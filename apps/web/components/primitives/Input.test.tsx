@@ -13,7 +13,11 @@
  *     load-bearing rule. Maestro sets `resource-id = node.id || node.ariaLabel`,
  *     so an auto-generated id would clobber the aria-label and silently break
  *     every `tapOn id: "<aria-label>"` selector in the suite.
- *  4. **reactive mode honours the NEO-39 focus-guard** — the same invariant
+ *  4. **error/helper text is ASSOCIATED with the field** (NEO-212) — the
+ *     message gets an id and the input an `aria-describedby`/`aria-invalid`,
+ *     so it is announced on focus instead of merely sitting underneath. The id
+ *     is on the `<p>`, never on the input, for reason 3 above.
+ *  5. **reactive mode honours the NEO-39 focus-guard** — the same invariant
  *     `useReactiveField.test.tsx` proves for the hook, asserted end-to-end
  *     through the component so a wiring mistake in the wrapper can't slip past.
  */
@@ -218,6 +222,89 @@ describe("Input — reactive mode (NEO-39 focus-guard)", () => {
   it("still applies the marker class in reactive mode", () => {
     setup("server");
     expect(field().className).toMatch(/mb-field-/);
+  });
+});
+
+describe("Input — error / helper association (NEO-212 a11y)", () => {
+  it("points the field at its error text and marks it invalid", () => {
+    render(<Input label="Player name" error="That name is already taken" />);
+    const el = screen.getByLabelText("Player name") as HTMLInputElement;
+
+    const describedBy = el.getAttribute("aria-describedby");
+    expect(describedBy).toBeTruthy();
+    // A <p> under an input is a VISUAL convention only; without this the
+    // message is never announced when the field takes focus.
+    expect(document.getElementById(describedBy!)?.textContent).toBe(
+      "That name is already taken",
+    );
+    expect(el.getAttribute("aria-invalid")).toBe("true");
+  });
+
+  it("describes the field with helper text, without claiming it is invalid", () => {
+    render(<Input label="Player name" helperText="Last name first" />);
+    const el = screen.getByLabelText("Player name") as HTMLInputElement;
+
+    expect(
+      document.getElementById(el.getAttribute("aria-describedby")!)?.textContent,
+    ).toBe("Last name first");
+    expect(el.getAttribute("aria-invalid")).toBeNull();
+  });
+
+  it("adds nothing when there is no message", () => {
+    render(<Input label="Player name" />);
+    const el = screen.getByLabelText("Player name") as HTMLInputElement;
+    expect(el.getAttribute("aria-describedby")).toBeNull();
+    expect(el.getAttribute("aria-invalid")).toBeNull();
+  });
+
+  it("keeps a caller-supplied aria-describedby alongside its own", () => {
+    render(
+      <Input
+        label="Player name"
+        error="Nope"
+        aria-describedby="external-hint"
+      />,
+    );
+    const ids = screen
+      .getByLabelText("Player name")
+      .getAttribute("aria-describedby")!
+      .split(" ");
+    expect(ids[0]).toBe("external-hint");
+    expect(document.getElementById(ids[1])?.textContent).toBe("Nope");
+  });
+
+  it("still emits no id on the input itself", () => {
+    // The load-bearing rule (see the file header): Maestro derives
+    // `resource-id` from `node.id || node.ariaLabel`, so the association id
+    // goes on the <p>, never on the field.
+    render(<Input label="Player name" error="Nope" />);
+    expect(screen.getByLabelText("Player name").getAttribute("id")).toBeNull();
+  });
+
+  it("wires the same association in reactive mode", () => {
+    render(
+      <Input
+        label="Player name"
+        error="Nope"
+        reactive={{ value: "server", onSave: vi.fn() }}
+      />,
+    );
+    const el = screen.getByLabelText("Player name");
+    expect(
+      document.getElementById(el.getAttribute("aria-describedby")!)?.textContent,
+    ).toBe("Nope");
+    expect(el.getAttribute("aria-invalid")).toBe("true");
+  });
+
+  it("leaves bare mode exactly as it was", () => {
+    // bare renders no message at all, so it gains neither attribute — its
+    // contract is "the lone <input>, markup unchanged".
+    const { container } = render(
+      <Input bare aria-label="field" error="ignored in bare mode" />,
+    );
+    expect(container.children).toHaveLength(1);
+    expect(field().getAttribute("aria-describedby")).toBeNull();
+    expect(field().getAttribute("aria-invalid")).toBeNull();
   });
 });
 

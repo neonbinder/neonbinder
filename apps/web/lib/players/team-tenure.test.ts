@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { pickDefaultTeamYear, tenureYears } from "./team-tenure";
+import { pickDefaultTeamYear, sortTeamYears, tenureYears } from "./team-tenure";
 
 const NOW = 2026;
 
@@ -81,5 +81,88 @@ describe("pickDefaultTeamYear", () => {
     const reversed = pickDefaultTeamYear([...stints].reverse(), NOW);
     expect(forward!.teamId).toBe("b");
     expect(reversed!.teamId).toBe("b");
+  });
+});
+
+// ===========================================================================
+// NEO-212 — sortTeamYears, the single career-timeline ordering shared by
+// commitCardChecklistPrelude (convex/selectorOptions.ts) and enrichPlayer
+// (convex/adapters/wikidata.ts). Both write players.teamYears, so a
+// disagreement here would mean the same player reads back as a different
+// timeline depending on which path created them.
+// ===========================================================================
+
+describe("sortTeamYears", () => {
+  it("orders by fromYear ascending regardless of input order", () => {
+    const rows = [
+      { teamId: "c", fromYear: 2019 },
+      { teamId: "a", fromYear: 2005 },
+      { teamId: "b", fromYear: 2011 },
+    ];
+    expect(sortTeamYears(rows).map((r) => r.teamId)).toEqual(["a", "b", "c"]);
+  });
+
+  it("breaks a same-fromYear tie on the earlier toYear", () => {
+    const rows = [
+      { teamId: "long", fromYear: 2011, toYear: 2018 },
+      { teamId: "short", fromYear: 2011, toYear: 2012 },
+    ];
+    expect(sortTeamYears(rows).map((r) => r.teamId)).toEqual(["short", "long"]);
+  });
+
+  it("sorts an open-ended stint LAST among stints sharing a fromYear", () => {
+    // No toYear means "still there" — by definition it has not ended, so it
+    // cannot sort before a stint that has.
+    const rows = [
+      { teamId: "open", fromYear: 2020 },
+      { teamId: "closed", fromYear: 2020, toYear: 2023 },
+    ];
+    expect(sortTeamYears(rows).map((r) => r.teamId)).toEqual(["closed", "open"]);
+  });
+
+  it("still orders an open-ended EARLIER stint before a later closed one", () => {
+    // The open-ended rule is a tie-break on fromYear only — it must never
+    // override the primary ordering.
+    const rows = [
+      { teamId: "later", fromYear: 2015, toYear: 2018 },
+      { teamId: "earlier-open", fromYear: 2001 },
+    ];
+    expect(sortTeamYears(rows).map((r) => r.teamId)).toEqual([
+      "earlier-open",
+      "later",
+    ]);
+  });
+
+  it("keeps BOTH stints when a player returns to the same team — it orders, it never dedupes", () => {
+    // The exact case the old teamId-keyed dedup destroyed.
+    const rows = [
+      { teamId: "angels", fromYear: 2016, toYear: 2019 },
+      { teamId: "angels", fromYear: 2011, toYear: 2013 },
+    ];
+    const sorted = sortTeamYears(rows);
+    expect(sorted).toHaveLength(2);
+    expect(sorted.map((r) => r.fromYear)).toEqual([2011, 2016]);
+  });
+
+  it("is stable for rows that compare equal", () => {
+    const rows = [
+      { teamId: "first", fromYear: 2010, toYear: 2012 },
+      { teamId: "second", fromYear: 2010, toYear: 2012 },
+    ];
+    expect(sortTeamYears(rows).map((r) => r.teamId)).toEqual(["first", "second"]);
+  });
+
+  it("does not mutate its input", () => {
+    const rows = [{ teamId: "b", fromYear: 2020 }, { teamId: "a", fromYear: 2000 }];
+    const sorted = sortTeamYears(rows);
+    expect(rows.map((r) => r.teamId)).toEqual(["b", "a"]);
+    expect(sorted).not.toBe(rows);
+  });
+
+  it("handles empty and single-element inputs", () => {
+    expect(sortTeamYears([])).toEqual([]);
+    expect(sortTeamYears([{ teamId: "only", fromYear: 2011 }])).toEqual([
+      { teamId: "only", fromYear: 2011 },
+    ]);
   });
 });

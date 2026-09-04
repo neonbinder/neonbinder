@@ -26,6 +26,24 @@
  *      the flow, not just before any decisions are made.
  *   8. isOpen=false (or the query still loading) renders nothing.
  *
+ * NEO-212 adds, in the blocks at the bottom of this file:
+ *   9. The third decision — "Skip — not a person/team" per row, and
+ *      "Skip Remaining (N)" in the footer beside the bulk create.
+ *  10. Near matches and the action hierarchy. THE LABEL "Add as New
+ *      {Player|Team}" IS AN E2E CONTRACT and is asserted present in the two
+ *      states any Maestro flow can reach (no match, close-only). In the
+ *      exact-match state the primary becomes "Link to {name}" and creation
+ *      demotes to a text link whose visible text and accessible name are the
+ *      same string, "Add as New {Player|Team} anyway" — no aria-label override
+ *      (WCAG 2.2 SC 2.5.3). That state needs an exact near match, which no
+ *      flow produces. The primary is ONE element across both states so focus
+ *      survives the async swap.
+ *  11. Wikidata career teams as unchecked-able proposals, and the
+ *      `excludedCareerTeamNames` they produce.
+ *  12. The "Will create N new teams · M already exist" summary.
+ *  13. Row-header copy control, Wikidata/Wikipedia links, description line.
+ *  14. Readability classes, and the enlarged NEO-110 height reservation.
+ *
  * --- Mocking strategy (mirrors CardDetailPanel.test.tsx / SetAttributesPanel
  * .test.tsx) ---
  * convex/react's useQuery/useMutation are module-mocked, routed by the
@@ -54,22 +72,46 @@ vi.mock("../../convex/_generated/api", () => ({
       recordDecision: "entityReviewQueue.recordDecision",
       cancelBatch: "entityReviewQueue.cancelBatch",
       recordAllRemainingAsCreate: "entityReviewQueue.recordAllRemainingAsCreate",
+      recordAllRemainingAsSkip: "entityReviewQueue.recordAllRemainingAsSkip",
     },
-    // CareerTeamEntry (rendered for player rows) reads teams.list for its
-    // typeahead; the useQuery mock below returns undefined for it, which is
-    // fine — free-text entry doesn't depend on the suggestion list.
-    teams: { list: "teams.list" },
+    players: { nearMatches: "players.nearMatches", search: "players.search" },
+    // `teams.search` is CareerTeamEntry's typeahead (rendered for player rows);
+    // `getManyByIds` resolves linked teams for the staging list; `resolveNames`
+    // backs the "will create N new teams" summary. Each returns undefined from
+    // the mock unless a test sets it.
+    teams: {
+      nearMatches: "teams.nearMatches",
+      search: "teams.search",
+      getManyByIds: "teams.getManyByIds",
+      resolveNames: "teams.resolveNames",
+    },
   },
 }));
 
 let currentRows: unknown;
+/** Near matches served to whichever of players/teams.nearMatches is active. */
+let currentNearMatches: unknown;
+/** Rows served to teams.resolveNames (the summary line). */
+let currentResolvedNames: unknown;
+/** Rows served to teams.getManyByIds (linked-team canonical names). */
+let currentLinkedTeams: unknown;
+/** Every (ref, args) pair useQuery saw, so arg-shaping can be asserted. */
+let queryCalls: Array<{ ref: string; args: unknown }>;
+
 const mockRecordDecision = vi.fn();
 const mockCancelBatch = vi.fn();
 const mockRecordAllRemainingAsCreate = vi.fn();
+const mockRecordAllRemainingAsSkip = vi.fn();
 
 vi.mock("convex/react", () => ({
   useQuery: (ref: string, args: unknown) => {
-    if (ref === "entityReviewQueue.getBatch" && args !== "skip") return currentRows;
+    queryCalls.push({ ref, args });
+    if (args === "skip") return undefined;
+    if (ref === "entityReviewQueue.getBatch") return currentRows;
+    if (ref === "players.nearMatches" || ref === "teams.nearMatches")
+      return currentNearMatches;
+    if (ref === "teams.resolveNames") return currentResolvedNames;
+    if (ref === "teams.getManyByIds") return currentLinkedTeams;
     return undefined;
   },
   useMutation: (ref: string) => {
@@ -77,6 +119,8 @@ vi.mock("convex/react", () => ({
     if (ref === "entityReviewQueue.cancelBatch") return mockCancelBatch;
     if (ref === "entityReviewQueue.recordAllRemainingAsCreate")
       return mockRecordAllRemainingAsCreate;
+    if (ref === "entityReviewQueue.recordAllRemainingAsSkip")
+      return mockRecordAllRemainingAsSkip;
     return vi.fn();
   },
 }));
@@ -122,7 +166,10 @@ type Row = {
   sportValue: string;
   status: "pending" | "ready" | "error";
   enrichment?: Record<string, unknown>;
-  decision?: { action: "create" } | { action: "link"; linkedPlayerId?: string; linkedTeamId?: string };
+  decision?:
+    | { action: "create"; excludedCareerTeamNames?: string[] }
+    | { action: "link"; linkedPlayerId?: string; linkedTeamId?: string }
+    | { action: "skip" };
 };
 
 let nextRowId = 0;
@@ -159,12 +206,31 @@ function renderWizard(props: Partial<Parameters<typeof EntityReviewWizard>[0]> =
   return { ...utils, onConfirm, onCancel };
 }
 
+/**
+ * The wizard's progress line, addressed by content rather than by role.
+ *
+ * `screen.getByRole("status")` used to be unambiguous here. NEO-212 added a
+ * `CopyButton` to the row header, and that primitive keeps an always-mounted
+ * `role="status"` live region (empty until a copy happens) — deliberately, so
+ * VoiceOver announces the result reliably. So the role now matches more than
+ * one node and the progress line has to be picked out of them.
+ */
+function progressText(): string {
+  const texts = screen.getAllByRole("status").map((el) => el.textContent ?? "");
+  return texts.find((t) => t.includes("reviewed")) ?? "";
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   mockRecordDecision.mockResolvedValue(null);
   mockCancelBatch.mockResolvedValue(null);
   mockRecordAllRemainingAsCreate.mockResolvedValue(0);
+  mockRecordAllRemainingAsSkip.mockResolvedValue(0);
   currentRows = [];
+  currentNearMatches = [];
+  currentResolvedNames = undefined;
+  currentLinkedTeams = undefined;
+  queryCalls = [];
   lastLinkSearchProps = null;
   nextRowId = 0;
 });
@@ -201,8 +267,8 @@ describe("EntityReviewWizard — current-item selection", () => {
     renderWizard();
 
     expect(screen.getByText(/Looking up 2 more names/)).toBeTruthy();
-    expect(screen.getByRole("status").textContent).toContain("0 of 2 reviewed");
-    expect(screen.getByRole("status").textContent).toContain("2 still being looked up");
+    expect(progressText()).toContain("0 of 2 reviewed");
+    expect(progressText()).toContain("2 still being looked up");
   });
 
   it("skips a still-pending row and presents the next non-pending, undecided row instead", () => {
@@ -294,7 +360,7 @@ describe("EntityReviewWizard — progress counters", () => {
     ];
     renderWizard();
 
-    const status = screen.getByRole("status").textContent ?? "";
+    const status = progressText();
     expect(status).toContain("1 of 3 reviewed");
     expect(status).toContain("1 still being looked up");
   });
@@ -303,7 +369,7 @@ describe("EntityReviewWizard — progress counters", () => {
     currentRows = [makeRow({ status: "ready" })];
     renderWizard();
 
-    const status = screen.getByRole("status").textContent ?? "";
+    const status = progressText();
     expect(status).toContain("0 of 1 reviewed");
     expect(status).not.toContain("still being looked up");
   });
@@ -729,31 +795,62 @@ describe("EntityReviewWizard — NEO-110 footer stability", () => {
   // that had just rendered into those coordinates (CI run 30505189226; the tap
   // point (394,388) is #00D558 in the failure screenshot).
   //
-  // The guard that prevents it is the body's reserved minimum height, so that
-  // is what these pin. A refactor that drops `min-h-80` fails here — which is
-  // the point, since nothing else in the suite would notice.
+  // A reserved MINIMUM body height (`min-h-80`, then `min-h-[22rem]`) was the
+  // first fix. It only BOUNDED the movement to (max-h − min-h)/2, and the bound
+  // came due: CI run 33817648830 (the seed job) lost the same bulk click to an
+  // 11px shift, because the Ohtani row's Wikidata description, career-team
+  // checkboxes and "Will create 3 new teams…" line landed in the 332ms between
+  // Maestro reading the link at [194,521][386,537] and clicking its centre
+  // (290,529) — by which time the link was at [194,532][386,548] and the click
+  // hit footer padding. The link is `text-xs`, 16px tall; 13px was never a safe
+  // margin.
+  //
+  // SO THE CONTRACT THESE PIN IS NOW STRUCTURAL, not a magic number: the dialog
+  // has a DEFINITE height and the body is the flex child that absorbs all of the
+  // change (`flex-1 min-h-0 overflow-y-auto`). Given those two facts the footer's
+  // y is invariant no matter what the body does, so there is no residual shift
+  // left to size. Re-adding `min-h-*`/`max-h-*` to the body — the shape that
+  // failed twice — fails the last test here, which is the point: nothing else in
+  // the suite would notice.
+  const DIALOG_HEIGHT_CLASS = "h-[min(40rem,100%)]";
 
-  function bodyRegion(): HTMLElement {
-    const el = document.querySelector(".min-h-80");
-    if (!el) throw new Error("wizard body region (min-h-80) not found");
-    return el as HTMLElement;
+  /** The three-child panel: [header, body, footer]. Structure IS the contract. */
+  function panelRegions(): {
+    panel: HTMLElement;
+    header: HTMLElement;
+    body: HTMLElement;
+    footer: HTMLElement;
+  } {
+    const overlay = document.querySelector('[role="dialog"]');
+    if (!overlay) throw new Error("wizard overlay not found");
+    const panel = overlay.firstElementChild as HTMLElement | null;
+    if (!panel) throw new Error("wizard panel not found");
+    const [header, body, footer] = Array.from(panel.children) as HTMLElement[];
+    if (!header || !body || !footer) {
+      throw new Error(
+        `wizard panel must be header/body/footer; got ${panel.children.length} children`,
+      );
+    }
+    return { panel, header, body, footer };
   }
 
-  it("reserves a minimum body height while every row is still pending", () => {
+  it("gives the dialog a definite height while every row is still pending", () => {
     currentRows = [makeRow({ status: "pending" }), makeRow({ status: "pending" })];
     renderWizard();
 
     expect(screen.getByText(/Looking up 2 more names/)).toBeTruthy();
-    expect(bodyRegion().className).toContain("min-h-80");
+    const { panel } = panelRegions();
+    expect(panel.className).toContain(DIALOG_HEIGHT_CLASS);
+    expect(panel.className).toContain("flex-col");
   });
 
-  it("keeps the same reserved body height once an item block renders", () => {
+  it("keeps the same definite dialog height once an item block renders", () => {
     // The exact state transition that used to move the footer.
     currentRows = [makeRow({ status: "ready", name: "Resolved Player" })];
     renderWizard();
 
     expect(screen.getByText("Resolved Player")).toBeTruthy();
-    expect(bodyRegion().className).toContain("min-h-80");
+    expect(panelRegions().panel.className).toContain(DIALOG_HEIGHT_CLASS);
   });
 
   it("keeps it on the final all-decided step too", () => {
@@ -761,15 +858,958 @@ describe("EntityReviewWizard — NEO-110 footer stability", () => {
     renderWizard();
 
     expect(screen.getByText(/All reviewed/)).toBeTruthy();
-    expect(bodyRegion().className).toContain("min-h-80");
+    expect(panelRegions().panel.className).toContain(DIALOG_HEIGHT_CLASS);
   });
 
-  it("bounds growth so tall content scrolls rather than overflowing the viewport", () => {
+  it("makes the body the only region that flexes, so the footer cannot move", () => {
     currentRows = [makeRow({ status: "ready" })];
     renderWizard();
 
-    const cls = bodyRegion().className;
-    expect(cls).toContain("overflow-y-auto");
-    expect(cls).toContain("max-h-[60vh]");
+    const { header, body, footer } = panelRegions();
+
+    // The body absorbs every height change and scrolls past the dialog height.
+    expect(body.className).toContain("flex-1");
+    expect(body.className).toContain("min-h-0");
+    expect(body.className).toContain("overflow-y-auto");
+
+    // …and must NOT reintroduce its own elastic height band. A `min-h-*` floor
+    // with a `max-h-*` ceiling on this div is exactly the shape that shipped
+    // both incidents. (`min-h-0` is the opposite of a floor — it is what lets a
+    // flex child shrink below its content and scroll — so it is allowed.)
+    const heightClasses = body.className
+      .split(/\s+/)
+      .filter((c) => /^(min|max)-h-/.test(c) && c !== "min-h-0");
+    expect(heightClasses).toEqual([]);
+
+    // Header and footer are fixed bookends — neither may be squeezed by the body.
+    expect(header.className).toContain("shrink-0");
+    expect(footer.className).toContain("shrink-0");
+  });
+
+  it("keeps the bulk buttons inside the footer, not the scrolling body", () => {
+    // If the bulk link ever migrated into the body it would move with the
+    // content again, whatever the dialog height says.
+    currentRows = [makeRow({ status: "ready" }), makeRow({ status: "ready" })];
+    renderWizard();
+
+    const { body, footer } = panelRegions();
+    const bulk = screen.getByRole("button", { name: /Add all remaining as new/i });
+
+    expect(footer.contains(bulk)).toBe(true);
+    expect(body.contains(bulk)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-212 — "Skip — not a person / not a team"
+//
+// The third decision. Before it existed, a checklist string that was not a
+// person at all ("Checklist", "Team Card", a subset header that landed in the
+// player column) could only be got past by minting a junk player row or by
+// cancelling the entire batch.
+// ---------------------------------------------------------------------------
+
+describe("EntityReviewWizard — skip decision", () => {
+  it("offers 'Skip — not a person' on a player row and records action:'skip'", async () => {
+    const row = makeRow({ kind: "player", name: "Checklist", status: "ready" });
+    currentRows = [row];
+    renderWizard();
+
+    const skip = screen.getByRole("button", {
+      name: "Skip Checklist — not a person",
+    });
+    expect(skip.textContent).toBe("Skip — not a person");
+
+    fireEvent.click(skip);
+
+    await waitFor(() => {
+      expect(mockRecordDecision).toHaveBeenCalledWith({
+        reviewRowId: row._id,
+        action: "skip",
+      });
+    });
+  });
+
+  it("says 'not a team' on a team row", () => {
+    currentRows = [makeRow({ kind: "team", name: "Team Card", status: "ready" })];
+    renderWizard();
+
+    const skip = screen.getByRole("button", {
+      name: "Skip Team Card — not a team",
+    });
+    expect(skip.textContent).toBe("Skip — not a team");
+  });
+
+  it("carries NO career-team or link payload — skip means nothing is written", async () => {
+    // The server ignores leftovers, but sending them at all would make the
+    // stored decision a misleading audit record.
+    const row = makeRow({
+      kind: "player",
+      name: "Checklist",
+      status: "ready",
+      enrichment: { careerTeams: [{ name: "Los Angeles Angels", fromYear: 2011 }] },
+    });
+    currentRows = [row];
+    renderWizard();
+
+    fireEvent.change(screen.getByLabelText("Career team name"), {
+      target: { value: "Some Club" },
+    });
+    fireEvent.change(screen.getByLabelText("From year"), { target: { value: "2020" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add career team" }));
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Skip Checklist — not a person" }),
+    );
+
+    await waitFor(() => {
+      expect(mockRecordDecision).toHaveBeenCalledWith({
+        reviewRowId: row._id,
+        action: "skip",
+      });
+    });
+  });
+
+  it("sits alongside 'Link to Existing…' rather than replacing it", () => {
+    currentRows = [makeRow({ kind: "player", name: "Checklist", status: "ready" })];
+    renderWizard();
+
+    expect(screen.getByLabelText("Link to existing instead")).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Skip Checklist — not a person" }),
+    ).toBeTruthy();
+  });
+});
+
+describe("EntityReviewWizard — bulk 'Skip Remaining'", () => {
+  it("labels the button with the undecided count and calls the bulk mutation", async () => {
+    currentRows = [
+      makeRow({ status: "ready", name: "A" }),
+      makeRow({ status: "pending", name: "B" }),
+      makeRow({ status: "pending", name: "C" }),
+    ];
+    renderWizard();
+
+    const bulk = screen.getByRole("button", { name: "Skip remaining (3)" });
+    expect(bulk.textContent).toContain("Skip Remaining (3)");
+
+    fireEvent.click(bulk);
+
+    await waitFor(() =>
+      expect(mockRecordAllRemainingAsSkip).toHaveBeenCalledWith({
+        selectorOptionId: "selopt-1",
+        batchId: "batch-1",
+      }),
+    );
+    expect(mockRecordAllRemainingAsCreate).not.toHaveBeenCalled();
+  });
+
+  it("sits beside 'Add All Remaining as New' with the same count", () => {
+    currentRows = [
+      makeRow({ status: "ready", decision: { action: "create" } }),
+      makeRow({ status: "ready" }),
+      makeRow({ status: "pending" }),
+    ];
+    renderWizard();
+
+    expect(screen.getByRole("button", { name: "Add all remaining as new (2)" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Skip remaining (2)" })).toBeTruthy();
+  });
+
+  it("is not rendered once every row is decided", () => {
+    currentRows = [makeRow({ status: "ready", decision: { action: "skip" } })];
+    renderWizard();
+
+    expect(screen.queryByText(/Skip Remaining/)).toBeNull();
+    expect(screen.getByText(/All reviewed/)).toBeTruthy();
+  });
+
+  it("surfaces a rejected bulk skip through the same alert as the bulk create (NEO-110)", async () => {
+    currentRows = [makeRow({ status: "ready" }), makeRow({ status: "ready" })];
+    mockRecordAllRemainingAsSkip.mockRejectedValueOnce(new Error("not an admin"));
+    renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Skip remaining (2)" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("not an admin");
+  });
+
+  it("re-enables both bulk buttons after a failure so the user can retry", async () => {
+    currentRows = [makeRow({ status: "ready" })];
+    mockRecordAllRemainingAsSkip.mockRejectedValueOnce(new Error("boom"));
+    renderWizard();
+
+    const skipAll = screen.getByRole("button", {
+      name: "Skip remaining (1)",
+    }) as HTMLButtonElement;
+    fireEvent.click(skipAll);
+
+    await screen.findByRole("alert");
+    expect(skipAll.disabled).toBe(false);
+    expect(
+      (screen.getByRole("button", { name: "Add all remaining as new (1)" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-212 — near matches and the action hierarchy
+//
+// The whole ticket in one behaviour: the wizard used to offer a green "Add as
+// New" with nothing else on screen, and "NY Yankees" became a second Yankees
+// row next to "New York Yankees".
+// ---------------------------------------------------------------------------
+
+describe("EntityReviewWizard — near matches", () => {
+  // NeonButton paints its neon as an INLINE style, so the variant is readable
+  // straight off the node. happy-dom preserves the authored hex rather than
+  // normalising it to rgb(), so these compare as written.
+  const GREEN = "#00D558";
+  const BLUE = "#00C2FF"; // NeonButton's `secondary`
+
+  it("queries players.nearMatches for a player row, skipping the team query", () => {
+    currentRows = [
+      makeRow({
+        kind: "player",
+        name: "Mike Trout",
+        sportId: "selopt-sport-9" as unknown as Id<"selectorOptions">,
+        status: "ready",
+      }),
+    ];
+    renderWizard();
+
+    const playerCall = queryCalls.filter((c) => c.ref === "players.nearMatches").pop();
+    const teamCall = queryCalls.filter((c) => c.ref === "teams.nearMatches").pop();
+    expect(playerCall?.args).toEqual({ name: "Mike Trout", sportId: "selopt-sport-9" });
+    expect(teamCall?.args).toBe("skip");
+  });
+
+  it("queries teams.nearMatches for a team row, skipping the player query", () => {
+    currentRows = [makeRow({ kind: "team", name: "NY Yankees", status: "ready" })];
+    renderWizard();
+
+    const teamCall = queryCalls.filter((c) => c.ref === "teams.nearMatches").pop();
+    const playerCall = queryCalls.filter((c) => c.ref === "players.nearMatches").pop();
+    expect(teamCall?.args).toEqual({ name: "NY Yankees", sportId: "selopt-sport-1" });
+    expect(playerCall?.args).toBe("skip");
+  });
+
+  it("NO MATCHES: green 'Add as New Player', no panel — unchanged from before", () => {
+    // This is the state every existing Maestro flow runs in (their names are
+    // nonsense strings that match nothing), so it must not move.
+    currentNearMatches = [];
+    currentRows = [makeRow({ kind: "player", status: "ready" })];
+    renderWizard();
+
+    const add = screen.getByRole("button", { name: "Add as New Player" });
+    expect(add.textContent).toBe("Add as New Player");
+    expect((add as HTMLElement).style.backgroundColor).toBe(GREEN);
+    expect(screen.queryByText("Possible matches")).toBeNull();
+  });
+
+  it("CLOSE ONLY: same label, panel shown, and the button loses its green", () => {
+    currentNearMatches = [
+      { _id: "p9", name: "Michael Trout", confidence: "close" },
+    ];
+    currentRows = [makeRow({ kind: "player", name: "Mike Trout", status: "ready" })];
+    renderWizard();
+
+    expect(screen.getByText("Possible matches")).toBeTruthy();
+    // The accessible name is an E2E contract and survives the demotion.
+    const add = screen.getByRole("button", { name: "Add as New Player" });
+    expect(add.textContent).toBe("Add as New Player");
+    expect((add as HTMLElement).style.backgroundColor).toBe(BLUE);
+    expect((add as HTMLElement).style.backgroundColor).not.toBe(GREEN);
+    // NeonButton's own `secondary` foreground is white — 2.07:1 on #00C2FF.
+    // The call site overrides it to black (10.2:1) rather than repainting the
+    // shared primitive; assert the override is actually applied.
+    expect((add as HTMLElement).style.color).toBe("#000000");
+  });
+
+  it("EXACT: the green button becomes 'Link to {name}' and create demotes to a text link", () => {
+    currentNearMatches = [
+      { _id: "p9", name: "Mike Trout", confidence: "exact" },
+      { _id: "p8", name: "Michael Trout", confidence: "close" },
+    ];
+    currentRows = [makeRow({ kind: "player", name: "Mike Trout", status: "ready" })];
+    renderWizard();
+
+    // EXACTLY ONE control carries "Link to Mike Trout". The promoted primary
+    // button IS the exact panel row, so that row is filtered out of the panel —
+    // two controls sharing one accessible name is ambiguous to a screen reader
+    // reading the list and to a Maestro `tapOn` matching by it.
+    const linkButtons = screen.getAllByLabelText("Link to Mike Trout");
+    expect(linkButtons).toHaveLength(1);
+    expect((linkButtons[0] as HTMLElement).style.backgroundColor).toBe(GREEN);
+
+    // Create is still reachable, as a text link whose accessible name IS its
+    // visible text — no aria-label sitting over words the operator can read.
+    const add = screen.getByRole("button", { name: "Add as New Player anyway" });
+    expect(add.textContent).toBe("Add as New Player anyway");
+    expect(add.getAttribute("aria-label")).toBeNull();
+    expect((add as HTMLElement).style.backgroundColor).toBe("");
+    // And the old mismatched name is gone.
+    expect(screen.queryByLabelText("Add as New Player")).toBeNull();
+  });
+
+  it("EXACT: the OTHER matches stay listed in the panel", () => {
+    // Only the promoted row is filtered, and by id — a different entity is
+    // still a candidate the operator should see, whatever its confidence.
+    currentNearMatches = [
+      { _id: "p9", name: "Mike Trout", confidence: "exact" },
+      { _id: "p8", name: "Michael Trout", confidence: "close" },
+    ];
+    currentRows = [makeRow({ kind: "player", name: "Mike Trout", status: "ready" })];
+    renderWizard();
+
+    expect(screen.getByText("Possible matches")).toBeTruthy();
+    expect(screen.getByLabelText("Link to Michael Trout")).toBeTruthy();
+  });
+
+  it("EXACT and nothing else: the panel disappears entirely", () => {
+    // Filtering the promoted row leaves [], which NearMatchPanel already
+    // renders as no panel at all — so the operator is not shown an empty
+    // "Possible matches" box whose only entry has moved up to the button.
+    currentNearMatches = [{ _id: "p9", name: "Mike Trout", confidence: "exact" }];
+    currentRows = [makeRow({ kind: "player", name: "Mike Trout", status: "ready" })];
+    renderWizard();
+
+    expect(screen.queryByText("Possible matches")).toBeNull();
+    expect(screen.getAllByLabelText("Link to Mike Trout")).toHaveLength(1);
+  });
+
+  it("EXACT: the promoted button links to the exact match's id", async () => {
+    const row = makeRow({ kind: "player", name: "Mike Trout", status: "ready" });
+    currentNearMatches = [{ _id: "player_exact", name: "Mike Trout", confidence: "exact" }];
+    currentRows = [row];
+    renderWizard();
+
+    const green = screen.getByLabelText("Link to Mike Trout");
+    expect((green as HTMLElement).style.backgroundColor).toBe(GREEN);
+    fireEvent.click(green);
+
+    await waitFor(() => {
+      expect(mockRecordDecision).toHaveBeenCalledWith({
+        reviewRowId: row._id,
+        action: "link",
+        linkedPlayerId: "player_exact",
+        linkedTeamId: undefined,
+      });
+    });
+  });
+
+  it("EXACT: the demoted create still carries the row's staged career teams", async () => {
+    const row = makeRow({
+      kind: "player",
+      name: "Mike Trout",
+      status: "ready",
+      enrichment: { careerTeams: [] },
+    });
+    currentNearMatches = [{ _id: "p9", name: "Mike Trout", confidence: "exact" }];
+    currentRows = [row];
+    renderWizard();
+
+    fireEvent.change(screen.getByLabelText("Career team name"), {
+      target: { value: "Los Angeles Angels" },
+    });
+    fireEvent.change(screen.getByLabelText("From year"), { target: { value: "2011" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add career team" }));
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Add as New Player anyway" }),
+    );
+
+    await waitFor(() => {
+      expect(mockRecordDecision).toHaveBeenCalledWith({
+        reviewRowId: row._id,
+        action: "create",
+        manualCareerTeams: [{ name: "Los Angeles Angels", fromYear: 2011 }],
+        excludedCareerTeamNames: undefined,
+      });
+    });
+  });
+
+  it("picking a panel row records a link decision", async () => {
+    const row = makeRow({ kind: "team", name: "NY Yankees", status: "ready" });
+    currentNearMatches = [
+      { _id: "team_ny", name: "New York Yankees", confidence: "close" },
+    ];
+    currentRows = [row];
+    renderWizard();
+
+    fireEvent.click(screen.getByLabelText("Link to New York Yankees"));
+
+    await waitFor(() => {
+      expect(mockRecordDecision).toHaveBeenCalledWith({
+        reviewRowId: row._id,
+        action: "link",
+        linkedPlayerId: undefined,
+        linkedTeamId: "team_ny",
+      });
+    });
+  });
+
+  it("hides the panel while the link search is open, so 'Link to {name}' is never ambiguous", () => {
+    currentNearMatches = [
+      { _id: "p9", name: "Michael Trout", confidence: "close" },
+    ];
+    currentRows = [makeRow({ kind: "player", name: "Mike Trout", status: "ready" })];
+    renderWizard();
+
+    expect(screen.getByText("Possible matches")).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("Link to existing instead"));
+    expect(screen.queryByText("Possible matches")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-212 — Wikidata career teams are PROPOSALS, not facts
+// ---------------------------------------------------------------------------
+
+describe("EntityReviewWizard — career-team proposals", () => {
+  const angelsRow = () =>
+    makeRow({
+      kind: "player",
+      name: "Mike Trout",
+      status: "ready",
+      enrichment: {
+        careerTeams: [
+          { name: "Los Angeles Angels", fromYear: 2011 },
+          { name: "Salt Lake Bees", fromYear: 2011, toYear: 2011 },
+          { name: "Cedar Rapids Kernels", fromYear: 2010, toYear: 2010 },
+        ],
+      },
+    });
+
+  it("renders each career team as a checkbox, checked by default", () => {
+    currentRows = [angelsRow()];
+    renderWizard();
+
+    const angels = screen.getByLabelText(
+      "Include career team Los Angeles Angels",
+    ) as HTMLInputElement;
+    expect(angels.type).toBe("checkbox");
+    expect(angels.checked).toBe(true);
+  });
+
+  it("sorts by fromYear, with an open-ended tenure last within a shared start year", () => {
+    currentRows = [angelsRow()];
+    renderWizard();
+
+    const labels = screen
+      .getAllByRole("checkbox")
+      .map((el) => el.getAttribute("aria-label"));
+    expect(labels).toEqual([
+      "Include career team Cedar Rapids Kernels", // 2010
+      "Include career team Salt Lake Bees", // 2011–2011 (closed)
+      "Include career team Los Angeles Angels", // 2011–present (open, last)
+    ]);
+  });
+
+  it("labels each proposal '{name} ({from}–{to|present})'", () => {
+    currentRows = [angelsRow()];
+    renderWizard();
+
+    expect(screen.getByText("Los Angeles Angels (2011–present)")).toBeTruthy();
+    expect(screen.getByText("Salt Lake Bees (2011–2011)")).toBeTruthy();
+  });
+
+  it("sends UNCHECKED proposals as excludedCareerTeamNames on create", async () => {
+    const row = angelsRow();
+    currentRows = [row];
+    renderWizard();
+
+    fireEvent.click(screen.getByLabelText("Include career team Salt Lake Bees"));
+    expect(
+      (screen.getByLabelText("Include career team Salt Lake Bees") as HTMLInputElement)
+        .checked,
+    ).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Player" }));
+
+    await waitFor(() => {
+      expect(mockRecordDecision).toHaveBeenCalledWith({
+        reviewRowId: row._id,
+        action: "create",
+        manualCareerTeams: undefined,
+        excludedCareerTeamNames: ["Salt Lake Bees"],
+      });
+    });
+  });
+
+  it("sends no exclusion list at all when nothing is unchecked", async () => {
+    const row = angelsRow();
+    currentRows = [row];
+    renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Player" }));
+
+    await waitFor(() => {
+      expect(mockRecordDecision).toHaveBeenCalledWith({
+        reviewRowId: row._id,
+        action: "create",
+        manualCareerTeams: undefined,
+        excludedCareerTeamNames: undefined,
+      });
+    });
+  });
+
+  it("re-checking a proposal drops it back out of the exclusion list", async () => {
+    const row = angelsRow();
+    currentRows = [row];
+    renderWizard();
+
+    const bees = () => screen.getByLabelText("Include career team Salt Lake Bees");
+    fireEvent.click(bees());
+    fireEvent.click(bees());
+    expect((bees() as HTMLInputElement).checked).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Player" }));
+
+    await waitFor(() => {
+      expect(mockRecordDecision).toHaveBeenCalledWith({
+        reviewRowId: row._id,
+        action: "create",
+        manualCareerTeams: undefined,
+        excludedCareerTeamNames: undefined,
+      });
+    });
+  });
+
+  it("keeps two same-named tenures from different years as distinct rows (list key)", () => {
+    // The list used to key on `ct.name` alone, so a player who returned to a
+    // club rendered one row instead of two.
+    currentRows = [
+      makeRow({
+        kind: "player",
+        status: "ready",
+        enrichment: {
+          careerTeams: [
+            { name: "Boston Red Sox", fromYear: 2005, toYear: 2008 },
+            { name: "Boston Red Sox", fromYear: 2012, toYear: 2014 },
+          ],
+        },
+      }),
+    ];
+    renderWizard();
+
+    expect(screen.getByText("Boston Red Sox (2005–2008)")).toBeTruthy();
+    expect(screen.getByText("Boston Red Sox (2012–2014)")).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-212 — "will create N new teams" summary
+// ---------------------------------------------------------------------------
+
+describe("EntityReviewWizard — team creation summary", () => {
+  const trout = () =>
+    makeRow({
+      kind: "player",
+      name: "Mike Trout",
+      status: "ready",
+      enrichment: {
+        careerTeams: [
+          { name: "Los Angeles Angels", fromYear: 2011 },
+          { name: "Salt Lake Bees", fromYear: 2011, toYear: 2011 },
+        ],
+      },
+    });
+
+  it("resolves the checked proposals plus the staged chips, deduped, for this sport", () => {
+    currentRows = [trout()];
+    renderWizard();
+
+    fireEvent.change(screen.getByLabelText("Career team name"), {
+      // Same team, different casing — the commit dedupes it, so the preview must.
+      target: { value: "los angeles angels" },
+    });
+    fireEvent.change(screen.getByLabelText("From year"), { target: { value: "2011" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add career team" }));
+
+    const call = queryCalls.filter((c) => c.ref === "teams.resolveNames").pop();
+    expect(call?.args).toEqual({
+      names: ["Los Angeles Angels", "Salt Lake Bees"],
+      sportId: "selopt-sport-1",
+    });
+  });
+
+  it("shows both halves when some names exist and some do not", () => {
+    currentResolvedNames = [
+      { name: "Los Angeles Angels" },
+      { name: "Salt Lake Bees", existingTeamId: "t1", existingName: "Salt Lake Bees" },
+    ];
+    currentRows = [trout()];
+    renderWizard();
+
+    expect(
+      screen.getByText("Will create 1 new team: Los Angeles Angels · 1 already exist"),
+    ).toBeTruthy();
+  });
+
+  it("omits the 'already exist' half when nothing exists yet", () => {
+    currentResolvedNames = [
+      { name: "Los Angeles Angels" },
+      { name: "Salt Lake Bees" },
+    ];
+    currentRows = [trout()];
+    renderWizard();
+
+    expect(
+      screen.getByText("Will create 2 new teams: Los Angeles Angels, Salt Lake Bees"),
+    ).toBeTruthy();
+  });
+
+  it("omits the 'will create' half when every name already exists", () => {
+    currentResolvedNames = [
+      { name: "Los Angeles Angels", existingTeamId: "t1" },
+      { name: "Salt Lake Bees", existingTeamId: "t2" },
+    ];
+    currentRows = [trout()];
+    renderWizard();
+
+    expect(screen.getByText("2 already exist")).toBeTruthy();
+    expect(screen.queryByText(/Will create/)).toBeNull();
+  });
+
+  it("skips the query entirely when there is nothing to resolve", () => {
+    currentRows = [
+      makeRow({ kind: "player", status: "ready", enrichment: { careerTeams: [] } }),
+    ];
+    renderWizard();
+
+    const call = queryCalls.filter((c) => c.ref === "teams.resolveNames").pop();
+    expect(call?.args).toBe("skip");
+    expect(screen.queryByText(/Will create/)).toBeNull();
+  });
+
+  it("does not run for a team row", () => {
+    currentRows = [makeRow({ kind: "team", status: "ready", enrichment: { league: "MLB" } })];
+    renderWizard();
+
+    const call = queryCalls.filter((c) => c.ref === "teams.resolveNames").pop();
+    expect(call?.args).toBe("skip");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-212 — row header: copy, source links, disambiguation line
+// ---------------------------------------------------------------------------
+
+describe("EntityReviewWizard — row header", () => {
+  it("offers a copy control for the reviewed name", () => {
+    currentRows = [makeRow({ name: "Mike Trout", status: "ready" })];
+    renderWizard();
+
+    expect(screen.getByLabelText("Copy name")).toBeTruthy();
+  });
+
+  it("links to the Wikidata record, opening safely in a new tab", () => {
+    currentRows = [
+      makeRow({ name: "Mike Trout", status: "ready", enrichment: { wikidataId: "Q303" } }),
+    ];
+    renderWizard();
+
+    const link = screen.getByRole("link", { name: /Wikidata Q303/ }) as HTMLAnchorElement;
+    expect(link.getAttribute("href")).toBe("https://www.wikidata.org/wiki/Q303");
+    expect(link.getAttribute("target")).toBe("_blank");
+    // rel is the security half — `noopener` denies the opened page a handle on
+    // this window, `noreferrer` denies it the referrer.
+    expect(link.getAttribute("rel")).toBe("noopener noreferrer");
+    expect(link.textContent).toContain("(opens in new tab)");
+  });
+
+  it("links to Wikipedia, underscoring and encoding the article title", () => {
+    currentRows = [
+      makeRow({
+        status: "ready",
+        enrichment: { wikidataId: "Q303", enwikiTitle: "Mike Trout" },
+      }),
+    ];
+    renderWizard();
+
+    const link = screen.getByRole("link", { name: /Wikipedia/ }) as HTMLAnchorElement;
+    expect(link.getAttribute("href")).toBe("https://en.wikipedia.org/wiki/Mike_Trout");
+    expect(link.getAttribute("rel")).toBe("noopener noreferrer");
+    expect(link.getAttribute("target")).toBe("_blank");
+  });
+
+  it("percent-encodes an article title that needs it", () => {
+    currentRows = [
+      makeRow({ status: "ready", enrichment: { enwikiTitle: "José Ramírez (baseball)" } }),
+    ];
+    renderWizard();
+
+    const link = screen.getByRole("link", { name: /Wikipedia/ }) as HTMLAnchorElement;
+    expect(link.getAttribute("href")).toBe(
+      "https://en.wikipedia.org/wiki/Jos%C3%A9_Ram%C3%ADrez_(baseball)",
+    );
+  });
+
+  it("shows a malformed Wikidata id as text, never as a link", () => {
+    // NEO-212 security review. `enrichment.wikidataId` originates at
+    // query.wikidata.org, so it is external input on its way into an `href`,
+    // and React warns on a `javascript:` URL while rendering it anyway. The
+    // guard is `wikidataUrl` (lib/players/wikidata-id.ts) returning null. The
+    // value is still SHOWN — the operator needs to see what the lookup found
+    // in order to judge it — just not as a destination.
+    currentRows = [
+      makeRow({
+        name: "Mike Trout",
+        status: "ready",
+        enrichment: { wikidataId: "javascript:alert(1)" },
+      }),
+    ];
+    renderWizard();
+
+    expect(screen.queryByRole("link", { name: /Wikidata/ })).toBeNull();
+    expect(screen.getByText("Wikidata javascript:alert(1)")).toBeTruthy();
+    // Nothing on the page carries the payload as a URL of any kind.
+    for (const a of Array.from(document.querySelectorAll("a"))) {
+      expect(a.getAttribute("href") ?? "").not.toContain("javascript:");
+    }
+  });
+
+  it("renders neither link when the lookup found nothing", () => {
+    currentRows = [makeRow({ status: "error", enrichment: undefined })];
+    renderWizard();
+
+    expect(screen.queryByRole("link", { name: /Wikidata/ })).toBeNull();
+    expect(screen.queryByRole("link", { name: /Wikipedia/ })).toBeNull();
+  });
+
+  it("shows the description and birth year — the line that settles 'which Mike Smith?'", () => {
+    currentRows = [
+      makeRow({
+        status: "ready",
+        enrichment: { description: "American baseball player", birthYear: 1991 },
+      }),
+    ];
+    renderWizard();
+
+    expect(screen.getByText("American baseball player · b. 1991")).toBeTruthy();
+  });
+
+  it("shows whichever half of that line exists on its own", () => {
+    currentRows = [makeRow({ status: "ready", enrichment: { birthYear: 1991 } })];
+    const { unmount } = renderWizard();
+    expect(screen.getByText("b. 1991")).toBeTruthy();
+    unmount();
+
+    currentRows = [
+      makeRow({ status: "ready", enrichment: { description: "Canadian ice hockey player" } }),
+    ];
+    renderWizard();
+    expect(screen.getByText("Canadian ice hockey player")).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-212 — readability
+//
+// Class assertions, for the same reason the footer-stability block uses them:
+// happy-dom performs no layout, so the only observable is the class that
+// produces the size.
+// ---------------------------------------------------------------------------
+
+describe("EntityReviewWizard — readability", () => {
+  it("widens the dialog from max-w-md to max-w-2xl", () => {
+    currentRows = [makeRow({ status: "ready" })];
+    renderWizard();
+
+    expect(document.querySelector(".max-w-2xl")).toBeTruthy();
+    expect(document.querySelector(".max-w-md")).toBeNull();
+  });
+
+  it("renders the enrichment body at text-sm rather than text-xs", () => {
+    currentRows = [makeRow({ status: "error", enrichment: undefined })];
+    renderWizard();
+
+    const body = screen.getByText("No Wikidata match found.").parentElement;
+    expect(body?.className).toContain("text-sm");
+    expect(body?.className).not.toContain("text-xs");
+  });
+
+  it("renders the manual career-team prompt at text-sm", () => {
+    currentRows = [
+      makeRow({ kind: "player", status: "ready", enrichment: { careerTeams: [] } }),
+    ];
+    renderWizard();
+
+    const prompt = screen.getByText(/Add career team history manually/);
+    expect(prompt.className).toContain("text-sm");
+  });
+
+  it("lifts the kind/sport tag from text-gray-500 to text-gray-400", () => {
+    currentRows = [makeRow({ kind: "player", sportValue: "Baseball", status: "ready" })];
+    renderWizard();
+
+    const tag = screen.getByText(/\(Player · Baseball\)/);
+    expect(tag.className).toContain("text-gray-400");
+    expect(tag.className).not.toContain("text-gray-500");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-212 — the single decision seam
+// ---------------------------------------------------------------------------
+
+describe("EntityReviewWizard — decision seam", () => {
+  it("exposes the in-flight state on the action row (the seam NEO-221 hooks)", () => {
+    // Deliberately NOT a guard yet: nothing is disabled here. This asserts the
+    // seam exists and is observable, so the guard lands in one place.
+    currentRows = [makeRow({ kind: "player", status: "ready" })];
+    renderWizard();
+
+    const actionRow = screen
+      .getByRole("button", { name: "Add as New Player" })
+      .closest("[aria-busy]");
+    expect(actionRow).toBeTruthy();
+    expect(actionRow?.getAttribute("aria-busy")).toBe("false");
+  });
+
+  it("routes create, link and skip through it — all three reach recordDecision", async () => {
+    const row = makeRow({ kind: "player", name: "Mike Trout", status: "ready" });
+    currentRows = [row];
+    renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Player" }));
+    await waitFor(() => expect(mockRecordDecision).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole("button", { name: "Skip Mike Trout — not a person" }));
+    await waitFor(() => expect(mockRecordDecision).toHaveBeenCalledTimes(2));
+
+    fireEvent.click(screen.getByLabelText("Link to existing instead"));
+    fireEvent.click(screen.getByText("Stub link select"));
+    await waitFor(() => expect(mockRecordDecision).toHaveBeenCalledTimes(3));
+
+    expect(mockRecordDecision.mock.calls.map((c) => c[0].action)).toEqual([
+      "create",
+      "skip",
+      "link",
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-212 — accessibility fixes from the WCAG 2.2 AA audit
+// ---------------------------------------------------------------------------
+
+describe("EntityReviewWizard — accessibility", () => {
+  it("keeps focus on the primary action when the near-match result flips to exact", () => {
+    // The near-match query resolves while the row is already on screen, so this
+    // swap can land under a keyboard user who has tabbed to the primary. One
+    // element in one slot means React patches it; a ternary between two
+    // elements would unmount the focused node and drop focus to <body>.
+    const props = () => (
+      <EntityReviewWizard
+        isOpen
+        selectorOptionId={"selopt-1" as unknown as Id<"selectorOptions">}
+        batchId="batch-1"
+        cardCount={3}
+        onConfirm={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    );
+
+    currentNearMatches = [
+      { _id: "p9", name: "Michael Trout", confidence: "close" },
+    ];
+    currentRows = [makeRow({ kind: "player", name: "Mike Trout", status: "ready" })];
+    // A NEW element each render: React bails out of re-rendering an element
+    // that is referentially identical to the previous one.
+    const { rerender } = render(props());
+
+    const primary = screen.getByRole("button", { name: "Add as New Player" });
+    (primary as HTMLElement).focus();
+    expect(document.activeElement).toBe(primary);
+
+    currentNearMatches = [{ _id: "p9", name: "Mike Trout", confidence: "exact" }];
+    rerender(props());
+
+    // The same node, now relabelled — not a remount, and not <body>.
+    expect(screen.getByRole("button", { name: "Link to Mike Trout" })).toBe(
+      primary,
+    );
+    expect(document.activeElement).toBe(primary);
+    expect(document.activeElement?.tagName).toBe("BUTTON");
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
+  it("keeps focus on the primary when the exact match disappears again", () => {
+    // The reverse edge: a debounce landing a fresh, emptier result set.
+    const props = () => (
+      <EntityReviewWizard
+        isOpen
+        selectorOptionId={"selopt-1" as unknown as Id<"selectorOptions">}
+        batchId="batch-1"
+        cardCount={3}
+        onConfirm={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    );
+
+    currentNearMatches = [{ _id: "p9", name: "Mike Trout", confidence: "exact" }];
+    currentRows = [makeRow({ kind: "player", name: "Mike Trout", status: "ready" })];
+    const { rerender } = render(props());
+
+    const primary = screen.getByRole("button", { name: "Link to Mike Trout" });
+    (primary as HTMLElement).focus();
+
+    currentNearMatches = [];
+    rerender(props());
+
+    expect(document.activeElement).toBe(primary);
+    expect(document.activeElement?.tagName).toBe("BUTTON");
+    expect(
+      screen.getByRole("button", { name: "Add as New Player" }),
+    ).toBe(primary);
+  });
+
+  it("groups the Wikidata career-team checkboxes under their own prompt", () => {
+    currentRows = [
+      makeRow({
+        kind: "player",
+        name: "Mike Trout",
+        status: "ready",
+        enrichment: {
+          careerTeams: [
+            { name: "Los Angeles Angels", fromYear: 2011 },
+            { name: "Arkansas Travelers", fromYear: 2010, toYear: 2011 },
+          ],
+        },
+      }),
+    ];
+    renderWizard();
+
+    const group = screen.getByRole("group", {
+      name: "Career teams to create with this player:",
+    });
+    expect(
+      group.querySelectorAll('input[type="checkbox"]'),
+    ).toHaveLength(2);
+  });
+
+  it("keeps the row heading's accessible name to just the entity name", () => {
+    // The CopyButton and the kind/sport tag used to live INSIDE the <h3>, so
+    // heading navigation announced "Mike Trout Copy name (Player · Baseball)".
+    currentRows = [
+      makeRow({
+        kind: "player",
+        name: "Mike Trout",
+        sportValue: "Baseball",
+        status: "ready",
+      }),
+    ];
+    renderWizard();
+
+    const heading = screen.getByRole("heading", { level: 3, name: "Mike Trout" });
+    expect(heading.textContent).toBe("Mike Trout");
+    expect(heading.querySelector("button")).toBeNull();
+    // Both are still on screen — moved beside the heading, not removed.
+    expect(screen.getByText(/\(Player · Baseball\)/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy name" })).toBeTruthy();
   });
 });

@@ -21,6 +21,14 @@ worked on. Seen concretely via `components/modules/confirm-dialog.tsx` (Cancel
 button = `cancel` variant, pink) and `app/print/placeholders/intake.tsx`
 ("Finish now" = `secondary` variant, blue, whenever `stage !== "waiting"`).
 
+Recurred again in NEO-212: `PlayerManagement.tsx`'s new "Add stint" button
+uses `secondary`, and — more notably — `EntityReviewWizard.tsx`'s `secondary`
+prop on the primary "Add as New {kind}" button is now driven by `hasCloseOnly`
+(a near-match query result), so the broken-contrast variant is now the PRIMARY
+create action on a common wizard path (any close-but-not-exact name match),
+not just an occasional secondary button. Worth re-reporting each time with the
+new call sites, since the underlying component still isn't fixed.
+
 **Do not silently fix this inside a feature-scoped audit.** It's a shared
 component whose colors are the app's branded Primary/Cancel/Accent tokens
 (CLAUDE.md), so changing them is a design-system decision with a much larger

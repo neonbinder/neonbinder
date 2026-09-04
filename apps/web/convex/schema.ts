@@ -920,7 +920,18 @@ export default defineSchema({
     .index("by_name_normalized", ["nameNormalized"])
     // Same compound-index optimization as players above. See its comment.
     .index("by_name_normalized_and_sport_id", ["nameNormalized", "sportId"])
-    .index("by_sport_id", ["sportId"]),
+    .index("by_sport_id", ["sportId"])
+    // NEO-212: mirrors players.search_name. The entity-review wizard's team
+    // pickers (and the team editor's) were the same 500-row fetch + client-side
+    // `.includes()` filter that NEO-147 removed from the player typeahead —
+    // fine while a sport had a few dozen teams, wrong once the league/defunct
+    // franchise backfill grew the table. Indexed on `name` (the raw display
+    // name the operator types), filterable by `sportId` so a football set never
+    // matches a baseball team.
+    .searchIndex("search_name", {
+      searchField: "name",
+      filterFields: ["sportId"],
+    }),
 
 
   // NEO-92: per-fetch review queue backing the step-through "new players &
@@ -932,8 +943,14 @@ export default defineSchema({
   // COMPLETION order (whichever finishes first), not original fetch order.
   // `decision` is patched by the user's own action in
   // the wizard (recordDecision) — durable across a page refresh, unlike
-  // keeping it only in React state. There is deliberately no "skip" decision
-  // variant: every name must resolve to create-or-link.
+  // keeping it only in React state. NEO-212: a third "skip" decision variant
+  // now exists alongside create/link. Skip means "not a person / not a team" —
+  // the card keeps the raw name as free text, and nothing is created or linked.
+  // It is the escape hatch for the junk that BSC checklists carry in player
+  // columns (header rows, "CHECKLIST", sponsor text), which previously had to
+  // be created as a bogus player just to clear the wizard. A skip is recorded
+  // durably in `entityReviewSkips` (below) at commit time so the same name
+  // never re-enters the wizard for that set.
   //
   // `createdByUserId` scopes batch resumption per (selectorOptionId, user):
   // startBatch only resumes a batch created by the SAME user. Two different
@@ -973,6 +990,18 @@ export default defineSchema({
         toYear: v.optional(v.number()),
       }))),
       isHallOfFame: v.optional(v.boolean()),
+      // NEO-212, player-only disambiguation context. Wikidata routinely returns
+      // several entities for one card name ("Chris Johnson" is a running back,
+      // an outfielder and a British cyclist), and a bare label gave the
+      // operator nothing to choose on. All three are best-effort: a real but
+      // thinly-documented player has none of them.
+      // Wikidata's English `schema:description` ("American football running
+      // back").
+      description: v.optional(v.string()),
+      birthYear: v.optional(v.number()),
+      // Title of the English Wikipedia article (enwiki sitelink), so the wizard
+      // can link out to the full article for a human to confirm against.
+      enwikiTitle: v.optional(v.string()),
       // team-only
       league: v.optional(v.string()),
       city: v.optional(v.string()),
@@ -1001,12 +1030,25 @@ export default defineSchema({
           fromYear: v.number(),
           toYear: v.optional(v.number()),
         }))),
+        // NEO-212, player-only: career-team labels that came back from
+        // Wikidata (enrichment.careerTeams) but that the admin UNCHECKED in
+        // the wizard. Commit must not create team rows for these. Recorded as
+        // an exclusion list rather than a rewritten careerTeams array so the
+        // decision stays auditable against what the lookup actually returned —
+        // "the operator rejected these two" rather than a silently shorter
+        // list. Names, matched against enrichment.careerTeams[].name.
+        excludedCareerTeamNames: v.optional(v.array(v.string())),
       }),
       v.object({
         action: v.literal("link"),
         linkedPlayerId: v.optional(v.id("players")),
         linkedTeamId: v.optional(v.id("teams")),
       }),
+      // NEO-212: "this name is not a person / not a team". Carries no payload —
+      // nothing is created, nothing is linked, and the card keeps the raw name
+      // as free text. Commit writes an `entityReviewSkips` row so the name
+      // stays out of this set's wizard on every later fetch.
+      v.object({ action: v.literal("skip") }),
     )),
   })
     .index("by_selector_option", ["selectorOptionId"])
@@ -1021,6 +1063,67 @@ export default defineSchema({
     // seconds under the Wikidata pool, so the common run reads the oldest few,
     // finds none stale, and stops.
     .index("by_status", ["status"]),
+
+  // NEO-212: durable record of names an operator decided are NOT an entity.
+  //
+  // Written by commitCardChecklist for every entityReviewQueue row decided
+  // "skip", and consulted by resolveUnknownsAndStartBatch so a skipped name
+  // never re-enters the wizard for that set. Without it a skip only survives
+  // until the next fetch: entityReviewQueue rows are per-batch throwaways
+  // cleaned up on commit, so the same "CHECKLIST" header row would be handed
+  // back to the operator on every re-fetch of the set, forever.
+  //
+  // SCOPED PER SET, ON PURPOSE. The key is (selectorOptionId, kind,
+  // nameNormalized), not a global name list. The junk that warrants a skip is
+  // an artifact of one marketplace checklist's formatting, and a name that is
+  // noise on one set is very often a real player on another — "Chase" is a
+  // sponsor logo on one issue and a shortstop on the next. A global skip list
+  // would let one operator's judgement on one set silently suppress a real
+  // player everywhere, which is unrecoverable without an audit trail nobody
+  // would think to check. Per-set keeps the blast radius to the set the
+  // operator was actually looking at.
+  //
+  // `kind` is part of the key because a name can legitimately be skipped as a
+  // player while still being a valid team on the same set (and vice versa).
+  //
+  // `skippedByUserId` is audit-only — unlike entityReviewQueue.createdByUserId
+  // it does NOT scope reads. A skip is a fact about the set's data, so it
+  // applies to every operator who fetches that set afterwards; scoping it per
+  // user would just make each admin re-skip the same junk.
+  entityReviewSkips: defineTable({
+    selectorOptionId: v.id("selectorOptions"),
+    kind: v.union(v.literal("player"), v.literal("team")),
+    // Normalized form is what the lookup compares against, matching how
+    // players/teams are deduped elsewhere.
+    nameNormalized: v.string(),
+    // Raw name as it appeared on the checklist, kept for display in any future
+    // "review skipped names" admin surface — a normalized string is not
+    // something a human should be asked to read back.
+    name: v.string(),
+    skippedAt: v.number(),
+    skippedByUserId: v.string(),
+    // The commit that recorded (or last refreshed) this skip. Optional because
+    // rows written before this field existed have no answer, and because a
+    // commit can run without a review batch at all.
+    //
+    // Audit context for the admin read-back in `convex/entityReviewSkips.ts`,
+    // and the one field that makes "why is this name suppressed?" answerable:
+    // it points at the review batch whose decisions produced the row, which is
+    // what a Convex log search needs to reconstruct the session. Unlike
+    // `skippedByUserId` it is safe to return to the client — it identifies a
+    // batch, not a person.
+    batchId: v.optional(v.string()),
+  })
+    // The only read pattern: "was this exact name skipped for this set as this
+    // kind?" — one indexed point lookup per unknown name during resolution.
+    // The prefix also covers a per-set (and per-set-and-kind) listing, which is
+    // exactly what `entityReviewSkips.listForSet` reads for the admin
+    // read-back / undo surface.
+    .index("by_selector_option_and_kind_and_name", [
+      "selectorOptionId",
+      "kind",
+      "nameNormalized",
+    ]),
 
   // NEO-195: candidate cards for ONE checklist fetch, written as reconciliation
   // produces them so the review modal can fill in live instead of waiting for

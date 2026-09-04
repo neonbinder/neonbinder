@@ -50,6 +50,24 @@ one is a defect"), name CI's per-PR preview as the cover, and do NOT reach for
 `convex dev`/`convex deploy` to force it. See
 [[speaking-conch-run-serialization]] — no run means no lock to take.
 
+**One unconditionally-mounted panel takes the WHOLE page down.** The blast
+radius is not limited to the feature under test: NEO-212 mounted
+`SkippedNamesPanel` (a `useQuery(api.entityReviewSkips.listForSet)`) inside
+`CardChecklist` with no gate, so on shared dev EVERY set-selector flow died the
+instant the checklist opened — including `util-drill-to-custom`'s own return
+contract, several steps before the new feature. A drill util failing its final
+assert with a blank "An error occurred. Please refresh the page." screenshot is
+this, not a selector bug.
+
+**Finding WHICH call is missing** — diff the components' call sites against the
+deployment, rather than guessing:
+
+```bash
+grep -rhoE "api\.[a-zA-Z0-9_]+\.[a-zA-Z0-9_]+" components/SetSelector/*.tsx | sort -u
+npx convex function-spec   # .functions[].identifier is "module.js:name"
+```
+Anything in the first list absent from the second is a branch-only call; then
+grep for its call site to see whether it is gated or mounted unconditionally.
 ## Update 2026-09-03 — the sanctioned local push can be blocked by ANOTHER branch
 
 `apps/web/e2e-local-stack.sh` now opens with "push THIS branch's Convex

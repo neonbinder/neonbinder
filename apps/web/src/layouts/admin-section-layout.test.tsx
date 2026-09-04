@@ -34,6 +34,7 @@ function renderAt(path: string) {
         <Route path="/admin" element={<AdminSectionLayout />}>
           <Route index element={<AdminHub />} />
           <Route path="set-builder" element={<div>set builder tool</div>} />
+          <Route path="players" element={<div>players tool</div>} />
           <Route path="teams" element={<div>teams tool</div>} />
           <Route path="pipeline-runs" element={<div>pipeline runs tool</div>} />
         </Route>
@@ -53,6 +54,7 @@ describe("AdminSectionLayout", () => {
       ]),
     ).toEqual([
       ["Set Builder", "/admin/set-builder"],
+      ["Players", "/admin/players"],
       ["Teams", "/admin/teams"],
       ["Pipeline Runs", "/admin/pipeline-runs"],
     ]);
@@ -60,6 +62,7 @@ describe("AdminSectionLayout", () => {
 
   it.each([
     ["/admin/set-builder", "Set Builder"],
+    ["/admin/players", "Players"],
     ["/admin/teams", "Teams"],
     ["/admin/pipeline-runs", "Pipeline Runs"],
   ])("marks %s as the current page", (path, label) => {
@@ -109,6 +112,7 @@ describe("AdminHub", () => {
     // The reason the hub exists rather than redirecting to the first tool: the
     // sub-tab strip is names only, with no room to say what a tool is for.
     expect(screen.getByText(/Build set parameters/i)).toBeTruthy();
+    expect(screen.getByText(/Search every player we know/i)).toBeTruthy();
     expect(screen.getByText(/Resolve team colors/i)).toBeTruthy();
   });
 });

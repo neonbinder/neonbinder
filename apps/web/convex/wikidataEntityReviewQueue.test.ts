@@ -72,20 +72,50 @@ type CareerTeamFixture = {
 function makePlayerDetailBody(opts: {
   careerTeams?: CareerTeamFixture[];
   hofAwardQid?: string;
+  // NEO-212: the SPARQL response is the cross-product of memberships ×
+  // awards, and these three are entity-level — so they repeat identically on
+  // every row, which is exactly how the real endpoint returns them.
+  descr?: string;
+  dob?: string;
+  title?: string;
+  // NEO-212: emit each membership once per award, reproducing the real
+  // cross-product rather than one tidy row per team. Without this the
+  // stint-dedup could not be told apart from no dedup at all.
+  awardQids?: string[];
 }) {
   const rows: Array<Record<string, SparqlBindingFixture>> = [];
+  const decorate = (row: Record<string, SparqlBindingFixture>) => {
+    if (opts.descr !== undefined) row.descr = literalBinding(opts.descr);
+    if (opts.dob !== undefined) row.dob = literalBinding(opts.dob);
+    if (opts.title !== undefined) row.title = literalBinding(opts.title);
+    return row;
+  };
+  // `hofAwardQid` is the single-award shorthand the pre-NEO-212 tests use;
+  // `awardQids` is the explicit list, for exercising the cross-product.
+  const awards = opts.awardQids ?? (opts.hofAwardQid ? [opts.hofAwardQid] : []);
   for (const ct of opts.careerTeams ?? []) {
-    const row: Record<string, SparqlBindingFixture> = {
+    const base: Record<string, SparqlBindingFixture> = {
       team: uriBinding(ct.teamQid),
       teamLabel: literalBinding(ct.teamLabel),
     };
-    if (ct.fromYear !== undefined) row.start = literalBinding(`${ct.fromYear}-01-01T00:00:00Z`);
-    if (ct.toYear !== undefined) row.end = literalBinding(`${ct.toYear}-01-01T00:00:00Z`);
-    if (opts.hofAwardQid) row.award = uriBinding(opts.hofAwardQid);
-    rows.push(row);
+    if (ct.fromYear !== undefined) base.start = literalBinding(`${ct.fromYear}-01-01T00:00:00Z`);
+    if (ct.toYear !== undefined) base.end = literalBinding(`${ct.toYear}-01-01T00:00:00Z`);
+    if (awards.length === 0) {
+      rows.push(decorate({ ...base }));
+    } else {
+      for (const award of awards) {
+        rows.push(decorate({ ...base, award: uriBinding(award) }));
+      }
+    }
   }
-  if (rows.length === 0 && opts.hofAwardQid) {
-    rows.push({ award: uriBinding(opts.hofAwardQid) });
+  if (rows.length === 0) {
+    if (awards.length > 0) {
+      for (const award of awards) rows.push(decorate({ award: uriBinding(award) }));
+    } else if (opts.descr !== undefined || opts.dob !== undefined || opts.title !== undefined) {
+      // A player with no teams and no awards still has entity-level fields,
+      // and they arrive on a single otherwise-empty row.
+      rows.push(decorate({}));
+    }
   }
   return { results: { bindings: rows } };
 }
@@ -207,6 +237,185 @@ describe("lookupPlayerEnrichment", () => {
     const result = await lookupPlayerEnrichment("Someone", { label: "Cricket" });
     expect(result).toBeNull();
     expect(fetchCalled).toBe(false);
+  });
+});
+
+
+// ===========================================================================
+// NEO-212 — multi-stint careers, and the player disambiguation fields.
+//
+// The old `seenTeams` set was keyed on the bare team QID. That collapsed the
+// membership × award cross-product (its actual job) but ALSO threw away a
+// player's second stint at a team they returned to, which is the single most
+// interesting thing a career timeline can record. The key is now the whole
+// stint — team + start + end — so both survive.
+// ===========================================================================
+
+describe("lookupPlayerEnrichment: multi-stint careers", () => {
+  test("keeps BOTH stints when one team appears twice with different years, sorted earliest first", async () => {
+    vi.stubGlobal(
+      "fetch",
+      makePlayerFetchStub({
+        qid: "Q1000",
+        detail: {
+          careerTeams: [
+            // Deliberately returned LATEST-first, the way the endpoint may
+            // well order them — the sort, not the response, decides.
+            { teamQid: "Q217123", teamLabel: "Los Angeles Angels", fromYear: 2016, toYear: 2019 },
+            { teamQid: "Q217123", teamLabel: "Los Angeles Angels", fromYear: 2011, toYear: 2013 },
+          ],
+        },
+      }),
+    );
+
+    const result = await lookupPlayerEnrichment("Returning Player", { label: "Baseball", wikidata: { sportQid: "Q5369", hallOfFameQid: "Q1194380" }, espn: { path: "baseball/mlb", leagueName: "Major League Baseball" } });
+
+    expect(result!.careerTeams).toEqual([
+      { name: "Los Angeles Angels", fromYear: 2011, toYear: 2013 },
+      { name: "Los Angeles Angels", fromYear: 2016, toYear: 2019 },
+    ]);
+  });
+
+  test("still collapses the membership x award cross-product to one entry per stint", async () => {
+    // Two teams and three awards is six SPARQL rows for two real stints. If
+    // the dedup key ever stops collapsing, this reads back as six careerTeams.
+    vi.stubGlobal(
+      "fetch",
+      makePlayerFetchStub({
+        qid: "Q1000",
+        detail: {
+          careerTeams: [
+            { teamQid: "Q217123", teamLabel: "Los Angeles Angels", fromYear: 2011, toYear: 2013 },
+            { teamQid: "Q217124", teamLabel: "Seattle Mariners", fromYear: 2014 },
+          ],
+          awardQids: ["Q1194380", "Q999001", "Q999002"],
+        },
+      }),
+    );
+
+    const result = await lookupPlayerEnrichment("Decorated Player", { label: "Baseball", wikidata: { sportQid: "Q5369", hallOfFameQid: "Q1194380" }, espn: { path: "baseball/mlb", leagueName: "Major League Baseball" } });
+
+    expect(result!.careerTeams).toEqual([
+      { name: "Los Angeles Angels", fromYear: 2011, toYear: 2013 },
+      { name: "Seattle Mariners", fromYear: 2014, toYear: undefined },
+    ]);
+    // The HoF award is in that list, so the collapse did not cost the award
+    // scan anything either.
+    expect(result!.isHallOfFame).toBe(true);
+  });
+
+  test("sorts stints across DIFFERENT teams into one chronological timeline", async () => {
+    vi.stubGlobal(
+      "fetch",
+      makePlayerFetchStub({
+        qid: "Q1000",
+        detail: {
+          careerTeams: [
+            { teamQid: "Q3", teamLabel: "Third Team", fromYear: 2020 },
+            { teamQid: "Q1", teamLabel: "First Team", fromYear: 2005, toYear: 2010 },
+            { teamQid: "Q2", teamLabel: "Second Team", fromYear: 2010, toYear: 2020 },
+          ],
+        },
+      }),
+    );
+
+    const result = await lookupPlayerEnrichment("Journeyman", { label: "Baseball", wikidata: { sportQid: "Q5369", hallOfFameQid: "Q1194380" }, espn: { path: "baseball/mlb", leagueName: "Major League Baseball" } });
+    expect(result!.careerTeams.map((ct) => ct.name)).toEqual([
+      "First Team",
+      "Second Team",
+      "Third Team",
+    ]);
+  });
+});
+
+describe("lookupPlayerEnrichment: disambiguation fields (description / birthYear / enwikiTitle)", () => {
+  test("parses all three when Wikidata has them", async () => {
+    vi.stubGlobal(
+      "fetch",
+      makePlayerFetchStub({
+        qid: "Q1000",
+        detail: {
+          careerTeams: [
+            { teamQid: "Q217123", teamLabel: "Los Angeles Angels", fromYear: 2011 },
+          ],
+          descr: "American football running back",
+          dob: "1991-08-07T00:00:00Z",
+          title: "Chris Johnson (running back)",
+        },
+      }),
+    );
+
+    const result = await lookupPlayerEnrichment("Chris Johnson", { label: "Baseball", wikidata: { sportQid: "Q5369", hallOfFameQid: "Q1194380" }, espn: { path: "baseball/mlb", leagueName: "Major League Baseball" } });
+    expect(result!.description).toBe("American football running back");
+    expect(result!.birthYear).toBe(1991);
+    expect(result!.enwikiTitle).toBe("Chris Johnson (running back)");
+  });
+
+  test("leaves each field ABSENT (not null, not empty string) when Wikidata has none of them", async () => {
+    // A real but thinly-documented player. The wizard renders on presence, so
+    // an empty string here would show a blank line claiming to be a
+    // description rather than nothing at all.
+    vi.stubGlobal(
+      "fetch",
+      makePlayerFetchStub({
+        qid: "Q1000",
+        detail: {
+          careerTeams: [
+            { teamQid: "Q217123", teamLabel: "Los Angeles Angels", fromYear: 2011 },
+          ],
+        },
+      }),
+    );
+
+    const result = await lookupPlayerEnrichment("Obscure Prospect", { label: "Baseball", wikidata: { sportQid: "Q5369", hallOfFameQid: "Q1194380" }, espn: { path: "baseball/mlb", leagueName: "Major League Baseball" } });
+    expect(result).not.toBeNull();
+    expect("description" in result!).toBe(false);
+    expect("birthYear" in result!).toBe(false);
+    expect("enwikiTitle" in result!).toBe(false);
+  });
+
+  test("reads them off a player with no career teams and no awards at all", async () => {
+    // The OPTIONAL blocks are independent, so a player whose only bindings are
+    // the entity-level three still yields them — one row, no team, no award.
+    vi.stubGlobal(
+      "fetch",
+      makePlayerFetchStub({
+        qid: "Q1000",
+        detail: {
+          descr: "British racing cyclist",
+          dob: "1985-03-02T00:00:00Z",
+          title: "Chris Johnson (cyclist)",
+        },
+      }),
+    );
+
+    const result = await lookupPlayerEnrichment("Chris Johnson", { label: "Baseball", wikidata: { sportQid: "Q5369", hallOfFameQid: "Q1194380" }, espn: { path: "baseball/mlb", leagueName: "Major League Baseball" } });
+    expect(result!.careerTeams).toEqual([]);
+    expect(result!.description).toBe("British racing cyclist");
+    expect(result!.birthYear).toBe(1985);
+    expect(result!.enwikiTitle).toBe("Chris Johnson (cyclist)");
+  });
+
+  test("the SPARQL detail query asks for the description, P569 and the enwiki sitelink", async () => {
+    // Cheap structural guard: the parsing tests above would all still pass
+    // against a query that never requested these, since the fixture supplies
+    // the bindings unconditionally.
+    let detailQuery = "";
+    vi.stubGlobal(
+      "fetch",
+      (async (url: string | URL) => {
+        const decoded = decodeURIComponent(String(url));
+        if (decoded.includes("p:P54") || decoded.includes("wdt:P166")) {
+          detailQuery = decoded;
+        }
+        return makePlayerFetchStub({ qid: "Q1000", detail: {} })(url);
+      }) as unknown as typeof fetch,
+    );
+
+    await lookupPlayerEnrichment("Someone", { label: "Baseball", wikidata: { sportQid: "Q5369", hallOfFameQid: "Q1194380" }, espn: { path: "baseball/mlb", leagueName: "Major League Baseball" } });
+    expect(detailQuery).toContain("schema:description");
+    expect(detailQuery).toContain("wdt:P569");
+    expect(detailQuery).toContain("schema:isPartOf <https://en.wikipedia.org/>");
   });
 });
 

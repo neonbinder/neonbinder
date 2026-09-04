@@ -24,6 +24,7 @@ import ChecklistSourceFilter, {
 } from "./ChecklistSourceFilter";
 import CrossListingImportModal from "./CrossListingImportModal";
 import CardAttentionWalker from "./CardAttentionWalker";
+import SkippedNamesPanel from "./SkippedNamesPanel";
 import { needsAttention } from "./card-attention";
 import { Input } from "../primitives/Input";
 import TeamPicker from "./TeamPicker";
@@ -1334,6 +1335,14 @@ export default function CardChecklist({
             )}
           </div>
         )}
+
+        {/* NEO-212 — the see-and-undo record of the review wizard's "Skip —
+            not a person/team" decision, for THIS set. It sits with the other
+            per-set notices, directly under the sync banner, because a skip is
+            a property of what the next sync will and will not ask about.
+            Renders nothing at all unless this set actually has skips, which
+            is nearly always. */}
+        <SkippedNamesPanel selectorOptionId={variantId} />
 
         <ChecklistSourceFilter
           chips={sourceChips}

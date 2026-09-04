@@ -13,7 +13,10 @@
  *     (NEO-99: wikidataPool.enqueueEntityReviewLookups, not the removed
  *     per-batch processEntityReviewQueue chain).
  *   - getBatch: scoped correctly by (selectorOptionId, batchId).
- *   - recordDecision: patches `decision` on exactly the targeted row.
+ *   - recordDecision: patches `decision` on exactly the targeted row,
+ *     including NEO-212's "skip" action and `excludedCareerTeamNames`.
+ *   - recordAllRemainingAsSkip: NEO-212's bulk counterpart to
+ *     recordAllRemainingAsCreate.
  *   - cancelBatch: deletes all rows for a batch, touches nothing else.
  *   - cleanupBatch: deletes all rows for a batch (same shape as cancelBatch,
  *     but internal — this is what commitCardChecklist schedules post-commit).
@@ -804,6 +807,419 @@ describe("recordDecision", () => {
       }),
     ).rejects.toThrow();
   });
+
+  // =========================================================================
+  // NEO-212: the "skip" action ("not a person / not a team")
+  // =========================================================================
+
+  test("a 'skip' decision patches exactly the targeted row — siblings untouched", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+
+    const skippedId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId,
+      batchId: "b1",
+      kind: "player",
+      // The shape skip exists for: a checklist artifact, not a person.
+      name: "Checklist",
+    });
+    const siblingId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId,
+      batchId: "b1",
+      kind: "player",
+      name: "Aaron Judge",
+    });
+
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: skippedId,
+      action: "skip",
+    });
+
+    const skipped = await t.run(async (ctx) => ctx.db.get(skippedId));
+    const sibling = await t.run(async (ctx) => ctx.db.get(siblingId));
+    // Payload-free by construction — commit reads only `action` for a skip.
+    expect(skipped!.decision).toEqual({ action: "skip" });
+    expect(sibling!.decision).toBeUndefined();
+  });
+
+  test("a 'skip' decision works on a team row too", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId,
+      batchId: "b1",
+      kind: "team",
+      name: "Prospects",
+    });
+
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: rowId,
+      action: "skip",
+    });
+
+    expect(
+      (await t.run(async (ctx) => ctx.db.get(rowId)))!.decision,
+    ).toEqual({ action: "skip" });
+  });
+
+  test("a 'skip' decision IGNORES a stray linkedPlayerId / linkedTeamId / manualCareerTeams", async () => {
+    // The wizard drives all three actions through one call site, so these are
+    // leftovers from a previously-selected action rather than caller error.
+    // Ignoring them (not throwing) keeps the operator out of a dead end, and
+    // nothing leaks: the stored decision is `{ action: "skip" }` and nothing
+    // more, so commit can never see them.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+    const existingPlayerId = await t.run(async (ctx) =>
+      ctx.db.insert("players", {
+        name: "Mike Trout",
+        nameNormalized: "mike trout",
+        sportId: selectorOptionId,
+        lastUpdated: Date.now(),
+      }),
+    );
+    const existingTeamId = await t.run(async (ctx) =>
+      ctx.db.insert("teams", {
+        name: "Los Angeles Angels",
+        nameNormalized: "angeles angels los",
+        sportId: selectorOptionId,
+        lastUpdated: Date.now(),
+      }),
+    );
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId,
+      batchId: "b1",
+      kind: "player",
+      name: "Checklist",
+    });
+
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: rowId,
+      action: "skip",
+      linkedPlayerId: existingPlayerId,
+      linkedTeamId: existingTeamId,
+      manualCareerTeams: [{ name: "Toronto Blue Jays", fromYear: 2023 }],
+      excludedCareerTeamNames: ["Arizona Diamondbacks"],
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(rowId));
+    expect(row!.decision).toEqual({ action: "skip" });
+  });
+
+  test("a 'skip' decision does NOT validate the ids it ignores — a bogus link id is still accepted", async () => {
+    // Same contract from the other side: skip must not run the link branch's
+    // existence/sport checks, because it never stores what they would check.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+    const deletedPlayerId = await t.run(async (ctx) =>
+      ctx.db.insert("players", {
+        name: "Ghost",
+        nameNormalized: "ghost",
+        sportId: selectorOptionId,
+        lastUpdated: Date.now(),
+      }),
+    );
+    await t.run(async (ctx) => ctx.db.delete(deletedPlayerId));
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId,
+      batchId: "b1",
+      kind: "player",
+      name: "Checklist",
+    });
+
+    await expect(
+      asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+        reviewRowId: rowId,
+        action: "skip",
+        linkedPlayerId: deletedPlayerId,
+      }),
+    ).resolves.toBeNull();
+    expect(
+      (await t.run(async (ctx) => ctx.db.get(rowId)))!.decision,
+    ).toEqual({ action: "skip" });
+  });
+
+  test("a 'skip' on an already-decided row overwrites it, exactly as create/link do", async () => {
+    // recordDecision has never guarded on an existing decision — the wizard
+    // lets an operator go back and change a call. This asserts the CURRENT
+    // rule for all three actions together so skip can't silently diverge.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+    const existingPlayerId = await t.run(async (ctx) =>
+      ctx.db.insert("players", {
+        name: "Mike Trout",
+        nameNormalized: "mike trout",
+        sportId: selectorOptionId,
+        lastUpdated: Date.now(),
+      }),
+    );
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId,
+      batchId: "b1",
+      kind: "player",
+      name: "Mike Trout",
+    });
+
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: rowId,
+      action: "create",
+    });
+    // create -> skip
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: rowId,
+      action: "skip",
+    });
+    expect(
+      (await t.run(async (ctx) => ctx.db.get(rowId)))!.decision,
+    ).toEqual({ action: "skip" });
+
+    // skip -> link, and back again: a skip is no more sticky than any other
+    // decision.
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: rowId,
+      action: "link",
+      linkedPlayerId: existingPlayerId,
+    });
+    expect(
+      (await t.run(async (ctx) => ctx.db.get(rowId)))!.decision,
+    ).toEqual({ action: "link", linkedPlayerId: existingPlayerId });
+
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: rowId,
+      action: "skip",
+    });
+    expect(
+      (await t.run(async (ctx) => ctx.db.get(rowId)))!.decision,
+    ).toEqual({ action: "skip" });
+  });
+
+  test("a 'skip' decision throws for an unauthenticated caller", async () => {
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSelectorOption(t);
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId,
+      batchId: "b1",
+      kind: "player",
+      name: "Checklist",
+    });
+
+    await expect(
+      t.mutation(api.entityReviewQueue.recordDecision, {
+        reviewRowId: rowId,
+        action: "skip",
+      }),
+    ).rejects.toThrow();
+  });
+
+  // =========================================================================
+  // NEO-212: excludedCareerTeamNames on a "create" decision
+  // =========================================================================
+
+  test("a 'create' decision stores excludedCareerTeamNames when given", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId,
+      batchId: "b1",
+      kind: "player",
+      name: "Daulton Varsho",
+    });
+
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: rowId,
+      action: "create",
+      excludedCareerTeamNames: [
+        "Arizona Diamondbacks",
+        "Toronto Blue Jays",
+      ],
+    });
+
+    expect(
+      (await t.run(async (ctx) => ctx.db.get(rowId)))!.decision,
+    ).toEqual({
+      action: "create",
+      excludedCareerTeamNames: ["Arizona Diamondbacks", "Toronto Blue Jays"],
+    });
+  });
+
+  test("a 'create' decision stores excludedCareerTeamNames alongside manualCareerTeams", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId,
+      batchId: "b1",
+      kind: "player",
+      name: "Daulton Varsho",
+    });
+
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: rowId,
+      action: "create",
+      manualCareerTeams: [{ name: "Toronto Blue Jays", fromYear: 2023 }],
+      excludedCareerTeamNames: ["Arizona Diamondbacks"],
+    });
+
+    expect(
+      (await t.run(async (ctx) => ctx.db.get(rowId)))!.decision,
+    ).toEqual({
+      action: "create",
+      manualCareerTeams: [{ name: "Toronto Blue Jays", fromYear: 2023 }],
+      excludedCareerTeamNames: ["Arizona Diamondbacks"],
+    });
+  });
+
+  test("a 'create' decision with an empty/absent excludedCareerTeamNames omits the key entirely", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId,
+      batchId: "b1",
+      kind: "player",
+      name: "Mike Trout",
+    });
+
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: rowId,
+      action: "create",
+      excludedCareerTeamNames: [],
+    });
+
+    // Byte-identical to the no-exclusions path — an empty array must not leave
+    // a stray `excludedCareerTeamNames: []` on the stored decision.
+    expect(
+      (await t.run(async (ctx) => ctx.db.get(rowId)))!.decision,
+    ).toEqual({ action: "create" });
+  });
+
+  test("excludedCareerTeamNames are trimmed and deduped case-insensitively", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId,
+      batchId: "b1",
+      kind: "player",
+      name: "Daulton Varsho",
+    });
+
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: rowId,
+      action: "create",
+      excludedCareerTeamNames: [
+        "Arizona Diamondbacks",
+        "  arizona diamondbacks  ",
+        "Toronto Blue Jays",
+      ],
+    });
+
+    // First appearance wins, with its original casing — the stored list stays
+    // readable as an audit record of what the operator rejected.
+    expect(
+      (await t.run(async (ctx) => ctx.db.get(rowId)))!.decision,
+    ).toEqual({
+      action: "create",
+      excludedCareerTeamNames: ["Arizona Diamondbacks", "Toronto Blue Jays"],
+    });
+  });
+
+  test("rejects an excludedCareerTeamNames entry that is empty or whitespace-only", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId,
+      batchId: "b1",
+      kind: "player",
+      name: "Daulton Varsho",
+    });
+
+    for (const blank of ["", "   "]) {
+      await expect(
+        asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+          reviewRowId: rowId,
+          action: "create",
+          // A blank label can never match an enrichment careerTeams name, so
+          // it is always operator/UI error rather than a harmless no-op.
+          excludedCareerTeamNames: ["Arizona Diamondbacks", blank],
+        }),
+      ).rejects.toThrow(/name cannot be empty/);
+    }
+
+    // The rejected call must not have partially written a decision.
+    expect(
+      (await t.run(async (ctx) => ctx.db.get(rowId)))!.decision,
+    ).toBeUndefined();
+  });
+
+  test("rejects an excludedCareerTeamNames array longer than the 64-entry cap", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId,
+      batchId: "b1",
+      kind: "player",
+      name: "Daulton Varsho",
+    });
+
+    await expect(
+      asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+        reviewRowId: rowId,
+        action: "create",
+        excludedCareerTeamNames: Array.from(
+          { length: 65 },
+          (_, i) => `Team ${i}`,
+        ),
+      }),
+    ).rejects.toThrow(/maximum is 64/);
+  });
+
+  test("accepts an excludedCareerTeamNames array exactly at the 64-entry cap", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId,
+      batchId: "b1",
+      kind: "player",
+      name: "Daulton Varsho",
+    });
+    const names = Array.from({ length: 64 }, (_, i) => `Team ${i}`);
+
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: rowId,
+      action: "create",
+      excludedCareerTeamNames: names,
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(rowId));
+    expect(
+      row!.decision?.action === "create" &&
+        row!.decision.excludedCareerTeamNames?.length,
+    ).toBe(64);
+  });
 });
 
 // ===========================================================================
@@ -990,6 +1406,168 @@ describe("recordAllRemainingAsCreate", () => {
 });
 
 // ===========================================================================
+// recordAllRemainingAsSkip (NEO-212)
+//
+// The mirror image of the create fast path, for a set whose surfaced "new
+// names" are mostly not entities at all (subset/parallel labels, checklist
+// headers). Both mutations share one private `decideAllRemaining` helper, so
+// these tests are as much about the two NOT drifting — same batch scoping,
+// same already-decided rule, same count — as about skip itself.
+// ===========================================================================
+
+describe("recordAllRemainingAsSkip", () => {
+  test("decides every undecided row in the batch as skip and returns the count", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+
+    for (const name of ["Checklist", "Header", "Puzzle Piece"])
+      await insertRow(t, {
+        selectorOptionId,
+        sportId: selectorOptionId,
+        batchId: "bulk",
+        kind: "player",
+        name,
+        status: "ready",
+      });
+
+    const count = await asAdmin.mutation(
+      api.entityReviewQueue.recordAllRemainingAsSkip,
+      { selectorOptionId, batchId: "bulk" },
+    );
+
+    expect(count).toBe(3);
+    const rows = await asAdmin.query(api.entityReviewQueue.getBatch, {
+      selectorOptionId,
+      batchId: "bulk",
+    });
+    expect(rows.every((r) => r.decision?.action === "skip")).toBe(true);
+  });
+
+  test("decides rows still 'pending' — same as the create variant (NEO-221 owns changing that)", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+
+    await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId, batchId: "bulk", kind: "player", name: "Resolved", status: "ready",
+    });
+    await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId, batchId: "bulk", kind: "player", name: "StillLookingUp", status: "pending",
+    });
+
+    const count = await asAdmin.mutation(
+      api.entityReviewQueue.recordAllRemainingAsSkip,
+      { selectorOptionId, batchId: "bulk" },
+    );
+
+    expect(count).toBe(2);
+  });
+
+  test("leaves an already-decided row alone and does not count it", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+
+    const decidedId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId, batchId: "bulk", kind: "player", name: "Already", status: "ready",
+    });
+    const undecidedId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId, batchId: "bulk", kind: "player", name: "Undecided", status: "ready",
+    });
+    await t.run(async (ctx) =>
+      ctx.db.patch(decidedId, { decision: { action: "create" } }),
+    );
+
+    const count = await asAdmin.mutation(
+      api.entityReviewQueue.recordAllRemainingAsSkip,
+      { selectorOptionId, batchId: "bulk" },
+    );
+
+    expect(count).toBe(1);
+    // The operator's own "create" call survives the bulk skip — the fast path
+    // fills in the REMAINDER, it does not overrule decisions already made.
+    expect(
+      (await t.run(async (ctx) => ctx.db.get(decidedId)))!.decision,
+    ).toEqual({ action: "create" });
+    expect(
+      (await t.run(async (ctx) => ctx.db.get(undecidedId)))!.decision,
+    ).toEqual({ action: "skip" });
+  });
+
+  test("is scoped to its own batch — a row in another batch of the same selectorOption is untouched", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+
+    await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId, batchId: "mine", kind: "player", name: "Mine", status: "ready",
+    });
+    await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId, batchId: "theirs", kind: "player", name: "Theirs", status: "ready",
+    });
+
+    const count = await asAdmin.mutation(
+      api.entityReviewQueue.recordAllRemainingAsSkip,
+      { selectorOptionId, batchId: "mine" },
+    );
+
+    expect(count).toBe(1);
+    const theirs = await asAdmin.query(api.entityReviewQueue.getBatch, {
+      selectorOptionId,
+      batchId: "theirs",
+    });
+    expect(theirs[0].decision).toBeUndefined();
+  });
+
+  test("returns 0 when every row is already decided", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId, batchId: "bulk", kind: "player", name: "Only", status: "ready",
+    });
+    await t.run(async (ctx) =>
+      ctx.db.patch(rowId, { decision: { action: "skip" } }),
+    );
+
+    expect(
+      await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsSkip, {
+        selectorOptionId,
+        batchId: "bulk",
+      }),
+    ).toBe(0);
+  });
+
+  test("requires admin", async () => {
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSelectorOption(t);
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId, batchId: "bulk", kind: "player", name: "X", status: "ready",
+    });
+
+    await expect(
+      t.mutation(api.entityReviewQueue.recordAllRemainingAsSkip, {
+        selectorOptionId,
+        batchId: "bulk",
+      }),
+    ).rejects.toThrow();
+    // Rejected before any write.
+    expect(
+      (await t.run(async (ctx) => ctx.db.get(rowId)))!.decision,
+    ).toBeUndefined();
+  });
+});
+
+// ===========================================================================
 // applyLookupResult — NEO-189 decided-row guard
 // ===========================================================================
 
@@ -1028,6 +1606,31 @@ describe("applyLookupResult — decided-row guard (NEO-189)", () => {
     expect(row!.status).toBe("pending");
     expect(row!.enrichment).toBeUndefined();
     expect(row!.decision).toEqual({ action: "create" });
+  });
+
+  test("skips the patch on a row decided 'skip' (NEO-212) as well as 'create'", async () => {
+    // The guard branches on the PRESENCE of a decision, not its action, so
+    // NEO-212's new action inherits it — asserted rather than assumed, since a
+    // straggler lookup writing here is exactly what broke the seed commit.
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSelectorOption(t);
+    const id = await insertRow(t, {
+      selectorOptionId, sportId: selectorOptionId, batchId: "b", kind: "player", name: "Checklist", status: "pending",
+    });
+    await t.run(async (ctx) =>
+      ctx.db.patch(id, { decision: { action: "skip" } }),
+    );
+
+    await t.mutation(internal.entityReviewQueue.applyLookupResult, {
+      id,
+      status: "ready",
+      enrichment: { wikidataId: "Q42", isHallOfFame: true },
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(id));
+    expect(row!.status).toBe("pending");
+    expect(row!.enrichment).toBeUndefined();
+    expect(row!.decision).toEqual({ action: "skip" });
   });
 
   test("does not downgrade a decided row that had already resolved", async () => {

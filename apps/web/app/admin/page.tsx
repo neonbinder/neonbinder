@@ -3,6 +3,7 @@ import {
   SignalIcon,
   SquaresPlusIcon,
   UserGroupIcon,
+  UserIcon,
 } from "@heroicons/react/24/outline";
 import { SECTIONS } from "@/src/layouts/admin-section-layout";
 
@@ -12,7 +13,7 @@ import { SECTIONS } from "@/src/layouts/admin-section-layout";
  * Bare /admin lists the tools rather than redirecting to the first one, for the
  * same reason /print does: the sub-tabs above are a strip of names with no room
  * to say what each tool DOES. The hub is where a tool gets a sentence. It is
- * also where the sections still to come land (Players, Features, Leagues), so
+ * also where the sections still to come land (Features, Leagues), so
  * an empty "pick a tool" screen is not a thing worth avoiding here.
  *
  * The cards are driven by the same SECTIONS array the sub-tabs use, so a tool
@@ -32,6 +33,12 @@ const TOOL_DETAILS: Record<
       "Build set parameters from marketplace data, map them to NeonBinder sets, and reconcile card checklists.",
     icon: SquaresPlusIcon,
     accent: "text-neon-orange group-hover:border-neon-orange/50",
+  },
+  "/admin/players": {
+    description:
+      "Search every player we know, add one by hand, and correct names, Hall of Fame status and career history.",
+    icon: UserIcon,
+    accent: "text-neon-blue group-hover:border-neon-blue/50",
   },
   "/admin/teams": {
     description:

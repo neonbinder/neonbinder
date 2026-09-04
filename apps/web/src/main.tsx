@@ -46,6 +46,7 @@ import ProfilePrizes from "@/app/profile/prizes/page";
 import ProfileApiKeys from "@/app/profile/api-keys/page";
 import AdminHub from "@/app/admin/page";
 import AdminSetBuilder from "@/app/admin/set-builder/page";
+import AdminPlayers from "@/app/admin/players/page";
 import AdminTeams from "@/app/admin/teams/page";
 import PipelineRuns from "@/app/pipeline-runs/page";
 import DesignPrimitives from "@/app/design/primitives/page";
@@ -185,6 +186,7 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
                 <Route path="/admin" element={<AdminSectionLayout />}>
                   <Route index element={<AdminHub />} />
                   <Route path="set-builder" element={<AdminSetBuilder />} />
+                  <Route path="players" element={<AdminPlayers />} />
                   <Route path="teams" element={<AdminTeams />} />
                   {/* NEO-170 — operator view of every user's placeholder
                       pipeline runs, with the abort lever. The queries behind

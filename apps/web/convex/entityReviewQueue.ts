@@ -20,13 +20,16 @@ import { getCurrentUserId, requireAdmin } from "./auth";
  * its own call to getAncestorChain, which requires admin) calls `startBatch`
  * for any unknown names it surfaces. The wizard subscribes to `getBatch` and
  * calls `recordDecision` once per row as the user reviews. `commitCardChecklist`
- * (admin-gated) reads the finished batch to resolve create/link decisions,
- * then schedules `cleanupBatch`. `cancelBatch` is the wizard's Cancel action —
- * it only ever touches these throwaway rows, never `players`/`teams`/
- * `cardChecklist`. Every public function here is admin-gated (requireAdmin),
- * matching every other function in selectorOptions.ts — even though the
- * blast radius of this table alone is small, there's no reason a non-admin
- * should be able to read/mutate it at all.
+ * (admin-gated) reads the finished batch to resolve its decisions, then
+ * schedules `cleanupBatch`. A decision is create, link, or — NEO-212 — skip
+ * ("not a person / not a team"): a skipped row creates and links nothing, the
+ * card keeps the raw name as free text, and commit records the name in
+ * `entityReviewSkips` so it stays out of this set's wizard on later fetches.
+ * `cancelBatch` is the wizard's Cancel action — it only ever touches these
+ * throwaway rows, never `players`/`teams`/`cardChecklist`. Every public
+ * function here is admin-gated (requireAdmin), matching every other function
+ * in selectorOptions.ts — even though the blast radius of this table alone is
+ * small, there's no reason a non-admin should be able to read/mutate it at all.
  */
 
 const enrichmentValidator = v.object({
@@ -37,6 +40,11 @@ const enrichmentValidator = v.object({
     toYear: v.optional(v.number()),
   }))),
   isHallOfFame: v.optional(v.boolean()),
+  // NEO-212: player-only disambiguation context from Wikidata. See the
+  // entityReviewQueue.enrichment comment in schema.ts.
+  description: v.optional(v.string()),
+  birthYear: v.optional(v.number()),
+  enwikiTitle: v.optional(v.string()),
   league: v.optional(v.string()),
   city: v.optional(v.string()),
   yearsActive: v.optional(v.object({
@@ -63,12 +71,18 @@ const decisionValidator = v.union(
   v.object({
     action: v.literal("create"),
     manualCareerTeams: v.optional(v.array(manualCareerTeamValidator)),
+    // NEO-212: Wikidata career-team labels the admin unchecked in the wizard.
+    // Commit must not create team rows for these. See schema.ts.
+    excludedCareerTeamNames: v.optional(v.array(v.string())),
   }),
   v.object({
     action: v.literal("link"),
     linkedPlayerId: v.optional(v.id("players")),
     linkedTeamId: v.optional(v.id("teams")),
   }),
+  // NEO-212: "not a person / not a team" — the card keeps the raw name, and
+  // nothing is created or linked. See schema.ts.
+  v.object({ action: v.literal("skip") }),
 );
 
 // Earliest plausible year for a career-team entry — 1869 (first openly
@@ -83,6 +97,46 @@ const MIN_CAREER_YEAR = 1869;
 // commitCardChecklist. A real player's career spans a handful of teams; 64 is
 // generous headroom.
 const MAX_MANUAL_CAREER_TEAMS = 64;
+
+// NEO-212: same guard rail, same reasoning, for the unchecked-Wikidata-team
+// exclusion list. Bounded independently of MAX_MANUAL_CAREER_TEAMS because the
+// two lists are populated from different places (hand-typed vs. Wikidata's
+// careerTeams), even though the number happens to match.
+const MAX_EXCLUDED_CAREER_TEAM_NAMES = 64;
+
+/**
+ * NEO-212: validate and normalize the Wikidata career-team labels an admin
+ * unchecked for a "create" decision.
+ *
+ * Trims each entry and rejects a blank one — a blank label can never match an
+ * `enrichment.careerTeams[].name`, so it is always operator/UI error rather
+ * than a harmless no-op worth swallowing. Caps the array for the same reason
+ * the manual entries are capped. Dedupes case-insensitively (keeping first
+ * appearance, and the original casing) so commit compares against a clean set
+ * and the stored decision stays readable as an audit record.
+ */
+function normalizeExcludedCareerTeamNames(
+  names: ReadonlyArray<string>,
+): string[] {
+  if (names.length > MAX_EXCLUDED_CAREER_TEAM_NAMES) {
+    throw new Error(
+      `Too many excluded career-team names (${names.length}); the maximum is ${MAX_EXCLUDED_CAREER_TEAM_NAMES}`,
+    );
+  }
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const raw of names) {
+    const name = raw.trim();
+    if (name.length === 0) {
+      throw new Error("Excluded career-team name cannot be empty");
+    }
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    normalized.push(name);
+  }
+  return normalized;
+}
 
 // `createdByUserId` is audit/scoping-only — see toPublicRow below. Mirrors
 // the players.ts/teams.ts pattern: internalQuery reads the full row,
@@ -283,22 +337,51 @@ export const getBatch = query({
  * the whole point of persisting decisions server-side rather than only in
  * React state.
  *
+ * Three actions:
+ *   - "create" — mint a new player/team at commit time, optionally carrying
+ *     hand-typed `manualCareerTeams` and (NEO-212) `excludedCareerTeamNames`,
+ *     the Wikidata career teams the admin unchecked.
+ *   - "link" — point the card at an existing player/team.
+ *   - "skip" (NEO-212) — the name is not a person / not a team. Commit leaves
+ *     the card's raw name alone and creates/links nothing.
+ *
  * A "link" decision is validated against the row before being trusted —
  * commitCardChecklist later uses `linkedPlayerId`/`linkedTeamId` verbatim to
  * populate a real card's playerIds/teamOnCardIds, so this is the boundary
  * that must reject a mismatched or missing id rather than silently
  * dropping the name later at commit time.
+ *
+ * A "skip" decision carries no payload, so nothing else on the args is
+ * meaningful — a `linkedPlayerId`/`linkedTeamId`/`manualCareerTeams` sent
+ * alongside it is IGNORED rather than rejected. The wizard drives all three
+ * actions through one call site, so those fields are leftovers from a
+ * previously-selected action, not a caller mistake; throwing would turn a
+ * harmless UI artifact into a dead end for the operator, and there is nothing
+ * to protect — the skip decision never stores them, so they cannot reach
+ * commit.
+ *
+ * Re-deciding a row that already carries a decision OVERWRITES it, for every
+ * action — the wizard lets an operator go back and change a call.
  */
 export const recordDecision = mutation({
   args: {
     reviewRowId: v.id("entityReviewQueue"),
-    action: v.union(v.literal("create"), v.literal("link")),
+    action: v.union(
+      v.literal("create"),
+      v.literal("link"),
+      // NEO-212: "not a person / not a team".
+      v.literal("skip"),
+    ),
     linkedPlayerId: v.optional(v.id("players")),
     linkedTeamId: v.optional(v.id("teams")),
     // Only meaningful for a player-row "create" decision — extra career-team
     // history the admin typed by hand in the wizard (Wikidata found nothing,
     // or missed a team). Validated below before it's trusted.
     manualCareerTeams: v.optional(v.array(manualCareerTeamValidator)),
+    // NEO-212, also "create"-only: the Wikidata career-team labels the admin
+    // UNCHECKED in the wizard, so commit doesn't create team rows for them.
+    // Validated/normalized below before it's trusted.
+    excludedCareerTeamNames: v.optional(v.array(v.string())),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -306,6 +389,13 @@ export const recordDecision = mutation({
 
     const row = await ctx.db.get(args.reviewRowId);
     if (!row) throw new Error("Review row not found");
+
+    // NEO-212: "not a person / not a team". Nothing else on the args applies —
+    // see the doc comment for why leftovers are ignored rather than rejected.
+    if (args.action === "skip") {
+      await ctx.db.patch(args.reviewRowId, { decision: { action: "skip" } });
+      return null;
+    }
 
     if (args.action === "create") {
       // Defense in depth: this is admin-gated, but still validate the shape
@@ -350,12 +440,19 @@ export const recordDecision = mutation({
           }
         }
       }
+      // NEO-212: the Wikidata career teams the admin unchecked. Validated on
+      // the same boundary and for the same reason as the manual entries above
+      // — commit consumes this list verbatim.
+      const excludedCareerTeamNames = normalizeExcludedCareerTeamNames(
+        args.excludedCareerTeamNames ?? [],
+      );
       await ctx.db.patch(args.reviewRowId, {
         decision: {
           action: "create",
           // Omit the key entirely when empty, matching how `enrichment` is
           // treated optionally elsewhere in this file.
           ...(manualCareerTeams.length ? { manualCareerTeams } : {}),
+          ...(excludedCareerTeamNames.length ? { excludedCareerTeamNames } : {}),
         },
       });
       return null;
@@ -399,6 +496,38 @@ export const recordDecision = mutation({
 });
 
 /**
+ * Shared body of the two bulk fast-paths below: walk one batch and decide
+ * every row that carries NO decision yet, leaving already-decided rows exactly
+ * as the operator left them, and return how many this call decided.
+ *
+ * Factored out so `recordAllRemainingAsCreate` and `recordAllRemainingAsSkip`
+ * cannot drift on batch scoping, on the already-decided rule, or on what the
+ * returned count means — the only difference between them is the decision they
+ * write. Private, and assumes its caller has already run `requireAdmin`.
+ */
+async function decideAllRemaining(
+  ctx: MutationCtx,
+  args: { selectorOptionId: Id<"selectorOptions">; batchId: string },
+  decision: { action: "create" } | { action: "skip" },
+): Promise<number> {
+  const rows = await ctx.db
+    .query("entityReviewQueue")
+    .withIndex("by_selector_option_and_batch", (q) =>
+      q.eq("selectorOptionId", args.selectorOptionId).eq("batchId", args.batchId),
+    )
+    .collect();
+  let count = 0;
+  for (const row of rows) {
+    if (row.decision) continue;
+    // Spread rather than passing `decision` through: each row stores its own
+    // object rather than sharing one reference across the whole batch.
+    await ctx.db.patch(row._id, { decision: { ...decision } });
+    count++;
+  }
+  return count;
+}
+
+/**
  * Bulk fast-path: mark every not-yet-decided row in this batch as
  * "create", in one mutation. A first-time real-set sync can surface
  * hundreds of genuinely-new names (the common case, not the exception —
@@ -419,20 +548,37 @@ export const recordAllRemainingAsCreate = mutation({
   returns: v.number(),
   handler: async (ctx, args): Promise<number> => {
     await requireAdmin(ctx);
+    return await decideAllRemaining(ctx, args, { action: "create" });
+  },
+});
 
-    const rows = await ctx.db
-      .query("entityReviewQueue")
-      .withIndex("by_selector_option_and_batch", (q) =>
-        q.eq("selectorOptionId", args.selectorOptionId).eq("batchId", args.batchId),
-      )
-      .collect();
-    let count = 0;
-    for (const row of rows) {
-      if (row.decision) continue;
-      await ctx.db.patch(row._id, { decision: { action: "create" } });
-      count++;
-    }
-    return count;
+/**
+ * NEO-212 counterpart to `recordAllRemainingAsCreate`: mark every
+ * not-yet-decided row in this batch as "skip". The case it exists for is the
+ * mirror image — a set whose surfaced "new names" are mostly not entities at
+ * all (subset/parallel labels, checklist headers, a team name that landed in a
+ * player column), where the operator wants the whole remainder left alone
+ * rather than minting a row for each.
+ *
+ * Same admin gate, same batch scoping, same already-decided rule and same
+ * return (how many rows THIS call decided) as the create variant; both run
+ * through `decideAllRemaining` so the two cannot drift.
+ *
+ * Rows still "pending" — their Wikidata lookup hasn't finished — are included,
+ * exactly as the create variant includes them today. For skip the lookup is
+ * moot anyway: nothing is created, so no enrichment is ever read. Whether
+ * either fast path ought to wait on pending rows before deciding them is
+ * NEO-221's question, not this function's.
+ */
+export const recordAllRemainingAsSkip = mutation({
+  args: {
+    selectorOptionId: v.id("selectorOptions"),
+    batchId: v.string(),
+  },
+  returns: v.number(),
+  handler: async (ctx, args): Promise<number> => {
+    await requireAdmin(ctx);
+    return await decideAllRemaining(ctx, args, { action: "skip" });
   },
 });
 
