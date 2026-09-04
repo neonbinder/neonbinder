@@ -47,7 +47,19 @@ export interface SportConfig {
   wikidata?: {
     /** Wikidata sport QID, used in the `wdt:P641` SPARQL filter. */
     sportQid: string;
-    /** A P166 (award received) match on this QID flips isHallOfFame true. */
+    /**
+     * The sport's Hall of Fame, as a Wikidata entity.
+     *
+     * NEO-235: a match on this QID via ANY of `adapters/wikidata.ts`'s
+     * `HALL_OF_FAME_STRATEGIES` — P166 "award received" or P463 "member of" —
+     * flips `isHallOfFame` true. It used to be P166 only, which is why the
+     * doc here used to name that property; the shape varies by sport and by
+     * editor, so the property list lives with the strategies now rather than
+     * being implied by this field's name.
+     *
+     * MUST be the INSTITUTION's QID (Q809892 "National Baseball Hall of Fame
+     * and Museum"), because that is the entity both properties point at.
+     */
     hallOfFameQid?: string;
   };
 }
@@ -62,33 +74,59 @@ export interface SportConfig {
  * Sports without a single canonical Hall of Fame (e.g. soccer) intentionally
  * omit `hallOfFameQid`: those players ship with `isHallOfFame` undefined rather
  * than misleadingly false.
+ *
+ * ## NEO-235: the four `hallOfFameQid` values were all wrong
+ *
+ * Every one of them resolved to an unrelated Wikidata entity, verified live on
+ * 2026-09-04:
+ *
+ *   baseball    Q1194380 → "Grochów", a village in Poland
+ *   football    Q1382553 → "Leistus spinibarbis", a species of beetle
+ *   basketball  Q635155  → "creator deity"
+ *   hockey      Q579974  → "Dušan Marković", a Serbian footballer (1906-1974)
+ *
+ * So `isHallOfFame` could never be true for anybody, in any sport, however the
+ * induction was recorded — the P166-only detection this ticket widens was the
+ * SECOND defect, not the first. The values below are the real institutions,
+ * each confirmed against the statements of a known inductee (Gwynn/Ruth/
+ * Griffey, Jerry Rice, Wayne Gretzky).
+ *
+ * These are DEFAULTS applied at sport-row creation, and the backfill in
+ * `storeSelectorOptions` only fires when a row has NO `sportConfig` at all.
+ * A deployment whose sport rows were created before this fix still carries the
+ * wrong QIDs on the row, and correcting the constants here does not reach
+ * them — see the NEO-235 notes on the branch.
  */
 const SPORT_CONFIG_DEFAULTS: Record<string, SportConfig> = {
   baseball: {
     skuCode: "BB",
     league: "MLB",
     espn: { path: "baseball/mlb", leagueName: "Major League Baseball" },
-    wikidata: { sportQid: "Q5369", hallOfFameQid: "Q1194380" },
+    // Q809892 = National Baseball Hall of Fame and Museum, Cooperstown.
+    wikidata: { sportQid: "Q5369", hallOfFameQid: "Q809892" },
   },
   football: {
     skuCode: "FB",
     league: "NFL",
     espn: { path: "football/nfl", leagueName: "National Football League" },
     // Q41323 = American football (our domain — no soccer cards).
-    wikidata: { sportQid: "Q41323", hallOfFameQid: "Q1382553" },
+    // Q778412 = Pro Football Hall of Fame, Canton.
+    wikidata: { sportQid: "Q41323", hallOfFameQid: "Q778412" },
   },
   basketball: {
     skuCode: "BK",
     league: "NBA",
     espn: { path: "basketball/nba", leagueName: "National Basketball Association" },
-    wikidata: { sportQid: "Q5372", hallOfFameQid: "Q635155" },
+    // Q290922 = Naismith Memorial Basketball Hall of Fame, Springfield.
+    wikidata: { sportQid: "Q5372", hallOfFameQid: "Q290922" },
   },
   hockey: {
     skuCode: "HK",
     league: "NHL",
     espn: { path: "hockey/nhl", leagueName: "National Hockey League" },
     // Q41466 = ice hockey.
-    wikidata: { sportQid: "Q41466", hallOfFameQid: "Q579974" },
+    // Q1136687 = Hockey Hall of Fame, Toronto.
+    wikidata: { sportQid: "Q41466", hallOfFameQid: "Q1136687" },
   },
 };
 

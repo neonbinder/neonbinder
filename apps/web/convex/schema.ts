@@ -994,6 +994,14 @@ export default defineSchema({
         fromYear: v.number(),
         toYear: v.optional(v.number()),
       }))),
+      // NEO-235, player-only. Team NAMES that Wikidata links to the player
+      // with NO usable start year (Tony Gwynn's "San Diego State Aztecs
+      // baseball" P54 statement carries no P580/P582 at all). They cannot
+      // become `careerTeams` entries — that shape requires `fromYear`, and
+      // synthesizing one from the player's work period fabricates a stint that
+      // never happened — so they are surfaced by name instead of dropped
+      // silently, for the wizard to show and an operator to date by hand.
+      undatedCareerTeams: v.optional(v.array(v.string())),
       isHallOfFame: v.optional(v.boolean()),
       // NEO-212, player-only disambiguation context. Wikidata routinely returns
       // several entities for one card name ("Chris Johnson" is a running back,
