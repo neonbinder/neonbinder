@@ -29,14 +29,34 @@ tags:
 # stays open with nothing created. It is here rather than in its own flow
 # because it is three steps and shares this flow's per-worker sport.
 #
-# DATA ISOLATION (R7 / R7a). Everything is created under this worker's own
-# synthetic sport, "E2E Test Sport <worker>", inside year 2026 — the suite's
-# existing per-worker custom playground. No real, marketplace-backed set is
-# read or written, and no other worker can see these rows. The two brand rows
-# (`xp-<worker>-A` / `xp-<worker>-B`) are stable per worker so retries reuse
+# DATA ISOLATION (R7 / R7a). Everything is created under a sport this flow owns
+# outright — `xp-sport-<worker>` — inside year 2026. No real, marketplace-backed
+# set is read or written, and no other worker can see these rows. The two brand
+# rows (`xp-<worker>-A` / `xp-<worker>-B`) are stable per worker so retries reuse
 # them; only the SET name carries ATTEMPT_ID, because a retry must find the row
 # THIS attempt put under B, not one a previous attempt left behind. Prefix
 # registered in .maestro/SET-REGISTRY.md.
+#
+# WHY ITS OWN SPORT, AND NOT THE SUITE'S SHARED "E2E Test Sport <worker>".
+# It used to use the shared one, and that broke `team-picker-create-custom-card`
+# in PR #226 run 1 — a flow this one never touches. Twenty-six flows drill
+# `E2E Test Sport <worker>`, and `util-drill-to-custom-set.yaml` pins them all to
+# `2026 › Topps`, so the two brand rows this flow ADDS land in a Manufacturers
+# column those flows read. That column had exactly one row (Topps); three rows
+# push the column's `+ Custom` / `Sync Manufacturers` buttons from y≈444 to
+# y≈611, past the bottom of the 1024×625 headless viewport — and
+# `util-drill-to-custom.yaml`'s Level-3 fallback waits for `Add custom
+# Manufacturers` WITHOUT scrolling (it is a deliberate CDP-re-render guard), so
+# it can never recover a button under the fold. The hierarchy dump from that run
+# shows it exactly: `Topps` / `xp-7-A` / `xp-7-B` present, no idle buttons at all.
+#
+# THE RULE THIS ENCODES: a flow that ADDS ROWS to a column other flows drill
+# through is a flow that can push their controls under the fold. Roughly FOUR
+# rows is the ceiling in this page (the columns start at y≈380, under the Admin
+# Tools block, and each row is ~58px). Adding a private sport costs nothing by
+# comparison: the Sports column is long enough to have a search input, every
+# drill filters it before touching it, and its list is capped by its own
+# `max-h-[400px]` scroller — so one more sport row is invisible to everyone.
 #
 # R4 — enters through the sign-in redirect; no in-body login.
 # R5 — every wait is the 7s default. Nothing here touches a marketplace: a
@@ -65,7 +85,7 @@ tags:
 - runFlow:
     file: util-drill-to-custom.yaml
     env:
-      SPORT: "E2E Test Sport ${WORKER_INDEX || 0}"
+      SPORT: "xp-sport-${WORKER_INDEX || 0}"
 
 # Open the Years column's custom form. centerElement so the button is fully in
 # view before it is pressed (R8).
@@ -103,7 +123,7 @@ tags:
 - runFlow:
     file: util-drill-to-custom.yaml
     env:
-      SPORT: "E2E Test Sport ${WORKER_INDEX || 0}"
+      SPORT: "xp-sport-${WORKER_INDEX || 0}"
       YEAR: "2026"
       MANUFACTURER: "xp-${WORKER_INDEX || 0}-B"
       SET_NAME: "xp-${WORKER_INDEX || 0}-${ATTEMPT_ID} Chrome"
@@ -129,7 +149,7 @@ tags:
 - runFlow:
     file: util-drill-to-custom.yaml
     env:
-      SPORT: "E2E Test Sport ${WORKER_INDEX || 0}"
+      SPORT: "xp-sport-${WORKER_INDEX || 0}"
       YEAR: "2026"
       MANUFACTURER: "xp-${WORKER_INDEX || 0}-A"
 

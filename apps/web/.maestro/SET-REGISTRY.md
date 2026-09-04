@@ -318,10 +318,35 @@ would put the wrong question on screen.
 | `xbg-`, `xbs-` | `cross-release-import-reports-missing-numbers.yaml` |
 | `xcg-`, `xsrc-` | `cross-release-hide-toggle-filters-guest-cards.yaml` |
 | `xdg-`, `xds-` | `cross-release-unlink-keeps-card-in-home-set.yaml` |
-| `xp-` | `custom-set-exists-elsewhere-offers-drill.yaml` — the brand rows `xp-<worker>-A` / `xp-<worker>-B` under `E2E Test Sport <worker>` / 2026, plus a set `xp-<worker>-<attempt> Chrome` under B |
+| `xp-` | `custom-set-exists-elsewhere-offers-drill.yaml` — its OWN sport `xp-sport-<worker>`, brand rows `xp-<worker>-A` / `xp-<worker>-B` under it in 2026, and a set `xp-<worker>-<attempt> Chrome` under B. **It must never use `E2E Test Sport <worker>`** — see the fold note below. |
 
 `xsrc-` is intentionally shared between the two cross-release flows that both
 need the same guest-source set; it is still per-worker.
+
+### Adding ROWS to a shared column pushes other flows' controls under the fold
+
+A per-worker custom SET is free. A per-worker custom **manufacturer, year or
+sport row added under an ancestor other flows drill through is not** — it makes
+that column taller for everybody.
+
+The columns start at y≈380 (the Admin Tools block sits above them) and each row
+is ~58px in the 1024×625 headless viewport, so a column's `Sync <X>` / `+ Custom`
+buttons fall off the bottom at roughly the **fourth** row. `util-drill-to-custom.yaml`
+waits for `Add custom <X>` **without scrolling** at several levels — a deliberate
+guard against a CDP crash during re-render — so once those buttons are under the
+fold the drill cannot recover and every consumer of that ancestor fails.
+
+This is not hypothetical. `custom-set-exists-elsewhere-offers-drill.yaml`
+originally created two brand rows under the SHARED `E2E Test Sport <worker>` ›
+`2026`, which `util-drill-to-custom-set.yaml` pins 7 flows to. In PR #226 run 1
+that took the Manufacturers column from one row (`Topps`) to three and broke
+`team-picker-create-custom-card` — a flow with no relationship to it. The fix was
+to give the flow its own sport.
+
+**So: if a flow must create a row above SET level, give it a private ancestor.**
+A private SPORT is the cheap one — the Sports column is long enough to render a
+search input, every drill filters it first, and its list is capped by its own
+`max-h-[400px]` scroller, so one more sport row is invisible to everyone.
 
 ## Read-only consumers of the shared real set
 

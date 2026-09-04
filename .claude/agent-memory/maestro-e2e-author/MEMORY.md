@@ -17,3 +17,4 @@
 - [Maestro web pressKey + picker popovers](patterns_maestro_web_presskey_and_popovers.md) — Enter is the ONLY web keycode; close a picker by tapping a neutral element above it
 - [Column shapes + cold sync](patterns_entity_column_shapes_and_cold_sync.md) — search input needs >8 entries; an EMPTY column shows `Sync <X>` before the sync starts, so gate on the `Syncing <X>` panel
 - [Bare `maestro test` needs SE_BROWSER_PATH](patterns_bare_maestro_needs_chrome_for_testing.md) — otherwise branded Chrome gives a 1x1 viewport and every assert "fails"
+- [NEO-219 confirm surfaces](reference_neo219_confirm_surfaces.md) — custom entry needs TWO Enters; Base picker needs an explicit pick; chips confirm detach; empty rows have a delete control
