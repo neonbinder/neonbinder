@@ -33,18 +33,49 @@ import type { Request } from "express";
  * `/credentials/check` is the one /credentials/* route that is body-keyed
  * (keys[]), and /login/* carry body.key — both are parsed (express.json runs
  * before this middleware), so the body fallbacks cover them.
+ *
+ * NEO-121 — `/easypost/:key/*` is parsed here too, and that is a FIX, not an
+ * extension. Every EasyPost route has carried the credential key in the same
+ * first-segment position since NEO-120, but this parser only recognised
+ * `credentials`, so rate/buy/label — and now tracker and webhooks — all fell
+ * through to the IP fallback. Behind Cloud Run IAM that fallback is a single
+ * global 60/min budget shared by every seller: exactly the failure NEO-47
+ * created this function to fix, quietly reintroduced for the postage routes.
+ * Two sellers buying labels at the same moment could 429 each other off the
+ * money path.
+ *
+ * All `/easypost/*` routes share one bucket per seller, read and write alike.
+ * That is deliberate — the point is to bound one seller's total pressure on
+ * their own EasyPost account, and a read loop that starved the buy path of its
+ * budget would be the same outage in a smaller costume. The on-demand tracker
+ * refresh has its own server-side cooldown in Convex for that reason.
  */
 export function credentialRateLimitKey(req: Request): string {
-  // segments = ["", "credentials", "<key>", ...] for /credentials/:key routes.
-  const segments = (req.path ?? "").split("/");
-  const pathKey =
-    segments[1] === "credentials" && segments[2] && segments[2] !== "check"
-      ? segments[2]
-      : undefined;
   const credKey =
-    pathKey ??
+    keyFromPath(req.path ?? "") ??
     (req.params as { key?: string } | undefined)?.key ??
     (req.body as { key?: string; keys?: string[] } | undefined)?.key ??
     (req.body as { keys?: string[] } | undefined)?.keys?.[0];
   return credKey ? `cred:${credKey}` : ipKeyGenerator(req.ip ?? "");
+}
+
+/**
+ * Pull the credential key out of a URL path, pre-routing.
+ *
+ * segments = ["", "<prefix>", "<key>", ...] for both key-in-path families:
+ * `/credentials/:key[/metadata|/token]` and `/easypost/:key[/...]`.
+ *
+ * `/credentials/check` is the one collision — a route name where a key would
+ * be — and it is body-keyed instead. No `/easypost/*` route has a fixed second
+ * segment, so it needs no equivalent exclusion; if one is ever added, it needs
+ * one here too, or every caller of it shares a bucket named after the route.
+ */
+function keyFromPath(path: string): string | undefined {
+  const [, prefix, candidate] = path.split("/");
+  if (!candidate) return undefined;
+  if (prefix === "credentials") {
+    return candidate === "check" ? undefined : candidate;
+  }
+  if (prefix === "easypost") return candidate;
+  return undefined;
 }

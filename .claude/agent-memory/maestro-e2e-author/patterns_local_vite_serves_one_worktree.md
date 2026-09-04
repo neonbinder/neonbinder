@@ -44,5 +44,14 @@ plus a `getCurrentUrl` timeout means the transport, not your selectors** —
 check `http` vs `https` before touching the flow. `curl -sk` against the same
 URL returning 200 does not clear the server: curl does not enforce the cert.
 
+**The MIRROR signature — Vite on https, runner on the default http** (2026-09-03):
+if you start Vite without `VITE_DEV_DISABLE_HTTPS=1` and then just run
+`npm run test:e2e:pick` (which defaults `APP_URL` to `http://localhost:3000`),
+Phase 0 fails on EVERY worker in ~90 s with a plain
+`Assertion is false: "Profile Settings" is visible`. Nothing in the message
+points at the transport. **"Phase 0 bootstrap failed on worker 0/1/2" — all
+workers, same assert — is a transport problem, never a flow problem**: check the
+`➜  Local:` line in the Vite log for `http` vs `https` before anything else.
+
 Note the Convex backend is still shared dev regardless of which Vite you run —
 see [[local-validation-needs-a-pr-preview]].

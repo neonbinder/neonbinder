@@ -53,3 +53,57 @@ worst), so it was defense-in-depth, not a live hole. **How to apply:** any new
 check before it reaches an attribute.
 
 Related: [[patterns-convex-auth-boundary]], [[patterns-checklist-commit-trust-boundary]].
+
+## 3. A control can be present in shape and dead in fact — check the wire shape
+
+NEO-121 added `ensureWebhook`'s **reconcile-before-create** (list the seller's
+EasyPost hooks, adopt ours, reap stale ones under our prefix, only then create).
+The policy was written correctly and was **entirely dead**: the browser route
+answers `{ webhooks: [...] }` while `postage.easypostListWebhooks` parsed only a
+bare array, so `hooks` was always `[]`. Nothing adopted, nothing reaped, and a
+lost create response would have produced a duplicate hook on the next attempt.
+
+The unit tests did not catch it because they stubbed the *Convex-side* expected
+shape rather than the shape the route actually returns — a stub is a claim about
+a contract, and a wrong stub makes a dead control look tested.
+
+**How to apply:** on any Convex ↔ browser-service boundary, read the route's
+`res.json(...)` and the Convex parse **side by side**, and check the test stub
+matches the route, not the parser. When a control's failure mode is silent
+(a reconcile that finds nothing looks exactly like a clean account), require a
+test that would fail if the parse regressed.
+
+## 4. A rate-limit cooldown must be stamped on the ATTEMPT, not the success
+
+`postage.refreshTracking`'s 60 s cooldown was stamped only through
+`applyTrackerSnapshot`'s `refreshedAt` — i.e. only when EasyPost returned a
+tracker. The ordinary state of a freshly-bought letter is `no_tracker` (the
+browser route answers 409), which throws before any write, so the loop the
+cooldown exists to stop was uncapped on the exact status a seller is most likely
+to be clicking at. All `/easypost/*` calls share one 60/min bucket per seller
+with `buy`, so the loop could 429 the seller's own money path.
+
+**How to apply:** whenever a cooldown/quota is implemented by writing a
+timestamp, check every early-return and throw between "decide to call out" and
+the write. The stamp belongs immediately before the outbound call.
+
+## 5. Things verified good on the NEO-121 surface (do not re-litigate)
+
+- Webhook HMAC gate ordering: token charset regex → row lookup → size cap →
+  HMAC → only then any write (`touchWebhookEvent` included). Constant-time
+  compare, Web Crypto only (the httpAction is default-runtime, `node:crypto` is
+  unreachable), integer-`weight` float rewrite anchored with a lookahead.
+- `urlToken` and `secret` appear in **no** public validator; `lastError` is an
+  NB-authored enum precisely because EasyPost echoes the rejected URL (which
+  carries the token) — `redactWebhookToken` scrubs it in `describeError` *and*
+  again in the router. Note nothing scrubs the HMAC *secret* from an upstream
+  message; EasyPost does not echo it today.
+- `REGISTERABLE_DEPLOYMENTS` fails closed and the dev slug `focused-fox-53` was
+  **already** public in `.github/workflows/preview-cleanup.yml`; committing it
+  in `convex/shipmentTracking.ts` discloses nothing new. What a dev slug reaches
+  is the `/e2e/*` surface — see [[patterns-testing-endpoint-gate]].
+- `getWebhookByToken` uses `.unique()` while `findPurchaseForWebhook`
+  deliberately uses `.first()` (a throw inside the handler reads to EasyPost as
+  a failed delivery and eventually disables the hook). With 256-bit tokens a
+  duplicate can only be a bug, so `.unique()` is defensible — but if that table
+  ever gains another writer, revisit.

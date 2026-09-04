@@ -51,6 +51,7 @@ function useWarmPrintQueries() {
   useQuery(api.shipping.getMyReturnAddress); // shipping labels
   useQuery(api.shipping.listMyLabelPurchases); // label history
   useQuery(api.publicProfile.getMyPublicProfile); // QR code
+  useQuery(api.shipmentTracking.getMyTrackingSetup); // label history's scan-updates chip
   // Spine labels (NEO-147) deliberately has nothing here. Both of its queries
   // are demand-driven — `players.search` is skipped until the user types, and
   // `teams.getManyByIds` needs a selected player — so neither paints a spinner

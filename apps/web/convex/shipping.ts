@@ -22,10 +22,63 @@ import {
 } from "./_generated/server";
 import { v } from "convex/values";
 import { getCurrentUserId } from "./auth";
-import { postalAddressValidator } from "./schema";
+import {
+  postalAddressValidator,
+  trackerSnapshotValidator,
+  trackingScanValidator,
+} from "./schema";
+import { sanitizeSnapshot } from "./shipmentTracking";
+
+/**
+ * Drop keys whose value is `undefined`.
+ *
+ * {@link sanitizeSnapshot} returns `undefined` for every field the tracker did
+ * not carry, which is exactly right for a `patch` (there it REMOVES the field,
+ * so a snapshot replaces rather than merges) and wrong for an `insert`, where
+ * an explicitly-undefined field is not a Convex value. One-line difference, one
+ * helper, rather than a second sanitiser that would drift.
+ */
+function withoutUndefined<T extends Record<string, unknown>>(value: T): Partial<T> {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, entry]) => entry !== undefined),
+  ) as Partial<T>;
+}
 
 /** How many purchases the history view shows. Reprints are a recent-item need. */
 const PURCHASE_HISTORY_LIMIT = 25;
+
+/**
+ * One `labelPurchases` document, as every reader of the table sees it.
+ *
+ * Shared by {@link listMyLabelPurchases} and {@link getLabelPurchaseForUser}
+ * rather than written out twice: NEO-121 added eight optional fields, and two
+ * hand-maintained copies of the same object is exactly how a reader ends up
+ * silently missing a field that the other one returns.
+ *
+ * **Every NEO-121 field here is seller-forgeable and none of it is proof of
+ * delivery** — see the module comment in convex/shipmentTracking.ts.
+ */
+const labelPurchaseDocValidator = v.object({
+  _id: v.id("labelPurchases"),
+  _creationTime: v.number(),
+  userId: v.string(),
+  easypostShipmentId: v.string(),
+  trackingCode: v.string(),
+  costCents: v.number(),
+  weightOz: v.number(),
+  toAddress: postalAddressValidator,
+  labelUrl: v.string(),
+  purchasedAt: v.number(),
+  trackerId: v.optional(v.string()),
+  trackingStatus: v.optional(v.string()),
+  trackingStatusDetail: v.optional(v.string()),
+  trackerUpdatedAt: v.optional(v.number()),
+  lastScanAt: v.optional(v.number()),
+  estDeliveryAt: v.optional(v.number()),
+  publicTrackingUrl: v.optional(v.string()),
+  scans: v.optional(v.array(trackingScanValidator)),
+  lastRefreshAt: v.optional(v.number()),
+});
 
 /**
  * The current user's saved return address, or null when they haven't set one.
@@ -160,6 +213,10 @@ export const recordLabelPurchase = internalMutation({
     weightOz: v.number(),
     toAddress: postalAddressValidator,
     labelUrl: v.string(),
+    // NEO-121 — the tracker EasyPost returns inline with a bought shipment.
+    // Optional: a browser revision that predates scan visibility does not send
+    // one, and the purchase must record either way.
+    tracker: v.optional(trackerSnapshotValidator),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -174,6 +231,10 @@ export const recordLabelPurchase = internalMutation({
       toAddress: args.toAddress,
       labelUrl: args.labelUrl,
       purchasedAt: Date.now(),
+      // Through the SAME sanitiser the webhook path uses — truncated strings,
+      // capped scans, https-only public URL. One definition of "stored", so
+      // the two write paths cannot disagree about what a snapshot becomes.
+      ...(args.tracker ? withoutUndefined(sanitizeSnapshot(args.tracker)) : {}),
     });
 
     return null;
@@ -186,20 +247,7 @@ export const recordLabelPurchase = internalMutation({
  */
 export const listMyLabelPurchases = query({
   args: {},
-  returns: v.array(
-    v.object({
-      _id: v.id("labelPurchases"),
-      _creationTime: v.number(),
-      userId: v.string(),
-      easypostShipmentId: v.string(),
-      trackingCode: v.string(),
-      costCents: v.number(),
-      weightOz: v.number(),
-      toAddress: postalAddressValidator,
-      labelUrl: v.string(),
-      purchasedAt: v.number(),
-    }),
-  ),
+  returns: v.array(labelPurchaseDocValidator),
   handler: async (ctx) => {
     const userId = await getCurrentUserId(ctx);
     if (!userId) return [];
@@ -247,21 +295,7 @@ export const getLabelPurchaseForUser = internalQuery({
     purchaseId: v.id("labelPurchases"),
     userId: v.string(),
   },
-  returns: v.union(
-    v.object({
-      _id: v.id("labelPurchases"),
-      _creationTime: v.number(),
-      userId: v.string(),
-      easypostShipmentId: v.string(),
-      trackingCode: v.string(),
-      costCents: v.number(),
-      weightOz: v.number(),
-      toAddress: postalAddressValidator,
-      labelUrl: v.string(),
-      purchasedAt: v.number(),
-    }),
-    v.null(),
-  ),
+  returns: v.union(labelPurchaseDocValidator, v.null()),
   handler: async (ctx, args) => {
     const row = await ctx.db.get(args.purchaseId);
     if (!row || row.userId !== args.userId) return null;
