@@ -386,6 +386,98 @@ describe("EntityColumn — custom-entry validation + confirm (NEO-219)", () => {
     expect(error.textContent).not.toContain("selectorOptions.ts");
   });
 
+  // ---------------------------------------------------------------------------
+  // Adversarial pass (NEO-219 readiness)
+  // ---------------------------------------------------------------------------
+
+  it("Escape at the confirm-create stage goes BACK to input, preserving the typed value — it does not Cancel/close", async () => {
+    renderColumn();
+    await typeAndSubmit("Bowman Chrome");
+
+    await waitFor(() => {
+      expect(screen.getByText("Create")).toBeTruthy();
+    });
+
+    await act(async () => {
+      fireEvent.keyDown(screen.getByText("Create"), { key: "Escape" });
+    });
+
+    // Still open, still "Add Custom Entry" — a real Cancel/close would drop
+    // this to mode "idle" and the heading would disappear.
+    expect(screen.getByText("Add Custom Entry")).toBeTruthy();
+    const input = screen.getByPlaceholderText(
+      "Enter custom value...",
+    ) as HTMLInputElement;
+    // Back to the INPUT stage, with what was typed still there.
+    expect(input.value).toBe("Bowman Chrome");
+    expect(mockAddCustom).not.toHaveBeenCalled();
+  });
+
+  it("Escape at the confirm-exists stage also goes BACK to input, not Cancel", async () => {
+    mockFindElsewhere.mockResolvedValue([MATCH_ELSEWHERE]);
+    renderColumn({ onDrillToExisting: vi.fn() });
+    await typeAndSubmit("Bowman Chrome");
+
+    await waitFor(() => {
+      expect(screen.getByText("Go to it")).toBeTruthy();
+    });
+
+    await act(async () => {
+      fireEvent.keyDown(screen.getByText("Go to it"), { key: "Escape" });
+    });
+
+    expect(screen.getByText("Add Custom Entry")).toBeTruthy();
+    expect(
+      (screen.getByPlaceholderText("Enter custom value...") as HTMLInputElement)
+        .value,
+    ).toBe("Bowman Chrome");
+    expect(mockAddCustom).not.toHaveBeenCalled();
+  });
+
+  it("a parent change WHILE the confirm is open clears the form entirely, not just the input", async () => {
+    const { rerender } = renderColumn();
+    await typeAndSubmit("Bowman Chrome");
+
+    await waitFor(() => {
+      expect(screen.getByText("Create")).toBeTruthy();
+    });
+    // Confirmed we are genuinely mid-confirm before the parent moves.
+    expect(
+      screen.getByText("Create set 'Bowman Chrome' under 2021 › Topps?"),
+    ).toBeTruthy();
+
+    await act(async () => {
+      rerender(
+        <EntityColumn
+          selector={<div>selector</div>}
+          renderForm={() => <div>form</div>}
+          addButtonText="Sync Sets"
+          isVisible={true}
+          level="setName"
+          parentId={OTHER_MFR_ID}
+        />,
+      );
+    });
+
+    // The whole form is gone — not left sitting on the stale confirm sentence
+    // naming the OLD parent.
+    expect(screen.queryByText("Add Custom Entry")).toBeNull();
+    expect(
+      screen.queryByText(/Create set 'Bowman Chrome' under/),
+    ).toBeNull();
+    expect(mockAddCustom).not.toHaveBeenCalled();
+
+    // Reopening under the new parent starts genuinely fresh (input stage,
+    // empty value) rather than resuming the old confirm.
+    await act(async () => {
+      fireEvent.click(screen.getByText("+ Custom"));
+    });
+    expect(
+      (screen.getByPlaceholderText("Enter custom value...") as HTMLInputElement)
+        .value,
+    ).toBe("");
+  });
+
   it("re-offers the drill when the SERVER is the one that finds the duplicate", async () => {
     // The client lookup came back empty (a race, or a failed read), so the
     // operator got the plain create confirm — and the mutation refused.

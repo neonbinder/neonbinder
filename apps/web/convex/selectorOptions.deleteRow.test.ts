@@ -700,3 +700,198 @@ describe("getSelectorOptionHoldings", () => {
     ).rejects.toThrow(/Admin access required/);
   });
 });
+
+// ===========================================================================
+// Adversarial pass (NEO-219 readiness) — structural edge cases the happy-path
+// suite above does not reach: a row that holds ONLY transient state, a
+// diverged/dangling `parent.children`, a parent that no longer exists, and a
+// checklist commit racing the delete between the query and the write.
+// ===========================================================================
+
+describe("deleteSelectorOption — adversarial", () => {
+  test("a row holding ONLY transient per-batch rows deletes cleanly (holds is empty)", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+
+    const sportId = await insertRow(t, "sport", "Baseball");
+    const setId = await insertRow(t, "setName", "Topps Chrome", {
+      parentId: sportId,
+      isCustom: true,
+    });
+
+    // Confirm the holdings view agrees BEFORE the write: transient rows are
+    // not holdings, so this row reads as empty despite carrying four of them.
+    const holdingsBefore = await asAdmin.query(
+      api.selectorOptions.getSelectorOptionHoldings,
+      { id: setId },
+    );
+    expect(holdingsBefore).toEqual({ holds: [], protected: false });
+
+    await t.run(async (ctx) => {
+      await ctx.db.insert("entityReviewQueue", {
+        selectorOptionId: setId,
+        batchId: "batch-1",
+        createdByUserId: ADMIN_IDENTITY.subject,
+        kind: "player",
+        name: "Some Name",
+        sportId,
+        status: "pending",
+      });
+      await ctx.db.insert("entityReviewSkips", {
+        selectorOptionId: setId,
+        kind: "team",
+        nameNormalized: "checklist",
+        name: "Checklist",
+        skippedAt: SENTINEL_LAST_UPDATED,
+        skippedByUserId: ADMIN_IDENTITY.subject,
+      });
+      await ctx.db.insert("checklistCandidates", {
+        selectorOptionId: setId,
+        batchId: "batch-1",
+        createdByUserId: ADMIN_IDENTITY.subject,
+        cardNumber: "1",
+        cardName: "Some Player",
+        platformData: {},
+        bucket: "matched",
+        stem: "1",
+        status: "ready",
+        lastUpdated: SENTINEL_LAST_UPDATED,
+      });
+      await ctx.db.insert("selectorSyncStatus", {
+        level: "variantType",
+        parentId: setId,
+        status: "error",
+        message: "boom",
+        updatedAt: SENTINEL_LAST_UPDATED,
+      });
+    });
+
+    const result = await asAdmin.mutation(
+      api.selectorOptions.deleteSelectorOption,
+      { id: setId },
+    );
+
+    expect(result.deleted).toBe(true);
+    expect(await t.run(async (ctx) => ctx.db.get(setId))).toBeNull();
+  });
+
+  test("deletes even when the parent's `children` array does NOT list it (legacy divergence)", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+
+    const sportId = await insertRow(t, "sport", "Baseball");
+    const doomedId = await insertRow(t, "year", "2024", {
+      parentId: sportId,
+      isCustom: true,
+    });
+    // Simulate a parent whose `children` array never listed this row (or has
+    // already been edited elsewhere) — insertRow appended it, so force it back
+    // out to reproduce the legacy/diverged shape.
+    await t.run(async (ctx) => {
+      const parent = await ctx.db.get(sportId);
+      await ctx.db.patch(sportId, {
+        children: (parent!.children ?? []).filter((c) => c !== doomedId),
+      });
+    });
+
+    const result = await asAdmin.mutation(
+      api.selectorOptions.deleteSelectorOption,
+      { id: doomedId },
+    );
+
+    expect(result.deleted).toBe(true);
+    // The write-if-changed guard sees no change and leaves the (already not
+    // listing it) array alone rather than erroring on a "remove" that is a
+    // no-op.
+    const parent = await t.run(async (ctx) => ctx.db.get(sportId));
+    expect(parent!.children).toEqual([]);
+  });
+
+  test("deletes cleanly when its OWN parentId points at a row that no longer exists", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+
+    // A real parent, deleted out from under the child without going through
+    // deleteSelectorOption (e.g. the admin reset tooling), leaving a dangling
+    // parentId — the shape collectSelectorOptionHoldings + the parent patch at
+    // the end of the mutation must both tolerate.
+    const ghostParentId = await insertRow(t, "sport", "Ephemeral", {
+      isCustom: true,
+    });
+    const orphanId = await insertRow(t, "year", "2024", {
+      parentId: ghostParentId,
+      isCustom: true,
+    });
+    await t.run(async (ctx) => ctx.db.delete(ghostParentId));
+
+    const result = await asAdmin.mutation(
+      api.selectorOptions.deleteSelectorOption,
+      { id: orphanId },
+    );
+
+    expect(result.deleted).toBe(true);
+    expect(result.parentId).toBe(ghostParentId);
+    expect(await t.run(async (ctx) => ctx.db.get(orphanId))).toBeNull();
+  });
+
+  test("deletes a row whose `children` array names ids with no backing rows (dangling children, no real holdings)", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+
+    const sportId = await insertRow(t, "sport", "Baseball");
+    const yearId = await insertRow(t, "year", "2024", { parentId: sportId });
+    // A child was created and then hard-deleted some other way, leaving its id
+    // behind in the parent's `children` array — but `by_parent` (what
+    // collectSelectorOptionHoldings actually reads) sees nothing, since no row
+    // has parentId===yearId any more.
+    const ghostChildId = await insertRow(t, "manufacturer", "Ghost", {
+      parentId: yearId,
+    });
+    await t.run(async (ctx) => ctx.db.delete(ghostChildId));
+    const stillListing = await t.run(async (ctx) => ctx.db.get(yearId));
+    expect(stillListing!.children).toContain(ghostChildId);
+
+    const holdings = await asAdmin.query(
+      api.selectorOptions.getSelectorOptionHoldings,
+      { id: yearId },
+    );
+    expect(holdings).toEqual({ holds: [], protected: false });
+
+    const result = await asAdmin.mutation(
+      api.selectorOptions.deleteSelectorOption,
+      { id: yearId },
+    );
+    expect(result.deleted).toBe(true);
+  });
+
+  test("a card committed AFTER the holdings read but BEFORE the delete is still caught — the mutation re-checks, never trusts the query", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+
+    const setId = await insertRow(t, "setName", "Topps Chrome");
+    const rowId = await insertRow(t, "insert", "Future Stars", {
+      parentId: setId,
+      isCustom: true,
+    });
+
+    // The FE's disabled-state read: empty, so the delete affordance is live.
+    const holdingsAtOpen = await asAdmin.query(
+      api.selectorOptions.getSelectorOptionHoldings,
+      { id: rowId },
+    );
+    expect(holdingsAtOpen).toEqual({ holds: [], protected: false });
+
+    // A checklist commit lands while the confirm dialog is sitting open.
+    await insertCard(t, rowId, "1", "Shohei Ohtani");
+
+    const error = await expectRefusal(() =>
+      asAdmin.mutation(api.selectorOptions.deleteSelectorOption, {
+        id: rowId,
+      }),
+    );
+    expect(error.data.code).toBe("SELECTOR_ROW_NOT_EMPTY");
+    expect(holdFor(error.data, "cards")?.count).toBe(1);
+    // Nothing written: the row and its new card both survive.
+    expect(await t.run(async (ctx) => ctx.db.get(rowId))).not.toBeNull();
+  });
+});

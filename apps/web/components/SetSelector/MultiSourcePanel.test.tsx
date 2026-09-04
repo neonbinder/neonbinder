@@ -332,4 +332,73 @@ describe("MultiSourcePanel — one confirm for every detach (NEO-219)", () => {
     // Still open, still offering the same decision — nothing was written.
     expect(screen.getByLabelText("Confirm detach Series 1")).toBeTruthy();
   });
+
+  // ---------------------------------------------------------------------------
+  // Adversarial pass (NEO-219 readiness)
+  // ---------------------------------------------------------------------------
+
+  test("DETACH_COUNT_CHANGED can fire twice in a row — the SECOND fresh count replaces the first, and still nothing commits", async () => {
+    setTwoSidedRow();
+    setCounts({ bsc: { b0: 110, b1: 1 } });
+    mutationSpies.detachPlatformId = vi
+      .fn()
+      .mockRejectedValueOnce({ data: { code: "DETACH_COUNT_CHANGED", cards: 7 } })
+      .mockRejectedValueOnce({ data: { code: "DETACH_COUNT_CHANGED", cards: 9 } });
+    render(<MultiSourcePanel selectorOptionId={ROW_ID} />);
+
+    fireEvent.click(screen.getByLabelText("Remove Series 1"));
+    fireEvent.click(screen.getByLabelText("Confirm detach Series 1"));
+    await waitFor(() => {
+      expect(screen.getByRole("alert").textContent).toContain("it now reads 7");
+    });
+
+    // Confirm again against the fresh (7) number — the mock refuses AGAIN with
+    // a still-newer number.
+    fireEvent.click(screen.getByLabelText("Confirm detach Series 1"));
+    await waitFor(() => {
+      expect(screen.getByRole("alert").textContent).toContain("it now reads 9");
+    });
+    expect(
+      screen.getByText(
+        'Detach BSC "Series 1"? 9 cards were fetched from it; their BSC link will be dropped.',
+      ),
+    ).toBeTruthy();
+    expect(mutationSpies.detachPlatformId).toHaveBeenCalledTimes(2);
+    // Both calls acknowledged the number shown AT THE TIME of that click, not
+    // some stale original value.
+    expect(mutationSpies.detachPlatformId).toHaveBeenNthCalledWith(1, {
+      selectorOptionId: ROW_ID,
+      side: "bsc",
+      slot: "b1",
+      confirmPrimary: false,
+      acknowledgedCards: 1,
+    });
+    expect(mutationSpies.detachPlatformId).toHaveBeenNthCalledWith(2, {
+      selectorOptionId: ROW_ID,
+      side: "bsc",
+      slot: "b1",
+      confirmPrimary: false,
+      acknowledgedCards: 7,
+    });
+  });
+
+  test("Escape closes the confirm even while the count is still 'Counting cards…'", async () => {
+    setTwoSidedRow();
+    // getSlotCardCounts deliberately unresolved — mirrors the
+    // "inert while counting" test above, but exercises Escape instead of a
+    // click on the disabled Confirm.
+    render(<MultiSourcePanel selectorOptionId={ROW_ID} />);
+
+    fireEvent.click(screen.getByLabelText("Remove Series 1"));
+    expect(screen.getByLabelText("Counting cards for Series 1")).toBeTruthy();
+
+    const group = screen.getByRole("group", { name: /Detach BSC "Series 1"\?/ });
+    fireEvent.keyDown(group, { key: "Escape" });
+
+    await waitFor(() => {
+      expect(document.activeElement).toBe(screen.getByLabelText("Remove Series 1"));
+    });
+    expect(screen.queryByRole("group", { name: /Detach BSC/ })).toBeNull();
+    expect(mutationSpies.detachPlatformId).not.toHaveBeenCalled();
+  });
 });

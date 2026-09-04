@@ -348,6 +348,252 @@ describe("findSelectorOptionElsewhere", () => {
         }),
     ).rejects.toThrow(/Admin access required/);
   });
+
+  // =========================================================================
+  // Adversarial pass (NEO-219 readiness)
+  // =========================================================================
+
+  test("folding is case AND surrounding-whitespace only — an internal double space is a DIFFERENT key", async () => {
+    // `selectorValueKey` is `value.toLowerCase().trim()` — it does not
+    // collapse internal runs of whitespace. So a value that differs from the
+    // stranded row only by a doubled internal space folds to a DIFFERENT key
+    // and is NOT reported as a match. Pinning the actual behavior here: if
+    // this starts failing, `selectorValueKey` changed to collapse internal
+    // whitespace, which is a real behavior change worth a deliberate review,
+    // not a silent one.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { topps } = await seedSetNameTree(t);
+
+    const matches = await asAdmin.query(
+      api.selectorOptions.findSelectorOptionElsewhere,
+      { level: "setName", parentId: topps, value: "bowman  chrome" },
+    );
+
+    expect(matches).toEqual([]);
+  });
+
+  test("caps at MAX_ELSEWHERE_MATCHES (20) rather than returning every hit", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+
+    const sportId = await insertRow(t, "sport", "Baseball");
+    const yearId = await insertRow(t, "year", "2021", sportId);
+    const home = await insertRow(t, "manufacturer", "Topps", yearId);
+    // 25 sibling manufacturers, each carrying a same-named set — well past the
+    // 20-match cap.
+    for (let i = 0; i < 25; i++) {
+      const mfr = await insertRow(t, "manufacturer", `Brand ${i}`, yearId);
+      await insertRow(t, "setName", "Bowman Chrome", mfr);
+    }
+
+    const matches = await asAdmin.query(
+      api.selectorOptions.findSelectorOptionElsewhere,
+      { level: "setName", parentId: home, value: "Bowman Chrome" },
+    );
+
+    expect(matches).toHaveLength(20);
+  });
+
+  test("insert scope reports a path through the sibling variantType", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+
+    const sportId = await insertRow(t, "sport", "Baseball");
+    const yearId = await insertRow(t, "year", "2024", sportId);
+    const mfrId = await insertRow(t, "manufacturer", "Topps", yearId);
+    const setId = await insertRow(t, "setName", "Topps Chrome", mfrId);
+    const baseId = await insertRow(t, "variantType", "Base", setId);
+    const insertVt = await insertRow(t, "variantType", "Insert", setId);
+    const strandedInsert = await insertRow(
+      t,
+      "insert",
+      "Future Stars",
+      insertVt,
+    );
+
+    const matches = await asAdmin.query(
+      api.selectorOptions.findSelectorOptionElsewhere,
+      { level: "insert", parentId: baseId, value: "Future Stars" },
+    );
+
+    expect(matches).toHaveLength(1);
+    // Root-first, the matched row included as the last entry — the FE
+    // renders "Baseball › 2024 › Topps › Topps Chrome › Insert" as the
+    // breadcrumb this offer names.
+    expect(matches[0].path.map((n) => n.value)).toEqual([
+      "Baseball",
+      "2024",
+      "Topps",
+      "Topps Chrome",
+      "Insert",
+      "Future Stars",
+    ]);
+    expect(matches[0].path.map((n) => n.level)).toEqual([
+      "sport",
+      "year",
+      "manufacturer",
+      "setName",
+      "variantType",
+      "insert",
+    ]);
+  });
+
+  test("parallel scope reports a path through the insert AND its variantType", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+
+    const sportId = await insertRow(t, "sport", "Baseball");
+    const yearId = await insertRow(t, "year", "2024", sportId);
+    const mfrId = await insertRow(t, "manufacturer", "Topps", yearId);
+    const setId = await insertRow(t, "setName", "Topps Chrome", mfrId);
+    const baseId = await insertRow(t, "variantType", "Base", setId);
+    const insertVt = await insertRow(t, "variantType", "Insert", setId);
+    const someInsert = await insertRow(t, "insert", "Future Stars", insertVt);
+    const parallelUnderInsert = await insertRow(
+      t,
+      "parallel",
+      "Gold /50",
+      someInsert,
+    );
+
+    const matches = await asAdmin.query(
+      api.selectorOptions.findSelectorOptionElsewhere,
+      { level: "parallel", parentId: baseId, value: "Gold /50" },
+    );
+
+    expect(matches).toHaveLength(1);
+    expect(matches[0].path.map((n) => n.value)).toEqual([
+      "Baseball",
+      "2024",
+      "Topps",
+      "Topps Chrome",
+      "Insert",
+      "Future Stars",
+      "Gold /50",
+    ]);
+  });
+
+  test("a manufacturer with no siblings under its year finds nothing (own row excluded, nothing else there)", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+
+    const sportId = await insertRow(t, "sport", "Baseball");
+    const yearId = await insertRow(t, "year", "2024", sportId);
+    // The ONLY manufacturer under this year.
+    const mfrId = await insertRow(t, "manufacturer", "Topps", yearId);
+    const setId = await insertRow(t, "setName", "Topps Chrome", mfrId);
+
+    const matches = await asAdmin.query(
+      api.selectorOptions.findSelectorOptionElsewhere,
+      { level: "setName", parentId: mfrId, value: "Topps Chrome" },
+    );
+
+    expect(matches).toEqual([]);
+  });
+
+  test("setName with no parentId at all (root-scope edge) returns nothing rather than throwing", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+
+    const matches = await asAdmin.query(
+      api.selectorOptions.findSelectorOptionElsewhere,
+      { level: "setName", parentId: undefined, value: "Topps Chrome" },
+    );
+
+    expect(matches).toEqual([]);
+  });
+});
+
+// ===========================================================================
+// addCustomSelectorOption — adversarial validation (NEO-219 readiness)
+// ===========================================================================
+
+describe("addCustomSelectorOption — adversarial", () => {
+  test("refuses a value over the 200-char ceiling with CUSTOM_VALUE_INVALID", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await insertRow(t, "sport", "Baseball");
+
+    const tooLong = "A".repeat(201);
+    let thrown: unknown;
+    try {
+      await asAdmin.mutation(api.selectorOptions.addCustomSelectorOption, {
+        level: "setName",
+        value: tooLong,
+        parentId: sportId,
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(ConvexError);
+    expect(
+      (thrown as ConvexError<{ code: string; reason: string }>).data,
+    ).toEqual({
+      code: "CUSTOM_VALUE_INVALID",
+      reason: "Name exceeds 200 characters",
+    });
+  });
+
+  test("refuses a zero-width character through the mutation, not just the pure checker", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await insertRow(t, "sport", "Baseball");
+
+    let thrown: unknown;
+    try {
+      await asAdmin.mutation(api.selectorOptions.addCustomSelectorOption, {
+        level: "setName",
+        value: "Bowman​Chrome",
+        parentId: sportId,
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(ConvexError);
+    expect(
+      (thrown as ConvexError<{ code: string; reason: string }>).data.reason,
+    ).toMatch(/zero-width/);
+
+    const sets = await t.run(async (ctx) =>
+      ctx.db
+        .query("selectorOptions")
+        .withIndex("by_level_and_parent", (q) =>
+          q.eq("level", "setName").eq("parentId", sportId),
+        )
+        .collect(),
+    );
+    expect(sets).toHaveLength(0);
+  });
+
+  test("a padded re-submission of an existing value resolves to it — no duplicate 'year' row", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await insertRow(t, "sport", "Baseball");
+
+    const first = await asAdmin.mutation(
+      api.selectorOptions.addCustomSelectorOption,
+      { level: "year", value: "2024", parentId: sportId },
+    );
+
+    const second = await asAdmin.mutation(
+      api.selectorOptions.addCustomSelectorOption,
+      { level: "year", value: "  2024  ", parentId: sportId },
+    );
+
+    expect(second).toBe(first);
+    const years = await t.run(async (ctx) =>
+      ctx.db
+        .query("selectorOptions")
+        .withIndex("by_level_and_parent", (q) =>
+          q.eq("level", "year").eq("parentId", sportId),
+        )
+        .collect(),
+    );
+    expect(years).toHaveLength(1);
+  });
 });
 
 // ===========================================================================

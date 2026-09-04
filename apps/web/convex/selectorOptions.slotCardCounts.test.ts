@@ -345,6 +345,97 @@ describe("detachPlatformId card accounting", () => {
       }),
     ).rejects.toThrow(/reconciliation primary/);
   });
+
+  // ===========================================================================
+  // Adversarial pass (NEO-219 readiness)
+  // ===========================================================================
+
+  test("acknowledgedCards=0 is accepted when the slot genuinely holds no cards", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+
+    const setId = await seedSet(t);
+    const rowId = await seedBaseRow(t, setId);
+    // b1 is attached but sources no cards.
+
+    const result = await asAdmin.mutation(
+      api.selectorOptions.detachPlatformId,
+      {
+        selectorOptionId: rowId,
+        side: "bsc",
+        slot: "b1",
+        // Falsy but explicit — must be compared, not treated as "no check".
+        acknowledgedCards: 0,
+      },
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.orphanedCards).toBe(0);
+    const row = await t.run(async (ctx) => ctx.db.get(rowId));
+    expect(row!.platformData.bsc).toEqual({ b0: "topps-chrome-series-1" });
+  });
+
+  test("detaches the primary WITH a matching acknowledgedCards in one call", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+
+    const setId = await seedSet(t);
+    const rowId = await seedBaseRow(t, setId);
+    await seedCard(t, rowId, "1", { bsc: { ref: "bsc-1", src: "b0" } });
+    await seedCard(t, rowId, "2", { bsc: { ref: "bsc-2", src: "b0" } });
+
+    const result = await asAdmin.mutation(
+      api.selectorOptions.detachPlatformId,
+      {
+        selectorOptionId: rowId,
+        side: "bsc",
+        slot: "b0",
+        confirmPrimary: true,
+        acknowledgedCards: 2,
+      },
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.orphanedCards).toBe(2);
+    const row = await t.run(async (ctx) => ctx.db.get(rowId));
+    // b0 (primary) is gone; b1 (extra) survives.
+    expect(row!.platformData.bsc).toEqual({ b1: "topps-chrome-series-2" });
+    // primaryPlatformId.bsc cleared so the `?? current[0]` fallback recomputes.
+    expect(row!.primaryPlatformId?.bsc).toBeUndefined();
+    expect(row!.primaryPlatformId?.sportlots).toBe("s0");
+  });
+
+  test("detaching the primary with a STALE acknowledgedCards still refuses, writing nothing", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+
+    const setId = await seedSet(t);
+    const rowId = await seedBaseRow(t, setId);
+    await seedCard(t, rowId, "1", { bsc: { ref: "bsc-1", src: "b0" } });
+    await seedCard(t, rowId, "2", { bsc: { ref: "bsc-2", src: "b0" } });
+    await seedCard(t, rowId, "3", { bsc: { ref: "bsc-3", src: "b0" } });
+
+    let thrown: unknown;
+    try {
+      await asAdmin.mutation(api.selectorOptions.detachPlatformId, {
+        selectorOptionId: rowId,
+        side: "bsc",
+        slot: "b0",
+        confirmPrimary: true,
+        acknowledgedCards: 2,
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(ConvexError);
+    expect((thrown as ConvexError<{ code: string; cards: number }>).data).toEqual(
+      { code: "DETACH_COUNT_CHANGED", cards: 3 },
+    );
+    const row = await t.run(async (ctx) => ctx.db.get(rowId));
+    expect(row!.platformData.bsc?.b0).toBe("topps-chrome-series-1");
+    expect(row!.primaryPlatformId?.bsc).toBe("b0");
+  });
 });
 
 // ===========================================================================
@@ -437,5 +528,66 @@ describe("setVariantTypePlatformData baseVersion", () => {
         baseVersion: 1,
       }),
     ).rejects.toThrow(/only operates on variantType rows/);
+  });
+
+  // ===========================================================================
+  // Adversarial pass (NEO-219 readiness) — falsy-value edge cases in the
+  // `!== undefined` equality check, which a truthy-style check would get wrong.
+  // ===========================================================================
+
+  test("baseVersion=0 accepted against a row whose lastUpdated is genuinely 0", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+
+    const setId = await seedSet(t);
+    const rowId = await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Base",
+        platformData: {},
+        parentId: setId,
+        children: [],
+        // A falsy-but-defined lastUpdated — the epoch. `!== undefined` must
+        // treat this as a real value to compare against, not as "missing".
+        lastUpdated: 0,
+      }),
+    );
+
+    const result = await asAdmin.mutation(
+      api.selectorOptions.setVariantTypePlatformData,
+      {
+        variantTypeId: rowId,
+        platformData: { bsc: "some-set" },
+        baseVersion: 0,
+      },
+    );
+
+    expect(result.success).toBe(true);
+  });
+
+  test("baseVersion=0 refused as stale against a row with a real (non-zero) lastUpdated", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+
+    const setId = await seedSet(t);
+    const rowId = await seedBaseRow(t, setId); // lastUpdated = SENTINEL_LAST_UPDATED
+
+    let thrown: unknown;
+    try {
+      await asAdmin.mutation(api.selectorOptions.setVariantTypePlatformData, {
+        variantTypeId: rowId,
+        platformData: { bsc: "some-set" },
+        // A falsy baseVersion must not be treated as "no check" — only
+        // `undefined` means that.
+        baseVersion: 0,
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(ConvexError);
+    expect((thrown as ConvexError<{ code: string }>).data).toEqual({
+      code: "BASE_MAPPING_STALE",
+    });
   });
 });

@@ -347,4 +347,62 @@ describe("BaseSetPicker — keyboard contract (NEO-219)", () => {
     // One side only → no per-side breakdown to invent.
     expect(screen.queryByText(/through SportLots,/)).toBeNull();
   });
+
+  it("Tab from the LAST focusable control wraps to the FIRST (forward trap)", async () => {
+    renderPicker({
+      slOptions: [{ value: SET, platformValue: "tc" }],
+    });
+
+    await waitFor(() => {
+      expect(
+        screen.getByLabelText(`SportLots base candidate: ${SET}`),
+      ).toBeTruthy();
+    });
+
+    const dialog = screen.getByRole("dialog");
+    const focusable = Array.from(
+      dialog.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ),
+    ).filter((el) => el.tabIndex >= 0);
+    const last = focusable[focusable.length - 1];
+    const first = focusable[0];
+
+    await act(async () => {
+      last.focus();
+      fireEvent.keyDown(dialog, { key: "Tab" });
+    });
+
+    expect(document.activeElement).toBe(first);
+  });
+
+  it("says so when totalCards is 0 in remap mode, without inventing a count", async () => {
+    renderPicker({
+      slOptions: [{ value: SET, platformValue: "tc" }],
+      mode: "remap",
+      remapNotice: { totalCards: 0, slCards: 0, bscCards: 0 },
+    });
+
+    expect(
+      screen.getByText("No cards are linked through the current mapping yet."),
+    ).toBeTruthy();
+    expect(
+      screen.queryByText(/cards are linked through the current mapping;/),
+    ).toBeNull();
+  });
+
+  it("shows the per-side breakdown only when BOTH sides contributed cards", async () => {
+    renderPicker({
+      slOptions: [{ value: SET, platformValue: "tc" }],
+      mode: "remap",
+      remapNotice: { totalCards: 12, slCards: 5, bscCards: 7 },
+    });
+
+    expect(
+      screen.getByText(
+        "12 cards are linked through the current mapping; their refs will point at the new set.",
+      ),
+    ).toBeTruthy();
+    expect(screen.getByText("5 through SportLots, 7 through BSC.")).toBeTruthy();
+  });
 });
