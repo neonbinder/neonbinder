@@ -27,6 +27,13 @@ tags:
 # GLOBAL table and concurrent workers get-or-create farm clubs ("Gulf Coast
 # League Yankees"), so the bare "Yankees" is not a safe handle.
 #
+# The ONE exception is the post-reload master-row assertion, which matches
+# ".*Yankees.*" because the row abbreviates a team to its nickname once the team
+# has a `city`. That matcher is safe where the others are not because it is
+# anchored inside a list filtered to this run's own player, and that player has
+# stints at nothing but New York — no farm club can answer it. See the note
+# there.
+#
 # R2 — this cannot go green without the feature working:
 #   * the create button is targeted by its own accessible name, "Create player
 #     <this run's name>", so it cannot be satisfied by some other button;
@@ -38,6 +45,9 @@ tags:
 #   * the two stints are asserted by RELATIVE POSITION (the later stint BELOW
 #     the earlier one), which is the acceptance criterion — a screen that
 #     rendered both but in insertion order fails;
+#   * after the reload the MASTER ROW names the Yankees, which it can only do by
+#     reading the saved stints back and totalling them per team (NEO-235
+#     replaced the row's old "2 stints" count with that team nod);
 #   * every one of those assertions is repeated after a full page reload, which
 #     is what separates "the form still holds what I typed" from "the database
 #     holds it".
@@ -314,10 +324,27 @@ tags:
     visible: ".*matches.*"
     timeout: 7000
 
-# The list itself reports the career history it just read back. Nothing is
-# selected yet on a freshly reloaded page, so this can only be coming from a
-# row in the list, not from a detail panel.
-- assertVisible: ".*2 stints.*"
+# The list itself reports the career history it just read back. NEO-235 replaced
+# the row's "2 stints" count with the team the player spent longest with, so
+# this is the same assertion against the same fact: the master row can only name
+# the Yankees by reading the stints back out of the database and summing them.
+#
+# Anchored `below:` the counter for the same reason the tap below it is —
+# maestro reports an input's current value as its text, and though the filter box
+# holds the player's name rather than a team, anchoring keeps this pointed at a
+# LIST ROW rather than at anything the page might grow above it.
+#
+# `.*Yankees.*` rather than the full name on purpose: the row prints the
+# nickname a fan says out loud when the team has a `city` recorded, and
+# "Seed Test Teams" (convex/teams.ts#seedTestTeams) sets colours but no city, so
+# today this row reads "New York Yankees". The loose matcher covers both, so
+# enriching that fixture's city later cannot silently break this flow. It is
+# still specific — no other team reaches this row, whose player is this run's own
+# and has stints at nothing else.
+- assertVisible:
+    text: ".*Yankees.*"
+    below:
+      text: ".*matches.*"
 
 # Open the row. Anchored below the counter because maestro reports an input's
 # current value as its text, so the filter box — which now holds this exact name

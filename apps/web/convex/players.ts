@@ -406,6 +406,48 @@ export const get = query({
 });
 
 /**
+ * NEO-235 — `get`, for an id that came out of a URL rather than out of a query.
+ *
+ * `/admin/players?player=<id>` puts a player id in a place anybody can retype,
+ * and `get` above takes `v.id("players")`. An id argument that does not parse
+ * is an ARGUMENT VALIDATION failure, which Convex raises before the handler
+ * runs and the client surfaces as a thrown query — on a `useQuery` that means
+ * the render throws and the screen is replaced by the app-level error boundary.
+ * A hand-mangled query string is not a broken application, so it must not look
+ * like one.
+ *
+ * Fixed on the SERVER rather than by validating the string in the browser,
+ * because the browser cannot actually tell: a Convex id's shape is not a
+ * documented format to regex against, and `normalizeId` is the only honest
+ * check — it is also the one that knows the id names THIS table. A client-side
+ * guess would have to be either loose (and still throw) or tight (and reject
+ * ids that are fine).
+ *
+ * Same gate and same public shape as `get`, so the two cannot drift: the only
+ * difference is that an unparseable or wrong-table id is answered `null`, the
+ * same answer a well-formed id for a deleted row already got. The screen has
+ * one "no such player" branch and this keeps it that way.
+ *
+ * `get` stays rather than being replaced by this. The two are not
+ * interchangeable and the difference is the type check: a caller that already
+ * holds a real `Id<"players">` — one that came out of another query, in this
+ * backend's other clients as much as this one — should be made to prove it at
+ * the boundary, and be told loudly if it cannot. This looser door is for the
+ * one caller that genuinely holds a string a human could have typed.
+ */
+export const getByIdParam = query({
+  args: { id: v.string() },
+  returns: v.union(playerDocPublicValidator, v.null()),
+  handler: async (ctx, args) => {
+    await requireSignedIn(ctx);
+    const id = ctx.db.normalizeId("players", args.id);
+    if (id === null) return null;
+    const doc = await ctx.db.get(id);
+    return doc ? toPublicPlayer(doc) : null;
+  },
+});
+
+/**
  * Batch lookup for resolving a list of playerIds back to display rows.
  * NEO-25: the card detail panel renders player-name chips from
  * `cardChecklist.playerIds[]` without N round-trips. Mirrors
