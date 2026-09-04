@@ -56,9 +56,11 @@ tags:
 # R7a / DATA ISOLATION — per-worker, per-attempt custom set
 #   `cnw-${WORKER_INDEX}-${ATTEMPT_ID}` under the REAL Baseball / 2024 / Topps
 #   ancestors (registered in .maestro/SET-REGISTRY.md). The real Sport ancestor
-#   keeps sport="baseball" so TeamPicker's sport-scoped list contains the
-#   setup-seeded New York Yankees; the custom Set node makes the subtree custom
-#   so no marketplace call fires. ATTEMPT_ID keeps the walker's queue exactly
+#   keeps sport="baseball", which is what lets TeamPicker create its team under
+#   a real sport row at all (NEO-96 — no sport row, no "+ Create"); the custom
+#   Set node makes the subtree custom so no marketplace call fires. The team
+#   itself is this flow's own, per-worker and per-attempt — see the note beside
+#   the picker. ATTEMPT_ID keeps the walker's queue exactly
 #   the two cards this attempt created — a leftover row from a failed attempt
 #   would put an unexpected card in front of the operator and every
 #   card-specific assertion below would fail for the wrong reason.
@@ -241,20 +243,23 @@ tags:
 - assertVisible:
     text: ".*1 card needs attention . 0 fixed.*"
 
-# The same picker the card drawer uses, including its typeahead. New York
-# Yankees is seeded for Baseball by the setup track — which is why this flow
-# drills the real Baseball ancestor (see the isolation note at the top).
+# The same picker the card drawer uses, including its typeahead — and its
+# "+ Create" row, which is how this flow gets a team at all (NEO-214: the global
+# seeded Yankees/Mets fixture is gone; `teams` is empty until a flow fills it).
+# The name is per-worker AND per-attempt because `teams` is a global table and
+# because the create row is offered only while no team of that name exists — one
+# left behind by a previous attempt would render "Add <name>" instead.
 - tapOn:
     id: "Add team"
 - assertVisible:
     id: "Search teams"
 - tapOn:
     id: "Search teams"
-- inputText: "Yankees"
+- inputText: "CNWT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
 - assertVisible:
-    id: "Add New York Yankees"
+    id: "Create team CNWT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
 - tapOn:
-    id: "Add New York Yankees"
+    id: "Create team CNWT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
 # Wait for the chip to carry the resolved NAME before tapping Save. Two
 # reasons: it proves the pick landed, and the chip's width is what pushes the
 # still-open typeahead popover clear of the Save button's centre. TeamPicker
@@ -263,7 +268,7 @@ tags:
 # see the product finding filed with NEO-102.
 - extendedWaitUntil:
     visible:
-      id: "Remove team New York Yankees"
+      id: "Remove team CNWT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
     timeout: 7000
 - tapOn:
     text: ".*Save & Next.*"
@@ -286,7 +291,7 @@ tags:
     timeout: 7000
 - assertNotVisible: "Fix them one at a time"
 - assertVisible:
-    text: ".*Yankees.*"
+    text: ".*CNWT-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
 
 # ════════════════════════════════════════════════════════════════════════════
 # RELOAD — the answers were written to the server, not just to this tab.

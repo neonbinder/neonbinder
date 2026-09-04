@@ -121,12 +121,31 @@ tags:
 # without selecting (e.g. a silent dismiss), the Years column
 # would never appear.
 #
-# We assert "Sync Years" (the sync button at the bottom of the
-# Years column) rather than the "Years" heading: the 1024×629
-# headless viewport renders the year rows list starting near the
-# top of the column, pushing the heading above the fold before
-# the assertion fires. "Sync Years" is always visible in the
-# lower portion of the column and is unique to the Years column.
+# We look for "Sync Years" (the sync button in the Years column's
+# footer) rather than the "Years" heading: the 1024×629 headless
+# viewport renders the year rows list starting near the top of the
+# column, pushing the heading above the fold before the assertion
+# fires. "Sync Years" is unique to the Years column, so finding it
+# can only mean that column mounted.
+#
+# SCROLLED TO, not asserted in place. This used to be a bare
+# `assertVisible` on the claim that the button "is always visible in
+# the lower portion of the column" — and that claim is false. The
+# footer sits BELOW the year rows, so how far down the page it lands
+# depends entirely on how many years the column happens to hold, and
+# that varies with what the run has synced by the time this flow is
+# claimed off the queue. On an EMPTY column the footer is right under
+# the search box and the old assert passed instantly; on a populated
+# one (CI run 33875599981: rows 2026/2025/2024/2023 at y=432..630 in
+# a 629px viewport) the footer is at y≈700 — off-screen, which
+# maestro-web reports as ABSENT, so the assert burned its whole
+# budget and failed with the column plainly rendered on screen.
+#
+# The scroll IS the assertion (R6): it fails loudly if the button
+# never appears, so nothing re-asserts the same text after it.
 # ============================================================
 
-- assertVisible: "Sync Years"
+- scrollUntilVisible:
+    element:
+      text: "Sync Years"
+    centerElement: true
