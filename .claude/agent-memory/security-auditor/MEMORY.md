@@ -7,5 +7,6 @@
 - [Attention-flag suppression](patterns_attention_flag_suppression.md) — a stored review flag cleared by "any write of field X" is clearable by an unrelated drawer save; check client args + the playerIds/teamOnCardIds validation asymmetry
 - [Postage/label trust boundary](patterns_postage_label_trust_boundary.md) — refreshLabelUrl derives the shipment id from an owned row, but public recordLabelPurchase lets the caller author it; printHtmlDocument never escapes bodyHtml
 - [Entity skip suppression](patterns_entity_skip_suppression.md) — entityReviewSkips is write-only: bulk skip + no delete/list surface + unreadable skippedByUserId = irreversible suppression
+- [Convex CLI target selection](patterns_convex_cli_target_selection.md) — a wrapper script that guards on a deployment NAME is bypassable: CONVEX_DEPLOY_KEY (env or .env.local) is read first and wins
 - [Public function auth registry](patterns_public_function_auth_registry.md) — publicFunctionAuth*.test.ts are the hand-maintained registry; unchanged + green does NOT mean new public functions are pinned
 - [Postage/label trust boundary](patterns_postage_label_trust_boundary.md) — ownership is only as strong as the row's writer; printHtmlDocument never escapes bodyHtml; a control can be dead on a wire-shape mismatch; stamp a cooldown on the attempt, not the success
