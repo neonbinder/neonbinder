@@ -1432,8 +1432,23 @@ describe("PlayerManagement — the ?player deep link", () => {
       screen.getByRole("button", { name: "Create player Mike Trout" }),
     );
 
-    await waitFor(() => expect(screen.getByText("Added Mike Trout.")).toBeTruthy());
-    expect(url()).toBe("?player=p-trout");
+    // TWO COMMITS, not one, and only the second carries the URL.
+    //
+    // `Added {name}.` is a plain setState in the mutation's continuation, so it
+    // lands in an urgent render. `selectPlayer`'s `setSearchParams` is applied
+    // inside React Router's `startTransition` and commits separately — and both
+    // continuations run after `await createByAdmin(...)`, i.e. outside `act`, so
+    // nothing forces them into one commit. `waitFor` on the text therefore
+    // returns as soon as the urgent commit lands, and sampling `useLocation` on
+    // the next line reads the location as it was BEFORE the transition flushed.
+    //
+    // The ORDER of the two commits is not what is under test — that the param
+    // is written at all is — so the wait moves onto the URL itself. This only
+    // failed in the full `--project components` run: a cold module cache made
+    // the urgent commit slow enough that the transition had already flushed by
+    // the first `waitFor` poll, and a warmed one does not.
+    await screen.findByText("Added Mike Trout.");
+    await waitFor(() => expect(url()).toBe("?player=p-trout"));
   });
 
   it("clears the filter once for the link, and never again", async () => {
