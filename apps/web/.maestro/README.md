@@ -342,6 +342,46 @@ state (worker 2 has accumulated state from running parallel-safe flows),
 loop the bootstrap + setup + intermediate flows with that `WORKER_INDEX`.
 `run-e2e-smoke.sh` automates this when you pass `MAESTRO_PARALLELISM>1`.
 
+### Seeding a fixture that no UI can create (`/testing/seed-credentials`)
+
+Some states cannot be reached by driving the product in test time — not because
+the UI is missing, but because reaching them costs real money, real minutes, or
+a real third party. A purchase row with USPS scans on it (NEO-121) needs a
+label bought with live postage and then three days of USPS sorting; a
+`needsReauth` credential needs a session that genuinely exists and is dead.
+
+For those, `/testing/seed-credentials` is the suite's generic **"seed, then
+land"** hop, and its `sites` query param is the **selector for what to seed**:
+
+| `sites` value | What it seeds |
+| --- | --- |
+| *(omitted)* | BSC + SportLots credentials (+ the EasyPost key, when configured) |
+| `sportlots` / `buysportscards` | just that platform's credentials — the credential-gate fixtures |
+| `label-scans` | one `labelPurchases` row plus a four-scan tracker snapshot, for `labels/scan-visibility.yaml` |
+
+A fixture selector is handled before the credential loop, so asking for it
+alone performs **no marketplace login**. The handler lives in
+`convex/testing.ts` and writes exclusively through the product's own internal
+writers (`shipping.recordLabelPurchase`, `shipmentTracking.applyTrackerSnapshot`),
+so the seeded row is sanitised and guarded exactly as production data is — a
+flow asserting against it is asserting against what the product would really
+render. Every one of these helpers is caller-scoped, idempotent, and fails
+closed in production (`TESTING_RESET_SECRET` is unset there).
+
+Nesting the inner query string needs `%26` for its `&`, so the sign-in page
+reads the whole thing as one `redirect` value:
+
+```
+/testing/sign-in?redirect=/testing/seed-credentials?sites=label-scans%26redirect=/print/labels&worker=${WORKER_INDEX}
+```
+
+**Mind which account a fixture lands on.** `resetMyTestState` clears three
+per-user tables and `labelPurchases` is not one of them, so a purchase seeded
+onto an account is there for good. `scan-visibility` therefore seeds the
+worker's MAIN account while `label-history-empty-state` asserts the empty state
+on the isolated `new-profile` account — two accounts, two states, neither flow
+able to disturb the other.
+
 ## Cascade prerequisite check (NEO-23)
 
 `run-e2e-smoke.sh` now tracks which `provides:` states have at least one

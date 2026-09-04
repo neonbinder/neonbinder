@@ -22,6 +22,51 @@ export const postalAddressValidator = v.object({
 });
 
 /**
+ * NEO-121 — one USPS scan as EasyPost reports it, normalised at the browser
+ * service boundary (`tracking_details[]` → this shape, `datetime` → ms).
+ * Exported so the stored shape, the browser service's response typing, and
+ * `shipmentTracking.applyTrackerSnapshot`'s args cannot drift apart.
+ *
+ * `message` is USPS's own wording ("Origin Primary Processing", "Delivery")
+ * and is rendered as TEXT, never HTML. Every string here is truncated by
+ * `applyTrackerSnapshot` before it is stored — see `labelPurchases` below.
+ */
+export const trackingScanValidator = v.object({
+  at: v.number(),          // scan time in ms
+  status: v.string(),      // EasyPost scan status, verbatim
+  message: v.string(),     // USPS's own message, verbatim
+  // The whole location is optional: EasyPost omits `tracking_location`
+  // entirely on some scans, and omits individual parts on others.
+  city: v.optional(v.string()),
+  state: v.optional(v.string()),
+  zip: v.optional(v.string()),
+  country: v.optional(v.string()),
+});
+
+/**
+ * NEO-121 — a whole tracker as of one moment: what a `tracker.created` /
+ * `tracker.updated` webhook event carries, and what `GET /shipments/:id`
+ * returns for a bought shipment. Exported for convex/postage.ts,
+ * convex/shipmentTracking.ts, and the browser service response typing.
+ *
+ * `updatedAt` is the monotonic guard: a snapshot is applied only when it is
+ * strictly newer than the row's `trackerUpdatedAt`, which makes out-of-order
+ * and duplicate webhook deliveries no-ops. `scans` is the FULL list every
+ * time — EasyPost resends the whole history — so applying a snapshot is a
+ * replace, not a merge.
+ */
+export const trackerSnapshotValidator = v.object({
+  trackerId: v.string(),                        // trk_…
+  status: v.string(),                           // EasyPost status enum, verbatim
+  statusDetail: v.optional(v.string()),
+  updatedAt: v.number(),                        // EasyPost updated_at, ms
+  lastScanAt: v.optional(v.number()),           // newest scan's `at`
+  estDeliveryAt: v.optional(v.number()),
+  publicTrackingUrl: v.optional(v.string()),    // https only
+  scans: v.array(trackingScanValidator),        // oldest → newest, full list
+});
+
+/**
  * NEO-137 — a card's identity on one marketplace, plus which of its parent
  * row's mapping SLOTS that identity came from. Exported so the stored shape
  * and every wire shape that carries it cannot drift apart.
@@ -242,17 +287,39 @@ export default defineSchema({
   /**
    * NEO-120 — one row per postage label actually bought from EasyPost.
    *
-   * Deliberately minimal, and deliberately NOT the `shipments` table NEO-121
-   * will add: no scan events, no status machine, no sale linkage. This exists
-   * so a seller can see what they spent and reprint a label they already paid
-   * for. Tracking is a separate feature with a separate table.
+   * **This IS the shipments table** (NEO-121 decision 2). The ticket named a
+   * separate `shipments` table before NEO-120 landed this one; renaming a
+   * Convex table is a copy migration for no gain, so scan visibility was added
+   * here as optional fields instead. Rows bought before NEO-121 stay valid and
+   * simply render as "no scans yet".
    *
    * `easypostShipmentId` is stored alongside `labelUrl` on purpose — **EasyPost
    * label URLs expire.** The shipment id is how a reprint re-fetches a fresh
-   * URL; a stored URL alone silently stops working after a while.
+   * URL; a stored URL alone silently stops working after a while. It is also
+   * the webhook's lookup key, hence `by_shipment`.
    *
    * `toAddress` is a snapshot, not a reference: what was on the label is a
    * historical fact and must not change if anything else is later edited.
+   *
+   * **The tracker fields below are seller-forgeable and are never proof of
+   * delivery.** A seller can read their own webhook URL and HMAC secret in
+   * their EasyPost dashboard, so they can post whatever tracker they like to
+   * their own ingest path. That is acceptable — the blast radius is fake scan
+   * lines on their own rows — but nothing downstream may treat these fields as
+   * evidence that a package moved, was delivered, or was ever mailed. For a
+   * letter there is no delivery scan at all: `out_for_delivery` is the normal
+   * terminal state.
+   *
+   * Every stored tracker string is TRUNCATED and `scans` is CAPPED (newest
+   * kept) by `shipmentTracking.applyTrackerSnapshot`, so a hostile payload
+   * cannot push a row past the Convex document limit and turn EasyPost's
+   * retry policy into a loop. Scans are a snapshot on the row rather than a
+   * table because every event carries the full history (decision 3).
+   *
+   * **No sale linkage yet** (decision 7). Convex optional fields are additive
+   * with no migration, so the day sales exist this gains `saleId?:
+   * v.id("sales")` in one line. A field that is never written is a reader
+   * trap, so there is deliberately no placeholder here.
    */
   labelPurchases: defineTable({
     userId: v.string(), // Clerk user ID
@@ -265,7 +332,76 @@ export default defineSchema({
     toAddress: postalAddressValidator,
     labelUrl: v.string(),
     purchasedAt: v.number(),
-  }).index("by_user", ["userId"]),
+
+    // NEO-121 — scan visibility. All optional: absent on every row bought
+    // before this shipped, and on any row whose tracker has not reported yet.
+    trackerId: v.optional(v.string()),            // trk_…, from the buy response or the first event
+    trackingStatus: v.optional(v.string()),       // EasyPost status enum verbatim; the UI maps it to words
+    trackingStatusDetail: v.optional(v.string()),
+    trackerUpdatedAt: v.optional(v.number()),     // EasyPost updated_at (ms) — the monotonic guard
+    lastScanAt: v.optional(v.number()),           // newest scan's time
+    estDeliveryAt: v.optional(v.number()),
+    publicTrackingUrl: v.optional(v.string()),    // EasyPost public_url; https only, checked before storing
+    scans: v.optional(v.array(trackingScanValidator)), // capped at 50, newest kept
+    // Server-side cooldown for the seller-facing "Check for new scans"
+    // button: a refresh within 60 s is answered from the row without calling
+    // EasyPost, so a click loop cannot burn the seller's key or 429 the buy
+    // path. Distinct from `trackerUpdatedAt`, which is EasyPost's clock.
+    lastRefreshAt: v.optional(v.number()),
+  })
+    .index("by_user", ["userId"])
+    .index("by_shipment", ["easypostShipmentId"]),
+
+  /**
+   * NEO-121 — one row per seller, holding that seller's EasyPost webhook
+   * registration. Under NEO-120 every seller has their own EasyPost account,
+   * so a webhook has to be registered on each account with that seller's key
+   * (through the browser service — the key never reaches Convex).
+   *
+   * **Why a per-seller token AND a per-seller secret** (decision 4): Convex
+   * mints a random 32-byte URL token and a separate random 32-byte HMAC
+   * secret per seller, and registers
+   * `${CONVEX_SITE_URL}/webhooks/easypost/<urlToken>` with that secret. The
+   * token finds this row; the row's secret verifies the body. There is no
+   * shared platform secret to keep in sync across dev / preview / prod, and
+   * one seller's secret forges nothing for another seller.
+   *
+   * **`urlToken` is a bearer credential**, not just an identifier: anyone
+   * holding it can post to that seller's ingest path (the HMAC still gates
+   * the write, but the token must be handled like the secret). Neither
+   * `urlToken` nor `secret` may ever appear in a public validator, in any
+   * response, or in a log line on either service.
+   *
+   * `lastError` is an NB-authored enum for exactly that reason: EasyPost's own
+   * error text echoes the URL it rejected, and that URL contains the token, so
+   * storing the upstream message would write the bearer credential into a
+   * field a client could read.
+   *
+   * One row per user. Re-registration patches this row rather than inserting;
+   * `url` is stored so a changed `CONVEX_SITE_URL` re-registers.
+   */
+  easypostWebhooks: defineTable({
+    userId: v.string(), // Clerk user ID
+    urlToken: v.string(), // SECRET — bearer credential, never leaves the server
+    secret: v.string(),   // SECRET — HMAC key, never leaves the server
+    webhookId: v.optional(v.string()), // hook_…; absent while registration is pending or failed
+    mode: v.optional(v.union(v.literal("test"), v.literal("production"))),
+    url: v.string(), // what was actually registered
+    registeredAt: v.optional(v.number()),
+    lastAttemptAt: v.number(), // read by the retry gate (>= 1h between attempts)
+    lastError: v.optional(
+      v.union(
+        v.literal("rejected"),     // EasyPost refused the registration
+        v.literal("unauthorized"), // the seller's key was rejected
+        v.literal("unavailable"),  // browser service unreachable, or a preview site
+        v.literal("no_key"),       // the seller has no EasyPost key saved
+      ),
+    ),
+    lastEventAt: v.optional(v.number()), // last verified event we accepted
+    disabledAt: v.optional(v.number()),  // mirrored from EasyPost if we learn of it
+  })
+    .index("by_user", ["userId"])
+    .index("by_token", ["urlToken"]),
 
   // Users table for storing Clerk user data
   users: defineTable({

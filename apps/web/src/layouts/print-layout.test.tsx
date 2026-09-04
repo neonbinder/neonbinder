@@ -15,16 +15,23 @@ import { render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { describe, expect, it, vi } from "vitest";
 
-// The layout holds both tools' queries open to keep them warm across sub-tab
+// The layout holds every tool's query open to keep them warm across sub-tab
 // changes (see useWarmPrintQueries). Those subscriptions need a Convex provider
-// that does not exist in a unit render, so stub the hook — the warming is a
-// runtime concern, not what these cases are about.
+// that does not exist in a unit render, so stub the hook. It is a spy rather
+// than a bare stub because the SET of warmed queries is itself worth pinning —
+// a tool that gains a query and forgets this list reintroduces the spinner
+// flash, and nothing else in the suite would notice.
+const { warmQuery } = vi.hoisted(() => ({
+  warmQuery: vi.fn((_ref: unknown) => undefined),
+}));
+
 vi.mock("convex/react", () => ({
-  useQuery: () => undefined,
+  useQuery: warmQuery,
   useMutation: () => vi.fn(),
   useAction: () => vi.fn(),
 }));
 
+import { getFunctionName, type FunctionReference } from "convex/server";
 import PrintLayout from "./print-layout";
 import PrintHub from "@/app/print/page";
 
@@ -84,6 +91,27 @@ describe("PrintLayout", () => {
     renderAt("/print/shipping");
     const h1s = screen.getAllByRole("heading", { level: 1 });
     expect(h1s.map((h) => h.textContent)).toEqual(["Print Shop"]);
+  });
+
+  /**
+   * The warmed set, not just "some query ran". A sub-route UNMOUNTS when you
+   * leave it, dropping its subscription, so a tool missing from this list
+   * repaints its spinner every time the seller comes back to it.
+   */
+  it("holds every tool's query open across sub-tab changes", () => {
+    warmQuery.mockClear();
+    renderAt("/print/shipping");
+    expect(
+      warmQuery.mock.calls.map(([ref]) =>
+        getFunctionName(ref as FunctionReference<"query">),
+      ),
+    ).toEqual([
+      "shipping:getMyReturnAddress",
+      "shipping:listMyLabelPurchases",
+      "publicProfile:getMyPublicProfile",
+      // NEO-121 — the "Scan updates" chip on Label History.
+      "shipmentTracking:getMyTrackingSetup",
+    ]);
   });
 
   it("renders only the active tool", () => {

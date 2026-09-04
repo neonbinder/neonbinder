@@ -1,0 +1,144 @@
+# R1 — Single feature (NEO-121): a seller looking at Label History can see what
+# USPS has scanned for a label they bought — the status in words, the newest
+# scan, and the whole timeline behind a disclosure — without leaving the page.
+#
+# WHY THE ROW IS SEEDED
+# The only organic way to get a purchase row with scans on it is to tap
+# "Buy & print" (real money on a production key, and it ends in window.print(),
+# whose native dialog wedges the runner) and then wait three days for USPS to
+# run the letter through its sorting machines. Neither is available to a CI run.
+# So the row is seeded server-side through the SAME two internal writers the
+# product uses — `shipping.recordLabelPurchase` and
+# `shipmentTracking.applyTrackerSnapshot` — which means what this flow asserts
+# against is a row sanitised, capped and monotonic-guarded exactly as a real
+# webhook delivery would leave it. See `seedMyTestLabelScans` in
+# convex/testing.ts; the four messages and towns are copied verbatim from a
+# real production letter (Madison WI → Olympia WA, 2026-09-03).
+#
+# NO PURCHASE, NO PRINT, NO REFRESH (repo law plus one addition):
+#   - never "Buy & print" — real money, and window.print() wedges the runner;
+#   - never "Reprint" — same print dialog;
+#   - never "Check for new scans" — that calls the browser service with the
+#     SEEDED shipment id, which names no real EasyPost object. The pull path is
+#     covered by convex/shipmentTracking.test.ts, where the failure modes are
+#     cheap to enumerate; here it could only assert an error message.
+#
+# WHICH ACCOUNT, AND WHY NOT `new-profile` (data isolation)
+# This flow runs as the worker's MAIN account, deliberately. Its sibling
+# `label-history-empty-state.yaml` asserts that /print/labels has no purchases,
+# and it signs in as `new-profile` — so seeding a purchase there would break it,
+# and `resetMyTestState` does not clear `labelPurchases` and could not undo it.
+# Two accounts, two states, neither flow able to disturb the other. The seed is
+# also per-caller and idempotent (keyed on one synthetic shipment id), so a
+# re-run re-uses the row it wrote rather than accumulating fixture rows, and
+# concurrent workers each seed their own account.
+#
+# SELF-CONTAINED (R4): the entry URL signs in and hops through
+# /testing/seed-credentials, which is the suite's generic "seed, then land"
+# page — `sites=label-scans` asks it for THIS fixture and nothing else, so no
+# marketplace login is performed. That entry chain is the whole handshake; no
+# in-body login step. The `%26` is a literal `&` for the INNER query string,
+# escaped so the sign-in page reads the whole thing as one `redirect` value.
+appId: com.neonbinder.web
+url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/seed-credentials?sites=label-scans%26redirect=/print/labels&worker=${WORKER_INDEX || "0"}
+name: Label History — see what USPS has scanned
+tags:
+  - labels
+---
+# Step 1: open the app at the signed-in Label History tab, with the fixture row
+# already filed. This sentence exists only on /print/labels, so it — not the
+# "Label History" heading, which the sub-nav tab also carries — is what proves
+# we landed on the route rather than on the [testing] bootstrap screen.
+- launchApp
+- extendedWaitUntil:
+    visible: ".*newest first. Reprint one without paying for it twice.*"
+    timeout: 45000
+
+# Step 2: the expectation line, which is half the feature. A seller who has used
+# eBay reads "tracking" as a delivery guarantee; a First-Class letter is nothing
+# of the kind, and the page has to say so before the seller asks support why it
+# never said "delivered".
+#
+# Matched on a fragment that sits entirely before the emphasised "out for
+# delivery" span, so the assertion does not depend on how the hierarchy
+# flattens a paragraph with a nested element.
+- assertVisible: ".*Nothing scans it when you drop it off.*"
+
+# Step 3: THE FEATURE, part one — the status in words.
+#
+# `out_for_delivery` is the finish line for a letter, not a hopeful in-flight
+# state, and the pill has to say that. This scroll IS the assertion (R6): if the
+# pill never renders — no scans stored, or the status never mapped — the scroll
+# fails loudly on its own. Matched around the em dash rather than through it.
+# centerElement so the row lands mid-viewport rather than clipped at an edge —
+# everything asserted in Steps 4-6 belongs to this same row, and at 1024×629 a
+# row that stops at the bottom edge takes its own scan line off screen with it.
+- scrollUntilVisible:
+    element:
+      text: ".*Out for delivery.*last USPS scan.*"
+    centerElement: true
+
+# The row we are asserting against is OUR fixture row and not some other row a
+# future flow might leave on this account: this recipient name is used nowhere
+# else in the suite.
+- assertVisible: "Scan Fixture Buyer"
+
+# Step 4: THE FEATURE, part two — the newest scan, inline, in USPS's own words
+# and with the buyer's own town. "Delivery" alone would also match the pill's
+# "Out for delivery"; pairing it with the town makes this assertion true of the
+# latest-scan line and of nothing else on the page.
+- assertVisible: ".*Delivery.*OLYMPIA, WA.*"
+
+# Step 5: the tracking number is still here — 31 digits, an IMb — and still
+# copyable. The Copy button says only "Copy" on screen, so it is addressed by
+# its accessible name, which is what tells 25 identical buttons apart.
+#
+# Trailing `.*` because that name no longer ends at the recipient: one buyer can
+# own several rows, so each control is named
+# "<recipient>, bought <timestamp>, tracking …<last 4>". Maestro matches a
+# selector against the WHOLE string, so a bare prefix would no longer match.
+# The timestamp half is a locale-formatted wall clock and the tracking half
+# depends on the fixture's number — neither belongs in an assertion whose
+# subject is "the copy button for our row exists".
+- assertVisible: "0004012345678901234567890123456"
+- assertVisible:
+    id: "Copy the tracking number for Scan Fixture Buyer.*"
+
+# Step 6: EasyPost mints a public tracking page for every tracker — the one
+# thing the ticket said an aggregator would otherwise have been bought for. We
+# assert the link is offered but never follow it: it leaves the app entirely.
+- assertVisible: ".*Public scan page.*"
+
+# Step 7: THE FEATURE, part three — the timeline is behind a disclosure, and the
+# disclosure actually discloses.
+#
+# Asserted closed first, so tapping it in a moment proves the toggle rather than
+# proving the timeline was always on screen. This negative assert is safe here
+# because Steps 2-6 have already proved the page rendered — a dead page would
+# have failed long before reaching it.
+- assertNotVisible: ".*Cancellation of Postage.*postmarked.*"
+
+- scrollUntilVisible:
+    element:
+      text: ".*Show all scans \\(4\\).*"
+    centerElement: true
+- tapOn:
+    text: ".*Show all scans \\(4\\).*"
+
+# The first scan on every letter is USPS's "Cancellation of Postage", which to a
+# seller reads as a refund or a voided label. It means the opposite — the stamp
+# was postmarked — and the gloss that says so is the reason this timeline is
+# safe to show a seller at all. Its presence here is both the proof the
+# disclosure opened and the proof the gloss is applied.
+- assertVisible: ".*Cancellation of Postage.*postmarked.*"
+
+# Step 8: and it closes again. A disclosure that only opens is a disclosure that
+# has quietly become a permanent block of text.
+- tapOn:
+    text: ".*Hide all scans \\(4\\).*"
+- assertNotVisible: ".*Cancellation of Postage.*postmarked.*"
+
+# Closed does not mean broken: the summary line the seller reads at a glance is
+# still there, which is what distinguishes "collapsed" from "the row lost its
+# scans".
+- assertVisible: ".*Delivery.*OLYMPIA, WA.*"

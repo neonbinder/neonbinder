@@ -18,6 +18,9 @@ const {
   createEasyPostClient,
   moneyToCents,
   pickLetterRate,
+  normalizeTracker,
+  redactWebhookToken,
+  MAX_SCANS,
   LETTER_PACKAGE,
   LETTER_LABEL_SIZE,
 } = require("../dist/services/easypost.js");
@@ -470,6 +473,682 @@ describe("transport failures", () => {
         weightOz: 1,
       }),
       /HTTP 502/,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-121 — scan visibility
+//
+// The tracker fixture below is a REAL production letter (a NEO-120 purchase,
+// Madison WI -> Olympia WA), not an invention: 31-digit IMb tracking code,
+// four scans over three days, terminal status `out_for_delivery` — which for a
+// letter is the finish line, because no scan ever confirms the mailbox — and
+// `tracking_location` fields that come back null. Every one of those is a
+// property a made-up fixture would have got wrong.
+// ---------------------------------------------------------------------------
+
+const LETTER_TRACKER = {
+  id: "trk_92253672884048",
+  object: "Tracker",
+  tracking_code: "0004012345678901234567890123456",
+  status: "out_for_delivery",
+  status_detail: "out_for_delivery",
+  created_at: "2026-08-25T17:00:00Z",
+  updated_at: "2026-08-29T00:06:00Z",
+  est_delivery_date: "2026-08-28T00:00:00Z",
+  shipment_id: "shp_letter",
+  carrier: "USPS",
+  public_url: "https://track.easypost.com/djE6dHJrX2ZpeHR1cmVfMDAx",
+  tracking_details: [
+    {
+      message: "Origin Processing Cancellation of Postage",
+      status: "in_transit",
+      datetime: "2026-08-25T17:52:00Z",
+      tracking_location: { city: "MADISON", state: "WI", zip: "53714", country: null },
+    },
+    {
+      message: "Origin Primary Processing",
+      status: "in_transit",
+      datetime: "2026-08-26T04:53:00Z",
+      tracking_location: { city: "MILWAUKEE", state: "WI", zip: null, country: null },
+    },
+    {
+      message: "Destination MMP Processing",
+      status: "in_transit",
+      datetime: "2026-08-27T22:22:00Z",
+      tracking_location: { city: "TACOMA", state: "WA", zip: null, country: null },
+    },
+    {
+      message: "Delivery",
+      status: "out_for_delivery",
+      datetime: "2026-08-29T00:06:00Z",
+      tracking_location: { city: null, state: null, zip: null, country: null },
+    },
+  ],
+};
+
+const ms = (iso) => Date.parse(iso);
+
+describe("normalizeTracker", () => {
+  it("normalises a real USPS letter tracker", () => {
+    const snap = normalizeTracker(LETTER_TRACKER);
+
+    assert.equal(snap.trackerId, "trk_92253672884048");
+    assert.equal(snap.status, "out_for_delivery");
+    assert.equal(snap.statusDetail, "out_for_delivery");
+    assert.equal(snap.updatedAt, ms("2026-08-29T00:06:00Z"));
+    assert.equal(snap.estDeliveryAt, ms("2026-08-28T00:00:00Z"));
+    assert.equal(snap.scans.length, 4);
+  });
+
+  // ISO strings are parsed HERE, once, for the same reason money is converted
+  // here: a timestamp that crosses the boundary as text gets re-parsed
+  // differently by every consumer that touches it.
+  it("parses every timestamp to ms at the boundary", () => {
+    const snap = normalizeTracker(LETTER_TRACKER);
+    for (const scan of snap.scans) {
+      assert.equal(typeof scan.at, "number");
+      assert.ok(Number.isFinite(scan.at));
+    }
+    assert.equal(typeof snap.updatedAt, "number");
+    assert.equal(typeof snap.estDeliveryAt, "number");
+  });
+
+  it("orders scans oldest to newest and reports the newest as lastScanAt", () => {
+    const snap = normalizeTracker(LETTER_TRACKER);
+    assert.equal(snap.scans[0].message, "Origin Processing Cancellation of Postage");
+    assert.equal(snap.scans[3].message, "Delivery");
+    assert.equal(snap.lastScanAt, ms("2026-08-29T00:06:00Z"));
+    assert.equal(snap.lastScanAt, snap.scans[snap.scans.length - 1].at);
+  });
+
+  it("sorts an out-of-order tracking_details list rather than trusting it", () => {
+    const shuffled = {
+      ...LETTER_TRACKER,
+      tracking_details: [...LETTER_TRACKER.tracking_details].reverse(),
+    };
+    const snap = normalizeTracker(shuffled);
+    assert.equal(snap.scans[0].message, "Origin Processing Cancellation of Postage");
+    assert.equal(snap.lastScanAt, ms("2026-08-29T00:06:00Z"));
+  });
+
+  // Real letter trackers return null city/state/zip/country on the final scan.
+  // Emitting those as the string "null" is how a UI ends up rendering
+  // "Delivery · null, null".
+  it("drops null tracking_location fields instead of emitting them", () => {
+    const snap = normalizeTracker(LETTER_TRACKER);
+
+    const delivery = snap.scans[3];
+    assert.equal(delivery.city, undefined);
+    assert.equal(delivery.state, undefined);
+    assert.equal(delivery.zip, undefined);
+    assert.equal(delivery.country, undefined);
+
+    // ...while a scan that DOES carry a location keeps it.
+    assert.equal(snap.scans[0].city, "MADISON");
+    assert.equal(snap.scans[0].state, "WI");
+    assert.equal(snap.scans[0].zip, "53714");
+    assert.equal(snap.scans[1].zip, undefined);
+  });
+
+  it("survives a tracker with no tracking_details at all", () => {
+    const snap = normalizeTracker({ id: "trk_new", status: "pre_transit", updated_at: "2026-08-25T17:00:00Z" });
+    assert.deepEqual(snap.scans, []);
+    assert.equal(snap.lastScanAt, undefined);
+    assert.equal(snap.estDeliveryAt, undefined);
+    assert.equal(snap.publicTrackingUrl, undefined);
+    assert.equal(snap.status, "pre_transit");
+  });
+
+  it("defaults a missing status to unknown rather than undefined", () => {
+    assert.equal(normalizeTracker({ id: "trk_x" }).status, "unknown");
+    assert.equal(normalizeTracker({}).trackerId, "");
+  });
+
+  // `at` drives relative-time rendering. A scan kept with at: 0 renders as
+  // "56 years ago", which is worse than one missing line.
+  it("drops a scan whose datetime will not parse", () => {
+    const snap = normalizeTracker({
+      ...LETTER_TRACKER,
+      tracking_details: [
+        ...LETTER_TRACKER.tracking_details,
+        { message: "Bogus", status: "in_transit", datetime: "not a date" },
+        { message: "Also bogus", status: "in_transit", datetime: null },
+      ],
+    });
+    assert.equal(snap.scans.length, 4);
+    assert.equal(snap.scans.some((s) => s.message === "Bogus"), false);
+  });
+
+  it(`caps scans at ${MAX_SCANS}, keeping the newest`, () => {
+    const many = Array.from({ length: 120 }, (_, i) => ({
+      message: `scan ${i}`,
+      status: "in_transit",
+      datetime: new Date(Date.UTC(2026, 0, 1) + i * 3600_000).toISOString(),
+    }));
+    const snap = normalizeTracker({ ...LETTER_TRACKER, tracking_details: many });
+
+    assert.equal(snap.scans.length, MAX_SCANS);
+    // Newest kept, oldest dropped.
+    assert.equal(snap.scans[MAX_SCANS - 1].message, "scan 119");
+    assert.equal(snap.scans[0].message, `scan ${120 - MAX_SCANS}`);
+    assert.equal(snap.lastScanAt, snap.scans[MAX_SCANS - 1].at);
+  });
+
+  // Strings stay whole here: Convex owns the document-size budget and does the
+  // truncating on the write. This pins that this layer is not also doing it,
+  // so the two cannot disagree about the limit.
+  it("does not truncate strings — Convex does that on the write", () => {
+    const long = "x".repeat(1000);
+    const snap = normalizeTracker({
+      ...LETTER_TRACKER,
+      tracking_details: [
+        { message: long, status: "in_transit", datetime: "2026-08-25T17:52:00Z" },
+      ],
+    });
+    assert.equal(snap.scans[0].message.length, 1000);
+  });
+
+  for (const [label, url] of [
+    ["http", "http://track.easypost.com/x"],
+    ["javascript:", "javascript:alert(1)"],
+    ["a data uri", "data:text/html,<script>"],
+    ["a protocol-relative url", "//track.easypost.com/x"],
+    ["a non-string", 42],
+    ["null", null],
+  ]) {
+    it(`drops a public_url that is ${label}`, () => {
+      const snap = normalizeTracker({ ...LETTER_TRACKER, public_url: url });
+      assert.equal(snap.publicTrackingUrl, undefined);
+    });
+  }
+
+  it("keeps an https public_url", () => {
+    assert.equal(
+      normalizeTracker(LETTER_TRACKER).publicTrackingUrl,
+      "https://track.easypost.com/djE6dHJrX2ZpeHR1cmVfMDAx",
+    );
+  });
+
+  // Never Date.now(): Convex applies a snapshot only when updatedAt beats the
+  // stored one, so an invented "now" would let an undated payload overwrite a
+  // good snapshot. Falling back to the newest scan, then 0, fails closed.
+  it("falls back to the newest scan, then 0, when updated_at is missing", () => {
+    const noUpdatedAt = { ...LETTER_TRACKER };
+    delete noUpdatedAt.updated_at;
+    assert.equal(normalizeTracker(noUpdatedAt).updatedAt, ms("2026-08-29T00:06:00Z"));
+
+    assert.equal(normalizeTracker({ id: "trk_x", status: "unknown" }).updatedAt, 0);
+  });
+
+  // `tracking_details: null` is a distinct shape from the field being absent
+  // entirely — `Array.isArray(null)` is false either way, but only a test
+  // pins that EasyPost sending an explicit null (rather than omitting the
+  // key) does not throw or otherwise behave differently.
+  it("survives tracking_details explicitly set to null", () => {
+    const snap = normalizeTracker({
+      id: "trk_x",
+      status: "pre_transit",
+      tracking_details: null,
+    });
+    assert.deepEqual(snap.scans, []);
+    assert.equal(snap.lastScanAt, undefined);
+  });
+
+  // `toMs` is `Date.parse`, which is UTC-based regardless of the offset a
+  // datetime string carries. A scan timestamped in a non-UTC offset must
+  // convert to the SAME instant as its UTC-normalised equivalent, not to the
+  // wall-clock number with the offset stripped.
+  it("normalises an offset datetime (non-UTC) to the correct UTC instant", () => {
+    const snap = normalizeTracker({
+      ...LETTER_TRACKER,
+      tracking_details: [
+        {
+          message: "Origin Processing",
+          status: "in_transit",
+          // 17:52:00 -07:00 is 2026-08-26T00:52:00Z.
+          datetime: "2026-08-25T17:52:00-07:00",
+        },
+      ],
+    });
+    assert.equal(snap.scans.length, 1);
+    assert.equal(snap.scans[0].at, ms("2026-08-26T00:52:00Z"));
+    assert.equal(snap.scans[0].at, Date.parse("2026-08-25T17:52:00-07:00"));
+  });
+
+  // Two scans that share a datetime and message are not deduplicated — they
+  // are kept as-is, in stable input order for equal sort keys. This pins that
+  // behavior explicitly: a future change to dedupe (or not) should have to
+  // touch this test, not discover the gap in production.
+  it("keeps duplicate scans (same datetime and message) rather than deduping", () => {
+    const dupe = {
+      message: "Origin Processing",
+      status: "in_transit",
+      datetime: "2026-08-25T17:52:00Z",
+    };
+    const snap = normalizeTracker({
+      id: "trk_x",
+      status: "in_transit",
+      tracking_details: [dupe, { ...dupe }],
+    });
+    assert.equal(snap.scans.length, 2);
+    assert.deepEqual(
+      snap.scans.map((s) => [s.at, s.message]),
+      [
+        [ms("2026-08-25T17:52:00Z"), "Origin Processing"],
+        [ms("2026-08-25T17:52:00Z"), "Origin Processing"],
+      ],
+    );
+  });
+
+  // Distinct from "present but all null" (already covered above) — this is
+  // the key missing from the scan object entirely, which the `?? {}`
+  // fallback exists for.
+  it("treats a scan with no tracking_location key at all like an all-null one", () => {
+    const snap = normalizeTracker({
+      id: "trk_x",
+      status: "in_transit",
+      tracking_details: [
+        { message: "Scan", status: "in_transit", datetime: "2026-08-25T17:52:00Z" },
+      ],
+    });
+    assert.equal(snap.scans.length, 1);
+    assert.equal(snap.scans[0].city, undefined);
+    assert.equal(snap.scans[0].state, undefined);
+    assert.equal(snap.scans[0].zip, undefined);
+    assert.equal(snap.scans[0].country, undefined);
+  });
+});
+
+describe("redactWebhookToken", () => {
+  // The webhook URL carries a bearer token in its path, and EasyPost quotes
+  // the URL it rejected back inside its own error text. Unredacted, that error
+  // is a credential in a log line and in a JSON body.
+  it("replaces the token segment of a webhook url", () => {
+    assert.equal(
+      redactWebhookToken(
+        "Webhook URL https://acme-123.convex.site/webhooks/easypost/Ab3xTOKENxYz is invalid",
+      ),
+      "Webhook URL https://acme-123.convex.site/webhooks/easypost/<token> is invalid",
+    );
+  });
+
+  it("redacts every occurrence, not just the first", () => {
+    const out = redactWebhookToken(
+      "a https://x.convex.site/webhooks/easypost/AAA b https://y.convex.site/webhooks/easypost/BBB",
+    );
+    assert.equal(out.includes("AAA"), false);
+    assert.equal(out.includes("BBB"), false);
+    assert.equal(out.match(/<token>/g).length, 2);
+  });
+
+  it("leaves a message with no webhook url alone", () => {
+    assert.equal(redactWebhookToken("Address not found"), "Address not found");
+    assert.equal(redactWebhookToken(""), "");
+  });
+
+  // The token-matching class is `[^/\s]+`, which has no way to know where a
+  // token ends and a query string begins — both live in the same slash-free
+  // segment. The whole thing is swallowed into `<token>`. That is the safe
+  // direction (over-redaction, never under-), but it is worth pinning: a
+  // narrower regex meant to "preserve the query string" would UNDER-redact
+  // instead, which is the actual hazard this function exists to avoid.
+  it("swallows a query string appended after the token, rather than leaking it", () => {
+    const out = redactWebhookToken(
+      "Webhook URL https://acme.convex.site/webhooks/easypost/TOKEN123?foo=bar failed",
+    );
+    assert.equal(out.includes("TOKEN123"), false);
+    assert.equal(out.includes("foo=bar"), false);
+    assert.equal(
+      out,
+      "Webhook URL https://acme.convex.site/webhooks/easypost/<token> failed",
+    );
+  });
+});
+
+describe("retrieveTracker", () => {
+  it("GETs the shipment and normalises shipment.tracker", async () => {
+    const { impl, calls } = stubFetch(
+      jsonResponse({ id: "shp_letter", tracker: LETTER_TRACKER }),
+    );
+
+    const snap = await createEasyPostClient({
+      apiKey: "ek_test",
+      fetchImpl: impl,
+    }).retrieveTracker({ shipmentId: "shp_letter" });
+
+    assert.match(calls[0].url, /\/v2\/shipments\/shp_letter$/);
+    assert.equal(calls[0].init.method, "GET");
+    assert.equal(calls[0].init.body, undefined);
+    assert.equal(snap.trackerId, "trk_92253672884048");
+    assert.equal(snap.status, "out_for_delivery");
+    assert.equal(snap.scans.length, 4);
+  });
+
+  it("url-encodes the shipment id", async () => {
+    const { impl, calls } = stubFetch(jsonResponse({ tracker: LETTER_TRACKER }));
+    await createEasyPostClient({ apiKey: "k", fetchImpl: impl }).retrieveTracker({
+      shipmentId: "a/b",
+    });
+    assert.match(calls[0].url, /\/shipments\/a%2Fb$/);
+  });
+
+  // "No tracker yet" is the ordinary state for the first hours of a letter's
+  // life. Reporting it as `unknown` would tell a seller something is broken.
+  for (const [label, shipment] of [
+    ["tracker is null", { id: "shp_1", tracker: null }],
+    ["tracker is absent", { id: "shp_1" }],
+    ["the shipment body is empty", {}],
+  ]) {
+    it(`raises no_tracker when ${label}`, async () => {
+      const { impl } = stubFetch(jsonResponse(shipment));
+      await assert.rejects(
+        createEasyPostClient({ apiKey: "k", fetchImpl: impl }).retrieveTracker({
+          shipmentId: "shp_1",
+        }),
+        (err) =>
+          err.kind === "no_tracker" &&
+          // Seller-readable: says what is happening, not what failed.
+          /scan/i.test(err.message) &&
+          !/error|failed/i.test(err.message),
+      );
+    });
+  }
+
+  it("still maps 401 to a key problem", async () => {
+    const { impl } = stubFetch(jsonResponse({ error: { message: "unauthorized" } }, 401));
+    await assert.rejects(
+      createEasyPostClient({ apiKey: "bad", fetchImpl: impl }).retrieveTracker({
+        shipmentId: "shp_1",
+      }),
+      (err) => err.kind === "auth",
+    );
+  });
+});
+
+describe("buyLabel tracker passthrough", () => {
+  const boughtBody = (over = {}) => ({
+    id: "shp_letter",
+    tracking_code: "0004012345678901234567890123456",
+    selected_rate: LETTER_RATE,
+    postage_label: { label_url: "https://easypost-files.example/label.png" },
+    ...over,
+  });
+
+  it("returns the inline tracker when the buy response carries one", async () => {
+    const { impl } = stubFetch(jsonResponse(boughtBody({ tracker: LETTER_TRACKER })));
+    const bought = await createEasyPostClient({
+      apiKey: "k",
+      fetchImpl: impl,
+    }).buyLabel({ shipmentId: "shp_letter", rateId: "rate_letter" });
+
+    assert.equal(bought.tracker.trackerId, "trk_92253672884048");
+    assert.equal(bought.tracker.status, "out_for_delivery");
+    // The purchase fields are untouched by the addition.
+    assert.equal(bought.amountCents, 78);
+    assert.equal(bought.trackingCode, "0004012345678901234567890123456");
+  });
+
+  // Additive: a shipment bought before USPS produced a tracker is normal.
+  it("omits tracker entirely when the buy response has none", async () => {
+    const { impl } = stubFetch(jsonResponse(boughtBody()));
+    const bought = await createEasyPostClient({
+      apiKey: "k",
+      fetchImpl: impl,
+    }).buyLabel({ shipmentId: "shp_letter", rateId: "rate_letter" });
+
+    assert.equal("tracker" in bought, false);
+    assert.equal(bought.labelUrl, "https://easypost-files.example/label.png");
+  });
+
+  it("omits tracker when the buy response carries a null one", async () => {
+    const { impl } = stubFetch(jsonResponse(boughtBody({ tracker: null })));
+    const bought = await createEasyPostClient({
+      apiKey: "k",
+      fetchImpl: impl,
+    }).buyLabel({ shipmentId: "shp_letter", rateId: "rate_letter" });
+    assert.equal("tracker" in bought, false);
+  });
+});
+
+describe("listWebhooks", () => {
+  it("GETs /webhooks and normalises the envelope", async () => {
+    const { impl, calls } = stubFetch(
+      jsonResponse({
+        webhooks: [
+          {
+            id: "hook_abc123",
+            url: "https://acme.convex.site/webhooks/easypost/TOKENAAA",
+            mode: "production",
+            disabled_at: null,
+          },
+          {
+            id: "hook_def456",
+            url: "https://old.convex.site/webhooks/easypost/TOKENBBB",
+            mode: "test",
+            disabled_at: "2026-08-01T00:00:00Z",
+          },
+        ],
+      }),
+    );
+
+    const hooks = await createEasyPostClient({
+      apiKey: "k",
+      fetchImpl: impl,
+    }).listWebhooks();
+
+    assert.match(calls[0].url, /\/v2\/webhooks$/);
+    assert.equal(calls[0].init.method, "GET");
+    assert.equal(calls[0].init.body, undefined);
+    assert.deepEqual(hooks[0], {
+      webhookId: "hook_abc123",
+      url: "https://acme.convex.site/webhooks/easypost/TOKENAAA",
+      mode: "production",
+      disabledAt: null,
+    });
+    // disabled_at becomes ms, like every other timestamp on this boundary.
+    assert.equal(hooks[1].disabledAt, ms("2026-08-01T00:00:00Z"));
+  });
+
+  it("returns an empty list for an account with no webhooks", async () => {
+    const { impl } = stubFetch(jsonResponse({ webhooks: [] }));
+    assert.deepEqual(
+      await createEasyPostClient({ apiKey: "k", fetchImpl: impl }).listWebhooks(),
+      [],
+    );
+  });
+
+  it("tolerates a bare array body", async () => {
+    const { impl } = stubFetch(jsonResponse([{ id: "hook_a", url: "https://x.convex.site/y", mode: "test" }]));
+    const hooks = await createEasyPostClient({ apiKey: "k", fetchImpl: impl }).listWebhooks();
+    assert.equal(hooks.length, 1);
+    assert.equal(hooks[0].webhookId, "hook_a");
+    assert.equal(hooks[0].disabledAt, null);
+  });
+});
+
+describe("createWebhook", () => {
+  const CONVEX_URL = "https://acme-123.convex.site/webhooks/easypost/Ab3xTOKENxYz";
+  const SECRET = "s".repeat(43);
+
+  it("POSTs the EasyPost v2 body shape: {webhook: {url, webhook_secret}}", async () => {
+    const { impl, calls } = stubFetch(
+      jsonResponse({ id: "hook_abc123", mode: "production", url: CONVEX_URL }),
+    );
+
+    const created = await createEasyPostClient({
+      apiKey: "k",
+      fetchImpl: impl,
+    }).createWebhook({ url: CONVEX_URL, secret: SECRET });
+
+    assert.match(calls[0].url, /\/v2\/webhooks$/);
+    assert.equal(calls[0].init.method, "POST");
+    assert.deepEqual(calls[0].body, {
+      webhook: { url: CONVEX_URL, webhook_secret: SECRET },
+    });
+    assert.deepEqual(created, { webhookId: "hook_abc123", mode: "production" });
+  });
+
+  // The secret is write-only: it goes out in the body and nothing derived from
+  // it comes back.
+  it("never returns the secret", async () => {
+    const { impl } = stubFetch(jsonResponse({ id: "hook_abc123", mode: "test" }));
+    const created = await createEasyPostClient({
+      apiKey: "k",
+      fetchImpl: impl,
+    }).createWebhook({ url: CONVEX_URL, secret: SECRET });
+    assert.equal(JSON.stringify(created).includes(SECRET), false);
+  });
+
+  // Registering a plaintext endpoint would put the seller's scan events AND
+  // the bearer token in the URL on the wire in the clear.
+  for (const badUrl of [
+    "http://acme.convex.site/webhooks/easypost/TOKEN",
+    "ftp://acme.convex.site/x",
+    "//acme.convex.site/x",
+    "acme.convex.site/x",
+  ]) {
+    it(`refuses ${badUrl} before calling out`, async () => {
+      const { impl, calls } = stubFetch();
+      await assert.rejects(
+        createEasyPostClient({ apiKey: "k", fetchImpl: impl }).createWebhook({
+          url: badUrl,
+          secret: SECRET,
+        }),
+        (err) => err.kind === "invalid_input" && /https/.test(err.message),
+      );
+      // Nothing was sent — the seller's key was never spent on this.
+      assert.equal(calls.length, 0);
+    });
+  }
+
+  // The rejected URL contains the bearer token, so it is never quoted back.
+  it("does not echo the rejected url into the error message", async () => {
+    const { impl } = stubFetch();
+    await assert.rejects(
+      createEasyPostClient({ apiKey: "k", fetchImpl: impl }).createWebhook({
+        url: "http://acme.convex.site/webhooks/easypost/Ab3xTOKENxYz",
+        secret: SECRET,
+      }),
+      (err) => !err.message.includes("Ab3xTOKENxYz"),
+    );
+  });
+
+  // EasyPost quotes the URL it rejected. That URL is a credential.
+  it("redacts the token out of an EasyPost rejection message", async () => {
+    const { impl } = stubFetch(
+      jsonResponse(
+        {
+          error: {
+            message: `Webhook URL ${CONVEX_URL} could not be verified`,
+            errors: [{ field: "url", message: `${CONVEX_URL} did not respond` }],
+          },
+        },
+        422,
+      ),
+    );
+
+    await assert.rejects(
+      createEasyPostClient({ apiKey: "k", fetchImpl: impl }).createWebhook({
+        url: CONVEX_URL,
+        secret: SECRET,
+      }),
+      (err) =>
+        !err.message.includes("Ab3xTOKENxYz") &&
+        err.message.includes("/webhooks/easypost/<token>") &&
+        // The useful half of the message survives redaction.
+        /could not be verified/.test(err.message),
+    );
+  });
+
+  it("raises rather than returning a webhook with no id", async () => {
+    const { impl } = stubFetch(jsonResponse({ mode: "test" }));
+    await assert.rejects(
+      createEasyPostClient({ apiKey: "k", fetchImpl: impl }).createWebhook({
+        url: CONVEX_URL,
+        secret: SECRET,
+      }),
+      (err) => err.kind === "unknown" && /webhook id/.test(err.message),
+    );
+  });
+});
+
+describe("deleteWebhook", () => {
+  it("DELETEs the webhook with no body and no Content-Type", async () => {
+    const { impl, calls } = stubFetch(jsonResponse({ id: "hook_abc123" }));
+    await createEasyPostClient({ apiKey: "k", fetchImpl: impl }).deleteWebhook({
+      webhookId: "hook_abc123",
+    });
+
+    assert.match(calls[0].url, /\/v2\/webhooks\/hook_abc123$/);
+    assert.equal(calls[0].init.method, "DELETE");
+    assert.equal(calls[0].init.body, undefined);
+    assert.equal(calls[0].init.headers["Content-Type"], undefined);
+    assert.equal(
+      calls[0].init.headers.Authorization,
+      `Basic ${Buffer.from("k:").toString("base64")}`,
+    );
+  });
+
+  it("url-encodes the webhook id", async () => {
+    const { impl, calls } = stubFetch(jsonResponse({}));
+    await createEasyPostClient({ apiKey: "k", fetchImpl: impl }).deleteWebhook({
+      webhookId: "a/b",
+    });
+    assert.match(calls[0].url, /\/webhooks\/a%2Fb$/);
+  });
+
+  // THE case this method exists to get right. A hook that is already gone is a
+  // completed delete, and that is decided here from the upstream status — so
+  // the router's own 404 ("no EasyPost key saved") is never confused with it.
+  it("treats EasyPost's own 404 as success", async () => {
+    const { impl } = stubFetch(
+      jsonResponse({ error: { message: "The requested resource could not be found." } }, 404),
+    );
+    await createEasyPostClient({ apiKey: "k", fetchImpl: impl }).deleteWebhook({
+      webhookId: "hook_gone",
+    });
+  });
+
+  it("survives a 404 with an empty body", async () => {
+    const { impl } = stubFetch({ ok: false, status: 404, text: async () => "" });
+    await createEasyPostClient({ apiKey: "k", fetchImpl: impl }).deleteWebhook({
+      webhookId: "hook_gone",
+    });
+  });
+
+  // 404 is the ONLY status forgiven. Everything else still maps as usual, so
+  // an unconfirmed delete stays unconfirmed and Convex keeps the row.
+  it("still raises on 401", async () => {
+    const { impl } = stubFetch(jsonResponse({ error: { message: "unauthorized" } }, 401));
+    await assert.rejects(
+      createEasyPostClient({ apiKey: "bad", fetchImpl: impl }).deleteWebhook({
+        webhookId: "hook_abc123",
+      }),
+      (err) => err.kind === "auth",
+    );
+  });
+
+  it("still raises on 500", async () => {
+    const { impl } = stubFetch(jsonResponse({ error: { message: "boom" } }, 500));
+    await assert.rejects(
+      createEasyPostClient({ apiKey: "k", fetchImpl: impl }).deleteWebhook({
+        webhookId: "hook_abc123",
+      }),
+      (err) => err.kind === "unknown",
+    );
+  });
+
+  it("still raises on a timeout", async () => {
+    const impl = async () => {
+      throw new Error("The operation was aborted due to timeout");
+    };
+    await assert.rejects(
+      createEasyPostClient({ apiKey: "k", fetchImpl: impl }).deleteWebhook({
+        webhookId: "hook_abc123",
+      }),
+      (err) => err.kind === "timeout",
     );
   });
 });
