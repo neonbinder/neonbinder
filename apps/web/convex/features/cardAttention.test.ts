@@ -99,26 +99,32 @@ describe("deriveCardAttention — missingTeam", () => {
     );
   });
 
-  test("a custom card with a PENDING team name is not flagged", () => {
-    // A typed name lands in `pendingTeamNames` and leaves `teamOnCardIds`
-    // empty until the next sync resolves it. Reading only `teamOnCardIds`
-    // badged that card "no team" and sent the walker to ask the operator for
-    // the team they had just typed.
+  test("a card with a PENDING team name is not MISSING a team — it gets NEO-221's unreviewedName instead", () => {
+    // A typed or unreviewed name lands in `pendingTeamNames` and leaves
+    // `teamOnCardIds` empty until something resolves it. Reading only
+    // `teamOnCardIds` badged that card "no team" and sent the walker to ask
+    // the operator for the team they had just typed.
     //
     // NEO-208 changed the PRODUCER (the quick-add form sends real ids now, so
     // no new row is born pending) and deliberately not the RULE: rows written
     // before that, and an old SPA bundle's `addCustomCard.teams`, still land
     // here and are still answered.
+    //
+    // NEO-221 gave that state its own item. The card is still NOT
+    // `missingTeam` — somebody has said something about the team — but it is
+    // now surfaced as a name that links to nothing, which is the actual work
+    // left. Exactly ONE item either way: two badges for one gap would just
+    // double the count the operator walks through.
     expect(
       deriveCardAttention({
         teamOnCardIds: [],
         pendingTeamNames: ["Savannah Bananas"],
         platformData: {},
       }),
-    ).toEqual([]);
+    ).toEqual([{ kind: "unreviewedName", names: ["Savannah Bananas"] }]);
     expect(
       needsAttention({ pendingTeamNames: ["Savannah Bananas"] }),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   test("an EMPTY pendingTeamNames array is still a missing team", () => {
@@ -280,6 +286,136 @@ describe("deriveCardAttention — kinds compose", () => {
   });
 });
 
+// ===========================================================================
+// NEO-221 — unreviewedName
+//
+// A name the card carries that links to nothing. Two producers with one
+// meaning: `addCustomCard` when an operator types a player/team the tables do
+// not have yet, and `commitCardChecklist` when a synced card's name reached
+// commit with no review decision (the operator dismissed the wizard, or
+// committed with rows still open). Either way the card names somebody it does
+// not link to, and either way the fix is the same.
+// ===========================================================================
+
+describe("deriveCardAttention — unreviewedName", () => {
+  test("an unreviewed PLAYER name with no playerIds is flagged, and carries the names", () => {
+    expect(
+      deriveCardAttention({
+        ...HAS_TEAM,
+        pendingPlayerNames: ["Elly De La Cruz", "Junior Caminero"],
+      }),
+    ).toEqual([
+      {
+        kind: "unreviewedName",
+        names: ["Elly De La Cruz", "Junior Caminero"],
+      },
+    ]);
+  });
+
+  test("a card that already LINKS a player is not flagged for its leftover name", () => {
+    // The link is the answer; a stale spelling beside it is a duplicate, not a
+    // gap. (`updateCard` clears the names when the fixer links a player, so
+    // this shape is transient — but it is reachable, and re-asking about a
+    // card that already has its player is the badge losing the operator's
+    // trust.)
+    expect(
+      deriveCardAttention({
+        ...HAS_TEAM,
+        playerIds: ["player_1"],
+        pendingPlayerNames: ["Elly De La Cruz"],
+      }),
+    ).toEqual([]);
+  });
+
+  test("an unreviewed TEAM name is flagged, and does NOT also raise missingTeam", () => {
+    // Exactly one badge for one gap. `hasTeam` counts a pending team name as
+    // having a team, so the card gets the specific item rather than both.
+    const items = deriveCardAttention({
+      teamOnCardIds: [],
+      teamCheckDoneAt: 1_700_000_000_000,
+      pendingTeamNames: ["Reno Aces"],
+      platformData: { bsc: { ref: "bsc-1" } },
+    });
+    expect(items).toEqual([{ kind: "unreviewedName", names: ["Reno Aces"] }]);
+    expect(items.some((i) => i.kind === "missingTeam")).toBe(false);
+  });
+
+  test("a card with a linked team is not flagged for a leftover team name", () => {
+    expect(
+      deriveCardAttention({
+        teamOnCardIds: ["team_1"],
+        pendingTeamNames: ["Reno Aces"],
+      }),
+    ).toEqual([]);
+  });
+
+  test("both sides unresolved report as ONE item listing every name", () => {
+    expect(
+      deriveCardAttention({
+        pendingPlayerNames: ["Elly De La Cruz"],
+        pendingTeamNames: ["Reno Aces"],
+      }),
+    ).toEqual([
+      { kind: "unreviewedName", names: ["Elly De La Cruz", "Reno Aces"] },
+    ]);
+  });
+
+  test("no marketplace-ref gate — a card with no refs is flagged exactly like one with them", () => {
+    // NB behaviour is never keyed on whether a row carries marketplace ids
+    // (the product invariant in the root CLAUDE.md). An earlier draft badged
+    // only ref-bearing cards, which is the retired "custom card" concept
+    // re-spelled; pinned so it cannot come back.
+    const withRef = deriveCardAttention({
+      ...HAS_TEAM,
+      pendingPlayerNames: ["Nobody Reviewed Me"],
+      platformData: { bsc: { ref: "bsc-1" } },
+    });
+    const withoutRef = deriveCardAttention({
+      ...HAS_TEAM,
+      pendingPlayerNames: ["Nobody Reviewed Me"],
+      platformData: {},
+    });
+    expect(withoutRef).toEqual(withRef);
+    expect(withoutRef).toEqual([
+      { kind: "unreviewedName", names: ["Nobody Reviewed Me"] },
+    ]);
+  });
+
+  test("empty arrays are not an unreviewed name", () => {
+    // `[]` is the shape a resolve pass leaves behind after stripping the last
+    // name, and it must read exactly like an absent field.
+    expect(
+      deriveCardAttention({
+        ...HAS_TEAM,
+        pendingPlayerNames: [],
+        pendingTeamNames: [],
+      }),
+    ).toEqual([]);
+  });
+
+  test("stacks with the NEO-101 title items rather than replacing them", () => {
+    expect(
+      deriveCardAttention({
+        ...HAS_TEAM,
+        listingTitleTruncated: true,
+        pendingPlayerNames: ["Elly De La Cruz"],
+      }),
+    ).toEqual([
+      { kind: "titleTruncated" },
+      { kind: "unreviewedName", names: ["Elly De La Cruz"] },
+    ]);
+  });
+
+  test("the returned names are a COPY — a caller cannot mutate the row through the item", () => {
+    const names = ["Elly De La Cruz"];
+    const [item] = deriveCardAttention({ ...HAS_TEAM, pendingPlayerNames: names });
+    expect(item.kind).toBe("unreviewedName");
+    if (item.kind !== "unreviewedName") throw new Error("unreachable");
+    item.names.push("Injected");
+    expect(names).toEqual(["Elly De La Cruz"]);
+  });
+});
+
 describe("needsAttention", () => {
   test("agrees with deriveCardAttention", () => {
     const rows: Array<Parameters<typeof deriveCardAttention>[0]> = [
@@ -290,6 +426,10 @@ describe("needsAttention", () => {
       { teamNoneConfirmedAt: 1 },
       { pendingTeamNames: ["Savannah Bananas"] },
       { pendingTeamNames: [] },
+      // NEO-221
+      { ...HAS_TEAM, pendingPlayerNames: ["Elly De La Cruz"] },
+      { ...HAS_TEAM, playerIds: ["player_1"], pendingPlayerNames: ["Elly"] },
+      { teamOnCardIds: ["team_1"], pendingTeamNames: ["Reno Aces"] },
       // NEO-101 kinds, on rows that are otherwise settled.
       { ...HAS_TEAM, listingTitle: "x".repeat(81) },
       { ...HAS_TEAM, listingTitleTruncated: true },

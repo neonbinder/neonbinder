@@ -345,6 +345,39 @@ describe("NEO-212 — a refused write to shared reference data persists nothing"
     expect((await t.run(async (ctx) => ctx.db.get(rowId)))?.decision).toBeUndefined();
   });
 
+  test("entityReviewQueue.clearDecision refuses a non-admin without un-deciding a row", async () => {
+    // NEO-221. The reverse of recordDecision: it puts a name the operator
+    // already ruled on back into the wizard as an open question. Ungated, a
+    // signed-in non-admin could walk a finished review back to the start, and
+    // — because un-deciding a still-`pending` row re-enqueues its Wikidata
+    // lookup — do it while spending outbound requests.
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSport(t);
+    const rowId = await t.run(async (ctx) =>
+      ctx.db.insert("entityReviewQueue", {
+        selectorOptionId,
+        batchId: "batch-1",
+        createdByUserId: ADMIN.subject,
+        kind: "player" as const,
+        name: "Mike Trout",
+        sportId: selectorOptionId,
+        status: "ready" as const,
+        decision: { action: "create" as const },
+      }),
+    );
+
+    await expect(
+      t.withIdentity(MEMBER).mutation(api.entityReviewQueue.clearDecision, {
+        reviewRowId: rowId,
+      }),
+    ).rejects.toThrow(/admin access required/i);
+
+    // The decision is STILL there — the refusal happened before any write.
+    expect((await t.run(async (ctx) => ctx.db.get(rowId)))?.decision).toEqual({
+      action: "create",
+    });
+  });
+
   test("entityReviewSkips.clearSkip refuses a non-admin without deleting the row", async () => {
     // The only destructive one of the ten. Deleting a skip re-opens a decision
     // the operator already made — the name re-enters the wizard on the next

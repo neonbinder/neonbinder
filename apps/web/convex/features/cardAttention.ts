@@ -52,7 +52,12 @@ export type AttentionItem =
   // NEO-101: an aspect-shaped field is longer than eBay's item-specific value
   // limit. WARN ONLY — nothing blocks the write, because no NB field is yet
   // proven to map verbatim onto an eBay aspect.
-  | { kind: "aspectValueOverLimit"; field: "cardVariation"; length: number };
+  | { kind: "aspectValueOverLimit"; field: "cardVariation"; length: number }
+  // NEO-221: names on this card that the operator never ruled on in the review
+  // wizard, so the card carries them as free text and links to no player/team.
+  // The names are carried so the label and the fixer can say WHICH, without
+  // re-reading the row.
+  | { kind: "unreviewedName"; names: string[] };
 
 /** The discriminant alone, for keying label maps and fixer registries. */
 export type AttentionKind = AttentionItem["kind"];
@@ -70,6 +75,12 @@ export type AttentionKind = AttentionItem["kind"];
 export type AttentionCardRow = {
   /** The team(s) printed on the card. Absent and `[]` are the same statement. */
   teamOnCardIds?: readonly string[];
+  /**
+   * NEO-221 — the player(s) this card is linked to. Read only for whether it
+   * is empty: a card that already links to a player has its answer, whatever
+   * extra spelling `pendingPlayerNames` still carries.
+   */
+  playerIds?: readonly string[];
   /**
    * Team names an operator typed that no `teams` row exists for yet; the next
    * sync's resolve pass turns them into `teamOnCardIds` (see schema.ts and
@@ -90,6 +101,18 @@ export type AttentionCardRow = {
    * real team is linked, so a row cannot end up counted twice.
    */
   pendingTeamNames?: readonly string[];
+  /**
+   * NEO-221 — player names this card carries that resolve to no `players` row.
+   *
+   * Two producers, one meaning. `addCustomCard` writes them when an operator
+   * types a player the table does not have yet; `commitCardChecklist` writes
+   * them when a synced card's name reached commit with no review decision.
+   * Either way the card names a player it does not link to, and either way the
+   * fix is the same — link it, or let the next sync's wizard resolve it. The
+   * rule below deliberately does NOT try to tell the two apart: where a row
+   * came from is not something NB behaviour is keyed on.
+   */
+  pendingPlayerNames?: readonly string[];
   /** Operator confirmed this card carries no team — see schema.ts. */
   teamNoneConfirmedAt?: number;
   /** The BSC per-card team lookup has RUN, whatever it found — see schema.ts. */
@@ -189,6 +212,41 @@ export function deriveCardAttention(row: AttentionCardRow): AttentionItem[] {
       field: "cardVariation",
       length: variationLength,
     });
+  }
+
+  // ── NEO-221: a name on the card that links to nothing ────────────────────
+  //
+  // Fires per side, on the same shape of test: a pending NAME with no
+  // corresponding LINK. `pendingPlayerNames` with an empty `playerIds`, or
+  // `pendingTeamNames` with an empty `teamOnCardIds`. A card that already
+  // links to a player or a team has its answer, and the leftover spelling is
+  // a duplicate rather than a gap.
+  //
+  // ## No marketplace gate, deliberately
+  //
+  // An earlier draft badged only cards carrying a BSC or SportLots ref, on the
+  // theory that a hand-added card's pending name is an answer awaiting the
+  // next sync while a synced card's is a question never asked. That is the
+  // "custom card" concept re-spelled, and NB behaviour is never keyed on
+  // whether a row has marketplace ids (see the product invariant in the root
+  // CLAUDE.md). It is also not true: both producers leave a card naming a
+  // player it does not link to, and both are fixed the same way — link it in
+  // the walker, or let the next sync's wizard resolve it.
+  //
+  // ## Exactly one badge, not two
+  //
+  // `hasTeam` above already counts a non-empty `pendingTeamNames` as having a
+  // team, so a card with an unresolved team name gets THIS item and not
+  // `missingTeam`. That split is the useful one: `missingTeam` means nobody
+  // has said anything about the team, and this means somebody has, and it has
+  // not landed yet. Two badges for one gap would just double the count the
+  // operator is working through.
+  const unreviewed = [
+    ...((row.playerIds?.length ?? 0) === 0 ? (row.pendingPlayerNames ?? []) : []),
+    ...((row.teamOnCardIds?.length ?? 0) === 0 ? (row.pendingTeamNames ?? []) : []),
+  ];
+  if (unreviewed.length > 0) {
+    items.push({ kind: "unreviewedName", names: [...unreviewed] });
   }
 
   return items;

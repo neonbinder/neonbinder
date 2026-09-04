@@ -1241,3 +1241,320 @@ describe("commitCardChecklist: decision.excludedCareerTeamNames", () => {
     expect(player!.teamYears![0].toYear).toBeUndefined();
   });
 });
+
+// ===========================================================================
+// NEO-221 — a name that reached commit with NO decision
+//
+// Every test above hands commit a batch whose rows are all decided, because
+// that is what the wizard produces when it runs to completion. This block is
+// about the other endings: the operator dismissed the wizard, committed with
+// rows still open, or came back to a batch that had moved on. Commit has to
+// land the cards anyway — refusing would cost the operator the whole sync —
+// so the names it could not resolve are recorded ON the cards, counted for the
+// caller, and folded straight back into the next fetch's wizard by
+// `resolveUnknownsAndStartBatch`, which already reads these two fields off
+// every row.
+//
+// A "skip" is deliberately NOT one of these: the operator ruled that the name
+// is not an entity, so the card keeping it as free text is the intended
+// outcome rather than an unanswered question.
+// ===========================================================================
+
+/** A review row with no decision at all — the shape this block is about. */
+async function insertUndecidedReviewRow(
+  t: ReturnType<typeof convexTest>,
+  opts: {
+    selectorOptionId: Id<"selectorOptions">;
+    batchId: string;
+    kind: "player" | "team";
+    name: string;
+    sportId: Id<"selectorOptions">;
+  },
+) {
+  return t.run(async (ctx) =>
+    ctx.db.insert("entityReviewQueue", {
+      selectorOptionId: opts.selectorOptionId,
+      batchId: opts.batchId,
+      createdByUserId: "user_review_001",
+      kind: opts.kind,
+      name: opts.name,
+      sportId: opts.sportId,
+      status: "ready" as const,
+    }),
+  );
+}
+
+async function readCards(
+  t: ReturnType<typeof convexTest>,
+  selectorOptionId: Id<"selectorOptions">,
+) {
+  return t.run(async (ctx) =>
+    ctx.db
+      .query("cardChecklist")
+      .withIndex("by_selector_option", (q) =>
+        q.eq("selectorOptionId", selectorOptionId),
+      )
+      .collect(),
+  );
+}
+
+describe("commitCardChecklist: unreviewed names", () => {
+  test("an undecided player name is stamped on the card and counted in the return", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+
+    await insertUndecidedReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      batchId: "batch-1",
+      kind: "player",
+      name: "Never Reviewed",
+    });
+
+    const result = await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [
+        makeCard({ cardNumber: "1", players: ["Never Reviewed"] }),
+        makeCard({ cardNumber: "2", players: [] }),
+      ],
+      batchId: "batch-1",
+    });
+
+    // The commit still LANDS — refusing would cost the operator the sync.
+    expect(result.success).toBe(true);
+    expect(result.count).toBe(2);
+    // Distinct names, not cards: one name went unanswered.
+    expect(result.unreviewedNameCount).toBe(1);
+
+    const cards = await readCards(t, variantTypeId);
+    const one = cards.find((c) => c.cardNumber === "1")!;
+    expect(one.pendingPlayerNames).toEqual(["Never Reviewed"]);
+    // No player row was minted for it, and the card links to nothing.
+    expect(one.playerIds ?? []).toEqual([]);
+    expect(
+      await t.run(async (ctx) => ctx.db.query("players").collect()),
+    ).toHaveLength(0);
+    // A card that carried none of the unreviewed names is untouched.
+    expect(cards.find((c) => c.cardNumber === "2")!.pendingPlayerNames).toBeUndefined();
+  });
+
+  test("an undecided TEAM name is stamped the same way", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+
+    await insertUndecidedReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      batchId: "batch-1",
+      kind: "team",
+      name: "Reno Aces",
+    });
+
+    const result = await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardNumber: "1", teams: ["Reno Aces"] })],
+      batchId: "batch-1",
+    });
+
+    expect(result.unreviewedNameCount).toBe(1);
+    const [card] = await readCards(t, variantTypeId);
+    expect(card.pendingTeamNames).toEqual(["Reno Aces"]);
+    expect(card.teamOnCardIds ?? []).toEqual([]);
+  });
+
+  test("a SKIPPED name is not unreviewed — the operator answered", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+
+    await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      batchId: "batch-1",
+      kind: "player",
+      name: "CHECKLIST",
+      decision: { action: "skip" },
+    });
+
+    const result = await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardNumber: "1", players: ["CHECKLIST"] })],
+      batchId: "batch-1",
+    });
+
+    expect(result.unreviewedNameCount).toBe(0);
+    const [card] = await readCards(t, variantTypeId);
+    // The card keeps the raw name as free text, exactly as before — nothing
+    // is stamped, because nothing is waiting.
+    expect(card.pendingPlayerNames).toBeUndefined();
+  });
+
+  test("a LATER commit that carries a decision clears the stamp", async () => {
+    // The self-healing loop, end to end: the unreviewed name goes onto the
+    // card, `resolveUnknownsAndStartBatch` folds it back into the next fetch's
+    // wizard, the operator rules on it, and the next commit retires the stamp
+    // because the name is now one this commit SETTLED.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+
+    await insertUndecidedReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      batchId: "batch-1",
+      kind: "player",
+      name: "Elly De La Cruz",
+    });
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardNumber: "1", players: ["Elly De La Cruz"] })],
+      batchId: "batch-1",
+    });
+    expect((await readCards(t, variantTypeId))[0].pendingPlayerNames).toEqual([
+      "Elly De La Cruz",
+    ]);
+
+    // Second sync: this time the operator reviewed the name.
+    await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      batchId: "batch-2",
+      kind: "player",
+      name: "Elly De La Cruz",
+      decision: { action: "create" },
+    });
+    const second = await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardNumber: "1", players: ["Elly De La Cruz"] })],
+      batchId: "batch-2",
+    });
+
+    expect(second.unreviewedNameCount).toBe(0);
+    const cards = await readCards(t, variantTypeId);
+    expect(cards).toHaveLength(1);
+    expect(cards[0].pendingPlayerNames).toBeUndefined();
+    expect(
+      await t.run(async (ctx) => ctx.db.query("players").collect()),
+    ).toHaveLength(1);
+  });
+
+  test("a name the operator SKIPPED on a later commit also clears the stamp", async () => {
+    // "Not a person" is an answer, so the name stops waiting for one. Left
+    // stamped it would badge the card forever, since a skip means no
+    // players/teams row will ever exist to resolve it.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+
+    await insertUndecidedReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      batchId: "batch-1",
+      kind: "player",
+      name: "CHECKLIST",
+    });
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardNumber: "1", players: ["CHECKLIST"] })],
+      batchId: "batch-1",
+    });
+
+    await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      batchId: "batch-2",
+      kind: "player",
+      name: "CHECKLIST",
+      decision: { action: "skip" },
+    });
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardNumber: "1", players: ["CHECKLIST"] })],
+      batchId: "batch-2",
+    });
+
+    expect((await readCards(t, variantTypeId))[0].pendingPlayerNames).toBeUndefined();
+  });
+
+  test("a re-sync does NOT drop an operator-typed name this commit said nothing about", async () => {
+    // The load-bearing half of the merge. `pendingPlayerNames` is storage this
+    // feature SHARES with `addCustomCard`: a hand-added card can carry a name
+    // an operator typed, and a marketplace card matching that row later must
+    // not silently throw it away. This commit only speaks for the names it
+    // actually settled.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+
+    const handAddedId = await t.run(async (ctx) =>
+      ctx.db.insert("cardChecklist", {
+        selectorOptionId: variantTypeId,
+        cardNumber: "1",
+        cardName: "Hand added",
+        isCustom: true,
+        pendingPlayerNames: ["Operator Typed"],
+        platformData: {},
+        sortOrder: 0,
+        lastUpdated: Date.now(),
+      }),
+    );
+
+    await insertUndecidedReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      batchId: "batch-1",
+      kind: "player",
+      name: "Never Reviewed",
+    });
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardNumber: "1", players: ["Never Reviewed"] })],
+      batchId: "batch-1",
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(handAddedId));
+    // Both: the operator's own name is untouched, and the sync's unreviewed
+    // name is added beside it.
+    expect(row!.pendingPlayerNames).toEqual(["Operator Typed", "Never Reviewed"]);
+  });
+
+  test("a fully-reviewed commit writes neither field and reports zero", async () => {
+    // The common path has to be byte-identical to what it was before this
+    // feature existed — no stamp, nothing to badge, nothing to say.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+
+    await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      batchId: "batch-1",
+      kind: "player",
+      name: "Mike Trout",
+      decision: { action: "create" },
+    });
+
+    const result = await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardNumber: "1", players: ["Mike Trout"] })],
+      batchId: "batch-1",
+    });
+
+    expect(result.unreviewedNameCount).toBe(0);
+    const [card] = await readCards(t, variantTypeId);
+    expect(card.pendingPlayerNames).toBeUndefined();
+    expect(card.pendingTeamNames).toBeUndefined();
+    expect(card.playerIds).toHaveLength(1);
+  });
+});

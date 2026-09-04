@@ -245,6 +245,29 @@ describe("NEO-212: the entity review + player management surface is admin-gated"
       "entityReviewSkips.listForSet",
       (t, sportId) => t.query(api.entityReviewSkips.listForSet, { selectorOptionId: sportId }),
     ],
+    // NEO-221. Un-deciding a reviewed row puts a name back into the wizard as
+    // an open question, and the wizard drives the GLOBAL players/teams tables
+    // — same surface, same gate as `recordDecision` beside it. Needs a real
+    // row id, so one is seeded first; the gate runs before that id is read, so
+    // the refusal is the gate and not a missing-row error.
+    [
+      "entityReviewQueue.clearDecision",
+      async (t, sportId) => {
+        const reviewRowId = await t.run(async (ctx) =>
+          ctx.db.insert("entityReviewQueue", {
+            selectorOptionId: sportId,
+            batchId: "batch-1",
+            createdByUserId: "somebody",
+            kind: "player" as const,
+            name: "Mike Trout",
+            sportId,
+            status: "ready" as const,
+            decision: { action: "create" as const },
+          }),
+        );
+        return t.mutation(api.entityReviewQueue.clearDecision, { reviewRowId });
+      },
+    ],
   ];
 
   test.each(ADMIN_GATED)("%s rejects an anonymous caller", async (_name, call) => {

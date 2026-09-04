@@ -106,6 +106,36 @@ async function insertRow(
  * mount). Same technique as convex/placeholderWarmup.test.ts.
  */
 const ENQUEUE_FN = "wikidataPool:enqueueEntityReviewLookups";
+
+/**
+ * NEO-221: the ARGUMENTS of every scheduled pool enqueue, in schedule order.
+ * The resume path has to prove it enqueues the rows it ADDED and nothing else,
+ * which the function name alone cannot show.
+ */
+async function scheduledEnqueueArgs(
+  t: ReturnType<typeof convexTest>,
+): Promise<Array<{ rowIds: Array<Id<"entityReviewQueue">> }>> {
+  return t.run(async (ctx) => {
+    const rows = await (
+      ctx as unknown as {
+        db: {
+          system: {
+            query: (n: string) => {
+              collect: () => Promise<
+                Array<{
+                  name: string;
+                  args: Array<{ rowIds: Array<Id<"entityReviewQueue">> }>;
+                }>
+              >;
+            };
+          };
+        };
+      }
+    ).db.system.query("_scheduled_functions").collect();
+    return rows.filter((r) => r.name === ENQUEUE_FN).map((r) => r.args[0]);
+  });
+}
+
 async function scheduledNames(
   t: ReturnType<typeof convexTest>,
 ): Promise<string[]> {
@@ -168,7 +198,11 @@ describe("startBatch", () => {
     expect(await scheduledNames(t)).toContain(ENQUEUE_FN);
   });
 
-  test("resumes an in-progress batch for the same selectorOptionId instead of deleting/recreating it", async () => {
+  test("resumes an in-progress batch instead of deleting/recreating it, keeping decisions on the names that are still there", async () => {
+    // NEO-221 changed what "resume" does to the batch's CONTENTS (it now
+    // reconciles against the incoming names — see the tests below), but not
+    // the property this one has always been about: the batchId is preserved
+    // and a decision the operator already made is never discarded.
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const selectorOptionId = await seedSelectorOption(t);
@@ -191,14 +225,11 @@ describe("startBatch", () => {
       action: "create",
     });
 
-    // A second fetch surfaces a DIFFERENT set of unknown names (e.g. the
-    // marketplace payload changed slightly) — startBatch must return the
-    // SAME batchId and leave the already-decided row alone, not discard it.
     const secondBatchId = await t.mutation(internal.entityReviewQueue.startBatch, {
       selectorOptionId,
       createdByUserId: "user_review_001",
       sportId: selectorOptionId,
-      playerNames: ["Someone Else Entirely"],
+      playerNames: ["Mike Trout"],
       teamNames: [],
     });
 
@@ -208,11 +239,320 @@ describe("startBatch", () => {
       selectorOptionId,
       batchId: firstBatchId,
     });
-    // Still just the original row — "Someone Else Entirely" was never
-    // inserted, and the original row's decision survived untouched.
+    // One row, the SAME row: the decision, not just the name, survived.
     expect(rowsAfter).toHaveLength(1);
+    expect(rowsAfter[0]._id).toBe(firstRows[0]._id);
     expect(rowsAfter[0].name).toBe("Mike Trout");
     expect(rowsAfter[0].decision).toEqual({ action: "create" });
+  });
+
+  // =========================================================================
+  // NEO-221 — resume RECONCILES the batch against the incoming names
+  //
+  // "Touch nothing" was right while the only way back into a resumed batch was
+  // an identical re-fetch. NEO-220's "Back to matching" makes a second Confirm
+  // with a DIFFERENT name set a normal thing to do, and a frozen batch would
+  // then ask about names no card carries while never asking about the new
+  // ones — leaving a real name with no decision, which is the failure the
+  // whole ticket exists to remove.
+  // =========================================================================
+
+  test("resume INSERTS a row for an incoming name the batch does not have, and schedules a lookup for it", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+
+    const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId,
+      createdByUserId: "user_review_001",
+      sportId: selectorOptionId,
+      playerNames: ["Mike Trout"],
+      teamNames: [],
+    });
+    // Settle the first row so the enqueue asserted below cannot be confused
+    // for a re-run of the original name's lookup.
+    const [first] = await asAdmin.query(api.entityReviewQueue.getBatch, {
+      selectorOptionId,
+      batchId,
+    });
+    await t.mutation(internal.entityReviewQueue.applyLookupResult, {
+      id: first._id,
+      status: "ready",
+    });
+
+    const resumed = await t.mutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId,
+      createdByUserId: "user_review_001",
+      sportId: selectorOptionId,
+      playerNames: ["Mike Trout", "Aaron Judge"],
+      teamNames: ["New York Yankees"],
+    });
+    expect(resumed).toBe(batchId);
+
+    const rows = await asAdmin.query(api.entityReviewQueue.getBatch, {
+      selectorOptionId,
+      batchId,
+    });
+    expect(rows.map((r) => r.name).sort()).toEqual([
+      "Aaron Judge",
+      "Mike Trout",
+      "New York Yankees",
+    ]);
+    // The pre-existing row is the SAME row, still carrying the resolved status
+    // its lookup wrote — reconciliation never re-runs settled work.
+    expect(rows.find((r) => r.name === "Mike Trout")!._id).toBe(first._id);
+    expect(rows.find((r) => r.name === "Mike Trout")!.status).toBe("ready");
+    expect(rows.find((r) => r.name === "Aaron Judge")!.status).toBe("pending");
+    expect(rows.find((r) => r.name === "New York Yankees")!.kind).toBe("team");
+  });
+
+  test("resume schedules the pool enqueue for the ADDED rows only", async () => {
+    // The load-bearing half of the insert above: a resume must not re-enqueue
+    // a lookup that has already run. Asserted through the scheduled call's
+    // ARGUMENTS — the enqueue itself reaches the workpool component and cannot
+    // run under convex-test.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+
+    const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId,
+      createdByUserId: "user_review_001",
+      sportId: selectorOptionId,
+      playerNames: ["Mike Trout"],
+      teamNames: [],
+    });
+    const [first] = await asAdmin.query(api.entityReviewQueue.getBatch, {
+      selectorOptionId,
+      batchId,
+    });
+
+    await t.mutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId,
+      createdByUserId: "user_review_001",
+      sportId: selectorOptionId,
+      playerNames: ["Mike Trout", "Aaron Judge"],
+      teamNames: [],
+    });
+
+    const rows = await asAdmin.query(api.entityReviewQueue.getBatch, {
+      selectorOptionId,
+      batchId,
+    });
+    const addedId = rows.find((r) => r.name === "Aaron Judge")!._id;
+
+    const enqueues = await scheduledEnqueueArgs(t);
+    // Two enqueues total: the original startBatch's, and the resume's.
+    expect(enqueues).toHaveLength(2);
+    expect(enqueues[0].rowIds).toEqual([first._id]);
+    expect(enqueues[1].rowIds).toEqual([addedId]);
+  });
+
+  test("resume drops an UNDECIDED row whose name is no longer incoming", async () => {
+    // An undecided row for a name no card carries is a question about nothing,
+    // and the wizard's "all reviewed" would block on it forever.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+
+    const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId,
+      createdByUserId: "user_review_001",
+      sportId: selectorOptionId,
+      playerNames: ["Mike Trout", "Gone Forever"],
+      teamNames: [],
+    });
+
+    await t.mutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId,
+      createdByUserId: "user_review_001",
+      sportId: selectorOptionId,
+      playerNames: ["Mike Trout"],
+      teamNames: [],
+    });
+
+    const after = await asAdmin.query(api.entityReviewQueue.getBatch, {
+      selectorOptionId,
+      batchId,
+    });
+    expect(after.map((r) => r.name)).toEqual(["Mike Trout"]);
+  });
+
+  test("resume KEEPS a DECIDED row even when its name is no longer incoming", async () => {
+    // Reconciliation is additive about the operator's work. The incoming name
+    // list is derived — from a marketplace payload, through a pairing session
+    // the operator can still change their mind about — so "not in the list any
+    // more" is a statement about that derivation, not evidence the human's
+    // ruling was wrong. Deleting on it would let a re-pair silently discard a
+    // decision, and the only clue would be a name they have to rule on twice.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+
+    const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId,
+      createdByUserId: "user_review_001",
+      sportId: selectorOptionId,
+      playerNames: ["Mike Trout", "Ruled On"],
+      teamNames: [],
+    });
+    const before = await asAdmin.query(api.entityReviewQueue.getBatch, {
+      selectorOptionId,
+      batchId,
+    });
+    const decidedId = before.find((r) => r.name === "Ruled On")!._id;
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: decidedId,
+      action: "create",
+    });
+
+    await t.mutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId,
+      createdByUserId: "user_review_001",
+      sportId: selectorOptionId,
+      playerNames: ["Mike Trout"],
+      teamNames: [],
+    });
+
+    const after = await asAdmin.query(api.entityReviewQueue.getBatch, {
+      selectorOptionId,
+      batchId,
+    });
+    expect(after.map((r) => r.name).sort()).toEqual(["Mike Trout", "Ruled On"]);
+    expect(after.find((r) => r._id === decidedId)!.decision).toEqual({
+      action: "create",
+    });
+  });
+
+  test("resume stamps lastTouchedAt on every surviving row — re-entering a batch is proof of life", async () => {
+    // What keeps the abandoned-batch sweep off a session an operator has just
+    // come back to. Without it, a batch created 25 hours ago and resumed a
+    // second ago would still read as abandoned.
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSelectorOption(t);
+
+    await t.mutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId,
+      createdByUserId: "user_review_001",
+      sportId: selectorOptionId,
+      playerNames: ["Mike Trout"],
+      teamNames: [],
+    });
+    const before = await t.run(async (ctx) =>
+      ctx.db.query("entityReviewQueue").collect(),
+    );
+    expect(before[0].lastTouchedAt).toBeUndefined();
+
+    await t.mutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId,
+      createdByUserId: "user_review_001",
+      sportId: selectorOptionId,
+      playerNames: ["Mike Trout"],
+      teamNames: [],
+    });
+
+    const after = await t.run(async (ctx) =>
+      ctx.db.query("entityReviewQueue").collect(),
+    );
+    expect(after[0].lastTouchedAt).toBeGreaterThan(0);
+  });
+
+  test("resume matches on the NORMALIZED name, so a re-spelling is not an add plus a drop", async () => {
+    // The names come off marketplace payloads, which respell freely. Keyed on
+    // the raw string, "J.T. Realmuto" → "JT Realmuto" would delete the row the
+    // operator just decided and ask again under a new id.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+
+    const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId,
+      createdByUserId: "user_review_001",
+      sportId: selectorOptionId,
+      playerNames: ["J.T. Realmuto"],
+      teamNames: [],
+    });
+    const [row] = await asAdmin.query(api.entityReviewQueue.getBatch, {
+      selectorOptionId,
+      batchId,
+    });
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: row._id,
+      action: "skip",
+    });
+
+    await t.mutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId,
+      createdByUserId: "user_review_001",
+      sportId: selectorOptionId,
+      playerNames: ["JT Realmuto"],
+      teamNames: [],
+    });
+
+    const after = await asAdmin.query(api.entityReviewQueue.getBatch, {
+      selectorOptionId,
+      batchId,
+    });
+    expect(after).toHaveLength(1);
+    expect(after[0]._id).toBe(row._id);
+    // The original spelling is kept — the row is the operator's, not the
+    // payload's, and its decision survived.
+    expect(after[0].name).toBe("J.T. Realmuto");
+    expect(after[0].decision).toEqual({ action: "skip" });
+  });
+
+  test("a player and a team sharing a name are reconciled separately", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+
+    const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId,
+      createdByUserId: "user_review_001",
+      sportId: selectorOptionId,
+      playerNames: ["Jackson"],
+      teamNames: ["Jackson"],
+    });
+
+    await t.mutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId,
+      createdByUserId: "user_review_001",
+      sportId: selectorOptionId,
+      playerNames: ["Jackson"],
+      teamNames: [],
+    });
+
+    const after = await asAdmin.query(api.entityReviewQueue.getBatch, {
+      selectorOptionId,
+      batchId,
+    });
+    // The team row went; the player row of the same name stayed.
+    expect(after).toHaveLength(1);
+    expect(after[0].kind).toBe("player");
+  });
+
+  test("resume with an unchanged name set inserts nothing and schedules nothing", async () => {
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSelectorOption(t);
+
+    await t.mutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId,
+      createdByUserId: "user_review_001",
+      sportId: selectorOptionId,
+      playerNames: ["Mike Trout"],
+      teamNames: ["New York Yankees"],
+    });
+    await t.mutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId,
+      createdByUserId: "user_review_001",
+      sportId: selectorOptionId,
+      playerNames: ["Mike Trout"],
+      teamNames: ["New York Yankees"],
+    });
+
+    // Still exactly one enqueue: the original one. The common resume (a plain
+    // page refresh) must stay as cheap as it was before reconciliation.
+    expect(await scheduledEnqueueArgs(t)).toHaveLength(1);
   });
 
   test("scopes batches per user — two different users fetching the SAME selectorOptionId get separate, non-colliding batches", async () => {
@@ -1236,10 +1576,17 @@ describe("recordDecision", () => {
 // as New Player" after a reflow (see EntityReviewWizard.tsx's NEO-110 comment)
 // — but nothing here proved that. These tests are that proof, kept permanently.
 //
-// The load-bearing property: this mutation decides EVERY undecided row in one
-// transaction and deliberately does NOT filter on `status`, so rows whose
-// lookup is still in flight are decided too (commitCardChecklist's create
-// branch treats `enrichment` as optional).
+// The load-bearing property: this mutation decides every undecided SETTLED row
+// in one transaction.
+//
+// NEO-221 changed the second half of that sentence. It used to decide rows
+// whose Wikidata lookup was still in flight too; it now skips them. Deciding a
+// `pending` row "create" throws its enrichment away — commit seeds the new
+// player/team from `enrichment`, and `enqueueEnrichment` is creation-only, so
+// there is no path back — which meant one bulk tap could mint dozens of
+// permanently bare rows for players Wikidata knows perfectly well. The wizard
+// re-calls this as lookups land, which is why the return value (rows decided
+// by THIS call) matters more than it used to.
 // ===========================================================================
 
 describe("recordAllRemainingAsCreate", () => {
@@ -1272,17 +1619,20 @@ describe("recordAllRemainingAsCreate", () => {
     expect(rows.every((r) => r.decision?.action === "create")).toBe(true);
   });
 
-  test("decides rows still 'pending' — an in-flight lookup must not be skipped", async () => {
-    // The exact CI shape: one lookup had resolved, two were still pending.
+  test("NEO-221: SKIPS rows still 'pending' — deciding one would throw its enrichment away", async () => {
+    // The exact CI shape from NEO-110: one lookup had resolved, two were still
+    // pending. That run's complaint was that the wizard read "1 of 3
+    // reviewed"; NEO-221's answer is that 1 of 3 is the HONEST count, because
+    // the other two have no enrichment to create from yet.
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const selectorOptionId = await seedSelectorOption(t);
 
-    await insertRow(t, {
+    const readyId = await insertRow(t, {
       selectorOptionId,
       sportId: selectorOptionId, batchId: "bulk", kind: "player", name: "KOPlayer", status: "ready",
     });
-    await insertRow(t, {
+    const pendingA = await insertRow(t, {
       selectorOptionId,
       sportId: selectorOptionId, batchId: "bulk", kind: "player", name: "CDPlayerA", status: "pending",
     });
@@ -1296,7 +1646,74 @@ describe("recordAllRemainingAsCreate", () => {
       { selectorOptionId, batchId: "bulk" },
     );
 
-    expect(count).toBe(3);
+    expect(count).toBe(1);
+    const rows = await asAdmin.query(api.entityReviewQueue.getBatch, {
+      selectorOptionId,
+      batchId: "bulk",
+    });
+    expect(rows.find((r) => r._id === readyId)!.decision).toEqual({
+      action: "create",
+    });
+    expect(rows.find((r) => r._id === pendingA)!.decision).toBeUndefined();
+  });
+
+  test("NEO-221: a re-call after a lookup lands decides the row that just settled", async () => {
+    // The wizard drives this loop — one operator tap, the count filling in as
+    // the pool drains — so a second call finding newly-settled work is the
+    // normal path, not a retry.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+
+    const lateId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId, batchId: "bulk", kind: "player", name: "LateLookup", status: "pending",
+    });
+
+    expect(
+      await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
+        selectorOptionId,
+        batchId: "bulk",
+      }),
+    ).toBe(0);
+
+    await t.mutation(internal.entityReviewQueue.applyLookupResult, {
+      id: lateId,
+      status: "ready",
+      enrichment: { wikidataId: "Q1" },
+    });
+
+    expect(
+      await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
+        selectorOptionId,
+        batchId: "bulk",
+      }),
+    ).toBe(1);
+    // The enrichment the wait was for is on the row commit will read.
+    const row = await t.run(async (ctx) => ctx.db.get(lateId));
+    expect(row!.decision).toEqual({ action: "create" });
+    expect(row!.enrichment?.wikidataId).toBe("Q1");
+  });
+
+  test("an 'error' row is decided — a lookup that failed is settled, not in flight", async () => {
+    // `status` is the wait condition, and "error" means the lookup has been
+    // and gone with nothing to show. Blocking on it would hang the fast path
+    // on every name Wikidata does not know, which is most of a rookie class.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+
+    await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId, batchId: "bulk", kind: "player", name: "NoWikidataMatch", status: "error",
+    });
+
+    expect(
+      await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
+        selectorOptionId,
+        batchId: "bulk",
+      }),
+    ).toBe(1);
   });
 
   test("leaves an already-decided row alone and does not count it", async () => {
@@ -1331,6 +1748,13 @@ describe("recordAllRemainingAsCreate", () => {
     // is now skipped outright on a decided row, so the decision cannot be
     // touched and the row keeps the `pending` status it was decided with. See
     // the "decided-row guard" block below for why that is inert.
+    //
+    // Driven through the SKIP fast path since NEO-221, because that is now the
+    // only bulk path that decides a row whose lookup is still in flight — and
+    // the guarantee is about the SHAPE (decided + pending), not about which
+    // decision produced it. The shape is still reachable, so it is still worth
+    // pinning: a straggler lookup landing on a decided row during the commit
+    // prelude's read is exactly what turned a seed job red.
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const selectorOptionId = await seedSelectorOption(t);
@@ -1343,7 +1767,7 @@ describe("recordAllRemainingAsCreate", () => {
         }),
       );
 
-    await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
+    await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsSkip, {
       selectorOptionId,
       batchId: "bulk",
     });
@@ -1823,5 +2247,302 @@ describe("cleanupBatch", () => {
         batchId: "never-existed",
       }),
     ).resolves.toBeNull();
+  });
+});
+
+// ===========================================================================
+// clearDecision (NEO-221)
+//
+// The other half of "an operator can change their mind". `recordDecision`
+// already overwrites, which covers "I meant link, not create"; this puts a row
+// back to being an open question, which is what the wizard's Back / decided
+// list needs — the review UI only ever presents an UNDECIDED row.
+// ===========================================================================
+
+describe("clearDecision", () => {
+  test("removes the decision and leaves the row otherwise untouched", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId,
+      batchId: "b",
+      kind: "player",
+      name: "Mike Trout",
+      status: "ready",
+    });
+    await t.run(async (ctx) =>
+      ctx.db.patch(rowId, { enrichment: { wikidataId: "Q123" } }),
+    );
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: rowId,
+      action: "create",
+    });
+
+    await asAdmin.mutation(api.entityReviewQueue.clearDecision, {
+      reviewRowId: rowId,
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(rowId));
+    // Byte-identical to a row that was never decided: `undefined` in a patch
+    // is how Convex removes a field.
+    expect(row!.decision).toBeUndefined();
+    // A settled lookup stays settled — re-deciding must not cost a second
+    // Wikidata round-trip.
+    expect(row!.status).toBe("ready");
+    expect(row!.enrichment?.wikidataId).toBe("Q123");
+    expect(row!.lastTouchedAt).toBeGreaterThan(0);
+    // Nothing re-enqueued: the row already has its answer.
+    expect(await scheduledEnqueueArgs(t)).toHaveLength(0);
+  });
+
+  test("re-schedules the lookup when the row is still 'pending'", async () => {
+    // A row decided while its lookup was in flight had that result dropped on
+    // the floor (`applyLookupResult` skips a decided row, NEO-189), so it is
+    // `pending` and will never leave `pending` on its own. Un-deciding it
+    // without re-enqueuing would hand the operator a row stuck on
+    // "Looking up…" forever.
+    //
+    // This is a LOOKUP, not entity enrichment: nothing here touches
+    // players/teams, and the creation-only enrichment rule is about those.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId,
+      batchId: "b",
+      kind: "player",
+      name: "StillLookingUp",
+      status: "pending",
+    });
+    // Only the bulk SKIP path can decide a pending row since NEO-221, which is
+    // exactly how this state is reached in the wild.
+    await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsSkip, {
+      selectorOptionId,
+      batchId: "b",
+    });
+
+    await asAdmin.mutation(api.entityReviewQueue.clearDecision, {
+      reviewRowId: rowId,
+    });
+
+    const enqueues = await scheduledEnqueueArgs(t);
+    expect(enqueues).toHaveLength(1);
+    expect(enqueues[0].rowIds).toEqual([rowId]);
+  });
+
+  test("does NOT re-schedule a lookup for a row that already errored", async () => {
+    // "error" means the lookup has been and gone with nothing to show. The
+    // row is answerable as it stands, so re-running it would only spend a
+    // Wikidata request to reach the same place.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId,
+      batchId: "b",
+      kind: "player",
+      name: "NoMatch",
+      status: "error",
+    });
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: rowId,
+      action: "skip",
+    });
+
+    await asAdmin.mutation(api.entityReviewQueue.clearDecision, {
+      reviewRowId: rowId,
+    });
+
+    expect(await scheduledEnqueueArgs(t)).toHaveLength(0);
+  });
+
+  test("throws on a row that no longer exists", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId,
+      batchId: "b",
+      kind: "player",
+      name: "Doomed",
+    });
+    await t.run(async (ctx) => ctx.db.delete(rowId));
+
+    await expect(
+      asAdmin.mutation(api.entityReviewQueue.clearDecision, {
+        reviewRowId: rowId,
+      }),
+    ).rejects.toThrow(/Review row not found/);
+  });
+
+  test("requires admin, and leaves the decision standing when it refuses", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId,
+      batchId: "b",
+      kind: "player",
+      name: "Mike Trout",
+      status: "ready",
+    });
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: rowId,
+      action: "create",
+    });
+
+    await expect(
+      t.mutation(api.entityReviewQueue.clearDecision, { reviewRowId: rowId }),
+    ).rejects.toThrow();
+    expect(
+      (await t.run(async (ctx) => ctx.db.get(rowId)))!.decision,
+    ).toEqual({ action: "create" });
+  });
+});
+
+// ===========================================================================
+// Per-session ownership (NEO-221)
+//
+// Batches are scoped per user on purpose (see startBatch and schema.ts): two
+// admin sessions — or two Maestro CI workers, each a distinct admin test
+// account — hold separate batches over the SAME set at once. `requireAdmin` is
+// the real gate; these are the second layer, and they exist because a row id
+// or batchId from the wrong session is far likelier to be a stale client than
+// an attack, and either way silently overwriting a colleague's in-progress
+// review is the wrong answer.
+// ===========================================================================
+
+describe("ownership scoping", () => {
+  const OTHER_ADMIN = {
+    subject: "user_review_002",
+    issuer: "https://clerk.example.com",
+    tokenIdentifier: "clerk|user_review_002",
+    role: "admin",
+  };
+
+  test("recordDecision refuses a row from another admin's session", async () => {
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSelectorOption(t);
+    // insertRow stamps createdByUserId "user_review_001" — ADMIN_IDENTITY.
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId,
+      batchId: "b",
+      kind: "player",
+      name: "Mike Trout",
+      status: "ready",
+    });
+
+    await expect(
+      t.withIdentity(OTHER_ADMIN).mutation(api.entityReviewQueue.recordDecision, {
+        reviewRowId: rowId,
+        action: "create",
+      }),
+    ).rejects.toThrow(/different review session/);
+    expect(
+      (await t.run(async (ctx) => ctx.db.get(rowId)))!.decision,
+    ).toBeUndefined();
+  });
+
+  test("clearDecision refuses a row from another admin's session", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId,
+      batchId: "b",
+      kind: "player",
+      name: "Mike Trout",
+      status: "ready",
+    });
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: rowId,
+      action: "create",
+    });
+
+    await expect(
+      t.withIdentity(OTHER_ADMIN).mutation(api.entityReviewQueue.clearDecision, {
+        reviewRowId: rowId,
+      }),
+    ).rejects.toThrow(/different review session/);
+    expect(
+      (await t.run(async (ctx) => ctx.db.get(rowId)))!.decision,
+    ).toEqual({ action: "create" });
+  });
+
+  test("cancelBatch refuses another admin's batch WITHOUT deleting any of it", async () => {
+    // Cancelling is the one irreversible thing an operator can do to a review,
+    // so the check runs before the delete, not per row inside it.
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSelectorOption(t);
+    for (const name of ["A", "B"])
+      await insertRow(t, {
+        selectorOptionId,
+        sportId: selectorOptionId,
+        batchId: "b",
+        kind: "player",
+        name,
+        status: "ready",
+      });
+
+    await expect(
+      t.withIdentity(OTHER_ADMIN).mutation(api.entityReviewQueue.cancelBatch, {
+        selectorOptionId,
+        batchId: "b",
+      }),
+    ).rejects.toThrow(/different review session/);
+    expect(
+      await t.run(async (ctx) =>
+        ctx.db.query("entityReviewQueue").collect(),
+      ),
+    ).toHaveLength(2);
+  });
+});
+
+// ===========================================================================
+// The bulk fast paths do not take `includePending` from the client (NEO-221)
+// ===========================================================================
+
+describe("bulk fast paths: includePending is not a client argument", () => {
+  test.each([
+    ["recordAllRemainingAsCreate", api.entityReviewQueue.recordAllRemainingAsCreate],
+    ["recordAllRemainingAsSkip", api.entityReviewQueue.recordAllRemainingAsSkip],
+  ] as const)("%s rejects a client-supplied includePending", async (_name, fn) => {
+    // Whether a `pending` row is in scope is a property of the DECISION being
+    // written (create consumes the enrichment, skip does not), not a caller
+    // preference — see `decideAllRemaining`. Pinned because the natural next
+    // refactor is to lift the flag into the args, and that would hand a client
+    // the ability to mint bare unenriched players in bulk.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+    await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId,
+      batchId: "bulk",
+      kind: "player",
+      name: "StillLookingUp",
+      status: "pending",
+    });
+
+    await expect(
+      asAdmin.mutation(fn, {
+        selectorOptionId,
+        batchId: "bulk",
+        includePending: true,
+      } as unknown as { selectorOptionId: Id<"selectorOptions">; batchId: string }),
+    ).rejects.toThrow();
   });
 });
