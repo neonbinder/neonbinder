@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
-import { slotIds } from "../../convex/platformSlots";
+import { primarySlot, slotIds, slotLabel } from "../../convex/platformSlots";
+import type { PlatformSide, SlotBearingRow } from "../../convex/platformSlots";
 import type { GenericId } from "convex/values";
 import NeonButton from "../modules/NeonButton";
-import BaseSetPicker from "./BaseSetPicker";
+import BaseSetPicker, { type BaseRemapNotice } from "./BaseSetPicker";
 import type { PlatformItem } from "./ReconciliationModal";
 import { blockedMessageFromErrors } from "./selector-sync-feedback";
 
@@ -24,6 +25,52 @@ type RawOptionsResult = {
  */
 const SYNC_FAILED_PREFIX = "Failed to fetch options";
 
+/**
+ * The refusal `setVariantTypePlatformData` raises when the row moved under us
+ * (NEO-219). Fixed text: the operator's picks were NOT written, and the only
+ * safe next step is to look at the mapping as it now stands.
+ */
+const STALE_MESSAGE =
+  "This Base mapping changed somewhere else while you were picking. Nothing was written — the choices below have been refreshed, so pick again.";
+
+/**
+ * Read a ConvexError's structured `code` without `instanceof`.
+ *
+ * Same reasoning as `RenameEntityControl.refusalMessage`: a rethrown or mocked
+ * error, and a convex-client version skew, must still be recognised. Production
+ * redacts `.message`, so `data.code` is the only field that crosses intact.
+ */
+function errorCode(e: unknown): string | null {
+  if (typeof e !== "object" || e === null) return null;
+  const data = (e as { data?: unknown }).data;
+  if (typeof data !== "object" || data === null) return null;
+  const { code } = data as { code?: unknown };
+  return typeof code === "string" ? code : null;
+}
+
+/**
+ * Cards fetched through a side's CURRENT PRIMARY slot.
+ *
+ * `getSlotCardCounts` reports per-slot tallies because detach acts on one slot;
+ * a re-map only ever moves the primary. A side whose primary cannot be resolved
+ * falls back to the side's total, which over-states rather than under-states —
+ * the wrong direction to be wrong in is "this will move nothing".
+ */
+function primarySlotCards(
+  perSlot: Record<string, number> | undefined,
+  slot: string | undefined,
+): number {
+  if (!perSlot) return 0;
+  if (slot && typeof perSlot[slot] === "number") return perSlot[slot];
+  return Object.values(perSlot).reduce((a, b) => a + b, 0);
+}
+
+type SlotCardCounts = {
+  bsc?: Record<string, number>;
+  sportlots?: Record<string, number>;
+  total?: number;
+};
+
 type BaseMappingFormProps = {
   variantTypeId: GenericId<"selectorOptions">;
   // When true, the form auto-runs fetchRawOptions and opens BaseSetPicker
@@ -31,6 +78,14 @@ type BaseMappingFormProps = {
   // click. The picker is the only piece of UI shown either way — there's no
   // form layout otherwise.
   autoOpen: boolean;
+  /**
+   * `initial` — this Base has no SportLots mapping yet; nothing is at stake.
+   * `remap` — the operator opened "Re-map Base" on a row that IS mapped, so
+   * the dialog states how many cards the existing mapping holds and the write
+   * is version-guarded. The parent already keys this component on the mode, so
+   * the two never share an instance.
+   */
+  mode: "initial" | "remap";
   onClose: () => void;
 };
 
@@ -41,9 +96,19 @@ type BaseMappingFormProps = {
 //
 // Replaces the isBase branch of VariantForm under the new "Base is
 // terminal" model.
+//
+// NEO-219: this form no longer writes ANYTHING the operator did not pick. It
+// used to take two silent shortcuts — storing `bscOptions[0]` whenever
+// SportLots came back empty, and storing the SET's own BSC slug when both
+// sides came back empty — so a Base row could end up linked to a marketplace
+// set nobody ever saw. Both are gone: every successful fetch opens the picker,
+// the set slug is offered there as a visible candidate row, and the only
+// outcomes that write nothing and skip the dialog are a failed fetch and
+// "nothing on either side, and no set slug either".
 export default function BaseMappingForm({
   variantTypeId,
   autoOpen,
+  mode,
   onClose,
 }: BaseMappingFormProps) {
   const fetchRawOptions = useAction(api.setReconciliation.fetchRawOptions);
@@ -53,11 +118,30 @@ export default function BaseMappingForm({
   const ancestorChain = useQuery(api.selectorOptions.getAncestorChain, {
     id: variantTypeId,
   });
+  // The row itself (for `baseVersion` + the current labels) and its per-slot
+  // card counts, in BOTH modes.
+  //
+  // Not remap-only, deliberately (security review, 2026-09-04). `mode` is
+  // derived from `baseHasMapping`, which counts the SPORTLOTS side ONLY — and
+  // this ticket newly permits a BSC-only confirm. So a Base row mapped to BSC
+  // alone reads as unmapped forever: the picker auto-opens in `initial` mode
+  // every time, and an unguarded confirm would let `setPrimarySlotId` re-point
+  // every card already fetched through that BSC slot at a different set, with
+  // no impact sentence and no version check. "Initial" is a statement about
+  // what the parent could see, not about what the row holds. Convex dedupes
+  // both subscriptions against the ones SetSelector already holds for this id.
+  const variantTypeRow = useQuery(api.selectorOptions.getSelectorOptionById, {
+    id: variantTypeId,
+  });
+  const slotCounts = useQuery(api.selectorOptions.getSlotCardCounts, {
+    selectorOptionId: variantTypeId,
+  }) as SlotCardCounts | undefined;
 
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerData, setPickerData] = useState<RawOptionsResult | null>(null);
+  const [staleNotice, setStaleNotice] = useState<string | null>(null);
   const triggered = useRef(false);
 
   const sportValue = ancestorChain?.find((a) => a.level === "sport")?.value;
@@ -71,12 +155,65 @@ export default function BaseMappingForm({
     (a) => a.level === "variantType",
   )?.value;
 
+  // The SET's own BSC slug. NEO-137: read through `slotIds` — `platformData.bsc`
+  // is a slot MAP, so the old typeof-string / Array.isArray narrowing was
+  // type-legal against a Record and silently always undefined.
+  const setListingSlug = setNameAncestor
+    ? slotIds(setNameAncestor, "bsc")[0]
+    : undefined;
+  const setListing: PlatformItem | undefined =
+    setListingSlug && setNameValue
+      ? { value: setNameValue, platformValue: setListingSlug }
+      : undefined;
+
+  const currentLabel = (side: PlatformSide): string | undefined => {
+    if (!variantTypeRow) return undefined;
+    const row = variantTypeRow as unknown as SlotBearingRow;
+    const slot = primarySlot(row, side);
+    return slot ? slotLabel(row, side, slot) : undefined;
+  };
+
+  // Built in both modes for the same reason the queries above are: whether
+  // cards are at stake is a property of the ROW, not of which button opened
+  // this dialog. The picker decides what to say from the counts.
+  const remapNotice: BaseRemapNotice | undefined =
+    slotCounts
+      ? {
+          totalCards: typeof slotCounts.total === "number" ? slotCounts.total : 0,
+          slCards: primarySlotCards(
+            slotCounts.sportlots,
+            variantTypeRow
+              ? primarySlot(variantTypeRow as unknown as SlotBearingRow, "sportlots")
+              : undefined,
+          ),
+          bscCards: primarySlotCards(
+            slotCounts.bsc,
+            variantTypeRow
+              ? primarySlot(variantTypeRow as unknown as SlotBearingRow, "bsc")
+              : undefined,
+          ),
+          currentSlLabel: currentLabel("sportlots"),
+          currentBscLabel: currentLabel("bsc"),
+        }
+      : undefined;
+
   const writePlatformData = async (platformData: {
     bsc?: string;
     sportlots?: string;
     sportlotsDisplay?: string;
   }) => {
-    await setPlatformData({ variantTypeId, platformData });
+    await setPlatformData({
+      variantTypeId,
+      platformData,
+      // Sent whenever the row has loaded, in both modes. A version token can
+      // only ever REFUSE a write, so carrying one on a mapping that turns out
+      // to have had nothing at stake costs nothing — while omitting one on a
+      // row that quietly did (the BSC-only case above) is a silent re-point of
+      // every card in that slot.
+      ...(typeof variantTypeRow?.lastUpdated === "number"
+        ? { baseVersion: variantTypeRow.lastUpdated }
+        : {}),
+    });
   };
 
   const doSync = async () => {
@@ -116,52 +253,30 @@ export default function BaseMappingForm({
         return;
       }
 
-      // SL has options → populate the picker. User confirms inside it.
-      if (result.slOptions.length > 0) {
-        setPickerData(result);
-        return;
-      }
-
-      // No SL data — close picker and auto-take BSC fallback. Brief flash
-      // of the skeleton picker is acceptable; the message below explains.
-      setPickerOpen(false);
-      if (result.bscOptions.length > 0) {
-        const bscPick = result.bscOptions[0];
-        await writePlatformData({ bsc: bscPick.platformValue });
-        setMessage(`Stored Base mapping: ${bscPick.value}`);
+      // Nothing anywhere — not one SportLots row, not one BSC row, and the set
+      // carries no BSC slug either. This is the ONLY successful outcome that
+      // does not open the picker, and it still writes nothing.
+      if (
+        result.slOptions.length === 0 &&
+        result.bscOptions.length === 0 &&
+        !setListing
+      ) {
+        setPickerOpen(false);
+        setMessage("No marketplace data found for this Base set.");
         onClose();
         return;
       }
 
-      // No data on either platform — fall back to the SET's BSC slug so
-      // BSC card lookups under variant=Base still resolve to the set's
-      // search results. SL mapping is left empty; the user can retry sync
-      // later or add custom cards by hand.
-      //
-      // NEO-137: read through slotIds, exactly as handlePickerConfirm below
-      // does. getAncestorChain returns platformData in the slot-map shape, so
-      // the old `typeof === "string" / Array.isArray` narrowing is dead against
-      // a Record — still type-legal, but always undefined. That silently turned
-      // this fallback off, so a Base set with no marketplace data on either side
-      // got "No marketplace data found" instead of the set-slug mapping, and
-      // BSC card lookups under variant=Base had nothing to resolve against.
-      const bscFallback = setNameAncestor
-        ? slotIds(setNameAncestor, "bsc")[0]
-        : undefined;
-      if (bscFallback) {
-        await writePlatformData({ bsc: bscFallback });
-        setMessage(`Stored Base mapping (fallback to set slug)`);
-      } else {
-        setMessage("No marketplace data found for this Base set.");
-      }
-      onClose();
+      // Everything else is a decision for the operator, including the cases
+      // that used to be taken silently on their behalf.
+      setPickerData(result);
     } catch {
       setPickerOpen(false);
       // NEO-211 F3: the thrown text is a Convex/adapter error that can carry a
-      // marketplace URL, a response body or a credential hint, and this catch
-      // also covers the writePlatformData calls above. Our own fixed string;
-      // the detail stays in the Convex logs. This panel shows Retry for EVERY
-      // message (not only errors), so there is no isError branch to preserve.
+      // marketplace URL, a response body or a credential hint. Our own fixed
+      // string; the detail stays in the Convex logs. This panel shows Retry for
+      // EVERY message (not only errors), so there is no isError branch to
+      // preserve.
       setMessage(`${SYNC_FAILED_PREFIX}. Nothing was changed.`);
     } finally {
       setLoading(false);
@@ -169,25 +284,42 @@ export default function BaseMappingForm({
   };
 
   const handlePickerConfirm = async (selected: {
-    sl: PlatformItem;
+    sl?: PlatformItem;
     bsc?: PlatformItem;
   }) => {
-    // BSC's variantName facet is often empty under variant=Base — fall back
-    // to the SET's BSC slug so card-checklist queries still resolve.
-    // NEO-137: platformData.bsc is a SLOT MAP now. The old
-    // typeof-string / Array.isArray narrowing is still type-legal against a
-    // Record, so it silently yielded `undefined` and the fallback stopped
-    // working — read the ids through the helper instead.
-    const bscFallback = setNameAncestor
-      ? slotIds(setNameAncestor, "bsc")[0]
-      : undefined;
-    const bscPlatformValue = selected.bsc?.platformValue ?? bscFallback;
+    // Exactly what was picked. No implicit set-slug substitution: the set
+    // listing is a candidate row in the dialog now, so if it is what should be
+    // linked, it was chosen.
+    const platformData: {
+      bsc?: string;
+      sportlots?: string;
+      sportlotsDisplay?: string;
+    } = {};
+    if (selected.sl) {
+      platformData.sportlots = selected.sl.platformValue;
+      platformData.sportlotsDisplay = selected.sl.value;
+    }
+    if (selected.bsc) {
+      platformData.bsc = selected.bsc.platformValue;
+    }
+    if (!platformData.sportlots && !platformData.bsc) return;
 
-    await writePlatformData({
-      sportlots: selected.sl.platformValue,
-      sportlotsDisplay: selected.sl.value,
-      ...(bscPlatformValue ? { bsc: bscPlatformValue } : {}),
-    });
+    try {
+      await writePlatformData(platformData);
+    } catch (e) {
+      if (errorCode(e) === "BASE_MAPPING_STALE") {
+        // Re-open on the FRESH row: `variantTypeRow` is reactive, so the next
+        // confirm carries the current `baseVersion`, and re-running the fetch
+        // means the candidate rows are current too.
+        setStaleNotice(STALE_MESSAGE);
+        void doSync();
+        return;
+      }
+      setPickerOpen(false);
+      setMessage(`${SYNC_FAILED_PREFIX}. Nothing was changed.`);
+      return;
+    }
+    setStaleNotice(null);
     setPickerOpen(false);
     onClose();
   };
@@ -211,8 +343,8 @@ export default function BaseMappingForm({
   return (
     <>
       {/* Inline message panel shows for every terminal state that doesn't
-          render a picker: errors, no-data fallbacks, AND a cancelled picker
-          (NEO-71-74 fix — previously Cancel called onClose() immediately
+          render a picker: errors, the nothing-anywhere case, AND a cancelled
+          picker (NEO-71-74 fix — previously Cancel called onClose() immediately
           with no recovery UI, and because this component's React `key`
           doesn't change on cancel, its internal `triggered` ref stayed
           tripped forever, silently rendering nothing on every later visit —
@@ -241,16 +373,21 @@ export default function BaseMappingForm({
           isOpen={pickerOpen}
           onClose={() => {
             setPickerOpen(false);
+            setStaleNotice(null);
             setMessage(
-              "Base mapping cancelled — no SportLots set was selected. Click Retry to pick one, or Close to leave it unmapped for now.",
+              "Base mapping cancelled — nothing was linked. Click Retry to pick a set, or Close to leave it unmapped for now.",
             );
           }}
           onConfirm={handlePickerConfirm}
           slOptions={pickerData?.slOptions ?? []}
           bscOptions={pickerData?.bscOptions ?? []}
+          setListing={setListing}
           setName={setNameValue || ""}
           manufacturer={manufacturerValue || ""}
           loading={loading}
+          mode={mode}
+          remapNotice={remapNotice}
+          notice={staleNotice}
         />
       )}
     </>

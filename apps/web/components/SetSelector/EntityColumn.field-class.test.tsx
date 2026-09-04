@@ -48,6 +48,9 @@ const mockQuery = vi.fn();
 
 vi.mock("convex/react", () => ({
   useMutation: () => mockAddCustom,
+  // NEO-219: see EntityColumn.custom-confirm.test.tsx — the column takes the
+  // convex client at render for the cross-parent duplicate lookup.
+  useConvex: () => ({ query: vi.fn() }),
   useAction: () => vi.fn(),
   useQuery: () => mockQuery(),
 }));

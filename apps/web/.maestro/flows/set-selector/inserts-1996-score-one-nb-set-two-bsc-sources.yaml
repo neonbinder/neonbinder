@@ -938,3 +938,102 @@ tags:
     text: ".*Dugout Collection Artists Proofs NB211-${ATTEMPT_ID}.*"
     below:
       id: "Search inserts"
+
+# ============================================================
+# STEP 9 — REMOVING A SOURCE ASKS FIRST, AND SAYS HOW MANY CARDS CAME FROM IT
+#          (NEO-219)
+#
+# WHAT A USER SEES. Every attached source chip has an "×". Pressing it no longer
+# detaches on the spot: it turns the chip into a question that names the source
+# AND the number of cards NeonBinder fetched through it — the one number the
+# operator cannot get back once the link is dropped. Cancel puts the chip back
+# exactly as it was.
+#
+# WHY IT RIDES ON THIS FLOW, and why it is SAFE here. The count is per SOURCE,
+# not per set, and the only place in the suite where a NeonBinder row has more
+# than one source is this one: 220 cards split 110/110 across BSC's two series.
+# On the ordinary 1:1 anchor the sentence could only ever repeat the set's own
+# total, which proves nothing about the per-source count. This flow already
+# owns that shape, and SET-REGISTRY.md's sole-writer rule forbids a second flow
+# from building it.
+#
+# NON-DESTRUCTIVE (R7). This step ends on CANCEL. Nothing is detached, no slot
+# key is retired, no card's marketplace ref is orphaned — the set is left with
+# both BSC sources and 220 paired cards, exactly as STEP 8 left it. That is the
+# contract recorded in SET-REGISTRY.md, and it is why this step may live on a
+# real set at all.
+#
+# THE CONFIRM IS CANCELLED WITH ITS OWN "Cancel" BUTTON, not the Escape key.
+# The product supports Escape here; Maestro on web does not — `pressKey: Escape`
+# fails the command outright ("Keycode ESCAPE is not supported on web"), and
+# Enter is the only key this suite can send. The Escape path is covered by the
+# component tests.
+#
+# COST: ~15s (two taps, one already-resolved count, one cancel). Watch it
+# against run-e2e-queue.sh's 600s per-flow kill — this flow is the longest in
+# the suite.
+# ============================================================
+
+# The insert row must be the SELECTED row for its sources to be on screen: STEP
+# 8c re-drilled and stopped at the "Insert" variant type, which shows no source
+# panel of its own. Select the row itself, anchored below the column's filter
+# so the still-typed "Artist" search pins it unambiguously.
+- tapOn:
+    text: ".*Dugout Collection Artists Proofs NB211-${ATTEMPT_ID}.*"
+    below:
+      id: "Search inserts"
+
+# PRECONDITION, asserted before anything is pressed (R2): both BSC sources are
+# still attached. Without this the cancel assertion at the end could pass on a
+# panel that never had two chips.
+- scrollUntilVisible:
+    element:
+      text: "Multi-source sets"
+    centerElement: true
+    timeout: 20000
+- assertVisible:
+    text: ".*Dugout Collection Artist.s Proofs Series 1.*"
+- assertVisible:
+    text: ".*Dugout Collection Artist.s Proofs Series 2.*"
+
+# Centre the Series 1 chip so its "×" — which sits at the right-hand end of the
+# same row — is fully in view before it is pressed (R8). The chip's remove
+# button is reached by its accessible name; the apostrophe is matched as "." for
+# the same reason every other assertion in this flow does (BSC's own punctuation
+# is not something this flow should encode).
+- scrollUntilVisible:
+    element:
+      text: ".*Dugout Collection Artist.s Proofs Series 1.*"
+    centerElement: true
+    timeout: 10000
+- tapOn:
+    id: "Remove Dugout Collection Artist.s Proofs Series 1"
+
+# THE ACCEPTANCE CRITERION. The question names the count for THIS source — 110,
+# the cards that came from Series 1 — not 220, the row's total. A per-set count
+# here would read 220 and this fails.
+#
+# The panel subscribes to the counts as it mounts, so by now they have long
+# resolved and the sentence never shows its "Counting the cards fetched from
+# it…" placeholder; 7s default (R5) — this is a Convex read, not a marketplace
+# call.
+- extendedWaitUntil:
+    visible:
+      text: ".*110 cards were fetched from it; their BSC link will be dropped.*"
+    timeout: 7000
+
+# CANCEL — the question goes away and NOTHING was detached.
+- tapOn:
+    id: "Cancel detach Dugout Collection Artist.s Proofs Series 1"
+- extendedWaitUntil:
+    notVisible: ".*were fetched from it.*"
+    timeout: 7000
+
+# Both sources are still attached. This is the assertion that makes the step
+# non-destructive rather than merely intended to be — and it is a POSITIVE
+# check, so it cannot be satisfied by an error page the way the notVisible
+# above could be.
+- assertVisible:
+    text: ".*Dugout Collection Artist.s Proofs Series 1.*"
+- assertVisible:
+    text: ".*Dugout Collection Artist.s Proofs Series 2.*"

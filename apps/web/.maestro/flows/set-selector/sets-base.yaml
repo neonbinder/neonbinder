@@ -85,23 +85,56 @@ tags:
           centerElement: true
           timeout: 7000
 
-# PATH A — picker stays open (SL returned data, no prior mapping):
-#   Validate the picker structure, then confirm. THIS is where the live SL fetch
-#   latency is absorbed: the "likely match" pill only renders once the scored SL
-#   options arrive, and the confirm button reads "Loading…"/stays disabled until
-#   fetchRawOptions resolves — it only flips to "Confirm Base Set" then, so the
-#   scrollUntilVisible below naturally waits out the real marketplace round-trip.
-#   Center before tapping so the button is fully in view. Rule 8.
+# PATH A — picker stays open (no prior mapping):
+#   Validate the picker structure, PICK a set on each side, then confirm. THIS is
+#   where the live SL fetch latency is absorbed: the "likely match" pill only
+#   renders once the scored SL options arrive, and the confirm button reads
+#   "Loading…"/stays disabled until fetchRawOptions resolves — it only flips to
+#   "Confirm Base Set" then, so the scrollUntilVisible below naturally waits out
+#   the real marketplace round-trip. Center before tapping so the button is fully
+#   in view. Rule 8.
 - runFlow:
     when:
       visible: "Select Base Set"
     commands:
       # BaseSetPicker modal STRUCTURE — the unique coverage this flow owns.
+      #
+      # The description is the promise NEO-219 makes to the operator, and it is
+      # asserted verbatim-ish because the promise is the feature: only what you
+      # pick gets linked. (Matched on the opening clause only — the sentence
+      # carries a curly apostrophe in "<set>'s base cards", which is a needless
+      # thing to encode in a regex.)
       - assertVisible:
-          text: ".*Choose the base set for.*"
+          text: ".*Choose the SportLots and BSC sets.*"
       - assertVisible:
           text: ".*SportLots base.*"
+      - assertVisible:
+          text: ".*BSC base.*"
+      # At least one row is close enough to the set name to be flagged. The pill
+      # threshold is unchanged by NEO-219 — what changed is that a flagged row is
+      # no longer SELECTED on the operator's behalf, which is exactly what the
+      # two taps below now have to do by hand.
       - assertVisible: "likely match"
+      # NEO-219 — PICK BEFORE CONFIRMING.
+      #
+      # (The footer's "Pick a SportLots or BSC set to continue." hint is NOT
+      # asserted here: it is shown only while nothing is selected, and an SL row
+      # whose name matches this set EXACTLY is still pre-selected by design — so
+      # whether the hint is on screen is a property of what SportLots happens to
+      # call this set, not of the feature.)
+      #
+      # Both lists render best-match-first, so the first row on each side is the
+      # best-ranked candidate — what the old build pre-selected on its own,
+      # except where NEO-219's re-ranking (an exact manufacturer match now scores
+      # BELOW the generic "Base" rows) deliberately promotes a better one. The
+      # labels are the marketplaces' own words for this set and are deliberately
+      # not pinned — SportLots names a base row differently from set to set.
+      # `id:` is a full-string regex in Maestro, so "…candidate: .*" is "the
+      # first candidate row on this side".
+      - tapOn:
+          id: "BSC base candidate: .*"
+      - tapOn:
+          id: "SportLots base candidate: .*"
       - scrollUntilVisible:
           element:
             text: "Confirm Base Set"
@@ -112,10 +145,12 @@ tags:
       - extendedWaitUntil:
           notVisible: "Select Base Set"
 
-# PATH B — auto-closed (prior mapping already exists): the picker dismissed
-#   itself and "Re-map Base" is already visible. No picker structure to validate
-#   here, but we explicitly assert the Re-map button to confirm the mapping
-#   committed correctly and the CardChecklist section rendered.
+# PATH B — a prior mapping already exists (a re-run against a deployment where
+#   this Base row was mapped earlier), so BaseMappingForm never mounts and
+#   "Re-map Base" is showing instead. No picker structure to validate here, but
+#   we explicitly assert the Re-map button to confirm the mapping is committed
+#   and the CardChecklist section rendered. (NEO-219: this is now the ONLY way
+#   the picker is skipped — it no longer closes itself and writes a fallback.)
 - runFlow:
     when:
       notVisible: "Select Base Set"

@@ -44,6 +44,9 @@ const state: { items: unknown; status: unknown; suggestions: unknown } = {
 };
 
 vi.mock("convex/react", () => ({
+  // NEO-219: the column takes the convex client at render for the cross-parent
+  // duplicate lookup; nothing in this file submits a custom value.
+  useConvex: () => ({ query: vi.fn() }),
   useMutation: (ref: string) => {
     if (ref === "applySelectorSyncSuggestions") return mockApply;
     if (ref === "dismissSelectorSyncNotice") return mockDismiss;

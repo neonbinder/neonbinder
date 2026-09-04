@@ -18,6 +18,11 @@ SPORT, YEAR, MANUFACTURER, SET_NAME, VARIANT_TYPE, VARIANT — identical names t
 5. If not visible and no search input: scrollUntilVisible Add-custom (centerElement:true) → tap → inputText → Enter → wait notVisible modal → tap value.
 6. Wait for next column header before proceeding.
 
+## NEO-219: every add-custom step is `inputText` → Enter → **Enter**
+The custom form raises a `Create {noun} '{v}' under {A} › {B}?` confirm with
+Create already focused, so the second Enter presses it. All 9 add sites in this
+util carry it. See [[neo219-confirm-surfaces]].
+
 ## Key gotchas embedded in the util
 - **Sports column**: real-synced always has search input after Baseball idle-signal; custom sports are added via search→not-found→Add-custom branch (search input remains present because real sports are alongside).
 - **Variant Types column (Level 5)**: do NOT scroll — CDP throws MismatchedInputException during page re-render after fresh Set creation. Use non-scrolling `extendedWaitUntil id:"Add custom Variant Types"` instead. (History: centerElement → CDP crash; visibilityPercentage:100 → same crash.)

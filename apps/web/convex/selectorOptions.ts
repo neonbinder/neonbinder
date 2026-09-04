@@ -66,6 +66,11 @@ import { sportConfigDefaultsFor } from "./sportConfig";
 import {
   PLATFORM_SIDES,
   checkSelectorValue,
+  // NEO-219: the per-level rule for an operator-typed custom value. Shared
+  // verbatim with EntityColumn's inline error so the form and the mutation
+  // cannot disagree about what "2o24" is.
+  checkCustomSelectorValue,
+  MAX_SELECTOR_VALUE_LENGTH,
   valuesDeepEqual,
   clearDeclinedIfLabelChanged,
   planSelectorSync,
@@ -1537,17 +1542,280 @@ export const storeSelectorOptions = mutation({
   },
 });
 
+// ───────────────────────────────────────────────────────────────────────────
+// NEO-219 C — "does this name already exist somewhere else in this subtree?"
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * Cap on matches returned/carried in a `ConvexError`. A name that legitimately
+ * appears under twenty different parents is a data problem the operator needs
+ * to see the shape of, not an exhaustive list of.
+ */
+const MAX_ELSEWHERE_MATCHES = 20;
+
+/**
+ * Ceiling on how many candidate parents one search scans (security condition
+ * 3b). Only `parallel` can approach it — its scope is every variantType in the
+ * set PLUS every insert under them, which a set with hundreds of inserts turns
+ * into a wide fan-out on a query an operator triggers by typing.
+ *
+ * Truncating makes the search a best-effort OFFER rather than a proof of
+ * absence, which is what it already was: `addCustomSelectorOption` treats "no
+ * match" as "go ahead", and a missed duplicate is a duplicate row, not data
+ * loss. The per-parent uniqueness check is unaffected.
+ */
+const MAX_ELSEWHERE_PARENTS = 200;
+
+type ElsewherePathNode = {
+  _id: Id<"selectorOptions">;
+  level: Level;
+  value: string;
+};
+
+type ElsewhereMatch = {
+  _id: Id<"selectorOptions">;
+  value: string;
+  parentId?: Id<"selectorOptions">;
+  /** Root-first ancestor chain, the matched row INCLUDED as the last entry. */
+  path: ElsewherePathNode[];
+};
+
+const elsewhereMatchValidator = v.object({
+  _id: v.id("selectorOptions"),
+  value: v.string(),
+  parentId: v.optional(v.id("selectorOptions")),
+  path: v.array(
+    v.object({
+      _id: v.id("selectorOptions"),
+      level: levelValidator,
+      value: v.string(),
+    }),
+  ),
+});
+
+/**
+ * Root-first ancestor chain INCLUDING the row itself, so a caller can render
+ * "2021 › All Brands › Bowman Chrome" without a second round trip.
+ *
+ * Deliberately not `getAncestorChain`: that is a public admin query returning
+ * platformData/features/metadata per node, which is far more than a breadcrumb
+ * needs and would be re-authorised per match.
+ */
+async function ancestorPathFor(
+  ctx: { db: QueryCtx["db"] },
+  id: Id<"selectorOptions">,
+): Promise<ElsewherePathNode[]> {
+  const out: ElsewherePathNode[] = [];
+  const seen = new Set<string>();
+  let currentId: Id<"selectorOptions"> | undefined = id;
+  while (currentId) {
+    const key = currentId as unknown as string;
+    if (seen.has(key)) break; // defensive: a cycle must not hang the query
+    seen.add(key);
+    // Explicit annotation: without it TS sees `currentId`'s type as depending
+    // on `row.parentId`, which depends on `ctx.db.get(currentId)` — a circular
+    // inference (TS7022). Same reason `getAncestorChain` annotates its node.
+    const row: Doc<"selectorOptions"> | null = await ctx.db.get(currentId);
+    if (!row) break;
+    out.unshift({ _id: row._id, level: row.level, value: row.value });
+    currentId = row.parentId;
+  }
+  return out;
+}
+
+/**
+ * Which parents a duplicate could hide under, per level (Jason 2026-09-04,
+ * decision 6).
+ *
+ * The scope is the level's real ambiguity, not a blanket global search:
+ *
+ *   • `setName` — every manufacturer under the SAME YEAR. This is the case the
+ *     ticket exists for: `syncSetsAcrossManufacturers` files a BSC set whose
+ *     name it cannot prefix-match under "All Brands", and an operator who
+ *     cannot find it there types it again under the real brand, producing two
+ *     rows for one set. Scoped to the year because "Topps Chrome" under 2021
+ *     and under 2024 are genuinely different rows.
+ *   • `insert` / `parallel` — the whole SET. Inserts move between variant
+ *     types and a parallel can hang off either a variantType or an insert, so
+ *     the parent alone is not where a duplicate would sit.
+ *   • everything else — the parent only, which the caller has already checked
+ *     and which the exclusion below removes. Sports, years and manufacturers
+ *     have no sibling-parent to hide under.
+ */
+async function elsewhereCandidateParents(
+  ctx: { db: QueryCtx["db"] },
+  level: Level,
+  parentId: Id<"selectorOptions"> | undefined,
+): Promise<Array<Id<"selectorOptions"> | undefined>> {
+  const childrenOf = async (
+    childLevel: Level,
+    of: Id<"selectorOptions">,
+  ): Promise<Array<Id<"selectorOptions">>> => {
+    const rows = await ctx.db
+      .query("selectorOptions")
+      .withIndex("by_level_and_parent", (q) =>
+        q.eq("level", childLevel).eq("parentId", of),
+      )
+      .collect();
+    return rows.map((r) => r._id);
+  };
+
+  if (!parentId) return [parentId];
+  const parent = await ctx.db.get(parentId);
+  if (!parent) return [parentId];
+
+  if (level === "setName") {
+    const yearId = parent.parentId;
+    if (!yearId) return [parentId];
+    return await childrenOf("manufacturer", yearId);
+  }
+
+  if (level === "insert" || level === "parallel") {
+    // Walk up to the setName that owns this branch. A parallel's parent is a
+    // variantType OR an insert, so this is a walk, not a fixed hop.
+    let setId: Id<"selectorOptions"> | undefined;
+    let cursor: typeof parent | null = parent;
+    for (let hops = 0; cursor && hops < 4; hops++) {
+      if (cursor.level === "setName") {
+        setId = cursor._id;
+        break;
+      }
+      cursor = cursor.parentId ? await ctx.db.get(cursor.parentId) : null;
+    }
+    if (!setId) return [parentId];
+
+    const variantTypeIds = await childrenOf("variantType", setId);
+    if (level === "insert") return variantTypeIds;
+
+    // parallel: every variantType AND every insert under them, capped.
+    const candidates: Array<Id<"selectorOptions">> = variantTypeIds.slice(
+      0,
+      MAX_ELSEWHERE_PARENTS,
+    );
+    for (const vtId of variantTypeIds) {
+      if (candidates.length >= MAX_ELSEWHERE_PARENTS) break;
+      candidates.push(...(await childrenOf("insert", vtId)));
+    }
+    return candidates.slice(0, MAX_ELSEWHERE_PARENTS);
+  }
+
+  return [parentId];
+}
+
+/**
+ * The shared implementation behind the `findSelectorOptionElsewhere` query and
+ * `addCustomSelectorOption`'s guard, so the offer the operator is shown and
+ * the refusal the mutation raises can never disagree about what counts as a
+ * duplicate.
+ *
+ * Folded with `selectorValueKey` — the SAME fold the sync matcher, the
+ * sibling-clash check and the suggestions query use. `by_value` is exact and
+ * case-sensitive, so it cannot serve this.
+ *
+ * Rows under the CALLER'S OWN parent are excluded: that is not "elsewhere", it
+ * is the select-existing path `addCustomSelectorOption` has always taken
+ * (return the existing id rather than mint a duplicate) and the FE's
+ * same-column match.
+ */
+async function findElsewhereMatches(
+  ctx: { db: QueryCtx["db"] },
+  level: Level,
+  parentId: Id<"selectorOptions"> | undefined,
+  value: string,
+): Promise<ElsewhereMatch[]> {
+  // Security condition 3b: nothing longer than a storable value can match a
+  // stored value, so an oversized string is answered with "no match" BEFORE
+  // any index read rather than being folded and scanned for. `checkSelectorValue`
+  // enforces the same ceiling on the write side, so this cannot hide a real row.
+  if (value.length > MAX_SELECTOR_VALUE_LENGTH) return [];
+
+  const key = selectorValueKey(value);
+  if (!key) return [];
+
+  const candidates = await elsewhereCandidateParents(ctx, level, parentId);
+  const matches: ElsewhereMatch[] = [];
+
+  for (const candidateParentId of candidates) {
+    if (candidateParentId === parentId) continue; // own parent: not elsewhere
+    const rows = await ctx.db
+      .query("selectorOptions")
+      .withIndex("by_level_and_parent", (q) =>
+        q.eq("level", level).eq("parentId", candidateParentId),
+      )
+      .collect();
+    for (const row of rows) {
+      if (selectorValueKey(row.value) !== key) continue;
+      matches.push({
+        _id: row._id,
+        value: row.value,
+        ...(row.parentId ? { parentId: row.parentId } : {}),
+        path: await ancestorPathFor(ctx, row._id),
+      });
+      if (matches.length >= MAX_ELSEWHERE_MATCHES) return matches;
+    }
+  }
+
+  return matches;
+}
+
+/**
+ * NEO-219 C — "'Bowman Chrome' already exists under 2021 › All Brands".
+ *
+ * Read by `EntityColumn`'s custom-entry confirm before it offers "Create". The
+ * mutation runs the same check itself, so this query is the OFFER, not the
+ * guard — a client that skips it still cannot mint a cross-parent duplicate
+ * without passing `allowDuplicateElsewhere`.
+ */
+export const findSelectorOptionElsewhere = query({
+  args: {
+    level: levelValidator,
+    parentId: v.optional(v.id("selectorOptions")),
+    value: v.string(),
+  },
+  returns: v.array(elsewhereMatchValidator),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    return await findElsewhereMatches(
+      ctx,
+      args.level,
+      args.parentId,
+      args.value,
+    );
+  },
+});
+
 export const addCustomSelectorOption = mutation({
   args: {
     level: levelValidator,
     value: v.string(),
     parentId: v.optional(v.id("selectorOptions")),
     userId: v.optional(v.string()),
+    // NEO-219: the operator saw "'X' already exists under 2021 › All Brands"
+    // and chose "Create here anyway" (Jason 2026-09-04, decision 5).
+    //
+    // OPTIONAL and default-false, so the cross-parent refusal is the DEFAULT
+    // and creating a knowing duplicate is an explicit, auditable act rather
+    // than something a client gets by not knowing about the flag.
+    allowDuplicateElsewhere: v.optional(v.boolean()),
   },
   returns: v.id("selectorOptions"),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
-    const { level, value, parentId, userId } = args;
+    const { level, parentId, userId } = args;
+
+    // NEO-219: validate BEFORE anything else. `checkSelectorValue` never ran
+    // on this path — the custom field trimmed for emptiness and nothing more —
+    // so `2o24` became a `year` row that every year-parsing consumer silently
+    // fails to read. Same function the form calls, so the inline error and
+    // this refusal are the same sentence.
+    const checked = checkCustomSelectorValue(level, args.value);
+    if (!checked.ok) {
+      throw new ConvexError({
+        code: "CUSTOM_VALUE_INVALID",
+        reason: checked.reason,
+      });
+    }
+    const value = checked.value;
 
     // NEO-71-74: fetch the parent once, up front — reused both for the
     // fresh row's copy-down `features` snapshot below and for the
@@ -1580,6 +1848,24 @@ export const addCustomSelectorOption = mutation({
       // possible under it). The FE drives the actual selection/drill; this is
       // the idempotent + race-safe backstop.
       return duplicate._id;
+    }
+
+    // NEO-219: only now — AFTER the per-parent idempotent return above, which
+    // `syncSetsAcrossManufacturers` depends on and which stays byte-identical
+    // — ask whether this name lives under a DIFFERENT parent in the same
+    // scope. Refusing before that return would break the internal caller and
+    // turn "typing a name that already exists here" into an error instead of a
+    // selection.
+    //
+    // For every level but setName/insert/parallel the scope IS the parent, so
+    // the search is one indexed read that returns nothing (the own-parent rows
+    // are excluded) and this is a no-op — which is what keeps the internal
+    // "All Brands" manufacturer creation unaffected.
+    if (!args.allowDuplicateElsewhere) {
+      const matches = await findElsewhereMatches(ctx, level, parentId, value);
+      if (matches.length > 0) {
+        throw new ConvexError({ code: "CUSTOM_EXISTS_ELSEWHERE", matches });
+      }
     }
 
     const features = {
@@ -1803,6 +2089,84 @@ export const attachPlatformIds = mutation({
   },
 });
 
+// ───────────────────────────────────────────────────────────────────────────
+// NEO-219 A — how many cards hang off each mapping slot
+// ───────────────────────────────────────────────────────────────────────────
+
+type SlotCardCounts = {
+  /** BSC slot key (`b0`, `b1`, …) → cards whose `platformData.bsc.src` is it. */
+  bsc: Record<string, number>;
+  sportlots: Record<string, number>;
+  /**
+   * Cards on the ROW, not the sum of the maps above.
+   *
+   * A card normally carries a `src` on BOTH sides, so summing the two maps
+   * double-counts it, and a card fetched before NEO-137 (or one whose ref
+   * could not be attributed) carries no `src` at all and appears in neither.
+   * "N cards are linked through the current mapping" wants this number; "N
+   * cards were fetched from THIS slot" wants a map entry.
+   */
+  total: number;
+};
+
+/**
+ * Tally a row's cards by mapping slot.
+ *
+ * There is deliberately NO index on `platformData.*.src` (schema.ts:727) — a
+ * per-slot count is `by_selector_option` + an in-memory tally, bounded by the
+ * same `MAX_CARDS_PER_COMMIT` ceiling a commit is (5000; the largest real
+ * checklist is ~300). Adding an index would cost a write on every card in
+ * every commit to serve a read that happens when an operator opens one
+ * confirm dialog.
+ *
+ * Shared by `getSlotCardCounts` (what the confirm dialog displays) and by
+ * `detachPlatformId` (what it re-checks before writing), so the number the
+ * operator acknowledged and the number the mutation validates against are
+ * produced by the same code.
+ */
+async function countCardsBySlot(
+  ctx: { db: QueryCtx["db"] },
+  selectorOptionId: Id<"selectorOptions">,
+): Promise<SlotCardCounts> {
+  const cards = await ctx.db
+    .query("cardChecklist")
+    .withIndex("by_selector_option", (q) =>
+      q.eq("selectorOptionId", selectorOptionId),
+    )
+    .collect();
+
+  const counts: SlotCardCounts = { bsc: {}, sportlots: {}, total: cards.length };
+  for (const card of cards) {
+    for (const side of PLATFORM_SIDES) {
+      const src = card.platformData?.[side]?.src;
+      if (!src) continue;
+      counts[side][src] = (counts[side][src] ?? 0) + 1;
+    }
+  }
+  return counts;
+}
+
+/**
+ * NEO-219 A — "how many cards would this detach orphan?", read reactively by
+ * the detach confirm in `MultiSourcePanel` and by the Base re-map notice.
+ *
+ * Returns zeros for a row that does not exist rather than throwing: this is a
+ * live subscription, and a row deleted (or a selection cleared) under an open
+ * dialog must not turn the column into an error boundary.
+ */
+export const getSlotCardCounts = query({
+  args: { selectorOptionId: v.id("selectorOptions") },
+  returns: v.object({
+    bsc: v.record(v.string(), v.number()),
+    sportlots: v.record(v.string(), v.number()),
+    total: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    return await countCardsBySlot(ctx, args.selectorOptionId);
+  },
+});
+
 /**
  * Detach a single platform ID. Refuses to detach the reconciliation primary
  * unless the caller passes `confirmPrimary: true` — the operator UI shows an
@@ -1830,10 +2194,25 @@ export const detachPlatformId = mutation({
     // is exactly what the UI renders a row per.
     slot: v.string(),
     confirmPrimary: v.optional(v.boolean()),
+    // NEO-219: the card count the operator was SHOWN when they confirmed.
+    //
+    // OPTIONAL, and absent means "do not check" — an older bundle, and every
+    // existing caller/test, keeps working unchanged. When present and no
+    // longer true (a checklist commit landed while the dialog sat open), the
+    // detach is refused with the fresh count rather than silently orphaning a
+    // different number of cards than the sentence the operator read. Mirrors
+    // NEO-211's optimistic-concurrency shape.
+    acknowledgedCards: v.optional(v.number()),
   },
   returns: v.object({
     success: v.boolean(),
     message: v.string(),
+    // NEO-219: cards whose `platformData.<side>.src` named the slot that was
+    // just retired. Their marketplace ref survives; its attribution does not
+    // (`platformSlotSeq` never rewinds — see the patch below). Reported so the
+    // FE can say what happened instead of the operator finding out at the next
+    // checklist fetch. 0 on the no-op path.
+    orphanedCards: v.number(),
   }),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
@@ -1850,7 +2229,11 @@ export const detachPlatformId = mutation({
     }
     const attachedId = idForSlot(row, args.side, args.slot);
     if (attachedId === undefined) {
-      return { success: true, message: "Nothing to detach (slot not attached)" };
+      return {
+        success: true,
+        message: "Nothing to detach (slot not attached)",
+        orphanedCards: 0,
+      };
     }
     const isPrimary = args.slot === primarySlot(row, args.side);
     if (isPrimary && !args.confirmPrimary) {
@@ -1858,6 +2241,25 @@ export const detachPlatformId = mutation({
         `Refusing to detach the reconciliation primary (${args.side}=${attachedId}). ` +
           `Pass confirmPrimary to detach it anyway, or re-run set reconciliation to change the primary.`,
       );
+    }
+
+    // NEO-219: count BEFORE writing, and re-check the operator's
+    // acknowledgement against it. The primary guard above is deliberately
+    // untouched and still runs first — it is a structural refusal about the
+    // mapping, this is a freshness check about the cards.
+    const counts = await countCardsBySlot(ctx, args.selectorOptionId);
+    const orphanedCards = counts[args.side][args.slot] ?? 0;
+    if (
+      args.acknowledgedCards !== undefined &&
+      args.acknowledgedCards !== orphanedCards
+    ) {
+      // Nothing is written. The FE keeps the dialog open and re-renders the
+      // sentence with `cards`, so the operator confirms a number that is
+      // still true.
+      throw new ConvexError({
+        code: "DETACH_COUNT_CHANGED",
+        cards: orphanedCards,
+      });
     }
 
     const detached = detachSlot(row, args.side, args.slot);
@@ -1889,7 +2291,7 @@ export const detachPlatformId = mutation({
       ...(isPrimary ? { primaryPlatformId: primaryPatch } : {}),
       lastUpdated: Date.now(),
     });
-    return { success: true, message: "Detached" };
+    return { success: true, message: "Detached", orphanedCards };
   },
 });
 
@@ -1985,6 +2387,409 @@ export const renamePlatformLabel = mutation({
  * machine-readable `code` so the FE can hide the control rather than
  * string-matching a message.
  */
+// ───────────────────────────────────────────────────────────────────────────
+// NEO-219 C — the ONE sanctioned selectorOptions delete
+// ───────────────────────────────────────────────────────────────────────────
+//
+// "Sets are fixed, never deleted" is still the governing rule. The single
+// exception Jason sanctioned on 2026-09-03 is a row with NOTHING below it:
+// no child rows, no cards, no cross-listings, and at sport level no
+// players/teams/leagues. Emptiness is checked HERE, server-side, on every
+// call — the FE's disabled state is an affordance, not the guard.
+//
+// Deleting an empty row cannot lose data by construction, which is what makes
+// it safe: if a row has no children, its subtree IS itself, so the check is a
+// handful of indexed point lookups rather than a walk. Custom or synced makes
+// no difference (decision 1) — an empty SYNCED row deleted today is simply
+// re-inserted by the next sync of its parent, which the return value says so
+// the FE can tell the operator.
+//
+// Deliberately NOT here: any cascade. A row with something below it is
+// refused with what it holds, and the operator empties it first.
+
+/** Ceiling on how many holding rows are read to produce a count. */
+const HOLDING_SCAN_CAP = 1000;
+/** How many names are carried back so the refusal can NAME what it found. */
+const HOLDING_EXAMPLE_LIMIT = 3;
+/**
+ * Ceiling on the rows one delete may sweep with the row.
+ *
+ * Above it the delete REFUSES rather than issuing an unbounded write batch
+ * inside a single transaction. A row carrying more archived review decisions
+ * than this is not the "nothing below it" case the exception was sanctioned
+ * for, so refusing is also the honest answer, not just the cheap one.
+ */
+const TRANSIENT_DELETE_CAP = 500;
+
+const holdingKindValidator = v.union(
+  v.literal("rows"),
+  v.literal("cards"),
+  v.literal("crossListings"),
+  v.literal("players"),
+  v.literal("teams"),
+  v.literal("leagues"),
+  // NEO-219 security condition 2 — staged checklist-review state.
+  v.literal("review"),
+);
+
+const holdingValidator = v.object({
+  kind: holdingKindValidator,
+  /**
+   * Saturates at HOLDING_SCAN_CAP. The number is what the operator reads in
+   * "Holds 3 sets and 220 cards"; the REFUSAL only needs to know the list is
+   * non-empty, so an unbounded `.collect()` of a 5000-card checklist to make a
+   * cosmetic number exact is not worth the read budget.
+   */
+  count: v.number(),
+  /**
+   * Always EMPTY for `kind: "review"`. The staged rows are another operator's
+   * in-progress work — unreviewed player and team names off a checklist. The
+   * refusal needs to say "a review is staged here", not leak its contents into
+   * a dialog.
+   */
+  examples: v.array(v.string()),
+  /**
+   * `kind: "rows"` ONLY, and only when every child shares one level — what the
+   * children ARE, so the FE can say "3 parallels" rather than "3 rows".
+   *
+   * "rows" cannot be named from the PARENT's level: a `variantType` legitimately
+   * holds `insert` children (an Insert variant type) or `parallel` children
+   * (parallels of Base), so the parent tells you nothing. When the children are
+   * genuinely mixed this is ABSENT rather than a guess — the FE falls back to
+   * the neutral "3 rows", which is true, instead of naming three parallels that
+   * are actually two parallels and an insert.
+   *
+   * Absent on every other kind: `cards` / `players` / `teams` / `leagues` /
+   * `crossListings` already say what they are.
+   */
+  level: v.optional(levelValidator),
+});
+
+type Holding = {
+  kind:
+    | "rows"
+    | "cards"
+    | "crossListings"
+    | "players"
+    | "teams"
+    | "leagues"
+    | "review";
+  count: number;
+  examples: string[];
+  level?: Level;
+};
+
+const ALL_SELECTOR_LEVELS = [
+  "sport",
+  "year",
+  "manufacturer",
+  "setName",
+  "variantType",
+  "insert",
+  "parallel",
+] as const;
+
+/**
+ * Everything that would be orphaned by deleting this row.
+ *
+ * Read by `getSelectorOptionHoldings` (the affordance's disabled state and its
+ * reason text) and re-read by `deleteSelectorOption` inside the transaction
+ * that deletes. The mutation never trusts the query's answer — a checklist
+ * commit can land between the two.
+ *
+ * `entityReviewQueue` / `checklistCandidates` / `entityReviewSkips` /
+ * `selectorSyncStatus` are NOT holdings. They are transient per-batch or
+ * per-column state whose only meaning is "a fetch is/was in flight here";
+ * nothing an operator would mourn, and they go with the row.
+ */
+async function collectSelectorOptionHoldings(
+  ctx: { db: QueryCtx["db"] },
+  row: Doc<"selectorOptions">,
+): Promise<Holding[]> {
+  const holds: Holding[] = [];
+  const pushNamed = (kind: Holding["kind"], rows: Array<{ name: string }>) => {
+    if (rows.length === 0) return;
+    holds.push({
+      kind,
+      count: rows.length,
+      examples: rows.slice(0, HOLDING_EXAMPLE_LIMIT).map((r) => r.name),
+    });
+  };
+  const cardLabel = (card: { cardNumber: string; cardName: string }): string =>
+    `#${card.cardNumber} ${card.cardName}`.trim();
+
+  const childRows = await ctx.db
+    .query("selectorOptions")
+    .withIndex("by_parent", (q) => q.eq("parentId", row._id))
+    .take(HOLDING_SCAN_CAP);
+  if (childRows.length > 0) {
+    const levels = new Set(childRows.map((child) => child.level));
+    holds.push({
+      kind: "rows",
+      count: childRows.length,
+      examples: childRows
+        .slice(0, HOLDING_EXAMPLE_LIMIT)
+        .map((child) => child.value),
+      // One level, or none at all — never the most common one. See the
+      // validator above for why a guess is worse than silence here.
+      ...(levels.size === 1 ? { level: childRows[0].level } : {}),
+    });
+  }
+
+  const cards = await ctx.db
+    .query("cardChecklist")
+    .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", row._id))
+    .take(HOLDING_SCAN_CAP);
+  if (cards.length > 0) {
+    holds.push({
+      kind: "cards",
+      count: cards.length,
+      examples: cards.slice(0, HOLDING_EXAMPLE_LIMIT).map(cardLabel),
+    });
+  }
+
+  // Guest appearances: the card lives under ANOTHER row, so deleting this one
+  // would strand the junction row rather than the card (NEO-21).
+  const crossListings = await ctx.db
+    .query("cardCrossListings")
+    .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", row._id))
+    .take(HOLDING_SCAN_CAP);
+  if (crossListings.length > 0) {
+    const examples: string[] = [];
+    for (const link of crossListings.slice(0, HOLDING_EXAMPLE_LIMIT)) {
+      const card = await ctx.db.get(link.cardChecklistId);
+      examples.push(card ? cardLabel(card) : "(card no longer exists)");
+    }
+    holds.push({
+      kind: "crossListings",
+      count: crossListings.length,
+      examples,
+    });
+  }
+
+  // ── NEO-219 security condition 2: in-flight checklist work counts ──────
+  //
+  // A set under review has ~900 staged `checklistCandidates` and a queue of
+  // unresolved player/team names, but NOT ONE `cardChecklist` row yet — the
+  // cards only land at commit. So the pre-condition window is exactly the
+  // window in which another admin's review is live, and treating those tables
+  // as "transient, delete them with the row" made the delete MOST available
+  // precisely when it was most destructive.
+  //
+  // Worse, `commitCardChecklist` is an ACTION (prelude → chunks → finalize).
+  // Its phases are separate transactions, so OCC cannot serialise a delete
+  // against it: a delete landing between the prelude and a chunk leaves the
+  // chunks inserting cards that point at a row which no longer exists —
+  // `resolveCardSlots` degrades to `() => ({})` for a missing row rather than
+  // throwing, so every one of those cards would store with no slot
+  // attribution at all. `commitCardChecklistChunk` now fails closed on a
+  // missing row as well; this is the half that stops the delete.
+  const stagedCandidates = await ctx.db
+    .query("checklistCandidates")
+    .withIndex("by_selector_option_and_user", (q) =>
+      q.eq("selectorOptionId", row._id),
+    )
+    .take(HOLDING_SCAN_CAP);
+  const stagedQueue = await ctx.db
+    .query("entityReviewQueue")
+    .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", row._id))
+    .take(HOLDING_SCAN_CAP);
+  // `entityReviewSkips` IS still swept with the row — a "not a person" ruling
+  // is meaningless once the set is gone. It is counted here only to keep the
+  // sweep bounded: above the cap the delete refuses instead of issuing an
+  // unbounded write batch (security condition 3a).
+  const archivedSkips = await ctx.db
+    .query("entityReviewSkips")
+    .withIndex("by_selector_option_and_kind_and_name", (q) =>
+      q.eq("selectorOptionId", row._id),
+    )
+    .take(TRANSIENT_DELETE_CAP + 1);
+  const skipsOverCap = archivedSkips.length > TRANSIENT_DELETE_CAP;
+  const reviewCount =
+    stagedCandidates.length +
+    stagedQueue.length +
+    (skipsOverCap ? archivedSkips.length : 0);
+  if (reviewCount > 0) {
+    holds.push({ kind: "review", count: reviewCount, examples: [] });
+  }
+
+  // NEO-96: players/teams/leagues reference a SPORT row by id. Nothing points
+  // at any other level, so this whole block is skipped elsewhere.
+  if (row.level === "sport") {
+    pushNamed(
+      "players",
+      await ctx.db
+        .query("players")
+        .withIndex("by_sport_id", (q) => q.eq("sportId", row._id))
+        .take(HOLDING_SCAN_CAP),
+    );
+    pushNamed(
+      "teams",
+      await ctx.db
+        .query("teams")
+        .withIndex("by_sport_id", (q) => q.eq("sportId", row._id))
+        .take(HOLDING_SCAN_CAP),
+    );
+    pushNamed(
+      "leagues",
+      await ctx.db
+        .query("leagues")
+        .withIndex("by_sport_id", (q) => q.eq("sportId", row._id))
+        .take(HOLDING_SCAN_CAP),
+    );
+  }
+
+  return holds;
+}
+
+/**
+ * NEO-219 C — reactive read of what a row holds, for the delete affordance's
+ * disabled state and its `aria-describedby` reason. DISPLAY ONLY: the mutation
+ * re-checks everything inside its own transaction.
+ */
+export const getSelectorOptionHoldings = query({
+  args: { id: v.id("selectorOptions") },
+  returns: v.object({
+    holds: v.array(holdingValidator),
+    /** `refusesValueRename` — a non-custom variantType. Never deletable. */
+    protected: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    const row = await ctx.db.get(args.id);
+    // A row that has just been deleted (or a stale subscription) reads as
+    // "nothing to hold", not an error — this query is live under an open
+    // column and must not turn it into an error boundary.
+    if (!row) return { holds: [], protected: false };
+    return {
+      holds: await collectSelectorOptionHoldings(ctx, row),
+      protected: refusesValueRename(row),
+    };
+  },
+});
+
+/**
+ * NEO-219 C — delete ONE empty selectorOptions row.
+ *
+ * Refuses, writing nothing, when:
+ *   • the row is a non-custom `variantType` (`refusesValueRename`) —
+ *     `SELECTOR_ROW_PROTECTED`. Base/Insert/Parallel/Promo are load-bearing
+ *     strings the sync, `getBaseVariantBySet` and the BSC facet derivation all
+ *     resolve by name; the sync would also just re-create them.
+ *   • anything hangs off it — `SELECTOR_ROW_NOT_EMPTY` with the holdings, so
+ *     the FE can say "Holds 3 sets and 220 cards" rather than "cannot delete".
+ *
+ * One transaction: the transient rows, the row itself and the parent's
+ * `children` patch either all land or none do.
+ */
+export const deleteSelectorOption = mutation({
+  args: { id: v.id("selectorOptions") },
+  returns: v.object({
+    deleted: v.boolean(),
+    /** Where the selection should fall back to. Absent for a root sport row. */
+    parentId: v.optional(v.id("selectorOptions")),
+    /**
+     * The row carried a marketplace id, so the next sync of its parent will
+     * very likely re-create it. Present only when true — the FE appends "the
+     * next sync of this column could add it back" to the success notice
+     * (decision 1).
+     */
+    syncedBack: v.optional(v.boolean()),
+  }),
+  handler: async (ctx, args) => {
+    // NEO-219 security condition 5: the row itself is gone afterwards, so this
+    // log line is the ONLY audit trail the one sanctioned delete leaves. Who
+    // did it has to be on it.
+    const adminUserId = await requireAdmin(ctx);
+    const row = await ctx.db.get(args.id);
+    if (!row) {
+      throw new Error(`selectorOptions row not found: ${args.id}`);
+    }
+
+    if (refusesValueRename(row)) {
+      throw new ConvexError({ code: "SELECTOR_ROW_PROTECTED" });
+    }
+
+    const holds = await collectSelectorOptionHoldings(ctx, row);
+    if (holds.length > 0) {
+      throw new ConvexError({ code: "SELECTOR_ROW_NOT_EMPTY", holds });
+    }
+
+    // ── transient state keyed on the row, deleted WITH it ──────────────────
+    //
+    // `checklistCandidates` and `entityReviewQueue` are NOT here: staged
+    // review work is a HOLDING now (see collectSelectorOptionHoldings), so
+    // reaching this line already proves both are empty. Deleting another
+    // operator's live review was the point of security condition 2.
+    //
+    // What is left is state that means nothing without the row, and every
+    // sweep is bounded: the holdings check above refused anything carrying
+    // more than TRANSIENT_DELETE_CAP skips, so the `.take` here is a belt on
+    // top of that rather than a silent truncation.
+    const skips = await ctx.db
+      .query("entityReviewSkips")
+      .withIndex("by_selector_option_and_kind_and_name", (q) =>
+        q.eq("selectorOptionId", row._id),
+      )
+      .take(TRANSIENT_DELETE_CAP);
+    for (const doc of skips) await ctx.db.delete(doc._id);
+
+    // A status row is keyed on (childLevel, parentId), so the ones belonging
+    // to this row are its CHILD columns' — one indexed lookup per level.
+    // `setSelectorSyncStatus` keeps at most one row per (level, parentId), so
+    // this is ≤ 7 rows in practice; the cap only exists so a future writer
+    // that stops upserting cannot turn this into an unbounded batch.
+    for (const level of ALL_SELECTOR_LEVELS) {
+      const statuses = await ctx.db
+        .query("selectorSyncStatus")
+        .withIndex("by_level_and_parent", (q) =>
+          q.eq("level", level).eq("parentId", row._id),
+        )
+        .take(TRANSIENT_DELETE_CAP);
+      for (const doc of statuses) await ctx.db.delete(doc._id);
+    }
+
+    await ctx.db.delete(row._id);
+
+    // NEO-85: write-if-changed, same discipline as every other children patch
+    // in this file — a byte-identical patch still invalidates every query that
+    // read the parent and reflows the SetSelector columns.
+    if (row.parentId) {
+      const parent = await ctx.db.get(row.parentId);
+      if (parent) {
+        const next = (parent.children ?? []).filter(
+          (childId) => childId !== row._id,
+        );
+        if (!valuesDeepEqual(parent.children ?? [], next)) {
+          await ctx.db.patch(row.parentId, { children: next });
+        }
+      }
+    }
+
+    const syncedBack =
+      slotIds(row, "bsc").length > 0 || slotIds(row, "sportlots").length > 0;
+
+    console.log(
+      JSON.stringify({
+        msg: "selector_option_deleted",
+        adminUserId,
+        id: row._id,
+        level: row.level,
+        value: truncateForLog(row.value),
+        isCustom: row.isCustom === true,
+        syncedBack,
+        parentId: row.parentId ?? null,
+      }),
+    );
+
+    return {
+      deleted: true,
+      ...(row.parentId ? { parentId: row.parentId } : {}),
+      ...(syncedBack ? { syncedBack: true } : {}),
+    };
+  },
+});
+
 export const renameSelectorOption = mutation({
   args: {
     id: v.id("selectorOptions"),
@@ -3715,6 +4520,16 @@ export const setVariantTypePlatformData = mutation({
       isInsert: v.optional(v.boolean()),
       isParallel: v.optional(v.boolean()),
     })),
+    // NEO-219: the row's `lastUpdated` as the picker read it.
+    //
+    // OPTIONAL — absent means "do not check", which is what every existing
+    // caller (and an older bundle mid-deploy) sends, so this is purely
+    // additive. Present and stale means the mapping moved under an open Base
+    // picker, and `setPrimarySlotId` below REUSES the primary slot key: a
+    // blind write would silently re-point every card already on that slot at
+    // whatever the other session just mapped. Refuse instead and let the
+    // operator re-read.
+    baseVersion: v.optional(v.number()),
   },
   returns: v.object({
     success: v.boolean(),
@@ -3735,6 +4550,14 @@ export const setVariantTypePlatformData = mutation({
       throw new Error(
         `setVariantTypePlatformData only operates on Base variantTypes; got "${row.value}"`,
       );
+    }
+    // Freshness check runs after the structural ones: a caller aimed at the
+    // wrong row should hear that, not "stale".
+    if (
+      args.baseVersion !== undefined &&
+      args.baseVersion !== row.lastUpdated
+    ) {
+      throw new ConvexError({ code: "BASE_MAPPING_STALE" });
     }
     // NEO-137: the incoming ids must be resolved to SLOTS. Spreading them
     // straight over `row.platformData` used to produce a mixed object
@@ -8030,6 +8853,25 @@ export const commitCardChecklistChunk = internalMutation({
     staleDecisionIds: Array<Id<"cardChecklist">>;
     contentAppliedCount: number;
   }> => {
+    // NEO-219 security condition 2 — fail closed on a row deleted mid-commit.
+    //
+    // `commitCardChecklist` is an ACTION: prelude, chunks and finalize are
+    // separate transactions, so nothing serialises them against a concurrent
+    // `deleteSelectorOption`. `resolveCardSlots` below returns `() => ({})`
+    // for a missing row, which is right for its own contract (a row with no
+    // slots attributes nothing) but WRONG here — it would let this chunk
+    // insert several hundred cards pointing at a row that no longer exists,
+    // silently and with no slot attribution. The delete now refuses while a
+    // review is staged; this is the other half, for the window the holdings
+    // check cannot cover.
+    const parentRow = await ctx.db.get(args.selectorOptionId);
+    if (!parentRow) {
+      throw new ConvexError({
+        code: "SELECTOR_ROW_DELETED",
+        selectorOptionId: args.selectorOptionId,
+      });
+    }
+
     const toStoredPlatformData = await resolveCardSlots(
       ctx,
       args.selectorOptionId,

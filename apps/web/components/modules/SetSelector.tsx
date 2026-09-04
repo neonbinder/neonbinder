@@ -74,7 +74,25 @@ import VariantMetadataEditor from "../SetSelector/VariantMetadataEditor";
 import ParallelGroupingModal from "../SetSelector/ParallelGroupingModal";
 import MultiSourcePanel from "../SetSelector/MultiSourcePanel";
 import SetAttributesPanel from "../SetSelector/SetAttributesPanel";
+import type { SelectorLevel } from "../SetSelector/selector-sync-feedback";
 import NeonButton from "./NeonButton";
+
+/**
+ * Which numeric cascade level each named level occupies.
+ *
+ * `clearFrom(n)` clears level n and everything deeper, so a deleted row's own
+ * level is the argument: deleting a set clears the set AND the variant type,
+ * variant and sub-variant hanging off it.
+ */
+const LEVEL_DEPTH: Record<SelectorLevel, number> = {
+  sport: 1,
+  year: 2,
+  manufacturer: 3,
+  setName: 4,
+  variantType: 5,
+  insert: 6,
+  parallel: 7,
+};
 
 export default function SetSelector() {
   // Level 1: Sport
@@ -231,6 +249,61 @@ export default function SetSelector() {
     setSelectedVariantOfVariantId(id);
   };
 
+  // NEO-219: the column row is the focus parking spot after a row the operator
+  // was standing on disappears (a sanctioned delete unmounts the panel that
+  // held focus, and the browser would otherwise drop it to <body>, restarting a
+  // keyboard user at the top of the document).
+  const columnRowRef = useRef<HTMLDivElement | null>(null);
+
+  // NEO-219: the row the attributes panel was editing has been deleted
+  // server-side. Drop the selection from that level down so nothing downstream
+  // is still querying a row that no longer exists.
+  const handleRowDeleted = (level: SelectorLevel) => {
+    const depth = LEVEL_DEPTH[level];
+    if (depth <= 1) setSelectedSportId(null);
+    clearFrom(depth === 1 ? 2 : depth);
+    columnRowRef.current?.focus();
+  };
+
+  /**
+   * NEO-219: drill the whole cascade onto a row that lives under a DIFFERENT
+   * parent, offered when the custom-entry form finds the typed value elsewhere.
+   *
+   * The level handlers are called in order and each clears everything below
+   * itself, so the shallowest write happens first and the deepest write wins —
+   * React batches all of them into one render, so the operator sees the final
+   * selection rather than a cascade animating through intermediate states.
+   */
+  const handleDrillToExisting = (
+    path: Array<{ _id: GenericId<"selectorOptions">; level: SelectorLevel }>,
+  ) => {
+    for (const step of path) {
+      switch (step.level) {
+        case "sport":
+          handleSportSelect(step._id);
+          break;
+        case "year":
+          handleYearSelect(step._id);
+          break;
+        case "manufacturer":
+          handleManufacturerSelect(step._id);
+          break;
+        case "setName":
+          handleSetSelect(step._id);
+          break;
+        case "variantType":
+          handleVariantTypeSelect(step._id);
+          break;
+        case "insert":
+          handleVariantSelect(step._id);
+          break;
+        case "parallel":
+          handleVariantOfVariantSelect(step._id);
+          break;
+      }
+    }
+  };
+
   // CardChecklist attaches to the deepest selected node — for Base
   // variantTypes that's the variantType row itself (Base is terminal).
   const cardChecklistId =
@@ -327,8 +400,12 @@ export default function SetSelector() {
           then can't tap it. Mac overlay scrollbars (0px) hide this locally —
           custom-entry-survives-resync 8/8 CI failure, NEO root-cause. */}
       <div
+        ref={columnRowRef}
+        // a11y: -1 keeps the row out of the tab order while leaving it a valid
+        // programmatic focus target for `handleRowDeleted`'s focus park.
+        tabIndex={-1}
         data-set-selector-scroll
-        className="flex flex-row gap-4 overflow-x-auto pb-4 pl-4"
+        className="flex flex-row gap-4 overflow-x-auto pb-4 pl-4 focus:outline-none"
       >
         {/* 1. Sport (SL & BSC) */}
         <ResilientEntityColumn
@@ -345,6 +422,7 @@ export default function SetSelector() {
           isVisible={true}
           level="sport"
           onSelectExisting={handleSportSelect}
+          onDrillToExisting={handleDrillToExisting}
           useEnsureSync
           syncingLabel="Syncing Sport Options"
         />
@@ -368,6 +446,7 @@ export default function SetSelector() {
           level="year"
           parentId={selectedSportId || undefined}
           onSelectExisting={handleYearSelect}
+          onDrillToExisting={handleDrillToExisting}
           useEnsureSync
           syncingLabel="Syncing Year Options"
         />
@@ -391,6 +470,7 @@ export default function SetSelector() {
           level="manufacturer"
           parentId={selectedYearId || undefined}
           onSelectExisting={handleManufacturerSelect}
+          onDrillToExisting={handleDrillToExisting}
           useEnsureSync
           syncingLabel="Syncing Manufacturer Options"
         />
@@ -417,6 +497,7 @@ export default function SetSelector() {
           level="setName"
           parentId={selectedManufacturerId || undefined}
           onSelectExisting={handleSetSelect}
+          onDrillToExisting={handleDrillToExisting}
           useEnsureSync
           syncingLabel="Syncing Sets"
         />
@@ -440,6 +521,7 @@ export default function SetSelector() {
           level="variantType"
           parentId={selectedSetId || undefined}
           onSelectExisting={handleVariantTypeSelect}
+          onDrillToExisting={handleDrillToExisting}
           useEnsureSync
           syncingLabel="Syncing Variant Types"
         />
@@ -474,6 +556,7 @@ export default function SetSelector() {
             level="insert"
             parentId={selectedVariantTypeId || undefined}
             onSelectExisting={handleVariantSelect}
+            onDrillToExisting={handleDrillToExisting}
             extraActions={
               selectedVariantTypeId ? (
                 <NeonButton
@@ -512,6 +595,7 @@ export default function SetSelector() {
             level="parallel"
             parentId={selectedVariantId || undefined}
             onSelectExisting={handleVariantOfVariantSelect}
+            onDrillToExisting={handleDrillToExisting}
           />
         )}
 
@@ -527,6 +611,11 @@ export default function SetSelector() {
               key={`${selectedVariantTypeId}-${baseMappingOpen ? "remap" : "auto"}`}
               variantTypeId={selectedVariantTypeId}
               autoOpen={true}
+              // NEO-219: the manual trigger is a RE-MAP — an existing mapping
+              // that already holds cards is about to be re-pointed — so the
+              // dialog states the impact and the write is version-guarded. The
+              // `key` above already gives the two modes separate instances.
+              mode={baseMappingOpen ? "remap" : "initial"}
               onClose={() => setBaseMappingOpen(false)}
             />
           )}
@@ -562,6 +651,7 @@ export default function SetSelector() {
         <SetAttributesPanel
           selectorOptionId={deepestSelectedId as Id<"selectorOptions">}
           defaultCollapsed={true}
+          onDeleted={handleRowDeleted}
         />
       )}
 
