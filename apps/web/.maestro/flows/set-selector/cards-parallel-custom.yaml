@@ -63,16 +63,31 @@ tags:
 
 # ── …and it is a real, selectable entry: tapping it opens its CardChecklist ──
 # The CardChecklist panel renders BELOW the columns (off-fold on 1024×629), so
-# scroll it into view. The page is settled by now (the entry+badge asserts above
+# scroll it into view. The page is settled by now (the entry assert above
 # already passed without scrolling), so this scroll is clear of the fresh-render
-# CDP scroll bug that bit the drill.
+# CDP scroll bug that bit the drill. Centred, because the next step taps it (R8).
 - scrollUntilVisible:
     element:
       text: ".*Prizm Gold.*"
     centerElement: true
 - tapOn: ".*Prizm Gold.*"
+
+# R8 EXCEPTION — deliberately NOT centred. "Fetch from Marketplaces" is the last
+# thing on the page: with the checklist open there is only ~100px of document
+# below it, so at maximum scroll it sits at y≈500 and centring it at y≈315 is
+# unreachable. `centerElement` then swipes until it times out and reports the
+# element as missing while it is plainly in view — measured on the NEO-239 PR
+# preview at bounds [333,497][521,529] with the page already scrolled to its
+# limit (root y0 = -694). Nothing is tapped here; the scroll only has to bring
+# the checklist into view for the assert below, so plain visibility is both
+# sufficient and the only thing that can settle.
+#
+# What made this newly reachable: NEO-239 dropped MultiSourcePanel's
+# "hide the panel for a row with no marketplace ids" branch, so a hand-made
+# variant now renders the whole "Multi-source sets / Attach more… / BSC /
+# SportLots" block above its checklist. Any flow that centre-scrolls to
+# something at the bottom of a hand-made variant's checklist can hit this.
 - scrollUntilVisible:
     element:
       text: ".*Fetch from Marketplaces.*|Refresh"
-    centerElement: true
 - assertVisible: "No cards in this checklist yet."
