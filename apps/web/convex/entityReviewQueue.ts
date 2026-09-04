@@ -39,6 +39,10 @@ const enrichmentValidator = v.object({
     fromYear: v.number(),
     toYear: v.optional(v.number()),
   }))),
+  // NEO-235, player-only: Wikidata teams with no usable start year. Names
+  // only — they cannot become `teamYears` entries (which require `fromYear`)
+  // and are surfaced so the operator can see what was found. See schema.ts.
+  undatedCareerTeams: v.optional(v.array(v.string())),
   isHallOfFame: v.optional(v.boolean()),
   // NEO-212: player-only disambiguation context from Wikidata. See the
   // entityReviewQueue.enrichment comment in schema.ts.

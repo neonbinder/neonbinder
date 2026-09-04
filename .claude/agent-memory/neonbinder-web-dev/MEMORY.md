@@ -5,3 +5,5 @@
 - [Notice CTAs need a structural marker](feedback-notice-ctas-need-a-structural-marker.md) — gate a banner's extra affordance on an explicit `kind` on the state, never the tone bucket or the text
 - [E2E viewport is the UX constraint](e2e-viewport-is-the-ux-constraint.md) — status text goes next to its control; 1024x629 is the bar, and `role="status"` can hide a sighted-user gap
 - [Mid-build security conditions override the brief](feedback_midbuild_security_conditions.md) — security-auditor verdicts arrive mid-task as numbered conditions; fold them in, report per-condition with test names
+- [Verify external ids live](external-ids-must-be-verified-live.md) — hard-coded QIDs/vendor ids must be resolved against the source before merge; four HoF QIDs were wrong for months
+- [sportConfig is copied onto rows](sport-config-is-copied-onto-rows.md) — editing the defaults never reaches an existing deployment; a repair has to ship with the change

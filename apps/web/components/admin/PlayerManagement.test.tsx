@@ -26,6 +26,12 @@
  *  5. **`NAME_TAKEN` is offered as a destination, not just an error.** The
  *     mutation hands back the other row's id precisely so the operator is not
  *     left to go and search for it.
+ *  6. **The selected player is in the URL, both ways.** A career stint links
+ *     out to `/admin/teams`, so Back has to come home to the player the
+ *     operator left. Both halves are silent when they break: a deep link that
+ *     lands on an unselected list still renders a perfectly correct screen, and
+ *     a selection that never reaches the URL only shows up one navigation
+ *     later.
  *
  * --- Mocking strategy (mirrors EntityReviewWizard.test.tsx) ---
  * convex/react's useQuery/useMutation/useAction are module-mocked and routed by
@@ -35,9 +41,23 @@
  * re-exercise a typeahead.
  */
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent,
+  render as renderBare,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
+import type { ReactElement } from "react";
+import { MemoryRouter, useLocation } from "react-router";
 import { ConvexError } from "convex/values";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// NEO-235: the career-history rows link into Team Management, so the panel now
+// needs a router around it. Every render in this file goes through the same
+// wrapper rather than each call site growing one.
+const render = (ui: ReactElement) =>
+  renderBare(ui, { wrapper: MemoryRouter });
 
 // ---------------------------------------------------------------------------
 // Module mocks — declared before the component import
@@ -49,6 +69,9 @@ vi.mock("../../convex/_generated/api", () => ({
       listForManagement: "players.listForManagement",
       search: "players.search",
       get: "players.get",
+      // NEO-235: the deep-link path answers out of `getByIdParam`, which takes
+      // a raw string. `get` stays mocked because it stays exported.
+      getByIdParam: "players.getByIdParam",
       nearMatches: "players.nearMatches",
       createByAdmin: "players.createByAdmin",
       savePlayerFields: "players.savePlayerFields",
@@ -180,6 +203,20 @@ const BAD_QID_PLAYER = {
   lastUpdated: 1,
 };
 
+/**
+ * NEO-235 — `TROUT` a few seconds later, once the enrichment `createByAdmin`
+ * scheduled has written back. Exactly the three fields the detail panel seeds a
+ * draft from that enrichment fills in: career stints, the Wikidata id and the
+ * Hall of Fame flag.
+ */
+const ENRICHED_TROUT = {
+  ...TROUT,
+  isHallOfFame: true,
+  externalIds: { wikidataId: "Q194298" },
+  teamYears: [{ teamId: "t-reds", fromYear: 2011 }],
+  lastUpdated: 2,
+};
+
 const PLAYERS_BY_ID: Record<string, unknown> = {
   "p-griffey": GRIFFEY,
   "p-trout": TROUT,
@@ -187,12 +224,28 @@ const PLAYERS_BY_ID: Record<string, unknown> = {
   "p-badqid": BAD_QID_PLAYER,
 };
 
+/**
+ * NEO-235: `city` on one row and not the other is the whole point of the pair.
+ * The master row prints the nickname a fan says out loud, which it can only do
+ * for a team whose city was enriched — "Seattle Mariners" becomes "Mariners",
+ * while the un-enriched Reds keep their full name. Both branches are real:
+ * `teams.city` is optional and plenty of prod rows have never been enriched.
+ */
+/**
+ * The colour pairs are chosen for what they SCORE against the master row's two
+ * backgrounds (slate-900 #0f172a idle, #02192e selected), not for realism — the
+ * exact ratios are in the comment on each team. Every one of the four branches
+ * of `teamTextColor` has a team here, so none of them can rot unnoticed.
+ */
 const TEAMS = [
   {
     _id: "t-mariners",
     _creationTime: 1,
     name: "Seattle Mariners",
+    city: "Seattle",
     sportId: "sport-baseball",
+    // Primary clears the floor comfortably (9.8:1) — the plain case.
+    colors: { primary: "#5fd3bc", secondary: "#0c2c56" },
     lastUpdated: 1,
   },
   {
@@ -200,9 +253,101 @@ const TEAMS = [
     _creationTime: 1,
     name: "Cincinnati Reds",
     sportId: "sport-baseball",
+    // The franchise red is 2.9:1 on this row — under the floor, and exactly the
+    // shape of the problem: a team's signature colour is very often the one
+    // that cannot carry small text on a near-black surface. Secondary (17.9:1)
+    // is what it gets printed on, and is what the row uses instead.
+    colors: { primary: "#c6011f", secondary: "#ffffff" },
+    lastUpdated: 1,
+  },
+  {
+    _id: "t-drab",
+    _creationTime: 1,
+    name: "Midnight Navys",
+    sportId: "sport-baseball",
+    // 1.2:1 and 2.3:1 — a franchise built entirely out of near-blacks. Nothing
+    // here is readable, so the row keeps its muted default.
+    colors: { primary: "#132448", secondary: "#005c5c" },
+    lastUpdated: 1,
+  },
+  {
+    _id: "t-borderline",
+    _creationTime: 1,
+    name: "Borderline Blues",
+    sportId: "sport-baseball",
+    // Deliberately knife-edge: 4.513:1 on an IDLE row and 4.494:1 on a SELECTED
+    // one, i.e. astride the 4.5 floor and on opposite sides of it. The two
+    // backgrounds differ by well under a percent in luminance, so this is the
+    // only way to prove the check is handed the background the row is actually
+    // painted on rather than a single hardcoded one. Contrived, and says so.
+    colors: { primary: "#3c84c6", secondary: "#ffffff" },
     lastUpdated: 1,
   },
 ];
+
+/**
+ * NEO-235 — the two fixtures the master row's team nod is decided by.
+ *
+ * `TRADED_TWICE` separates SUMMED tenure from longest-single-stint: four years
+ * in Seattle plus another four beats one six-year run in Cincinnati, so the row
+ * must say Mariners. `pickDefaultTeamYear` (the spine designer's per-stint
+ * rule) would say Reds here — which is the reason the row does not use it.
+ *
+ * `STILL_PLAYING` pins the open-ended stint: no `toYear` means "still there",
+ * counted through the current year, so nine seasons in Cincinnati beat six in
+ * Seattle. Years are derived from the real current year rather than hardcoded
+ * because "still there" is a fact about now; a frozen literal would quietly
+ * stop testing anything as the fixture aged.
+ */
+const CURRENT_YEAR = new Date().getFullYear();
+
+const TRADED_TWICE = {
+  _id: "p-traded",
+  _creationTime: 5,
+  name: "Traded Twice",
+  nameNormalized: "traded twice",
+  sportId: "sport-baseball",
+  teamYears: [
+    { teamId: "t-mariners", fromYear: 2005, toYear: 2009 },
+    { teamId: "t-reds", fromYear: 2010, toYear: 2016 },
+    { teamId: "t-mariners", fromYear: 2017, toYear: 2021 },
+  ],
+  lastUpdated: 1,
+};
+
+const STILL_PLAYING = {
+  _id: "p-current",
+  _creationTime: 6,
+  name: "Still Playing",
+  nameNormalized: "playing still",
+  sportId: "sport-baseball",
+  teamYears: [
+    { teamId: "t-mariners", fromYear: 1990, toYear: 1996 },
+    { teamId: "t-reds", fromYear: CURRENT_YEAR - 9 },
+  ],
+  lastUpdated: 1,
+};
+
+/** One-team players, each pointing at one colour branch of the row label. */
+const DRAB_PLAYER = {
+  _id: "p-drab",
+  _creationTime: 7,
+  name: "Drab Fixture",
+  nameNormalized: "drab fixture",
+  sportId: "sport-baseball",
+  teamYears: [{ teamId: "t-drab", fromYear: 2000, toYear: 2010 }],
+  lastUpdated: 1,
+};
+
+const BORDERLINE_PLAYER = {
+  _id: "p-borderline",
+  _creationTime: 8,
+  name: "Borderline Fixture",
+  nameNormalized: "borderline fixture",
+  sportId: "sport-baseball",
+  teamYears: [{ teamId: "t-borderline", fromYear: 2000, toYear: 2010 }],
+  lastUpdated: 1,
+};
 
 // Mutable per-test query answers.
 let management: unknown;
@@ -221,6 +366,13 @@ function routeQuery(ref: string, args: Record<string, unknown>): unknown {
       return nearMatches;
     case "players.get":
       return PLAYERS_BY_ID[args.id as string] ?? null;
+    // NEO-235: same map, and the same `?? null` for anything not in it. That
+    // last part is the whole behaviour under test — the real query normalizes
+    // the string first and answers `null` for one that is not an id of this
+    // table at all, where `players.get` would have REJECTED the argument and
+    // thrown the query into the app-level error boundary.
+    case "players.getByIdParam":
+      return PLAYERS_BY_ID[args.id as string] ?? null;
     case "teams.getManyByIds":
       return TEAMS.filter((t) =>
         (args.ids as string[]).includes(t._id),
@@ -234,6 +386,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   for (const key of Object.keys(seenArgs)) delete seenArgs[key];
   lastPickerSportId = null;
+  // the id queries answer out of this map and two NEO-235 tests move a row
+  // under an open panel, so it is restored rather than left mutated.
+  PLAYERS_BY_ID["p-trout"] = TROUT;
+  PLAYERS_BY_ID["p-griffey"] = GRIFFEY;
   management = {
     players: [RICE, GRIFFEY, TROUT],
     totalCount: 3,
@@ -249,6 +405,17 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
 });
+
+/**
+ * The team nod on a given row. Found by its `title` (the full label, which is
+ * also what a truncated row recovers on hover) rather than by class or
+ * position, so the assertions below survive any restyling of the row.
+ */
+function teamNod(playerName: RegExp): HTMLElement {
+  const row = screen.getByRole("button", { name: playerName });
+  const label = row.textContent?.match(/Baseball(.*)$/)?.[1]?.trim() ?? "";
+  return within(row).getByTitle(label);
+}
 
 /** Open the detail panel on Ken Griffey Jr. */
 function selectGriffey() {
@@ -350,19 +517,148 @@ describe("PlayerManagement — the list", () => {
     ).toBeTruthy();
   });
 
-  it("badges Hall of Fame, stint count and a known Wikidata id", () => {
+  /**
+   * NEO-235 — the row says who, and which one. Sport and home franchise are the
+   * two things that tell two similarly-named players apart; the Hall of Fame
+   * tag, the stint count and the "Q…" Wikidata glyph tell them apart from
+   * nothing, and four competing sizes and colours per row made the names — the
+   * only thing anyone scans this list for — the hardest thing on it to read.
+   * They are asserted as ABSENT here because they are still rendered a few
+   * hundred lines away in the detail panel, so a regression that put them back
+   * on the row would otherwise show up nowhere.
+   */
+  it("shows the sport, and none of the detail-panel badges", () => {
     render(<PlayerManagement />);
     const row = screen.getByRole("button", { name: /Ken Griffey Jr\./ });
     expect(row.textContent).toContain("Baseball");
-    expect(row.textContent).toContain("HoF");
-    expect(row.textContent).toContain("2 stints");
-    expect(row.textContent).toContain("Q…");
+    expect(row.textContent).not.toContain("HoF");
+    expect(row.textContent).not.toContain("stint");
+    expect(row.textContent).not.toContain("Q…");
+  });
 
-    // Mike Trout has none of them — the badges mean something.
-    const plain = screen.getByRole("button", { name: /Mike Trout/ });
-    expect(plain.textContent).not.toContain("HoF");
-    expect(plain.textContent).not.toContain("stint");
-    expect(plain.textContent).not.toContain("Q…");
+  it("names the team a player spent longest with, as a fan says it", () => {
+    management = { players: [GRIFFEY], totalCount: 1, truncated: false };
+    render(<PlayerManagement />);
+
+    // Both of Griffey's stints are Seattle's, and Seattle has a `city`, so the
+    // row drops it: "Seattle Mariners" is how the table stores the team and
+    // "Mariners" is how anyone holding the card refers to it.
+    const row = screen.getByRole("button", { name: /Ken Griffey Jr\./ });
+    expect(row.textContent).toContain("Mariners");
+    expect(row.textContent).not.toContain("Seattle");
+  });
+
+  it("keeps the full name for a team with no city recorded", () => {
+    management = { players: [STILL_PLAYING], totalCount: 1, truncated: false };
+    render(<PlayerManagement />);
+
+    // A longer label is the safe failure; a wrong one is not.
+    expect(
+      screen.getByRole("button", { name: /Still Playing/ }).textContent,
+    ).toContain("Cincinnati Reds");
+  });
+
+  it("totals a player's stints per team rather than ranking single stints", () => {
+    management = { players: [TRADED_TWICE], totalCount: 1, truncated: false };
+    render(<PlayerManagement />);
+
+    // 4 + 4 in Seattle against a single 6 in Cincinnati. Ranking by longest
+    // SINGLE stint — what the spine designer's `pickDefaultTeamYear` does —
+    // would file him under the Reds, and the hobby would not.
+    const row = screen.getByRole("button", { name: /Traded Twice/ });
+    expect(row.textContent).toContain("Mariners");
+    expect(row.textContent).not.toContain("Reds");
+  });
+
+  it("counts an open-ended stint through the current year", () => {
+    management = { players: [STILL_PLAYING], totalCount: 1, truncated: false };
+    render(<PlayerManagement />);
+
+    // Nine seasons and counting in Cincinnati against six long-finished ones in
+    // Seattle. Treating the absent `toYear` as a zero-length stint — the easy
+    // bug — flips this to Mariners.
+    const row = screen.getByRole("button", { name: /Still Playing/ });
+    expect(row.textContent).toContain("Cincinnati Reds");
+    expect(row.textContent).not.toContain("Mariners");
+  });
+
+  it("shows the sport alone for a player with no career history", () => {
+    render(<PlayerManagement />);
+    const row = screen.getByRole("button", { name: /Mike Trout/ });
+    expect(row.textContent).toContain("Baseball");
+    expect(row.textContent).not.toContain("Mariners");
+    expect(row.textContent).not.toContain("Reds");
+  });
+
+  /**
+   * NEO-235 — the team nod is painted in the TEAM's colours, not NeonBinder's.
+   *
+   * A collector recognises a franchise by its livery before they have finished
+   * reading the word, which is the whole reason the owner asked for this. The
+   * gate is WCAG 1.4.3 (4.5:1 for text this size) and it is a real gate, not
+   * the informational readout the spine designer shows — this is UI, not ink on
+   * paper. Colour never carries meaning on its own here: the label reads the
+   * same word down every branch, so a muted row has lost decoration and no
+   * information.
+   */
+  it("paints the team nod in the team's primary colour when it is readable", () => {
+    management = { players: [GRIFFEY], totalCount: 1, truncated: false };
+    render(<PlayerManagement />);
+    expect(teamNod(/Ken Griffey Jr\./).style.color).toBe("#5fd3bc");
+  });
+
+  it("falls back to the secondary colour when the primary cannot be read", () => {
+    management = { players: [STILL_PLAYING], totalCount: 1, truncated: false };
+    render(<PlayerManagement />);
+
+    // The franchise red scores 2.9:1 on this row. Its secondary is the colour
+    // the team prints that red ON, so the fallback is usually the right colour
+    // for the team as well as the readable one.
+    expect(teamNod(/Still Playing/).style.color).toBe("#ffffff");
+  });
+
+  it("stays muted when neither team colour clears the contrast floor", () => {
+    management = { players: [DRAB_PLAYER], totalCount: 1, truncated: false };
+    render(<PlayerManagement />);
+
+    // No inline colour at all — the class-level slate-300 is what shows, and
+    // the label still names the team, so nothing is lost but the livery.
+    const nod = teamNod(/Drab Fixture/);
+    expect(nod.style.color).toBe("");
+    expect(nod.textContent).toBe("Midnight Navys");
+  });
+
+  it("measures the colour against the background the row is actually painted on", () => {
+    management = {
+      players: [BORDERLINE_PLAYER],
+      totalCount: 1,
+      truncated: false,
+    };
+    render(<PlayerManagement />);
+
+    // 4.513:1 on the idle row — over the floor, so the primary is used.
+    expect(teamNod(/Borderline Fixture/).style.color).toBe("#3c84c6");
+
+    // Selecting the row swaps in `bg-neon-blue/10`, and the same colour now
+    // scores 4.494:1 — under it. A check hardcoded to one background would
+    // leave the primary in place here.
+    fireEvent.click(screen.getByRole("button", { name: /Borderline Fixture/ }));
+    expect(teamNod(/Borderline Fixture/).style.color).toBe("#ffffff");
+  });
+
+  it("asks for every visible row's team in one batched lookup", () => {
+    management = {
+      players: [GRIFFEY, TRADED_TWICE, STILL_PLAYING],
+      totalCount: 3,
+      truncated: false,
+    };
+    render(<PlayerManagement />);
+
+    // Three players, four teams named between them, two distinct ids — one
+    // query, deduped. A per-row lookup would open a subscription per row, and
+    // this list holds up to 500.
+    const ids = lastArgs("teams.getManyByIds")?.ids as string[];
+    expect([...ids].sort()).toEqual(["t-mariners", "t-reds"]);
   });
 
   it("marks the open row as current", () => {
@@ -532,6 +828,40 @@ describe("PlayerManagement — the detail panel", () => {
     expect(
       screen.getByLabelText("Remove Seattle Mariners 2009 stint"),
     ).toBeTruthy();
+  });
+
+  it("links each stint to its team in Team Management", () => {
+    // NEO-235. Two assertions, and the second is the load-bearing one: the
+    // link wraps the WHOLE "{team} · {years}" string. A link around the team
+    // name alone would leave the row reading as two separate pieces of text,
+    // which is what both the Maestro flow (it matches that string and anchors
+    // a `below:` assertion on it) and the row-order test above depend on.
+    render(<PlayerManagement />);
+    selectGriffey();
+
+    const rows = screen
+      .getByRole("list", { name: "Career history" })
+      .querySelectorAll("li");
+
+    const links = Array.from(rows).map((li) => li.querySelector("a"));
+    expect(links.map((a) => a?.getAttribute("href"))).toEqual([
+      "/admin/teams?team=t-mariners",
+      "/admin/teams?team=t-mariners",
+    ]);
+    // The visible text is the accessible name — no aria-label overriding it.
+    expect(links.map((a) => a?.textContent)).toEqual([
+      "Seattle Mariners · 1989–1999",
+      "Seattle Mariners · 2009–present",
+    ]);
+    expect(links[0]?.getAttribute("title")).toBe(
+      "Open Seattle Mariners in Team Management",
+    );
+
+    // The row's own text is unchanged by the link — see above.
+    expect(Array.from(rows).map((li) => li.textContent)).toEqual([
+      "Seattle Mariners · 1989–1999Remove stint",
+      "Seattle Mariners · 2009–presentRemove stint",
+    ]);
   });
 
   it("scopes the team picker to the player's sport", () => {
@@ -743,6 +1073,118 @@ describe("PlayerManagement — the detail panel", () => {
 });
 
 // ---------------------------------------------------------------------------
+// NEO-235 — the panel follows the live row, and says so when it cannot
+// ---------------------------------------------------------------------------
+
+describe("PlayerManagement — an enrichment landing under an open panel", () => {
+  /** Open Mike Trout, then let the scheduled enrichment write back. */
+  function enrichUnderTheOpenPanel(
+    rerender: ReturnType<typeof render>["rerender"],
+  ) {
+    PLAYERS_BY_ID["p-trout"] = ENRICHED_TROUT;
+    rerender(<PlayerManagement />);
+  }
+
+  it("adopts the enriched row while the draft is untouched", () => {
+    // The bug NEO-235 was filed for: `createByAdmin` schedules enrichment, the
+    // row grows stints/QID/HoF seconds later, and every part of the screen
+    // reading the row directly moved while the draft did not — so the header
+    // link showed the QID over a Wikidata box that was still empty.
+    const { rerender } = render(<PlayerManagement />);
+    fireEvent.click(screen.getByRole("button", { name: /Mike Trout/ }));
+    expect(screen.getByText("No stints recorded yet.")).toBeTruthy();
+
+    enrichUnderTheOpenPanel(rerender);
+
+    expect(
+      (screen.getByLabelText("Wikidata id") as HTMLInputElement).value,
+    ).toBe("Q194298");
+    expect(
+      (screen.getByRole("checkbox", { name: "Hall of Fame" }) as HTMLInputElement)
+        .checked,
+    ).toBe(true);
+    expect(screen.getByText("Cincinnati Reds · 2011–present")).toBeTruthy();
+    // Adopted silently: nothing was at risk, so there is nothing to report...
+    expect(screen.queryByText(/updated elsewhere/)).toBeNull();
+    // ...and the draft now equals the row, so there is nothing to save either.
+    expect(
+      screen.getByRole("button", { name: "Save" }).hasAttribute("disabled"),
+    ).toBe(true);
+  });
+
+  it("keeps a dirty draft, and reloads it only when asked", () => {
+    const { rerender } = render(<PlayerManagement />);
+    fireEvent.click(screen.getByRole("button", { name: /Mike Trout/ }));
+    fireEvent.change(screen.getByLabelText("Player name"), {
+      target: { value: "Michael Trout" },
+    });
+
+    enrichUnderTheOpenPanel(rerender);
+
+    // Not one keystroke of the operator's is overwritten.
+    expect(
+      (screen.getByLabelText("Player name") as HTMLInputElement).value,
+    ).toBe("Michael Trout");
+    expect(
+      (screen.getByLabelText("Wikidata id") as HTMLInputElement).value,
+    ).toBe("");
+    const notice = screen.getByText(
+      "This player was updated elsewhere — Reload to see the latest.",
+    );
+    expect(notice.closest("[role='status']")).toBeTruthy();
+
+    // Reload is the only thing that discards it, and it takes the whole row.
+    fireEvent.click(screen.getByLabelText("Reload player Mike Trout"));
+    expect(
+      (screen.getByLabelText("Player name") as HTMLInputElement).value,
+    ).toBe("Mike Trout");
+    expect(
+      (screen.getByLabelText("Wikidata id") as HTMLInputElement).value,
+    ).toBe("Q194298");
+    expect(screen.getByText("Cincinnati Reds · 2011–present")).toBeTruthy();
+    expect(screen.queryByText(/updated elsewhere/)).toBeNull();
+  });
+
+  it("still saves the fields the operator changed afterwards", async () => {
+    const { rerender } = render(<PlayerManagement />);
+    fireEvent.click(screen.getByRole("button", { name: /Mike Trout/ }));
+    enrichUnderTheOpenPanel(rerender);
+
+    // Edit the value the enrichment just wrote — the case that proves the
+    // re-seed rebased what "changed" means rather than merely repainting.
+    fireEvent.click(screen.getByRole("checkbox", { name: "Hall of Fame" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(mockSavePlayerFields).toHaveBeenCalledWith({
+        id: "p-trout",
+        isHallOfFame: false,
+      }),
+    );
+    expect(await screen.findByText("Saved Mike Trout.")).toBeTruthy();
+  });
+
+  it("never reports the panel's own save as a change from elsewhere", async () => {
+    // The reactive write a save produces looks exactly like anyone else's. It
+    // is told apart by the draft already matching it — not by a timer, and not
+    // by assuming the mutation resolves before its own query update lands.
+    const { rerender } = render(<PlayerManagement />);
+    selectGriffey();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Hall of Fame" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByText("Saved Ken Griffey Jr..")).toBeTruthy();
+
+    PLAYERS_BY_ID["p-griffey"] = { ...GRIFFEY, isHallOfFame: false };
+    rerender(<PlayerManagement />);
+
+    expect(screen.queryByText(/updated elsewhere/)).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Save" }).hasAttribute("disabled"),
+    ).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // NEO-212 — accessibility fixes from the WCAG 2.2 AA audit
 // ---------------------------------------------------------------------------
 
@@ -814,17 +1256,17 @@ describe("PlayerManagement — accessibility", () => {
     expect(counter.getAttribute("aria-live")).toBe("polite");
   });
 
-  it("expands the HoF and Wikidata glyphs for assistive tech", () => {
-    // `title` is a mouse-hover affordance: not announced reliably, and never on
-    // touch or keyboard. Both glyphs carry the expansion as an aria-label too.
+  it("reads the row out as a name, a sport and a team", () => {
+    // NEO-235: the row used to end in two unexplained glyphs ("HoF", "Q…")
+    // carrying their expansion as aria-labels. Both are gone, and what replaced
+    // them needs no expansion — the separator between the sport and the team is
+    // a CSS border, so it contributes nothing to the accessible name and the
+    // button announces the three plain words a person would say out loud.
+    management = { players: [GRIFFEY], totalCount: 1, truncated: false };
     render(<PlayerManagement />);
-    const hof = screen.getByText("HoF");
-    expect(hof.getAttribute("aria-label")).toBe("Hall of Fame");
-    expect(hof.getAttribute("title")).toBe("Hall of Fame");
-
-    const qid = screen.getByText("Q…");
-    expect(qid.getAttribute("aria-label")).toBe("Wikidata Q313256");
-    expect(qid.getAttribute("title")).toBe("Wikidata Q313256");
+    expect(
+      screen.getByRole("button", { name: "Ken Griffey Jr. Baseball Mariners" }),
+    ).toBeTruthy();
   });
 
   it("renders the row's sport tag at a contrast-passing slate", () => {
@@ -839,5 +1281,201 @@ describe("PlayerManagement — accessibility", () => {
     );
     expect(tag?.className).toContain("text-slate-400");
     expect(tag?.className).not.toContain("text-slate-500");
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+/**
+ * NEO-235 — `?player=<id>`, the other end of the career-history link.
+ *
+ * The detail panel links every stint to `/admin/teams?team=<id>`. Back from
+ * there is only useful if this screen's own history entry names the player who
+ * was open, which is why selecting writes the param with `replace` rather than
+ * pushing: the entry the operator leaves is the entry they come back to, and
+ * they do not have to walk back through every row they looked at first.
+ *
+ * The deep link is deliberately NOT resolved against the master list. That
+ * list is a 500-row page of a server-side query, so the player behind a shared
+ * link is frequently not in it; the id goes to `players.getByIdParam` instead,
+ * and the panel opens either way. That query takes the param as a raw STRING
+ * and normalizes it server-side, so a hand-mangled `?player=` is an empty
+ * panel rather than a rejected argument that throws the render away.
+ */
+
+// The URL is half of what is under test here, so it is rendered.
+function LocationProbe() {
+  return <span data-testid="search">{useLocation().search}</span>;
+}
+
+function renderAt(entry: string) {
+  // A FRESH element each time, deliberately: handing `rerender` the identical
+  // element object lets React bail out of the subtree entirely, and a rerender
+  // that renders nothing proves nothing. The router itself stays mounted, so
+  // the history it has accumulated survives — `initialEntries` only ever seeds
+  // the first mount.
+  const tree = () => (
+    <MemoryRouter initialEntries={[entry]}>
+      <PlayerManagement />
+      <LocationProbe />
+    </MemoryRouter>
+  );
+  // `renderBare`, not the file-level `render`: that one supplies its own
+  // MemoryRouter at "/" and this needs the entry to carry a query string.
+  const result = renderBare(tree());
+  return { ...result, rerenderTree: () => result.rerender(tree()) };
+}
+
+const url = () => screen.getByTestId("search").textContent;
+const listRow = (name: RegExp) => screen.getByRole("button", { name });
+
+describe("PlayerManagement — the ?player deep link", () => {
+  it("opens a player the master list has no row for", () => {
+    // The case the id query exists for: a truncated page that does not contain
+    // the linked player. Resolving the param against `visible` would answer
+    // "no such player" for everyone past the cap — on the screen whose whole
+    // job is to be reachable by id.
+    management = { players: [RICE], totalCount: 500, truncated: true };
+    renderAt("/admin/players?player=p-griffey");
+
+    expect(screen.getByLabelText("Player name")).toHaveProperty(
+      "value",
+      "Ken Griffey Jr.",
+    );
+    // No row was highlighted because there is no row — the panel came from
+    // the id query alone.
+    expect(document.querySelector('[aria-current="true"]')).toBeNull();
+    expect(lastArgs("players.getByIdParam")).toEqual({ id: "p-griffey" });
+  });
+
+  it("selects and scrolls to the row when the list does have one", () => {
+    // The scroll matters as much as the selection: the master list is a 32rem
+    // scroller, so a selected row can land off-screen and the link would look
+    // like it did nothing.
+    const scrollIntoView = vi
+      .spyOn(Element.prototype, "scrollIntoView")
+      .mockImplementation(() => {});
+
+    renderAt("/admin/players?player=p-trout");
+
+    expect(listRow(/Mike Trout/).getAttribute("aria-current")).toBe("true");
+    expect(listRow(/Ken Griffey Jr\./).getAttribute("aria-current")).toBeNull();
+    expect(screen.getByLabelText("Player name")).toHaveProperty(
+      "value",
+      "Mike Trout",
+    );
+    expect(scrollIntoView).toHaveBeenCalled();
+
+    scrollIntoView.mockRestore();
+  });
+
+  it("leaves the screen alone for an id this deployment does not have", () => {
+    // A stale link, or one copied from another deployment. Not an error state:
+    // there is nothing an operator could do about it here, so the screen opens
+    // exactly as it always does.
+    renderAt("/admin/players?player=p-gone");
+
+    expect(document.querySelector('[aria-current="true"]')).toBeNull();
+    expect(
+      screen.getByText(
+        "Select a player to see and edit everything we know about them.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("renders normally for a param that is not an id at all", () => {
+    // Not the same case as the stale id above, and it used to have a very
+    // different outcome. `?player=p-gone` is a WELL-FORMED id for a row this
+    // deployment does not have; `?player=not-an-id` does not parse as an id of
+    // any table. The screen used to hand the raw string to `players.get`, whose
+    // argument is `v.id("players")`, so Convex refused it before the handler
+    // ran and `useQuery` threw — replacing the whole admin screen with the
+    // app-level error boundary because somebody mangled a query string.
+    //
+    // `players.getByIdParam` takes a string and normalizes it server-side, so
+    // an unparseable id is answered `null` and lands in the SAME placeholder
+    // branch as a deleted one. Asserted as "the page is still here", because
+    // the defect's signature was the page not being here.
+    renderAt("/admin/players?player=not-an-id");
+
+    expect(lastArgs("players.getByIdParam")).toEqual({ id: "not-an-id" });
+    expect(document.querySelector('[aria-current="true"]')).toBeNull();
+    expect(
+      screen.getByText(
+        "Select a player to see and edit everything we know about them.",
+      ),
+    ).toBeTruthy();
+    // The master list is untouched: this is a normal render, not a recovery.
+    expect(listRow(/Mike Trout/)).toBeTruthy();
+  });
+
+  it("writes the param when a row is picked", () => {
+    renderAt("/admin/players");
+    expect(url()).toBe("");
+
+    fireEvent.click(listRow(/Ken Griffey Jr\./));
+
+    expect(listRow(/Ken Griffey Jr\./).getAttribute("aria-current")).toBe("true");
+    expect(url()).toBe("?player=p-griffey");
+  });
+
+  it("writes the param for a player it has just created", async () => {
+    // The new row is selected by `onCreated`, so the URL has to follow it
+    // there too — an operator who adds a player and then clicks into their
+    // first team must be able to come back to them.
+    const { container } = renderAt("/admin/players");
+    openAddForm(container);
+    fireEvent.change(screen.getByLabelText("New player name"), {
+      target: { value: "Mike Trout" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Create player Mike Trout" }),
+    );
+
+    await waitFor(() => expect(screen.getByText("Added Mike Trout.")).toBeTruthy());
+    expect(url()).toBe("?player=p-trout");
+  });
+
+  it("clears the filter once for the link, and never again", async () => {
+    // Two halves of one rule. The link CLEARS what is in the box, because a
+    // filter left over from the last visit can hide the row it just selected.
+    // A click does NOT, because the param a click writes is the operator's own
+    // selection.
+    //
+    // The second half is the one that actually bites. React Router commits
+    // location updates in a transition, so the render in which a click's new
+    // selection lands is a render where the URL still names the PREVIOUS
+    // player — indistinguishable, to a screen that remembers only the last id
+    // it followed, from a fresh link back to them. It follows the stale param,
+    // clears the filters as any link does, and the operator watches the word
+    // they just typed vanish under their own click.
+    management = undefined;
+    const { rerenderTree } = renderAt("/admin/players?player=p-griffey");
+
+    fireEvent.change(screen.getByLabelText("Filter players"), {
+      target: { value: "Dodgy" },
+    });
+    expect(screen.getByLabelText("Filter players")).toHaveProperty(
+      "value",
+      "Dodgy",
+    );
+
+    // The list arrives; the link is followed now, and takes the box with it.
+    management = { players: [RICE, GRIFFEY, TROUT], totalCount: 3, truncated: false };
+    rerenderTree();
+
+    expect(screen.getByLabelText("Filter players")).toHaveProperty("value", "");
+    expect(listRow(/Ken Griffey Jr\./).getAttribute("aria-current")).toBe("true");
+
+    // One character stays client-side, so the row list here is the loaded page
+    // filtered in the browser — no debounce to wait on.
+    fireEvent.change(screen.getByLabelText("Filter players"), {
+      target: { value: "r" },
+    });
+    fireEvent.click(listRow(/Mike Trout/));
+
+    expect(url()).toBe("?player=p-trout");
+    expect(screen.getByLabelText("Filter players")).toHaveProperty("value", "r");
+    expect(listRow(/Mike Trout/).getAttribute("aria-current")).toBe("true");
   });
 });
