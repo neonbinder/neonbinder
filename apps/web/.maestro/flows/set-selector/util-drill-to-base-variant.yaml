@@ -81,12 +81,34 @@ tags:
 # open (SL data found) or auto-confirm and close (no SL data).
 # 60s covers: SL fetch round trip (~50s) + Puppeteer session re-auth if needed.
 # Wait for either the BaseSetPicker modal (SL data present) OR the post-confirm
-# "Re-map Base" control (Path B — modal auto-closed). Re-map Base sits in the
-# variant-type row and stays in viewport, unlike "Fetch from Marketplaces"
-# which renders below in the column's overflow.
-- extendedWaitUntil:
-    visible:
+# "Re-map Base" control (Path B — modal auto-closed).
+#
+# NOT a bare visibility wait: SCROLL to it. The Base-mapping controls render
+# BELOW the columns container (components/modules/SetSelector.tsx:519-540) —
+# they are NOT "in the variant-type row", which is what this comment used to
+# claim. Anything that makes a column taller therefore pushes them under the
+# 1024x629 fold, and a plain `visible:` wait can never recover.
+#
+# That is not hypothetical. CI run 2 failed four flows here at once: one worker
+# hit a BSC hiccup, and a status="done" partial-failure notice
+# ("BuySportsCards could not be reached, so nothing from BuySportsCards was
+# changed…") is stored PER COLUMN and shown to EVERY worker until someone
+# dismisses it. It rendered in the Manufacturers column, grew it, and pushed the
+# Base controls off screen; the hierarchy dump had no text from below the
+# columns at all.
+#
+# DO NOT "fix" this by tapping that notice's Dismiss in a shared util —
+# dismissing deletes the status row for every worker, including the one that
+# actually needs to see it.
+#
+# The 60s ceiling is unchanged — it is the SL round-trip budget, and
+# scrollUntilVisible polls for the element the whole time exactly as the wait
+# did. (The picker itself is a fixed-position portal, so on Path A the scroll is
+# a no-op and it matches immediately.)
+- scrollUntilVisible:
+    element:
       text: ".*Select Base Set.*|.*Re-map Base.*"
+    centerElement: true
     timeout: 60000
 
 # If the picker is open (SL data present), confirm the pre-selected set.

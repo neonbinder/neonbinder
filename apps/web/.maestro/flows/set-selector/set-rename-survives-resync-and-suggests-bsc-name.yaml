@@ -302,11 +302,15 @@ tags:
 # rather than at the Sets column behind the dialog.
 - assertVisible: "BSC: Topps NHL Sticker Collection"
 
-# Maestro matches `id:` as a FULL-STRING REGEX, so the parentheses in the
-# accessible name ("… (from BSC)") have to be escaped — unescaped they are a
-# capture group and the pattern would only match a label without them.
+# The accessible name leads with the VISIBLE word (WCAG 2.5.3 Label in Name),
+# then the per-row context: `Accept — rename "X" to "Y" (from BSC)`
+# (SelectorSyncReviewModal.tsx:310). The dash is an em dash, U+2014.
+#
+# Maestro matches `id:` as a FULL-STRING REGEX, so the parentheses have to be
+# escaped — unescaped they are a capture group and the pattern would only match
+# a label without them.
 - tapOn:
-    id: 'Rename "TCG" to "Topps NHL Sticker Collection" \(from BSC\)'
+    id: 'Accept — rename "TCG" to "Topps NHL Sticker Collection" \(from BSC\)'
 
 # The running total is the only feedback that the press registered, and it is
 # exact on purpose: one accepted side, nothing declined. A second suggestion

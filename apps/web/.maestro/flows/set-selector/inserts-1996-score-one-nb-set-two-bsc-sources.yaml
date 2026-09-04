@@ -712,9 +712,26 @@ tags:
 # control's mechanics (the input opens EMPTY, so there is nothing to erase).
 # ============================================================
 
+# SCROLL **UP**, and scroll to the PANEL HEADING rather than to the pencil.
+#
+# Both halves are load-bearing (CI run 2, runner-5 step-145). By this point the
+# page is parked deep inside the CardChecklist, whose rows are their own inner
+# scroller — and SetAttributesPanel mounts ABOVE that checklist. A default
+# (DOWN) scrollUntilVisible therefore walks AWAY from the pencil and into the
+# card rows, and after 3m17s of that it failed with the checklist showing
+# cards #72-#75.
+#
+# Targeting the heading rather than the pencil keeps the scroll on an ordinary,
+# non-virtualised element — `Attributes for <name> (Insert)` — instead of
+# hunting an icon button. The pencil (`aria-label="Rename <currentValue>"`,
+# RenameEntityControl.tsx:191) sits in that same header row immediately after
+# the title, so centring the heading puts the tap target at y≈315 with it. That
+# is why the tap below needs no scroll of its own (R8 satisfied by the centring
+# above, on the same row).
 - scrollUntilVisible:
     element:
-      id: "Rename Dugout Collection Artists Proofs"
+      text: ".*Attributes for Dugout Collection Artists Proofs.*"
+    direction: UP
     centerElement: true
     timeout: 15000
 - tapOn:
@@ -876,13 +893,18 @@ tags:
 - assertVisible:
     text: ".*BSC: Dugout Collection Artist.s Proofs Series [12].*"
 
+# The accessible name leads with the VISIBLE word (WCAG 2.5.3 Label in Name),
+# then the per-row context: `Decline — keep "X"; stop suggesting BSC's "Y"`
+# (SelectorSyncReviewModal.tsx:320). The dash is an em dash, U+2014, and "keep"
+# is lower-case because it is no longer the first word.
+#
 # `id:` is a full-string REGEX in Maestro, so the marketplace label is left as
 # `.*` while the row half — the part that must not be ambiguous — is pinned to
 # this attempt's marker.
 - tapOn:
-    id: "Keep \"Dugout Collection Artists Proofs NB211-${ATTEMPT_ID}\"; stop suggesting BSC's \".*\""
+    id: "Decline — keep \"Dugout Collection Artists Proofs NB211-${ATTEMPT_ID}\"; stop suggesting BSC's \".*\""
 - tapOn:
-    id: "Keep \"Dugout Collection Artists Proofs NB211-${ATTEMPT_ID}\"; stop suggesting SportLots's \".*\""
+    id: "Decline — keep \"Dugout Collection Artists Proofs NB211-${ATTEMPT_ID}\"; stop suggesting SportLots's \".*\""
 
 # The running total is the only feedback that the presses registered, and it is
 # exact: two declines, nothing accepted. A stray accept here would rename the
