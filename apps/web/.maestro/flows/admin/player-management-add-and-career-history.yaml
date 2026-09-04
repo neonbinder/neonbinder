@@ -38,12 +38,11 @@ tags:
 # previous attempt left behind would render "Add <name>" instead and the first
 # stint below would be reaching for a control that is not there.
 #
-# The ONE exception is the post-reload master-row assertion, which matches
-# ".*Yankees.*" because the row abbreviates a team to its nickname once the team
-# has a `city`. That matcher is safe where the others are not because it is
-# anchored inside a list filtered to this run's own player, and that player has
-# stints at nothing but New York — no farm club can answer it. See the note
-# there.
+# That one name carries every team assertion in the flow, including the
+# post-reload MASTER ROW one NEO-235 added. The row prints a team's NICKNAME —
+# `teamNickname` strips a leading city from the name — but a team born in this
+# picker has no `city` at all, so the row prints the name in full and the
+# matcher is simply the name.
 #
 # R2 — this cannot go green without the feature working:
 #   * the create button is targeted by its own accessible name, "Create player
@@ -56,9 +55,9 @@ tags:
 #   * the two stints are asserted by RELATIVE POSITION (the later stint BELOW
 #     the earlier one), which is the acceptance criterion — a screen that
 #     rendered both but in insertion order fails;
-#   * after the reload the MASTER ROW names the Yankees, which it can only do by
-#     reading the saved stints back and totalling them per team (NEO-235
-#     replaced the row's old "2 stints" count with that team nod);
+#   * after the reload the MASTER ROW names this run's own team, which it can
+#     only do by reading the saved stints back and totalling them per team
+#     (NEO-235 replaced the row's old "2 stints" count with that team nod);
 #   * every one of those assertions is repeated after a full page reload, which
 #     is what separates "the form still holds what I typed" from "the database
 #     holds it".
@@ -376,22 +375,23 @@ tags:
 # The list itself reports the career history it just read back. NEO-235 replaced
 # the row's "2 stints" count with the team the player spent longest with, so
 # this is the same assertion against the same fact: the master row can only name
-# the Yankees by reading the stints back out of the database and summing them.
+# this team by reading the stints back out of the database and totalling them.
 #
 # Anchored `below:` the counter for the same reason the tap below it is —
 # maestro reports an input's current value as its text, and though the filter box
 # holds the player's name rather than a team, anchoring keeps this pointed at a
 # LIST ROW rather than at anything the page might grow above it.
 #
-# `.*Yankees.*` rather than the full name on purpose: the row prints the
-# nickname a fan says out loud when the team has a `city` recorded, and
-# "Seed Test Teams" (convex/teams.ts#seedTestTeams) sets colours but no city, so
-# today this row reads "New York Yankees". The loose matcher covers both, so
-# enriching that fixture's city later cannot silently break this flow. It is
-# still specific — no other team reaches this row, whose player is this run's own
-# and has stints at nothing else.
+# THE FULL NAME, not a nickname. The row prints `teamNickname(team)`, which
+# strips a leading city from the stored name — but only when the row HAS a
+# `city`, and a team created through this picker has none: `teams.findOrCreate`
+# writes a name, a sport and a league and nothing else. So the row prints this
+# team's name in full. (NEO-235 wrote this assertion against the seeded
+# "New York Yankees" and matched ".*Yankees.*" to survive that fixture gaining a
+# city later; NEO-214 deleted the fixture, and a per-attempt name needs no such
+# hedge — it is unique to this run and cannot be answered by another team.)
 - assertVisible:
-    text: ".*Yankees.*"
+    text: ".*PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
     below:
       text: ".*matches.*"
 
