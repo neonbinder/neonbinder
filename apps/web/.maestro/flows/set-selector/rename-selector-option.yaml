@@ -194,6 +194,11 @@ tags:
 - assertVisible: "Add Custom Entry"
 - inputText: "vt-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
 - pressKey: Enter
+# NEO-219: the first Enter raises a "Create <noun> '<value>' under <parent>?"
+# confirm with the Create button already focused; this second Enter presses it.
+# Without it the form never closes and the gate below fails — which is exactly
+# how this flow went red in run 10, PART 2 having been written before NEO-219.
+- pressKey: Enter
 - assertNotVisible: "Add Custom Entry"
 
 # Select the new variant type — that is what re-points the attributes panel at
