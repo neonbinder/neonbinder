@@ -1,0 +1,18 @@
+---
+name: wcag-recurring-findings
+description: Recurring accessibility defect patterns found across NeonBinder admin master-detail screens (Players/Teams/Leagues) — what to check first on the next one.
+metadata:
+  type: project
+---
+
+Found auditing NEO-240 (`components/admin/LeagueManagement.tsx`), and worth checking first on any *new* admin master-detail screen (Players/Teams/Leagues share one shape — see `components/admin/LeagueManagement.tsx`'s own header comment):
+
+1. **A button whose visible label changes on a busy/loading state, but carries a *static* `aria-label`.** E.g. a primary button that reads "Create X" / "Adding…" but has `aria-label="Create league X"` hardcoded regardless of the busy flag — screen readers never hear "Adding…" at all (SC 2.5.3 Label in Name mismatch during the busy state, and SC 4.1.2 loses the state change). Fix pattern: fold the busy check into the `aria-label` expression too, not just the visible children. Buttons with NO static `aria-label` override (accessible name = content) don't have this problem — only ones with a hand-written `aria-label` need the check.
+
+2. **Live regions bound directly to a value that changes on every keystroke** (e.g. a filtered-list counter recomputed from a `useMemo` keyed on the filter text). `role="status"`/`aria-live="polite"` on that element announces every intermediate value while the operator is still typing. The near-match/possible-duplicates panels in this codebase already debounce correctly (300ms, `NEAR_MATCH_DEBOUNCE_MS`) — a plain result-count readout usually does not. **Careful with the fix**: if a test asserts `getByText("N of M leagues...")` synchronously right after `fireEvent.change` (no `waitFor`), the *visible* text must stay synchronous — don't debounce the visible node's text itself. Debounce a separate, always-mounted announcement channel instead (same "always-mounted, text starts empty" trick `NearMatchPanel` uses for its sr-only live span), or accept the over-announcement as a known tradeoff and say so explicitly.
+
+3. **Master-detail panel swaps that unmount the focused control.** These screens intentionally keep ONE button element across state transitions to avoid losing focus when a label flips (see LeagueManagement.tsx's `AddLeagueForm` primary button — extensively commented). But the *outer* swap — add-form panel ⇄ detail panel, or a detail panel keyed by `key={selected._id}` that remounts when the operator picks a different row **from inside the currently-open panel** (e.g. a "that name already exists — open it" link inside the detail view itself) — is not covered by that pattern and drops focus to `<body>`. Check every place a click *inside* the swapped subtree causes that subtree to unmount, not just the direct "does this ternary swap" case.
+
+4. **Toggle-button groups (`aria-pressed`) whose pressed state is conveyed only by color/hue**, even when `aria-pressed` is correctly wired for AT. Check whether the pressed vs. unpressed treatment also has a *luminance* jump (not just a hue change) — a border going from near-black to bright is defensible as "more than color alone" even without an icon; a treatment that only shifts hue at constant lightness is not. `LevelGroup` in `LeagueManagement.tsx` is a borderline-pass example (border luminance jumps ~0.05→0.60).
+
+General shape: these screens (`PlayerManagement.tsx`, `TeamManagement.tsx`, `LeagueManagement.tsx`) deliberately copy each other's URL-follow / focus / debounce patterns — a defect fixed correctly in one is worth grep-checking in the others, and a defect found in a new one was very possibly copied from an older one that was never fixed (see the `NeonButton secondary` note in [[neon-palette-contrast]]).
