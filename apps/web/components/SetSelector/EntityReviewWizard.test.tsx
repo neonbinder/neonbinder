@@ -799,6 +799,27 @@ describe("EntityReviewWizard — cancel", () => {
     expect(onCancel).not.toHaveBeenCalled();
   });
 
+  it("Escape from a plain field with NO handler of its own still spares the review", async () => {
+    // The `Career team name` combobox stops propagation itself, so a test
+    // through it proves CareerTeamEntry, not the dialog root. `From year` is a
+    // bare `<Input type="number">` with no `onKeyDown` at all, so Escape there
+    // reaches the root and only `isEditableTarget` stands between the operator
+    // and a discarded batch.
+    currentRows = [
+      makeRow({ kind: "player", status: "ready", enrichment: { careerTeams: [] } }),
+    ];
+    const { onCancel } = renderWizard();
+
+    const yearField = screen.getByLabelText("From year");
+    expect((yearField as HTMLInputElement).onkeydown).toBeNull();
+    fireEvent.keyDown(yearField, { key: "Escape", bubbles: true });
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockCancelBatch).not.toHaveBeenCalled();
+    expect(onCancel).not.toHaveBeenCalled();
+    expect(screen.getByText("Confirm New Players & Teams")).toBeTruthy();
+  });
+
   it("Escape while the link search is open closes the search, not the review", async () => {
     // One level at a time. The search panel is a level; the batch is not the
     // next one after it.
@@ -2315,9 +2336,16 @@ describe("EntityReviewWizard — one decision at a time", () => {
     );
     renderWizard();
 
+    // BOTH CLICKS IN ONE `act`. Separate `act`s let React commit the state
+    // update from the first click before the second handler runs, so a
+    // `deciding` STATE flag would pass this test while still failing in a
+    // browser — where two clicks in the same frame share one render closure.
+    // Nested `act` does not flush, so this is the real double-click.
     const add = screen.getByRole("button", { name: "Add as New Player" });
-    fireEvent.click(add);
-    fireEvent.click(add);
+    act(() => {
+      fireEvent.click(add);
+      fireEvent.click(add);
+    });
 
     expect(mockRecordDecision).toHaveBeenCalledTimes(1);
 
@@ -2822,5 +2850,182 @@ describe("EntityReviewWizard — back to matching", () => {
     expect(onCancel).not.toHaveBeenCalled();
     // No confirm either — nothing is being discarded.
     expect(screen.queryByText(/Discard/)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Correctness review follow-ups (NEO-221)
+// ---------------------------------------------------------------------------
+
+describe("EntityReviewWizard — re-deciding releases the pin", () => {
+  const wizardEl = () => (
+    <EntityReviewWizard
+      isOpen
+      selectorOptionId={"selopt-1" as unknown as Id<"selectorOptions">}
+      batchId="batch-1"
+      summary={SUMMARY}
+      onConfirm={vi.fn()}
+      onCancel={vi.fn()}
+    />
+  );
+
+  const alpha = (over: Partial<Row> = {}) =>
+    makeRow({
+      _id: "row-a" as unknown as Id<"entityReviewQueue">,
+      name: "Alpha",
+      kind: "player",
+      status: "ready",
+      ...over,
+    });
+  const bravo = (over: Partial<Row> = {}) =>
+    makeRow({
+      _id: "row-b" as unknown as Id<"entityReviewQueue">,
+      name: "Bravo",
+      kind: "player",
+      status: "ready",
+      ...over,
+    });
+
+  it("moves on to the next undecided row after a re-decide", async () => {
+    // `resolveNav` pins an EXPLICIT row even once it is decided — that is what
+    // the read-only panel is built on. Deciding it is the operator finishing
+    // with it, so the pin has to be released or they re-decide the same row
+    // into a panel that just says "Already decided".
+    currentRows = [alpha({ decision: { action: "create" } }), bravo()];
+    const { rerender } = render(wizardEl());
+
+    fireEvent.click(screen.getByRole("button", { name: "Change decision for Alpha" }));
+    await waitFor(() => expect(mockClearDecision).toHaveBeenCalledTimes(1));
+
+    currentRows = [alpha(), bravo()];
+    rerender(wizardEl());
+    expect(screen.getByRole("heading", { level: 3, name: "Alpha" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Player" }));
+    await waitFor(() => expect(mockRecordDecision).toHaveBeenCalledTimes(1));
+
+    currentRows = [alpha({ decision: { action: "skip" } }), bravo()];
+    rerender(wizardEl());
+
+    expect(screen.getByRole("heading", { level: 3, name: "Bravo" })).toBeTruthy();
+    expect(screen.queryByRole("group", { name: "Decision for Alpha" })).toBeNull();
+  });
+
+  it("reaches the final summary when the re-decided row was the LAST one", async () => {
+    // The worst shape of the same bug: `current` non-null beats `allDecided`,
+    // so the summary <dl> never rendered while Confirm & Save sat autofocused
+    // behind a panel that offered no way to reach it but "Next".
+    currentRows = [alpha({ decision: { action: "create" } })];
+    const { rerender } = render(wizardEl());
+
+    fireEvent.click(screen.getByRole("button", { name: "Change decision for Alpha" }));
+    await waitFor(() => expect(mockClearDecision).toHaveBeenCalledTimes(1));
+    currentRows = [alpha()];
+    rerender(wizardEl());
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Player" }));
+    await waitFor(() => expect(mockRecordDecision).toHaveBeenCalledTimes(1));
+    currentRows = [alpha({ decision: { action: "create" } })];
+    rerender(wizardEl());
+
+    expect(screen.getByText("All reviewed — save 3 cards?")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Confirm & Save/ })).toBeTruthy();
+    expect(screen.queryByRole("group", { name: "Decision for Alpha" })).toBeNull();
+  });
+
+  it("'Change decision' KEEPS the pin — that is the case the operator asked for", async () => {
+    // The mirror image, so the fix above cannot be widened into the clear path
+    // by accident: after a clear the operator must land on the row they
+    // reopened, not be walked past it.
+    currentRows = [alpha({ decision: { action: "create" } }), bravo()];
+    const { rerender } = render(wizardEl());
+
+    fireEvent.click(screen.getByRole("button", { name: "Change decision for Alpha" }));
+    await waitFor(() => expect(mockClearDecision).toHaveBeenCalledTimes(1));
+    currentRows = [alpha(), bravo()];
+    rerender(wizardEl());
+
+    expect(screen.getByRole("heading", { level: 3, name: "Alpha" })).toBeTruthy();
+  });
+
+  it("ignores 'Change decision' on another row while a write is in flight", async () => {
+    // `decide` refuses on `decidingRef` — and it refuses AFTER this handler has
+    // already moved `nav`. Without its own copy of the guard, the second click
+    // pinned Bravo showing the very decision its clear was meant to remove,
+    // with no clear ever sent and nothing on screen saying so.
+    currentRows = [
+      alpha({ decision: { action: "create" } }),
+      bravo({ decision: { action: "skip" } }),
+    ];
+    mockClearDecision.mockImplementationOnce(() => new Promise(() => {}));
+    render(wizardEl());
+
+    // First click pins Alpha and hangs on the clear.
+    fireEvent.click(screen.getByRole("button", { name: "Change decision for Alpha" }));
+    expect(mockClearDecision).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("group", { name: "Decision for Alpha" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Change decision for Bravo" }));
+
+    expect(mockClearDecision).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("group", { name: "Decision for Alpha" })).toBeTruthy();
+    expect(screen.queryByRole("group", { name: "Decision for Bravo" })).toBeNull();
+  });
+});
+
+describe("EntityReviewWizard — armed bulk add does not stall", () => {
+  const wizardEl = () => (
+    <EntityReviewWizard
+      isOpen
+      selectorOptionId={"selopt-1" as unknown as Id<"selectorOptions">}
+      batchId="batch-1"
+      summary={SUMMARY}
+      onConfirm={vi.fn()}
+      onCancel={vi.fn()}
+    />
+  );
+
+  it("picks up a row that settled DURING an in-flight bulk call", async () => {
+    // The stall: the effect used to return when `bulkRef.current` was set, so
+    // a settle landing inside the round-trip scheduled nothing and the footer
+    // sat on "Adding N more…" forever with no timer and no further call.
+    vi.useFakeTimers();
+    try {
+      let releaseFirst: (v: unknown) => void = () => {};
+      mockRecordAllRemainingAsCreate.mockImplementationOnce(
+        () => new Promise((res) => (releaseFirst = res)),
+      );
+
+      currentRows = [
+        makeRow({ _id: "row-a" as unknown as Id<"entityReviewQueue">, status: "ready", name: "A" }),
+        makeRow({ _id: "row-b" as unknown as Id<"entityReviewQueue">, status: "pending", name: "B" }),
+      ];
+      const { rerender } = render(wizardEl());
+
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: "Add All Remaining as New (2) — 1 still looking up, wait or skip",
+        }),
+      );
+      expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1);
+
+      // B settles while that first call is still open.
+      currentRows = [
+        makeRow({ _id: "row-a" as unknown as Id<"entityReviewQueue">, status: "ready", name: "A" }),
+        makeRow({ _id: "row-b" as unknown as Id<"entityReviewQueue">, status: "ready", name: "B" }),
+      ];
+      rerender(wizardEl());
+
+      releaseFirst(1);
+      await act(async () => {});
+
+      act(() => {
+        vi.advanceTimersByTime(1500);
+      });
+
+      expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

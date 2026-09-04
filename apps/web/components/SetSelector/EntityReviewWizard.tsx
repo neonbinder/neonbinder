@@ -571,6 +571,16 @@ export default function EntityReviewWizard({
    * `bulkPending` (a render value), so a burst of row updates cannot fire two
    * overlapping mutations. `autoAddRef` is the same trick for the armed flag,
    * read inside the timer callback where the render closure is already stale.
+   *
+   * ## A bulk already in flight must RE-ARM, never drop the round
+   *
+   * An earlier version returned early when `bulkRef.current` was set. A row
+   * settling DURING an in-flight call therefore hit a closed door and nothing
+   * rescheduled it: the footer sat on "Adding N more as their lookups finish…"
+   * with no timer pending and no further call, forever. Two halves to the fix,
+   * and both are needed — `bulkPending` is in the deps so the effect re-enters
+   * when a call finishes, and `fire` re-arms the debounce rather than
+   * returning when it finds one running.
    */
   useEffect(() => {
     if (!autoAddPending || !rows) return;
@@ -584,7 +594,9 @@ export default function EntityReviewWizard({
     // Everything left is still being looked up. Wait for the pool, do not poll
     // it: the next `rows` update re-enters this effect on its own.
     if (settled === 0) return;
-    if (bulkRef.current || saving) return;
+    // NOT `|| bulkRef.current` — see the header. An in-flight call re-arms
+    // below rather than swallowing this round.
+    if (saving) return;
     if (autoAddCallsRef.current >= AUTO_ADD_MAX_CALLS) {
       autoAddRef.current = false;
       setAutoAddPending(false);
@@ -594,8 +606,24 @@ export default function EntityReviewWizard({
       return;
     }
 
-    const fire = () => {
-      if (!autoAddRef.current || bulkRef.current) return;
+    // Function declarations, so `fire` can call `schedule` and vice versa
+    // without either being read before it is initialised.
+    function schedule() {
+      if (autoAddTimerRef.current !== null) return;
+      autoAddTimerRef.current = setTimeout(() => {
+        autoAddTimerRef.current = null;
+        fire();
+      }, AUTO_ADD_DEBOUNCE_MS);
+    }
+
+    function fire() {
+      if (!autoAddRef.current) return;
+      // A call is already running. Come back after the debounce instead of
+      // dropping this round on the floor — that is the stall.
+      if (bulkRef.current) {
+        schedule();
+        return;
+      }
       autoAddCallsRef.current += 1;
       bulkRef.current = true;
       setBulkPending("create");
@@ -614,9 +642,9 @@ export default function EntityReviewWizard({
           setBulkPending(null);
         }
       })();
-    };
+    }
 
-    if (settled >= AUTO_ADD_BATCH_THRESHOLD) {
+    if (settled >= AUTO_ADD_BATCH_THRESHOLD && !bulkRef.current) {
       if (autoAddTimerRef.current !== null) {
         clearTimeout(autoAddTimerRef.current);
         autoAddTimerRef.current = null;
@@ -624,20 +652,19 @@ export default function EntityReviewWizard({
       fire();
       return;
     }
-    // A call is already scheduled — the rows that settled since will be swept
-    // up by it. This is the "two rows 100ms apart make one call" case.
-    if (autoAddTimerRef.current !== null) return;
-    autoAddTimerRef.current = setTimeout(() => {
-      autoAddTimerRef.current = null;
-      fire();
-    }, AUTO_ADD_DEBOUNCE_MS);
+    // Otherwise debounce. `schedule` is a no-op when a call is already
+    // pending, which is the "two rows 100ms apart make one call" case.
+    schedule();
     // The mutation reference, `selectorOptionId` and `batchId` are deliberately
     // NOT deps. They are constant for the life of the dialog, and including a
     // `useMutation` result — whose identity stability is the hook's business,
     // not ours — would re-run this effect on every render, turning "issue one
     // more bulk create" into a loop the `bulkRef` guard only partly damps.
+    // `bulkPending` IS a dep, deliberately: it is the only signal that an
+    // in-flight bulk finished, and without it a row that settled during one
+    // never gets a second look.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoAddPending, rows, saving]);
+  }, [autoAddPending, rows, saving, bulkPending]);
 
   useEffect(() => {
     autoAddRef.current = autoAddPending;
@@ -694,6 +721,24 @@ export default function EntityReviewWizard({
         const without = prev.filter((id) => id !== rowId);
         return historyMode === "push" ? [...without, rowId] : without;
       });
+      /*
+       * A DECISION UNPINS THE ROW.
+       *
+       * `resolveNav` holds an explicitly-presented row still even once it
+       * carries a decision — that is what makes the read-only panel possible.
+       * But deciding a row the operator navigated to on purpose (Back →
+       * "Change decision" → "Add as New") is them finishing with it, so
+       * leaving it pinned re-rendered the same row as "Already decided… /
+       * Next" and, on the LAST row, kept `current` non-null so the final
+       * summary never appeared while Confirm & Save sat autofocused behind it.
+       *
+       * Only for a "push" (a real decision) and only when this row is the
+       * pinned one: a "drop" is `clearDecision`, which is precisely the case
+       * that must STAY pinned so the operator lands on the row they reopened.
+       */
+      if (historyMode === "push" && navRef.current.explicit && navRef.current.rowId === rowId) {
+        resumeWalking();
+      }
     } catch (e) {
       setRowError({
         rowId,
@@ -747,6 +792,11 @@ export default function EntityReviewWizard({
    * workaround.
    */
   const handleChangeDecision = (rowId: Id<"entityReviewQueue">) => {
+    // `decide` refuses while another write is in flight, and it refuses AFTER
+    // this function has already moved `nav`. Moving first would pin the row
+    // showing the decision the clear was meant to remove, with no clear ever
+    // issued and nothing on screen saying so. Check the same guard first.
+    if (decidingRef.current !== null) return;
     const next: NavState = { rowId, explicit: true };
     navRef.current = next;
     setNav(next);
