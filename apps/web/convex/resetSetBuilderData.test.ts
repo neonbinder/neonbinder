@@ -13,8 +13,20 @@
  * the flag's only remaining job is "arm before you fire", and a future reader
  * finding that old reasoning in git history should find this test too.
  *
- * The third case is the one that would otherwise rot silently: the reset
- * drains SIX tables, and a table added to the schema but not to the loop
+ * ## WHY THE HAPPY PATH RUNS WITH NO IDENTITY
+ *
+ * This is the CLI's actual shape, and it was learned the hard way: NEO-214's
+ * first CI seed job failed with "Could not find function" because the command
+ * carried `--identity`, which routes `convex run` through the path that
+ * resolves PUBLIC functions only. An internal function is invisible there.
+ * Drop the flag and the call lands — but then there is no user identity at
+ * all, so a `requireAdmin` anywhere under this entry point would throw
+ * "Not authenticated" on every legitimate run. The batch mutations therefore
+ * carry no identity check; the deployment's admin credential is the auth.
+ * `t.action(...)` with no `withIdentity` is that shape.
+ *
+ * The drain case is the one that would otherwise rot silently: the reset
+ * covers SIX tables, and a table added to the schema but not to the loop
  * leaves rows behind that the next run reuses ids for. Each table is seeded
  * with a distinguishable number of rows so a mixed-up count is visible.
  */
@@ -28,9 +40,6 @@ import type { Id } from "./_generated/dataModel";
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
 }).glob("./**/*.*s");
-
-const ADMIN = { subject: "admin", role: "admin" };
-const NON_ADMIN = { subject: "user", role: "user" };
 
 const NOW = 1_700_000_000_000;
 
@@ -144,12 +153,11 @@ async function seedAllSixTables(
   });
 }
 
-const runReset = (t: ReturnType<typeof convexTest>, identity = ADMIN) =>
-  t
-    .withIdentity(identity)
-    .action(internal.selectorOptions.resetSetBuilderDataFromCli, {
-      confirm: "RESET" as const,
-    });
+/** No identity, deliberately — see the header note. This is the CLI's shape. */
+const runReset = (t: ReturnType<typeof convexTest>) =>
+  t.action(internal.selectorOptions.resetSetBuilderDataFromCli, {
+    confirm: "RESET" as const,
+  });
 
 async function tableCounts(t: ReturnType<typeof convexTest>) {
   return t.run(async (ctx) => ({
@@ -187,15 +195,15 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
     });
   });
 
-  test("refuses a non-admin identity even when armed, and deletes nothing", async () => {
-    // `requireAdmin` lives on the batch mutations rather than here, so this
-    // proves the arming flag did not become the only gate when the public
-    // action was deleted.
-    vi.stubEnv("ALLOW_RESET_SET_BUILDER_DATA", "true");
+  test("refuses when the flag is any value other than \"true\"", async () => {
+    // The check is `!== "true"`, so a deployment carrying a truthy-looking
+    // "1" or "TRUE" is NOT armed. Worth pinning: arming is a deliberate act
+    // and a near-miss value silently failing open would be the worst outcome.
+    vi.stubEnv("ALLOW_RESET_SET_BUILDER_DATA", "1");
     const t = convexTest(schema, modules);
     await seedAllSixTables(t);
 
-    await expect(runReset(t, NON_ADMIN)).rejects.toThrow(/Admin access required/);
+    await expect(runReset(t)).rejects.toThrow(/ALLOW_RESET_SET_BUILDER_DATA/);
 
     expect(await tableCounts(t)).toEqual({
       selectorOptions: 3,
@@ -207,19 +215,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
     });
   });
 
-  test("refuses an anonymous caller even when armed", async () => {
-    vi.stubEnv("ALLOW_RESET_SET_BUILDER_DATA", "true");
-    const t = convexTest(schema, modules);
-    await seedAllSixTables(t);
-
-    await expect(
-      t.action(internal.selectorOptions.resetSetBuilderDataFromCli, {
-        confirm: "RESET" as const,
-      }),
-    ).rejects.toThrow(/Not authenticated/);
-  });
-
-  test("armed and admin: drains all six tables and returns the counts", async () => {
+  test("armed, with NO caller identity: drains all six tables and returns the counts", async () => {
     vi.stubEnv("ALLOW_RESET_SET_BUILDER_DATA", "true");
     const t = convexTest(schema, modules);
     await seedAllSixTables(t);
@@ -244,6 +240,46 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       leagues: 0,
     });
   });
+
+  /**
+   * NEO-214 security review, finding 7. The entry point is not the only door:
+   * anything already inside Convex can call a batch mutation directly. With no
+   * identity check anywhere on this path, the arming flag is the only thing
+   * standing between such a caller and an emptied table — so each batch
+   * asserts it independently rather than trusting the entry point to have.
+   */
+  test.each([
+    ["resetSelectorOptionsBatch", "selectorOptions"],
+    ["resetCardChecklistBatch", "cardChecklist"],
+    ["resetCardCrossListingsBatch", "cardCrossListings"],
+    ["resetPlayersBatch", "players"],
+    ["resetTeamsBatch", "teams"],
+    ["resetLeaguesBatch", "leagues"],
+  ] as const)(
+    "%s refuses when unarmed, even called directly, and deletes nothing",
+    async (fn) => {
+      const t = convexTest(schema, modules);
+      await seedAllSixTables(t);
+
+      await expect(
+        t.mutation(
+          internal.selectorOptions[
+            fn as keyof typeof internal.selectorOptions
+          ] as never,
+          {},
+        ),
+      ).rejects.toThrow(/ALLOW_RESET_SET_BUILDER_DATA/);
+
+      expect(await tableCounts(t)).toEqual({
+        selectorOptions: 3,
+        cardChecklist: 5,
+        cardCrossListings: 6,
+        players: 4,
+        teams: 2,
+        leagues: 1,
+      });
+    },
+  );
 
   test("is a no-op on an already-empty deployment", async () => {
     // The runbook tells operators to re-run after a partial failure, so a
