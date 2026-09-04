@@ -36,21 +36,6 @@ type RawOptionsResult = {
 // platform fetch failure.
 const SYNC_FAILED_PREFIX = "Sync failed: could not load variants";
 
-/**
- * NEO-216 — the no-marketplace-serves-this-level message, ParallelForm's twin.
- *
- * Both BSC and SportLots serve `insert` (`PLATFORM_LEVEL_SUPPORT` in
- * convex/platformLevels.ts), so the no-marketplace-models-this-level case
- * cannot arise here the way it does for `parallel`. What CAN arise is its
- * observable twin: both sides answered, neither listed anything, nothing
- * failed. The old copy called that "Stored 0 variants (single platform)" and
- * unmounted the panel; it reads the same to an operator either way. Wired here
- * so the two columns cannot drift. Not an error — nothing failed and no retry
- * changes it — so it renders as a status with Close and no Retry.
- */
-const NO_PLATFORM_MESSAGE =
-  "Neither marketplace lists inserts for this set; add them with + Custom.";
-
 export default function VariantForm({
   variantTypeId,
   onDone,
@@ -225,16 +210,6 @@ export default function VariantForm({
           return;
         }
 
-        // Both sides answered, neither had anything, nothing failed — see
-        // ParallelForm for why this is a status rather than "Stored 0", and
-        // for why it keys on the outcome instead of `platformsServingLevel`.
-        // The store was already skipped here by the `items.length > 0` guard
-        // below, so only the copy and the premature `onDone` change.
-        if (result.bscOptions.length === 0 && result.slOptions.length === 0) {
-          setMessage(NO_PLATFORM_MESSAGE);
-          return;
-        }
-
         const items = [
           ...result.bscOptions.map((o: PlatformItem) => ({
             value: o.value,
@@ -274,6 +249,10 @@ export default function VariantForm({
         );
         // A detach the operator has not seen is a silent data change. Hold the
         // panel open so the notice renders; they close it themselves.
+        // NB: empty-empty-no-errors MUST land here and call onDone — it is the
+        // normal path for a custom subtree (both adapters short-circuit), and
+        // EntityColumn renders this form INSTEAD of the idle "+ Custom" button
+        // while mode === "sync", so not returning to idle hides that button.
         if (unlinkedRows.length === 0) onDone?.();
       }
     } catch {
