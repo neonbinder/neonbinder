@@ -151,3 +151,38 @@ Genuine gaps found, none of them regressions — all net-new coverage:
    this as separately worth testing, though — if set and clear used
    different functions it would need actual investigation, not just an
    extrapolated test.
+
+8. **When a "no upper bound" finding gets fixed by ANOTHER concurrent agent
+   mid-pass, your own pinning tests for the gap go stale, not wrong.** In
+   this same session, after I pinned "a 1e21 printRun is accepted (finding,
+   not a failure)" at both the convex and component layers, a concurrent
+   agent added a real `PRINT_RUN_MAX = 1_000_000` ceiling to BOTH
+   `updateCard` and `CardDetailPanel.tsx` — including rewriting the shared
+   `PRINT_RUN_MESSAGE` text — and had already flipped my convex-side test to
+   assert rejection by the time I re-read the file. My component-side
+   sibling test hadn't been touched by them, so it silently regressed from
+   "documents a finding" to "asserts something now false". The tell was the
+   vitest failure diff itself (`expected 'Print run must be a whole number
+   betw…' to be 'Print run must be a whole number of 1…'`) — the RECEIVED
+   side quoting a message I never wrote is a strong signal the SOURCE moved
+   under a test, not that the test has a bug. `git diff HEAD -- <source
+   file>` confirmed it in seconds. Fixed by rewriting my test to assert the
+   new capped/rejected behavior (mirroring how the coordinator's own fix
+   handled its own convex test), not by reverting anything. General rule:
+   a "no bound enforced" pinning test is inherently the most likely kind of
+   test to be invalidated by someone else fixing the exact gap you just
+   found — expect it, and re-run right before the final report even if
+   nothing you touched looks related.
+
+9. **A file can visibly change AGAIN between two `grep`s seconds apart** when
+   another agent is still actively iterating on it — a test name that just
+   failed can be gone by the next search, not because anything was reverted
+   but because the other agent renamed/restructured it mid-edit. Don't chase
+   a moving target's intermediate states; re-run the whole affected project
+   once more after a short beat and trust that result over any single
+   snapshot. In this pass a test titled "stays silent when the redundant
+   commit is a no-op" failed on one run and had no matching name on the next
+   grep two tool calls later (renamed to "stays silent when the second
+   commit is for the value already being saved", now passing) — it was
+   never mine to fix, and re-running instead of investigating the stale
+   snapshot was the right amount of effort.
