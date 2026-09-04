@@ -13,7 +13,7 @@
  * is deliberate: `CardChecklist` owns the wiring and has its own file.
  */
 
-import { render, screen, fireEvent, act } from "@testing-library/react";
+import { render, screen, fireEvent, act, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { Id } from "../../convex/_generated/dataModel";
 import SyncReviewModal, {
@@ -547,5 +547,144 @@ describe("SyncReviewModal — Escape is a forward skip", () => {
     expect(skip.textContent).toBe("Skip changes");
     fireEvent.click(skip);
     expect(onSkip).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * NEO-220 — skipping with selections on screen asks first.
+ *
+ * Escape here stays a FORWARD skip; what changes is that it no longer discards
+ * the operator's ticks in silence. The number is `acceptedFieldCount +
+ * selectedDeleteIds.length` — the selection as it stands, INCLUDING the
+ * fold-equal fields that arrive pre-ticked, because skipping drops those too.
+ */
+describe("SyncReviewModal — skip guard", () => {
+  const reviewDialog = () =>
+    screen.getByRole("dialog", { name: /Review upstream changes|Test Set/ });
+
+  const tickTheField = () =>
+    fireEvent.click(
+      screen.getByLabelText(
+        "Apply Card name to #1 Card One: Before becomes After",
+      ),
+    );
+
+  it("skips straight through when nothing is selected", () => {
+    const { onSkip } = renderModal(diff({ cards: [diffCard()] }));
+
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+
+    expect(onSkip).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("button", { name: "Skip anyway" })).toBeNull();
+  });
+
+  it("Escape with a ticked change asks first, and names the count", () => {
+    const { onSkip } = renderModal(diff({ cards: [diffCard()] }));
+    tickTheField();
+
+    fireEvent.keyDown(reviewDialog(), { key: "Escape" });
+
+    expect(onSkip).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("dialog", {
+        name: "1 selection not applied — skip anyway?",
+      }),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Skip anyway" })).toBeTruthy();
+  });
+
+  it("the footer's Skip changes goes through the same guard", () => {
+    const { onSkip } = renderModal(diff({ cards: [diffCard()] }));
+    tickTheField();
+
+    fireEvent.click(screen.getByLabelText("Skip reviewing changes and continue"));
+
+    expect(onSkip).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Skip anyway" })).toBeTruthy();
+  });
+
+  /**
+   * The reformatting fields arrive pre-ticked. Nobody chose them, but skipping
+   * still drops them, so the count is about what does not get applied rather
+   * than about who ticked it.
+   */
+  it("counts the pre-ticked reformatting fields too", () => {
+    const { onSkip } = renderModal(
+      diff({
+        cards: [
+          diffCard({
+            bucket: "formattingOnly",
+            fields: [
+              field({
+                oldValue: "Jose Ramirez",
+                newValue: "José Ramírez",
+                foldEqual: true,
+              }),
+            ],
+          }),
+        ],
+      }),
+    );
+
+    fireEvent.keyDown(reviewDialog(), { key: "Escape" });
+
+    expect(onSkip).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("dialog", {
+        name: "1 selection not applied — skip anyway?",
+      }),
+    ).toBeTruthy();
+  });
+
+  it("counts ticked deletions alongside ticked fields", () => {
+    renderModal(
+      diff({
+        cards: [diffCard()],
+        removedUpstream: {
+          fullyOrphaned: [
+            { id: rowId(7), cardNumber: "7", cardName: "Gone", sides: ["bsc"] },
+          ],
+          partialOrphanCount: 0,
+        },
+      }),
+    );
+    tickTheField();
+    fireEvent.click(screen.getByLabelText("Delete #7 Gone"));
+
+    fireEvent.keyDown(reviewDialog(), { key: "Escape" });
+
+    expect(
+      screen.getByRole("dialog", {
+        name: "2 selections not applied — skip anyway?",
+      }),
+    ).toBeTruthy();
+  });
+
+  it("Cancel on the guard keeps the review and the ticks", () => {
+    const { onSkip, onConfirm } = renderModal(diff({ cards: [diffCard()] }));
+    tickTheField();
+    fireEvent.keyDown(reviewDialog(), { key: "Escape" });
+
+    const guard = screen.getByRole("dialog", { name: /skip anyway/ });
+    fireEvent.click(within(guard).getByRole("button", { name: "Cancel" }));
+
+    expect(onSkip).not.toHaveBeenCalled();
+    expect(onConfirm).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Skip anyway" })).toBeNull();
+    const box = screen.getByLabelText(
+      "Apply Card name to #1 Card One: Before becomes After",
+    ) as HTMLInputElement;
+    expect(box.checked).toBe(true);
+  });
+
+  it("confirming the guard skips", () => {
+    const { onSkip, onConfirm } = renderModal(diff({ cards: [diffCard()] }));
+    tickTheField();
+    fireEvent.keyDown(reviewDialog(), { key: "Escape" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Skip anyway" }));
+
+    expect(onSkip).toHaveBeenCalledTimes(1);
+    expect(onConfirm).not.toHaveBeenCalled();
   });
 });

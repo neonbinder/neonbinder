@@ -27,6 +27,13 @@ import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import { detectGroupings } from "./parallelDetection";
 import NeonButton from "../modules/NeonButton";
+import { ConfirmDialog } from "../modules/confirm-dialog";
+import { isEditableTarget } from "../../lib/dom/is-editable-target";
+
+/** "1 pending move" / "2 pending moves". */
+function plural(n: number, noun: string): string {
+  return `${n} ${noun}${n === 1 ? "" : "s"}`;
+}
 
 type RowId = Id<"selectorOptions">;
 
@@ -373,8 +380,15 @@ export default function ParallelGroupingModal({
   const apply = useMutation(api.selectorOptions.applyParallelGroupings);
   const [state, dispatch] = useReducer(reducer, emptyState);
   const [confirming, setConfirming] = useState(false);
+  /**
+   * NEO-220 — is the "throw these moves away?" confirm on screen? Distinct
+   * from `confirming` ("the save is in flight"), which is the opposite
+   * question.
+   */
+  const [discardOpen, setDiscardOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
+  const overlayRef = useRef<HTMLDivElement | null>(null);
 
   // Initialize once when the tree first resolves. Subsequent updates from
   // other tabs are intentionally ignored — re-initializing would discard the
@@ -553,16 +567,37 @@ export default function ParallelGroupingModal({
     }
   }, [apply, diff, onClose, totalChanges, variantTypeId]);
 
-  // Keyboard: Escape closes, Enter on Confirm fires (browsers handle Enter
-  // on focused button natively).
+  /**
+   * NEO-220 — the single door out.
+   *
+   * Backdrop click, footer Cancel and Escape all come through here, so the
+   * "would this lose anything?" question is asked once. `totalChanges` is
+   * already the number the footer shows, which means the confirm and the
+   * footer can never disagree about how much work is on screen.
+   */
+  const requestClose = useCallback(() => {
+    if (confirming) return;
+    if (totalChanges === 0) {
+      onClose();
+      return;
+    }
+    setDiscardOpen(true);
+  }, [confirming, onClose, totalChanges]);
+
+  /**
+   * NEO-220 — focus opens on the dialog container.
+   *
+   * This is what makes the root `onKeyDown` below reachable at all: Escape is
+   * handled on the overlay element now, not on `window`, and a keypress only
+   * reaches it if focus is inside. The window listener it replaces fired
+   * wherever focus happened to be, including inside the discard confirm this
+   * dialog now renders — one Escape would have dismissed the confirm AND the
+   * session it was protecting.
+   */
   useEffect(() => {
     if (!isOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [isOpen, onClose]);
+    overlayRef.current?.focus();
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -579,8 +614,25 @@ export default function ParallelGroupingModal({
     // needed — createPortal(document.body) escapes the root Theme's CSS scope.
     <Theme>
     <div
-      className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
-      onClick={onClose}
+      className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4 outline-none"
+      ref={overlayRef}
+      // Focusable only programmatically — it exists so Escape has somewhere to
+      // land inside this dialog rather than on `window`.
+      tabIndex={-1}
+      onClick={requestClose}
+      onKeyDown={(e) => {
+        if (e.key !== "Escape") return;
+        // The discard confirm is a sibling in this portal and owns Escape
+        // while it is open.
+        if (discardOpen) return;
+        // D8: Escape inside a text field means something smaller and local.
+        if (isEditableTarget(e.target)) return;
+        // Escape during a drag cancels the DRAG (dnd-kit's own document
+        // listener); one keypress must not also end the session.
+        if (activeDragId) return;
+        e.preventDefault();
+        requestClose();
+      }}
     >
       <div
         className="bg-gray-900 border border-gray-700 rounded-xl max-w-3xl w-full max-h-[90vh] flex flex-col"
@@ -728,7 +780,7 @@ export default function ParallelGroupingModal({
             )}
           </div>
           <div className="flex gap-3">
-            <NeonButton cancel onClick={onClose} disabled={confirming}>
+            <NeonButton cancel onClick={requestClose} disabled={confirming}>
               Cancel
             </NeonButton>
             <NeonButton
@@ -745,6 +797,24 @@ export default function ParallelGroupingModal({
         </div>
       </div>
     </div>
+    {/* NEO-220 — a SIBLING of the overlay, not a child of it: this overlay
+        closes on backdrop click, and a confirm nested inside it would hand
+        its own backdrop click straight to the thing it is protecting. */}
+    {discardOpen && (
+      <ConfirmDialog
+        title={`Discard ${plural(totalChanges, "pending move")}?`}
+        description="Closing puts every parallel back where it was. Nothing has been saved yet."
+        confirmLabel={`Discard ${plural(totalChanges, "pending move")}`}
+        // Nothing is written on this path, so there is no in-flight window.
+        busyLabel={`Discard ${plural(totalChanges, "pending move")}`}
+        busy={false}
+        onConfirm={() => {
+          setDiscardOpen(false);
+          onClose();
+        }}
+        onCancel={() => setDiscardOpen(false)}
+      />
+    )}
     </Theme>,
     document.body,
   );

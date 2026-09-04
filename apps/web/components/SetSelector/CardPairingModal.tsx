@@ -22,7 +22,9 @@ import {
   type DragStartEvent,
 } from "@dnd-kit/core";
 import NeonButton from "../modules/NeonButton";
+import { ConfirmDialog } from "../modules/confirm-dialog";
 import { Input } from "../primitives/Input";
+import { countPairingEdits } from "./pairing-session-edits";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import { compareCardNumbers } from "@/lib/cards/card-number";
 // NEO-199: the wrong-player check is SHARED with the server. `fetchCardChecklist`
@@ -33,6 +35,7 @@ import {
   conflictingNames,
   type NameDisagreement,
 } from "@/lib/cards/card-name";
+import { isEditableTarget } from "../../lib/dom/is-editable-target";
 
 /**
  * NEO-137 — card-level pairing, before any NB card exists.
@@ -170,6 +173,22 @@ type NameConflict = NameDisagreement & {
  */
 type IncomingPair = { card: PairingCard; confidence: number };
 
+/**
+ * The candidates snapshot this dialog opens on, and keeps receiving.
+ *
+ * Named rather than inlined on the props so `seedState` — the reducer's lazy
+ * initializer, which lives outside the component — can take it by type.
+ */
+type PairingInitialData = {
+  /**
+   * Pairs the server already merged. Typed as INCOMING — no `chosen`, because
+   * nobody has chosen yet; `seedMatched` derives that here (NEO-199).
+   */
+  autoMatched: IncomingPair[];
+  unmatchedBsc: PairingCard[];
+  unmatchedSl: PairingCard[];
+};
+
 type MatchedPair = {
   card: PairingCard;
   confidence: number;
@@ -193,6 +212,22 @@ type State = {
   unmatchedSl: PairingCard[];
   keptBsc: PairingCard[];
   keptSl: PairingCard[];
+  /**
+   * NEO-220 — `candidateKey` of every pair that ARRIVED matched: the seed plus
+   * everything `ABSORB` has folded in since. Never pruned.
+   *
+   * It exists so the discard confirm can count an auto-pair the operator took
+   * apart, which nothing else in this state can see: after `UNLINK` both halves
+   * sit in the unmatched columns looking exactly like cards that never matched.
+   * A discard count blind to that would read 0 on a session whose entire work
+   * was correcting the server's matches, and a confirm that says "nothing to
+   * lose" while there is is worse than no confirm at all.
+   *
+   * Carried on the state rather than in a ref beside it because `ordered` and
+   * every reducer case already thread the state through; a parallel ref would
+   * be one more thing to keep in sync with `ABSORB`.
+   */
+  seedMatchedKeys: Set<string>;
 };
 
 type Action =
@@ -321,6 +356,11 @@ function parseDragId(
   const side = id.slice(0, i);
   if (side !== "bsc" && side !== "sl") return undefined;
   return { side, key: id.slice(i + 1) };
+}
+
+/** "1 pairing" / "2 pairings". */
+function plural(n: number, noun: string): string {
+  return `${n} ${noun}${n === 1 ? "" : "s"}`;
 }
 
 /**
@@ -453,6 +493,7 @@ function compareCards(a: PairingCard, b: PairingCard): number {
  */
 function ordered(state: State): State {
   return {
+    ...state,
     matched: [...state.matched].sort((a, b) => compareCards(a.card, b.card)),
     unmatchedBsc: [...state.unmatchedBsc].sort(compareCards),
     unmatchedSl: [...state.unmatchedSl].sort(compareCards),
@@ -529,6 +570,33 @@ function seedMatched(incoming: IncomingPair[]): MatchedPair[] {
       confidence: pair.confidence,
       nameConflict: { ...conflict, chosen: "bsc" },
     };
+  });
+}
+
+/**
+ * The reducer's opening state, built once from the first snapshot of the
+ * candidates stream.
+ *
+ * Lazy (passed as `useReducer`'s initializer rather than its value) because it
+ * now allocates a Set alongside the sort, and because `seedMatched` runs here
+ * exactly once — it used to run on every render only to be thrown away.
+ */
+function seedState(initialData: PairingInitialData): State {
+  // NEO-199: `seedMatched`, not the raw array — an auto-matched pair the
+  // marketplaces name differently has to arrive already flagged, on the very
+  // first paint. That is the common path; waiting for the operator to
+  // hand-link something before the guard exists is the defect.
+  const matched = seedMatched(initialData.autoMatched);
+  // NEO-195: `ordered` on the seed too — the first paint is otherwise in
+  // whatever order the fetch produced, which for a streamed batch is arrival
+  // order, not card order.
+  return ordered({
+    matched,
+    unmatchedBsc: initialData.unmatchedBsc,
+    unmatchedSl: initialData.unmatchedSl,
+    keptBsc: [],
+    keptSl: [],
+    seedMatchedKeys: new Set(matched.map((m) => candidateKey(m.card))),
   });
 }
 
@@ -675,6 +743,17 @@ function baseReducer(state: State, action: Action): State {
         unmatchedSl: [...unmatchedSl, ...newSl],
         keptBsc,
         keptSl,
+        // NEO-220: a pair that streams in already matched is as much "the
+        // server's work" as one in the seed, so unlinking it later is as much
+        // an edit. Only the genuinely NEW rows are added — a pair the operator
+        // has already taken apart is not `isNew` (both its refs are in `seen`),
+        // so a re-delivery cannot resurrect the key it was counted by.
+        seedMatchedKeys: newMatched.length
+          ? new Set([
+              ...state.seedMatchedKeys,
+              ...newMatched.map((m) => candidateKey(m.card)),
+            ])
+          : state.seedMatchedKeys,
       };
     }
     case "LINK": {
@@ -1022,15 +1101,7 @@ export default function CardPairingModal({
   onConfirm: (result: PairingResult) => Promise<void>;
   /** e.g. "Dugout Collection Artist's Proofs Series 1" — for the heading. */
   setLabel?: string;
-  initialData: {
-    /**
-     * Pairs the server already merged. Typed as INCOMING — no `chosen`, because
-     * nobody has chosen yet; `seedMatched` derives that here (NEO-199).
-     */
-    autoMatched: IncomingPair[];
-    unmatchedBsc: PairingCard[];
-    unmatchedSl: PairingCard[];
-  };
+  initialData: PairingInitialData;
   /**
    * NEO-195 — the fetch is still running and more candidates are coming.
    *
@@ -1042,23 +1113,7 @@ export default function CardPairingModal({
   /** Progress for the streaming banner: cards released / cards found so far. */
   streamProgress?: { ready: number; total: number };
 }) {
-  // NEO-195: `ordered` on the seed too — the first paint is otherwise in
-  // whatever order the fetch produced, which for a streamed batch is arrival
-  // order, not card order.
-  const [state, dispatch] = useReducer(
-    reducer,
-    ordered({
-      // NEO-199: `seedMatched`, not the raw array — an auto-matched pair the
-      // marketplaces name differently has to arrive already flagged, on the
-      // very first paint. That is the common path; waiting for the operator to
-      // hand-link something before the guard exists is the defect.
-      matched: seedMatched(initialData.autoMatched),
-      unmatchedBsc: initialData.unmatchedBsc,
-      unmatchedSl: initialData.unmatchedSl,
-      keptBsc: [],
-      keptSl: [],
-    }),
-  );
+  const [state, dispatch] = useReducer(reducer, initialData, seedState);
   const [selectedBsc, setSelectedBsc] = useState<string | null>(null);
   /**
    * NEO-189 follow-up — which matched row's title is open for editing, keyed
@@ -1115,6 +1170,15 @@ export default function CardPairingModal({
     initialData.unmatchedBsc.length > 0 || initialData.unmatchedSl.length > 0,
   );
   const [confirming, setConfirming] = useState(false);
+  /**
+   * NEO-220 — is the "throw this session away?" confirm on screen?
+   *
+   * Distinct from `confirming`, which means "the commit is in flight". They are
+   * mutually exclusive in practice (Cancel is not reachable mid-save) but they
+   * are opposite questions, and one flag for both would make Escape during a
+   * save open a discard dialog.
+   */
+  const [discardOpen, setDiscardOpen] = useState(false);
 
   // NEO-195: fold in candidates that became ready after the modal opened.
   // Append-only (see the ABSORB case), so nothing the operator has already
@@ -1357,6 +1421,35 @@ export default function CardPairingModal({
     }
   }, [confirming, isStreaming, onConfirm, state]);
 
+  /**
+   * NEO-220 — how much of this session a dismissal would throw away.
+   *
+   * Nothing on this screen is written until Confirm, so Escape and Cancel are
+   * both silent discards of everything the operator has linked, kept and
+   * renamed. `countPairingEdits` is pure and separately tested; see
+   * `pairing-session-edits.ts` for what does and does not count.
+   */
+  const pendingEdits = useMemo(
+    () => countPairingEdits(state, candidateKey),
+    [state],
+  );
+
+  /**
+   * The single door out. Every dismissal path goes through here — root Escape
+   * and the footer Cancel — so "was anything lost?" is asked in exactly one
+   * place and cannot be forgotten on the next path someone adds.
+   *
+   * A clean session closes immediately: a confirm over nothing is a dialog that
+   * teaches operators to dismiss confirms without reading them.
+   */
+  const requestClose = useCallback(() => {
+    if (pendingEdits === 0) {
+      onClose();
+      return;
+    }
+    setDiscardOpen(true);
+  }, [onClose, pendingEdits]);
+
   if (!isOpen) return null;
 
   const totalToSave =
@@ -1372,6 +1465,17 @@ export default function CardPairingModal({
         ref={dialogRef}
         onKeyDown={(e) => {
           if (e.key === "Escape") {
+            // NEO-220: the discard confirm owns Escape while it is open. It is
+            // a sibling in this portal, not a descendant, so a keypress inside
+            // it never reaches here — this covers the case where focus is
+            // somehow still behind it.
+            if (discardOpen) return;
+            // NEO-220 (D8): inside a text field Escape already means something
+            // smaller — clear the filter, abandon the rename — and those
+            // handlers stop propagation. Anything that reaches here from a
+            // field is a field with no local meaning for the key, and closing
+            // the whole dialog is not what the operator asked for.
+            if (isEditableTarget(e.target)) return;
             // Escape during a drag CANCELS THE DRAG (dnd-kit's own document
             // listener), so it must not also close the modal — one keypress
             // that both aborts the gesture and throws away every unsaved
@@ -1380,7 +1484,7 @@ export default function CardPairingModal({
             // only clears it via a React state update, which cannot land
             // mid-event.
             if (activeDragId) return;
-            onClose();
+            requestClose();
             return;
           }
           if (e.key !== "Tab") return;
@@ -1987,6 +2091,17 @@ export default function CardPairingModal({
                   type="text"
                   value={bscFilter}
                   onChange={(e) => setBscFilter(e.target.value)}
+                  // NEO-220 (D8): Escape in a filter clears the filter. It is
+                  // the reflex every other search box on the web has trained,
+                  // and letting it reach the dialog root instead means the
+                  // operator loses the session to a keystroke they meant as
+                  // "undo my typing".
+                  onKeyDown={(e) => {
+                    if (e.key !== "Escape") return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setBscFilter("");
+                  }}
                   placeholder="Filter BSC cards"
                   aria-label="Filter BSC cards"
                 />
@@ -2064,6 +2179,13 @@ export default function CardPairingModal({
                   type="text"
                   value={slFilter}
                   onChange={(e) => setSlFilter(e.target.value)}
+                  // Same as the BSC filter above (NEO-220 D8).
+                  onKeyDown={(e) => {
+                    if (e.key !== "Escape") return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setSlFilter("");
+                  }}
                   placeholder="Filter SportLots cards"
                   aria-label="Filter SportLots cards"
                 />
@@ -2198,7 +2320,7 @@ export default function CardPairingModal({
               <NeonButton
                 secondary
                 size="2"
-                onClick={onClose}
+                onClick={requestClose}
                 // Specific, matching every other dialog in this directory —
                 // CardChecklist renders a "Cancel new card" button on the same
                 // page, so a bare "Cancel" would be ambiguous to assistive
@@ -2246,6 +2368,28 @@ export default function CardPairingModal({
           </footer>
         </div>
       </div>
+      {/* NEO-220 — a SIBLING of the overlay, not a child of it.
+          The overlay stack in this directory closes on backdrop click, and a
+          confirm nested inside one would hand its own backdrop click straight
+          to the thing it is protecting: click "no, keep working" on the
+          backdrop and lose the session anyway. Rendered here it is also outside
+          the modal root's `onKeyDown`, so ConfirmDialog's Escape is its own. */}
+      {discardOpen && (
+        <ConfirmDialog
+          title={`Discard ${plural(pendingEdits, "pairing")}?`}
+          description="Closing throws away every link, keep and name choice on this screen. No cards have been saved."
+          confirmLabel={`Discard ${plural(pendingEdits, "pairing")}`}
+          // Nothing is written on this path, so there is no in-flight window to
+          // label — the same string keeps ConfirmDialog's contract honest.
+          busyLabel={`Discard ${plural(pendingEdits, "pairing")}`}
+          busy={false}
+          onConfirm={() => {
+            setDiscardOpen(false);
+            onClose();
+          }}
+          onCancel={() => setDiscardOpen(false)}
+        />
+      )}
     </Theme>,
     document.body,
   );

@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useReducer, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Theme } from "@radix-ui/themes";
 import {
@@ -16,9 +16,12 @@ import {
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import NeonButton from "../modules/NeonButton";
+import { ConfirmDialog } from "../modules/confirm-dialog";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
+import { countReconciliationEdits } from "./reconciliation-edits";
 import { Input } from "../primitives/Input";
 import type { Id } from "../../convex/_generated/dataModel";
+import { isEditableTarget } from "../../lib/dom/is-editable-target";
 
 // ===== TYPES =====
 
@@ -356,6 +359,11 @@ type ReconciliationModalProps = {
   }>;
 };
 
+/** "1 set change" / "2 set changes". */
+function plural(n: number, noun: string): string {
+  return `${n} ${noun}${n === 1 ? "" : "s"}`;
+}
+
 // ===== DRAGGABLE ITEM =====
 
 // Text input with an inline "×" clear button that appears once the user
@@ -389,6 +397,16 @@ function FilterInput({
         type="text"
         value={value}
         onChange={(e) => onChange(e.target.value)}
+        // NEO-220 (D8): Escape clears the filter — the same thing the "×"
+        // does, and the reflex every search box on the web has trained.
+        // Stopped here so it never reaches the dialog root, where Escape now
+        // means "throw this reconciliation away".
+        onKeyDown={(e) => {
+          if (e.key !== "Escape") return;
+          e.preventDefault();
+          e.stopPropagation();
+          if (value.length > 0) clear();
+        }}
         placeholder={placeholder}
         aria-label={ariaLabel}
         className={`${fieldClass()} w-full pl-2.5 pr-7 py-1.5 text-xs`}
@@ -563,6 +581,11 @@ function ReadySetRow({
               (e.target as HTMLInputElement).blur();
             } else if (e.key === "Escape") {
               e.preventDefault();
+              // NEO-220 (D8): Escape here reverts the title and nothing else.
+              // The dialog root now treats an un-stopped Escape as "discard the
+              // whole reconciliation", so abandoning one rename would have
+              // thrown away every set on the screen.
+              e.stopPropagation();
               setTitleDraft(set.title);
               (e.target as HTMLInputElement).blur();
             }
@@ -785,6 +808,15 @@ export default function ReconciliationModal({
   );
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
+  /**
+   * NEO-220 — is the "throw this session away?" confirm on screen?
+   *
+   * Separate from `confirming` ("the save is in flight") on purpose: they are
+   * opposite questions, and one flag for both would make Escape during a save
+   * offer to discard the work being saved.
+   */
+  const [discardOpen, setDiscardOpen] = useState(false);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
   // Default SL-side prefixes: full set name, set name with manufacturer
   // prefix stripped, plus any caller-supplied extras (typically the SL Base
   // anchor's name). De-duped and lowercased.
@@ -1062,6 +1094,48 @@ export default function ReconciliationModal({
     }
   }, [state, onConfirm]);
 
+  /**
+   * NEO-220 — how much of this session a dismissal would throw away.
+   *
+   * A diff against the seeded state, not a counter: the modal opens with a
+   * screenful of Ready sets restored from `existingRows`, so "the list is not
+   * empty" says nothing about whether the operator has done anything.
+   * `countReconciliationEdits` is pure and separately tested.
+   */
+  const pendingEdits = useMemo(
+    () => countReconciliationEdits(initialState, state),
+    [initialState, state],
+  );
+
+  /**
+   * The single door out. Backdrop click, footer Cancel and root Escape all come
+   * through here, so the "was anything lost?" question is asked once rather
+   * than three times — and cannot be forgotten on the next path someone adds.
+   *
+   * The backdrop is the reason this dialog needed the guard most: a reconcile
+   * of a real set is twenty minutes of dragging, and one stray click outside
+   * the panel ended it silently.
+   */
+  const requestClose = useCallback(() => {
+    if (confirming) return;
+    if (pendingEdits === 0) {
+      onClose();
+      return;
+    }
+    setDiscardOpen(true);
+  }, [confirming, onClose, pendingEdits]);
+
+  /**
+   * a11y: `aria-modal="true"` is a promise that focus starts inside and stays
+   * inside. It starts here, on the container, so the first Tab lands on the
+   * dialog's own first control rather than wherever the operator had been on
+   * the page behind.
+   */
+  useEffect(() => {
+    if (!isOpen) return;
+    dialogRef.current?.focus();
+  }, [isOpen]);
+
   // Find the dragged item for the overlay
   const activeDragItem = useMemo(() => {
     if (!activeDragId) return null;
@@ -1216,8 +1290,54 @@ export default function ReconciliationModal({
     // needed — createPortal(document.body) escapes the root Theme's CSS scope.
     <Theme>
     <div
-      className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
-      onClick={onClose}
+      className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4 outline-none"
+      // NEO-220: this dialog announced itself to nothing. Every other modal in
+      // this directory carries the role/aria-modal/labelledby trio and owns its
+      // keyboard contract; this one had no role, no name and no keydown
+      // handler, so assistive tech read it as an anonymous div and Escape did
+      // nothing at all.
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="reconciliation-heading"
+      tabIndex={-1}
+      ref={dialogRef}
+      onClick={requestClose}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") {
+          // The discard confirm owns Escape while it is open. It is a sibling
+          // in this portal rather than a descendant, so its own keypresses
+          // never reach here; this covers focus left behind it.
+          if (discardOpen) return;
+          // D8: inside a text field Escape already means something smaller —
+          // clear the filter, revert the title — and those handlers stop
+          // propagation. Anything arriving here from a field is a field with
+          // no local meaning for the key.
+          if (isEditableTarget(e.target)) return;
+          // Escape during a drag cancels the DRAG (dnd-kit's own document
+          // listener). One keypress must not also end the session.
+          if (activeDragId) return;
+          e.preventDefault();
+          requestClose();
+          return;
+        }
+        if (e.key !== "Tab") return;
+        // Keep Tab inside the dialog — aria-modal="true" promises this.
+        const root = dialogRef.current;
+        if (!root) return;
+        const focusable = root.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), input:not([disabled]), [href], select, textarea, [tabindex]:not([tabindex="-1"])',
+        );
+        if (focusable.length === 0) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }}
     >
       <div
         className="bg-gray-900 border border-gray-700 rounded-xl max-w-6xl w-full max-h-[90vh] flex flex-col"
@@ -1225,7 +1345,10 @@ export default function ReconciliationModal({
       >
         {/* Header */}
         <div className="px-6 py-4 border-b border-gray-700">
-          <h2 className="text-xl font-semibold text-white">
+          <h2
+            id="reconciliation-heading"
+            className="text-xl font-semibold text-white"
+          >
             Reconcile {levelLabel}
           </h2>
           <p className="text-sm text-gray-400 mt-1">
@@ -1336,7 +1459,7 @@ export default function ReconciliationModal({
               {saveError}
             </span>
           )}
-          <NeonButton cancel onClick={onClose} disabled={confirming}>
+          <NeonButton cancel onClick={requestClose} disabled={confirming}>
             Cancel
           </NeonButton>
           <NeonButton
@@ -1348,6 +1471,24 @@ export default function ReconciliationModal({
         </div>
       </div>
     </div>
+    {/* NEO-220 — a SIBLING of the overlay, not a child of it. This overlay
+        closes on backdrop click; a confirm nested inside it would hand its own
+        backdrop click straight to the thing it is protecting. */}
+    {discardOpen && (
+      <ConfirmDialog
+        title={`Discard ${plural(pendingEdits, "set change")}?`}
+        description="Closing throws away the sets you built here. Nothing has been saved yet."
+        confirmLabel={`Discard ${plural(pendingEdits, "set change")}`}
+        // Nothing is written on this path, so there is no in-flight window.
+        busyLabel={`Discard ${plural(pendingEdits, "set change")}`}
+        busy={false}
+        onConfirm={() => {
+          setDiscardOpen(false);
+          onClose();
+        }}
+        onCancel={() => setDiscardOpen(false)}
+      />
+    )}
     </Theme>,
     document.body,
   );
