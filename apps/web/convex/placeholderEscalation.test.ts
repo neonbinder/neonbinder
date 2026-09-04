@@ -17,7 +17,7 @@
  */
 
 import { convexTest } from "convex-test";
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import schema from "./schema";
 import { api } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -36,12 +36,71 @@ const USER_A = { subject: "user_escAAAA1111" };
 const ENQUEUE_HEAVY_FN = "placeholderHeavyPool:enqueueHeavyImage";
 const HEAVY_WARMUP_FN = "placeholderBatch:warmupHeavyPreprocess";
 
+const HEAVY_URL = "http://localhost:9998";
+
 beforeEach(() => {
-  // Loopback so that, even if a scheduled warm-up somehow ran, the OIDC path is
-  // skipped and the (swallowed) fetch fails harmlessly rather than reaching GCP.
-  process.env.NEONBINDER_PREPROCESS_URL = "http://localhost:9998";
+  // Loopback → the OIDC path short-circuits, so no google-auth-library and
+  // nothing can reach GCP.
+  process.env.NEONBINDER_PREPROCESS_URL = HEAVY_URL;
   vi.unstubAllGlobals();
 });
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  // Belt-and-suspenders: a test that enabled fake timers to drain must not
+  // leave the fake-timer mode visible to the next one.
+  vi.useRealTimers();
+});
+
+/**
+ * Records every outbound call the drained schedule makes.
+ *
+ * `/warmup` answers like the real service; anything else is a terminal 404 so a
+ * cascade settles fast instead of recursing. Mirrors `makeBatchStartStub` in
+ * placeholderWarmup.test.ts.
+ */
+function stubPreprocess() {
+  const calls: string[] = [];
+  vi.stubGlobal(
+    "fetch",
+    (async (url: string | URL): Promise<Response> => {
+      const u = String(url);
+      calls.push(u);
+      if (u.endsWith("/warmup")) {
+        return new Response(
+          JSON.stringify({ status: "warm", was_cold: true }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response("not found", { status: 404 });
+    }) as unknown as typeof fetch,
+  );
+  return { calls };
+}
+
+/**
+ * Run the scheduled work this test caused, to completion.
+ *
+ * NOT optional tidying. These tests assert what was SCHEDULED and used to stop
+ * there, leaving `placeholderBatch:warmupHeavyPreprocess` in the queue to fire
+ * after the file's environment had been torn down — which surfaced as
+ * `EnvironmentTeardownError: Cannot load '/convex/lib/cloudRunAuth.ts' … after
+ * the environment was torn down` in a full run. convex-test catches that and
+ * only prints it, so the run stayed green while the defect sat one timing
+ * change away from failing it, exactly as the sibling
+ * `bscTeamEnrichmentQueue.tolerance.test.ts` leak did on CI run 9.
+ *
+ * Fake timers are entered and left HERE rather than file-wide: the other tests
+ * in this file assert on real `Date.now()` timestamps.
+ */
+async function drain(t: ReturnType<typeof convexTest>): Promise<void> {
+  vi.useFakeTimers();
+  try {
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+  } finally {
+    vi.useRealTimers();
+  }
+}
 
 // A completed fast crop (no escalation) in the service's snake_case wire shape.
 const CROP_BODY = {
@@ -222,6 +281,7 @@ describe("a fast decline re-routes the image to the heavy pool", () => {
 
 describe("the heavy warm-gate", () => {
   test("the FIRST escalation warms heavy once and records heavyWarmStartedAt", async () => {
+    const { calls } = stubPreprocess();
     const t = convexTest(schema, modules);
     const jobId = "job-warm-1";
     await seedJob(t, { jobId, status: "processing", totalImages: 2 });
@@ -235,9 +295,28 @@ describe("the heavy warm-gate", () => {
     expect(scheduled).toContain(HEAVY_WARMUP_FN);
     // Exactly one warm-up fan-out scheduled — not one per escalation.
     expect(scheduled.filter((n) => n === HEAVY_WARMUP_FN)).toHaveLength(1);
+
+    // …and it is OWNED: run it, and assert what it actually did. Scheduling is
+    // half the guarantee; the warm-up has to reach the heavy service, and
+    // asserting the call proves the schedule carried a usable target rather
+    // than merely existing.
+    // …and it is OWNED: run it, and assert what it actually did.
+    //
+    // A LOWER BOUND, not an exact count, and the reason matters: convex-test's
+    // scheduler queue is shared across every `convexTest()` instance in a file
+    // (see the same note in placeholderWarmup.test.ts), so the first test that
+    // drains also sweeps up whatever the earlier tests left behind. Pinning an
+    // exact number here would be pinning THEIR behaviour, from a test that
+    // does not own it. What this test owns is that its own warm-up reached the
+    // heavy service — and that no warm-up went anywhere else.
+    await drain(t);
+    const warmups = calls.filter((u) => u.endsWith("/warmup"));
+    expect(warmups.length).toBeGreaterThan(0);
+    expect(warmups.every((u) => u === `${HEAVY_URL}/warmup`)).toBe(true);
   });
 
   test("a SECOND escalation enqueues heavy but does NOT re-fire the warm-gate", async () => {
+    const { calls } = stubPreprocess();
     const t = convexTest(schema, modules);
     const jobId = "job-warm-2";
     // Pre-set heavyWarmStartedAt as if a first escalation already warmed heavy.
@@ -258,12 +337,18 @@ describe("the heavy warm-gate", () => {
     expect(scheduled).not.toContain(HEAVY_WARMUP_FN);
     // The original timestamp is untouched.
     expect((await getJob(t, jobId))?.heavyWarmStartedAt).toBe(1_700_000_000_500);
+
+    // Drain the heavy enqueue this test DID schedule, and prove the warm-gate
+    // stayed shut where it counts: no /warmup call reached the service either.
+    await drain(t);
+    expect(calls.filter((u) => u.endsWith("/warmup"))).toHaveLength(0);
   });
 
   test("two escalations settling in ONE transaction still warm heavy only once", async () => {
     // The workpool can settle several completions inline in one transaction; the
     // per-job settle lock serializes them, so the second reads the first's
     // heavyWarmStartedAt write and skips the warm-up.
+    const { calls } = stubPreprocess();
     const t = convexTest(schema, modules);
     const jobId = "job-warm-3";
     await seedJob(t, { jobId, status: "processing", totalImages: 2 });
@@ -285,6 +370,11 @@ describe("the heavy warm-gate", () => {
       (await ctx.db.query("placeholderImages").collect()).filter((r) => r.jobId === jobId),
     );
     expect(images.every((i) => i.escalated === true)).toBe(true);
+
+    // One schedule, one call. The de-duplication has to hold all the way to
+    // the wire, not just in the scheduler table.
+    await drain(t);
+    expect(calls.filter((u) => u === `${HEAVY_URL}/warmup`)).toHaveLength(1);
   });
 });
 
