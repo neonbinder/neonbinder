@@ -154,6 +154,40 @@ separately and don't infer one from the other — a translucent-tint badge in
 particular can need meaningfully different token weights per theme, not just
 a color swap.**
 
+## `border-gray-600` vs `border-gray-500` on an unconditionally-dark `bg-gray-900` box — the border needs its own check, separate from the text
+
+`gray-600` (#4a5565) as a plain `border-*` (not translucent) against opaque
+`gray-900` (#101828) measures **2.35:1** — fails WCAG 1.4.11's 3:1 non-text
+minimum. `gray-500` (#6a7282) against the same background measures 3.67:1 —
+passes, with margin similar to its 4.5:1-failing text role (see the
+recurring-bug entry above: gray-500 fails as TEXT against gray-900, but
+passes as a BORDER, because the two success criteria have different
+thresholds). Found on `SelectorSyncReviewModal.tsx`'s resting-state pill
+border; fixed `border-gray-600` → `border-gray-500`. **Don't assume a
+border and its neighbouring text can share the same gray token check** — look
+up the actual threshold (3:1 for a non-text UI boundary vs 4.5:1 for text)
+before picking the shade.
+
+## Translucent amber border opacity failing 1.4.11 even though the paired TEXT opacity passes (NEO-211)
+
+`SyncDoneNotice.tsx` (renamed from `UnlinkedNotice.tsx`) used
+`border-amber-700/60 dark:border-amber-400/40` on a box whose own background
+is `bg-amber-400/10`. Composited in order (per the chained-opacity method
+above: blend the border color into the box's ALREADY-blended background,
+not into the page background): light mode measures **2.45:1**, dark mode
+**2.57:1** — both fail 1.4.11's 3:1, even though the accompanying TEXT
+(`text-amber-800 dark:text-amber-300`) passes comfortably in both themes
+(6.69:1 / 10.22:1). A translucent border needs a materially higher opacity
+than translucent text sitting on the same tinted background to clear its own
+(lower, 3:1) threshold — passing text contrast on a badge is not evidence its
+border also passes. **Fix**: match the pairing this codebase's own
+`EntityColumn.tsx` suggestions-pill already uses on the identical amber
+tint — `border-amber-700` (solid, not `/60`) light, `dark:border-amber-400/70`
+(not `/40`) dark — which measures 4.75:1 / 4.96:1. When two components share
+the same `bg-amber-400/10` tint, don't assume their border opacity was ever
+compared to each other's; check both, and copy the *better* one rather than
+inventing a new opacity value.
+
 ## Resolved: the dark background IS forced, just not via `body`
 
 Traced during the NEO-121 audit. `apps/web/app/globals.css`'s `body` background

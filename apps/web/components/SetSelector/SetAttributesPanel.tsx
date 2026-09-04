@@ -8,7 +8,7 @@ import {
   type ExpectedFeature,
 } from "../../convex/features/expectedFeatures";
 import { FeatureValueControl } from "./FeatureValueControl";
-import RenameEntityControl from "./RenameEntityControl";
+import RenameEntityControl, { canRenameSelectorRow } from "./RenameEntityControl";
 
 /**
  * NEO-38 (PR B-2) — level-agnostic set ATTRIBUTES editor.
@@ -171,7 +171,13 @@ export default function SetAttributesPanel({
             <h3 className="text-sm font-semibold text-gray-100">
               {headerTitle}
             </h3>
-            <RenameEntityControl id={selectorOptionId} currentValue={row.value} />
+            {/* NEO-211 (plan F): a non-custom variantType's value drives Base
+                detection and the BSC checklist fetch's `variant` facet, so it is
+                not editable. Rendering a pencil that always errors would be a
+                worse answer than not offering one. */}
+            {canRenameSelectorRow(row) && (
+              <RenameEntityControl id={selectorOptionId} currentValue={row.value} />
+            )}
           </div>
           <p className="text-xs text-gray-500 mt-0.5 truncate" title={breadcrumb}>
             {breadcrumb}

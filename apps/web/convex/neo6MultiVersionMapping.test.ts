@@ -188,13 +188,29 @@ describe("storeReconciledOptions", () => {
     await insertVariantWithExtras(t, parentId);
 
     // Reconciler sends the same value but with no sportlots ID (removed).
+    //
+    // NEO-211 changed what "removed" has to look like. A side is only unlinked
+    // when the caller DECLARES it fetched successfully (`coveredSides`) *and*
+    // that side actually returned something — an item carrying no ids at all
+    // is indistinguishable from a marketplace outage, and an outage must never
+    // strip linkage. So the batch now says "SportLots answered, and here is
+    // what it returned", with this row's id conspicuously absent from it.
+    // Everything asserted below is the original assertion, unchanged.
     await asAdmin.mutation(api.setReconciliation.storeReconciledOptions, {
       level: "variantType",
       parentId,
+      coveredSides: ["sportlots"],
       reconciledItems: [
         {
           value: "Base Set",
           platformData: { sportlots: undefined },
+          metadata: undefined,
+        },
+        {
+          // Another set SportLots DID return this run — the evidence that the
+          // side came back at all.
+          value: "Some Other Set",
+          platformData: { sportlots: "sl-still-listed" },
           metadata: undefined,
         },
       ],
@@ -209,8 +225,12 @@ describe("storeReconciledOptions", () => {
         .collect();
     });
 
-    expect(rows).toHaveLength(1);
-    const row = rows[0];
+    // Two rows now: "Base Set" plus the still-listed set that proves the side
+    // came back. "Base Set" itself is never deleted — that is the whole point
+    // of NEO-211 — so it is still here to assert against.
+    expect(rows).toHaveLength(2);
+    const row = rows.find((r) => r.value === "Base Set")!;
+    expect(row).toBeTruthy();
 
     // Primary is gone from primaryPlatformId.
     expect(row.primaryPlatformId?.sportlots).toBeUndefined();

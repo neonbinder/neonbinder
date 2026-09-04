@@ -22,7 +22,7 @@ vi.mock("convex/react", () => ({
     ref === "selectorOptions.renameSelectorOption" ? mockRename : vi.fn(),
 }));
 
-import RenameEntityControl from "./RenameEntityControl";
+import RenameEntityControl, { canRenameSelectorRow } from "./RenameEntityControl";
 
 const ID = "selopt-1" as unknown as Id<"selectorOptions">;
 
@@ -113,5 +113,63 @@ describe("RenameEntityControl", () => {
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("already called");
     expect(screen.getByLabelText("Edit name for Baseball")).toBeTruthy();
+  });
+
+  /**
+   * NEO-211 (plan F). A non-custom `variantType`'s value is code, not a label:
+   * `SetSelector` finds the Base variant by the literal string "Base", and the
+   * BSC checklist fetch derives its `variant` facet straight from this display
+   * value — so "Insert", "Parallel" and "Promo" are load-bearing too. The server
+   * refuses the rename; this asserts the refusal REACHES the operator with the
+   * server's own explanation rather than a generic "Rename failed".
+   */
+  it("renders the server's variantType refusal, not a generic failure", async () => {
+    // Shaped like a ConvexError: the payload rides on `.data`, and `.message`
+    // on the thrown object is the serialized envelope, not the human sentence.
+    const refusal = Object.assign(
+      new Error("[Request ID: abc] Server Error"),
+      {
+        data: {
+          code: "VARIANT_TYPE_RENAME_REFUSED",
+          message:
+            'The variant type name "Base" can\'t be changed — it drives Base detection and the BSC checklist fetch.',
+        },
+      },
+    );
+    mockRename.mockRejectedValueOnce(refusal);
+    renderControl("Base");
+    fireEvent.click(screen.getByLabelText("Rename Base"));
+    const input = screen.getByLabelText("Edit name for Base");
+    fireEvent.change(input, { target: { value: "Basic" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("drives Base detection");
+    expect(alert.textContent).not.toContain("Request ID");
+  });
+});
+
+/**
+ * The render-time half of plan F. The refusal above is the guarantee; this is
+ * the affordance — a pencil that always errors is a worse answer than no pencil.
+ * Both exist deliberately: a stale bundle or a second tab still cannot get the
+ * write through.
+ */
+describe("canRenameSelectorRow", () => {
+  it("refuses a synced variantType row", () => {
+    expect(canRenameSelectorRow({ level: "variantType", isCustom: false })).toBe(false);
+    // `isCustom` absent is the same statement as false on these rows.
+    expect(canRenameSelectorRow({ level: "variantType" })).toBe(false);
+  });
+
+  it("allows a CUSTOM variantType — it was never one of the magic strings", () => {
+    expect(canRenameSelectorRow({ level: "variantType", isCustom: true })).toBe(true);
+  });
+
+  it("allows every other level, custom or not", () => {
+    for (const level of ["sport", "year", "manufacturer", "setName", "insert", "parallel"]) {
+      expect(canRenameSelectorRow({ level })).toBe(true);
+      expect(canRenameSelectorRow({ level, isCustom: true })).toBe(true);
+    }
   });
 });

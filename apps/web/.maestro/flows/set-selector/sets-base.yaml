@@ -75,9 +75,14 @@ tags:
       - tapOn:
           text: "Base"
           retryTapIfNoChange: true
-      - extendedWaitUntil:
-          visible:
+      # Scroll, don't just look: the Base-mapping controls render BELOW the
+      # columns container, so a taller column (e.g. a shared partial-failure
+      # notice from another worker) parks them under the fold and the retry key
+      # can never match. See util-drill-to-base-variant.yaml for the full note.
+      - scrollUntilVisible:
+          element:
             text: ".*Select Base Set.*|.*Re-map Base.*"
+          centerElement: true
           timeout: 7000
 
 # PATH A — picker stays open (SL returned data, no prior mapping):
@@ -115,7 +120,13 @@ tags:
     when:
       notVisible: "Select Base Set"
     commands:
-      - assertVisible: "Re-map Base"
+      # Same fold rule as above — scroll rather than assert in place. The scroll
+      # IS the assertion (R6).
+      - scrollUntilVisible:
+          element:
+            text: "Re-map Base"
+          centerElement: true
+          timeout: 10000
 
 # ── CardChecklist renders after the mapping is confirmed ────────────────────
 # Scroll DOWN to the "Fetch from Marketplaces" / "Refresh" button to confirm

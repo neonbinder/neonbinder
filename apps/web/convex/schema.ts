@@ -253,6 +253,24 @@ export const selectorOptionFields = {
       hallOfFameQid: v.optional(v.string()),
     })),
   })),
+  // NEO-211 — a marketplace label this row's operator has already said NO to.
+  //
+  // The sync never renames a row: it stores what the marketplace calls the set
+  // (`platformLabels[side][primarySlot]`) and `getSelectorSyncSuggestions`
+  // derives "upstream calls this something else" from the difference. Without
+  // this field a deliberate NB rename would be re-suggested on every single
+  // re-sync forever, which trains the operator to dismiss the one notice that
+  // matters.
+  //
+  // Stored NORMALISED (`selectorValueKey`, i.e. lowercase+trim) and compared
+  // normalised, so a re-cased "TOPPS" does not re-open a decision already made
+  // about "Topps". Cleared the moment that side's label becomes something
+  // genuinely new — a decline is a decision about ONE label, not a permanent
+  // mute on the side.
+  declinedUpstreamLabels: v.optional(v.object({
+    bsc: v.optional(v.string()),
+    sportlots: v.optional(v.string()),
+  })),
   // NEO-24: marketplace-agnostic feature map. Keys come from
   // `convex/features/expectedFeatures.ts` (e.g. "league", "era",
   // "isReprint"). Values are strings ("MLB", "Modern",
@@ -473,9 +491,36 @@ export default defineSchema({
       v.literal("parallel"),
     ),
     parentId: v.optional(v.id("selectorOptions")),
-    status: v.union(v.literal("syncing"), v.literal("error")),
+    // NEO-211 adds "done": a sync that SUCCEEDED but has something the admin
+    // needs to see — marketplace links that were detached because upstream
+    // stopped listing them, and/or a platform that could not be reached while
+    // the other one stored fine. The happy-and-quiet path still deletes the
+    // row, so "done" means "there is a notice here", not "finished".
+    status: v.union(v.literal("syncing"), v.literal("error"), v.literal("done")),
     message: v.optional(v.string()),
     requestId: v.optional(v.string()),
+    // NEO-211 D — rows whose marketplace link was removed because that side
+    // was fetched successfully and did not return the id. The ROW is never
+    // deleted (sets are fixed), so this is the only trace the event leaves;
+    // per Jason 2026-09-03 nothing else is persisted to remember it.
+    //
+    // Capped at UNLINK_NOTICE_LIMIT entries with the true count in
+    // `unlinkedTotal` — a status row is read reactively by every open column,
+    // and an unbounded list on a bad re-sync would be shipped to the browser
+    // on every keystroke elsewhere in the tree.
+    unlinked: v.optional(
+      v.array(
+        v.object({
+          id: v.id("selectorOptions"),
+          value: v.string(),
+          side: v.union(v.literal("bsc"), v.literal("sportlots")),
+          // Whether the row carries a stored checklist. Only meaningful at the
+          // levels that can (variantType/insert/parallel); absent elsewhere.
+          hasCards: v.optional(v.boolean()),
+        }),
+      ),
+    ),
+    unlinkedTotal: v.optional(v.number()),
     updatedAt: v.number(),
   }).index("by_level_and_parent", ["level", "parentId"]),
 

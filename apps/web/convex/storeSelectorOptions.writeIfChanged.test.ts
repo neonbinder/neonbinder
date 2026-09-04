@@ -52,6 +52,14 @@ describe("storeSelectorOptions write-if-changed (NEO-85)", () => {
         value: "Football",
         platformData: { bsc: { b0: "bsc-fb" }, sportlots: { s0: "sl-fb" } },
       platformSlotSeq: { bsc: 1, sportlots: 1 },
+        // NEO-211: the sync now records the marketplace's own name for the set
+        // against the slot it lives in — that stored label is what
+        // `getSelectorSyncSuggestions` reads to notice a marketplace rename,
+        // and at these levels the incoming display value IS the label. A row
+        // that has never been synced by the new code lacks it, and writing it
+        // for the first time is a genuine change; seeding it here keeps this
+        // test about the NO-CHANGE path it was written for.
+        platformLabels: { bsc: { b0: "Football" }, sportlots: { s0: "Football" } },
         children: [],
         // NEO-96: a synced sport row carries its config. Without this the
         // one-time sportConfig backfill would (correctly) patch the row, and
@@ -92,6 +100,10 @@ describe("storeSelectorOptions write-if-changed (NEO-85)", () => {
         value: "Football",
         platformData: { bsc: { b0: "bsc-fb" }, sportlots: { s0: "sl-fb" } },
       platformSlotSeq: { bsc: 1, sportlots: 1 },
+        // Only the BSC slot gets a label here: the option below carries no SL
+        // id, so the SL side is not touched at all (NEO-211 — an absent side
+        // is never refreshed and never unlinked without explicit coverage).
+        platformLabels: { bsc: { b0: "Football" } },
         children: [],
         // NEO-96: a synced sport row carries its config. Without this the
         // one-time sportConfig backfill would (correctly) patch the row, and

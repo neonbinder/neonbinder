@@ -341,9 +341,15 @@ tags:
 - tapOn: "Base"
 # Path A: BaseSetPicker stays open (SL data present) → confirm.
 # Path B: it auto-closes (BSC fallback) → "Re-map Base" appears. Handle both.
-- extendedWaitUntil:
-    visible:
+# Scroll, don't just look — the Base-mapping controls render BELOW the columns
+# container (components/modules/SetSelector.tsx:519-540), so any column that
+# grows (a shared partial-failure notice, a long list) parks them under the
+# 1024x629 fold. Same ceiling, same element; see util-drill-to-base-variant.yaml
+# for the CI evidence.
+- scrollUntilVisible:
+    element:
       text: ".*Select Base Set.*|.*Re-map Base.*"
+    centerElement: true
     timeout: 60000
 - runFlow:
     when:
@@ -362,14 +368,19 @@ tags:
 # extendedWaitUntil visible because it is scroll-clipped.
 #
 # Correct pattern (mirrors util-drill-to-base-variant.yaml):
-#   1. Wait for "Re-map Base" (in-viewport settle anchor — proves baseHasMapping
-#      became true and CardChecklist has mounted after the Convex write).
+#   1. SCROLL to "Re-map Base" (settle anchor — proves baseHasMapping became
+#      true and CardChecklist has mounted after the Convex write). It is NOT an
+#      "in-viewport" anchor: it renders below the columns container, so it goes
+#      under the fold whenever a column grows.
 #   2. scrollUntilVisible "Add Card" (centerElement + vis:50) — brings the
 #      CardChecklist header row into viewport before tapping.
-#   3. assertVisible "Fetch from Marketplaces|Refresh" — confirm it's in-view.
+#   3. assertVisible "Fetch from Marketplaces|Refresh" — same flex row as Add
+#      Card, so the centring above already put it in view.
 #   4. tapOn it.
-- extendedWaitUntil:
-    visible: "Re-map Base"
+- scrollUntilVisible:
+    element:
+      text: "Re-map Base"
+    centerElement: true
     timeout: 30000
 - scrollUntilVisible:
     element:

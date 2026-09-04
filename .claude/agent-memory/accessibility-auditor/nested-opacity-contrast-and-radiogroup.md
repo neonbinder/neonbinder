@@ -97,3 +97,45 @@ All five fixes here shipped with `role="group"` kept as an OUTER wrapper
 already-passing test suite's `getByRole("group", {name: "Name conflict on
 #N"})` assertions — nesting a more specific role inside a coarser one it's
 consistent with is a fine way to add semantics without a churny rename.
+
+## Not every mutually-exclusive pill pair needs converting — check for a genuine "neither" state first (NEO-211)
+
+`SelectorSyncReviewModal`'s Accept/Decline pair (per marketplace-suggestion
+side) LOOKS like the same shape as the CardPairingModal case above, but is
+NOT: CardPairingModal's pair always has exactly one chosen (mandatory
+selection, no "neither"), which is what makes `aria-pressed` the wrong tool.
+Here, undecided-is-the-default-and-a-legitimate-permanent-state is the whole
+point of the feature (an operator can leave a suggestion unresolved forever
+with zero consequence) — a real third state, not a transient "hasn't picked
+yet". `role="radio"`/`radiogroup` CAN represent an unchecked group (nothing
+in the spec requires one radio always checked), but plain `aria-pressed` on
+two independent toggle buttons already communicates "on/off/on" correctly
+for this shape, and the component's own logic already enforces mutual
+exclusivity (choosing one clears the other in state). **Reviewed and left
+as `aria-pressed`, not converted** — don't reflexively apply the
+CardPairingModal radiogroup fix to every two-button pill pair; check first
+whether "neither pressed" is a real, common, permanent state (leave as
+toggle buttons) or an artifact of "hasn't finished choosing yet" combined
+with an always-eventually-one-chosen requirement (convert to radiogroup).
+
+## The 2.5.3 Label-in-Name bug recurs on a SECOND unrelated component (NEO-211)
+
+Same defect as the `BSC: X` pill pair above, found independently in
+`SelectorSyncReviewModal.tsx`'s Accept/Decline buttons: visible text "Accept"/
+"Decline", `aria-label` starting instead with `Rename "..." to "..."` /
+`Keep "..."; stop suggesting ...` — neither accessible name contains its own
+button's visible word anywhere. This is now confirmed as a recurring
+authoring habit in this codebase (write the aria-label as if it fully
+replaces the visible text, rather than extends it) rather than a one-off —
+**check it by default on any button whose visible text is a short verb
+("Accept", "Decline", "Save", "Rename", …) and whose `aria-label` is a full
+sentence**, not just when a review happens to be primed for it. Fix used both
+times: keep the exact visible word first, then append context (here with an
+em dash: `` `Accept — rename "${a}" to "${b}" (from ${side})` ``). When the
+component has an existing test file with `getByLabelText` pinned to the OLD
+string, updating those call sites is safe and expected here (these are the
+feature's OWN newly-authored tests, not a long-standing external contract) —
+unlike the genuinely-locked-test case in
+[[shared-component-two-surface-contrast]], there's no reason to leave the
+fix partial when the test asserting the old string was written in the same
+commit as the bug.
