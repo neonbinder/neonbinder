@@ -256,10 +256,36 @@ tags:
 - tapOn:
     id: "Search teams"
 - inputText: "CNWT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
-- assertVisible:
-    id: "Create team CNWT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
-- tapOn:
-    id: "Create team CNWT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+
+# NOTHING MATCHES THAT NAME — the precondition for creating it, and a real
+# assertion that the name is this attempt's alone.
+- assertVisible: "No matches."
+
+# CREATE IT WITH ENTER, NOT BY TAPPING THE "+ Create" ROW (NEO-236).
+#
+# The row still exists and is still labelled "Create team <name>" — but inside
+# THIS dialog it can no longer be clicked, and that is geometry, not flakiness.
+# NEO-236 turned the create row into a two-field form (Location, Team name, a
+# "Shows as" preview, then the button), which grew the popover from 112px to
+# 261px — measured against the shipped stylesheet at 1024x629.
+#
+# The walker's body is `min-h-80 max-h-[70vh] overflow-y-auto`, i.e. a 320px
+# scroll box, and the popover is `absolute top-full` INSIDE it. Measured on the
+# same viewport: the body's visible box is y=162-482, the trigger sits at
+# y=258-280, so the popover runs y=284-544 and the "+ Create team" button lands
+# at y=507-535 — 25px BELOW the bottom of the box that clips it.
+# `document.elementFromPoint` at the button's centre returns the dialog's
+# footer, not the button. Maestro reports layout bounds, so `assertVisible`
+# passes and `tapOn` "succeeds" while the click lands on the footer: no team is
+# created and the next step fails somewhere else entirely.
+#
+# Enter on the search input runs the SAME handler the row does: TeamPicker's
+# keydown takes the highlighted match when there is one and otherwise calls
+# createAndAdd(). "No matches." above is what proves there is none, so Enter
+# here can only mean create — and it needs no coordinates at all. (Identical to
+# the fix already carried by team-management-edit-a-team,
+# player-management-add-and-career-history and the spine-label flow.)
+- pressKey: Enter
 # Wait for the chip to carry the resolved NAME before tapping Save. Two
 # reasons: it proves the pick landed, and the chip's width is what pushes the
 # still-open typeahead popover clear of the Save button's centre. TeamPicker

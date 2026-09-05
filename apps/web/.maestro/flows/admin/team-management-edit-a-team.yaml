@@ -34,11 +34,23 @@ tags:
 # flow deliberately asserts nothing about it beyond what it needs to get a team.
 #
 # R2 — this cannot go green without the feature working. It selects the team,
-# proves the panel opened on a row with NO colours yet (the Primary field shows
-# its placeholder, so anything already filled in would fail), types a colour and
-# a city, saves, and asserts BOTH values survive a full reload and re-selection.
-# A panel that rendered but did not persist, or persisted to the wrong row,
-# fails.
+# proves the panel opened on a row with NO location and NO colours yet (both
+# fields show their placeholders, so anything already filled in would fail),
+# types a Location and a colour, saves, and asserts BOTH values survive a full
+# reload and re-selection. A panel that rendered but did not persist, or
+# persisted to the wrong row, fails.
+#
+# NEO-236 — WHAT "LOCATION" IS, AND WHY THE FLOW ENDS BACK IN A TEAM PICKER.
+# A team's stored name is now two halves: `location` ("San Diego") and `name`
+# ("Padres"), and the name anyone says out loud is the two composed. This
+# screen is the ONLY place either half is typed, so it is the only place the
+# split can be proved. After the save the flow reads the row back three ways —
+# the panel heading says the FULL name, the master row PRINTS the short one
+# while answering to the full one, and the Location box holds what was typed —
+# and then walks back to the product's team typeahead and types the FULL name
+# there. That last step is the whole risk of the split in one assertion: if the
+# picker matched on `name` alone, an operator typing "San Diego Padres" would
+# be offered "+ Create" and would quietly make a SECOND Padres.
 #
 # R7 / R7a — writes to NO shared row. Both the player and the team are named
 # "<prefix>-<worker>-<attempt>", so eight concurrent runners and a retry can
@@ -182,40 +194,45 @@ tags:
 
 # ── THE DETAIL PANEL, AND IT IS SHOWING THIS ROW'S REAL STATE ──────────────
 # The panel's fields sit below the filter row, past the fold on the 1024x629
-# headless viewport, so the colour field is scrolled to and centred — and the
-# scroll IS the assertion (R6), which is why nothing re-asserts the same text
-# after it.
+# headless viewport, so each field is scrolled to and centred — and each scroll
+# IS the assertion (R6), which is why nothing re-asserts the same text after it.
 #
-# What it asserts is that the panel opened on a team with NO colours: a team
-# born from the typeahead carries only a name. maestro-web reports an empty
-# input by its PLACEHOLDER (value ‖ placeholder ‖ aria-label), and "#01214b" is
-# the Primary colour field's — it appears nowhere else in the app. So the field
-# mapped an ABSENT value rather than someone else's, which is the precondition
-# that makes the save below mean something. The tap after it goes to the same
-# node, which is the input itself rather than its label — the most direct handle
-# there is, and the one that cannot be satisfied once a value is typed.
+# maestro-web reports an empty input by its PLACEHOLDER (value ‖ placeholder ‖
+# aria-label), so a placeholder found here is proof the field mapped an ABSENT
+# value rather than someone else's — the precondition that makes the save below
+# mean something. Two placeholders are read, in the order the form lists them:
+#
+#   "San Diego" — the Location box (NEO-236). A team born from the typeahead
+#                 has a name and nothing else, so its location is empty.
+#   "#01214b"   — the Primary colour box. Same story, and the reason the list
+#                 flags this row as needing attention.
+#
+# Neither string appears anywhere else on a screen filtered to one team, and
+# the tap after each goes to the same node — the input itself rather than its
+# label, the most direct handle there is, and the one that stops answering the
+# moment a value is typed.
+#
+# ── EDIT AND SAVE ───────────────────────────────────────────────────────────
+# Two fields, chosen deliberately: Location is the half of the name this ticket
+# added, and the colour is what this screen exists to supply. Both are empty on
+# arrival, so neither needs erasing first, and they are filled top-down in the
+# order the form lists them (NEO-236 put Location and Name at the TOP, above the
+# league and the colours) so every scroll below moves the page one way.
+- scrollUntilVisible:
+    element:
+      text: "San Diego"
+    centerElement: true
+    timeout: 15000
+- tapOn: "San Diego"
+- inputText: 'Loc${WORKER_INDEX || "0"}'
+
 - scrollUntilVisible:
     element:
       text: "#01214b"
     centerElement: true
     timeout: 15000
-
-# ── EDIT AND SAVE ───────────────────────────────────────────────────────────
-# Two fields, chosen deliberately: the colour is what this screen exists to
-# supply (a team with no primary colour is what the list flags as needing
-# attention), and City is free text that nothing derives from. Both are empty on
-# arrival, so neither needs erasing first. They are filled top-down, in the
-# order they appear, so every scroll below moves the page one way.
 - tapOn: "#01214b"
 - inputText: "#132448"
-
-- scrollUntilVisible:
-    element:
-      text: "City"
-    centerElement: true
-    timeout: 10000
-- tapOn: "City"
-- inputText: 'Bronx${WORKER_INDEX || "0"}'
 
 # Save and Discover only exist inside the panel, so reaching them is the other
 # half of the proof that it opened rather than rendering the "Select a team"
@@ -229,9 +246,12 @@ tags:
 - assertVisible: "Discover"
 - tapOn: "Save"
 
-# The mutation confirms by name, so this proves the save targeted THIS team.
+# The mutation confirms by name — and NEO-236 made that the COMPOSED name, so
+# this line is itself the first read-back of the split: "Saved Loc0 TMT-0-…"
+# can only be said by a save that took the Location box and the Name box and
+# put them together in that order.
 - extendedWaitUntil:
-    visible: ".*Saved TMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
+    visible: '.*Saved Loc${WORKER_INDEX || "0"} TMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*'
     timeout: 15000
 
 # ── IT PERSISTED ────────────────────────────────────────────────────────────
@@ -251,15 +271,128 @@ tags:
     text: "TMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
     below:
       text: "1 of .* teams.*"
-# The scroll IS this assertion (R6) — it fails loudly if the city never comes
-# back — and it also brings the colour field, two rows away in the same grid,
-# into the viewport for the assertion after it.
+# ONE SCROLL, THEN EVERY READ-BACK IN ONE VIEWPORT.
+#
+# The "Location" label is the anchor because it is the only node on this screen
+# that says that word, and centring it puts the whole top of the form on screen
+# together with the list row beside it: measured against the shipped layout at
+# 1024x629, centring the label at y≈315 puts the counter at ≈240, the master
+# row at ≈259, the panel heading at ≈267 and the colour boxes at ≈480. So the
+# four assertions below need no further scrolling, and each one names a
+# DIFFERENT node than the scroll did (R6).
 - scrollUntilVisible:
     element:
-      text: 'Bronx${WORKER_INDEX || "0"}'
+      text: "Location"
     centerElement: true
     timeout: 15000
-# And the colour came back too — the field now reports a VALUE where it reported
-# its placeholder before the save, which is the same field answering differently
-# for the same team.
+
+# 1. THE HEADING SAYS THE FULL NAME. Anchored ABOVE the Location label, because
+#    the live "Shows as: <full name>" preview under the two boxes says the same
+#    string — and it sits BELOW the label, so this can only be the heading.
+- assertVisible:
+    text: 'Loc${WORKER_INDEX || "0"} TMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}'
+    above:
+      text: "Location"
+
+# 2. THE MASTER ROW ANSWERS TO THE FULL NAME. Its `aria-label` is exactly
+#    `teamFullName`, and maestro-web derives `resource-id` from `aria-label`, so
+#    `id:` is the row and only the row. This is the handle every other flow taps
+#    an admin team row by, which is why it is asserted rather than assumed.
+- assertVisible:
+    id: 'Loc${WORKER_INDEX || "0"} TMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}'
+
+# 3. …AND PRINTS THE SHORT ONE. The matcher is fully anchored, so "TMT-0-…"
+#    cannot be answered by a node reading "Loc0 TMT-0-…" — this fails if the row
+#    ever goes back to printing the whole string. Two anchors pin it to the row:
+#    BELOW the counter rules out the filter box (which holds this exact string
+#    as its value), ABOVE the Location label rules out the panel's own Name box
+#    (which holds it too, and sits under the label).
+- assertVisible:
+    text: "TMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    below:
+      text: "1 of .* teams.*"
+    above:
+      text: "Location"
+
+# 4. THE LOCATION BOX HOLDS WHAT WAS TYPED. Anchored BELOW the label for the
+#    mirror-image reason: the row's muted second line prints the location too,
+#    and it sits above the label.
+- assertVisible:
+    text: 'Loc${WORKER_INDEX || "0"}'
+    below:
+      text: "Location"
+
+# 5. And the colour came back too — the field now reports a VALUE where it
+#    reported its placeholder before the save, which is the same field answering
+#    differently for the same team.
 - assertVisible: "#132448"
+
+# ════════════════════════════════════════════════════════════════════════════
+# THE OTHER SIDE OF THE SPLIT: THE TEAM TYPEAHEAD FINDS THE ROW BY ITS FULL
+# NAME, SO NOBODY CAN CREATE A SECOND ONE (NEO-236)
+#
+# This is the risk the split introduces, and it is worth ten steps to close.
+# The row now stores "Loc0" and "TMT-0-…" in two columns. An operator adding a
+# team to a card types what they say — the whole thing — and if the picker
+# matched on the nickname column alone it would find nothing, offer to CREATE
+# the name they typed, and leave the deployment with two teams that read
+# identically.
+#
+# It runs in the picker this flow already used to make the team (the career
+# editor on /admin/players), against the same player it created on the way in —
+# no new fixture, no new screen.
+# ════════════════════════════════════════════════════════════════════════════
+- openLink: ${APP_URL || "http://localhost:3000"}/admin/players
+- extendedWaitUntil:
+    visible: ".*of .* players.*"
+    timeout: 30000
+
+# Filtering by a name only this attempt owns; while a search term is present the
+# counter counts matches rather than the whole table, so "1 matches" is both the
+# "the list has settled" gate and an assertion that the name is this run's alone.
+- tapOn: "Filter players"
+- inputText: "TME-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- extendedWaitUntil:
+    visible: "1 matches"
+    timeout: 15000
+
+# Every admin master row prints its name in a `title`-bearing span, and
+# maestro-web derives `resource-id` from `title` — so `id:` is the row, while a
+# `text:` matcher would also answer for the filter box holding the same string.
+- tapOn:
+    id: "TME-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+
+- scrollUntilVisible:
+    element:
+      id: "Add team"
+    centerElement: true
+- tapOn:
+    id: "Add team"
+- tapOn:
+    id: "Search teams"
+- inputText: 'Loc${WORKER_INDEX || "0"} TMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}'
+
+# THE ASSERTION THIS BLOCK EXISTS FOR. Every option in the typeahead is labelled
+# `Add <the team's composed name>`, so this can only be satisfied by a stored row
+# whose location and nickname compose to exactly what was typed. A picker still
+# matching on the nickname column would show "No matches." here.
+- assertVisible:
+    id: 'Add Loc${WORKER_INDEX || "0"} TMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}'
+
+# And the create row is gone, which is the same fact said the other way: an
+# exact match suppresses it. Corroborating rather than load-bearing — the career
+# editor is near the bottom of the player panel, so a create form rendered here
+# would hang below the fold where Maestro cannot see it either way. The
+# assertion that carries the weight is the one above, and the one below.
+- assertNotVisible:
+    id: 'Create team Loc${WORKER_INDEX || "0"} TMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}'
+
+# Take the match with Enter — the picker's keydown selects the highlighted match
+# when there is one — and the chip that comes back carries the FULL name. A chip
+# is only ever painted from a row that exists, so this is the operator linking
+# the team they already had instead of minting a twin.
+- pressKey: Enter
+- extendedWaitUntil:
+    visible:
+      id: 'Remove team Loc${WORKER_INDEX || "0"} TMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}'
+    timeout: 7000

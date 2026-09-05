@@ -364,6 +364,32 @@ screen the flow is already standing. `/admin/teams` has no "add a team" control
 by design — it edits teams, it does not invent them — so a flow that needs a
 team's COLOURS creates the team in a picker first and then colours it there.
 
+**NEO-236 — a team name is now two columns.** `location` ("San Diego") is
+optional and `name` ("Padres") is the nickname; the name the product shows
+everywhere except the two admin master rows is the two composed. A prefix in
+the table below is a NAME, and every flow here leaves Location EMPTY, so the
+full name and the short name are the same string and every existing matcher is
+unchanged. **`admin/team-management-edit-a-team.yaml` is the one exception**:
+it types `Loc${WORKER_INDEX}` into the Location box, so from the moment it
+saves, its team answers to `Loc<w> TMT-<w>-<attempt>` (heading, picker option,
+chip, `Saved …` line, master-row `aria-label`) while the master row still
+PRINTS `TMT-<w>-<attempt>`. Any new flow that sets a Location must register it
+here the same way, because the composed string is what every other surface
+matches on.
+
+Two consequences worth knowing before writing a picker step:
+
+* The typeahead matches and de-duplicates on the COMPOSED name, so typing a
+  full name finds a split row and suppresses `+ Create`. Reach for
+  `id: "Add <full name>"`, not `id: "Create team <full name>"`, once a row with
+  that composed name exists.
+* The `+ Create` row is a two-field FORM now (Location, Team name, a preview,
+  then the button), which grew the popover from 112px to 261px. In a scroll box
+  shorter than that the button is clipped and a tap on it silently misses — see
+  the note on `checklist-attention-walker-missing-team.yaml` below. Where the
+  picker sits inside a small dialog, create with `pressKey: Enter` on the search
+  input (guarded by `assertVisible: "No matches."`) instead of tapping the row.
+
 | Prefix | Owning flow | Shape |
 |---|---|---|
 | `CNAA-`, `CNAB-` | `checklist-attention-badge-and-filter.yaml` | `-${WORKER_INDEX}-${ATTEMPT_ID}` |
@@ -372,7 +398,7 @@ team's COLOURS creates the team in a picker first and then colours it there.
 | `PMT-` | `admin/player-management-add-and-career-history.yaml` | `-${WORKER_INDEX}-${ATTEMPT_ID}` |
 | `SLA-`, `SLB-` | `spine-label/player-team-colors-default-to-longest-tenure.yaml` | `-${WORKER_INDEX}-${ATTEMPT_ID}` (coloured `#132448` / `#002d72`) |
 | `TLF-` | `checklist-title-length-limits-and-fixer.yaml` | `-${ATTEMPT_ID}` — kept SHORT on purpose; the name lands in a generated listing title measured against an 80-character cap |
-| `TMT-` | `admin/team-management-edit-a-team.yaml` | `-${WORKER_INDEX}-${ATTEMPT_ID}` |
+| `TMT-` | `admin/team-management-edit-a-team.yaml` | `-${WORKER_INDEX}-${ATTEMPT_ID}`, and the ONLY team in the suite with a `location`: `Loc${WORKER_INDEX}`, so its composed name is `Loc<w> TMT-<w>-<attempt>` |
 | `TPT-` | `team-picker.yaml` | `-${ATTEMPT_ID}` |
 
 **Always per-ATTEMPT, not just per-worker.** `+ Create <name>` is offered only
