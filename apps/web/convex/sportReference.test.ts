@@ -24,6 +24,7 @@ import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
+import { drainScheduled } from "../lib/testing/drain-scheduled";
 import { Id } from "./_generated/dataModel";
 
 const modules = (import.meta as unknown as {
@@ -184,6 +185,7 @@ describe("NEO-96 round trip: commit-created entities are visible to the pickers"
       name: "Los Angeles Angels",
       sportId,
     });
+    await drainScheduled(t);
 
     // Now the commit path resolves the SAME name. No review row is needed —
     // the name already resolves to an existing entity, which is the behaviour

@@ -23,6 +23,7 @@ import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { normalizeLeagueName } from "./leagues";
+import { drainScheduled } from "../lib/testing/drain-scheduled";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -158,6 +159,7 @@ describe("NEO-240: findOrCreateLeague matches on aliases, not just the name", ()
     await t
       .withIdentity(ADMIN)
       .mutation(api.teams.findOrCreate, { name: "New York Yankees", sportId });
+    await drainScheduled(t);
 
     const rows = await allLeagues(t);
     expect(rows).toHaveLength(1);
@@ -176,6 +178,7 @@ describe("NEO-240: findOrCreateLeague matches on aliases, not just the name", ()
     await t
       .withIdentity(ADMIN)
       .mutation(api.teams.findOrCreate, { name: "New York Yankees", sportId });
+    await drainScheduled(t);
     const defaultRow = (await allLeagues(t))[0];
 
     const result = await t
@@ -229,6 +232,7 @@ describe("NEO-240: findOrCreateLeague matches on aliases, not just the name", ()
     const result = await t
       .withIdentity(ADMIN)
       .mutation(api.leagues.createByAdmin, { name: "MLB", sportId: basketball });
+    await drainScheduled(t);
 
     expect(result.created).toBe(true);
     expect(await allLeagues(t)).toHaveLength(2);
@@ -335,6 +339,9 @@ describe("NEO-240: the creation-only enrichment hook", () => {
     expect(scheduled).toHaveLength(1);
     expect(scheduled[0].name).toContain("enqueueEnrichment");
     expect((scheduled[0].args[0] as { leagueIds?: unknown[] }).leagueIds).toHaveLength(1);
+    // Read first, drain after: draining before the assertions above would
+    // remove the very rows they check (see drain-scheduled.ts's doc comment).
+    await drainScheduled(t);
   });
 
   test("a FOUND league schedules nothing more", async () => {
@@ -354,6 +361,10 @@ describe("NEO-240: the creation-only enrichment hook", () => {
     expect(
       await t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect()),
     ).toHaveLength(1);
+    // Read first, drain after: draining between the two createByAdmin calls
+    // would make the second one look like the first, defeating the point of
+    // this test (see drain-scheduled.ts's doc comment).
+    await drainScheduled(t);
   });
 });
 
@@ -369,6 +380,7 @@ describe("leagues.createByAdmin", () => {
     const first = await t
       .withIdentity(ADMIN)
       .mutation(api.leagues.createByAdmin, { name: "Texas League", sportId });
+    await drainScheduled(t);
     const second = await t
       .withIdentity(ADMIN)
       .mutation(api.leagues.createByAdmin, { name: "  texas league ", sportId });
@@ -389,6 +401,7 @@ describe("leagues.createByAdmin", () => {
       level: "minor" as const,
       sportId,
     });
+    await drainScheduled(t);
 
     const row = await t.run(async (ctx) => ctx.db.get(id));
     expect(row!.name).toBe("International League");

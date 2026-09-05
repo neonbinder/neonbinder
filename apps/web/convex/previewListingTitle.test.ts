@@ -16,7 +16,7 @@
  */
 
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
@@ -95,6 +95,30 @@ async function insertCard(
 }
 
 describe("previewListingTitle (NEO-101)", () => {
+  // NEO-247: "reproduces EXACTLY what commitCardChecklist's insert branch
+  // stored" (below) commits a card carrying a bsc ref with no resolvable
+  // team, which schedules processBscTeamEnrichmentQueue as a side effect.
+  // Stub fetch to THROW rather than a canned 200 — same convention as
+  // convex/cardChecklist.bscTeamEnrichment.test.ts's NEO-220 fix: the
+  // adapter already swallows a request failure ("network unavailable" is a
+  // state it handles), and it cannot write anything derived from a payload
+  // this file invented. This also removes the "pulling the outbound call
+  // forward" concern the drain below used to have to avoid — a thrown stub
+  // has nothing sensitive to disturb no matter when it resolves.
+  beforeEach(() => {
+    vi.stubGlobal(
+      "fetch",
+      (async (url: string | URL) => {
+        throw new Error(
+          `NEO-247: this test file must not reach the network: ${String(url)}`,
+        );
+      }) as unknown as typeof fetch,
+    );
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   test("resolves player names, the set-name ancestor, and the row's own flags", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
@@ -389,10 +413,7 @@ describe("previewListingTitle (NEO-101)", () => {
       sportId,
     });
     // NEO-220: settle the enrichment that creation schedules BEFORE the test
-    // goes on. Drained here rather than at the end of the test on purpose —
-    // `commitCardChecklist` below schedules its own BSC team backfill, and a
-    // drain after it would pull that outbound call forward into this test
-    // instead of leaving it exactly as it was. See drain-scheduled.ts.
+    // goes on. See drain-scheduled.ts.
     await drainScheduled(t);
 
     await asAdmin.action(api.selectorOptions.commitCardChecklist, {
@@ -416,6 +437,12 @@ describe("previewListingTitle (NEO-101)", () => {
         },
       ],
     });
+    // NEO-247: this commit also schedules its own BSC team backfill (the
+    // card carries a bsc ref with no resolvable team). Now that fetch is
+    // stubbed to throw (above), draining it here has nothing sensitive to
+    // pull forward — the old comment about that risk applied only when the
+    // stub could return a shape this test hadn't invented.
+    await drainScheduled(t);
 
     const [card] = await t.run(async (ctx) =>
       ctx.db

@@ -19,10 +19,11 @@
  */
 
 import { convexTest } from "convex-test";
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
+import { drainScheduled } from "../lib/testing/drain-scheduled";
 
 type Card = {
   cardNumber: string;
@@ -182,6 +183,28 @@ async function seedTree(
 beforeEach(() => {
   mockState.bscCards = [];
   mockState.slCards = [];
+  // NEO-188/NEO-247: commitCardChecklist's finalize step can schedule a BSC
+  // per-card team lookup (processBscTeamEnrichmentQueue -> resolveBscCardTeam
+  // -> fetchBscCardTeamNameRaw), which is NOT covered by this file's existing
+  // vi.mock("./adapters/buysportscards", ...) — that mock only overrides
+  // fetchBscChecklist/fetchBscCardTeamNames, and resolveBscCardTeam calls a
+  // private sibling function directly, bypassing the module mock. A
+  // THROWING stub instead — same convention as
+  // convex/cardChecklist.bscTeamEnrichment.test.ts's NEO-220 fix: the
+  // adapter already swallows a request failure ("network unavailable" is a
+  // state it handles), and it cannot write anything derived from a payload
+  // this file invented.
+  vi.stubGlobal(
+    "fetch",
+    (async (url: string | URL) => {
+      throw new Error(
+        `NEO-247: this test file must not reach the network: ${String(url)}`,
+      );
+    }) as unknown as typeof fetch,
+  );
+});
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 describe("fetchCardChecklist — stored pairing survives a re-sync (NEO-137)", () => {
@@ -268,6 +291,7 @@ describe("fetchCardChecklist — stored pairing survives a re-sync (NEO-137)", (
     expect(second.slOnly.map((c) => c.platformData.sportlots?.ref)).toEqual([
       "#1 Ken Griffey Jr.",
     ]);
+    await drainScheduled(t);
   });
 
   /**
@@ -326,6 +350,7 @@ describe("fetchCardChecklist — stored pairing survives a re-sync (NEO-137)", (
     expect(stored[0].platformData.sportlots).toEqual({
       ref: "#B1 Cal Ripken Jr.",
     });
+    await drainScheduled(t);
   });
 
   test("the stored ref resolves to a slot on the row, so it round-trips", async () => {
@@ -362,5 +387,6 @@ describe("fetchCardChecklist — stored pairing survives a re-sync (NEO-137)", (
       ref: "#B1 Cal Ripken Jr.",
       src: "s0",
     });
+    await drainScheduled(t);
   });
 });

@@ -14,10 +14,33 @@
  */
 
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
+import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
+
+beforeEach(() => {
+  // NEO-188/NEO-247: commitCardChecklist can schedule a BSC per-card team
+  // lookup (processBscTeamEnrichmentQueue) as a side effect. This file has
+  // nothing to say about team resolution. A THROWING stub rather than a
+  // canned 200 — same convention as
+  // convex/cardChecklist.bscTeamEnrichment.test.ts's NEO-220 fix: the
+  // adapter already swallows a request failure ("network unavailable" is a
+  // state it handles), and it cannot write anything derived from a payload
+  // this file invented.
+  vi.stubGlobal(
+    "fetch",
+    (async (url: string | URL) => {
+      throw new Error(
+        `NEO-247: this test file must not reach the network: ${String(url)}`,
+      );
+    }) as unknown as typeof fetch,
+  );
+});
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -183,6 +206,8 @@ describe("diffChecklistAgainstExisting — bucketing", () => {
     expect(result.removedUpstream.fullyOrphaned).toHaveLength(0);
     expect(result.removedUpstream.partialOrphanCount).toBe(0);
     expect(result.conflicts).toHaveLength(0);
+    await drainScheduled(t);
+    await cancelScheduled(t);
   });
 
   test("a case/punctuation-only rename is formattingOnly, fold-equal, and tier 2", async () => {
@@ -215,6 +240,8 @@ describe("diffChecklistAgainstExisting — bucketing", () => {
       foldEqual: true,
       source: "bsc",
     });
+    await drainScheduled(t);
+    await cancelScheduled(t);
   });
 
   test("a substantive rename plus a tier-1 flag is contentChanges, and each field carries its own tier", async () => {
@@ -256,6 +283,8 @@ describe("diffChecklistAgainstExisting — bucketing", () => {
       oldValue: "",
       newValue: "99",
     });
+    await drainScheduled(t);
+    await cancelScheduled(t);
   });
 
   test("a card that matches no existing row is bucketed new with no fields", async () => {
@@ -337,6 +366,8 @@ describe("diffChecklistAgainstExisting — bucketing", () => {
     });
     // One fold-equal field and one that is not ⇒ the card needs real review.
     expect(result.cards[0].bucket).toBe("contentChanges");
+    await drainScheduled(t);
+    await cancelScheduled(t);
   });
 
   test("the `unmatched-<side>` marker the commit adds is not reported as an attributes change", async () => {
@@ -359,6 +390,8 @@ describe("diffChecklistAgainstExisting — bucketing", () => {
 
     const result = await diff(t, leafId, [kept]);
     expect(result.cards[0].bucket).toBe("identical");
+    await drainScheduled(t);
+    await cancelScheduled(t);
   });
 });
 
@@ -406,6 +439,8 @@ describe("diffChecklistAgainstExisting — explicitly-empty stored values", () =
     expect(result.cards).toHaveLength(1);
     expect(result.cards[0].fields).toEqual([]);
     expect(result.cards[0].bucket).toBe("identical");
+    await drainScheduled(t);
+    await cancelScheduled(t);
   });
 
   test("no field entry is ever emitted for a pair that both render as empty", async () => {
@@ -442,6 +477,8 @@ describe("diffChecklistAgainstExisting — explicitly-empty stored values", () =
     expect(
       result.cards[0].fields.every((f) => f.oldValue !== "" || f.newValue !== ""),
     ).toBe(true);
+    await drainScheduled(t);
+    await cancelScheduled(t);
   });
 
   test("a real true→absent change on the same field is still reported and still applies", async () => {
@@ -487,6 +524,8 @@ describe("diffChecklistAgainstExisting — explicitly-empty stored values", () =
       });
     expect((await storedRows(t, leafId))[0].isRookie).toBeUndefined();
     expect(row.isRookie).toBe(true);
+    await drainScheduled(t);
+    await cancelScheduled(t);
   });
 
   test("the chunk's pre-write re-diff agrees: accepting a false→absent field writes nothing", async () => {
@@ -524,6 +563,8 @@ describe("diffChecklistAgainstExisting — explicitly-empty stored values", () =
     expect(after.isRookie).toBe(false);
     expect(after.isRelic).toBe(false);
     expect(after.cardVariation).toBe("");
+    await drainScheduled(t);
+    await cancelScheduled(t);
   });
 });
 
@@ -566,6 +607,8 @@ describe("diffChecklistAgainstExisting — autographType is not diffed (NEO-217)
 
     expect(result.cards[0].fields).toEqual([]);
     expect(result.cards[0].bucket).toBe("identical");
+    await drainScheduled(t);
+    await cancelScheduled(t);
   });
 
   test("an incoming autographType against a row that has none is not a field entry either", async () => {
@@ -592,6 +635,8 @@ describe("diffChecklistAgainstExisting — autographType is not diffed (NEO-217)
     ]);
 
     expect(result.cards[0].fields.map((f) => f.name)).toEqual(["printRun"]);
+    await drainScheduled(t);
+    await cancelScheduled(t);
   });
 });
 
@@ -654,6 +699,8 @@ describe("diffChecklistAgainstExisting — ambiguity is only reported when it ch
     expect(result.ambiguityBlockedCount).toBe(0);
     expect(result.cards.every((c) => c.bucket === "identical")).toBe(true);
     expect(result.cards.some((c) => c.bucket === "new")).toBe(false);
+    await drainScheduled(t);
+    await cancelScheduled(t);
   });
 
   test("a card that ambiguity actually cost a match IS counted", async () => {
@@ -674,6 +721,8 @@ describe("diffChecklistAgainstExisting — ambiguity is only reported when it ch
 
     expect(result.ambiguityBlockedCount).toBe(1);
     expect(result.cards.map((c) => c.bucket)).toEqual(["new"]);
+    await drainScheduled(t);
+    await cancelScheduled(t);
   });
 
   test("a genuinely new card is not blamed on ambiguity", async () => {
@@ -691,6 +740,8 @@ describe("diffChecklistAgainstExisting — ambiguity is only reported when it ch
 
     expect(result.cards.map((c) => c.bucket)).toEqual(["new"]);
     expect(result.ambiguityBlockedCount).toBe(0);
+    await drainScheduled(t);
+    await cancelScheduled(t);
   });
 });
 
@@ -740,6 +791,8 @@ describe("diffChecklistAgainstExisting — the diff is the commit's own matching
     expect(after).toHaveLength(1);
     expect(after[0]._id).toBe(row._id);
     expect(after[0].cardName).toBe("Upstream Name");
+    await drainScheduled(t);
+    await cancelScheduled(t);
   });
 
   test("two rows sharing a card number are each diffed against their OWN row", async () => {
@@ -771,6 +824,8 @@ describe("diffChecklistAgainstExisting — the diff is the commit's own matching
       newValue: "Bob Corrected",
     });
     expect(result.cards[0].existingId).not.toBe(result.cards[1].existingId);
+    await drainScheduled(t);
+    await cancelScheduled(t);
   });
 
   test("a cross-side conflict is reported with both candidate rows and the card is left out of the diff list", async () => {
@@ -813,6 +868,8 @@ describe("diffChecklistAgainstExisting — the diff is the commit's own matching
     // them, it is only unclear which row the name belongs to.
     expect(result.removedUpstream.fullyOrphaned).toHaveLength(0);
     expect(result.removedUpstream.partialOrphanCount).toBe(2);
+    await drainScheduled(t);
+    await cancelScheduled(t);
   });
 });
 
@@ -846,6 +903,8 @@ describe("diffChecklistAgainstExisting — removed upstream", () => {
       },
     ]);
     expect(result.removedUpstream.partialOrphanCount).toBe(0);
+    await drainScheduled(t);
+    await cancelScheduled(t);
   });
 
   test("a row linked to a side that produced no cards this sync is a PARTIAL orphan, never deletion-eligible", async () => {
@@ -870,6 +929,8 @@ describe("diffChecklistAgainstExisting — removed upstream", () => {
 
     expect(result.removedUpstream.fullyOrphaned).toHaveLength(0);
     expect(result.removedUpstream.partialOrphanCount).toBe(1);
+    await drainScheduled(t);
+    await cancelScheduled(t);
   });
 
   test("a row still live on one of its two linked sides is matched, not orphaned", async () => {
@@ -903,6 +964,8 @@ describe("diffChecklistAgainstExisting — removed upstream", () => {
       "identical",
       "identical",
     ]);
+    await drainScheduled(t);
+    await cancelScheduled(t);
   });
 
   test("a card no marketplace claims is never reported as removed upstream", async () => {
@@ -933,6 +996,8 @@ describe("diffChecklistAgainstExisting — removed upstream", () => {
     // carries, not on who created it.
     expect(result.removedUpstream.fullyOrphaned).toHaveLength(0);
     expect(result.removedUpstream.partialOrphanCount).toBe(0);
+    await drainScheduled(t);
+    await cancelScheduled(t);
   });
 });
 

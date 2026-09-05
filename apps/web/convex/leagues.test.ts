@@ -15,6 +15,7 @@ import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { normalizeLeagueName } from "./leagues";
 import { normalizeTeamName } from "./teams";
+import { drainScheduled } from "../lib/testing/drain-scheduled";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -91,6 +92,7 @@ describe("league creation", () => {
     const a = await t
       .withIdentity(ADMIN)
       .mutation(api.leagues.create, { name: "Pacific Coast League", sportId });
+    await drainScheduled(t);
     const b = await t
       .withIdentity(ADMIN)
       .mutation(api.leagues.create, { name: "pacific coast league  ", sportId });
@@ -107,9 +109,11 @@ describe("league creation", () => {
     const a = await t
       .withIdentity(ADMIN)
       .mutation(api.leagues.create, { name: "National League", sportId: baseball });
+    await drainScheduled(t);
     const b = await t
       .withIdentity(ADMIN)
       .mutation(api.leagues.create, { name: "National League", sportId: football });
+    await drainScheduled(t);
 
     expect(a).not.toBe(b);
   });
@@ -121,6 +125,7 @@ describe("league creation", () => {
     await t
       .withIdentity(ADMIN)
       .mutation(api.leagues.create, { name: "Nippon Professional Baseball", sportId });
+    await drainScheduled(t);
     await t.withIdentity(ADMIN).mutation(api.leagues.create, {
       name: "Nippon Professional Baseball",
       abbreviation: "NPB",
@@ -208,6 +213,7 @@ describe("every team-creation path attaches a league", () => {
       name: "New York Yankees",
       sportId,
     });
+    await drainScheduled(t);
 
     const team = await t.run(async (ctx) => ctx.db.get(teamId));
     expect(team!.leagueId).toBeDefined();
@@ -226,6 +232,7 @@ describe("every team-creation path attaches a league", () => {
       name: "Chiba Lotte Marines",
       sportId,
     });
+    await drainScheduled(t);
 
     const team = await t.run(async (ctx) => ctx.db.get(teamId));
     expect(team!.leagueId).toBeDefined();
@@ -241,6 +248,7 @@ describe("every team-creation path attaches a league", () => {
       name: "Some Club",
       sportId,
     });
+    await drainScheduled(t);
 
     const team = await t.run(async (ctx) => ctx.db.get(teamId));
     expect(team!.leagueId).toBeUndefined();
@@ -253,6 +261,7 @@ describe("every team-creation path attaches a league", () => {
 
     for (const name of ["Yankees", "Mets", "Red Sox"]) {
       await t.withIdentity(ADMIN).mutation(api.teams.findOrCreate, { name, sportId });
+      await drainScheduled(t);
     }
 
     expect(await leagues(t)).toHaveLength(1);
@@ -287,6 +296,7 @@ describe("legacy league conversion", () => {
     const teamId = await seedLegacyTeam(t, sportId, "Montreal Expos", "National League");
 
     await t.mutation(internal.teams.convertLegacyLeagueInternal, { id: teamId });
+    await drainScheduled(t);
 
     const team = await t.run(async (ctx) => ctx.db.get(teamId));
     expect(team!.leagueId).toBeDefined();
@@ -304,7 +314,9 @@ describe("legacy league conversion", () => {
     const b = await seedLegacyTeam(t, sportId, "Cubs", "National League");
 
     await t.mutation(internal.teams.convertLegacyLeagueInternal, { id: a });
+    await drainScheduled(t);
     await t.mutation(internal.teams.convertLegacyLeagueInternal, { id: b });
+    await drainScheduled(t);
 
     expect(await leagues(t)).toHaveLength(1);
   });
@@ -315,6 +327,7 @@ describe("legacy league conversion", () => {
     const assigned = await t
       .withIdentity(ADMIN)
       .mutation(api.leagues.create, { name: "Pacific Coast League", sportId });
+    await drainScheduled(t);
     const teamId = await seedLegacyTeam(t, sportId, "Expos", "National League");
     await t.run(async (ctx) => ctx.db.patch(teamId, { leagueId: assigned }));
 
@@ -342,8 +355,10 @@ describe("legacy league conversion", () => {
     const teamId = await seedLegacyTeam(t, sportId, "Expos", "National League");
 
     await t.mutation(internal.teams.convertLegacyLeagueInternal, { id: teamId });
+    await drainScheduled(t);
     const first = await t.run(async (ctx) => ctx.db.get(teamId));
     await t.mutation(internal.teams.convertLegacyLeagueInternal, { id: teamId });
+    await drainScheduled(t);
     const second = await t.run(async (ctx) => ctx.db.get(teamId));
 
     expect(second!.leagueId).toBe(first!.leagueId);
@@ -359,10 +374,12 @@ describe("leagues.list", () => {
 
     for (const name of ["Pacific Coast League", "American League"]) {
       await t.withIdentity(ADMIN).mutation(api.leagues.create, { name, sportId });
+      await drainScheduled(t);
     }
     await t
       .withIdentity(ADMIN)
       .mutation(api.leagues.create, { name: "NHL", sportId: other });
+    await drainScheduled(t);
 
     const rows = await t
       .withIdentity(ADMIN)
@@ -380,6 +397,7 @@ describe("leagues.list", () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
     await t.withIdentity(ADMIN).mutation(api.leagues.create, { name: "MLB", sportId });
+    await drainScheduled(t);
 
     const rows = await t
       .withIdentity({ subject: "u", role: "user" })

@@ -29,6 +29,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
+import { drainScheduled } from "../lib/testing/drain-scheduled";
 
 const modules = (
   import.meta as unknown as {
@@ -110,10 +111,30 @@ beforeEach(() => {
   vi.spyOn(console, "error").mockImplementation(() => {});
   mockState.bscCards = [];
   mockState.slCards = [];
+  // NEO-188/NEO-247: commitCardChecklist's finalize step can schedule a BSC
+  // per-card team lookup (processBscTeamEnrichmentQueue -> resolveBscCardTeam
+  // -> fetchBscCardTeamNameRaw), which is NOT covered by this file's existing
+  // vi.mock("./adapters/buysportscards", ...) — that mock only overrides
+  // fetchBscChecklist/fetchBscCardTeamNames, and resolveBscCardTeam calls a
+  // private sibling function directly, bypassing the module mock. A
+  // THROWING stub instead — same convention as
+  // convex/cardChecklist.bscTeamEnrichment.test.ts's NEO-220 fix: the
+  // adapter already swallows a request failure ("network unavailable" is a
+  // state it handles), and it cannot write anything derived from a payload
+  // this file invented.
+  vi.stubGlobal(
+    "fetch",
+    (async (url: string | URL) => {
+      throw new Error(
+        `NEO-247: this test file must not reach the network: ${String(url)}`,
+      );
+    }) as unknown as typeof fetch,
+  );
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 const BSC_TOTAL = 335;
@@ -295,5 +316,6 @@ describe("the seed's first Base commit saves every card", () => {
     expect(saved.filter((r) => r.platformData?.bsc?.ref).length).toBe(
       BSC_TOTAL,
     );
+    await drainScheduled(t);
   });
 });
