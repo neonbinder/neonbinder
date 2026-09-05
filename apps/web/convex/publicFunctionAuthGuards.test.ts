@@ -208,6 +208,58 @@ describe("NEO-202 — players.getManyByIds requires a signed-in caller", () => {
   });
 });
 
+describe("NEO-220 — players.findOrCreate is admin-gated, and a refusal writes nothing", () => {
+  /**
+   * The "did not write" half, the property this file exists to pin. NEO-220
+   * raised this mutation from signed-in to admin because its insert branch now
+   * schedules pooled Wikidata enrichment; `publicFunctionAuth.test.ts` records
+   * WHICH gate it carries, and this records that a refused call left the
+   * globally-shared `players` table — and the scheduler — untouched.
+   *
+   * A signed-in non-admin is the interesting caller, not an anonymous one:
+   * sign-up is open, so that is the identity an attacker actually has.
+   */
+  test("a signed-in non-admin is refused and creates no player row", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+
+    await expect(
+      t
+        .withIdentity(MEMBER)
+        .mutation(api.players.findOrCreate, { name: "Shohei Ohtani", sportId }),
+    ).rejects.toThrow(/Admin access required/);
+
+    const rows = await t.run(async (ctx) => ctx.db.query("players").collect());
+    expect(rows).toHaveLength(0);
+  });
+
+  test("an anonymous caller is refused and creates no player row", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+
+    await expect(
+      t.mutation(api.players.findOrCreate, { name: "Shohei Ohtani", sportId }),
+    ).rejects.toThrow(/not authenticated/i);
+
+    const rows = await t.run(async (ctx) => ctx.db.query("players").collect());
+    expect(rows).toHaveLength(0);
+  });
+
+  test("an admin still creates the row — the gate is not a wholesale break", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+
+    const id = await t
+      .withIdentity(ADMIN)
+      .mutation(api.players.findOrCreate, { name: "Shohei Ohtani", sportId });
+
+    expect(id).toBeDefined();
+    const rows = await t.run(async (ctx) => ctx.db.query("players").collect());
+    expect(rows).toHaveLength(1);
+    expect(rows[0].name).toBe("Shohei Ohtani");
+  });
+});
+
 describe("NEO-235 — players.getByIdParam is guarded, and stays a throw", () => {
   /**
    * The registry entry for the deep-link read. `convex/players.management.test.ts`

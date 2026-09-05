@@ -137,8 +137,12 @@ describe("NEO-154: taxonomy reads and writes require a signed-in caller", () => 
    * (`TeamPicker`, and so every screen under `components/SetSelector/`), so
    * nothing legitimate lost access.
    *
-   * `players.findOrCreate` deliberately stayed at signed-in: it gained no
-   * enqueue, so it gained no cost vector. See the comment at its handler.
+   * NEO-220 UPDATE: `players.findOrCreate` no longer stays at signed-in. It
+   * gained the same enqueue on its own insert branch — a player created from
+   * the picker was otherwise bare forever, since enrichment fires only at
+   * creation — so it gained the same cost vector and takes the same gate. It
+   * is listed in the `ADMIN_GATED` table below rather than getting its own
+   * three tests here. The asymmetry this paragraph used to describe is gone.
    */
   test("teams.findOrCreate rejects a signed-in NON-ADMIN caller", async () => {
     const t = convexTest(schema, modules);
@@ -231,6 +235,11 @@ describe("NEO-212: the entity review + player management surface is admin-gated"
     ["players.nearMatches", (t, sportId) => t.query(api.players.nearMatches, { name: "Trout", sportId })],
     ["players.listForManagement", (t) => t.query(api.players.listForManagement, {})],
     ["players.createByAdmin", (t, sportId) => t.mutation(api.players.createByAdmin, { name: "Nobody", sportId })],
+    // NEO-220 raised this one from signed-in to admin — see the note under the
+    // `teams.findOrCreate` block above, which now applies verbatim to both
+    // twins: its insert branch schedules a pooled Wikidata enrichment, and
+    // `wikidataPool` caps concurrency rather than total queued work.
+    ["players.findOrCreate", (t, sportId) => t.mutation(api.players.findOrCreate, { name: "Nobody", sportId })],
     ["teams.resolveNames", (t, sportId) => t.query(api.teams.resolveNames, { names: [], sportId })],
     ["teams.nearMatches", (t, sportId) => t.query(api.teams.nearMatches, { name: "Yankees", sportId })],
     [

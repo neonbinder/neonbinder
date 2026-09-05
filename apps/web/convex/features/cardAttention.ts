@@ -111,6 +111,14 @@ export type AttentionCardRow = {
    * fix is the same — link it, or let the next sync's wizard resolve it. The
    * rule below deliberately does NOT try to tell the two apart: where a row
    * came from is not something NB behaviour is keyed on.
+   *
+   * NEO-220 note on the first producer, mirroring the NEO-208 note on
+   * `pendingTeamNames` above. The quick-add form used to be it — a free-text
+   * "Player(s)" box that wrote here — and it now uses `PlayerPicker` and sends
+   * real `playerIds`, so a card added by hand today is born linked and never
+   * lands in this state. What remains are rows written before that, rows an
+   * old SPA bundle wrote through the legacy `addCustomCard.players` name
+   * array, and the commit path. THE RULE IS UNCHANGED.
    */
   pendingPlayerNames?: readonly string[];
   /** Operator confirmed this card carries no team — see schema.ts. */
@@ -284,3 +292,21 @@ export function needsAttention(row: AttentionCardRow): boolean {
  * cannot disagree with what the server will actually accept.
  */
 export const MAX_CARD_TEAMS = 8;
+
+/**
+ * NEO-220 — the hard cap on how many players one card can be LINKED to.
+ *
+ * Deliberately much wider than `MAX_CARD_TEAMS`: a card is never printed for
+ * more than a handful of teams, but a League Leaders / rookie-combo / team
+ * checklist card legitimately names well past eight players. 20 is a sanity
+ * bound on a picker, not a marketplace rule — it sits comfortably above the
+ * widest real multi-player card while still being a hard bound, and it is the
+ * SAME number `selectorOptions.MAX_PENDING_PLAYER_NAMES` already uses for the
+ * typed-name shape of the same field, so the two spellings of "the players on
+ * this card" cannot accept different amounts.
+ *
+ * Enforced server-side in `selectorOptions.addCustomCard` (via
+ * `resolvePlayerIdsForWrite`). Note `updateCard.playerIds` is deliberately NOT
+ * bounded by this yet — see the note there.
+ */
+export const MAX_CARD_PLAYERS = 20;

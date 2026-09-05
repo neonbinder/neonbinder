@@ -950,6 +950,28 @@ describe("CardChecklist — NEO-102 attention count, filter and walker", () => {
 
 const YANKEES = { _id: "team-yankees", name: "New York Yankees" };
 const METS = { _id: "team-mets", name: "New York Mets" };
+/**
+ * NEO-220 — the quick-add form's PlayerPicker exposes DIFFERENT accessible
+ * names from the card drawer's and the attention walker's, because
+ * CardChecklist mounts more than one of these pickers and neither hides the
+ * other. Mirrored from `QUICK_ADD_PLAYER_LABELS` in CardChecklist.tsx;
+ * spelled out here rather than imported so a rename has to be made
+ * deliberately in both places, and so this file records what the E2E flows
+ * actually target.
+ */
+const QA_ROOT = "Players on the new card";
+const QA_TRIGGER = "Add a player to the new card";
+const QA_SEARCH = "Find a player for the new card";
+
+/** NEO-220 — the quick-add form's PlayerPicker candidate pool. */
+const JUDGE = { _id: "player-judge", name: "Aaron Judge" };
+const LINDOR = { _id: "player-lindor", name: "Francisco Lindor" };
+
+/** Pick a player through the real picker's popover, by its display name. */
+function pickPlayer(name: string) {
+  fireEvent.click(screen.getByLabelText(QA_TRIGGER));
+  fireEvent.click(screen.getByLabelText(`Add ${name}`));
+}
 
 /** Open the form and return its container element. */
 function openAddForm(): HTMLElement {
@@ -992,28 +1014,42 @@ describe("CardChecklist — NEO-208 quick-add Team picker", () => {
     expect(screen.getByLabelText("Add team")).toBeTruthy();
   });
 
-  it("keeps the field's reserved Maestro marker class on the picker's wrapper", () => {
+  it("keeps each field's reserved Maestro marker class on its picker wrapper", () => {
     // Maestro's web driver re-finds a tapped element by an XPath built from
-    // its class (see useFieldTestClass). The picker is not an <input>, but the
-    // "team" key stays claimed so no other field in this form can be handed
-    // it, and the class stays a stable handle for scoping a query to this box.
+    // its class (see useFieldTestClass). Neither picker is an <input>, but the
+    // "team" and "players" keys stay claimed so no other field in this form
+    // can be handed one, and each class stays a stable handle for scoping a
+    // query to that box.
     const form = (() => {
       renderChecklist();
       return openAddForm();
     })();
 
-    // Read the base off a field that still exists, rather than hardcoding a
-    // `useId()` value. (Note the sanitizer drops the capital in a camelCase
-    // key, so the players field is the unambiguous one to read.)
-    const playersMarker = screen
-      .getByLabelText("Players")
+    // Read the base off a field that is still a real <input>, rather than
+    // hardcoding a `useId()` value. NEO-220: that used to be the players
+    // textbox; it is a picker now, so the card-number field is the one left —
+    // and its SUFFIX is unreadable ("cardNumber" sanitizes to "card-umber",
+    // since the key sanitizer replaces the capital rather than lowercasing
+    // it), so match the `mb-field-<base>` prefix instead. `useId()` is
+    // stripped to alphanumerics by the hook, so the base never contains a
+    // hyphen and this cannot over-match.
+    const base = screen
+      .getByLabelText("Card number")
       .className.split(/\s+/)
-      .find((c) => /^mb-field-.+-players$/.test(c))!;
-    const base = playersMarker.replace(/-players$/, "");
+      .map((c) => /^(mb-field-[a-z0-9]+)-/.exec(c)?.[1])
+      .find((b): b is string => !!b)!;
 
-    const wrapper = form.querySelector(`.${base}-team`);
-    expect(wrapper).toBeTruthy();
-    expect(wrapper!.contains(screen.getByLabelText("Team picker"))).toBe(true);
+    const teamWrapper = form.querySelector(`.${base}-team`);
+    expect(teamWrapper).toBeTruthy();
+    expect(teamWrapper!.contains(screen.getByLabelText("Team picker"))).toBe(
+      true,
+    );
+
+    const playersWrapper = form.querySelector(`.${base}-players`);
+    expect(playersWrapper).toBeTruthy();
+    expect(
+      playersWrapper!.contains(screen.getByLabelText(QA_ROOT)),
+    ).toBe(true);
   });
 
   it("sends the picked ids as teamOnCardIds, and no `teams` name array", async () => {
@@ -1052,26 +1088,29 @@ describe("CardChecklist — NEO-208 quick-add Team picker", () => {
   });
 
   it("still forwards the other fields unchanged", async () => {
+    state.players = [JUDGE, LINDOR];
     renderChecklist();
     openAddForm();
     fillCardNumber("503");
     fireEvent.change(screen.getByLabelText("Card name"), {
       target: { value: "Subway Series" },
     });
-    fireEvent.change(screen.getByLabelText("Players"), {
-      target: { value: "Aaron Judge, Francisco Lindor" },
-    });
+    pickPlayer("Aaron Judge");
+    pickPlayer("Francisco Lindor");
     pickTeam("New York Yankees");
 
     await act(async () => {
       fireEvent.click(screen.getByLabelText("Submit new card"));
     });
 
+    // NEO-220: `players` (the typed name array) is gone from this call
+    // entirely — the whole argument list is asserted, so its return would
+    // fail here.
     expect(mockAddCustomCard).toHaveBeenCalledWith({
       selectorOptionId: VARIANT_ID,
       cardNumber: "503",
       cardName: "Subway Series",
-      players: ["Aaron Judge", "Francisco Lindor"],
+      playerIds: [JUDGE._id, LINDOR._id],
       teamOnCardIds: [YANKEES._id],
     });
   });
@@ -1189,7 +1228,10 @@ describe("CardChecklist — NEO-208 quick-add Team picker", () => {
     expect(document.activeElement).toBe(screen.getByLabelText("Card number"));
   });
 
-  it("keeps the keyboard order: number, name, players, then the team picker", () => {
+  it("keeps the keyboard order: number, name, player picker, team picker, buttons", () => {
+    // NEO-220: the Players textbox became a picker, so its tab stop is the
+    // picker's own "+ Add player" trigger. The ORDER is what must not move —
+    // an operator adding twenty cards has this sequence in their fingers.
     const form = (() => {
       renderChecklist();
       return openAddForm();
@@ -1202,7 +1244,7 @@ describe("CardChecklist — NEO-208 quick-add Team picker", () => {
     expect(focusables).toEqual([
       "Card number",
       "Card name",
-      "Players",
+      QA_TRIGGER,
       "Add team",
       "Submit new card",
       "Cancel new card",
@@ -1452,6 +1494,441 @@ describe("CardChecklist — NEO-208 quick-add Team picker", () => {
     });
 
     expect(screen.getByLabelText("Search teams")).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-220 — the quick-add form's Players field is a real PlayerPicker.
+//
+// The players twin of the NEO-208 block above, and deliberately the same cases
+// so a divergence between the two fields shows up as one block passing and the
+// other failing.
+//
+// The defect: a typed name went to `addCustomCard.players` →
+// `pendingPlayerNames`, so the card was born NAMING a player it did not link
+// to — which `deriveCardAttention` badges as an `unreviewedName`, sending the
+// attention walker to ask the operator about a player they had just typed in.
+// Picked ids make the card born LINKED, and a linked card starts answered.
+//
+// Driven through the REAL `PlayerPicker` throughout, so the aria-labels
+// Maestro targets are the real ones.
+// ---------------------------------------------------------------------------
+describe("CardChecklist — NEO-220 quick-add Player picker", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.cards = [];
+    state.variantRow = { value: "Test Set" };
+    state.ancestorChain = [{ _id: SPORT_ID, level: "sport", value: "Baseball" }];
+    state.liveCandidates = null;
+    state.teams = [YANKEES, METS];
+    state.players = [JUDGE, LINDOR];
+    mockAddCustomCard.mockResolvedValue("new-card-1");
+  });
+
+  it("renders a PlayerPicker, not a free-text Players box", () => {
+    renderChecklist();
+    openAddForm();
+
+    // The old field's accessible name. Its absence is the regression pin: a
+    // revert to the textbox brings this label back.
+    expect(screen.queryByLabelText("Players")).toBeNull();
+    expect(screen.getByLabelText(QA_ROOT)).toBeTruthy();
+    expect(screen.getByLabelText(QA_TRIGGER)).toBeTruthy();
+  });
+
+  it("labels the field, so the picker is not an unexplained row of chips", () => {
+    renderChecklist();
+    const form = openAddForm();
+    expect(form.textContent).toContain("Players (optional)");
+  });
+
+  it("names its controls distinctly from every other PlayerPicker on the page", () => {
+    // CardChecklist mounts more than one PlayerPicker — the quick-add form's
+    // and, when a card is open, the drawer's — and neither hides the other. So
+    // the quick-add instance must not answer to the default names, and, just
+    // as importantly, must not CONTAIN them: Maestro's `id:` selector is a
+    // regex find over the aria-label, so a suffixed label would make a flow
+    // targeting the default match both elements.
+    renderChecklist();
+    openAddForm();
+
+    for (const [distinct, base] of [
+      [QA_ROOT, "Player picker"],
+      [QA_TRIGGER, "Add player"],
+    ] as const) {
+      expect(screen.getByLabelText(distinct)).toBeTruthy();
+      expect(distinct.includes(base)).toBe(false);
+      expect(base.includes(distinct)).toBe(false);
+    }
+    // The defaults are not present at all while only this form is open.
+    expect(screen.queryByLabelText("Player picker")).toBeNull();
+    expect(screen.queryByLabelText("Add player")).toBeNull();
+
+    fireEvent.click(screen.getByLabelText(QA_TRIGGER));
+    expect(screen.getByLabelText(QA_SEARCH)).toBeTruthy();
+    expect(QA_SEARCH.includes("Search players")).toBe(false);
+    expect(screen.queryByLabelText("Search players")).toBeNull();
+  });
+
+  it("sends the picked ids as playerIds, and no `players` name array", async () => {
+    renderChecklist();
+    openAddForm();
+    fillCardNumber("601");
+    pickPlayer("Aaron Judge");
+    pickPlayer("Francisco Lindor");
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Submit new card"));
+    });
+
+    expect(mockAddCustomCard).toHaveBeenCalledTimes(1);
+    const args = mockAddCustomCard.mock.calls[0][0];
+    expect(args.playerIds).toEqual([JUDGE._id, LINDOR._id]);
+    // The legacy free-text shape must not ride along — a row carrying both
+    // would name the same player twice, once in a spelling that links to
+    // nothing (see addCustomCard).
+    expect(args).not.toHaveProperty("players");
+  });
+
+  it("sends NEITHER playerIds nor players when nobody was picked", async () => {
+    renderChecklist();
+    openAddForm();
+    fillCardNumber("602");
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Submit new card"));
+    });
+
+    const args = mockAddCustomCard.mock.calls[0][0];
+    expect(args).not.toHaveProperty("playerIds");
+    expect(args).not.toHaveProperty("players");
+  });
+
+  /**
+   * The NEO-36 pin, for the same reason the Team block carries one: the
+   * picker's value is React STATE, which is the deviation from this form's
+   * uncontrolled-fields rule. That rule exists because a keystroke and a
+   * reactive `getCardChecklist` re-render race. A picker changes only in whole
+   * chips, one discrete setState each, so there is no half-typed value for a
+   * re-render to overwrite — proved here by driving exactly the event that
+   * broke the text fields.
+   */
+  it("keeps the picked chips across a re-render with new getCardChecklist data", async () => {
+    const { rerender } = renderChecklist();
+    openAddForm();
+    fillCardNumber("603");
+    pickPlayer("Aaron Judge");
+
+    expect(screen.getByLabelText("Player: Aaron Judge")).toBeTruthy();
+
+    state.cards = [settledCard()];
+    rerender(
+      <CardChecklist
+        variantId={VARIANT_ID}
+        sourceChips={{}}
+        sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "Add Card" })).toBeTruthy();
+    expect(screen.getByLabelText("Player: Aaron Judge")).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Submit new card"));
+    });
+    expect(mockAddCustomCard.mock.calls[0][0].playerIds).toEqual([JUDGE._id]);
+  });
+
+  it("resets the picker when the form is cancelled, and again on open", () => {
+    // The text fields reset by being unmounted; the picker is React state and
+    // does not, so a cancelled card's players must be cleared explicitly or
+    // they silently ride along on the next one. Both edges, because whatever
+    // route hid the form, opening it is a fresh card.
+    renderChecklist();
+    openAddForm();
+    pickPlayer("Aaron Judge");
+    expect(screen.getByLabelText("Player: Aaron Judge")).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText("Cancel new card"));
+    openAddForm();
+
+    expect(screen.queryByLabelText(/^Player: /)).toBeNull();
+    expect(screen.queryByLabelText(/^Remove player /)).toBeNull();
+  });
+
+  it("closes the form and clears the picker after a successful add", async () => {
+    renderChecklist();
+    openAddForm();
+    fillCardNumber("604");
+    pickPlayer("Aaron Judge");
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Submit new card"));
+    });
+
+    expect(screen.queryByRole("heading", { name: "Add Card" })).toBeNull();
+
+    openAddForm();
+    expect(screen.queryByLabelText("Player: Aaron Judge")).toBeNull();
+  });
+
+  it("lets a chip be removed again before submitting", async () => {
+    renderChecklist();
+    openAddForm();
+    fillCardNumber("605");
+    pickPlayer("Aaron Judge");
+    fireEvent.click(screen.getByLabelText("Remove player Aaron Judge"));
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Submit new card"));
+    });
+
+    expect(mockAddCustomCard.mock.calls[0][0]).not.toHaveProperty("playerIds");
+  });
+
+  it("keeps a picked player when the mutation fails, so nothing is lost", async () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    mockAddCustomCard.mockRejectedValue(new Error("server said no"));
+
+    renderChecklist();
+    openAddForm();
+    fillCardNumber("606");
+    pickPlayer("Aaron Judge");
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Submit new card"));
+    });
+
+    expect(screen.getByRole("heading", { name: "Add Card" })).toBeTruthy();
+    expect(screen.getByLabelText("Player: Aaron Judge")).toBeTruthy();
+    expect(err).toHaveBeenCalled();
+    err.mockRestore();
+  });
+
+  it("passes the ancestor chain's sport to the picker, so the typeahead is scoped", () => {
+    renderChecklist();
+    openAddForm();
+    fireEvent.click(screen.getByLabelText(QA_TRIGGER));
+    fireEvent.change(screen.getByLabelText(QA_SEARCH), {
+      target: { value: "Rookie Nobody" },
+    });
+
+    expect(screen.getByLabelText("Create player Rookie Nobody")).toBeTruthy();
+  });
+
+  it("cannot create a player from a row with no sport ancestor", () => {
+    state.ancestorChain = [
+      { _id: VARIANT_ID, level: "variantType", value: "Base" },
+    ];
+    renderChecklist();
+    openAddForm();
+    fireEvent.click(screen.getByLabelText(QA_TRIGGER));
+    fireEvent.change(screen.getByLabelText(QA_SEARCH), {
+      target: { value: "Rookie Nobody" },
+    });
+
+    // NEO-96: a player must reference a real sport row. No sport, no create.
+    expect(screen.queryByLabelText(/^Create player /)).toBeNull();
+  });
+
+  /**
+   * The escape hatch that makes this field usable at all on a hand-added card:
+   * a brand-new rookie, or anyone the marketplace sync has never named, is not
+   * in the `players` table yet. `players.findOrCreate`'s resolved id has to
+   * reach `addCustomCard.playerIds` through the same React-state chip list a
+   * picked-from-the-list player takes.
+   */
+  it("creates a new player from the popover, then sends the fresh id on submit", async () => {
+    mockFindOrCreatePlayer.mockImplementation(
+      async ({ name }: { name: string; sportId: unknown }) => {
+        const created = { _id: "player-rookie", name };
+        state.players = [...state.players, created];
+        return created._id;
+      },
+    );
+    renderChecklist();
+    openAddForm();
+    fillCardNumber("610");
+    fireEvent.click(screen.getByLabelText(QA_TRIGGER));
+    fireEvent.change(screen.getByLabelText(QA_SEARCH), {
+      target: { value: "Rookie Nobody" },
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Create player Rookie Nobody"));
+    });
+
+    expect(mockFindOrCreatePlayer).toHaveBeenCalledWith({
+      name: "Rookie Nobody",
+      sportId: SPORT_ID,
+    });
+    expect(screen.getByLabelText("Player: Rookie Nobody")).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Submit new card"));
+    });
+
+    expect(mockAddCustomCard.mock.calls[0][0].playerIds).toEqual([
+      "player-rookie",
+    ]);
+  });
+
+  it("surfaces a refused create inline instead of silently doing nothing", async () => {
+    // Before this the handler was a bare try/finally: "Creating…" flipped
+    // back, no chip appeared, no reason was given, and the rejection went
+    // unhandled. The popover must still be the SAME open popover afterwards —
+    // a close/reopen would throw the message away with it.
+    mockFindOrCreatePlayer.mockRejectedValue(new Error("nope"));
+    renderChecklist();
+    openAddForm();
+    fireEvent.click(screen.getByLabelText(QA_TRIGGER));
+    fireEvent.change(screen.getByLabelText(QA_SEARCH), {
+      target: { value: "Rookie Nobody" },
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Create player Rookie Nobody"));
+    });
+
+    expect(screen.getByRole("alert").textContent).toBe(
+      "Could not create player.",
+    );
+    expect(screen.getByLabelText(QA_SEARCH)).toBeTruthy();
+    expect(screen.queryByLabelText(/^Player: /)).toBeNull();
+  });
+
+  it("submitting while the picker popover is still open still sends the picked player", async () => {
+    // `addChip` deliberately leaves the popover open so a second player can be
+    // added on a multi-player card — this is the state the form is normally IN
+    // when an operator hits Add, not an edge case.
+    renderChecklist();
+    openAddForm();
+    fillCardNumber("611");
+    pickPlayer("Aaron Judge");
+    expect(screen.getByLabelText(QA_SEARCH)).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Submit new card"));
+    });
+
+    expect(mockAddCustomCard.mock.calls[0][0].playerIds).toEqual([JUDGE._id]);
+  });
+
+  // a11y (WCAG 2.4.11 Focus Not Obscured). This picker's popover is
+  // `absolute top-full z-10` and now opens directly over the Team row and the
+  // Add/Cancel buttons below it. `PlayerPicker` had no keyboard-equivalent
+  // close before NEO-220 — it had no outside-close of any kind — so tabbing
+  // out of an open popover landed focus on a control the popover was still
+  // visually covering.
+  it("closes the player popover when Tab moves focus onto Submit (2.4.11)", async () => {
+    renderChecklist();
+    openAddForm();
+    fireEvent.click(screen.getByLabelText(QA_TRIGGER));
+    const searchInput = screen.getByLabelText(QA_SEARCH);
+
+    // Let the picker's own open-time autofocus effect land first; it runs on a
+    // `setTimeout(0)` queued by the same click, and synchronous test code can
+    // outrun it in a way a real Tab press cannot — which would let the
+    // autofocus re-steal focus and mask the close this test checks.
+    await waitFor(() => expect(document.activeElement).toBe(searchInput));
+
+    // Moving focus directly is the same observable effect a real Tab has. The
+    // close is deferred (a `document.activeElement` read a tick after the
+    // blur, not the blur's own `relatedTarget`), so this needs an async act to
+    // flush that timer.
+    await act(async () => {
+      screen.getByLabelText("Submit new card").focus();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(screen.queryByLabelText(QA_SEARCH)).toBeNull();
+    expect(
+      screen.getByLabelText(QA_TRIGGER).getAttribute("aria-expanded"),
+    ).toBe("false");
+  });
+
+  it("keeps the popover open when focus moves between controls inside it", async () => {
+    // Regression guard on the fix above: "focus left the root" must not also
+    // fire for focus moving from one in-picker control to another, which is
+    // ordinary keyboard use.
+    renderChecklist();
+    openAddForm();
+    fireEvent.click(screen.getByLabelText(QA_TRIGGER));
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByLabelText(QA_SEARCH),
+      ),
+    );
+
+    await act(async () => {
+      screen.getByLabelText("Add Aaron Judge").focus();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(screen.getByLabelText(QA_SEARCH)).toBeTruthy();
+  });
+
+  it("picks a highlighted player with Enter, so the field is keyboard-only operable", async () => {
+    // The whole flow without a mouse: open the popover, type, Enter. Arrow
+    // keys move the highlight; Enter takes it.
+    renderChecklist();
+    openAddForm();
+    fillCardNumber("612");
+    fireEvent.click(screen.getByLabelText(QA_TRIGGER));
+    const search = screen.getByLabelText(QA_SEARCH);
+    fireEvent.change(search, { target: { value: "Francisco" } });
+    fireEvent.keyDown(search, { key: "Enter" });
+
+    expect(screen.getByLabelText("Player: Francisco Lindor")).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Submit new card"));
+    });
+    expect(mockAddCustomCard.mock.calls[0][0].playerIds).toEqual([LINDOR._id]);
+  });
+
+  it("closes the popover on Escape without picking anything", () => {
+    renderChecklist();
+    openAddForm();
+    fireEvent.click(screen.getByLabelText(QA_TRIGGER));
+    fireEvent.keyDown(screen.getByLabelText(QA_SEARCH), {
+      key: "Escape",
+    });
+
+    expect(screen.queryByLabelText(QA_SEARCH)).toBeNull();
+    expect(screen.queryByLabelText(/^Player: /)).toBeNull();
+  });
+
+  it("removes the last chip on Backspace in an empty search box", () => {
+    renderChecklist();
+    openAddForm();
+    pickPlayer("Aaron Judge");
+    pickPlayer("Francisco Lindor");
+
+    fireEvent.keyDown(screen.getByLabelText(QA_SEARCH), {
+      key: "Backspace",
+    });
+
+    expect(screen.getByLabelText("Player: Aaron Judge")).toBeTruthy();
+    expect(screen.queryByLabelText("Player: Francisco Lindor")).toBeNull();
+  });
+
+  it("keeps the two pickers independent — a player pick is not a team pick", async () => {
+    // Both pickers are chip rows with near-identical markup sitting one row
+    // apart. This pins that the ids land in the right argument.
+    renderChecklist();
+    openAddForm();
+    fillCardNumber("613");
+    pickPlayer("Aaron Judge");
+    pickTeam("New York Yankees");
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Submit new card"));
+    });
+
+    const args = mockAddCustomCard.mock.calls[0][0];
+    expect(args.playerIds).toEqual([JUDGE._id]);
+    expect(args.teamOnCardIds).toEqual([YANKEES._id]);
   });
 });
 
@@ -1876,7 +2353,10 @@ describe("CardChecklist — NEO-221 D12: names nobody reviewed", () => {
     });
     expect(names.textContent).toContain("Yordan Alvrez");
 
-    // Link the real player through the walker's picker and save.
+    // Link the real player through the walker's picker and save. The
+    // attention walker's `UnreviewedNameFixer` mounts a DEFAULT-labelled
+    // PlayerPicker — only the quick-add form's instance is renamed (NEO-220),
+    // and this is the test that says so.
     fireEvent.click(screen.getByLabelText("Add player"));
     fireEvent.click(screen.getByLabelText("Add Yordan Alvarez"));
     await act(async () => {

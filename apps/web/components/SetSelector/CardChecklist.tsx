@@ -28,6 +28,7 @@ import SkippedNamesPanel from "./SkippedNamesPanel";
 import { needsAttention } from "./card-attention";
 import { Input } from "../primitives/Input";
 import TeamPicker from "./TeamPicker";
+import PlayerPicker, { type PlayerPickerLabels } from "./PlayerPicker";
 
 
 type CardChecklistProps = {
@@ -116,6 +117,31 @@ const NO_SYNC_DECISIONS: SyncReviewResult = {
   operatorDeleteIds: [],
   heldBackIndices: [],
   conflictResolutions: [],
+};
+
+/**
+ * NEO-220 — accessible names for the QUICK-ADD form's `PlayerPicker`, kept
+ * distinct from the card drawer's, which this same component also mounts.
+ *
+ * Reworded rather than suffixed, on purpose. Maestro's `id:` selector is a
+ * regex FIND over the aria-label, so "Add player to new card" would make the
+ * drawer's own `id: "Add player"` match two elements — strictly worse than the
+ * collision. Each string here shares no substring with its default in either
+ * direction:
+ *
+ *   "Player picker"            ↔ "Players on the new card"
+ *   "Add player"               ↔ "Add a player to the new card"
+ *   "Search players"           ↔ "Find a player for the new card"
+ *   "Player typeahead results" ↔ "Player results for the new card"
+ *
+ * Module scope, not inline, so the object identity is stable across renders
+ * and the E2E author has one place to read the real strings from.
+ */
+const QUICK_ADD_PLAYER_LABELS: PlayerPickerLabels = {
+  root: "Players on the new card",
+  trigger: "Add a player to the new card",
+  search: "Find a player for the new card",
+  results: "Player results for the new card",
 };
 
 export default function CardChecklist({
@@ -232,12 +258,14 @@ export default function CardChecklist({
   // commits to state, so handleAddCard submitted the card without it. React
   // never reconciles an uncontrolled input's value, so the DOM holds exactly
   // what the user typed and handleAddCard reads it directly at submit —
-  // "what you see is what you submit". The Players field carries comma-
-  // separated names forwarded to addCustomCard.players → pendingPlayerNames →
-  // the UnknownEntitiesDialog on the next fetch.
+  // "what you see is what you submit".
+  //
+  // NEO-220: only card number and card name are left on this rule. The
+  // Players field is a `PlayerPicker` now (see `addFormPlayerIds` below), for
+  // the same reason NEO-208 replaced the Team box — a typed name linked to
+  // nothing.
   const cardNumberRef = useRef<HTMLInputElement>(null);
   const cardNameRef = useRef<HTMLInputElement>(null);
-  const playersRef = useRef<HTMLInputElement>(null);
   /**
    * NEO-208 — the quick-add form's picked teams. React STATE, not a ref, and
    * that is the one place this form deviates from the NEO-36 rule above.
@@ -262,6 +290,16 @@ export default function CardChecklist({
    * `openAddForm` / `closeAddForm`.
    */
   const [addFormTeamIds, setAddFormTeamIds] = useState<Array<Id<"teams">>>([]);
+  /**
+   * NEO-220 — the quick-add form's picked players. React STATE for exactly
+   * the reasons spelled out for `addFormTeamIds` above (a picker changes only
+   * in whole chips, so there is no half-typed value for a re-render to eat,
+   * and chips have to re-render when they change, which a ref does not do),
+   * and reset at both edges of the form's life for the same reason.
+   */
+  const [addFormPlayerIds, setAddFormPlayerIds] = useState<
+    Array<Id<"players">>
+  >([]);
   /**
    * a11y (NEO-203 audit follow-up) — the durable "restore focus here" target
    * for `SyncReviewModal`. That modal mounts only after `handlePairingConfirm`
@@ -522,8 +560,10 @@ export default function CardChecklist({
         // A custom subtree has no marketplace cards at all, so there is
         // nothing to pair. Showing an empty pairing dialog would be a step
         // the operator can only click through — go straight to entity
-        // resolution, which is where a custom card's own pendingPlayerNames
-        // surface.
+        // resolution, which is where a row's leftover pendingPlayerNames
+        // surface. NEO-220: a card added by hand TODAY is born linked and
+        // carries none, so what reaches this path is rows written before that
+        // and rows an old SPA bundle wrote with the legacy `players` array.
         //
         // Read off the action's own count, NOT off `liveCandidates`: the
         // subscription's value at this instant may still predate the batch
@@ -862,19 +902,21 @@ export default function CardChecklist({
   };
 
   /**
-   * NEO-208 — the two edges of the quick-add form's life. The text fields
-   * reset by being unmounted; `addFormTeamIds` is React state and does not, so
-   * both entry and exit clear it explicitly. Every path that hides the form
-   * goes through `closeAddForm` (open, cancel, successful submit) so a picked
-   * team can never survive into the next card.
+   * NEO-208/NEO-220 — the two edges of the quick-add form's life. The text
+   * fields reset by being unmounted; the two pickers' values are React state
+   * and do not, so both entry and exit clear them explicitly. Every path that
+   * hides the form goes through `closeAddForm` (open, cancel, successful
+   * submit) so a picked team or player can never survive into the next card.
    */
   const openAddForm = useCallback(() => {
     setAddFormTeamIds([]);
+    setAddFormPlayerIds([]);
     setShowAddForm(true);
   }, []);
   const closeAddForm = useCallback(() => {
     setShowAddForm(false);
     setAddFormTeamIds([]);
+    setAddFormPlayerIds([]);
   }, []);
 
   const handleAddCard = async () => {
@@ -883,11 +925,12 @@ export default function CardChecklist({
     // exactly what the field shows.
     const cardNumber = cardNumberRef.current?.value.trim() ?? "";
     if (!cardNumber) return;
-    const players = (playersRef.current?.value ?? "")
-      .split(",")
-      .map((n) => n.trim())
-      .filter((n) => n.length > 0);
     const cardName = (cardNameRef.current?.value ?? "").trim();
+    // NEO-220: dedupe client-side as well as server-side, same belt as the
+    // teams below — `PlayerPicker.addChip` already refuses a duplicate, but
+    // the mutation's own dedupe is what the row is written from and the two
+    // must not be able to disagree about which chip the operator meant.
+    const playerIds = [...new Set(addFormPlayerIds)];
     // NEO-208: dedupe here as well as server-side. `TeamPicker.addChip`
     // already refuses a duplicate, so this is belt — but the mutation's own
     // dedupe is what the row is written from, and sending a clean array keeps
@@ -898,7 +941,15 @@ export default function CardChecklist({
         selectorOptionId: variantId,
         cardNumber,
         cardName: cardName || `Card #${cardNumber}`,
-        ...(players.length > 0 ? { players } : {}),
+        // NEO-220: the picked players as real `players` ids, so the card is
+        // born LINKED. This replaces the old comma-separated free-text box,
+        // whose typed names became `pendingPlayerNames` — a name the card
+        // carried while linking to nothing, which `deriveCardAttention` then
+        // badged as an `unreviewedName` and sent the walker to ask the
+        // operator about. Nothing is sent when the picker is empty, which is
+        // "no players named" rather than a deliberate empty list. The legacy
+        // `players` name array is never sent from here any more.
+        ...(playerIds.length > 0 ? { playerIds } : {}),
         // NEO-208: the picked teams as real `teams` ids, so the card is born
         // LINKED. This replaces the old free-text Team box, whose typed name
         // became `pendingTeamNames` and then rendered NOWHERE until the next
@@ -1360,14 +1411,62 @@ export default function CardChecklist({
                 aria-label="Card name"
               />
             </div>
-            <Input
-              bare
-              type="text"
-              ref={playersRef}
-              className={`${fieldClass("players")} w-full p-2 text-sm`}
-              placeholder="Player(s) — comma separated, optional"
-              aria-label="Players"
-            />
+            {/* NEO-220 — the same `PlayerPicker` the card drawer and the
+                attention walker's unreviewed-name fixer use, in place of the
+                free-text "Player(s) — comma separated" box.
+
+                Exactly the change NEO-208 made one row down for teams, and for
+                the same reason: a typed name landed in `pendingPlayerNames`,
+                which links to nothing, so the card was born naming a player it
+                did not point at — and `deriveCardAttention` badged it as an
+                `unreviewedName` for a gap the operator had just filled in.
+                Picked ids make the card born LINKED, and a linked card is
+                correctly not badged.
+
+                Same wrapper treatment as the Team field: the reserved
+                `fieldClass("players")` marker moves onto the wrapper, because
+                Maestro's web driver re-finds a tapped element by an XPath
+                built from its class (see useFieldTestClass). The key stays
+                claimed so no other field in this form can be handed it, and
+                the class stays a stable handle for scoping a query to this
+                box. Keyboard order is unchanged — the picker's own "+ Add
+                player" trigger takes the tab stop the textbox had.
+
+                Row geometry is deliberately unchanged too: the old `p-2
+                text-sm` input measured ~38px, and a 10px label + `mb-1` over a
+                `py-0.5 text-xs` chip row measures the same, so the Add/Cancel
+                footer does not move on the 1024×629 E2E viewport where this
+                form already sits near the fold. */}
+            <div className={`${fieldClass("players")} w-full`}>
+              {/* Plural like the card drawer's own "Players" label, so the two
+                  read as one field, and carrying the "(optional)" the old
+                  box's placeholder did — a card with no players named is a
+                  legitimate answer here, unlike the Team field it is not even
+                  a badged one.
+                  No `htmlFor`: the picker is a chip row, not one input, and
+                  its controls carry their own aria-labels.
+                  a11y: `text-gray-500 dark:text-gray-400`, matching the Team
+                  label below — see the long note there for why the bare
+                  `text-gray-400` the drawer uses fails 1.4.3 on this panel. */}
+              <label className="block text-[10px] uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-1">
+                Players (optional)
+              </label>
+              {/* Distinct accessible names, because this component also
+                  mounts the card DRAWER's PlayerPicker and neither hides the
+                  other — an operator can have a card open and start adding a
+                  new one. Two identically-named "Add player" triggers is an
+                  ambiguity for a screen-reader user and an outright wrong tap
+                  for Maestro, whose `id:` selector is a regex find over the
+                  aria-label. None of these four shares a substring with the
+                  drawer's defaults in either direction, which is why they are
+                  reworded rather than suffixed — see PlayerPickerLabels. */}
+              <PlayerPicker
+                value={addFormPlayerIds}
+                onChange={setAddFormPlayerIds}
+                sportId={ancestorSportId}
+                labels={QUICK_ADD_PLAYER_LABELS}
+              />
+            </div>
             {/* NEO-208 — the same TeamPicker the card drawer and the
                 attention walker's fixer use, in place of the free-text "Team
                 (optional)" box. A typed name used to land in
