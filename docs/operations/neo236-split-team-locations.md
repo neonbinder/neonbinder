@@ -134,7 +134,7 @@ Deploy order, and it matters: **PR merges → dry run → read the output → re
 run → disarm.** The split is only safe once the schema carries `location` and
 every reader composes the full name, so nothing runs before the merge.
 
-1. **Backup Now.** Convex dashboard → deployment `first-starfish-800` →
+1. **Backup Now.** Convex dashboard → the prod deployment →
    Settings → Backups → **Backup Now**. NEO-190 §3: a manual backup before any
    deliberate bulk write. This is the only undo that exists.
 2. **Arm:**
