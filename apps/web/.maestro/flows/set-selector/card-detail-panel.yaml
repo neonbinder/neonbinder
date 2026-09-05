@@ -186,7 +186,7 @@ tags:
 # doing this sum by eye. `util-add-custom-card` types PLAYER_NAME into the
 # **Card name** field (whose placeholder happens to read "Player name"); the
 # generator's `playerNames` come from the SEPARATE "Players" field, which the
-# util leaves empty, so they arrive as `pendingPlayerNames: []`. The card's
+# util leaves empty, so the card is added with no players at all. The card's
 # display name never reaches the title. What the title DOES now carry, since
 # titles fill toward 80, is the sport ancestor's value — "E2E Test Sport N",
 # 16 characters of it — appended as the last filler token. That is already in

@@ -239,15 +239,43 @@ visible to whichever other flows happen to be running at that moment.
 a `selectorOptionId` **globally** — there is no author scoping. A custom card
 added to a shared set therefore seeds *other* workers' entity-review batches.
 
-This was violated by `checklist-fetch-cancel-dialog` and
-`checklist-keyboard-only-dialog`, which added cards `9001-*` / `9002-*` to
-2024 Topps Chrome Base on every attempt and never cleaned up. CI run
-`30505189226`: the cancel flow (runner 4) left `CDPlayerA/CDPlayerB-r4-a1-27829`
-behind at 01:30:33; 91s later the keyboard flow (runner 2) opened its wizard on
-3 unknowns instead of its own 1 and failed. Accumulated junk also showed up
-directly in the UI — "Cards (337)" against "Found 335 cards". Both flows are now
-on per-worker custom sets. `NEO-109` (read-only `signed-by-autofills-from-players`
-failing on card #300) is very likely the same pollution.
+This was violated by two entity-review flows (since retired — see below) that
+added cards `9001-*` / `9002-*` to 2024 Topps Chrome Base on every attempt and
+never cleaned up. CI run `30505189226`: one of them (runner 4) left
+`CDPlayerA/CDPlayerB-r4-a1-27829` behind at 01:30:33; 91s later the other
+(runner 2) opened its wizard on 3 unknowns instead of its own 1 and failed.
+Accumulated junk also showed up directly in the UI — "Cards (337)" against
+"Found 335 cards". Both were moved onto per-worker custom sets at the time.
+`NEO-109` (read-only `signed-by-autofills-from-players` failing on card #300) is
+very likely the same pollution. Keep the lesson: the fix for a flow that needs
+to write is a per-worker custom set, never "clean up afterwards".
+
+### Retired: the six quick-add entity-review flows (NEO-220/221, 2026-09-05)
+
+`checklist-fetch-cancel-dialog`, `checklist-fetch-unknown-entities-link-existing`,
+`checklist-fetch-wizard-add-career-team`, `checklist-fetch-wizard-back-and-resume`,
+`checklist-fetch-wizard-skip-not-a-person` and `checklist-keyboard-only-dialog`
+(prefixes `fcd-`, `lce-`, `cte-`, `wbr-`, `skp-`, `kod-`) all reached the entity
+review wizard the same way: type an invented name into the quick-add form's
+free-text Players field, sync, and let the resulting `pendingPlayerNames` open
+the wizard.
+
+That path no longer exists. Quick-add's Players field is a **PlayerPicker**, so
+a hand-added card is born linked (`playerIds`) and never carries a pending name
+— the sync commits immediately and no wizard appears. The flows fixtured a
+product path the product no longer has, so they were deleted rather than
+rewritten around a fiction.
+
+Wizard coverage now lives in two places: the unit files
+(`EntityReviewWizard.test.tsx` cancel/back/Enter blocks, `entityReviewQueue`
+resume tests, `entityReviewSkips`, `SkippedNamesPanel`) and — for the live,
+end-to-end path — STEP 6 of `inserts-1996-score-one-nb-set-two-bsc-sources.yaml`,
+which opens the wizard on a genuine cold two-source fetch and now also covers
+decide → Cancel (Esc) → "Discard 1 decision?" → keep, and the Enter commit.
+
+Do not re-create them against a custom subtree: it cannot produce an unknown
+name any more. See `todos/neo-220-221-e2e-fixture-plan.md` for the post-NEO-239
+conditions under which the back-and-resume reload path could return.
 
 ### Per-attempt custom SPORT rows — `custom-entry-survives-resync`, self-cleaning
 
@@ -296,19 +324,14 @@ would put the wrong question on screen.
 | `cna-` | `checklist-attention-badge-and-filter.yaml` (also `-${ATTEMPT_ID}`) |
 | `cnw-` | `checklist-attention-walker-missing-team.yaml` (also `-${ATTEMPT_ID}`) |
 | `clt-` | `custom-card-row-opens-panel-with-autotitle.yaml` |
-| `cte-` | `checklist-fetch-wizard-add-career-team.yaml` |
 | `cvar-` | `variation-link-group-and-unlink.yaml` |
-| `fcd-` | `checklist-fetch-cancel-dialog.yaml` |
 | `fp-` | `features-propagation.yaml` |
-| `kod-` | `checklist-keyboard-only-dialog.yaml` |
-| `lce-` | `checklist-fetch-unknown-entities-link-existing.yaml` |
 | `parallel-feature-` | `cards-parallel-custom.yaml` |
 | `pg-cancel-` | `parallel-grouping-cancel-discards.yaml` (also `-${ATTEMPT_ID}`) |
 | `pg-move-` | `move-parallels-of-inserts-custom.yaml` |
 | `pg-reject-` | `parallel-grouping-reject-parallel.yaml` (also `-${ATTEMPT_ID}`) |
 | `pp-` | `player-picker-create-custom-card.yaml` |
 | `rnm-` | `rename-selector-option.yaml` (also `-${ATTEMPT_ID}`; renamed in-flow to `rnmx-`) |
-| `skp-` | `checklist-fetch-wizard-skip-not-a-person.yaml` |
 | `tlf-` | `checklist-title-length-limits-and-fixer.yaml` (also `-${ATTEMPT_ID}`) |
 | `tp-` | `team-picker.yaml` |
 | `tpc-` | `team-picker-create-custom-card.yaml` |

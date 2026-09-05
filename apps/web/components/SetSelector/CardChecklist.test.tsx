@@ -60,6 +60,9 @@ vi.mock("../../convex/_generated/api", () => ({
       resolveChecklistEntities: "resolveChecklistEntities",
       commitCardChecklist: "commitCardChecklist",
       addCustomCard: "addCustomCard",
+      // NEO-221: the attention walker's UnreviewedNameFixer writes through
+      // this one.
+      updateCard: "selectorOptions.updateCard",
       // Referenced by CrossListingImportModal, which CardChecklist always
       // mounts (isOpen=false). Never asserted on here.
       getSelectorOptions: "getSelectorOptions",
@@ -77,7 +80,13 @@ vi.mock("../../convex/_generated/api", () => ({
       list: "teams.list",
       findOrCreate: "teams.findOrCreate",
     },
-    players: { getManyByIds: "players.getManyByIds" },
+    // NEO-221: UnreviewedNameFixer mounts the REAL PlayerPicker, which needs
+    // all three of these to resolve.
+    players: {
+      getManyByIds: "players.getManyByIds",
+      list: "players.list",
+      findOrCreate: "players.findOrCreate",
+    },
     cardChecklist: {
       suggestedTeamsForCard: "cardChecklist.suggestedTeamsForCard",
       confirmCardNoTeam: "cardChecklist.confirmCardNoTeam",
@@ -111,17 +120,62 @@ vi.mock("react-virtuoso", () => ({
 }));
 
 /**
- * NEO-102 (CI round 2): the entity-review wizard is stubbed down to its Cancel
- * button. Only ONE thing about it matters here — what CardChecklist's banner
- * says after `onCancel` fires — and the real wizard would drag in the whole
- * `entityReviewQueue` query/mutation surface to prove a fact about its parent.
- * Its own behaviour is covered by EntityReviewWizard.test.tsx.
+ * NEO-102 (CI round 2): the entity-review wizard is stubbed down to the props
+ * its PARENT owns. The real wizard would drag in the whole
+ * `entityReviewQueue` query/mutation surface to prove facts about
+ * CardChecklist; its own behaviour is covered by EntityReviewWizard.test.tsx.
+ *
+ * NEO-221 widened the stub with the three props D6/D9/D10 added — `summary`,
+ * `onBack` and `commitError`/`onDismissCommitError`. Each is rendered as plain
+ * text or a button so a test can read back exactly what the parent decided:
+ * what the final step will claim it is saving, whether there is a pairing
+ * session to return to, and whether a failed commit was reported without
+ * throwing the review away.
  */
 vi.mock("./EntityReviewWizard", () => ({
-  default: ({ onCancel }: { onCancel: () => void }) => (
-    <button type="button" onClick={onCancel}>
-      Cancel entity review
-    </button>
+  default: ({
+    summary,
+    onConfirm,
+    onCancel,
+    onBack,
+    commitError,
+    onDismissCommitError,
+  }: {
+    summary: {
+      cardCount: number;
+      deleteCount: number;
+      reviewDecisionCount: number;
+    };
+    onConfirm: () => void;
+    onCancel: () => void;
+    onBack?: () => void;
+    commitError?: string | null;
+    onDismissCommitError?: () => void;
+  }) => (
+    <div>
+      <p>
+        {`Wizard summary: ${summary.cardCount} cards, ${summary.deleteCount} deletions, ${summary.reviewDecisionCount} field decisions`}
+      </p>
+      {commitError && <p>{`Wizard commit error: ${commitError}`}</p>}
+      <button type="button" onClick={onConfirm}>
+        Confirm entity review
+      </button>
+      <button type="button" onClick={onCancel}>
+        Cancel entity review
+      </button>
+      {/* Rendered ONLY when the prop is present — that presence is itself the
+          assertion in the "custom subtree has nothing to go back to" test. */}
+      {onBack && (
+        <button type="button" onClick={onBack}>
+          Back to matching
+        </button>
+      )}
+      {onDismissCommitError && (
+        <button type="button" onClick={onDismissCommitError}>
+          Dismiss commit error
+        </button>
+      )}
+    </div>
   ),
 }));
 
@@ -135,6 +189,9 @@ const mockDiscardCandidates = vi.fn();
 // it had no component test at all before this ticket.
 const mockAddCustomCard = vi.fn();
 const mockFindOrCreateTeam = vi.fn();
+// NEO-221 — the attention walker's UnreviewedNameFixer.
+const mockUpdateCard = vi.fn();
+const mockFindOrCreatePlayer = vi.fn();
 
 // Mutable holders read lazily by the mocked hooks at call time — same shape
 // as EntityColumn.ensure-sync.test.tsx's `state`.
@@ -155,6 +212,13 @@ const state: {
    */
   teams: Array<{ _id: string; name: string }>;
   /**
+   * NEO-221: the `players` table, for the REAL `PlayerPicker` inside
+   * `UnreviewedNameFixer`. Serves `players.list` (typeahead candidates) and
+   * `players.getManyByIds` (chip labels), exactly as `teams` does for
+   * `TeamPicker` — the mocked `useQuery` ignores arguments.
+   */
+  players: Array<{ _id: string; name: string }>;
+  /**
    * NEO-212: rows for `entityReviewSkips.listForSet`. `[]` — no skips — is the
    * state every pre-existing test in this file runs in, and SkippedNamesPanel
    * renders nothing for it, so the checklist is visually unchanged for them.
@@ -171,6 +235,7 @@ const state: {
   ancestorChain: [],
   liveCandidates: null,
   teams: [],
+  players: [],
   skippedNames: [],
 };
 
@@ -184,6 +249,9 @@ vi.mock("convex/react", () => ({
     // resolved-but-empty, which is the "no career history" shape.
     if (ref === "cardChecklist.suggestedTeamsForCard") return [];
     if (ref === "teams.getManyByIds" || ref === "teams.list") return state.teams;
+    if (ref === "players.getManyByIds" || ref === "players.list") {
+      return state.players;
+    }
     if (ref === "entityReviewSkips.listForSet") return state.skippedNames;
     // CrossListingImportModal's drill-down queries — never exercised here.
     return undefined;
@@ -192,6 +260,8 @@ vi.mock("convex/react", () => ({
     if (ref === "discardCandidates") return mockDiscardCandidates;
     if (ref === "addCustomCard") return mockAddCustomCard;
     if (ref === "teams.findOrCreate") return mockFindOrCreateTeam;
+    if (ref === "players.findOrCreate") return mockFindOrCreatePlayer;
+    if (ref === "selectorOptions.updateCard") return mockUpdateCard;
     return vi.fn();
   },
   useAction: (ref: string) => {
@@ -602,7 +672,10 @@ async function commitZeroCandidatePath() {
     unknownTeams: [],
     batchId: undefined,
   });
-  mockCommitChecklist.mockResolvedValue({ count: 2 });
+  // NEO-221 (D12): the commit now reports how many names its batch never had
+  // a decision for. Zero here — the "nothing was skipped" shape every
+  // pre-existing assertion in this file runs in.
+  mockCommitChecklist.mockResolvedValue({ count: 2, unreviewedNameCount: 0 });
   mockDiscardCandidates.mockResolvedValue(undefined);
   let resolveFetch!: (value: unknown) => void;
   mockFetchChecklist.mockImplementation(
@@ -877,6 +950,28 @@ describe("CardChecklist — NEO-102 attention count, filter and walker", () => {
 
 const YANKEES = { _id: "team-yankees", name: "New York Yankees" };
 const METS = { _id: "team-mets", name: "New York Mets" };
+/**
+ * NEO-220 — the quick-add form's PlayerPicker exposes DIFFERENT accessible
+ * names from the card drawer's and the attention walker's, because
+ * CardChecklist mounts more than one of these pickers and neither hides the
+ * other. Mirrored from `QUICK_ADD_PLAYER_LABELS` in CardChecklist.tsx;
+ * spelled out here rather than imported so a rename has to be made
+ * deliberately in both places, and so this file records what the E2E flows
+ * actually target.
+ */
+const QA_ROOT = "Players on the new card";
+const QA_TRIGGER = "Add a player to the new card";
+const QA_SEARCH = "Find a player for the new card";
+
+/** NEO-220 — the quick-add form's PlayerPicker candidate pool. */
+const JUDGE = { _id: "player-judge", name: "Aaron Judge" };
+const LINDOR = { _id: "player-lindor", name: "Francisco Lindor" };
+
+/** Pick a player through the real picker's popover, by its display name. */
+function pickPlayer(name: string) {
+  fireEvent.click(screen.getByLabelText(QA_TRIGGER));
+  fireEvent.click(screen.getByLabelText(`Add ${name}`));
+}
 
 /** Open the form and return its container element. */
 function openAddForm(): HTMLElement {
@@ -919,28 +1014,42 @@ describe("CardChecklist — NEO-208 quick-add Team picker", () => {
     expect(screen.getByLabelText("Add team")).toBeTruthy();
   });
 
-  it("keeps the field's reserved Maestro marker class on the picker's wrapper", () => {
+  it("keeps each field's reserved Maestro marker class on its picker wrapper", () => {
     // Maestro's web driver re-finds a tapped element by an XPath built from
-    // its class (see useFieldTestClass). The picker is not an <input>, but the
-    // "team" key stays claimed so no other field in this form can be handed
-    // it, and the class stays a stable handle for scoping a query to this box.
+    // its class (see useFieldTestClass). Neither picker is an <input>, but the
+    // "team" and "players" keys stay claimed so no other field in this form
+    // can be handed one, and each class stays a stable handle for scoping a
+    // query to that box.
     const form = (() => {
       renderChecklist();
       return openAddForm();
     })();
 
-    // Read the base off a field that still exists, rather than hardcoding a
-    // `useId()` value. (Note the sanitizer drops the capital in a camelCase
-    // key, so the players field is the unambiguous one to read.)
-    const playersMarker = screen
-      .getByLabelText("Players")
+    // Read the base off a field that is still a real <input>, rather than
+    // hardcoding a `useId()` value. NEO-220: that used to be the players
+    // textbox; it is a picker now, so the card-number field is the one left —
+    // and its SUFFIX is unreadable ("cardNumber" sanitizes to "card-umber",
+    // since the key sanitizer replaces the capital rather than lowercasing
+    // it), so match the `mb-field-<base>` prefix instead. `useId()` is
+    // stripped to alphanumerics by the hook, so the base never contains a
+    // hyphen and this cannot over-match.
+    const base = screen
+      .getByLabelText("Card number")
       .className.split(/\s+/)
-      .find((c) => /^mb-field-.+-players$/.test(c))!;
-    const base = playersMarker.replace(/-players$/, "");
+      .map((c) => /^(mb-field-[a-z0-9]+)-/.exec(c)?.[1])
+      .find((b): b is string => !!b)!;
 
-    const wrapper = form.querySelector(`.${base}-team`);
-    expect(wrapper).toBeTruthy();
-    expect(wrapper!.contains(screen.getByLabelText("Team picker"))).toBe(true);
+    const teamWrapper = form.querySelector(`.${base}-team`);
+    expect(teamWrapper).toBeTruthy();
+    expect(teamWrapper!.contains(screen.getByLabelText("Team picker"))).toBe(
+      true,
+    );
+
+    const playersWrapper = form.querySelector(`.${base}-players`);
+    expect(playersWrapper).toBeTruthy();
+    expect(
+      playersWrapper!.contains(screen.getByLabelText(QA_ROOT)),
+    ).toBe(true);
   });
 
   it("sends the picked ids as teamOnCardIds, and no `teams` name array", async () => {
@@ -979,26 +1088,29 @@ describe("CardChecklist — NEO-208 quick-add Team picker", () => {
   });
 
   it("still forwards the other fields unchanged", async () => {
+    state.players = [JUDGE, LINDOR];
     renderChecklist();
     openAddForm();
     fillCardNumber("503");
     fireEvent.change(screen.getByLabelText("Card name"), {
       target: { value: "Subway Series" },
     });
-    fireEvent.change(screen.getByLabelText("Players"), {
-      target: { value: "Aaron Judge, Francisco Lindor" },
-    });
+    pickPlayer("Aaron Judge");
+    pickPlayer("Francisco Lindor");
     pickTeam("New York Yankees");
 
     await act(async () => {
       fireEvent.click(screen.getByLabelText("Submit new card"));
     });
 
+    // NEO-220: `players` (the typed name array) is gone from this call
+    // entirely — the whole argument list is asserted, so its return would
+    // fail here.
     expect(mockAddCustomCard).toHaveBeenCalledWith({
       selectorOptionId: VARIANT_ID,
       cardNumber: "503",
       cardName: "Subway Series",
-      players: ["Aaron Judge", "Francisco Lindor"],
+      playerIds: [JUDGE._id, LINDOR._id],
       teamOnCardIds: [YANKEES._id],
     });
   });
@@ -1116,7 +1228,10 @@ describe("CardChecklist — NEO-208 quick-add Team picker", () => {
     expect(document.activeElement).toBe(screen.getByLabelText("Card number"));
   });
 
-  it("keeps the keyboard order: number, name, players, then the team picker", () => {
+  it("keeps the keyboard order: number, name, player picker, team picker, buttons", () => {
+    // NEO-220: the Players textbox became a picker, so its tab stop is the
+    // picker's own "+ Add player" trigger. The ORDER is what must not move —
+    // an operator adding twenty cards has this sequence in their fingers.
     const form = (() => {
       renderChecklist();
       return openAddForm();
@@ -1129,7 +1244,7 @@ describe("CardChecklist — NEO-208 quick-add Team picker", () => {
     expect(focusables).toEqual([
       "Card number",
       "Card name",
-      "Players",
+      QA_TRIGGER,
       "Add team",
       "Submit new card",
       "Cancel new card",
@@ -1382,6 +1497,441 @@ describe("CardChecklist — NEO-208 quick-add Team picker", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// NEO-220 — the quick-add form's Players field is a real PlayerPicker.
+//
+// The players twin of the NEO-208 block above, and deliberately the same cases
+// so a divergence between the two fields shows up as one block passing and the
+// other failing.
+//
+// The defect: a typed name went to `addCustomCard.players` →
+// `pendingPlayerNames`, so the card was born NAMING a player it did not link
+// to — which `deriveCardAttention` badges as an `unreviewedName`, sending the
+// attention walker to ask the operator about a player they had just typed in.
+// Picked ids make the card born LINKED, and a linked card starts answered.
+//
+// Driven through the REAL `PlayerPicker` throughout, so the aria-labels
+// Maestro targets are the real ones.
+// ---------------------------------------------------------------------------
+describe("CardChecklist — NEO-220 quick-add Player picker", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.cards = [];
+    state.variantRow = { value: "Test Set" };
+    state.ancestorChain = [{ _id: SPORT_ID, level: "sport", value: "Baseball" }];
+    state.liveCandidates = null;
+    state.teams = [YANKEES, METS];
+    state.players = [JUDGE, LINDOR];
+    mockAddCustomCard.mockResolvedValue("new-card-1");
+  });
+
+  it("renders a PlayerPicker, not a free-text Players box", () => {
+    renderChecklist();
+    openAddForm();
+
+    // The old field's accessible name. Its absence is the regression pin: a
+    // revert to the textbox brings this label back.
+    expect(screen.queryByLabelText("Players")).toBeNull();
+    expect(screen.getByLabelText(QA_ROOT)).toBeTruthy();
+    expect(screen.getByLabelText(QA_TRIGGER)).toBeTruthy();
+  });
+
+  it("labels the field, so the picker is not an unexplained row of chips", () => {
+    renderChecklist();
+    const form = openAddForm();
+    expect(form.textContent).toContain("Players (optional)");
+  });
+
+  it("names its controls distinctly from every other PlayerPicker on the page", () => {
+    // CardChecklist mounts more than one PlayerPicker — the quick-add form's
+    // and, when a card is open, the drawer's — and neither hides the other. So
+    // the quick-add instance must not answer to the default names, and, just
+    // as importantly, must not CONTAIN them: Maestro's `id:` selector is a
+    // regex find over the aria-label, so a suffixed label would make a flow
+    // targeting the default match both elements.
+    renderChecklist();
+    openAddForm();
+
+    for (const [distinct, base] of [
+      [QA_ROOT, "Player picker"],
+      [QA_TRIGGER, "Add player"],
+    ] as const) {
+      expect(screen.getByLabelText(distinct)).toBeTruthy();
+      expect(distinct.includes(base)).toBe(false);
+      expect(base.includes(distinct)).toBe(false);
+    }
+    // The defaults are not present at all while only this form is open.
+    expect(screen.queryByLabelText("Player picker")).toBeNull();
+    expect(screen.queryByLabelText("Add player")).toBeNull();
+
+    fireEvent.click(screen.getByLabelText(QA_TRIGGER));
+    expect(screen.getByLabelText(QA_SEARCH)).toBeTruthy();
+    expect(QA_SEARCH.includes("Search players")).toBe(false);
+    expect(screen.queryByLabelText("Search players")).toBeNull();
+  });
+
+  it("sends the picked ids as playerIds, and no `players` name array", async () => {
+    renderChecklist();
+    openAddForm();
+    fillCardNumber("601");
+    pickPlayer("Aaron Judge");
+    pickPlayer("Francisco Lindor");
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Submit new card"));
+    });
+
+    expect(mockAddCustomCard).toHaveBeenCalledTimes(1);
+    const args = mockAddCustomCard.mock.calls[0][0];
+    expect(args.playerIds).toEqual([JUDGE._id, LINDOR._id]);
+    // The legacy free-text shape must not ride along — a row carrying both
+    // would name the same player twice, once in a spelling that links to
+    // nothing (see addCustomCard).
+    expect(args).not.toHaveProperty("players");
+  });
+
+  it("sends NEITHER playerIds nor players when nobody was picked", async () => {
+    renderChecklist();
+    openAddForm();
+    fillCardNumber("602");
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Submit new card"));
+    });
+
+    const args = mockAddCustomCard.mock.calls[0][0];
+    expect(args).not.toHaveProperty("playerIds");
+    expect(args).not.toHaveProperty("players");
+  });
+
+  /**
+   * The NEO-36 pin, for the same reason the Team block carries one: the
+   * picker's value is React STATE, which is the deviation from this form's
+   * uncontrolled-fields rule. That rule exists because a keystroke and a
+   * reactive `getCardChecklist` re-render race. A picker changes only in whole
+   * chips, one discrete setState each, so there is no half-typed value for a
+   * re-render to overwrite — proved here by driving exactly the event that
+   * broke the text fields.
+   */
+  it("keeps the picked chips across a re-render with new getCardChecklist data", async () => {
+    const { rerender } = renderChecklist();
+    openAddForm();
+    fillCardNumber("603");
+    pickPlayer("Aaron Judge");
+
+    expect(screen.getByLabelText("Player: Aaron Judge")).toBeTruthy();
+
+    state.cards = [settledCard()];
+    rerender(
+      <CardChecklist
+        variantId={VARIANT_ID}
+        sourceChips={{}}
+        sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "Add Card" })).toBeTruthy();
+    expect(screen.getByLabelText("Player: Aaron Judge")).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Submit new card"));
+    });
+    expect(mockAddCustomCard.mock.calls[0][0].playerIds).toEqual([JUDGE._id]);
+  });
+
+  it("resets the picker when the form is cancelled, and again on open", () => {
+    // The text fields reset by being unmounted; the picker is React state and
+    // does not, so a cancelled card's players must be cleared explicitly or
+    // they silently ride along on the next one. Both edges, because whatever
+    // route hid the form, opening it is a fresh card.
+    renderChecklist();
+    openAddForm();
+    pickPlayer("Aaron Judge");
+    expect(screen.getByLabelText("Player: Aaron Judge")).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText("Cancel new card"));
+    openAddForm();
+
+    expect(screen.queryByLabelText(/^Player: /)).toBeNull();
+    expect(screen.queryByLabelText(/^Remove player /)).toBeNull();
+  });
+
+  it("closes the form and clears the picker after a successful add", async () => {
+    renderChecklist();
+    openAddForm();
+    fillCardNumber("604");
+    pickPlayer("Aaron Judge");
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Submit new card"));
+    });
+
+    expect(screen.queryByRole("heading", { name: "Add Card" })).toBeNull();
+
+    openAddForm();
+    expect(screen.queryByLabelText("Player: Aaron Judge")).toBeNull();
+  });
+
+  it("lets a chip be removed again before submitting", async () => {
+    renderChecklist();
+    openAddForm();
+    fillCardNumber("605");
+    pickPlayer("Aaron Judge");
+    fireEvent.click(screen.getByLabelText("Remove player Aaron Judge"));
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Submit new card"));
+    });
+
+    expect(mockAddCustomCard.mock.calls[0][0]).not.toHaveProperty("playerIds");
+  });
+
+  it("keeps a picked player when the mutation fails, so nothing is lost", async () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    mockAddCustomCard.mockRejectedValue(new Error("server said no"));
+
+    renderChecklist();
+    openAddForm();
+    fillCardNumber("606");
+    pickPlayer("Aaron Judge");
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Submit new card"));
+    });
+
+    expect(screen.getByRole("heading", { name: "Add Card" })).toBeTruthy();
+    expect(screen.getByLabelText("Player: Aaron Judge")).toBeTruthy();
+    expect(err).toHaveBeenCalled();
+    err.mockRestore();
+  });
+
+  it("passes the ancestor chain's sport to the picker, so the typeahead is scoped", () => {
+    renderChecklist();
+    openAddForm();
+    fireEvent.click(screen.getByLabelText(QA_TRIGGER));
+    fireEvent.change(screen.getByLabelText(QA_SEARCH), {
+      target: { value: "Rookie Nobody" },
+    });
+
+    expect(screen.getByLabelText("Create player Rookie Nobody")).toBeTruthy();
+  });
+
+  it("cannot create a player from a row with no sport ancestor", () => {
+    state.ancestorChain = [
+      { _id: VARIANT_ID, level: "variantType", value: "Base" },
+    ];
+    renderChecklist();
+    openAddForm();
+    fireEvent.click(screen.getByLabelText(QA_TRIGGER));
+    fireEvent.change(screen.getByLabelText(QA_SEARCH), {
+      target: { value: "Rookie Nobody" },
+    });
+
+    // NEO-96: a player must reference a real sport row. No sport, no create.
+    expect(screen.queryByLabelText(/^Create player /)).toBeNull();
+  });
+
+  /**
+   * The escape hatch that makes this field usable at all on a hand-added card:
+   * a brand-new rookie, or anyone the marketplace sync has never named, is not
+   * in the `players` table yet. `players.findOrCreate`'s resolved id has to
+   * reach `addCustomCard.playerIds` through the same React-state chip list a
+   * picked-from-the-list player takes.
+   */
+  it("creates a new player from the popover, then sends the fresh id on submit", async () => {
+    mockFindOrCreatePlayer.mockImplementation(
+      async ({ name }: { name: string; sportId: unknown }) => {
+        const created = { _id: "player-rookie", name };
+        state.players = [...state.players, created];
+        return created._id;
+      },
+    );
+    renderChecklist();
+    openAddForm();
+    fillCardNumber("610");
+    fireEvent.click(screen.getByLabelText(QA_TRIGGER));
+    fireEvent.change(screen.getByLabelText(QA_SEARCH), {
+      target: { value: "Rookie Nobody" },
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Create player Rookie Nobody"));
+    });
+
+    expect(mockFindOrCreatePlayer).toHaveBeenCalledWith({
+      name: "Rookie Nobody",
+      sportId: SPORT_ID,
+    });
+    expect(screen.getByLabelText("Player: Rookie Nobody")).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Submit new card"));
+    });
+
+    expect(mockAddCustomCard.mock.calls[0][0].playerIds).toEqual([
+      "player-rookie",
+    ]);
+  });
+
+  it("surfaces a refused create inline instead of silently doing nothing", async () => {
+    // Before this the handler was a bare try/finally: "Creating…" flipped
+    // back, no chip appeared, no reason was given, and the rejection went
+    // unhandled. The popover must still be the SAME open popover afterwards —
+    // a close/reopen would throw the message away with it.
+    mockFindOrCreatePlayer.mockRejectedValue(new Error("nope"));
+    renderChecklist();
+    openAddForm();
+    fireEvent.click(screen.getByLabelText(QA_TRIGGER));
+    fireEvent.change(screen.getByLabelText(QA_SEARCH), {
+      target: { value: "Rookie Nobody" },
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Create player Rookie Nobody"));
+    });
+
+    expect(screen.getByRole("alert").textContent).toBe(
+      "Could not create player.",
+    );
+    expect(screen.getByLabelText(QA_SEARCH)).toBeTruthy();
+    expect(screen.queryByLabelText(/^Player: /)).toBeNull();
+  });
+
+  it("submitting while the picker popover is still open still sends the picked player", async () => {
+    // `addChip` deliberately leaves the popover open so a second player can be
+    // added on a multi-player card — this is the state the form is normally IN
+    // when an operator hits Add, not an edge case.
+    renderChecklist();
+    openAddForm();
+    fillCardNumber("611");
+    pickPlayer("Aaron Judge");
+    expect(screen.getByLabelText(QA_SEARCH)).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Submit new card"));
+    });
+
+    expect(mockAddCustomCard.mock.calls[0][0].playerIds).toEqual([JUDGE._id]);
+  });
+
+  // a11y (WCAG 2.4.11 Focus Not Obscured). This picker's popover is
+  // `absolute top-full z-10` and now opens directly over the Team row and the
+  // Add/Cancel buttons below it. `PlayerPicker` had no keyboard-equivalent
+  // close before NEO-220 — it had no outside-close of any kind — so tabbing
+  // out of an open popover landed focus on a control the popover was still
+  // visually covering.
+  it("closes the player popover when Tab moves focus onto Submit (2.4.11)", async () => {
+    renderChecklist();
+    openAddForm();
+    fireEvent.click(screen.getByLabelText(QA_TRIGGER));
+    const searchInput = screen.getByLabelText(QA_SEARCH);
+
+    // Let the picker's own open-time autofocus effect land first; it runs on a
+    // `setTimeout(0)` queued by the same click, and synchronous test code can
+    // outrun it in a way a real Tab press cannot — which would let the
+    // autofocus re-steal focus and mask the close this test checks.
+    await waitFor(() => expect(document.activeElement).toBe(searchInput));
+
+    // Moving focus directly is the same observable effect a real Tab has. The
+    // close is deferred (a `document.activeElement` read a tick after the
+    // blur, not the blur's own `relatedTarget`), so this needs an async act to
+    // flush that timer.
+    await act(async () => {
+      screen.getByLabelText("Submit new card").focus();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(screen.queryByLabelText(QA_SEARCH)).toBeNull();
+    expect(
+      screen.getByLabelText(QA_TRIGGER).getAttribute("aria-expanded"),
+    ).toBe("false");
+  });
+
+  it("keeps the popover open when focus moves between controls inside it", async () => {
+    // Regression guard on the fix above: "focus left the root" must not also
+    // fire for focus moving from one in-picker control to another, which is
+    // ordinary keyboard use.
+    renderChecklist();
+    openAddForm();
+    fireEvent.click(screen.getByLabelText(QA_TRIGGER));
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByLabelText(QA_SEARCH),
+      ),
+    );
+
+    await act(async () => {
+      screen.getByLabelText("Add Aaron Judge").focus();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(screen.getByLabelText(QA_SEARCH)).toBeTruthy();
+  });
+
+  it("picks a highlighted player with Enter, so the field is keyboard-only operable", async () => {
+    // The whole flow without a mouse: open the popover, type, Enter. Arrow
+    // keys move the highlight; Enter takes it.
+    renderChecklist();
+    openAddForm();
+    fillCardNumber("612");
+    fireEvent.click(screen.getByLabelText(QA_TRIGGER));
+    const search = screen.getByLabelText(QA_SEARCH);
+    fireEvent.change(search, { target: { value: "Francisco" } });
+    fireEvent.keyDown(search, { key: "Enter" });
+
+    expect(screen.getByLabelText("Player: Francisco Lindor")).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Submit new card"));
+    });
+    expect(mockAddCustomCard.mock.calls[0][0].playerIds).toEqual([LINDOR._id]);
+  });
+
+  it("closes the popover on Escape without picking anything", () => {
+    renderChecklist();
+    openAddForm();
+    fireEvent.click(screen.getByLabelText(QA_TRIGGER));
+    fireEvent.keyDown(screen.getByLabelText(QA_SEARCH), {
+      key: "Escape",
+    });
+
+    expect(screen.queryByLabelText(QA_SEARCH)).toBeNull();
+    expect(screen.queryByLabelText(/^Player: /)).toBeNull();
+  });
+
+  it("removes the last chip on Backspace in an empty search box", () => {
+    renderChecklist();
+    openAddForm();
+    pickPlayer("Aaron Judge");
+    pickPlayer("Francisco Lindor");
+
+    fireEvent.keyDown(screen.getByLabelText(QA_SEARCH), {
+      key: "Backspace",
+    });
+
+    expect(screen.getByLabelText("Player: Aaron Judge")).toBeTruthy();
+    expect(screen.queryByLabelText("Player: Francisco Lindor")).toBeNull();
+  });
+
+  it("keeps the two pickers independent — a player pick is not a team pick", async () => {
+    // Both pickers are chip rows with near-identical markup sitting one row
+    // apart. This pins that the ids land in the right argument.
+    renderChecklist();
+    openAddForm();
+    fillCardNumber("613");
+    pickPlayer("Aaron Judge");
+    pickTeam("New York Yankees");
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Submit new card"));
+    });
+
+    const args = mockAddCustomCard.mock.calls[0][0];
+    expect(args.playerIds).toEqual([JUDGE._id]);
+    expect(args.teamOnCardIds).toEqual([YANKEES._id]);
+  });
+});
+
 /**
  * NEO-212 — the checklist mounts `SkippedNamesPanel` with its own variant id.
  *
@@ -1421,5 +1971,542 @@ describe("CardChecklist — NEO-212 skipped-names disclosure", () => {
       screen.getByLabelText("Skipped names (1) — not players or teams"),
     ).toBeTruthy();
     expect(screen.getByLabelText("Unskip Checklist")).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-221 — the orchestration half of "you cannot lose a review session by
+// accident" (plan §3 WP-D: D6, D9, D10, D12 client).
+//
+// Everything here is about what CardChecklist DOES with the wizard, not what
+// the wizard looks like: which props it hands over, what survives a trip back
+// to matching, and what a failed commit costs. The wizard itself is the stub
+// at the top of this file.
+// ---------------------------------------------------------------------------
+
+/** A `SyncDiff` with nothing to settle, so `needsSyncReview` is false. */
+const NOTHING_TO_REVIEW = {
+  cards: [],
+  conflicts: [],
+  removedUpstream: { fullyOrphaned: [] },
+};
+
+/** A BSC-only candidate — something the operator can KEEP in the pairing dialog. */
+const bscOnlyCandidate = {
+  cardNumber: "2",
+  cardName: "BSC Only Player",
+  bucket: "bscOnly" as const,
+  confidence: 1,
+  platformData: { bsc: { ref: "bsc-2" } },
+};
+
+/**
+ * Drives a REAL pairing session all the way to an open wizard: two streamed
+ * candidates (one matched, one BSC-only), the operator confirms the pairing,
+ * the content diff has nothing to settle, and entity resolution reports an
+ * unknown player.
+ *
+ * Distinct from `cancelEntityReviewPath` above, which reaches the same wizard
+ * through the ZERO-candidate short-circuit — no pairing session ever exists on
+ * that route, which is exactly why it must not be offered a way back to one.
+ */
+async function pairedEntityReviewPath() {
+  state.liveCandidates = {
+    ready: 2,
+    total: 2,
+    cards: [streamedCandidate, bscOnlyCandidate],
+  };
+  mockFetchChecklist.mockResolvedValue({
+    success: true,
+    message: "Fetched 2 cards",
+    candidateCount: 2,
+  });
+  mockDiffChecklist.mockResolvedValue(NOTHING_TO_REVIEW);
+  mockResolveEntities.mockResolvedValue({
+    unknownPlayers: [{ name: "Unknown Guy" }],
+    unknownTeams: [],
+    batchId: "batch-1",
+  });
+  mockDiscardCandidates.mockResolvedValue(undefined);
+
+  const rendered = renderChecklist();
+  await act(async () => {
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+  });
+  expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+  return rendered;
+}
+
+/** Press Confirm in the pairing dialog and wait for the wizard to take over. */
+async function confirmPairing() {
+  await act(async () => {
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+  });
+  await waitFor(() => expect(screen.getByText(/Wizard summary/)).toBeTruthy());
+}
+
+describe("CardChecklist — NEO-221 D6: what the wizard is told it will save", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.cards = [];
+    state.variantRow = { value: "Test Set" };
+    state.ancestorChain = [{ _id: SPORT_ID, level: "sport", value: "Baseball" }];
+    state.liveCandidates = null;
+    state.teams = [];
+    state.players = [];
+    state.skippedNames = [];
+  });
+
+  /**
+   * The wizard used to be handed `cardCount` alone. Deletions and accepted
+   * field changes are the IRREVERSIBLE half of a commit and they were decided
+   * one dialog earlier, so the final step has to account for them too.
+   */
+  it("derives the summary from the preview, not just its card count", async () => {
+    await pairedEntityReviewPath();
+    await confirmPairing();
+
+    expect(
+      screen.getByText(
+        "Wizard summary: 1 cards, 0 deletions, 0 field decisions",
+      ),
+    ).toBeTruthy();
+  });
+});
+
+describe("CardChecklist — NEO-221 D9: Back to matching", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.cards = [];
+    state.variantRow = { value: "Test Set" };
+    state.ancestorChain = [{ _id: SPORT_ID, level: "sport", value: "Baseball" }];
+    state.liveCandidates = null;
+    state.teams = [];
+    state.players = [];
+    state.skippedNames = [];
+  });
+
+  it("re-opens the pairing dialog and closes the wizard", async () => {
+    await pairedEntityReviewPath();
+    await confirmPairing();
+    expect(screen.queryByText(/Match Cards/)).toBeNull();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Back to matching" }));
+    });
+
+    expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+    expect(screen.queryByText(/Wizard summary/)).toBeNull();
+  });
+
+  /**
+   * The whole point of parking rather than unmounting. `CardPairingModal`'s
+   * `if (!isOpen) return null` sits BELOW its hooks, so a modal that is merely
+   * hidden keeps its reducer — every link, keep and rename the operator made.
+   * Read back through the CARDS the second Confirm produces: a kept BSC-only
+   * card is in the confirmed set both times, which it could not be if the
+   * reducer had been re-seeded from `initialData`.
+   */
+  it("keeps the pairing session's own state — the kept card survives the round trip", async () => {
+    await pairedEntityReviewPath();
+
+    fireEvent.click(screen.getByLabelText("Keep all BSC-only cards"));
+    await confirmPairing();
+    expect(mockResolveEntities.mock.calls[0][0].cards).toHaveLength(2);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Back to matching" }));
+    });
+    expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+
+    await confirmPairing();
+    expect(mockResolveEntities).toHaveBeenCalledTimes(2);
+    expect(mockResolveEntities.mock.calls[1][0].cards).toHaveLength(2);
+  });
+
+  /**
+   * Back is NOT an abort. It leaves the batch alone (so `startBatch` resumes
+   * the same review with the same decisions) and it leaves the candidates
+   * alone — discarding them would empty the very dialog it goes back to.
+   */
+  it("does not discard the candidates it is going back to", async () => {
+    await pairedEntityReviewPath();
+    await confirmPairing();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Back to matching" }));
+    });
+
+    expect(mockDiscardCandidates).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The custom-subtree path reaches the wizard with `candidateCount === 0` —
+   * nothing was ever paired, so there is nowhere to go back TO and the footer
+   * must offer only Cancel.
+   */
+  it("is not offered when there was no pairing session", async () => {
+    await cancelEntityReviewPath();
+
+    expect(screen.getByText(/Wizard summary/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Back to matching" })).toBeNull();
+  });
+});
+
+describe("CardChecklist — NEO-221 D9/D10: aborting the review", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.cards = [];
+    state.variantRow = { value: "Test Set" };
+    state.ancestorChain = [{ _id: SPORT_ID, level: "sport", value: "Baseball" }];
+    state.liveCandidates = null;
+    state.teams = [];
+    state.players = [];
+    state.skippedNames = [];
+  });
+
+  /**
+   * `discardCandidates` used to fire when the operator CONFIRMED the pairing.
+   * It cannot any more — a parked session can still be returned to — so it
+   * moved to the two ends of the pipeline. This is the abort end.
+   */
+  it("closes the parked pairing session and discards its candidates", async () => {
+    await pairedEntityReviewPath();
+    await confirmPairing();
+    expect(mockDiscardCandidates).not.toHaveBeenCalled();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Cancel entity review" }));
+    });
+
+    expect(screen.getByText("Fetch cancelled — no cards saved.")).toBeTruthy();
+    expect(screen.queryByText(/Wizard summary/)).toBeNull();
+    // Closed for good: the dialog does not come back, parked or otherwise.
+    expect(screen.queryByText(/Match Cards/)).toBeNull();
+    expect(mockDiscardCandidates).toHaveBeenCalledWith({
+      selectorOptionId: VARIANT_ID,
+    });
+  });
+});
+
+describe("CardChecklist — NEO-221 D10: a commit that fails", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.cards = [];
+    state.variantRow = { value: "Test Set" };
+    state.ancestorChain = [{ _id: SPORT_ID, level: "sport", value: "Baseball" }];
+    state.liveCandidates = null;
+    state.teams = [];
+    state.players = [];
+    state.skippedNames = [];
+  });
+
+  /**
+   * The review is the expensive thing on screen — potentially hundreds of
+   * create/link decisions. Clearing `pendingPreview` on a rejection threw all
+   * of it away and closed the wizard over a message the operator could no
+   * longer act on.
+   */
+  it("keeps the wizard open and hands it the failure", async () => {
+    await cancelEntityReviewPath();
+    mockCommitChecklist.mockRejectedValue(new Error("chunk 2/3 timed out"));
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Confirm entity review" }));
+    });
+
+    expect(screen.getByText(/Wizard summary/)).toBeTruthy();
+    expect(
+      screen.getByText("Wizard commit error: chunk 2/3 timed out"),
+    ).toBeTruthy();
+    expect(screen.getByText(/Commit failed: chunk 2\/3 timed out/)).toBeTruthy();
+  });
+
+  /** Retry is the same commit, re-sent: the batch is untouched server-side. */
+  it("retrying re-sends the commit, and a second attempt can land", async () => {
+    await cancelEntityReviewPath();
+    mockCommitChecklist.mockRejectedValueOnce(new Error("chunk 2/3 timed out"));
+    mockCommitChecklist.mockResolvedValue({ count: 1, unreviewedNameCount: 0 });
+    mockDiscardCandidates.mockResolvedValue(undefined);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Confirm entity review" }));
+    });
+    expect(screen.getByText(/Wizard commit error/)).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Confirm entity review" }));
+    });
+
+    expect(mockCommitChecklist).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText(/Wizard summary/)).toBeNull();
+    expect(screen.getByText(/Saved 1 cards\./)).toBeTruthy();
+  });
+
+  it("dismissing the failure clears it without closing the wizard", async () => {
+    await cancelEntityReviewPath();
+    mockCommitChecklist.mockRejectedValue(new Error("chunk 2/3 timed out"));
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Confirm entity review" }));
+    });
+    expect(screen.getByText(/Wizard commit error/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss commit error" }));
+
+    expect(screen.queryByText(/Wizard commit error/)).toBeNull();
+    expect(screen.getByText(/Wizard summary/)).toBeTruthy();
+  });
+});
+
+describe("CardChecklist — NEO-221 D12: names nobody reviewed", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.cards = [];
+    state.variantRow = { value: "Test Set" };
+    state.ancestorChain = [{ _id: SPORT_ID, level: "sport", value: "Baseball" }];
+    state.liveCandidates = null;
+    state.teams = [];
+    state.players = [];
+    state.skippedNames = [];
+  });
+
+  /**
+   * The cards ARE saved, so this is a NOTE on the success banner rather than a
+   * failure — but it is the only announcement that some of them landed with no
+   * player or team link at all.
+   */
+  it("appends the unreviewed-names sentence to the commit banner", async () => {
+    state.liveCandidates = { ready: 0, total: 0, cards: [] };
+    mockResolveEntities.mockResolvedValue({
+      unknownPlayers: [],
+      unknownTeams: [],
+      batchId: undefined,
+    });
+    // A COUNT and nothing else: the names themselves stay on the cards
+    // (`pendingPlayerNames`/`pendingTeamNames`), which is where the attention
+    // walker's fixer reads them from. Shipping them back through the commit
+    // return as well would be a second copy that can only go stale.
+    mockCommitChecklist.mockResolvedValue({ count: 2, unreviewedNameCount: 3 });
+    mockDiscardCandidates.mockResolvedValue(undefined);
+    mockFetchChecklist.mockResolvedValue({
+      success: true,
+      message: "Custom selector subtree — no marketplace data available.",
+      candidateCount: 0,
+    });
+
+    renderChecklist();
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    });
+    await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+
+    expect(
+      screen.getByText(
+        "Saved 2 cards. 3 names were not reviewed; those cards have no player/team link.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("says nothing extra when every name was reviewed", async () => {
+    await commitZeroCandidatePath();
+
+    expect(screen.getByText("Saved 2 cards.")).toBeTruthy();
+  });
+
+  /**
+   * The attention count and the walker's fixer, end to end through the parent.
+   *
+   * DEPENDS ON WP-C: `deriveCardAttention` has to know the `unreviewedName`
+   * kind before a row carrying `pendingPlayerNames` is counted at all, and
+   * `updateCard` has to accept the pending arrays before the fixer's write can
+   * clear them. That is why the plan lands C and D together.
+   */
+  it("counts a card whose names were never reviewed, and links them in the walker", async () => {
+    state.players = [{ _id: "player-1", name: "Yordan Alvarez" }];
+    state.cards = [
+      settledCard({
+        _id: "card-unreviewed" as unknown as Id<"cardChecklist">,
+        cardNumber: "9",
+        cardName: "Yordan Alvrez",
+        pendingPlayerNames: ["Yordan Alvrez"],
+      }),
+    ];
+    mockUpdateCard.mockResolvedValue(null);
+
+    renderChecklist();
+
+    expect(
+      screen.getByRole("button", { name: /Show only cards needing attention/ })
+        .textContent,
+    ).toContain("1 need attention");
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Fix cards needing attention one at a time/ }),
+    );
+
+    // The unreviewed name is shown — an operator cannot link a misspelling
+    // they cannot see. Scoped to the fixer's own list: the grid row behind the
+    // dialog carries the same text.
+    const names = await screen.findByRole("list", {
+      name: "Typed on this card, not linked yet",
+    });
+    expect(names.textContent).toContain("Yordan Alvrez");
+
+    // Link the real player through the walker's picker and save. The
+    // attention walker's `UnreviewedNameFixer` mounts a DEFAULT-labelled
+    // PlayerPicker — only the quick-add form's instance is renamed (NEO-220),
+    // and this is the test that says so.
+    fireEvent.click(screen.getByLabelText("Add player"));
+    fireEvent.click(screen.getByLabelText("Add Yordan Alvarez"));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Save & Next/ }));
+    });
+
+    expect(mockUpdateCard).toHaveBeenCalledWith({
+      id: "card-unreviewed",
+      playerIds: ["player-1"],
+      teamOnCardIds: ["team-1"],
+      pendingPlayerNames: [],
+      pendingTeamNames: [],
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-221 — the failure paths out of a PARKED pairing session.
+//
+// `handlePairingConfirm` parks the session (D9) so the wizard can offer "Back
+// to matching". Three routes then leave no dialog on screen at all, and each
+// one used to leave the session parked forever: nothing could reach it, its
+// candidates were never discarded, and — because `startCandidateBatch` clears
+// and rewrites in ONE transaction — the next Sync re-showed the SAME modal
+// instance, whose append-only absorb stacked the new batch beside the stale
+// one. Confirm then shipped cards from a checklist the operator was no longer
+// looking at.
+// ---------------------------------------------------------------------------
+
+/** A second fetch's candidate, sharing nothing with the first batch. */
+const freshCandidate = {
+  cardNumber: "7",
+  cardName: "Fresh Player",
+  bucket: "matched" as const,
+  confidence: 1,
+  platformData: { bsc: { ref: "bsc-7" }, sportlots: { ref: "sl-7" } },
+};
+
+/**
+ * Sync again after a failure and assert the dialog that comes back holds ONLY
+ * the new batch.
+ *
+ * This is the bleed itself, observed from the operator's seat: a stale row
+ * surviving into the next session is a card that can be committed onto a set
+ * it was never fetched for.
+ */
+async function resyncAndExpectOnlyTheNewBatch() {
+  state.liveCandidates = { ready: 1, total: 1, cards: [freshCandidate] };
+  await act(async () => {
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+  });
+
+  expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+  expect(screen.getByText(/Fresh Player/)).toBeTruthy();
+  expect(screen.queryByText(/Streamed Player/)).toBeNull();
+  expect(screen.queryByText(/BSC Only Player/)).toBeNull();
+}
+
+describe("CardChecklist — NEO-221: a parked session that nothing can reach", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.cards = [];
+    state.variantRow = { value: "Test Set" };
+    state.ancestorChain = [{ _id: SPORT_ID, level: "sport", value: "Baseball" }];
+    state.liveCandidates = null;
+    state.teams = [];
+    state.players = [];
+    state.skippedNames = [];
+  });
+
+  /** (a) The content diff — or entity resolution — throws. */
+  it("closes and discards when the step after pairing throws", async () => {
+    await pairedEntityReviewPath();
+    mockDiffChecklist.mockRejectedValue(new Error("diff exploded"));
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Confirm card matches"));
+    });
+
+    expect(screen.getByText("Error: diff exploded")).toBeTruthy();
+    expect(screen.queryByText(/Wizard summary/)).toBeNull();
+    // No dialog is on screen, so the session has to end itself.
+    expect(mockDiscardCandidates).toHaveBeenCalledWith({
+      selectorOptionId: VARIANT_ID,
+    });
+    await resyncAndExpectOnlyTheNewBatch();
+  });
+
+  /**
+   * (b) The commit fails on the path with NO unknowns — so no wizard opens,
+   * and `commitError` has nothing to render it. The banner is the only place
+   * the operator sees this, and the session still has to end.
+   */
+  it("closes when a commit fails with no wizard to report it", async () => {
+    await pairedEntityReviewPath();
+    mockResolveEntities.mockResolvedValue({
+      unknownPlayers: [],
+      unknownTeams: [],
+      batchId: undefined,
+    });
+    mockCommitChecklist.mockRejectedValue(new Error("chunk 2/3 timed out"));
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Confirm card matches"));
+    });
+
+    expect(screen.getByText(/Commit failed: chunk 2\/3 timed out/)).toBeTruthy();
+    expect(screen.queryByText(/Wizard summary/)).toBeNull();
+    await resyncAndExpectOnlyTheNewBatch();
+  });
+
+  /** (c) The content review was shown, skipped, and the step after it threw. */
+  it("closes and discards when the step after the content review throws", async () => {
+    await pairedEntityReviewPath();
+    mockDiffChecklist.mockResolvedValue({
+      cards: [],
+      removedUpstream: {
+        fullyOrphaned: [
+          {
+            id: "row-gone" as unknown as Id<"cardChecklist">,
+            cardNumber: "5",
+            cardName: "Gone Card",
+            sides: ["bsc"],
+          },
+        ],
+        partialOrphanCount: 0,
+      },
+      conflicts: [],
+      collisionInsertCount: 0,
+      ambiguityBlockedCount: 0,
+    });
+    mockResolveEntities.mockRejectedValue(new Error("resolve exploded"));
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Confirm card matches"));
+    });
+    // The content review takes over from the pairing dialog.
+    await screen.findByText(/Gone Card/);
+
+    await act(async () => {
+      // Its accessible name is the aria-label, not the visible "Skip changes".
+      fireEvent.click(
+        screen.getByRole("button", { name: /Skip reviewing changes/ }),
+      );
+    });
+
+    expect(screen.getByText("Error: resolve exploded")).toBeTruthy();
+    expect(mockDiscardCandidates).toHaveBeenCalledWith({
+      selectorOptionId: VARIANT_ID,
+    });
+    await resyncAndExpectOnlyTheNewBatch();
   });
 });

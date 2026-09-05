@@ -9,9 +9,14 @@ tags:
 # reconcile that builds the set, and the card fetch that proves both sources
 # are read.
 #
-# STEP 7 adds ONE more, and only because it is free here: NEO-203's re-sync
-# content-diff review. See the note above STEP 7 for why it rides on this flow
-# rather than owning one.
+# Two more ride along, and only because they are free here — each would cost
+# another several-minute live fetch to reach on its own:
+#   - STEP 6 (NEO-220/221): the entity-review wizard's "Cancel asks before it
+#     discards" confirm and its Enter commit. Since the quick-add Players field
+#     became a PlayerPicker this is the ONLY place in the suite a wizard opens
+#     at all — see the note above STEP 6.
+#   - STEP 7 (NEO-203): the re-sync content-diff review. See the note above
+#     STEP 7 for why it rides on this flow rather than owning one.
 #
 # WHY ONE FLOW, having briefly been two. I split it on a guess that the combined
 # runtime (cold insert sync + reconcile + cold two-source fetch + entity wizard)
@@ -367,6 +372,22 @@ tags:
 # 220 fresh cards surface hundreds of unknown players; the bulk-confirm footer
 # button is the sanctioned path (setup.yaml documents why per-item draining is
 # not viable — each item is gated by the 3s/item Wikidata queue).
+#
+# THIS IS NOW THE ONLY QUEUE FLOW THAT OPENS THE ENTITY-REVIEW WIZARD
+# (NEO-220/221). Six flows used to reach it by typing an invented name into the
+# quick-add form's free-text Players field and letting the resulting pending
+# name open the wizard on the next sync. That field is a PlayerPicker now: a
+# hand-added card is born LINKED and never carries a pending name, so a custom
+# subtree can no longer produce an unknown at all, and those six flows were
+# retired (the reasoning is written up in .maestro/SET-REGISTRY.md). Only a
+# genuine cold marketplace fetch still produces unknown names — setup.yaml
+# drains one in the seed job, but it only bulk-confirms; nothing else in the
+# queue sees the wizard at all.
+#
+# This flow already pays for such a fetch, so the two wizard behaviours worth an
+# end-to-end proof ride here, for ~35s: the confirm that Cancel now raises
+# before discarding decisions, and the Enter commit. Everything else about the
+# wizard is component-covered in EntityReviewWizard.test.tsx.
 # ============================================================
 
 - extendedWaitUntil:
@@ -377,14 +398,83 @@ tags:
     when:
       visible: "Confirm New Players & Teams"
     commands:
+      # ── 6a. CANCEL WITH WORK ON THE BOOKS ASKS FIRST, AND "KEEP WORKING"
+      #        REALLY KEEPS IT (NEO-220) ──────────────────────────────────
+      # Cancel used to throw a review session away on one click. It now asks
+      # first, and only once there IS something to lose — so this needs exactly
+      # one decision taken before the cancel.
+      #
+      # WHICH name is presented is not asserted: the wizard presents the first
+      # row whose background lookup has SETTLED, and hundreds of lookups race.
+      # The decision is taken on whichever is on screen, which is all this
+      # needs. 30s, not the 7s default, because the row only offers an action
+      # once its live Wikidata lookup has come back — an external round-trip.
+      #
+      # PLAYER **OR** TEAM. Unlike the retired custom-subtree flows, whose only
+      # unknowns were two invented player names, a real 1996 fetch queues
+      # unknown TEAMS as well (1996's Expos / Marlins / Anaheim Angels are not
+      # in the roster the 2024 Topps Chrome seed created). The button's
+      # accessible name is "Add as New {Player|Team}", so pinning it to Player
+      # would fail whenever a team happens to settle first. Both are the same
+      # "create" decision and either leaves exactly ONE decision on the books,
+      # which is all 6a asserts.
+      - extendedWaitUntil:
+          visible:
+            id: "Add as New (Player|Team)"
+          timeout: 30000
+      - tapOn:
+          id: "Add as New (Player|Team)"
+      - tapOn:
+          text: "Cancel (Esc)"
+          retryTapIfNoChange: true
+      # The confirm names exactly what is at stake. One decision → "Discard 1
+      # decision?" (singular), which is also the proof that the decision above
+      # landed.
+      - assertVisible:
+          text: "Discard 1 decision.*"
+      # "Cancel" here is the confirm's own keep-working button, NOT the
+      # wizard's "Cancel (Esc)" behind it — and the confirm's HEADING starts
+      # with "Discard" too, so neither can be matched by text alone. Anchored
+      # below the confirm's own explanation so it can only be the one inside
+      # the dialog.
+      - tapOn:
+          text: "Cancel"
+          below:
+            text: ".*The same names come back the next time you sync this set.*"
+      # Nothing was lost: the wizard is still open …
+      - assertVisible: "Confirm New Players & Teams"
+      # … and the decision is still on the books, listed under the current name.
+      - assertVisible:
+          text: "Decided \\(1\\)"
+
+      # ── 6b. BULK-DECIDE THE REST AND COMMIT ───────────────────────────
+      # The one decision above is absorbed by the bulk (it is already decided,
+      # so "Add All Remaining as New" simply leaves it alone) — 6a writes no
+      # extra player and the 220-card total below is unchanged by it.
       - tapOn:
           text: ".*Add All Remaining as New.*"
+      # NEO-221 — the bulk add now decides only rows whose Wikidata lookup has
+      # SETTLED, staying armed for the rest, so this wait is gated on that live
+      # external round-trip rather than on one mutation. Raised for that reason;
+      # it resolves the moment the wizard is done, so a healthy run pays nothing
+      # for the bigger ceiling.
       - extendedWaitUntil:
           visible:
             text: ".*Confirm & Save.*"
-          timeout: 60000
-      - tapOn:
-          text: ".*Confirm & Save.*"
+          timeout: 240000
+      # KEYBOARD COMMIT, not a tap (NEO-220). Confirm & Save is autofocused the
+      # moment every row is decided, and its label says "(Enter)" — so Enter
+      # committing IS the feature, and a tap would leave that promise untested.
+      # This works only because the button carries the id
+      # `entity-review-confirm-save`: maestro-web's `pressKey` re-finds the
+      # active element by an XPath that falls back to the class string, and the
+      # footer's Cancel is a NeonButton with the IDENTICAL classes — without the
+      # id the XPath matched both, Selenium returned the first, and Enter aimed
+      # at Confirm landed on Cancel (the failure screenshot showed
+      # "Discard 1 decision?" while the app's own focus was correct). The button
+      # also handles Enter in its own onKeyDown, because a synthetic
+      # KeyboardEvent has no default action and cannot activate a <button>.
+      - pressKey: Enter
       # NEO-163: no gate on the wizard closing. The "Saved N cards" wait below is
       # a positive terminal signal proving the same thing and more, so this
       # negative gate against a repainting node only added a failure mode.

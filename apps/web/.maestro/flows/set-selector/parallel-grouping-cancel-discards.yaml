@@ -8,6 +8,15 @@ tags:
 # PRODUCT-FEATURE test: Cancel discards pending groupings and does NOT persist.
 # Also covers the modal's two close mechanisms (Cancel button + backdrop tap).
 #
+# NEO-220: neither close mechanism throws work away silently any more. Both the
+# footer Cancel and a backdrop tap now ask "Discard N pending moves?" first, so
+# every close in this flow is TWO steps — the close, then the confirm. The
+# discard button is what still has to leave the modal, so the assertions after
+# it are unchanged. (The confirm's own Cancel — "keep working" — is covered on
+# the entity-review wizard, in STEP 6 of
+# inserts-1996-score-one-nb-set-two-bsc-sources.yaml; repeating it here would be
+# R3 duplication.)
+#
 # KEY PROOF: after Accept All → Cancel → reopen, the items show "Suggested"
 # badges again (live auto-suggestions, not saved placements). If Cancel had
 # written to the DB, the reopen would show them as persisted parallels with no
@@ -108,6 +117,14 @@ tags:
 
 # ── CANCEL (close #1, via the Cancel button) discards the pending promotion ─
 - tapOn: "Cancel"
+# NEO-220 — the confirm. There ARE pending moves (Accept All above), so the
+# modal asks before throwing them away. The dialog's own HEADING also begins
+# "Discard …", so anchor the tap below the explanation sentence to be certain
+# it lands on the BUTTON and not on the title.
+- tapOn:
+    text: "Discard .*"
+    below:
+      text: ".*Nothing has been saved yet.*"
 - assertNotVisible: ".*Drag inserts under a parent.*"
 
 # ── EXACT DATA CHECK: all three inserts still top-level after Cancel ─────────
@@ -186,6 +203,13 @@ tags:
 # This should discard the pending Accept All — NOT write it to the DB.
 - tapOn:
     point: "2%, 50%"
+# NEO-220 — the backdrop asks the SAME question the footer Cancel does. That is
+# the point of the change: there is one door out, so a stray click on the page
+# behind the modal can no longer erase an Accept All.
+- tapOn:
+    text: "Discard .*"
+    below:
+      text: ".*Nothing has been saved yet.*"
 - assertNotVisible: ".*Drag inserts under a parent.*"
 
 # RE-OPEN to verify backdrop discarded the pending promotion.
@@ -208,7 +232,13 @@ tags:
 - assertVisible: ".*Save [0-9]+ change.*"
 
 # ── CLOSE the modal and verify columns intact ───────────────────────────────
+# The re-opened modal auto-suggests again ("Save N changes" was just asserted),
+# so this close is dirty too and gets the same confirm.
 - tapOn: "Cancel"
+- tapOn:
+    text: "Discard .*"
+    below:
+      text: ".*Nothing has been saved yet.*"
 - assertNotVisible: ".*Drag inserts under a parent.*"
 
 # The Inserts column action buttons are present and the modal is gone.

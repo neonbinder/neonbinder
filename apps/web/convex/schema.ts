@@ -1141,6 +1141,18 @@ export default defineSchema({
       // stays out of this set's wizard on every later fetch.
       v.object({ action: v.literal("skip") }),
     )),
+    // NEO-221: when a human last acted on this row (recordDecision,
+    // decideAllRemaining, clearDecision). ADDITIVE and optional — every row
+    // written before this field existed reads as `undefined`, which the
+    // abandoned-batch sweep treats as "never touched" and falls back to
+    // `_creationTime` for.
+    //
+    // It exists because `_creationTime` alone cannot tell an abandoned review
+    // session from a long one: a real operator working through 300 names on a
+    // first-time sync is still working on rows inserted hours ago, and a sweep
+    // keyed on creation would delete the session out from under them. This
+    // field is the "still alive" signal — see `sweepAbandonedBatches`.
+    lastTouchedAt: v.optional(v.number()),
   })
     .index("by_selector_option", ["selectorOptionId"])
     .index("by_selector_option_and_batch", ["selectorOptionId", "batchId"])

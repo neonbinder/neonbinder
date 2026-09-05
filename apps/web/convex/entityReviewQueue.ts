@@ -10,6 +10,8 @@ import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { RunResult } from "@convex-dev/workpool";
 import { getCurrentUserId, requireAdmin } from "./auth";
+import { normalizePlayerName } from "./players";
+import { normalizeTeamName } from "./teams";
 
 /**
  * NEO-92: backs the step-through "new players & teams" review wizard that
@@ -158,6 +160,8 @@ const rowValidator = v.object({
   status: v.union(v.literal("pending"), v.literal("ready"), v.literal("error")),
   enrichment: v.optional(enrichmentValidator),
   decision: v.optional(decisionValidator),
+  // NEO-221 — see schema.ts. Read only by `sweepAbandonedBatches`.
+  lastTouchedAt: v.optional(v.number()),
 });
 
 const publicRowValidator = v.object({
@@ -174,6 +178,11 @@ const publicRowValidator = v.object({
   status: v.union(v.literal("pending"), v.literal("ready"), v.literal("error")),
   enrichment: v.optional(enrichmentValidator),
   decision: v.optional(decisionValidator),
+  // NEO-221. Projected rather than stripped: it is a timestamp of the
+  // operator's own activity, not an identity, so there is nothing to withhold
+  // — and `toPublicRow` only removes `createdByUserId`, so omitting it here
+  // would make `getBatch`'s return validator reject its own rows.
+  lastTouchedAt: v.optional(v.number()),
 });
 
 /**
@@ -188,6 +197,33 @@ async function sportLabel(
 ): Promise<string> {
   const row = await ctx.db.get(sportId);
   return row?.value ?? sportId;
+}
+
+/**
+ * NEO-221 — defence in depth: an admin may only act on their OWN review batch.
+ *
+ * `requireAdmin` is the real gate and every function here already runs it; the
+ * blast radius of this table is a handful of throwaway rows. This is the
+ * second layer, and it exists because batches are deliberately scoped per user
+ * (see `startBatch` and the schema note): two admin sessions — or, in Maestro
+ * CI, two workers each authenticated as a distinct admin test account — hold
+ * separate batches over the SAME set at the same time. A row id or a batchId
+ * from the wrong session is far likelier to be a stale client than an attack,
+ * and either way the right answer is to refuse rather than to silently
+ * overwrite or delete a colleague's in-progress review.
+ *
+ * `createdByUserId` is written from `getCurrentUserId` at the fetch that
+ * started the batch (selectorOptions.ts), and `requireAdmin` returns the same
+ * `identity.subject` — the two are the same identity form, which is what makes
+ * comparing them meaningful rather than accidentally always-false.
+ */
+function assertOwnsRow(
+  row: { createdByUserId: string },
+  callerId: string,
+): void {
+  if (row.createdByUserId !== callerId) {
+    throw new Error("This review row belongs to a different review session");
+  }
 }
 
 function toPublicRow<T extends { createdByUserId: string }>(
@@ -228,6 +264,54 @@ function toPublicRow<T extends { createdByUserId: string }>(
  * it's already been committed. See the delete site in commitCardChecklist
  * for why that matters (an earlier scheduled-delete version of this had
  * exactly that race).
+ *
+ * ## NEO-221 — resume RECONCILES rather than returning the batch untouched
+ *
+ * "Touch nothing" was right while the only way back into a resumed batch was
+ * an identical re-fetch. It stopped being right once the wizard could hand the
+ * operator back to card matching and return (NEO-220's "Back to matching"):
+ * the second Confirm can legitimately carry a DIFFERENT name set — a pairing
+ * the operator linked no longer contributes its unmatched name, a rename
+ * introduces one — and a batch frozen at the first Confirm's names would ask
+ * about names no card carries any more while never asking about the new ones.
+ * Commit would then find no decision for a real name and leave the card
+ * unlinked, which is precisely the failure this ticket exists to remove.
+ *
+ * So a resume reconciles the batch against the incoming names, keyed by
+ * `kind` + the SAME normalizer the players/teams tables dedupe on
+ * (`normalizePlayerName`/`normalizeTeamName`), so a re-spelling of one name is
+ * a match rather than an add plus a drop:
+ *
+ *   - a key present on both sides keeps its row, and therefore its decision,
+ *     its enrichment and its status — reconciliation never re-asks something
+ *     the operator has already answered;
+ *   - a key only in the incoming set gets a fresh `pending` row (same shape as
+ *     a first-time insert) and a lookup scheduled for it — and ONLY for it, so
+ *     resuming does not re-run the whole batch's Wikidata work;
+ *   - a key only on the existing side is dropped ONLY IF the operator never
+ *     ruled on it. An UNDECIDED row for a name no card carries any more is a
+ *     question about nothing, and leaving it would block the wizard's
+ *     "all reviewed" on it forever. A DECIDED row is kept, whatever the
+ *     incoming set says.
+ *
+ * ## Why a decided row is never deleted here
+ *
+ * Reconciliation is ADDITIVE about the operator's work, in exactly the sense
+ * the sync boundary is additive about NB's data. The incoming name list is
+ * derived — from a marketplace payload, through a pairing session an operator
+ * can still change their mind about — so "this name is not in the list any
+ * more" is a statement about that derivation, not evidence that the human's
+ * ruling was wrong. Deleting on it would let a re-pair silently discard a
+ * decision, and the operator's only clue would be a name they have to rule on
+ * twice. A kept-but-unused decision costs one throwaway row; the batch is
+ * deleted wholesale at commit, cancel, or by the abandoned-batch sweep.
+ *
+ * Every surviving row is stamped `lastTouchedAt`: coming back to a batch is
+ * proof of life, and a session an operator has just re-entered must not look
+ * abandoned to the sweep.
+ *
+ * The `batchId` is preserved throughout, because the client is already holding
+ * it and a new one would strand the open wizard.
  */
 export const startBatch = internalMutation({
   args: {
@@ -239,6 +323,14 @@ export const startBatch = internalMutation({
   },
   returns: v.string(),
   handler: async (ctx, args): Promise<string> => {
+    // Keyed the same way on both sides of the reconciliation below, and by
+    // the same normalizers `players`/`teams` dedupe on, so "J.T. Realmuto"
+    // and "JT Realmuto" are one name here exactly as they are one row there.
+    const keyFor = (kind: "player" | "team", name: string) =>
+      kind === "player"
+        ? `player:${normalizePlayerName(name)}`
+        : `team:${normalizeTeamName(name)}`;
+
     const existing = await ctx.db
       .query("entityReviewQueue")
       .withIndex("by_selector_option_and_user", (q) =>
@@ -247,7 +339,77 @@ export const startBatch = internalMutation({
           .eq("createdByUserId", args.createdByUserId),
       )
       .first();
-    if (existing) return existing.batchId;
+
+    if (existing) {
+      const batchId = existing.batchId;
+      // Scoped to the resumed batch itself, not to every row this user has for
+      // this selectorOption: one user only ever holds one batch at a time (a
+      // commit or a cancel deletes it), and reading through the batch index
+      // keeps that assumption from silently deleting a stray row from another.
+      const existingRows = await ctx.db
+        .query("entityReviewQueue")
+        .withIndex("by_selector_option_and_batch", (q) =>
+          q.eq("selectorOptionId", args.selectorOptionId).eq("batchId", batchId),
+        )
+        .collect();
+
+      // Incoming names, deduped by key so two spellings of one name cannot
+      // insert two rows. First spelling wins, matching how
+      // `resolveUnknownsAndStartBatch` picks the label it surfaces.
+      const incoming = new Map<string, { kind: "player" | "team"; name: string }>();
+      for (const name of args.playerNames) {
+        const key = keyFor("player", name);
+        if (!incoming.has(key)) incoming.set(key, { kind: "player", name });
+      }
+      for (const name of args.teamNames) {
+        const key = keyFor("team", name);
+        if (!incoming.has(key)) incoming.set(key, { kind: "team", name });
+      }
+
+      const now = Date.now();
+      const existingKeys = new Set<string>();
+      for (const row of existingRows) {
+        const key = keyFor(row.kind, row.name);
+        // Recorded BEFORE the drop test, so a decided row that is no longer
+        // incoming still suppresses a re-insert of its own name.
+        existingKeys.add(key);
+        if (!incoming.has(key) && row.decision === undefined) {
+          // Gone from the incoming set and never ruled on — a question about
+          // a name no card carries. A DECIDED row is kept; see the doc above.
+          await ctx.db.delete(row._id);
+          continue;
+        }
+        // Re-entering the batch is operator activity. See the sweep.
+        await ctx.db.patch(row._id, { lastTouchedAt: now });
+      }
+
+      const addedIds: Array<Id<"entityReviewQueue">> = [];
+      for (const [key, { kind, name }] of incoming) {
+        if (existingKeys.has(key)) continue;
+        addedIds.push(
+          await ctx.db.insert("entityReviewQueue", {
+            selectorOptionId: args.selectorOptionId,
+            batchId,
+            createdByUserId: args.createdByUserId,
+            kind,
+            name,
+            sportId: args.sportId,
+            status: "pending",
+          }),
+        );
+      }
+      if (addedIds.length > 0) {
+        // Only the ADDED rows. A resume must never re-enqueue a lookup that
+        // already ran (or is running) — see the enqueue note on the fresh path
+        // below, and NEO-99's creation-only enrichment contract.
+        await ctx.scheduler.runAfter(
+          0,
+          internal.wikidataPool.enqueueEntityReviewLookups,
+          { rowIds: addedIds },
+        );
+      }
+      return batchId;
+    }
 
     const batchId = crypto.randomUUID();
     const ids: Array<Id<"entityReviewQueue">> = [];
@@ -389,15 +551,20 @@ export const recordDecision = mutation({
   },
   returns: v.null(),
   handler: async (ctx, args) => {
-    await requireAdmin(ctx);
+    const callerId = await requireAdmin(ctx);
 
     const row = await ctx.db.get(args.reviewRowId);
     if (!row) throw new Error("Review row not found");
+    assertOwnsRow(row, callerId);
 
     // NEO-212: "not a person / not a team". Nothing else on the args applies —
     // see the doc comment for why leftovers are ignored rather than rejected.
     if (args.action === "skip") {
-      await ctx.db.patch(args.reviewRowId, { decision: { action: "skip" } });
+      await ctx.db.patch(args.reviewRowId, {
+        decision: { action: "skip" },
+        // NEO-221: proof of life for the abandoned-batch sweep.
+        lastTouchedAt: Date.now(),
+      });
       return null;
     }
 
@@ -458,6 +625,7 @@ export const recordDecision = mutation({
           ...(manualCareerTeams.length ? { manualCareerTeams } : {}),
           ...(excludedCareerTeamNames.length ? { excludedCareerTeamNames } : {}),
         },
+        lastTouchedAt: Date.now(),
       });
       return null;
     }
@@ -478,6 +646,7 @@ export const recordDecision = mutation({
       }
       await ctx.db.patch(args.reviewRowId, {
         decision: { action: "link", linkedPlayerId: args.linkedPlayerId },
+        lastTouchedAt: Date.now(),
       });
     } else {
       if (!args.linkedTeamId) {
@@ -493,7 +662,73 @@ export const recordDecision = mutation({
       }
       await ctx.db.patch(args.reviewRowId, {
         decision: { action: "link", linkedTeamId: args.linkedTeamId },
+        lastTouchedAt: Date.now(),
       });
+    }
+    return null;
+  },
+});
+
+/**
+ * NEO-221 — un-decide one row, so the operator can go back and change a call.
+ *
+ * `recordDecision` already OVERWRITES a decision, which covers "I meant link,
+ * not create". This covers the other half: putting a row back into the queue
+ * as an open question, which is what the wizard's Back / decided-list "Change
+ * decision" needs — the review UI presents an undecided row, so a row has to
+ * be able to become undecided again before it can be re-presented.
+ *
+ * Patching `decision: undefined` is how Convex removes a field, so the row is
+ * left byte-identical to one that was never decided. `enrichment` and `status`
+ * are deliberately untouched: a settled lookup stays settled, and re-deciding
+ * a row must not cost a second Wikidata round-trip.
+ *
+ * ## Why a still-`pending` row re-schedules a lookup
+ *
+ * `applyLookupResult` and `backstopEntityReviewRowImpl` both SKIP a decided row
+ * (NEO-189 — writing to a row the commit prelude is reading is what made a
+ * seed job lose an optimistic-concurrency race on every retry). So a row that
+ * was decided while its lookup was still in flight has had its result dropped
+ * on the floor: it is `pending`, it will never leave `pending` on its own, and
+ * un-deciding it would hand the operator a row stuck on "Looking up…" forever.
+ * Re-scheduling the pool enqueue is what makes the row answerable again.
+ *
+ * This is a LOOKUP, not entity enrichment. The creation-only rule
+ * (`enqueueEnrichment`, and the note on `resolveTeamIdByName` in
+ * selectorOptions.ts) is about re-enriching a `players`/`teams` row that
+ * already exists; nothing here touches those tables. An `entityReviewQueue`
+ * row is a throwaway question awaiting an answer, and this is the same enqueue
+ * `startBatch` performs when the question is first asked.
+ *
+ * Bounded by operator clicks — one enqueue per "Change decision" tap on a row
+ * that never resolved, which is a rare shape to begin with.
+ *
+ * Admin-gated exactly as `recordDecision` is: same table, same blast radius,
+ * and the two are two halves of one operator gesture.
+ */
+export const clearDecision = mutation({
+  args: { reviewRowId: v.id("entityReviewQueue") },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const callerId = await requireAdmin(ctx);
+
+    const row = await ctx.db.get(args.reviewRowId);
+    if (!row) throw new Error("Review row not found");
+    assertOwnsRow(row, callerId);
+
+    await ctx.db.patch(args.reviewRowId, {
+      decision: undefined,
+      // NEO-221: un-deciding is operator activity like any other — a session
+      // spent walking back through decisions must not look abandoned.
+      lastTouchedAt: Date.now(),
+    });
+
+    if (row.status === "pending") {
+      await ctx.scheduler.runAfter(
+        0,
+        internal.wikidataPool.enqueueEntityReviewLookups,
+        { rowIds: [args.reviewRowId] },
+      );
     }
     return null;
   },
@@ -507,12 +742,34 @@ export const recordDecision = mutation({
  * Factored out so `recordAllRemainingAsCreate` and `recordAllRemainingAsSkip`
  * cannot drift on batch scoping, on the already-decided rule, or on what the
  * returned count means — the only difference between them is the decision they
- * write. Private, and assumes its caller has already run `requireAdmin`.
+ * write, and (NEO-221) whether a row whose lookup is still in flight is in
+ * scope. Private, and assumes its caller has already run `requireAdmin`.
+ *
+ * ## NEO-221 — `includePending` is not a preference, it is the difference
+ * between the two fast paths
+ *
+ * A `pending` row is one whose Wikidata lookup has not come back. What that
+ * means depends entirely on what is about to be written to it:
+ *
+ *   - CREATE consumes the lookup. `enrichment` is what seeds the new
+ *     player/team's Wikidata id, career teams, league, city and colours, so
+ *     deciding a pending row "create" mints a permanently bare row for a
+ *     player Wikidata knows perfectly well — silently, and with no later path
+ *     back to the enrichment (`enqueueEnrichment` is creation-only). The
+ *     operator asked for "everything else is new", not "everything else is new
+ *     and unenriched". So create passes `false` and the caller re-arms as
+ *     lookups land.
+ *   - SKIP consumes nothing. Nothing is created, nothing is linked, and no
+ *     enrichment is ever read — so waiting on the lookup buys the operator
+ *     precisely nothing, and making them wait to say "none of this is an
+ *     entity" would be a worse wizard, not a safer one. Skip passes `true`.
  */
 async function decideAllRemaining(
   ctx: MutationCtx,
   args: { selectorOptionId: Id<"selectorOptions">; batchId: string },
   decision: { action: "create" } | { action: "skip" },
+  includePending: boolean,
+  callerId: string,
 ): Promise<number> {
   const rows = await ctx.db
     .query("entityReviewQueue")
@@ -520,12 +777,26 @@ async function decideAllRemaining(
       q.eq("selectorOptionId", args.selectorOptionId).eq("batchId", args.batchId),
     )
     .collect();
+  // NEO-221 — same second layer as `recordDecision` and `cancelBatch`, and it
+  // matters MORE here than on either of them: one call rules on every open row
+  // in the batch, so a stale batchId from another session would decide a
+  // colleague's whole review in a single mutation. Checked over every row
+  // before the first patch, so a refusal writes nothing at all.
+  for (const row of rows) assertOwnsRow(row, callerId);
+  const now = Date.now();
   let count = 0;
   for (const row of rows) {
     if (row.decision) continue;
+    if (!includePending && row.status === "pending") continue;
     // Spread rather than passing `decision` through: each row stores its own
     // object rather than sharing one reference across the whole batch.
-    await ctx.db.patch(row._id, { decision: { ...decision } });
+    await ctx.db.patch(row._id, {
+      decision: { ...decision },
+      // NEO-221: one timestamp for the whole call — this IS one operator
+      // action, and stamping each row a millisecond apart would only make the
+      // sweep's arithmetic harder to read.
+      lastTouchedAt: now,
+    });
     count++;
   }
   return count;
@@ -537,12 +808,19 @@ async function decideAllRemaining(
  * hundreds of genuinely-new names (the common case, not the exception —
  * e.g. every rookie in a brand-new set) where reviewing one at a time has
  * real value ONLY when something looks wrong; when everything's fine, the
- * user needs a fast path instead of hundreds of individual taps. Rows
- * still "pending" (their Wikidata lookup hasn't finished yet) are
- * included too — commitCardChecklist's create branch already treats
- * `enrichment` as optional, so those just create a bare, unenriched row
- * (identical to how any player/team looked up with no Wikidata match
- * behaves) rather than blocking on the lookup queue draining.
+ * user needs a fast path instead of hundreds of individual taps.
+ *
+ * NEO-221: rows still "pending" — their Wikidata lookup has not come back —
+ * are now EXCLUDED, where they used to be swept up with the rest. Deciding one
+ * "create" mints a permanently bare player/team for a name Wikidata could have
+ * enriched, with no later path back (enrichment is creation-only); see
+ * `decideAllRemaining` for the full argument. The wizard re-calls this as
+ * lookups land, so the operator still taps once — the count just fills in
+ * over a few seconds instead of all at once.
+ *
+ * The return value is what makes that loop safe to drive from the client: it
+ * is how many rows THIS call decided, so a re-call that finds nothing settled
+ * yet returns 0 rather than looking like a failure.
  */
 export const recordAllRemainingAsCreate = mutation({
   args: {
@@ -551,8 +829,8 @@ export const recordAllRemainingAsCreate = mutation({
   },
   returns: v.number(),
   handler: async (ctx, args): Promise<number> => {
-    await requireAdmin(ctx);
-    return await decideAllRemaining(ctx, args, { action: "create" });
+    const callerId = await requireAdmin(ctx);
+    return await decideAllRemaining(ctx, args, { action: "create" }, false, callerId);
   },
 });
 
@@ -568,11 +846,14 @@ export const recordAllRemainingAsCreate = mutation({
  * return (how many rows THIS call decided) as the create variant; both run
  * through `decideAllRemaining` so the two cannot drift.
  *
- * Rows still "pending" — their Wikidata lookup hasn't finished — are included,
- * exactly as the create variant includes them today. For skip the lookup is
- * moot anyway: nothing is created, so no enrichment is ever read. Whether
- * either fast path ought to wait on pending rows before deciding them is
- * NEO-221's question, not this function's.
+ * NEO-221 answered the question this comment used to leave open, and answered
+ * it DIFFERENTLY for the two paths: skip still includes rows whose lookup is
+ * in flight, while create no longer does. That is not an inconsistency — a
+ * skip creates nothing and therefore never reads `enrichment`, so waiting on
+ * the lookup would cost the operator time and buy them nothing, whereas a
+ * create consumes the enrichment and deciding early throws it away. Skip is
+ * also the operator's explicit "none of this is an entity", which is exactly
+ * the case where blocking on a lookup would be perverse.
  */
 export const recordAllRemainingAsSkip = mutation({
   args: {
@@ -581,10 +862,41 @@ export const recordAllRemainingAsSkip = mutation({
   },
   returns: v.number(),
   handler: async (ctx, args): Promise<number> => {
-    await requireAdmin(ctx);
-    return await decideAllRemaining(ctx, args, { action: "skip" });
+    const callerId = await requireAdmin(ctx);
+    return await decideAllRemaining(ctx, args, { action: "skip" }, true, callerId);
   },
 });
+
+/**
+ * NEO-221 — delete every row of one batch, and return how many were deleted.
+ *
+ * The single deletion body behind `cancelBatch` (the operator said no),
+ * `cleanupBatch` (an operator tool for a batch nobody will finish) and
+ * `sweepAbandonedBatches` (the cron that finds those on its own). Three
+ * callers with three different reasons and exactly one definition of what
+ * "delete a batch" means — before this, two of them carried their own copy of
+ * the same loop, which is one drift away from a sweep that half-cleans.
+ *
+ * Deliberately reads through `by_selector_option_and_batch` rather than taking
+ * the rows a caller already has: the sweep decides on a sampled window, and
+ * deleting from a stale list would leave a batch partly alive.
+ *
+ * Private, and assumes its caller has already gated itself.
+ */
+async function deleteBatchRows(
+  ctx: MutationCtx,
+  selectorOptionId: Id<"selectorOptions">,
+  batchId: string,
+): Promise<number> {
+  const rows = await ctx.db
+    .query("entityReviewQueue")
+    .withIndex("by_selector_option_and_batch", (q) =>
+      q.eq("selectorOptionId", selectorOptionId).eq("batchId", batchId),
+    )
+    .collect();
+  for (const row of rows) await ctx.db.delete(row._id);
+  return rows.length;
+}
 
 /**
  * Wizard Cancel. Only ever deletes these throwaway rows — players, teams,
@@ -598,16 +910,59 @@ export const cancelBatch = mutation({
   },
   returns: v.null(),
   handler: async (ctx, args) => {
-    await requireAdmin(ctx);
-
+    const callerId = await requireAdmin(ctx);
+    // NEO-221 — refuse to cancel someone else's session. Checked BEFORE the
+    // delete, on the batch's own rows: cancelling is the one irreversible
+    // thing an operator can do to a review, so a stale batchId from another
+    // tab must not be able to throw away a colleague's work. An empty batch
+    // (already committed or cancelled) has no owner to disagree with and is a
+    // no-op, exactly as it was.
     const rows = await ctx.db
       .query("entityReviewQueue")
       .withIndex("by_selector_option_and_batch", (q) =>
         q.eq("selectorOptionId", args.selectorOptionId).eq("batchId", args.batchId),
       )
       .collect();
-    for (const row of rows) await ctx.db.delete(row._id);
+    for (const row of rows) assertOwnsRow(row, callerId);
+    await deleteBatchRows(ctx, args.selectorOptionId, args.batchId);
     return null;
+  },
+});
+
+/**
+ * NEO-221 — the batchId of this (selectorOptionId, user) pair's open review
+ * batch, or null.
+ *
+ * Exists for one caller and one shape: `resolveUnknownsAndStartBatch` needs to
+ * know whether a batch is already open BEFORE it decides whether to call
+ * `startBatch`. It cannot just call `startBatch` unconditionally — with no
+ * batch open and no unknown names that would mint an empty batch and hand the
+ * client a batchId for a wizard with nothing in it. And it cannot skip the
+ * call when there are no unknowns either, because an OPEN batch full of
+ * undecided rows then survives a re-Confirm that resolved everything, and
+ * nothing ever consumes or deletes it. So the caller asks first.
+ *
+ * Reads `by_selector_option_and_user`'s first row, which is exactly the read
+ * `startBatch` itself does to decide resume-versus-create — deliberately the
+ * same index and the same question, so the two cannot disagree about whether
+ * a batch exists.
+ */
+export const findOpenBatch = internalQuery({
+  args: {
+    selectorOptionId: v.id("selectorOptions"),
+    createdByUserId: v.string(),
+  },
+  returns: v.union(v.string(), v.null()),
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("entityReviewQueue")
+      .withIndex("by_selector_option_and_user", (q) =>
+        q
+          .eq("selectorOptionId", args.selectorOptionId)
+          .eq("createdByUserId", args.createdByUserId),
+      )
+      .first();
+    return existing?.batchId ?? null;
   },
 });
 
@@ -834,13 +1189,159 @@ export const cleanupBatch = internalMutation({
   },
   returns: v.null(),
   handler: async (ctx, args) => {
-    const rows = await ctx.db
-      .query("entityReviewQueue")
-      .withIndex("by_selector_option_and_batch", (q) =>
-        q.eq("selectorOptionId", args.selectorOptionId).eq("batchId", args.batchId),
-      )
-      .collect();
-    for (const row of rows) await ctx.db.delete(row._id);
+    await deleteBatchRows(ctx, args.selectorOptionId, args.batchId);
     return null;
+  },
+});
+
+/**
+ * NEO-221 — how long a review batch may sit with NO operator activity before
+ * the hourly cron deletes it.
+ *
+ * Distinct from ENTITY_REVIEW_STALE_MS above, which is about a single row's
+ * LOOKUP hanging (30 minutes, ages `pending` → `error`, deletes nothing). This
+ * one is about the SESSION: a wizard the operator closed the tab on, whose
+ * rows are perfectly healthy and will simply sit there forever, quietly
+ * resuming themselves into the next fetch of that set (see `startBatch`).
+ *
+ * A day, because deleting a batch throws away real operator work — every
+ * decision recorded in it — and the only cost of erring long is some rows in a
+ * throwaway table. An operator who reviews 200 names across a working day,
+ * leaves it overnight and comes back is doing something entirely reasonable;
+ * `lastTouchedAt` keeps their session alive for as long as they keep touching
+ * it, and 24 hours of complete silence is the honest read of "nobody is coming
+ * back".
+ */
+export const ENTITY_REVIEW_ABANDONED_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Rows examined per sweep invocation. Bounds the transaction the way
+ * ENTITY_REVIEW_SWEEP_CHUNK does — a table PAGE, not an index range, because
+ * abandonment is a property of a whole (selectorOptionId, batchId) group and
+ * no index groups by that.
+ */
+export const ENTITY_REVIEW_ABANDONED_SCAN = 500;
+
+/**
+ * Cron target (crons.ts): delete review batches nobody is coming back to.
+ *
+ * ## What it is for
+ *
+ * `commitCardChecklist` and `cancelBatch` each clean up after themselves, so
+ * the only batches that survive are the ones whose session simply ENDED —
+ * closed tab, crashed browser, an operator who walked away. Those are not
+ * inert: `startBatch` resumes any batch it finds for the same
+ * (selectorOptionId, user), so an abandoned one silently becomes the next
+ * fetch's starting point, complete with decisions made against a card list
+ * that may be weeks old. Deleting it is what makes the next fetch a fresh
+ * question.
+ *
+ * ## The abandonment test
+ *
+ * A batch is abandoned when EVERY row in it has been silent past the cutoff,
+ * where a row's last sign of life is `max(_creationTime, lastTouchedAt ?? 0)`.
+ * Every row, not any row and not the newest: a batch is one session, and one
+ * decision recorded ten minutes ago is proof the whole session is alive even
+ * if two hundred of its rows were inserted yesterday and never touched again.
+ * `lastTouchedAt` absent means "never touched", which is exactly what a row
+ * written before this field existed is.
+ *
+ * ## Why the page only NOMINATES, and the batch is then re-read in full
+ *
+ * The page is a window over the table ordered by `_creationTime`, and a batch
+ * is routinely bigger than it — a first-time sync of a real set surfaces
+ * hundreds of names. Judging a batch on the rows that happened to fall inside
+ * the window would delete a live session whose recent activity sat just
+ * outside it, which is the operator-work-destroying failure this whole ticket
+ * is about. So a page can only nominate a (selectorOptionId, batchId) as a
+ * candidate; the decision is taken over the batch's FULL row set, re-read
+ * through `by_selector_option_and_batch` in this same transaction.
+ *
+ * ## Why it paginates with a cursor rather than restarting
+ *
+ * `sweepStalePendingRows` can restart from the top each run because the rows
+ * it fixes LEAVE the index it reads (`status` stops being `pending`). This one
+ * reads the whole table, and the rows it does not delete — every live batch —
+ * stay exactly where they are. Without a cursor, a deployment whose oldest 500
+ * rows are one long-running review would re-examine that same review forever
+ * and never reach the abandoned batch behind it. So the cursor is carried
+ * forward and the sweep self-schedules until the table is exhausted, the same
+ * bounded-work-then-continue shape as `sweepWedgedBatches`.
+ */
+export const sweepAbandonedBatches = internalMutation({
+  args: {
+    // Continuation of THIS sweep's walk over the table. Absent on the cron's
+    // own invocation, which always starts from the beginning.
+    cursor: v.optional(v.string()),
+  },
+  returns: v.object({
+    batches: v.number(),
+    rows: v.number(),
+    done: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    const cutoff = Date.now() - ENTITY_REVIEW_ABANDONED_MS;
+    const lastTouched = (row: Doc<"entityReviewQueue">) =>
+      Math.max(row._creationTime, row.lastTouchedAt ?? 0);
+
+    const page = await ctx.db
+      .query("entityReviewQueue")
+      .paginate({
+        cursor: args.cursor ?? null,
+        numItems: ENTITY_REVIEW_ABANDONED_SCAN,
+      });
+
+    // Group by (selectorOptionId, batchId). `\u0000` cannot appear in either
+    // component, so the composite key is unambiguous. A batch straddling the
+    // page boundary is nominated by whichever page holds a stale row of it and
+    // then re-read in full below, so the split costs correctness nothing.
+    const candidates = new Map<
+      string,
+      { selectorOptionId: Id<"selectorOptions">; batchId: string }
+    >();
+    for (const row of page.page) {
+      if (lastTouched(row) >= cutoff) continue;
+      const key = `${row.selectorOptionId}\u0000${row.batchId}`;
+      if (!candidates.has(key)) {
+        candidates.set(key, {
+          selectorOptionId: row.selectorOptionId,
+          batchId: row.batchId,
+        });
+      }
+    }
+
+    let batches = 0;
+    let rows = 0;
+    for (const { selectorOptionId, batchId } of candidates.values()) {
+      // The decision, taken over the WHOLE batch. One live row anywhere in it
+      // means the session is not over — see the note above.
+      const all = await ctx.db
+        .query("entityReviewQueue")
+        .withIndex("by_selector_option_and_batch", (q) =>
+          q.eq("selectorOptionId", selectorOptionId).eq("batchId", batchId),
+        )
+        .collect();
+      if (all.length === 0) continue;
+      if (all.some((row) => lastTouched(row) >= cutoff)) continue;
+      rows += await deleteBatchRows(ctx, selectorOptionId, batchId);
+      batches += 1;
+    }
+
+    if (batches > 0) {
+      // Ids and counts only — never a name. See the no-PII rule in
+      // observability.ts.
+      console.warn(
+        JSON.stringify({ msg: "entity_review_batches_reaped", batches, rows }),
+      );
+    }
+
+    if (!page.isDone) {
+      await ctx.scheduler.runAfter(
+        0,
+        internal.entityReviewQueue.sweepAbandonedBatches,
+        { cursor: page.continueCursor },
+      );
+    }
+    return { batches, rows, done: page.isDone };
   },
 });

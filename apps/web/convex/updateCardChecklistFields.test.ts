@@ -797,3 +797,78 @@ describe("updateCard printRun — boundary values beyond the basic sweep", () =>
     expect(stored!.printRun).toBeUndefined();
   });
 });
+
+// ===========================================================================
+// NEO-221 — the unreviewed-name fixer's clear path
+//
+// `pendingPlayerNames`/`pendingTeamNames` are names the card carries that link
+// to nothing: typed by an operator on a hand-added card, or left unresolved by
+// a commit whose review never ruled on them. The attention walker's fixer
+// resolves them — by linking a real player/team, or by deciding the name was
+// never one — and then has to be able to say so. These two arguments are how.
+// ===========================================================================
+
+describe("updateCard pending-name arguments (NEO-221)", () => {
+  test("an EMPTY array clears the field rather than storing []", async () => {
+    // "None" is the ABSENCE of the field everywhere else that writes these two
+    // (addCustomCard, the commit chunk), and `deriveCardAttention` reads `[]`
+    // and absent identically — but a stored `[]` would still be a second
+    // spelling of the same state for every future reader to get wrong.
+    const { asAdmin, cardId } = await seed();
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      pendingPlayerNames: ["Never Reviewed"],
+      pendingTeamNames: ["Reno Aces"],
+    });
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      pendingPlayerNames: [],
+      pendingTeamNames: [],
+    });
+
+    const stored = await asAdmin.run(async (ctx) => ctx.db.get(cardId));
+    expect(stored!.pendingPlayerNames).toBeUndefined();
+    expect(stored!.pendingTeamNames).toBeUndefined();
+  });
+
+  test("omitting the arguments leaves the stored names alone", async () => {
+    // The fixer is one of several writers of this row; an unrelated title edit
+    // must not retire a name nobody has dealt with.
+    const { asAdmin, cardId } = await seed();
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      pendingPlayerNames: ["Never Reviewed"],
+    });
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      listingTitle: "A new title",
+    });
+
+    const stored = await asAdmin.run(async (ctx) => ctx.db.get(cardId));
+    expect(stored!.pendingPlayerNames).toEqual(["Never Reviewed"]);
+  });
+
+  test("linking a real team still retires a typed team name on its own (NEO-208)", async () => {
+    // Derived from the write, not accepted as an argument — and the two paths
+    // agree rather than fighting: sending the name back alongside a non-empty
+    // `teamOnCardIds` still clears it, because linking a team IS the answer
+    // the typed name was waiting for.
+    const { asAdmin, teamA, cardId } = await seed();
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      pendingTeamNames: ["Reno Aces"],
+    });
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      teamOnCardIds: [teamA],
+      pendingTeamNames: ["Reno Aces"],
+    });
+
+    const stored = await asAdmin.run(async (ctx) => ctx.db.get(cardId));
+    expect(stored!.pendingTeamNames).toBeUndefined();
+    expect(stored!.teamOnCardIds).toEqual([teamA]);
+  });
+});

@@ -52,7 +52,12 @@ export type AttentionItem =
   // NEO-101: an aspect-shaped field is longer than eBay's item-specific value
   // limit. WARN ONLY — nothing blocks the write, because no NB field is yet
   // proven to map verbatim onto an eBay aspect.
-  | { kind: "aspectValueOverLimit"; field: "cardVariation"; length: number };
+  | { kind: "aspectValueOverLimit"; field: "cardVariation"; length: number }
+  // NEO-221: names on this card that the operator never ruled on in the review
+  // wizard, so the card carries them as free text and links to no player/team.
+  // The names are carried so the label and the fixer can say WHICH, without
+  // re-reading the row.
+  | { kind: "unreviewedName"; names: string[] };
 
 /** The discriminant alone, for keying label maps and fixer registries. */
 export type AttentionKind = AttentionItem["kind"];
@@ -70,6 +75,12 @@ export type AttentionKind = AttentionItem["kind"];
 export type AttentionCardRow = {
   /** The team(s) printed on the card. Absent and `[]` are the same statement. */
   teamOnCardIds?: readonly string[];
+  /**
+   * NEO-221 — the player(s) this card is linked to. Read only for whether it
+   * is empty: a card that already links to a player has its answer, whatever
+   * extra spelling `pendingPlayerNames` still carries.
+   */
+  playerIds?: readonly string[];
   /**
    * Team names an operator typed that no `teams` row exists for yet; the next
    * sync's resolve pass turns them into `teamOnCardIds` (see schema.ts and
@@ -90,6 +101,26 @@ export type AttentionCardRow = {
    * real team is linked, so a row cannot end up counted twice.
    */
   pendingTeamNames?: readonly string[];
+  /**
+   * NEO-221 — player names this card carries that resolve to no `players` row.
+   *
+   * Two producers, one meaning. `addCustomCard` writes them when an operator
+   * types a player the table does not have yet; `commitCardChecklist` writes
+   * them when a synced card's name reached commit with no review decision.
+   * Either way the card names a player it does not link to, and either way the
+   * fix is the same — link it, or let the next sync's wizard resolve it. The
+   * rule below deliberately does NOT try to tell the two apart: where a row
+   * came from is not something NB behaviour is keyed on.
+   *
+   * NEO-220 note on the first producer, mirroring the NEO-208 note on
+   * `pendingTeamNames` above. The quick-add form used to be it — a free-text
+   * "Player(s)" box that wrote here — and it now uses `PlayerPicker` and sends
+   * real `playerIds`, so a card added by hand today is born linked and never
+   * lands in this state. What remains are rows written before that, rows an
+   * old SPA bundle wrote through the legacy `addCustomCard.players` name
+   * array, and the commit path. THE RULE IS UNCHANGED.
+   */
+  pendingPlayerNames?: readonly string[];
   /** Operator confirmed this card carries no team — see schema.ts. */
   teamNoneConfirmedAt?: number;
   /** The BSC per-card team lookup has RUN, whatever it found — see schema.ts. */
@@ -141,6 +172,9 @@ export type AttentionCardRow = {
  *   2. `teamNoneConfirmedAt` is unset. An operator who said "this card carries
  *      no team" has answered; re-asking is the bug this field exists to stop.
  *   3. the card is not still WAITING on the automatic answer.
+ *   4. (NEO-221) no `unreviewedName` item fired. That item's fixer links the
+ *      whole card in one write, so raising both would stop the walker twice
+ *      for one piece of work.
  *
  * Clause 3 is the one worth explaining. A card with a `platformData.bsc.ref`
  * has an automatic source for its team: `processBscTeamEnrichmentQueue` walks
@@ -161,10 +195,48 @@ export type AttentionCardRow = {
 export function deriveCardAttention(row: AttentionCardRow): AttentionItem[] {
   const items: AttentionItem[] = [];
 
+  // ── NEO-221: a name on the card that links to nothing ────────────────────
+  //
+  // Computed first because `missingTeam` below defers to it — see there.
+  //
+  // Fires per side, on the same shape of test: a pending NAME with no
+  // corresponding LINK. `pendingPlayerNames` with an empty `playerIds`, or
+  // `pendingTeamNames` with an empty `teamOnCardIds`. A card that already
+  // links to a player or a team has its answer, and the leftover spelling is
+  // a duplicate rather than a gap.
+  //
+  // ## No marketplace gate, deliberately
+  //
+  // An earlier draft badged only cards carrying a BSC or SportLots ref, on the
+  // theory that a hand-added card's pending name is an answer awaiting the
+  // next sync while a synced card's is a question never asked. That is the
+  // "custom card" concept re-spelled, and NB behaviour is never keyed on
+  // whether a row has marketplace ids (see the product invariant in the root
+  // CLAUDE.md). It is also not true: both producers leave a card naming a
+  // player it does not link to, and both are fixed the same way — link it in
+  // the walker, or let the next sync's wizard resolve it.
+  const unreviewed = [
+    ...((row.playerIds?.length ?? 0) === 0 ? (row.pendingPlayerNames ?? []) : []),
+    ...((row.teamOnCardIds?.length ?? 0) === 0 ? (row.pendingTeamNames ?? []) : []),
+  ];
+
   const hasTeam =
     (row.teamOnCardIds?.length ?? 0) > 0 || (row.pendingTeamNames?.length ?? 0) > 0;
   const awaitingBscLookup = !!row.platformData?.bsc?.ref && !row.teamCheckDoneAt;
-  if (!hasTeam && !row.teamNoneConfirmedAt && !awaitingBscLookup) {
+  // `unreviewed.length === 0` is the fourth clause, and it is about the
+  // WALKER rather than about teams. `unreviewedName`'s fixer links the whole
+  // card — players and teams, in one write — so a card carrying both items
+  // would stop the operator twice for one piece of work, and the second stop
+  // would present a question the first had already answered. One gap, one
+  // badge. (The two only ever coincide on a card with an unresolved PLAYER
+  // name and no team at all: a pending TEAM name already counts as having a
+  // team, so it suppresses `missingTeam` through `hasTeam` above.)
+  if (
+    !hasTeam &&
+    !row.teamNoneConfirmedAt &&
+    !awaitingBscLookup &&
+    unreviewed.length === 0
+  ) {
     items.push({ kind: "missingTeam" });
   }
 
@@ -191,6 +263,12 @@ export function deriveCardAttention(row: AttentionCardRow): AttentionItem[] {
     });
   }
 
+  // NEO-221 — see the note where `unreviewed` is computed, at the top. Pushed
+  // last so the title/aspect items keep the order they had.
+  if (unreviewed.length > 0) {
+    items.push({ kind: "unreviewedName", names: [...unreviewed] });
+  }
+
   return items;
 }
 
@@ -214,3 +292,21 @@ export function needsAttention(row: AttentionCardRow): boolean {
  * cannot disagree with what the server will actually accept.
  */
 export const MAX_CARD_TEAMS = 8;
+
+/**
+ * NEO-220 — the hard cap on how many players one card can be LINKED to.
+ *
+ * Deliberately much wider than `MAX_CARD_TEAMS`: a card is never printed for
+ * more than a handful of teams, but a League Leaders / rookie-combo / team
+ * checklist card legitimately names well past eight players. 20 is a sanity
+ * bound on a picker, not a marketplace rule — it sits comfortably above the
+ * widest real multi-player card while still being a hard bound, and it is the
+ * SAME number `selectorOptions.MAX_PENDING_PLAYER_NAMES` already uses for the
+ * typed-name shape of the same field, so the two spellings of "the players on
+ * this card" cannot accept different amounts.
+ *
+ * Enforced server-side in `selectorOptions.addCustomCard` (via
+ * `resolvePlayerIdsForWrite`). Note `updateCard.playerIds` is deliberately NOT
+ * bounded by this yet — see the note there.
+ */
+export const MAX_CARD_PLAYERS = 20;

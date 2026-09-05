@@ -68,10 +68,11 @@ function renderModal(
   }> = {},
 ) {
   const onConfirm = vi.fn().mockResolvedValue(undefined);
+  const onClose = vi.fn();
   render(
     <CardPairingModal
       isOpen
-      onClose={vi.fn()}
+      onClose={onClose}
       onConfirm={onConfirm}
       setLabel={overrides.setLabel}
       isStreaming={overrides.isStreaming}
@@ -83,7 +84,7 @@ function renderModal(
       }}
     />,
   );
-  return { onConfirm };
+  return { onConfirm, onClose };
 }
 
 describe("CardPairingModal", () => {
@@ -3016,5 +3017,163 @@ describe("CardPairingModal — the Matched header sticks (NEO-189 follow-up)", (
     expect(
       screen.getByLabelText("Expand matched cards, 1 with a name conflict"),
     ).toBeTruthy();
+  });
+});
+
+/**
+ * NEO-220 — you cannot lose a pairing session by accident.
+ *
+ * Nothing on this screen is written until Confirm, so Escape and Cancel are
+ * both silent discards. The guard in front of them has to fire when there is
+ * work and stay out of the way when there is not: a confirm over an untouched
+ * session is a dialog operators learn to click through without reading, which
+ * is how it stops protecting anything.
+ */
+describe("CardPairingModal — discard guard", () => {
+  const pairingDialog = () =>
+    screen.getByRole("dialog", { name: /Match Cards/ });
+
+  const linkFirstPair = () => {
+    fireEvent.click(screen.getByLabelText("Select BSC card #1 Ken Griffey Jr."));
+    fireEvent.click(
+      screen.getByLabelText("Link selected BSC card to #A1 Ken Griffey Jr."),
+    );
+  };
+
+  test("Escape on an untouched session closes immediately", () => {
+    const { onClose } = renderModal({
+      autoMatched: [{ card: pairedCard("1", "Ken Griffey Jr."), confidence: 1 }],
+    });
+
+    fireEvent.keyDown(pairingDialog(), { key: "Escape" });
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(/^Discard/)).toBeNull();
+  });
+
+  test("Cancel on an untouched session closes immediately", () => {
+    const { onClose } = renderModal({
+      autoMatched: [{ card: pairedCard("1", "Ken Griffey Jr."), confidence: 1 }],
+    });
+
+    fireEvent.click(screen.getByLabelText("Cancel card matching"));
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("dialog", { name: /Discard/ })).toBeNull();
+  });
+
+  test("Escape after a hand-linked pair asks first, and names the count", () => {
+    const { onClose } = renderModal({
+      unmatchedBsc: [bscCard("1", "Ken Griffey Jr.")],
+      unmatchedSl: [slCard("A1", "Ken Griffey Jr.")],
+    });
+    linkFirstPair();
+
+    fireEvent.keyDown(pairingDialog(), { key: "Escape" });
+
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog", { name: "Discard 1 pairing?" })).toBeTruthy();
+    // The E2E driver taps by accessible name, so the button's own label —
+    // not just the title — has to carry the "Discard" prefix.
+    expect(screen.getByRole("button", { name: "Discard 1 pairing" })).toBeTruthy();
+  });
+
+  test("counts a kept card and a hand-linked pair together", () => {
+    renderModal({
+      unmatchedBsc: [bscCard("1", "Ken Griffey Jr."), bscCard("5", "Keep Me")],
+      unmatchedSl: [slCard("A1", "Ken Griffey Jr.")],
+    });
+    linkFirstPair();
+    fireEvent.click(screen.getByLabelText("Keep #5 Keep Me as BSC-only"));
+
+    fireEvent.click(screen.getByLabelText("Cancel card matching"));
+
+    expect(screen.getByRole("button", { name: "Discard 2 pairings" })).toBeTruthy();
+  });
+
+  /**
+   * The edit nothing else on this screen can see: after the unlink both halves
+   * are back in the unmatched columns, indistinguishable from cards that never
+   * matched at all.
+   */
+  test("counts an auto-matched pair the operator took apart", () => {
+    renderModal({
+      autoMatched: [{ card: pairedCard("1", "Ken Griffey Jr."), confidence: 1 }],
+    });
+
+    fireEvent.click(screen.getByLabelText("Unlink #1 Ken Griffey Jr."));
+    fireEvent.click(screen.getByLabelText("Cancel card matching"));
+
+    expect(screen.getByRole("button", { name: "Discard 1 pairing" })).toBeTruthy();
+  });
+
+  test("Cancel on the confirm keeps both the session and the dialog", () => {
+    const { onClose } = renderModal({
+      unmatchedBsc: [bscCard("1", "Ken Griffey Jr.")],
+      unmatchedSl: [slCard("A1", "Ken Griffey Jr.")],
+    });
+    linkFirstPair();
+    fireEvent.click(screen.getByLabelText("Cancel card matching"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog", { name: /Discard/ })).toBeNull();
+    expect(pairingDialog()).toBeTruthy();
+    // The pair is still merged — the confirm never touched the reducer. (The
+    // Matched section is collapsed while unmatched work exists, so the footer
+    // count is what is on screen to read it off.)
+    expect(screen.getByText("1 card will be saved")).toBeTruthy();
+    // And the guard still knows about it on the next attempt.
+    fireEvent.keyDown(pairingDialog(), { key: "Escape" });
+    expect(screen.getByRole("button", { name: "Discard 1 pairing" })).toBeTruthy();
+  });
+
+  test("confirming the discard closes the modal", () => {
+    const { onClose } = renderModal({
+      unmatchedBsc: [bscCard("1", "Ken Griffey Jr.")],
+      unmatchedSl: [slCard("A1", "Ken Griffey Jr.")],
+    });
+    linkFirstPair();
+    fireEvent.keyDown(pairingDialog(), { key: "Escape" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Discard 1 pairing" }));
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * D8. Escape in a search box means "clear what I typed" everywhere else on
+   * the web; letting it reach the dialog root turns that reflex into a lost
+   * session.
+   */
+  test("Escape in the BSC filter clears the filter and does not close", () => {
+    const { onClose } = renderModal({
+      unmatchedBsc: [bscCard("1", "Ken Griffey Jr.")],
+    });
+    const filter = screen.getByLabelText("Filter BSC cards") as HTMLInputElement;
+    fireEvent.change(filter, { target: { value: "griffey" } });
+    expect(filter.value).toBe("griffey");
+
+    fireEvent.keyDown(filter, { key: "Escape" });
+
+    expect(filter.value).toBe("");
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog", { name: /Discard/ })).toBeNull();
+  });
+
+  test("Escape in the SportLots filter clears the filter and does not close", () => {
+    const { onClose } = renderModal({
+      unmatchedSl: [slCard("A1", "Ken Griffey Jr.")],
+    });
+    const filter = screen.getByLabelText(
+      "Filter SportLots cards",
+    ) as HTMLInputElement;
+    fireEvent.change(filter, { target: { value: "griffey" } });
+
+    fireEvent.keyDown(filter, { key: "Escape" });
+
+    expect(filter.value).toBe("");
+    expect(onClose).not.toHaveBeenCalled();
   });
 });
