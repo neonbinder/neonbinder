@@ -6,6 +6,7 @@ import {
   normalizeEntityName,
   rankTeamCandidates,
 } from "../../convex/lib/entityNearMatch";
+import { teamFullName } from "../../lib/teams/team-name";
 import { Input } from "../primitives/Input";
 
 /**
@@ -17,10 +18,24 @@ import { Input } from "../primitives/Input";
  *
  * The team field is a free-text combobox: it typeaheads against candidate
  * teams, but UNLIKE EntityLinkSearch it deliberately accepts a name that
- * matches nothing — that becomes a brand-new team, resolved via get-or-create
- * at commit time (commitCardChecklist's resolveTeamIdByName), exactly how
- * Wikidata-sourced career teams are already resolved. So there's no "+ Create"
- * escape hatch here; typing IS creating.
+ * matches nothing. So there's no "+ Create" escape hatch here; typing IS
+ * creating.
+ *
+ * ## NEO-236 — creating takes Location + Name, never a full string
+ *
+ * Jason, 2026-09-05: "We simply shouldn't allow for full string creation.
+ * Location & Team Name should be the input." So the entry is now two fields —
+ * an optional Location ("San Diego") ahead of the nickname ("Padres") — and it
+ * reports both upward rather than one string. The wizard composes them for
+ * matching (`teamFullName`) and carries the split through to the decision, so
+ * a career team the commit has to CREATE lands as a properly split row instead
+ * of one whose whole name sits in `name`.
+ *
+ * Location stays optional and blank by default: a college side, a national
+ * team or "Orix Buffaloes" has none, and a blank Location is a real answer
+ * rather than an unfinished form. Picking a suggestion fills Name with the
+ * whole existing name and clears Location — the composed string then matches
+ * that row exactly, so commit LINKS to it and creates nothing.
  *
  * This component owns only its own mini-form state and emits each completed
  * entry via `onAdd`. The staged list of added entries (and its per-row reset)
@@ -56,7 +71,17 @@ const SEARCH_DEBOUNCE_MS = 200;
 /** How many suggestions the dropdown shows, staged and searched combined. */
 const MAX_SUGGESTIONS = 8;
 
-export type CareerTeamDraft = { name: string; fromYear: number; toYear?: number };
+/**
+ * NEO-236: `name` is the NICKNAME the operator typed ("Padres"), `location`
+ * the optional place ahead of it ("San Diego"). Compose with `teamFullName`
+ * for anything that matches, displays, or dedupes — never by hand.
+ */
+export type CareerTeamDraft = {
+  name: string;
+  location?: string;
+  fromYear: number;
+  toYear?: number;
+};
 
 /** One dropdown row. `staged` drives the "this batch" tag and the ordering. */
 type Suggestion = { key: string; name: string; staged: boolean };
@@ -77,6 +102,7 @@ export default function CareerTeamEntry({
   onAdd: (entry: CareerTeamDraft) => void;
 }) {
   const [name, setName] = useState("");
+  const [location, setLocation] = useState("");
   const [debouncedName, setDebouncedName] = useState("");
   const [fromYear, setFromYear] = useState("");
   const [toYear, setToYear] = useState("");
@@ -97,7 +123,19 @@ export default function CareerTeamEntry({
   }, [name]);
 
   const trimmedName = name.trim();
+  const trimmedLocation = location.trim();
   const debouncedTrimmed = debouncedName.trim();
+  /**
+   * What this entry would actually create or match: "San Diego Padres".
+   *
+   * The typeahead still SEARCHES on the nickname alone — the index is
+   * token-wise, so "Padres" already returns "San Diego Padres" — but the
+   * duplicate warning below compares the composed string, because that is the
+   * name commit will look up.
+   */
+  const composedName = trimmedName
+    ? teamFullName({ name: trimmedName, location: trimmedLocation })
+    : "";
 
   const searched = useQuery(
     api.teams.search,
@@ -132,6 +170,9 @@ export default function CareerTeamEntry({
       .map((n) => ({ key: `staged:${n}`, name: n, staged: true }));
 
     const saved = (searched ?? [])
+      // NEO-236: the FULL name. A suggestion is something the operator can
+      // pick to LINK to, and "Padres" does not identify the row it belongs to.
+      .map((t) => ({ _id: t._id, name: teamFullName(t) }))
       // Dropping a saved team already offered as staged: the same name twice,
       // once tagged and once not, reads as two different teams.
       .filter((t) => !stagedKeys.has(normalizeEntityName(t.name)))
@@ -149,17 +190,24 @@ export default function CareerTeamEntry({
    * head of the ranking settles it.
    */
   const didYouMean = useMemo<string | null>(() => {
-    if (!trimmedName) return null;
-    const pool = [...stagedNames, ...(searched ?? []).map((t) => t.name)];
+    if (!composedName) return null;
+    const pool = [
+      ...stagedNames,
+      // NEO-236: `teams.search` returns whole rows, so the full name is
+      // composed here rather than read off `name` — a split row's `name` is
+      // just "Padres" and ranking "San Diego Padres" against it would report a
+      // near match where there is an exact one.
+      ...(searched ?? []).map((t) => teamFullName(t)),
+    ];
     if (pool.length === 0) return null;
     const ranked = rankTeamCandidates(
-      trimmedName,
+      composedName,
       pool.map((n) => ({ name: n })),
     );
     if (ranked.length === 0) return null;
     if (ranked[0].confidence === "exact") return null;
     return pool[ranked[0].index] ?? null;
-  }, [trimmedName, stagedNames, searched]);
+  }, [composedName, stagedNames, searched]);
 
   const fromNum = Number(fromYear);
   const toNum = toYear.trim() === "" ? undefined : Number(toYear);
@@ -176,8 +224,14 @@ export default function CareerTeamEntry({
 
   const commit = () => {
     if (!canAdd) return;
-    onAdd({ name: trimmedName, fromYear: fromNum, ...(toNum !== undefined ? { toYear: toNum } : {}) });
+    onAdd({
+      name: trimmedName,
+      ...(trimmedLocation ? { location: trimmedLocation } : {}),
+      fromYear: fromNum,
+      ...(toNum !== undefined ? { toYear: toNum } : {}),
+    });
     setName("");
+    setLocation("");
     setDebouncedName("");
     setFromYear("");
     setToYear("");
@@ -185,8 +239,16 @@ export default function CareerTeamEntry({
     nameInputRef.current?.focus();
   };
 
+  /**
+   * A suggestion is an existing (or already-staged) team's WHOLE name, so it
+   * goes into Name with Location cleared: composed, it is byte-for-byte the
+   * name commit will look up, which is what makes it link rather than create.
+   * Splitting it back into two fields would be a guess, and NEO-236 has no
+   * code path that guesses a location.
+   */
   const pickSuggestion = (teamName: string) => {
     setName(teamName);
+    setLocation("");
     setDebouncedName(teamName);
     setSuggestionsOpen(false);
     nameInputRef.current?.focus();
@@ -194,7 +256,20 @@ export default function CareerTeamEntry({
 
   return (
     <div className="border border-gray-700 rounded-md bg-gray-900/60 p-2 space-y-1.5">
-      <div className="relative">
+      {/* NEO-236: Location then Name, in the order the stored name reads. The
+          nickname field keeps the whole flexible width — it is the one being
+          typed against a typeahead, and it is the only required half. */}
+      <div className="flex items-start gap-2">
+      <Input
+        bare
+        type="text"
+        value={location}
+        placeholder="Location"
+        aria-label="Career team location (optional)"
+        onChange={(e) => setLocation(e.target.value)}
+        className="w-28 shrink-0 p-1.5 text-sm"
+      />
+      <div className="relative flex-1 min-w-0">
         <Input
           bare
           ref={nameInputRef}
@@ -283,6 +358,15 @@ export default function CareerTeamEntry({
           </ul>
         )}
       </div>
+      </div>
+
+      {/* Only once a Location is in play: with none, the composed name is the
+          Name field verbatim and echoing it back is noise. */}
+      {trimmedLocation && trimmedName && (
+        // gray-400, not gray-500: 500 on this panel's gray-900 ground is
+        // ~3.6:1, under SC 1.4.3's 4.5:1 floor for normal-size text.
+        <p className="text-xs text-gray-400">Shows as: {composedName}</p>
+      )}
 
       {didYouMean && (
         <p className="text-xs text-gray-400">

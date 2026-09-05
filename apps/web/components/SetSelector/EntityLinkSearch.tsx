@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
+import { teamFullName } from "../../lib/teams/team-name";
 import { Input } from "../primitives/Input";
 
 /**
@@ -75,7 +76,20 @@ export default function EntityLinkSearch({
     api.teams.search,
     kind === "team" && trimmed ? { query: trimmed, sportId } : "skip",
   );
-  const candidates = kind === "player" ? players : teams;
+  /**
+   * One `{ _id, name }` shape for both kinds, with a TEAM's name composed from
+   * its location and nickname (NEO-236).
+   *
+   * Composed here, once, rather than at each of the four places below that
+   * read `.name`: the sort key, the visible text, the `Link to {name}`
+   * accessible name and the Enter-to-select handler must all agree, and
+   * "Padres" in a list that also holds "Padres" from another franchise is not
+   * a name an operator can choose between.
+   */
+  const candidates: Array<{ _id: Id<"players"> | Id<"teams">; name: string }> | undefined =
+    kind === "player"
+      ? players
+      : teams?.map((t) => ({ _id: t._id, name: teamFullName(t) }));
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- typeahead highlight resets with the query it indexes into

@@ -84,6 +84,8 @@ async function insertRow(
     name: string;
     sportId: Id<"selectorOptions">;
     status?: "pending" | "ready" | "error";
+    /** NEO-236: the bulk fast path reads `enrichment.location` to pre-fill. */
+    enrichment?: Record<string, unknown>;
   },
 ) {
   return t.run(async (ctx) =>
@@ -95,6 +97,7 @@ async function insertRow(
       name: opts.name,
       sportId: opts.sportId,
       status: opts.status ?? "pending",
+      ...(opts.enrichment ? { enrichment: opts.enrichment as never } : {}),
     }),
   );
 }
@@ -1823,5 +1826,398 @@ describe("cleanupBatch", () => {
         batchId: "never-existed",
       }),
     ).resolves.toBeNull();
+  });
+});
+
+// ===========================================================================
+// NEO-236 — the operator's Location + Name rides on the create decision
+//
+// A `teams` row born out of this queue is built from `decision.create` and
+// nothing else; the prelude has no fallback to `row.name`. So what
+// recordDecision stores here IS what gets created, and these tests pin the
+// validation that stands between an operator's typing and a `teams` insert.
+// ===========================================================================
+
+describe("recordDecision — NEO-236 team create payload", () => {
+  test("stores the operator's Location + Name on a team row, trimmed", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId,
+      batchId: "b1",
+      kind: "team",
+      name: "SD PADRES",
+      status: "ready",
+    });
+
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: rowId,
+      action: "create",
+      create: { location: "  San   Diego ", name: "  Padres  " },
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(rowId));
+    expect(row!.decision).toEqual({
+      action: "create",
+      create: { location: "San Diego", name: "Padres" },
+    });
+  });
+
+  test("omits `location` when it is blank — a location-less team is a real team", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId,
+      batchId: "b1",
+      kind: "team",
+      name: "Orix Buffaloes",
+      status: "ready",
+    });
+
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: rowId,
+      action: "create",
+      create: { location: "   ", name: "Orix Buffaloes" },
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(rowId));
+    expect(row!.decision).toEqual({
+      action: "create",
+      create: { name: "Orix Buffaloes" },
+    });
+  });
+
+  test("refuses a blank name — it composes to nothing and can create nothing", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId,
+      batchId: "b1",
+      kind: "team",
+      name: "Padres",
+      status: "ready",
+    });
+
+    await expect(
+      asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+        reviewRowId: rowId,
+        action: "create",
+        create: { location: "San Diego", name: "   " },
+      }),
+    ).rejects.toThrow(/Team name cannot be empty/);
+  });
+
+  test("refuses a composed name past the stored-name limit", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId,
+      batchId: "b1",
+      kind: "team",
+      name: "Long",
+      status: "ready",
+    });
+
+    // Neither half is over the limit; TOGETHER they are. The bound has to be
+    // on the composed name, which is what lands in the row.
+    await expect(
+      asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+        reviewRowId: rowId,
+        action: "create",
+        create: { location: "L".repeat(70), name: "N".repeat(70) },
+      }),
+    ).rejects.toThrow(/the limit is 120/);
+  });
+
+  test("drops a `create` sent on a PLAYER row — it is meaningless there", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId,
+      batchId: "b1",
+      kind: "player",
+      name: "Mike Trout",
+      status: "ready",
+    });
+
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: rowId,
+      action: "create",
+      create: { name: "Padres" },
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(rowId));
+    expect(row!.decision).toEqual({ action: "create" });
+  });
+
+  test("drops `createTeams` sent on a TEAM row — commit never reads it there", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId,
+      batchId: "b1",
+      kind: "team",
+      name: "Padres",
+      status: "ready",
+    });
+
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: rowId,
+      action: "create",
+      create: { name: "Padres" },
+      createTeams: [{ sourceName: "Angels", name: "Angels" }],
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(rowId));
+    expect(row!.decision).toEqual({
+      action: "create",
+      create: { name: "Padres" },
+    });
+  });
+});
+
+describe("recordDecision — NEO-236 career-team create payload", () => {
+  const seedPlayerRow = async (t: ReturnType<typeof convexTest>) => {
+    const selectorOptionId = await seedSelectorOption(t);
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId,
+      batchId: "b1",
+      kind: "player",
+      name: "Tony Gwynn",
+      status: "ready",
+    });
+    return rowId;
+  };
+
+  test("stores one pair per accepted career team, keyed by the label it answers", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const rowId = await seedPlayerRow(t);
+
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: rowId,
+      action: "create",
+      createTeams: [
+        { sourceName: "  Padres  ", location: " San Diego ", name: " Padres " },
+        { sourceName: "Aztecs", name: "San Diego State Aztecs baseball" },
+      ],
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(rowId));
+    expect(row!.decision).toEqual({
+      action: "create",
+      createTeams: [
+        { sourceName: "Padres", location: "San Diego", name: "Padres" },
+        { sourceName: "Aztecs", name: "San Diego State Aztecs baseball" },
+      ],
+    });
+  });
+
+  test("dedupes by sourceName, keeping the first — commit looks the list up by that key", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const rowId = await seedPlayerRow(t);
+
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: rowId,
+      action: "create",
+      createTeams: [
+        { sourceName: "Padres", location: "San Diego", name: "Padres" },
+        { sourceName: "PADRES", location: "Wrong", name: "Padres" },
+      ],
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(rowId));
+    expect(
+      (row!.decision as { createTeams: unknown[] }).createTeams,
+    ).toEqual([{ sourceName: "Padres", location: "San Diego", name: "Padres" }]);
+  });
+
+  test("refuses a blank sourceName — it can never match a career-team label", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const rowId = await seedPlayerRow(t);
+
+    await expect(
+      asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+        reviewRowId: rowId,
+        action: "create",
+        createTeams: [{ sourceName: "   ", name: "Padres" }],
+      }),
+    ).rejects.toThrow(/Career-team source name cannot be empty/);
+  });
+
+  test("refuses an over-length list rather than truncating it", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const rowId = await seedPlayerRow(t);
+
+    await expect(
+      asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+        reviewRowId: rowId,
+        action: "create",
+        createTeams: Array.from({ length: 65 }, (_, i) => ({
+          sourceName: `Team ${i}`,
+          name: `Team ${i}`,
+        })),
+      }),
+    ).rejects.toThrow(/the maximum is 64/);
+  });
+
+  test("an old-shaped create decision (no pairs at all) still records", async () => {
+    // Every field is optional so a queue row written before NEO-236 — and a
+    // client that has not shipped the new fields yet — stays valid.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const rowId = await seedPlayerRow(t);
+
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: rowId,
+      action: "create",
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(rowId));
+    expect(row!.decision).toEqual({ action: "create" });
+  });
+});
+
+describe("recordAllRemainingAsCreate — NEO-236 team pre-fill", () => {
+  test("splits a team row on an ESPN location that is a whole-word prefix", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId,
+      batchId: "b1",
+      kind: "team",
+      name: "San Diego Padres",
+      status: "ready",
+      enrichment: { location: "San Diego" },
+    });
+
+    await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
+      selectorOptionId,
+      batchId: "b1",
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(rowId));
+    // Exactly what the wizard would have pre-filled and the operator would
+    // have confirmed unedited — "confirm one row" and "confirm the batch" must
+    // mean the same thing.
+    expect(row!.decision).toEqual({
+      action: "create",
+      create: { location: "San Diego", name: "Padres" },
+    });
+  });
+
+  test("leaves the whole name intact when the location is not a prefix", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId,
+      batchId: "b1",
+      kind: "team",
+      name: "Los Angeles Angels",
+      status: "ready",
+      // Where the franchise plays, not the front of its name.
+      enrichment: { location: "Anaheim" },
+    });
+
+    await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
+      selectorOptionId,
+      batchId: "b1",
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(rowId));
+    expect(row!.decision).toEqual({
+      action: "create",
+      create: { name: "Los Angeles Angels" },
+    });
+  });
+
+  test("a team row with no enrichment at all gets the whole name and no location", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId,
+      batchId: "b1",
+      kind: "team",
+      name: "Orix Buffaloes",
+      status: "pending",
+    });
+
+    await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
+      selectorOptionId,
+      batchId: "b1",
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(rowId));
+    expect(row!.decision).toEqual({
+      action: "create",
+      create: { name: "Orix Buffaloes" },
+    });
+  });
+
+  test("a player row is untouched by the pre-fill", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId,
+      batchId: "b1",
+      kind: "player",
+      name: "Mike Trout",
+      status: "ready",
+    });
+
+    await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
+      selectorOptionId,
+      batchId: "b1",
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(rowId));
+    expect(row!.decision).toEqual({ action: "create" });
+  });
+
+  test("bulk SKIP carries no create payload on a team row", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId,
+      batchId: "b1",
+      kind: "team",
+      name: "CHECKLIST",
+      status: "ready",
+      enrichment: { location: "CHECKLIST" },
+    });
+
+    await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsSkip, {
+      selectorOptionId,
+      batchId: "b1",
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(rowId));
+    expect(row!.decision).toEqual({ action: "skip" });
   });
 });

@@ -347,3 +347,55 @@ describe("EntityLinkSearch — keyboard", () => {
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// NEO-236 — a team is offered by its FULL name
+// ---------------------------------------------------------------------------
+
+describe("EntityLinkSearch — split team names", () => {
+  it("labels, names and selects a split team by its whole name", () => {
+    currentTeams = [{ _id: "t1", name: "Padres", location: "San Diego" }];
+    const { onSelect } = renderSearch({ kind: "team" });
+    typeAndSettle("Search existing teams", "Padres");
+
+    // "Link to Padres" would be ambiguous the moment a second franchise shares
+    // the nickname, and it does not tell the operator which row they are about
+    // to reuse.
+    const option = screen.getByRole("option", { name: "Link to San Diego Padres" });
+    expect(option.textContent).toBe("San Diego Padres");
+
+    fireEvent.click(option);
+    expect(onSelect).toHaveBeenCalledWith("t1", "San Diego Padres");
+  });
+
+  it("leaves a location-less team exactly as it is", () => {
+    currentTeams = [{ _id: "t2", name: "Orix Buffaloes" }];
+    renderSearch({ kind: "team" });
+    typeAndSettle("Search existing teams", "Orix");
+
+    expect(
+      screen.getByRole("option", { name: "Link to Orix Buffaloes" }),
+    ).toBeTruthy();
+  });
+
+  it("ranks 'starts with what I typed' on the FULL name", () => {
+    // Sorting on the nickname would put "Padres" ahead of "San Diego Padres"
+    // for the query "San", which is the opposite of what the operator sees.
+    currentTeams = [
+      { _id: "t1", name: "Padres", location: "San Diego" },
+      { _id: "t2", name: "Sandlot Club" },
+      { _id: "t3", name: "Mariners", location: "Seattle" },
+    ];
+    renderSearch({ kind: "team" });
+    typeAndSettle("Search existing teams", "San");
+
+    const names = screen
+      .getAllByRole("option")
+      .map((el) => el.getAttribute("aria-label"));
+    expect(names).toEqual([
+      "Link to San Diego Padres",
+      "Link to Sandlot Club",
+      "Link to Seattle Mariners",
+    ]);
+  });
+});

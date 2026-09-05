@@ -1147,6 +1147,44 @@ export default defineSchema({
         // "the operator rejected these two" rather than a silently shorter
         // list. Names, matched against enrichment.careerTeams[].name.
         excludedCareerTeamNames: v.optional(v.array(v.string())),
+        // ── NEO-236: the operator's Location + Name, team-kind only ─────────
+        //
+        // Jason, 2026-09-05: "We simply shouldn't allow for full string
+        // creation. Location & Team Name should be the input." A `teams` row
+        // born out of this queue is built from THESE two fields and nothing
+        // else — never from `name` above, which is the raw checklist string
+        // ("SD Padres", "PADRES", "Padres  "). The prelude has no fallback: a
+        // create decision on a team row with no `create` payload links if the
+        // name already matches a row and otherwise leaves the card without
+        // that team, for the attention walker's missing-team lane to catch.
+        //
+        // Optional because every row written before NEO-236 predates the
+        // field, and because it is meaningless on a player-kind decision.
+        // `location` is separately optional: colleges, national sides and
+        // corporate-named clubs ("Orix Buffaloes") have none, and a blank
+        // Location is a real answer rather than an unfinished form.
+        create: v.optional(v.object({
+          location: v.optional(v.string()),
+          name: v.string(),
+        })),
+        // NEO-236, player-only: the same Location + Name, once per career team
+        // the operator ACCEPTED that matched no existing row.
+        //
+        // Career-team names arrive as full strings — a Wikidata P54 label, or
+        // whatever the operator typed into the manual entry — and the commit
+        // prelude links them when the composed name already exists. When it
+        // does not, this is the only thing that lets it create one, keyed by
+        // `sourceName` (the label as shown in the wizard, matched normalized)
+        // so the decision stays auditable against the proposals it answers:
+        // "the operator said the P54 label 'Padres' means San Diego / Padres".
+        // A career team with no entry here and no existing match is dropped
+        // from the player's `teamYears` rather than minting a row nobody
+        // reviewed.
+        createTeams: v.optional(v.array(v.object({
+          sourceName: v.string(),
+          location: v.optional(v.string()),
+          name: v.string(),
+        }))),
       }),
       v.object({
         action: v.literal("link"),
