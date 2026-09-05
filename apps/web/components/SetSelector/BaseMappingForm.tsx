@@ -197,14 +197,28 @@ export default function BaseMappingForm({
         }
       : undefined;
 
-  const writePlatformData = async (platformData: {
-    bsc?: string;
-    sportlots?: string;
-    sportlotsDisplay?: string;
-  }) => {
+  const writePlatformData = async (
+    platformData: {
+      bsc?: string;
+      sportlots?: string;
+      sportlotsDisplay?: string;
+    },
+    /**
+     * BSC's own display name for the set that was picked — the BSC twin of
+     * `sportlotsDisplay`, stored as the setName slot's LABEL.
+     *
+     * Without it `slotLabel` fell back to the slug and the Multi-source panel
+     * read "topps topps": the slug rendered once as the chip's name and once as
+     * its id. Passed as `undefined` when there was nothing to pick from, which
+     * CLEARS a stale label rather than leaving the previous set's name over a
+     * new slug (NEO-239).
+     */
+    bscLabel?: string,
+  ) => {
     await setPlatformData({
       variantTypeId,
       platformData,
+      ...(bscLabel ? { bscLabel } : {}),
       // Sent whenever the row has loaded, in both modes. A version token can
       // only ever REFUSE a write, so carrying one on a mapping that turns out
       // to have had nothing at stake costs nothing — while omitting one on a
@@ -305,7 +319,9 @@ export default function BaseMappingForm({
     if (!platformData.sportlots && !platformData.bsc) return;
 
     try {
-      await writePlatformData(platformData);
+      // `selected.bsc.value` is BSC's own name for the set the operator chose,
+      // which is the only place a real label for this slot can come from.
+      await writePlatformData(platformData, selected.bsc?.value);
     } catch (e) {
       if (errorCode(e) === "BASE_MAPPING_STALE") {
         // Re-open on the FRESH row: `variantTypeRow` is reactive, so the next

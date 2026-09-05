@@ -38,7 +38,9 @@ import { v } from "convex/values";
 import {
   slotEntries,
   slotFacet,
+  slotLabel,
   type PlatformDataShape,
+  type SlotBearingRow,
 } from "./platformSlots";
 
 /**
@@ -330,4 +332,124 @@ export function planBscFanOut(
     totalBeforeCap,
     capped,
   };
+}
+
+// ---------------------------------------------------------------------------
+// What the OPERATOR sees: sources, scope, and slots that are neither
+// ---------------------------------------------------------------------------
+
+/** A slot on this row that names a place cards come from. */
+export type BscSourceSlot = {
+  slot: string;
+  facet: BscSourceFacet;
+  id: string;
+  label: string;
+};
+
+/** A slot on this row that NARROWS the query rather than naming a source. */
+export type BscScopeSlot = {
+  slot: string;
+  facet: BscFacet;
+  id: string;
+  label: string;
+};
+
+/** A slot written before facets existed, on a level whose level-rule is silent. */
+export type BscUntaggedSlot = { slot: string; id: string; label: string };
+
+export type BscSourceView = {
+  /**
+   * One entry per SOURCE this row draws cards from. This is what a chip is.
+   */
+  sources: BscSourceSlot[];
+  scope: {
+    /**
+     * The facet filters the checklist fetch will actually send for this chain,
+     * straight from `resolveBscFacetFilters`. Held here so the panel and the
+     * fetch cannot drift: if the operator sees a source, it is because the
+     * same function that builds the request counted it as one.
+     */
+    filters: Record<string, string[]>;
+    /**
+     * The scope slots THIS ROW carries itself — the only scope worth putting
+     * on a chip. Scope inherited from an ancestor (the sport, the year, the
+     * set, the variant type a row sits under) is already spelled out in the
+     * breadcrumb above the panel, and repeating it per chip would turn one
+     * fact into four.
+     */
+    own: BscScopeSlot[];
+  };
+  /** Slots that resolve to no facet at all. Inert in the fetch; shown anyway. */
+  untagged: BscUntaggedSlot[];
+};
+
+/**
+ * NEO-239 — split this row's BSC slots into what an operator can act on.
+ *
+ * ## The distinction the panel got wrong
+ *
+ * A Base variant type shows two BSC slots: the `variant` slug that says "the
+ * base cards", and the `setName` slug Base mapping stored. Rendered as two
+ * identical chips they read as TWO SOURCES — as if the row pulled cards from
+ * two places — when one of them is not a source at all. It narrows the single
+ * source to a slice of itself.
+ *
+ * So: a chip is a SOURCE, and a source is a slot whose facet is in
+ * `BSC_SOURCE_FACETS`. `variant` is scope and is never a chip. That rule is
+ * level-agnostic on purpose — a `switch (row.level)` here is the same class of
+ * mistake as deriving the facet from the display value, because it re-decides
+ * centrally something the slot already states.
+ *
+ * ## Why it delegates to `resolveBscFacetFilters`
+ *
+ * The panel must not have its own opinion about what counts as a source. The
+ * fetch's answer IS the answer, so the chain-wide filters come back untouched
+ * from the same function the request is built with, and the per-slot walk below
+ * applies the identical `tagged ?? legacyBscFacetForLevel(level)` rule. A slot
+ * the fetch would ignore is a slot the operator sees under "needs re-mapping",
+ * never a chip that promises cards it will not deliver.
+ *
+ * `chain` is root→leaf INCLUDING the row itself, exactly as
+ * `resolveBscFacetFilters` takes it. `row` must be the leaf; passing a
+ * different row would describe one row's chips under another's scope.
+ */
+export function bscSourceView(
+  row: SlotBearingRow & FacetBearingRow,
+  chain: readonly FacetBearingRow[],
+): BscSourceView {
+  const sources: BscSourceSlot[] = [];
+  const own: BscScopeSlot[] = [];
+  const untagged: BscUntaggedSlot[] = [];
+
+  for (const { slot, id } of slotEntries(row, "bsc")) {
+    const facet = slotFacet(row, "bsc", slot) ?? legacyBscFacetForLevel(row.level);
+    const label = slotLabel(row, "bsc", slot);
+    if (!facet) {
+      untagged.push({ slot, id, label });
+    } else if (BSC_SOURCE_FACETS.has(facet)) {
+      sources.push({ slot, facet: facet as BscSourceFacet, id, label });
+    } else {
+      own.push({ slot, facet: facet as BscFacet, id, label });
+    }
+  }
+
+  return {
+    sources,
+    scope: { filters: resolveBscFacetFilters(chain).filters, own },
+    untagged,
+  };
+}
+
+/**
+ * The qualifier a chip carries, or `undefined` when the row scopes nothing
+ * itself.
+ *
+ * Reads as a noun phrase after the source name — "Topps · base cards" — because
+ * that is the sentence the operator is checking: which set, and which part of
+ * it. Built from the slot's LABEL rather than its id so it says "base cards"
+ * and not "2024-topps-chrome-base cards"; the id is on the chip already.
+ */
+export function bscScopeQualifier(own: readonly BscScopeSlot[]): string | undefined {
+  if (own.length === 0) return undefined;
+  return own.map((s) => `${s.label.toLowerCase()} cards`).join(" + ");
 }

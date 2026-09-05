@@ -49,6 +49,7 @@ import { slotEntries, slotIds, slotLabel } from "../../convex/platformSlots";
 import type { Id } from "../../convex/_generated/dataModel";
 import type { SourceChips } from "../SetSelector/ChecklistSourceFilter";
 import { isBaseRole } from "../SetSelector/baseRole";
+import { bscSourceView } from "../../convex/bscFacets";
 
 import SportSelector from "../SetSelector/SportSelector";
 import YearSelector from "../SetSelector/YearSelector";
@@ -351,6 +352,14 @@ export default function SetSelector() {
     api.selectorOptions.getSelectorOptionById,
     cardChecklistId ? { id: cardChecklistId } : "skip",
   );
+  // NEO-239: the BSC half of the source filter is the same list of SOURCES the
+  // attach panel shows, so the chain the fetch buckets on is read here too.
+  // Convex dedupes it against MultiSourcePanel's identical query whenever both
+  // are mounted.
+  const cardChecklistChain = useQuery(
+    api.selectorOptions.getAncestorChain,
+    cardChecklistId ? { id: cardChecklistId } : "skip",
+  );
   const sourceChips: SourceChips = useMemo(() => {
     if (!cardChecklistRow) return {};
     const out: SourceChips = {};
@@ -359,7 +368,19 @@ export default function SetSelector() {
       // platformData.<side>.src. Keying them by marketplace id would not
       // survive a row holding the same set in two slots, and would not match
       // what the per-card filter compares against.
-      const entries = slotEntries(cardChecklistRow, side);
+      //
+      // NEO-239: on the BSC side the list is the row's SOURCES, not its slots.
+      // A `variant` slug scopes the query — no card is ever attributed to it —
+      // so a chip for it filtered the checklist down to nothing, and on a Base
+      // row it was the chip that looked most like the obvious one to press.
+      // SportLots has one unit of attachment and no facets, so it keeps the
+      // plain slot walk.
+      const entries =
+        side === "bsc"
+          ? bscSourceView(cardChecklistRow, cardChecklistChain ?? [
+              cardChecklistRow,
+            ]).sources.map((s) => ({ slot: s.slot, id: s.id }))
+          : slotEntries(cardChecklistRow, side);
       if (entries.length <= 1) continue;
       const primarySlotKey =
         cardChecklistRow.primaryPlatformId?.[side] ?? entries[0].slot;
@@ -372,7 +393,7 @@ export default function SetSelector() {
       };
     }
     return out;
-  }, [cardChecklistRow]);
+  }, [cardChecklistRow, cardChecklistChain]);
   // Slot -> display label, for the per-card source badge. Falls back to the
   // marketplace id via slotLabel when a slot carries no label.
   const sourceLabelMaps = useMemo(() => {

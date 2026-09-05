@@ -6,7 +6,11 @@ import type { Id } from "../../convex/_generated/dataModel";
 import NeonButton from "../modules/NeonButton";
 import AttachSetsDialog from "./AttachSetsDialog";
 import { slotEntries, slotFacet, slotLabel } from "../../convex/platformSlots";
-import type { BscFacet } from "../../convex/bscFacets";
+import {
+  bscScopeQualifier,
+  bscSourceView,
+  type BscSourceFacet,
+} from "../../convex/bscFacets";
 import { SIDE_LABEL, type SyncSide } from "./selector-sync-feedback";
 
 /**
@@ -76,14 +80,22 @@ type SlotChip = {
    * slot the reconciler writes — those are the untagged ones the fetch handles
    * by NB level, so "no tag" is a real, visible state rather than a gap.
    *
-   * NEO-239 added a third: `variant`, the BSC axis a variantType row filters on
-   * (what used to be re-derived from the row's DISPLAY VALUE, which is why
-   * those rows could not be renamed). An untagged variantType row makes the BSC
-   * side unresolvable and is skipped, so whether this tag is present is now the
-   * difference between a row that fetches and one that does not — the operator
-   * has to be able to see it.
+   * Typed to the SOURCE facets only. `variant` is a real BSC facet but never a
+   * chip: it scopes the query rather than naming a place cards come from, so it
+   * arrives as `qualifier` below instead. Narrowing the type is what makes that
+   * a fact the compiler holds rather than a rule a future edit can forget.
    */
-  facet?: BscFacet;
+  facet?: BscSourceFacet;
+  /**
+   * What this row's OWN scope narrows the source to — "base cards" — rendered
+   * after the label as "Topps · base cards".
+   *
+   * Only the row's own scope. The set an insert sits under, its sport, its
+   * year and its variant type are ancestors, and the breadcrumb above the
+   * panel already names them; repeating them per chip turns one fact into four
+   * and makes the chip look like it is describing a different source.
+   */
+  qualifier?: string;
 };
 
 /** Detach options carried from the chip's confirm to the mutation. */
@@ -198,6 +210,14 @@ export default function MultiSourcePanel({
     }),
     [bscEntries, slEntries],
   );
+  // NEO-239 — the BSC column's whole content, decided by the same function the
+  // checklist fetch uses. The panel deliberately has no opinion of its own
+  // about what counts as a source: if it showed one the fetch would not query,
+  // the operator would be told cards come from somewhere they do not.
+  const bscView = useMemo(
+    () => (row && chain ? bscSourceView(row, chain) : null),
+    [row, chain],
+  );
 
   if (!row || !chain) return null;
   if (
@@ -229,10 +249,21 @@ export default function MultiSourcePanel({
       id: e.id,
       label: slotLabel(row, side, e.slot),
       isPrimary: e.slot === primary,
-      ...(slotFacet(row, side, e.slot)
-        ? { facet: slotFacet(row, side, e.slot) }
-        : {}),
     }));
+
+  // One chip per SOURCE. A Base row carries a `variant` slug too — "the base
+  // cards" — and rendering it beside the set it narrows made the row look like
+  // it drew from two places (the reported bug). It is the qualifier now, and
+  // the same one hangs off every source because it narrows all of them.
+  const bscQualifier = bscView ? bscScopeQualifier(bscView.scope.own) : undefined;
+  const bscChips: SlotChip[] = (bscView?.sources ?? []).map((s) => ({
+    slot: s.slot,
+    id: s.id,
+    label: s.label,
+    isPrimary: s.slot === primaryBscSlot,
+    facet: s.facet,
+    ...(bscQualifier ? { qualifier: bscQualifier } : {}),
+  }));
 
   // NEO-239: no row is hidden here. A set either carries marketplace ids or
   // it does not, and both behave the same — an id can be attached to ANY row,
@@ -273,7 +304,8 @@ export default function MultiSourcePanel({
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <SideColumn
           side="bsc"
-          chips={toChips(bscEntries, "bsc", primaryBscSlot)}
+          chips={bscChips}
+          untagged={bscView?.untagged ?? []}
           countFor={(slot) => countFor("bsc", slot)}
           onDetach={(slot, opts) =>
             detach({
@@ -326,22 +358,21 @@ export default function MultiSourcePanel({
 }
 
 /**
- * What each BSC facet is CALLED in this panel.
+ * What each BSC SOURCE facet is CALLED in this panel.
  *
- * `variant` is BSC's own axis of Base / Insert / Parallel, which is NB's
- * variantType column, so it is named for the NB level the operator is looking
- * at rather than for BSC's word — the two "variant" facets would otherwise be
- * one indistinguishable label, and they source completely different things.
+ * No `variant` entry, and it is not an omission: a `variant` slot is scope and
+ * never reaches a chip (NEO-239). Its surface is the BASE SET tag in the panel
+ * header and the "· base cards" qualifier on the chips it narrows.
  */
-const FACET_NOUN: Record<BscFacet, string> = {
+const FACET_NOUN: Record<BscSourceFacet, string> = {
   setName: "set",
   variantName: "variant",
-  variant: "variant type",
 };
 
 function SideColumn({
   side,
   chips,
+  untagged = [],
   countFor,
   onDetach,
   onRename,
@@ -349,6 +380,11 @@ function SideColumn({
 }: {
   side: Side;
   chips: SlotChip[];
+  /**
+   * BSC slots that resolve to no facet at all — written before NEO-189 tagged
+   * them, on a level whose level-rule is silent. The fetch ignores them.
+   */
+  untagged?: Array<{ slot: string; id: string; label: string }>;
   countFor: (slot: string) => number | undefined;
   onDetach: (slot: string, opts?: DetachOptions) => Promise<unknown>;
   onRename: (slot: string, label: string) => Promise<unknown>;
@@ -359,8 +395,8 @@ function SideColumn({
       <header className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">
         {SIDE_LABEL[side]}
       </header>
-      {chips.length === 0 ? (
-        <div className="text-xs text-gray-500 italic">No sets attached.</div>
+      {chips.length === 0 && untagged.length === 0 ? (
+        <div className="text-xs text-gray-400 italic">No sets attached.</div>
       ) : (
         <ul className="flex flex-col gap-1.5">
           {chips.map((chip) => (
@@ -375,6 +411,38 @@ function SideColumn({
             />
           ))}
         </ul>
+      )}
+      {untagged.length > 0 && (
+        // NEO-239 — shown, inert, and named for the fix.
+        //
+        // These could be hidden: they source nothing, and the column is about
+        // sources. But an untagged slot is exactly how the NEO-189 corruption
+        // survived unnoticed — a mis-saved mapping wrote a setName slug into a
+        // variantType row, and nothing on any screen said so. A slot you cannot
+        // see and cannot act on is the bug that made this ticket necessary.
+        //
+        // No × and no rename: the remedy is to re-map it in the attach dialog,
+        // where the facet gets chosen, and offering a detach here would let an
+        // operator "fix" it by deleting the evidence.
+        <div className="mt-3">
+          <p className="text-[10px] uppercase tracking-wide text-gray-400">
+            Needs re-mapping
+          </p>
+          <ul className="mt-1 flex flex-col gap-1">
+            {untagged.map((u) => (
+              <li
+                key={u.slot}
+                className="text-xs text-gray-400 break-words"
+                title="Attached before sources were labelled — re-attach it from “Attach more…” to say which set it is."
+              >
+                {u.label}{" "}
+                <span className="text-[10px] text-gray-500 break-all">
+                  {u.id}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
     </div>
   );
@@ -618,6 +686,14 @@ function Chip({
         >
           {chip.label}
         </button>
+      )}
+      {chip.qualifier && (
+        // Outside the rename button on purpose: the qualifier is not part of
+        // the label the operator can edit, it is what the row's own scope does
+        // to this source.
+        <span className="text-xs text-gray-400 shrink-0">
+          · {chip.qualifier}
+        </span>
       )}
       <span className="text-[10px] text-gray-500 break-all" aria-hidden>
         {chip.id}

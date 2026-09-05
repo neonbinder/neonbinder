@@ -301,9 +301,14 @@ describe("BaseMappingForm — cancel-recovery fix (NEO-71-74)", () => {
       fireEvent.click(screen.getByText("Confirm Base Set"));
     });
 
+    // NEO-239: BSC's own name for the picked set rides along as the setName
+    // slot's LABEL. Without it slotLabel fell back to the slug and the
+    // Multi-source panel read "topps-chrome topps-chrome" — the slug once as
+    // the chip's name and once as its id.
     expect(mockSetPlatformData).toHaveBeenCalledWith({
       variantTypeId: VARIANT_TYPE_ID,
       platformData: { bsc: "topps-chrome" },
+      bscLabel: "2024 Topps Chrome",
     });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
@@ -336,6 +341,7 @@ describe("BaseMappingForm — cancel-recovery fix (NEO-71-74)", () => {
     expect(mockSetPlatformData).toHaveBeenCalledWith({
       variantTypeId: VARIANT_TYPE_ID,
       platformData: { bsc: "2024-topps-chrome" },
+      bscLabel: "2024 Topps Chrome",
     });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
