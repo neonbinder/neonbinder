@@ -38,10 +38,22 @@ incoming full string and finds the same row.
 heuristic: that would turn "Nippon-Ham Fighters" into a team from Nippon-Ham
 and give "San Diego State Aztecs" a location it does not have. A row is split
 only when ESPN's per-league team list carries a team with the *same dedup key*
-and ESPN's own `location` is a whole-word prefix of our name. Everything else
-is left whole and listed for you (§5). Wikidata is deliberately not consulted —
-its P159/P131 values are corporate headquarters, not team locations
-("Nishi-Shinjuku" for the Chiba Lotte Marines).
+and ESPN's own `location` sits at the front of our name as whole words.
+Everything else is left whole and listed for you (§5). Wikidata is deliberately
+not consulted — its P159/P131 values are corporate headquarters, not team
+locations ("Nishi-Shinjuku" for the Chiba Lotte Marines).
+
+**Where the two spell the place differently, our spelling wins.** Prod holds a
+row named `St Louis Blues`; ESPN writes `St. Louis`. A character-for-character
+prefix test fails on the period, so the task falls back to one extra rule, and
+it is a rule rather than a judgement: take as many leading words of *our* name
+as ESPN's location has (two, here), and accept the split only if those words
+normalise to the same string ESPN's location does. `St Louis` does, so the row
+splits — and it stores **`St Louis`**, not `St. Louis`. Writing ESPN's
+punctuation onto a name an operator typed would be a rename wearing a split's
+clothes. Word count alone is never enough: `Yankees, New York` against ESPN's
+`New York` gives leading words `Yankees, New`, which normalise to `new yankees`
+and not `new york`, so that row is refused and reported.
 
 ---
 
@@ -208,7 +220,7 @@ The counts sum to `scanned`; every row lands in exactly one bucket.
 | `split_espn` | Patched. ESPN named the place part and it was a whole-word prefix. | Nothing. |
 | `skipped_already_split` | The row already carries a `location`. | Nothing — this is what makes a re-run a no-op. |
 | `skipped_no_source` | No ESPN team in that sport shares this row's dedup key: colleges, NPB/KBO, minor-league affiliates, E2E leftovers, defunct franchises. Listed in `noSource`. | Split by hand (§6), or leave whole if it has no location. |
-| `skipped_not_prefix` | ESPN matched the team but its `location` is not a whole-word prefix of our name — "Los Angeles" against a row reading "LA Angels", or "St. Louis" against "St Louis Blues". Listed in `notPrefix` with ESPN's answer beside it. | Split by hand. Forcing it would be a rename, not a split. |
+| `skipped_not_prefix` | ESPN matched the team but its `location` does not sit at the front of our name as whole words, under either test in §1 — "Los Angeles" against a row reading "LA Angels", or "New York" against "Yankees, New York". Listed in `notPrefix` with ESPN's answer beside it. A pure punctuation difference does **not** land here. | Split by hand. Forcing it would be a rename, not a split. |
 | `skipped_key_mismatch` | The row's stored `nameNormalized` is not what its own name normalises to — a hand-written or pre-`teamRowFields` key. Listed in `keyMismatch`. | Look at it. Re-deriving the key here would silently repoint every card that resolves through that team, so the task will not do it. |
 
 A `ConvexError` naming a dedup key that "would change" means the invariant

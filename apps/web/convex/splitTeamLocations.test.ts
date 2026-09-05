@@ -302,8 +302,10 @@ describe("NEO-236 splitTeamLocations — splitting from ESPN", () => {
   test("matches ESPN by dedup key, so word order and punctuation cannot miss", async () => {
     // "Yankees, New York" is a real shape in marketplace payloads, and it is
     // why `nameNormalized` token-sorts in the first place. The row still finds
-    // its ESPN entry — and then does NOT split, because "New York" is not a
-    // prefix of that string. Matching and splitting are separate questions.
+    // its ESPN entry — and then does NOT split, because neither the strict
+    // prefix nor the word-boundary equivalence fallback can place "New York" at
+    // the front of it. Matching and splitting are separate questions; the
+    // fallback's own refusal is pinned below.
     const t = convexTest(schema, modules);
     await seed(t, [
       { value: "Baseball", espn: MLB, teams: [{ name: "Yankees, New York" }] },
@@ -524,19 +526,21 @@ describe("NEO-236 splitTeamLocations — the rows it refuses to touch", () => {
     ]);
   });
 
-  test("punctuation that differs between our row and ESPN is refused, not forced", async () => {
+  test("punctuation differing from ESPN still splits, keeping OUR spelling", async () => {
     /**
-     * The documented edge from the NEO-236 brief. Our row reads "St Louis
-     * Blues"; ESPN spells the place "St. Louis". The two MATCH — both normalise
-     * to "blues louis st", so the row finds its ESPN entry — but the split
-     * still fails, because `splitTeamName` compares raw characters: "St Louis "
-     * is not "st. louis".
+     * The real prod row. Ours reads "St Louis Blues"; ESPN spells the place
+     * "St. Louis". The two MATCH — both normalise to "blues louis st", which is
+     * how the ESPN entry is found at all — but `splitTeamName` compares raw
+     * characters and "St Louis " is not "st. louis", so the strict prefix says
+     * no.
      *
-     * Left as `skipped_not_prefix` on purpose. Forcing it would mean choosing
-     * whose punctuation wins, and writing ESPN's "St. Louis" onto a row whose
-     * operator typed "St Louis" is a rename, not a split — the one thing this
-     * task must never do silently. The row is listed with ESPN's answer beside
-     * it, so the hand split on /admin/teams is one glance.
+     * `splitTeamNameAtEquivalentPrefix` closes it exactly: ESPN's location is
+     * two words, our name's first two words are "St Louis", and those normalise
+     * to the same thing ESPN's location does. So the split lands at that word
+     * boundary — and the stored location is **"St Louis"**, our spelling, not
+     * ESPN's. That is the assertion that matters: writing "St. Louis" onto a
+     * row an operator typed as "St Louis" is a rename wearing a split's
+     * clothes.
      */
     const t = convexTest(schema, modules);
     await seed(t, [
@@ -548,16 +552,47 @@ describe("NEO-236 splitTeamLocations — the rows it refuses to touch", () => {
 
     const result = await runSplit(t, false);
 
+    expect(result.counts.split_espn).toBe(1);
+    expect(result.counts.skipped_not_prefix).toBe(0);
+    expect(identityOf(await allTeams(t))).toEqual([
+      {
+        name: "Blues",
+        // OUR spelling. ESPN said "St. Louis"; the row keeps its own.
+        location: "St Louis",
+        nameNormalized: "blues louis st",
+      },
+    ]);
+  });
+
+  test("the equivalence fallback refuses when the leading words are a different place", async () => {
+    /**
+     * The guard on the rule above, and the reason it checks equivalence rather
+     * than word count alone. "Yankees, New York" against ESPN's "New York":
+     * ESPN's location is two words, our first two words are "Yankees, New",
+     * and those normalise to "new yankees" — not "new york". So it refuses,
+     * and the row is reported instead of being cut into
+     * ("Yankees, New", "York").
+     */
+    const t = convexTest(schema, modules);
+    await seed(t, [
+      { value: "Baseball", espn: MLB, teams: [{ name: "Yankees, New York" }] },
+    ]);
+    espn.lists.set(MLB.path, [
+      { displayName: "New York Yankees", location: "New York" },
+    ]);
+
+    const result = await runSplit(t, false);
+
+    expect(result.counts.split_espn).toBe(0);
     expect(result.counts.skipped_not_prefix).toBe(1);
-    expect(result.counts.skipped_no_source).toBe(0);
     expect(result.notPrefix).toEqual([
-      { name: "St Louis Blues", sport: "Hockey", espnLocation: "St. Louis" },
+      { name: "Yankees, New York", sport: "Baseball", espnLocation: "New York" },
     ]);
     expect(identityOf(await allTeams(t))).toEqual([
       {
-        name: "St Louis Blues",
+        name: "Yankees, New York",
         location: undefined,
-        nameNormalized: "blues louis st",
+        nameNormalized: "new yankees york",
       },
     ]);
   });

@@ -42,8 +42,11 @@
  * San Diego — both wrong, both unreviewable once written. So the split is
  * applied only where ESPN's own per-league team list names a team whose
  * display name is *the same team* (identical dedup key) and whose `location`
- * is a whole-word prefix of the row's name. Everything else is left whole and
- * LISTED in the result for an operator to split by hand on `/admin/teams`.
+ * corresponds to a leading run of whole words in the row's name — either
+ * character-for-character, or by word-boundary equivalence when only the
+ * punctuation differs (`splitTeamNameAtEquivalentPrefix`). Everything else is
+ * left whole and LISTED in the result for an operator to split by hand on
+ * `/admin/teams`.
  *
  * Wikidata is deliberately not consulted: its P159/P131 values are corporate
  * headquarters, not team locations — dev's rows read "Nishi-Shinjuku" for the
@@ -125,6 +128,69 @@ function assertSplitArmed(): void {
 }
 
 /**
+ * The punctuation fallback: split at the same WORD BOUNDARY ESPN used, keeping
+ * OUR spelling of the place.
+ *
+ * `splitTeamName` (lib/teams/team-name.ts) compares raw characters, which is
+ * exactly right for deciding "is this string the front of that one" and exactly
+ * wrong for the case prod actually holds: our row reads "St Louis Blues" and
+ * ESPN spells the place "St. Louis". The two are the same team — they share a
+ * dedup key, which is how we found the ESPN entry at all — but the character
+ * comparison fails on the period and the row would sit in `skipped_not_prefix`
+ * forever.
+ *
+ * The rule, and it is a rule rather than a judgement:
+ *
+ *   N = the word count of ESPN's location (2 for "St. Louis")
+ *   take the first N whitespace-separated words of OUR name ("St Louis")
+ *   accept ONLY if those words normalise to what ESPN's location normalises to
+ *
+ * `normalizeEntityName` is the same function that decides two team names are
+ * the same row, so "these N words ARE that place" is settled by the codebase's
+ * existing notion of name equality, not by a new one invented here.
+ *
+ * Two properties this must have, both pinned by tests:
+ *
+ * - **Our spelling wins.** The returned location is the words as OUR row spells
+ *   them ("St Louis"), never ESPN's ("St. Louis"). Writing ESPN's punctuation
+ *   onto a row an operator typed would be a rename wearing a split's clothes,
+ *   and the whole task exists to not do that. It also keeps the recomposed full
+ *   name byte-identical to what the row already held, which is what makes the
+ *   dedup-key assertion downstream trivially true.
+ * - **It still refuses a real mismatch.** "Yankees, New York" against ESPN's
+ *   "New York": the first two words are "Yankees, New", which normalise to
+ *   "new yankees" — not "new york" — so this returns null and the row is
+ *   reported rather than mangled. Word COUNT alone is never enough; the
+ *   equivalence check is what makes this exact instead of a guess.
+ *
+ * Returns null when the counts leave nothing for the nickname, so a row whose
+ * whole name is the location is never emptied.
+ */
+function splitTeamNameAtEquivalentPrefix(
+  fullName: string,
+  location: string,
+): { location: string; name: string } | null {
+  const full = fullName.trim().replace(/\s+/g, " ");
+  const loc = location.trim().replace(/\s+/g, " ");
+  if (!full || !loc) return null;
+
+  const locWords = loc.split(" ");
+  const fullWords = full.split(" ");
+  // Strictly fewer, so something is always left to be the nickname.
+  if (fullWords.length <= locWords.length) return null;
+
+  const prefix = fullWords.slice(0, locWords.length).join(" ");
+  const name = fullWords.slice(locWords.length).join(" ");
+  if (!name) return null;
+
+  const prefixKey = normalizeEntityName(prefix);
+  if (prefixKey.length === 0 || prefixKey !== normalizeEntityName(loc)) return null;
+
+  // `prefix`, not `loc`: our spelling, never ESPN's.
+  return { location: prefix, name };
+}
+
+/**
  * What happened to one row. Every row lands in exactly one of these, and the
  * counts sum to the number of rows scanned.
  */
@@ -141,11 +207,15 @@ type Outcome =
    */
   | "skipped_no_source"
   /**
-   * ESPN matched, but its `location` is not a whole-word prefix of our name —
-   * ESPN says "Los Angeles" where our row reads "LA Angels", or the two spell
-   * the place differently ("St. Louis" vs "St Louis"). Never forced: the
-   * mechanical split would produce a name nobody wrote. Listed with ESPN's
-   * answer so the hand split is one glance rather than a lookup.
+   * ESPN matched the team, but its `location` does not correspond to any
+   * leading run of words in our name — ESPN says "Los Angeles" where our row
+   * reads "LA Angels", or "New York" against "Yankees, New York". Both the
+   * character-exact prefix and the word-boundary equivalence fallback said no.
+   * Never forced: splitting anyway would produce a name nobody wrote. Listed
+   * with ESPN's answer so the hand split is one glance rather than a lookup.
+   *
+   * A pure punctuation difference ("St. Louis" against a row reading "St Louis
+   * Blues") does NOT land here — see `splitTeamNameAtEquivalentPrefix`.
    */
   | "skipped_not_prefix"
   /**
@@ -352,11 +422,14 @@ export const applyBatch = internalMutation({
         continue;
       }
 
-      // 4. Mechanical, whole-word, case-insensitive prefix. `splitTeamName`
-      //    decides nothing — it answers "does this string sit at the front of
-      //    that one", and a `null` here means the two spell the place
-      //    differently. Never forced.
-      const split = splitTeamName(row.name, espnLocation);
+      // 4. Mechanical, whole-word, case-insensitive prefix first; then the
+      //    word-boundary equivalence fallback for the case where the two spell
+      //    the place differently ("St. Louis" vs "St Louis"). Neither decides
+      //    anything — both answer "is this place the front of that name", and
+      //    a null from both means the answer is no. Never forced.
+      const split =
+        splitTeamName(row.name, espnLocation) ??
+        splitTeamNameAtEquivalentPrefix(row.name, espnLocation);
       if (!split) {
         counts.skipped_not_prefix += 1;
         notPrefix.push({ name: row.name, sport, espnLocation });
