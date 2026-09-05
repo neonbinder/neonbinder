@@ -1,0 +1,175 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Entity review — Link to Existing resolves an unknown name onto a player we already have instead of minting a duplicate"
+tags:
+  - set-selector
+  - regression
+---
+# R1 — ONE FEATURE (NEO-92, extended by NEO-212): "Link to Existing…". A
+# marketplace spells a player it already knows differently, and the fetch
+# surfaces that spelling as an unknown. The operator links it to the row
+# NeonBinder already holds; NO new player is minted for the incoming spelling.
+# Link, don't duplicate — that is the whole feature, and it is the reason the
+# wizard has three outcomes rather than two.
+#
+# R2 — HARD ASSERTIONS, no silent fall-through:
+#     (a) the review starts with nothing decided — "0 of N reviewed";
+#     (b) the row on screen is a PLAYER row (its link panel is labelled for
+#         players), asserted BEFORE the feature action as the precondition it is;
+#     (c) the search finds the existing roster row and offers it by name;
+#     (d) taking it records exactly ONE decision AND that decision is a LINK,
+#         not a create: the history reads "Linked to <name>". "Added as new"
+#         and "Skipped" are the other two strings that can appear there, so
+#         this assertion distinguishes all three;
+#     (e) the batch commits cleanly with the link on it ("Saved N cards"), which
+#         is what proves the link survives `recordDecision` and the commit's own
+#         re-resolution rather than only rendering.
+#
+# ⚠️ DATA DEPENDENCY — THE LINK TARGET.
+#   `players` is empty at the head of every run and the setup track fills it by
+#   committing the whole 2024 Topps Chrome Base checklist, so the Baseball roster
+#   this search reaches IS that set's players. **Shohei Ohtani** is card #1 of
+#   2024 Topps Chrome and is the target here.
+#
+#   If he is ever not in the roster, this flow fails at STEP 3's wait with a
+#   perfectly readable message, and the fix is to change the two literals in
+#   STEP 3 to another player setup provisions. It is deliberately NOT a name
+#   this flow creates: minting a fixture player would put a global row in
+#   `players` for every worker, and the roster is already a fixture the suite
+#   maintains.
+#
+# ⚠️ THE CURRENT ROW MUST BE A PLAYER. The wizard presents ONE row at a time and
+#   which row settles first is a race between live Wikidata lookups, so this
+#   flow depends on the approved SportLots source set queuing PLAYER unknowns
+#   only — its teams must already be known (ordinary MLB clubs, which setup's
+#   Topps Chrome commit creates). That is a stated criterion of the set; see
+#   util-attach-sl-set-and-open-wizard.yaml and .maestro/SET-REGISTRY.md. A team
+#   row here fails loudly at STEP 3(b), which is the right signal: the source set
+#   is wrong, not the flow.
+#
+# R7 — THIS FLOW MINTS NO PLAYER. A link creates nothing, and every other row is
+#   skipped — also a no-create decision. `players` is GLOBAL and empty at the
+#   head of every run, so a name added here would stop being unknown for every
+#   worker that fetches the same SportLots set afterwards and would silently
+#   shrink their wizards. The cards ARE committed, onto this flow's own private
+#   per-attempt set.
+#
+# R3 — DEDUP: Back is checklist-wizard-back-to-matching-resumes-decisions, Skip
+#   is checklist-wizard-skip-not-a-person (which owns the Skipped-names panel;
+#   the bulk skip here is only how this flow reaches its commit), the
+#   career-team mini-form is checklist-wizard-career-team-entry. Only this flow
+#   links.
+#
+# R7a — writes go to a PRIVATE set. `lce-<worker>-<attempt>` is hand-typed under
+#   the real Baseball / 2024 / Topps ancestors; no shared row is touched. Per
+#   ATTEMPT as well as per worker, because this flow COMMITS. Registered in
+#   .maestro/SET-REGISTRY.md.
+
+# ============================================================
+# LAUNCH + SIGN IN
+# ============================================================
+
+- launchApp
+- extendedWaitUntil:
+    visible: ".*Build set parameters using marketplace APIs.*"
+    timeout: 45000
+
+# ============================================================
+# SETUP — a private set, one real SportLots source, wizard open
+# ============================================================
+
+- runFlow:
+    file: util-attach-sl-set-and-open-wizard.yaml
+    env:
+      SET_NAME: "lce-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+
+# ============================================================
+# STEP 1 — R2(a): the review starts with nothing decided
+# ============================================================
+
+- assertVisible:
+    text: "0 of [0-9]+ reviewed.*"
+
+# ============================================================
+# STEP 2 — OPEN THE LINK PANEL
+# 30s, not the 7s default: the row offers no action until its background
+# Wikidata lookup — a live external round-trip — has come back or errored.
+# ============================================================
+
+- extendedWaitUntil:
+    visible:
+      id: "Link to existing instead"
+    timeout: 30000
+- tapOn:
+    id: "Link to existing instead"
+
+# ============================================================
+# STEP 3 — R2(b)+(c): a PLAYER row, and the roster row it will take
+#
+# (b) The panel's accessible name is "Search existing players" for a player row
+#     and "Search existing teams" for a team row, so this assert is also the
+#     precondition guard that the row under test is the kind this flow is about.
+# (c) `players.search` is a Convex search index scoped to the sport row, so
+#     "Ohtani" reaches the whole roster rather than a 500-row page of it.
+# ============================================================
+
+- assertVisible:
+    id: "Search existing players"
+- tapOn:
+    id: "Search existing players"
+- inputText: "Ohtani"
+# The 7s default. `players.search` is a Convex search index behind a 200ms
+# typeahead debounce; anything slower than that is a product finding, not a
+# timeout to inflate.
+- extendedWaitUntil:
+    visible:
+      id: "Link to Shohei Ohtani"
+
+# ============================================================
+# STEP 4 — R2(d): THE FEATURE — take the existing row
+#
+# The history line is where the decision is READ BACK, and it names the row that
+# was linked. "Linked to Shohei Ohtani" is the one string that can only be
+# produced by the link path: a create reads "Added as new" and a skip reads
+# "Skipped". Together with the counter moving to exactly 1, this says one
+# decision was recorded and it was a link.
+# ============================================================
+
+- tapOn:
+    id: "Link to Shohei Ohtani"
+- extendedWaitUntil:
+    visible:
+      text: "1 of [0-9]+ reviewed.*"
+- assertVisible:
+    text: "Decided \\(1\\)"
+- assertVisible:
+    text: "Linked to Shohei Ohtani"
+
+# ============================================================
+# STEP 5 — R2(e): commit with the link on the batch
+#
+# Every other row is skipped so the commit creates nothing. "Confirm & Save"
+# renders only once every row carries a decision, so its appearance is the
+# assertion that the bulk covered the rest; 120s covers a batch still draining
+# its live Wikidata queue.
+#
+# A clean "Saved N cards" is the end-to-end half of the claim: the link survived
+# `recordDecision` and the commit's own re-resolution of the linked id, not just
+# the render.
+# ============================================================
+
+- tapOn:
+    text: ".*Skip Remaining \\([0-9]+\\).*"
+- extendedWaitUntil:
+    visible:
+      text: ".*Confirm & Save.*"
+    timeout: 120000
+- tapOn:
+    text: ".*Confirm & Save.*"
+# 60s, not the 7s default: `commitCardChecklist` writes every kept card and
+# re-resolves the batch's decisions — including this flow's link — on the way
+# through. MEASURE IT on the first green run and trim.
+- extendedWaitUntil:
+    visible:
+      text: ".*Saved [0-9]+ cards.*"
+    timeout: 60000

@@ -276,9 +276,88 @@ end-to-end path — STEP 6 of `inserts-1996-score-one-nb-set-two-bsc-sources.yam
 which opens the wizard on a genuine cold two-source fetch and now also covers
 decide → Cancel (Esc) → "Discard 1 decision?" → keep, and the Enter commit.
 
-Do not re-create them against a custom subtree: it cannot produce an unknown
-name any more. See `todos/neo-220-221-e2e-fixture-plan.md` for the post-NEO-239
-conditions under which the back-and-resume reload path could return.
+Do not re-create them **the way they were written**: a marketplace-free subtree
+cannot produce an unknown name any more.
+
+**NEO-248 brought the coverage back a different way.** NEO-239 made marketplace
+resolvability PER SIDE, and SportLots needs ids only at sport and year — so a
+hand-typed set under the real Baseball / 2024 / Topps ancestors is
+BSC-unresolvable for good while SportLots becomes resolvable the moment one
+SportLots set id is attached through the Multi-source panel. That yields a
+private, per-worker, per-attempt set that fetches a REAL one-sided checklist:
+real unknown names, no shared row written, no BSC cost. The four replacements are
+
+| flow | what it owns |
+|---|---|
+| `checklist-wizard-back-to-matching-resumes-decisions` | "Back to matching" parks the review; re-confirming resumes the SAME batch with its decisions |
+| `checklist-wizard-skip-not-a-person` | the per-row skip, the bulk skip, and the set's own "Skipped names" list + Unskip |
+| `checklist-wizard-link-to-existing-player` | "Link to Existing" resolves onto a roster player instead of minting a duplicate |
+| `checklist-wizard-career-team-entry` | the inline career-team mini-form on a player row, and the decision it feeds |
+
+all sharing `util-attach-sl-set-and-open-wizard.yaml`. Their common fixture is
+the SportLots source set below — read that section before touching any of them.
+
+They deliberately REUSE the retired flows' prefixes (`wbr-`, `skp-`, `lce-`,
+`cte-`) — same feature, same owner, one name per behaviour. `fcd-` and `kod-`
+are retired outright: the discard confirm and the Enter commit both live in
+STEP 6 of `inserts-1996-score-one-nb-set-two-bsc-sources.yaml` now.
+
+### SportLots source set for the entity-review wizard fixtures — NEO-248 ⚠️ AWAITING OWNER APPROVAL
+
+The four `checklist-wizard-*` flows each build their own private set and attach
+**one** SportLots set to it. That SportLots set is not a NeonBinder row and no
+flow writes to it — it is READ, once per flow, to produce a real checklist. It
+still needs approval under rule 1: it is a live marketplace fetch with a real
+cost, paid four times per worker per run.
+
+**The constant lives in exactly one place**: the `evalScript` at the top of
+`flows/set-selector/util-attach-sl-set-and-open-wizard.yaml`. It currently holds
+the placeholder `TBD-AWAITING-OWNER-APPROVAL`, and **every one of the four flows
+fails at the attach step until it is replaced.** Do not enqueue them before then.
+
+**What the set has to be** — five conditions, all of which need a live probe
+against a deployment carrying NEO-239 (dev lags `main`, so dev cannot answer):
+
+1. **Under Baseball / 2024 / Topps**, so it appears in the attach pane, which
+   scopes SportLots by sport + year + manufacturer.
+2. **Small.** Every card is fetched, paired and reviewed inside one flow.
+3. **Its players are NOT already in `players`.** `setup.yaml` commits every 2024
+   Topps Chrome Base / Future Stars / Gold Wave player; a name the roster already
+   holds is not an unknown and never reaches the wizard. It must nevertheless
+   surface **at least two** unknown names — three of the four flows decide one row
+   by hand and bulk-decide the rest, and the bulk controls render only while at
+   least one row is undecided.
+4. **Its teams ARE already known** (ordinary MLB clubs, which setup's Topps
+   Chrome commit creates). The wizard shows ONE row at a time and which settles
+   first is a race between live Wikidata lookups, so a set that also queues
+   unknown TEAMS makes "the current row is a player" a coin flip — and
+   `checklist-wizard-link-to-existing-player` and
+   `checklist-wizard-career-team-entry` act on controls only a player row renders.
+
+5. **No other SportLots set in the pane contains its name as a substring.**
+   Maestro matches an `id:` (an aria-label) as a regex FIND, so
+   `Edit label for Topps Series 1` also matches
+   `Edit label for Topps Series 1 Chrome` — and the attached-chip assertion
+   (`Remove <name>`) has the same shape. The util filters the pane to the typed
+   name first, so the probe's check is: with that name typed, exactly ONE
+   candidate row remains.
+
+**Name it exactly as the attach pane DISPLAYS it.** `fetchSlAttachSets` passes
+`labelContext: { manufacturer }`, which strips the brand prefix, so the pane's
+label can differ from SportLots' own raw name — and the flows select the row by
+that label.
+
+**None of the four flows creates a player or a team.** That is a fixture
+constraint, not tidiness: `players` is GLOBAL and empty at the head of every run,
+so a name one worker "added as new" stops being unknown for every worker that
+fetches this same set afterwards, quietly draining the fixture. Two flows exit
+through Cancel → Discard and two decide every row as skip or link. If a future
+flow on this set needs to CREATE, it needs its own SportLots set.
+
+**Concurrency is unproven.** Eight runners may fetch this same SportLots set at
+once. Nothing is written on either side, so there is no correctness hazard — the
+open question is whether SportLots rate-limits. Add a `serial-marketplace`-style
+constraint only on evidence, not pre-emptively.
 
 ### Per-attempt custom SPORT rows — `custom-entry-survives-resync`, self-cleaning
 
@@ -337,18 +416,22 @@ would put the wrong question on screen.
 | `cna-` | `checklist-attention-badge-and-filter.yaml` (also `-${ATTEMPT_ID}`) |
 | `cnw-` | `checklist-attention-walker-missing-team.yaml` (also `-${ATTEMPT_ID}`) |
 | `clt-` | `custom-card-row-opens-panel-with-autotitle.yaml` |
+| `cte-` | `checklist-wizard-career-team-entry.yaml` (also `-${ATTEMPT_ID}`; attaches a SportLots set — see NEO-248 above) |
 | `cvar-` | `variation-link-group-and-unlink.yaml` |
 | `fp-` | `features-propagation.yaml` |
+| `lce-` | `checklist-wizard-link-to-existing-player.yaml` (also `-${ATTEMPT_ID}`; attaches a SportLots set — see NEO-248 above) |
 | `parallel-feature-` | `cards-parallel-custom.yaml` |
 | `pg-cancel-` | `parallel-grouping-cancel-discards.yaml` (also `-${ATTEMPT_ID}`) |
 | `pg-move-` | `move-parallels-of-inserts-custom.yaml` |
 | `pg-reject-` | `parallel-grouping-reject-parallel.yaml` (also `-${ATTEMPT_ID}`) |
 | `pp-` | `player-picker-create-custom-card.yaml` |
 | `rnm-` | `rename-selector-option.yaml` (also `-${ATTEMPT_ID}`; renamed in-flow to `rnmx-`) |
+| `skp-` | `checklist-wizard-skip-not-a-person.yaml` (also `-${ATTEMPT_ID}`; attaches a SportLots set — see NEO-248 above) |
 | `tlf-` | `checklist-title-length-limits-and-fixer.yaml` (also `-${ATTEMPT_ID}`) |
 | `tp-` | `team-picker.yaml` |
 | `tpc-` | `team-picker-create-custom-card.yaml` |
 | `vme-insert-` | `variant-metadata-editor-insert.yaml` |
+| `wbr-` | `checklist-wizard-back-to-matching-resumes-decisions.yaml` (also `-${ATTEMPT_ID}`; attaches a SportLots set — see NEO-248 above) |
 | `WOSet3-` | `new-chain-autopopulates-features.yaml` (under synthetic `E2E Test Sport N`) |
 | `xag-`, `xsrc-` | `cross-release-card-appears-in-guest-checklist.yaml` |
 | `xbg-`, `xbs-` | `cross-release-import-reports-missing-numbers.yaml` |
