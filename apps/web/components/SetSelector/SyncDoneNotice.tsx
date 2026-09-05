@@ -50,12 +50,6 @@ import type { UnlinkedNotice as Notice } from "./selector-sync-feedback";
  * be a stop sign in front of a signpost. Dismissal is per-surface — the column
  * calls the server's dismiss mutation so it does not come back on every
  * re-subscribe; the forms just drop their local copy.
- *
- * ## Maestro
- *
- * Deliberately contains no bare word "Custom": `custom-entry-survives-resync`
- * asserts `text: "Custom"` positioned `rightOf` a row, and a second match in the
- * same column is a resolution hazard.
  */
 export default function SyncDoneNotice({
   message,

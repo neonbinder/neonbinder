@@ -9,8 +9,9 @@ import SyncDoneNotice from "./SyncDoneNotice";
 import {
   blockedMessageFromErrors,
   buildUnlinkedNotices,
-  coveredSidesFromErrors,
+  coveredSidesFromFetch,
   returnedIdsFromFetch,
+  skippedSidesOf,
   totalsBySideFor,
   partialFailureMessage,
   planSinglePlatformStore,
@@ -204,7 +205,13 @@ export default function VariantForm({
         // to idle mode, which unmounts this form and takes the alert (and its
         // Retry button) with it. The operator has to be able to see that their
         // data was left alone and to re-run the sync.
-        const plan = planSinglePlatformStore(result.errors);
+        // NEO-239: a side skipped for lack of ids is not "reached and empty",
+        // so it never enters coveredSides — otherwise this store would unlink
+        // every child's slot on a marketplace the fetch never queried.
+        const plan = planSinglePlatformStore(
+          result.errors,
+          skippedSidesOf(result),
+        );
         if (plan.kind === "blocked") {
           setMessage(partialFailureMessage(SYNC_FAILED_PREFIX, plan));
           return;
@@ -221,25 +228,43 @@ export default function VariantForm({
           })),
         ];
 
-        let unlinkedRows: UnlinkedEntry[] = [];
-        if (items.length > 0) {
-          const stored = await storeReconciledOptions({
-            level: "insert",
-            parentId: variantTypeId,
-            reconciledItems: items,
-            // Both sides were reached (plan.kind === "store" proves it), so the
-            // store is allowed to detach links on the side that returned
-            // nothing. Without this the mutation infers coverage from the items
-            // it was handed and would never touch the empty side at all.
-            coveredSides: plan.coveredSides,
-            // What the FETCH returned, which on this path is the whole story:
-            // the empty side comes through as [], the statement that licenses
-            // unlinking its rows.
-            returnedIds: returnedIdsFromFetch(result),
-          });
-          unlinkedRows = stored?.unlinked ?? [];
-          setUnlinkedTotal(stored?.unlinkedTotal);
+        // NEO-239 — NOTHING CAME BACK, AND THAT IS NOT A FAILURE.
+        //
+        // Either both sides were skipped for want of ids on this chain (a
+        // hand-built subtree: `skippedSides` is both, `errors` is empty), or a
+        // side that WAS reached genuinely had nothing. In neither case is there
+        // anything to store, anything to unlink, or anything to retry — the
+        // only useful next move is "+ Custom", which lives on the idle column
+        // behind this form. So go idle rather than sitting on a Retry the
+        // operator cannot act on.
+        //
+        // A routing rule, not an optimisation: leaving the panel up stranded
+        // ten E2E flows at the Inserts column of a hand-made subtree (CI run
+        // 5), and it is what a real operator building a set by hand meets on
+        // their very first Sync.
+        if (items.length === 0) {
+          setMessage(null);
+          onDone?.();
+          return;
         }
+
+        const stored = await storeReconciledOptions({
+          level: "insert",
+          parentId: variantTypeId,
+          reconciledItems: items,
+          // Every side that was REACHED — the store is allowed to detach
+          // links only on those. Without it the mutation infers coverage from
+          // the items it was handed and never touches the empty side at all;
+          // with a SKIPPED side wrongly in it, the mutation would detach every
+          // child's slot on a marketplace nobody asked (NEO-239).
+          coveredSides: plan.coveredSides,
+          // What the FETCH returned, which on this path is the whole story:
+          // the empty side comes through as [], the statement that licenses
+          // unlinking its rows.
+          returnedIds: returnedIdsFromFetch(result),
+        });
+        const unlinkedRows: UnlinkedEntry[] = stored?.unlinked ?? [];
+        setUnlinkedTotal(stored?.unlinkedTotal);
 
         setUnlinked(unlinkedRows);
         setMessage(
@@ -269,8 +294,14 @@ export default function VariantForm({
 
   const handleReconciliationConfirm = async (result: ReconciledResult) => {
     // Both read off the fetch result the modal was built from. If it is gone
-    // we say nothing rather than guessing — see `coveredSidesFromErrors`.
-    const covered = coveredSidesFromErrors(reconciliationData?.errors);
+    // we say nothing rather than guessing — see `coveredSidesFromFetch`. A side
+    // the fetch SKIPPED for lack of ids is subtracted too (NEO-239): it raises
+    // no error, and calling it covered would unlink every child's slot on a
+    // marketplace that was never asked.
+    const covered = coveredSidesFromFetch(
+      reconciliationData?.errors,
+      skippedSidesOf(reconciliationData),
+    );
     const returnedIds = reconciliationData
       ? returnedIdsFromFetch(reconciliationData)
       : undefined;

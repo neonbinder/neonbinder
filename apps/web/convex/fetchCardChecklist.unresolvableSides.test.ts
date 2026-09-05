@@ -1,5 +1,13 @@
 /**
- * NEO-92 follow-up: `fetchCardChecklist`'s custom-subtree branch used to
+ * NEO-239 renamed what this file is about. The branch under test is no longer
+ * "is any ancestor user-created?" but "does this path carry the marketplace
+ * ids either side needs?" — see `convex/marketplaceResolvability.ts`. The
+ * fixture is unchanged in substance: a sport row with an empty `platformData`
+ * is unresolvable on BOTH sides, which is exactly the state the `isCustom`
+ * flag used to stand in for, and the skip lands in the same place in the
+ * action.
+ *
+ * NEO-92 follow-up: `fetchCardChecklist`'s skip branch used to
  * short-circuit to `{cards: [], unknownPlayers: [], unknownTeams: []}`
  * unconditionally — a real, previously-unclosed gap. A custom-only set's
  * cards can still carry `pendingPlayerNames`/`pendingTeamNames` (from
@@ -22,6 +30,7 @@ import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
+import { NO_MARKETPLACE_IDS_MESSAGE } from "./marketplaceResolvability";
 
 // convex-test v0.0.53 with Vitest uses import.meta.glob to discover modules.
 const modules = (import.meta as unknown as {
@@ -55,8 +64,8 @@ async function seedCustomSport(
         espn: { path: "baseball/mlb", leagueName: "Major League Baseball" },
         wikidata: { sportQid: "Q5369", hallOfFameQid: "Q1194380" },
       },
+      // No ids on either side — nothing to ask BSC or SportLots.
       platformData: {},
-      isCustom: true,
       children: [],
       lastUpdated: Date.now(),
     }),
@@ -72,8 +81,7 @@ async function seedCustomCardWithPendingPlayer(
     ctx.db.insert("cardChecklist", {
       selectorOptionId,
       cardNumber: "1",
-      cardName: "Custom Card",
-      isCustom: true,
+      cardName: "Hand Added Card",
       pendingPlayerNames: [playerName],
       platformData: {},
       sortOrder: 0,
@@ -82,7 +90,7 @@ async function seedCustomCardWithPendingPlayer(
   );
 }
 
-describe("fetchCardChecklist — custom subtree", () => {
+describe("fetchCardChecklist — a path with no marketplace ids", () => {
   test("surfaces a custom card's pendingPlayerNames as an unknown and opens a review batch", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_A);
@@ -129,7 +137,7 @@ describe("fetchCardChecklist — custom subtree", () => {
     expect(rows[0].kind).toBe("player");
   });
 
-  test("a custom subtree with no pending names commits with the old unconditional message, no batch opened", async () => {
+  test("a path with no marketplace ids commits with the fixed skip message, no batch opened", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_A);
     const selectorOptionId = await seedCustomSport(t);
@@ -139,7 +147,7 @@ describe("fetchCardChecklist — custom subtree", () => {
     });
 
     expect(result.success).toBe(true);
-    expect(result.message).toContain("no marketplace data available");
+    expect(result.message).toBe(NO_MARKETPLACE_IDS_MESSAGE);
     expect(result.candidateCount).toBe(0);
 
     const resolved = await asAdmin.action(

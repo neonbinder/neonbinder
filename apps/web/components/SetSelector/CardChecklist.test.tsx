@@ -45,6 +45,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Id } from "../../convex/_generated/dataModel";
+import { NO_MARKETPLACE_IDS_MESSAGE } from "../../convex/marketplaceResolvability";
 
 // ---------------------------------------------------------------------------
 // Module mocks — declared before the component import
@@ -286,6 +287,22 @@ vi.mock("convex/react", () => ({
 
 import CardChecklist from "./CardChecklist";
 
+/**
+ * The fetch's own words when it published nothing because neither marketplace
+ * side was resolvable — NEO-239 replaced the old "custom subtree" gate (any
+ * custom ancestor skips both marketplaces) with a per-side resolvability check
+ * (a side is fetched only when the ids it needs are present, otherwise skipped,
+ * never guessed by name).
+ *
+ * Imported from the server's own constant rather than retyped, so a reworded
+ * skip message cannot leave this fixture asserting a sentence the fetch stopped
+ * saying. It is a PAYLOAD fixture either way: these tests drive the
+ * zero-candidate route and care only that `candidateCount: 0` short-circuits
+ * before anything is published, and the component renders `message` verbatim
+ * without ever parsing it.
+ */
+const NOTHING_TO_FETCH_MESSAGE = NO_MARKETPLACE_IDS_MESSAGE;
+
 const VARIANT_ID = "variant-1" as unknown as Id<"selectorOptions">;
 const SPORT_ID = "sport-1" as unknown as Id<"selectorOptions">;
 
@@ -447,8 +464,9 @@ describe("CardChecklist — the pairing session outlives the fetch", () => {
   });
 
   it("skips the dialog entirely when the run produced no candidates, using the ancestor chain's sport", async () => {
-    // The custom-subtree path: `fetchCardChecklist` short-circuits before
-    // publishing anything. `candidateCount` is the whole signal — the client
+    // The nothing-to-fetch path: neither marketplace side is resolvable at
+    // this level, so `fetchCardChecklist` short-circuits before publishing
+    // anything. `candidateCount` is the whole signal — the client
     // cannot read it off the subscription, whose value at that instant may
     // still predate the batch write.
     state.liveCandidates = { ready: 0, total: 0, cards: [] };
@@ -458,7 +476,7 @@ describe("CardChecklist — the pairing session outlives the fetch", () => {
     await act(async () => {
       resolveFetch({
         success: true,
-        message: "Custom selector subtree — no marketplace data available.",
+        message: NOTHING_TO_FETCH_MESSAGE,
         candidateCount: 0,
       });
     });
@@ -560,7 +578,7 @@ describe("CardChecklist — commit paints 'Saved' only after the queries catch u
     await act(async () => {
       resolveFetch({
         success: true,
-        message: "Custom selector subtree — no marketplace data available.",
+        message: NOTHING_TO_FETCH_MESSAGE,
         candidateCount: 0,
       });
     });
@@ -687,7 +705,7 @@ async function commitZeroCandidatePath() {
   await act(async () => {
     resolveFetch({
       success: true,
-      message: "Custom selector subtree — no marketplace data available.",
+      message: NOTHING_TO_FETCH_MESSAGE,
       candidateCount: 0,
     });
   });
@@ -720,7 +738,7 @@ async function cancelEntityReviewPath() {
   await act(async () => {
     resolveFetch({
       success: true,
-      message: "Custom selector subtree — no marketplace data available.",
+      message: NOTHING_TO_FETCH_MESSAGE,
       candidateCount: 0,
     });
   });

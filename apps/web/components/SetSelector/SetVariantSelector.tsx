@@ -5,6 +5,7 @@ import EntitySelector, {
   displayByValue,
   type SelectorItem,
 } from "./EntitySelector";
+import { isBaseRole } from "./baseRole";
 
 type SetVariantSelectorProps = {
   setId: GenericId<"selectorOptions">;
@@ -24,8 +25,11 @@ const noDescription = () => undefined;
 // Variants column), but Base is terminal — its checklist attaches directly to
 // the variantType row, so its SL/BSC mapping is meaningful here and drives the
 // SL/BSC pills.
-const isBaseTerminal = (item: SelectorItem) =>
-  typeof item.value === "string" && item.value.toLowerCase().trim() === "base";
+//
+// NEO-239: the role comes off the row (`metadata.isBase`), not off its name. A
+// renamed Base still shows its pills; a row called "Base" that was never marked
+// as the base set does not. See ./baseRole.
+const isBaseTerminal = (item: SelectorItem) => isBaseRole(item.metadata);
 
 export default function SetVariantSelector({
   setId,

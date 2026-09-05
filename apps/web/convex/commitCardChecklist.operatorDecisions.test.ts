@@ -260,15 +260,23 @@ describe("commitCardChecklist — operatorDeleteIds guards", () => {
     expect(rows[0]._id).toBe(rowId);
   });
 
-  test("9c: an isCustom row is refused, not deleted", async () => {
+  test("9c: a row no marketplace claims IS deletable when the operator asks", async () => {
+    // NEO-239, decision 3 — a REVERSAL. This guard used to refuse the delete
+    // because the row was `isCustom`, while `deleteCard` one screen over
+    // deleted the same row without complaint. Two doors disagreeing about
+    // whether a card can be removed is worse than either answer.
+    //
+    // The trust boundary is unchanged and is what actually protects the data:
+    // the id must belong to THIS checklist (resolved against the
+    // by_selector_option snapshot) and must not have come back in this same
+    // commit. An operator who selected a row and pressed delete meant it.
     const t = convexTest(schema, modules);
     const { sportId, leafId } = await seedTree(t);
-    const customId = await t.run(async (ctx) =>
+    const handAddedId = await t.run(async (ctx) =>
       ctx.db.insert("cardChecklist", {
         selectorOptionId: leafId,
         cardNumber: "9001",
-        cardName: "Custom Card",
-        isCustom: true,
+        cardName: "Hand Added Card",
         platformData: {},
         sortOrder: 0,
         lastUpdated: Date.now(),
@@ -279,12 +287,12 @@ describe("commitCardChecklist — operatorDeleteIds guards", () => {
       selectorOptionId: leafId,
       sportId,
       cards: [card({ cardNumber: "1", cardName: "Marketplace Card", bscRef: "R1" })],
-      operatorDeleteIds: [customId],
+      operatorDeleteIds: [handAddedId],
     });
 
-    expect(result.operatorDeleted).toBe(0);
+    expect(result.operatorDeleted).toBe(1);
     const rows = await storedRows(t, leafId);
-    expect(rows.some((r) => r._id === customId)).toBe(true);
+    expect(rows.some((r) => r._id === handAddedId)).toBe(false);
   });
 
   test("9d: a legitimate delete cascades cross-listings and orphans variation children", async () => {

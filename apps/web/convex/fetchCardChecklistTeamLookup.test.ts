@@ -227,16 +227,19 @@ async function seedTree(t: ReturnType<typeof convexTest>): Promise<Id<"selectorO
         espn: { path: "baseball/mlb", leagueName: "Major League Baseball" },
         wikidata: { sportQid: "Q5369", hallOfFameQid: "Q1194380" },
       },
-      platformData: { bsc: { b0: "baseball" } },
-      platformSlotSeq: { bsc: 1 },
+      // NEO-239 — SportLots is scoped by `sprt` + `yr`, so those two ids are
+      // what make the SL side of this chain resolvable at all. Without them
+      // SportLots is SKIPPED rather than queried by display name.
+      platformData: { bsc: { b0: "baseball" }, sportlots: { s0: "BB" } },
+      platformSlotSeq: { bsc: 1, sportlots: 1 },
       children: [],
       lastUpdated: Date.now(),
     });
     const yearId = await ctx.db.insert("selectorOptions", {
       level: "year",
       value: "2024",
-      platformData: { bsc: { b0: "2024" } },
-      platformSlotSeq: { bsc: 1 },
+      platformData: { bsc: { b0: "2024" }, sportlots: { s0: "2024" } },
+      platformSlotSeq: { bsc: 1, sportlots: 1 },
       parentId: sportId,
       children: [],
       lastUpdated: Date.now(),
@@ -255,7 +258,14 @@ async function seedTree(t: ReturnType<typeof convexTest>): Promise<Id<"selectorO
     const variantTypeId = await ctx.db.insert("selectorOptions", {
       level: "variantType",
       value: "Base",
-      platformData: {},
+      // NEO-239 — BSC's `variant` axis comes from a TAGGED slot on this row,
+      // never from its display value. An empty `platformData` here used to
+      // still produce `variant: ["base"]` on the wire (derived from the name);
+      // now it means the BSC side of the chain is unresolvable and skipped.
+      platformData: { bsc: { b0: "base" } },
+      platformFacets: { bsc: { b0: "variant" } },
+      primaryPlatformId: { bsc: "b0" },
+      platformSlotSeq: { bsc: 1 },
       parentId: setNameId,
       children: [],
       lastUpdated: Date.now(),

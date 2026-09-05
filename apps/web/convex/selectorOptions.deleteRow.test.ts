@@ -16,7 +16,8 @@
  *  - a "rows" holding carries the children's LEVEL when they share one, and
  *    omits it when they are mixed
  *  - sport row holding players (and teams, and leagues) refused
- *  - non-custom variantType refused as protected, custom variantType allowed
+ *  - NEO-239: no protected row class — an EMPTY variantType deletes like any
+ *    other row; only its HOLDINGS can refuse it
  *  - an empty SYNCED row IS deletable and reports syncedBack
  *  - non-admin rejected
  *  - getSelectorOptionHoldings mirrors the mutation's view, non-destructively
@@ -674,7 +675,15 @@ describe("deleteSelectorOption — refusals", () => {
     expect(rows?.level).toBeUndefined();
   });
 
-  test("refuses a non-custom variantType as protected", async () => {
+  test("an EMPTY variantType deletes like any other row (NEO-239)", async () => {
+    // NEO-219 refused this as `SELECTOR_ROW_PROTECTED`, on the reasoning that
+    // Base/Insert/Parallel are load-bearing STRINGS the sync,
+    // `getBaseVariantBySet` and the BSC facet derivation resolve by name.
+    // NEO-239 made every one of those read the row instead — `metadata.isBase`
+    // and a `variant`-tagged slot — so the name is a name and there is no
+    // protected row class left. The other half of that reasoning, "the sync
+    // would just re-create it", is real and is reported as `syncedBack`, not
+    // used to refuse.
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
 
@@ -683,32 +692,38 @@ describe("deleteSelectorOption — refusals", () => {
       parentId: setId,
     });
 
-    const error = await expectRefusal(() =>
-      asAdmin.mutation(api.selectorOptions.deleteSelectorOption, { id: baseId }),
+    const result = await asAdmin.mutation(
+      api.selectorOptions.deleteSelectorOption,
+      { id: baseId },
     );
 
-    expect(error.data.code).toBe("SELECTOR_ROW_PROTECTED");
-    expect(await t.run(async (ctx) => ctx.db.get(baseId))).not.toBeNull();
+    expect(result.deleted).toBe(true);
+    expect(await t.run(async (ctx) => ctx.db.get(baseId))).toBeNull();
   });
 
-  test("allows an empty CUSTOM variantType", async () => {
+  test("a hand-added variantType deletes too — same row, same rules", async () => {
+    // It was already allowed; the point now is that it is not a DIFFERENT
+    // case. Nothing distinguishes the two rows to the delete path.
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
 
     const setId = await insertRow(t, "setName", "Topps Chrome");
-    const customVt = await insertRow(t, "variantType", "Box Topper", {
+    const handAdded = await insertRow(t, "variantType", "Box Topper", {
       parentId: setId,
-      isCustom: true,
     });
 
     const result = await asAdmin.mutation(
       api.selectorOptions.deleteSelectorOption,
-      { id: customVt },
+      { id: handAdded },
     );
     expect(result.deleted).toBe(true);
   });
 
-  test("reports protected before holdings so the reason is the durable one", async () => {
+  test("a variantType that HOLDS something is still refused, on the holdings", async () => {
+    // The refusal that survives, and the one that was always the real guard:
+    // what hangs off the row. NEO-219 reported `SELECTOR_ROW_PROTECTED` first
+    // here because that reason was durable; now there is only one reason, and
+    // it names what the operator has to clear.
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
 
@@ -721,7 +736,8 @@ describe("deleteSelectorOption — refusals", () => {
     const error = await expectRefusal(() =>
       asAdmin.mutation(api.selectorOptions.deleteSelectorOption, { id: baseId }),
     );
-    expect(error.data.code).toBe("SELECTOR_ROW_PROTECTED");
+    expect(error.data.code).toBe("SELECTOR_ROW_NOT_EMPTY");
+    expect(await t.run(async (ctx) => ctx.db.get(baseId))).not.toBeNull();
   });
 
   test("throws for a row that does not exist", async () => {
@@ -807,8 +823,13 @@ describe("deleteSelectorOption — audit log", () => {
       id: sportId,
       level: "sport",
       value: "Cricket",
-      isCustom: true,
+      // NEO-239 — `isCustom` is NOT on the line. Nothing writes the field any
+      // more, so logging it would read `false` on every row, including the
+      // hand-added ones, and say the opposite of what it looks like it says.
+      // `syncedBack` carries the fact that actually distinguishes them.
+      syncedBack: false,
     });
+    expect(lines[0]).not.toHaveProperty("isCustom");
   });
 });
 
@@ -871,7 +892,11 @@ describe("getSelectorOptionHoldings", () => {
     ]);
   });
 
-  test("flags a non-custom variantType as protected", async () => {
+  test("NO row reports as protected any more (NEO-239)", async () => {
+    // `protected` was `refusesValueRename` — a variantType row nobody typed by
+    // hand. That class is gone, so the field is always false and the delete
+    // affordance is never disabled on those grounds. Kept in the shape so the
+    // FE keeps compiling; it should stop reading it.
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
 
@@ -884,7 +909,7 @@ describe("getSelectorOptionHoldings", () => {
       api.selectorOptions.getSelectorOptionHoldings,
       { id: baseId },
     );
-    expect(holdings.protected).toBe(true);
+    expect(holdings.protected).toBe(false);
     expect(holdings.holds).toEqual([]);
   });
 

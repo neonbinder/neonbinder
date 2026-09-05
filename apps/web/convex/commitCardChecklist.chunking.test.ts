@@ -116,7 +116,12 @@ function card(
     autographType: undefined,
     cardVariation: extra.cardVariation,
     isVariation: extra.isVariation,
-    platformData: {},
+    // NEO-239 — a card carries a marketplace REF or it does not, and that is
+    // now what decides whether upstream dropping it means anything. A row with
+    // no ref has no upstream, so it is preserved and never reported as
+    // "no longer listed" (which is what `isCustom` used to say, less
+    // accurately). These fixtures model MARKETPLACE cards, so they carry one.
+    platformData: { bsc: { ref: `bsc-${cardNumber}` } },
   };
 }
 

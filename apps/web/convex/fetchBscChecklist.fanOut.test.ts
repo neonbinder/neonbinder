@@ -148,6 +148,24 @@ const PARENT = {
   variantType: "insert",
 };
 
+/**
+ * NEO-239 — the scope every checklist request must carry, as SLOT IDS.
+ *
+ * These used to ride in on `parentFilters` (NB display values, lowercased by
+ * the adapter) and `variant` was pinned from `parentFilters.variantType`. Both
+ * are gone: `parentFilters` is telemetry now, and `variant` comes from the
+ * row's `variant`-tagged slot like every other facet. A request missing any of
+ * sport / year / setName / variant is REFUSED rather than sent, because
+ * without a variant axis BSC answers with the set's base cards plus every
+ * insert and parallel in it.
+ */
+const SCOPE = {
+  sport: ["baseball"],
+  year: ["1996"],
+  setName: ["score"],
+  variant: ["insert"],
+};
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -165,7 +183,8 @@ describe("fetchBscChecklist — per-source-set fan-out (NEO-137)", () => {
       .withIdentity(ADMIN)
       .action(api.adapters.buysportscards.fetchBscChecklist, {
         parentFilters: PARENT,
-        platformFilters: { insert: [S2, S1] },
+        facetFilters: { ...SCOPE, variantName: [S2, S1] },
+        sourceFacet: "variantName",
       });
 
     // THE REGRESSION: one request per slug, never both in one facet.
@@ -201,7 +220,8 @@ describe("fetchBscChecklist — per-source-set fan-out (NEO-137)", () => {
       .withIdentity(ADMIN)
       .action(api.adapters.buysportscards.fetchBscChecklist, {
         parentFilters: PARENT,
-        platformFilters: { insert: [S2, S1] },
+        facetFilters: { ...SCOPE, variantName: [S2, S1] },
+        sourceFacet: "variantName",
       });
 
     expect(result.success).toBe(true);
@@ -255,7 +275,8 @@ describe("fetchBscChecklist — per-source-set fan-out (NEO-137)", () => {
       .withIdentity(ADMIN)
       .action(api.adapters.buysportscards.fetchBscChecklist, {
         parentFilters: PARENT,
-        platformFilters: { insert: [S2, S1] },
+        facetFilters: { ...SCOPE, variantName: [S2, S1] },
+        sourceFacet: "variantName",
       });
 
     expect(result.success).toBe(true);
@@ -298,7 +319,8 @@ describe("fetchBscChecklist — per-source-set fan-out (NEO-137)", () => {
       .withIdentity(ADMIN)
       .action(api.adapters.buysportscards.fetchBscChecklist, {
         parentFilters: PARENT,
-        platformFilters: { insert: [S2, S1] },
+        facetFilters: { ...SCOPE, variantName: [S2, S1] },
+        sourceFacet: "variantName",
       });
 
     const bySlug = new Map<string, number>();
@@ -320,7 +342,8 @@ describe("fetchBscChecklist — per-source-set fan-out (NEO-137)", () => {
       .withIdentity(ADMIN)
       .action(api.adapters.buysportscards.fetchBscChecklist, {
         parentFilters: PARENT,
-        platformFilters: { insert: [S2] },
+        facetFilters: { ...SCOPE, variantName: [S2] },
+        sourceFacet: "variantName",
       });
 
     expect(recorded).toHaveLength(1);
@@ -346,7 +369,8 @@ describe("fetchBscChecklist — per-source-set fan-out (NEO-137)", () => {
       .withIdentity(ADMIN)
       .action(api.adapters.buysportscards.fetchBscChecklist, {
         parentFilters: PARENT,
-        platformFilters: { insert: [S2, S1] },
+        facetFilters: { ...SCOPE, variantName: [S2, S1] },
+        sourceFacet: "variantName",
       });
 
     expect(result.success).toBe(false);
@@ -377,7 +401,8 @@ describe("fetchBscChecklist — per-source-set fan-out (NEO-137)", () => {
       .withIdentity(ADMIN)
       .action(api.adapters.buysportscards.fetchBscChecklist, {
         parentFilters: PARENT,
-        platformFilters: { insert: [S2, S1] },
+        facetFilters: { ...SCOPE, variantName: [S2, S1] },
+        sourceFacet: "variantName",
       });
 
     expect(recorded).toHaveLength(2);
@@ -467,6 +492,7 @@ describe("fetchBscChecklist — setName fan-out (NEO-189)", () => {
         facetFilters: {
           sport: ["baseball"],
           year: ["2024"],
+          variant: ["base"],
           setName: [SET1, SET2],
         },
         sourceFacet: "setName",
@@ -494,7 +520,12 @@ describe("fetchBscChecklist — setName fan-out (NEO-189)", () => {
       .withIdentity(ADMIN)
       .action(api.adapters.buysportscards.fetchBscChecklist, {
         parentFilters: BASE_PARENT,
-        facetFilters: { sport: ["baseball"], setName: [SET1, SET2] },
+        facetFilters: {
+          sport: ["baseball"],
+          year: ["2024"],
+          variant: ["base"],
+          setName: [SET1, SET2],
+        },
         sourceFacet: "setName",
       });
 
@@ -538,7 +569,12 @@ describe("fetchBscChecklist — setName fan-out (NEO-189)", () => {
       .withIdentity(ADMIN)
       .action(api.adapters.buysportscards.fetchBscChecklist, {
         parentFilters: BASE_PARENT,
-        facetFilters: { sport: ["baseball"], setName: [SET1, SET2] },
+        facetFilters: {
+          sport: ["baseball"],
+          year: ["2024"],
+          variant: ["base"],
+          setName: [SET1, SET2],
+        },
         sourceFacet: "setName",
       });
 
@@ -571,7 +607,12 @@ describe("fetchBscChecklist — setName fan-out (NEO-189)", () => {
       .withIdentity(ADMIN)
       .action(api.adapters.buysportscards.fetchBscChecklist, {
         parentFilters: BASE_PARENT,
-        facetFilters: { sport: ["baseball"], setName: [SET1, SET2] },
+        facetFilters: {
+          sport: ["baseball"],
+          year: ["2024"],
+          variant: ["base"],
+          setName: [SET1, SET2],
+        },
         sourceFacet: "setName",
       });
 
@@ -619,7 +660,12 @@ describe("fetchBscChecklist — setName fan-out (NEO-189)", () => {
       .withIdentity(ADMIN)
       .action(api.adapters.buysportscards.fetchBscChecklist, {
         parentFilters: BASE_PARENT,
-        facetFilters: { sport: ["baseball"], setName: [SET1] },
+        facetFilters: {
+          sport: ["baseball"],
+          year: ["2024"],
+          variant: ["base"],
+          setName: [SET1],
+        },
         sourceFacet: "setName",
       });
 
@@ -644,7 +690,12 @@ describe("fetchBscChecklist — setName fan-out (NEO-189)", () => {
       .action(api.adapters.buysportscards.fetchBscChecklist, {
         parentFilters: BASE_PARENT,
         platformFilters: { setName: ["topps"], insert: ["legacy-variant"] },
-        facetFilters: { setName: [SET2] },
+        facetFilters: {
+          sport: ["baseball"],
+          year: ["2024"],
+          variant: ["base"],
+          setName: [SET2],
+        },
         sourceFacet: "setName",
       });
 

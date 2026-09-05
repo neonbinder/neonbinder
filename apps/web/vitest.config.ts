@@ -11,6 +11,12 @@ import {
 // a guard only one project honors leaves that class open on the other.
 const NETWORK_GUARD = path.resolve(__dirname, "./vitest.setup.network-guard.ts");
 
+// NEO-239: the same reasoning applied to `process.env`. The `forks` pool reuses
+// a worker across test FILES and env lives on the process, so an assignment one
+// file forgets to undo reappears as a random failure in a later, unrelated one.
+// On EVERY project for the same reason the guard above is.
+const ENV_ISOLATION = path.resolve(__dirname, "./vitest.setup.env-isolation.ts");
+
 // `environmentMatchGlobs` is the field convex-test docs recommend but it's
 // not in the current Vitest types. Cast so tsc stays clean — runtime
 // behavior is unaffected.
@@ -24,7 +30,7 @@ export default defineConfig({
           environment: "node",
           globals: true,
           include: CONVEX_LIB_INCLUDE,
-          setupFiles: [NETWORK_GUARD],
+          setupFiles: [ENV_ISOLATION, NETWORK_GUARD],
           ...({ environmentMatchGlobs: [["convex/**", "edge-runtime"]] } as Record<string, unknown>),
         },
         resolve: {
@@ -52,7 +58,7 @@ export default defineConfig({
           environment: "happy-dom",
           globals: true,
           include: COMPONENTS_INCLUDE,
-          setupFiles: [NETWORK_GUARD],
+          setupFiles: [ENV_ISOLATION, NETWORK_GUARD],
         },
         resolve: {
           alias: {

@@ -9,13 +9,15 @@ tags:
   # has `mb-field-*` via useFieldTestClass() (EntityColumn.tsx). Maestro's
   # inputText targets the right box in both cases — no WIP concerns remain.
 ---
-# A user adds a custom sport entry, then syncs sports from marketplaces.
-# After the sync completes, the custom entry must still be visible in the list.
-# This verifies that marketplace sync does not delete or overwrite user-created
-# custom entries.
+# A user adds a sport entry by hand, then syncs sports from marketplaces.
+# After the sync completes, the hand-added entry must still be visible in the
+# list. This verifies that marketplace sync does not delete or overwrite
+# user-created entries.
 #
-# This test also confirms the "Custom" badge is shown on custom entries
-# both before and after a re-sync.
+# NEO-239: there is no "Custom" badge any more. A row either carries
+# marketplace ids or it does not, and both render identically — so survival is
+# proved by the row's own VALUE still being there after the sync, which is the
+# only thing that was ever load-bearing here.
 #
 # STEP 4 (NEO-219) then removes the row again through the new delete control in
 # the attributes header, which is what makes this flow self-cleaning: it creates
@@ -105,13 +107,6 @@ tags:
     id: "Search sports"
 - inputText: "TestCustomSport-${ATTEMPT_ID}"
 - assertVisible: "TestCustomSport-${ATTEMPT_ID}"
-
-# Verify the "Custom" badge is shown next to the entry (rightOf pins to
-# the entry row, avoiding a false match on the column's "+ Custom" button)
-- assertVisible:
-    text: "Custom"
-    rightOf:
-      text: "TestCustomSport-${ATTEMPT_ID}"
 
 # ============================================================
 # STEP 2 — Re-sync sports from marketplaces
@@ -229,12 +224,6 @@ tags:
     id: "Search sports"
 - inputText: "TestCustomSport-${ATTEMPT_ID}"
 - assertVisible: "TestCustomSport-${ATTEMPT_ID}"
-
-# The "Custom" badge must still be shown on the entry after re-sync
-- assertVisible:
-    text: "Custom"
-    rightOf:
-      text: "TestCustomSport-${ATTEMPT_ID}"
 
 # Reload the page again to reset the search filter, then verify marketplace
 # badge icons (BSC / SL) appear on synced sport entries in the full list.

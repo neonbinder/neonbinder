@@ -43,11 +43,38 @@ const modules = (import.meta as unknown as {
 }).glob("./**/*.*s");
 
 describe("processBscTeamEnrichmentQueue — tolerance of a card that throws", () => {
+  /**
+   * The queue's outer catch reports each swallowed failure with
+   * `console.error` (adapters/buysportscards.ts). Two cards fail here, so two
+   * lines are emitted from work this test deliberately schedules.
+   *
+   * Left un-spied they travel to the vitest host over the worker RPC as
+   * `onUserConsoleLog`, and CI caught the consequence on run 9: all 219 files
+   * passed and vitest still exited 1 with four
+   * `EnvironmentTeardownError: Closing rpc while "onUserConsoleLog" was
+   * pending`. The last log races the worker's own teardown — a test that
+   * passes and still fails the run.
+   *
+   * Capturing them fixes that at the source (nothing crosses the RPC) and is
+   * strictly better than suppression: the lines are now ASSERTED, so this test
+   * proves the outer catch actually ran for BOTH cards rather than merely that
+   * nothing threw. `mockRestore` in `afterEach` per the repo's convention.
+   */
+  const errorLines: string[] = [];
+
   beforeEach(() => {
     vi.useFakeTimers();
+    errorLines.length = 0;
+    vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      errorLines.push(args.map(String).join(" "));
+    });
+    // The drain also logs "queue drained." on `console.log`; same RPC, same
+    // race, so it is captured too.
+    vi.spyOn(console, "log").mockImplementation(() => {});
   });
   afterEach(() => {
     vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   test("one card's resolveBscCardTeam throwing does not abort the rest of the tail", async () => {
@@ -119,5 +146,15 @@ describe("processBscTeamEnrichmentQueue — tolerance of a card that throws", ()
     const b = await t.run(async (ctx) => ctx.db.get(cardB));
     expect(a!.teamCheckDoneAt).toBeUndefined();
     expect(b!.teamCheckDoneAt).toBeUndefined();
+
+    // …and the outer catch ran for EVERY card, not just the first. Without
+    // this the test could pass on a queue that silently stopped after cardA:
+    // "neither card was resolved" is true in that case too.
+    const failures = errorLines.filter((line) =>
+      line.includes("resolveBscCardTeam"),
+    );
+    expect(failures).toHaveLength(2);
+    expect(failures.some((line) => line.includes(cardA))).toBe(true);
+    expect(failures.some((line) => line.includes(cardB))).toBe(true);
   });
 });

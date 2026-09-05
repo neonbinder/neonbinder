@@ -27,6 +27,72 @@ import type { PlatformSide } from "./platformSlots";
  */
 export const MAX_SYNC_ITEMS = 2000;
 
+// ───────────────────────────────────────────────────────────────────────────
+// User-safe notice text
+//
+// Everything below builds `selectorSyncStatus.message`, which is REACTIVE
+// STATE SERVED TO THE BROWSER. An adapter's own message can carry a
+// marketplace URL, a response body or a credential hint, and an NB row's value
+// is operator content — so these functions are built from a platform NAME and
+// nothing else (NEO-47, NEO-211 B).
+//
+// The two builders live together because they must agree on that mapping: a
+// side that failed and a side that was never asked are different events with
+// the same vocabulary, and the FE renders both from the same notice.
+// ───────────────────────────────────────────────────────────────────────────
+
+const PLATFORM_LABELS: Record<string, string> = {
+  bsc: "BuySportsCards",
+  sportlots: "SportLots",
+};
+
+/**
+ * An unrecognised key is NOT echoed. The only keys these ever receive are
+ * "bsc" and "sportlots"; the fallback is what makes "no adapter string reaches
+ * reactive state" a property of these functions rather than of their callers.
+ *
+ * Exported because NEO-216's "no marketplace serves this level" notice needs
+ * the same naming and the same guarantee — one mapping, not two.
+ */
+export function platformNames(sides: readonly string[]): string {
+  return sides
+    .map((p) => PLATFORM_LABELS[p] ?? "A marketplace")
+    .sort()
+    .join(" and ");
+}
+
+/**
+ * NEO-211 B — what the admin is told when ONE marketplace FAILED and the other
+ * one stored fine.
+ */
+export function partialSyncMessage(failedPlatforms: readonly string[]): string {
+  const names = platformNames(failedPlatforms);
+  return (
+    `${names} could not be reached, so nothing from ${names} was changed. ` +
+    `Everything the other marketplace returned was saved — retry to fill in the rest.`
+  );
+}
+
+/**
+ * NEO-239 — what the admin is told when one marketplace was NEVER ASKED,
+ * because this path carries no ids to scope it with.
+ *
+ * Deliberately distinct from `partialSyncMessage`: "could not be reached"
+ * invites a Retry that would fail identically every time, because nothing is
+ * wrong with the marketplace. The fix is to attach an id, which is a different
+ * action in a different place.
+ *
+ * For the case where BOTH sides are skipped, callers use
+ * `NO_MARKETPLACE_IDS_MESSAGE` instead and say nothing at all on the level-sync
+ * path — a hand-made subtree has no marketplace behind it by design, and a
+ * notice on every one of its columns would be noise the operator learns to
+ * dismiss.
+ */
+export function skippedSyncMessage(skippedSides: readonly string[]): string {
+  const names = platformNames(skippedSides);
+  return `${names} skipped: no ${names} ids on this path.`;
+}
+
 /**
  * How many unlink notices are kept.
  *

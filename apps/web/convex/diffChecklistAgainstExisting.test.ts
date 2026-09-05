@@ -905,7 +905,7 @@ describe("diffChecklistAgainstExisting — removed upstream", () => {
     ]);
   });
 
-  test("custom cards are never reported as removed upstream", async () => {
+  test("a card no marketplace claims is never reported as removed upstream", async () => {
     const t = convexTest(schema, modules);
     const { sportId, leafId } = await seedTree(t);
     await t
@@ -927,6 +927,10 @@ describe("diffChecklistAgainstExisting — removed upstream", () => {
       card({ cardNumber: "1", cardName: "Marketplace", bscRef: "bsc-1" }),
     ]);
 
+    // NEO-239 — and not as a PARTIAL orphan either. The hand-added row has no
+    // ref on either side, so upstream's silence about it is not evidence of
+    // anything; it is not an orphan of any degree. Keyed on the refs the row
+    // carries, not on who created it.
     expect(result.removedUpstream.fullyOrphaned).toHaveLength(0);
     expect(result.removedUpstream.partialOrphanCount).toBe(0);
   });

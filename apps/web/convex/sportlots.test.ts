@@ -212,7 +212,10 @@ describe("fetchSportLotsChecklist setRadioId resolution (NEO-91)", () => {
 
     expect(result.success).toBe(false);
     expect(result.cards).toEqual([]);
-    expect(result.message).toMatch(/no set identifier/i);
+    // NEO-239 — one fixed refusal message for every unscoped SportLots
+    // request, and it no longer falls back to sending the NB set NAME as the
+    // `selset` radio id.
+    expect(result.message).toMatch(/no SportLots ids/i);
   });
 });
 

@@ -503,6 +503,114 @@ describe("NEO-236: no writer derives a team's dedup key by hand", () => {
     expect(derives(good)).toBe(false);
   });
 
+  /**
+   * The read-side twin of the insert grep above.
+   *
+   * A hand-rolled `by_name_normalized_and_sport_id` lookup on `teams` needs a
+   * `nameNormalized` from somewhere, and every caller that had one built it
+   * with its own inlined copy of `normalizeTeamName`. There were three such
+   * copies across the codebase and all three were byte-identical, which is
+   * precisely what makes the drift dangerous rather than obvious: the day one
+   * of them gains a rule the others lack, the lookup starts missing rows it
+   * should find and the caller quietly mints a duplicate franchise. Nothing
+   * fails, nothing logs, and the two Padres rows are only visible to whoever
+   * scrolls Team Management.
+   *
+   * `teams.ts` and `lib/teamRow.ts` are the sanctioned homes — they OWN the
+   * derivation, so they are the two places the raw index read belongs.
+   *
+   * Scoped to `db.query("teams")` chains on purpose, NOT to the index name:
+   * `players` carries an index of the same name, and the prelude's player
+   * lookup uses it legitimately. Banning the string outright would fail on
+   * that and teach the next person to add an eslint-disable.
+   */
+  const TEAM_INDEX = "by_name_normalized_and_sport_id";
+  /** Files that own the derivation and may therefore read the index directly. */
+  const IDENTITY_OWNERS = ["teams.ts", join("lib", "teamRow.ts")];
+
+  /** `db.query("teams")` chains whose statement reaches for the identity index. */
+  function rawTeamIdentityLookups(src: string): number {
+    let count = 0;
+    // NOT `db.query("teams")`: the chain is routinely wrapped after `ctx.db`,
+    // so the two halves are on different lines and a contiguous needle finds
+    // nothing. (The insert grep can use `db.insert("teams"` because that call
+    // is never split.) The comment guard below is what keeps the looser needle
+    // from matching prose.
+    const NEEDLE = 'query("teams")';
+    let index = src.indexOf(NEEDLE);
+    while (index !== -1) {
+      // Same comment guard as `insertBodies` — doc comments name this call.
+      const lineStart = src.lastIndexOf("\n", index) + 1;
+      const linePrefix = src.slice(lineStart, index).trimStart();
+      if (!linePrefix.startsWith("*") && !linePrefix.startsWith("//")) {
+        // The chain ends at the statement's semicolon; the index name has to
+        // appear inside it to count.
+        const stop = src.indexOf(";", index);
+        const chain = src.slice(index, stop === -1 ? src.length : stop);
+        if (chain.includes(TEAM_INDEX)) count += 1;
+      }
+      index = src.indexOf(NEEDLE, index + 1);
+    }
+    return count;
+  }
+
+  test("only teams.ts and lib/teamRow.ts read the team identity index directly", () => {
+    const offenders: string[] = [];
+    let ownerLookups = 0;
+
+    for (const file of sourceFiles(CONVEX_DIR)) {
+      const relative = file.slice(CONVEX_DIR.length + 1);
+      const hits = rawTeamIdentityLookups(readFileSync(file, "utf8"));
+      if (hits === 0) continue;
+      if (IDENTITY_OWNERS.includes(relative)) ownerLookups += hits;
+      else offenders.push(relative);
+    }
+
+    // Positive control: the detector is worthless if it has stopped matching
+    // the lookups that ARE there. The owners have several; "more than zero" is
+    // the assertion, not the count.
+    expect(ownerLookups).toBeGreaterThan(0);
+
+    // If this fails: use `findTeamByFullName(ctx, sportId, fullName)` from
+    // convex/lib/teamRow.ts instead. It takes the full name and owns the
+    // normalisation, so there is nothing left for the caller to get wrong.
+    expect(offenders).toEqual([]);
+  });
+
+  test("the read-side check would actually catch a hand-rolled lookup", () => {
+    // A guard on the guard, same as for the insert grep.
+    const bad = `
+      const existing = await ctx.db
+        .query("teams")
+        .withIndex("by_name_normalized_and_sport_id", (q) =>
+          q.eq("nameNormalized", norm(name)).eq("sportId", sportId),
+        )
+        .first();
+    `;
+    // The sanctioned call — no index name in sight.
+    const good = `
+      const existing = await findTeamByFullName(ctx, sportId, name);
+    `;
+    // A PLAYERS lookup on the same-named index must not be flagged.
+    const players = `
+      const existing = await ctx.db
+        .query("players")
+        .withIndex("by_name_normalized_and_sport_id", (q) =>
+          q.eq("nameNormalized", norm(name)).eq("sportId", sportId),
+        )
+        .first();
+    `;
+    // A doc comment that merely names the index must not be flagged either.
+    const mentioned = `
+      // was a hand-rolled db.query("teams") by_name_normalized_and_sport_id read
+      const existing = await findTeamByFullName(ctx, sportId, name);
+    `;
+    expect(rawTeamIdentityLookups(bad)).toBe(1);
+    expect(rawTeamIdentityLookups(good)).toBe(0);
+    expect(rawTeamIdentityLookups(players)).toBe(0);
+    expect(rawTeamIdentityLookups(mentioned)).toBe(0);
+  });
+
   test("the identity helpers are where they are documented to be", () => {
     // A guard on the guard: the grep above passes vacuously if the module it
     // points at has been moved or renamed.

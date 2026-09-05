@@ -81,6 +81,43 @@ export function toSyncSide(platform: string): SyncSide | null {
   return platform === "bsc" || platform === "sportlots" ? platform : null;
 }
 
+/**
+ * The sides the fetch never attempted, read off its result (NEO-239).
+ *
+ * A side is now fetched only when every ancestor it needs carries an id on that
+ * side; otherwise it is SKIPPED — no request, no error. That skip is invisible
+ * to the error list, and `coveredSides` used to be derived from the error list
+ * alone. A skipped side would therefore arrive as "covered" with empty
+ * `returnedIds`, and `coveredSides` is exactly the positive evidence that
+ * licenses the store to unlink: every child's slot on that side would be
+ * detached because a marketplace we never asked did not answer. That is the
+ * silent data loss this reader exists to prevent — the same failure the
+ * NEO-211 partial-failure guard exists to prevent, arriving through the other
+ * door.
+ *
+ * Read structurally from `unknown` rather than off the generated result type on
+ * purpose: this is the ONE place in the client that knows the field's name, so
+ * a backend rename is one edit here, and a result that predates the field
+ * simply reports nothing skipped instead of failing to compile.
+ *
+ * Absent field is read as "nothing was skipped", which is the pre-NEO-239
+ * behaviour and is NOT the guarantee: an old SPA bundle keeps sending
+ * error-derived `coveredSides` for its whole cache lifetime, so the store
+ * mutation independently narrows coverage to the sides the parent chain is
+ * actually resolvable on. This is the affordance; the server is the guarantee.
+ */
+export function skippedSidesOf(fetchResult: unknown): SyncSide[] {
+  if (typeof fetchResult !== "object" || fetchResult === null) return [];
+  const raw = (fetchResult as { skippedSides?: unknown }).skippedSides;
+  if (!Array.isArray(raw)) return [];
+  const sides: SyncSide[] = [];
+  for (const entry of raw) {
+    const side = typeof entry === "string" ? toSyncSide(entry) : null;
+    if (side && !sides.includes(side)) sides.push(side);
+  }
+  return sides;
+}
+
 export type SinglePlatformPlan =
   | {
       /** Safe to write: every side was reached, so an empty side means empty. */
@@ -104,16 +141,23 @@ export type SinglePlatformPlan =
  * blocks for the same reason: we cannot claim a side was covered when we do not
  * know which one broke.
  *
- * When it does store, `coveredSides` is BOTH sides, and that is the point: the
- * mutation only unlinks on a side it was explicitly told was covered (absent
- * means unlink nothing), so this is the positive evidence that the marketplace
- * was asked and had nothing. A side that reported an error is never in the list.
+ * When it does store, `coveredSides` is every side that was actually REACHED,
+ * and that is the point: the mutation only unlinks on a side it was explicitly
+ * told was covered (absent means unlink nothing), so this is the positive
+ * evidence that the marketplace was asked and had nothing. A side that reported
+ * an error is never in the list — and neither is a side the fetch SKIPPED for
+ * lack of ids (NEO-239), which raises no error at all. "We never asked" is not
+ * "we asked and it had nothing"; see `skippedSidesOf`.
  */
 export function planSinglePlatformStore(
   errors: readonly FetchPlatformError[],
+  skippedSides: readonly SyncSide[] = [],
 ): SinglePlatformPlan {
   if (errors.length === 0) {
-    return { kind: "store", coveredSides: [...ALL_SIDES] };
+    return {
+      kind: "store",
+      coveredSides: ALL_SIDES.filter((s) => !skippedSides.includes(s)),
+    };
   }
   const failedLabels: string[] = [];
   const seen = new Set<string>();
@@ -177,13 +221,19 @@ export function blockedMessageFromErrors(
 }
 
 /**
- * Which sides came back without an error — what the reconciliation path passes
- * as `coveredSides`. Both sides populated the modal, so this is normally both;
- * computing it rather than hardcoding keeps the guarantee true if that ever
- * stops being the case.
+ * Which sides were actually REACHED — what the reconciliation path passes as
+ * `coveredSides`. Both sides populated the modal, so this is normally both;
+ * computing it rather than hardcoding keeps the guarantee true when it is not.
+ *
+ * Named for the fetch rather than for the errors (it was
+ * `coveredSidesFromErrors`) because the error list stopped being the whole
+ * story in NEO-239: a side skipped for lack of ids reports no error, and
+ * counting it as covered would license unlinking every child's slot on a
+ * marketplace nobody asked.
  */
-export function coveredSidesFromErrors(
+export function coveredSidesFromFetch(
   errors: readonly FetchPlatformError[] | undefined,
+  skippedSides: readonly SyncSide[] = [],
 ): SyncSide[] | undefined {
   // Undefined input is NOT "no errors" — it is "we no longer know what the
   // fetch reported". Returning both sides there would fail OPEN: the store
@@ -191,12 +241,12 @@ export function coveredSidesFromErrors(
   // and had nothing, and would unlink on a side we cannot vouch for. Omitting
   // the arg entirely means unlink nothing, which is the safe answer.
   if (!errors) return undefined;
-  const failed = new Set<SyncSide>();
+  const uncovered = new Set<SyncSide>(skippedSides);
   for (const e of errors) {
     const side = toSyncSide(e.platform);
-    if (side) failed.add(side);
+    if (side) uncovered.add(side);
   }
-  return ALL_SIDES.filter((s) => !failed.has(s));
+  return ALL_SIDES.filter((s) => !uncovered.has(s));
 }
 
 // ---------------------------------------------------------------------------

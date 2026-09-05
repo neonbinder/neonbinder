@@ -480,22 +480,36 @@ describe("checkSelectorValue", () => {
 });
 
 describe("planValueRename", () => {
-  test("refuses a non-custom variantType row", () => {
+  test("allows ANY variantType rename — the refusal is gone (NEO-239)", () => {
+    // NEO-211 F refused a rename on a variantType row the sync had created,
+    // because two things read that row's DISPLAY VALUE as data: the BSC
+    // checklist fetch derived its `variant` facet from it, and "which row is
+    // the base set" was the literal string "base". Both now read the row — a
+    // `variant`-tagged BSC slot and `metadata.isBase` — so the name is a name.
+    //
+    // Renaming a variantType was the one thing an operator could not do to
+    // their own taxonomy, and the reason was always an adapter's shortcut.
     const plan = planValueRename({
       row: { _id: "a", level: "variantType", value: "Base" },
       nextValue: "Base Set",
       siblings: [],
     });
-    expect(plan).toMatchObject({ ok: false, reason: "refused" });
+    expect(plan).toMatchObject({ ok: true, unchanged: false, value: "Base Set" });
   });
 
-  test("allows a CUSTOM variantType row", () => {
+  test("a variantType rename still obeys the sibling-clash rule", () => {
+    // Dropping the blanket refusal does not drop the guard that matters: two
+    // rows under one parent must not share a display value, or the drill utils
+    // and pickers cannot tell them apart.
     const plan = planValueRename({
-      row: { _id: "a", level: "variantType", value: "Base", isCustom: true },
-      nextValue: "My Base",
-      siblings: [{ _id: "a", value: "Base" }],
+      row: { _id: "a", level: "variantType", value: "Base" },
+      nextValue: "insert",
+      siblings: [
+        { _id: "a", value: "Base" },
+        { _id: "b", value: "Insert" },
+      ],
     });
-    expect(plan).toMatchObject({ ok: true, unchanged: false, value: "My Base" });
+    expect(plan).toMatchObject({ ok: false, reason: "clash" });
   });
 
   test("refuses a sibling clash on the folded name", () => {

@@ -34,8 +34,9 @@ tags:
 #   facts (isRookie/printRun/…) on top. So a custom card under a fresh leaf
 #   exercises the exact inheritance path a synced card uses.
 #   A genuinely marketplace-SYNCED card can NOT prove this here: (a) a per-worker
-#   custom subtree short-circuits the BSC/SL adapters (isCustomSubtree gate,
-#   NEO-22) so it never receives synced cards, and (b) the real shared sets
+#   hand-made subtree carries no marketplace ids, so neither BSC nor SportLots
+#   is ever fetched (NEO-239) and it never receives synced cards, and (b) the
+#   real shared sets
 #   (2024 Topps Chrome Base) were synced on shared dev BEFORE these defaults
 #   existed — their leaf snapshots predate the defaults (write-once: never
 #   recomputed), so their synced cards render these fields blank locally — and

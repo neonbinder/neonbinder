@@ -33,10 +33,6 @@ type EntitySelectorProps = {
   isItemTerminal?: (item: SelectorItem) => boolean;
 };
 
-function isCustom(item: SelectorItem): boolean {
-  return item.isCustom === true;
-}
-
 function getPlatformData(item: SelectorItem): {
   sportlots?: string;
   bsc?: string | string[];
@@ -180,11 +176,6 @@ function EntitySelector({
       >
         <div className="flex items-center gap-2">
           <div className="font-semibold">{getDisplayName(selected)}</div>
-          {isCustom(selected) && (
-            <span className="text-xs px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 border border-blue-300 dark:border-blue-700">
-              Custom
-            </span>
-          )}
         </div>
         <ChevronDownIcon className="w-5 h-5 text-gray-500" />
       </div>
@@ -249,20 +240,13 @@ function EntitySelector({
                 className={`w-full text-left p-3 rounded-md border transition-colors ${
                   selectedId === item._id
                     ? `${selectedColor}`
-                    : isCustom(item)
-                      ? "bg-blue-50 dark:bg-blue-950 border-blue-200 dark:border-blue-800 hover:bg-blue-100 dark:hover:bg-blue-900"
-                      : "bg-gray-50 dark:bg-gray-700 border-gray-200 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-600"
+                    : "bg-gray-50 dark:bg-gray-700 border-gray-200 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-600"
                 }`}
               >
                 <div className="flex items-center gap-2">
                   <span className="font-semibold">
                     {getDisplayName(item)}
                   </span>
-                  {isCustom(item) && (
-                    <span className="text-xs px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 border border-blue-300 dark:border-blue-700">
-                      Custom
-                    </span>
-                  )}
                   {showPills && pd?.sportlots && (
                     <span className="text-xs px-1 py-0.5 rounded bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300">
                       SL

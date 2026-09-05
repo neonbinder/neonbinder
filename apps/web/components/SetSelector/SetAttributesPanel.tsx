@@ -12,7 +12,8 @@ import { slotIds, type SlotBearingRow } from "../../convex/platformSlots";
 import { ConfirmDialog } from "../modules/confirm-dialog";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import { FeatureValueControl } from "./FeatureValueControl";
-import RenameEntityControl, { canRenameSelectorRow } from "./RenameEntityControl";
+import RenameEntityControl from "./RenameEntityControl";
+import BaseRoleControl from "./BaseRoleControl";
 import {
   ALL_SIDES,
   joinLabels,
@@ -162,6 +163,18 @@ export default function SetAttributesPanel({
   const headerTitle = `Attributes for ${row.value} (${LEVEL_LABEL[leafLevel]})`;
 
   /**
+   * Raise a transient confirmation.
+   *
+   * Shared by the feature rows below and by the header's base-role control
+   * (NEO-239), which is why it is a helper rather than an inline setToast:
+   * two callers raising a 6s toast had to agree on the 6s.
+   */
+  const showToast = (message: string) => {
+    setToast(message);
+    setTimeout(() => setToast(null), 6000);
+  };
+
+  /**
    * NEO-217 — an empty value CLEARS the attribute; it is not a no-op.
    *
    * This used to return early on `""`, which meant nothing set at this level
@@ -188,8 +201,7 @@ export default function SetAttributesPanel({
     // (NEO-71-74), no propagation counts to report. "Saved {label}" is
     // unchanged (Maestro asserts it); "Cleared {label}" is the new string,
     // deliberately distinct so the toast never claims a value was stored.
-    setToast(clearing ? `Cleared ${label}` : `Saved ${label}`);
-    setTimeout(() => setToast(null), 6000);
+    showToast(clearing ? `Cleared ${label}` : `Saved ${label}`);
     try {
       await setSelectorOptionFeature({ selectorOptionId, key, value: trimmed });
     } catch (e) {
@@ -222,32 +234,49 @@ export default function SetAttributesPanel({
             <h3 className="text-sm font-semibold text-gray-100">
               {headerTitle}
             </h3>
-            {/* NEO-211 (plan F): a non-custom variantType's value drives Base
-                detection and the BSC checklist fetch's `variant` facet, so it is
-                not editable. Rendering a pencil that always errors would be a
-                worse answer than not offering one. */}
-            {canRenameSelectorRow(row) && (
-              <RenameEntityControl id={selectorOptionId} currentValue={row.value} />
+            {/* NEO-239: every level renames, variantType included. Base is an
+                NB role flag and the BSC `variant` facet comes off the row's
+                tagged slot, so no display value is load-bearing any more. */}
+            <RenameEntityControl id={selectorOptionId} currentValue={row.value} />
+            {/* NEO-239: which variant type is the set's base is IDENTITY, not
+                an attribute, so it sits with the name rather than in the grid
+                below — and stays reachable while the panel is collapsed, which
+                is how an operator building a set by hand will meet it. Only
+                variant types have the role; nothing else in the hierarchy can
+                be a base set. */}
+            {leafLevel === "variantType" && (
+              <BaseRoleControl
+                id={selectorOptionId}
+                value={row.value}
+                metadata={row.metadata}
+                onResult={showToast}
+              />
             )}
             {/* NEO-219: the one sanctioned delete, next to the pencil for the
                 same reason the pencil is next to the title — the title IS the
-                row it acts on. Gated by exactly the rename rule on the client
-                (a non-custom variantType is structural, not a label) and again,
-                independently, by the server's own emptiness + protection
-                checks. */}
-            {canRenameSelectorRow(row) && (
-              <DeleteSelectorRowControl
-                // Keyed on the row: this panel does NOT remount when the
-                // selection moves, so without this a dialog opened for one row
-                // — or a revealed reason belonging to it — would survive onto
-                // the next one and ask its question about the wrong thing.
-                key={selectorOptionId}
-                id={selectorOptionId}
-                row={row}
-                level={leafLevel}
-                onDeleted={onDeleted}
-              />
-            )}
+                row it acts on.
+                NEO-239: this used to be wrapped in `canRenameSelectorRow(row)`,
+                which meant "hide it on a variantType that is not custom". That
+                predicate is gone with the custom concept — a row either carries
+                marketplace ids or it does not, and both behave the same — so
+                the gate is now the control's OWN, and it is a better one: it
+                reads `getSelectorOptionHoldings` and renders nothing for a
+                protected row, an explained refusal for a row with something
+                below it, and the confirm only when the row is genuinely empty.
+                Server-side emptiness + protection checks still run
+                independently. Nothing became deletable that the server would
+                not already have let go. */}
+            <DeleteSelectorRowControl
+              // Keyed on the row: this panel does NOT remount when the
+              // selection moves, so without this a dialog opened for one row
+              // — or a revealed reason belonging to it — would survive onto
+              // the next one and ask its question about the wrong thing.
+              key={selectorOptionId}
+              id={selectorOptionId}
+              row={row}
+              level={leafLevel}
+              onDeleted={onDeleted}
+            />
           </div>
           <p className="text-xs text-gray-500 mt-0.5 truncate" title={breadcrumb}>
             {breadcrumb}
@@ -276,6 +305,25 @@ export default function SetAttributesPanel({
         )}
       </div>
 
+      {toast && (
+        // NEO-47: position the save confirmation FIXED in the viewport, not
+        // in-flow above the grid. A save made while scrolled down to the
+        // feature rows would otherwise render the toast off-screen above
+        // the fold — invisible to the user (and the e2e assertion).
+        //
+        // NEO-239: outside the `expanded` branch, because the header now holds
+        // a control ("Mark as base set") that is reachable while the panel is
+        // collapsed. A confirmation that only renders in the expanded state
+        // would leave that action looking like it did nothing.
+        <div
+          className="fixed top-20 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-gray-900 border border-[#00D558]/60 rounded text-xs text-[#00D558] shadow-lg"
+          role="status"
+          aria-live="polite"
+        >
+          {toast}
+        </div>
+      )}
+
       {expanded && (
         <>
           <div className="flex items-center justify-between">
@@ -283,20 +331,6 @@ export default function SetAttributesPanel({
               Set attributes
             </span>
           </div>
-
-          {toast && (
-            // NEO-47: position the save confirmation FIXED in the viewport, not
-            // in-flow above the grid. A save made while scrolled down to the
-            // feature rows would otherwise render the toast off-screen above
-            // the fold — invisible to the user (and the e2e assertion).
-            <div
-              className="fixed top-20 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-gray-900 border border-[#00D558]/60 rounded text-xs text-[#00D558] shadow-lg"
-              role="status"
-              aria-live="polite"
-            >
-              {toast}
-            </div>
-          )}
 
           {toggleFeatures.length > 0 && (
             <div

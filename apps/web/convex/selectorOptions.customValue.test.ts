@@ -714,7 +714,11 @@ describe("addCustomSelectorOption validation", () => {
 
     const row = await t.run(async (ctx) => ctx.db.get(id));
     expect(row!.value).toBe("2024");
-    expect(row!.isCustom).toBe(true);
+    // NEO-239 — `addCustomSelectorOption` no longer writes `isCustom`. What a
+    // hand-added row IS, is a row with no marketplace ids; that is the only
+    // fact anything downstream reads.
+    expect(row!.isCustom).toBeUndefined();
+    expect(row!.platformData).toEqual({});
   });
 
   test("refuses a cross-parent duplicate with CUSTOM_EXISTS_ELSEWHERE", async () => {
@@ -806,7 +810,11 @@ describe("addCustomSelectorOption validation", () => {
 
     const row = await t.run(async (ctx) => ctx.db.get(id));
     expect(row!.parentId).toBe(topps);
-    expect(row!.isCustom).toBe(true);
+    // NEO-239 — `addCustomSelectorOption` no longer writes `isCustom`. What a
+    // hand-added row IS, is a row with no marketplace ids; that is the only
+    // fact anything downstream reads.
+    expect(row!.isCustom).toBeUndefined();
+    expect(row!.platformData).toEqual({});
 
     const parent = await t.run(async (ctx) => ctx.db.get(topps));
     expect(parent!.children).toContain(id);
@@ -859,7 +867,11 @@ describe("addCustomSelectorOption validation", () => {
     const row = await t.run(async (ctx) => ctx.db.get(id));
     expect(row!.value).toBe("All Brands");
     expect(row!.parentId).toBe(year2021);
-    expect(row!.isCustom).toBe(true);
+    // NEO-239 — `addCustomSelectorOption` no longer writes `isCustom`. What a
+    // hand-added row IS, is a row with no marketplace ids; that is the only
+    // fact anything downstream reads.
+    expect(row!.isCustom).toBeUndefined();
+    expect(row!.platformData).toEqual({});
 
     // And it is still idempotent on a second call.
     const again = await asAdmin.mutation(

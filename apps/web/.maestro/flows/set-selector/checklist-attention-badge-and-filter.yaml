@@ -42,8 +42,8 @@ tags:
 #   • Clause 3 of the rule ("a BSC-linked card is not badged until
 #     teamCheckDoneAt lands"). No E2E flow can reach it: a BSC-linked card
 #     only exists on a REAL marketplace set, which is read-only (R7a), and a
-#     per-worker custom subtree is short-circuited before any marketplace call
-#     (isCustomSubtree, NEO-22) so its cards never carry a BSC ref. The clause
+#     per-worker hand-made subtree carries no marketplace ids, so neither side
+#     is fetched (NEO-239) and its cards never carry a BSC ref. The clause
 #     is unit-covered in convex/features/cardAttention.test.ts. The same wall
 #     is documented at length in checklist-bsc-team-enrichment.yaml's header.
 #

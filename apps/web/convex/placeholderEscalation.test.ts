@@ -17,9 +17,8 @@
  */
 
 import { convexTest } from "convex-test";
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import schema from "./schema";
-import { cancelScheduled } from "../lib/testing/drain-scheduled";
 import { api } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
@@ -36,13 +35,133 @@ const USER_A = { subject: "user_escAAAA1111" };
 
 const ENQUEUE_HEAVY_FN = "placeholderHeavyPool:enqueueHeavyImage";
 const HEAVY_WARMUP_FN = "placeholderBatch:warmupHeavyPreprocess";
+/**
+ * NEO-239 — the third thing a settle can queue, and the one nothing asserted.
+ * A batch whose last image settles goes to `pairing` and schedules this; that
+ * unasserted, unowned action is what leaked past teardown.
+ */
+const PAIRING_FN = "placeholderPairing:runPairing";
+
+const HEAVY_URL = "http://localhost:9998";
+
+/**
+ * NEO-239 — the SECOND scheduled-work leak in this file, and a different
+ * function from the first.
+ *
+ * `drain()` below was added for `placeholderBatch:warmupHeavyPreprocess`. It
+ * covers the three tests that call it and nothing else, and the settle path
+ * these tests drive queues more than the warm-gate: when the last image of a
+ * batch settles, `recordImageOutcomeImpl` schedules
+ * `placeholderPairing:runPairing`. Nothing owned that, so it fired after the
+ * file's environment had been torn down and surfaced in a full run as
+ *
+ *   Error when running scheduled function placeholderPairing:runPairing
+ *   EnvironmentTeardownError: Cannot load '/convex/lib/pairing/pool.ts'
+ *   imported from …/convex/lib/pairing/pairBatch.ts after the environment was
+ *   torn down
+ *
+ * `pool.ts` and `pairBatch.ts` are the same import chain one level apart —
+ * `pairBatch` imports `pool` — so the module the message names says how far
+ * loading had got, not which test queued the work. This is the SAME class as
+ * placeholderPipeline.test.ts's `runPairing` leak, in a second file.
+ *
+ * CANCELLED rather than drained, and this file is the reason the distinction
+ * exists: as its header says, these tests assert on the scheduled-function
+ * ROWS and must not run them, because draining would reach
+ * `placeholderHeavyPool:enqueueHeavyImage` on a workpool component convex-test
+ * cannot mount. Cancelling settles the queue without running anything, so the
+ * assertions above it are untouched and no unmounted component is reached.
+ *
+ * It reproduces about one full run in three on this machine — the pending
+ * action only outlives teardown when the worker is loaded enough for its timer
+ * to fire late — which is why it is fixed from the mechanism (a job left
+ * `pending` in `_scheduled_functions`) rather than from a repro.
+ */
+let harnesses: Array<ReturnType<typeof convexTest>> = [];
+
+/** Every test builds its world through this so `afterEach` can settle it. */
+function harness(): ReturnType<typeof convexTest> {
+  const t = convexTest(schema, modules);
+  harnesses.push(t);
+  return t;
+}
 
 beforeEach(() => {
-  // Loopback so that, even if a scheduled warm-up somehow ran, the OIDC path is
-  // skipped and the (swallowed) fetch fails harmlessly rather than reaching GCP.
-  process.env.NEONBINDER_PREPROCESS_URL = "http://localhost:9998";
+  // Loopback → the OIDC path short-circuits, so no google-auth-library and
+  // nothing can reach GCP.
+  process.env.NEONBINDER_PREPROCESS_URL = HEAVY_URL;
   vi.unstubAllGlobals();
+  harnesses = [];
 });
+
+afterEach(async () => {
+  for (const t of harnesses) {
+    await t.run(async (ctx) => {
+      for (const job of await ctx.db.system
+        .query("_scheduled_functions")
+        .collect()) {
+        if (job.state.kind === "pending" || job.state.kind === "inProgress") {
+          await ctx.scheduler.cancel(job._id);
+        }
+      }
+    });
+  }
+  harnesses = [];
+  vi.unstubAllGlobals();
+  // Belt-and-suspenders: a test that enabled fake timers to drain must not
+  // leave the fake-timer mode visible to the next one.
+  vi.useRealTimers();
+});
+
+/**
+ * Records every outbound call the drained schedule makes.
+ *
+ * `/warmup` answers like the real service; anything else is a terminal 404 so a
+ * cascade settles fast instead of recursing. Mirrors `makeBatchStartStub` in
+ * placeholderWarmup.test.ts.
+ */
+function stubPreprocess() {
+  const calls: string[] = [];
+  vi.stubGlobal(
+    "fetch",
+    (async (url: string | URL): Promise<Response> => {
+      const u = String(url);
+      calls.push(u);
+      if (u.endsWith("/warmup")) {
+        return new Response(
+          JSON.stringify({ status: "warm", was_cold: true }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response("not found", { status: 404 });
+    }) as unknown as typeof fetch,
+  );
+  return { calls };
+}
+
+/**
+ * Run the scheduled work this test caused, to completion.
+ *
+ * NOT optional tidying. These tests assert what was SCHEDULED and used to stop
+ * there, leaving `placeholderBatch:warmupHeavyPreprocess` in the queue to fire
+ * after the file's environment had been torn down — which surfaced as
+ * `EnvironmentTeardownError: Cannot load '/convex/lib/cloudRunAuth.ts' … after
+ * the environment was torn down` in a full run. convex-test catches that and
+ * only prints it, so the run stayed green while the defect sat one timing
+ * change away from failing it, exactly as the sibling
+ * `bscTeamEnrichmentQueue.tolerance.test.ts` leak did on CI run 9.
+ *
+ * Fake timers are entered and left HERE rather than file-wide: the other tests
+ * in this file assert on real `Date.now()` timestamps.
+ */
+async function drain(t: ReturnType<typeof convexTest>): Promise<void> {
+  vi.useFakeTimers();
+  try {
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+  } finally {
+    vi.useRealTimers();
+  }
+}
 
 // A completed fast crop (no escalation) in the service's snake_case wire shape.
 const CROP_BODY = {
@@ -124,6 +243,20 @@ async function scheduledNames(t: ReturnType<typeof convexTest>): Promise<string[
   });
 }
 
+/**
+ * Cancel just the debounced pairing run, leaving every other scheduled job for
+ * the test (and the file's `afterEach`) to deal with.
+ */
+async function cancelPairingDebounce(t: ReturnType<typeof convexTest>): Promise<void> {
+  await t.run(async (ctx) => {
+    for (const job of await ctx.db.system.query("_scheduled_functions").collect()) {
+      if (job.name === PAIRING_FN && job.state.kind === "pending") {
+        await ctx.scheduler.cancel(job._id);
+      }
+    }
+  });
+}
+
 /** Drive one completion through the shared settle seam. */
 async function settle(
   t: ReturnType<typeof convexTest>,
@@ -143,7 +276,16 @@ async function settle(
   // `finishAllScheduledFunctions` without fake timers, and adding those to this
   // file would change time semantics for every test in it. See
   // lib/testing/drain-scheduled.ts.
-  await cancelScheduled(t);
+  //
+  // BY NAME rather than `cancelScheduled(t)`, which is the shared helper's
+  // blanket form. NEO-239 added three warm-gate tests below that drain the
+  // schedule and assert the heavy `/warmup` actually reached the wire; a
+  // blanket cancel here takes `placeholderBatch:warmupHeavyPreprocess` with it
+  // and those assertions see zero calls. Cancelling only the debounce keeps
+  // NEO-220's intent exactly as its comment states it — "this file does not
+  // exercise the debounced pairing run" — without discarding the one scheduled
+  // job this file DOES exercise.
+  await cancelPairingDebounce(t);
 }
 
 // ---------------------------------------------------------------------------
@@ -170,7 +312,7 @@ describe("readNeedsEscalation", () => {
 
 describe("a fast decline re-routes the image to the heavy pool", () => {
   test("marks the row escalated, drops the fast workId, and does NOT count it", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     const jobId = "job-esc-1";
     await seedJob(t, { jobId, status: "processing", totalImages: 2 });
     const imageId = await seedImage(t, jobId, 0, "processing", { workId: "fast-work-0" });
@@ -189,10 +331,13 @@ describe("a fast decline re-routes the image to the heavy pool", () => {
     expect(job?.processedImages).toBe(0);
     expect(job?.failedImages).toBe(0);
     expect(job?.status).toBe("processing");
+    // And nothing was queued to pair a batch that has not finished. An
+    // escalation is a hand-off, not a completion.
+    expect(await scheduledNames(t)).not.toContain(PAIRING_FN);
   });
 
   test("schedules the heavy enqueue for exactly that image", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     const jobId = "job-esc-2";
     await seedJob(t, { jobId, status: "processing", totalImages: 1 });
     const imageId = await seedImage(t, jobId, 0);
@@ -213,7 +358,7 @@ describe("a fast decline re-routes the image to the heavy pool", () => {
   });
 
   test("a fast crop completion is unaffected — it settles, and never escalates", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     const jobId = "job-esc-3";
     await seedJob(t, { jobId, status: "processing", totalImages: 2 });
     const imageId = await seedImage(t, jobId, 0);
@@ -235,7 +380,8 @@ describe("a fast decline re-routes the image to the heavy pool", () => {
 
 describe("the heavy warm-gate", () => {
   test("the FIRST escalation warms heavy once and records heavyWarmStartedAt", async () => {
-    const t = convexTest(schema, modules);
+    const { calls } = stubPreprocess();
+    const t = harness();
     const jobId = "job-warm-1";
     await seedJob(t, { jobId, status: "processing", totalImages: 2 });
     const imageId = await seedImage(t, jobId, 0);
@@ -248,10 +394,29 @@ describe("the heavy warm-gate", () => {
     expect(scheduled).toContain(HEAVY_WARMUP_FN);
     // Exactly one warm-up fan-out scheduled — not one per escalation.
     expect(scheduled.filter((n) => n === HEAVY_WARMUP_FN)).toHaveLength(1);
+
+    // …and it is OWNED: run it, and assert what it actually did. Scheduling is
+    // half the guarantee; the warm-up has to reach the heavy service, and
+    // asserting the call proves the schedule carried a usable target rather
+    // than merely existing.
+    // …and it is OWNED: run it, and assert what it actually did.
+    //
+    // A LOWER BOUND, not an exact count, and the reason matters: convex-test's
+    // scheduler queue is shared across every `convexTest()` instance in a file
+    // (see the same note in placeholderWarmup.test.ts), so the first test that
+    // drains also sweeps up whatever the earlier tests left behind. Pinning an
+    // exact number here would be pinning THEIR behaviour, from a test that
+    // does not own it. What this test owns is that its own warm-up reached the
+    // heavy service — and that no warm-up went anywhere else.
+    await drain(t);
+    const warmups = calls.filter((u) => u.endsWith("/warmup"));
+    expect(warmups.length).toBeGreaterThan(0);
+    expect(warmups.every((u) => u === `${HEAVY_URL}/warmup`)).toBe(true);
   });
 
   test("a SECOND escalation enqueues heavy but does NOT re-fire the warm-gate", async () => {
-    const t = convexTest(schema, modules);
+    const { calls } = stubPreprocess();
+    const t = harness();
     const jobId = "job-warm-2";
     // Pre-set heavyWarmStartedAt as if a first escalation already warmed heavy.
     await seedJob(t, {
@@ -271,13 +436,19 @@ describe("the heavy warm-gate", () => {
     expect(scheduled).not.toContain(HEAVY_WARMUP_FN);
     // The original timestamp is untouched.
     expect((await getJob(t, jobId))?.heavyWarmStartedAt).toBe(1_700_000_000_500);
+
+    // Drain the heavy enqueue this test DID schedule, and prove the warm-gate
+    // stayed shut where it counts: no /warmup call reached the service either.
+    await drain(t);
+    expect(calls.filter((u) => u.endsWith("/warmup"))).toHaveLength(0);
   });
 
   test("two escalations settling in ONE transaction still warm heavy only once", async () => {
     // The workpool can settle several completions inline in one transaction; the
     // per-job settle lock serializes them, so the second reads the first's
     // heavyWarmStartedAt write and skips the warm-up.
-    const t = convexTest(schema, modules);
+    const { calls } = stubPreprocess();
+    const t = harness();
     const jobId = "job-warm-3";
     await seedJob(t, { jobId, status: "processing", totalImages: 2 });
     const a = await seedImage(t, jobId, 0);
@@ -298,6 +469,11 @@ describe("the heavy warm-gate", () => {
       (await ctx.db.query("placeholderImages").collect()).filter((r) => r.jobId === jobId),
     );
     expect(images.every((i) => i.escalated === true)).toBe(true);
+
+    // One schedule, one call. The de-duplication has to hold all the way to
+    // the wire, not just in the scheduler table.
+    await drain(t);
+    expect(calls.filter((u) => u === `${HEAVY_URL}/warmup`)).toHaveLength(1);
   });
 });
 
@@ -307,7 +483,7 @@ describe("the heavy warm-gate", () => {
 
 describe("the heavy completion terminates the escalated row", () => {
   test("a heavy crop marks the escalated row done and counts it, without re-escalating", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     const jobId = "job-heavy-1";
     await seedJob(t, { jobId, status: "processing", totalImages: 2, processedImages: 1 });
     // An image already escalated (as settle left it), now carrying a heavy handle.
@@ -333,10 +509,16 @@ describe("the heavy completion terminates the escalated row", () => {
     expect(job?.status).toBe("pairing");
     // No further escalation was scheduled off the heavy completion.
     expect(await scheduledNames(t)).not.toContain(ENQUEUE_HEAVY_FN);
+    // …and the batch being complete is what QUEUED pairing. `status: "pairing"`
+    // and the schedule are two separate writes that could disagree, so the row
+    // is asserted rather than inferred. `scheduledNames` does not filter by
+    // state and `settle` cancels the debounce immediately, so what this pins is
+    // that the enqueue HAPPENED — which is the half that could regress.
+    expect(await scheduledNames(t)).toContain(PAIRING_FN);
   });
 
   test("even a heavy response claiming needs_escalation:true cannot re-escalate", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     const jobId = "job-heavy-2";
     await seedJob(t, { jobId, status: "processing", totalImages: 1 });
     const imageId = await seedImage(t, jobId, 0, "processing", {
@@ -353,7 +535,7 @@ describe("the heavy completion terminates the escalated row", () => {
   });
 
   test("a heavy failure marks the escalated row failed and counts it", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     const jobId = "job-heavy-3";
     await seedJob(t, { jobId, status: "processing", totalImages: 2, processedImages: 1 });
     const imageId = await seedImage(t, jobId, 0, "processing", {
@@ -374,7 +556,7 @@ describe("the heavy completion terminates the escalated row", () => {
 
 describe("a fast-then-heavy image is counted exactly once, end to end", () => {
   test("a 2-image batch: one fast crop, one escalation that resolves heavy", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     const jobId = "job-e2e-1";
     await seedJob(t, { jobId, status: "processing", totalImages: 2 });
     const fast = await seedImage(t, jobId, 0);
@@ -408,7 +590,7 @@ describe("enqueueHeavyImage guards", () => {
   // These paths return BEFORE touching the heavy pool, so they are reachable
   // under convex-test; the happy-path enqueue is left to integration.
   test("no-ops when the image row is gone", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     const jobId = "job-guard-1";
     await seedJob(t, { jobId, status: "processing" });
     const imageId = await seedImage(t, jobId, 0, "processing", { escalated: true });
@@ -421,7 +603,7 @@ describe("enqueueHeavyImage guards", () => {
   });
 
   test("no-ops when the row is not an un-enqueued escalation", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     const jobId = "job-guard-2";
     await seedJob(t, { jobId, status: "processing" });
     // Not escalated → skip (would be a stale/duplicate schedule).
@@ -442,7 +624,7 @@ describe("enqueueHeavyImage guards", () => {
   });
 
   test("no-ops when the job is no longer draining work (a cancel forced it terminal)", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     const jobId = "job-guard-3";
     await seedJob(t, { jobId, status: "failed" });
     const imageId = await seedImage(t, jobId, 0, "processing", { escalated: true });
@@ -505,7 +687,7 @@ describe("deriveHeavyWarming", () => {
 
 describe("getPlaceholderJob surfaces heavyWarming", () => {
   test("true while an escalation waits on a cold heavy service", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     const jobId = "job-warmflag-1";
     await seedJob(t, { jobId, status: "processing", totalImages: 2, processedImages: 1 });
     await seedImage(t, jobId, 0, "done"); // fast crop already streamed in
@@ -518,7 +700,7 @@ describe("getPlaceholderJob surfaces heavyWarming", () => {
   });
 
   test("false once the heavy service has produced a result", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     const jobId = "job-warmflag-2";
     await seedJob(t, { jobId, status: "processing", totalImages: 2, processedImages: 2 });
     await seedImage(t, jobId, 0, "done", { escalated: true }); // heavy result landed
@@ -531,7 +713,7 @@ describe("getPlaceholderJob surfaces heavyWarming", () => {
   });
 
   test("false for a batch with no escalations", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     const jobId = "job-warmflag-3";
     await seedJob(t, { jobId, status: "processing", totalImages: 2, processedImages: 1 });
     await seedImage(t, jobId, 0, "done");
@@ -550,7 +732,7 @@ describe("getPlaceholderJob surfaces heavyWarming", () => {
 
 describe("streaming is preserved across the escalation", () => {
   test("fast crops appear as 'done' in listPlaceholderImages while an escalation is still processing", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     const jobId = "job-stream-1";
     await seedJob(t, { jobId, status: "processing", totalImages: 3 });
     const a = await seedImage(t, jobId, 0);

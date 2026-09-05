@@ -76,19 +76,20 @@ import EntityColumn from "./EntityColumn";
 // Fixtures
 // ---------------------------------------------------------------------------
 
-// Two existing options at the "sport" column: one synced, one prior-custom.
+// Two existing options at the "sport" column: one that came from a sync and
+// one that was typed in by hand. NEO-239: the rows are indistinguishable — a
+// set either carries marketplace ids or it does not, and both behave the same
+// here — so the fixture no longer flags one of them.
 // `value` is what the user types to match; `_id` is what onSelectExisting must
 // receive. The other fields satisfy the row shape EntityColumn reads.
 const EXISTING_ITEMS = [
   {
     _id: "sport-football-id" as unknown as OptionId,
     value: "Football",
-    isCustom: false,
   },
   {
     _id: "sport-cricket-id" as unknown as OptionId,
     value: "Cricket",
-    isCustom: true,
   },
 ];
 

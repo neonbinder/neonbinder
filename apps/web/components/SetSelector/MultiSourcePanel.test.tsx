@@ -105,7 +105,12 @@ describe("MultiSourcePanel — the facet a BSC slot filters on (NEO-189)", () =>
     ).toBeTruthy();
   });
 
-  test("an UNTAGGED slot shows no tag — it is inert, not unknown", () => {
+  test("an UNTAGGED slot shows no facet tag — it is inert, not unknown", () => {
+    // NEO-239 moved WHERE it renders (it is under "Needs re-mapping" now,
+    // not a chip), but the original point stands and is retested here: a slot
+    // whose facet nobody recorded must never be shown a guessed one. The panel
+    // saying "set" over an untagged slug would tell the operator this row
+    // sources a whole set when the fetch ignores it entirely.
     setRow({
       platformData: { bsc: { b0: "base" } },
       platformLabels: { bsc: { b0: "Base" } },
@@ -131,6 +136,93 @@ describe("MultiSourcePanel — the facet a BSC slot filters on (NEO-189)", () =>
     const bsc = within(bscColumn());
     expect(bsc.getByLabelText("Series 1 is attached as a BSC set")).toBeTruthy();
     expect(bsc.getByLabelText("Series 2 is attached as a BSC set")).toBeTruthy();
+  });
+
+  test("a `variant` slot is SCOPE — it qualifies the source instead of being one", () => {
+    // The reported bug. A Base variant type carries BSC's `base` slug (which
+    // narrows the query to the base cards) beside the set Base mapping stored.
+    // Rendered as two chips they read as two sources; there is one source,
+    // sliced. The slug becomes the qualifier on the chip it narrows.
+    setRow({
+      platformData: { bsc: { b0: "base", b1: "topps" } },
+      platformLabels: { bsc: { b0: "Base", b1: "Topps" } },
+      platformFacets: { bsc: { b0: "variant", b1: "setName" } },
+      primaryPlatformId: { bsc: "b1" },
+    });
+    render(<MultiSourcePanel selectorOptionId={ROW_ID} />);
+
+    const bsc = within(bscColumn());
+    // ONE chip, and it reads "Topps · base cards".
+    expect(bsc.getByLabelText("Remove Topps")).toBeTruthy();
+    expect(bsc.getByText("· base cards")).toBeTruthy();
+    // The scope slug is not a chip, has no ×, and is not up for re-mapping
+    // either — it is doing its job.
+    expect(bsc.queryByLabelText("Remove Base")).toBeNull();
+    expect(bsc.queryByText("Needs re-mapping")).toBeNull();
+  });
+
+  test("an insert's source carries NO qualifier — its scope is all ancestral", () => {
+    // The set and the variant slice are ancestors, and the breadcrumb above the
+    // panel already names them. Repeating them per chip would make the chip
+    // look like it describes a different source.
+    queryResults.getSelectorOptionById = {
+      _id: ROW_ID,
+      level: "insert",
+      value: "Homefield Advantage",
+      platformData: { bsc: { b0: "homefield-advantage" } },
+      platformLabels: { bsc: { b0: "Homefield Advantage" } },
+      platformFacets: { bsc: { b0: "variantName" } },
+      primaryPlatformId: { bsc: "b0" },
+    };
+    queryResults.getAncestorChain = [
+      { _id: "set-1", level: "setName", value: "Topps", platformData: { bsc: { b0: "topps" } } },
+      { _id: "vt-1", level: "variantType", value: "Insert", platformData: { bsc: { b0: "insert" } }, platformFacets: { bsc: { b0: "variant" } } },
+      { _id: ROW_ID, level: "insert", value: "Homefield Advantage", platformData: { bsc: { b0: "homefield-advantage" } } },
+    ];
+    render(<MultiSourcePanel selectorOptionId={ROW_ID} />);
+
+    const bsc = within(bscColumn());
+    expect(bsc.getByLabelText("Remove Homefield Advantage")).toBeTruthy();
+    expect(bsc.queryByText(/· .* cards/)).toBeNull();
+  });
+
+  test("a legacy untagged slot is listed under 'Needs re-mapping', with no ×", () => {
+    // The NEO-189 corruption class: a mis-saved mapping wrote a setName slug
+    // into a variantType row's slot. It sources nothing, so it is not a chip —
+    // but hiding it is how it went unnoticed in the first place. Shown, inert,
+    // and named for the fix. No detach: the remedy is to re-attach it with a
+    // facet, not to delete the evidence.
+    setRow({
+      platformData: { bsc: { b0: "topps" } },
+      platformLabels: { bsc: { b0: "Topps" } },
+      primaryPlatformId: { bsc: "b0" },
+    });
+    render(<MultiSourcePanel selectorOptionId={ROW_ID} />);
+
+    const bsc = within(bscColumn());
+    expect(bsc.getByText("Needs re-mapping")).toBeTruthy();
+    expect(bsc.getByText("Topps")).toBeTruthy();
+    expect(bsc.queryByLabelText("Remove Topps")).toBeNull();
+    expect(bsc.queryByLabelText("Rename label for topps")).toBeNull();
+    // Not the empty state either: there IS something attached, it just does
+    // not source anything yet.
+    expect(bsc.queryByText("No sets attached.")).toBeNull();
+  });
+
+  test("renders for a row with NO ids at all — that is the attach affordance", () => {
+    // NEO-239. This panel used to return null for a row flagged `isCustom`, on
+    // the theory that a hand-entered row "has no marketplace concept". It was
+    // backwards: the panel IS the only way to attach a first id, so hiding it
+    // on exactly the rows that have none made them permanently unattachable,
+    // and made a set entered by hand a second class of thing. A set either
+    // carries marketplace ids or it does not, and both behave the same.
+    setRow({ platformData: {}, isCustom: true });
+    render(<MultiSourcePanel selectorOptionId={ROW_ID} />);
+
+    expect(screen.getByText("Multi-source sets")).toBeTruthy();
+    expect(screen.getByLabelText("Attach more source sets")).toBeTruthy();
+    // Both sides say so explicitly rather than rendering an empty column.
+    expect(screen.getAllByText("No sets attached.")).toHaveLength(2);
   });
 
   test("SportLots chips never carry a facet tag", () => {
@@ -168,11 +260,17 @@ describe("MultiSourcePanel — one confirm for every detach (NEO-219)", () => {
    * so one fixture covers primary/non-primary and both side labels.
    */
   function setTwoSidedRow() {
+    // NEO-239: both BSC slots are TAGGED here, where this fixture once left
+    // them bare. An untagged slot on a variantType row resolves to no facet at
+    // all, so it is no longer a chip — and these tests are about the detach
+    // CONFIRM, which needs a chip to hang off. Tagging them is what the rows
+    // actually look like after NEO-189; every assertion below is unchanged.
     setRow({
       platformData: {
         bsc: { b0: "base", b1: SERIES_1 },
         sportlots: { s0: "884412" },
       },
+      platformFacets: { bsc: { b0: "setName", b1: "setName" } },
       platformLabels: {
         bsc: { b0: "Base", b1: "Series 1" },
         sportlots: { s0: "Topps" },

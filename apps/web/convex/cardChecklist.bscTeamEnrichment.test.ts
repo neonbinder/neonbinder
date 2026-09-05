@@ -28,6 +28,93 @@ const modules = (import.meta as unknown as {
 }).glob("./**/*.*s");
 
 // ---------------------------------------------------------------------------
+// NEO-239: the scheduled work these tests cause is OWNED here, not left for
+// teardown
+// ---------------------------------------------------------------------------
+
+/**
+ * Every harness built in this file, so `afterEach` can settle what the test
+ * scheduled.
+ *
+ * Why this file needs it. These tests create teams, and since NEO-156 every
+ * team-creation path attaches a league via `resolveDefaultLeagueId`. Since
+ * NEO-240 the insert branch of `findOrCreateLeague` schedules
+ * `wikidataPool:enqueueEnrichment` for the new league. Nothing here awaited
+ * that, so it fired after the file's environment had been torn down and
+ * surfaced in a full run as
+ *
+ *   Error when running scheduled function wikidataPool:enqueueEnrichment
+ *   EnvironmentTeardownError: Cannot load '/convex/entityReviewQueue.ts'
+ *   imported from /convex/wikidataPool.ts after the environment was torn down
+ *
+ * convex-test only PRINTS that, so the run stayed green while the defect sat
+ * one timing change away from failing it — the same class already fixed in
+ * bscTeamEnrichmentQueue.tolerance.test.ts, placeholderEscalation.test.ts and
+ * placeholderPipeline.test.ts.
+ *
+ * NEO-220 (#229) reached the same conclusion from the other end and fixed the
+ * same file independently: a `beforeEach` that makes `fetch` throw, and a
+ * `drainScheduled(t)` at the end of every test that creates a team. Both
+ * survive the merge and BOTH are needed — measured, not assumed. Replacing this
+ * hook with an assertion that the queue is empty leaves four tests failing it:
+ * three hold `adapters/buysportscards:processBscTeamEnrichmentQueue` and one
+ * holds `wikidataPool:enqueueEnrichment`.
+ *
+ * So this hook is the backstop for the work `drainScheduled` cannot settle, and
+ * it CANCELS rather than drains for three structural reasons:
+ *
+ *  1. `wikidataPool` is a Convex component and nothing in this repo calls
+ *     `t.registerComponent`, so running `enqueueEnrichment` swaps the teardown
+ *     error for `Component "wikidataPool" is not registered` — noise for noise.
+ *  2. `enqueueBscTeamBackfill`'s cursor test deliberately seeds 1200 eligible
+ *     cards, and its queue chains one card at a time. Draining that is 1200
+ *     scheduled iterations, past convex-test's iteration ceiling and pointless
+ *     besides — the queue's own draining behaviour is
+ *     `bscTeamEnrichmentQueue.test.ts`'s subject, not this file's.
+ *  3. The enqueue test below asserts the PENDING row and must still find it, so
+ *     the settling has to happen after the assertion, not inside the test.
+ *
+ * What this file owns is the ENQUEUE, and the test below asserts that wire
+ * directly off the `_scheduled_functions` row — the same "assert the scheduled
+ * row rather than run it" shape placeholderEscalation.test.ts uses.
+ */
+let harnesses: Array<ReturnType<typeof convexTest>> = [];
+
+function harness(): ReturnType<typeof convexTest> {
+  const t = convexTest(schema, modules);
+  harnesses.push(t);
+  return t;
+}
+
+/** The jobs a test left on the scheduler, newest last. */
+function pendingScheduled(t: ReturnType<typeof convexTest>) {
+  return t.run(async (ctx) =>
+    (await ctx.db.system.query("_scheduled_functions").collect()).filter(
+      (job) => job.state.kind === "pending" || job.state.kind === "inProgress",
+    ),
+  );
+}
+
+beforeEach(() => {
+  harnesses = [];
+});
+
+afterEach(async () => {
+  for (const t of harnesses) {
+    await t.run(async (ctx) => {
+      for (const job of await ctx.db.system
+        .query("_scheduled_functions")
+        .collect()) {
+        if (job.state.kind === "pending" || job.state.kind === "inProgress") {
+          await ctx.scheduler.cancel(job._id);
+        }
+      }
+    });
+  }
+  harnesses = [];
+});
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -145,7 +232,7 @@ afterEach(() => {
 
 describe("getForBscTeamCheck", () => {
   test("returns null when the card has no platformData.bsc", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     const { variantTypeId, sportId } = await seedTree(t);
     const cardId = await insertCard(t, variantTypeId, "1"); // no bsc
 
@@ -156,7 +243,7 @@ describe("getForBscTeamCheck", () => {
   });
 
   test("needsCheck is true when neither teamOnCardIds nor teamCheckDoneAt is set", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     const { variantTypeId, sportId } = await seedTree(t);
     const cardId = await insertCard(t, variantTypeId, "1", { bsc: "bsc-1" });
 
@@ -167,7 +254,7 @@ describe("getForBscTeamCheck", () => {
   });
 
   test("needsCheck is false once teamOnCardIds is set", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     const { variantTypeId, sportId } = await seedTree(t);
     const teamId = await t.run(async (ctx) =>
       ctx.db.insert("teams", {
@@ -189,7 +276,7 @@ describe("getForBscTeamCheck", () => {
   });
 
   test("needsCheck is false once teamCheckDoneAt is set, even with empty teamOnCardIds", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     const { variantTypeId, sportId } = await seedTree(t);
     const cardId = await insertCard(t, variantTypeId, "1", {
       bsc: "bsc-1",
@@ -218,7 +305,7 @@ describe("applyBscTeamResolution", () => {
    * card for the attention walker.
    */
   test("a team BSC names that we do NOT hold creates nothing and links nothing", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     const { variantTypeId } = await seedTree(t);
     const cardId = await insertCard(t, variantTypeId, "1", { bsc: "bsc-1" });
 
@@ -257,8 +344,47 @@ describe("applyBscTeamResolution", () => {
     expect(teams).toHaveLength(0);
   });
 
+  /**
+   * NEO-239 asserted this wire; NEO-236 INVERTED it, and the assertion is
+   * worth keeping in its inverted form.
+   *
+   * #227 added this test as "creating a team attaches a league and enqueues
+   * that league's enrichment" — the two hops that used to hang off the team
+   * insert (NEO-156 attaches a league, NEO-240 schedules the new league's
+   * Wikidata lookup), asserted off the `_scheduled_functions` row instead of
+   * being left dangling, which is how the enqueue came to fire after teardown
+   * in a full run.
+   *
+   * NEO-236 removed the insert those hops hung off: this mutation LINKS an
+   * existing team or leaves the card alone, because creation takes a reviewed
+   * Location + Name and a background queue has neither. So the honest version
+   * of #227's assertion is that the whole chain is gone — no team, therefore
+   * no league, therefore nothing scheduled. Kept rather than deleted because
+   * it is now the structural proof that a marketplace string can no longer
+   * mint shared rows behind an operator's back, in exactly the "assert the
+   * scheduled row rather than run it" shape #227 established.
+   */
+  test("an unmatched team creates no team, no league, and schedules nothing", async () => {
+    const t = harness();
+    const { variantTypeId } = await seedTree(t);
+    const cardId = await insertCard(t, variantTypeId, "1", { bsc: "bsc-1" });
+
+    await t.mutation(internal.cardChecklist.applyBscTeamResolution, {
+      cardChecklistId: cardId,
+      teamName: "New York Yankees",
+    });
+
+    expect(await t.run(async (ctx) => ctx.db.query("teams").collect())).toEqual([]);
+    // No team insert means `resolveDefaultLeagueId` never runs, so the league
+    // this used to create as a side effect is not created either.
+    expect(await t.run(async (ctx) => ctx.db.query("leagues").collect())).toEqual([]);
+    // And nothing reaches the scheduler — the enqueue that fired after
+    // teardown has no caller left on this path at all.
+    expect(await pendingScheduled(t)).toEqual([]);
+  });
+
   test("links an existing teams row via by_name_normalized_and_sport, including one that is SPLIT", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     const { variantTypeId, sportId } = await seedTree(t);
     const existingTeamId = await t.run(async (ctx) =>
       ctx.db.insert("teams", {
@@ -300,7 +426,7 @@ describe("applyBscTeamResolution", () => {
   });
 
   test("a later match CLEARS a hint left by an earlier miss", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     const { variantTypeId, sportId } = await seedTree(t);
     const cardId = await insertCard(t, variantTypeId, "1", { bsc: "bsc-1" });
 
@@ -340,7 +466,7 @@ describe("applyBscTeamResolution", () => {
     // A third party's string reaching an admin screen. Truncated rather than
     // refused: unlike a stored team name this is only a hint, and dropping the
     // whole hint because it was long helps nobody.
-    const t = convexTest(schema, modules);
+    const t = harness();
     const { variantTypeId } = await seedTree(t);
     const cardId = await insertCard(t, variantTypeId, "1", { bsc: "bsc-1" });
 
@@ -354,7 +480,7 @@ describe("applyBscTeamResolution", () => {
   });
 
   test("no-team-found case (empty string) only sets teamCheckDoneAt", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     const { variantTypeId, sportId } = await seedTree(t);
     const cardId = await insertCard(t, variantTypeId, "1", { bsc: "bsc-1" });
 
@@ -379,7 +505,7 @@ describe("applyBscTeamResolution", () => {
   });
 
   test("whitespace-only teamName is treated the same as empty", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     const { variantTypeId, sportId } = await seedTree(t);
     const cardId = await insertCard(t, variantTypeId, "1", { bsc: "bsc-1" });
 
@@ -404,7 +530,7 @@ describe("applyBscTeamResolution", () => {
   });
 
   test("already-resolved row is a no-op and backfills teamCheckDoneAt if missing, without touching teamOnCardIds", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     const { variantTypeId, sportId } = await seedTree(t);
     const preexistingTeamId = await t.run(async (ctx) =>
       ctx.db.insert("teams", {
@@ -443,7 +569,7 @@ describe("applyBscTeamResolution", () => {
   });
 
   test("already-resolved row with teamCheckDoneAt already set leaves the original timestamp untouched", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     const { variantTypeId, sportId } = await seedTree(t);
     const preexistingTeamId = await t.run(async (ctx) =>
       ctx.db.insert("teams", {
@@ -480,7 +606,7 @@ describe("applyBscTeamResolution", () => {
   });
 
   test("missing sport ancestor does NOT set teamCheckDoneAt, so it can be retried later", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     // Orphaned selectorOption — no sport ancestor in its parent chain.
     const orphanedOptId = await t.run(async (ctx) =>
       ctx.db.insert("selectorOptions", {
@@ -514,7 +640,7 @@ describe("applyBscTeamResolution", () => {
   });
 
   test("row that no longer exists is a safe no-op", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     const { variantTypeId, sportId } = await seedTree(t);
     const cardId = await insertCard(t, variantTypeId, "1", { bsc: "bsc-1" });
     await t.run(async (ctx) => ctx.db.delete(cardId));
@@ -543,7 +669,7 @@ describe("applyBscTeamResolution", () => {
 
 describe("enqueueBscTeamBackfill", () => {
   test("only enqueues rows with platformData.bsc, no teamOnCardIds, and no teamCheckDoneAt", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     const { variantTypeId, sportId } = await seedTree(t);
     const teamId = await t.run(async (ctx) =>
       ctx.db.insert("teams", {
@@ -574,7 +700,7 @@ describe("enqueueBscTeamBackfill", () => {
   });
 
   test("respects batchSize and reports remaining beyond the batch", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     const { variantTypeId, sportId } = await seedTree(t);
     for (let i = 0; i < 5; i++) {
       await insertCard(t, variantTypeId, String(i + 1), { bsc: `bsc-${i + 1}` });
@@ -593,7 +719,7 @@ describe("enqueueBscTeamBackfill", () => {
   });
 
   test("defaults batchSize to 200 when not provided", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     const { variantTypeId, sportId } = await seedTree(t);
     for (let i = 0; i < 3; i++) {
       await insertCard(t, variantTypeId, String(i + 1), { bsc: `bsc-${i + 1}` });
@@ -610,7 +736,7 @@ describe("enqueueBscTeamBackfill", () => {
   });
 
   test("no eligible rows enqueues nothing", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     const { variantTypeId, sportId } = await seedTree(t);
     await insertCard(t, variantTypeId, "1"); // no bsc ref at all
 
@@ -638,7 +764,7 @@ describe("enqueueBscTeamBackfill", () => {
   // the cutoff — no rerun could ever reach them. Cursor-based `.paginate()`
   // fixes this by actually advancing through the whole table.
   test("advances past the first page via cursor instead of re-scanning it forever", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     const { variantTypeId, sportId } = await seedTree(t);
 
     // Seed more than one page's worth of eligible rows (PAGE_SIZE is 1000
@@ -698,7 +824,7 @@ describe("enqueueBscTeamBackfill", () => {
  */
 describe("NEO-102: teamNoneConfirmedAt suppresses BSC team enrichment", () => {
   test("getForBscTeamCheck: needsCheck is false for a none-confirmed card", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     const { variantTypeId } = await seedTree(t);
     const cardId = await insertCard(t, variantTypeId, "1", {
       bsc: "bsc-1",
@@ -715,7 +841,7 @@ describe("NEO-102: teamNoneConfirmedAt suppresses BSC team enrichment", () => {
   });
 
   test("applyBscTeamResolution: a found team is NOT written over a none-confirmed card", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     const { variantTypeId } = await seedTree(t);
     const cardId = await insertCard(t, variantTypeId, "1", {
       bsc: "bsc-1",
@@ -753,7 +879,7 @@ describe("NEO-102: teamNoneConfirmedAt suppresses BSC team enrichment", () => {
   });
 
   test("applyBscTeamResolution: an already-stamped none-confirmed card is left completely alone", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     const { variantTypeId } = await seedTree(t);
     const cardId = await insertCard(t, variantTypeId, "1", {
       bsc: "bsc-1",
@@ -774,7 +900,7 @@ describe("NEO-102: teamNoneConfirmedAt suppresses BSC team enrichment", () => {
   });
 
   test("enqueueBscTeamBackfill: a none-confirmed card is not eligible", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     const { variantTypeId } = await seedTree(t);
     await insertCard(t, variantTypeId, "1", { bsc: "bsc-1" });
     await insertCard(t, variantTypeId, "2", {

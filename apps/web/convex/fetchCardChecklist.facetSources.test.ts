@@ -169,7 +169,7 @@ async function buckets(
 async function seedTree(
   t: ReturnType<typeof convexTest>,
   baseSlots: Record<string, string>,
-  baseFacets?: Record<string, "setName" | "variantName">,
+  baseFacets?: Record<string, "setName" | "variantName" | "variant">,
 ): Promise<Id<"selectorOptions">> {
   return t.run(async (ctx) => {
     const sportId = await ctx.db.insert("selectorOptions", {
@@ -243,7 +243,9 @@ describe("fetchCardChecklist — BSC splits, NeonBinder does not (NEO-189)", () 
     const baseId = await seedTree(
       t,
       { b0: "base", b1: SERIES_1, b2: SERIES_2 },
-      { b1: "setName", b2: "setName" },
+      // NEO-239 — `b0` is the row's VARIANT axis and now says so. Untagged, the
+      // BSC side of this chain is unresolvable and would be skipped entirely.
+      { b0: "variant", b1: "setName", b2: "setName" },
     );
 
     const result = await t
@@ -288,7 +290,9 @@ describe("fetchCardChecklist — BSC splits, NeonBinder does not (NEO-189)", () 
     const baseId = await seedTree(
       t,
       { b0: "base", b1: SERIES_1, b2: SERIES_2 },
-      { b1: "setName", b2: "setName" },
+      // NEO-239 — `b0` is the row's VARIANT axis and now says so. Untagged, the
+      // BSC side of this chain is unresolvable and would be skipped entirely.
+      { b0: "variant", b1: "setName", b2: "setName" },
     );
 
     await t.withIdentity(ADMIN).action(api.selectorOptions.fetchCardChecklist, {
@@ -313,7 +317,9 @@ describe("fetchCardChecklist — BSC splits, NeonBinder does not (NEO-189)", () 
     const baseId = await seedTree(
       t,
       { b0: "base", b1: SERIES_1, b2: SERIES_2 },
-      { b1: "setName", b2: "setName" },
+      // NEO-239 — `b0` is the row's VARIANT axis and now says so. Untagged, the
+      // BSC side of this chain is unresolvable and would be skipped entirely.
+      { b0: "variant", b1: "setName", b2: "setName" },
     );
 
     const result = await t
@@ -350,7 +356,7 @@ describe("fetchCardChecklist — BSC splits, NeonBinder does not (NEO-189)", () 
     const recorded: Recorded[] = [];
     vi.stubGlobal("fetch", stubBsc({ [SERIES_2]: ["1"] }, recorded));
     const t = convexTest(schema, modules);
-    const baseId = await seedTree(t, { b0: "parallel" });
+    const baseId = await seedTree(t, { b0: "parallel" }, { b0: "variant" });
     const parallelId = await t.run(async (ctx) => {
       const base = (await ctx.db.get(baseId))!;
       await ctx.db.patch(baseId, { value: "Parallel" });
@@ -376,13 +382,21 @@ describe("fetchCardChecklist — BSC splits, NeonBinder does not (NEO-189)", () 
   });
 });
 
-describe("fetchCardChecklist — untagged legacy slots stay inert (NEO-189)", () => {
-  test("an UNTAGGED Base row queries exactly what it queried before", async () => {
-    // THE COMPATIBILITY GUARANTEE. Every row attached before this change
-    // carries no facet tag. `b0: "base"` is what the reconciler writes at
-    // variantType level, and the fetch has always ignored it — `variant` is
-    // re-derived from the display value instead. Nothing here may infer that
-    // the untagged id is a setName: a wrong guess re-sources a live checklist.
+describe("fetchCardChecklist — untagged slots are inert, and now gate the side (NEO-189/NEO-239)", () => {
+  test("an UNTAGGED Base row makes BSC unresolvable — NO request is issued", async () => {
+    // NEO-239, and a REVERSAL of what this test used to assert.
+    //
+    // `b0: "base"` is what the reconciler wrote at variantType level before
+    // facet tags existed. The fetch used to paper over the missing tag by
+    // re-deriving `variant` from the row's DISPLAY VALUE — an NB name building
+    // a marketplace query, which the product invariant forbids in that
+    // direction as much as the other.
+    //
+    // Dropping the pin without a gate would be worse than the pin: a query
+    // scoped to sport + year + setName with NO VARIANT AXIS returns the base
+    // cards plus every insert and every parallel in the set (NEO-22's
+    // ~5000-card superset), with a 200 and no error to notice. So the row is
+    // BSC-unresolvable and BSC is not called at all. The backfill tags it.
     const recorded: Recorded[] = [];
     vi.stubGlobal("fetch", stubBsc({ "2024-topps": ["1", "2"] }, recorded));
     const t = convexTest(schema, modules);
@@ -394,25 +408,18 @@ describe("fetchCardChecklist — untagged legacy slots stay inert (NEO-189)", ()
         selectorOptionId: baseId,
       });
 
+    // Not an error: SportLots still ran, and this is a real, recoverable
+    // state, not a fault.
     expect(result.success).toBe(true);
-    expect(recorded).toHaveLength(1);
-    expect(recorded[0]).toEqual({
-      sport: ["baseball"],
-      year: ["2024"],
-      setName: ["2024-topps"], // the ANCESTOR's slug, untouched
-      variant: ["base"],
-    });
-    // The untagged `base` slug never reaches setName or variantName. It only
-    // appears as `variant`, which is re-derived from the display value, not
-    // from the slug — the distinction the level skip exists to preserve.
-    expect(recorded[0].setName).not.toContain("base");
-    expect(recorded[0].variantName).toBeUndefined();
+    expect(recorded).toHaveLength(0);
   });
 
   test("an untagged id sitting NEXT TO a tagged one does not become tagged", async () => {
     // Partial migration is the normal state: a row keeps its reconciler-written
-    // `base` slot and gains an operator-attached Series 1. Only the tagged one
-    // may reach the query.
+    // `base` slot and gains an operator-attached Series 1. The untagged one
+    // still contributes nothing — but under NEO-239 it also leaves the row
+    // without a `variant` axis, so BSC is skipped outright rather than queried
+    // across every variant in the set.
     const recorded: Recorded[] = [];
     vi.stubGlobal("fetch", stubBsc({ [SERIES_1]: ["1"] }, recorded));
     const t = convexTest(schema, modules);
@@ -426,15 +433,43 @@ describe("fetchCardChecklist — untagged legacy slots stay inert (NEO-189)", ()
       selectorOptionId: baseId,
     });
 
+    expect(recorded).toHaveLength(0);
+  });
+
+  test("tagging that same `base` slot `variant` is all it takes to resolve", async () => {
+    // The other half of the statement above, and what the backfill does: the
+    // id was always right, it just did not say what it was. One tag and the
+    // row queries exactly what the display-value pin used to produce — from
+    // the slot this time.
+    const recorded: Recorded[] = [];
+    vi.stubGlobal("fetch", stubBsc({ "2024-topps": ["1", "2"] }, recorded));
+    const t = convexTest(schema, modules);
+    const baseId = await seedTree(t, { b0: "base" }, { b0: "variant" });
+
+    await t.withIdentity(ADMIN).action(api.selectorOptions.fetchCardChecklist, {
+      selectorOptionId: baseId,
+    });
+
     expect(recorded).toHaveLength(1);
-    expect(recorded[0].setName).toEqual([SERIES_1]);
+    expect(recorded[0]).toEqual({
+      sport: ["baseball"],
+      year: ["2024"],
+      setName: ["2024-topps"], // the ANCESTOR's slug, untouched
+      variant: ["base"],
+    });
+    expect(recorded[0].setName).not.toContain("base");
+    expect(recorded[0].variantName).toBeUndefined();
   });
 
   test("an UNTAGGED Parallel row is still inert", async () => {
     const recorded: Recorded[] = [];
     vi.stubGlobal("fetch", stubBsc({ "2024-topps": ["1"] }, recorded));
     const t = convexTest(schema, modules);
-    const variantTypeId = await seedTree(t, { b0: "parallel" });
+    const variantTypeId = await seedTree(
+      t,
+      { b0: "parallel" },
+      { b0: "variant" },
+    );
     const parallelId = await t.run(async (ctx) => {
       await ctx.db.patch(variantTypeId, { value: "Parallel" });
       return ctx.db.insert("selectorOptions", {

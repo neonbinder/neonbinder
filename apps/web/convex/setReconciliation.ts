@@ -35,9 +35,60 @@ import {
   platformSideValidator,
   returnedIdsValidator,
   unionChildren,
+  skippedSyncMessage,
   unlinkedEntryValidator,
   type UnlinkedEntry,
 } from "./selectorSyncStore";
+import { soleBscBaseVariantId, syncWrittenBscFacet } from "./bscFacets";
+import { selectorOptionFields } from "./schema";
+// NEO-239 — the per-side "can this marketplace be asked?" rule, shared with
+// selectorOptions.ts so the reconciler and the aggregator cannot disagree.
+import {
+  NO_MARKETPLACE_IDS_MESSAGE,
+  SL_ATTACH_REQUIRED_LEVELS,
+  notifiableSkippedSides,
+  resolvableSides,
+  skippedSideList,
+  type ChainResolution,
+  type ResolvableRow,
+} from "./marketplaceResolvability";
+import type { Doc } from "./_generated/dataModel";
+
+/**
+ * A sentinel thrown to short-circuit a side's fetch block WITHOUT its catch
+ * recording a `platformError`. A skipped side must never look like a failed
+ * one: `coveredSides` is derived from errors, and a failure there is silence
+ * that gets read as evidence.
+ */
+const SKIP_SIDE = Symbol("skip-side");
+
+/**
+ * NEO-239 — the ancestor chain a MUTATION needs to judge resolvability.
+ *
+ * `getAncestorChain` is an admin-gated query and a mutation cannot call it, so
+ * `storeReconciledOptions` walks the parents itself. Mirrors the helper of the
+ * same name in selectorOptions.ts; kept local per the no-cross-file-import
+ * convention noted there for this pair of files.
+ */
+async function loadResolvabilityChain(
+  ctx: { db: { get: (id: Id<"selectorOptions">) => Promise<Doc<"selectorOptions"> | null> } },
+  leafId: Id<"selectorOptions"> | undefined,
+): Promise<ResolvableRow[]> {
+  const chain: ResolvableRow[] = [];
+  let currentId: Id<"selectorOptions"> | undefined = leafId;
+  while (currentId) {
+    const row: Doc<"selectorOptions"> | null = await ctx.db.get(currentId);
+    if (!row) break;
+    chain.unshift({
+      level: row.level,
+      value: row.value,
+      platformData: row.platformData ?? {},
+      platformFacets: row.platformFacets,
+    });
+    currentId = row.parentId;
+  }
+  return chain;
+}
 
 
 // ===== LEVEL VALIDATOR =====
@@ -51,11 +102,13 @@ const levelValidator = v.union(
   v.literal("parallel"),
 );
 
-const metadataValidator = v.optional(v.object({
-  cardNumberPrefix: v.optional(v.string()),
-  isInsert: v.optional(v.boolean()),
-  isParallel: v.optional(v.boolean()),
-}));
+/**
+ * NEO-239 — DERIVED, never re-listed. `storeReconciledOptions` takes operator
+ * metadata on the wire, and a hand-typed copy of the table's shape here would
+ * silently reject a field the table gained. See the twin in selectorOptions.ts
+ * for the drift that made this structural.
+ */
+const metadataValidator = selectorOptionFields.metadata;
 
 // ===== MATCHING HELPERS =====
 
@@ -407,6 +460,15 @@ export const fetchRawOptions = action({
     // Secret Manager creds → 404). Empty array means no adapter errors.
     errors: v.array(v.object({ platform: v.string(), message: v.string() })),
     message: v.optional(v.string()),
+    /**
+     * NEO-239 (audit F1/R1) — sides this run NEVER ASKED for want of
+     * marketplace ids on the chain. Distinct from `errors`: an error means the
+     * side was asked and could not answer, a skip means it was never asked, and
+     * only the second is silence that proves nothing. The client MUST subtract
+     * these before it builds `coveredSides`, and `storeReconciledOptions`
+     * subtracts them again server-side for bundles that predate this field.
+     */
+    skippedSides: v.array(platformSideValidator),
   }),
   // Explicit return type: without it, adding `slCandidates` pushed the
   // inferred type past TypeScript's inference budget and `fetchRawOptions`
@@ -431,6 +493,7 @@ export const fetchRawOptions = action({
     }>;
     errors: Array<{ platform: string; message: string }>;
     message: string;
+    skippedSides: Array<"bsc" | "sportlots">;
   }> => {
     await requireAdmin(ctx);
     try {
@@ -460,7 +523,11 @@ export const fetchRawOptions = action({
       // Build platform-specific filters from the ancestor chain
       let slPlatformFilters: Record<string, string> | undefined;
       let bscPlatformFilters: Record<string, string[]> | undefined;
-      const precondMissingBsc: string[] = [];
+      // No parent = nothing to scope by and nothing that can be missing.
+      let resolution: ChainResolution = {
+        bsc: { served: true, resolvable: true, missing: [] },
+        sportlots: { served: true, resolvable: true, missing: [] },
+      };
 
       if (parentId) {
         const chain = await ctx.runQuery(
@@ -468,47 +535,26 @@ export const fetchRawOptions = action({
           { id: parentId },
         );
 
-        // Uniform custom-subtree skip — the third and last sync backend to
-        // get it (fetchAggregatedOptions + syncSetsAcrossManufacturers in
-        // selectorOptions.ts already have it). A custom ancestor has no
-        // marketplace presence, so BSC/SL must not be queried. Without this,
-        // the custom node's missing BSC slug trips the precondition below and
-        // surfaces a spurious "Sync failed: could not load …" on what should
-        // be a clean skip → the form then routes empty+no-errors to onDone
-        // (idle, "+ Custom"). Kept local (no cross-file import) per the
-        // convention noted in selectorOptions.ts. See NEO-22 / NEO-47 Phase 3.
-        if (chain.some((row) => row.isCustom === true)) {
-          console.log(
-            `[fetchRawOptions] custom subtree — skipping marketplace fetch for ${level}`,
-          );
-          return {
-            success: true,
-            bscOptions: [],
-            slOptions: [],
-            autoMatched: [],
-            unmatchedBsc: [],
-            unmatchedSl: [],
-            slCandidates: [],
-            errors: [],
-            message: "Custom subtree — no marketplace variants to sync",
-          };
-        }
+        // NEO-239 — PER-SIDE resolvability replaces BOTH the custom-subtree
+        // skip and the BSC precondition that used to follow it.
+        //
+        // The two were doing the same job badly from opposite ends: the skip
+        // covered "a human made a row on this path" and the precondition
+        // covered "a synced row has no slug", and between them sat a
+        // display-value fallback that turned a missing id into a wrong query
+        // for every level not on the required list. Now a side is asked when
+        // its ids are there and skipped when they are not, and no NB name ever
+        // reaches a marketplace.
+        resolution = resolvableSides(chain, { level });
 
         slPlatformFilters = {};
         bscPlatformFilters = {};
 
-        // Data-integrity precondition for BSC only. Missing BSC slugs at
-        // sport/year/setName lead to under-filtered queries returning 0
-        // results, which the form's empty-with-errors guard then surfaces
-        // as a generic "could not load variants". Catch the missing slugs
-        // here so the error names the actual broken level. SL is
-        // intentionally not preconditioned — see fetchCardChecklist for
-        // the rationale (SL has no setName-level concept).
-        const BSC_REQUIRED = new Set(["sport", "year", "setName"]);
-
         for (const ancestor of chain) {
           const lvl = ancestor.level;
-          // NEO-137: adapters speak marketplace IDs, not slots.
+          // NEO-137: adapters speak marketplace IDs, not slots. NEO-239: and
+          // ONLY marketplace IDs — the `else if (ancestor.value)` fallback that
+          // used to sit here is gone.
           const ancestorSlIds = slotIds(ancestor, "sportlots");
           if (ancestorSlIds.length > 0) {
             slPlatformFilters[lvl] = ancestorSlIds[0];
@@ -516,17 +562,11 @@ export const fetchRawOptions = action({
           const ancestorBscIds = slotIds(ancestor, "bsc");
           if (ancestorBscIds.length > 0) {
             bscPlatformFilters[lvl] = ancestorBscIds;
-          } else if (BSC_REQUIRED.has(lvl) && bscServesLevel) {
-            // NEO-216: only a precondition for a call we are going to MAKE.
-            // See the twin note in fetchAggregatedOptions.
-            precondMissingBsc.push(`${lvl}=${ancestor.value}`);
-          } else if (ancestor.value) {
-            // Display-value fallback is only acceptable for levels that
-            // are NOT in BSC_REQUIRED. The intent is to forward
-            // manufacturer/variantType-style display values when no slug
-            // mapping exists; for sport/year/setName we want a clean
-            // precondition error instead of a silently-wrong filter.
-            bscPlatformFilters[lvl] = [ancestor.value.toLowerCase()];
+            // NEO-239 — no `else`. The display-value fallback that used to sit
+            // here sent an NB name as a BSC filter, and the `precondMissingBsc`
+            // branch beside it is now `resolvableSides` (which also carries
+            // NEO-216's "only a precondition for a call we are going to MAKE"
+            // refinement: an unserved level is unresolvable, not a failure).
           }
         }
 
@@ -538,15 +578,15 @@ export const fetchRawOptions = action({
         );
       }
 
-      if (precondMissingBsc.length > 0) {
-        const errs = [{
-          platform: "bsc",
-          message: `Missing platformData.bsc on: ${precondMissingBsc.join(", ")}`,
-        }];
-        console.error(
-          `[fetchRawOptions] precondition failed:`,
-          JSON.stringify(errs),
+      const skippedSides = skippedSideList(resolution);
+      if (skippedSides.length > 0) {
+        console.log(
+          `[fetchRawOptions] skipping ${skippedSides.join(",")} for ${level} — ` +
+            `bsc_missing=${resolution.bsc.missing.join(",")} ` +
+            `sl_missing=${resolution.sportlots.missing.join(",")}`,
         );
+      }
+      if (skippedSides.length === 2) {
         return {
           success: true,
           bscOptions: [],
@@ -555,8 +595,12 @@ export const fetchRawOptions = action({
           unmatchedBsc: [],
           unmatchedSl: [],
           slCandidates: [],
-          errors: errs,
-          message: errs.map((e) => `${e.platform}: ${e.message}`).join("; "),
+          // NOT an error. The form routes empty-with-no-errors to onDone —
+          // idle, "+ Custom" — which is exactly right for a level of NB's own
+          // taxonomy that no marketplace stands behind.
+          errors: [],
+          message: NO_MARKETPLACE_IDS_MESSAGE,
+          skippedSides,
         };
       }
 
@@ -564,58 +608,62 @@ export const fetchRawOptions = action({
       let slOptions: PlatformItem[] = [];
       const platformErrors: Record<string, string> = {};
 
-      // Fetch from SportLots
-      if (slServesLevel) {
-        try {
-          const result = await ctx.runAction(
-            api.adapters.sportlots.fetchSportLotsSelectorOptions,
-            {
-              level,
-              parentFilters: parentFilters || {},
-              ...(slPlatformFilters
-                ? { platformFilters: slPlatformFilters }
-                : {}),
-            },
-          );
-          if (result.success && result.options) {
-            // Drop the SL Base anchor row itself (e.g. "Prizm Stars & Stripes")
-            // so it doesn't surface as a variant candidate downstream.
-            slOptions = baseSlPrefix
-              ? result.options.filter(
-                  (o) =>
-                    o.value.trim().toLowerCase() !==
-                    baseSlPrefix.trim().toLowerCase(),
-                )
-              : result.options;
-          } else if (!result.success) {
-            platformErrors.sportlots = result.message || "Unknown error";
-          }
-        } catch (error) {
+      // Fetch from SportLots — only when the chain can scope it (NEO-239).
+      try {
+        if (!resolution.sportlots.resolvable) throw SKIP_SIDE;
+        const result = await ctx.runAction(
+          api.adapters.sportlots.fetchSportLotsSelectorOptions,
+          {
+            level,
+            parentFilters: parentFilters || {},
+            ...(slPlatformFilters ? { platformFilters: slPlatformFilters } : {}),
+            // NEO-239 — label cleanup only; see the note on `labelContext`.
+            ...(parentFilters?.manufacturer
+              ? { labelContext: { manufacturer: parentFilters.manufacturer } }
+              : {}),
+          },
+        );
+        if (result.success && result.options) {
+          // Drop the SL Base anchor row itself (e.g. "Prizm Stars & Stripes")
+          // so it doesn't surface as a variant candidate downstream.
+          slOptions = baseSlPrefix
+            ? result.options.filter(
+                (o) =>
+                  o.value.trim().toLowerCase() !==
+                  baseSlPrefix.trim().toLowerCase(),
+              )
+            : result.options;
+        } else if (!result.success) {
+          platformErrors.sportlots = result.message || "Unknown error";
+        }
+      } catch (error) {
+        // A SKIPPED side is not a FAILED side: it raises no `platformError`, so
+        // it never enters `coveredSides` and nothing is unlinked on it.
+        if (error !== SKIP_SIDE) {
           const msg = error instanceof Error ? error.message : "Unknown error";
           platformErrors.sportlots = msg;
           console.error(`[fetchRawOptions] SportLots error:`, error);
         }
       }
 
-      // Fetch from BSC
-      if (bscServesLevel) {
-        try {
-          const result = await ctx.runAction(
-            api.adapters.buysportscards.fetchBscSelectorOptions,
-            {
-              level,
-              parentFilters: parentFilters || {},
-              ...(bscPlatformFilters
-                ? { platformFilters: bscPlatformFilters }
-                : {}),
-            },
-          );
-          if (result.success && result.options) {
-            bscOptions = result.options;
-          } else if (!result.success) {
-            platformErrors.bsc = result.message || "Unknown error";
-          }
-        } catch (error) {
+      // Fetch from BSC — only when the chain can scope it (NEO-239).
+      try {
+        if (!resolution.bsc.resolvable) throw SKIP_SIDE;
+        const result = await ctx.runAction(
+          api.adapters.buysportscards.fetchBscSelectorOptions,
+          {
+            level,
+            parentFilters: parentFilters || {},
+            ...(bscPlatformFilters ? { platformFilters: bscPlatformFilters } : {}),
+          },
+        );
+        if (result.success && result.options) {
+          bscOptions = result.options;
+        } else if (!result.success) {
+          platformErrors.bsc = result.message || "Unknown error";
+        }
+      } catch (error) {
+        if (error !== SKIP_SIDE) {
           const msg = error instanceof Error ? error.message : "Unknown error";
           platformErrors.bsc = msg;
           console.error(`[fetchRawOptions] BSC error:`, error);
@@ -661,6 +709,14 @@ export const fetchRawOptions = action({
         message,
       }));
 
+      // Only sides that MODEL this level — see `notifiableSkippedSides`. A
+      // structural skip is silent.
+      const notifiableSkipped = notifiableSkippedSides(resolution);
+      const skipSuffix =
+        notifiableSkipped.length > 0
+          ? ` ${skippedSyncMessage(notifiableSkipped)}`
+          : "";
+
       return {
         success: true,
         bscOptions,
@@ -670,7 +726,8 @@ export const fetchRawOptions = action({
         unmatchedSl,
         slCandidates,
         errors,
-        message: `BSC: ${bscOptions.length}, SL: ${slOptions.length}, Auto-matched: ${autoMatched.length}${warningSuffix}`,
+        message: `BSC: ${bscOptions.length}, SL: ${slOptions.length}, Auto-matched: ${autoMatched.length}${warningSuffix}${skipSuffix}`,
+        skippedSides,
       };
     } catch (error) {
       console.error(`[fetchRawOptions] Error:`, error);
@@ -689,6 +746,7 @@ export const fetchRawOptions = action({
           },
         ],
         message: `Failed to fetch options: ${error instanceof Error ? error.message : "Unknown error"}`,
+        skippedSides: [] as Array<"bsc" | "sportlots">,
       };
     }
   },
@@ -741,8 +799,13 @@ type AttachContext = {
   bscSetName?: string[];
   /** Display name of the row's own set, for the BSC breadcrumb. */
   setLabel?: string;
-  /** True when any node in the chain is user-created — skip marketplaces. */
-  isCustom: boolean;
+  /**
+   * NEO-239 — which side this row's chain can actually be asked, replacing
+   * `isCustom`. The SL side uses the ATTACH rule (`SL_ATTACH_REQUIRED_LEVELS`),
+   * which adds `manufacturer`: SportLots' set list is scoped by `brd`, and an
+   * empty `brd` is not a narrower pool but every brand in the year.
+   */
+  resolution: ChainResolution;
 };
 
 /**
@@ -774,9 +837,12 @@ async function resolveAttachContext(
     );
   }
 
-  const out: AttachContext = { isCustom: false };
+  const out: AttachContext = {
+    resolution: resolvableSides(chain, {
+      slRequired: SL_ATTACH_REQUIRED_LEVELS,
+    }),
+  };
   for (const ancestor of chain) {
-    if (ancestor.isCustom === true) out.isCustom = true;
     const slIds = slotIds(ancestor, "sportlots");
     const bscIds = slotIds(ancestor, "bsc");
     switch (ancestor.level) {
@@ -841,11 +907,20 @@ export const fetchSlAttachSets = action({
   }> => {
     await requireAdmin(ctx);
     const cxt = await resolveAttachContext(ctx, args.selectorOptionId);
-    if (cxt.isCustom) {
+    // NEO-239 — the precondition this action never had. `fetchBscAttachOptions`
+    // below has always refused an unscoped BSC pool ("40k rows is not a
+    // browsable pool"); the SL side sent `sprt`/`yr`/`brd` as whatever it had,
+    // and an empty `brd` returns every brand in the year — a WIDER pool than
+    // the operator asked for, delivered with no error.
+    if (!cxt.resolution.sportlots.resolvable) {
+      console.log(
+        `[fetchSlAttachSets] no SportLots ids on this path — ` +
+          `missing=${cxt.resolution.sportlots.missing.join(",")}`,
+      );
       return {
         success: true,
         options: [],
-        message: "Custom subtree — no marketplace sets to attach",
+        message: NO_MARKETPLACE_IDS_MESSAGE,
       };
     }
 
@@ -867,6 +942,12 @@ export const fetchSlAttachSets = action({
           },
           ...(Object.keys(platformFilters).length > 0
             ? { platformFilters }
+            : {}),
+          // NEO-239 — label cleanup only; see the note on `labelContext`. The
+          // attach pane lists candidate sets by name, so the same duplication
+          // ("Topps Topps Series 1" against the brand heading) applies here.
+          ...(cxt.manufacturer
+            ? { labelContext: { manufacturer: cxt.manufacturer } }
             : {}),
         },
       );
@@ -933,33 +1014,31 @@ export const fetchBscAttachOptions = action({
   }> => {
     await requireAdmin(ctx);
     const cxt = await resolveAttachContext(ctx, args.selectorOptionId);
-    if (cxt.isCustom) {
-      return {
-        success: true,
-        options: [],
-        message: "Custom subtree — no marketplace sets to attach",
-      };
-    }
 
     const platformFilters: Record<string, string[]> = {};
     if (cxt.bscSport) platformFilters.sport = cxt.bscSport;
     if (cxt.bscYear) platformFilters.year = cxt.bscYear;
 
     // sport + year are what scope a BSC facet query. Without them the setName
-    // aggregation is the whole catalogue, which is not a browsable pool — fail
-    // loudly instead of handing the operator 40k rows.
+    // aggregation is the whole catalogue, which is not a browsable pool.
+    //
+    // NEO-239 — this is `resolvableSides` asked of the BSC side, and it now
+    // covers the case the `isCustom` gate above it used to catch. A skip, not a
+    // failure: a row whose chain carries no BSC ids has nothing to browse, and
+    // the operator can still attach on the SportLots pane.
+    //
+    // The `setName` requirement is deliberately NOT applied here — this pane
+    // exists to browse the YEAR's sets and find a sibling, so the row's own set
+    // slug is optional (see the `view: "variants"` fallback below).
     if (!platformFilters.sport || !platformFilters.year) {
-      const missing = [
-        platformFilters.sport ? null : "sport",
-        platformFilters.year ? null : "year",
-      ].filter(Boolean);
+      console.log(
+        `[fetchBscAttachOptions] no BSC ids to scope the pool — ` +
+          `missing=${cxt.resolution.bsc.missing.join(",")}`,
+      );
       return {
-        success: false,
+        success: true,
         options: [],
-        message:
-          `Missing platformData.bsc on: ${missing.join(", ")}. ` +
-          `Upstream selectorOptions hydration did not write the BSC slugs ` +
-          `needed to scope this query.`,
+        message: NO_MARKETPLACE_IDS_MESSAGE,
       };
     }
 
@@ -1161,9 +1240,39 @@ export const storeReconciledOptions = mutation({
             : (args.returnedIds.sportlots ?? []),
         }
       : undefined;
-    const effectiveCovered = (args.coveredSides ?? []).filter(
-      (side) => !truncatedSides.includes(side),
-    );
+    // NEO-239 (audit F1/R1) — NARROW COVERAGE SERVER-SIDE.
+    //
+    // `coveredSides` is built by the client from ERRORS, and a side skipped for
+    // want of marketplace ids raises none. Left alone it would arrive marked
+    // covered with an empty `returnedIds`, and the unlink pass below would read
+    // that as "upstream dropped every set" and detach the primary slot of every
+    // sibling row on a side nobody queried. `fetchRawOptions` subtracts its own
+    // `skippedSides`, but an SPA bundle from before this ticket does not know
+    // the field exists, so the mutation re-derives the answer from the parent
+    // chain it can read itself.
+    const parentChain = await loadResolvabilityChain(ctx, parentId);
+    // NO `level` here, deliberately, and it is a different question from the
+    // fetch's. The fetch asks "can this side ANSWER at this level?" — which
+    // includes whether it serves the level at all. The store is not fetching:
+    // its only job (audit F1/R1) is to refuse coverage for a side the chain
+    // carries no ids for, so a caller cannot license the unlink pass on a
+    // marketplace that was never reachable. Applying the served-level table
+    // here would ALSO block a legitimate unlink the caller declared with
+    // evidence — a reconciled variantType batch that says "SportLots answered,
+    // and this row's id was not in it".
+    const chainResolution = resolvableSides(parentChain);
+    const effectiveCovered = (args.coveredSides ?? [])
+      .filter((side) => !truncatedSides.includes(side))
+      .filter((side) => {
+        if (chainResolution[side].resolvable) return true;
+        console.warn(
+          `[storeReconciledOptions] dropping ${side} from coveredSides — the ` +
+            `parent chain carries no ${side} ids (missing: ` +
+            `${chainResolution[side].missing.join(", ")}). Nothing will be ` +
+            `unlinked on that side.`,
+        );
+        return false;
+      });
 
     const plan = planSelectorSync({
       existing: existingOptions,
@@ -1222,6 +1331,23 @@ export const storeReconciledOptions = mutation({
         value: working.get(r._id)?.value ?? r.value,
       }));
 
+    // NEO-239 — the base ROLE, decided once for the whole batch. Same rule as
+    // `storeSelectorOptions`: exactly one incoming BSC id may name the base
+    // variant, and a set whose base an operator has already chosen is left
+    // alone. See `isBscBaseVariantId` for why it is a token match on the
+    // marketplace id rather than a literal or the NB display value.
+    const baseVariantId =
+      level === "variantType"
+        ? soleBscBaseVariantId(items.map((item) => item.ids.bsc))
+        : undefined;
+    const siblingHoldsBaseRole = existingOptions.some(
+      (row) => row.metadata?.isBase === true,
+    );
+    const confersBaseRole = (ids: Partial<Record<"bsc" | "sportlots", string>>) =>
+      baseVariantId !== undefined &&
+      !siblingHoldsBaseRole &&
+      ids.bsc === baseVariantId;
+
     const linkedIds: Id<"selectorOptions">[] = [];
     const relinkedAll: UnlinkedEntry[] = [];
 
@@ -1248,7 +1374,6 @@ export const storeReconciledOptions = mutation({
               _id: row._id,
               level: row.level,
               value: w.value,
-              isCustom: row.isCustom,
               features: w.features,
               sportConfig: row.sportConfig,
             },
@@ -1260,9 +1385,10 @@ export const storeReconciledOptions = mutation({
             if (renamePlan.features) w.features = renamePlan.features;
             if (renamePlan.sportConfig) w.sportConfig = renamePlan.sportConfig;
           } else if (!renamePlan.ok) {
-            // Refused (protected variantType), clashing or invalid. The
-            // LINKAGE below still applies — refusing a name is not a reason to
-            // drop the marketplace mapping the operator just confirmed.
+            // Clashing or invalid. (The "protected variantType" refusal is gone
+            // as of NEO-239.) The LINKAGE below still applies — refusing a name
+            // is not a reason to drop the marketplace mapping the operator just
+            // confirmed.
             console.warn(
               `[storeReconciledOptions] rename refused (${renamePlan.reason}) ` +
                 `for ${row._id} at level=${level}: ${renamePlan.message}`,
@@ -1310,7 +1436,18 @@ export const storeReconciledOptions = mutation({
           const next = setPrimarySlotId(w, side, refreshedId, label);
           w.platformData = next.platformData;
           w.platformLabels = next.platformLabels;
-          w.platformFacets = next.platformFacets;
+          // NEO-239 — a variantType sync knows the facet of the ids it just
+          // fetched (it asked BSC for its `variant` values), so it tags them.
+          // Every other level stays untagged: NEO-189's rule is that a slot is
+          // tagged deliberately or not at all.
+          const syncFacet = syncWrittenBscFacet(level);
+          w.platformFacets =
+            side === "bsc" && syncFacet && next.slot
+              ? {
+                  ...(next.platformFacets ?? {}),
+                  bsc: { ...(next.platformFacets?.bsc ?? {}), [next.slot]: syncFacet },
+                }
+              : next.platformFacets;
           w.platformSlotSeq = next.platformSlotSeq;
           if (next.slot) nextPrimary[side] = next.slot;
           // A decline is a decision about ONE label; a new label re-opens it.
@@ -1326,6 +1463,14 @@ export const storeReconciledOptions = mutation({
 
         if (item.metadata) {
           w.metadata = { ...(w.metadata || {}), ...item.metadata };
+        }
+
+        // NEO-239 — the base ROLE, from BSC's own base variant id, never from
+        // the display value. ADDS ONLY: a row that already carries a value
+        // keeps it, so an operator's `setBaseVariantType` decision survives
+        // every later sync.
+        if (w.metadata?.isBase === undefined && confersBaseRole(parsed.ids)) {
+          w.metadata = { ...(w.metadata ?? {}), isBase: true };
         }
 
         linkedIds.push(row._id);
@@ -1363,6 +1508,28 @@ export const storeReconciledOptions = mutation({
         sportlots: slIds.map((id) => ({ id, ...safeLabel("sportlots", id) })),
       });
 
+      // NEO-239 — tag the variantType level's BSC slots as `variant`, and
+      // derive the base role from BSC's `base` id.
+      const syncFacet = syncWrittenBscFacet(level);
+      const insertFacets =
+        syncFacet && bscIds.length > 0
+          ? {
+              ...alloc.platformFacets,
+              bsc: {
+                ...(alloc.platformFacets.bsc ?? {}),
+                ...Object.fromEntries(
+                  bscIds
+                    .map((id) => alloc.slotByIdBySide.bsc[id])
+                    .filter((slot): slot is string => !!slot)
+                    .map((slot) => [slot, syncFacet] as const),
+                ),
+              },
+            }
+          : alloc.platformFacets;
+      const insertMetadata = confersBaseRole(parsed.ids)
+        ? { ...(item.metadata ?? {}), isBase: true }
+        : item.metadata;
+
       const newPrimary: { bsc?: string; sportlots?: string } = {};
       if (bscIds[0]) newPrimary.bsc = alloc.slotByIdBySide.bsc[bscIds[0]];
       if (slIds[0]) {
@@ -1383,6 +1550,9 @@ export const storeReconciledOptions = mutation({
         value: insertValue,
         platformData: alloc.platformData,
         ...(hasLabels ? { platformLabels: alloc.platformLabels } : {}),
+        ...(Object.keys(insertFacets.bsc ?? {}).length > 0
+          ? { platformFacets: insertFacets }
+          : {}),
         ...(Object.keys(newPrimary).length > 0
           ? { primaryPlatformId: newPrimary }
           : {}),
@@ -1391,7 +1561,7 @@ export const storeReconciledOptions = mutation({
           : {}),
         parentId,
         children: [],
-        metadata: item.metadata,
+        metadata: insertMetadata,
         ...(Object.keys(features).length > 0 ? { features } : {}),
         lastUpdated: Date.now(),
       });
@@ -1409,7 +1579,9 @@ export const storeReconciledOptions = mutation({
     if (reconciledItems.length > 0) {
       for (const side of plan.coveredSides) {
         for (const row of existingOptions) {
-          if (row.isCustom) continue;
+          // NEO-239 — the `if (row.isCustom) continue` here was already a
+          // no-op: `unlinkStalePrimary` returns nothing for a row with no
+          // primary id on the side.
           const w = workingFor(row);
           const un = unlinkStalePrimary(w, side, plan.returnedIds[side]);
           if (!un) continue;

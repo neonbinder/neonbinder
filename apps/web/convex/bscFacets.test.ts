@@ -22,10 +22,16 @@
 
 import { describe, expect, test } from "vitest";
 import {
+  BSC_SOURCE_FACETS,
   MAX_BSC_FAN_OUT,
+  isBscBaseVariantId,
+  soleBscBaseVariantId,
   legacyBscFacetForLevel,
   planBscFanOut,
   resolveBscFacetFilters,
+  syncWrittenBscFacet,
+  bscSourceView,
+  bscScopeQualifier,
   type BscFacet,
   type FacetBearingRow,
 } from "./bscFacets";
@@ -277,5 +283,307 @@ describe("planBscFanOut", () => {
     const plan = planBscFanOut({ setName: ["a", "b"] }, 2);
     expect(plan.capped).toBe(false);
     expect(plan.combos).toHaveLength(2);
+  });
+});
+
+// ===========================================================================
+// NEO-239 — `variant` joins the facet union, but not as a card SOURCE
+// ===========================================================================
+
+describe("the `variant` facet (NEO-239)", () => {
+  test("a `variant`-tagged slot filters on the variant axis", () => {
+    // This is what replaced deriving `filters.variant` from the row's DISPLAY
+    // value in `fetchBscChecklist`. BSC's variant set is not the closed
+    // base/insert/parallel enum that shortcut assumed ("Promo", "Mail In"
+    // occur), which is exactly why the id has to drive it.
+    const plan = resolveBscFacetFilters([
+      node("sport", { b0: "baseball" }),
+      node("year", { b0: "2024" }),
+      node("setName", { b0: "2024-topps" }),
+      node("variantType", { b0: "promo" }, { b0: "variant" }),
+    ]);
+    expect(plan.filters.variant).toEqual(["promo"]);
+  });
+
+  test("`variant` is NEVER the sourceFacet — it scopes, it does not source", () => {
+    // `sourceFacet` decides what each returned card is ATTRIBUTED to, so that
+    // `resolveCardSlots` can bind it to the slot it came from. A variant value
+    // is not a set; cards attributed to one would bind to nothing.
+    const plan = resolveBscFacetFilters([
+      node("sport", { b0: "baseball" }),
+      node("variantType", { b0: "base" }, { b0: "variant" }),
+    ]);
+    expect(plan.sourceFacet).toBeUndefined();
+    expect([...BSC_SOURCE_FACETS].sort()).toEqual(["setName", "variantName"]);
+  });
+
+  test("a row carrying BOTH a variant tag and setName tags contributes both", () => {
+    // NEO-189's motivating row, now fully expressible: an NB Base drawing from
+    // two BSC setName sets AND scoping them to the base variant. The deepest
+    // SOURCE facet still names the source.
+    const plan = resolveBscFacetFilters([
+      node("sport", { b0: "baseball" }),
+      node("setName", { b0: "2024-topps" }),
+      node(
+        "variantType",
+        { b0: "base", b1: "series-1", b2: "series-2" },
+        { b0: "variant", b1: "setName", b2: "setName" },
+      ),
+    ]);
+    expect(plan.filters.variant).toEqual(["base"]);
+    // The setName ancestor's own slug is OVERRIDDEN, not unioned — BSC answers
+    // a three-value facet with 200 OK and no rows.
+    expect(plan.filters.setName).toEqual(["series-1", "series-2"]);
+    expect(plan.sourceFacet).toBe("setName");
+  });
+});
+
+describe("syncWrittenBscFacet", () => {
+  test("only the variantType sync knows the facet of the ids it stores", () => {
+    // It asked BSC for its `variant` facet values and is storing what came
+    // back, so the tag is a fact the writer holds. Every other level returns
+    // undefined: NEO-189's rule is that a slot is tagged deliberately or not
+    // at all, and a second source of truth for setName would only be able to
+    // disagree with the level rule.
+    expect(syncWrittenBscFacet("variantType")).toBe("variant");
+    for (const level of [
+      "sport",
+      "year",
+      "manufacturer",
+      "setName",
+      "insert",
+      "parallel",
+    ]) {
+      expect(syncWrittenBscFacet(level)).toBeUndefined();
+    }
+  });
+});
+
+// ===========================================================================
+// NEO-239 — recognising BSC's base variant id
+// ===========================================================================
+
+describe("isBscBaseVariantId", () => {
+  test.each(["base", "Base", "BASE", " base ", "base-set", "base_cards", "2024-topps-chrome-base"])(
+    "%s is the base variant",
+    (id) => {
+      // The first shipped version of this was `id === "base"`, and CI caught it
+      // against real BSC: the rows synced, the Base row got no role, and the
+      // setup flow's tap on "Base" produced no mapping form. We still have no
+      // recorded sample of BSC's actual slug, so the match is on whole TOKENS
+      // of the id rather than a literal nobody has verified.
+      expect(isBscBaseVariantId(id)).toBe(true);
+    },
+  );
+
+  test.each(["insert", "parallel", "promo", "mail-in", "short-print"])(
+    "%s is not",
+    (id) => {
+      expect(isBscBaseVariantId(id)).toBe(false);
+    },
+  );
+
+  test("`baseball` is NOT a base variant — the reason this is a token match", () => {
+    // A substring test would say yes. BSC's `sport` facet uses this exact
+    // string, and nothing stops a future caller passing the wrong facet's id.
+    expect(isBscBaseVariantId("baseball")).toBe(false);
+    expect(isBscBaseVariantId("database")).toBe(false);
+    expect(isBscBaseVariantId("rebase")).toBe(false);
+  });
+});
+
+describe("soleBscBaseVariantId", () => {
+  test("names the one base id in a batch", () => {
+    expect(soleBscBaseVariantId(["insert", "base", "parallel"])).toBe("base");
+  });
+
+  test("returns undefined when NOTHING matches", () => {
+    expect(soleBscBaseVariantId(["insert", "parallel"])).toBeUndefined();
+    expect(soleBscBaseVariantId([])).toBeUndefined();
+    expect(soleBscBaseVariantId([undefined, undefined])).toBeUndefined();
+  });
+
+  test("returns undefined when TWO match — ambiguity is not resolved by guessing", () => {
+    // Fail-closed. No role is one click of `setBaseVariantType` away; two base
+    // rows make `getBaseVariantBySet` answer by document order.
+    expect(soleBscBaseVariantId(["base", "base-parallel"])).toBeUndefined();
+  });
+
+  test("the SAME id twice is still one answer", () => {
+    // Two NB rows may legitimately map to one marketplace set (NEO-137 M:1);
+    // that is not the ambiguity this guards against.
+    expect(soleBscBaseVariantId(["base", "base", "insert"])).toBe("base");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// bscSourceView — sources vs scope vs neither (NEO-239)
+// ---------------------------------------------------------------------------
+
+/**
+ * The bug: a Base variant type rendered TWO BSC chips — the `variant` slug
+ * scoping the query to the base cards, and the `setName` slug Base mapping
+ * stored — which reads as two sources. One of them is not a source. It narrows
+ * the single source to a slice of itself.
+ *
+ * These cases are the shapes the panel actually meets, and the assertions are
+ * deliberately about the SPLIT rather than about rendering: the panel, the
+ * checklist's source filter and the fetch all have to agree on which slots are
+ * places cards come from, and this is the one function that decides.
+ */
+
+/** A leaf row, with the label map the chips read. */
+function leaf(
+  level: string,
+  bscSlots: Record<string, string>,
+  facets?: Record<string, BscFacet>,
+  labels?: Record<string, string>,
+) {
+  return {
+    level,
+    platformData: { bsc: bscSlots },
+    ...(facets ? { platformFacets: { bsc: facets } } : {}),
+    ...(labels ? { platformLabels: { bsc: labels } } : {}),
+  };
+}
+
+describe("bscSourceView", () => {
+  test("a Base variant type has ONE source; its `variant` slug is scope", () => {
+    // The reported case. b0 is the row's own variant scope, b1 is the set Base
+    // mapping attached. Two chips said "two sources"; there is one.
+    const row = leaf(
+      "variantType",
+      { b0: "base", b1: "topps" },
+      { b0: "variant", b1: "setName" },
+      { b0: "Base", b1: "Topps" },
+    );
+    const chain = [node("setName", { b0: "topps" }), row];
+
+    const view = bscSourceView(row, chain);
+
+    expect(view.sources).toEqual([
+      { slot: "b1", facet: "setName", id: "topps", label: "Topps" },
+    ]);
+    expect(view.scope.own).toEqual([
+      { slot: "b0", facet: "variant", id: "base", label: "Base" },
+    ]);
+    expect(view.untagged).toEqual([]);
+    // The chip reads "Topps · base cards" — which set, and which part of it.
+    expect(bscScopeQualifier(view.scope.own)).toBe("base cards");
+  });
+
+  test("an insert's source carries no qualifier — its scope is all ancestral", () => {
+    // "Homefield Advantage" under 2024 Topps / Insert: the set and the variant
+    // slice are both ANCESTORS, and the breadcrumb above the panel already
+    // says so. Repeating them on the chip turns one fact into three.
+    const row = leaf(
+      "insert",
+      { b0: "homefield-advantage" },
+      { b0: "variantName" },
+      { b0: "Homefield Advantage" },
+    );
+    const chain = [
+      node("setName", { b0: "topps" }),
+      node("variantType", { b0: "insert" }, { b0: "variant" }),
+      row,
+    ];
+
+    const view = bscSourceView(row, chain);
+
+    expect(view.sources.map((s) => s.label)).toEqual(["Homefield Advantage"]);
+    expect(view.scope.own).toEqual([]);
+    expect(bscScopeQualifier(view.scope.own)).toBeUndefined();
+  });
+
+  test("the N:M split is N chips, not one — both halves are real sources", () => {
+    // One NB Base row, BSC's Series 1 and Series 2. This is the feature the
+    // whole facet system exists for, so it must not collapse into one chip.
+    const row = leaf(
+      "variantType",
+      { b0: "base", b1: "series-1", b2: "series-2" },
+      { b0: "variant", b1: "setName", b2: "setName" },
+      { b0: "Base", b1: "Series 1", b2: "Series 2" },
+    );
+    const view = bscSourceView(row, [node("setName", { b0: "topps" }), row]);
+
+    expect(view.sources.map((s) => s.label)).toEqual(["Series 1", "Series 2"]);
+    expect(view.scope.own.map((s) => s.label)).toEqual(["Base"]);
+  });
+
+  test("a parallel row's untagged slot is untagged, not a silent source", () => {
+    // `parallel` has no level rule at all, so an untagged slot there resolves
+    // to no facet. It contributes nothing to the fetch, and a chip for it would
+    // promise cards that never arrive.
+    const row = leaf("parallel", { b0: "gold-foil" }, undefined, { b0: "Gold Foil" });
+    const view = bscSourceView(row, [row]);
+
+    expect(view.sources).toEqual([]);
+    expect(view.scope.own).toEqual([]);
+    expect(view.untagged).toEqual([
+      { slot: "b0", id: "gold-foil", label: "Gold Foil" },
+    ]);
+  });
+
+  test("a legacy UNTAGGED variantType slug is never treated as a source", () => {
+    // The NEO-189 corruption: a mis-saved Base mapping wrote a setName slug
+    // into a variantType row's slot. Untagged, it could be either — so it is
+    // neither, and the operator is told to re-map it rather than shown a chip
+    // that would source the wrong set.
+    const row = leaf("variantType", { b0: "topps" }, undefined, { b0: "Topps" });
+    const view = bscSourceView(row, [node("setName", { b0: "topps" }), row]);
+
+    expect(view.sources).toEqual([]);
+    expect(view.untagged.map((u) => u.slot)).toEqual(["b0"]);
+  });
+
+  test("a hand-made row with no ids has nothing in any bucket", () => {
+    // NEO-239: no marketplace ids is an ordinary state, not a special kind of
+    // row. Every list is simply empty, and the panel says "No sets attached."
+    const row = leaf("insert", {});
+    const view = bscSourceView(row, [row]);
+
+    expect(view).toEqual({
+      sources: [],
+      scope: { filters: {}, own: [] },
+      untagged: [],
+    });
+  });
+
+  test("scope.filters is the FETCH's own answer, not a second opinion", () => {
+    // The panel must not decide for itself what the request will contain. This
+    // pins that the filters come back from `resolveBscFacetFilters` untouched,
+    // so a slot shown as a source is one the fetch counts as a source.
+    const row = leaf(
+      "variantType",
+      { b0: "base", b1: "series-1" },
+      { b0: "variant", b1: "setName" },
+    );
+    const chain = [
+      node("sport", { b0: "baseball" }),
+      node("year", { b0: "2024" }),
+      node("setName", { b0: "topps" }),
+      row,
+    ];
+
+    expect(bscSourceView(row, chain).scope.filters).toEqual(
+      resolveBscFacetFilters(chain).filters,
+    );
+    // And the deepest setName wins over the ancestor's, as it does in the fetch.
+    expect(bscSourceView(row, chain).scope.filters.setName).toEqual(["series-1"]);
+  });
+
+  test("a slot with no label falls back to its id, never to the slot key", () => {
+    // Labels are optional on every write path that predates them; a chip
+    // reading "b1" would name nothing the operator recognises.
+    const row = leaf("insert", { b1: "homefield-advantage" }, { b1: "variantName" });
+    expect(bscSourceView(row, [row]).sources[0].label).toBe("homefield-advantage");
+  });
+
+  test("two scope slots read as one qualifier, joined", () => {
+    const own = [
+      { slot: "b0", facet: "variant" as const, id: "base", label: "Base" },
+      { slot: "b2", facet: "variant" as const, id: "promo", label: "Promo" },
+    ];
+    expect(bscScopeQualifier(own)).toBe("base cards + promo cards");
   });
 });
