@@ -27,6 +27,7 @@ import type * as adapters_wikidata from "../adapters/wikidata.js";
 import type * as adminUsers from "../adminUsers.js";
 import type * as auth from "../auth.js";
 import type * as backfillCardFeatures from "../backfillCardFeatures.js";
+import type * as backfillVariantFacetAndBaseRole from "../backfillVariantFacetAndBaseRole.js";
 import type * as browserAudience from "../browserAudience.js";
 import type * as bscFacets from "../bscFacets.js";
 import type * as cardChecklist from "../cardChecklist.js";
@@ -113,6 +114,7 @@ declare const fullApi: ApiFromModules<{
   adminUsers: typeof adminUsers;
   auth: typeof auth;
   backfillCardFeatures: typeof backfillCardFeatures;
+  backfillVariantFacetAndBaseRole: typeof backfillVariantFacetAndBaseRole;
   browserAudience: typeof browserAudience;
   bscFacets: typeof bscFacets;
   cardChecklist: typeof cardChecklist;
