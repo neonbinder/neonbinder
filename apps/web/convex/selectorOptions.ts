@@ -3332,13 +3332,34 @@ const MAX_PENDING_TEAM_NAMES = MAX_CARD_TEAMS;
 const MAX_PENDING_PLAYER_NAMES = MAX_CARD_PLAYERS;
 
 /**
- * Trim, drop empties, and refuse a list that is too long or a name that is —
- * the shared shape of `addCustomCard`'s two free-text entity args.
+ * Trim, drop empties and repeats, and refuse a list that is too long or a name
+ * that is — the shared shape of the free-text entity args.
+ *
+ * Shared by the TWO mutations that can put typed names on a `cardChecklist`
+ * row: `addCustomCard` (`players` / `teams`, the pre-picker shape an old SPA
+ * bundle can still send) and, since NEO-246, `updateCard`
+ * (`pendingPlayerNames` / `pendingTeamNames`, how the attention walker's
+ * `UnreviewedNameFixer` writes back the names it has not answered). #229
+ * shipped the second pair unbounded while the first pair went through here,
+ * which is the same asymmetry `resolvePlayerIdsForWrite` had and is fixed for
+ * the same reason: these names land on a row that the listing-title
+ * generator, the entity-review wizard and the row sub-line all render, and an
+ * admin client's own limits are UI only.
  *
  * `label` only shapes the error text ("player" / "team"); `limit` is the
  * per-kind cap (`MAX_PENDING_PLAYER_NAMES` / `MAX_PENDING_TEAM_NAMES`) — both
  * errors name it so an operator — or a future client author — can see what
  * WOULD be accepted rather than only that this was not.
+ *
+ * Deduped (exact string, after the trim, first-seen order kept) BEFORE the cap
+ * is measured, exactly as `resolvePlayerIdsForWrite` and
+ * `resolveTeamOnCardIdsForWrite` do for the LINKED spelling of the same two
+ * fields. The two spellings say the same thing about the same card, so a
+ * repeat must not count twice against the cap in one and not the other — and a
+ * name stored twice is rendered twice in the row sub-line and asked about
+ * twice in the review wizard. This is a drop, not a rewrite: the surviving
+ * strings are still verbatim what the caller sent, which is what the
+ * over-length REFUSAL below exists to protect.
  */
 function normalizePendingNames(
   raw: ReadonlyArray<string> | undefined,
@@ -3346,7 +3367,14 @@ function normalizePendingNames(
   limit: number,
 ): string[] | undefined {
   if (raw === undefined) return undefined;
-  const names = raw.map((n) => n.trim()).filter((n) => n.length > 0);
+  const names: string[] = [];
+  const seen = new Set<string>();
+  for (const candidate of raw) {
+    const name = candidate.trim();
+    if (name.length === 0 || seen.has(name)) continue;
+    seen.add(name);
+    names.push(name);
+  }
   if (names.length > limit) {
     throw new ConvexError(
       `A card can carry at most ${limit} ${label} names.`,
@@ -3363,6 +3391,37 @@ function normalizePendingNames(
     }
   }
   return names;
+}
+
+/**
+ * NEO-246 — the SAME bounds as `normalizePendingNames`, applied by DROPPING
+ * rather than refusing.
+ *
+ * Why two spellings of one rule. `normalizePendingNames` guards the two
+ * OPERATOR-facing mutations, where a refusal is the honest answer: a person
+ * typed something and can be told it was not stored. This guards the commit
+ * chunk, which merges names an ADAPTER derived from a marketplace with names
+ * already sitting on the row, on a path with no operator standing in front of
+ * it. Throwing there would fail a whole chunk of a sync — hundreds of cards
+ * nobody has a problem with — because one upstream row carried an essay in a
+ * player field. So the commit takes what fits and moves on.
+ *
+ * That is not a licence to store anything: the point of bounding it here at
+ * all is that `updateCard` now REFUSES what it used to accept, and the walker's
+ * `UnreviewedNameFixer` writes the row's stored names straight back when it
+ * answers only one side. A row the commit stamped over the cap would therefore
+ * be one the operator could never save — the fix for a bad row would itself be
+ * refused. Every writer has to agree on the shape of this field for that not to
+ * happen.
+ *
+ * Expects `names` already trimmed, non-empty and deduped — both callers build
+ * their list that way before reaching here, and the order they built it in is
+ * the order the truncation respects (first-seen wins, so on the update path
+ * the names already stored on the row outrank the ones this sync stamped).
+ */
+function boundPendingNames(names: string[], limit: number): string[] {
+  const kept = names.filter((n) => n.length <= MAX_PENDING_NAME_LENGTH);
+  return kept.length > limit ? kept.slice(0, limit) : kept;
 }
 
 /**
@@ -3448,27 +3507,33 @@ async function resolveTeamOnCardIdsForWrite(
  * (preserving the caller's order, since the array is display order), cap,
  * then one existence + sport check per id, all BEFORE anything is written.
  *
- * Why it exists at all: `addCustomCard` reaches admin clients whose picker
- * caps are UI only, so an admin calling the mutation directly must not be able
- * to write an unbounded array, a pile of duplicate ids, or an id that resolves
- * to no player — or to a player from another sport, which would put a
+ * Why it exists at all: every writer of this field reaches admin clients whose
+ * picker caps are UI only, so an admin calling the mutation directly must not
+ * be able to write an unbounded array, a pile of duplicate ids, or an id that
+ * resolves to no player — or to a player from another sport, which would put a
  * basketball player on a baseball card and be invisible until a listing was
  * generated from it.
  *
- * ## Why `updateCard.playerIds` is NOT routed through this
+ * ## Both writers of `playerIds` come through here (NEO-246)
  *
- * It is the obvious next step and it is deliberately not taken here.
- * `updateCard.playerIds` is written by `CardDetailPanel`'s PlayerPicker AND by
- * `UnreviewedNameFixer`, and `previewListingTitle` already carries a long note
- * explaining that bounding it properly "changes an input contract
- * CardDetailPanel and the commit path both use, and that is its own decision
- * rather than a preview query's to make". That is still true, and it is still
- * not this ticket's to make: NEO-220 is about the card being born linked. The
- * asymmetry is real and worth closing — `previewListingTitle` bounds its own
- * fan-out locally in the meantime, so nothing is unbounded at read time.
+ * `addCustomCard.playerIds` and `updateCard.playerIds`, exactly as
+ * `resolveTeamOnCardIdsForWrite` serves both sides of the team field. NEO-220
+ * shipped the helper on the quick-add path only and left a note here arguing
+ * that bounding the update path "changes an input contract CardDetailPanel and
+ * the commit path both use, and that is its own decision rather than a preview
+ * query's to make". That reasoning is RETIRED: the asymmetry shipped to
+ * production in #229 and meant a card born with a validated player list could
+ * be edited into an unvalidated one a second later, through
+ * `CardDetailPanel`'s PlayerPicker or the attention walker's
+ * `UnreviewedNameFixer`. ONE function rather than two copies, for the same
+ * reason the team helper gives: a card born with a player is validated exactly
+ * as a card given one later, and a second implementation is how the two paths
+ * would end up accepting different things.
  *
- * `selectorOptionId` is the row the card is about to live under; it is only
- * used to resolve the sport, and only when there is at least one id to check.
+ * `selectorOptionId` is the row the card lives (or is about to live) under —
+ * `addCustomCard` holds it as an argument, `updateCard` reads it off the
+ * stored card. It is only used to resolve the sport, and only when there is at
+ * least one id to check.
  *
  * The returned `names` are the rows this already read, so the listing-title
  * generator does not read them a second time. Order matches `ids`.
@@ -3798,6 +3863,10 @@ export const updateCard = mutation({
     // `pendingTeamNames` retirement below: that one follows from a team having
     // been LINKED, and there is no equivalent write to infer "this name was
     // junk" from. Admin-gated like every other argument here.
+    //
+    // NEO-246: bounded by `normalizePendingNames` — the same count and
+    // per-name length `addCustomCard`'s free-text args have had since NEO-208
+    // — with the same refusal wording, because it is the same helper.
     pendingPlayerNames: v.optional(v.array(v.string())),
     pendingTeamNames: v.optional(v.array(v.string())),
     listingTitle: v.optional(v.string()),
@@ -3932,6 +4001,61 @@ export const updateCard = mutation({
       filtered.teamOnCardIds = ids;
     }
 
+    // NEO-246: `playerIds` gets the SAME treatment, from the same shared
+    // helper, for the same reason. It arrives from admin clients — the card
+    // detail panel's PlayerPicker and the attention walker's
+    // `UnreviewedNameFixer` — whose 20-player cap is UI only, and until now it
+    // was the one full-replacement entity array on this mutation written
+    // straight through: no dedupe, no cap, no existence check, no sport check.
+    // A card added through `addCustomCard` was born validated and could be
+    // edited into an unvalidated state on the very next save (#229).
+    //
+    // `resolvePlayerIdsForWrite` is shared verbatim with `addCustomCard`, so
+    // the born-with-a-player path and the given-one-later path cannot diverge
+    // on what they accept, and the operator sees the same refusal wording
+    // whichever one they are standing in.
+    if (Array.isArray(filtered.playerIds)) {
+      const { ids } = await resolvePlayerIdsForWrite(
+        ctx,
+        (await loadStoredCard()).selectorOptionId,
+        filtered.playerIds as Array<Id<"players">>,
+      );
+      filtered.playerIds = ids;
+    }
+
+    // NEO-246: the TYPED spelling of those same two fields gets the same
+    // treatment, from the same shared normaliser `addCustomCard` uses. #229
+    // added these two arguments for the attention walker's
+    // `UnreviewedNameFixer` and left them as bare `v.array(v.string())` — no
+    // trim, no cap, no per-name length — while the free-text args on
+    // `addCustomCard` had been bounded since NEO-208. An unbounded write here
+    // parks arbitrary text on a row that the listing-title generator, the
+    // entity-review wizard and the row sub-line all render.
+    //
+    // Runs BEFORE the derived clears below, so a `pendingTeamNames` that a
+    // non-empty `teamOnCardIds` write is about to retire is still validated on
+    // the way past — a refusal must not depend on which other field happened
+    // to be in the same call.
+    //
+    // `[]` survives as `[]` and is turned into a deleted field by the
+    // explicitly-emptied loop further down; a list of nothing but whitespace
+    // normalises to `[]` and lands in exactly the same place, which is the
+    // right answer for both.
+    if (Array.isArray(filtered.pendingPlayerNames)) {
+      filtered.pendingPlayerNames = normalizePendingNames(
+        filtered.pendingPlayerNames as string[],
+        "player",
+        MAX_PENDING_PLAYER_NAMES,
+      );
+    }
+    if (Array.isArray(filtered.pendingTeamNames)) {
+      filtered.pendingTeamNames = normalizePendingNames(
+        filtered.pendingTeamNames as string[],
+        "team",
+        MAX_PENDING_TEAM_NAMES,
+      );
+    }
+
     // NEO-102: giving this card a real team RETIRES the operator's "no team"
     // confirmation, in the same patch, so the two can never contradict each
     // other on the row.
@@ -4049,28 +4173,20 @@ export const previewListingTitle = query({
     const card = await ctx.db.get(args.cardId);
     if (!card) throw new ConvexError("previewListingTitle: no such card");
 
-    // NEO-101 security follow-up: BOUND AND DEDUPE the fan-out before reading
-    // anything. `playerIds` is an unvalidated array on the row — `updateCard`
-    // accepts it as full replacement with no cap and no de-duplication, unlike
-    // `teamOnCardIds` (see `MAX_CARD_TEAMS` there) — so a single call to this
-    // query could otherwise turn one card id into an unbounded sequential
-    // `ctx.db.get` walk. Deduping first also stops a row that repeats the same
-    // id from paying for it twice, and from printing the player twice.
-    //
-    // The cap is deliberately generous rather than tight: the widest real
-    // multi-player cards (League Leaders, rookie combos) run to a handful of
-    // names, and a title only has room for two or three of them anyway, so 12
-    // is well past anything legitimate while still being a hard bound.
-    //
-    // Not fixed by adding a `MAX_CARD_PLAYERS` to `updateCard` here: doing
-    // that properly means dedupe + cap + existence checks on the write path,
-    // which changes an input contract `CardDetailPanel` and the commit path
-    // both use, and that is its own decision rather than a preview query's to
-    // make. This bound is local and costs nothing.
-    const PREVIEW_PLAYER_LOOKUP_LIMIT = 12;
+    // Deduped and BOUNDED before any read, exactly as `teamOnCardIds` is
+    // below. NEO-101 originally bounded this with a LOCAL constant of its own
+    // (12) because `updateCard.playerIds` was written unvalidated and this
+    // query was the only thing standing between one card id and an unbounded
+    // sequential `ctx.db.get` walk. NEO-246 routed that write through
+    // `resolvePlayerIdsForWrite`, so the stopgap is gone and the bound here is
+    // `MAX_CARD_PLAYERS` — the same number the write path enforces. A row that
+    // went through the supported path can therefore never be truncated by it;
+    // the cap remains for rows written before that validation landed, or by a
+    // future caller that skips it. Deduping still earns its keep for the same
+    // rows: a repeat must not be read twice, or printed twice.
     const previewPlayerIds = [...new Set(card.playerIds ?? [])].slice(
       0,
-      PREVIEW_PLAYER_LOOKUP_LIMIT,
+      MAX_CARD_PLAYERS,
     );
     const resolvedPlayerNames: string[] = [];
     for (const playerId of previewPlayerIds) {
@@ -9835,15 +9951,30 @@ export const commitCardChecklistChunk = internalMutation({
           stored: string[] | undefined,
           incoming: string[] | undefined,
           settled: Set<string>,
+          limit: number,
         ): { changed: boolean; next: string[] | undefined } => {
-          const next: string[] = [];
+          const merged: string[] = [];
           const seen = new Set<string>();
           for (const raw of [...(stored ?? []), ...(incoming ?? [])]) {
             const name = raw.trim();
             if (!name || settled.has(name) || seen.has(name)) continue;
             seen.add(name);
-            next.push(name);
+            merged.push(name);
           }
+          // NEO-246 — the union of two individually-fine lists can still be
+          // over the cap, so the bound is applied to the RESULT rather than to
+          // either input. Stored names come first in the concatenation above,
+          // so truncation drops the ones this sync stamped and keeps the ones
+          // the row already carried — the operator's existing backlog is not
+          // displaced by a fresh marketplace name.
+          //
+          // A row stamped over the cap before this landed is REPAIRED here
+          // rather than left alone: the shortened list differs from `before`,
+          // so `changed` is true and the patch writes it. That matters because
+          // `updateCard` now refuses an over-cap list, and the walker's fixer
+          // writes the stored names back verbatim — an unrepaired row would be
+          // one the operator could never save.
+          const next = boundPendingNames(merged, limit);
           const before = stored ?? [];
           const changed =
             next.length !== before.length ||
@@ -9854,11 +9985,13 @@ export const commitCardChecklistChunk = internalMutation({
           existing.pendingPlayerNames,
           card.pendingPlayerNames,
           settledPlayerNames,
+          MAX_PENDING_PLAYER_NAMES,
         );
         const nextPendingTeams = mergePendingNames(
           existing.pendingTeamNames,
           card.pendingTeamNames,
           settledTeamNames,
+          MAX_PENDING_TEAM_NAMES,
         );
 
         await ctx.db.patch(existing._id, {
@@ -9980,6 +10113,19 @@ export const commitCardChecklistChunk = internalMutation({
         };
         const listingTitle = assessListingTitle(listingInputs);
 
+        // NEO-246 — see the note beside where these are spread below. The
+        // payload's lists are already trimmed, deduped and (for every real
+        // caller) bounded by the action; this makes the mutation self-
+        // sufficient about the shape of a field `updateCard` now enforces.
+        const insertPendingPlayerNames = boundPendingNames(
+          card.pendingPlayerNames ?? [],
+          MAX_PENDING_PLAYER_NAMES,
+        );
+        const insertPendingTeamNames = boundPendingNames(
+          card.pendingTeamNames ?? [],
+          MAX_PENDING_TEAM_NAMES,
+        );
+
         const newCardId: Id<"cardChecklist"> = await ctx.db.insert("cardChecklist", {
           selectorOptionId: args.selectorOptionId,
           cardNumber: card.cardNumber,
@@ -10011,11 +10157,19 @@ export const commitCardChecklistChunk = internalMutation({
           // NEO-221 — names this card carries that nobody ruled on. Omitted
           // entirely when empty, so a fully-reviewed commit writes exactly the
           // row it wrote before this feature existed.
-          ...(card.pendingPlayerNames?.length
-            ? { pendingPlayerNames: card.pendingPlayerNames }
+          //
+          // NEO-246 — bounded on the way in, the same way the update branch
+          // bounds its merge. The action already applied this bound when it
+          // built the payload (which is what keeps `unreviewedNameCount`
+          // honest), so this is idempotent for every real caller; it is here
+          // because an internal mutation must not depend on its caller having
+          // done it, and an over-cap row would be one `updateCard` could never
+          // accept a fix for.
+          ...(insertPendingPlayerNames.length
+            ? { pendingPlayerNames: insertPendingPlayerNames }
             : {}),
-          ...(card.pendingTeamNames?.length
-            ? { pendingTeamNames: card.pendingTeamNames }
+          ...(insertPendingTeamNames.length
+            ? { pendingTeamNames: insertPendingTeamNames }
             : {}),
           sortOrder: card.sortOrder,
           lastUpdated: Date.now(),
@@ -11938,19 +12092,34 @@ export const commitCardChecklist = action({
       // because one card can list the same name twice (a two-player card whose
       // adapter repeated a name), and the stored field is a set of names, not
       // a transcript.
-      const pendingPlayerNames = Array.from(
-        new Set(
-          (c.players ?? [])
-            .map((p) => p.trim())
-            .filter((p) => p && unreviewedPlayers.has(p)),
+      //
+      // NEO-246 — and BOUNDED here, before anything counts them. The chunk
+      // applies the same bound on the way into the row; doing it here too is
+      // what keeps `unreviewedNameCount` honest, because the operator is being
+      // told how many names they have to deal with and a name that was
+      // dropped on the floor is not one of them. Non-throwing: this is
+      // marketplace-derived input on an internal path, and one upstream row
+      // carrying an essay in a player field must not fail a whole chunk of a
+      // sync (see `boundPendingNames`).
+      const pendingPlayerNames = boundPendingNames(
+        Array.from(
+          new Set(
+            (c.players ?? [])
+              .map((p) => p.trim())
+              .filter((p) => p && unreviewedPlayers.has(p)),
+          ),
         ),
+        MAX_PENDING_PLAYER_NAMES,
       );
-      const pendingTeamNames = Array.from(
-        new Set(
-          teamSources
-            .map((t) => t.trim())
-            .filter((t) => t && unreviewedTeams.has(t)),
+      const pendingTeamNames = boundPendingNames(
+        Array.from(
+          new Set(
+            teamSources
+              .map((t) => t.trim())
+              .filter((t) => t && unreviewedTeams.has(t)),
+          ),
         ),
+        MAX_PENDING_TEAM_NAMES,
       );
       // What the operator is actually told about — see `stampedUnreviewedNames`.
       for (const n of pendingPlayerNames) stampedUnreviewedNames.add(n);

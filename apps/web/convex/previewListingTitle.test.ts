@@ -20,6 +20,7 @@ import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
+import { MAX_CARD_PLAYERS } from "./features/cardAttention";
 import type { Id } from "./_generated/dataModel";
 
 const modules = (
@@ -230,17 +231,20 @@ describe("previewListingTitle (NEO-101)", () => {
   });
 
   test("de-dupes and bounds the playerIds fan-out", async () => {
-    // `playerIds` is unvalidated on the row — `updateCard` takes it as full
-    // replacement with no cap and no de-duplication, unlike `teamOnCardIds`.
-    // A repeated id must not be read (or printed) twice, and a long array must
-    // not turn one query call into an unbounded sequential read walk.
+    // NEO-246: `updateCard.playerIds` now dedupes and caps on the WRITE path,
+    // so a row that went through it can never reach this bound. The bound stays
+    // for rows written before that landed (or by a future caller that skips
+    // it): a repeated id must not be read — or printed — twice, and a long
+    // array must not turn one query call into an unbounded sequential read
+    // walk. Inserted straight into the table here, which is the only way to
+    // produce such a row now.
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { sportId, variantTypeId } = await seedSubtree(t);
 
     const playerIds = await t.run(async (ctx) => {
       const ids: Id<"players">[] = [];
-      for (let i = 0; i < 20; i++) {
+      for (let i = 0; i < MAX_CARD_PLAYERS + 4; i++) {
         ids.push(
           await ctx.db.insert("players", {
             name: `Player ${String(i).padStart(2, "0")}`,
@@ -264,7 +268,8 @@ describe("previewListingTitle (NEO-101)", () => {
     );
     expect(dupePreview.inputs.playerNames).toEqual(["Player 00", "Player 01"]);
 
-    // A 20-id array reads at most the documented bound.
+    // An over-cap array reads at most `MAX_CARD_PLAYERS` — the same bound the
+    // write path enforces, no longer a local number of this query's own.
     const wideCardId = await insertCard(t, variantTypeId, {
       cardNumber: "2",
       playerIds,
@@ -273,7 +278,7 @@ describe("previewListingTitle (NEO-101)", () => {
       api.selectorOptions.previewListingTitle,
       { cardId: wideCardId },
     );
-    expect(widePreview.inputs.playerNames).toHaveLength(12);
+    expect(widePreview.inputs.playerNames).toHaveLength(MAX_CARD_PLAYERS);
     expect(widePreview.inputs.playerNames[0]).toBe("Player 00");
     expect(widePreview.title.length).toBeLessThanOrEqual(80);
   });
