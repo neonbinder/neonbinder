@@ -104,11 +104,14 @@ async function seedSport(t: ReturnType<typeof convexTest>) {
 }
 
 /**
- * A team shaped EXACTLY as the two enqueueing creation paths insert one —
- * `selectorOptions`' `resolveTeamIdByName` and `teams.findOrCreateInternal`.
- * Both write `{name, nameNormalized, sportId, leagueId, lastUpdated}` and
+ * A team shaped EXACTLY as the enqueueing creation paths insert one —
+ * `selectorOptions`' commit prelude and `teams.findOrCreate`. Both write
+ * `{name, location?, nameNormalized, sportId, leagueId, lastUpdated}` and
  * nothing else, so `leagueId` is present here on purpose: it is the field most
  * likely to be mistaken for an enrichment marker.
+ *
+ * NEO-236 note: `location` is deliberately ABSENT here and stays a valid
+ * enrichment marker, because no creation path has one to write.
  */
 async function insertBareTeam(
   t: ReturnType<typeof convexTest>,
@@ -620,19 +623,22 @@ describe("teams.findOrCreate enqueues enrichment on INSERT only (NEO-208)", () =
     expect(await scheduledEnrichmentCount(t, "teamIds")).toBe(1);
   });
 
-  test("findOrCreateInternal is unchanged — it enqueues nothing", async () => {
-    // Deliberately untouched by NEO-208. Its server-side callers already
-    // enqueue (or deliberately do not) at the site that knows whether the row
-    // is new; adding an enqueue here would double up on those.
+  test("findByFullNameInternal creates nothing, so there is nothing to enqueue", async () => {
+    // NEO-208 left `findOrCreateInternal` alone: its server-side callers
+    // enqueued (or deliberately did not) at the site that knew whether the row
+    // was new. NEO-236 removed the question entirely — the server-side path is
+    // a QUERY now and cannot insert, so "enqueues nothing" is structural
+    // rather than a convention.
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
 
-    await t.mutation(internal.teams.findOrCreateInternal, {
+    await t.query(internal.teams.findByFullNameInternal, {
       name: "Chiba Lotte Marines",
       sportId,
     });
 
     expect(await scheduledEnrichmentCount(t, "teamIds")).toBe(0);
+    expect(await t.run(async (ctx) => ctx.db.query("teams").collect())).toHaveLength(0);
   });
 
   test("a rejected call — over-long name — enqueues nothing and creates nothing", async () => {

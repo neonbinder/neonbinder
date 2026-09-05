@@ -32,8 +32,10 @@ import { v } from "convex/values";
 import type { Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { requireAdmin } from "./auth";
-import { normalizeTeamName } from "./teams";
-import { resolveDefaultLeagueId } from "./leagues";
+// NEO-236: these two paths LOOK UP a team and link it; neither may create one.
+// See `convex/lib/teamRow.ts` and the notes on each handler below.
+import { findTeamByFullName } from "./lib/teamRow";
+import { teamFullName } from "../lib/teams/team-name";
 
 /**
  * Walk up the parent chain from a cardChecklist's selectorOption to
@@ -70,18 +72,32 @@ export const backfillTeamToOnCardIds = internalMutation({
   args: {
     /**
      * Cap on rows scanned per invocation. Defaults to 100 — a card
-     * row patch is one read + one write, with a possible team
-     * findOrCreate (one extra read + maybe one write). 100 keeps us
-     * far below the 4096-read mutation budget even for a degenerate
-     * batch of all-new teams.
+     * row patch is one read + one write, plus one indexed team lookup.
+     * 100 keeps us far below the 4096-read mutation budget.
      */
     batchSize: v.optional(v.number()),
   },
   returns: v.object({
     /** Rows visited this batch (including skips). */
     processed: v.number(),
-    /** New `teams` rows inserted to satisfy a missing FK. */
-    teamsCreated: v.number(),
+    /**
+     * NEO-236: rows whose legacy `team` string matches no team we hold.
+     *
+     * This used to be `teamsCreated`, and the rename is the behaviour change:
+     * the migration inserted a `teams` row for every unrecognised string a
+     * marketplace had ever written onto a card. Creation now takes Location +
+     * Name from an operator, and this path has neither, so an unmatched row is
+     * LEFT ALONE — both its `team` string and its empty `teamOnCardIds` stay
+     * put, so the attention walker's missing-team lane still surfaces it and a
+     * rerun after the operator creates the team picks it up.
+     *
+     * **This changes the operator's exit condition.** The old advice was
+     * "rerun until `processed === 0`", which assumed every row could be
+     * migrated. An unmatched row stays eligible forever by design, so a run
+     * whose `processed === unmatched` has done everything it can — anything
+     * further needs the teams to exist first.
+     */
+    unmatched: v.number(),
     /**
      * Rows skipped because we couldn't determine the sport for the
      * ancestor chain — usually orphaned test fixtures. Logged with
@@ -109,7 +125,7 @@ export const backfillTeamToOnCardIds = internalMutation({
       .take(PAGE_SIZE);
 
     let processed = 0;
-    let teamsCreated = 0;
+    let unmatched = 0;
     let skippedAmbiguous = 0;
     let remaining = 0;
 
@@ -158,31 +174,23 @@ export const backfillTeamToOnCardIds = internalMutation({
         continue;
       }
 
-      const normalized = normalizeTeamName(teamString);
-      // findOrCreate via the by_name_normalized_and_sport compound
-      // index (same hot-path lookup commitCardChecklist uses). One
-      // indexed read per team string regardless of cross-sport dupes.
-      const existing = await ctx.db
-        .query("teams")
-        .withIndex("by_name_normalized_and_sport_id", (q) =>
-          q.eq("nameNormalized", normalized).eq("sportId", sportId),
-        )
-        .first();
+      // NEO-236: the shared identity lookup (`by_name_normalized_and_sport_id`
+      // keyed on the composed full name), so a legacy string still resolves
+      // onto a row that has since been split into location + nickname. One
+      // indexed read per team string.
+      const existing = await findTeamByFullName(ctx, sportId, teamString);
 
-      let teamId: Id<"teams">;
-      if (existing) {
-        teamId = existing._id;
-      } else {
-        teamId = await ctx.db.insert("teams", {
-          name: teamString.trim(),
-          nameNormalized: normalized,
-          sportId,
-          // NEO-156: every team-creation path attaches a league.
-          leagueId: await resolveDefaultLeagueId(ctx, sportId),
-          lastUpdated: Date.now(),
-        });
-        teamsCreated += 1;
+      if (!existing) {
+        // NEO-236: no match, so no link — and NOT an insert. Deliberately
+        // leaves `team` set as well: the string is the only record of what the
+        // marketplace claimed, and clearing it would destroy the evidence an
+        // operator needs to create the right team. The row simply stays
+        // unmigrated and a later pass will link it once the team exists.
+        unmatched += 1;
+        processed += 1;
+        continue;
       }
+      const teamId: Id<"teams"> = existing._id;
 
       await ctx.db.patch(row._id, {
         teamOnCardIds: [teamId],
@@ -199,7 +207,7 @@ export const backfillTeamToOnCardIds = internalMutation({
     // Caller can rerun until processed === 0 to fully drain.
     return {
       processed,
-      teamsCreated,
+      unmatched,
       skippedAmbiguous,
       remaining,
     };
@@ -254,11 +262,21 @@ export const applyBscTeamResolution = internalMutation({
   },
   returns: v.object({
     applied: v.boolean(),
-    teamCreated: v.boolean(),
+    /**
+     * NEO-236: BSC named a team we do not hold, so nothing was linked.
+     *
+     * Replaces `teamCreated`. This path used to insert a `teams` row from
+     * whatever string BSC's per-card endpoint returned — a globally-shared row
+     * created by a background queue, from a marketplace string, with no
+     * operator in the loop. Creation takes Location + Name now, and a queue
+     * has neither, so a miss leaves the card teamless for the attention
+     * walker's missing-team lane to surface.
+     */
+    unmatched: v.boolean(),
   }),
   handler: async (ctx, args) => {
     const row = await ctx.db.get(args.cardChecklistId);
-    if (!row) return { applied: false, teamCreated: false };
+    if (!row) return { applied: false, unmatched: false };
 
     // NEO-102: an operator confirmed this card carries no team. A background
     // writer must never overturn that.
@@ -277,14 +295,14 @@ export const applyBscTeamResolution = internalMutation({
       if (!row.teamCheckDoneAt) {
         await ctx.db.patch(row._id, { teamCheckDoneAt: Date.now() });
       }
-      return { applied: false, teamCreated: false };
+      return { applied: false, unmatched: false };
     }
 
     if (row.teamOnCardIds && row.teamOnCardIds.length > 0) {
       if (!row.teamCheckDoneAt) {
         await ctx.db.patch(row._id, { teamCheckDoneAt: Date.now() });
       }
-      return { applied: false, teamCreated: false };
+      return { applied: false, unmatched: false };
     }
 
     const teamName = args.teamName.trim();
@@ -292,7 +310,7 @@ export const applyBscTeamResolution = internalMutation({
       // No team on file for this card (insert/subset cards like League
       // Leaders) — remember we checked so it's never re-enqueued.
       await ctx.db.patch(row._id, { teamCheckDoneAt: Date.now() });
-      return { applied: false, teamCreated: false };
+      return { applied: false, unmatched: false };
     }
 
     const sportId = await findSportForSelectorOption(ctx, row.selectorOptionId);
@@ -304,40 +322,39 @@ export const applyBscTeamResolution = internalMutation({
         `[applyBscTeamResolution] skipping ambiguous row id=${row._id}` +
           ` selectorOptionId=${row.selectorOptionId}`,
       );
-      return { applied: false, teamCreated: false };
+      return { applied: false, unmatched: false };
     }
 
-    const normalized = normalizeTeamName(teamName);
-    const existing = await ctx.db
-      .query("teams")
-      .withIndex("by_name_normalized_and_sport_id", (q) =>
-        q.eq("nameNormalized", normalized).eq("sportId", sportId),
-      )
-      .first();
+    // NEO-236: the shared identity lookup on BSC's full team string, so a row
+    // already split into location + nickname still matches.
+    const existing = await findTeamByFullName(ctx, sportId, teamName);
 
-    let teamId: Id<"teams">;
-    let teamCreated = false;
-    if (existing) {
-      teamId = existing._id;
-    } else {
-      teamId = await ctx.db.insert("teams", {
-        name: teamName,
-        nameNormalized: normalized,
-        sportId,
-        // NEO-156: every team-creation path attaches a league.
-        leagueId: await resolveDefaultLeagueId(ctx, sportId),
-        lastUpdated: Date.now(),
-      });
-      teamCreated = true;
+    if (!existing) {
+      // NEO-236: link-or-leave. No insert, and no team on the card.
+      //
+      // `teamCheckDoneAt` is still STAMPED, and that is deliberate rather than
+      // an oversight. It records "the BSC lookup has been and gone for this
+      // card", which is true — the answer came back, we simply have no team to
+      // point at. Leaving it unset would put the row straight back into
+      // `enqueueBscTeamBackfill`'s scan and spend a live BSC request per pass
+      // to re-learn the same string, forever. Contrast the `!sportId` branch
+      // above, which leaves it unset precisely because that IS a retryable
+      // condition (a broken ancestor chain an operator can fix).
+      //
+      // The card is not lost: an empty `teamOnCardIds` with no
+      // `teamNoneConfirmedAt` is exactly what the attention walker's
+      // missing-team lane looks for, and the operator resolves it there.
+      await ctx.db.patch(row._id, { teamCheckDoneAt: Date.now() });
+      return { applied: false, unmatched: true };
     }
 
     await ctx.db.patch(row._id, {
-      teamOnCardIds: [teamId],
+      teamOnCardIds: [existing._id],
       teamCheckDoneAt: Date.now(),
       lastUpdated: Date.now(),
     });
 
-    return { applied: true, teamCreated };
+    return { applied: true, unmatched: false };
   },
 });
 
@@ -618,7 +635,9 @@ export const suggestedTeamsForCard = query({
         if (seenTeamIds.has(entry.teamId)) continue;
         if (!teamNameById.has(entry.teamId)) {
           const team = await ctx.db.get(entry.teamId);
-          teamNameById.set(entry.teamId, team?.name ?? null);
+          // NEO-236: the FULL name. This chip is a suggestion an operator
+          // judges at a glance, and "Padres" does not say which Padres.
+          teamNameById.set(entry.teamId, team ? teamFullName(team) : null);
         }
         const name = teamNameById.get(entry.teamId);
         if (!name) continue; // never suggest a blank chip

@@ -174,9 +174,18 @@ describe("getForBscTeamCheck", () => {
 // ===========================================================================
 
 describe("applyBscTeamResolution", () => {
-  test("team-found case creates a teams row and sets teamOnCardIds + teamCheckDoneAt", async () => {
+  /**
+   * NEO-236 — the behaviour this test used to assert is now the bug.
+   *
+   * It was called "team-found case CREATES a teams row": a background queue,
+   * given a string BSC returned, minted a globally-shared `teams` row nobody
+   * had reviewed. Creation takes Location + Name from an operator now, and
+   * this path has neither, so an unmatched name links nothing and leaves the
+   * card for the attention walker.
+   */
+  test("a team BSC names that we do NOT hold creates nothing and links nothing", async () => {
     const t = convexTest(schema, modules);
-    const { variantTypeId, sportId } = await seedTree(t);
+    const { variantTypeId } = await seedTree(t);
     const cardId = await insertCard(t, variantTypeId, "1", { bsc: "bsc-1" });
 
     const result = await t.mutation(
@@ -184,25 +193,28 @@ describe("applyBscTeamResolution", () => {
       { cardChecklistId: cardId, teamName: "New York Yankees" },
     );
 
-    expect(result).toEqual({ applied: true, teamCreated: true });
+    expect(result).toEqual({ applied: false, unmatched: true });
 
     const card = await getCard(t, cardId);
-    expect(card!.teamOnCardIds).toHaveLength(1);
+    expect(card!.teamOnCardIds ?? []).toEqual([]);
+    // Stamped anyway: the lookup HAS been and gone, and leaving it unset would
+    // re-enqueue a live BSC request for this card on every backfill pass.
     expect(card!.teamCheckDoneAt).toBeTypeOf("number");
-
-    const teamId: Id<"teams"> = card!.teamOnCardIds![0];
-    const teamRow = await t.run(async (ctx) => ctx.db.get(teamId));
-    expect(teamRow!.name).toBe("New York Yankees");
-    // NEO-96: the team references the sport ROW, so assert the id.
-    expect(teamRow!.sportId).toBe(sportId);
+    // Nothing was inserted.
+    const teams = await t.run(async (ctx) => ctx.db.query("teams").collect());
+    expect(teams).toHaveLength(0);
   });
 
-  test("reuses an existing teams row via by_name_normalized_and_sport instead of creating a duplicate", async () => {
+  test("links an existing teams row via by_name_normalized_and_sport, including one that is SPLIT", async () => {
     const t = convexTest(schema, modules);
     const { variantTypeId, sportId } = await seedTree(t);
     const existingTeamId = await t.run(async (ctx) =>
       ctx.db.insert("teams", {
+        // NEO-236: a split row — location out front, nickname in `name`. The
+        // dedup key still keys the WHOLE name, which is what lets BSC's "New
+        // York Yankees" resolve onto it.
         name: "Yankees",
+        location: "New York",
         // normalizeTeamName("New York Yankees") token-sorts to this key.
         nameNormalized: "new yankees york",
         sportId,
@@ -216,9 +228,10 @@ describe("applyBscTeamResolution", () => {
       { cardChecklistId: cardId, teamName: "New York Yankees" },
     );
 
-    expect(result).toEqual({ applied: true, teamCreated: false });
+    expect(result).toEqual({ applied: true, unmatched: false });
     const card = await getCard(t, cardId);
     expect(card!.teamOnCardIds).toEqual([existingTeamId]);
+    expect(card!.teamCheckDoneAt).toBeTypeOf("number");
   });
 
   test("no-team-found case (empty string) only sets teamCheckDoneAt", async () => {
@@ -231,7 +244,7 @@ describe("applyBscTeamResolution", () => {
       { cardChecklistId: cardId, teamName: "" },
     );
 
-    expect(result).toEqual({ applied: false, teamCreated: false });
+    expect(result).toEqual({ applied: false, unmatched: false });
     const card = await getCard(t, cardId);
     expect(card!.teamOnCardIds).toBeUndefined();
     expect(card!.teamCheckDoneAt).toBeTypeOf("number");
@@ -247,7 +260,7 @@ describe("applyBscTeamResolution", () => {
       { cardChecklistId: cardId, teamName: "   " },
     );
 
-    expect(result).toEqual({ applied: false, teamCreated: false });
+    expect(result).toEqual({ applied: false, unmatched: false });
     const card = await getCard(t, cardId);
     expect(card!.teamOnCardIds).toBeUndefined();
     expect(card!.teamCheckDoneAt).toBeTypeOf("number");
@@ -276,7 +289,7 @@ describe("applyBscTeamResolution", () => {
       { cardChecklistId: cardId, teamName: "Some Other Team" },
     );
 
-    expect(result).toEqual({ applied: false, teamCreated: false });
+    expect(result).toEqual({ applied: false, unmatched: false });
     const card = await getCard(t, cardId);
     // teamOnCardIds is never overwritten with the (bogus) resolution input.
     expect(card!.teamOnCardIds).toEqual([preexistingTeamId]);
@@ -306,7 +319,7 @@ describe("applyBscTeamResolution", () => {
       { cardChecklistId: cardId, teamName: "Some Other Team" },
     );
 
-    expect(result).toEqual({ applied: false, teamCreated: false });
+    expect(result).toEqual({ applied: false, unmatched: false });
     const card = await getCard(t, cardId);
     expect(card!.teamCheckDoneAt).toBe(originalTimestamp); // not clobbered with Date.now()
   });
@@ -330,7 +343,7 @@ describe("applyBscTeamResolution", () => {
       { cardChecklistId: cardId, teamName: "Some Team" },
     );
 
-    expect(result).toEqual({ applied: false, teamCreated: false });
+    expect(result).toEqual({ applied: false, unmatched: false });
     const card = await getCard(t, cardId);
     expect(card!.teamOnCardIds).toBeUndefined();
     expect(card!.teamCheckDoneAt).toBeUndefined(); // retryable later
@@ -347,7 +360,7 @@ describe("applyBscTeamResolution", () => {
       { cardChecklistId: cardId, teamName: "Some Team" },
     );
 
-    expect(result).toEqual({ applied: false, teamCreated: false });
+    expect(result).toEqual({ applied: false, unmatched: false });
   });
 });
 
@@ -518,7 +531,7 @@ describe("NEO-102: teamNoneConfirmedAt suppresses BSC team enrichment", () => {
       internal.cardChecklist.applyBscTeamResolution,
       { cardChecklistId: cardId, teamName: "New York Yankees" },
     );
-    expect(result).toEqual({ applied: false, teamCreated: false });
+    expect(result).toEqual({ applied: false, unmatched: false });
 
     const card = await getCard(t, cardId);
     expect(card!.teamOnCardIds).toBeUndefined();

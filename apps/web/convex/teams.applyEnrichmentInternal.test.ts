@@ -93,6 +93,11 @@ describe("teams.applyEnrichmentInternal — gap-fill only (NEO-203)", () => {
 
     const team = await getTeam(t, teamId);
     expect(team!.location).toBe("Boston");
+    // NEO-236: `location` does not sit alongside the whole name, it is SPLIT
+    // out of it — the row was created as "Boston Red Sox" by a path with no
+    // location to pass, and ESPN's answer says which words those are.
+    expect(team!.name).toBe("Red Sox");
+    expect(team!.nameNormalized).toBe(normalizeTeamName("Boston Red Sox"));
     expect(team!.yearsActive).toEqual({ from: 1908 });
     expect(team!.colors).toEqual({ primary: "#0d2340", secondary: "#bd3039" });
   });
@@ -110,8 +115,9 @@ describe("teams.applyEnrichmentInternal — gap-fill only (NEO-203)", () => {
     });
 
     const team = await getTeam(t, teamId);
-    // The populated field survives...
+    // The populated field survives — and so, therefore, does the name.
     expect(team!.location).toBe("Boston (operator-corrected)");
+    expect(team!.name).toBe("Boston Red Sox");
     // ...while the genuinely empty ones were filled.
     expect(team!.yearsActive).toEqual({ from: 1908 });
     expect(team!.colors).toEqual({ primary: "#0d2340", secondary: "#bd3039" });
@@ -143,5 +149,111 @@ describe("teams.applyEnrichmentInternal — gap-fill only (NEO-203)", () => {
         location: "Boston",
       }),
     ).resolves.toBeNull();
+  });
+});
+
+/**
+ * NEO-236 — the location gap-fill is a SPLIT of the name the row already has,
+ * and the guards on it are the guards on "never rewrite a name a human wrote".
+ */
+describe("teams.applyEnrichmentInternal — the location split (NEO-236)", () => {
+  test("a location that is not a whole-word prefix writes nothing at all", async () => {
+    const t = convexTest(schema, modules);
+    // The real case: ESPN answers "Anaheim" for the Los Angeles Angels. True
+    // about the club, false as an answer to "what is the front of this name".
+    const { teamId } = await t.run(async (ctx) => {
+      const sportId = await ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Baseball",
+        platformData: {},
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+      });
+      const teamId = await ctx.db.insert("teams", {
+        name: "Los Angeles Angels",
+        nameNormalized: normalizeTeamName("Los Angeles Angels"),
+        sportId,
+        lastUpdated: 1_700_000_000_000,
+      });
+      return { teamId };
+    });
+
+    await t.mutation(internal.teams.applyEnrichmentInternal, {
+      id: teamId,
+      location: "Anaheim",
+    });
+
+    const team = await getTeam(t, teamId);
+    expect(team!.location).toBeUndefined();
+    expect(team!.name).toBe("Los Angeles Angels");
+  });
+
+  test("a location EQUAL to the whole name writes nothing — there would be no nickname left", async () => {
+    const t = convexTest(schema, modules);
+    const { teamId } = await seedTeam(t);
+
+    await t.mutation(internal.teams.applyEnrichmentInternal, {
+      id: teamId,
+      location: "Boston Red Sox",
+    });
+
+    const team = await getTeam(t, teamId);
+    expect(team!.location).toBeUndefined();
+    expect(team!.name).toBe("Boston Red Sox");
+  });
+
+  test("a partial-word prefix does not split — 'Bost' is not a location", async () => {
+    const t = convexTest(schema, modules);
+    const { teamId } = await seedTeam(t);
+
+    await t.mutation(internal.teams.applyEnrichmentInternal, {
+      id: teamId,
+      location: "Bost",
+    });
+
+    const team = await getTeam(t, teamId);
+    expect(team!.location).toBeUndefined();
+    expect(team!.name).toBe("Boston Red Sox");
+  });
+
+  /**
+   * The structural belt. The recomputed key is identical BY CONSTRUCTION
+   * (`normalizeTeamName` token-sorts, so moving a leading word cannot change
+   * it), so a mismatch can only mean the row's stored key was not derived from
+   * its name — hand-written, or written by something that bypassed
+   * `teamRowFields`. Patching such a row would strand it: every identity
+   * lookup would stop finding it. It refuses instead.
+   */
+  test("a row whose stored key does not match its name is REFUSED, not silently repaired", async () => {
+    const t = convexTest(schema, modules);
+    const { teamId } = await t.run(async (ctx) => {
+      const sportId = await ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Baseball",
+        platformData: {},
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+      });
+      const teamId = await ctx.db.insert("teams", {
+        name: "Boston Red Sox",
+        // Hand-written and wrong for the name beside it.
+        nameNormalized: "something else entirely",
+        sportId,
+        lastUpdated: 1_700_000_000_000,
+      });
+      return { teamId };
+    });
+
+    await expect(
+      t.mutation(internal.teams.applyEnrichmentInternal, {
+        id: teamId,
+        location: "Boston",
+      }),
+    ).rejects.toThrow(/dedup key/);
+
+    const team = await getTeam(t, teamId);
+    expect(team!.name).toBe("Boston Red Sox");
+    expect(team!.nameNormalized).toBe("something else entirely");
+    expect(team!.location).toBeUndefined();
   });
 });

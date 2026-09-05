@@ -109,9 +109,19 @@ async function insertLegacyCard(
 // ---------------------------------------------------------------------------
 
 describe("backfillTeamToOnCardIds", () => {
-  test("happy path: creates a teams row and links it on the card", async () => {
+  /**
+   * NEO-236 — the migration LINKS; it no longer creates.
+   *
+   * This test used to be "happy path: creates a teams row". A one-shot
+   * migration inserting a globally-shared `teams` row per unrecognised
+   * marketplace string is exactly the creation-without-an-operator NEO-236
+   * closes: creation takes Location + Name, and a legacy `team` column has
+   * neither. An unmatched row keeps BOTH its string and its empty link, so
+   * nothing is lost and a rerun picks it up once the team exists.
+   */
+  test("a legacy string naming a team we do not hold is left completely alone", async () => {
     const t = convexTest(schema, modules);
-    const { variantTypeId, sportId } = await seedTree(t);
+    const { variantTypeId } = await seedTree(t);
     const cardId = await insertLegacyCard(t, variantTypeId, "New York Yankees", "1");
 
     const result = await t.mutation(
@@ -120,25 +130,31 @@ describe("backfillTeamToOnCardIds", () => {
     );
 
     expect(result.processed).toBe(1);
-    expect(result.teamsCreated).toBe(1);
+    expect(result.unmatched).toBe(1);
     expect(result.skippedAmbiguous).toBe(0);
 
     const patched = await t.run(async (ctx) => ctx.db.get(cardId));
-    expect(patched!.teamOnCardIds).toHaveLength(1);
-    // Legacy field cleared after the migration.
-    expect((patched as any).team).toBeUndefined();
+    expect(patched!.teamOnCardIds ?? []).toEqual([]);
+    // The string SURVIVES: it is the only record of what the marketplace
+    // claimed, and the operator needs it to create the right team.
+    expect((patched as any).team).toBe("New York Yankees");
 
-    const teamRow = await t.run(async (ctx) =>
-      ctx.db.get(patched!.teamOnCardIds![0]),
-    );
-    expect(teamRow!.name).toBe("New York Yankees");
-    // NEO-96: the team references the sport ROW, so assert the id.
-    expect(teamRow!.sportId).toBe(sportId);
+    const teams = await t.run(async (ctx) => ctx.db.query("teams").collect());
+    expect(teams).toHaveLength(0);
   });
 
   test("idempotent: re-run on already-migrated rows reports zero processed", async () => {
     const t = convexTest(schema, modules);
     const { variantTypeId, sportId } = await seedTree(t);
+    await t.run(async (ctx) =>
+      ctx.db.insert("teams", {
+        name: "Red Sox",
+        location: "Boston",
+        nameNormalized: "boston red sox",
+        sportId,
+        lastUpdated: Date.now(),
+      }),
+    );
     await insertLegacyCard(t, variantTypeId, "Boston Red Sox", "1");
 
     // First run drains.
@@ -147,6 +163,7 @@ describe("backfillTeamToOnCardIds", () => {
       { batchSize: 10 },
     );
     expect(first.processed).toBe(1);
+    expect(first.unmatched).toBe(0);
 
     // Second run finds nothing.
     const second = await t.mutation(
@@ -154,20 +171,22 @@ describe("backfillTeamToOnCardIds", () => {
       { batchSize: 10 },
     );
     expect(second.processed).toBe(0);
-    expect(second.teamsCreated).toBe(0);
+    expect(second.unmatched).toBe(0);
     expect(second.remaining).toBe(0);
   });
 
-  test("reuses existing teams row when name + sport already matches", async () => {
+  test("links an existing teams row when name + sport already matches, split or not", async () => {
     const t = convexTest(schema, modules);
     const { variantTypeId, sportId } = await seedTree(t);
 
-    // Pre-existing teams row. nameNormalized matches the token-sorted
-    // output of `normalizeTeamName("New York Yankees")` =
-    // ["new", "york", "yankees"].sort() → "new yankees york".
+    // NEO-236: a SPLIT row. `nameNormalized` matches the token-sorted output
+    // of `normalizeTeamName("New York Yankees")` = ["new", "york",
+    // "yankees"].sort() → "new yankees york", which is precisely why moving
+    // "New York" into `location` cannot make the legacy string stop matching.
     const existingTeamId = await t.run(async (ctx) =>
       ctx.db.insert("teams", {
         name: "Yankees",
+        location: "New York",
         nameNormalized: "new yankees york",
         sportId,
         lastUpdated: Date.now(),
@@ -181,12 +200,13 @@ describe("backfillTeamToOnCardIds", () => {
       { batchSize: 10 },
     );
 
-    // We expect the existing row to be reused — zero new teams created.
-    expect(result.teamsCreated).toBe(0);
+    expect(result.unmatched).toBe(0);
     expect(result.processed).toBe(1);
 
     const patched = await t.run(async (ctx) => ctx.db.get(cardId));
     expect(patched!.teamOnCardIds).toEqual([existingTeamId]);
+    // Linked, so the legacy string is cleared in the same patch.
+    expect((patched as any).team).toBeUndefined();
   });
 
   test("skips rows with no sport ancestor (ambiguous data)", async () => {
@@ -221,14 +241,25 @@ describe("backfillTeamToOnCardIds", () => {
     );
 
     expect(result.skippedAmbiguous).toBe(1);
-    expect(result.teamsCreated).toBe(0);
+    expect(result.unmatched).toBe(0);
   });
 
   test("batchSize caps the work per invocation; re-run drains the queue", async () => {
     const t = convexTest(schema, modules);
     const { variantTypeId, sportId } = await seedTree(t);
-    // Insert 5 rows; cap to 2 per batch.
+    // Insert 5 rows; cap to 2 per batch. NEO-236: every one names a team we
+    // ALREADY hold, because only a linked row gets its legacy string cleared
+    // and so stops being eligible — an unmatched row deliberately stays put,
+    // which is the case the test below covers.
     for (let i = 0; i < 5; i++) {
+      await t.run(async (ctx) =>
+        ctx.db.insert("teams", {
+          name: `Team ${i}`,
+          nameNormalized: `${i} team`,
+          sportId,
+          lastUpdated: Date.now(),
+        }),
+      );
       await insertLegacyCard(t, variantTypeId, `Team ${i}`, String(i + 1));
     }
 
@@ -252,6 +283,34 @@ describe("backfillTeamToOnCardIds", () => {
     );
     expect(third.processed).toBe(1);
     expect(third.remaining).toBe(0);
+  });
+
+  /**
+   * NEO-236 — the migration no longer converges to zero, and that is the
+   * intended shape rather than a leak.
+   *
+   * An unmatched row keeps its legacy string, so it stays eligible on every
+   * pass. The old exit condition ("rerun until `processed === 0`") would spin
+   * forever on it. `unmatched` is what tells the operator to stop: a pass
+   * where `processed === unmatched` has migrated everything it can, and the
+   * rest needs the teams to be created first.
+   */
+  test("unmatched rows stay eligible on every pass — the operator's exit signal is processed === unmatched", async () => {
+    const t = convexTest(schema, modules);
+    const { variantTypeId } = await seedTree(t);
+    await insertLegacyCard(t, variantTypeId, "Nobody's Team", "1");
+
+    const first = await t.mutation(
+      internal.cardChecklist.backfillTeamToOnCardIds,
+      { batchSize: 10 },
+    );
+    expect(first).toMatchObject({ processed: 1, unmatched: 1, remaining: 0 });
+
+    const second = await t.mutation(
+      internal.cardChecklist.backfillTeamToOnCardIds,
+      { batchSize: 10 },
+    );
+    expect(second).toMatchObject({ processed: 1, unmatched: 1 });
   });
 
   test("already-linked rows just have the leftover string cleared", async () => {
@@ -280,7 +339,7 @@ describe("backfillTeamToOnCardIds", () => {
       { batchSize: 10 },
     );
 
-    expect(result.teamsCreated).toBe(0);
+    expect(result.unmatched).toBe(0);
     // The legacy string was cleared without touching the link.
     const patched = await t.run(async (ctx) => ctx.db.get(cardId));
     expect((patched as any).team).toBeUndefined();

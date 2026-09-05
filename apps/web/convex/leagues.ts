@@ -32,6 +32,8 @@ import { rankTeamCandidates } from "./lib/entityNearMatch";
 // Leagues store a QID for the same reason players and teams do, so they
 // validate it in the same one place rather than growing a fourth regex.
 import { isWikidataQid } from "../lib/players/wikidata-id";
+// NEO-236: the team split — `teamsIn` orders by the composed full name.
+import { teamFullName } from "../lib/teams/team-name";
 
 /**
  * NEO-240 — where a league sits in the professional pyramid.
@@ -1053,8 +1055,11 @@ export const teamsIn = query({
       .withIndex("by_league_id", (q) => q.eq("leagueId", args.leagueId))
       .collect();
 
+    // NEO-236: sorted by the FULL name, matching `teams.listForManagement` —
+    // this panel is read as an alphabetised list of the teams a league holds,
+    // and sorting on the nickname alone scatters that order.
     return rows
-      .sort((a, b) => a.name.localeCompare(b.name))
+      .sort((a, b) => teamFullName(a).localeCompare(teamFullName(b)))
       .map((team) => ({
         _id: team._id,
         name: team.name,
