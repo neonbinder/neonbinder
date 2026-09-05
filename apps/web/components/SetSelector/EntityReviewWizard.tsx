@@ -897,6 +897,10 @@ export default function EntityReviewWizard({
   };
 
   const handleBulkCreate = () => {
+    // Inert while the auto-add is armed, matching the `aria-disabled` the
+    // button renders: it is already doing exactly this, and a click between
+    // rounds would just issue a duplicate.
+    if (autoAddPending) return;
     // Rows still being looked up are excluded server-side, so arm the follow-up
     // rather than leaving the operator to click again for each straggler. The
     // cap counts per arming, so re-clicking after it trips is a fresh budget —
@@ -998,6 +1002,22 @@ export default function EntityReviewWizard({
    * do not flash this on the way out.
    */
   const expired = hadRows && total === 0 && !closing && !saving;
+
+  /**
+   * The footer's second row. Exactly one message, or none — see the JSX.
+   *
+   * The pending clause used to live inside the bulk button's own label, which
+   * made a control's width a function of a count that ticks down. Here it is
+   * just text, and the row it sits in has its height reserved whether it says
+   * anything or not.
+   */
+  const footerStatus: string | null = expired
+    ? null
+    : autoAddPending
+      ? `Adding ${remaining} more as their lookups finish…`
+      : pendingUndecided > 0
+        ? `${pendingUndecided} still looking up — wait or skip`
+        : null;
 
   const summaryRows: Array<[string, number]> = [
     ["Cards to save", summary.cardCount],
@@ -1704,76 +1724,80 @@ export default function EntityReviewWizard({
             )}
           </div>
 
-          <div className="px-6 py-4 border-t border-gray-700 flex items-center justify-between gap-3 shrink-0">
-            <div className="flex items-center gap-4">
+          {/*
+            THE FOOTER IS TWO FIXED ROWS, and the split is the whole point.
+
+            Row 1 is what the OPERATOR can do; row 2 is what the WIZARD is
+            doing about it. They were one row, with the machine's sentence
+            appended to the operator's button — "Add All Remaining as New (433)
+            — 229 still looking up, wait or skip". On a real set (1990 Bowman:
+            433 unknowns, 229 pending) that label wrapped to two centred lines,
+            dragged "Skip Remaining (433)" onto a second line with it, and left
+            both sitting crookedly beside the buttons.
+
+            Wrapping is not just ugly here, it is the NEO-110 reflow class
+            again at a smaller scale: a label whose length tracks a COUNT THAT
+            CHANGES is a control whose height changes under the operator's
+            cursor, and a Maestro tap read at one height and clicked at
+            another. So the variable-length sentence moves to its own row,
+            which is rendered ALWAYS — empty or not — with its height reserved,
+            and row 1 is `whitespace-nowrap`. Neither row can push the other.
+          */}
+          <div className="px-6 py-4 border-t border-gray-700 shrink-0 space-y-2">
+            {/*
+              ROW 1 — actions. The right group never yields (`shrink-0`); the
+              left group is `min-w-0 overflow-hidden` so a genuine overflow
+              clips rather than wraps. The widest pair CAN coexist —
+              "Back to matching" + "Cancel (Esc)" beside both bulk links — but
+              "Confirm & Save" and the bulk links never do: the links render
+              only while `!allDecided`, and the confirm only once `allDecided`.
+            */}
+            <div className="flex items-center justify-between gap-4">
+            <div className="flex min-w-0 items-center gap-4 overflow-hidden whitespace-nowrap">
               {/*
-                The auto-add status REPLACES the bulk buttons in the same row
-                rather than stacking above them. Growing the footer would push
-                its contents up by the height of the new line — the NEO-110
-                failure mode, arriving from the other direction.
+                The bulk links stay MOUNTED while the auto-add is armed rather
+                than being swapped out for the status line — nothing in row 1
+                may move mid-session. `aria-disabled` and not `disabled`, for
+                the same reason as the per-row decision controls: a keyboard
+                operator who has tabbed here must not be ejected from the
+                footer.
+
+                Only the CREATE link goes inert. "Skip Remaining" stays live on
+                purpose — row 2 says "wait or skip", and taking the skip away
+                while it says so would be advertising an exit and locking it.
+
+                No aria-label on either: the visible text IS the accessible
+                name, and Maestro matches `.*Add All Remaining as New.*`.
               */}
-              {!expired && autoAddPending ? (
+              {!expired && !allDecided && remaining > 0 && (
                 <>
-                  <span className="text-xs text-gray-400" role="status" aria-live="polite">
-                    Adding {remaining} more as their lookups finish…
-                  </span>
-                  {/* a11y (2.5.8): p-2 -m-2 — same convention as
-                      TrackingCode's Copy button; the footer's height is
-                      fixed by its own padding (see the NEO-110 note above),
-                      so this cannot move it. */}
                   <button
                     type="button"
-                    onClick={() => {
-                      autoAddRef.current = false;
-                      setAutoAddPending(false);
-                    }}
-                    className="p-2 -m-2 text-xs text-gray-400 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none underline decoration-dotted"
+                    onClick={handleBulkCreate}
+                    disabled={bulkPending !== null || saving}
+                    aria-disabled={autoAddPending}
+                    className="text-xs text-gray-400 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none underline decoration-dotted disabled:opacity-50 aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
                   >
-                    Stop
+                    {bulkPending === "create"
+                      ? "Adding all remaining…"
+                      : `Add All Remaining as New (${remaining})`}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleBulkSkip}
+                    disabled={bulkPending !== null || saving}
+                    className="text-xs text-gray-400 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none underline decoration-dotted disabled:opacity-50"
+                  >
+                    {bulkPending === "skip"
+                      ? "Skipping remaining…"
+                      : `Skip Remaining (${remaining})`}
                   </button>
                 </>
-              ) : (
-                !expired &&
-                !allDecided &&
-                remaining > 0 && (
-                  <>
-                    {/*
-                      No aria-label: the visible text IS the accessible name.
-                      The pending clause changes the visible string, and a
-                      shorter aria-label over it would be a label-in-name
-                      violation (WCAG 2.2 SC 2.5.3) as well as a lie about what
-                      the button is going to do. Maestro matches
-                      `.*Add All Remaining as New.*`, which the prefix keeps.
-                    */}
-                    <button
-                      type="button"
-                      onClick={handleBulkCreate}
-                      disabled={bulkPending !== null || saving}
-                      className="text-xs text-gray-400 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none underline decoration-dotted disabled:opacity-50"
-                    >
-                      {bulkPending === "create"
-                        ? "Adding all remaining…"
-                        : `Add All Remaining as New (${remaining})${
-                            pendingUndecided > 0
-                              ? ` — ${pendingUndecided} still looking up, wait or skip`
-                              : ""
-                          }`}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleBulkSkip}
-                      disabled={bulkPending !== null || saving}
-                      className="text-xs text-gray-400 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none underline decoration-dotted disabled:opacity-50"
-                    >
-                      {bulkPending === "skip"
-                        ? "Skipping remaining…"
-                        : `Skip Remaining (${remaining})`}
-                    </button>
-                  </>
-                )
               )}
             </div>
-            <div className="flex items-center gap-3">
+            {/* The buttons never yield: if row 1 is ever too narrow, the bulk
+                links clip, not the way out of the dialog. */}
+            <div className="flex shrink-0 items-center gap-3">
               {expired ? (
                 // Nothing to discard — the rows are already gone, so this is a
                 // plain acknowledgement, not a cancel.
@@ -1871,6 +1895,37 @@ export default function EntityReviewWizard({
                 </>
               )}
             </div>
+            </div>
+
+            {/*
+              ROW 2 — reserved, always rendered, even with nothing to say.
+              `min-h-4` is one `text-xs` line, so the footer's height is the
+              same on the first paint as on the last and row 1 never moves.
+              One live region, because these messages are alternatives rather
+              than a stack: the operator is either waiting on lookups or
+              watching them be added, never both.
+            */}
+            <p
+              className="flex min-h-4 items-center gap-3 text-xs text-gray-400"
+              role="status"
+              aria-live="polite"
+            >
+              {footerStatus}
+              {footerStatus !== null && autoAddPending && (
+                // a11y (2.5.8): p-2 -m-2 grows the target past 24px without
+                // moving the text or the row's reserved height.
+                <button
+                  type="button"
+                  onClick={() => {
+                    autoAddRef.current = false;
+                    setAutoAddPending(false);
+                  }}
+                  className="p-2 -m-2 text-gray-400 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none underline decoration-dotted"
+                >
+                  Stop
+                </button>
+              )}
+            </p>
           </div>
         </div>
       </div>

@@ -251,6 +251,27 @@ function progressText(): string {
   return texts.find((t) => t.includes("reviewed")) ?? "";
 }
 
+/**
+ * The footer's reserved status row (NEO-220): the LAST element in the footer,
+ * addressed structurally because `role="status"` is not unique on this screen —
+ * the header's progress line and CopyButton's live region both carry it.
+ *
+ * Returns "" when the row is rendered empty, which is the point of it: the row
+ * exists at a fixed height whether or not there is anything to say, so row 1
+ * can never be pushed around by a message arriving.
+ */
+function footerStatusText(): string {
+  const overlay = document.querySelector('[role="dialog"]');
+  if (!overlay) throw new Error("wizard overlay not found");
+  const panel = overlay.firstElementChild as HTMLElement;
+  const footer = panel.children[2] as HTMLElement;
+  const status = footer.lastElementChild as HTMLElement;
+  if (status.getAttribute("role") !== "status") {
+    throw new Error("footer's last child is not the status row");
+  }
+  return (status.textContent ?? "").trim();
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   mockRecordDecision.mockResolvedValue(null);
@@ -1037,12 +1058,15 @@ describe("EntityReviewWizard — bulk 'Add All Remaining as New'", () => {
     ];
     renderWizard();
 
-    const bulk = screen.getByRole("button", {
-      name: "Add All Remaining as New (3) — 2 still looking up, wait or skip",
-    });
-    // The E2E-matched prefix is intact — Maestro matches
-    // `.*Add All Remaining as New.*` and the clause is appended, not woven in.
-    expect(bulk.textContent).toContain("Add All Remaining as New (3)");
+    const bulk = screen.getByRole("button", { name: "Add All Remaining as New (3)" });
+    // The button's own label is JUST the action and its count — no clause. On
+    // 1990 Bowman ("(433) — 229 still looking up…") the combined string wrapped
+    // to two lines and dragged "Skip Remaining" with it.
+    expect(bulk.textContent).toBe("Add All Remaining as New (3)");
+    expect(bulk.textContent).not.toContain("still looking up");
+
+    // The clause lives in the footer's own status row instead.
+    expect(footerStatusText()).toBe("2 still looking up — wait or skip");
 
     fireEvent.click(bulk);
 
@@ -1059,7 +1083,10 @@ describe("EntityReviewWizard — bulk 'Add All Remaining as New'", () => {
     renderWizard();
 
     const bulk = screen.getByRole("button", { name: "Add All Remaining as New (2)" });
-    expect(bulk.textContent).not.toContain("still looking up");
+    expect(bulk.textContent).toBe("Add All Remaining as New (2)");
+    // …and the status row is rendered but empty — its height is reserved so
+    // row 1 cannot move when a message arrives later.
+    expect(footerStatusText()).toBe("");
   });
 
   it("counts only undecided rows, ignoring ones already decided", () => {
@@ -1071,9 +1098,7 @@ describe("EntityReviewWizard — bulk 'Add All Remaining as New'", () => {
     renderWizard();
 
     expect(
-      screen.getByRole("button", {
-        name: "Add All Remaining as New (2) — 1 still looking up, wait or skip",
-      }),
+      screen.getByRole("button", { name: "Add All Remaining as New (2)" }),
     ).toBeTruthy();
   });
 
@@ -1156,9 +1181,7 @@ describe("EntityReviewWizard — armed bulk add", () => {
       const { rerender } = render(wizardEl());
 
       fireEvent.click(
-        screen.getByRole("button", {
-          name: "Add All Remaining as New (3) — 2 still looking up, wait or skip",
-        }),
+        screen.getByRole("button", { name: "Add All Remaining as New (3)" }),
       );
       await act(async () => {});
       expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1);
@@ -1208,9 +1231,7 @@ describe("EntityReviewWizard — armed bulk add", () => {
       const { rerender } = render(wizardEl());
 
       fireEvent.click(
-        screen.getByRole("button", {
-          name: "Add All Remaining as New (2) — 1 still looking up, wait or skip",
-        }),
+        screen.getByRole("button", { name: "Add All Remaining as New (2)" }),
       );
       await act(async () => {});
       expect(screen.getByText(/Adding .* as their lookups finish/)).toBeTruthy();
@@ -1252,9 +1273,7 @@ describe("EntityReviewWizard — armed bulk add", () => {
       const { rerender } = render(wizardEl());
 
       fireEvent.click(
-        screen.getByRole("button", {
-          name: "Add All Remaining as New (2) — 1 still looking up, wait or skip",
-        }),
+        screen.getByRole("button", { name: "Add All Remaining as New (2)" }),
       );
       await act(async () => {});
 
@@ -1296,15 +1315,13 @@ describe("EntityReviewWizard — armed bulk add", () => {
       const { rerender } = render(wizardEl());
 
       fireEvent.click(
-        screen.getByRole("button", {
-          name: "Add All Remaining as New (2) — 1 still looking up, wait or skip",
-        }),
+        screen.getByRole("button", { name: "Add All Remaining as New (2)" }),
       );
       await act(async () => {});
-      // Armed — so the bulk buttons are replaced by the status line. Re-render
-      // with the create landed so the footer offers "Skip Remaining" again.
-      fireEvent.click(screen.getByRole("button", { name: "Stop" }));
-      rerender(wizardEl());
+      // Armed — and "Skip Remaining" is STILL live, because row 2 says "wait or
+      // skip" and taking the skip away while it says so would advertise an exit
+      // and lock it.
+      expect(screen.getByText(/as their lookups finish/)).toBeTruthy();
 
       fireEvent.click(screen.getByRole("button", { name: "Skip Remaining (2)" }));
       await act(async () => {});
@@ -1543,9 +1560,7 @@ describe("EntityReviewWizard — bulk 'Skip Remaining'", () => {
     renderWizard();
 
     expect(
-      screen.getByRole("button", {
-        name: "Add All Remaining as New (2) — 1 still looking up, wait or skip",
-      }),
+      screen.getByRole("button", { name: "Add All Remaining as New (2)" }),
     ).toBeTruthy();
     expect(screen.getByRole("button", { name: "Skip Remaining (2)" })).toBeTruthy();
   });
@@ -3123,9 +3138,7 @@ describe("EntityReviewWizard — armed bulk add does not stall", () => {
       const { rerender } = render(wizardEl());
 
       fireEvent.click(
-        screen.getByRole("button", {
-          name: "Add All Remaining as New (2) — 1 still looking up, wait or skip",
-        }),
+        screen.getByRole("button", { name: "Add All Remaining as New (2)" }),
       );
       expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1);
 
@@ -3222,5 +3235,185 @@ describe("EntityReviewWizard — keyboard-only bulk-then-commit", () => {
     expect(document.activeElement).toBe(
       screen.getByRole("button", { name: "Confirm & Save (Enter)" }),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-220 — the footer is two fixed rows
+//
+// Jason hit this on 1990 Bowman: 433 unknowns, 229 of them still being looked
+// up. The bulk button's label was "Add All Remaining as New (433) — 229 still
+// looking up, wait or skip", which wrapped to two centred lines, dragged
+// "Skip Remaining (433)" onto a second line with it, and left both sitting
+// crookedly beside "Back to matching" and "Cancel (Esc)".
+//
+// A label whose LENGTH tracks a COUNT THAT CHANGES is the NEO-110 reflow class
+// at a smaller scale: the control's height moves under the cursor between a
+// Maestro read and the click that follows it.
+// ---------------------------------------------------------------------------
+
+describe("EntityReviewWizard — footer layout", () => {
+  const wizardEl = (props: Partial<Parameters<typeof EntityReviewWizard>[0]> = {}) => (
+    <EntityReviewWizard
+      isOpen
+      selectorOptionId={"selopt-1" as unknown as Id<"selectorOptions">}
+      batchId="batch-1"
+      summary={SUMMARY}
+      onConfirm={vi.fn()}
+      onCancel={vi.fn()}
+      {...props}
+    />
+  );
+
+  /** [row 1, row 2] — the footer's shape IS the contract. */
+  function footerRows(): { actions: HTMLElement; status: HTMLElement } {
+    const overlay = document.querySelector('[role="dialog"]');
+    if (!overlay) throw new Error("wizard overlay not found");
+    const footer = (overlay.firstElementChild as HTMLElement).children[2] as HTMLElement;
+    const [actions, status] = Array.from(footer.children) as HTMLElement[];
+    if (!actions || !status || footer.children.length !== 2) {
+      throw new Error(`footer must be exactly two rows; got ${footer.children.length}`);
+    }
+    return { actions, status };
+  }
+
+  it("renders the status row even with nothing to say, at a reserved height", () => {
+    // The whole reason it is always mounted: if it appeared only when it had
+    // text, the footer would grow the moment a lookup started and row 1 would
+    // move — which is the defect, arriving from the other direction.
+    currentRows = [makeRow({ status: "ready" }), makeRow({ status: "ready" })];
+    renderWizard();
+
+    const { status } = footerRows();
+    expect(status.getAttribute("role")).toBe("status");
+    expect(status.getAttribute("aria-live")).toBe("polite");
+    expect(status.textContent?.trim()).toBe("");
+    // `min-h-4` is one text-xs line — the reservation itself.
+    expect(status.className).toContain("min-h-4");
+  });
+
+  it("keeps the status row present on the final step too", () => {
+    currentRows = [makeRow({ decision: { action: "create" } })];
+    renderWizard();
+
+    expect(footerRows().status.getAttribute("role")).toBe("status");
+    expect(footerStatusText()).toBe("");
+  });
+
+  it("puts the pending clause in the status row, never in the button", () => {
+    // The 1990 Bowman shape, at test scale.
+    currentRows = [
+      makeRow({ status: "ready" }),
+      ...Array.from({ length: 4 }, (_, i) =>
+        makeRow({ _id: `p-${i}` as unknown as Id<"entityReviewQueue">, status: "pending" }),
+      ),
+    ];
+    renderWizard();
+
+    const { actions, status } = footerRows();
+    const bulk = screen.getByRole("button", { name: "Add All Remaining as New (5)" });
+
+    expect(actions.contains(bulk)).toBe(true);
+    expect(status.contains(bulk)).toBe(false);
+    expect(bulk.textContent).toBe("Add All Remaining as New (5)");
+    expect(footerStatusText()).toBe("4 still looking up — wait or skip");
+  });
+
+  it("keeps both bulk links on one line — they may not wrap", () => {
+    currentRows = [makeRow({ status: "ready" }), makeRow({ status: "pending" })];
+    renderWizard();
+
+    const { actions } = footerRows();
+    const left = actions.firstElementChild as HTMLElement;
+    expect(left.className).toContain("whitespace-nowrap");
+    // The buttons never yield; the links are what clips if it ever comes to it.
+    const right = actions.lastElementChild as HTMLElement;
+    expect(right.className).toContain("shrink-0");
+    expect(left.className).toContain("min-w-0");
+  });
+
+  it("aligns the buttons to row 1, not across both rows", () => {
+    currentRows = [makeRow({ status: "ready" })];
+    renderWizard({ onBack: vi.fn() });
+
+    const { actions, status } = footerRows();
+    for (const name of ["Back to matching", "Cancel (Esc)"]) {
+      const button = screen.getByRole("button", { name });
+      expect(actions.contains(button)).toBe(true);
+      expect(status.contains(button)).toBe(false);
+    }
+  });
+
+  it("dims the bulk create rather than unmounting it while the auto-add is armed", async () => {
+    // Unmounting it would move everything to its right. `aria-disabled`, not
+    // `disabled`, so a keyboard operator who tabbed here is not ejected.
+    currentRows = [makeRow({ status: "ready" }), makeRow({ status: "pending" })];
+    renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add All Remaining as New (2)" }));
+    await waitFor(() => expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1));
+
+    const bulk = screen.getByRole("button", {
+      name: "Add All Remaining as New (2)",
+    }) as HTMLButtonElement;
+    expect(bulk.getAttribute("aria-disabled")).toBe("true");
+    expect(bulk.className).toContain("aria-disabled:opacity-50");
+    expect(footerStatusText()).toContain("Adding 2 more as their lookups finish…");
+  });
+
+  it("keeps Skip Remaining live while armed — row 2 offers it by name", async () => {
+    currentRows = [makeRow({ status: "ready" }), makeRow({ status: "pending" })];
+    renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add All Remaining as New (2)" }));
+    await waitFor(() => expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1));
+
+    const skip = screen.getByRole("button", {
+      name: "Skip Remaining (2)",
+    }) as HTMLButtonElement;
+    expect(skip.getAttribute("aria-disabled")).not.toBe("true");
+    fireEvent.click(skip);
+    await waitFor(() => expect(mockRecordAllRemainingAsSkip).toHaveBeenCalledTimes(1));
+  });
+
+  it("puts Stop in the status row beside the message it belongs to", async () => {
+    currentRows = [makeRow({ status: "ready" }), makeRow({ status: "pending" })];
+    renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add All Remaining as New (2)" }));
+    await waitFor(() => expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1));
+
+    const { actions, status } = footerRows();
+    const stop = screen.getByRole("button", { name: "Stop" });
+    expect(status.contains(stop)).toBe(true);
+    expect(actions.contains(stop)).toBe(false);
+    // a11y 2.5.8: the p-2 -m-2 target growth, which cannot change row height.
+    expect(stop.className).toContain("p-2");
+    expect(stop.className).toContain("-m-2");
+  });
+
+  it("shows no status and no Stop once nothing is pending", () => {
+    currentRows = [makeRow({ status: "ready" }), makeRow({ status: "ready" })];
+    renderWizard();
+
+    expect(footerStatusText()).toBe("");
+    expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
+  });
+});
+
+describe("EntityReviewWizard — armed bulk create is inert", () => {
+  it("a second click on the dimmed create link issues nothing", async () => {
+    currentRows = [makeRow({ status: "ready" }), makeRow({ status: "pending" })];
+    renderWizard();
+
+    const bulk = screen.getByRole("button", { name: "Add All Remaining as New (2)" });
+    fireEvent.click(bulk);
+    await waitFor(() => expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1));
+
+    // Armed and aria-disabled, so the click is a no-op — the button says so and
+    // behaves that way, rather than quietly issuing a duplicate.
+    fireEvent.click(screen.getByRole("button", { name: "Add All Remaining as New (2)" }));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1);
   });
 });
