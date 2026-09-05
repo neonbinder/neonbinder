@@ -31,6 +31,7 @@ import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { resolveBscFacetFilters } from "./bscFacets";
+import { slotLabel } from "./platformSlots";
 
 const modules = (
   import.meta as unknown as {
@@ -512,6 +513,132 @@ describe("Base mapping writes setName alongside variant, never over it", () => {
     expect(plan.filters.year).toEqual(["2024"]);
     // A setName-tagged slot on the leaf makes it the source of cards.
     expect(plan.sourceFacet).toBe("setName");
+  });
+
+  // -------------------------------------------------------------------------
+  // The setName slot's LABEL (NEO-239)
+  // -------------------------------------------------------------------------
+  //
+  // Without a label the chip fell back to the slug and the Multi-source panel
+  // read "topps topps" — the same string as the chip's name and as its id.
+  // `bscLabel` is the BSC twin of `sportlotsDisplay`, and the picker sends the
+  // display name of whichever BSC set the operator chose.
+
+  test("bscLabel names the setName slot it allocates", async () => {
+    const t = convexTest(schema, modules);
+    const { baseId } = await seedMappedBase(t);
+
+    await t
+      .withIdentity(ADMIN)
+      .mutation(api.selectorOptions.setVariantTypePlatformData, {
+        variantTypeId: baseId,
+        platformData: { bsc: "2024-topps-chrome", sportlots: "884412" },
+        bscLabel: "2024 Topps Chrome",
+      });
+
+    const row = await t.run(async (ctx) => ctx.db.get(baseId));
+    const setNameSlot = Object.entries(row!.platformFacets!.bsc!).find(
+      ([, f]) => f === "setName",
+    )![0];
+    expect(row!.platformLabels?.bsc?.[setNameSlot]).toBe("2024 Topps Chrome");
+    // The variant slot keeps whatever the SYNC gave it. A Base mapping write
+    // says nothing about the variant axis and must not retitle it.
+    const variantSlot = Object.entries(row!.platformFacets!.bsc!).find(
+      ([, f]) => f === "variant",
+    )![0];
+    expect(row!.platformLabels?.bsc?.[variantSlot]).toBe("Base");
+  });
+
+  test("re-mapping with a new bscLabel refreshes the label on the same slot", async () => {
+    const t = convexTest(schema, modules);
+    const { baseId } = await seedMappedBase(t);
+    const write = (bsc: string, bscLabel?: string) =>
+      t.withIdentity(ADMIN).mutation(api.selectorOptions.setVariantTypePlatformData, {
+        variantTypeId: baseId,
+        platformData: { bsc, sportlots: "884412" },
+        ...(bscLabel ? { bscLabel } : {}),
+      });
+
+    await write("topps-series-1", "Topps Series 1");
+    await write("topps-series-2", "Topps Series 2");
+
+    const row = await t.run(async (ctx) => ctx.db.get(baseId));
+    const setNameSlots = Object.entries(row!.platformFacets!.bsc!).filter(
+      ([, f]) => f === "setName",
+    );
+    expect(setNameSlots).toHaveLength(1);
+    expect(row!.platformData.bsc![setNameSlots[0][0]]).toBe("topps-series-2");
+    expect(row!.platformLabels?.bsc?.[setNameSlots[0][0]]).toBe("Topps Series 2");
+  });
+
+  test("omitting bscLabel on a re-map CLEARS the old one, so the chip shows the new slug", async () => {
+    // The stale-label trap. `BaseMappingForm`'s fallback — the setName
+    // ancestor's own slug, used because BSC's variantName facet is usually
+    // empty under `variant=base` — has no display name to send. Keeping the
+    // previous label would leave the chip naming a set this row no longer
+    // draws from, which is worse than the slug: the slug is at least true.
+    const t = convexTest(schema, modules);
+    const { baseId } = await seedMappedBase(t);
+    const write = (bsc: string, bscLabel?: string) =>
+      t.withIdentity(ADMIN).mutation(api.selectorOptions.setVariantTypePlatformData, {
+        variantTypeId: baseId,
+        platformData: { bsc, sportlots: "884412" },
+        ...(bscLabel ? { bscLabel } : {}),
+      });
+
+    await write("topps-series-1", "Topps Series 1");
+    await write("2024-topps-chrome");
+
+    const row = await t.run(async (ctx) => ctx.db.get(baseId));
+    const setNameSlot = Object.entries(row!.platformFacets!.bsc!).find(
+      ([, f]) => f === "setName",
+    )![0];
+    expect(row!.platformLabels?.bsc?.[setNameSlot]).toBeUndefined();
+    // `slotLabel`'s fallback is the id, never the slot key.
+    expect(slotLabel(row!, "bsc", setNameSlot)).toBe("2024-topps-chrome");
+  });
+
+  test("a legacy untagged slot gets the label too — same write, same path", async () => {
+    const t = convexTest(schema, modules);
+    const setId = await seedSetRow(t);
+    const legacy = await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Base",
+        platformData: { bsc: { b0: "base" } },
+        metadata: { isBase: true },
+        primaryPlatformId: { bsc: "b0" },
+        platformSlotSeq: { bsc: 1 },
+        parentId: setId,
+        children: [],
+        lastUpdated: SENTINEL,
+      }),
+    );
+
+    await t
+      .withIdentity(ADMIN)
+      .mutation(api.selectorOptions.setVariantTypePlatformData, {
+        variantTypeId: legacy,
+        platformData: { bsc: "2024-topps-chrome" },
+        bscLabel: "2024 Topps Chrome",
+      });
+
+    const row = await t.run(async (ctx) => ctx.db.get(legacy));
+    expect(row!.platformLabels?.bsc).toEqual({ b0: "2024 Topps Chrome" });
+  });
+
+  test("a blank bscLabel is refused rather than stored", async () => {
+    // `assertValidSlotLabel` is the one rule every label-writing path shares.
+    const t = convexTest(schema, modules);
+    const { baseId } = await seedMappedBase(t);
+
+    await expect(
+      t.withIdentity(ADMIN).mutation(api.selectorOptions.setVariantTypePlatformData, {
+        variantTypeId: baseId,
+        platformData: { bsc: "2024-topps-chrome" },
+        bscLabel: "x".repeat(201),
+      }),
+    ).rejects.toThrow(/exceeds/);
   });
 
   test("a legacy row with an UNTAGGED bsc slot keeps the old in-place refresh", async () => {

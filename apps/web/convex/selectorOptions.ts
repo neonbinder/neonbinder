@@ -132,6 +132,7 @@ import {
 } from "./marketplaceResolvability";
 import {
   allocateSlots,
+  assertValidSlotLabel,
   detachSlot,
   idForSlot,
   initialSlots,
@@ -4855,6 +4856,24 @@ export const setVariantTypePlatformData = mutation({
       // string stopped meaning anything once a row could hold several SL sets.
       sportlotsDisplay: v.optional(v.string()),
     }),
+    /**
+     * The BSC set's human display name, for the setName slot written below —
+     * the BSC twin of `platformData.sportlotsDisplay`, and top-level rather
+     * than inside `platformData` because that object is the marketplace-ID
+     * WIRE shape and this is not an id.
+     *
+     * Without it the slot had no label at all and `slotLabel` fell back to the
+     * slug, which is how the Multi-source panel came to read "topps topps" —
+     * the slug rendered twice, once as the chip's name and once as its id.
+     *
+     * ABSENT is a real state, not a default: the picker can only supply a name
+     * when the operator picked a set from BSC's list, and
+     * `BaseMappingForm`'s fallback (the setName ancestor's own slug) has no
+     * name to offer. Absent therefore CLEARS any label the slot carried — see
+     * the write below — so the fallback is the CURRENT slug rather than a
+     * label left over from the set this row used to be mapped to.
+     */
+    bscLabel: v.optional(v.string()),
     // Derived from the table (NEO-239). A hand-typed copy here is how the
     // `isBase` drift happened one validator over.
     metadata: selectorOptionFields.metadata,
@@ -4964,12 +4983,29 @@ export const setVariantTypePlatformData = mutation({
       )?.slot;
       const targetSlot = existingSetNameSlot ?? untaggedPrimary;
 
+      // The label the panel shows for this slot. Written on BOTH paths, and
+      // CLEARED on the refresh path when the caller sent none: the slot's id
+      // has just changed, so a label carried over from the previous mapping
+      // would name a set this row no longer draws from — worse than the slug,
+      // which is at least true. `slotLabel` falls back to the id.
+      const bscLabel = args.bscLabel?.trim();
+      if (bscLabel) {
+        assertValidSlotLabel(bscLabel, "setVariantTypePlatformData(bsc)");
+      }
+
       if (targetSlot) {
+        const nextBscLabels = { ...(working.platformLabels?.bsc ?? {}) };
+        if (bscLabel) nextBscLabels[targetSlot] = bscLabel;
+        else delete nextBscLabels[targetSlot];
         working = {
           ...working,
           platformData: {
             ...working.platformData,
             bsc: { ...(working.platformData.bsc ?? {}), [targetSlot]: incomingBsc },
+          },
+          platformLabels: {
+            ...(working.platformLabels ?? {}),
+            bsc: nextBscLabels,
           },
           platformFacets: {
             ...(working.platformFacets ?? {}),
@@ -4981,7 +5017,13 @@ export const setVariantTypePlatformData = mutation({
         };
       } else {
         const alloc = allocateSlots(working, {
-          bsc: [{ id: incomingBsc, facet: "setName" }],
+          bsc: [
+            {
+              id: incomingBsc,
+              facet: "setName",
+              ...(bscLabel ? { label: bscLabel } : {}),
+            },
+          ],
         });
         working = {
           ...working,
