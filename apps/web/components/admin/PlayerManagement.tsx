@@ -12,6 +12,7 @@ import {
   type NearMatch,
 } from "@/components/entities/NearMatchPanel";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
+import { teamFullName, teamShortName } from "@/lib/teams/team-name";
 // NEO-235: `tenureYears` owns the open-ended-stint rule ("still there" counts
 // through the current year). `primaryTeamId` below sums it per team rather than
 // re-deriving it — see that function for why it is not `pickDefaultTeamYear`.
@@ -151,32 +152,6 @@ function primaryTeamId(
     }
   }
   return bestId as Id<"teams"> | null;
-}
-
-/**
- * The team as a fan says it out loud: "Padres", not "San Diego Padres".
- *
- * Only the row's own stored `location` is stripped, and only as a whole
- * leading word — nothing here guesses where a location ends. A team whose
- * `location` was never enriched keeps its full name, which is the safe
- * failure: a longer label, never a wrong one.
- *
- * NEO-236 renamed the field it reads (`city` → `location`) and changed nothing
- * else. This derivation goes away entirely once `teams.name` holds the
- * nickname on its own and `teamShortName` (lib/teams/team-name.ts) can just
- * read it.
- *
- * Row-only. The detail panel and the career-history list stay on full names —
- * an operator editing a stint needs the name the row actually carries, and the
- * E2E flows match on it.
- */
-function teamNickname(team: { name: string; location?: string }): string {
-  const name = team.name.trim();
-  const location = team.location?.trim();
-  if (!location) return name;
-  if (!name.toLowerCase().startsWith(`${location.toLowerCase()} `)) return name;
-  const nickname = name.slice(location.length).trim();
-  return nickname.length > 0 ? nickname : name;
 }
 
 /**
@@ -622,7 +597,11 @@ function PlayerDetail({
   const teamRows = useQuery(api.teams.getManyByIds, { ids: teamIds });
   const teamNameById = useMemo(() => {
     const map = new Map<string, string>();
-    for (const row of teamRows ?? []) map.set(row._id as string, row.name);
+    // Full names: a stint row is a statement about which franchise, and
+    // "Giants · 1998-2002" does not say which one.
+    for (const row of teamRows ?? []) {
+      map.set(row._id as string, teamFullName(row));
+    }
     return map;
   }, [teamRows]);
   const teamName = (id: Id<"teams">) => teamNameById.get(id as string) ?? "…";
@@ -1269,7 +1248,15 @@ export default function PlayerManagement() {
     >();
     for (const team of rowTeamRows ?? []) {
       map.set(team._id as string, {
-        label: teamNickname(team),
+        // NEO-236 — the nickname is a stored field now, not a derivation.
+        // Before the split this had to strip the team's `location` off the
+        // front of its name and guessed wrong for every row whose location was
+        // never filled in; `teamShortName` just reads what is there.
+        //
+        // Row-only. The detail panel's career history stays on full names — an
+        // operator editing a stint needs the whole name, and so does the
+        // E2E matcher.
+        label: teamShortName(team),
         colors: team.colors,
       });
     }

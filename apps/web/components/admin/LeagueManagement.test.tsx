@@ -190,18 +190,28 @@ const LEAGUES_BY_ID: Record<string, unknown> = {
  * colour is very often the one that cannot carry small text on a near-black
  * surface — and its white secondary is what the team prints that navy on.
  */
+/**
+ * NEO-236 shapes: `name` is the nickname and `location` is the place, so a chip
+ * showing "New York Yankees" is the two composed rather than a stored string.
+ * `t-aztecs` has never been split and carries no location at all, which is the
+ * other real branch — for it, full == short and the chip reads the same.
+ */
 const AL_TEAMS = [
   {
     _id: "t-yankees",
-    name: "New York Yankees",
+    name: "Yankees",
     location: "New York",
     colors: { primary: "#132448", secondary: "#ffffff" },
   },
   {
     _id: "t-mariners",
-    name: "Seattle Mariners",
+    name: "Mariners",
     location: "Seattle",
     colors: { primary: "#5fd3bc" },
+  },
+  {
+    _id: "t-aztecs",
+    name: "San Diego State Aztecs",
   },
 ];
 
@@ -945,9 +955,15 @@ describe("LeagueManagement — the detail panel", () => {
     const links = within(
       screen.getByRole("list", { name: "Teams in this league" }),
     ).getAllByRole("link");
+    // NEO-236 — the FULL name on every chip. A league roster is read as a list
+    // of franchises, and "Giants" among thirty of them does not say which one;
+    // the two admin MASTER rows are the only places the short name is used.
+    // The Aztecs carry no location, so composing gives their name back
+    // unchanged — the branch that must not gain a stray leading space.
     expect(links.map((a) => [a.textContent, a.getAttribute("href")])).toEqual([
       ["New York Yankees", "/admin/teams?team=t-yankees"],
       ["Seattle Mariners", "/admin/teams?team=t-mariners"],
+      ["San Diego State Aztecs", "/admin/teams?team=t-aztecs"],
     ]);
     expect(links[0].getAttribute("title")).toBe(
       "Open New York Yankees in Team Management",

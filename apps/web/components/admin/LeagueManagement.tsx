@@ -25,6 +25,7 @@ import { userFacingMessage } from "@/lib/errors/user-facing-message";
 // pair scores.
 import { contrastRatio, normalizeHexColor } from "@/lib/print/contrast";
 import { WIKIDATA_QID, wikidataUrl } from "@/lib/players/wikidata-id";
+import { teamFullName } from "@/lib/teams/team-name";
 
 /**
  * NEO-240 — League Management, the third of the entity editors.
@@ -747,11 +748,16 @@ function LeagueDetail({
                 <li key={team._id}>
                   <Link
                     to={`/admin/teams?team=${team._id}`}
-                    title={`Open ${team.name} in Team Management`}
+                    title={`Open ${teamFullName(team)} in Team Management`}
                     style={color ? { color } : undefined}
                     className="flex min-h-6 items-center rounded-full bg-slate-900 px-2.5 py-1 text-sm text-slate-300 underline underline-offset-2 transition-shadow hover:ring-1 hover:ring-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-teal"
                   >
-                    {team.name}
+                    {/* NEO-236 — the full name. A league roster is read as a
+                        list of franchises, and a chip saying "Giants" among
+                        thirty others does not say which one; the two admin
+                        MASTER rows are the only places the short name is
+                        used. */}
+                    {teamFullName(team)}
                   </Link>
                 </li>
               );

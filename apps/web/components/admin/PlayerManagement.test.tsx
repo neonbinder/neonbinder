@@ -225,11 +225,17 @@ const PLAYERS_BY_ID: Record<string, unknown> = {
 };
 
 /**
- * NEO-235: `location` on one row and not the other is the whole point of the pair.
- * The master row prints the nickname a fan says out loud, which it can only do
- * for a team whose location was enriched — "Seattle Mariners" becomes "Mariners",
- * while the un-enriched Reds keep their full name. Both branches are real:
- * `teams.location` is optional and plenty of prod rows have never been enriched.
+ * NEO-236 shapes: `name` is the nickname on its own and `location` is the place
+ * beside it, so "Seattle Mariners" is stored as ("Seattle", "Mariners") and the
+ * master row can print "Mariners" by reading a field rather than by stripping a
+ * prefix off one.
+ *
+ * `location` on one row and not the other is still the whole point of the pair.
+ * The Reds have never been split — plenty of prod rows carry the whole name in
+ * `name` and no location at all, legitimately (colleges, national sides) or
+ * because nobody has split them yet — and for those, full == short. The master
+ * row has to be right in both cases: a longer label is the safe failure, a
+ * wrong one is not.
  */
 /**
  * The colour pairs are chosen for what they SCORE against the master row's two
@@ -241,7 +247,7 @@ const TEAMS = [
   {
     _id: "t-mariners",
     _creationTime: 1,
-    name: "Seattle Mariners",
+    name: "Mariners",
     location: "Seattle",
     sportId: "sport-baseball",
     // Primary clears the floor comfortably (9.8:1) — the plain case.
@@ -540,15 +546,15 @@ describe("PlayerManagement — the list", () => {
     management = { players: [GRIFFEY], totalCount: 1, truncated: false };
     render(<PlayerManagement />);
 
-    // Both of Griffey's stints are Seattle's, and Seattle has a `location`, so the
-    // row drops it: "Seattle Mariners" is how the table stores the team and
-    // "Mariners" is how anyone holding the card refers to it.
+    // Both of Griffey's stints are Seattle's, and that row is split, so the row
+    // prints the nickname alone: "Seattle Mariners" is how the team is named
+    // everywhere else, and "Mariners" is how anyone holding the card says it.
     const row = screen.getByRole("button", { name: /Ken Griffey Jr\./ });
     expect(row.textContent).toContain("Mariners");
     expect(row.textContent).not.toContain("Seattle");
   });
 
-  it("keeps the full name for a team with no location recorded", () => {
+  it("prints the whole name for a team that has never been split", () => {
     management = { players: [STILL_PLAYING], totalCount: 1, truncated: false };
     render(<PlayerManagement />);
 
@@ -810,6 +816,23 @@ describe("PlayerManagement — the add form", () => {
 });
 
 describe("PlayerManagement — the detail panel", () => {
+  it("names a stint's team in FULL while the master row is short", () => {
+    // NEO-236, the whole contract of the split in one assertion. The Mariners
+    // are stored as ("Seattle", "Mariners"), and the same screen has to say it
+    // both ways at once: the master row is a nickname index and the stint is a
+    // statement about which franchise, where "Giants · 1998-2002" would not say
+    // which one. A single helper for both would get one of them wrong.
+    render(<PlayerManagement />);
+    selectGriffey();
+
+    expect(
+      screen.getByRole("button", { name: "Ken Griffey Jr. Baseball Mariners" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByText("Seattle Mariners · 1989–1999"),
+    ).toBeTruthy();
+  });
+
   it("lists two stints at one team in career order", () => {
     render(<PlayerManagement />);
     selectGriffey();
