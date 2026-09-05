@@ -144,24 +144,44 @@ less than usual.
 
 Local E2E normally points at **shared dev**, which means it cannot exercise the
 PR's `services/browser` or `services/preprocess` code at all. To close that gap,
-point Vite at the PR's Convex preview instead of dev:
+run a second local Vite on its own port, wired to the PR's Convex preview
+instead of dev, and use that port as `APP_URL`:
 
 ```bash
-# in apps/web/.env.local
-VITE_CONVEX_URL=<the PR's Convex preview URL>
+cd apps/web
+TESTING_ENDPOINT_SECRET=<this worktree's value, e.g. from .env.local> \
+VITE_CONVEX_URL=<the PR's Convex preview URL> \
+VITE_DEV_DISABLE_HTTPS=1 npx vite --port 3001
+
+# in another shell, point the E2E runner at it
+APP_URL=http://localhost:3001 MAESTRO_PARALLELISM=1 npm run test:e2e:pick -- <flow>
 ```
+
+- **Port 3001, not 3000** — keeps this Vite instance separate from a `vite-keeper.sh`
+  instance you may already have running against shared dev on 3000, so you can debug
+  the PR's stack without tearing that one down.
+- **`VITE_DEV_DISABLE_HTTPS=1`** — same reason `vite-keeper.sh` sets it for the 3000
+  instance: Chrome for Testing hangs after `launchApp` under the mkcert HTTPS plugin.
+- **`TESTING_ENDPOINT_SECRET`** must be exported into the Vite process itself — it's
+  read by `vite.config.ts`'s own dev-server middleware (not the deployed preview) to
+  check the `x-testing-auth` header the flow sends. Use this worktree's existing
+  value; there is nothing preview-specific about it.
 
 `wire-browser-url` and `wire-preprocess-url` have already pointed that preview's
 `NEONBINDER_BROWSER_URL` / `NEONBINDER_PREPROCESS_URL` at the PR's own `pr-<N>`
 Cloud Run revisions, so this gives you local Vite → PR Convex → PR browser +
 preprocess: the whole stack of the change, debuggable locally.
 
-Then run the single flow: `npm run test:e2e:pick -- <flow>` (it resolves the
-prerequisite closure for you).
+**Verified 2026-09-05:** bootstrap and a set-selector drill both pass run this way
+against a real PR's Convex preview. One gotcha found in the process: phase-0
+bootstrap **hangs** against a preview at the default `MAESTRO_PARALLELISM=3` (3
+concurrent workers racing the same freshly-created preview data) — pass
+`MAESTRO_PARALLELISM=1` whenever `APP_URL` points at a PR preview instead of shared
+dev. `npm run test:e2e:pick` resolves the prerequisite closure for you either way.
 
-> **Unverified as of 2026-08-25.** The preview's `TESTING_ENDPOINT_SECRET` must
-> match what `/testing/sign-in` expects, and protected previews may need
-> `VERCEL_AUTOMATION_BYPASS_SECRET`. Prove this on one PR before relying on it.
+A protected preview may additionally need `VERCEL_AUTOMATION_BYPASS_SECRET` — not
+exercised by the runs above; confirm on a PR with deployment protection enabled
+before relying on it there.
 
 #### Check `node --version` at the moment the gate runs
 
@@ -201,6 +221,17 @@ npm run preview          # Preview built bundle
 npm run lint             # ESLint
 npm run test:e2e         # Maestro E2E locally (see E2E Testing below)
 ```
+
+> **Never run `npm run dev:backend` / `npm run dev:all` / `npx convex dev` against the
+> shared dev Convex deployment.** Since NEO-249, shared dev is a **CI-managed mirror of
+> `main`** — the `deploy-dev-convex` job in `release.yml` pushes it after every
+> production release, so `npx convex dev` from a worktree would immediately clobber it
+> with local/uncommitted function code, then silently drift again the moment someone
+> next merges to `main`. This is exactly the failure mode NEO-249 fixed. Feature-branch
+> work always targets **that branch's own PR Convex preview** instead — see
+> "Debugging a red flow against the PR's own services" below for the verified recipe.
+> `dev-backend.sh`'s behavior is unchanged by this — it still does exactly what its
+> comments say — this is a policy about when to run it, not a code change.
 
 ### services/browser
 ```bash

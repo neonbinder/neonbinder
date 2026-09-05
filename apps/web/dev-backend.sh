@@ -1,5 +1,15 @@
 #!/bin/bash
 
+# NEO-249: this wraps `npx convex dev`, which targets the SHARED dev Convex
+# deployment (there is one dev deployment per project, shared across every
+# worktree/agent). That deployment is now a CI-managed mirror of `main`
+# (release.yml's deploy-dev-convex job pushes it after every production
+# release) — do not run this script against shared dev. It will immediately
+# overwrite it with local/uncommitted function code, then drift again on the
+# next merge to main. Point Vite at your PR's own Convex preview instead (see
+# the root CLAUDE.md, "Debugging a red flow against the PR's own services").
+# This comment does not change the script's behavior below.
+
 # Check if a URL was provided as the first argument
 if [ -n "$1" ]; then
   echo "Setting NEONBINDER_BROWSER_URL to: $1"
