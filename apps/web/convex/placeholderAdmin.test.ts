@@ -29,7 +29,7 @@
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import schema from "./schema";
-import { cancelScheduled } from "./test-support/drain-scheduled";
+import { cancelScheduled } from "../lib/testing/drain-scheduled";
 import { api } from "./_generated/api";
 import type { Doc } from "./_generated/dataModel";
 
@@ -177,7 +177,7 @@ describe("both admin functions are role-gated", () => {
     // EnvironmentTeardownError while every test reports green.
     // Cancelled rather than drained: some of this work reaches Cloud
     // Run, and running it would trade a teardown race for a real
-    // outbound request. See test-support/drain-scheduled.ts.
+    // outbound request. See lib/testing/drain-scheduled.ts.
     await cancelScheduled(t);
   });
 
@@ -197,7 +197,7 @@ describe("both admin functions are role-gated", () => {
     // EnvironmentTeardownError while every test reports green.
     // Cancelled rather than drained: some of this work reaches Cloud
     // Run, and running it would trade a teardown race for a real
-    // outbound request. See test-support/drain-scheduled.ts.
+    // outbound request. See lib/testing/drain-scheduled.ts.
     await cancelScheduled(t);
   });
 
@@ -217,7 +217,7 @@ describe("both admin functions are role-gated", () => {
     // EnvironmentTeardownError while every test reports green.
     // Cancelled rather than drained: some of this work reaches Cloud
     // Run, and running it would trade a teardown race for a real
-    // outbound request. See test-support/drain-scheduled.ts.
+    // outbound request. See lib/testing/drain-scheduled.ts.
     await cancelScheduled(t);
   });
 
@@ -241,7 +241,7 @@ describe("both admin functions are role-gated", () => {
     // EnvironmentTeardownError while every test reports green.
     // Cancelled rather than drained: some of this work reaches Cloud
     // Run, and running it would trade a teardown race for a real
-    // outbound request. See test-support/drain-scheduled.ts.
+    // outbound request. See lib/testing/drain-scheduled.ts.
     await cancelScheduled(t);
   });
 });
@@ -278,7 +278,7 @@ describe("adminListPlaceholderJobs", () => {
     // EnvironmentTeardownError while every test reports green.
     // Cancelled rather than drained: some of this work reaches Cloud
     // Run, and running it would trade a teardown race for a real
-    // outbound request. See test-support/drain-scheduled.ts.
+    // outbound request. See lib/testing/drain-scheduled.ts.
     await cancelScheduled(t);
   });
 
@@ -306,7 +306,7 @@ describe("adminListPlaceholderJobs", () => {
     // EnvironmentTeardownError while every test reports green.
     // Cancelled rather than drained: some of this work reaches Cloud
     // Run, and running it would trade a teardown race for a real
-    // outbound request. See test-support/drain-scheduled.ts.
+    // outbound request. See lib/testing/drain-scheduled.ts.
     await cancelScheduled(t);
   });
 
@@ -336,7 +336,7 @@ describe("adminListPlaceholderJobs", () => {
     // EnvironmentTeardownError while every test reports green.
     // Cancelled rather than drained: some of this work reaches Cloud
     // Run, and running it would trade a teardown race for a real
-    // outbound request. See test-support/drain-scheduled.ts.
+    // outbound request. See lib/testing/drain-scheduled.ts.
     await cancelScheduled(t);
   });
 
@@ -381,7 +381,7 @@ describe("adminListPlaceholderJobs", () => {
     // EnvironmentTeardownError while every test reports green.
     // Cancelled rather than drained: some of this work reaches Cloud
     // Run, and running it would trade a teardown race for a real
-    // outbound request. See test-support/drain-scheduled.ts.
+    // outbound request. See lib/testing/drain-scheduled.ts.
     await cancelScheduled(t);
   });
 
@@ -408,7 +408,7 @@ describe("adminListPlaceholderJobs", () => {
     // EnvironmentTeardownError while every test reports green.
     // Cancelled rather than drained: some of this work reaches Cloud
     // Run, and running it would trade a teardown race for a real
-    // outbound request. See test-support/drain-scheduled.ts.
+    // outbound request. See lib/testing/drain-scheduled.ts.
     await cancelScheduled(t);
   });
 
@@ -425,7 +425,7 @@ describe("adminListPlaceholderJobs", () => {
     // EnvironmentTeardownError while every test reports green.
     // Cancelled rather than drained: some of this work reaches Cloud
     // Run, and running it would trade a teardown race for a real
-    // outbound request. See test-support/drain-scheduled.ts.
+    // outbound request. See lib/testing/drain-scheduled.ts.
     await cancelScheduled(t);
   });
 
@@ -454,7 +454,7 @@ describe("adminListPlaceholderJobs", () => {
     // EnvironmentTeardownError while every test reports green.
     // Cancelled rather than drained: some of this work reaches Cloud
     // Run, and running it would trade a teardown race for a real
-    // outbound request. See test-support/drain-scheduled.ts.
+    // outbound request. See lib/testing/drain-scheduled.ts.
     await cancelScheduled(t);
   });
 });
@@ -506,7 +506,7 @@ describe("adminCancelPlaceholderBatch", () => {
     // EnvironmentTeardownError while every test reports green.
     // Cancelled rather than drained: some of this work reaches Cloud
     // Run, and running it would trade a teardown race for a real
-    // outbound request. See test-support/drain-scheduled.ts.
+    // outbound request. See lib/testing/drain-scheduled.ts.
     await cancelScheduled(t);
   });
 
@@ -545,7 +545,7 @@ describe("adminCancelPlaceholderBatch", () => {
     // EnvironmentTeardownError while every test reports green.
     // Cancelled rather than drained: some of this work reaches Cloud
     // Run, and running it would trade a teardown race for a real
-    // outbound request. See test-support/drain-scheduled.ts.
+    // outbound request. See lib/testing/drain-scheduled.ts.
     await cancelScheduled(t);
   });
 
@@ -580,7 +580,7 @@ describe("adminCancelPlaceholderBatch", () => {
     // EnvironmentTeardownError while every test reports green.
     // Cancelled rather than drained: some of this work reaches Cloud
     // Run, and running it would trade a teardown race for a real
-    // outbound request. See test-support/drain-scheduled.ts.
+    // outbound request. See lib/testing/drain-scheduled.ts.
     await cancelScheduled(t);
   });
 
@@ -599,7 +599,7 @@ describe("adminCancelPlaceholderBatch", () => {
     // EnvironmentTeardownError while every test reports green.
     // Cancelled rather than drained: some of this work reaches Cloud
     // Run, and running it would trade a teardown race for a real
-    // outbound request. See test-support/drain-scheduled.ts.
+    // outbound request. See lib/testing/drain-scheduled.ts.
     await cancelScheduled(t);
   });
 
@@ -625,7 +625,7 @@ describe("adminCancelPlaceholderBatch", () => {
     // EnvironmentTeardownError while every test reports green.
     // Cancelled rather than drained: some of this work reaches Cloud
     // Run, and running it would trade a teardown race for a real
-    // outbound request. See test-support/drain-scheduled.ts.
+    // outbound request. See lib/testing/drain-scheduled.ts.
     await cancelScheduled(t);
   });
 });
@@ -704,7 +704,7 @@ describe("admin cancel and user cancel are the same cancel", () => {
     // EnvironmentTeardownError while every test reports green.
     // Cancelled rather than drained: some of this work reaches Cloud
     // Run, and running it would trade a teardown race for a real
-    // outbound request. See test-support/drain-scheduled.ts.
+    // outbound request. See lib/testing/drain-scheduled.ts.
     await cancelScheduled(t);
   });
 });
@@ -743,7 +743,7 @@ describe("seedMyTestPlaceholderStream", () => {
     // EnvironmentTeardownError while every test reports green.
     // Cancelled rather than drained: some of this work reaches Cloud
     // Run, and running it would trade a teardown race for a real
-    // outbound request. See test-support/drain-scheduled.ts.
+    // outbound request. See lib/testing/drain-scheduled.ts.
     await cancelScheduled(t);
   });
 
@@ -766,7 +766,7 @@ describe("seedMyTestPlaceholderStream", () => {
     // EnvironmentTeardownError while every test reports green.
     // Cancelled rather than drained: some of this work reaches Cloud
     // Run, and running it would trade a teardown race for a real
-    // outbound request. See test-support/drain-scheduled.ts.
+    // outbound request. See lib/testing/drain-scheduled.ts.
     await cancelScheduled(t);
   });
 
@@ -783,7 +783,7 @@ describe("seedMyTestPlaceholderStream", () => {
     // EnvironmentTeardownError while every test reports green.
     // Cancelled rather than drained: some of this work reaches Cloud
     // Run, and running it would trade a teardown race for a real
-    // outbound request. See test-support/drain-scheduled.ts.
+    // outbound request. See lib/testing/drain-scheduled.ts.
     await cancelScheduled(t);
   });
 
@@ -817,7 +817,7 @@ describe("seedMyTestPlaceholderStream", () => {
     // EnvironmentTeardownError while every test reports green.
     // Cancelled rather than drained: some of this work reaches Cloud
     // Run, and running it would trade a teardown race for a real
-    // outbound request. See test-support/drain-scheduled.ts.
+    // outbound request. See lib/testing/drain-scheduled.ts.
     await cancelScheduled(t);
   });
 });
@@ -848,7 +848,7 @@ describe("seedCancelMyActivePlaceholderJobs", () => {
     // EnvironmentTeardownError while every test reports green.
     // Cancelled rather than drained: some of this work reaches Cloud
     // Run, and running it would trade a teardown race for a real
-    // outbound request. See test-support/drain-scheduled.ts.
+    // outbound request. See lib/testing/drain-scheduled.ts.
     await cancelScheduled(t);
   });
 
@@ -865,7 +865,7 @@ describe("seedCancelMyActivePlaceholderJobs", () => {
     // EnvironmentTeardownError while every test reports green.
     // Cancelled rather than drained: some of this work reaches Cloud
     // Run, and running it would trade a teardown race for a real
-    // outbound request. See test-support/drain-scheduled.ts.
+    // outbound request. See lib/testing/drain-scheduled.ts.
     await cancelScheduled(t);
   });
 
@@ -909,7 +909,7 @@ describe("seedCancelMyActivePlaceholderJobs", () => {
     // EnvironmentTeardownError while every test reports green.
     // Cancelled rather than drained: some of this work reaches Cloud
     // Run, and running it would trade a teardown race for a real
-    // outbound request. See test-support/drain-scheduled.ts.
+    // outbound request. See lib/testing/drain-scheduled.ts.
     await cancelScheduled(t);
   });
 
@@ -952,7 +952,7 @@ describe("seedCancelMyActivePlaceholderJobs", () => {
     // EnvironmentTeardownError while every test reports green.
     // Cancelled rather than drained: some of this work reaches Cloud
     // Run, and running it would trade a teardown race for a real
-    // outbound request. See test-support/drain-scheduled.ts.
+    // outbound request. See lib/testing/drain-scheduled.ts.
     await cancelScheduled(t);
   });
 
@@ -988,7 +988,7 @@ describe("seedCancelMyActivePlaceholderJobs", () => {
     // EnvironmentTeardownError while every test reports green.
     // Cancelled rather than drained: some of this work reaches Cloud
     // Run, and running it would trade a teardown race for a real
-    // outbound request. See test-support/drain-scheduled.ts.
+    // outbound request. See lib/testing/drain-scheduled.ts.
     await cancelScheduled(t);
   });
 
@@ -1015,7 +1015,7 @@ describe("seedCancelMyActivePlaceholderJobs", () => {
     // EnvironmentTeardownError while every test reports green.
     // Cancelled rather than drained: some of this work reaches Cloud
     // Run, and running it would trade a teardown race for a real
-    // outbound request. See test-support/drain-scheduled.ts.
+    // outbound request. See lib/testing/drain-scheduled.ts.
     await cancelScheduled(t);
   });
 
@@ -1041,7 +1041,7 @@ describe("seedCancelMyActivePlaceholderJobs", () => {
     // EnvironmentTeardownError while every test reports green.
     // Cancelled rather than drained: some of this work reaches Cloud
     // Run, and running it would trade a teardown race for a real
-    // outbound request. See test-support/drain-scheduled.ts.
+    // outbound request. See lib/testing/drain-scheduled.ts.
     await cancelScheduled(t);
   });
 
@@ -1076,7 +1076,7 @@ describe("seedCancelMyActivePlaceholderJobs", () => {
     // EnvironmentTeardownError while every test reports green.
     // Cancelled rather than drained: some of this work reaches Cloud
     // Run, and running it would trade a teardown race for a real
-    // outbound request. See test-support/drain-scheduled.ts.
+    // outbound request. See lib/testing/drain-scheduled.ts.
     await cancelScheduled(t);
   });
 });
@@ -1118,7 +1118,7 @@ describe("source display hint", () => {
     // EnvironmentTeardownError while every test reports green.
     // Cancelled rather than drained: some of this work reaches Cloud
     // Run, and running it would trade a teardown race for a real
-    // outbound request. See test-support/drain-scheduled.ts.
+    // outbound request. See lib/testing/drain-scheduled.ts.
     await cancelScheduled(t);
   });
 
@@ -1147,7 +1147,7 @@ describe("source display hint", () => {
     // EnvironmentTeardownError while every test reports green.
     // Cancelled rather than drained: some of this work reaches Cloud
     // Run, and running it would trade a teardown race for a real
-    // outbound request. See test-support/drain-scheduled.ts.
+    // outbound request. See lib/testing/drain-scheduled.ts.
     await cancelScheduled(t);
   });
 });

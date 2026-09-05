@@ -54,7 +54,7 @@ import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
-import { drainScheduled } from "./test-support/drain-scheduled";
+import { drainScheduled } from "../lib/testing/drain-scheduled";
 import { Id } from "./_generated/dataModel";
 
 // convex-test v0.0.53 with Vitest uses import.meta.glob to discover modules.

@@ -19,7 +19,7 @@
 import { convexTest } from "convex-test";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import schema from "./schema";
-import { cancelScheduled } from "./test-support/drain-scheduled";
+import { cancelScheduled } from "../lib/testing/drain-scheduled";
 import { api } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
@@ -142,7 +142,7 @@ async function settle(
   // CANCELLED rather than drained: a delayed schedule cannot be forced by
   // `finishAllScheduledFunctions` without fake timers, and adding those to this
   // file would change time semantics for every test in it. See
-  // test-support/drain-scheduled.ts.
+  // lib/testing/drain-scheduled.ts.
   await cancelScheduled(t);
 }
 
