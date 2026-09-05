@@ -296,6 +296,39 @@ tags:
     visible:
       id: "Remove team CNWT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
     timeout: 7000
+
+# CLOSE THE POPOVER BEFORE REACHING FOR SAVE — and close it from the DIALOG
+# HEADER, which is the one handle in here that the picker cannot move.
+#
+# NEO-236 gave TeamPicker a `useLayoutEffect` that calls
+# `scrollIntoView({block: "nearest"})` on the create submit when the create form
+# appears, so that an operator in a small container can actually see the button.
+# In this dialog that scrolls the walker's own `overflow-y-auto` body — measured
+# in CI run 33982239886, by exactly 63px. Creating the team then unmounts the
+# form (an exact match now exists), the body stops overflowing, and the browser
+# clamps `scrollTop` back to 0. Everything below the picker moves 63px DOWN, a
+# second or so after the create.
+#
+# That is a moving target, and it is what broke this step: Maestro read
+# "Save & Next (Enter)" at y=227-259 in the scrolled state, clicked its centre
+# (387,243) ~330ms later, and by then the button had settled at y=290-322. The
+# click landed 47px high, on the picker row — no handler, no save, and the
+# walker still showing "1 card needs attention · 0 fixed".
+#
+# So the scroll is made to settle BEFORE any coordinate is read. A pointerdown
+# anywhere outside the picker root closes the popover, and the dialog's own
+# `<h2>` is outside the scrolling body altogether — its position cannot move
+# with the body's scroll, which is the whole point of choosing it over anything
+# inside the fixer. Escape is deliberately not used: in this dialog it means
+# "defer this card".
+- tapOn:
+    id: "card-attention-walker-title"
+# The popover is gone, so the body no longer overflows and its scroll is back
+# at rest. Only now is "Save & Next" read for its coordinates.
+- extendedWaitUntil:
+    notVisible:
+      id: "Search teams"
+    timeout: 7000
 - tapOn:
     text: ".*Save & Next.*"
 

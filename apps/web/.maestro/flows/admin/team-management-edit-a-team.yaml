@@ -347,18 +347,29 @@ tags:
     visible: ".*of .* players.*"
     timeout: 30000
 
-# Filtering by a name only this attempt owns; while a search term is present the
-# counter counts matches rather than the whole table, so "1 matches" is both the
-# "the list has settled" gate and an assertion that the name is this run's alone.
+# Filter to this attempt's player, then wait for THE ROW — never for the count.
+#
+# The count is not ours to predict. While a search term is present the counter
+# reads "{n} matches", and that query runs through Convex's search index, which
+# is WORD-WISE: "TME-2-r2-a1-4406" is a bag of tokens, and other workers'
+# fixtures share several of them. Measured in CI run 33982239886, this exact
+# filter returned "3 matches" — our TME row plus a `KOPlayer-r5-a1-…` and a
+# `PM-0-r0-a1-…` that merely shared the `a1` token. Any assertion on the number
+# is really an assertion about what the other seven runners happened to create,
+# which is not a fact this flow may depend on (the data-isolation rule).
+#
+# The ROW is unambiguous and is the thing actually needed next: every admin
+# master row prints its name in a `title`-bearing span, and maestro-web derives
+# `resource-id` from `title`, so `id:` is that row and only that row (a `text:`
+# matcher would also answer for the filter box now holding the same string).
+# Waiting on it is both the settle gate and the real assertion — the search
+# came back and it found the player this flow created.
 - tapOn: "Filter players"
 - inputText: "TME-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
 - extendedWaitUntil:
-    visible: "1 matches"
+    visible:
+      id: "TME-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
     timeout: 15000
-
-# Every admin master row prints its name in a `title`-bearing span, and
-# maestro-web derives `resource-id` from `title` — so `id:` is the row, while a
-# `text:` matcher would also answer for the filter box holding the same string.
 - tapOn:
     id: "TME-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
 
