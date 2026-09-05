@@ -304,11 +304,30 @@ export default function CareerTeamEntry({
                 setSuggestionsOpen(false);
               }
             } else if (e.key === "Escape") {
-              // Swallow Escape only when the dropdown is open, so the wizard's
-              // own Escape-to-cancel still works when it isn't.
+              /*
+               * NEO-220 — Escape in this field NEVER reaches the wizard.
+               *
+               * It used to be swallowed only while the dropdown had
+               * suggestions in it, so Escape on a typed name that matched
+               * nothing — the exact case this field exists for, a team
+               * Wikidata and `teams` have both never heard of — bubbled to the
+               * dialog root and cancelled the whole review batch. The operator
+               * pressed a key that means "clear this" and lost every decision
+               * they had made.
+               *
+               * Now it steps out one level at a time and stops there: close
+               * the dropdown if it is open, otherwise clear the name. Both are
+               * local, both are what Escape means in a combobox, and neither
+               * can reach past this field. `stopPropagation` unconditionally,
+               * so the guarantee does not depend on which branch ran.
+               */
+              e.preventDefault();
+              e.stopPropagation();
               if (suggestionsOpen && suggestions.length > 0) {
-                e.preventDefault();
-                e.stopPropagation();
+                setSuggestionsOpen(false);
+              } else if (name !== "") {
+                setName("");
+                setDebouncedName("");
                 setSuggestionsOpen(false);
               }
             }

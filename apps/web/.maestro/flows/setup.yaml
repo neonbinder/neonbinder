@@ -568,18 +568,27 @@ tags:
       # above), so a fresh real-set fetch surfaces HUNDREDS of unknowns. Rather
       # than draining them one at a time (each gated by the 3s/item Wikidata
       # queue), tap the footer "Add All Remaining as New (N)" button — one
-      # recordAllRemainingAsCreate call marks every not-yet-decided row (including
-      # still-pending ones) as "create". The button is visible as soon as the
-      # wizard opens (any undecided items), so no per-item Wikidata wait is needed.
+      # recordAllRemainingAsCreate call marks every SETTLED not-yet-decided row
+      # as "create", and the wizard keeps going for the rest (see the wait
+      # below). The button is visible as soon as the wizard opens (any undecided
+      # items). Since NEO-221 its label can carry a "— N still looking up, wait
+      # or skip" suffix, which is why the matcher is a prefix regex.
       - tapOn:
           text: ".*Add All Remaining as New.*"
-      # allDecided flips true after the bulk mutation patches every row; the final
-      # "Confirm & Save" step then renders. 30s covers the bulk row patch on a
-      # freshly-reset real set (hundreds of rows) — a sanctioned setup-track write.
+      # NEO-221 — the bulk button no longer decides rows whose Wikidata lookup
+      # is still in flight (deciding a name nobody has looked up yet was the
+      # defect). It decides the SETTLED rows now and stays armed, adding the
+      # rest as their lookups land, until "Confirm & Save" appears on its own.
+      # So this wait is no longer "one mutation patches N rows" (~seconds) but
+      # "the 5-wide Wikidata lane drains a real set's worth of names". That is
+      # a live external round-trip, which is the sanctioned exception to the 7s
+      # rule (R5) and is why only the setup track carries a number this big.
+      # 240s matches the cold-sync ceiling already used above. RE-MEASURE from
+      # the first CI run and bring it down if the drain is quicker than this.
       - extendedWaitUntil:
           visible:
             text: ".*Confirm & Save.*"
-          timeout: 30000
+          timeout: 240000
       - tapOn:
           text: ".*Confirm & Save.*"
       # NEO-163: no gate on the wizard closing. The "Saved N cards" wait below
@@ -811,18 +820,27 @@ tags:
       # above), so a fresh real-set fetch surfaces HUNDREDS of unknowns. Rather
       # than draining them one at a time (each gated by the 3s/item Wikidata
       # queue), tap the footer "Add All Remaining as New (N)" button — one
-      # recordAllRemainingAsCreate call marks every not-yet-decided row (including
-      # still-pending ones) as "create". The button is visible as soon as the
-      # wizard opens (any undecided items), so no per-item Wikidata wait is needed.
+      # recordAllRemainingAsCreate call marks every SETTLED not-yet-decided row
+      # as "create", and the wizard keeps going for the rest (see the wait
+      # below). The button is visible as soon as the wizard opens (any undecided
+      # items). Since NEO-221 its label can carry a "— N still looking up, wait
+      # or skip" suffix, which is why the matcher is a prefix regex.
       - tapOn:
           text: ".*Add All Remaining as New.*"
-      # allDecided flips true after the bulk mutation patches every row; the final
-      # "Confirm & Save" step then renders. 30s covers the bulk row patch on a
-      # freshly-reset real set (hundreds of rows) — a sanctioned setup-track write.
+      # NEO-221 — the bulk button no longer decides rows whose Wikidata lookup
+      # is still in flight (deciding a name nobody has looked up yet was the
+      # defect). It decides the SETTLED rows now and stays armed, adding the
+      # rest as their lookups land, until "Confirm & Save" appears on its own.
+      # So this wait is no longer "one mutation patches N rows" (~seconds) but
+      # "the 5-wide Wikidata lane drains a real set's worth of names". That is
+      # a live external round-trip, which is the sanctioned exception to the 7s
+      # rule (R5) and is why only the setup track carries a number this big.
+      # 240s matches the cold-sync ceiling already used above. RE-MEASURE from
+      # the first CI run and bring it down if the drain is quicker than this.
       - extendedWaitUntil:
           visible:
             text: ".*Confirm & Save.*"
-          timeout: 30000
+          timeout: 240000
       - tapOn:
           text: ".*Confirm & Save.*"
       # NEO-163: no gate on the wizard closing. The "Saved N cards" wait below
@@ -1008,18 +1026,27 @@ tags:
       # above), so a fresh real-set fetch surfaces HUNDREDS of unknowns. Rather
       # than draining them one at a time (each gated by the 3s/item Wikidata
       # queue), tap the footer "Add All Remaining as New (N)" button — one
-      # recordAllRemainingAsCreate call marks every not-yet-decided row (including
-      # still-pending ones) as "create". The button is visible as soon as the
-      # wizard opens (any undecided items), so no per-item Wikidata wait is needed.
+      # recordAllRemainingAsCreate call marks every SETTLED not-yet-decided row
+      # as "create", and the wizard keeps going for the rest (see the wait
+      # below). The button is visible as soon as the wizard opens (any undecided
+      # items). Since NEO-221 its label can carry a "— N still looking up, wait
+      # or skip" suffix, which is why the matcher is a prefix regex.
       - tapOn:
           text: ".*Add All Remaining as New.*"
-      # allDecided flips true after the bulk mutation patches every row; the final
-      # "Confirm & Save" step then renders. 30s covers the bulk row patch on a
-      # freshly-reset real set (hundreds of rows) — a sanctioned setup-track write.
+      # NEO-221 — the bulk button no longer decides rows whose Wikidata lookup
+      # is still in flight (deciding a name nobody has looked up yet was the
+      # defect). It decides the SETTLED rows now and stays armed, adding the
+      # rest as their lookups land, until "Confirm & Save" appears on its own.
+      # So this wait is no longer "one mutation patches N rows" (~seconds) but
+      # "the 5-wide Wikidata lane drains a real set's worth of names". That is
+      # a live external round-trip, which is the sanctioned exception to the 7s
+      # rule (R5) and is why only the setup track carries a number this big.
+      # 240s matches the cold-sync ceiling already used above. RE-MEASURE from
+      # the first CI run and bring it down if the drain is quicker than this.
       - extendedWaitUntil:
           visible:
             text: ".*Confirm & Save.*"
-          timeout: 30000
+          timeout: 240000
       - tapOn:
           text: ".*Confirm & Save.*"
       # NEO-163: no gate on the wizard closing. The "Saved N cards" wait below

@@ -15,18 +15,23 @@ tags:
 #   proves Signed By changed as a direct result.
 #
 # WHY THE REAL Topps Chrome BASE SET (and not a per-worker custom set):
-#   The auto-fill reads card.playerIds[]. Only REAL marketplace-synced cards
-#   ever carry playerIds: commitCardChecklist resolves playerIds ONLY for the
-#   marketplace cards in its fetch preview (convex/selectorOptions.ts —
-#   the `out` array is built purely from BSC/SL rows). A CUSTOM card added via
-#   addCustomCard stores its player names in `pendingPlayerNames`, and the
-#   commit only CLEARS those pending names once the player entity exists — it
-#   never writes playerIds back onto a custom row (custom rows are excluded
-#   from the preview, so the playerIds-patch branch never runs for them).
-#   Net: a custom card CANNOT acquire playerIds, so the auto-fill can only be
-#   exercised on a real synced card. setup.yaml pre-syncs the 2024 Topps Chrome
-#   Base checklist AND confirms its EntityReviewWizard, so every Base card
-#   has real playerIds — the required precondition.
+#   The auto-fill reads card.playerIds[]. setup.yaml pre-syncs the 2024 Topps
+#   Chrome Base checklist AND confirms its EntityReviewWizard, so every Base
+#   card already carries real playerIds — the precondition this flow needs,
+#   already paid for by the seed. The obvious custom-set alternative does not
+#   supply it: `util-add-custom-card` leaves the quick-add form's Players field
+#   empty, so the card it builds has no players at all.
+#
+#   NEO-220 CHANGED WHAT IS POSSIBLE HERE — read this before copying the
+#   paragraph above into a new flow. This header used to say a custom card can
+#   NEVER acquire playerIds (they were stored as `pendingPlayerNames` and the
+#   commit never patched ids back onto a custom row). That is now FALSE: the
+#   quick-add Players field is a PlayerPicker and `addCustomCard` takes real
+#   player ids, so a hand-added card is born LINKED. This flow could therefore
+#   move onto a per-worker custom set, which R7a would prefer — it has not,
+#   because that means teaching `util-add-custom-card` to pick a player, a
+#   change every flow sharing that util would have to absorb. Treat the move as
+#   an open follow-up, not as impossible.
 #
 # ISOLATION STORY (sole-writer tolerance — same model as
 # topps-chrome-add-feature.yaml):
@@ -219,10 +224,15 @@ tags:
           commands:
             - tapOn:
                 text: ".*Add All Remaining as New.*"
+            # NEO-221 — the bulk add now decides only rows whose Wikidata lookup has
+            # SETTLED, staying armed for the rest, so this wait is gated on that live
+            # external round-trip rather than on one mutation. Raised for that reason;
+            # it resolves the moment the wizard is done, so a healthy run pays nothing
+            # for the bigger ceiling.
             - extendedWaitUntil:
                 visible:
                   text: ".*Confirm & Save.*"
-                timeout: 30000
+                timeout: 240000
             - tapOn:
                 text: ".*Confirm & Save.*"
             # NEO-163: no gate on the wizard closing. The "Saved N cards" wait below is

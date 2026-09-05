@@ -3,7 +3,9 @@ import type { RefObject } from "react";
 import { createPortal } from "react-dom";
 import { Theme } from "@radix-ui/themes";
 import NeonButton from "../modules/NeonButton";
+import { ConfirmDialog } from "../modules/confirm-dialog";
 import type { Id } from "../../convex/_generated/dataModel";
+import { isEditableTarget } from "../../lib/dom/is-editable-target";
 
 /**
  * NEO-203 phase C — the content-diff review.
@@ -321,6 +323,11 @@ function CardDiffRow({
   );
 }
 
+/** "1 selection" / "2 selections". */
+function plural(n: number, noun: string): string {
+  return `${n} ${noun}${n === 1 ? "" : "s"}`;
+}
+
 export default function SyncReviewModal({
   isOpen,
   diff,
@@ -373,6 +380,15 @@ export default function SyncReviewModal({
   // re-capitalisations do not bury the six changes that matter.
   const [formattingCollapsed, setFormattingCollapsed] = useState(true);
   const [confirmingDeletes, setConfirmingDeletes] = useState(false);
+  /**
+   * NEO-220 — is the "skip anyway?" confirm on screen?
+   *
+   * Separate from `confirmingDeletes`: that one guards a DESTRUCTIVE apply,
+   * this one guards walking away from selections that were never applied. Both
+   * are "are you sure", and they are never open at once — `requestSkip` stands
+   * down while the delete confirm has the screen.
+   */
+  const [skipConfirmOpen, setSkipConfirmOpen] = useState(false);
 
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const skipBtnRef = useRef<HTMLButtonElement | null>(null);
@@ -497,6 +513,35 @@ export default function SyncReviewModal({
     submit();
   }, [selectedDeleteIds.length, submit]);
 
+  /**
+   * NEO-220 — how many decisions skipping would leave on the table.
+   *
+   * Not "edits the operator made": the fold-equal fields arrive pre-ticked, and
+   * skipping drops those too. What the operator is walking away from is the
+   * SELECTION as it stands, so that is what the number counts and what the
+   * confirm's title says.
+   */
+  const unappliedSelections = acceptedFieldCount + selectedDeleteIds.length;
+
+  /**
+   * The single door out of the review. Both Escape and the footer's "Skip
+   * changes" come through here.
+   *
+   * Skip is a FORWARD move, not an abort (see this file's header) — the paired
+   * cards still save either way, which is why the confirm's wording is about
+   * what does NOT get applied rather than about losing work.
+   */
+  const requestSkip = useCallback(() => {
+    // The delete confirm has the screen; it is a modal over a modal, and
+    // stacking a third would be one "are you sure" too many.
+    if (confirmingDeletes) return;
+    if (unappliedSelections === 0) {
+      onSkip();
+      return;
+    }
+    setSkipConfirmOpen(true);
+  }, [confirmingDeletes, onSkip, unappliedSelections]);
+
   if (!isOpen) return null;
 
   const orphans = diff.removedUpstream.fullyOrphaned;
@@ -514,10 +559,17 @@ export default function SyncReviewModal({
         ref={dialogRef}
         onKeyDown={(e) => {
           if (e.key === "Escape") {
-            // The nested confirm owns its own Escape; it stops propagation, so
-            // reaching here means no confirm is open.
+            // The nested delete confirm owns its own Escape; it stops
+            // propagation, so reaching here means it is not open.
             e.stopPropagation();
-            onSkip();
+            // NEO-220: the skip confirm is a sibling in this portal and owns
+            // Escape while it is open.
+            if (skipConfirmOpen) return;
+            // NEO-220 (D8): inside a text field Escape means something
+            // smaller and local. Checkboxes are excluded from "editable" —
+            // Escape from a tick box is still a skip.
+            if (isEditableTarget(e.target)) return;
+            requestSkip();
             return;
           }
           if (e.key !== "Tab") return;
@@ -958,7 +1010,7 @@ export default function SyncReviewModal({
                 secondary
                 size="2"
                 disabled={saving}
-                onClick={onSkip}
+                onClick={requestSkip}
                 // Deliberately NOT "Cancel": this does not cancel the sync. The
                 // paired cards are still saved; only the content changes and
                 // deletions on this screen are skipped.
@@ -1084,6 +1136,25 @@ export default function SyncReviewModal({
           </div>
         )}
       </div>
+      {/* NEO-220 — a SIBLING of the review dialog, so its Escape and its
+          backdrop click are its own. Unlike the delete confirm above (which is
+          a descendant and has to stop propagation to stay that way), this one
+          needs no such arrangement. */}
+      {skipConfirmOpen && (
+        <ConfirmDialog
+          title={`${plural(unappliedSelections, "selection")} not applied — skip anyway?`}
+          description="Skip applies none of your ticked changes and deletes nothing. The cards you paired still save."
+          confirmLabel="Skip anyway"
+          // Nothing is written on this path, so there is no in-flight window.
+          busyLabel="Skip anyway"
+          busy={false}
+          onConfirm={() => {
+            setSkipConfirmOpen(false);
+            onSkip();
+          }}
+          onCancel={() => setSkipConfirmOpen(false)}
+        />
+      )}
     </Theme>,
     document.body,
   );

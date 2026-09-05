@@ -94,4 +94,26 @@ crons.interval(
   {},
 );
 
+/**
+ * NEO-221 — delete entity-review batches nobody is coming back to.
+ *
+ * A separate entry from "age stale entity-review lookups" above, and
+ * deliberately so: that one is about a single row's LOOKUP hanging (30
+ * minutes, `pending` → `error`, deletes nothing), while this is about the
+ * SESSION ending — a closed tab leaves a batch of perfectly healthy rows that
+ * `startBatch` would otherwise resume into the next fetch of that set, weeks
+ * later, complete with decisions made against a card list that has moved on.
+ *
+ * Hourly against a 24-hour threshold, matching the checklist-candidate reaper
+ * next to it: the cost of being an hour late is nothing, and the common run
+ * samples the oldest few rows, finds them all fresh, and stops — see
+ * `sweepAbandonedBatches`.
+ */
+crons.interval(
+  "reap abandoned entity-review batches",
+  { hours: 1 },
+  internal.entityReviewQueue.sweepAbandonedBatches,
+  {},
+);
+
 export default crons;

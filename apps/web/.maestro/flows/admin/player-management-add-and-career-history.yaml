@@ -259,9 +259,8 @@ tags:
 # thing in this section the popover can never cover. It is a plain <h3> with no
 # handler and is not focusable, so the tap has no effect beyond dismissing the
 # popover. It is also unambiguous: the stint <ul> carries "Career history" as
-# an aria-LABEL, which Maestro exposes as `id`, not as text (see the
-# `id: "Staged career teams"` matcher in checklist-fetch-wizard-add-career-team),
-# so a `text:` matcher can only resolve to the heading. No scroll first: the
+# an aria-LABEL, which Maestro exposes as `id`, not as text, so a `text:`
+# matcher can only resolve to the heading. No scroll first: the
 # step above just centred "Add team", and the heading is a fixed two lines
 # above it, so it is on screen by construction.
 - tapOn: "Career history"

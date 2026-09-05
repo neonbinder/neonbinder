@@ -17,7 +17,7 @@
  * to its own spy.
  */
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -365,5 +365,169 @@ describe("PlayerPicker", () => {
 
     expect(screen.queryByLabelText("Create player Bobby Witt Jr")).toBeNull();
     expect(mockFindOrCreate).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // NEO-220 — dismissal and create-failure feedback, ported from TeamPicker
+  //
+  // This picker moved into `CardChecklist`'s quick-add form, where its
+  // `absolute top-full z-10` popover is drawn over the Team row and the
+  // Add/Cancel buttons. Its three prior gaps all became real defects there:
+  // no outside-click close, no keyboard-out close (WCAG 2.4.11 Focus Not
+  // Obscured), and a refused create that vanished silently.
+  // -------------------------------------------------------------------------
+
+  it("closes the popover on a pointerdown outside the picker", () => {
+    currentCandidates = [makePlayer("p1", "Aaron Judge")];
+    renderPicker();
+    openPopover();
+    expect(screen.getByLabelText("Search players")).toBeTruthy();
+
+    fireEvent.pointerDown(document.body);
+
+    expect(screen.queryByLabelText("Search players")).toBeNull();
+  });
+
+  it("leaves the popover open for a pointerdown INSIDE the picker", () => {
+    currentCandidates = [makePlayer("p1", "Aaron Judge")];
+    renderPicker();
+    openPopover();
+
+    fireEvent.pointerDown(screen.getByLabelText("Search players"));
+
+    expect(screen.getByLabelText("Search players")).toBeTruthy();
+  });
+
+  it("closes the popover once focus actually leaves the picker (2.4.11)", async () => {
+    // The keyboard counterpart to the pointerdown handler: Tab out of the
+    // popover, which has no focus trap, lands on whatever the caller rendered
+    // next — in the quick-add form, controls this popover covers.
+    currentCandidates = [makePlayer("p1", "Aaron Judge")];
+    render(
+      <div>
+        <PlayerPicker value={[]} onChange={vi.fn()} sportId={SPORT_ID} />
+        <button aria-label="Outside">Outside</button>
+      </div>,
+    );
+    openPopover();
+    const search = screen.getByLabelText("Search players");
+    await waitFor(() => expect(document.activeElement).toBe(search));
+
+    fireEvent.blur(search);
+    screen.getByLabelText("Outside").focus();
+    await waitFor(() =>
+      expect(screen.queryByLabelText("Search players")).toBeNull(),
+    );
+  });
+
+  it("stays open when focus moves between controls inside the picker", async () => {
+    currentCandidates = [makePlayer("p1", "Aaron Judge")];
+    renderPicker();
+    openPopover();
+    const search = screen.getByLabelText("Search players");
+    await waitFor(() => expect(document.activeElement).toBe(search));
+
+    fireEvent.blur(search);
+    screen.getByLabelText("Add Aaron Judge").focus();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(screen.getByLabelText("Search players")).toBeTruthy();
+  });
+
+  it("renders the reason a create was refused, in the SAME open popover", async () => {
+    mockFindOrCreate.mockRejectedValue(new Error("boom"));
+    currentCandidates = [];
+    renderPicker();
+    openPopover();
+    fireEvent.change(screen.getByLabelText("Search players"), {
+      target: { value: "Bobby Witt Jr" },
+    });
+
+    fireEvent.click(screen.getByLabelText("Create player Bobby Witt Jr"));
+    await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
+
+    // A plain Error is redacted in production, so only the generic fallback is
+    // ever shown for one — never the raw message.
+    expect(screen.getByRole("alert").textContent).toBe(
+      "Could not create player.",
+    );
+    // Still the same open popover, query preserved, so the operator can edit
+    // and retry rather than reopening and retyping.
+    expect(
+      (screen.getByLabelText("Search players") as HTMLInputElement).value,
+    ).toBe("Bobby Witt Jr");
+  });
+
+  it("clears the refusal on the next keystroke", async () => {
+    mockFindOrCreate.mockRejectedValue(new Error("boom"));
+    currentCandidates = [];
+    renderPicker();
+    openPopover();
+    const search = screen.getByLabelText("Search players");
+    fireEvent.change(search, { target: { value: "Bobby Witt Jr" } });
+    fireEvent.click(screen.getByLabelText("Create player Bobby Witt Jr"));
+    await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
+
+    // The message described the name that was in the box; the next keystroke
+    // makes it stale, so it goes with the query it was about.
+    fireEvent.change(search, { target: { value: "Bobby Witt Jr." } });
+
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("keeps the Create row MOUNTED while creating, so the refusal survives", async () => {
+    // The regression this guards: gating `showCreateOption` on `!creating`
+    // unmounted the focused button the instant the request started, parking
+    // focus on <body> — which `handleRootBlur` reads as "focus left the
+    // picker" and closes the popover on, clearing the error state before the
+    // awaited mutation had even rejected. The refusal then landed invisibly.
+    let settle: (id: Id<"players">) => void = () => {};
+    mockFindOrCreate.mockImplementation(
+      () => new Promise<Id<"players">>((resolve) => { settle = resolve; }),
+    );
+    currentCandidates = [];
+    renderPicker();
+    openPopover();
+    fireEvent.change(screen.getByLabelText("Search players"), {
+      target: { value: "Bobby Witt Jr" },
+    });
+    fireEvent.click(screen.getByLabelText("Create player Bobby Witt Jr"));
+
+    // Mid-flight: the row is still there, announcing itself rather than
+    // vanishing — `aria-disabled`, never native `disabled`, which would
+    // force-blur it and reproduce the same focus park.
+    const createRow = screen.getByLabelText("Create player Bobby Witt Jr");
+    expect(createRow.textContent).toBe("Creating…");
+    expect(createRow.getAttribute("aria-disabled")).toBe("true");
+    expect(createRow.hasAttribute("disabled")).toBe(false);
+    expect(screen.getByLabelText("Search players")).toBeTruthy();
+
+    await act(async () => {
+      settle(pid("p-new"));
+    });
+  });
+
+  it("refuses a second create while one is in flight", async () => {
+    let settle: (id: Id<"players">) => void = () => {};
+    mockFindOrCreate.mockImplementation(
+      () => new Promise<Id<"players">>((resolve) => { settle = resolve; }),
+    );
+    currentCandidates = [];
+    renderPicker();
+    openPopover();
+    fireEvent.change(screen.getByLabelText("Search players"), {
+      target: { value: "Bobby Witt Jr" },
+    });
+
+    fireEvent.click(screen.getByLabelText("Create player Bobby Witt Jr"));
+    fireEvent.click(screen.getByLabelText("Create player Bobby Witt Jr"));
+
+    // The `creating` guard inside `createAndAdd` is what blocks re-entry now
+    // that the button stays clickable — `aria-disabled` only announces.
+    expect(mockFindOrCreate).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      settle(pid("p-new"));
+    });
   });
 });

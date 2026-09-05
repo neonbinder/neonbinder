@@ -473,3 +473,91 @@ describe("CareerTeamEntry — Location + Name", () => {
     expect(screen.queryByText(/Did you mean/)).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// NEO-220 — Escape is the field's, and never the dialog's
+//
+// The old handler swallowed Escape only while the dropdown had suggestions in
+// it. Type a team neither Wikidata nor `teams` has heard of — the exact case
+// this field exists for — and Escape bubbled to the wizard root and cancelled
+// the whole review batch. The operator pressed a key that means "clear this"
+// and lost every decision they had made.
+// ---------------------------------------------------------------------------
+
+describe("CareerTeamEntry — Escape", () => {
+  /** Renders the field inside a spy container, standing in for the dialog root. */
+  function renderInDialog(props: Partial<Parameters<typeof CareerTeamEntry>[0]> = {}) {
+    const onRootKeyDown = vi.fn();
+    const onAdd = vi.fn();
+    render(
+      <div onKeyDown={onRootKeyDown}>
+        <CareerTeamEntry sportId={SPORT_ID} stagedNames={[]} onAdd={onAdd} {...props} />
+      </div>,
+    );
+    return { onRootKeyDown, onAdd };
+  }
+
+  it("closes an open dropdown and stops there", () => {
+    const { onRootKeyDown } = renderInDialog({ stagedNames: ["Toronto Blue Jays"] });
+
+    typeName("Toronto");
+    expect(screen.getAllByRole("option").length).toBeGreaterThan(0);
+
+    const input = screen.getByLabelText("Career team name") as HTMLInputElement;
+    fireEvent.keyDown(input, { key: "Escape" });
+
+    expect(screen.queryAllByRole("option")).toHaveLength(0);
+    // The typed name survives — closing a dropdown is not discarding the entry.
+    expect(input.value).toBe("Toronto");
+    expect(onRootKeyDown).not.toHaveBeenCalled();
+  });
+
+  it("clears the name once the dropdown is closed", () => {
+    const { onRootKeyDown } = renderInDialog({ stagedNames: ["Toronto Blue Jays"] });
+
+    typeName("Toronto");
+    const input = screen.getByLabelText("Career team name") as HTMLInputElement;
+    fireEvent.keyDown(input, { key: "Escape" }); // closes the dropdown
+    fireEvent.keyDown(input, { key: "Escape" }); // clears the field
+
+    expect(input.value).toBe("");
+    expect(onRootKeyDown).not.toHaveBeenCalled();
+  });
+
+  it("clears a name that matched nothing — the case that used to cancel the batch", () => {
+    // No suggestions at all, so the old guard (`suggestionsOpen &&
+    // suggestions.length > 0`) was false and Escape bubbled straight out.
+    currentTeams = [];
+    const { onRootKeyDown } = renderInDialog();
+
+    typeName("Brand New Club");
+    expect(screen.queryAllByRole("option")).toHaveLength(0);
+
+    const input = screen.getByLabelText("Career team name") as HTMLInputElement;
+    fireEvent.keyDown(input, { key: "Escape" });
+
+    expect(input.value).toBe("");
+    expect(onRootKeyDown).not.toHaveBeenCalled();
+  });
+
+  it("never reaches the dialog even with nothing to clear", () => {
+    // `stopPropagation` is unconditional on purpose: the guarantee must not
+    // depend on which branch of the handler ran.
+    const { onRootKeyDown } = renderInDialog();
+
+    fireEvent.keyDown(screen.getByLabelText("Career team name"), { key: "Escape" });
+
+    expect(onRootKeyDown).not.toHaveBeenCalled();
+  });
+
+  it("leaves the year fields alone — they are not this handler's business", () => {
+    const { onRootKeyDown } = renderInDialog();
+
+    typeName("Toronto Blue Jays");
+    fireEvent.change(screen.getByLabelText("From year"), { target: { value: "2023" } });
+    fireEvent.keyDown(screen.getByLabelText("Career team name"), { key: "Escape" });
+
+    expect((screen.getByLabelText("From year") as HTMLInputElement).value).toBe("2023");
+    expect(onRootKeyDown).not.toHaveBeenCalled();
+  });
+});

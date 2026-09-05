@@ -3,6 +3,7 @@ import type { Id } from "../../convex/_generated/dataModel";
 import { attentionItemLabel, type AttentionItem } from "./card-attention";
 import MissingTeamFixer from "./MissingTeamFixer";
 import TitleFixer from "./TitleFixer";
+import UnreviewedNameFixer from "./UnreviewedNameFixer";
 
 /**
  * NEO-102 — the attention-fixer registry. **This shape is a locked contract**
@@ -78,6 +79,17 @@ export type CardChecklistRow = {
    * convex/features/cardAttention.ts.
    */
   pendingTeamNames?: string[];
+  /**
+   * NEO-221 (D12): player names the commit could not resolve, because their
+   * entity-review rows were never decided. Same storage and same self-healing
+   * route as `pendingTeamNames` above — the next sync's
+   * `resolveUnknownsAndStartBatch` folds them into a fresh batch — but unlike
+   * that field this one has no "counts as answered" clause: a typed player
+   * name is not a player LINK, and nothing else on the row stands in for one.
+   * `UnreviewedNameFixer` renders these, so leaving the field off the type
+   * would hand the operator a fixer that shows no names.
+   */
+  pendingPlayerNames?: string[];
   /**
    * NEO-102: `deriveCardAttention` reads `bsc.ref`'s presence — a BSC-linked
    * card has an automatic team source still to come, so it is not badged until
@@ -167,6 +179,11 @@ export const attentionFixers: Partial<Record<AttentionItem["kind"], AttentionFix
   titleOverLimit: TitleFixer,
   titleTruncated: TitleFixer,
   aspectValueOverLimit: TitleFixer,
+  // NEO-221 (D12) — names the commit wrote onto the card because their review
+  // rows were never decided. One component covers both halves (player names
+  // and team names): a card can carry either or both, and both are answered
+  // by the same single `updateCard` write.
+  unreviewedName: UnreviewedNameFixer,
 };
 
 /**

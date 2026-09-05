@@ -138,7 +138,27 @@ export default function EntityLinkSearch({
         onChange={(e) => setQuery(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === "Escape") {
+            /*
+             * NEO-220 — one level at a time, and never past this panel.
+             *
+             * Escape used to close the whole search on the first press, and it
+             * only failed to cancel the entire review batch because the wizard
+             * root happened to skip Escape while `linkingOpen`. That is a
+             * guarantee living in the wrong component: anything that changed
+             * the root's condition would have turned "clear my search" into
+             * "throw the session away", silently.
+             *
+             * So this handler owns both levels itself — clear the query if
+             * there is one, otherwise close the panel — and `stopPropagation`
+             * unconditionally, so the guarantee holds whatever the root does.
+             */
             e.preventDefault();
+            e.stopPropagation();
+            if (query !== "") {
+              setQuery("");
+              setDebouncedQuery("");
+              return;
+            }
             onCancel();
           } else if (e.key === "ArrowDown") {
             e.preventDefault();
