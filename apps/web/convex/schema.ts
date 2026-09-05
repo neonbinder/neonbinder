@@ -1078,11 +1078,17 @@ export default defineSchema({
     ),
     enrichment: v.optional(v.object({
       wikidataId: v.optional(v.string()),
-      // player-only. Team NAMES, not ids — resolving to real team rows via
-      // teams.findOrCreateInternal is deferred to commit time (only once
-      // "create" is the confirmed decision), so a lookup during mere
-      // preview can never orphan a team row for a player the user ends up
-      // linking to someone else or never creates.
+      // player-only. Team NAMES, not ids — resolving them to real team rows is
+      // deferred to commit time (only once "create" is the confirmed
+      // decision), so a lookup during mere preview can never orphan a team row
+      // for a player the user ends up linking to someone else or never
+      // creates.
+      //
+      // NEO-236: at commit, each name is MATCHED against `teams` by its
+      // composed full name and linked when it hits. It is never inserted from
+      // the name itself — a row is created only from the operator's Location +
+      // Name in `decision.createTeams`, and a name with neither a match nor an
+      // entry there is dropped from the player's timeline rather than minted.
       careerTeams: v.optional(v.array(v.object({
         name: v.string(),
         fromYear: v.number(),
