@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
+import { teamFullName } from "../../lib/teams/team-name";
 import type { Id } from "../../convex/_generated/dataModel";
 import CardAttentionBadge from "./CardAttentionBadge";
 import { deriveCardAttention } from "./card-attention";
@@ -168,9 +169,15 @@ export default function CardChecklistItem({
     setConfirmDelete(false);
   };
 
+  // NEO-236: the FULL name ("San Diego Padres"), composed from the row's
+  // nickname and its optional location. A checklist sub-line is a reading
+  // surface for a collector, not an admin master row — "Padres · /99 ·
+  // Refractor" would drop the half of the name that tells two Cardinals
+  // apart. `teamFullName` is the same helper the server keys the row on, so
+  // this cannot drift from what a listing title or a spine label prints.
   const teamLabel = useMemo(() => {
     if (!teamRows || teamRows.length === 0) return "";
-    return teamRows.map((t) => t.name).join(", ");
+    return teamRows.map((t) => teamFullName(t)).join(", ");
   }, [teamRows]);
 
   // Build the secondary line: "<team(s)> · /99 · Refractor · On-Card auto"
