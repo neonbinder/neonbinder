@@ -13,8 +13,9 @@ tags:
 # every close in this flow is TWO steps — the close, then the confirm. The
 # discard button is what still has to leave the modal, so the assertions after
 # it are unchanged. (The confirm's own Cancel — "keep working" — is covered on
-# the review wizard in checklist-fetch-cancel-dialog.yaml; repeating it here
-# would be R3 duplication.)
+# the entity-review wizard, in STEP 6 of
+# inserts-1996-score-one-nb-set-two-bsc-sources.yaml; repeating it here would be
+# R3 duplication.)
 #
 # KEY PROOF: after Accept All → Cancel → reopen, the items show "Suggested"
 # badges again (live auto-suggestions, not saved placements). If Cancel had

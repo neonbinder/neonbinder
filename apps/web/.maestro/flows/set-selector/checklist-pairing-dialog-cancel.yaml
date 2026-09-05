@@ -57,9 +57,10 @@ tags:
 #   Score map-out named in NEO-137's Phase 5 needs that approval and is NOT
 #   added here.
 #
-# R3 — DEDUP: the entity-review wizard's own cancel path is covered by
-#   checklist-fetch-cancel-dialog (custom subtree, no pairing step). This flow
-#   uniquely covers the pairing dialog that now precedes it. No other flow
+# R3 — DEDUP: the entity-review wizard's own cancel path is covered by STEP 6
+#   of inserts-1996-score-one-nb-set-two-bsc-sources.yaml (and exhaustively by
+#   EntityReviewWizard.test.tsx). This flow uniquely covers the pairing dialog
+#   that now precedes it. No other flow
 #   links, unlinks or re-pairs anything — variation-link-group-and-unlink is a
 #   per-worker CUSTOM set and never opens this dialog at all.
 
@@ -456,9 +457,9 @@ tags:
 - eraseText: 60
 - inputText: "NB Operator Name"
 # ENTER commits. Maestro's web driver maps only ENTER and BACKSPACE
-# (maestro.drivers.WebDriver.mapToSeleniumKey) — checklist-keyboard-only-dialog
-# documents that even `pressKey: Escape` never reaches a div-level keydown
-# handler on web. That is exactly why the commit key is Enter here, and why the
+# (maestro.drivers.WebDriver.mapToSeleniumKey throws on anything else), so
+# `pressKey: Escape` cannot be driven from a flow at all — it never reaches a
+# keydown handler. That is exactly why the commit key is Enter here, and why the
 # cancel key (Escape, which MUST be swallowed by the field rather than reaching
 # the dialog root and closing the whole modal) is covered in
 # CardPairingModal.test.tsx instead.

@@ -29,8 +29,9 @@ tags:
 #   really did submit. So the keyboard path is proved by the same assertion,
 #   with no extra steps. (The modal also closes on Escape, but Maestro's web
 #   driver can only send Enter and Backspace — every other key is rejected
-#   outright — so Escape is not testable here and the Cancel button is used to
-#   close instead. Same limitation is recorded in checklist-keyboard-only-dialog.)
+#   outright by maestro.drivers.WebDriver.mapToSeleniumKey — so Escape is not
+#   testable here and the Cancel button is used to close instead. The same
+#   limitation is noted at the rename step of checklist-pairing-dialog-cancel.)
 #
 # WHY THE SOURCE IS DRILLED ALL THE WAY DOWN:
 #   The import only accepts a source at variant level or deeper — a checklist of
