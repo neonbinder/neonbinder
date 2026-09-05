@@ -347,6 +347,134 @@ describe("CareerTeamEntry — 'Did you mean' prompt", () => {
 });
 
 // ---------------------------------------------------------------------------
+// NEO-236 — Location + Name, never a full string
+// ---------------------------------------------------------------------------
+
+describe("CareerTeamEntry — Location + Name", () => {
+  it("emits the two halves separately, trimmed", () => {
+    const { onAdd } = renderEntry();
+
+    fireEvent.change(screen.getByLabelText("Career team location (optional)"), {
+      target: { value: "  San Diego  " },
+    });
+    typeName("  Padres  ");
+    fireEvent.change(screen.getByLabelText("From year"), { target: { value: "2004" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add career team" }));
+
+    expect(onAdd).toHaveBeenCalledWith({
+      name: "Padres",
+      location: "San Diego",
+      fromYear: 2004,
+    });
+  });
+
+  it("omits `location` entirely when it is left blank", () => {
+    const { onAdd } = renderEntry();
+
+    typeName("Orix Buffaloes");
+    fireEvent.change(screen.getByLabelText("From year"), { target: { value: "2004" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add career team" }));
+
+    expect(onAdd).toHaveBeenCalledWith({ name: "Orix Buffaloes", fromYear: 2004 });
+  });
+
+  it("shows the composed name once a Location is typed, and not before", () => {
+    renderEntry();
+
+    typeName("Padres");
+    expect(screen.queryByText(/Shows as:/)).toBeNull();
+
+    fireEvent.change(screen.getByLabelText("Career team location (optional)"), {
+      target: { value: "San Diego" },
+    });
+    expect(screen.getByText("Shows as: San Diego Padres")).toBeTruthy();
+  });
+
+  it("clears Location and both fields after adding", () => {
+    renderEntry();
+
+    fireEvent.change(screen.getByLabelText("Career team location (optional)"), {
+      target: { value: "San Diego" },
+    });
+    typeName("Padres");
+    fireEvent.change(screen.getByLabelText("From year"), { target: { value: "2004" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add career team" }));
+
+    expect(
+      (
+        screen.getByLabelText(
+          "Career team location (optional)",
+        ) as HTMLInputElement
+      ).value,
+    ).toBe("");
+    expect(
+      (screen.getByLabelText("Career team name") as HTMLInputElement).value,
+    ).toBe("");
+  });
+
+  it("a blank Location alone cannot add — Name is still the required half", () => {
+    const { onAdd } = renderEntry();
+
+    fireEvent.change(screen.getByLabelText("Career team location (optional)"), {
+      target: { value: "San Diego" },
+    });
+    fireEvent.change(screen.getByLabelText("From year"), { target: { value: "2004" } });
+
+    const addButton = screen.getByRole("button", {
+      name: "Add career team",
+    }) as HTMLButtonElement;
+    expect(addButton.disabled).toBe(true);
+    fireEvent.click(addButton);
+    expect(onAdd).not.toHaveBeenCalled();
+  });
+
+  it("suggests a split saved team by its FULL name, and picking it clears Location", () => {
+    currentTeams = [{ _id: "t1", name: "Padres", location: "San Diego" }];
+    renderEntry();
+
+    fireEvent.change(screen.getByLabelText("Career team location (optional)"), {
+      target: { value: "Typed" },
+    });
+    typeName("Padres");
+
+    // "Padres" alone does not identify the row; the option names the whole team.
+    const option = screen.getByRole("option", {
+      name: "Use existing team San Diego Padres",
+    });
+    fireEvent.click(option);
+
+    expect(
+      (screen.getByLabelText("Career team name") as HTMLInputElement).value,
+    ).toBe("San Diego Padres");
+    // Composed, the picked name is byte-for-byte the existing row's — which is
+    // what makes commit link to it rather than create a second one.
+    expect(
+      (
+        screen.getByLabelText(
+          "Career team location (optional)",
+        ) as HTMLInputElement
+      ).value,
+    ).toBe("");
+  });
+
+  it("the duplicate warning compares the COMPOSED name, not the nickname", () => {
+    currentTeams = [{ _id: "t1", name: "Padres", location: "San Diego" }];
+    renderEntry();
+
+    // Nickname alone is a near match against "San Diego Padres"...
+    typeName("Padres");
+    expect(screen.getByText("Did you mean San Diego Padres?")).toBeTruthy();
+
+    // ...but with the Location filled in it is an EXACT match, so there is
+    // nothing to mean instead.
+    fireEvent.change(screen.getByLabelText("Career team location (optional)"), {
+      target: { value: "San Diego" },
+    });
+    expect(screen.queryByText(/Did you mean/)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // NEO-220 — Escape is the field's, and never the dialog's
 //
 // The old handler swallowed Escape only while the dropdown had suggestions in

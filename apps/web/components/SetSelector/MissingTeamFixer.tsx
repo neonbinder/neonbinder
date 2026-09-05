@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
+import { teamFullName } from "../../lib/teams/team-name";
 import type { Id } from "../../convex/_generated/dataModel";
 import NeonButton from "../modules/NeonButton";
 import TeamPicker from "./TeamPicker";
@@ -54,6 +55,30 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
     api.players.getManyByIds,
     row.playerIds && row.playerIds.length > 0 ? { ids: row.playerIds } : "skip",
   );
+  /**
+   * NEO-236 — the suggestion rows carry a denormalised `name` and nothing
+   * else, so the location half of a split team's name has to come from the
+   * team rows themselves. Read here rather than added to
+   * `suggestedTeamsForCard`'s payload so this fixer owns its own display
+   * contract; the ids are the ones the picker below is already resolving, so
+   * Convex serves both from one subscription whenever nothing has been
+   * toggled yet.
+   */
+  const suggestedTeamIds = useMemo(
+    () => [...new Set((suggestions ?? []).map((s) => s.teamId))],
+    [suggestions],
+  );
+  const suggestedTeamRows = useQuery(
+    api.teams.getManyByIds,
+    suggestedTeamIds.length > 0 ? { ids: suggestedTeamIds } : "skip",
+  );
+  const locationByTeamId = useMemo(() => {
+    const map = new Map<string, string | undefined>();
+    for (const team of suggestedTeamRows ?? []) {
+      map.set(team._id as unknown as string, team.location);
+    }
+    return map;
+  }, [suggestedTeamRows]);
   const updateCard = useMutation(api.selectorOptions.updateCard);
   const confirmCardNoTeam = useMutation(api.cardChecklist.confirmCardNoTeam);
 
@@ -84,13 +109,19 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
       } else {
         byTeam.set(s.teamId as string, {
           teamId: s.teamId,
-          name: s.name,
+          // The FULL name, composed the moment the team row arrives. Until it
+          // does, the suggestion's own `name` stands in — for an unsplit row
+          // that IS the full name, so the common case never flickers.
+          name: teamFullName({
+            name: s.name,
+            location: locationByTeamId.get(s.teamId as string),
+          }),
           playerNames: [s.playerName],
         });
       }
     }
     return [...byTeam.values()];
-  }, [suggestions]);
+  }, [suggestions, locationByTeamId]);
 
   useEffect(() => {
     if (teamIds !== null || suggestions === undefined) return;
@@ -276,6 +307,33 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
       )}
 
       <div className="space-y-1" ref={pickerRegionRef}>
+        {/*
+          NEO-236 — the marketplace's own answer, above the picker.
+
+          The BSC per-card lookup used to CREATE a team from whatever string it
+          got back. It links-or-leaves now, because creation takes a reviewed
+          Location + Name and a background queue has neither. Throwing the
+          string away with it left the operator on a card with no team and no
+          indication which team it was supposed to be — we had the answer and
+          discarded it on the way to not trusting it.
+
+          Framed as "Marketplace says", not "Team", and rendered muted rather
+          than as a chip: the suggestion chips above are ACCEPTABLE with a
+          keystroke, and this deliberately is not. It is the marketplace's
+          claim, presented for a human to read and split into Location + Name
+          themselves — never something a click could turn into a team row, which
+          is precisely the shortcut NEO-236 removed.
+
+          Plain text, never an anchor and never a `title`: a marketplace string
+          is untrusted content reaching an admin screen, the same rule the card
+          number and name follow in this panel.
+        */}
+        {row.bscTeamName && (
+          <p className="text-xs text-gray-500">
+            Marketplace says:{" "}
+            <span className="text-gray-300">{row.bscTeamName}</span>
+          </p>
+        )}
         <p className="text-xs text-gray-400">Teams on this card</p>
         {/* The same picker the card detail panel uses, including its "+ Create"
             path through teams.findOrCreate — so a team no marketplace has ever

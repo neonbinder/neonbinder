@@ -32,6 +32,8 @@ import { rankTeamCandidates } from "./lib/entityNearMatch";
 // Leagues store a QID for the same reason players and teams do, so they
 // validate it in the same one place rather than growing a fourth regex.
 import { isWikidataQid } from "../lib/players/wikidata-id";
+// NEO-236: the team split — `teamsIn` orders by the composed full name.
+import { teamFullName } from "../lib/teams/team-name";
 
 /**
  * NEO-240 — where a league sits in the professional pyramid.
@@ -1022,7 +1024,7 @@ export const saveLeagueFields = mutation({
  * A narrow projection rather than the whole team document, and that is a
  * decision rather than an economy: this panel exists to say "here is what is
  * IN this league", so it returns the identifying name plus the two facts a
- * league view can sanity-check at a glance (the city, and the colours that
+ * league view can sanity-check at a glance (the location, and the colours that
  * make a wrong-league team obvious). Everything else about a team belongs to
  * Team Management, which owns editing it.
  *
@@ -1036,7 +1038,7 @@ export const teamsIn = query({
     v.object({
       _id: v.id("teams"),
       name: v.string(),
-      city: v.optional(v.string()),
+      location: v.optional(v.string()),
       colors: v.optional(
         v.object({
           primary: v.optional(v.string()),
@@ -1053,12 +1055,15 @@ export const teamsIn = query({
       .withIndex("by_league_id", (q) => q.eq("leagueId", args.leagueId))
       .collect();
 
+    // NEO-236: sorted by the FULL name, matching `teams.listForManagement` —
+    // this panel is read as an alphabetised list of the teams a league holds,
+    // and sorting on the nickname alone scatters that order.
     return rows
-      .sort((a, b) => a.name.localeCompare(b.name))
+      .sort((a, b) => teamFullName(a).localeCompare(teamFullName(b)))
       .map((team) => ({
         _id: team._id,
         name: team.name,
-        city: team.city,
+        location: team.location,
         colors: team.colors,
       }));
   },

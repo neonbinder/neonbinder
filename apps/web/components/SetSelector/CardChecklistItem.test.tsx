@@ -42,8 +42,16 @@ vi.mock("../../convex/_generated/api", () => ({
 
 const mockDeleteCard = vi.fn();
 
+/**
+ * The rows `teams.getManyByIds` resolves to. `undefined` (the default, and
+ * what every pre-NEO-236 test in this file runs with) is the un-resolved
+ * state: the row renders with no team on its sub-line at all.
+ */
+let currentTeamRows: unknown;
+
 vi.mock("convex/react", () => ({
-  useQuery: () => undefined,
+  useQuery: (ref: string) =>
+    ref === "teams.getManyByIds" ? currentTeamRows : undefined,
   useMutation: (ref: string) => (ref === "deleteCard" ? mockDeleteCard : vi.fn()),
 }));
 
@@ -88,6 +96,7 @@ function renderItem(
 describe("CardChecklistItem", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    currentTeamRows = undefined;
     mockDeleteCard.mockResolvedValue(undefined);
   });
 
@@ -164,6 +173,7 @@ describe("CardChecklistItem", () => {
 describe("CardChecklistItem — variation grouping (NEO-189)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    currentTeamRows = undefined;
     mockDeleteCard.mockResolvedValue(undefined);
   });
 
@@ -379,6 +389,7 @@ describe("CardChecklistItem — NEO-102 attention mark", () => {
 describe("CardChecklistItem — NEO-208 pending team names", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    currentTeamRows = undefined;
   });
 
   it("appends a typed team name as '<name> (unconfirmed)'", () => {
@@ -484,6 +495,7 @@ describe("CardChecklistItem — NEO-208 pending team names", () => {
 describe("CardChecklistItem — NEO-217 autograph suffix", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    currentTeamRows = undefined;
   });
 
   it("renders the auto suffix from features.autographed", () => {
@@ -553,5 +565,67 @@ describe("CardChecklistItem — NEO-217 autograph suffix", () => {
     expect(
       document.querySelectorAll(".truncate.min-h-\\[1rem\\]").length,
     ).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-236 — the team sub-line carries the FULL name
+//
+// `teams.name` is the nickname now ("Padres") and the place lives in
+// `teams.location` ("San Diego"). A checklist sub-line is a reading surface
+// for a collector, not one of the two admin master rows, so it composes the
+// two — otherwise a Cardinals row would not say which Cardinals.
+// ---------------------------------------------------------------------------
+
+describe("CardChecklistItem — NEO-236 team names", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    currentTeamRows = undefined;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function renderWithTeams(rows: unknown, cardOverrides = {}) {
+    currentTeamRows = rows;
+    return render(
+      <CardChecklistItem
+        card={makeCard({
+          teamOnCardIds: ["team-1" as unknown as Id<"teams">],
+          ...cardOverrides,
+        })}
+        onEdit={vi.fn()}
+      />,
+    );
+  }
+
+  it("composes location and name for a split row", () => {
+    renderWithTeams([
+      { _id: "team-1", name: "Padres", location: "San Diego" },
+    ]);
+
+    expect(screen.getByText("San Diego Padres")).toBeTruthy();
+  });
+
+  it("renders a location-less row (a college side, a national team) unchanged", () => {
+    renderWithTeams([{ _id: "team-1", name: "Nippon-Ham Fighters" }]);
+
+    expect(screen.getByText("Nippon-Ham Fighters")).toBeTruthy();
+  });
+
+  it("joins several teams by their full names, ahead of the rest of the sub-line", () => {
+    const { container } = renderWithTeams(
+      [
+        { _id: "team-1", name: "Padres", location: "San Diego" },
+        { _id: "team-2", name: "Yankees", location: "New York" },
+      ],
+      { printRun: 99 },
+    );
+
+    const subtitle = container.querySelector(".truncate.min-h-\\[1rem\\]");
+    expect(subtitle?.textContent).toBe(
+      "San Diego Padres, New York Yankees · /99",
+    );
   });
 });

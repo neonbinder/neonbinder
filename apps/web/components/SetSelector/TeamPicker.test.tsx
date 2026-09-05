@@ -9,9 +9,15 @@
  * a team at all).
  *
  * Structure mirrors `PlayerPicker.test.tsx` (same session, same component
- * shape) with team-specific additions: the `m.city` suffix on candidate
- * rows and the "No matches." empty-state string TeamPicker renders (that
- * PlayerPicker's popover doesn't).
+ * shape) with team-specific additions: the "No matches." empty-state string
+ * TeamPicker renders (that PlayerPicker's popover doesn't) and, since NEO-236,
+ * the Location + Name create form.
+ *
+ * NEO-236 — `teams.location` is no longer a fact printed BESIDE the name; it
+ * is the first half OF the name ("San Diego" + "Padres"). So every assertion
+ * about what this picker shows, announces or matches on is an assertion about
+ * the COMPOSED full name, and the create path is a two-field form rather than
+ * a row that submits whatever was typed into the search box.
  *
  * --- Mocking strategy (identity-routed useQuery/useMutation) ---
  * `convex/react`'s `useQuery`/`useMutation` are module-mocked, routed by the
@@ -75,8 +81,8 @@ function tid(n: string): Id<"teams"> {
   return n as unknown as Id<"teams">;
 }
 
-function makeTeam(id: string, name: string, city?: string) {
-  return { _id: tid(id), name, city };
+function makeTeam(id: string, name: string, location?: string) {
+  return { _id: tid(id), name, location };
 }
 
 function renderPicker(props: Partial<Parameters<typeof TeamPicker>[0]> = {}) {
@@ -142,15 +148,46 @@ describe("TeamPicker", () => {
   // Candidate list (teams.list), filtered/ranked by typed query
   // -------------------------------------------------------------------------
 
-  it("lists candidates from teams.list when the popover opens, including the city suffix", () => {
-    currentCandidates = [makeTeam("t1", "New York Yankees", "Bronx")];
+  // NEO-236: this used to assert a "Bronx" SUFFIX printed after the name.
+  // A split row's location is the front of its name now, so the option reads
+  // as one composed string and the suffix slot carries the league alone —
+  // printing the location twice read as a stutter.
+  it("lists candidates from teams.list as their composed full name, with the league as the only suffix", () => {
+    currentCandidates = [
+      { ...makeTeam("t1", "Yankees", "New York"), league: "MLB" },
+    ];
     renderPicker();
 
     openPopover();
 
     const option = screen.getByLabelText("Add New York Yankees");
     expect(option).toBeTruthy();
-    expect(option.textContent).toContain("Bronx");
+    expect(option.textContent).toContain("New York Yankees");
+    expect(option.textContent).toContain("MLB");
+  });
+
+  it("renders a chip for a split row as its full name, not its nickname", () => {
+    currentSelectedRows = [makeTeam("t1", "Padres", "San Diego")];
+    renderPicker({ value: [tid("t1")] });
+
+    expect(screen.getByLabelText("Team: San Diego Padres")).toBeTruthy();
+    expect(screen.getByLabelText("Remove team San Diego Padres")).toBeTruthy();
+  });
+
+  // The duplicate-team risk the split creates, at its source: an operator who
+  // types the full name of an ALREADY-SPLIT row has to be shown that row. If
+  // the filter compared against `name` alone, "San Diego" would match nothing
+  // and the operator would be offered a create — a second Padres.
+  it("matches a split row on its location as well as its nickname", () => {
+    currentCandidates = [makeTeam("t1", "Padres", "San Diego")];
+    renderPicker();
+    openPopover();
+
+    fireEvent.change(screen.getByLabelText("Search teams"), {
+      target: { value: "San Diego" },
+    });
+
+    expect(screen.getByLabelText("Add San Diego Padres")).toBeTruthy();
   });
 
   it("shows 'No matches.' when a typed query matches no candidate and no create row would help clarify state", () => {
@@ -625,5 +662,349 @@ describe("TeamPicker", () => {
       (screen.getByLabelText("Search teams") as HTMLInputElement).value,
     ).toBe(longName);
     expect(onChange).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // NEO-236 — the create form takes Location + Name, never a full string
+  //
+  // Jason, 2026-09-05: "We simply shouldn't allow for full string creation.
+  // Location & Team Name should be the input." These tests pin the three
+  // things that makes true: the typed query pre-fills the NAME with no
+  // guessed split, the location is a separate optional field, and the row the
+  // operator is about to create is composed on screen before they commit it.
+  // -------------------------------------------------------------------------
+
+  it("pre-fills the name field with the typed query verbatim, never a guessed split", () => {
+    currentCandidates = [];
+    renderPicker({ sportId: SPORT_ID });
+    openPopover();
+
+    fireEvent.change(screen.getByLabelText("Search teams"), {
+      target: { value: "San Diego Padres" },
+    });
+
+    // The WHOLE string lands in the name box. Splitting it here would be the
+    // component deciding that "San Diego" is a location, which is exactly the
+    // guess `splitTeamName`'s docstring refuses to make on its own.
+    expect(
+      (screen.getByLabelText("New team name") as HTMLInputElement).value,
+    ).toBe("San Diego Padres");
+    expect(
+      (screen.getByLabelText("New team location (optional)") as HTMLInputElement).value,
+    ).toBe("");
+  });
+
+  it("composes the two fields into a 'Shows as:' preview and into the submit's label", () => {
+    currentCandidates = [];
+    renderPicker({ sportId: SPORT_ID });
+    openPopover();
+
+    fireEvent.change(screen.getByLabelText("Search teams"), {
+      target: { value: "Padres" },
+    });
+    fireEvent.change(screen.getByLabelText("New team location (optional)"), {
+      target: { value: "San Diego" },
+    });
+
+    expect(screen.getByText("San Diego Padres")).toBeTruthy();
+    expect(screen.getByLabelText("Create team San Diego Padres")).toBeTruthy();
+  });
+
+  it("sends location and name as separate arguments to teams.findOrCreate", async () => {
+    currentCandidates = [];
+    mockFindOrCreate.mockResolvedValue(tid("new-team-3"));
+    const { onChange } = renderPicker({ sportId: SPORT_ID });
+    openPopover();
+
+    fireEvent.change(screen.getByLabelText("Search teams"), {
+      target: { value: "Padres" },
+    });
+    fireEvent.change(screen.getByLabelText("New team location (optional)"), {
+      target: { value: "San Diego" },
+    });
+    fireEvent.click(screen.getByLabelText("Create team San Diego Padres"));
+
+    await waitFor(() => {
+      expect(mockFindOrCreate).toHaveBeenCalledWith({
+        name: "Padres",
+        location: "San Diego",
+        sportId: SPORT_ID,
+      });
+    });
+    await waitFor(() => {
+      expect(onChange).toHaveBeenCalledWith([tid("new-team-3")]);
+    });
+  });
+
+  // "No location" is an absent optional on the server (colleges, national
+  // sides, Orix Buffaloes), not an empty string — a blank box must not invent
+  // a third state that means the same thing.
+  it("omits `location` entirely when the location field is left blank", async () => {
+    currentCandidates = [];
+    mockFindOrCreate.mockResolvedValue(tid("new-team-4"));
+    renderPicker({ sportId: SPORT_ID });
+    openPopover();
+
+    fireEvent.change(screen.getByLabelText("Search teams"), {
+      target: { value: "Savannah Bananas" },
+    });
+    fireEvent.change(screen.getByLabelText("New team location (optional)"), {
+      target: { value: "   " },
+    });
+    fireEvent.click(screen.getByLabelText("Create team Savannah Bananas"));
+
+    await waitFor(() => {
+      expect(mockFindOrCreate).toHaveBeenCalledTimes(1);
+    });
+    expect(Object.keys(mockFindOrCreate.mock.calls[0][0])).not.toContain(
+      "location",
+    );
+  });
+
+  it("stops mirroring the search box once the operator edits the name field", async () => {
+    currentCandidates = [];
+    mockFindOrCreate.mockResolvedValue(tid("new-team-5"));
+    renderPicker({ sportId: SPORT_ID });
+    openPopover();
+
+    const search = screen.getByLabelText("Search teams");
+    fireEvent.change(search, { target: { value: "San Diego Padres" } });
+    // The operator does the split by hand: nickname in the name box, place in
+    // the location box.
+    fireEvent.change(screen.getByLabelText("New team name"), {
+      target: { value: "Padres" },
+    });
+    fireEvent.change(screen.getByLabelText("New team location (optional)"), {
+      target: { value: "San Diego" },
+    });
+    // Typing on in the search box must not clobber the edit under the cursor.
+    fireEvent.change(search, { target: { value: "San Diego Padre" } });
+
+    expect(
+      (screen.getByLabelText("New team name") as HTMLInputElement).value,
+    ).toBe("Padres");
+
+    fireEvent.click(screen.getByLabelText("Create team San Diego Padres"));
+    await waitFor(() => {
+      expect(mockFindOrCreate).toHaveBeenCalledWith({
+        name: "Padres",
+        location: "San Diego",
+        sportId: SPORT_ID,
+      });
+    });
+  });
+
+  it("Enter inside the location field submits the create", async () => {
+    currentCandidates = [];
+    mockFindOrCreate.mockResolvedValue(tid("new-team-6"));
+    renderPicker({ sportId: SPORT_ID });
+    openPopover();
+
+    fireEvent.change(screen.getByLabelText("Search teams"), {
+      target: { value: "Padres" },
+    });
+    const location = screen.getByLabelText("New team location (optional)");
+    fireEvent.change(location, { target: { value: "San Diego" } });
+    fireEvent.keyDown(location, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(mockFindOrCreate).toHaveBeenCalledWith({
+        name: "Padres",
+        location: "San Diego",
+        sportId: SPORT_ID,
+      });
+    });
+  });
+
+  // The form must not vanish out from under the cursor: an unmount parks focus
+  // on <body>, which `handleRootBlur` reads as "focus left the picker" and
+  // uses to close the whole popover. So an emptied name field leaves the form
+  // standing and only the submit goes inert.
+  it("keeps the form mounted but refuses to submit when the name is emptied", () => {
+    currentCandidates = [];
+    renderPicker({ sportId: SPORT_ID });
+    openPopover();
+
+    fireEvent.change(screen.getByLabelText("Search teams"), {
+      target: { value: "Padres" },
+    });
+    fireEvent.change(screen.getByLabelText("New team name"), {
+      target: { value: "" },
+    });
+
+    const submit = screen.getByLabelText("Create team");
+    expect(submit.getAttribute("aria-disabled")).toBe("true");
+    expect(
+      screen.getByLabelText("New team location (optional)"),
+    ).toBeTruthy();
+
+    fireEvent.click(submit);
+    expect(mockFindOrCreate).not.toHaveBeenCalled();
+    // a11y: `aria-disabled` keeps the button clickable on purpose, so a press
+    // in that state has to say why nothing happened rather than no-op in
+    // silence — the audit's one major finding on this form.
+    expect(screen.getByRole("alert").textContent).toContain(
+      "Enter a team name.",
+    );
+  });
+
+  it("re-announces the same refusal on a second press (the alert remounts)", () => {
+    currentCandidates = [];
+    renderPicker({ sportId: SPORT_ID });
+    openPopover();
+
+    fireEvent.change(screen.getByLabelText("Search teams"), {
+      target: { value: "Padres" },
+    });
+    fireEvent.change(screen.getByLabelText("New team name"), {
+      target: { value: "" },
+    });
+
+    const submit = screen.getByLabelText("Create team");
+    fireEvent.click(submit);
+    const first = screen.getByRole("alert");
+    fireEvent.click(submit);
+    const second = screen.getByRole("alert");
+
+    // Same text, different element: React resolves an identical setState to no
+    // re-render, so without the remount the live region would stay silent on
+    // every press after the first.
+    expect(second.textContent).toBe(first.textContent);
+    expect(second).not.toBe(first);
+  });
+
+  // The exact-match suppression has to see through the split, or the picker
+  // offers to create a team it is already listing one row above.
+  it("offers no create form when the typed query is the full name of a split row", () => {
+    currentCandidates = [makeTeam("t1", "Padres", "San Diego")];
+    renderPicker({ sportId: SPORT_ID });
+    openPopover();
+
+    fireEvent.change(screen.getByLabelText("Search teams"), {
+      target: { value: "san diego padres" },
+    });
+
+    expect(screen.queryByLabelText(/^Create team/)).toBeNull();
+    expect(screen.getByLabelText("Add San Diego Padres")).toBeTruthy();
+  });
+
+  it("clears both create fields after a team is created and attached", async () => {
+    currentCandidates = [];
+    mockFindOrCreate.mockResolvedValue(tid("new-team-7"));
+    renderPicker({ sportId: SPORT_ID });
+    openPopover();
+
+    fireEvent.change(screen.getByLabelText("Search teams"), {
+      target: { value: "Padres" },
+    });
+    fireEvent.change(screen.getByLabelText("New team location (optional)"), {
+      target: { value: "San Diego" },
+    });
+    fireEvent.click(screen.getByLabelText("Create team San Diego Padres"));
+
+    await waitFor(() => {
+      expect(mockFindOrCreate).toHaveBeenCalledTimes(1);
+    });
+    // The query is cleared on the add, which takes the create form with it —
+    // leaving it populated would offer to create the same team twice.
+    await waitFor(() => {
+      expect(screen.queryByLabelText("New team location (optional)")).toBeNull();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // NEO-236 — the create form is reachable inside a short scroll container
+  //
+  // The popover is `absolute`, which an `overflow-y-auto` ancestor still clips.
+  // `CardAttentionWalker`'s body is a 320px box, and the two-field form pushed
+  // "+ Create team" ~25px past its clip edge — the button an operator had just
+  // asked for was off screen until they scrolled the dialog by hand. jsdom and
+  // happy-dom do no layout, so what is pinned here is the BEHAVIOUR that fixes
+  // it: the submit is scrolled into view once, on the edge where the form
+  // appears, and never again while it stays open.
+  // -------------------------------------------------------------------------
+
+  describe("scrolls its create form into view", () => {
+    let scrollSpy: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      scrollSpy = vi.fn();
+      // Assigned rather than spied: happy-dom does not implement
+      // scrollIntoView, so there is nothing for `vi.spyOn` to wrap.
+      Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+        value: scrollSpy,
+        writable: true,
+        configurable: true,
+      });
+    });
+
+    it("scrolls the submit into view, minimally, when the form appears", () => {
+      currentCandidates = [];
+      renderPicker({ sportId: SPORT_ID });
+      openPopover();
+
+      fireEvent.change(screen.getByLabelText("Search teams"), {
+        target: { value: "Padres" },
+      });
+
+      expect(scrollSpy).toHaveBeenCalledTimes(1);
+      // `nearest` is the whole point: it scrolls by the minimum needed and
+      // does nothing when the form already fits, so the picker's other three
+      // call sites are untouched.
+      expect(scrollSpy).toHaveBeenCalledWith({
+        block: "nearest",
+        inline: "nearest",
+      });
+      expect(scrollSpy.mock.instances[0]).toBe(
+        screen.getByLabelText("Create team Padres"),
+      );
+    });
+
+    it("does not scroll again while the form stays open", () => {
+      currentCandidates = [];
+      renderPicker({ sportId: SPORT_ID });
+      openPopover();
+
+      const search = screen.getByLabelText("Search teams");
+      fireEvent.change(search, { target: { value: "Padres" } });
+      fireEvent.change(search, { target: { value: "Padre" } });
+      fireEvent.change(screen.getByLabelText("New team location (optional)"), {
+        target: { value: "San Diego" },
+      });
+
+      // Re-scrolling on every keystroke would fight an operator who had
+      // scrolled the dialog themselves.
+      expect(scrollSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("scrolls again when the form comes back after an exact match hid it", () => {
+      currentCandidates = [makeTeam("t1", "Padres", "San Diego")];
+      renderPicker({ sportId: SPORT_ID });
+      openPopover();
+
+      const search = screen.getByLabelText("Search teams");
+      fireEvent.change(search, { target: { value: "Padres" } });
+      expect(scrollSpy).toHaveBeenCalledTimes(1);
+
+      // An exact full-name match suppresses the form entirely...
+      fireEvent.change(search, { target: { value: "San Diego Padres" } });
+      expect(scrollSpy).toHaveBeenCalledTimes(1);
+
+      // ...and it is a fresh appearance when the operator types past it.
+      fireEvent.change(search, { target: { value: "San Diego Padres II" } });
+      expect(scrollSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it("never scrolls when no create form is offered", () => {
+      currentCandidates = [makeTeam("t1", "Padres", "San Diego")];
+      renderPicker({ sportId: SPORT_ID });
+      openPopover();
+
+      fireEvent.change(screen.getByLabelText("Search teams"), {
+        target: { value: "san diego padres" },
+      });
+
+      expect(scrollSpy).not.toHaveBeenCalled();
+    });
   });
 });

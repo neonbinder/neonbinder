@@ -4,10 +4,12 @@
  *     functions extracted from `enrichPlayer`/`enrichTeam` so the wizard can
  *     preview Wikidata data BEFORE a player/team row is created. Unlike
  *     `enrichPlayer`, `lookupPlayerEnrichment` must NOT resolve `careerTeams`
- *     to real team ids (no `teams.findOrCreateInternal` call) — that's the
- *     specific bug the deferred-materialization design in entityReviewQueue.ts
- *     fixes (a mere preview lookup could otherwise orphan a team row for a
- *     player the user ends up linking to someone else, or never creates).
+ *     to real team ids (no team lookup at all) — that's the specific bug the
+ *     deferred-materialization design in entityReviewQueue.ts fixes (a mere
+ *     preview lookup could otherwise orphan a team row for a player the user
+ *     ends up linking to someone else, or never creates). NEO-236 narrowed
+ *     `enrichPlayer`'s own resolution to a LOOKUP too, so neither path can
+ *     create a team any more — but the preview must still not even look.
  *   - `runEntityReviewLookup` (NEO-99) — the single-row `wikidataPool` work item
  *     that replaced the old chained `processEntityReviewQueue`. One call looks up
  *     one row and patches it "ready"/"error"; the pool (not this action) handles
@@ -31,6 +33,7 @@ import { convexTest } from "convex-test";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api";
 import schema from "./schema";
+import { normalizeTeamName } from "./teams";
 import { Id } from "./_generated/dataModel";
 import {
   lookupPlayerEnrichment,
@@ -207,7 +210,7 @@ describe("lookupPlayerEnrichment", () => {
     expect(typeof result!.careerTeams[0].name).toBe("string");
     // Exactly the search + detail SPARQL calls — no third call resolving
     // "Los Angeles Angels" to a team id (that would prove a leaked
-    // teams.findOrCreateInternal-equivalent side effect).
+    // team-resolution side effect in what is meant to be a pure preview).
     expect(calls).toHaveLength(2);
   });
 
@@ -729,6 +732,28 @@ describe("both enrichment paths agree on a Gwynn-shaped fixture (NEO-235)", () =
   test("enrichPlayer writes isHallOfFame true and both DATED stints, ignoring the undated one", async () => {
     const t = convexTest(schema, modules);
     const sportId = await seedGwynnSport(t);
+    // NEO-236: career teams are LINKED, never created — `enrichPlayer` calls
+    // `teams.findByFullNameInternal` now, so a stint only lands if we already
+    // hold the team. One of these is stored SPLIT and the other whole, which
+    // is the state the rollout actually produces, and both must resolve from
+    // Wikidata's full-string label.
+    const aztecsId = await t.run(async (ctx) =>
+      ctx.db.insert("teams", {
+        name: "San Diego State Aztecs men's basketball",
+        nameNormalized: normalizeTeamName("San Diego State Aztecs men's basketball"),
+        sportId,
+        lastUpdated: 1_700_000_000_000,
+      }),
+    );
+    const padresId = await t.run(async (ctx) =>
+      ctx.db.insert("teams", {
+        name: "Padres",
+        location: "San Diego",
+        nameNormalized: normalizeTeamName("San Diego Padres"),
+        sportId,
+        lastUpdated: 1_700_000_000_000,
+      }),
+    );
     const playerId = await t.run(async (ctx) =>
       ctx.db.insert("players", {
         name: "Tony Gwynn",
@@ -749,15 +774,149 @@ describe("both enrichment paths agree on a Gwynn-shaped fixture (NEO-235)", () =
     // no `fromYear` and `players.teamYears` has nowhere to put it.
     expect(player!.teamYears).toHaveLength(2);
     expect(player!.teamYears!.map((ty) => ty.fromYear)).toEqual([1977, 1982]);
-    const teamNames = await Promise.all(
-      player!.teamYears!.map(async (ty) =>
-        t.run(async (ctx) => (await ctx.db.get(ty.teamId))?.name),
-      ),
+    expect(player!.teamYears!.map((ty) => ty.teamId)).toEqual([aztecsId, padresId]);
+    // No team was minted along the way.
+    expect(await t.run(async (ctx) => ctx.db.query("teams").collect())).toHaveLength(2);
+  });
+
+  /**
+   * NEO-236 — a career team we do not hold is SKIPPED, not created.
+   *
+   * Before this, enriching one player inserted a globally-shared `teams` row
+   * per unseen P54 label — rows no operator chose, named however Wikidata
+   * happened to spell it, which every picker and spine label then offered.
+   * Creation takes Location + Name from a person; this path has neither.
+   *
+   * The stint is genuinely lost rather than parked: `players.teamYears`
+   * requires a `teamId` and the row has nowhere to hold a bare name (the same
+   * constraint that produced `undatedCareerTeams` in NEO-235). The miss is
+   * logged so the aggregate is visible, and the review wizard is where an
+   * operator turns one of these into a real team.
+   */
+  test("a career team we do not hold is skipped and logged, and no team row is created", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedGwynnSport(t);
+    // Only ONE of Gwynn's two dated teams exists.
+    const padresId = await t.run(async (ctx) =>
+      ctx.db.insert("teams", {
+        name: "Padres",
+        location: "San Diego",
+        nameNormalized: normalizeTeamName("San Diego Padres"),
+        sportId,
+        lastUpdated: 1_700_000_000_000,
+      }),
     );
-    expect(teamNames).toEqual([
-      "San Diego State Aztecs men's basketball",
-      "San Diego Padres",
+    const playerId = await t.run(async (ctx) =>
+      ctx.db.insert("players", {
+        name: "Tony Gwynn",
+        nameNormalized: "tony gwynn",
+        sportId,
+        createdByUserId: "user_test",
+        lastUpdated: 1_700_000_000_000,
+      }),
+    );
+
+    const logged: string[] = [];
+    const logSpy = vi
+      .spyOn(console, "log")
+      .mockImplementation((...args: unknown[]) => {
+        logged.push(String(args[0]));
+      });
+    try {
+      vi.stubGlobal("fetch", gwynnStub());
+      await t.action(internal.adapters.wikidata.enrichPlayer, { playerId });
+    } finally {
+      logSpy.mockRestore();
+    }
+
+    const player = await t.run(async (ctx) => ctx.db.get(playerId));
+    expect(player!.teamYears).toEqual([
+      { teamId: padresId, fromYear: 1982, toYear: 2001 },
     ]);
+    // Nothing inserted — still just the one team we seeded.
+    expect(await t.run(async (ctx) => ctx.db.query("teams").collect())).toHaveLength(1);
+
+    const unmatched = logged
+      .map((line) => {
+        try {
+          return JSON.parse(line) as { msg?: string; player?: string; team?: string };
+        } catch {
+          return null;
+        }
+      })
+      .filter((entry) => entry?.msg === "career_team_unmatched");
+    expect(unmatched).toEqual([
+      {
+        msg: "career_team_unmatched",
+        player: "Tony Gwynn",
+        team: "San Diego State Aztecs men's basketball",
+      },
+    ]);
+  });
+
+  /**
+   * NEO-236 security review — the logged label is truncated.
+   *
+   * A Wikidata team label is third-party text of no fixed length, and this
+   * line fires once per unmatched stint on a path that walks a whole career.
+   * An adversarially long label would otherwise be copied verbatim into the
+   * deployment log on every enrichment pass. 120 is the length a team name is
+   * allowed to be everywhere else in the product, so nothing legitimate is cut
+   * — the value here is a diagnostic, not data.
+   */
+  test("an absurdly long career-team label is truncated in the log line", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedGwynnSport(t);
+    const playerId = await t.run(async (ctx) =>
+      ctx.db.insert("players", {
+        name: "Tony Gwynn",
+        nameNormalized: "tony gwynn",
+        sportId,
+        createdByUserId: "user_test",
+        lastUpdated: 1_700_000_000_000,
+      }),
+    );
+
+    const longLabel = "Z".repeat(5000);
+    const logged: string[] = [];
+    const logSpy = vi
+      .spyOn(console, "log")
+      .mockImplementation((...args: unknown[]) => {
+        logged.push(String(args[0]));
+      });
+    try {
+      vi.stubGlobal(
+        "fetch",
+        makePlayerFetchStub({
+          qid: "Q1145222",
+          detail: {
+            careerTeams: [
+              {
+                teamQid: "Q999999",
+                teamLabel: longLabel,
+                fromYear: 1982,
+                toYear: 2001,
+              },
+            ],
+          },
+        }),
+      );
+      await t.action(internal.adapters.wikidata.enrichPlayer, { playerId });
+    } finally {
+      logSpy.mockRestore();
+    }
+
+    const unmatched = logged
+      .map((line) => {
+        try {
+          return JSON.parse(line) as { msg?: string; team?: string };
+        } catch {
+          return null;
+        }
+      })
+      .filter((entry) => entry?.msg === "career_team_unmatched");
+    expect(unmatched).toHaveLength(1);
+    expect(unmatched[0]!.team).toHaveLength(120);
   });
 
   test("runEntityReviewLookup stores the same verdict, plus the undated team by name", async () => {

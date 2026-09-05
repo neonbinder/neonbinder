@@ -6,10 +6,12 @@ import {
 } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { RunResult } from "@convex-dev/workpool";
 import { getCurrentUserId, requireAdmin } from "./auth";
+// NEO-236: pure, no Convex imports — see lib/teams/team-name.ts.
+import { splitTeamName } from "../lib/teams/team-name";
 import { normalizePlayerName } from "./players";
 import { normalizeTeamName } from "./teams";
 
@@ -52,7 +54,8 @@ const enrichmentValidator = v.object({
   birthYear: v.optional(v.number()),
   enwikiTitle: v.optional(v.string()),
   league: v.optional(v.string()),
-  city: v.optional(v.string()),
+  // NEO-236: the place part of the team name. Location, not city.
+  location: v.optional(v.string()),
   yearsActive: v.optional(v.object({
     from: v.number(),
     to: v.optional(v.number()),
@@ -73,6 +76,29 @@ const manualCareerTeamValidator = v.object({
   toYear: v.optional(v.number()),
 });
 
+/**
+ * NEO-236 — the operator's Location + Name for a team-kind create decision.
+ *
+ * The whole point is that neither half is the raw checklist string: the wizard
+ * pre-fills them (splitting on the ESPN location when it is a whole-word
+ * prefix) and the operator confirms or corrects. `teamRowFields` composes them
+ * back into the stored name and its dedup key at commit.
+ */
+const teamCreateValidator = v.object({
+  location: v.optional(v.string()),
+  name: v.string(),
+});
+
+/**
+ * NEO-236 — the same, per accepted career team on a player-kind decision,
+ * keyed by the label the wizard showed (`sourceName`).
+ */
+const careerTeamCreateValidator = v.object({
+  sourceName: v.string(),
+  location: v.optional(v.string()),
+  name: v.string(),
+});
+
 const decisionValidator = v.union(
   v.object({
     action: v.literal("create"),
@@ -80,6 +106,12 @@ const decisionValidator = v.union(
     // NEO-212: Wikidata career-team labels the admin unchecked in the wizard.
     // Commit must not create team rows for these. See schema.ts.
     excludedCareerTeamNames: v.optional(v.array(v.string())),
+    // NEO-236: team-kind only — the Location + Name a `teams` row is built
+    // from. Without it the prelude creates nothing. See schema.ts.
+    create: v.optional(teamCreateValidator),
+    // NEO-236: player-kind only — Location + Name for each accepted career
+    // team that matched no existing row. See schema.ts.
+    createTeams: v.optional(v.array(careerTeamCreateValidator)),
   }),
   v.object({
     action: v.literal("link"),
@@ -142,6 +174,142 @@ function normalizeExcludedCareerTeamNames(
     normalized.push(name);
   }
   return normalized;
+}
+
+/**
+ * Mirrors `MAX_TEAM_NAME_LENGTH` in convex/teams.ts (120). Copied rather than
+ * imported because `teams.ts` does not export it and this module has no other
+ * reason to depend on it; the bound is applied to the COMPOSED full name, which
+ * is what `teams.findOrCreate` bounds, so the two agree on what they measure.
+ */
+const MAX_TEAM_FULL_NAME_LENGTH = 120;
+
+/**
+ * Upper bound on per-career-team create entries carried on one decision. Same
+ * shape of guard rail, and the same generosity, as MAX_MANUAL_CAREER_TEAMS —
+ * this list can never be longer than the accepted career teams it answers.
+ */
+const MAX_CAREER_TEAM_CREATES = 64;
+
+/**
+ * NEO-236: normalize one Location + Name, or answer "this is not usable".
+ *
+ * Trims both and drops an empty location — a blank Location is "this team has
+ * none", a real answer for a college or a national side, not an unfinished
+ * form. The length bound is on the COMPOSED name, because that is what lands
+ * in `teams.name` + `teams.location` and what `teams.findOrCreate` measures.
+ *
+ * ## Why this returns null instead of throwing
+ *
+ * Security review, finding 3. Two callers feed this text the operator NEVER
+ * TYPED: the bulk fast path pre-fills from `row.name`, which is a raw,
+ * unbounded marketplace string, and the wizard defaults each career-team pair
+ * to a raw Wikidata P54 label. A throw there aborted the whole action — one
+ * 200-character checklist row turned "Add All Remaining as New" into a
+ * redacted "Server Error" and decided nothing, with no way for the operator to
+ * find or fix the offending row.
+ *
+ * So the shared rule is fail-soft, and each caller decides what an unusable
+ * pair means for it. Dropping is safe because every path already handles the
+ * absence: the commit prelude treats a missing `create` as "nothing inserted,
+ * name reported unresolved", which is the attention walker's missing-team lane
+ * — the operator still gets the row, just later and with a UI in front of it.
+ * `requireTeamCreate` is the one place a refusal is still right.
+ *
+ * Deliberately does NOT normalize case or punctuation — that is the dedup
+ * key's job (`teamRowFields`), and the operator's own spelling is what should
+ * be stored.
+ */
+function toTeamCreate(input: {
+  location?: string;
+  name: string;
+}): { location?: string; name: string } | null {
+  const name = input.name.trim().replace(/\s+/g, " ");
+  if (name.length === 0) return null;
+  const location = input.location?.trim().replace(/\s+/g, " ") || undefined;
+  const fullLength = location ? location.length + 1 + name.length : name.length;
+  if (fullLength > MAX_TEAM_FULL_NAME_LENGTH) return null;
+  return { name, ...(location ? { location } : {}) };
+}
+
+/**
+ * NEO-236: the same, where a refusal IS the right answer — the operator typed
+ * these two fields into the wizard's Location and Team name inputs and pressed
+ * a button that says it will create a team.
+ *
+ * Silently dropping here would be the worse failure: the wizard would report
+ * the row decided, commit would create nothing, and the only trace would be a
+ * name in `unresolvedTeamNames`. So it throws — as `ConvexError`, not a plain
+ * `Error`, because only `ConvexError` survives Convex's error boundary with
+ * its message intact; a plain `Error` reaches the browser redacted to "Server
+ * Error" and tells the operator nothing about what to change.
+ *
+ * The message carries the LENGTH, never the name — the same rule
+ * `teams.findOrCreate` follows, because this string reaches Sentry and the
+ * browser console.
+ */
+function requireTeamCreate(input: {
+  location?: string;
+  name: string;
+}): { location?: string; name: string } {
+  const normalized = toTeamCreate(input);
+  if (normalized) return normalized;
+  const name = input.name.trim().replace(/\s+/g, " ");
+  if (name.length === 0) {
+    throw new ConvexError("Enter a team name before adding it.");
+  }
+  const location = input.location?.trim().replace(/\s+/g, " ") || undefined;
+  const fullLength = location ? location.length + 1 + name.length : name.length;
+  throw new ConvexError(
+    `A team name is ${fullLength} characters; the limit is ${MAX_TEAM_FULL_NAME_LENGTH}.`,
+  );
+}
+
+/**
+ * NEO-236: validate the per-career-team Location + Name list.
+ *
+ * Each entry names the proposal it answers (`sourceName`), which must be
+ * non-empty for the same reason an excluded name must: a blank one can never
+ * match a career-team label, so it would silently do nothing. Deduped by the
+ * normalized `sourceName`, keeping the FIRST entry — commit looks the list up
+ * by that key, so two entries for one label would make the outcome depend on
+ * iteration order.
+ */
+function normalizeCareerTeamCreates(
+  entries: ReadonlyArray<{ sourceName: string; location?: string; name: string }>,
+): Array<{ sourceName: string; location?: string; name: string }> {
+  if (entries.length > MAX_CAREER_TEAM_CREATES) {
+    throw new Error(
+      `Too many career-team create entries (${entries.length}); the maximum is ${MAX_CAREER_TEAM_CREATES}`,
+    );
+  }
+  const seen = new Set<string>();
+  const out: Array<{ sourceName: string; location?: string; name: string }> = [];
+  for (const entry of entries) {
+    const sourceName = entry.sourceName.trim();
+    if (sourceName.length === 0) {
+      throw new Error("Career-team source name cannot be empty");
+    }
+    const key = sourceName.toLowerCase();
+    if (seen.has(key)) continue;
+    // NEO-236 security review, finding 3: an unusable pair is DROPPED, not
+    // thrown on. The wizard defaults each of these to a raw Wikidata P54
+    // label, so an over-long label is text the operator never typed — and
+    // throwing would abort the whole create decision (the player row, its
+    // exclusions, its hand-typed stints) over one career team. Dropped, the
+    // label falls back to link-or-leave: commit still links it if we hold the
+    // team, and otherwise omits that one stint.
+    //
+    // `sourceName` still throws, and the asymmetry is deliberate: a blank
+    // sourceName cannot come from typing at all (the wizard always supplies
+    // the label it is answering), so it is a client bug worth failing loudly
+    // on rather than a value to tolerate.
+    const create = toTeamCreate(entry);
+    if (!create) continue;
+    seen.add(key);
+    out.push({ sourceName, ...create });
+  }
+  return out;
 }
 
 // `createdByUserId` is audit/scoping-only — see toPublicRow below. Mirrors
@@ -548,6 +716,13 @@ export const recordDecision = mutation({
     // UNCHECKED in the wizard, so commit doesn't create team rows for them.
     // Validated/normalized below before it's trusted.
     excludedCareerTeamNames: v.optional(v.array(v.string())),
+    // NEO-236, "create"-only and team-kind-only: the Location + Name the
+    // operator confirmed in the wizard. The ONLY thing commit will build a
+    // `teams` row from — see the schema comment.
+    create: v.optional(teamCreateValidator),
+    // NEO-236, "create"-only and player-kind-only: Location + Name per
+    // accepted career team that matched nothing.
+    createTeams: v.optional(v.array(careerTeamCreateValidator)),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -617,6 +792,19 @@ export const recordDecision = mutation({
       const excludedCareerTeamNames = normalizeExcludedCareerTeamNames(
         args.excludedCareerTeamNames ?? [],
       );
+      // NEO-236: the Location + Name a team row will be built from, and the
+      // per-career-team equivalents. Each is meaningful for exactly one row
+      // kind, so the other is dropped rather than stored — an unused `create`
+      // on a player row is dead weight in an audit record, and a `createTeams`
+      // on a team row would suggest commit consults it there (it does not).
+      const create =
+        row.kind === "team" && args.create
+          ? requireTeamCreate(args.create)
+          : undefined;
+      const createTeams =
+        row.kind === "player" && args.createTeams
+          ? normalizeCareerTeamCreates(args.createTeams)
+          : [];
       await ctx.db.patch(args.reviewRowId, {
         decision: {
           action: "create",
@@ -624,6 +812,8 @@ export const recordDecision = mutation({
           // treated optionally elsewhere in this file.
           ...(manualCareerTeams.length ? { manualCareerTeams } : {}),
           ...(excludedCareerTeamNames.length ? { excludedCareerTeamNames } : {}),
+          ...(create ? { create } : {}),
+          ...(createTeams.length ? { createTeams } : {}),
         },
         lastTouchedAt: Date.now(),
       });
@@ -787,19 +977,74 @@ async function decideAllRemaining(
   let count = 0;
   for (const row of rows) {
     if (row.decision) continue;
+    // NEO-221: a row whose lookup has not landed is skipped on the CREATE
+    // path (see the note above) and included on SKIP.
     if (!includePending && row.status === "pending") continue;
-    // Spread rather than passing `decision` through: each row stores its own
-    // object rather than sharing one reference across the whole batch.
-    await ctx.db.patch(row._id, {
-      decision: { ...decision },
-      // NEO-221: one timestamp for the whole call — this IS one operator
-      // action, and stamping each row a millisecond apart would only make the
-      // sweep's arithmetic harder to read.
-      lastTouchedAt: now,
-    });
+    // Each row is patched with its OWN fresh object literal, never a shared
+    // reference to `decision`.
+    //
+    // NEO-236: a team row's create decision carries the Location + Name the
+    // commit prelude will build from, because the prelude has NO fallback to
+    // the raw string. The bulk path has no per-row form to read that from, so
+    // it writes exactly what the wizard would have PRE-FILLED for this row and
+    // the operator would have confirmed unedited: the ESPN location split off
+    // the front when it is a whole-word prefix, otherwise the whole name with
+    // no location. Nothing is guessed — `splitTeamName` is mechanical and only
+    // fires on a location the lookup actually returned.
+    //
+    // The two tickets compose well here: because NEO-221 holds pending rows
+    // back from the create path, every team row this branch pre-fills has its
+    // lookup in hand, so an ESPN location that exists is an ESPN location this
+    // sees. Before that, a bulk create could race the lookup and split nothing.
+    //
+    // NEO-236 security review, finding 3: a row whose name will not compose
+    // into a team is decided WITHOUT a create payload rather than aborting the
+    // batch. One 200-character checklist row used to turn this whole action
+    // into a redacted "Server Error" that decided nothing; now it decides every
+    // other row, and that one is left for the commit prelude to report as
+    // unresolved — the attention walker's missing-team lane.
+    //
+    // Branched rather than spread-with-a-conditional-key so `create` cannot
+    // even be expressed on the "skip" arm, which does not carry one.
+    //
+    // NEO-221: one timestamp for the whole call — this IS one operator action,
+    // and stamping each row a millisecond apart would only make the sweep's
+    // arithmetic harder to read.
+    if (decision.action === "create") {
+      const prefill = row.kind === "team" ? prefilledTeamCreate(row) : null;
+      await ctx.db.patch(row._id, {
+        decision: prefill
+          ? { action: "create", create: prefill }
+          : { action: "create" },
+        lastTouchedAt: now,
+      });
+    } else {
+      await ctx.db.patch(row._id, {
+        decision: { action: "skip" },
+        lastTouchedAt: now,
+      });
+    }
     count++;
   }
   return count;
+}
+
+/**
+ * NEO-236: the Location + Name the wizard shows for a team row before the
+ * operator touches anything. Shared by the bulk fast path here and mirrored by
+ * `teamCreatePrefill` in EntityReviewWizard.tsx, so "confirm one row" and
+ * "confirm the whole batch" cannot disagree about what an untouched row means.
+ */
+function prefilledTeamCreate(
+  row: Doc<"entityReviewQueue">,
+): { location?: string; name: string } | null {
+  const location = row.enrichment?.location;
+  const split = location ? splitTeamName(row.name, location) : null;
+  // Null when the row's own name is unusable — blank, or longer than a team
+  // name may be. `row.name` is a raw marketplace string with no bound on it,
+  // and this path has no operator to tell, so the row is simply left without a
+  // create payload (see `toTeamCreate`).
+  return toTeamCreate(split ?? { name: row.name });
 }
 
 /**

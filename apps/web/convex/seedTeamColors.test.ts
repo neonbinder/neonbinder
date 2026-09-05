@@ -12,6 +12,7 @@ import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { normalizeTeamName } from "./teams";
+import { teamFullName } from "../lib/teams/team-name";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -41,6 +42,13 @@ async function seedSports(
 
 const teams = (t: ReturnType<typeof convexTest>) =>
   t.run(async (ctx) => ctx.db.query("teams").collect());
+/**
+ * NEO-236 — seeded rows are SPLIT: `name` is "Brewers", `location` is
+ * "Milwaukee". Assertions here name franchises the way a person does, so they
+ * compare against the composed name.
+ */
+const fullNames = async (t: ReturnType<typeof convexTest>) =>
+  (await teams(t)).map((x) => teamFullName(x));
 const leagues = (t: ReturnType<typeof convexTest>) =>
   t.run(async (ctx) => ctx.db.query("leagues").collect());
 
@@ -96,9 +104,17 @@ describe("seedFromBundledData", () => {
 
     await run(t);
 
-    const brewers = (await teams(t)).find((x) => x.name === "Milwaukee Brewers");
+    const brewers = (await teams(t)).find(
+      (x) => teamFullName(x) === "Milwaukee Brewers",
+    );
     expect(brewers!.colors?.primary).toMatch(/^#[0-9a-f]{6}$/);
     expect(brewers!.leagueId).toBeDefined();
+    // NEO-236: seeded from the dataset's hand-split Location + Name.
+    expect(brewers!.name).toBe("Brewers");
+    expect(brewers!.location).toBe("Milwaukee");
+    // The dedup key still keys the WHOLE name, which is what keeps a seed run
+    // converging onto rows created before the split.
+    expect(brewers!.nameNormalized).toBe(normalizeTeamName("Milwaukee Brewers"));
   });
 
   test("adopts an existing team rather than duplicating it", async () => {
@@ -115,8 +131,14 @@ describe("seedFromBundledData", () => {
 
     await run(t);
 
-    const cubs = (await teams(t)).filter((x) => x.name === "Chicago Cubs");
+    const cubs = (await teams(t)).filter(
+      (x) => teamFullName(x) === "Chicago Cubs",
+    );
     expect(cubs).toHaveLength(1);
+    // NEO-236: ADOPTED, so the pre-existing unsplit row keeps its own shape —
+    // seeding fills gaps, it does not restructure a row it did not create.
+    expect(cubs[0].name).toBe("Chicago Cubs");
+    expect(cubs[0].location).toBeUndefined();
     expect(cubs[0].colors?.primary).toBeDefined();
     expect(cubs[0].leagueId).toBeDefined();
   });
@@ -139,7 +161,9 @@ describe("seedFromBundledData", () => {
 
     await run(t);
 
-    const cubs = (await teams(t)).find((x) => x.name === "Chicago Cubs");
+    const cubs = (await teams(t)).find(
+      (x) => teamFullName(x) === "Chicago Cubs",
+    );
     expect(cubs!.colors).toEqual({ primary: "#abcdef", secondary: "#123456" });
   });
 
@@ -151,11 +175,16 @@ describe("seedFromBundledData", () => {
 
     await run(t);
 
-    const names = (await teams(t)).map((x) => x.name);
+    const names = await fullNames(t);
     expect(names).toContain("Cleveland Guardians");
     expect(names).not.toContain("Cleveland Indians");
     expect(names).toContain("Los Angeles Angels");
     expect(names).not.toContain("Los Angeles Angels of Anaheim");
+
+    // NEO-236: the rename lands as Location + Name like any other creation —
+    // `RENAMED_FRANCHISES` stores the split, so nothing re-splits a string.
+    const guardians = (await teams(t)).find((x) => x.name === "Guardians");
+    expect(guardians!.location).toBe("Cleveland");
   });
 
   test("does not duplicate a franchise we already hold under its current name", async () => {
@@ -173,10 +202,10 @@ describe("seedFromBundledData", () => {
     await run(t);
 
     const cleveland = (await teams(t)).filter((x) =>
-      x.name.startsWith("Cleveland"),
+      teamFullName(x).startsWith("Cleveland"),
     );
     expect(cleveland).toHaveLength(1);
-    expect(cleveland[0].name).toBe("Cleveland Guardians");
+    expect(teamFullName(cleveland[0])).toBe("Cleveland Guardians");
   });
 
   test("seeds the NBA with colours too", async () => {
@@ -190,7 +219,9 @@ describe("seedFromBundledData", () => {
 
     expect(result.teamsCreated).toBe(30);
     expect(result.colorsApplied).toBe(30);
-    const celtics = (await teams(t)).find((x) => x.name === "Boston Celtics");
+    const celtics = (await teams(t)).find(
+      (x) => teamFullName(x) === "Boston Celtics",
+    );
     expect(celtics!.colors).toEqual({ primary: "#007a33", secondary: "#ba9653" });
   });
 

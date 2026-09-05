@@ -583,7 +583,7 @@ export const getInternal = internalQuery({
  * gaps only. The asymmetry is not an oversight:
  *
  *  - `teams.applyEnrichmentInternal` guards because `teams.saveTeamFields`
- *    lets an operator hand-edit city / yearsActive / colors, so a blind write
+ *    lets an operator hand-edit location / yearsActive / colors, so a blind write
  *    there destroys human input. `players` has NO such editor — there is no
  *    mutation in this file that writes `teamYears` or `isHallOfFame` from a
  *    person — so there is nothing here for a gap-fill rule to protect.

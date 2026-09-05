@@ -24,6 +24,12 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
+// NEO-236: the one place a team row's identity fields are derived. Fixtures go
+// through it too, so a seeded team is keyed exactly the way a real one is —
+// otherwise a test could "prove" a lookup works against a row production would
+// never have written.
+import { teamRowFields } from "./lib/teamRow";
+import { teamFullName } from "../lib/teams/team-name";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -1357,6 +1363,27 @@ describe("commitCardChecklist wires up BSC per-card team enrichment (NEO-90)", (
     });
   }
 
+  /**
+   * NEO-236: a `teams` row the BSC resolution can LINK to.
+   *
+   * Inserted directly rather than through `teams.findOrCreate`, which schedules
+   * a Wikidata enrichment — this suite asserts the exact list of fetched URLs,
+   * so an extra scheduled lookup would show up as a phantom call.
+   */
+  async function seedTeam(
+    t: ReturnType<typeof convexTest>,
+    sportId: Id<"selectorOptions">,
+    parts: { name: string; location?: string },
+  ) {
+    return t.run(async (ctx) =>
+      ctx.db.insert("teams", {
+        ...teamRowFields(parts),
+        sportId,
+        lastUpdated: Date.now(),
+      }),
+    );
+  }
+
   beforeEach(() => {
     vi.useFakeTimers();
   });
@@ -1365,10 +1392,19 @@ describe("commitCardChecklist wires up BSC per-card team enrichment (NEO-90)", (
     vi.unstubAllGlobals();
   });
 
-  test("a new card with a BSC ref and no team gets its team resolved via the enrichment queue", async () => {
+  test("a new card with a BSC ref and no team is LINKED to the team BSC names", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { variantTypeId, sportId } = await seedVariantType(t);
+
+    // NEO-236: the queue links, it does not create. So the team has to already
+    // exist for this card to acquire one — and it is seeded SPLIT, because the
+    // string BSC returns is the whole name and a split row still has to match
+    // it (the dedup key is token-sorted over the composed name).
+    const redsId = await seedTeam(t, sportId, {
+      location: "Cincinnati",
+      name: "Reds",
+    });
 
     // NEO-188: RECORD the URLs and assert after the drain, rather than calling
     // expect() inside the stub. `fetchBscCardTeamNameRaw` wraps its fetch in a
@@ -1426,10 +1462,84 @@ describe("commitCardChecklist wires up BSC per-card team enrichment (NEO-90)", (
         .collect(),
     );
     expect(cards).toHaveLength(1);
-    expect(cards[0].teamOnCardIds).toHaveLength(1);
+    expect(cards[0].teamOnCardIds).toEqual([redsId]);
     expect(cards[0].teamCheckDoneAt).toBeTypeOf("number");
     const teamRow = await t.run(async (ctx) => ctx.db.get(cards[0].teamOnCardIds![0]));
-    expect(teamRow!.name).toBe("Cincinnati Reds");
+    expect(teamFullName(teamRow!)).toBe("Cincinnati Reds");
+    // The existing row is reused, not duplicated by a second insert.
+    const allTeams = await t.run(async (ctx) => ctx.db.query("teams").collect());
+    expect(allTeams).toHaveLength(1);
+  });
+
+  test("...and when we hold no such team, nothing is created and the card is left for the operator", async () => {
+    // NEO-236, the other half of link-or-leave. This path used to INSERT a
+    // `teams` row from whatever string BSC's per-card endpoint returned: a
+    // globally-shared row minted by a background queue, from a marketplace
+    // string, with no operator in the loop. Creation takes Location + Name now
+    // and a queue has neither, so the card is simply left teamless — which is
+    // exactly what the attention walker's missing-team lane looks for.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantType(t);
+    // Deliberately NO seedTeam call.
+
+    const fetchedUrls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      (async (url: string | URL | Request) => {
+        fetchedUrls.push(String(url));
+        return new Response(JSON.stringify({ teamName: "Cincinnati Reds" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }) as unknown as typeof fetch,
+    );
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [
+        {
+          cardNumber: "50",
+          cardName: "Elly De La Cruz",
+          team: undefined,
+          teams: [],
+          players: ["Elly De La Cruz"],
+          attributes: [],
+          isRookie: true,
+          isRelic: false,
+          printRun: undefined,
+          autographType: undefined,
+          cardVariation: undefined,
+          platformData: { bsc: { ref: "bsc-50" } },
+          unmatched: undefined,
+        },
+      ],
+    });
+
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+    // The lookup still HAPPENED — this is a miss, not a skip.
+    expect(fetchedUrls).toEqual([
+      "https://api-prod.buysportscards.com/marketplace/card/bsc-50/card-listing",
+    ]);
+
+    const cards = await t.run(async (ctx) =>
+      ctx.db
+        .query("cardChecklist")
+        .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", variantTypeId))
+        .collect(),
+    );
+    expect(cards).toHaveLength(1);
+    expect(cards[0].teamOnCardIds ?? []).toEqual([]);
+    // Stamped anyway, and that is the point: the answer came back and there is
+    // nothing to point at. Leaving it unset would put the row back into
+    // `enqueueBscTeamBackfill`'s scan and spend a live BSC request per pass to
+    // re-learn the same string, forever.
+    expect(cards[0].teamCheckDoneAt).toBeTypeOf("number");
+    // Nothing minted from the marketplace string.
+    const allTeams = await t.run(async (ctx) => ctx.db.query("teams").collect());
+    expect(allTeams).toEqual([]);
   });
 
   test("a card whose team is already recoverable from the bulk fetch is NOT re-queued (fetch never called)", async () => {

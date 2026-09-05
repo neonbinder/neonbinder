@@ -6,11 +6,16 @@ import { getCurrentUserId, requireAdmin, requireSignedIn } from "./auth";
 import { findOrCreateLeague, resolveDefaultLeagueId } from "./leagues";
 import { normalizePlayerName } from "./players";
 import { MANUAL_COLOR_SOURCE_URL } from "./teamColorSources";
-import { longestToken, rankTeamCandidates } from "./lib/entityNearMatch";
+import { longestToken, nameTokens, rankTeamCandidates } from "./lib/entityNearMatch";
 // NEO-212 security review: the shared `Q<digits>` chokepoint — see
 // lib/players/wikidata-id.ts. Named for players only because that is where the
 // id first appeared; the shape is the same for every Wikidata entity.
 import { isWikidataQid } from "../lib/players/wikidata-id";
+// NEO-236: the split. `teamRowFields` is the ONE derivation of a row's
+// identity fields and `findTeamByFullName` the ONE lookup — see
+// convex/lib/teamRow.ts for why every writer in this file goes through them.
+import { findTeamByFullName, teamRowFields } from "./lib/teamRow";
+import { splitTeamName, teamFullName } from "../lib/teams/team-name";
 
 /**
  * Lowercase + strip punctuation + token-sort. Same shape as the player
@@ -47,7 +52,11 @@ const teamDocValidator = v.object({
   // free-text predecessor, kept only until the backfill drains — see the schema.
   leagueId: v.optional(v.id("leagues")),
   league: v.optional(v.string()),
-  city: v.optional(v.string()),
+  // NEO-236: the place part of the franchise name — "San Diego" in "San Diego
+  // Padres". Location, not city (Tampa Bay, New England, Golden State), and
+  // optional: colleges, national teams and corporate-named clubs carry none.
+  // `nameNormalized` always keys the WHOLE name; see lib/teams/team-name.ts.
+  location: v.optional(v.string()),
   yearsActive: v.optional(v.object({
     from: v.number(),
     to: v.optional(v.number()),
@@ -82,12 +91,11 @@ export const findByNameAndSport = query({
   returns: v.union(teamDocValidator, v.null()),
   handler: async (ctx, args) => {
     await requireSignedIn(ctx);
-    const normalized = normalizeTeamName(args.name);
-    const matches = await ctx.db
-      .query("teams")
-      .withIndex("by_name_normalized", (q) => q.eq("nameNormalized", normalized))
-      .collect();
-    return matches.find((t) => t.sportId === args.sportId) ?? null;
+    // NEO-236: `name` here is a FULL name — a marketplace payload, a Wikidata
+    // label, or an operator's typed string. It resolves to a split row because
+    // the dedup key is derived from the composed full name; see
+    // convex/lib/teamRow.ts.
+    return await findTeamByFullName(ctx, args.sportId, args.name);
   },
 });
 
@@ -103,9 +111,24 @@ export const findByNameAndSport = query({
  */
 const MAX_TEAM_NAME_LENGTH = 120;
 
+/**
+ * NEO-236 — Location + Name, never a full string.
+ *
+ * Jason, 2026-09-05: "We simply shouldn't allow for full string creation.
+ * Location & Team Name should be the input." Both operator creation surfaces
+ * (TeamPicker's "+ Create", MissingTeamFixer) collect the two parts and pass
+ * them separately; `location` is optional because colleges, national sides and
+ * corporate-named clubs genuinely have none.
+ *
+ * `name` alone still resolves an EXISTING row correctly whatever the caller
+ * splits it as, because the lookup key is derived from the composed full name
+ * — "San Diego Padres" and ("San Diego", "Padres") normalise identically.
+ * That is what lets the split roll out without a flag day.
+ */
 export const findOrCreate = mutation({
   args: {
     name: v.string(),
+    location: v.optional(v.string()),
     sportId: v.id("selectorOptions"),
   },
   returns: v.id("teams"),
@@ -122,19 +145,25 @@ export const findOrCreate = mutation({
     // work. `wikidataPool` caps concurrency, not total queued work. Every
     // caller of this mutation is admin tooling already — `TeamPicker`, and so
     // every screen under `components/SetSelector/` — so nothing legitimate
-    // loses access. `findOrCreateInternal` below is unchanged and remains the
-    // path for server-side callers.
+    // loses access. NEO-236 narrowed the server-side counterpart to a pure
+    // lookup (`findByFullNameInternal` below), so this mutation is now the
+    // only programmatic path that can insert a team at all.
     const userId = await requireAdmin(ctx);
 
     const name = args.name.trim();
     if (name.length === 0) {
       throw new ConvexError("A team name is required.");
     }
-    if (name.length > MAX_TEAM_NAME_LENGTH) {
+    // NEO-236: the cap applies to the COMPOSED full name, which is what gets
+    // stored as the dedup key and rendered everywhere — a 100-character
+    // location plus a 100-character nickname is a 201-character team however
+    // it was typed.
+    const fullName = teamFullName({ name, location: args.location });
+    if (fullName.length > MAX_TEAM_NAME_LENGTH) {
       // The LENGTH, never the name: this string reaches Sentry and the browser
       // console through Convex's error path.
       throw new ConvexError(
-        `A team name is ${name.length} characters; the limit is ${MAX_TEAM_NAME_LENGTH}.`,
+        `A team name is ${fullName.length} characters; the limit is ${MAX_TEAM_NAME_LENGTH}.`,
       );
     }
 
@@ -151,18 +180,12 @@ export const findOrCreate = mutation({
       throw new ConvexError("A team must be created under a sport.");
     }
 
-    const normalized = normalizeTeamName(name);
-    const matches = await ctx.db
-      .query("teams")
-      .withIndex("by_name_normalized", (q) => q.eq("nameNormalized", normalized))
-      .collect();
-    const existing = matches.find((t) => t.sportId === args.sportId);
+    const existing = await findTeamByFullName(ctx, args.sportId, fullName);
     // NOT enqueued — see the creation-only note on the insert below.
     if (existing) return existing._id;
 
     const id = await ctx.db.insert("teams", {
-      name,
-      nameNormalized: normalized,
+      ...teamRowFields({ name, location: args.location }),
       sportId: args.sportId,
       // NEO-156: every creation path attaches a league. Undefined when the
       // sport has no configured one (a custom sport) — legitimate, and
@@ -253,10 +276,8 @@ export const getManyByIds = query({
 });
 
 /**
- * Internal `get` and `findOrCreate` for actions that run outside user
- * auth (e.g. Wikidata enrichment). The Wikidata player adapter resolves
- * each P54 team membership through findOrCreateInternal, which is why
- * enriching one player can spawn many team rows in a single pass.
+ * Internal `get` for actions that run outside user auth (e.g. Wikidata
+ * enrichment).
  */
 export const getInternal = internalQuery({
   args: { id: v.id("teams") },
@@ -264,31 +285,35 @@ export const getInternal = internalQuery({
   handler: async (ctx, args) => await ctx.db.get(args.id),
 });
 
-export const findOrCreateInternal = internalMutation({
+/**
+ * NEO-236 — LOOK UP a team by its full name. Never inserts.
+ *
+ * This replaced `findOrCreateInternal`, and the rename is the point: the old
+ * name promised a row and delivered one by INVENTING it from whatever string a
+ * source happened to use. A Wikidata P54 label ("San Diego Padres", "Padres de
+ * San Diego", "San Diego Padres (minors)") was enough to mint a
+ * globally-shared row that no operator ever saw — which is exactly what
+ * NEO-236 closes: Location and Name are the input to creation, and no
+ * automatic path has them.
+ *
+ * Jason, 2026-09-05: the automated paths "are still looking up the team in
+ * each of those places and if there is a match we are linking to the team
+ * still" — on a miss they leave the card or the stint for operator review
+ * rather than inserting. **A caller must treat `null` as "skip", never as
+ * "create".**
+ *
+ * `name` is a FULL name; a caller holding a split row composes it with
+ * `teamFullName(row)`.
+ */
+export const findByFullNameInternal = internalQuery({
   args: {
     name: v.string(),
     sportId: v.id("selectorOptions"),
   },
-  returns: v.id("teams"),
-  handler: async (ctx, args): Promise<Id<"teams">> => {
-    const normalized = normalizeTeamName(args.name);
-    const matches = await ctx.db
-      .query("teams")
-      .withIndex("by_name_normalized", (q) => q.eq("nameNormalized", normalized))
-      .collect();
-    const existing = matches.find((t) => t.sportId === args.sportId);
-    if (existing) return existing._id;
-
-    return await ctx.db.insert("teams", {
-      name: args.name.trim(),
-      nameNormalized: normalized,
-      sportId: args.sportId,
-      // NEO-156: every creation path attaches a league. Undefined when the
-      // sport has no configured one (a custom sport) — legitimate, and
-      // assignable later in Team Management.
-      leagueId: await resolveDefaultLeagueId(ctx, args.sportId),
-      lastUpdated: Date.now(),
-    });
+  returns: v.union(v.id("teams"), v.null()),
+  handler: async (ctx, args): Promise<Id<"teams"> | null> => {
+    const found = await findTeamByFullName(ctx, args.sportId, args.name);
+    return found?._id ?? null;
   },
 });
 
@@ -296,7 +321,7 @@ export const applyEnrichmentInternal = internalMutation({
   args: {
     id: v.id("teams"),
     league: v.optional(v.string()),
-    city: v.optional(v.string()),
+    location: v.optional(v.string()),
     yearsActive: v.optional(v.object({
       from: v.number(),
       to: v.optional(v.number()),
@@ -317,7 +342,12 @@ export const applyEnrichmentInternal = internalMutation({
 
     const patch: {
       leagueId?: Id<"leagues">;
-      city?: string;
+      location?: string;
+      // NEO-236: enrichment may move a location prefix OUT of `name`, which
+      // rewrites both. `nameNormalized` is recomputed rather than carried, and
+      // asserted unchanged — see the split block below.
+      name?: string;
+      nameNormalized?: string;
       yearsActive?: { from: number; to?: number };
       colors?: { primary?: string; secondary?: string };
       externalIds?: { wikidataId?: string; espnId?: string };
@@ -345,7 +375,7 @@ export const applyEnrichmentInternal = internalMutation({
     // Background enrichment must never overwrite an operator-visible value it
     // did not write. These three are all editable by hand in Team Management
     // (`updateTeam` below), and every one of them was being blindly restamped
-    // on each re-enrichment: a corrected city, a hand-entered franchise span,
+    // on each re-enrichment: a corrected location, a hand-entered franchise span,
     // or hand-picked spine-label colors survived only until the next time the
     // team was enqueued — which a checklist commit does routinely
     // (`commitCardChecklistFinalize` → `wikidataPool.enqueueEnrichment`).
@@ -355,7 +385,47 @@ export const applyEnrichmentInternal = internalMutation({
     // supersede those with teamcolorcodes.com's better-covered answer — see
     // the ordering note in adapters/wikidata.ts `enrichTeam`. What changed is
     // that a value a HUMAN put there is no longer in that contest.
-    if (args.city !== undefined && !existing.city) patch.city = args.city;
+    //
+    // NEO-236: `location` is not merely gap-filled, it is SPLIT OUT of the
+    // name the row already has. A row created before the split (or by any
+    // automatic path, which never has a location) stores the whole franchise
+    // name in `name`; ESPN's `location` is the only source that answers the
+    // place part exactly as it appears at the front of that name. So the
+    // patch moves the prefix rather than adding a second, redundant fact:
+    // "San Diego Padres" + "San Diego" becomes {location: "San Diego",
+    // name: "Padres"}.
+    //
+    // Three guards, and each of them is a way this could rewrite a name a
+    // human wrote:
+    //
+    //   1. Only when the row has NO location — the gap-fill rule, unchanged.
+    //   2. Only when `splitTeamName` says the location is a WHOLE-WORD PREFIX
+    //      with something left over. "Los Angeles Angels" + "Anaheim" is not,
+    //      so that row is left whole rather than acquiring a location it does
+    //      not read with. No first-token heuristic, ever — Jason: nothing may
+    //      guess a location without a source.
+    //   3. The recomputed dedup key must be IDENTICAL. It is, by construction
+    //      (`normalizeTeamName` token-sorts, so moving a leading word cannot
+    //      change it), which is exactly why a violation means the row's stored
+    //      key was not derived from its name — a hand-written key, or a
+    //      writer that bypassed `teamRowFields`. Patching that row would
+    //      strand it: every identity lookup would stop finding it. Refuse
+    //      loudly instead.
+    if (args.location !== undefined && !existing.location) {
+      const split = splitTeamName(teamFullName(existing), args.location);
+      if (split) {
+        const fields = teamRowFields({ name: split.name, location: split.location });
+        if (fields.nameNormalized !== existing.nameNormalized) {
+          // The id only: this message reaches Sentry and the browser console.
+          throw new Error(
+            `Team ${args.id}: refusing an enrichment split that would change the dedup key.`,
+          );
+        }
+        patch.location = fields.location;
+        patch.name = fields.name;
+        patch.nameNormalized = fields.nameNormalized;
+      }
+    }
     if (args.yearsActive !== undefined && !existing.yearsActive) {
       patch.yearsActive = args.yearsActive;
     }
@@ -391,7 +461,7 @@ export const applyEnrichmentInternal = internalMutation({
  * "Discover" — re-run every source for ONE team, on demand.
  *
  * A newly created team already gets this automatically: every creation path
- * enqueues it, and `adapters/wikidata.enrichTeam` resolves league, city, years
+ * enqueues it, and `adapters/wikidata.enrichTeam` resolves league, location, years
  * and colors for it. This action is the manual counterpart — for a team that
  * predates the pipeline, one whose sources had nothing at the time, or one
  * whose match turned out to be the wrong franchise.
@@ -535,7 +605,7 @@ export const saveTeamFields = mutation({
     // The free-text `league` predecessor is not settable here — assigning a
     // league by typing is exactly what created the drift this replaced.
     leagueId: v.optional(v.union(v.id("leagues"), v.null())),
-    city: v.optional(v.union(v.string(), v.null())),
+    location: v.optional(v.union(v.string(), v.null())),
     yearsActive: v.optional(
       v.union(
         v.object({ from: v.number(), to: v.optional(v.number()) }),
@@ -560,11 +630,78 @@ export const saveTeamFields = mutation({
 
     const patch: Record<string, unknown> = { lastUpdated: Date.now() };
 
-    if (args.name !== undefined) {
-      const trimmed = args.name.trim();
-      if (!trimmed) throw new Error("Team name cannot be empty");
-      patch.name = trimmed;
-      patch.nameNormalized = normalizeTeamName(trimmed);
+    // NEO-236: Name and Location are ONE fact for identity purposes — the
+    // dedup key is derived from the composed full name — so a change to
+    // either recomputes both fields together, through `teamRowFields`.
+    //
+    // The collision check is new with the split and it is not theoretical.
+    // Before this, editing a name rewrote `nameNormalized` with no check at
+    // all, so two rows in a sport could end up sharing a key; every
+    // `findTeamByFullName` then resolves to whichever `.first()` returns,
+    // and cards linked to the other row silently render the wrong team.
+    // Splitting makes that easier to reach by accident: an operator moving
+    // "San Diego" out of "San Diego Padres" on a row that already coexists
+    // with a bare "Padres" row lands exactly on it. Refused, with the name
+    // it clashed on, so the operator can go and merge them by hand.
+    const nextName = args.name !== undefined ? args.name : existing.name;
+    const nextLocation =
+      args.location !== undefined
+        ? (args.location ?? undefined)
+        : existing.location;
+
+    if (args.name !== undefined || args.location !== undefined) {
+      if (args.name !== undefined && !args.name.trim()) {
+        throw new Error("Team name cannot be empty");
+      }
+
+      // NEO-236 security review: the same bound `findOrCreate` puts on a NEW
+      // team, applied to an edit. It was missing here, which made this the
+      // way around the cap — create "Padres", then rename it to anything.
+      // The cap exists because a team name is a globally-shared string that
+      // spine labels, listing titles and every picker render, and because it
+      // is what a Wikidata lookup gets pointed at.
+      //
+      // On the COMPOSED name, for the same reason as `findOrCreate`: a
+      // 100-character location beside a 100-character nickname is a
+      // 201-character team however it was typed. Refused rather than
+      // truncated, matching the create path — silently storing something
+      // other than what was typed is how a mangled name becomes canonical.
+      // The LENGTH only, never the name: this reaches Sentry and the browser
+      // console through Convex's error path.
+      const mergedFullName = teamFullName({
+        name: nextName,
+        location: nextLocation,
+      });
+      if (mergedFullName.length > MAX_TEAM_NAME_LENGTH) {
+        throw new ConvexError(
+          `A team name is ${mergedFullName.length} characters; the limit is ${MAX_TEAM_NAME_LENGTH}.`,
+        );
+      }
+
+      const fields = teamRowFields({ name: nextName, location: nextLocation });
+
+      if (fields.nameNormalized !== existing.nameNormalized) {
+        const clash = await ctx.db
+          .query("teams")
+          .withIndex("by_name_normalized_and_sport_id", (q) =>
+            q
+              .eq("nameNormalized", fields.nameNormalized)
+              .eq("sportId", existing.sportId),
+          )
+          .first();
+        if (clash && clash._id !== args.id) {
+          throw new ConvexError(
+            `Another team in this sport is already called ${teamFullName(fields)}.`,
+          );
+        }
+      }
+
+      patch.name = fields.name;
+      patch.nameNormalized = fields.nameNormalized;
+      // `undefined` here is the CLEAR: `args.location === null` means the
+      // operator emptied the field, and a team with no location is a normal
+      // team (a college, a national side), not a broken one.
+      patch.location = fields.location;
     }
     if (args.leagueId !== undefined) {
       patch.leagueId = args.leagueId ?? undefined;
@@ -572,7 +709,6 @@ export const saveTeamFields = mutation({
       // carries two answers to the same question.
       patch.league = undefined;
     }
-    if (args.city !== undefined) patch.city = args.city ?? undefined;
     if (args.yearsActive !== undefined) {
       patch.yearsActive = args.yearsActive ?? undefined;
     }
@@ -600,7 +736,11 @@ export const saveTeamFields = mutation({
       patch.colorSource = args.colors
         ? {
             url: MANUAL_COLOR_SOURCE_URL,
-            matchedName: existing.name,
+            // NEO-236: the FULL name, and the merged one — the same string
+            // every other `colorSource.matchedName` holds (the colour source's
+            // own page title, "San Diego Padres"), and the same string this
+            // save is about to store if it also changed the name.
+            matchedName: teamFullName({ name: nextName, location: nextLocation }),
             resolvedAt: Date.now(),
           }
         : undefined;
@@ -644,7 +784,12 @@ export const listForPicker = query({
           .take(TEAM_MANAGEMENT_CAP)
       : await ctx.db.query("teams").take(TEAM_MANAGEMENT_CAP);
 
-    return rows.sort((a, b) => a.name.localeCompare(b.name));
+    // NEO-236: sorted by the FULL name, which is what a picker renders. Sorting
+    // on `name` alone would file the Padres under P and the Giants under G,
+    // scattering a league the operator reads as an alphabetised list of cities.
+    return rows.sort((a, b) =>
+      teamFullName(a).localeCompare(teamFullName(b)),
+    );
   },
 });
 
@@ -683,7 +828,10 @@ export const listForManagement = query({
 
     const truncated = rows.length > TEAM_MANAGEMENT_CAP;
     const teams = rows.slice(0, TEAM_MANAGEMENT_CAP);
-    teams.sort((a, b) => a.name.localeCompare(b.name));
+    // NEO-236: by FULL name — see the note in `listForPicker`. The management
+    // ROW renders the short name, but the order the operator scans is the one
+    // they know the teams by.
+    teams.sort((a, b) => teamFullName(a).localeCompare(teamFullName(b)));
 
     // Reported rather than silently dropped: a list that quietly stops at 2000
     // reads as "that is all the teams", which is the kind of wrong the
@@ -757,7 +905,22 @@ export const search = query({
   handler: async (ctx, args) => {
     if (!(await getCurrentUserId(ctx))) return [];
 
-    const term = args.query.trim();
+    // NEO-236: the `search_name` index now covers `nameNormalized` rather
+    // than `name`, because a split row's `name` is the nickname alone
+    // ("Padres") and an operator typing "San Diego Padres" must still find it.
+    // The stored side of that index is lowercased and punctuation-stripped, so
+    // the QUERY has to be put through the same normalisation or a term like
+    // "St. Louis" is compared against a document that no longer contains the
+    // period.
+    //
+    // `nameTokens` and NOT `normalizeTeamName`: the two differ only in that
+    // `normalizeTeamName` token-SORTS, and sorting the query is actively
+    // wrong here. Convex prefix-matches the FINAL query term, which is how a
+    // typeahead works at all — sorting "new yor" to "new yor" is harmless but
+    // sorting "yankees ne" to "ne yankees" would prefix-match "ne" and drop
+    // the row the operator is halfway through typing. Sorting the DOCUMENT is
+    // fine, because an index scores tokens and not their order.
+    const term = nameTokens(args.query).join(" ");
     if (!term) return [];
 
     // NEO-212 security review: FLOORED as well as capped. `Math.min` alone let
@@ -773,7 +936,7 @@ export const search = query({
     return await ctx.db
       .query("teams")
       .withSearchIndex("search_name", (q) => {
-        const search = q.search("name", term);
+        const search = q.search("nameNormalized", term);
         return args.sportId ? search.eq("sportId", args.sportId) : search;
       })
       .take(limit);
@@ -833,6 +996,9 @@ export const resolveNames = query({
       );
     }
 
+    // NEO-236: `existingName` is the row's FULL name. The wizard shows it to
+    // say "this is the row you would be reusing", and "Padres" alone does not
+    // answer that for an operator who typed "San Diego Padres".
     const seen = new Map<string, { id: Id<"teams">; name: string } | null>();
     const results: Array<{
       name: string;
@@ -858,7 +1024,7 @@ export const resolveNames = query({
           .first();
         seen.set(
           normalized,
-          found ? { id: found._id, name: found.name } : null,
+          found ? { id: found._id, name: teamFullName(found) } : null,
         );
       }
 
@@ -940,24 +1106,33 @@ export const nearMatches = query({
     // Keyed by id so the exact hit and a search hit for the same row collapse.
     const candidates = new Map<Id<"teams">, { _id: Id<"teams">; name: string }>();
 
-    const normalized = normalizeTeamName(name);
-    if (normalized) {
-      const exact = await ctx.db
-        .query("teams")
-        .withIndex("by_name_normalized_and_sport_id", (q) =>
-          q.eq("nameNormalized", normalized).eq("sportId", args.sportId),
-        )
-        .first();
-      if (exact) candidates.set(exact._id, { _id: exact._id, name: exact.name });
+    // NEO-236: the shared identity lookup, so this cannot disagree with what
+    // `findOrCreate` would actually reuse — the whole point of step 1.
+    //
+    // NEO-236: FULL names throughout — `rankTeamCandidates` compares the
+    // operator's typed string (a full name) against these, and the returned
+    // `name` is what the "did you mean?" prompt renders. Ranking "Padres"
+    // against "San Diego Padres" would score a real exact match as merely
+    // close.
+    const exact = await findTeamByFullName(ctx, args.sportId, name);
+    if (exact) {
+      candidates.set(exact._id, { _id: exact._id, name: teamFullName(exact) });
     }
 
-    const searchTeams = async (term: string) =>
-      await ctx.db
+    // NEO-236: same normalisation, and for the same reason, as `search`
+    // above — the index covers `nameNormalized` now, so the term has to be
+    // lowercased and punctuation-stripped to compare against it. Source order
+    // is kept rather than sorted; see the note in `search`.
+    const searchTeams = async (rawTerm: string) => {
+      const term = nameTokens(rawTerm).join(" ");
+      if (!term) return [];
+      return await ctx.db
         .query("teams")
         .withSearchIndex("search_name", (q) =>
-          q.search("name", term).eq("sportId", args.sportId),
+          q.search("nameNormalized", term).eq("sportId", args.sportId),
         )
         .take(NEAR_MATCH_SEARCH_CANDIDATES);
+    };
 
     let hits = await searchTeams(name);
     if (hits.length === 0) {
@@ -965,7 +1140,7 @@ export const nearMatches = query({
       if (fallbackTerm) hits = await searchTeams(fallbackTerm);
     }
     for (const hit of hits) {
-      candidates.set(hit._id, { _id: hit._id, name: hit.name });
+      candidates.set(hit._id, { _id: hit._id, name: teamFullName(hit) });
     }
 
     const rows = [...candidates.values()];

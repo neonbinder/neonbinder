@@ -58,6 +58,16 @@ export type CardChecklistRow = {
   teamCheckDoneAt?: number;
   teamNoneConfirmedAt?: number;
   /**
+   * NEO-236: the team name BSC returned that matched no `teams` row.
+   *
+   * A HINT for the operator, not a team. `deriveCardAttention` must never
+   * read it: a card carrying one is still "missing team" — that is the whole
+   * reason it is here rather than in `pendingTeamNames`, which the attention
+   * rule counts as HAVING a team and which would take the card straight out
+   * of the lane `MissingTeamFixer` works.
+   */
+  bscTeamName?: string;
+  /**
    * NEO-102: team names an operator typed that no `teams` row exists for yet.
    * `deriveCardAttention` counts a non-empty list as HAVING a team — leave
    * this off the row and every card carrying a typed team gets badged "no

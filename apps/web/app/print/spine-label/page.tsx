@@ -41,6 +41,7 @@ import {
   spineFontUrl,
 } from "@/lib/print/spine-fonts";
 import { pickDefaultTeamYear } from "@/lib/players/team-tenure";
+import { teamFullName } from "@/lib/teams/team-name";
 
 /**
  * /print/spine-label — binder spine labels (NEO-147).
@@ -165,13 +166,17 @@ export default function SpineLabelPage() {
   const allLeagues = useQuery(api.leagues.list, {});
   const leagueList = useMemo(() => allLeagues ?? [], [allLeagues]);
 
+  // NEO-236: filtered on the COMPOSED full name. A split row stores "Padres"
+  // with location "San Diego"; someone typing "San Diego" into a label
+  // designer is naming a team, and matching `name` alone would tell them we
+  // have never heard of it.
   const teamMatches = useMemo(() => {
     const needle = teamQuery.trim().toLowerCase();
     if (!needle) return [];
     return (allTeams ?? [])
       .filter((t) => {
         if (leagueFilter !== "all" && t.leagueId !== leagueFilter) return false;
-        return t.name.toLowerCase().includes(needle);
+        return teamFullName(t).toLowerCase().includes(needle);
       })
       .slice(0, TEAM_PICKER_RESULTS);
   }, [allTeams, teamQuery, leagueFilter]);
@@ -512,7 +517,7 @@ export default function SpineLabelPage() {
                           background: team.colors?.primary ?? "transparent",
                         }}
                       />
-                      {team.name}
+                      {teamFullName(team)}
                       {!hasColors && (
                         <span className="text-xs text-slate-400">(no colors)</span>
                       )}
@@ -567,12 +572,14 @@ export default function SpineLabelPage() {
                   onQueryChange={setTeamQuery}
                   items={teamMatches}
                   getKey={(t) => t._id}
-                  getLabel={(t) => t.name}
+                  getLabel={(t) => teamFullName(t)}
                   getDescription={(t) =>
                     t.colors?.primary ? undefined : "no colors"
                   }
                   onSelect={(t) => {
-                    setTeamQuery(t.name);
+                    // The box holds what the label will say, so it holds the
+                    // full name — not the nickname a split row stores.
+                    setTeamQuery(teamFullName(t));
                     applyPickedTeamColors(t);
                   }}
                   label="Find a team"

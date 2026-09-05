@@ -121,7 +121,7 @@ async function insertTeam(
     name: string;
     sportId: Id<"selectorOptions">;
     leagueId?: Id<"leagues">;
-    city?: string;
+    location?: string;
     colors?: { primary?: string; secondary?: string };
   },
 ): Promise<Id<"teams">> {
@@ -134,7 +134,7 @@ async function insertTeam(
       nameNormalized: opts.name.toLowerCase(),
       sportId: opts.sportId,
       ...(opts.leagueId ? { leagueId: opts.leagueId } : {}),
-      ...(opts.city ? { city: opts.city } : {}),
+      ...(opts.location ? { location: opts.location } : {}),
       ...(opts.colors ? { colors: opts.colors } : {}),
       lastUpdated: 1_700_000_000_000,
     }),
@@ -1076,7 +1076,7 @@ describe("leagues.teamsIn", () => {
       name: "Albuquerque Isotopes",
       sportId,
       leagueId: pcl,
-      city: "Albuquerque",
+      location: "Albuquerque",
       colors: { primary: "#00D558", secondary: "#FF2EB3" },
     });
     await insertTeam(t, { name: "Amarillo Sod Poodles", sportId, leagueId: tl });
@@ -1093,7 +1093,7 @@ describe("leagues.teamsIn", () => {
     expect(rows[0]).toEqual({
       _id: expect.anything(),
       name: "Albuquerque Isotopes",
-      city: "Albuquerque",
+      location: "Albuquerque",
       colors: { primary: "#00D558", secondary: "#FF2EB3" },
     });
     // The projection is deliberate: everything else about a team belongs to

@@ -24,6 +24,9 @@ import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
+// NEO-236: `teams.list` returns raw rows, so a split team's `name` is the
+// nickname alone. Every assertion about a team NAME composes it.
+import { teamFullName } from "../lib/teams/team-name";
 import { Id } from "./_generated/dataModel";
 
 const modules = (import.meta as unknown as {
@@ -93,6 +96,13 @@ async function decideCreate(
     batchId: string;
     kind: "player" | "team";
     name: string;
+    /**
+     * NEO-236: the operator's Location + Name. A TEAM row is built from this
+     * and nothing else — commit never inserts from `name`, which is the raw
+     * checklist string. Omit it for a player row, or to model a team the
+     * operator never gave a pair for (commit then links or leaves it).
+     */
+    create?: { location?: string; name: string };
   },
 ) {
   return t.run(async (ctx) =>
@@ -104,7 +114,10 @@ async function decideCreate(
       name: opts.name,
       sportId: opts.sportId,
       status: "ready",
-      decision: { action: "create" },
+      decision: {
+        action: "create",
+        ...(opts.create ? { create: opts.create } : {}),
+      },
     }),
   );
 }
@@ -162,6 +175,9 @@ describe("NEO-96 round trip: commit-created entities are visible to the pickers"
       batchId: "b2",
       kind: "team",
       name: "Los Angeles Angels",
+      // NEO-236: the wizard's Location + Name. Without it commit creates
+      // nothing at all — the raw checklist string is never a source for a row.
+      create: { location: "Los Angeles", name: "Angels" },
     });
     await asAdmin.action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
@@ -171,7 +187,13 @@ describe("NEO-96 round trip: commit-created entities are visible to the pickers"
     });
 
     const visible = await asAdmin.query(api.teams.list, { sportId, limit: 500 });
-    expect(visible.map((tm) => tm.name)).toContain("Los Angeles Angels");
+    // The reference round trip, unchanged in intent: what commit created is
+    // what the picker lists. Composed, because `list` returns raw rows and the
+    // row now stores ("Los Angeles", "Angels").
+    expect(visible.map((tm) => teamFullName(tm))).toContain("Los Angeles Angels");
+    const angels = visible.find((tm) => teamFullName(tm) === "Los Angeles Angels");
+    expect(angels!.location).toBe("Los Angeles");
+    expect(angels!.name).toBe("Angels");
   });
 
   test("and the reverse: a picker-created entity is found by the commit path, not duplicated", async () => {
@@ -363,6 +385,7 @@ describe("NEO-96 renameSelectorOption", () => {
     await decideCreate(t, {
       selectorOptionId: variantTypeId, sportId, batchId: "r1",
       kind: "team", name: "Los Angeles Angels",
+      create: { location: "Los Angeles", name: "Angels" },
     });
     await asAdmin.action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
@@ -381,7 +404,7 @@ describe("NEO-96 renameSelectorOption", () => {
     const players = await asAdmin.query(api.players.list, { sportId, limit: 500 });
     const teams = await asAdmin.query(api.teams.list, { sportId, limit: 500 });
     expect(players.map((p) => p.name)).toContain("Mike Trout");
-    expect(teams.map((tm) => tm.name)).toContain("Los Angeles Angels");
+    expect(teams.map((tm) => teamFullName(tm))).toContain("Los Angeles Angels");
 
     const row = await t.run(async (ctx) => ctx.db.get(sportId));
     expect(row?.value).toBe("MLB Baseball");

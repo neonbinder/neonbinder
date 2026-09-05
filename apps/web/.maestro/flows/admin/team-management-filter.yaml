@@ -43,8 +43,10 @@
 #
 # DELIBERATE COVERAGE LIMIT — the `teams` table is global and its contents depend
 # on the deployment, so no particular team can be named here without making the
-# flow green-or-red by accident. The detail panel (Name / League / City / years /
-# colours / Save) is therefore NOT exercised; only its unselected state is.
+# flow green-or-red by accident. The detail panel (Location / Name / League /
+# years / colours / Save) is therefore NOT exercised; only its unselected state
+# is. NEO-236 split the stored name into Location + Name and moved both to the
+# top of that panel; team-management-edit-a-team owns every assertion about it.
 appId: com.neonbinder.web
 url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/admin/teams&worker=${WORKER_INDEX || "0"}
 name: Team Management — filtering to a name nothing matches reports no matches

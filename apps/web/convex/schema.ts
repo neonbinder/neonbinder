@@ -562,6 +562,25 @@ export default defineSchema({
     // has no team (an insert/subset card) would be re-fetched forever on
     // every future sync. Not touched by `lastUpdated`-driven logic.
     teamCheckDoneAt: v.optional(v.number()),
+    // NEO-236: the team name BSC returned that we could not match to a row.
+    //
+    // The BSC per-card lookup used to CREATE a `teams` row from whatever
+    // string it got back. It links-or-leaves now (creation takes Location +
+    // Name from an operator, and a background queue has neither), and without
+    // this column the miss threw the marketplace's answer away — leaving the
+    // operator to work out from nothing which team a card was meant to carry.
+    // Kept so `MissingTeamFixer` can show them "Marketplace says: …" and let
+    // them split it into a real Location + Name.
+    //
+    // A HINT, and only a hint. It is NOT a team, and nothing may treat it as
+    // one: `features/cardAttention.ts` still badges the card "missing team",
+    // and this is deliberately not `pendingTeamNames` (which the attention
+    // rule reads as the card HAVING a team). Written only by
+    // `cardChecklist.applyBscTeamResolution`, capped at 120 characters to
+    // match `MAX_TEAM_NAME_LENGTH`, and never read by any matching or
+    // creation logic — a marketplace string is input for a human, never a
+    // source of truth.
+    bscTeamName: v.optional(v.string()),
     // NEO-102: an OPERATOR decided this card carries no team at all.
     //
     // DISTINCT FROM `teamCheckDoneAt` above, which means only that the BSC
@@ -933,7 +952,7 @@ export default defineSchema({
     .index("by_name_normalized_and_sport_id", ["nameNormalized", "sportId"])
     .index("by_sport_id", ["sportId"]),
 
-  // Teams — first-class entity. Modeled with city + yearsActive to support
+  // Teams — first-class entity. Modeled with location + yearsActive to support
   // defunct franchises (Expos → Nationals, SuperSonics, etc.) since vintage
   // sets reference teams that no longer exist.
   teams: defineTable({
@@ -951,7 +970,14 @@ export default defineSchema({
     // more, and reads prefer `leagueId`. Remove once prod shows zero rows
     // carrying it and no `leagueId`.
     league: v.optional(v.string()),
-    city: v.optional(v.string()),
+    // NEO-236: the place part of the franchise name — "San Diego" in "San
+    // Diego Padres". Location, not city: Tampa Bay, New England, Golden State;
+    // optional — colleges, national teams and corporate-named clubs carry
+    // none. `name` holds only the nickname once a row is split, and
+    // `nameNormalized` keeps the WHOLE name (see lib/teams/team-name.ts):
+    // because `normalizeTeamName` token-sorts, splitting a row cannot change
+    // its dedup key, which is what lets the split roll out a row at a time.
+    location: v.optional(v.string()),
     yearsActive: v.optional(v.object({
       from: v.number(),
       to: v.optional(v.number()),
@@ -1008,11 +1034,20 @@ export default defineSchema({
     // pickers (and the team editor's) were the same 500-row fetch + client-side
     // `.includes()` filter that NEO-147 removed from the player typeahead —
     // fine while a sport had a few dozen teams, wrong once the league/defunct
-    // franchise backfill grew the table. Indexed on `name` (the raw display
-    // name the operator types), filterable by `sportId` so a football set never
-    // matches a baseball team.
+    // franchise backfill grew the table. Filterable by `sportId` so a football
+    // set never matches a baseball team.
+    //
+    // NEO-236: indexed on `nameNormalized`, not `name`. Once a row is split,
+    // `name` is the nickname alone ("Padres") and an operator typing "San
+    // Diego Padres" would match nothing; `nameNormalized` still carries every
+    // token of the full name. The token SORT in `normalizeTeamName` is
+    // irrelevant to matching — a search index scores tokens, not order — but
+    // it does mean the QUERY must not be sorted before it is handed to
+    // `withSearchIndex`, because the backend prefix-matches only the final
+    // term. `teams.search` normalises the term in source order for exactly
+    // that reason.
     .searchIndex("search_name", {
-      searchField: "name",
+      searchField: "nameNormalized",
       filterFields: ["sportId"],
     }),
 
@@ -1062,11 +1097,17 @@ export default defineSchema({
     ),
     enrichment: v.optional(v.object({
       wikidataId: v.optional(v.string()),
-      // player-only. Team NAMES, not ids — resolving to real team rows via
-      // teams.findOrCreateInternal is deferred to commit time (only once
-      // "create" is the confirmed decision), so a lookup during mere
-      // preview can never orphan a team row for a player the user ends up
-      // linking to someone else or never creates.
+      // player-only. Team NAMES, not ids — resolving them to real team rows is
+      // deferred to commit time (only once "create" is the confirmed
+      // decision), so a lookup during mere preview can never orphan a team row
+      // for a player the user ends up linking to someone else or never
+      // creates.
+      //
+      // NEO-236: at commit, each name is MATCHED against `teams` by its
+      // composed full name and linked when it hits. It is never inserted from
+      // the name itself — a row is created only from the operator's Location +
+      // Name in `decision.createTeams`, and a name with neither a match nor an
+      // entry there is dropped from the player's timeline rather than minted.
       careerTeams: v.optional(v.array(v.object({
         name: v.string(),
         fromYear: v.number(),
@@ -1095,7 +1136,9 @@ export default defineSchema({
       enwikiTitle: v.optional(v.string()),
       // team-only
       league: v.optional(v.string()),
-      city: v.optional(v.string()),
+      // NEO-236: the place part of the team's name. Location, not city —
+      // see `teams.location`.
+      location: v.optional(v.string()),
       yearsActive: v.optional(v.object({
         from: v.number(),
         to: v.optional(v.number()),
@@ -1129,6 +1172,44 @@ export default defineSchema({
         // "the operator rejected these two" rather than a silently shorter
         // list. Names, matched against enrichment.careerTeams[].name.
         excludedCareerTeamNames: v.optional(v.array(v.string())),
+        // ── NEO-236: the operator's Location + Name, team-kind only ─────────
+        //
+        // Jason, 2026-09-05: "We simply shouldn't allow for full string
+        // creation. Location & Team Name should be the input." A `teams` row
+        // born out of this queue is built from THESE two fields and nothing
+        // else — never from `name` above, which is the raw checklist string
+        // ("SD Padres", "PADRES", "Padres  "). The prelude has no fallback: a
+        // create decision on a team row with no `create` payload links if the
+        // name already matches a row and otherwise leaves the card without
+        // that team, for the attention walker's missing-team lane to catch.
+        //
+        // Optional because every row written before NEO-236 predates the
+        // field, and because it is meaningless on a player-kind decision.
+        // `location` is separately optional: colleges, national sides and
+        // corporate-named clubs ("Orix Buffaloes") have none, and a blank
+        // Location is a real answer rather than an unfinished form.
+        create: v.optional(v.object({
+          location: v.optional(v.string()),
+          name: v.string(),
+        })),
+        // NEO-236, player-only: the same Location + Name, once per career team
+        // the operator ACCEPTED that matched no existing row.
+        //
+        // Career-team names arrive as full strings — a Wikidata P54 label, or
+        // whatever the operator typed into the manual entry — and the commit
+        // prelude links them when the composed name already exists. When it
+        // does not, this is the only thing that lets it create one, keyed by
+        // `sourceName` (the label as shown in the wizard, matched normalized)
+        // so the decision stays auditable against the proposals it answers:
+        // "the operator said the P54 label 'Padres' means San Diego / Padres".
+        // A career team with no entry here and no existing match is dropped
+        // from the player's `teamYears` rather than minting a row nobody
+        // reviewed.
+        createTeams: v.optional(v.array(v.object({
+          sourceName: v.string(),
+          location: v.optional(v.string()),
+          name: v.string(),
+        }))),
       }),
       v.object({
         action: v.literal("link"),

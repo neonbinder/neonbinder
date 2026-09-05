@@ -343,3 +343,113 @@ describe("deriveStagedTeamNames — dedupe", () => {
     ).toEqual([{ name: "Blue Jays Toronto", source: "batch-team" }]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// NEO-236 — a team row is staged under the name it will actually be CREATED
+// as, not the string the checklist happened to use
+// ---------------------------------------------------------------------------
+
+describe("deriveStagedTeamNames — the operator's Location + Name", () => {
+  it("stages the COMPOSED create name, not the raw checklist name", () => {
+    // The same failure this module exists to prevent, one level up: the row
+    // will exist as "San Diego Padres", so offering "SD Padres" on a later row
+    // suggests a name that will never be in `teams`. The operator retypes the
+    // real one and the batch asks for two franchises again.
+    const rows = [
+      teamRow({
+        _id: "t1",
+        name: "SD Padres",
+        decision: {
+          action: "create",
+          create: { location: "San Diego", name: "Padres" },
+        },
+      }),
+    ];
+
+    expect(
+      deriveStagedTeamNames({ rows, currentRowId: null, ...noExtras }),
+    ).toEqual([{ name: "San Diego Padres", source: "batch-team" }]);
+  });
+
+  it("stages the name alone when the operator left Location blank", () => {
+    const rows = [
+      teamRow({
+        _id: "t1",
+        name: "Aztecs (SDSU)",
+        decision: { action: "create", create: { name: "San Diego State Aztecs" } },
+      }),
+    ];
+
+    expect(
+      deriveStagedTeamNames({ rows, currentRowId: null, ...noExtras }),
+    ).toEqual([{ name: "San Diego State Aztecs", source: "batch-team" }]);
+  });
+
+  it("falls back to the raw name on an UNDECIDED row — there is no split to read", () => {
+    const rows = [teamRow({ _id: "t1", name: "SD Padres" })];
+
+    expect(
+      deriveStagedTeamNames({ rows, currentRowId: null, ...noExtras }),
+    ).toEqual([{ name: "SD Padres", source: "batch-team" }]);
+  });
+
+  it("falls back to the raw name on a create decision carrying no pair", () => {
+    // A queue row written before NEO-236, or a client that has not shipped the
+    // fields yet. Commit creates nothing from it, but the batch has still
+    // committed to the name, so it stays a suggestion.
+    const rows = [
+      teamRow({ _id: "t1", name: "SD Padres", decision: { action: "create" } }),
+    ];
+
+    expect(
+      deriveStagedTeamNames({ rows, currentRowId: null, ...noExtras }),
+    ).toEqual([{ name: "SD Padres", source: "batch-team" }]);
+  });
+
+  it("dedupes a split row against a career team naming the same franchise", () => {
+    // Proof the composed name is what reaches the dedup key: keyed on the raw
+    // "SD Padres" these would be two different keys and the typeahead would
+    // offer the same franchise twice.
+    const rows = [
+      teamRow({
+        _id: "t1",
+        name: "SD Padres",
+        decision: {
+          action: "create",
+          create: { location: "San Diego", name: "Padres" },
+        },
+      }),
+      playerRow({
+        _id: "p1",
+        name: "Tony Gwynn",
+        decision: {
+          action: "create",
+          manualCareerTeams: [{ name: "San Diego Padres", fromYear: 1982 }],
+        },
+      }),
+    ];
+
+    expect(
+      deriveStagedTeamNames({ rows, currentRowId: null, ...noExtras }),
+    ).toEqual([{ name: "San Diego Padres", source: "batch-team" }]);
+  });
+
+  it("excludes the CURRENT team row by its composed name too", () => {
+    // The exclusion and the staging must read the same name, or a split
+    // current row suggests itself straight back at the operator.
+    const rows = [
+      teamRow({
+        _id: "t1",
+        name: "SD Padres",
+        decision: {
+          action: "create",
+          create: { location: "San Diego", name: "Padres" },
+        },
+      }),
+    ];
+
+    expect(
+      deriveStagedTeamNames({ rows, currentRowId: "t1", ...noExtras }),
+    ).toEqual([]);
+  });
+});

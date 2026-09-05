@@ -39,9 +39,10 @@ tags:
 # stint below would be reaching for a control that is not there.
 #
 # That one name carries every team assertion in the flow, including the
-# post-reload MASTER ROW one NEO-235 added. The row prints a team's NICKNAME —
-# `teamNickname` strips a leading city from the name — but a team born in this
-# picker has no `city` at all, so the row prints the name in full and the
+# post-reload MASTER ROW one NEO-235 added. The row prints a team's SHORT name —
+# since NEO-236 a team is stored as an optional `location` plus a nickname, and
+# the row prints the nickname alone — but a team born in this picker is created
+# from a name with NO location, so short and full are the same string and the
 # matcher is simply the name.
 #
 # R2 — this cannot go green without the feature working:
@@ -381,14 +382,15 @@ tags:
 # holds the player's name rather than a team, anchoring keeps this pointed at a
 # LIST ROW rather than at anything the page might grow above it.
 #
-# THE FULL NAME, not a nickname. The row prints `teamNickname(team)`, which
-# strips a leading city from the stored name — but only when the row HAS a
-# `city`, and a team created through this picker has none: `teams.findOrCreate`
-# writes a name, a sport and a league and nothing else. So the row prints this
-# team's name in full. (NEO-235 wrote this assertion against the seeded
-# "New York Yankees" and matched ".*Yankees.*" to survive that fixture gaining a
-# city later; NEO-214 deleted the fixture, and a per-attempt name needs no such
-# hedge — it is unique to this run and cannot be answered by another team.)
+# THE WHOLE NAME, and that is not a hedge. Since NEO-236 the row prints
+# `teamShortName(team)` — the nickname alone, with any `location` moved to the
+# muted second line — but a team created through this picker has no location:
+# the create form's Location box is left empty here, so `name` holds the whole
+# string and short and full are identical. (NEO-235 wrote this assertion against
+# the seeded "New York Yankees" and matched ".*Yankees.*" to survive that fixture
+# gaining a city later; NEO-214 deleted the fixture, and a per-attempt name needs
+# no such hedge — it is unique to this run and cannot be answered by another
+# team. The split itself is proved in admin/team-management-edit-a-team.)
 - assertVisible:
     text: ".*PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
     below:

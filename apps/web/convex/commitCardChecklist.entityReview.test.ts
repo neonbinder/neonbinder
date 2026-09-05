@@ -30,7 +30,7 @@
 
 import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
 
@@ -147,6 +147,13 @@ async function insertReviewRow(
       // NEO-212: careerTeams the admin UNCHECKED in the wizard. Commit must
       // not create team rows for these.
       excludedCareerTeamNames?: string[];
+      // NEO-236: the operator's Location + Name. A team row is built from
+      // THIS and nothing else — `name` above is the raw checklist string and
+      // is never stored. Absent means the prelude creates nothing.
+      create?: { location?: string; name: string };
+      // NEO-236, player rows: the same, per accepted career team that matched
+      // no existing row. Absent for a label means that stint is dropped.
+      createTeams?: Array<{ sourceName: string; location?: string; name: string }>;
     } | {
       action: "link";
       linkedPlayerId?: Id<"players">;
@@ -175,6 +182,22 @@ async function insertReviewRow(
   );
 }
 
+/**
+ * NEO-236: what the wizard sends for career-team labels the operator LEFT
+ * UNTOUCHED — Name pre-filled to the label, Location blank.
+ *
+ * This is the fixture that keeps these tests about what they were about. The
+ * split itself is exercised by the tests that pass a real Location; here the
+ * point is that a career team is only created because the OPERATOR supplied a
+ * Location + Name for it, even when the pair they confirmed happens to be the
+ * label unchanged.
+ */
+function untouchedCreateTeams(
+  labels: string[],
+): Array<{ sourceName: string; name: string }> {
+  return labels.map((sourceName) => ({ sourceName, name: sourceName }));
+}
+
 // ===========================================================================
 // "create" decision — player, with careerTeams
 // ===========================================================================
@@ -191,7 +214,13 @@ describe("commitCardChecklist: 'create' decision seeds a new row from the batch'
       batchId: "batch-1",
       kind: "player",
       name: "Mike Trout",
-      decision: { action: "create" },
+      decision: {
+        action: "create",
+        createTeams: untouchedCreateTeams([
+          "Los Angeles Angels",
+          "Los Angeles Angels of Anaheim",
+        ]),
+      },
       enrichment: {
         wikidataId: "Q123456",
         isHallOfFame: true,
@@ -228,8 +257,10 @@ describe("commitCardChecklist: 'create' decision seeds a new row from the batch'
     expect(player!.teamYears?.[0].toYear).toBe(2010);
     expect(player!.teamYears?.[1].fromYear).toBe(2011);
 
-    // Each careerTeams NAME resolved to a real (bare, unenriched) team row —
-    // proves resolveTeamIdByName's get-or-create ran for both names.
+    // Each careerTeams NAME resolved to a real (bare, unenriched) team row.
+    // NEO-236: created from the operator's Location + Name (here the untouched
+    // pre-fill: the label, no location), never from the label itself — a label
+    // with no `createTeams` entry and no existing match is dropped instead.
     const team1 = await t.run(async (ctx) => ctx.db.get(player!.teamYears![0].teamId));
     const team2 = await t.run(async (ctx) => ctx.db.get(player!.teamYears![1].teamId));
     expect(team1!.name).toBe("Los Angeles Angels of Anaheim");
@@ -269,6 +300,10 @@ describe("commitCardChecklist: 'create' decision seeds a new row from the batch'
         manualCareerTeams: [
           { name: "Toronto Blue Jays", fromYear: 2023 },
         ],
+        createTeams: untouchedCreateTeams([
+          "Arizona Diamondbacks",
+          "Toronto Blue Jays",
+        ]),
       },
       enrichment: {
         careerTeams: [{ name: "Arizona Diamondbacks", fromYear: 2020, toYear: 2022 }],
@@ -320,6 +355,10 @@ describe("commitCardChecklist: 'create' decision seeds a new row from the batch'
           { name: "Arizona Diamondbacks", fromYear: 2020, toYear: 2022 },
           { name: "Toronto Blue Jays", fromYear: 2023 },
         ],
+        createTeams: untouchedCreateTeams([
+          "Arizona Diamondbacks",
+          "Toronto Blue Jays",
+        ]),
       },
       // no enrichment key at all
     });
@@ -363,6 +402,10 @@ describe("commitCardChecklist: 'create' decision seeds a new row from the batch'
         // admin is deliberately CORRECTING Wikidata's years (2011–2018 →
         // 2011–2019), so the manual years must win, not be discarded.
         manualCareerTeams: [{ name: "Angels Los Angeles", fromYear: 2011, toYear: 2019 }],
+        createTeams: untouchedCreateTeams([
+          "Los Angeles Angels",
+          "Angels Los Angeles",
+        ]),
       },
       enrichment: {
         careerTeams: [{ name: "Los Angeles Angels", fromYear: 2011, toYear: 2018 }],
@@ -406,7 +449,7 @@ describe("commitCardChecklist: 'create' decision seeds a new row from the batch'
     expect(angelsRows).toHaveLength(1);
   });
 
-  test("a team 'create' decision inserts a new team with league/city/yearsActive/colors/espnId from its enrichment", async () => {
+  test("a team 'create' decision builds the row from the operator's Location + Name, and takes league/yearsActive/colors/espnId from its enrichment", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
@@ -417,12 +460,20 @@ describe("commitCardChecklist: 'create' decision seeds a new row from the batch'
       batchId: "batch-1",
       kind: "team",
       name: "Los Angeles Angels",
-      decision: { action: "create" },
+      // NEO-236: the operator's split, confirmed in the wizard. Note it does
+      // NOT agree with `enrichment.location` below, on purpose — see the
+      // assertions.
+      decision: {
+        action: "create",
+        create: { location: "Los Angeles", name: "Angels" },
+      },
       enrichment: {
         wikidataId: "Q217123",
         espnId: "3",
         league: "Major League Baseball",
-        city: "Anaheim",
+        // Wikidata/ESPN say the franchise is headquartered in Anaheim. It is
+        // not the location part of the NAME, and nothing may write it as one.
+        location: "Anaheim",
         yearsActive: { from: 1961 },
         colors: { primary: "#BA0021", secondary: "#003263" },
       },
@@ -451,7 +502,18 @@ describe("commitCardChecklist: 'create' decision seeds a new row from the batch'
       team!.leagueId ? ctx.db.get(team!.leagueId) : null,
     );
     expect(league?.name).toBe("Major League Baseball");
-    expect(team!.city).toBe("Anaheim");
+    // ── NEO-236 ───────────────────────────────────────────────────────────
+    // The row is the OPERATOR's two fields, not the checklist string and not
+    // the enrichment's location. "Anaheim" was a headquarters, and writing it
+    // behind the operator's answer would have produced "Anaheim Angels" — a
+    // team that has not existed since 2005.
+    expect(team!.name).toBe("Angels");
+    expect(team!.location).toBe("Los Angeles");
+    // ...while the dedup key is still derived from the WHOLE name, which is
+    // why the lookup above (`angeles angels los`) found it at all. That is the
+    // invariant the split rests on: token-sorted normalisation makes a split
+    // row and an unsplit one the same key.
+    expect(team!.nameNormalized).toBe("angeles angels los");
     expect(team!.yearsActive).toEqual({ from: 1961, to: undefined });
     expect(team!.colors).toEqual({ primary: "#BA0021", secondary: "#003263" });
     expect(team!.externalIds).toEqual({ wikidataId: "Q217123", espnId: "3" });
@@ -1046,7 +1108,10 @@ describe("commitCardChecklist: multi-stint careers survive commit", () => {
       batchId: "batch-1",
       kind: "player",
       name: "Returning Player",
-      decision: { action: "create" },
+      decision: {
+        action: "create",
+        createTeams: untouchedCreateTeams(["Los Angeles Angels"]),
+      },
       enrichment: {
         careerTeams: [
           // Latest first, so the assertion is about the sort and not the input.
@@ -1076,8 +1141,10 @@ describe("commitCardChecklist: multi-stint careers survive commit", () => {
     expect(player!.teamYears).toHaveLength(2);
     expect(player!.teamYears![0]).toMatchObject({ fromYear: 2011, toYear: 2013 });
     expect(player!.teamYears![1]).toMatchObject({ fromYear: 2016, toYear: 2019 });
-    // Two stints, ONE team row — resolveTeamIdByName's get-or-create still
-    // folds the repeated name.
+    // Two stints, ONE team row. NEO-236: the first stint creates it from the
+    // operator's Location + Name, the second FINDS it — `findTeamByFullName`
+    // runs before the insert in `createTeamFromOperatorInput`, so a repeated
+    // label cannot produce a second row.
     expect(player!.teamYears![0].teamId).toBe(player!.teamYears![1].teamId);
     const angels = await t.run(async (ctx) =>
       ctx.db
@@ -1106,6 +1173,7 @@ describe("commitCardChecklist: multi-stint careers survive commit", () => {
         // The admin adding the stint Wikidata missed entirely, at a team it
         // does know about — the case the old teamId key could not express.
         manualCareerTeams: [{ name: "Los Angeles Angels", fromYear: 2016, toYear: 2019 }],
+        createTeams: untouchedCreateTeams(["Los Angeles Angels"]),
       },
       enrichment: {
         careerTeams: [{ name: "Los Angeles Angels", fromYear: 2011, toYear: 2013 }],
@@ -1161,6 +1229,13 @@ describe("commitCardChecklist: decision.excludedCareerTeamNames", () => {
         // entry — the exclusion is matched on the NORMALIZED name, so it must
         // not be defeated by how the label happened to be rendered in the UI.
         excludedCareerTeamNames: ["Wrong, Team F.C."],
+        // NEO-236: BOTH labels are answered here, including the excluded one.
+        // The exclusion has to be what stops it, not the absence of a create
+        // entry — otherwise this test would pass for the wrong reason.
+        createTeams: untouchedCreateTeams([
+          "Los Angeles Angels",
+          "Wrong Team FC",
+        ]),
       },
       enrichment: {
         careerTeams: [
@@ -1189,9 +1264,10 @@ describe("commitCardChecklist: decision.excludedCareerTeamNames", () => {
     const kept = await t.run(async (ctx) => ctx.db.get(player!.teamYears![0].teamId));
     expect(kept!.name).toBe("Los Angeles Angels");
 
-    // The rejected team was never MINTED. Filtering after resolveTeamIdByName
-    // would leave an orphan row here that nothing points at, and that the next
-    // lookup of that name would silently adopt.
+    // The rejected team was never MINTED — even though the decision carries a
+    // `createTeams` entry for it. The exclusion is checked before the label is
+    // resolved at all, so an orphan row nothing points at (and that the next
+    // lookup of that name would silently adopt) cannot appear.
     const allTeams = await t.run(async (ctx) => ctx.db.query("teams").collect());
     expect(allTeams.map((tm) => tm.name)).toEqual(["Los Angeles Angels"]);
   });
@@ -1214,6 +1290,7 @@ describe("commitCardChecklist: decision.excludedCareerTeamNames", () => {
         // a global blocklist, and an admin who unchecked Wikidata's entry and
         // then typed their own is asking for exactly the typed one.
         excludedCareerTeamNames: ["Los Angeles Angels"],
+        createTeams: untouchedCreateTeams(["Los Angeles Angels"]),
       },
       enrichment: {
         careerTeams: [{ name: "Los Angeles Angels", fromYear: 2005, toYear: 2010 }],
@@ -1239,6 +1316,527 @@ describe("commitCardChecklist: decision.excludedCareerTeamNames", () => {
     // The manual entry's years, not the excluded Wikidata entry's 2005–2010.
     expect(player!.teamYears![0].fromYear).toBe(2011);
     expect(player!.teamYears![0].toYear).toBeUndefined();
+  });
+});
+
+// ===========================================================================
+// NEO-236 — the prelude MATCHES teams; it never inserts on a miss
+//
+// Jason, 2026-09-05: the operator-less creators "are still looking up the team
+// in each of those places and if there is a match we are linking to the team
+// still"; on a miss they leave the card for operator review instead of
+// inserting. These tests pin both halves of that, plus the one path that DOES
+// create — an operator's reviewed Location + Name.
+// ===========================================================================
+
+/** Insert a team row the way `teamRowFields` would, split or whole. */
+async function seedTeam(
+  t: ReturnType<typeof convexTest>,
+  sportId: Id<"selectorOptions">,
+  parts: { name: string; location?: string },
+) {
+  return t.run(async (ctx) =>
+    ctx.db.insert("teams", {
+      name: parts.name,
+      ...(parts.location ? { location: parts.location } : {}),
+      // The invariant: the key is derived from the WHOLE name, token-sorted.
+      nameNormalized: [parts.location, parts.name]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase()
+        .split(/\s+/)
+        .sort()
+        .join(" "),
+      sportId,
+      lastUpdated: Date.now(),
+    }),
+  );
+}
+
+describe("commitCardChecklist: an unresolvable team name is reported, never invented", () => {
+  test("an UNREVIEWED team name creates nothing, links nothing, and comes back in unresolvedTeamNames", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+
+    const prelude = await asAdmin.mutation(
+      internal.selectorOptions.commitCardChecklistPrelude,
+      {
+        selectorOptionId: variantTypeId,
+        sportId,
+        playerNames: [],
+        teamNames: ["Wichita Wind Surge"],
+      },
+    );
+
+    expect(prelude.teamIdByName).toEqual([]);
+    expect(prelude.createdTeamIds).toEqual([]);
+    expect(prelude.unresolvedTeamNames).toEqual(["Wichita Wind Surge"]);
+    expect(prelude.unresolvedTeamCount).toBe(1);
+
+    const teams = await t.run(async (ctx) => ctx.db.query("teams").collect());
+    expect(teams).toEqual([]);
+  });
+
+  /**
+   * NEO-236 security review — the unlinked list is bounded; the count is not.
+   *
+   * A first sync of a large set can leave hundreds of team names unlinked at
+   * once, and each is raw marketplace text of unbounded length — so an
+   * uncapped `unresolvedTeamNames` is an unbounded return value assembled from
+   * third-party strings. Capped at 200 with `unresolvedTeamCount` carrying the
+   * real number, the same shape `ambiguousKeys` and `staleDecisionIds` already
+   * use. The count is what the commit's log line and its "anything to review?"
+   * check read, so truncating the list cannot make work disappear.
+   */
+  test("unresolvedTeamNames is capped at 200 while unresolvedTeamCount stays true", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+
+    const teamNames = Array.from(
+      { length: 260 },
+      (_, i) => `Unknown Ballclub ${i}`,
+    );
+
+    const prelude = await asAdmin.mutation(
+      internal.selectorOptions.commitCardChecklistPrelude,
+      {
+        selectorOptionId: variantTypeId,
+        sportId,
+        playerNames: [],
+        teamNames,
+      },
+    );
+
+    expect(prelude.unresolvedTeamCount).toBe(260);
+    expect(prelude.unresolvedTeamNames).toHaveLength(200);
+    // A real sample, not one name repeated.
+    expect(new Set(prelude.unresolvedTeamNames).size).toBe(200);
+    // And still nothing created — the cap is about the REPORT, not the rule.
+    expect(await t.run(async (ctx) => ctx.db.query("teams").collect())).toEqual([]);
+  });
+
+  test("a 'create' decision with NO operator Location + Name creates nothing", async () => {
+    // The shape a pre-NEO-236 queue row has, and the shape a bulk decide would
+    // have had if it did not pre-fill. There is deliberately no fallback to the
+    // raw string, so this is the one place the rule is provably load-bearing.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+
+    await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      batchId: "batch-1",
+      kind: "team",
+      name: "Wichita Wind Surge",
+      decision: { action: "create" },
+    });
+
+    const prelude = await asAdmin.mutation(
+      internal.selectorOptions.commitCardChecklistPrelude,
+      {
+        selectorOptionId: variantTypeId,
+        sportId,
+        playerNames: [],
+        teamNames: ["Wichita Wind Surge"],
+        batchId: "batch-1",
+      },
+    );
+
+    expect(prelude.createdTeamIds).toEqual([]);
+    expect(prelude.unresolvedTeamNames).toEqual(["Wichita Wind Surge"]);
+    const teams = await t.run(async (ctx) => ctx.db.query("teams").collect());
+    expect(teams).toEqual([]);
+  });
+
+  test("a SKIPPED team is not 'unresolved' — 'not a team' is an answer", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+
+    await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      batchId: "batch-1",
+      kind: "team",
+      name: "CHECKLIST",
+      decision: { action: "skip" },
+    });
+
+    const prelude = await asAdmin.mutation(
+      internal.selectorOptions.commitCardChecklistPrelude,
+      {
+        selectorOptionId: variantTypeId,
+        sportId,
+        playerNames: [],
+        teamNames: ["CHECKLIST"],
+        batchId: "batch-1",
+      },
+    );
+
+    expect(prelude.unresolvedTeamNames).toEqual([]);
+    expect(prelude.skippedTeamNames).toEqual(["CHECKLIST"]);
+  });
+
+  test("an unresolved team leaves the CARD without a team id, and the name pending", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [
+        makeCard({
+          cardNumber: "1",
+          cardName: "Team Card",
+          teams: ["Wichita Wind Surge"],
+        }),
+      ],
+    });
+
+    const card = await t.run(async (ctx) =>
+      ctx.db
+        .query("cardChecklist")
+        .withIndex("by_selector_option", (q) =>
+          q.eq("selectorOptionId", variantTypeId),
+        )
+        .first(),
+    );
+    // No team id — the attention walker's missing-team lane is what surfaces
+    // this, exactly as it does for a card that named no team at all.
+    expect(card!.teamOnCardIds ?? []).toEqual([]);
+    const teams = await t.run(async (ctx) => ctx.db.query("teams").collect());
+    expect(teams).toEqual([]);
+  });
+});
+
+describe("commitCardChecklist: an operator's Location + Name LINKS before it creates", () => {
+  test("links to an existing SPLIT row when the composed name matches it", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    const padresId = await seedTeam(t, sportId, {
+      location: "San Diego",
+      name: "Padres",
+    });
+
+    await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      batchId: "batch-1",
+      kind: "team",
+      // A checklist string that normalises to something ELSE, so the loop's
+      // own by-name lookup misses and only the composed name can match.
+      name: "SD Padres",
+      decision: {
+        action: "create",
+        create: { location: "San Diego", name: "Padres" },
+      },
+    });
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardNumber: "1", cardName: "Padres", teams: ["SD Padres"] })],
+      batchId: "batch-1",
+    });
+
+    const teams = await t.run(async (ctx) => ctx.db.query("teams").collect());
+    expect(teams).toHaveLength(1);
+    expect(teams[0]._id).toBe(padresId);
+
+    const card = await t.run(async (ctx) =>
+      ctx.db
+        .query("cardChecklist")
+        .withIndex("by_selector_option", (q) =>
+          q.eq("selectorOptionId", variantTypeId),
+        )
+        .first(),
+    );
+    expect(card!.teamOnCardIds).toEqual([padresId]);
+    // NEO-236: the name that reaches the listing title is the FULL one, not
+    // the nickname the row happens to store — roughly half of sold comps are
+    // searched by city, so "Padres" alone is a worse search term.
+    expect(card!.listingTitle).toContain("San Diego Padres");
+  });
+
+  test("links to an existing UNSPLIT row too — the dedup key is the same either way", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    // A row nobody has split yet: the whole name in `name`, no location.
+    const padresId = await seedTeam(t, sportId, { name: "San Diego Padres" });
+
+    await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      batchId: "batch-1",
+      kind: "team",
+      name: "SD Padres",
+      decision: {
+        action: "create",
+        create: { location: "San Diego", name: "Padres" },
+      },
+    });
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardNumber: "1", cardName: "Padres", teams: ["SD Padres"] })],
+      batchId: "batch-1",
+    });
+
+    const teams = await t.run(async (ctx) => ctx.db.query("teams").collect());
+    expect(teams).toHaveLength(1);
+    expect(teams[0]._id).toBe(padresId);
+    // The existing row is NOT rewritten into the operator's split. Linking is
+    // linking; re-splitting a row behind an operator who was creating a
+    // different one is exactly the silent overwrite NEO-236 forbids.
+    expect(teams[0].name).toBe("San Diego Padres");
+    expect(teams[0].location).toBeUndefined();
+  });
+
+  test("creates a properly split row when nothing matches, and enqueues no re-enrichment", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+
+    await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      batchId: "batch-1",
+      kind: "team",
+      name: "Wind Surge",
+      decision: {
+        action: "create",
+        create: { location: "Wichita", name: "Wind Surge" },
+      },
+    });
+
+    const prelude = await asAdmin.mutation(
+      internal.selectorOptions.commitCardChecklistPrelude,
+      {
+        selectorOptionId: variantTypeId,
+        sportId,
+        playerNames: [],
+        teamNames: ["Wind Surge"],
+        batchId: "batch-1",
+      },
+    );
+
+    const teams = await t.run(async (ctx) => ctx.db.query("teams").collect());
+    expect(teams).toHaveLength(1);
+    expect(teams[0].name).toBe("Wind Surge");
+    expect(teams[0].location).toBe("Wichita");
+    expect(teams[0].nameNormalized).toBe("surge wichita wind");
+    expect(prelude.createdTeamIds).toEqual([teams[0]._id]);
+    expect(prelude.unresolvedTeamNames).toEqual([]);
+    // The wizard already enriched this row before it was created — NEO-147's
+    // creation-only enrichment queue is for the incidental career teams, not
+    // for a team the operator reviewed.
+    expect(prelude.enrichmentTeamIds).toEqual([]);
+    // And the FULL name is what leaves the prelude.
+    expect(prelude.teamNameById).toEqual([
+      { id: teams[0]._id, name: "Wichita Wind Surge" },
+    ]);
+  });
+});
+
+describe("commitCardChecklist: career teams link on a match and are dropped without one", () => {
+  test("a career team matching an existing SPLIT row links to it and creates nothing", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    const padresId = await seedTeam(t, sportId, {
+      location: "San Diego",
+      name: "Padres",
+    });
+
+    await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      batchId: "batch-1",
+      kind: "player",
+      name: "Tony Gwynn",
+      decision: { action: "create" },
+      enrichment: {
+        careerTeams: [{ name: "San Diego Padres", fromYear: 1982, toYear: 2001 }],
+      },
+    });
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardNumber: "1", cardName: "Tony Gwynn", players: ["Tony Gwynn"] })],
+      batchId: "batch-1",
+    });
+
+    const player = await t.run(async (ctx) =>
+      ctx.db
+        .query("players")
+        .withIndex("by_name_normalized_and_sport_id", (q) =>
+          q.eq("nameNormalized", "gwynn tony").eq("sportId", sportId),
+        )
+        .first(),
+    );
+    // Linked, with NO `createTeams` entry needed — matching comes first.
+    expect(player!.teamYears).toHaveLength(1);
+    expect(player!.teamYears![0].teamId).toBe(padresId);
+    const teams = await t.run(async (ctx) => ctx.db.query("teams").collect());
+    expect(teams).toHaveLength(1);
+  });
+
+  test("a career team matching NOTHING, with no operator pair, is dropped rather than minted", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+
+    await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      batchId: "batch-1",
+      kind: "player",
+      name: "Tony Gwynn",
+      // The old behaviour minted a `teams` row straight off this P54 label.
+      decision: { action: "create" },
+      enrichment: {
+        careerTeams: [
+          { name: "San Diego State Aztecs baseball", fromYear: 1979, toYear: 1981 },
+        ],
+      },
+    });
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardNumber: "1", cardName: "Tony Gwynn", players: ["Tony Gwynn"] })],
+      batchId: "batch-1",
+    });
+
+    const player = await t.run(async (ctx) =>
+      ctx.db
+        .query("players")
+        .withIndex("by_name_normalized_and_sport_id", (q) =>
+          q.eq("nameNormalized", "gwynn tony").eq("sportId", sportId),
+        )
+        .first(),
+    );
+    // The player is still created — only the unreviewable stint is dropped.
+    expect(player).not.toBeNull();
+    expect(player!.teamYears).toBeUndefined();
+    const teams = await t.run(async (ctx) => ctx.db.query("teams").collect());
+    expect(teams).toEqual([]);
+  });
+
+  test("with an operator pair, the same career team is created SPLIT and enqueued for enrichment", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+
+    await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      batchId: "batch-1",
+      kind: "player",
+      name: "Tony Gwynn",
+      decision: {
+        action: "create",
+        createTeams: [
+          {
+            sourceName: "Padres",
+            location: "San Diego",
+            name: "Padres",
+          },
+        ],
+      },
+      enrichment: {
+        careerTeams: [{ name: "Padres", fromYear: 1982, toYear: 2001 }],
+      },
+    });
+
+    const prelude = await asAdmin.mutation(
+      internal.selectorOptions.commitCardChecklistPrelude,
+      {
+        selectorOptionId: variantTypeId,
+        sportId,
+        playerNames: ["Tony Gwynn"],
+        teamNames: [],
+        batchId: "batch-1",
+      },
+    );
+
+    const teams = await t.run(async (ctx) => ctx.db.query("teams").collect());
+    expect(teams).toHaveLength(1);
+    expect(teams[0].name).toBe("Padres");
+    expect(teams[0].location).toBe("San Diego");
+    // An incidental career team lands bare, so it DOES go on the enrichment
+    // queue — unlike a team the operator reviewed directly.
+    expect(prelude.enrichmentTeamIds).toEqual([teams[0]._id]);
+    // Answered, so it is not reported as unresolved.
+    expect(prelude.unresolvedTeamNames).toEqual([]);
+  });
+});
+
+describe("commitCardChecklist: the bulk fast path still creates teams end to end", () => {
+  test("'Add All Remaining as New' on a team row lands a real, split teams row", async () => {
+    // The path every wizard Maestro flow takes past a row it does not care
+    // about. It has no per-row form to read a Location + Name from, so
+    // `recordAllRemainingAsCreate` writes the pre-fill and the prelude builds
+    // from that — if the two ever drift, bulk-confirming a batch silently
+    // creates nothing, which is invisible until someone counts the teams.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+
+    await t.run(async (ctx) =>
+      ctx.db.insert("entityReviewQueue", {
+        selectorOptionId: variantTypeId,
+        batchId: "batch-1",
+        // NEO-221 added a review-session ownership check to the bulk
+        // mutations, so the row has to belong to the session that decides it.
+        createdByUserId: ADMIN_IDENTITY.subject,
+        kind: "team",
+        name: "San Diego Padres",
+        sportId,
+        status: "ready",
+        enrichment: { location: "San Diego" },
+      }),
+    );
+
+    await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
+      selectorOptionId: variantTypeId,
+      batchId: "batch-1",
+    });
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [
+        makeCard({
+          cardNumber: "1",
+          cardName: "Team Card",
+          teams: ["San Diego Padres"],
+        }),
+      ],
+      batchId: "batch-1",
+    });
+
+    const teams = await t.run(async (ctx) => ctx.db.query("teams").collect());
+    expect(teams).toHaveLength(1);
+    expect(teams[0].name).toBe("Padres");
+    expect(teams[0].location).toBe("San Diego");
+    const card = await t.run(async (ctx) =>
+      ctx.db
+        .query("cardChecklist")
+        .withIndex("by_selector_option", (q) =>
+          q.eq("selectorOptionId", variantTypeId),
+        )
+        .first(),
+    );
+    expect(card!.teamOnCardIds).toEqual([teams[0]._id]);
   });
 });
 
