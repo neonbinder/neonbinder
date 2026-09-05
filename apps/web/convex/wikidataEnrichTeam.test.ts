@@ -200,7 +200,6 @@ describe("enrichTeam", () => {
         wikidataQid: "Q1421",
         wikidataDetail: {
           league: "National League",
-          city159: "Washington, D.C.",
           inceptionYear: 1969,
         },
       }),
