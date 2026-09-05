@@ -136,6 +136,43 @@ export const selectorOptionLevelValidator = v.union(
  * impossible: a new field is in the `returns` of all four the moment it is in
  * the table. See `selectorOptionDocValidator` in convex/selectorOptions.ts.
  */
+/**
+ * NEO-239 — the `metadata` FIELDS, exported so every validator that speaks
+ * metadata is BUILT from this one definition.
+ *
+ * Same lesson as `selectorOptionFields` above, learned the same way. Four
+ * places re-typed this three-field object by hand — `getAncestorChain`'s
+ * `returns`, `storeReconciledOptions`' args, `setVariantTypePlatformData`'s
+ * args and `updateSelectorOptionMetadata`'s args — and when NEO-239 added
+ * `isBase` to the table, `getAncestorChain` started throwing
+ * `Object contains extra field 'isBase'` for every chain containing a Base
+ * row. Server-side, so the SetSelector page error-boundaried the moment the
+ * flag existed: the seed flow synced variant types, the flag was written
+ * correctly, and the NEXT query to walk that chain took the page down.
+ *
+ * A required-object caller writes `v.object(selectorOptionMetadataFields)`;
+ * an optional one uses `selectorOptionFields.metadata`. Neither re-lists a
+ * field, so the next addition here reaches all four for free.
+ */
+export const selectorOptionMetadataFields = {
+  cardNumberPrefix: v.optional(v.string()),   // e.g. "DK-" for Diamond Kings
+  isInsert: v.optional(v.boolean()),
+  isParallel: v.optional(v.boolean()),
+  /**
+   * NEO-239 — "this variantType row is the set's BASE", as an NB ROLE.
+   *
+   * Was detected by comparing the display value to the literal `"base"`,
+   * which made an NB behaviour depend on a name that came from a
+   * marketplace, and broke the moment an operator renamed the row. The role
+   * is decided ONCE — when the variantType row is created from BSC's `base`
+   * variant slot — and read from here afterwards, so a rename is free.
+   *
+   * Absent means "not the base", including on rows written before this
+   * field; `backfillVariantFacetAndBaseRole` sets it on the existing ones.
+   */
+  isBase: v.optional(v.boolean()),
+};
+
 export const selectorOptionFields = {
   level: selectorOptionLevelValidator,
   value: v.string(), // Display value (e.g., "Football")
@@ -192,11 +229,23 @@ export const selectorOptionFields = {
   //
   // BSC only — SportLots has one unit of attachment, so there is nothing to
   // disambiguate. See convex/bscFacets.ts.
+  //
+  // NEO-239 widened the union with `variant`. THE VALIDATOR MUST BE DEPLOYED
+  // BEFORE ANYTHING WRITES ONE — a `variant` tag written against the old
+  // two-literal union is rejected at write time, and a row that already
+  // carries one cannot be READ back by a rolled-back deployment either (Convex
+  // validates documents on read as well). Rolling this deployment back after
+  // the backfill has run therefore breaks reads on every tagged row; the
+  // recovery is to roll forward, not back.
   platformFacets: v.optional(v.object({
     bsc: v.optional(
       v.record(
         v.string(),
-        v.union(v.literal("setName"), v.literal("variantName")),
+        v.union(
+          v.literal("setName"),
+          v.literal("variantName"),
+          v.literal("variant"),
+        ),
       ),
     ),
   })),
@@ -218,13 +267,26 @@ export const selectorOptionFields = {
   })),
   parentId: v.optional(v.id("selectorOptions")), // For hierarchical relationships
   children: v.optional(v.array(v.id("selectorOptions"))), // Child options
-  isCustom: v.optional(v.boolean()), // Distinguishes user-added entries from marketplace data
-  createdByUserId: v.optional(v.string()), // Audit trail for custom entries
-  metadata: v.optional(v.object({
-    cardNumberPrefix: v.optional(v.string()),   // e.g. "DK-" for Diamond Kings
-    isInsert: v.optional(v.boolean()),
-    isParallel: v.optional(v.boolean()),
-  })),
+  /**
+   * @deprecated NEO-239 — DEAD FIELD. Nothing reads it and nothing writes it.
+   *
+   * It used to mean "a human typed this row", and five unrelated behaviours
+   * hung off that one bit: whether marketplaces were queried, whether the
+   * attach panel rendered, whether the row could be renamed, whether its cards
+   * survived a re-sync, and a "Custom" badge. Every one of those is now
+   * expressed as what the row actually CARRIES — marketplace ids per side, an
+   * `isBase` role, a card's `platformData.<side>.ref`. There is no custom kind
+   * of row.
+   *
+   * Kept optional and unread rather than dropped: removing a field from the
+   * schema needs a backfill over every existing row, and the `city` /
+   * `league → leagueId` precedent (NEO-236) is to leave the tombstone until a
+   * ticket clears the data. Do not reintroduce a read.
+   */
+  isCustom: v.optional(v.boolean()),
+  createdByUserId: v.optional(v.string()), // Audit trail for hand-added entries
+  // Built from `selectorOptionMetadataFields` above — never re-listed here.
+  metadata: v.optional(v.object(selectorOptionMetadataFields)),
   // NEO-96: self-describing config for a `level: "sport"` row. Absent on
   // every other level, and absent on custom sports (which degrade explicitly:
   // slugified SKU prefix, no Wikidata/ESPN enrichment).
@@ -737,8 +799,21 @@ export default defineSchema({
     // Two NB rows sharing one marketplace set is resolved HERE: each row's
     // cards name their own SL refs (`#A1…` vs `#B1…`) out of the same slot.
     platformData: cardPlatformDataValidator,
+    /**
+     * @deprecated NEO-239 — DEAD FIELD on the write side. Nothing writes it.
+     *
+     * "Is this card ours or the marketplace's?" is answered by the row itself:
+     * `platformData.bsc?.ref || platformData.sportlots?.ref` (see
+     * `hasMarketplaceRef`). A card with no ref is preserved across a re-sync,
+     * sorts after the marketplace numbers and is never reported as dropped
+     * upstream — because it has no upstream, not because a human made it.
+     *
+     * Still READ by an old SPA bundle to render the retired "Custom" badge, so
+     * it stays in the validator (a whole-row `returns` must list every field a
+     * document can carry) until a backfill ticket clears the data.
+     */
     isCustom: v.optional(v.boolean()),
-    // Player names declared on a custom card before the players exist as
+    // Player names declared on a hand-added card before the players exist as
     // entities. fetchCardChecklist's reconciliation surfaces these as
     // unknownPlayers in the UnknownEntitiesDialog; commitCardChecklist
     // clears entries that the user confirms (so subsequent fetches don't

@@ -45,11 +45,13 @@ It exists to prove one thing that no custom set can express: **a NeonBinder
 rename survives a forced marketplace re-sync, and the marketplace's own name
 comes back as a suggestion rather than as an overwrite.**
 
-A custom Set node makes its whole subtree custom (`isCustomSubtree`, NEO-22),
-which short-circuits BSC and SportLots before any fetch — so a custom set has no
-marketplace id to match on, no marketplace label to disagree with our name, and
-no forced sync worth forcing. The feature only exists where a real marketplace
-holds an opinion about what the row is called.
+A hand-made Set node carries no marketplace ids, and neither does anything
+created under it. A marketplace side is fetched only when the ids that side
+needs are present on the ancestors (NEO-239) — so for a hand-made set neither
+side is resolvable, neither is fetched, and there is no id to match on, no
+marketplace label to disagree with our name, and no forced sync worth forcing.
+The feature only exists where a real marketplace holds an opinion about what the
+row is called.
 
 `setName` is a **BSC-only level** — the SportLots adapter returns
 `success: true, options: []` for it by design — so a renamed set can only ever
@@ -220,10 +222,11 @@ clear and the read are now scoped to the operator who fetched, and each runner
 signs in as its own `dev+e2e-<N>` user. What remains is ~90s of live BSC/SL
 round-trip per fetch, which is reason enough not to pay for it twice.
 
-It cannot use a custom set: a custom subtree is short-circuited before any
-marketplace fetch (`isCustomSubtree`, NEO-22), so it produces no candidates, and
-`CardChecklist` deliberately skips the pairing dialog when all three buckets are
-empty. The dialog is only reachable with real marketplace data.
+It cannot use a hand-made set: a hand-made subtree carries no marketplace ids,
+so neither side is resolvable and neither is fetched (NEO-239) — it produces no
+candidates, and `CardChecklist` deliberately skips the pairing dialog when all
+three buckets are empty. The dialog is only reachable with real marketplace
+data.
 
 NEO-137's Phase 5 also calls for a full 1996 Score map-out. That needs a NEW
 real set and therefore explicit owner approval — it is **not** in the suite.
@@ -291,9 +294,19 @@ players or teams — which is the only condition `deleteSelectorOption` accepts.
 
 ## Custom sets
 
-A **custom Set node makes the whole subtree custom** (`isCustomSubtree` → BSC/SL
-skipped, NEO-22), so it costs no marketplace sync at all. This is the default
-choice for any flow that needs to write.
+**A marketplace side is fetched only when the ids that side needs are present on
+the ancestors** (NEO-239). BSC needs `sport`, `year` and `setName`; SportLots
+needs `sport` and `year` (plus `manufacturer` to attach). A hand-made subtree
+carries no ids on any ancestor, so neither side is ever resolvable, neither is
+fetched, and it costs no marketplace sync at all — which is why the per-worker
+fixtures below stay marketplace-free. This is the default choice for any flow
+that needs to write.
+
+This replaced NEO-22's "once custom, always custom" flag. There is no "custom"
+mode any more: a row either carries marketplace ids or it does not, and the two
+behave identically everywhere else — including in the entity-review wizard and
+in rename, both of which now work on any row at any level. A missing id is never
+guessed at from a display name; the side is simply skipped.
 
 **Preferred shape:** a custom `SET_NAME` under the *real* `Baseball / 2024 /
 Topps` ancestors. Keeping the real Sport ancestor means `fetchCardChecklist`

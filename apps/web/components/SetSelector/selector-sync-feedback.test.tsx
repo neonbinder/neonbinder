@@ -20,12 +20,13 @@ import {
   buildUnlinkedNotices,
   returnedIdsFromFetch,
   totalsBySideFor,
-  coveredSidesFromErrors,
+  coveredSidesFromFetch,
   joinLabels,
   levelLabelPlural,
   levelNoun,
   partialFailureMessage,
   planSinglePlatformStore,
+  skippedSidesOf,
   unlinkNoticeText,
   UNLINKED_NAME_LIMIT_TOAST,
   type UnlinkedEntry,
@@ -40,6 +41,33 @@ describe("planSinglePlatformStore", () => {
       kind: "store",
       coveredSides: ["bsc", "sportlots"],
     });
+  });
+
+  it("never covers a side the fetch SKIPPED for lack of ids (NEO-239)", () => {
+    // The single-platform branch exists precisely because one side is empty,
+    // and a skipped side is empty for a reason that is NOT evidence: nobody
+    // asked it. Storing with it in coveredSides detaches every child's slot on
+    // that marketplace. There is no error to block on, so the skip list is the
+    // only thing standing between an id-less set and a silent mass unlink.
+    expect(planSinglePlatformStore([], ["sportlots"])).toEqual({
+      kind: "store",
+      coveredSides: ["bsc"],
+    });
+    expect(planSinglePlatformStore([], ["bsc", "sportlots"])).toEqual({
+      kind: "store",
+      coveredSides: [],
+    });
+  });
+
+  it("still blocks on an error even when the other side was skipped", () => {
+    // Blocking outranks covering: an error means we know nothing about the
+    // side we would be writing about, whatever the skip list says.
+    expect(
+      planSinglePlatformStore(
+        [{ platform: "bsc", message: "503" }],
+        ["sportlots"],
+      ),
+    ).toEqual({ kind: "blocked", failedLabels: ["BuySportsCards"] });
   });
 
   it("blocks on ANY error, and names the platform in full", () => {
@@ -257,25 +285,71 @@ describe("blockedMessageFromErrors", () => {
   });
 });
 
-describe("coveredSidesFromErrors", () => {
+describe("coveredSidesFromFetch", () => {
   it("returns undefined for an ABSENT result, so the arg is omitted", () => {
     // Fails closed. `[]` means "no errors"; undefined means "we no longer know
     // what the fetch reported", and claiming both sides were reached there
     // would license an unlink on a side we cannot vouch for.
-    expect(coveredSidesFromErrors(undefined)).toBeUndefined();
-    expect(coveredSidesFromErrors([])).toEqual(["bsc", "sportlots"]);
+    expect(coveredSidesFromFetch(undefined)).toBeUndefined();
+    expect(coveredSidesFromFetch([])).toEqual(["bsc", "sportlots"]);
   });
 
   it("excludes a side that reported an error", () => {
     expect(
-      coveredSidesFromErrors([{ platform: "bsc", message: "503" }]),
+      coveredSidesFromFetch([{ platform: "bsc", message: "503" }]),
     ).toEqual(["sportlots"]);
   });
 
   it("ignores a platform that is not a side", () => {
     expect(
-      coveredSidesFromErrors([{ platform: "internal", message: "x" }]),
+      coveredSidesFromFetch([{ platform: "internal", message: "x" }]),
     ).toEqual(["bsc", "sportlots"]);
+  });
+
+  it("excludes a SKIPPED side even though it reported no error (NEO-239)", () => {
+    // The whole point. A side with no ids on the parent chain is never
+    // queried, so it raises nothing — and "no error" used to read as "reached
+    // and empty", which licenses the store to detach every child's slot on
+    // that side. Never asked is not the same statement as asked and empty.
+    expect(coveredSidesFromFetch([], ["sportlots"])).toEqual(["bsc"]);
+    expect(coveredSidesFromFetch([], ["bsc", "sportlots"])).toEqual([]);
+  });
+
+  it("excludes a side that was skipped AND a different side that errored", () => {
+    expect(
+      coveredSidesFromFetch([{ platform: "bsc", message: "503" }], [
+        "sportlots",
+      ]),
+    ).toEqual([]);
+  });
+});
+
+describe("skippedSidesOf", () => {
+  it("reads the fetch result's skipped sides", () => {
+    expect(skippedSidesOf({ skippedSides: ["bsc"] })).toEqual(["bsc"]);
+    expect(skippedSidesOf({ skippedSides: ["sportlots", "bsc"] })).toEqual([
+      "sportlots",
+      "bsc",
+    ]);
+  });
+
+  it("reports nothing skipped for a result that has no such field", () => {
+    // A result from before NEO-239 (or from an older deployment) must not
+    // crash or block the store. The server narrows coverage independently —
+    // this reader is the affordance, not the guarantee.
+    expect(skippedSidesOf({ errors: [] })).toEqual([]);
+    expect(skippedSidesOf(undefined)).toEqual([]);
+    expect(skippedSidesOf(null)).toEqual([]);
+    expect(skippedSidesOf("not an object")).toEqual([]);
+  });
+
+  it("drops entries that are not a known side, and de-duplicates", () => {
+    // `internal` is a real platform key in the error list and is deliberately
+    // not a side; echoing an unknown key into coveredSides arithmetic would
+    // make the result depend on a string we do not control.
+    expect(
+      skippedSidesOf({ skippedSides: ["internal", "bsc", "bsc", 7, null] }),
+    ).toEqual(["bsc"]);
   });
 });
 

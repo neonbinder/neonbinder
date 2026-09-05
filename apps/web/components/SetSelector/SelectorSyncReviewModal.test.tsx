@@ -90,7 +90,7 @@ describe("seedChoices", () => {
 // ---------------------------------------------------------------------------
 
 describe("bulk actions", () => {
-  it("Decline all touches only the UNDECIDED, never an explicit Accept", () => {
+  it("'Keep all mine' touches only the UNDECIDED, never an explicit take", () => {
     const rows = [BOTH_SIDES];
     const withAccept: ChoiceMap = { [choiceKey("selopt_1", "bsc")]: "accept" };
     const next = declineUndecided(rows, withAccept);
@@ -100,7 +100,7 @@ describe("bulk actions", () => {
     expect(next[choiceKey("selopt_1", "sportlots")]).toBe("decline");
   });
 
-  it("Clear declines is its undo, and keeps the accepts", () => {
+  it("'Undo that' is its undo, and keeps the accepts", () => {
     const cleared = clearDeclines({
       [choiceKey("selopt_1", "bsc")]: "accept",
       [choiceKey("selopt_1", "sportlots")]: "decline",
@@ -191,16 +191,16 @@ function renderModal(rows: SelectorSyncSuggestion[] = [BOTH_SIDES]) {
 }
 
 function sideRow(label: string) {
-  // Each side's Accept/Decline pair is disambiguated by its aria-label, exactly
-  // as the E2E author will have to do when a column shows more than one row.
-  // Labels lead with the visible word ("Accept —" / "Decline —") so the
+  // Each side's take/keep pair is disambiguated by its aria-label, exactly as
+  // the E2E author will have to do when a column shows more than one row.
+  // Labels lead with the visible words ("Take it —" / "Keep mine —") so the
   // accessible name still contains the button's own visible text (WCAG 2.5.3).
   return {
     accept: screen.getByLabelText(
-      `Accept — rename "TCG" to "${label}" (from ${label === "Topps" ? "BSC" : "SportLots"})`,
+      `Take it — rename "TCG" to "${label}" (from ${label === "Topps" ? "BSC" : "SportLots"})`,
     ),
     decline: screen.getByLabelText(
-      `Decline — keep "TCG"; stop suggesting ${
+      `Keep mine — keep "TCG"; stop suggesting ${
         label === "Topps" ? "BSC" : "SportLots"
       }'s "${label}"`,
     ),
@@ -208,11 +208,45 @@ function sideRow(label: string) {
 }
 
 describe("SelectorSyncReviewModal — the dialog", () => {
-  it("shows the marketplace's label in the literal 'BSC: {label}' form", () => {
-    // The plan's own E2E acceptance asserts this exact string.
+  it("titles itself for the column, and says what happens to YOUR name", () => {
+    // NEO-239 copy pass. The old explainer ended "NeonBinder owns these names
+    // — nothing changes unless you accept a suggestion here", which stated a
+    // rule about the system rather than what the operator's data does. The
+    // replacement is pinned here because both halves are load-bearing: the
+    // title is an E2E anchor, and the second sentence is the whole reassurance
+    // that opening this dialog has not already changed anything.
     renderModal();
-    expect(screen.getByText(/BSC: Topps/)).toBeTruthy();
-    expect(screen.getByText(/SportLots: Topps Chewing Gum/)).toBeTruthy();
+    expect(screen.getByText("Name Check — Sets")).toBeTruthy();
+    expect(
+      screen.getByText(
+        /A marketplace calls 1 of your sets something else\. Yours stays — unless you take theirs\./,
+      ),
+    ).toBeTruthy();
+    // The retired sentence must not come back with a reword.
+    expect(screen.queryByText(/owns these names/)).toBeNull();
+  });
+
+  it("pluralises the explainer on more than one row", () => {
+    renderModal([
+      BOTH_SIDES,
+      suggestion({ existingId: id(2), currentValue: "Score" }),
+    ]);
+    expect(
+      screen.getByText(
+        /A marketplace calls 2 of your sets something else\. Yours stay — unless you take theirs\./,
+      ),
+    ).toBeTruthy();
+  });
+
+  it("names the marketplace as the one doing the calling, in STRAIGHT quotes", () => {
+    // The E2E asserts this exact string, and the quotes are the fragile part:
+    // typographic quotes here would render U+201C/U+201D and a YAML assertion
+    // typed with "…" would silently never match.
+    renderModal();
+    expect(screen.getByText('BSC calls it "Topps"')).toBeTruthy();
+    expect(
+      screen.getByText('SportLots calls it "Topps Chewing Gum"'),
+    ).toBeTruthy();
   });
 
   it("opens with Apply disabled — nothing decided, nothing to send", () => {
@@ -256,14 +290,14 @@ describe("SelectorSyncReviewModal — the dialog", () => {
     fireEvent.click(decline);
     expect(accept.getAttribute("aria-pressed")).toBe("false");
     expect(decline.getAttribute("aria-pressed")).toBe("true");
-    expect(screen.getByText("0 to accept · 1 to decline")).toBeTruthy();
+    expect(screen.getByText("0 to take · 1 to keep")).toBeTruthy();
 
     // Pressing the now-pressed Decline again returns to the resting,
     // undecided third state.
     fireEvent.click(decline);
     expect(accept.getAttribute("aria-pressed")).toBe("false");
     expect(decline.getAttribute("aria-pressed")).toBe("false");
-    expect(screen.getByText("0 to accept · 0 to decline")).toBeTruthy();
+    expect(screen.getByText("0 to take · 0 to keep")).toBeTruthy();
 
     // Nothing decided on this side; the OTHER side (SportLots) is still
     // untouched from its seeded undecided state, so Apply stays disabled.
@@ -297,7 +331,7 @@ describe("SelectorSyncReviewModal — the dialog", () => {
     renderModal();
     fireEvent.click(sideRow("Topps").accept);
     expect(
-      screen.getByText("1 to accept · 0 to decline").getAttribute("role"),
+      screen.getByText("1 to take · 0 to keep").getAttribute("role"),
     ).toBe("status");
   });
 
@@ -313,16 +347,16 @@ describe("SelectorSyncReviewModal — the dialog", () => {
 
   it("offers the formatting bulk only when there is a fold-equal side", () => {
     renderModal();
-    expect(screen.queryByText(/Accept all formatting-only/)).toBeNull();
+    expect(screen.queryByText(/Take all style-only/)).toBeNull();
   });
 
-  it("Decline all reports how many sides it is about to decline", () => {
+  it("'Keep all mine' reports how many sides it is about to decline", () => {
     renderModal();
-    const bulk = screen.getByText("Decline all (2)");
+    const bulk = screen.getByText("Keep all mine (2)");
     fireEvent.click(bulk);
     // Once nothing is undecided, the button becomes its own undo.
-    expect(screen.getByText("Clear declines")).toBeTruthy();
-    expect(screen.getByText("0 to accept · 2 to decline")).toBeTruthy();
+    expect(screen.getByText("Undo that")).toBeTruthy();
+    expect(screen.getByText("0 to take · 2 to keep")).toBeTruthy();
   });
 
   it("says so rather than closing when the live list empties out", () => {

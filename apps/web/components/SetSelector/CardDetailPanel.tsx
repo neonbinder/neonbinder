@@ -181,7 +181,6 @@ type CardDetailCard = {
     bsc?: { ref: string; src?: string };
     sportlots?: { ref: string; src?: string };
   };
-  isCustom?: boolean;
   features?: Record<string, string>;
 };
 
@@ -771,11 +770,6 @@ export default function CardDetailPanel({
             className="text-sm font-semibold text-gray-900 dark:text-gray-100 flex-1 truncate"
           >
             Card #{card.cardNumber}
-            {card.isCustom && (
-              <span className="ml-2 text-[10px] uppercase tracking-wide text-blue-500">
-                Custom
-              </span>
-            )}
           </h2>
           <button
             onClick={onPrev}

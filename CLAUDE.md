@@ -22,6 +22,52 @@ NeonBinder is a platform for trading card collectors to manage collections and s
 >
 > **Not in this repo:** GCP infrastructure is a separate Terraform repo, **`neonbinder/neonbinder_ioc`** (GitFlow: `develop`→dev apply, `main`→prod apply). The React Native mobile client (`NeonBinderApp`) is **paused** and not part of the monorepo today; it's expected to return after the web stabilizes (keep cross-platform concerns like Maestro in mind).
 
+## Product invariant: NB owns the data; marketplaces are input and linkage, never truth
+
+This rule governs every plan, schema, adapter, test and UI decision. Jason,
+2026-09-01 and 2026-09-04, verbatim: "We are building NB data that may also
+contain links to marketplaces. We can never have anything that is user
+facing be dependent upon the marketplaces. It can be derived initially and
+can have links to marketplaces but cannot be directly dependent in either
+direction." And: "There are just sets that do or do not have marketplace
+identifiers attached to them. We should not treat them any different
+whether they do or don't."
+
+1. **NeonBinder owns its data.** Sports, years, brands, sets, variant types,
+   inserts, parallels, cards, players and teams are NB's rows with NB's
+   ids. BSC and SportLots could be dropped tomorrow for eBay or Mercari and
+   every NB set must stand untouched.
+2. **Marketplaces are exactly two things.** (a) An *initial input*: a row
+   may be derived from marketplace data when it is created. (b) A *listing
+   destination*: NB keeps a link (the marketplace's id, in the row's
+   platform slot) so inventory can be listed there. Nothing else.
+3. **Never a source of truth.** After creation a marketplace value never
+   silently overwrites NB data. Upstream changes become operator-reviewed
+   suggestions (NEO-203 checklist diff, NEO-211 name suggestions). Sync is
+   additive and id-keyed; it never deletes or renames an NB row.
+4. **No dependency in either direction, ever, on anything user-facing.**
+   Forward: NB behaviour is never keyed on a marketplace value or name
+   (e.g. detecting the base set by the literal "Base"); an NB role gets an
+   NB flag, derived once at creation. Reverse: a marketplace query is never
+   built from an NB display value; adapters read ids from slots. A plan
+   that says "derive X from the name" or "protect the name because the
+   adapter reads it" is the smell — fix the adapter to read the slot.
+5. **Linkage is maintained, not optional.** Every attached marketplace id
+   stays attached unless the operator detaches it, or that side was fetched
+   successfully, no longer returns it, and the operator is told. Losing a
+   link means inventory cannot be listed; that is a bug.
+6. **There is no "custom" concept.** A row either has marketplace ids or it
+   does not, and both behave identically. A marketplace side is fetched
+   only when the ids that side needs are present; otherwise that side is
+   skipped, never guessed by name. `isCustom` is being retired
+   (NEO-239).
+7. **Card numbers are never unique at any scope.** Never key logic on a
+   card number without an exactly-one-match guard.
+
+Marketplace refs may be read only inside the sync/adapter boundary, to
+route a marketplace's own update to the row linked to it.
+
+
 ## Code Search & Navigation
 
 Application code lives under `apps/web/`, `services/browser/` and `services/preprocess/`. When searching:

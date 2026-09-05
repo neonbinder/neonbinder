@@ -85,12 +85,15 @@ describe("auditSelectorOptionsForResync", () => {
         children: [],
         lastUpdated: SENTINEL,
       });
-      // Custom rows have no upstream and are excluded from the id counts.
+      // NEO-239 — a row nobody linked. It used to carry `isCustom: true` and
+      // be EXCLUDED from the id counts on the theory that it was a different
+      // kind of row. It is not: "no BSC id, no SL id" is exactly the fact this
+      // audit exists to size, and hiding a whole population from it made the
+      // pre-resync estimate wrong in the direction that matters.
       await ctx.db.insert("selectorOptions", {
         level: "setName",
         value: "My Own Set",
         platformData: {},
-        isCustom: true,
         parentId,
         children: [],
         lastUpdated: SENTINEL,
@@ -105,11 +108,14 @@ describe("auditSelectorOptionsForResync", () => {
     expect(report.scanned.truncated).toBe(false);
     const setName = report.byLevel.find((l) => l.level === "setName")!;
     expect(setName.rows).toBe(6);
-    expect(setName.nonCustomRows).toBe(5);
-    // Chrome ×2 and Bowman-family rows: everything without a BSC slug.
-    expect(setName.missingBsc).toBe(2);
+    // Every row is countable now — see the seed note above.
+    expect(setName.linkableRows).toBe(6);
+    // Chrome ×2 plus the unlinked row: everything without a BSC slug.
+    expect(setName.missingBsc).toBe(3);
     // Everything except "Topps".
-    expect(setName.missingSportlots).toBe(4);
+    expect(setName.missingSportlots).toBe(5);
+    // No variantType rows in this fixture, so nothing is missing a variant tag.
+    expect(setName.missingVariantFacet).toBe(0);
     expect(setName.valueCollisionGroups).toBe(1);
     expect(setName.sharedMarketplaceIds).toBe(1);
 
@@ -129,10 +135,11 @@ describe("auditSelectorOptionsForResync", () => {
         (s) => s.value === "Bowman" && s.side === "sportlots",
       ),
     ).toBe(true);
-    // A custom row is never reported as missing an id.
+    // NEO-239 — and an UNLINKED row IS reported. It is the clearest instance of
+    // the thing the sample list is for.
     expect(
       report.samples.missingId.some((s) => s.value === "My Own Set"),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   test("a collision only counts inside one sibling group", async () => {

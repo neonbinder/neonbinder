@@ -38,24 +38,126 @@ import { v } from "convex/values";
 import {
   slotEntries,
   slotFacet,
+  slotLabel,
   type PlatformDataShape,
+  type SlotBearingRow,
 } from "./platformSlots";
 
 /**
- * The BSC facets an operator can attach an id to.
+ * The BSC facets a slot's id can belong to.
  *
- * Deliberately NOT the full facet list. `sport` and `year` are scope resolved
- * from the ancestor chain, and `variant` (base/insert/parallel) is derived
- * from the NB variantType's display value — see the note in
- * `fetchBscChecklist`. Only `setName` and `variantName` name a source of
- * cards, so only those two are attachable.
+ * `sport` and `year` are scope resolved from the ancestor chain and are never
+ * tagged; every other facet a slot can hold is here.
+ *
+ * NEO-239 added `variant` (base/insert/parallel/promo/…). It used to be
+ * derived from the NB variantType row's DISPLAY VALUE, which is the reverse
+ * dependency the product invariant forbids — an NB name must never build a
+ * marketplace query, and BSC's variant set is not a closed enum ("Promo",
+ * "Mail In" occur), so the name was never a safe stand-in for the id either.
+ * It is now a tagged slot like any other.
  */
-export type BscFacet = "setName" | "variantName";
+export type BscFacet = "setName" | "variantName" | "variant";
+
+/**
+ * The facets that name a SOURCE OF CARDS, and so the only ones an operator can
+ * attach as an extra source set.
+ *
+ * `variant` is deliberately NOT here (NEO-239 / audit F6): it SCOPES a query
+ * — "the base cards of this set" — it does not name a second set to draw cards
+ * from. Attaching it as a source would make `sourceFacet` attribute cards to a
+ * value that is not a set, and `resolveCardSlots` would bind them to nothing.
+ */
+export type BscSourceFacet = "setName" | "variantName";
+
+export const BSC_SOURCE_FACETS: ReadonlySet<string> = new Set([
+  "setName",
+  "variantName",
+]);
 
 export const bscFacetValidator = v.union(
   v.literal("setName"),
   v.literal("variantName"),
+  v.literal("variant"),
 );
+
+/**
+ * NEO-239 — which of BSC's `variant` facet ids means "the base set"?
+ *
+ * ## Why this is a marketplace-id question and not a name one
+ *
+ * NB's base ROLE (`metadata.isBase`) has to come from somewhere at creation,
+ * and the invariant is explicit about which direction is allowed: a row may be
+ * DERIVED from marketplace data when it is created. So this compares a
+ * marketplace id to marketplace vocabulary, once, on the sync that inserts the
+ * row. It never reads the NB display value, and nothing re-derives afterwards —
+ * a rename cannot move the role, and `setBaseVariantType` overrides it.
+ *
+ * ## Why it is not `id === "base"`
+ *
+ * That is what shipped first, and CI caught it: `setup.yaml` synced 2024 Topps
+ * Chrome's variant types against real BSC, the rows appeared, and the Base row
+ * got no role — so BSC's actual slug for its base variant is not the bare
+ * literal. We have no recorded sample of what it IS (the only prior evidence in
+ * this repo was `parentFilters.variantType.toLowerCase()`, an assumption
+ * NEO-239 deleted for being one), and the failure is silent two screens later:
+ * the operator taps "Base" and no mapping form appears.
+ *
+ * So the match is on TOKENS rather than a literal. The id is folded to
+ * lowercase and split on every non-alphanumeric run, and the base variant is
+ * the one carrying a whole `base` token. That recognises `base`, `Base`,
+ * `base-set`, `base_cards` and `2024-topps-chrome-base` alike, while
+ * `baseball` — one token, not two — is correctly NOT a match, which a
+ * substring test would have got wrong.
+ *
+ * ## Ambiguity is not resolved here
+ *
+ * A token test cannot rank `base` against a hypothetical `base-parallel`.
+ * Callers therefore confer the role only when EXACTLY ONE id in the batch
+ * matches (see `storeSelectorOptions`); more than one is reported and left to
+ * `setBaseVariantType`. Fail-closed: no role is recoverable in one click, two
+ * rival base rows make `getBaseVariantBySet` answer by document order.
+ */
+export function isBscBaseVariantId(id: string): boolean {
+  return id
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean)
+    .includes("base");
+}
+
+/**
+ * The single BSC id in a batch that names the base variant, or `undefined`
+ * when none does or more than one does.
+ *
+ * The batch is the unit because the sync sees every variant of a set at once —
+ * which is the only place "exactly one of these is the base" can be checked at
+ * all.
+ */
+export function soleBscBaseVariantId(
+  ids: ReadonlyArray<string | undefined>,
+): string | undefined {
+  const matches = [
+    ...new Set(ids.filter((id): id is string => !!id && isBscBaseVariantId(id))),
+  ];
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+/**
+ * The facet a SYNC at `level` knows the ids it just fetched belong to.
+ *
+ * Only `variantType` is answered, and only since NEO-239. The level sync at
+ * variantType asks BSC for its `variant` facet values and stores exactly what
+ * came back, so the tag is a fact the writer holds, not an inference about an
+ * id someone else wrote.
+ *
+ * Every other level deliberately returns `undefined`: NEO-189's rule is that a
+ * slot is tagged deliberately or not at all, and retro-tagging a setName row's
+ * primary would change nothing (the level rule already answers `setName` for
+ * it) while adding a way for the two sources of truth to disagree.
+ */
+export function syncWrittenBscFacet(level: string): BscFacet | undefined {
+  return level === "variantType" ? "variant" : undefined;
+}
 
 /** NB level → BSC facet key. Levels absent here have no BSC facet at all. */
 export const LEVEL_TO_BSC_FACET: Record<string, string> = {
@@ -72,16 +174,22 @@ export const LEVEL_TO_BSC_FACET: Record<string, string> = {
  *
  * Two levels resolve to `undefined` and that is load-bearing:
  *
- *   variantType — `LEVEL_TO_BSC_FACET` maps it to `variant`, but the checklist
- *                 fetch has always skipped it and re-derived `variant` from
- *                 the row's DISPLAY value instead. A mis-saved BaseSetPicker
- *                 mapping corrupted those slugs in dev (they ended up pointing
- *                 at the parent setName), and the display value is robust
- *                 regardless of what is on the entity.
- *   parallel    — never had a BSC facet.
+ *   variantType — `LEVEL_TO_BSC_FACET` maps it to `variant`, but an UNTAGGED
+ *                 variantType slug is not trustworthy: a mis-saved
+ *                 BaseSetPicker mapping corrupted those slugs in dev (they
+ *                 ended up pointing at the parent setName), so an untagged id
+ *                 here could be a setName value wearing a variant's clothes.
+ *                 It contributes nothing.
  *
- * Both cases mean "this untagged id contributes nothing to the query", which
- * is what shipped and what untagged rows must keep doing.
+ *                 NEO-239 changed what happens NEXT, not this: the checklist
+ *                 fetch used to paper over the gap by deriving `variant` from
+ *                 the row's DISPLAY value. It no longer does. A variantType row
+ *                 with no `variant`-tagged slot makes the whole BSC side
+ *                 unresolvable and BSC is SKIPPED — see
+ *                 `marketplaceResolvability.ts`. Failing open would query
+ *                 sport+year+setName with no variant axis, which returns base
+ *                 plus every insert and parallel in the set.
+ *   parallel    — never had a BSC facet.
  */
 export function legacyBscFacetForLevel(level: string): string | undefined {
   if (level === "variantType") return undefined;
@@ -104,8 +212,11 @@ export type BscFacetPlan = {
    * of this facet so `resolveCardSlots` can bind each card to the slot it came
    * from. `undefined` when the leaf contributed nothing, which is the legacy
    * Base/Parallel case and keeps the old attribution fallback.
+   *
+   * NEVER `variant` (NEO-239 / audit F6) — that facet scopes a query, it does
+   * not name a set cards can be attributed to.
    */
-  sourceFacet?: BscFacet;
+  sourceFacet?: BscSourceFacet;
 };
 
 /**
@@ -130,7 +241,7 @@ export function resolveBscFacetFilters(
   chain: readonly FacetBearingRow[],
 ): BscFacetPlan {
   const filters: Record<string, string[]> = {};
-  let sourceFacet: BscFacet | undefined;
+  let sourceFacet: BscSourceFacet | undefined;
 
   for (const node of chain) {
     const perFacet = new Map<string, string[]>();
@@ -144,9 +255,9 @@ export function resolveBscFacetFilters(
     }
     for (const [facet, ids] of perFacet) {
       filters[facet] = ids;
-      // Deepest contributor of an ATTACHABLE facet names the source. `sport`
-      // and `year` are scope, never a source.
-      if (facet === "setName" || facet === "variantName") sourceFacet = facet;
+      // Deepest contributor of a SOURCE facet names the source. `sport`,
+      // `year` and `variant` are scope, never a source.
+      if (BSC_SOURCE_FACETS.has(facet)) sourceFacet = facet as BscSourceFacet;
     }
   }
 
@@ -221,4 +332,124 @@ export function planBscFanOut(
     totalBeforeCap,
     capped,
   };
+}
+
+// ---------------------------------------------------------------------------
+// What the OPERATOR sees: sources, scope, and slots that are neither
+// ---------------------------------------------------------------------------
+
+/** A slot on this row that names a place cards come from. */
+export type BscSourceSlot = {
+  slot: string;
+  facet: BscSourceFacet;
+  id: string;
+  label: string;
+};
+
+/** A slot on this row that NARROWS the query rather than naming a source. */
+export type BscScopeSlot = {
+  slot: string;
+  facet: BscFacet;
+  id: string;
+  label: string;
+};
+
+/** A slot written before facets existed, on a level whose level-rule is silent. */
+export type BscUntaggedSlot = { slot: string; id: string; label: string };
+
+export type BscSourceView = {
+  /**
+   * One entry per SOURCE this row draws cards from. This is what a chip is.
+   */
+  sources: BscSourceSlot[];
+  scope: {
+    /**
+     * The facet filters the checklist fetch will actually send for this chain,
+     * straight from `resolveBscFacetFilters`. Held here so the panel and the
+     * fetch cannot drift: if the operator sees a source, it is because the
+     * same function that builds the request counted it as one.
+     */
+    filters: Record<string, string[]>;
+    /**
+     * The scope slots THIS ROW carries itself — the only scope worth putting
+     * on a chip. Scope inherited from an ancestor (the sport, the year, the
+     * set, the variant type a row sits under) is already spelled out in the
+     * breadcrumb above the panel, and repeating it per chip would turn one
+     * fact into four.
+     */
+    own: BscScopeSlot[];
+  };
+  /** Slots that resolve to no facet at all. Inert in the fetch; shown anyway. */
+  untagged: BscUntaggedSlot[];
+};
+
+/**
+ * NEO-239 — split this row's BSC slots into what an operator can act on.
+ *
+ * ## The distinction the panel got wrong
+ *
+ * A Base variant type shows two BSC slots: the `variant` slug that says "the
+ * base cards", and the `setName` slug Base mapping stored. Rendered as two
+ * identical chips they read as TWO SOURCES — as if the row pulled cards from
+ * two places — when one of them is not a source at all. It narrows the single
+ * source to a slice of itself.
+ *
+ * So: a chip is a SOURCE, and a source is a slot whose facet is in
+ * `BSC_SOURCE_FACETS`. `variant` is scope and is never a chip. That rule is
+ * level-agnostic on purpose — a `switch (row.level)` here is the same class of
+ * mistake as deriving the facet from the display value, because it re-decides
+ * centrally something the slot already states.
+ *
+ * ## Why it delegates to `resolveBscFacetFilters`
+ *
+ * The panel must not have its own opinion about what counts as a source. The
+ * fetch's answer IS the answer, so the chain-wide filters come back untouched
+ * from the same function the request is built with, and the per-slot walk below
+ * applies the identical `tagged ?? legacyBscFacetForLevel(level)` rule. A slot
+ * the fetch would ignore is a slot the operator sees under "needs re-mapping",
+ * never a chip that promises cards it will not deliver.
+ *
+ * `chain` is root→leaf INCLUDING the row itself, exactly as
+ * `resolveBscFacetFilters` takes it. `row` must be the leaf; passing a
+ * different row would describe one row's chips under another's scope.
+ */
+export function bscSourceView(
+  row: SlotBearingRow & FacetBearingRow,
+  chain: readonly FacetBearingRow[],
+): BscSourceView {
+  const sources: BscSourceSlot[] = [];
+  const own: BscScopeSlot[] = [];
+  const untagged: BscUntaggedSlot[] = [];
+
+  for (const { slot, id } of slotEntries(row, "bsc")) {
+    const facet = slotFacet(row, "bsc", slot) ?? legacyBscFacetForLevel(row.level);
+    const label = slotLabel(row, "bsc", slot);
+    if (!facet) {
+      untagged.push({ slot, id, label });
+    } else if (BSC_SOURCE_FACETS.has(facet)) {
+      sources.push({ slot, facet: facet as BscSourceFacet, id, label });
+    } else {
+      own.push({ slot, facet: facet as BscFacet, id, label });
+    }
+  }
+
+  return {
+    sources,
+    scope: { filters: resolveBscFacetFilters(chain).filters, own },
+    untagged,
+  };
+}
+
+/**
+ * The qualifier a chip carries, or `undefined` when the row scopes nothing
+ * itself.
+ *
+ * Reads as a noun phrase after the source name — "Topps · base cards" — because
+ * that is the sentence the operator is checking: which set, and which part of
+ * it. Built from the slot's LABEL rather than its id so it says "base cards"
+ * and not "2024-topps-chrome-base cards"; the id is on the chip already.
+ */
+export function bscScopeQualifier(own: readonly BscScopeSlot[]): string | undefined {
+  if (own.length === 0) return undefined;
+  return own.map((s) => `${s.label.toLowerCase()} cards`).join(" + ");
 }

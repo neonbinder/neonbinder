@@ -196,7 +196,7 @@ describe("addCustomSelectorOption", () => {
   // New value: inserts a fresh isCustom=true row
   // -------------------------------------------------------------------------
 
-  test("should insert a new isCustom=true row and return its id when no match exists", async () => {
+  test("should insert a new row with NO marketplace ids and return its id when no match exists", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
 
@@ -231,7 +231,11 @@ describe("addCustomSelectorOption", () => {
     const newRow = await t.run(async (ctx) => ctx.db.get(newId));
     expect(newRow).not.toBeNull();
     expect(newRow?.value).toBe("Pickleball");
-    expect(newRow?.isCustom).toBe(true);
+    // NEO-239 — `isCustom` is no longer written. What a hand-added row IS, is a
+    // row with no marketplace ids; that is the only fact anything downstream
+    // reads, and it is visible right here.
+    expect(newRow?.isCustom).toBeUndefined();
+    expect(newRow?.platformData).toEqual({});
     expect(newRow?.level).toBe("sport");
   });
 

@@ -76,6 +76,10 @@ async function seedBaseRow(
     const id = await ctx.db.insert("selectorOptions", {
       level: "variantType",
       value: "Base",
+      // NEO-239 — the base ROLE. `setVariantTypePlatformData` gates on
+      // `metadata.isBase`, not on the row being called "Base", and that
+      // structural check runs BEFORE the freshness one.
+      metadata: { isBase: true },
       platformData: {
         bsc: { b0: "topps-chrome-series-1", b1: "topps-chrome-series-2" },
         sportlots: { s0: "sl-primary", s1: "sl-extra" },
@@ -544,6 +548,7 @@ describe("setVariantTypePlatformData baseVersion", () => {
       ctx.db.insert("selectorOptions", {
         level: "variantType",
         value: "Base",
+        metadata: { isBase: true }, // NEO-239 — the role, not the name.
         platformData: {},
         parentId: setId,
         children: [],

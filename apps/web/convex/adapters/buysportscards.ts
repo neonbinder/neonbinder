@@ -174,6 +174,37 @@ export const getBscToken = internalAction({
 });
 
 /**
+ * NEO-239 — the levels a BSC request is SCOPED by, and the facets a checklist
+ * request cannot go out without.
+ *
+ * BSC has no `manufacturer` facet at all (see `LEVEL_TO_BSC_FACET`), so a
+ * hand-added manufacturer never blocks a BSC query; `insert` and `parallel`
+ * narrow a query further and their absence is not a widening.
+ */
+const BSC_SCOPED_LEVELS = ["sport", "year", "setName"] as const;
+
+/**
+ * A checklist request scoped by anything less than this returns a SUPERSET,
+ * with a 200 and no error. `variant` is on the list because without it BSC
+ * answers with the base cards plus every insert and parallel in the set.
+ */
+const BSC_CHECKLIST_REQUIRED_FACETS = [
+  "sport",
+  "year",
+  "setName",
+  "variant",
+] as const;
+
+/**
+ * FIXED text. `selectorSyncStatus.message` is reactive state served to the
+ * browser (NEO-47), so a refusal names no row, no slug and no marketplace
+ * response — the detail goes to `console.warn`, joined on requestId.
+ */
+const BSC_UNSCOPED_MESSAGE =
+  "BuySportsCards was not queried: this path has no BuySportsCards ids to " +
+  "scope the request with.";
+
+/**
  * Call the BSC bulk-upload API to get available filter options for a level
  */
 export const fetchBscSelectorOptions = action({
@@ -291,30 +322,55 @@ export const fetchBscSelectorOptions = action({
       // Levels without a BSC facet (manufacturer, parallel) are skipped.
       const filters: Record<string, string[]> = {};
 
-      if (args.platformFilters) {
-        // Use pre-resolved BSC slugs — map NB level names to BSC facet keys
-        for (const [lvl, values] of Object.entries(args.platformFilters)) {
-          const facet = LEVEL_TO_BSC_FACET[lvl];
-          if (facet) {
-            filters[facet] = values;
-          }
+      // NEO-239 — SLOT IDS ONLY.
+      //
+      // This used to have an `else` branch that filled `filters` from
+      // `parentFilters` — NB DISPLAY VALUES — whenever no `platformFilters`
+      // arrived. That is the reverse dependency the product invariant forbids:
+      // a marketplace query built from an NB name. It is also fail-open, since
+      // a name BSC does not know scopes nothing and BSC answers 200 with a
+      // superset or an empty body, neither of which raises an error the caller
+      // could see.
+      //
+      // `parentFilters` now reaches `recordAdapterCall` and the log line only.
+      // A caller with no ids to send must not call this action at all — see
+      // `resolvableSides` in convex/marketplaceResolvability.ts.
+      for (const [lvl, values] of Object.entries(args.platformFilters ?? {})) {
+        const facet = LEVEL_TO_BSC_FACET[lvl];
+        if (facet && values.length > 0) {
+          filters[facet] = values;
         }
-      } else {
-        // Fallback: use display labels (only correct for top-level sport sync
-        // where there are no parent filters)
-        if (args.parentFilters.sport) {
-          filters.sport = [args.parentFilters.sport];
-        }
-        if (args.parentFilters.year) {
-          filters.year = [args.parentFilters.year];
-        }
-        // manufacturer has no BSC facet — SL only
-        if (args.parentFilters.setName) {
-          filters.setName = [args.parentFilters.setName];
-        }
-        if (args.parentFilters.variantType) {
-          filters.variant = [args.parentFilters.variantType];
-        }
+      }
+
+      // NEO-239 — refuse an UNSCOPED request rather than send one. Distinct
+      // from the NEO-216 served-level guard above: that one asks "does BSC have
+      // this level at all", this one asks "did the caller's chain supply the
+      // ids for the level it says it is scoping by". A level named in
+      // `parentFilters` with no id in `filters` means the query that would go
+      // out is wider than anybody asked for.
+      const unscoped = BSC_SCOPED_LEVELS.filter(
+        (lvl) => args.parentFilters[lvl] && !filters[LEVEL_TO_BSC_FACET[lvl]],
+      );
+      if (unscoped.length > 0) {
+        await recordAdapterCall(ctx, {
+          requestId,
+          operation: "fetchBscSelectorOptions",
+          platform: "bsc",
+          level: args.level,
+          parentSport: args.parentFilters.sport,
+          parentYear: args.parentFilters.year,
+          parentSetName: args.parentFilters.setName,
+          duration_ms: Date.now() - start,
+          token_ms: tokenMs,
+          success: false,
+          stage: "adapter",
+          error_class: "precondition_missing_slot_id",
+        });
+        console.warn(
+          `[fetchBscSelectorOptions] refusing an unscoped request — no BSC id ` +
+            `on: ${unscoped.join(", ")}`,
+        );
+        return { success: false, options: [], message: BSC_UNSCOPED_MESSAGE };
       }
 
       // Unreachable since the NEO-216 guard above (which reads the same
@@ -899,49 +955,55 @@ export const fetchBscChecklist = action({
 
       // Build nested `filters: { sport: [...], year: [...], ... }`.
       //
-      // Three sources, in precedence order:
+      // NEO-239 — SLOT IDS ONLY, from two sources:
       //
       //   facetFilters    (NEO-189) — already bucketed by BSC facet from the
       //                   row's slot tags. Authoritative and complete.
-      //   platformFilters — bucketed by NB level; the facet is guessed via
-      //                   LEVEL_TO_BSC_FACET. variantType is skipped and
-      //                   parallel has no facet, so an untagged id on either
-      //                   contributes nothing — see legacyBscFacetForLevel.
-      //   parentFilters   — display labels, top-level sync only.
+      //   platformFilters — bucketed by NB level; the facet is derived via
+      //                   legacyBscFacetForLevel. variantType and parallel
+      //                   resolve to no facet, so an untagged id on either
+      //                   contributes nothing.
       //
-      // `variant` is ALWAYS re-derived from `parentFilters.variantType` below,
-      // never taken from a slug. It is a tiny enum (base/insert/parallel)
-      // whose BSC slug is just the lowercased display value, and a mis-saved
-      // BaseSetPicker mapping once corrupted the variant entity's
-      // `platformData.bsc` so the slug pointed at the parent setName —
-      // confirmed live in dev. The display value is robust regardless.
+      // The `parentFilters` else-branch is GONE, and so is the `variant` pin
+      // that used to sit outside the if/else re-deriving the facet from
+      // `parentFilters.variantType.toLowerCase()`. That pin was the last place
+      // an NB DISPLAY VALUE built a marketplace query, and BSC's variant set is
+      // not the closed base/insert/parallel enum it assumed ("Promo", "Mail In"
+      // occur upstream). `parentFilters` is now telemetry and log text only.
       const filters: Record<string, string[]> = {};
-      if (args.facetFilters) {
-        for (const [facet, values] of Object.entries(args.facetFilters)) {
-          if (facet === "variant") continue; // see comment above
-          if (values.length > 0) filters[facet] = values;
-        }
-      } else if (args.platformFilters) {
-        for (const [lvl, values] of Object.entries(args.platformFilters)) {
-          const facet = legacyBscFacetForLevel(lvl);
-          if (facet) {
-            filters[facet] = values;
-          }
-        }
-      } else {
-        if (args.parentFilters.sport) {
-          filters.sport = [args.parentFilters.sport.toLowerCase()];
-        }
-        if (args.parentFilters.year) {
-          filters.year = [args.parentFilters.year];
-        }
-        // manufacturer has no BSC facet — SL only
-        if (args.parentFilters.setName) {
-          filters.setName = [args.parentFilters.setName];
-        }
+      const facetSource = args.facetFilters
+        ? Object.entries(args.facetFilters).map(
+            ([facet, values]) => [facet, values] as const,
+          )
+        : Object.entries(args.platformFilters ?? {}).map(
+            ([lvl, values]) => [legacyBscFacetForLevel(lvl), values] as const,
+          );
+      for (const [facet, values] of facetSource) {
+        if (!facet) continue;
+        if (values.length > 0) filters[facet] = values;
       }
-      if (args.parentFilters.variantType) {
-        filters.variant = [args.parentFilters.variantType.toLowerCase()];
+
+      // REQUIRED FACETS — refuse, never widen.
+      //
+      // Dropping the display-value pin means a variantType row with no
+      // `variant`-tagged slot would otherwise send sport + year + setName with
+      // NO VARIANT AXIS, and BSC answers that with the base cards plus every
+      // insert and every parallel in the set — NEO-22's ~5000-card superset,
+      // returned as a 200 with no error for the caller to notice.
+      //
+      // The chain-level gate (`resolvableSides`) should already have skipped
+      // BSC before we get here. This is the second lock on the same door,
+      // placed at the boundary that actually issues the request, so no future
+      // caller can reach the wire around it.
+      const missingFacets = BSC_CHECKLIST_REQUIRED_FACETS.filter(
+        (facet) => !filters[facet]?.length,
+      );
+      if (missingFacets.length > 0) {
+        console.warn(
+          `[fetchBscChecklist] refusing an under-scoped checklist request — ` +
+            `no BSC id for facet(s): ${missingFacets.join(", ")}`,
+        );
+        return { success: false, cards: [], message: BSC_UNSCOPED_MESSAGE };
       }
 
       // FAN OUT — one request per SOURCE SET. Do NOT batch them.

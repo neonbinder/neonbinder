@@ -29,9 +29,10 @@ tags:
 #   Topps Chrome path.
 #
 #   WHY Baseball/2024/Topps (not E2E Test Sport ${WORKER_INDEX}/2026):
-#     The custom Set name (tp-<worker>) is unique and not a real marketplace
-#     set, so BSC/SL adapters short-circuit via the NEO-22 gate, while the real
-#     Baseball ancestor keeps sport="baseball" — and TeamPicker is sport-scoped
+#     The hand-made Set (tp-<worker>) carries no marketplace ids, so neither
+#     side is resolvable and neither BSC nor SportLots is ever fetched
+#     (NEO-239), while the real Baseball ancestor keeps sport="baseball" —
+#     and TeamPicker is sport-scoped
 #     in both directions: it filters its candidate list by the sport row and it
 #     TAGS a team it creates with the same one, which is also what enables its
 #     "+ Create" row at all (no sport row, no creation — NEO-96).

@@ -30,6 +30,25 @@ const SYNC_FAILED_PREFIX = "Failed to fetch options";
  * (NEO-219). Fixed text: the operator's picks were NOT written, and the only
  * safe next step is to look at the mapping as it now stands.
  */
+/**
+ * The three ways this form can end without a mapping, kept apart because they
+ * ask the operator for three different things (NEO-239).
+ *
+ * They all used to collapse into the CANCELLED line: a rejected write left the
+ * picker's own close handler's message standing, so a server refusal read as
+ * "you cancelled" — the one reading that tells the operator nothing went wrong.
+ */
+const CANCELLED_MESSAGE =
+  "Base mapping cancelled — nothing was linked. Click Retry to pick a set, or Close to leave it unmapped for now.";
+
+/** The write was attempted and refused. Their picks are gone; the data is not. */
+const WRITE_FAILED_MESSAGE =
+  "Couldn't link that set. Nothing changed — try again.";
+
+/** There is nothing to pick FROM, so Retry would re-run the same empty fetch. */
+const NOTHING_TO_LINK_MESSAGE =
+  "Nothing to link yet — this set isn't on a marketplace. Attach one from Attach more… when it is.";
+
 const STALE_MESSAGE =
   "This Base mapping changed somewhere else while you were picking. Nothing was written — the choices below have been refreshed, so pick again.";
 
@@ -142,6 +161,14 @@ export default function BaseMappingForm({
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerData, setPickerData] = useState<RawOptionsResult | null>(null);
   const [staleNotice, setStaleNotice] = useState<string | null>(null);
+  /**
+   * Which terminal state the panel is showing. Only `nothing` changes the
+   * BUTTONS — Retry there would re-run the very fetch that just came back
+   * empty, which is an invitation to press a button that cannot help.
+   */
+  const [messageKind, setMessageKind] = useState<
+    "cancelled" | "failed" | "nothing" | "error" | null
+  >(null);
   const triggered = useRef(false);
 
   const sportValue = ancestorChain?.find((a) => a.level === "sport")?.value;
@@ -197,14 +224,28 @@ export default function BaseMappingForm({
         }
       : undefined;
 
-  const writePlatformData = async (platformData: {
-    bsc?: string;
-    sportlots?: string;
-    sportlotsDisplay?: string;
-  }) => {
+  const writePlatformData = async (
+    platformData: {
+      bsc?: string;
+      sportlots?: string;
+      sportlotsDisplay?: string;
+    },
+    /**
+     * BSC's own display name for the set that was picked — the BSC twin of
+     * `sportlotsDisplay`, stored as the setName slot's LABEL.
+     *
+     * Without it `slotLabel` fell back to the slug and the Multi-source panel
+     * read "topps topps": the slug rendered once as the chip's name and once as
+     * its id. Passed as `undefined` when there was nothing to pick from, which
+     * CLEARS a stale label rather than leaving the previous set's name over a
+     * new slug (NEO-239).
+     */
+    bscLabel?: string,
+  ) => {
     await setPlatformData({
       variantTypeId,
       platformData,
+      ...(bscLabel ? { bscLabel } : {}),
       // Sent whenever the row has loaded, in both modes. A version token can
       // only ever REFUSE a write, so carrying one on a mapping that turns out
       // to have had nothing at stake costs nothing — while omitting one on a
@@ -223,6 +264,7 @@ export default function BaseMappingForm({
     // skeletons until data arrives.
     setLoading(true);
     setMessage(null);
+    setMessageKind(null);
     setPickerData(null);
     setPickerOpen(true);
     try {
@@ -246,6 +288,7 @@ export default function BaseMappingForm({
         // in VariantForm/ParallelForm: raw marketplace text must never reach
         // the DOM, so the platform names are ours and the detail stays in the
         // Convex logs.
+        setMessageKind("error");
         setMessage(
           blockedMessageFromErrors(SYNC_FAILED_PREFIX, result.errors ?? []) ??
             `${SYNC_FAILED_PREFIX}.`,
@@ -261,9 +304,15 @@ export default function BaseMappingForm({
         result.bscOptions.length === 0 &&
         !setListing
       ) {
+        // NEO-239: this used to set a message and immediately call onClose(),
+        // which unmounted the form before the message could render — the
+        // operator tapped Base and watched the panel vanish. It stays now, and
+        // it offers only Close: Retry would re-run the fetch that just came
+        // back empty on both sides, and the actual next step is to attach a
+        // marketplace id from the panel this form sits above.
         setPickerOpen(false);
-        setMessage("No marketplace data found for this Base set.");
-        onClose();
+        setMessageKind("nothing");
+        setMessage(NOTHING_TO_LINK_MESSAGE);
         return;
       }
 
@@ -274,9 +323,10 @@ export default function BaseMappingForm({
       setPickerOpen(false);
       // NEO-211 F3: the thrown text is a Convex/adapter error that can carry a
       // marketplace URL, a response body or a credential hint. Our own fixed
-      // string; the detail stays in the Convex logs. This panel shows Retry for
-      // EVERY message (not only errors), so there is no isError branch to
-      // preserve.
+      // string; the detail stays in the Convex logs. The FETCH is what failed
+      // here, so this keeps its own prefix — the write's refusal has its own
+      // sentence (NEO-239).
+      setMessageKind("error");
       setMessage(`${SYNC_FAILED_PREFIX}. Nothing was changed.`);
     } finally {
       setLoading(false);
@@ -305,7 +355,9 @@ export default function BaseMappingForm({
     if (!platformData.sportlots && !platformData.bsc) return;
 
     try {
-      await writePlatformData(platformData);
+      // `selected.bsc.value` is BSC's own name for the set the operator chose,
+      // which is the only place a real label for this slot can come from.
+      await writePlatformData(platformData, selected.bsc?.value);
     } catch (e) {
       if (errorCode(e) === "BASE_MAPPING_STALE") {
         // Re-open on the FRESH row: `variantTypeRow` is reactive, so the next
@@ -315,8 +367,12 @@ export default function BaseMappingForm({
         void doSync();
         return;
       }
+      // NEO-239: the WRITE failed, which is not "failed to fetch options" — the
+      // fetch worked, the operator picked, and the server said no. Set after
+      // the picker closes so it outlives the cancel copy that close raises.
       setPickerOpen(false);
-      setMessage(`${SYNC_FAILED_PREFIX}. Nothing was changed.`);
+      setMessageKind("failed");
+      setMessage(WRITE_FAILED_MESSAGE);
       return;
     }
     setStaleNotice(null);
@@ -360,7 +416,9 @@ export default function BaseMappingForm({
             {message}
           </div>
           <div className="flex gap-2">
-            <NeonButton onClick={doSync}>Retry</NeonButton>
+            {messageKind !== "nothing" && (
+              <NeonButton onClick={doSync}>Retry</NeonButton>
+            )}
             <NeonButton cancel onClick={onClose}>
               Close
             </NeonButton>
@@ -374,9 +432,8 @@ export default function BaseMappingForm({
           onClose={() => {
             setPickerOpen(false);
             setStaleNotice(null);
-            setMessage(
-              "Base mapping cancelled — nothing was linked. Click Retry to pick a set, or Close to leave it unmapped for now.",
-            );
+            setMessageKind("cancelled");
+            setMessage(CANCELLED_MESSAGE);
           }}
           onConfirm={handlePickerConfirm}
           slOptions={pickerData?.slOptions ?? []}

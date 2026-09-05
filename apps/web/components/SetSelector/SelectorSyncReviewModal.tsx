@@ -55,8 +55,8 @@ import {
  * listing draft and search filter displays, and which can collide with a
  * sibling. A batch of unreviewed substantive renames is exactly the safety
  * property failing for the action hardest to notice went wrong. So the bulk
- * actions are "Decline all", scoped to the UNDECIDED sides so it cannot undo a
- * deliberate Accept, and "Accept all formatting-only suggestions", scoped to
+ * actions are "Keep all mine", scoped to the UNDECIDED sides so it cannot undo
+ * a deliberate take, and "Take all style-only", scoped to
  * `foldEqual` — the one bucket that is safe to bulk-accept.
  *
  * ## Escape closes
@@ -152,7 +152,7 @@ export function allSideKeys(
 }
 
 /**
- * "Decline all" — every side with NO decision yet becomes a decline.
+ * "Keep all mine" — every side with NO decision yet becomes a decline.
  *
  * Scoped to the undecided, never overwriting an explicit Accept: mirrors
  * `toggleAllFormatting`, which only ever touches its own group's keys. Bulk-
@@ -170,7 +170,7 @@ export function declineUndecided(
   return next;
 }
 
-/** The undo for "Decline all": drop every decline, keep every accept. */
+/** "Undo that" — the undo for "Keep all mine": drop every decline, keep every accept. */
 export function clearDeclines(choices: ChoiceMap): ChoiceMap {
   const next: ChoiceMap = {};
   for (const [key, value] of Object.entries(choices)) {
@@ -179,7 +179,7 @@ export function clearDeclines(choices: ChoiceMap): ChoiceMap {
   return next;
 }
 
-/** "Accept all formatting-only suggestions" — the `foldEqual` bucket only. */
+/** "Take all style-only" — the `foldEqual` bucket only. */
 export function acceptFormattingOnly(
   suggestions: readonly SelectorSyncSuggestion[],
   choices: ChoiceMap,
@@ -287,13 +287,18 @@ function SuggestionSideRow({
   return (
     <div className="flex flex-wrap items-center justify-between gap-2">
       <span className="text-sm text-gray-200 min-w-0 break-words">
-        {/* Literal "BSC: {label}" / "SportLots: {label}" — the plan's own E2E
-            acceptance asserts this exact string. Do not decorate it. */}
-        {sideName}: {entry.label}
+        {/* NEO-239 copy pass: reads as a sentence about the marketplace, not
+            as a log line: it says whose name it is and that it is only THEIR
+            name — the whole point of the row — where "BSC: …" read like a field
+            dump. STRAIGHT quotes, built in a template literal rather than typed
+            as JSX text: curly ones would render U+201C/U+201D and a Maestro
+            assertion typed with "…" in YAML would silently never match. E2E
+            asserts this exact string. */}
+        {`${sideName} calls it "${entry.label}"`}
         {entry.foldEqual && (
           // Says WHY this one arrived pre-accepted. Words, not a colour.
           <span className="ml-1.5 text-[10px] uppercase tracking-wide text-gray-400">
-            formatting only
+            style only
           </span>
         )}
       </span>
@@ -302,26 +307,26 @@ function SuggestionSideRow({
           type="button"
           disabled={disabled}
           aria-pressed={choice === "accept"}
-          // WCAG 2.5.3 Label in Name: the visible word ("Accept") has to be a
-          // substring of the accessible name, or a speech-input user saying
-          // "click Accept" has nothing to match. Leads with it, then appends
+          // WCAG 2.5.3 Label in Name: the visible words ("Take it") have to be
+          // a substring of the accessible name, or a speech-input user saying
+          // "click Take it" has nothing to match. Leads with them, then appends
           // the per-row context an aria-label already needs to disambiguate
           // rows sharing the same two words.
-          aria-label={`Accept — rename "${row.currentValue}" to "${entry.label}" (from ${sideName})`}
+          aria-label={`Take it — rename "${row.currentValue}" to "${entry.label}" (from ${sideName})`}
           onClick={() => toggle("accept")}
           className={pill(choice === "accept")}
         >
-          Accept
+          Take it
         </button>
         <button
           type="button"
           disabled={disabled}
           aria-pressed={choice === "decline"}
-          aria-label={`Decline — keep "${row.currentValue}"; stop suggesting ${sideName}'s "${entry.label}"`}
+          aria-label={`Keep mine — keep "${row.currentValue}"; stop suggesting ${sideName}'s "${entry.label}"`}
           onClick={() => toggle("decline")}
           className={pill(choice === "decline")}
         >
-          Decline
+          Keep mine
         </button>
       </span>
     </div>
@@ -419,11 +424,15 @@ export default function SelectorSyncReviewModal({
   if (!isOpen) return null;
 
   const decided = summary.accepting + summary.declining;
-  // "Decline all" flips to its undo once there is nothing left undecided and at
+  // "Keep all mine" flips to its undo once there is nothing left undecided and at
   // least one decline exists to clear — same toggle-label shape as the orphan
   // section's Select all / Clear all in sync-review-modal.
   const declineIsClear = summary.undecided === 0 && summary.declining > 0;
-  const noun = levelNoun(level, suggestions.length);
+  // ALWAYS the plural. The sentence below is "N of your <noun>", where the
+  // noun names the whole column the operator is looking at, not the count —
+  // "1 of your set" is what agreeing with the count produces, and it is not
+  // English. Only the verb ("stays" / "stay") tracks the number.
+  const nounPlural = levelNoun(level, 2);
 
   return createPortal(
     <Theme>
@@ -468,7 +477,7 @@ export default function SelectorSyncReviewModal({
               id="selector-sync-suggestions-heading"
               className="text-lg font-semibold text-gray-100"
             >
-              Name Suggestions{columnLabel ? ` — ${columnLabel}` : ""}
+              Name Check{columnLabel ? ` — ${columnLabel}` : ""}
             </h2>
             {breadcrumb && (
               // text-gray-400, not -500: this dialog is unconditionally
@@ -479,10 +488,16 @@ export default function SelectorSyncReviewModal({
                 {breadcrumb}
               </p>
             )}
+            {/* NEO-239 copy pass. The old second sentence ("NeonBinder owns
+                these names — nothing changes unless you accept a suggestion
+                here") stated a rule about the system; this one states what
+                happens to the operator's data. Same information, none of the
+                machinery. */}
             <p className="text-xs text-gray-400 mt-1">
-              A marketplace is using a different name for {suggestions.length}{" "}
-              {noun} you already have. NeonBinder owns these names — nothing
-              changes unless you accept a suggestion here.
+              A marketplace calls {suggestions.length} of your {nounPlural}{" "}
+              something else. Yours{" "}
+              {suggestions.length === 1 ? "stays" : "stay"} — unless you take
+              theirs.
             </p>
           </header>
 
@@ -533,7 +548,7 @@ export default function SelectorSyncReviewModal({
                 only feedback that a choice registered. role="status" already
                 implies polite + atomic, so no explicit aria-live. */}
             <span className="text-xs text-gray-400" role="status">
-              {summary.accepting} to accept · {summary.declining} to decline
+              {summary.accepting} to take · {summary.declining} to keep
             </span>
             <div className="flex gap-2 flex-wrap">
               {foldEqualCount > 0 && (
@@ -544,9 +559,9 @@ export default function SelectorSyncReviewModal({
                   onClick={() =>
                     setChoices((prev) => acceptFormattingOnly(suggestions, prev))
                   }
-                  aria-label={`Accept all ${foldEqualCount} formatting-only suggestions`}
+                  aria-label={`Take all ${foldEqualCount} style-only suggestions`}
                 >
-                  Accept all formatting-only suggestions ({foldEqualCount})
+                  Take all style-only ({foldEqualCount})
                 </NeonButton>
               )}
               <NeonButton
@@ -563,12 +578,12 @@ export default function SelectorSyncReviewModal({
                 aria-label={
                   declineIsClear
                     ? "Clear every decline and leave those suggestions undecided"
-                    : `Decline the ${summary.undecided} undecided suggestions and keep our names`
+                    : `Keep your names for the ${summary.undecided} undecided suggestions`
                 }
               >
                 {declineIsClear
-                  ? "Clear declines"
-                  : `Decline all (${summary.undecided})`}
+                  ? "Undo that"
+                  : `Keep all mine (${summary.undecided})`}
               </NeonButton>
               <NeonButton
                 ref={closeBtnRef}
@@ -576,9 +591,9 @@ export default function SelectorSyncReviewModal({
                 size="2"
                 disabled={saving}
                 onClick={onClose}
-                aria-label="Close without applying any decisions"
+                aria-label="Not now — close without applying any decisions"
               >
-                Close
+                Not now
               </NeonButton>
               <NeonButton
                 size="2"

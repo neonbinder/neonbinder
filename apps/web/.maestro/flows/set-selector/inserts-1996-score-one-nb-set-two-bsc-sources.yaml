@@ -977,41 +977,41 @@ tags:
 
 - scrollUntilVisible:
     element:
-      id: ".*naming suggestions? from marketplaces — review"
+      id: ".*names? to check — review suggestions"
     centerElement: true
     timeout: 15000
 - tapOn:
-    id: ".*naming suggestions? from marketplaces — review"
+    id: ".*names? to check — review suggestions"
 
 - extendedWaitUntil:
-    visible: "Name Suggestions — Inserts"
+    visible: "Name Check — Inserts"
     timeout: 7000
 
 # Both side badges, for OUR row. The SportLots label is a fixed fact of the
 # fixture (one combined set); which of BSC's two series holds the primary slot
 # is not, so that one is matched on its shape.
 - assertVisible:
-    text: ".*SportLots: Dugout Collection Artists Proofs.*"
+    text: '.*SportLots calls it "Dugout Collection Artists Proofs".*'
 - assertVisible:
-    text: ".*BSC: Dugout Collection Artist.s Proofs Series [12].*"
+    text: '.*BSC calls it "Dugout Collection Artist.s Proofs Series [12]".*'
 
 # The accessible name leads with the VISIBLE word (WCAG 2.5.3 Label in Name),
-# then the per-row context: `Decline — keep "X"; stop suggesting BSC's "Y"`
-# (SelectorSyncReviewModal.tsx:320). The dash is an em dash, U+2014, and "keep"
-# is lower-case because it is no longer the first word.
+# then the per-row context: `Keep mine — keep "X"; stop suggesting BSC's "Y"`
+# (SelectorSyncReviewModal.tsx). The dash is an em dash, U+2014, and the second
+# "keep" is lower-case because it is no longer the first word.
 #
 # `id:` is a full-string REGEX in Maestro, so the marketplace label is left as
 # `.*` while the row half — the part that must not be ambiguous — is pinned to
 # this attempt's marker.
 - tapOn:
-    id: "Decline — keep \"Dugout Collection Artists Proofs NB211-${ATTEMPT_ID}\"; stop suggesting BSC's \".*\""
+    id: "Keep mine — keep \"Dugout Collection Artists Proofs NB211-${ATTEMPT_ID}\"; stop suggesting BSC's \".*\""
 - tapOn:
-    id: "Decline — keep \"Dugout Collection Artists Proofs NB211-${ATTEMPT_ID}\"; stop suggesting SportLots's \".*\""
+    id: "Keep mine — keep \"Dugout Collection Artists Proofs NB211-${ATTEMPT_ID}\"; stop suggesting SportLots's \".*\""
 
 # The running total is the only feedback that the presses registered, and it is
 # exact: two declines, nothing accepted. A stray accept here would rename the
 # row, which is the one outcome this step exists to rule out.
-- assertVisible: "0 to accept · 2 to decline"
+- assertVisible: "0 to take · 2 to keep"
 
 - tapOn:
     id: "Apply decisions"

@@ -9,8 +9,9 @@ import SyncDoneNotice from "./SyncDoneNotice";
 import {
   blockedMessageFromErrors,
   buildUnlinkedNotices,
-  coveredSidesFromErrors,
+  coveredSidesFromFetch,
   returnedIdsFromFetch,
+  skippedSidesOf,
   totalsBySideFor,
   partialFailureMessage,
   planSinglePlatformStore,
@@ -152,7 +153,12 @@ export default function ParallelForm({
         // about the OTHER side too, so an adapter error means write nothing and
         // name the platform. No onDone() on this path: it would unmount the
         // form and take the alert and its Retry button with it.
-        const plan = planSinglePlatformStore(result.errors);
+        // NEO-239: a side skipped for lack of ids is not "reached and empty",
+        // so it never enters coveredSides — see VariantForm.doSync.
+        const plan = planSinglePlatformStore(
+          result.errors,
+          skippedSidesOf(result),
+        );
         if (plan.kind === "blocked") {
           setMessage(partialFailureMessage(SYNC_FAILED_PREFIX, plan));
           return;
@@ -169,21 +175,39 @@ export default function ParallelForm({
           })),
         ];
 
-        let unlinkedRows: UnlinkedEntry[] = [];
-        if (items.length > 0) {
-          const stored = await storeReconciledOptions({
-            level: "parallel",
-            parentId: insertId,
-            reconciledItems: items,
-            // Both sides were reached, so the store may act on the empty one.
-            coveredSides: plan.coveredSides,
-            // The empty side arrives as [] — the statement that licenses
-            // unlinking its rows.
-            returnedIds: returnedIdsFromFetch(result),
-          });
-          unlinkedRows = stored?.unlinked ?? [];
-          setUnlinkedTotal(stored?.unlinkedTotal);
+        // NEO-239 — NOTHING CAME BACK, AND THAT IS NOT A FAILURE.
+        //
+        // Either both sides were skipped for want of ids on this chain (a
+        // hand-built subtree: `skippedSides` is both, `errors` is empty), or a
+        // side that WAS reached genuinely had nothing. In neither case is there
+        // anything to store, anything to unlink, or anything to retry — the
+        // only useful next move is "+ Custom", which lives on the idle column
+        // behind this form. So go idle rather than sitting on a Retry the
+        // operator cannot act on.
+        //
+        // A routing rule, not an optimisation: leaving the panel up stranded
+        // ten E2E flows at the Inserts column of a hand-made subtree (CI run
+        // 5), and it is what a real operator building a set by hand meets on
+        // their very first Sync.
+        if (items.length === 0) {
+          setMessage(null);
+          onDone?.();
+          return;
         }
+
+        const stored = await storeReconciledOptions({
+          level: "parallel",
+          parentId: insertId,
+          reconciledItems: items,
+          // Every side that was REACHED — a skipped one is excluded, so the
+          // store never detaches on a marketplace nobody asked (NEO-239).
+          coveredSides: plan.coveredSides,
+          // The empty side arrives as [] — the statement that licenses
+          // unlinking its rows.
+          returnedIds: returnedIdsFromFetch(result),
+        });
+        const unlinkedRows: UnlinkedEntry[] = stored?.unlinked ?? [];
+        setUnlinkedTotal(stored?.unlinkedTotal);
 
         setUnlinked(unlinkedRows);
         setMessage(
@@ -212,8 +236,14 @@ export default function ParallelForm({
 
   const handleReconciliationConfirm = async (result: ReconciledResult) => {
     // Both read off the fetch result the modal was built from. If it is gone
-    // we say nothing rather than guessing — see `coveredSidesFromErrors`.
-    const covered = coveredSidesFromErrors(reconciliationData?.errors);
+    // we say nothing rather than guessing — see `coveredSidesFromFetch`. A side
+    // the fetch SKIPPED for lack of ids is subtracted too (NEO-239): it raises
+    // no error, and calling it covered would unlink every child's slot on a
+    // marketplace that was never asked.
+    const covered = coveredSidesFromFetch(
+      reconciliationData?.errors,
+      skippedSidesOf(reconciliationData),
+    );
     const returnedIds = reconciliationData
       ? returnedIdsFromFetch(reconciliationData)
       : undefined;

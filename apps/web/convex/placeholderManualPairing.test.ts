@@ -37,11 +37,57 @@ const modules = (import.meta as unknown as {
 const USER_A = { subject: "user_manualAAAA1111" };
 const USER_B = { subject: "user_manualBBBB2222" };
 
+/**
+ * NEO-239 — the repair this file schedules is OWNED here, not left for teardown.
+ *
+ * Every SUCCESSFUL `updatePlaceholderImageIdentity` and `unpairPlaceholderImages`
+ * ends in `scheduleRepair` (convex/placeholderPairing.ts), which queues
+ * `placeholderPairing:runPairing`. Most tests here drain it inline with
+ * `drain(t)` because they assert what the re-pair DID; the ones that assert
+ * only the mutation's own return value did not, and left the action queued.
+ * It then fired after the file's environment had been torn down and surfaced
+ * in a full run as
+ *
+ *   Error when running scheduled function placeholderPairing:runPairing
+ *   EnvironmentTeardownError: Cannot load '/convex/lib/pairing/pool.ts' …
+ *   after the environment was torn down
+ *
+ * (`pool.ts` and `pairBatch.ts` are the same import chain one level apart —
+ * `pairBatch` imports `pool` — so which one the message names says only how far
+ * module loading had got, not which test scheduled the work.)
+ *
+ * convex-test only PRINTS that, so the run stayed green while the defect sat
+ * one timing change away from failing it. Verified by probe rather than by
+ * reasoning: after a successful identity edit the system table holds
+ * `[["placeholderPairing:runPairing","pending"]]`, and reading it does not
+ * drain it.
+ *
+ * Draining is safe and cheap here — `runPairing` is pure local work
+ * (`lib/pairing/pairBatch`), it makes no outbound request, and fake timers are
+ * already on for the whole file.
+ */
+let harnesses: Array<ReturnType<typeof convexTest>> = [];
+
+/** Every test builds its world through this so `afterEach` can drain it. */
+function harness(): ReturnType<typeof convexTest> {
+  const t = convexTest(schema, modules);
+  harnesses.push(t);
+  return t;
+}
+
 beforeEach(() => {
   vi.useFakeTimers();
+  harnesses = [];
 });
-afterEach(() => {
-  vi.useRealTimers();
+afterEach(async () => {
+  try {
+    for (const t of harnesses) {
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+    }
+  } finally {
+    harnesses = [];
+    vi.useRealTimers();
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -160,6 +206,100 @@ const P = api.placeholderPairing as unknown as {
 };
 
 // ---------------------------------------------------------------------------
+// What the correction surface QUEUES (NEO-239)
+// ---------------------------------------------------------------------------
+
+/** The scheduler rows a test has caused and not yet run. */
+async function pendingJobs(t: ReturnType<typeof convexTest>): Promise<string[]> {
+  return t.run(async (ctx) =>
+    (await ctx.db.system.query("_scheduled_functions").collect())
+      .filter((j) => j.state.kind === "pending" || j.state.kind === "inProgress")
+      .map((j) => j.name),
+  );
+}
+
+describe("the repair each mutation queues", () => {
+  /**
+   * The half of these mutations no test looked at. Every assertion in this file
+   * is about the mutation's own return value or about the state AFTER a drain;
+   * nothing pinned that the deferred re-pair is queued at all, or — the case
+   * that actually bites — that a REFUSED call queues nothing.
+   *
+   * A guard that threw after scheduling would leave a repair running against a
+   * job the operator was told it had not touched, and the only visible symptom
+   * would be pairs moving on their own.
+   */
+  test("a successful identity edit queues exactly one repair", async () => {
+    const JOB = "job-queues-one";
+    const t = harness();
+    await seedJob(t, JOB, { totalImages: 2, processedImages: 2 });
+    await seedDone(t, JOB, 0, FRONT(["Misread Name"], "Braves"));
+    await seedDone(t, JOB, 1, BACK(["Real Name"], "Braves", "7"));
+
+    await t
+      .withIdentity(USER_A)
+      .mutation(P.updatePlaceholderImageIdentity, {
+        jobId: JOB,
+        entryIndex: 0,
+        players: ["Real Name"],
+      });
+
+    expect(await pendingJobs(t)).toEqual(["placeholderPairing:runPairing"]);
+
+    // …and it is real work, not an empty hop: draining it pairs them.
+    await drain(t);
+    expect(await getPairs(t, JOB)).toHaveLength(1);
+    expect(await pendingJobs(t)).toEqual([]);
+  });
+
+  test("a REFUSED edit queues nothing at all", async () => {
+    // The guard throws before `scheduleRepair`. If that order ever inverted,
+    // a rejected correction would still re-pair the job behind the user.
+    const JOB = "job-queues-none";
+    const t = harness();
+    await seedJob(t, JOB, { totalImages: 1, processedImages: 0 });
+    await t.run(async (ctx) =>
+      ctx.db.insert("placeholderImages", {
+        jobId: JOB,
+        userId: USER_A.subject,
+        entryIndex: 0,
+        originalName: "scan-0.jpg",
+        status: "processing",
+        textCount: 4,
+      }),
+    );
+
+    await expect(
+      t.withIdentity(USER_A).mutation(P.updatePlaceholderImageIdentity, {
+        jobId: JOB,
+        entryIndex: 0,
+        players: ["Anyone"],
+      }),
+    ).rejects.toThrow(/not processed yet/);
+
+    expect(await pendingJobs(t)).toEqual([]);
+  });
+
+  test("an unpair queues its repair too", async () => {
+    const JOB = "job-unpair-queues";
+    const t = harness();
+    await seedJob(t, JOB, { totalImages: 2, processedImages: 2 });
+    await seedDone(t, JOB, 0, FRONT(["Same Name"], "Braves"));
+    await seedDone(t, JOB, 1, BACK(["Same Name"], "Braves", "9"));
+    await runAuto(t, JOB);
+    expect(await getPairs(t, JOB)).toHaveLength(1);
+
+    await t.withIdentity(USER_A).mutation(P.unpairPlaceholderImages, {
+      jobId: JOB,
+      frontIndex: 0,
+      backIndex: 1,
+    });
+
+    expect(await pendingJobs(t)).toEqual(["placeholderPairing:runPairing"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // updatePlaceholderImageIdentity — the Acuña case
 // ---------------------------------------------------------------------------
 
@@ -170,7 +310,7 @@ describe("updatePlaceholderImageIdentity", () => {
     // unmatched. Fixing the name re-pairs them by identity on the scheduled run,
     // even though the job has already succeeded.
     const JOB = "job-acuna";
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, JOB, { totalImages: 2, processedImages: 2 });
     await seedDone(t, JOB, 0, FRONT(["Moises Alou Jr"], "Atlanta Braves"));
     await seedDone(t, JOB, 1, BACK(["Ronald Acuña"], "Atlanta Braves", "MA-2"));
@@ -206,7 +346,7 @@ describe("updatePlaceholderImageIdentity", () => {
 
   test("only patches the fields provided, and clears with an empty value", async () => {
     const JOB = "job-edit-partial";
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, JOB, { totalImages: 1, processedImages: 1 });
     await seedDone(t, JOB, 0, {
       players: ["Wrong Name"],
@@ -241,7 +381,7 @@ describe("updatePlaceholderImageIdentity", () => {
 
   test("enforces the ingestion caps (≤8 players, strings sliced to 200)", async () => {
     const JOB = "job-edit-caps";
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, JOB, { totalImages: 1, processedImages: 1 });
     await seedDone(t, JOB, 0, { players: ["x"], textCount: 6 });
 
@@ -262,7 +402,7 @@ describe("updatePlaceholderImageIdentity", () => {
 
   test("refuses an image that is not done", async () => {
     const JOB = "job-edit-notdone";
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, JOB, { status: "processing", totalImages: 1 });
     await t.run(async (ctx) => {
       await ctx.db.insert("placeholderImages", {
@@ -290,7 +430,7 @@ describe("updatePlaceholderImageIdentity", () => {
 describe("manuallyPairPlaceholderImages", () => {
   test("forces a pair between identity-disagreeing images, merged front/back", async () => {
     const JOB = "job-manual-basic";
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, JOB, { totalImages: 2, processedImages: 2 });
     await seedDone(t, JOB, 0, FRONT(["No Readable Name"], "Team A"));
     await seedDone(t, JOB, 1, BACK(["Different Name"], "Team B", "77"));
@@ -325,7 +465,7 @@ describe("manuallyPairPlaceholderImages", () => {
     // there, its images must NOT have been pulled back to their identity twins,
     // and the freed twins (1 and 2) must be free to (fail to) re-pair.
     const JOB = "job-manual-survives";
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, JOB, { totalImages: 4, processedImages: 4 });
     await seedDone(t, JOB, 0, FRONT(["Ronald Acuña"], "Atlanta Braves"));
     await seedDone(t, JOB, 1, BACK(["Ronald Acuña"], "Atlanta Braves", "1"));
@@ -370,7 +510,7 @@ describe("manuallyPairPlaceholderImages", () => {
 
   test("refuses to pair an already-paired image", async () => {
     const JOB = "job-manual-refuse";
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, JOB, { totalImages: 3, processedImages: 3 });
     await seedDone(t, JOB, 0, FRONT(["Ronald Acuña"], "Atlanta Braves"));
     await seedDone(t, JOB, 1, BACK(["Ronald Acuña"], "Atlanta Braves", "1"));
@@ -392,7 +532,7 @@ describe("manuallyPairPlaceholderImages", () => {
 
   test("refuses an image that is not done, and refuses self-pairing", async () => {
     const JOB = "job-manual-guards";
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, JOB, { totalImages: 2, processedImages: 1, failedImages: 1 });
     await seedDone(t, JOB, 0, FRONT(["A"], "T"));
     await t.run(async (ctx) => {
@@ -421,7 +561,7 @@ describe("manuallyPairPlaceholderImages", () => {
 describe("unpairPlaceholderImages", () => {
   test("breaks an automatic pair, and the matcher does NOT put it back", async () => {
     const JOB = "job-unpair-auto";
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, JOB, { totalImages: 2, processedImages: 2 });
     await seedDone(t, JOB, 0, FRONT(["Ronald Acuña"], "Atlanta Braves"));
     await seedDone(t, JOB, 1, BACK(["Ronald Acuña"], "Atlanta Braves", "1"));
@@ -451,7 +591,7 @@ describe("unpairPlaceholderImages", () => {
 
   test("breaks a manual pair, clearing the manual mark but not re-forming it", async () => {
     const JOB = "job-unpair-manual";
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, JOB, { totalImages: 2, processedImages: 2 });
     await seedDone(t, JOB, 0, FRONT(["Ronald Acuña"], "Atlanta Braves"));
     await seedDone(t, JOB, 1, BACK(["Ronald Acuña"], "Atlanta Braves", "1"));
@@ -482,7 +622,7 @@ describe("unpairPlaceholderImages", () => {
 
   test("refuses to unpair a pair that does not exist", async () => {
     const JOB = "job-unpair-missing";
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, JOB, { totalImages: 2, processedImages: 2 });
     await seedDone(t, JOB, 0, FRONT(["A"], "T"));
     await seedDone(t, JOB, 1, BACK(["A"], "T", "1"));
@@ -506,7 +646,7 @@ describe("ownership and auth", () => {
 
   test("another user cannot edit identity, manual-pair, or unpair — indistinguishable from missing", async () => {
     const JOB = "job-owner";
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedPairedJob(t, JOB);
 
     for (const call of [
@@ -522,7 +662,7 @@ describe("ownership and auth", () => {
 
   test("all three throw when unauthenticated", async () => {
     const JOB = "job-auth";
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedPairedJob(t, JOB);
 
     await expect(
@@ -548,7 +688,7 @@ describe("ownership and auth", () => {
 describe("a split is recorded, not just applied", () => {
   test("both images remember it, and an automatic run will not undo it", async () => {
     const JOB = "job-split-durable";
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, JOB, { totalImages: 2, processedImages: 2 });
     await seedDone(t, JOB, 0, FRONT(["Ronald Acuña"], "Atlanta Braves"));
     await seedDone(t, JOB, 1, BACK(["Ronald Acuña"], "Atlanta Braves", "13"));
@@ -579,7 +719,7 @@ describe("a split is recorded, not just applied", () => {
     // The user changed their mind. A stale rejection would contradict the pair
     // now sitting in the table.
     const JOB = "job-split-cleared";
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, JOB, { totalImages: 2, processedImages: 2 });
     await seedDone(t, JOB, 0, FRONT(["Ronald Acuña"], "Atlanta Braves"));
     await seedDone(t, JOB, 1, BACK(["Ronald Acuña"], "Atlanta Braves", "13"));
@@ -608,7 +748,7 @@ describe("a split is recorded, not just applied", () => {
     // smaller one is what the user made — so the freed front must still find
     // its real partner on the next run.
     const JOB = "job-split-repairs";
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, JOB, { totalImages: 3, processedImages: 3 });
     await seedDone(t, JOB, 0, FRONT(["Ronald Acuña"], "Atlanta Braves"));
     await seedDone(t, JOB, 1, BACK(["Ronald Acuña"], "Atlanta Braves", "13"));
@@ -647,7 +787,7 @@ describe("swapPairSides", () => {
 
   test("reverses the pair in place and marks it manual", async () => {
     const JOB = "job-swap";
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedSwappable(t, JOB);
     const before = (await getPairs(t, JOB))[0];
 
@@ -672,7 +812,7 @@ describe("swapPairSides", () => {
     // The old unpair-then-pair composition wrote `unpairedFrom` and then
     // cleared it, briefly asserting a rejection that never happened.
     const JOB = "job-swap-no-split";
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedSwappable(t, JOB);
     const before = (await getPairs(t, JOB))[0];
 
@@ -691,7 +831,7 @@ describe("swapPairSides", () => {
 
   test("refuses another user's job", async () => {
     const JOB = "job-swap-other";
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedSwappable(t, JOB);
     const before = (await getPairs(t, JOB))[0];
 

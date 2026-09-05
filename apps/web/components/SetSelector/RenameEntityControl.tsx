@@ -67,27 +67,24 @@ import { Input } from "../primitives/Input";
  * precedent: Enter commits, Escape reverts, blur commits, errors surface in a
  * role="alert" rather than being swallowed.
  *
- * ── NOT EVERY ROW IS RENAMEABLE (NEO-211, plan F) ───────────────────────────
- * A non-custom `variantType` row's VALUE is load-bearing code, not a label:
- * `SetSelector` detects the Base variant by the literal string "Base" (terminal
- * detection, column hiding, the Base mapping panel), `getBaseVariantBySet` does
- * the same, and the BSC checklist fetch derives its `variant` facet straight
- * from this display value — so "Insert", "Parallel" and "Promo" are every bit
- * as load-bearing as "Base". Renaming one silently breaks the fetch rather
- * than failing loudly.
- *
- * `canRenameSelectorRow` is the render-time gate for that, and the server
- * refuses the same rows independently (`VARIANT_TYPE_RENAME_REFUSED`). Both,
- * deliberately: the gate is the affordance, the refusal is the guarantee — a
- * stale bundle, a second tab, or a row that turns out not to be custom after all
- * still cannot get the write through.
+ * ── EVERY ROW IS RENAMEABLE (NEO-239) ───────────────────────────────────────
+ * `variantType` rows used to be refused a rename, because two things read their
+ * DISPLAY VALUE as code: Base detection matched the literal "base", and the BSC
+ * checklist fetch re-derived its `variant` facet from the value. Both now read
+ * ids and NB role flags instead — Base is `metadata.isBase`, and the `variant`
+ * facet comes off the row's tagged BSC slot — so the value is a label again, at
+ * every level. Nothing user-facing may key on a marketplace value or feed an NB
+ * display value back into a marketplace query; a rename gate built on that
+ * coupling had to go with it.
  */
 
 /**
- * The server's refusal payload for a rename this control should not have
- * offered. Matched structurally rather than with `instanceof ConvexError` so a
- * mocked/rethrown error in a test, or a version skew in the convex client,
- * still surfaces the server's own words.
+ * The server's refusal payload for a rename it would not accept. Matched
+ * structurally rather than with `instanceof ConvexError` so a mocked/rethrown
+ * error in a test, or a version skew in the convex client, still surfaces the
+ * server's own words. Kept as a defensive read after NEO-239 removed the only
+ * refusal that used it: an old bundle talking to a new server, or a future
+ * refusal, should still say why rather than failing silently.
  */
 function refusalMessage(e: unknown): string | null {
   if (typeof e !== "object" || e === null) return null;
@@ -98,20 +95,6 @@ function refusalMessage(e: unknown): string | null {
   return typeof message === "string" && message.length > 0
     ? message
     : "This name can't be changed.";
-}
-
-/**
- * May this row's display value be edited at all?
- *
- * Exported so the panel that renders the control and this control's own tests
- * agree on one rule. A CUSTOM variantType is renameable: it was never one of the
- * four magic strings, so nothing keys off it.
- */
-export function canRenameSelectorRow(row: {
-  level?: string;
-  isCustom?: boolean;
-}): boolean {
-  return !(row.level === "variantType" && !row.isCustom);
 }
 export default function RenameEntityControl({
   id,

@@ -420,6 +420,17 @@ tags:
 # ════════════════════════════════════════════════════════════════════════════
 
 - tapOn: "Base"
+
+# Selecting a variant type is the first thing that mounts BaseMappingForm and
+# subscribes to the ancestor chain, so a server-side error there kills the whole
+# page. Say so here, in one second, instead of letting the next scroll spend its
+# full timeout swiping a dead page and then blame a missing element (NEO-239 —
+# CI run 33892721504, where a `returns:`-validator drift on the new
+# `metadata.isBase` read exactly like a Base row that was never flagged).
+# A fast-fail diagnostic, not a guarantee: the tap's own settle is what gives
+# the boundary time to land, and a slower one is still caught by the step below.
+- assertNotVisible: "An error occurred. Please refresh the page."
+
 # Path A: this Base row has no mapping yet → BaseSetPicker opens and STAYS open
 #   until a set is picked and confirmed.
 # Path B: this Base row is ALREADY mapped (a re-run against a deployment the

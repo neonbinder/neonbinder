@@ -44,7 +44,6 @@ type Placement =
 type RowInfo = {
   _id: RowId;
   value: string;
-  isCustom: boolean;
   originalKind: "insert" | "parallel";
   originalParentId: RowId | null;
   // True for inserts that had parallel children at modal open. Such rows
@@ -134,7 +133,6 @@ function buildInitialState(tree: Tree): {
     rows.set(insert._id, {
       _id: insert._id,
       value: insert.value,
-      isCustom: !!insert.isCustom,
       originalKind: "insert",
       originalParentId: null,
       originalHadParallels: parallels.length > 0,
@@ -144,7 +142,6 @@ function buildInitialState(tree: Tree): {
       rows.set(par._id, {
         _id: par._id,
         value: par.value,
-        isCustom: !!par.isCustom,
         originalKind: "parallel",
         originalParentId: insert._id,
         originalHadParallels: false,
@@ -258,11 +255,6 @@ function DraggableRow({
         } disabled:opacity-100`}
       >
         <span className="text-gray-200 break-words flex-1">{info.value}</span>
-        {info.isCustom && (
-          <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-900/40 text-blue-300 border border-blue-700">
-            Custom
-          </span>
-        )}
         {isSuggested && (
           <span className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-900/40 text-yellow-300 border border-yellow-700">
             Suggested
