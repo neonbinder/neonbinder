@@ -64,3 +64,53 @@ export async function drainScheduled(t: {
 }): Promise<void> {
   await t.finishAllScheduledFunctions(() => {});
 }
+
+/**
+ * NEO-220 — CANCEL every pending scheduled function instead of running it.
+ *
+ * The counterpart to `drainScheduled`, for work that is scheduled with a real
+ * DELAY. `finishAllScheduledFunctions` can only force a function whose
+ * scheduled time has already passed on the real clock; a delayed one is
+ * skipped, so draining does not remove it and it stays armed to fire during
+ * teardown. The alternative — retrofitting `vi.useFakeTimers()` onto the whole
+ * file so `vi.runAllTimers` can reach it — changes time semantics for every
+ * other test in that file, which is a far bigger blast radius than the leak.
+ *
+ * Cancelling is the honest description of what these tests want. The concrete
+ * case is `placeholderEscalation.test.ts`: completing an image schedules
+ * `placeholderPairing:runPairing` behind a 5s debounce
+ * (`PAIRING_DEBOUNCE_MS`), and nothing in that file asserts on pairing — it
+ * covers escalation state. Locally the file finishes well inside 5s and the
+ * timer never fires; in CI it does not, which is why the failure is
+ * CI-only. Cancelling says "this file does not exercise the debounced pairing
+ * run" rather than pretending to run it.
+ *
+ * Use `drainScheduled` whenever the work is `runAfter(0)` — actually settling
+ * it is always preferable to discarding it. Reach for this only when the delay
+ * makes that impossible.
+ */
+export async function cancelScheduled(t: {
+  run: <T>(fn: (ctx: never) => Promise<T>) => Promise<T>;
+}): Promise<void> {
+  await t.run(async (ctx: never) => {
+    const c = ctx as unknown as {
+      db: {
+        system: {
+          query: (n: string) => {
+            collect: () => Promise<Array<{ _id: unknown; state: { kind: string } }>>;
+          };
+        };
+      };
+      scheduler: { cancel: (id: never) => Promise<void> };
+    };
+    const rows = await c.db.system.query("_scheduled_functions").collect();
+    for (const row of rows) {
+      // Only what has not started. A finished or in-progress function is not
+      // cancellable, and an in-progress one is already being awaited by
+      // whatever started it.
+      if (row.state.kind === "pending") {
+        await c.scheduler.cancel(row._id as never);
+      }
+    }
+  });
+}

@@ -19,6 +19,7 @@
 import { convexTest } from "convex-test";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import schema from "./schema";
+import { cancelScheduled } from "./test-support/drain-scheduled";
 import { api } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
@@ -131,6 +132,18 @@ async function settle(
   result: Parameters<typeof recordImageOutcomeImpl>[2],
 ) {
   await t.run(async (ctx) => recordImageOutcomeImpl(ctx, { jobId, imageId }, result));
+  // NEO-220: completing an image arms `placeholderPairing:runPairing` behind a
+  // 5s debounce (`PAIRING_DEBOUNCE_MS`). Nothing in this file asserts on
+  // pairing — it covers escalation state — but convex-test leaves that timer
+  // running, and a file that takes longer than the debounce (CI does; a laptop
+  // does not) fires it into worker teardown. That fails the JOB with an
+  // EnvironmentTeardownError while every test still reports green.
+  //
+  // CANCELLED rather than drained: a delayed schedule cannot be forced by
+  // `finishAllScheduledFunctions` without fake timers, and adding those to this
+  // file would change time semantics for every test in it. See
+  // test-support/drain-scheduled.ts.
+  await cancelScheduled(t);
 }
 
 // ---------------------------------------------------------------------------

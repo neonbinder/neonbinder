@@ -29,6 +29,7 @@
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import schema from "./schema";
+import { cancelScheduled } from "./test-support/drain-scheduled";
 import { api } from "./_generated/api";
 import type { Doc } from "./_generated/dataModel";
 
@@ -168,6 +169,16 @@ describe("both admin functions are role-gated", () => {
     await expect(t.query(api.placeholderPipeline.adminListPlaceholderJobs, {})).rejects.toThrow(
       /not authenticated/i,
     );
+    // NEO-220: cancel whatever this test left armed. Every assertion
+    // above has already run — including the three tests that
+    // deliberately DRAIN the scheduled sweep first — so this only
+    // removes work nothing here examines. convex-test would otherwise
+    // let it fire into worker teardown, which fails the JOB with an
+    // EnvironmentTeardownError while every test reports green.
+    // Cancelled rather than drained: some of this work reaches Cloud
+    // Run, and running it would trade a teardown race for a real
+    // outbound request. See test-support/drain-scheduled.ts.
+    await cancelScheduled(t);
   });
 
   test("adminListPlaceholderJobs rejects a signed-in non-admin", async () => {
@@ -178,6 +189,16 @@ describe("both admin functions are role-gated", () => {
     await expect(
       t.withIdentity(NON_ADMIN).query(api.placeholderPipeline.adminListPlaceholderJobs, {}),
     ).rejects.toThrow(/admin access required/i);
+    // NEO-220: cancel whatever this test left armed. Every assertion
+    // above has already run — including the three tests that
+    // deliberately DRAIN the scheduled sweep first — so this only
+    // removes work nothing here examines. convex-test would otherwise
+    // let it fire into worker teardown, which fails the JOB with an
+    // EnvironmentTeardownError while every test reports green.
+    // Cancelled rather than drained: some of this work reaches Cloud
+    // Run, and running it would trade a teardown race for a real
+    // outbound request. See test-support/drain-scheduled.ts.
+    await cancelScheduled(t);
   });
 
   test("adminCancelPlaceholderBatch rejects an unauthenticated caller", async () => {
@@ -188,6 +209,16 @@ describe("both admin functions are role-gated", () => {
     ).rejects.toThrow(/not authenticated/i);
     // And it did not act.
     expect((await getJob(t, "job-1"))?.status).toBe("processing");
+    // NEO-220: cancel whatever this test left armed. Every assertion
+    // above has already run — including the three tests that
+    // deliberately DRAIN the scheduled sweep first — so this only
+    // removes work nothing here examines. convex-test would otherwise
+    // let it fire into worker teardown, which fails the JOB with an
+    // EnvironmentTeardownError while every test reports green.
+    // Cancelled rather than drained: some of this work reaches Cloud
+    // Run, and running it would trade a teardown race for a real
+    // outbound request. See test-support/drain-scheduled.ts.
+    await cancelScheduled(t);
   });
 
   test("adminCancelPlaceholderBatch rejects a signed-in non-admin, even for their OWN job", async () => {
@@ -202,6 +233,16 @@ describe("both admin functions are role-gated", () => {
         .mutation(api.placeholderPipeline.adminCancelPlaceholderBatch, { jobId: "job-1" }),
     ).rejects.toThrow(/admin access required/i);
     expect((await getJob(t, "job-1"))?.status).toBe("processing");
+    // NEO-220: cancel whatever this test left armed. Every assertion
+    // above has already run — including the three tests that
+    // deliberately DRAIN the scheduled sweep first — so this only
+    // removes work nothing here examines. convex-test would otherwise
+    // let it fire into worker teardown, which fails the JOB with an
+    // EnvironmentTeardownError while every test reports green.
+    // Cancelled rather than drained: some of this work reaches Cloud
+    // Run, and running it would trade a teardown race for a real
+    // outbound request. See test-support/drain-scheduled.ts.
+    await cancelScheduled(t);
   });
 });
 
@@ -229,6 +270,16 @@ describe("adminListPlaceholderJobs", () => {
       OTHER_USER.subject,
       NON_ADMIN.subject,
     ]);
+    // NEO-220: cancel whatever this test left armed. Every assertion
+    // above has already run — including the three tests that
+    // deliberately DRAIN the scheduled sweep first — so this only
+    // removes work nothing here examines. convex-test would otherwise
+    // let it fire into worker teardown, which fails the JOB with an
+    // EnvironmentTeardownError while every test reports green.
+    // Cancelled rather than drained: some of this work reaches Cloud
+    // Run, and running it would trade a teardown race for a real
+    // outbound request. See test-support/drain-scheduled.ts.
+    await cancelScheduled(t);
   });
 
   test("caps the page and keeps the newest rows", async () => {
@@ -247,6 +298,16 @@ describe("adminListPlaceholderJobs", () => {
     expect(rows[0].jobId).toBe("job-104");
     // The five oldest fell off the end, not the newest.
     expect(rows.some((r) => r.jobId === "job-000")).toBe(false);
+    // NEO-220: cancel whatever this test left armed. Every assertion
+    // above has already run — including the three tests that
+    // deliberately DRAIN the scheduled sweep first — so this only
+    // removes work nothing here examines. convex-test would otherwise
+    // let it fire into worker teardown, which fails the JOB with an
+    // EnvironmentTeardownError while every test reports green.
+    // Cancelled rather than drained: some of this work reaches Cloud
+    // Run, and running it would trade a teardown race for a real
+    // outbound request. See test-support/drain-scheduled.ts.
+    await cancelScheduled(t);
   });
 
   test("never returns anything path-shaped", async () => {
@@ -267,6 +328,16 @@ describe("adminListPlaceholderJobs", () => {
     expect(rows[0]).not.toHaveProperty("pairCount");
     // Free-text error detail about another user's upload stays out too.
     expect(rows[0]).not.toHaveProperty("errorDetail");
+    // NEO-220: cancel whatever this test left armed. Every assertion
+    // above has already run — including the three tests that
+    // deliberately DRAIN the scheduled sweep first — so this only
+    // removes work nothing here examines. convex-test would otherwise
+    // let it fire into worker teardown, which fails the JOB with an
+    // EnvironmentTeardownError while every test reports green.
+    // Cancelled rather than drained: some of this work reaches Cloud
+    // Run, and running it would trade a teardown race for a real
+    // outbound request. See test-support/drain-scheduled.ts.
+    await cancelScheduled(t);
   });
 
   test("defaults mode to zip for rows that predate streaming, and counters to 0", async () => {
@@ -302,6 +373,16 @@ describe("adminListPlaceholderJobs", () => {
     expect(stream.status).toBe("collecting");
     expect(stream.totalImages).toBe(3);
     expect(stream.lastActivityAt).toBe(1_700_000_005_000);
+    // NEO-220: cancel whatever this test left armed. Every assertion
+    // above has already run — including the three tests that
+    // deliberately DRAIN the scheduled sweep first — so this only
+    // removes work nothing here examines. convex-test would otherwise
+    // let it fire into worker teardown, which fails the JOB with an
+    // EnvironmentTeardownError while every test reports green.
+    // Cancelled rather than drained: some of this work reaches Cloud
+    // Run, and running it would trade a teardown race for a real
+    // outbound request. See test-support/drain-scheduled.ts.
+    await cancelScheduled(t);
   });
 
   test("surfaces the error code of a failed run, which is what triage groups on", async () => {
@@ -319,6 +400,16 @@ describe("adminListPlaceholderJobs", () => {
 
     expect(rows[0].errorCode).toBe("TOO_MANY_IMAGE_FAILURES");
     expect(JSON.stringify(rows)).not.toContain("3 of 4 images");
+    // NEO-220: cancel whatever this test left armed. Every assertion
+    // above has already run — including the three tests that
+    // deliberately DRAIN the scheduled sweep first — so this only
+    // removes work nothing here examines. convex-test would otherwise
+    // let it fire into worker teardown, which fails the JOB with an
+    // EnvironmentTeardownError while every test reports green.
+    // Cancelled rather than drained: some of this work reaches Cloud
+    // Run, and running it would trade a teardown race for a real
+    // outbound request. See test-support/drain-scheduled.ts.
+    await cancelScheduled(t);
   });
 
   test("is empty rather than an error when there are no jobs", async () => {
@@ -326,6 +417,16 @@ describe("adminListPlaceholderJobs", () => {
     await expect(
       t.withIdentity(ADMIN).query(api.placeholderPipeline.adminListPlaceholderJobs, {}),
     ).resolves.toEqual([]);
+    // NEO-220: cancel whatever this test left armed. Every assertion
+    // above has already run — including the three tests that
+    // deliberately DRAIN the scheduled sweep first — so this only
+    // removes work nothing here examines. convex-test would otherwise
+    // let it fire into worker teardown, which fails the JOB with an
+    // EnvironmentTeardownError while every test reports green.
+    // Cancelled rather than drained: some of this work reaches Cloud
+    // Run, and running it would trade a teardown race for a real
+    // outbound request. See test-support/drain-scheduled.ts.
+    await cancelScheduled(t);
   });
 
   test("passes source through — the 'scanner CLI vs web app' column — and leaves it absent when unset", async () => {
@@ -345,6 +446,16 @@ describe("adminListPlaceholderJobs", () => {
     expect(rows.find((r) => r.jobId === scanner.jobId)?.source).toBe("scanner");
     // Absent stays absent — no default is invented for "which client".
     expect(rows.find((r) => r.jobId === "job-no-source")?.source).toBeUndefined();
+    // NEO-220: cancel whatever this test left armed. Every assertion
+    // above has already run — including the three tests that
+    // deliberately DRAIN the scheduled sweep first — so this only
+    // removes work nothing here examines. convex-test would otherwise
+    // let it fire into worker teardown, which fails the JOB with an
+    // EnvironmentTeardownError while every test reports green.
+    // Cancelled rather than drained: some of this work reaches Cloud
+    // Run, and running it would trade a teardown race for a real
+    // outbound request. See test-support/drain-scheduled.ts.
+    await cancelScheduled(t);
   });
 });
 
@@ -387,6 +498,16 @@ describe("adminCancelPlaceholderBatch", () => {
     }
     // Abandoned allocations gone; the confirmed image untouched.
     expect((await getImages(t, "job-1")).map((i) => i.entryIndex)).toEqual([2]);
+    // NEO-220: cancel whatever this test left armed. Every assertion
+    // above has already run — including the three tests that
+    // deliberately DRAIN the scheduled sweep first — so this only
+    // removes work nothing here examines. convex-test would otherwise
+    // let it fire into worker teardown, which fails the JOB with an
+    // EnvironmentTeardownError while every test reports green.
+    // Cancelled rather than drained: some of this work reaches Cloud
+    // Run, and running it would trade a teardown race for a real
+    // outbound request. See test-support/drain-scheduled.ts.
+    await cancelScheduled(t);
   });
 
   test("writes an audit line naming the admin, the target user and the job", async () => {
@@ -416,6 +537,16 @@ describe("adminCancelPlaceholderBatch", () => {
         adminUserId: ADMIN.subject,
       },
     ]);
+    // NEO-220: cancel whatever this test left armed. Every assertion
+    // above has already run — including the three tests that
+    // deliberately DRAIN the scheduled sweep first — so this only
+    // removes work nothing here examines. convex-test would otherwise
+    // let it fire into worker teardown, which fails the JOB with an
+    // EnvironmentTeardownError while every test reports green.
+    // Cancelled rather than drained: some of this work reaches Cloud
+    // Run, and running it would trade a teardown race for a real
+    // outbound request. See test-support/drain-scheduled.ts.
+    await cancelScheduled(t);
   });
 
   test("the audit line is written even when the cancel changes nothing", async () => {
@@ -441,6 +572,16 @@ describe("adminCancelPlaceholderBatch", () => {
     expect(result.canceled).toBe(false);
     expect(result.reason).toMatch(/already succeeded/i);
     expect(lines.filter((l) => l.includes("admin_cancel"))).toHaveLength(1);
+    // NEO-220: cancel whatever this test left armed. Every assertion
+    // above has already run — including the three tests that
+    // deliberately DRAIN the scheduled sweep first — so this only
+    // removes work nothing here examines. convex-test would otherwise
+    // let it fire into worker teardown, which fails the JOB with an
+    // EnvironmentTeardownError while every test reports green.
+    // Cancelled rather than drained: some of this work reaches Cloud
+    // Run, and running it would trade a teardown race for a real
+    // outbound request. See test-support/drain-scheduled.ts.
+    await cancelScheduled(t);
   });
 
   test("refuses a job that does not exist", async () => {
@@ -450,6 +591,16 @@ describe("adminCancelPlaceholderBatch", () => {
         .withIdentity(ADMIN)
         .mutation(api.placeholderPipeline.adminCancelPlaceholderBatch, { jobId: "job-nope" }),
     ).rejects.toThrow(/job not found/i);
+    // NEO-220: cancel whatever this test left armed. Every assertion
+    // above has already run — including the three tests that
+    // deliberately DRAIN the scheduled sweep first — so this only
+    // removes work nothing here examines. convex-test would otherwise
+    // let it fire into worker teardown, which fails the JOB with an
+    // EnvironmentTeardownError while every test reports green.
+    // Cancelled rather than drained: some of this work reaches Cloud
+    // Run, and running it would trade a teardown race for a real
+    // outbound request. See test-support/drain-scheduled.ts.
+    await cancelScheduled(t);
   });
 
   test("a canceled run is startable again by its owner", async () => {
@@ -466,6 +617,16 @@ describe("adminCancelPlaceholderBatch", () => {
       .withIdentity(OTHER_USER)
       .mutation(api.placeholderPipeline.startPlaceholderBatch, { jobId: "job-1" });
     expect(restart.started).toBe(true);
+    // NEO-220: cancel whatever this test left armed. Every assertion
+    // above has already run — including the three tests that
+    // deliberately DRAIN the scheduled sweep first — so this only
+    // removes work nothing here examines. convex-test would otherwise
+    // let it fire into worker teardown, which fails the JOB with an
+    // EnvironmentTeardownError while every test reports green.
+    // Cancelled rather than drained: some of this work reaches Cloud
+    // Run, and running it would trade a teardown race for a real
+    // outbound request. See test-support/drain-scheduled.ts.
+    await cancelScheduled(t);
   });
 });
 
@@ -535,6 +696,16 @@ describe("admin cancel and user cancel are the same cancel", () => {
     expect(adminJob?.errorDetail).not.toBe(userJob?.errorDetail);
     expect(userJob?.errorDetail).toMatch(/by user/i);
     expect(adminJob?.errorDetail).toMatch(/administrator/i);
+    // NEO-220: cancel whatever this test left armed. Every assertion
+    // above has already run — including the three tests that
+    // deliberately DRAIN the scheduled sweep first — so this only
+    // removes work nothing here examines. convex-test would otherwise
+    // let it fire into worker teardown, which fails the JOB with an
+    // EnvironmentTeardownError while every test reports green.
+    // Cancelled rather than drained: some of this work reaches Cloud
+    // Run, and running it would trade a teardown race for a real
+    // outbound request. See test-support/drain-scheduled.ts.
+    await cancelScheduled(t);
   });
 });
 
@@ -564,6 +735,16 @@ describe("seedMyTestPlaceholderStream", () => {
     expect(job?.objectPath).toBe(`placeholders/${NON_ADMIN.subject}/${jobId}/`);
     // No images, no GCS.
     expect(await getImages(t, jobId)).toHaveLength(0);
+    // NEO-220: cancel whatever this test left armed. Every assertion
+    // above has already run — including the three tests that
+    // deliberately DRAIN the scheduled sweep first — so this only
+    // removes work nothing here examines. convex-test would otherwise
+    // let it fire into worker teardown, which fails the JOB with an
+    // EnvironmentTeardownError while every test reports green.
+    // Cancelled rather than drained: some of this work reaches Cloud
+    // Run, and running it would trade a teardown race for a real
+    // outbound request. See test-support/drain-scheduled.ts.
+    await cancelScheduled(t);
   });
 
   test("fails closed when the testing flag is absent — production has none", async () => {
@@ -577,6 +758,16 @@ describe("seedMyTestPlaceholderStream", () => {
     expect(await t.run(async (ctx) => ctx.db.query("placeholderJobs").collect())).toHaveLength(
       0,
     );
+    // NEO-220: cancel whatever this test left armed. Every assertion
+    // above has already run — including the three tests that
+    // deliberately DRAIN the scheduled sweep first — so this only
+    // removes work nothing here examines. convex-test would otherwise
+    // let it fire into worker teardown, which fails the JOB with an
+    // EnvironmentTeardownError while every test reports green.
+    // Cancelled rather than drained: some of this work reaches Cloud
+    // Run, and running it would trade a teardown race for a real
+    // outbound request. See test-support/drain-scheduled.ts.
+    await cancelScheduled(t);
   });
 
   test("requires a signed-in caller", async () => {
@@ -584,6 +775,16 @@ describe("seedMyTestPlaceholderStream", () => {
     await expect(t.mutation(api.testing.seedMyTestPlaceholderStream, {})).rejects.toThrow(
       /not authenticated/i,
     );
+    // NEO-220: cancel whatever this test left armed. Every assertion
+    // above has already run — including the three tests that
+    // deliberately DRAIN the scheduled sweep first — so this only
+    // removes work nothing here examines. convex-test would otherwise
+    // let it fire into worker teardown, which fails the JOB with an
+    // EnvironmentTeardownError while every test reports green.
+    // Cancelled rather than drained: some of this work reaches Cloud
+    // Run, and running it would trade a teardown race for a real
+    // outbound request. See test-support/drain-scheduled.ts.
+    await cancelScheduled(t);
   });
 
   test("the seeded run is exactly what an admin can then see and abort", async () => {
@@ -608,6 +809,16 @@ describe("seedMyTestPlaceholderStream", () => {
       .mutation(api.placeholderPipeline.adminCancelPlaceholderBatch, { jobId });
     expect(result.canceled).toBe(true);
     expect((await getJob(t, jobId))?.status).toBe("failed");
+    // NEO-220: cancel whatever this test left armed. Every assertion
+    // above has already run — including the three tests that
+    // deliberately DRAIN the scheduled sweep first — so this only
+    // removes work nothing here examines. convex-test would otherwise
+    // let it fire into worker teardown, which fails the JOB with an
+    // EnvironmentTeardownError while every test reports green.
+    // Cancelled rather than drained: some of this work reaches Cloud
+    // Run, and running it would trade a teardown race for a real
+    // outbound request. See test-support/drain-scheduled.ts.
+    await cancelScheduled(t);
   });
 });
 
@@ -629,6 +840,16 @@ describe("seedCancelMyActivePlaceholderJobs", () => {
 
     // And it did not cancel anything.
     expect((await getJob(t, "job-1"))?.status).toBe("processing");
+    // NEO-220: cancel whatever this test left armed. Every assertion
+    // above has already run — including the three tests that
+    // deliberately DRAIN the scheduled sweep first — so this only
+    // removes work nothing here examines. convex-test would otherwise
+    // let it fire into worker teardown, which fails the JOB with an
+    // EnvironmentTeardownError while every test reports green.
+    // Cancelled rather than drained: some of this work reaches Cloud
+    // Run, and running it would trade a teardown race for a real
+    // outbound request. See test-support/drain-scheduled.ts.
+    await cancelScheduled(t);
   });
 
   test("requires a signed-in caller", async () => {
@@ -636,6 +857,16 @@ describe("seedCancelMyActivePlaceholderJobs", () => {
     await expect(
       t.mutation(api.placeholderPipeline.seedCancelMyActivePlaceholderJobs, {}),
     ).rejects.toThrow(/not authenticated/i);
+    // NEO-220: cancel whatever this test left armed. Every assertion
+    // above has already run — including the three tests that
+    // deliberately DRAIN the scheduled sweep first — so this only
+    // removes work nothing here examines. convex-test would otherwise
+    // let it fire into worker teardown, which fails the JOB with an
+    // EnvironmentTeardownError while every test reports green.
+    // Cancelled rather than drained: some of this work reaches Cloud
+    // Run, and running it would trade a teardown race for a real
+    // outbound request. See test-support/drain-scheduled.ts.
+    await cancelScheduled(t);
   });
 
   test("cancels EVERY active status, not just collecting", async () => {
@@ -670,6 +901,16 @@ describe("seedCancelMyActivePlaceholderJobs", () => {
     expect((await getJob(t, "job-pending"))?.status).toBe("pending");
     expect((await getJob(t, "job-succeeded"))?.status).toBe("succeeded");
     expect((await getJob(t, "job-failed"))?.status).toBe("failed");
+    // NEO-220: cancel whatever this test left armed. Every assertion
+    // above has already run — including the three tests that
+    // deliberately DRAIN the scheduled sweep first — so this only
+    // removes work nothing here examines. convex-test would otherwise
+    // let it fire into worker teardown, which fails the JOB with an
+    // EnvironmentTeardownError while every test reports green.
+    // Cancelled rather than drained: some of this work reaches Cloud
+    // Run, and running it would trade a teardown race for a real
+    // outbound request. See test-support/drain-scheduled.ts.
+    await cancelScheduled(t);
   });
 
   test("goes through cancelJobImpl — real work cancellation, not a status patch", async () => {
@@ -703,6 +944,16 @@ describe("seedCancelMyActivePlaceholderJobs", () => {
 
     // Abandoned allocations gone, the confirmed image kept — the sweep ran.
     expect((await getImages(t, "job-stream")).map((i) => i.entryIndex)).toEqual([2]);
+    // NEO-220: cancel whatever this test left armed. Every assertion
+    // above has already run — including the three tests that
+    // deliberately DRAIN the scheduled sweep first — so this only
+    // removes work nothing here examines. convex-test would otherwise
+    // let it fire into worker teardown, which fails the JOB with an
+    // EnvironmentTeardownError while every test reports green.
+    // Cancelled rather than drained: some of this work reaches Cloud
+    // Run, and running it would trade a teardown race for a real
+    // outbound request. See test-support/drain-scheduled.ts.
+    await cancelScheduled(t);
   });
 
   test("aggregates canceledWorkItems across every cancelled job", async () => {
@@ -729,6 +980,16 @@ describe("seedCancelMyActivePlaceholderJobs", () => {
 
     expect(result.canceled).toBe(2);
     expect(result.canceledWorkItems).toBe(0);
+    // NEO-220: cancel whatever this test left armed. Every assertion
+    // above has already run — including the three tests that
+    // deliberately DRAIN the scheduled sweep first — so this only
+    // removes work nothing here examines. convex-test would otherwise
+    // let it fire into worker teardown, which fails the JOB with an
+    // EnvironmentTeardownError while every test reports green.
+    // Cancelled rather than drained: some of this work reaches Cloud
+    // Run, and running it would trade a teardown race for a real
+    // outbound request. See test-support/drain-scheduled.ts.
+    await cancelScheduled(t);
   });
 
   test("only touches the CALLER's jobs, never another user's", async () => {
@@ -746,6 +1007,16 @@ describe("seedCancelMyActivePlaceholderJobs", () => {
     expect((await getJob(t, "job-mine"))?.status).toBe("failed");
     // Untouched.
     expect((await getJob(t, "job-theirs"))?.status).toBe("processing");
+    // NEO-220: cancel whatever this test left armed. Every assertion
+    // above has already run — including the three tests that
+    // deliberately DRAIN the scheduled sweep first — so this only
+    // removes work nothing here examines. convex-test would otherwise
+    // let it fire into worker teardown, which fails the JOB with an
+    // EnvironmentTeardownError while every test reports green.
+    // Cancelled rather than drained: some of this work reaches Cloud
+    // Run, and running it would trade a teardown race for a real
+    // outbound request. See test-support/drain-scheduled.ts.
+    await cancelScheduled(t);
   });
 
   test("is idempotent — a second call finds nothing active", async () => {
@@ -762,6 +1033,16 @@ describe("seedCancelMyActivePlaceholderJobs", () => {
       .withIdentity(NON_ADMIN)
       .mutation(api.placeholderPipeline.seedCancelMyActivePlaceholderJobs, {});
     expect(second).toEqual({ canceled: 0, canceledWorkItems: 0 });
+    // NEO-220: cancel whatever this test left armed. Every assertion
+    // above has already run — including the three tests that
+    // deliberately DRAIN the scheduled sweep first — so this only
+    // removes work nothing here examines. convex-test would otherwise
+    // let it fire into worker teardown, which fails the JOB with an
+    // EnvironmentTeardownError while every test reports green.
+    // Cancelled rather than drained: some of this work reaches Cloud
+    // Run, and running it would trade a teardown race for a real
+    // outbound request. See test-support/drain-scheduled.ts.
+    await cancelScheduled(t);
   });
 
   test("frees the caller's slots so a fresh seed can start — the end-to-end point", async () => {
@@ -787,6 +1068,16 @@ describe("seedCancelMyActivePlaceholderJobs", () => {
       .withIdentity(NON_ADMIN)
       .mutation(api.placeholderStream.startPlaceholderStream, {});
     expect(after.started).toBe(true);
+    // NEO-220: cancel whatever this test left armed. Every assertion
+    // above has already run — including the three tests that
+    // deliberately DRAIN the scheduled sweep first — so this only
+    // removes work nothing here examines. convex-test would otherwise
+    // let it fire into worker teardown, which fails the JOB with an
+    // EnvironmentTeardownError while every test reports green.
+    // Cancelled rather than drained: some of this work reaches Cloud
+    // Run, and running it would trade a teardown race for a real
+    // outbound request. See test-support/drain-scheduled.ts.
+    await cancelScheduled(t);
   });
 });
 
@@ -819,6 +1110,16 @@ describe("source display hint", () => {
       .withIdentity(NON_ADMIN)
       .query(api.placeholderPipeline.getPlaceholderJob, { jobId: "job-zip" });
     expect(visible?.source).toBe("web");
+    // NEO-220: cancel whatever this test left armed. Every assertion
+    // above has already run — including the three tests that
+    // deliberately DRAIN the scheduled sweep first — so this only
+    // removes work nothing here examines. convex-test would otherwise
+    // let it fire into worker teardown, which fails the JOB with an
+    // EnvironmentTeardownError while every test reports green.
+    // Cancelled rather than drained: some of this work reaches Cloud
+    // Run, and running it would trade a teardown race for a real
+    // outbound request. See test-support/drain-scheduled.ts.
+    await cancelScheduled(t);
   });
 
   test("the zip start path leaves source absent when none is passed", async () => {
@@ -838,5 +1139,15 @@ describe("source display hint", () => {
       .withIdentity(NON_ADMIN)
       .query(api.placeholderPipeline.getPlaceholderJob, { jobId: "job-zip" });
     expect(visible?.source).toBeUndefined();
+    // NEO-220: cancel whatever this test left armed. Every assertion
+    // above has already run — including the three tests that
+    // deliberately DRAIN the scheduled sweep first — so this only
+    // removes work nothing here examines. convex-test would otherwise
+    // let it fire into worker teardown, which fails the JOB with an
+    // EnvironmentTeardownError while every test reports green.
+    // Cancelled rather than drained: some of this work reaches Cloud
+    // Run, and running it would trade a teardown race for a real
+    // outbound request. See test-support/drain-scheduled.ts.
+    await cancelScheduled(t);
   });
 });
