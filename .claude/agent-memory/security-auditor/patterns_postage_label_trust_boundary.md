@@ -98,7 +98,7 @@ the write. The stamp belongs immediately before the outbound call.
   carries the token) — `redactWebhookToken` scrubs it in `describeError` *and*
   again in the router. Note nothing scrubs the HMAC *secret* from an upstream
   message; EasyPost does not echo it today.
-- `REGISTERABLE_DEPLOYMENTS` fails closed and the dev slug `focused-fox-53` was
+- `REGISTERABLE_DEPLOYMENTS` fails closed and the dev slug `<dev-slug>` was
   **already** public in `.github/workflows/preview-cleanup.yml`; committing it
   in `convex/shipmentTracking.ts` discloses nothing new. What a dev slug reaches
   is the `/e2e/*` surface — see [[patterns-testing-endpoint-gate]].

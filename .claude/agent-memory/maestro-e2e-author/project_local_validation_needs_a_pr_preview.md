@@ -10,7 +10,7 @@ branch**, local validation is blocked until the branch has an open PR with a
 built Convex preview. Verified 2026-09-01 on `neo-203-nb-owned-resync`.
 
 **Why:**
-- `apps/web/.env.local` sets `CONVEX_DEPLOYMENT=dev:focused-fox-53` and
+- `apps/web/.env.local` sets `CONVEX_DEPLOYMENT=dev:<dev-slug>` and
   `VITE_CONVEX_URL` at that same shared dev deployment. Confirm what a
   deployment actually has with `npx convex function-spec | grep <fnName>` —
   that is the decisive check, and it is read-only.
