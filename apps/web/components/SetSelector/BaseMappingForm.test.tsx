@@ -374,7 +374,15 @@ describe("BaseMappingForm — cancel-recovery fix (NEO-71-74)", () => {
     });
   });
 
-  it("shows a final 'no marketplace data found' message and writes nothing when neither platform has options and the set has no BSC slug either (unchanged fallback path)", async () => {
+  it("says there is nothing to link, offers Close ONLY, and stays on screen", async () => {
+    // NEO-239. This branch used to set a message and call onClose() in the same
+    // breath, so the form unmounted before the message could render: the
+    // operator tapped Base and watched the panel vanish with no explanation.
+    //
+    // It also must not offer Retry. There is nothing to pick from — both sides
+    // came back empty and the set carries no BSC slug — so Retry would re-run
+    // the identical fetch. The real next step is attaching a marketplace id,
+    // which is what the sentence points at.
     mockFetchRawOptions.mockResolvedValue({
       success: true,
       bscOptions: [],
@@ -385,11 +393,54 @@ describe("BaseMappingForm — cancel-recovery fix (NEO-71-74)", () => {
 
     await waitFor(() => {
       expect(
-        screen.getByText("No marketplace data found for this Base set."),
+        screen.getByText(
+          "Nothing to link yet — this set isn't on a marketplace. Attach one from Attach more… when it is.",
+        ),
       ).toBeTruthy();
     });
     expect(mockSetPlatformData).not.toHaveBeenCalled();
-    expect(onClose).toHaveBeenCalledTimes(1);
+    // Stays mounted: the message is the whole point of this state.
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.queryByText("Retry")).toBeNull();
+    expect(screen.getByText("Close")).toBeTruthy();
+  });
+
+  it("a REFUSED write says the write failed, not that the operator cancelled", async () => {
+    // Jason's local FE against an older backend, or any server refusal. The
+    // picker's own close handler raises the cancelled copy, and that used to be
+    // the sentence left standing — the one reading that tells the operator
+    // nothing went wrong. Their picks are gone; their data is not, and the
+    // difference is the whole message.
+    mockFetchRawOptions.mockResolvedValue({
+      success: true,
+      bscOptions: [{ value: "2024 Topps Chrome", platformValue: "topps-chrome" }],
+      slOptions: [],
+    });
+    mockSetPlatformData.mockRejectedValueOnce(
+      new Error("[Request ID: abc] Server Error: bscLabel"),
+    );
+
+    renderForm();
+
+    await waitForPickerLoaded();
+    await act(async () => {
+      fireEvent.click(
+        screen.getByLabelText("BSC base candidate: 2024 Topps Chrome"),
+      );
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText("Confirm Base Set"));
+    });
+
+    expect(
+      screen.getByText("Couldn't link that set. Nothing changed — try again."),
+    ).toBeTruthy();
+    expect(screen.queryByText(/Base mapping cancelled/)).toBeNull();
+    // No thrown text: the arg name and the request id stay in the logs.
+    expect(screen.queryByText(/Request ID/)).toBeNull();
+    expect(screen.queryByText(/bscLabel/)).toBeNull();
+    // Retry IS offered — the picks are recoverable by picking again.
+    expect(screen.getByText("Retry")).toBeTruthy();
   });
 
   // -------------------------------------------------------------------------
