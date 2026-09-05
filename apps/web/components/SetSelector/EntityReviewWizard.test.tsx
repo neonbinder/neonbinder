@@ -917,6 +917,46 @@ describe("EntityReviewWizard — Enter", () => {
     expect(onConfirm).toHaveBeenCalledTimes(1);
   });
 
+  it("carries a UNIQUE id — Maestro re-finds the active element by XPath", () => {
+    /*
+     * WHY AN id IS A BEHAVIOURAL CONTRACT HERE.
+     *
+     * maestro-web's `pressKey` does not type into `document.activeElement`. It
+     * runs `createXPathFromElement(document.activeElement)`, re-finds the node
+     * by that XPath, and sends the key to the match. The generator emits
+     * `id("…")` when the element has one and falls back to
+     * `tag[@class="…"]` per ancestor otherwise.
+     *
+     * Confirm & Save and Cancel (Esc) are sibling Radix <Button>s with the
+     * IDENTICAL class string — the neon colour is a `data-accent-color`
+     * attribute and an inline style, never a class — so the class-based XPath
+     * matched BOTH and Selenium returned the first: Cancel. Enter aimed at the
+     * correctly-focused Confirm button opened "Discard 1 decision?" instead of
+     * committing. The old dialog-level Enter handler hid this by committing
+     * from any non-input target, which is the D5 bug that had to go.
+     *
+     * So: the id must exist, and it must be the only one in the document.
+     */
+    currentRows = [makeRow({ decision: { action: "create" } })];
+    renderWizard();
+
+    const confirm = screen.getByRole("button", { name: "Confirm & Save (Enter)" });
+    expect(confirm.id).toBe("entity-review-confirm-save");
+    expect(
+      document.querySelectorAll("#entity-review-confirm-save"),
+    ).toHaveLength(1);
+  });
+
+  it("does not give Cancel an id that could shadow it", () => {
+    // The sibling that used to win the XPath race. It needs no id of its own —
+    // and must not accidentally acquire the Confirm button's.
+    currentRows = [makeRow({ decision: { action: "create" } })];
+    renderWizard();
+
+    const cancel = screen.getByRole("button", { name: "Cancel (Esc)" });
+    expect(cancel.id).not.toBe("entity-review-confirm-save");
+  });
+
   it("prevents the default action so a REAL keypress cannot commit twice", () => {
     // A real browser turns Enter-on-a-button into a click. Without
     // preventDefault the handler above and that click would both fire.

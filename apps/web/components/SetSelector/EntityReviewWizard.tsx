@@ -1806,6 +1806,30 @@ export default function EntityReviewWizard({
                   {allDecided && !commitError && (
                     <NeonButton
                       ref={confirmButtonRef}
+                      /*
+                       * A UNIQUE id, and it is load-bearing for E2E.
+                       *
+                       * maestro-web's `pressKey` does not send the key to
+                       * `document.activeElement`. It runs
+                       * `createXPathFromElement(document.activeElement)`, then
+                       * re-finds the element by that XPath and sends to the
+                       * match. The generator uses `id("…")` when the element
+                       * has one and falls back to `tag[@class="…"]` per
+                       * ancestor otherwise — and this button and its
+                       * `Cancel (Esc)` sibling are both Radix <Button>s with
+                       * the IDENTICAL class string (the neon colour is a
+                       * `data-accent-color` attribute and an inline style, not
+                       * a class). The XPath therefore matched both, Selenium
+                       * returned the first, and Enter aimed at Confirm landed
+                       * on Cancel — which is why the failure screenshot showed
+                       * "Discard 1 decision?" while the app's own focus was
+                       * correct. An id makes the XPath name exactly this node.
+                       *
+                       * Do not remove it, and do not reuse it: the wizard
+                       * title's `entity-review-wizard-title` is the only other
+                       * id here, for the same "must be addressable" reason.
+                       */
+                      id="entity-review-confirm-save"
                       onClick={onConfirm}
                       disabled={saving}
                       /*
