@@ -8386,7 +8386,7 @@ export const commitCardChecklistPrelude = internalMutation({
     // NEO-147: "minimal at insert" is still right, but until now it also
     // meant "never enriched at all". A team the user reviewed goes through
     // processEntityReviewQueue → lookupTeamEnrichment before it is created,
-    // so it lands with league/city/colors already on it. A team born HERE
+    // so it lands with league/location/colors already on it. A team born HERE
     // skipped that entirely and had no other path to it —
     // processEnrichmentQueue (the queue built for exactly this) had zero
     // callers, so these rows stayed bare forever. Spine labels read
@@ -8603,7 +8603,7 @@ export const commitCardChecklistPrelude = internalMutation({
         sportId: args.sportId,
         lastUpdated: Date.now(),
         ...(leagueId ? { leagueId } : {}),
-        ...(enrichment?.city ? { city: enrichment.city } : {}),
+        ...(enrichment?.location ? { location: enrichment.location } : {}),
         ...(enrichment?.yearsActive ? { yearsActive: enrichment.yearsActive } : {}),
         ...(enrichment?.colors ? { colors: enrichment.colors } : {}),
         ...(enrichment?.wikidataId || enrichment?.espnId

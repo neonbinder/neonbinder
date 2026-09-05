@@ -194,13 +194,13 @@ const AL_TEAMS = [
   {
     _id: "t-yankees",
     name: "New York Yankees",
-    city: "New York",
+    location: "New York",
     colors: { primary: "#132448", secondary: "#ffffff" },
   },
   {
     _id: "t-mariners",
     name: "Seattle Mariners",
-    city: "Seattle",
+    location: "Seattle",
     colors: { primary: "#5fd3bc" },
   },
 ];

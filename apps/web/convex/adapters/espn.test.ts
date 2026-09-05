@@ -82,7 +82,7 @@ describe("fetchEspnTeamInfo", () => {
     expect(requestedUrl).toBe("https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/teams");
     expect(result).toEqual({
       espnId: "19",
-      city: "Washington",
+      location: "Washington",
       colorPrimary: "#0d2340",
       colorAlternate: "#ba122b",
       league: "Major League Baseball",

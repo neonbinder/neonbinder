@@ -9,7 +9,7 @@
  * a team at all).
  *
  * Structure mirrors `PlayerPicker.test.tsx` (same session, same component
- * shape) with team-specific additions: the `m.city` suffix on candidate
+ * shape) with team-specific additions: the `m.location` suffix on candidate
  * rows and the "No matches." empty-state string TeamPicker renders (that
  * PlayerPicker's popover doesn't).
  *
@@ -75,8 +75,8 @@ function tid(n: string): Id<"teams"> {
   return n as unknown as Id<"teams">;
 }
 
-function makeTeam(id: string, name: string, city?: string) {
-  return { _id: tid(id), name, city };
+function makeTeam(id: string, name: string, location?: string) {
+  return { _id: tid(id), name, location };
 }
 
 function renderPicker(props: Partial<Parameters<typeof TeamPicker>[0]> = {}) {
@@ -142,7 +142,7 @@ describe("TeamPicker", () => {
   // Candidate list (teams.list), filtered/ranked by typed query
   // -------------------------------------------------------------------------
 
-  it("lists candidates from teams.list when the popover opens, including the city suffix", () => {
+  it("lists candidates from teams.list when the popover opens, including the location suffix", () => {
     currentCandidates = [makeTeam("t1", "New York Yankees", "Bronx")];
     renderPicker();
 

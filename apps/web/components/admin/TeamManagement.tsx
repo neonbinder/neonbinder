@@ -178,7 +178,7 @@ function TeamDetail({
     { id: Id<"leagues">; name: string }[]
   >([]);
   const leagueSelectRef = useRef<HTMLSelectElement>(null);
-  const [city, setCity] = useState(team.city ?? "");
+  const [location, setLocation] = useState(team.location ?? "");
   const [fromYear, setFromYear] = useState(
     team.yearsActive?.from ? String(team.yearsActive.from) : "",
   );
@@ -199,7 +199,7 @@ function TeamDetail({
     setLeagueId(team.leagueId ?? NO_LEAGUE);
     setAddingLeague(false);
     setAddedLeagues([]);
-    setCity(team.city ?? "");
+    setLocation(team.location ?? "");
     setFromYear(team.yearsActive?.from ? String(team.yearsActive.from) : "");
     setToYear(team.yearsActive?.to ? String(team.yearsActive.to) : "");
     setPrimary(team.colors?.primary ?? "");
@@ -257,7 +257,7 @@ function TeamDetail({
         id: team._id,
         name: name.trim(),
         leagueId: resolvedLeagueId,
-        city: city.trim() || null,
+        location: location.trim() || null,
         yearsActive: fromYear && Number.isFinite(from)
           ? { from, ...(toYear && Number.isFinite(to) ? { to } : {}) }
           : null,
@@ -443,10 +443,16 @@ function TeamDetail({
           </Link>
         </div>
 
+        {/*
+          NEO-236: "Location", not "City". The leading part of a franchise
+          name is a place and not reliably a city — Tampa Bay, New England,
+          Golden State — and labelling the field "City" was what made
+          operators leave it blank for those teams.
+        */}
         <Input
-          label="City"
-          value={city}
-          onChange={(e) => setCity(e.target.value)}
+          label="Location"
+          value={location}
+          onChange={(e) => setLocation(e.target.value)}
         />
 
         <div className="flex gap-2">

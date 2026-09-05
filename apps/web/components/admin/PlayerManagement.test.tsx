@@ -225,11 +225,11 @@ const PLAYERS_BY_ID: Record<string, unknown> = {
 };
 
 /**
- * NEO-235: `city` on one row and not the other is the whole point of the pair.
+ * NEO-235: `location` on one row and not the other is the whole point of the pair.
  * The master row prints the nickname a fan says out loud, which it can only do
- * for a team whose city was enriched — "Seattle Mariners" becomes "Mariners",
+ * for a team whose location was enriched — "Seattle Mariners" becomes "Mariners",
  * while the un-enriched Reds keep their full name. Both branches are real:
- * `teams.city` is optional and plenty of prod rows have never been enriched.
+ * `teams.location` is optional and plenty of prod rows have never been enriched.
  */
 /**
  * The colour pairs are chosen for what they SCORE against the master row's two
@@ -242,7 +242,7 @@ const TEAMS = [
     _id: "t-mariners",
     _creationTime: 1,
     name: "Seattle Mariners",
-    city: "Seattle",
+    location: "Seattle",
     sportId: "sport-baseball",
     // Primary clears the floor comfortably (9.8:1) — the plain case.
     colors: { primary: "#5fd3bc", secondary: "#0c2c56" },
@@ -540,7 +540,7 @@ describe("PlayerManagement — the list", () => {
     management = { players: [GRIFFEY], totalCount: 1, truncated: false };
     render(<PlayerManagement />);
 
-    // Both of Griffey's stints are Seattle's, and Seattle has a `city`, so the
+    // Both of Griffey's stints are Seattle's, and Seattle has a `location`, so the
     // row drops it: "Seattle Mariners" is how the table stores the team and
     // "Mariners" is how anyone holding the card refers to it.
     const row = screen.getByRole("button", { name: /Ken Griffey Jr\./ });
@@ -548,7 +548,7 @@ describe("PlayerManagement — the list", () => {
     expect(row.textContent).not.toContain("Seattle");
   });
 
-  it("keeps the full name for a team with no city recorded", () => {
+  it("keeps the full name for a team with no location recorded", () => {
     management = { players: [STILL_PLAYING], totalCount: 1, truncated: false };
     render(<PlayerManagement />);
 

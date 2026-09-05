@@ -3,7 +3,8 @@
  * undocumented, read-only JSON — same risk profile already accepted for
  * BSC's per-card detail endpoint (adapters/buysportscards.ts). Confirmed
  * live against NBA/NFL/MLB/NHL: reliably returns a hex `color`/
- * `alternateColor` and `location` (city) for every CURRENT team in one call
+ * `alternateColor` and `location` (the place part of the team name) for every
+ * CURRENT team in one call
  * per league. It has no historical/defunct-franchise coverage at all — that
  * gap is why `adapters/wikidata.ts`'s `enrichTeam` still falls back to
  * Wikidata rather than replacing it.
@@ -38,7 +39,12 @@ interface EspnTeamListResponse {
 
 export interface EspnTeamInfo {
   espnId?: string;
-  city?: string;
+  /**
+   * NEO-236: the place part of the franchise name — ESPN's own `location`
+   * field, which is where the name it maps to came from. Location, not city:
+   * ESPN answers "Tampa Bay", "New England", "Golden State" here too.
+   */
+  location?: string;
   colorPrimary?: string;
   colorAlternate?: string;
   league: string;
@@ -49,7 +55,7 @@ function normalize(s: string): string {
 }
 
 /**
- * Look up a team's current city + colors on ESPN by exact (case-insensitive)
+ * Look up a team's current location + colors on ESPN by exact (case-insensitive)
  * display-name match within its sport's current team list. Returns null when
  * the sport isn't mapped, the fetch fails, or no team in the league's
  * current roster matches — all no-throw, matching the rest of this
@@ -92,7 +98,7 @@ export async function fetchEspnTeamInfo(
 
   return {
     espnId: match.team.id,
-    city: match.team.location,
+    location: match.team.location,
     colorPrimary: match.team.color ? `#${match.team.color}` : undefined,
     colorAlternate: match.team.alternateColor ? `#${match.team.alternateColor}` : undefined,
     league: league.leagueName,

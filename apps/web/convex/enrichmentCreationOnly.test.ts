@@ -145,7 +145,7 @@ describe("enrichTeam — creation-only (NEO-203)", () => {
   // Each marker is checked on its own: they are OR'd in the guard, and a
   // team in the wild carries whichever one its source happened to answer.
   const markerCases: Array<[string, Record<string, unknown>]> = [
-    ["city", { city: "Washington" }],
+    ["location", { location: "Washington" }],
     ["yearsActive", { yearsActive: { from: 1969 } }],
     ["colors", { colors: { primary: "#ab0003" } }],
     [

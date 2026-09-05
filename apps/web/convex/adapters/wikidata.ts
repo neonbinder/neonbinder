@@ -17,7 +17,7 @@ import { isWikidataQid } from "../../lib/players/wikidata-id";
 
 /**
  * Wikidata SPARQL adapter — enriches players (HoF, career teams) and
- * teams (city, league, years active) from query.wikidata.org. No API
+ * teams (location, league, years active) from query.wikidata.org. No API
  * key required.
  *
  * Concurrency model (NEO-99): every SPARQL caller — the review-wizard
@@ -701,7 +701,8 @@ export interface PlayerLookupResult {
 export interface TeamLookupResult {
   wikidataId?: string;
   league?: string;
-  city?: string;
+  /** NEO-236: the place part of the team name. Location, not city. */
+  location?: string;
   yearsActive?: { from: number; to?: number };
   colors?: { primary?: string; secondary?: string };
   espnId?: string;
@@ -969,7 +970,7 @@ ${hallOfFameSparqlBlocks(qid, hofQid)}
  * already been answered.
  */
 function teamEnrichmentMarkers(team: {
-  city?: string;
+  location?: string;
   yearsActive?: unknown;
   colors?: { primary?: string; secondary?: string };
   colorSource?: unknown;
@@ -977,7 +978,7 @@ function teamEnrichmentMarkers(team: {
   externalIds?: { wikidataId?: string; espnId?: string };
 }): string[] {
   const markers: string[] = [];
-  if (team.city) markers.push("city");
+  if (team.location) markers.push("location");
   if (team.yearsActive) markers.push("yearsActive");
   if (team.colors?.primary || team.colors?.secondary) markers.push("colors");
   if (team.colorSource) markers.push("colorSource");
@@ -1096,11 +1097,11 @@ export const enrichPlayer = internalAction({
 
 /**
  * NEO-91: multi-source. ESPN (adapters/espn.ts) is tried first — reliable
- * hex colors and city for any CURRENT team, confirmed live against
+ * hex colors and location for any CURRENT team, confirmed live against
  * NBA/NFL/MLB/NHL — but it has zero historical/defunct-franchise coverage.
  * Wikidata always runs too: it's the only source for `yearsActive`/
- * `wikidataId`, and the only source for `city`/`league` when ESPN found no
- * match (a defunct team). When both resolve a city, ESPN's wins (more
+ * `wikidataId`, and the only source for `location`/`league` when ESPN found no
+ * match (a defunct team). When both resolve a location, ESPN's wins (more
  * likely accurate for anything currently active); ESPN's league (the exact
  * name from SPORT_TO_ESPN_LEAGUE, not a guess) also wins over Wikidata's
  * label when present.
@@ -1108,9 +1109,9 @@ export const enrichPlayer = internalAction({
 /**
  * Pure(-ish) lookup — no db writes. Already side-effect-free (unlike the
  * player lookup, a team has no nested "career teams" to defer). Tries ESPN
- * first (reliable colors/city/league for CURRENT teams), then Wikidata
+ * first (reliable colors/location/league for CURRENT teams), then Wikidata
  * (sole source of yearsActive/wikidataId, and the only source for
- * city/league when ESPN found no match — a defunct team). Returns null
+ * location/league when ESPN found no match — a defunct team). Returns null
  * only when NEITHER source matches.
  */
 export async function lookupTeamEnrichment(
@@ -1138,7 +1139,7 @@ export async function lookupTeamEnrichment(
     }
     return {
       league: espnInfo.league,
-      city: espnInfo.city,
+      location: espnInfo.location,
       colors: { primary: espnInfo.colorPrimary, secondary: espnInfo.colorAlternate },
       espnId: espnInfo.espnId,
     };
@@ -1162,7 +1163,9 @@ export async function lookupTeamEnrichment(
   const result = await runSparql(detailQuery);
   const row = result?.results.bindings[0];
 
-  const wikidataCity = row?.city159Label?.value ?? row?.city276Label?.value;
+  // NEO-236: the SPARQL variable names below stay `city159`/`city276` —
+  // they name Wikidata's own P159/P276 properties, not our field.
+  const wikidataLocation = row?.city159Label?.value ?? row?.city276Label?.value;
   const fromYear = yearFromBinding(row?.inception);
   const toYear = yearFromBinding(row?.dissolved);
   const yearsActive = fromYear !== undefined ? { from: fromYear, to: toYear } : undefined;
@@ -1170,7 +1173,7 @@ export async function lookupTeamEnrichment(
   return {
     wikidataId: qid,
     league: espnInfo?.league ?? row?.leagueLabel?.value,
-    city: espnInfo?.city ?? wikidataCity,
+    location: espnInfo?.location ?? wikidataLocation,
     yearsActive,
     colors: espnInfo
       ? { primary: espnInfo.colorPrimary, secondary: espnInfo.colorAlternate }
@@ -1230,7 +1233,7 @@ export const enrichTeam = internalAction({
         await ctx.runMutation(internal.teams.applyEnrichmentInternal, {
           id: args.teamId,
           league: result.league,
-          city: result.city,
+          location: result.location,
           yearsActive: result.yearsActive,
           colors: result.colors,
           wikidataId: result.wikidataId,

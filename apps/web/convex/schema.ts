@@ -933,7 +933,7 @@ export default defineSchema({
     .index("by_name_normalized_and_sport_id", ["nameNormalized", "sportId"])
     .index("by_sport_id", ["sportId"]),
 
-  // Teams — first-class entity. Modeled with city + yearsActive to support
+  // Teams — first-class entity. Modeled with location + yearsActive to support
   // defunct franchises (Expos → Nationals, SuperSonics, etc.) since vintage
   // sets reference teams that no longer exist.
   teams: defineTable({
@@ -951,7 +951,14 @@ export default defineSchema({
     // more, and reads prefer `leagueId`. Remove once prod shows zero rows
     // carrying it and no `leagueId`.
     league: v.optional(v.string()),
-    city: v.optional(v.string()),
+    // NEO-236: the place part of the franchise name — "San Diego" in "San
+    // Diego Padres". Location, not city: Tampa Bay, New England, Golden State;
+    // optional — colleges, national teams and corporate-named clubs carry
+    // none. `name` holds only the nickname once a row is split, and
+    // `nameNormalized` keeps the WHOLE name (see lib/teams/team-name.ts):
+    // because `normalizeTeamName` token-sorts, splitting a row cannot change
+    // its dedup key, which is what lets the split roll out a row at a time.
+    location: v.optional(v.string()),
     yearsActive: v.optional(v.object({
       from: v.number(),
       to: v.optional(v.number()),
@@ -1008,11 +1015,20 @@ export default defineSchema({
     // pickers (and the team editor's) were the same 500-row fetch + client-side
     // `.includes()` filter that NEO-147 removed from the player typeahead —
     // fine while a sport had a few dozen teams, wrong once the league/defunct
-    // franchise backfill grew the table. Indexed on `name` (the raw display
-    // name the operator types), filterable by `sportId` so a football set never
-    // matches a baseball team.
+    // franchise backfill grew the table. Filterable by `sportId` so a football
+    // set never matches a baseball team.
+    //
+    // NEO-236: indexed on `nameNormalized`, not `name`. Once a row is split,
+    // `name` is the nickname alone ("Padres") and an operator typing "San
+    // Diego Padres" would match nothing; `nameNormalized` still carries every
+    // token of the full name. The token SORT in `normalizeTeamName` is
+    // irrelevant to matching — a search index scores tokens, not order — but
+    // it does mean the QUERY must not be sorted before it is handed to
+    // `withSearchIndex`, because the backend prefix-matches only the final
+    // term. `teams.search` normalises the term in source order for exactly
+    // that reason.
     .searchIndex("search_name", {
-      searchField: "name",
+      searchField: "nameNormalized",
       filterFields: ["sportId"],
     }),
 
@@ -1095,7 +1111,9 @@ export default defineSchema({
       enwikiTitle: v.optional(v.string()),
       // team-only
       league: v.optional(v.string()),
-      city: v.optional(v.string()),
+      // NEO-236: the place part of the team's name. Location, not city —
+      // see `teams.location`.
+      location: v.optional(v.string()),
       yearsActive: v.optional(v.object({
         from: v.number(),
         to: v.optional(v.number()),

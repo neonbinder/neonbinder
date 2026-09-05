@@ -88,7 +88,7 @@ export interface League {
 interface LeagueTeam {
   _id: Id<"teams">;
   name: string;
-  city?: string;
+  location?: string;
   colors?: { primary?: string; secondary?: string };
 }
 

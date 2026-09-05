@@ -6,7 +6,7 @@ import { getCurrentUserId, requireAdmin, requireSignedIn } from "./auth";
 import { findOrCreateLeague, resolveDefaultLeagueId } from "./leagues";
 import { normalizePlayerName } from "./players";
 import { MANUAL_COLOR_SOURCE_URL } from "./teamColorSources";
-import { longestToken, rankTeamCandidates } from "./lib/entityNearMatch";
+import { longestToken, nameTokens, rankTeamCandidates } from "./lib/entityNearMatch";
 // NEO-212 security review: the shared `Q<digits>` chokepoint — see
 // lib/players/wikidata-id.ts. Named for players only because that is where the
 // id first appeared; the shape is the same for every Wikidata entity.
@@ -47,7 +47,11 @@ const teamDocValidator = v.object({
   // free-text predecessor, kept only until the backfill drains — see the schema.
   leagueId: v.optional(v.id("leagues")),
   league: v.optional(v.string()),
-  city: v.optional(v.string()),
+  // NEO-236: the place part of the franchise name — "San Diego" in "San Diego
+  // Padres". Location, not city (Tampa Bay, New England, Golden State), and
+  // optional: colleges, national teams and corporate-named clubs carry none.
+  // `nameNormalized` always keys the WHOLE name; see lib/teams/team-name.ts.
+  location: v.optional(v.string()),
   yearsActive: v.optional(v.object({
     from: v.number(),
     to: v.optional(v.number()),
@@ -296,7 +300,7 @@ export const applyEnrichmentInternal = internalMutation({
   args: {
     id: v.id("teams"),
     league: v.optional(v.string()),
-    city: v.optional(v.string()),
+    location: v.optional(v.string()),
     yearsActive: v.optional(v.object({
       from: v.number(),
       to: v.optional(v.number()),
@@ -317,7 +321,7 @@ export const applyEnrichmentInternal = internalMutation({
 
     const patch: {
       leagueId?: Id<"leagues">;
-      city?: string;
+      location?: string;
       yearsActive?: { from: number; to?: number };
       colors?: { primary?: string; secondary?: string };
       externalIds?: { wikidataId?: string; espnId?: string };
@@ -345,7 +349,7 @@ export const applyEnrichmentInternal = internalMutation({
     // Background enrichment must never overwrite an operator-visible value it
     // did not write. These three are all editable by hand in Team Management
     // (`updateTeam` below), and every one of them was being blindly restamped
-    // on each re-enrichment: a corrected city, a hand-entered franchise span,
+    // on each re-enrichment: a corrected location, a hand-entered franchise span,
     // or hand-picked spine-label colors survived only until the next time the
     // team was enqueued — which a checklist commit does routinely
     // (`commitCardChecklistFinalize` → `wikidataPool.enqueueEnrichment`).
@@ -355,7 +359,9 @@ export const applyEnrichmentInternal = internalMutation({
     // supersede those with teamcolorcodes.com's better-covered answer — see
     // the ordering note in adapters/wikidata.ts `enrichTeam`. What changed is
     // that a value a HUMAN put there is no longer in that contest.
-    if (args.city !== undefined && !existing.city) patch.city = args.city;
+    if (args.location !== undefined && !existing.location) {
+      patch.location = args.location;
+    }
     if (args.yearsActive !== undefined && !existing.yearsActive) {
       patch.yearsActive = args.yearsActive;
     }
@@ -391,7 +397,7 @@ export const applyEnrichmentInternal = internalMutation({
  * "Discover" — re-run every source for ONE team, on demand.
  *
  * A newly created team already gets this automatically: every creation path
- * enqueues it, and `adapters/wikidata.enrichTeam` resolves league, city, years
+ * enqueues it, and `adapters/wikidata.enrichTeam` resolves league, location, years
  * and colors for it. This action is the manual counterpart — for a team that
  * predates the pipeline, one whose sources had nothing at the time, or one
  * whose match turned out to be the wrong franchise.
@@ -535,7 +541,7 @@ export const saveTeamFields = mutation({
     // The free-text `league` predecessor is not settable here — assigning a
     // league by typing is exactly what created the drift this replaced.
     leagueId: v.optional(v.union(v.id("leagues"), v.null())),
-    city: v.optional(v.union(v.string(), v.null())),
+    location: v.optional(v.union(v.string(), v.null())),
     yearsActive: v.optional(
       v.union(
         v.object({ from: v.number(), to: v.optional(v.number()) }),
@@ -572,7 +578,7 @@ export const saveTeamFields = mutation({
       // carries two answers to the same question.
       patch.league = undefined;
     }
-    if (args.city !== undefined) patch.city = args.city ?? undefined;
+    if (args.location !== undefined) patch.location = args.location ?? undefined;
     if (args.yearsActive !== undefined) {
       patch.yearsActive = args.yearsActive ?? undefined;
     }
@@ -757,7 +763,22 @@ export const search = query({
   handler: async (ctx, args) => {
     if (!(await getCurrentUserId(ctx))) return [];
 
-    const term = args.query.trim();
+    // NEO-236: the `search_name` index now covers `nameNormalized` rather
+    // than `name`, because a split row's `name` is the nickname alone
+    // ("Padres") and an operator typing "San Diego Padres" must still find it.
+    // The stored side of that index is lowercased and punctuation-stripped, so
+    // the QUERY has to be put through the same normalisation or a term like
+    // "St. Louis" is compared against a document that no longer contains the
+    // period.
+    //
+    // `nameTokens` and NOT `normalizeTeamName`: the two differ only in that
+    // `normalizeTeamName` token-SORTS, and sorting the query is actively
+    // wrong here. Convex prefix-matches the FINAL query term, which is how a
+    // typeahead works at all — sorting "new yor" to "new yor" is harmless but
+    // sorting "yankees ne" to "ne yankees" would prefix-match "ne" and drop
+    // the row the operator is halfway through typing. Sorting the DOCUMENT is
+    // fine, because an index scores tokens and not their order.
+    const term = nameTokens(args.query).join(" ");
     if (!term) return [];
 
     // NEO-212 security review: FLOORED as well as capped. `Math.min` alone let
@@ -773,7 +794,7 @@ export const search = query({
     return await ctx.db
       .query("teams")
       .withSearchIndex("search_name", (q) => {
-        const search = q.search("name", term);
+        const search = q.search("nameNormalized", term);
         return args.sportId ? search.eq("sportId", args.sportId) : search;
       })
       .take(limit);
@@ -951,13 +972,20 @@ export const nearMatches = query({
       if (exact) candidates.set(exact._id, { _id: exact._id, name: exact.name });
     }
 
-    const searchTeams = async (term: string) =>
-      await ctx.db
+    // NEO-236: same normalisation, and for the same reason, as `search`
+    // above — the index covers `nameNormalized` now, so the term has to be
+    // lowercased and punctuation-stripped to compare against it. Source order
+    // is kept rather than sorted; see the note in `search`.
+    const searchTeams = async (rawTerm: string) => {
+      const term = nameTokens(rawTerm).join(" ");
+      if (!term) return [];
+      return await ctx.db
         .query("teams")
         .withSearchIndex("search_name", (q) =>
-          q.search("name", term).eq("sportId", args.sportId),
+          q.search("nameNormalized", term).eq("sportId", args.sportId),
         )
         .take(NEAR_MATCH_SEARCH_CANDIDATES);
+    };
 
     let hits = await searchTeams(name);
     if (hits.length === 0) {

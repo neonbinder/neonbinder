@@ -1,9 +1,9 @@
 /**
  * NEO-91: unit tests for `enrichTeam`'s multi-source merge logic
  * (convex/adapters/wikidata.ts) — ESPN (adapters/espn.ts, current-team
- * city/colors/league) tried first, Wikidata always also queried (only
+ * location/colors/league) tried first, Wikidata always also queried (only
  * source for yearsActive/wikidataId, and the fallback source for
- * city/league when ESPN has no match for a defunct/historical team).
+ * location/league when ESPN has no match for a defunct/historical team).
  *
  * Lives at the convex/ ROOT (not co-located under convex/adapters/) for
  * the same reason documented in convex/bscTeamEnrichmentQueue.test.ts:
@@ -172,7 +172,7 @@ afterEach(() => {
 // ===========================================================================
 
 describe("enrichTeam", () => {
-  test("ESPN matches AND Wikidata matches: city/league from ESPN, yearsActive/wikidataId from Wikidata, espnId persisted, colors from the bundled dataset", async () => {
+  test("ESPN matches AND Wikidata matches: location/league from ESPN, yearsActive/wikidataId from Wikidata, espnId persisted, colors from the bundled dataset", async () => {
     const t = convexTest(schema, modules);
     const teamId = await insertTeam(t, "Washington Nationals");
 
@@ -200,9 +200,9 @@ describe("enrichTeam", () => {
     await t.action(internal.adapters.wikidata.enrichTeam, { teamId });
 
     const team = await getTeam(t, teamId);
-    // ESPN wins for city/league even though Wikidata also resolved them.
+    // ESPN wins for location/league even though Wikidata also resolved them.
     expect(await getLeagueName(t, teamId)).toBe("Major League Baseball");
-    expect(team!.city).toBe("Washington");
+    expect(team!.location).toBe("Washington");
     // NEO-156: colors do NOT come from ESPN for a team the bundled dataset
     // carries. `enrichTeam` runs the color resolver last, and a dedicated color
     // source outranks ESPN — the same precedence teamcolorcodes.com already
@@ -215,7 +215,7 @@ describe("enrichTeam", () => {
     expect(team!.externalIds?.espnId).toBe("20");
   });
 
-  test("ESPN matches, Wikidata has no QID at all: persists ESPN's city/league/espnId, no wikidataId, no yearsActive", async () => {
+  test("ESPN matches, Wikidata has no QID at all: persists ESPN's location/league/espnId, no wikidataId, no yearsActive", async () => {
     const t = convexTest(schema, modules);
     const teamId = await insertTeam(t, "Washington Nationals");
 
@@ -239,7 +239,7 @@ describe("enrichTeam", () => {
 
     const team = await getTeam(t, teamId);
     expect(await getLeagueName(t, teamId)).toBe("Major League Baseball");
-    expect(team!.city).toBe("Washington");
+    expect(team!.location).toBe("Washington");
     // NEO-156: colors do NOT come from ESPN for a team the bundled dataset
     // carries. `enrichTeam` runs the color resolver last, and a dedicated color
     // source outranks ESPN — the same precedence teamcolorcodes.com already
@@ -250,7 +250,7 @@ describe("enrichTeam", () => {
     expect(team!.yearsActive).toBeUndefined();
   });
 
-  test("ESPN has no match (defunct-team-shaped), Wikidata resolves: city/league from Wikidata, colors not set at all", async () => {
+  test("ESPN has no match (defunct-team-shaped), Wikidata resolves: location/league from Wikidata, colors not set at all", async () => {
     const t = convexTest(schema, modules);
     const teamId = await insertTeam(t, "Montreal Expos");
 
@@ -274,7 +274,7 @@ describe("enrichTeam", () => {
 
     const team = await getTeam(t, teamId);
     expect(await getLeagueName(t, teamId)).toBe("National League");
-    expect(team!.city).toBe("Montreal");
+    expect(team!.location).toBe("Montreal");
     expect(team!.yearsActive).toEqual({ from: 1969, to: 2004 });
     expect(team!.externalIds?.wikidataId).toBe("Q1130155");
     expect(team!.externalIds?.espnId).toBeUndefined();
@@ -303,14 +303,14 @@ describe("enrichTeam", () => {
     expect(after!.lastUpdated).toBe(before!.lastUpdated);
   });
 
-  test("P159 (headquarters) absent but P276 (location) present: city falls back to the P276 value", async () => {
+  test("P159 (headquarters) absent but P276 (location) present: location falls back to the P276 value", async () => {
     const t = convexTest(schema, modules);
     const teamId = await insertTeam(t, "Montreal Expos");
 
     vi.stubGlobal(
       "fetch",
       makeFetchStub({
-        espnTeams: [], // ESPN's city would otherwise win — keep it out of the picture
+        espnTeams: [], // ESPN's location would otherwise win — keep it out of the picture
         wikidataQid: "Q1130155",
         wikidataDetail: {
           league: "National League",
@@ -324,6 +324,6 @@ describe("enrichTeam", () => {
     await t.action(internal.adapters.wikidata.enrichTeam, { teamId });
 
     const team = await getTeam(t, teamId);
-    expect(team!.city).toBe("Montreal, Quebec");
+    expect(team!.location).toBe("Montreal, Quebec");
   });
 });

@@ -1022,7 +1022,7 @@ export const saveLeagueFields = mutation({
  * A narrow projection rather than the whole team document, and that is a
  * decision rather than an economy: this panel exists to say "here is what is
  * IN this league", so it returns the identifying name plus the two facts a
- * league view can sanity-check at a glance (the city, and the colours that
+ * league view can sanity-check at a glance (the location, and the colours that
  * make a wrong-league team obvious). Everything else about a team belongs to
  * Team Management, which owns editing it.
  *
@@ -1036,7 +1036,7 @@ export const teamsIn = query({
     v.object({
       _id: v.id("teams"),
       name: v.string(),
-      city: v.optional(v.string()),
+      location: v.optional(v.string()),
       colors: v.optional(
         v.object({
           primary: v.optional(v.string()),
@@ -1058,7 +1058,7 @@ export const teamsIn = query({
       .map((team) => ({
         _id: team._id,
         name: team.name,
-        city: team.city,
+        location: team.location,
         colors: team.colors,
       }));
   },

@@ -406,7 +406,7 @@ describe("commitCardChecklist: 'create' decision seeds a new row from the batch'
     expect(angelsRows).toHaveLength(1);
   });
 
-  test("a team 'create' decision inserts a new team with league/city/yearsActive/colors/espnId from its enrichment", async () => {
+  test("a team 'create' decision inserts a new team with league/location/yearsActive/colors/espnId from its enrichment", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
@@ -422,7 +422,7 @@ describe("commitCardChecklist: 'create' decision seeds a new row from the batch'
         wikidataId: "Q217123",
         espnId: "3",
         league: "Major League Baseball",
-        city: "Anaheim",
+        location: "Anaheim",
         yearsActive: { from: 1961 },
         colors: { primary: "#BA0021", secondary: "#003263" },
       },
@@ -451,7 +451,7 @@ describe("commitCardChecklist: 'create' decision seeds a new row from the batch'
       team!.leagueId ? ctx.db.get(team!.leagueId) : null,
     );
     expect(league?.name).toBe("Major League Baseball");
-    expect(team!.city).toBe("Anaheim");
+    expect(team!.location).toBe("Anaheim");
     expect(team!.yearsActive).toEqual({ from: 1961, to: undefined });
     expect(team!.colors).toEqual({ primary: "#BA0021", secondary: "#003263" });
     expect(team!.externalIds).toEqual({ wikidataId: "Q217123", espnId: "3" });

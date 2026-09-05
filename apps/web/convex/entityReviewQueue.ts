@@ -50,7 +50,8 @@ const enrichmentValidator = v.object({
   birthYear: v.optional(v.number()),
   enwikiTitle: v.optional(v.string()),
   league: v.optional(v.string()),
-  city: v.optional(v.string()),
+  // NEO-236: the place part of the team name. Location, not city.
+  location: v.optional(v.string()),
   yearsActive: v.optional(v.object({
     from: v.number(),
     to: v.optional(v.number()),

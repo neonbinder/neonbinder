@@ -11,7 +11,7 @@
  *      earlier in the array is skipped over, never blocking presentation of
  *      a later row whose lookup already completed.
  *   2. Enrichment rendering: player (HoF badge, career-team list, "no
- *      history" fallback) and team (league/city/years-active/color swatch)
+ *      history" fallback) and team (league/location/years-active/color swatch)
  *      shapes, plus the "No Wikidata match found" fallback for an
  *      error/no-enrichment row.
  *   3. Progress counters: "{decided} of {total} reviewed" and "{N} still
@@ -316,19 +316,19 @@ describe("EntityReviewWizard — enrichment content", () => {
     expect(screen.getByText("No career-team history found.")).toBeTruthy();
   });
 
-  it("shows league/city/years-active for a ready team row", () => {
+  it("shows league/location/years-active for a ready team row", () => {
     currentRows = [
       makeRow({
         kind: "team",
         name: "Los Angeles Angels",
         status: "ready",
-        enrichment: { league: "Major League Baseball", city: "Anaheim", yearsActive: { from: 1961 } },
+        enrichment: { league: "Major League Baseball", location: "Anaheim", yearsActive: { from: 1961 } },
       }),
     ];
     renderWizard();
 
     expect(screen.getByText(/League: Major League Baseball/)).toBeTruthy();
-    expect(screen.getByText(/City: Anaheim/)).toBeTruthy();
+    expect(screen.getByText(/Location: Anaheim/)).toBeTruthy();
     expect(screen.getByText(/Active: 1961.*present/)).toBeTruthy();
   });
 

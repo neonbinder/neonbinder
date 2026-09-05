@@ -8,6 +8,13 @@
  * warned about none of it. These cases lock the three shapes that fix it: free
  * typeahead, an exact bulk existence check, and a fuzzy per-name prompt.
  *
+ * NEO-236 moved the `search_name` index off `name` and onto `nameNormalized`,
+ * and normalised the QUERY to match (lowercased, punctuation-stripped, source
+ * order kept — see `teams.search`). Nothing below changed expectation as a
+ * result: every case here still asserts the same rows. What did change is that
+ * the longest-token fallback is no longer reachable from a test — see the note
+ * on that case.
+ *
  * **What convex-test does and does not model about search indexes.**
  * `withSearchIndex` IS supported (convex-test 0.0.55, `evaluateSearchFilter`)
  * and honours `filterFields`, so the sport filter and the "does a search hit
@@ -15,22 +22,25 @@
  * of the real backend, in three ways that matter when reading a failure:
  *
  *   1. It splits the document field on WHITESPACE only, where Convex's
- *      `SimpleTokenizer` also splits on punctuation. "St. Louis" is one
- *      document word `st.` locally and two terms (`st`, `louis`) in
- *      production.
+ *      `SimpleTokenizer` also splits on punctuation. Since NEO-236 this no
+ *      longer bites for teams: `nameNormalized` has already had its
+ *      punctuation stripped by `normalizeTeamName`, so the local document
+ *      words and production's terms finally agree.
  *   2. It prefix-matches EVERY query term; Convex prefix-matches only the
  *      final term.
  *   3. It applies no relevance ranking at all — results come back in table
  *      order, where Convex returns them BM25-ordered.
  *
+ * Both engines are OR-ish: a document matching ANY query term is a hit
+ * (convex-test's `evaluateSearchFilter` uses `queryTerms.some(...)`). That is
+ * why `nearMatches` can search a whole name and still find a row storing only
+ * part of it.
+ *
  * (3) is why nothing below asserts an ORDER that depends on the search index,
  * and why the `nearMatches` ordering cases seed few enough rows that all of
  * them survive the `.take(10)` — the ordering under test is
  * `rankTeamCandidates`'s, which is pure and covered exhaustively in
- * `convex/lib/entityNearMatch.test.ts`. (1) and (2) also mean a search MISS
- * staged locally is a miss for local reasons: the one case below that drives
- * the fallback query says so in its own comment, and claims only that the
- * branch runs and answers correctly.
+ * `convex/lib/entityNearMatch.test.ts`.
  */
 
 import { convexTest } from "convex-test";
@@ -329,7 +339,7 @@ describe("teams.nearMatches", () => {
     ]);
   });
 
-  test("finds the full club name from an abbreviated city", async () => {
+  test("finds the full club name from an abbreviated location", async () => {
     const t = convexTest(schema, modules);
     const baseball = await seedSport(t, "Baseball", "BB");
     const yankeesId = await seedTeam(t, "New York Yankees", baseball);
@@ -445,19 +455,31 @@ describe("teams.nearMatches", () => {
   });
 
   /**
-   * Exercises the SECOND search — the longest-token fallback that runs only
-   * when the whole-name query comes back empty.
+   * NEO-236 — this case USED to be the only thing exercising the longest-token
+   * fallback, and it no longer does. Read that as a finding, not a regression.
    *
-   * Honest about what stages the miss: convex-test splits document text on
-   * whitespace only, so the query terms "n.y." and "yankees." (periods
-   * attached) prefix-match no document word and the whole-name search finds
-   * nothing. Convex's real tokenizer splits on punctuation and would have
-   * matched directly. So this proves the fallback BRANCH runs and returns the
-   * right row — not that production reaches it by this route. In production
-   * the branch earns its place against BM25 crowding, which convex-test models
-   * not at all (see the header).
+   * It worked before only because of a convex-test artefact: the index covered
+   * the raw `name`, whose document words keep their punctuation locally, so
+   * the query terms "n.y." and "yankees." prefix-matched nothing and the
+   * whole-name search came back empty. Production never took that route — its
+   * tokenizer strips punctuation on both sides and would have matched
+   * directly.
+   *
+   * Now that the index covers `nameNormalized` and the query is normalised the
+   * same way, the first search matches, which is the production behaviour
+   * finally being modelled. The assertion below is unchanged and still worth
+   * keeping: a punctuation-heavy abbreviation must find the row.
+   *
+   * The fallback branch itself is now unreachable from ANY input, here or in
+   * production, and that was already true before this change. Both engines are
+   * OR-ish, and the fallback term is `longestToken(name)` — always one of the
+   * whole-name query's own terms. So if the fallback would match, the
+   * whole-name search already did, and `hits.length === 0` cannot be true. Its
+   * stated purpose (rescuing a row BM25 crowded out of the top ten) needs a
+   * different trigger than "no hits at all". Left in place deliberately:
+   * changing it is a behaviour change, and NEO-236 WP0 is a rename.
    */
-  test("falls back to the longest token when the whole-name search misses", async () => {
+  test("finds the row from a punctuation-heavy abbreviation", async () => {
     const t = convexTest(schema, modules);
     const baseball = await seedSport(t, "Baseball", "BB");
     const yankeesId = await seedTeam(t, "Yankees", baseball);

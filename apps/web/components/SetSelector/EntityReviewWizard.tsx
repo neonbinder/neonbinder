@@ -745,7 +745,9 @@ export default function EntityReviewWizard({
                     ) : (
                       <>
                         {current.enrichment.league && <p>League: {current.enrichment.league}</p>}
-                        {current.enrichment.city && <p>City: {current.enrichment.city}</p>}
+                        {current.enrichment.location && (
+                          <p>Location: {current.enrichment.location}</p>
+                        )}
                         {current.enrichment.yearsActive && (
                           <p>
                             Active: {current.enrichment.yearsActive.from}

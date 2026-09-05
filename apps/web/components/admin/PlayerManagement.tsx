@@ -156,21 +156,26 @@ function primaryTeamId(
 /**
  * The team as a fan says it out loud: "Padres", not "San Diego Padres".
  *
- * Only the row's own stored `city` is stripped, and only as a whole leading
- * word — nothing here guesses where a city ends. A team whose `city` was never
- * enriched keeps its full name, which is the safe failure: a longer label,
- * never a wrong one.
+ * Only the row's own stored `location` is stripped, and only as a whole
+ * leading word — nothing here guesses where a location ends. A team whose
+ * `location` was never enriched keeps its full name, which is the safe
+ * failure: a longer label, never a wrong one.
+ *
+ * NEO-236 renamed the field it reads (`city` → `location`) and changed nothing
+ * else. This derivation goes away entirely once `teams.name` holds the
+ * nickname on its own and `teamShortName` (lib/teams/team-name.ts) can just
+ * read it.
  *
  * Row-only. The detail panel and the career-history list stay on full names —
  * an operator editing a stint needs the name the row actually carries, and the
  * E2E flows match on it.
  */
-function teamNickname(team: { name: string; city?: string }): string {
+function teamNickname(team: { name: string; location?: string }): string {
   const name = team.name.trim();
-  const city = team.city?.trim();
-  if (!city) return name;
-  if (!name.toLowerCase().startsWith(`${city.toLowerCase()} `)) return name;
-  const nickname = name.slice(city.length).trim();
+  const location = team.location?.trim();
+  if (!location) return name;
+  if (!name.toLowerCase().startsWith(`${location.toLowerCase()} `)) return name;
+  const nickname = name.slice(location.length).trim();
   return nickname.length > 0 ? nickname : name;
 }
 
