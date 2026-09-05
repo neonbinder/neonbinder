@@ -17,9 +17,10 @@
  */
 
 import { convexTest } from "convex-test";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api";
 import schema from "./schema";
+import { drainScheduled } from "../lib/testing/drain-scheduled";
 import { Id } from "./_generated/dataModel";
 
 const modules = (import.meta as unknown as {
@@ -51,18 +52,27 @@ const modules = (import.meta as unknown as {
  * bscTeamEnrichmentQueue.tolerance.test.ts, placeholderEscalation.test.ts and
  * placeholderPipeline.test.ts.
  *
- * SETTLED BY CANCELLING, not by draining, which is the difference from those
- * three. Two reasons, both structural rather than convenience:
+ * NEO-220 (#229) reached the same conclusion from the other end and fixed the
+ * same file independently: a `beforeEach` that makes `fetch` throw, and a
+ * `drainScheduled(t)` at the end of every test that creates a team. Both
+ * survive the merge and BOTH are needed — measured, not assumed. Replacing this
+ * hook with an assertion that the queue is empty leaves four tests failing it:
+ * three hold `adapters/buysportscards:processBscTeamEnrichmentQueue` and one
+ * holds `wikidataPool:enqueueEnrichment`.
+ *
+ * So this hook is the backstop for the work `drainScheduled` cannot settle, and
+ * it CANCELS rather than drains for three structural reasons:
  *
  *  1. `wikidataPool` is a Convex component and nothing in this repo calls
  *     `t.registerComponent`, so running `enqueueEnrichment` swaps the teardown
  *     error for `Component "wikidataPool" is not registered` — noise for noise.
- *  2. The one thing here that CAN be drained end to end is the BSC enrichment
- *     queue, and `enqueueBscTeamBackfill`'s cursor test deliberately seeds 1200
- *     eligible cards. Draining that chain is 1200 scheduled iterations, past
- *     convex-test's iteration ceiling and pointless besides — the queue's own
- *     draining behaviour is `bscTeamEnrichmentQueue.test.ts`'s subject, not
- *     this file's.
+ *  2. `enqueueBscTeamBackfill`'s cursor test deliberately seeds 1200 eligible
+ *     cards, and its queue chains one card at a time. Draining that is 1200
+ *     scheduled iterations, past convex-test's iteration ceiling and pointless
+ *     besides — the queue's own draining behaviour is
+ *     `bscTeamEnrichmentQueue.test.ts`'s subject, not this file's.
+ *  3. The enqueue test below asserts the PENDING row and must still find it, so
+ *     the settling has to happen after the assertion, not inside the test.
  *
  * What this file owns is the ENQUEUE, and the test below asserts that wire
  * directly off the `_scheduled_functions` row — the same "assert the scheduled
@@ -187,6 +197,39 @@ const getCard = (t: ReturnType<typeof convexTest>, id: Id<"cardChecklist">) =>
 // getForBscTeamCheck
 // ===========================================================================
 
+/**
+ * NEO-220 — this file must not reach the network, and must not leave work
+ * running past the end of a test.
+ *
+ * `enqueueBscTeamBackfill` schedules `processBscTeamEnrichmentQueue`, which
+ * calls BuySportsCards' PRODUCTION API. Nothing here asserts on that action —
+ * these tests cover the Convex-side building blocks (`getForBscTeamCheck`,
+ * `applyBscTeamResolution`, `enqueueBscTeamBackfill`) and only ever schedule
+ * it as a side effect. Until now that scheduled work escaped past teardown and
+ * fired real requests to `api-prod.buysportscards.com`, which is exactly the
+ * leak NEO-188's guard exists to catch; it went unattributed because the
+ * requests landed after the test that started them had already passed.
+ *
+ * A THROWING stub rather than a canned 200: the adapter swallows request
+ * failures, so "network unavailable" is a state it already handles, and it
+ * cannot write anything derived from a payload this file invented. Inventing a
+ * response shape is how a stub starts asserting things nobody meant to assert.
+ */
+beforeEach(() => {
+  vi.stubGlobal(
+    "fetch",
+    (async (url: string | URL) => {
+      throw new Error(
+        `NEO-220: this test file must not reach the network: ${String(url)}`,
+      );
+    }) as unknown as typeof fetch,
+  );
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
 describe("getForBscTeamCheck", () => {
   test("returns null when the card has no platformData.bsc", async () => {
     const t = harness();
@@ -261,6 +304,15 @@ describe("applyBscTeamResolution", () => {
       internal.cardChecklist.applyBscTeamResolution,
       { cardChecklistId: cardId, teamName: "New York Yankees" },
     );
+    // NEO-220: creating a team here runs `resolveDefaultLeagueId` →
+    // `findOrCreateLeague`, which schedules a Wikidata enrichment (NEO-240).
+    // convex-test runs a scheduled function in the background without waiting
+    // for it, so a test that returns while it is still running races the
+    // worker teardown and fails the JOB with an EnvironmentTeardownError while
+    // every test still reports green. Drained right after the scheduling call,
+    // never at end of test: `enqueueBscTeamBackfill` below schedules the BSC
+    // network queue, and a later drain would pull that outbound call forward.
+    await drainScheduled(t);
 
     expect(result).toEqual({ applied: true, teamCreated: true });
 
@@ -327,6 +379,15 @@ describe("applyBscTeamResolution", () => {
       internal.cardChecklist.applyBscTeamResolution,
       { cardChecklistId: cardId, teamName: "New York Yankees" },
     );
+    // NEO-220: creating a team here runs `resolveDefaultLeagueId` →
+    // `findOrCreateLeague`, which schedules a Wikidata enrichment (NEO-240).
+    // convex-test runs a scheduled function in the background without waiting
+    // for it, so a test that returns while it is still running races the
+    // worker teardown and fails the JOB with an EnvironmentTeardownError while
+    // every test still reports green. Drained right after the scheduling call,
+    // never at end of test: `enqueueBscTeamBackfill` below schedules the BSC
+    // network queue, and a later drain would pull that outbound call forward.
+    await drainScheduled(t);
 
     expect(result).toEqual({ applied: true, teamCreated: false });
     const card = await getCard(t, cardId);
@@ -342,6 +403,15 @@ describe("applyBscTeamResolution", () => {
       internal.cardChecklist.applyBscTeamResolution,
       { cardChecklistId: cardId, teamName: "" },
     );
+    // NEO-220: creating a team here runs `resolveDefaultLeagueId` →
+    // `findOrCreateLeague`, which schedules a Wikidata enrichment (NEO-240).
+    // convex-test runs a scheduled function in the background without waiting
+    // for it, so a test that returns while it is still running races the
+    // worker teardown and fails the JOB with an EnvironmentTeardownError while
+    // every test still reports green. Drained right after the scheduling call,
+    // never at end of test: `enqueueBscTeamBackfill` below schedules the BSC
+    // network queue, and a later drain would pull that outbound call forward.
+    await drainScheduled(t);
 
     expect(result).toEqual({ applied: false, teamCreated: false });
     const card = await getCard(t, cardId);
@@ -358,6 +428,15 @@ describe("applyBscTeamResolution", () => {
       internal.cardChecklist.applyBscTeamResolution,
       { cardChecklistId: cardId, teamName: "   " },
     );
+    // NEO-220: creating a team here runs `resolveDefaultLeagueId` →
+    // `findOrCreateLeague`, which schedules a Wikidata enrichment (NEO-240).
+    // convex-test runs a scheduled function in the background without waiting
+    // for it, so a test that returns while it is still running races the
+    // worker teardown and fails the JOB with an EnvironmentTeardownError while
+    // every test still reports green. Drained right after the scheduling call,
+    // never at end of test: `enqueueBscTeamBackfill` below schedules the BSC
+    // network queue, and a later drain would pull that outbound call forward.
+    await drainScheduled(t);
 
     expect(result).toEqual({ applied: false, teamCreated: false });
     const card = await getCard(t, cardId);
@@ -387,6 +466,15 @@ describe("applyBscTeamResolution", () => {
       internal.cardChecklist.applyBscTeamResolution,
       { cardChecklistId: cardId, teamName: "Some Other Team" },
     );
+    // NEO-220: creating a team here runs `resolveDefaultLeagueId` →
+    // `findOrCreateLeague`, which schedules a Wikidata enrichment (NEO-240).
+    // convex-test runs a scheduled function in the background without waiting
+    // for it, so a test that returns while it is still running races the
+    // worker teardown and fails the JOB with an EnvironmentTeardownError while
+    // every test still reports green. Drained right after the scheduling call,
+    // never at end of test: `enqueueBscTeamBackfill` below schedules the BSC
+    // network queue, and a later drain would pull that outbound call forward.
+    await drainScheduled(t);
 
     expect(result).toEqual({ applied: false, teamCreated: false });
     const card = await getCard(t, cardId);
@@ -417,6 +505,15 @@ describe("applyBscTeamResolution", () => {
       internal.cardChecklist.applyBscTeamResolution,
       { cardChecklistId: cardId, teamName: "Some Other Team" },
     );
+    // NEO-220: creating a team here runs `resolveDefaultLeagueId` →
+    // `findOrCreateLeague`, which schedules a Wikidata enrichment (NEO-240).
+    // convex-test runs a scheduled function in the background without waiting
+    // for it, so a test that returns while it is still running races the
+    // worker teardown and fails the JOB with an EnvironmentTeardownError while
+    // every test still reports green. Drained right after the scheduling call,
+    // never at end of test: `enqueueBscTeamBackfill` below schedules the BSC
+    // network queue, and a later drain would pull that outbound call forward.
+    await drainScheduled(t);
 
     expect(result).toEqual({ applied: false, teamCreated: false });
     const card = await getCard(t, cardId);
@@ -441,6 +538,15 @@ describe("applyBscTeamResolution", () => {
       internal.cardChecklist.applyBscTeamResolution,
       { cardChecklistId: cardId, teamName: "Some Team" },
     );
+    // NEO-220: creating a team here runs `resolveDefaultLeagueId` →
+    // `findOrCreateLeague`, which schedules a Wikidata enrichment (NEO-240).
+    // convex-test runs a scheduled function in the background without waiting
+    // for it, so a test that returns while it is still running races the
+    // worker teardown and fails the JOB with an EnvironmentTeardownError while
+    // every test still reports green. Drained right after the scheduling call,
+    // never at end of test: `enqueueBscTeamBackfill` below schedules the BSC
+    // network queue, and a later drain would pull that outbound call forward.
+    await drainScheduled(t);
 
     expect(result).toEqual({ applied: false, teamCreated: false });
     const card = await getCard(t, cardId);
@@ -458,6 +564,15 @@ describe("applyBscTeamResolution", () => {
       internal.cardChecklist.applyBscTeamResolution,
       { cardChecklistId: cardId, teamName: "Some Team" },
     );
+    // NEO-220: creating a team here runs `resolveDefaultLeagueId` →
+    // `findOrCreateLeague`, which schedules a Wikidata enrichment (NEO-240).
+    // convex-test runs a scheduled function in the background without waiting
+    // for it, so a test that returns while it is still running races the
+    // worker teardown and fails the JOB with an EnvironmentTeardownError while
+    // every test still reports green. Drained right after the scheduling call,
+    // never at end of test: `enqueueBscTeamBackfill` below schedules the BSC
+    // network queue, and a later drain would pull that outbound call forward.
+    await drainScheduled(t);
 
     expect(result).toEqual({ applied: false, teamCreated: false });
   });
@@ -488,6 +603,10 @@ describe("enqueueBscTeamBackfill", () => {
     const result = await t.mutation(internal.cardChecklist.enqueueBscTeamBackfill, {
       batchSize: 10,
     });
+    // Settle the BSC queue this schedules. Safe to drain now that `fetch` is
+    // stubbed to throw (see the beforeEach above): the action fails harmlessly
+    // inside the test instead of firing a real request after teardown.
+    await drainScheduled(t);
 
     // Exactly the one genuinely-eligible row is enqueued; the other three
     // (already-linked, already-checked, no-BSC-ref) are correctly excluded.
@@ -505,6 +624,10 @@ describe("enqueueBscTeamBackfill", () => {
     const result = await t.mutation(internal.cardChecklist.enqueueBscTeamBackfill, {
       batchSize: 2,
     });
+    // Settle the BSC queue this schedules. Safe to drain now that `fetch` is
+    // stubbed to throw (see the beforeEach above): the action fails harmlessly
+    // inside the test instead of firing a real request after teardown.
+    await drainScheduled(t);
 
     expect(result.enqueued).toBe(2);
     expect(result.remaining).toBe(3);
@@ -518,6 +641,10 @@ describe("enqueueBscTeamBackfill", () => {
     }
 
     const result = await t.mutation(internal.cardChecklist.enqueueBscTeamBackfill, {});
+    // Settle the BSC queue this schedules. Safe to drain now that `fetch` is
+    // stubbed to throw (see the beforeEach above): the action fails harmlessly
+    // inside the test instead of firing a real request after teardown.
+    await drainScheduled(t);
 
     expect(result.enqueued).toBe(3);
     expect(result.remaining).toBe(0);
@@ -531,6 +658,10 @@ describe("enqueueBscTeamBackfill", () => {
     const result = await t.mutation(internal.cardChecklist.enqueueBscTeamBackfill, {
       batchSize: 10,
     });
+    // Settle the BSC queue this schedules. Safe to drain now that `fetch` is
+    // stubbed to throw (see the beforeEach above): the action fails harmlessly
+    // inside the test instead of firing a real request after teardown.
+    await drainScheduled(t);
 
     expect(result.enqueued).toBe(0);
     expect(result.remaining).toBe(0);
@@ -563,6 +694,10 @@ describe("enqueueBscTeamBackfill", () => {
     const first = await t.mutation(internal.cardChecklist.enqueueBscTeamBackfill, {
       batchSize: TOTAL_ROWS, // no artificial per-page cap — isolate the cursor behavior
     });
+    // Settle the BSC queue this schedules. Safe to drain now that `fetch` is
+    // stubbed to throw (see the beforeEach above): the action fails harmlessly
+    // inside the test instead of firing a real request after teardown.
+    await drainScheduled(t);
     expect(first.isDone).toBe(false);
     expect(first.enqueued).toBeGreaterThan(0);
 
@@ -570,6 +705,10 @@ describe("enqueueBscTeamBackfill", () => {
       batchSize: TOTAL_ROWS,
       cursor: first.continueCursor,
     });
+    // Settle the BSC queue this schedules. Safe to drain now that `fetch` is
+    // stubbed to throw (see the beforeEach above): the action fails harmlessly
+    // inside the test instead of firing a real request after teardown.
+    await drainScheduled(t);
     // The second call, continuing from the first's cursor, must reach NEW
     // rows the first call's page never scanned — the old bug would return
     // enqueued: 0 here forever (same top-1000 window, already all enqueued).
@@ -630,6 +769,15 @@ describe("NEO-102: teamNoneConfirmedAt suppresses BSC team enrichment", () => {
       internal.cardChecklist.applyBscTeamResolution,
       { cardChecklistId: cardId, teamName: "New York Yankees" },
     );
+    // NEO-220: creating a team here runs `resolveDefaultLeagueId` →
+    // `findOrCreateLeague`, which schedules a Wikidata enrichment (NEO-240).
+    // convex-test runs a scheduled function in the background without waiting
+    // for it, so a test that returns while it is still running races the
+    // worker teardown and fails the JOB with an EnvironmentTeardownError while
+    // every test still reports green. Drained right after the scheduling call,
+    // never at end of test: `enqueueBscTeamBackfill` below schedules the BSC
+    // network queue, and a later drain would pull that outbound call forward.
+    await drainScheduled(t);
     expect(result).toEqual({ applied: false, teamCreated: false });
 
     const card = await getCard(t, cardId);
@@ -679,6 +827,19 @@ describe("NEO-102: teamNoneConfirmedAt suppresses BSC team enrichment", () => {
       internal.cardChecklist.enqueueBscTeamBackfill,
       { batchSize: 10 },
     );
+    // Settle the BSC queue this schedules. Safe to drain now that `fetch` is
+    // stubbed to throw (see the beforeEach above): the action fails harmlessly
+    // inside the test instead of firing a real request after teardown.
+    await drainScheduled(t);
+    // NEO-220: creating a team here runs `resolveDefaultLeagueId` →
+    // `findOrCreateLeague`, which schedules a Wikidata enrichment (NEO-240).
+    // convex-test runs a scheduled function in the background without waiting
+    // for it, so a test that returns while it is still running races the
+    // worker teardown and fails the JOB with an EnvironmentTeardownError while
+    // every test still reports green. Drained right after the scheduling call,
+    // never at end of test: `enqueueBscTeamBackfill` below schedules the BSC
+    // network queue, and a later drain would pull that outbound call forward.
+    await drainScheduled(t);
 
     // Only card #1. The confirmed one is settled, so re-deriving its team is
     // work whose best outcome is a no-op and whose worst is a contradiction.

@@ -109,3 +109,34 @@ flow at it. That validated NEO-211's whole cold drill, set selection, rename
 control and attributes-panel assertions for real — everything except the steps
 that call the missing functions. Add `--host`: Chrome resolves `localhost` to
 `::1` and Vite binds IPv4 only by default.
+
+## Update 2026-09-04 — shared dev can also lag **main**, not just your branch
+
+Same symptom, opposite cause, and the `function-spec` check finds both. On
+`neo-220-221-review-session-safety` (based on `33c6cd7`, the NEO-219 merge)
+EVERY set-selector flow died at the SPORT level of `util-drill-to-custom`:
+
+```
+[CONVEX Q(selectorOptions:getSelectorOptionHoldings)] Server Error
+Could not find public function for 'selectorOptions:getSelectorOptionHoldings'.
+The above error occurred in the <DeleteSelectorRowControl> component.
+```
+
+`getSelectorOptionHoldings` / `deleteSelectorOption` shipped in NEO-219 (#226)
+and are on `main` — but **merging to main deploys PRODUCTION Convex, never
+dev** (`release.yml`). Shared dev only moves when a human runs `convex dev`, so
+it drifts behind main indefinitely. `git diff <base> -- <component>` came back
+EMPTY for `SetAttributesPanel.tsx`, which is what proved the crash was not the
+branch's.
+
+Blast radius is worse than the NEO-212 case above: `DeleteSelectorRowControl`
+lives in `SetAttributesPanel`'s header, which mounts as soon as **any selector
+row is selected at any level** — so the page dies one tap into the drill,
+before a year, a set or a checklist ever renders. Nothing under `/set-selector`
+can be validated locally in that state.
+
+**How to apply:** when every set-selector flow fails identically and early,
+check `npx convex function-spec` against BOTH directions — a function your
+branch added, and a function `main` added that dev never received. If it is the
+second, the fix is not yours: report it and ask for dev to be refreshed (or for
+the PR's own Convex preview URL). Do not run `convex dev`/`deploy` yourself.

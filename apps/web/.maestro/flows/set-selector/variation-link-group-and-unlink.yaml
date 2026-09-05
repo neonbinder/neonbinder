@@ -150,8 +150,7 @@ tags:
 # drive the drawer's inner scroll — it burned its whole timeout and failed with
 # "No visible element found" on the first run of this flow. Manual swipes at
 # x=80% are inside the drawer; this is the same pattern
-# player-picker-create-custom-card and checklist-fetch-unknown-entities-link-existing
-# use to reach the bottom of this drawer. Two swipes land "Variation of" in the
+# player-picker-create-custom-card uses to reach the bottom of this drawer. Two swipes land "Variation of" in the
 # middle band (three would reach Players, the last section).
 # R8's centerElement does not apply: scrollUntilVisible cannot be used here at
 # all, so the swipes are followed by a hard visibility wait instead.

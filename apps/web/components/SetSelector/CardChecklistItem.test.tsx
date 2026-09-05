@@ -434,11 +434,15 @@ describe("CardChecklistItem — NEO-208 pending team names", () => {
     expect(node.closest("button")).toBeNull();
   });
 
-  it("does not mark a row whose only team answer is a pending name", () => {
-    // `deriveCardAttention` is unchanged by NEO-208 — a typed name is still an
-    // answer. This pins that the new rendering did not come with a rule change.
+  it("marks a row whose only team answer is a pending name as 'not yet linked', not 'no team'", () => {
+    // NEO-220 reversed the NEO-208 pin here on purpose: a typed name still
+    // counts as a team answer (so `missingTeam` stays quiet), but until it is
+    // linked to a real team the card is not finished, and the walker now offers
+    // the link. One badge, the truthful one.
     renderItem({ card: makeCard({ pendingTeamNames: ["Savannah Bananas"] }) });
-    expect(screen.queryByLabelText(/needs attention/)).toBeNull();
+    const badge = screen.getByLabelText(/needs attention/);
+    expect(badge.getAttribute("aria-label")).toMatch(/not yet linked to a player or team/);
+    expect(badge.getAttribute("aria-label")).not.toMatch(/no team on this card/);
   });
 
   it("shows nothing extra when there are no pending names", () => {

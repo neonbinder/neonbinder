@@ -9,3 +9,4 @@
 - [sportConfig is copied onto rows](sport-config-is-copied-onto-rows.md) — editing the defaults never reaches an existing deployment; a repair has to ship with the change
 - [PlayerManagement deep-link test flakes under load](reference_playermanagement_deeplink_test_flakes_under_load.md) — fails in a full components run, passes alone; re-run before blaming your diff
 - [No inline sub-object forms](feedback-no-inline-sub-object-forms.md) — a "+ Add a new …" select option opens a modal that creates and selects; never inline fields saved by the parent form
+- [Reword duplicate aria-labels, never suffix](disambiguate-duplicate-aria-labels-by-rewording.md) — Maestro's `id:` is a regex find, so "Add player to new card" makes `id: "Add player"` match two elements

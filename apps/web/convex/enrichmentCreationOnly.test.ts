@@ -42,6 +42,7 @@ import { Id } from "./_generated/dataModel";
 import { normalizeTeamName } from "./teams";
 import { normalizePlayerName } from "./players";
 import { normalizeLeagueName } from "./leagues";
+import { drainScheduled } from "../lib/testing/drain-scheduled";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -786,5 +787,156 @@ describe("teams.findOrCreate enqueues enrichment on INSERT only (NEO-208)", () =
     expect(line).toBeUndefined();
 
     logSpy.mockRestore();
+  });
+});
+
+/**
+ * NEO-220 — `players.findOrCreate` joins the enqueueing creation paths.
+ *
+ * The exact shape of the block above, one table over, and for the same reason:
+ * this was the LAST player-creation path with no enrichment route at all. A
+ * reviewed player arrives already enriched (`processEntityReviewQueue` →
+ * `lookupPlayerEnrichment`), the commit prelude inserts already-enriched rows,
+ * and `createByAdmin` enqueues. A player born in `PlayerPicker` — the card
+ * drawer, the attention walker's fixer, and since NEO-220 the quick-add form —
+ * stayed bare forever: no career teams, no Hall of Fame flag, no Wikidata id,
+ * and no route back, because enrichment fires only at creation and an explicit
+ * admin force is the sole re-enrich path.
+ *
+ * The CONTRACT half, again: the insert branch schedules exactly one enrichment
+ * and the FOUND branch schedules none. `enrichPlayer`'s own creation-only
+ * guard is covered above; draining the pool here would test the pool.
+ */
+describe("players.findOrCreate enqueues enrichment on INSERT only (NEO-220)", () => {
+  const ADMIN = { subject: "admin_neo220", role: "admin" };
+
+  test("a player it CREATED is enqueued exactly once", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+
+    const playerId = await t
+      .withIdentity(ADMIN)
+      .mutation(api.players.findOrCreate, { name: "Shohei Ohtani", sportId });
+
+    expect(playerId).toBeDefined();
+    expect(await scheduledEnrichmentCount(t, "playerIds")).toBe(1);
+    // And it carries the id it just inserted, not some other row.
+    const rows = await t.run(async (ctx) => ctx.db.query("players").collect());
+    expect(rows.map((r) => r._id)).toEqual([playerId]);
+
+    // Read the queue FIRST, then settle it. See drain-scheduled.ts: an
+    // undrained scheduled function keeps running into worker teardown, and the
+    // console log it emits there races the shutdown and fails the whole job
+    // while every test still reports green.
+    await drainScheduled(t);
+  });
+
+  test("a player it FOUND is not enqueued at all", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await t.run(async (ctx) =>
+      ctx.db.insert("players", {
+        name: "Shohei Ohtani",
+        nameNormalized: normalizePlayerName("Shohei Ohtani"),
+        sportId,
+        lastUpdated: 1_700_000_000_000,
+      }),
+    );
+
+    await t
+      .withIdentity(ADMIN)
+      .mutation(api.players.findOrCreate, { name: "Shohei Ohtani", sportId });
+
+    expect(await scheduledEnrichmentCount(t, "playerIds")).toBe(0);
+    await drainScheduled(t);
+  });
+
+  test("the second call for the same name enqueues nothing more", async () => {
+    // The idempotency the picker relies on: an operator who types the same
+    // rookie into two cards must not queue two lookups for one player.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const asAdmin = t.withIdentity(ADMIN);
+
+    const first = await asAdmin.mutation(api.players.findOrCreate, {
+      name: "Shohei Ohtani",
+      sportId,
+    });
+    expect(await scheduledEnrichmentCount(t, "playerIds")).toBe(1);
+
+    // Normalization folds the punctuation and the reordering, so this is the
+    // SAME row — see `normalizePlayerName`.
+    const second = await asAdmin.mutation(api.players.findOrCreate, {
+      name: "  Ohtani, Shohei  ",
+      sportId,
+    });
+    expect(second).toBe(first);
+    expect(await scheduledEnrichmentCount(t, "playerIds")).toBe(1);
+    await drainScheduled(t);
+  });
+
+  test("a rejected call — over-long name — enqueues nothing and creates nothing", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+
+    await expect(
+      t.withIdentity(ADMIN).mutation(api.players.findOrCreate, {
+        name: "z".repeat(121),
+        sportId,
+      }),
+    ).rejects.toThrow(/the limit is 120/);
+
+    expect(await scheduledEnrichmentCount(t, "playerIds")).toBe(0);
+    expect(
+      await t.run(async (ctx) => ctx.db.query("players").collect()),
+    ).toHaveLength(0);
+    await drainScheduled(t);
+  });
+
+  test("a sportId that is not a SPORT row is refused, so no orphan player is created", async () => {
+    // Same class of unfindable row the team twin refuses: `list`, `search` and
+    // `findByNameAndSport` all key on the sport row id, so a player hung off a
+    // variantType row is unreachable by every query that matters.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const variantTypeId = await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Base",
+        platformData: {},
+        parentId: sportId,
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+      }),
+    );
+
+    await expect(
+      t.withIdentity(ADMIN).mutation(api.players.findOrCreate, {
+        name: "Orphan Guy",
+        sportId: variantTypeId,
+      }),
+    ).rejects.toThrow(/must be created under a sport/);
+
+    expect(await scheduledEnrichmentCount(t, "playerIds")).toBe(0);
+    expect(
+      await t.run(async (ctx) => ctx.db.query("players").collect()),
+    ).toHaveLength(0);
+    await drainScheduled(t);
+  });
+
+  test("a non-admin caller enqueues nothing — the gate runs before the insert", async () => {
+    // The cost vector this gate exists for: pooled Wikidata work bounded by
+    // concurrency, not by total queued volume.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+
+    await expect(
+      t
+        .withIdentity({ subject: "member_neo220" })
+        .mutation(api.players.findOrCreate, { name: "Shohei Ohtani", sportId }),
+    ).rejects.toThrow(/Admin access required/);
+
+    expect(await scheduledEnrichmentCount(t, "playerIds")).toBe(0);
+    await drainScheduled(t);
   });
 });

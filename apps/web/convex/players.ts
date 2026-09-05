@@ -132,10 +132,24 @@ export const findByNameAndSport = query({
 });
 
 /**
+ * Bound on an operator-typed player name — same value and same reasoning as
+ * `teams.MAX_TEAM_NAME_LENGTH`. Over-length is refused rather than trimmed:
+ * silently storing something other than what was typed is how a mangled name
+ * becomes canonical for every listing title and spine label downstream.
+ */
+const MAX_PLAYER_NAME_LENGTH = 120;
+
+/**
  * Create-if-missing player by name + sport. Idempotent — calling twice
- * with the same inputs returns the same id. The reconciler in
- * fetchCardChecklist calls this once per BSC `players[]` entry the user
- * confirmed in UnknownEntitiesDialog.
+ * with the same inputs returns the same id.
+ *
+ * NEO-220 corrected a stale claim here: this is NOT what the checklist
+ * commit path calls. `commitCardChecklistFinalize` inserts into `players`
+ * directly (see the player loop in `selectorOptions.ts`), already enriched.
+ * The ONLY caller of this mutation is `SetSelector/PlayerPicker`'s "+ Create"
+ * row, reached from the card drawer, the attention walker's
+ * `UnreviewedNameFixer`, and the checklist quick-add form — every one of them
+ * under `/admin/set-builder`.
  *
  * Cross-user note: the row this returns may have been created by a
  * different user. That's intentional — see playerDocPublicValidator's
@@ -148,29 +162,102 @@ export const findOrCreate = mutation({
   },
   returns: v.id("players"),
   handler: async (ctx, args): Promise<Id<"players">> => {
-    // NEO-208 deliberately left this at signed-in while raising its
-    // `teams.findOrCreate` twin to admin: that one now schedules a pooled
-    // Wikidata enrichment on its insert branch, so it gained a cost vector an
-    // open caller could drive. This one adds no enqueue and no new cost, so
-    // widening the gate here would be scope the ticket did not earn.
-    const userId = await getCurrentUserId(ctx);
-    if (!userId) throw new Error("Not authenticated");
+    /**
+     * NEO-208 left this at signed-in while raising its `teams.findOrCreate`
+     * twin to admin, on the reasoning that this one scheduled no enrichment
+     * and so gained no cost vector. NEO-220 gives it that enrichment (below),
+     * which retires the reasoning along with the asymmetry.
+     *
+     * `requireAdmin`, for the two reasons the teams twin already carries:
+     * sign-up is open, so "signed in" is not a meaningful bound on who may
+     * create globally-shared rows; and the insert branch now enqueues pooled
+     * Wikidata work whose CONCURRENCY — not total volume — `wikidataPool`
+     * bounds. Nothing legitimate loses access: every caller is
+     * `SetSelector/PlayerPicker`, mounted only under `/admin/set-builder`,
+     * whose sibling mutations (`addCustomCard`, `updateCard`) are already
+     * `requireAdmin` — a non-admin who reached this could create a player but
+     * could not attach it to anything.
+     */
+    const userId = await requireAdmin(ctx);
 
-    const normalized = normalizePlayerName(args.name);
+    const name = args.name.trim();
+    if (name.length === 0) {
+      throw new ConvexError("A player name is required.");
+    }
+    if (name.length > MAX_PLAYER_NAME_LENGTH) {
+      // The LENGTH, never the name: this string reaches Sentry and the browser
+      // console through Convex's error path. Same bound and same reasoning as
+      // `createByAdmin` below and `teams.findOrCreate`; over-length is refused
+      // rather than trimmed, because silently storing something other than
+      // what was typed is how a mangled name becomes canonical.
+      throw new ConvexError(
+        `A player name is ${name.length} characters; the limit is ${MAX_PLAYER_NAME_LENGTH}.`,
+      );
+    }
+
+    // `sportId` is a bare `v.id("selectorOptions")` — the validator proves it
+    // is an id in that table, not that it points at a SPORT. A player hung off
+    // a variantType row is unreachable by `list`, `search` and
+    // `findByNameAndSport`, all of which key on the sport row id, so it would
+    // be an orphan. Same check `createByAdmin` and `teams.findOrCreate` make.
+    const sportRow = await ctx.db.get(args.sportId);
+    if (!sportRow || sportRow.level !== "sport") {
+      throw new ConvexError("A player must be created under a sport.");
+    }
+
+    const normalized = normalizePlayerName(name);
     const matches = await ctx.db
       .query("players")
       .withIndex("by_name_normalized", (q) => q.eq("nameNormalized", normalized))
       .collect();
     const existing = matches.find((p) => p.sportId === args.sportId);
+    // NOT enqueued — see the creation-only note on the insert below.
     if (existing) return existing._id;
 
-    return await ctx.db.insert("players", {
-      name: args.name.trim(),
+    const id = await ctx.db.insert("players", {
+      name,
       nameNormalized: normalized,
       sportId: args.sportId,
       createdByUserId: userId,
       lastUpdated: Date.now(),
     });
+
+    // An audit trail for a shared-row creation an operator triggers from a
+    // typeahead. Structured JSON, not concatenation — the name is operator
+    // input and must not be able to shape a log line.
+    console.log(
+      JSON.stringify({ msg: "player_created", playerId: id, sportId: args.sportId, userId }),
+    );
+
+    /**
+     * NEO-220 — enrich the player we just INSERTED, and only that.
+     *
+     * This was the last player-creation path in the product with no enrichment
+     * at all, and the quick-add form is what made that matter: a player born
+     * from this picker stayed BARE forever — no career teams, no Hall of Fame
+     * flag, no Wikidata id — because enrichment fires only at creation and an
+     * explicit admin force is the sole re-enrich path. Every other route
+     * already covers itself: the review wizard enriches before its insert
+     * (`processEntityReviewQueue` → `lookupPlayerEnrichment`), the commit
+     * prelude inserts already-enriched rows, and `createByAdmin` enqueues.
+     * Reusing that same enqueue verbatim rather than inventing another.
+     *
+     * The early `return existing._id` above is what makes this honour
+     * `enqueueEnrichment`'s CREATION-ONLY contract (see the contract note in
+     * `wikidataPool.ts`): a player this mutation FOUND leaves without being
+     * enqueued. Jason, 2026-09-02: "if the player is already known we should
+     * not try to look up the data again."
+     *
+     * No `force` — that flag belongs to `enrichFromWikidata`, the human "this
+     * answer is wrong, look again" remedy. Automatic callers never set it.
+     * Scheduled rather than awaited inline because enrichment is a network
+     * round-trip and this is a mutation.
+     */
+    await ctx.scheduler.runAfter(0, internal.wikidataPool.enqueueEnrichment, {
+      playerIds: [id],
+    });
+
+    return id;
   },
 });
 
@@ -629,14 +716,6 @@ export const enrichFromWikidata = action({
  */
 const PLAYER_MANAGEMENT_CAP = 500;
 
-/**
- * Bound on an operator-typed player name — same value and same reasoning as
- * `teams.MAX_TEAM_NAME_LENGTH`. Over-length is refused rather than trimmed:
- * silently storing something other than what was typed is how a mangled name
- * becomes canonical for every listing title and spine label downstream.
- */
-const MAX_PLAYER_NAME_LENGTH = 120;
-
 
 /**
  * Earliest plausible career year. Baseball's first professional league (the
@@ -728,13 +807,19 @@ export const listForManagement = query({
 /**
  * NEO-212: admin quick-add for a player, the counterpart of `teams.findOrCreate`.
  *
- * Separate from `findOrCreate` above rather than a widening of it, because the
- * two have genuinely different contracts and NEO-208 already drew that line:
- * `findOrCreate` is the signed-in reconciler the checklist commit path calls
- * per confirmed BSC name, and it deliberately schedules no enrichment, so it
- * adds no cost vector an open caller could drive. This one is admin-only and
- * DOES enqueue a pooled Wikidata lookup, which is precisely why it could not
- * simply be the same function with a flag.
+ * NEO-220 REDREW the line this used to sit on. The old reasoning was that
+ * `findOrCreate` was the SIGNED-IN reconciler and scheduled no enrichment,
+ * while this one was admin-only and did — so they could not be one function
+ * with a flag. Both halves are gone: `findOrCreate` is `requireAdmin` now and
+ * enqueues on its own insert branch, and it was never what the commit path
+ * calls (that inserts directly, already enriched).
+ *
+ * They stay separate for what is left, which is the RETURN CONTRACT. This one
+ * answers `{ id, created }`, because the Player Management form has to say
+ * "already here" and jump to the existing row rather than claim a creation;
+ * `findOrCreate` answers a bare id, because a typeahead chip does not care
+ * which branch produced it. Merging them would make every picker call site
+ * destructure an answer it has no use for.
  *
  * Idempotent, and that is a correctness requirement rather than a convenience:
  * players are globally-shared rows keyed on (normalized name, sport), so a

@@ -415,24 +415,48 @@ describe("updateCard and the no-team confirmation", () => {
     expect(row!.pendingTeamNames).toEqual(["Bosten Red Sox"]);
   });
 
-  test("pendingTeamNames is not settable through updateCard's args", async () => {
-    // Same discipline as the two no-team fields above: the clear is DERIVED
-    // from the write. A validator entry would make it directly settable,
-    // which would let a client fabricate "the operator typed this".
+  test("NEO-221: pendingTeamNames IS settable now — and linking a team still retires it on its own", async () => {
+    // This used to assert the opposite, on the reasoning that a validator
+    // entry would let a client fabricate "the operator typed this". NEO-221
+    // gave those names a second producer (a commit whose review never ruled on
+    // them) and, with it, an attention item and a walker fixer — and a fixer
+    // that can raise the flag but not lower it is a dead end for the operator.
+    // So the field is settable, by the same admin gate that can already write
+    // `teamOnCardIds` on this row; what stays DERIVED is the retirement that
+    // follows from linking a real team, which is the part a client must not be
+    // able to fake either way round.
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const { leafId } = await seedTree(t);
+    const { sportId, leafId } = await seedTree(t);
     const cardId = await insertCard(t, leafId);
 
-    await expect(
-      asAdmin.mutation(api.selectorOptions.updateCard, {
-        id: cardId,
-        pendingTeamNames: ["Invented"],
-      } as never),
-    ).rejects.toThrow();
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      pendingTeamNames: ["Bosten Red Sox"],
+    });
+    expect((await getCard(t, cardId))!.pendingTeamNames).toEqual([
+      "Bosten Red Sox",
+    ]);
 
-    const row = await getCard(t, cardId);
-    expect(row!.pendingTeamNames).toBeUndefined();
+    // Clearing is an EMPTY array, stored as the absence of the field.
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      pendingTeamNames: [],
+    });
+    expect((await getCard(t, cardId))!.pendingTeamNames).toBeUndefined();
+
+    // And the NEO-208 derivation is unchanged: linking a real team retires a
+    // typed name whether or not the caller mentions it.
+    const yankees = await insertTeam(t, sportId, "New York Yankees");
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      pendingTeamNames: ["Bosten Red Sox"],
+    });
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      teamOnCardIds: [yankees],
+    });
+    expect((await getCard(t, cardId))!.pendingTeamNames).toBeUndefined();
   });
 
   test("neither field is settable through updateCard's args", async () => {
@@ -1055,9 +1079,13 @@ describe("addCustomCard — team ids (NEO-208)", () => {
     const row = await getCard(t, cardId);
     expect(row!.pendingTeamNames).toEqual(["New York Yankees"]);
     expect(row!.teamOnCardIds).toBeUndefined();
-    // Still counted as answered, so the row is not badged — the rule
-    // `deriveCardAttention` has always applied to these.
-    expect(deriveCardAttention(row!)).toEqual([]);
+    // Still counted as ANSWERED, so it is not `missingTeam` — that rule is
+    // unchanged. NEO-221 gave the state its own item instead: the card names a
+    // team it does not link to, which is real work left, and the walker's
+    // fixer can now finish it. Exactly one item, not two.
+    expect(deriveCardAttention(row!)).toEqual([
+      { kind: "unreviewedName", names: ["New York Yankees"] },
+    ]);
   });
 
   test("ids WIN over a typed name when a caller sends both, and the row says its team once", async () => {

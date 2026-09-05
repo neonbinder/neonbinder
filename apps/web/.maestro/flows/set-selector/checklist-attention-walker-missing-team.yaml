@@ -46,8 +46,10 @@ tags:
 #     career years, and a custom card added through the add-card form has
 #     pending player NAMES, not linked player rows with careers — so there is
 #     nothing to suggest from. Reaching a linked player with career history
-#     means the entity-review wizard (checklist-fetch-wizard-add-career-team),
-#     a different feature and a 3.5-minute path. Unit/component-covered.
+#     means the entity-review wizard, which since NEO-220/221 is only reachable
+#     from a real cold marketplace fetch (STEP 6 of
+#     inserts-1996-score-one-nb-set-two-bsc-sources.yaml) — a different feature
+#     and a multi-minute path. Unit/component-covered.
 #   • Escape-to-defer as a literal keypress. maestro-web's pressKey maps only
 #     Enter and Backspace (CdpWebDriver.mapToSeleniumKey throws on anything
 #     else), so Escape cannot be driven from a flow at all. The walker's

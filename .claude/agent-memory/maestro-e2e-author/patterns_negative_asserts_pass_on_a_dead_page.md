@@ -22,3 +22,14 @@ immediately follow it with a POSITIVE assertion of what should now be on
 screen — the state, not just the absence. Order matters: the positive one is
 what fails loudly. The same rule applies to a flow's final steps: never let a
 flow's last word be a negative.
+
+**A `when: notVisible:` GUARD is the same hazard, and it is worse** — it does
+not merely pass, it routes the flow down the WRONG BRANCH. Observed 2026-09-04:
+`util-drill-to-custom` taps the sport, then guards its fallback with
+`when: notVisible: "Years"` + `when: notVisible: <SPORT>`. On a page that had
+just fallen to its error boundary BOTH guards were satisfied, so the util
+decided the sport did not exist and went looking for `Add custom Sports` — and
+the reported failure was `No visible element found: id: Add custom Sports`,
+which names neither the crash nor the sport. When a `when:`-guarded fallback
+fires for something that should obviously have been there, screenshot first and
+suspect a dead page before touching the selector.

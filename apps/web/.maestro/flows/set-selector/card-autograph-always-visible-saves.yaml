@@ -35,9 +35,10 @@ tags:
 #   read back — there is nothing to assert across the Cancel/reopen. The one
 #   observable proxy for an Autographed write, the None→set Signed By auto-fill,
 #   requires the card to carry real playerIds; this flow's per-worker CUSTOM card
-#   (added via util-add-custom-card → pendingPlayerNames) never acquires playerIds
-#   (only real marketplace-synced cards do — see signed-by-autofills-from-players.yaml),
-#   so that proxy cannot fire here either. Rather than fake a pass or attach a
+#   is added via util-add-custom-card, which leaves the quick-add form's Players
+#   field EMPTY, so the card has no players at all and the auto-fill has nothing
+#   to read (see signed-by-autofills-from-players.yaml, which owns that feature
+#   on the seeded real Base set), so that proxy cannot fire here either. Rather than fake a pass or attach a
 #   real player just to re-derive the auto-fill (which signed-by-autofills-from-players.yaml
 #   already owns — that would be cross-flow duplication, R3), we keep the still-
 #   fully-provable R1 fact (always-visible-without-expanding) and drop the now-

@@ -20,5 +20,6 @@
 - [NEO-239 retire "custom" — flow impact](reference_neo239_retire_custom_flow_impact.md) — no "Custom" badge to assert; per-side resolvability replaces `isCustomSubtree`; any variantType renameable; Base is `metadata.isBase`
 - [CI's Convex preview starts empty](reference_ci_convex_preview_starts_empty.md) — no dev clone, no `--preview-run`; `e2e.yml`'s seed job runs the setup track, so a backfill is never a CI prerequisite
 - [Never push a branch's Convex to shared dev](feedback_never_push_a_branch_convex_to_shared_dev.md) — use the PR's own preview on a spare-port Vite; seed it with the setup track
+- [Capture the browser console with CDP](patterns_capture_browser_console_with_cdp.md) — Maestro logs no console; 30 lines of raw CDP turns a blank error-boundary screenshot into a named root cause
 - [NEO-219 confirm surfaces](reference_neo219_confirm_surfaces.md) — custom entry needs TWO Enters; Base picker needs an explicit pick; chips confirm detach; empty rows have a delete control
 - [CI's seed resets the preview under your local run](reference_ci_seed_resets_the_preview_under_your_local_run.md) — columns emptying + "no <ancestor> ancestor" mid-flow is a concurrent global reset, not a product bug; check `gh run view` seed startedAt first

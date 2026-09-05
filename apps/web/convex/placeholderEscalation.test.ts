@@ -243,6 +243,20 @@ async function scheduledNames(t: ReturnType<typeof convexTest>): Promise<string[
   });
 }
 
+/**
+ * Cancel just the debounced pairing run, leaving every other scheduled job for
+ * the test (and the file's `afterEach`) to deal with.
+ */
+async function cancelPairingDebounce(t: ReturnType<typeof convexTest>): Promise<void> {
+  await t.run(async (ctx) => {
+    for (const job of await ctx.db.system.query("_scheduled_functions").collect()) {
+      if (job.name === PAIRING_FN && job.state.kind === "pending") {
+        await ctx.scheduler.cancel(job._id);
+      }
+    }
+  });
+}
+
 /** Drive one completion through the shared settle seam. */
 async function settle(
   t: ReturnType<typeof convexTest>,
@@ -251,6 +265,27 @@ async function settle(
   result: Parameters<typeof recordImageOutcomeImpl>[2],
 ) {
   await t.run(async (ctx) => recordImageOutcomeImpl(ctx, { jobId, imageId }, result));
+  // NEO-220: completing an image arms `placeholderPairing:runPairing` behind a
+  // 5s debounce (`PAIRING_DEBOUNCE_MS`). Nothing in this file asserts on
+  // pairing — it covers escalation state — but convex-test leaves that timer
+  // running, and a file that takes longer than the debounce (CI does; a laptop
+  // does not) fires it into worker teardown. That fails the JOB with an
+  // EnvironmentTeardownError while every test still reports green.
+  //
+  // CANCELLED rather than drained: a delayed schedule cannot be forced by
+  // `finishAllScheduledFunctions` without fake timers, and adding those to this
+  // file would change time semantics for every test in it. See
+  // lib/testing/drain-scheduled.ts.
+  //
+  // BY NAME rather than `cancelScheduled(t)`, which is the shared helper's
+  // blanket form. NEO-239 added three warm-gate tests below that drain the
+  // schedule and assert the heavy `/warmup` actually reached the wire; a
+  // blanket cancel here takes `placeholderBatch:warmupHeavyPreprocess` with it
+  // and those assertions see zero calls. Cancelling only the debounce keeps
+  // NEO-220's intent exactly as its comment states it — "this file does not
+  // exercise the debounced pairing run" — without discarding the one scheduled
+  // job this file DOES exercise.
+  await cancelPairingDebounce(t);
 }
 
 // ---------------------------------------------------------------------------
@@ -474,9 +509,11 @@ describe("the heavy completion terminates the escalated row", () => {
     expect(job?.status).toBe("pairing");
     // No further escalation was scheduled off the heavy completion.
     expect(await scheduledNames(t)).not.toContain(ENQUEUE_HEAVY_FN);
-    // …and the batch being complete is what queues pairing. Asserting it here
-    // is the point: `status: "pairing"` is a promise that the pairing action
-    // was actually enqueued, and the two used to be able to disagree.
+    // …and the batch being complete is what QUEUED pairing. `status: "pairing"`
+    // and the schedule are two separate writes that could disagree, so the row
+    // is asserted rather than inferred. `scheduledNames` does not filter by
+    // state and `settle` cancels the debounce immediately, so what this pins is
+    // that the enqueue HAPPENED — which is the half that could regress.
     expect(await scheduledNames(t)).toContain(PAIRING_FN);
   });
 

@@ -1,8 +1,47 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
+import { userFacingMessage } from "../../lib/errors/user-facing-message";
 import type { Id } from "../../convex/_generated/dataModel";
 import { Input } from "../primitives/Input";
+
+/**
+ * NEO-220 — the four container-level accessible names, overridable per
+ * instance. Every one of them is present whatever the picker's state, and
+ * NONE of them carries a player's name, so they are exactly the labels that
+ * collide when two PlayerPickers are on screen at once — which is now
+ * reachable in `CardChecklist`, where the card drawer and the quick-add form
+ * mount one each and neither hides the other.
+ *
+ * Whole strings rather than a prefix/suffix knob, deliberately. Maestro
+ * selects by `resource-id` (= the aria-label) with a REGEX FIND, so a derived
+ * label that contains the base one — "Add player to new card" — would make the
+ * drawer's own `id: "Add player"` match BOTH elements: strictly worse than the
+ * collision it set out to fix. Every override below is checked to share no
+ * substring with its default in either direction.
+ *
+ * Chip and option labels ("Player: Mike Trout", "Add Mike Trout", "Create
+ * player X") are deliberately NOT overridable: they carry the player's name,
+ * which is the disambiguator, and the existing drawer flows target them that
+ * way.
+ */
+export type PlayerPickerLabels = {
+  /** The chip row's own name. Default "Player picker". */
+  root: string;
+  /** The "+ Add player" trigger. Default "Add player". */
+  trigger: string;
+  /** The popover's search input. Default "Search players". */
+  search: string;
+  /** The popover listbox. Default "Player typeahead results". */
+  results: string;
+};
+
+const DEFAULT_LABELS: PlayerPickerLabels = {
+  root: "Player picker",
+  trigger: "Add player",
+  search: "Search players",
+  results: "Player typeahead results",
+};
 
 /**
  * NEO-25 — multi-select player picker. Mirrors `TeamPicker`'s chip/popover
@@ -26,12 +65,21 @@ import { Input } from "../primitives/Input";
  *   Up/Down on input — move highlight
  *   Esc on input — close popover without selecting
  *   Backspace on empty input — remove last chip
+ *
+ * NEO-220 — the three dismissal/feedback behaviours `TeamPicker` grew in
+ * NEO-208 are ported here verbatim, because this picker now sits in the SAME
+ * place that forced them: `CardChecklist`'s quick-add form, immediately ABOVE
+ * the Team row and the Add/Cancel buttons. Its popover is `absolute top-full
+ * w-64 z-10`, so an open one physically covers all three. See
+ * `handleRootBlur` (WCAG 2.4.11), the pointerdown-outside effect, and
+ * `createError` below.
  */
 export default function PlayerPicker({
   value,
   onChange,
   sportId,
   disabled,
+  labels = DEFAULT_LABELS,
 }: {
   value: Array<Id<"players">>;
   onChange: (next: Array<Id<"players">>) => void;
@@ -43,6 +91,13 @@ export default function PlayerPicker({
    */
   sportId?: Id<"selectorOptions">;
   disabled?: boolean;
+  /**
+   * Accessible names for this instance's four container controls. Omit on the
+   * one picker a screen can be sure of having only one of; pass all four when a
+   * second picker can be mounted alongside it. All four together, never a
+   * subset — a half-renamed instance is a collision you then have to find.
+   */
+  labels?: PlayerPickerLabels;
 }) {
   const selectedRows = useQuery(api.players.getManyByIds, { ids: value });
   const candidates = useQuery(
@@ -55,8 +110,25 @@ export default function PlayerPicker({
   const [query, setQuery] = useState("");
   const [highlightIdx, setHighlightIdx] = useState(0);
   const [creating, setCreating] = useState(false);
+  /**
+   * NEO-220 — why the last "+ Create" attempt was refused, shown inline
+   * beside the search input. Ported from `TeamPicker` (NEO-208), where the
+   * handler being a bare try/finally meant a refusal landed as a silent
+   * no-op — "Creating…" flipped back, no chip appeared, no reason given —
+   * plus an unhandled rejection in the console.
+   *
+   * Safe to render verbatim: NEO-220 gave `players.findOrCreate` the same
+   * refusals its `teams` twin carries (a name over the 120-char cap, a
+   * `sportId` that is not a SPORT row, an empty name), and every one of those
+   * messages names a LENGTH or a category, never the typed content. Anything
+   * that is not a ConvexError gets the generic fallback instead, because
+   * production redacts a plain Error to "Server Error" (see
+   * `userFacingMessage`).
+   */
+  const [createError, setCreateError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- typeahead highlight resets with the query it indexes into
@@ -68,6 +140,31 @@ export default function PlayerPicker({
       const t = setTimeout(() => inputRef.current?.focus(), 0);
       return () => clearTimeout(t);
     }
+  }, [popoverOpen]);
+
+  /**
+   * Close on a pointerdown outside the picker — see `TeamPicker`, where the
+   * same effect is documented at length. This picker had no outside-close at
+   * all, which was survivable while its only homes were the card drawer and
+   * `UnreviewedNameFixer` (both of which have room below the popover). In the
+   * quick-add form it is not: an operator who opens this popover and then
+   * reaches for the Team picker or Add/Cancel is clicking at a control the
+   * popover is drawn over.
+   *
+   * `pointerdown`, not `click`, so the popover is gone before the click
+   * resolves underneath it. Deliberately NOT `closePopover`, which would pull
+   * focus back to the trigger mid-press.
+   */
+  useEffect(() => {
+    if (!popoverOpen) return;
+    const onPointerDown = (e: Event) => {
+      if (rootRef.current?.contains(e.target as Node)) return;
+      setPopoverOpen(false);
+      setQuery("");
+      setCreateError(null);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
   }, [popoverOpen]);
 
   const labelById = useMemo(() => {
@@ -104,8 +201,17 @@ export default function PlayerPicker({
   }, [query, candidates]);
 
   // NEO-96: no sport row → no create. See TeamPicker for the rationale.
+  //
+  // NEO-220 (focus-park pattern): deliberately no longer gated on `!creating`.
+  // This row used to unmount the instant `creating` flipped true, which parks
+  // focus — a click had just landed on the button — onto <body>.
+  // `handleRootBlur` below closes the popover on exactly that signal, so it
+  // would fire mid-request and clear `createError` before the awaited
+  // `findOrCreate` had even settled, leaving the refusal invisible. The row
+  // stays mounted and announces itself `aria-disabled` instead; the `creating`
+  // guard inside `createAndAdd` is what actually blocks a second submit.
   const showCreateOption =
-    query.trim().length > 0 && !hasExactMatch && !creating && !!sportId;
+    query.trim().length > 0 && !hasExactMatch && !!sportId;
 
   const removeChip = (idToRemove: Id<"players">) => {
     if (disabled) return;
@@ -123,12 +229,24 @@ export default function PlayerPicker({
 
   const createAndAdd = async () => {
     const name = query.trim();
-    if (!name || disabled) return;
+    // `creating` guard: re-entry protection now that the button stays mounted
+    // (and clickable — `aria-disabled`, not `disabled`) for the request.
+    if (!name || disabled || creating) return;
     setCreating(true);
+    setCreateError(null);
     try {
       if (!sportId) return;
       const id = await findOrCreate({ name, sportId });
       addChip(id);
+    } catch (err) {
+      // The ConvexError's `data`, never `.message`: production redacts a plain
+      // Error, and a surviving message arrives wrapped in "[CONVEX M(...)]
+      // [Request ID: ...]" noise. The query is left alone so "+ Create" stays
+      // available for a retry after a fix.
+      setCreateError(userFacingMessage(err, "Could not create player."));
+      // Land the operator back in the input, which is what a retry needs to
+      // edit — not on the button they just pressed verbatim.
+      setTimeout(() => inputRef.current?.focus(), 0);
     } finally {
       setCreating(false);
     }
@@ -137,14 +255,49 @@ export default function PlayerPicker({
   const closePopover = () => {
     setPopoverOpen(false);
     setQuery("");
+    setCreateError(null);
     setTimeout(() => triggerRef.current?.focus(), 0);
+  };
+
+  /**
+   * Close on Tab (or Shift+Tab) out of the picker while the popover is open —
+   * the keyboard counterpart to the pointerdown handler above, and WCAG 2.4.11
+   * (Focus Not Obscured) in the quick-add form specifically: the popover has
+   * no focus trap, so Tab from its last row walks focus onto whatever the
+   * caller placed next in the DOM — there, the Team picker's "+ Add team"
+   * trigger and then Add/Cancel, all of which this `absolute … z-10` popover
+   * is drawn over.
+   *
+   * Checked via a deferred read of `document.activeElement` rather than the
+   * blur event's `relatedTarget`, which is unreliable across environments
+   * (notably jsdom, where it comes back `null` for an ordinary focus move).
+   * Deliberately NOT `closePopover`: that steals focus back to the trigger,
+   * fighting the Tab the operator just pressed.
+   */
+  const handleRootBlur = () => {
+    // The "+ Create" row no longer unmounts mid-request (see
+    // `showCreateOption`), so this should not fire during a create at all —
+    // guarded anyway, so a future change to that row's mount behaviour cannot
+    // silently reopen the race.
+    if (!popoverOpen || creating) return;
+    setTimeout(() => {
+      if (rootRef.current?.contains(document.activeElement)) return;
+      setPopoverOpen(false);
+      setQuery("");
+      setCreateError(null);
+    }, 0);
   };
 
   // Highlight index spans matches PLUS the trailing "create" row when shown.
   const rowCount = matches.length + (showCreateOption ? 1 : 0);
 
   return (
-    <div className="flex flex-wrap gap-1.5 items-center" aria-label="Player picker">
+    <div
+      ref={rootRef}
+      className="flex flex-wrap gap-1.5 items-center"
+      aria-label={labels.root}
+      onBlur={handleRootBlur}
+    >
       {value.map((id) => (
         <span
           key={id}
@@ -174,7 +327,7 @@ export default function PlayerPicker({
           type="button"
           disabled={disabled}
           onClick={() => setPopoverOpen(true)}
-          aria-label="Add player"
+          aria-label={labels.trigger}
           aria-expanded={popoverOpen}
           className="px-2 py-0.5 text-xs rounded border border-dashed border-gray-400 dark:border-gray-600 hover:border-[#00D558] focus:border-[#00D558] focus:outline-none text-gray-600 dark:text-gray-300"
         >
@@ -185,7 +338,7 @@ export default function PlayerPicker({
           <div
             className="absolute left-0 top-full mt-1 z-10 w-64 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-md shadow-lg p-2 space-y-1"
             role="listbox"
-            aria-label="Player typeahead results"
+            aria-label={labels.results}
           >
             <Input
               bare
@@ -193,8 +346,13 @@ export default function PlayerPicker({
               type="text"
               value={query}
               placeholder="Search or add a player..."
-              aria-label="Search players"
-              onChange={(e) => setQuery(e.target.value)}
+              aria-label={labels.search}
+              onChange={(e) => {
+                // The refusal described the name that was in this box; the
+                // next keystroke makes it stale, so it goes with the query.
+                setCreateError(null);
+                setQuery(e.target.value);
+              }}
               onKeyDown={(e) => {
                 if (e.key === "Escape") {
                   e.preventDefault();
@@ -224,6 +382,21 @@ export default function PlayerPicker({
               }}
               className="w-full p-1.5 text-sm"
             />
+
+            {createError && (
+              // a11y: NOT the brand `#FF2EB3` — measured against this
+              // popover's own `bg-white dark:bg-gray-800` it is 3.34:1 /
+              // 4.4:1, both under WCAG 1.4.3's 4.5:1 floor for normal text.
+              // Same-hue darkened/lightened pair CardDetailPanel's
+              // `parentError` and TeamPicker already use: 5.55:1 on white,
+              // 5.87:1 on dark:bg-gray-800.
+              <p
+                role="alert"
+                className="px-2 py-1 text-xs text-[#C2178A] dark:text-[#FF6FCB]"
+              >
+                {createError}
+              </p>
+            )}
 
             {!candidates && (
               <div className="text-xs text-gray-500 px-2 py-1">Loading…</div>
@@ -256,7 +429,13 @@ export default function PlayerPicker({
             {showCreateOption && (
               <button
                 type="button"
-                disabled={creating}
+                // NEO-220: `aria-disabled`, not `disabled` — the row stays
+                // mounted and focusable for the request (see
+                // `showCreateOption`). Native `disabled` force-blurs a focused
+                // element straight to <body>, which is the same focus-park
+                // pattern documented on `TitleFixer`'s Save button and would
+                // reproduce the very bug this avoids.
+                aria-disabled={creating || undefined}
                 onClick={() => void createAndAdd()}
                 onMouseEnter={() => setHighlightIdx(matches.length)}
                 aria-label={`Create player ${query.trim()}`}

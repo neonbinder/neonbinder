@@ -54,6 +54,7 @@ import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
+import { drainScheduled } from "../lib/testing/drain-scheduled";
 import { Id } from "./_generated/dataModel";
 
 // convex-test v0.0.53 with Vitest uses import.meta.glob to discover modules.
@@ -208,6 +209,64 @@ describe("NEO-202 — players.getManyByIds requires a signed-in caller", () => {
   });
 });
 
+describe("NEO-220 — players.findOrCreate is admin-gated, and a refusal writes nothing", () => {
+  /**
+   * The "did not write" half, the property this file exists to pin. NEO-220
+   * raised this mutation from signed-in to admin because its insert branch now
+   * schedules pooled Wikidata enrichment; `publicFunctionAuth.test.ts` records
+   * WHICH gate it carries, and this records that a refused call left the
+   * globally-shared `players` table — and the scheduler — untouched.
+   *
+   * A signed-in non-admin is the interesting caller, not an anonymous one:
+   * sign-up is open, so that is the identity an attacker actually has.
+   */
+  test("a signed-in non-admin is refused and creates no player row", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+
+    await expect(
+      t
+        .withIdentity(MEMBER)
+        .mutation(api.players.findOrCreate, { name: "Shohei Ohtani", sportId }),
+    ).rejects.toThrow(/Admin access required/);
+
+    const rows = await t.run(async (ctx) => ctx.db.query("players").collect());
+    expect(rows).toHaveLength(0);
+  });
+
+  test("an anonymous caller is refused and creates no player row", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+
+    await expect(
+      t.mutation(api.players.findOrCreate, { name: "Shohei Ohtani", sportId }),
+    ).rejects.toThrow(/not authenticated/i);
+
+    const rows = await t.run(async (ctx) => ctx.db.query("players").collect());
+    expect(rows).toHaveLength(0);
+  });
+
+  test("an admin still creates the row — the gate is not a wholesale break", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+
+    const id = await t
+      .withIdentity(ADMIN)
+      .mutation(api.players.findOrCreate, { name: "Shohei Ohtani", sportId });
+
+    expect(id).toBeDefined();
+    const rows = await t.run(async (ctx) => ctx.db.query("players").collect());
+    expect(rows).toHaveLength(1);
+    expect(rows[0].name).toBe("Shohei Ohtani");
+
+    // The one test in this block that actually INSERTS, so the only one that
+    // schedules the creation-time enrichment. The two refusals above throw in
+    // `requireAdmin`, before the insert, and schedule nothing. See
+    // drain-scheduled.ts for why leaving it running would fail the job.
+    await drainScheduled(t);
+  });
+});
+
 describe("NEO-235 — players.getByIdParam is guarded, and stays a throw", () => {
   /**
    * The registry entry for the deep-link read. `convex/players.management.test.ts`
@@ -343,6 +402,39 @@ describe("NEO-212 — a refused write to shared reference data persists nothing"
     ).rejects.toThrow(/admin access required/i);
 
     expect((await t.run(async (ctx) => ctx.db.get(rowId)))?.decision).toBeUndefined();
+  });
+
+  test("entityReviewQueue.clearDecision refuses a non-admin without un-deciding a row", async () => {
+    // NEO-221. The reverse of recordDecision: it puts a name the operator
+    // already ruled on back into the wizard as an open question. Ungated, a
+    // signed-in non-admin could walk a finished review back to the start, and
+    // — because un-deciding a still-`pending` row re-enqueues its Wikidata
+    // lookup — do it while spending outbound requests.
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSport(t);
+    const rowId = await t.run(async (ctx) =>
+      ctx.db.insert("entityReviewQueue", {
+        selectorOptionId,
+        batchId: "batch-1",
+        createdByUserId: ADMIN.subject,
+        kind: "player" as const,
+        name: "Mike Trout",
+        sportId: selectorOptionId,
+        status: "ready" as const,
+        decision: { action: "create" as const },
+      }),
+    );
+
+    await expect(
+      t.withIdentity(MEMBER).mutation(api.entityReviewQueue.clearDecision, {
+        reviewRowId: rowId,
+      }),
+    ).rejects.toThrow(/admin access required/i);
+
+    // The decision is STILL there — the refusal happened before any write.
+    expect((await t.run(async (ctx) => ctx.db.get(rowId)))?.decision).toEqual({
+      action: "create",
+    });
   });
 
   test("entityReviewSkips.clearSkip refuses a non-admin without deleting the row", async () => {
