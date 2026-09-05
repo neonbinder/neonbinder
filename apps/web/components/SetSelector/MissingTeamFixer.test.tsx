@@ -65,13 +65,14 @@ import MissingTeamFixer from "./MissingTeamFixer";
 
 const CARD_ID = "card-1" as unknown as Id<"cardChecklist">;
 
-function renderFixer() {
+function renderFixer(rowOverrides: { bscTeamName?: string } = {}) {
   return render(
     <MissingTeamFixer
       row={{
         _id: CARD_ID,
         cardNumber: "327",
         cardName: "Fernando Tatis Jr.",
+        ...rowOverrides,
       }}
       items={[]}
       onSaved={vi.fn()}
@@ -155,5 +156,54 @@ describe("MissingTeamFixer — NEO-236 team names", () => {
       ).toBeTruthy();
     });
     expect(screen.getAllByText("San Diego Padres")).toHaveLength(1);
+  });
+});
+
+/**
+ * NEO-236 security review — the marketplace's own answer, kept as a hint.
+ *
+ * `applyBscTeamResolution` no longer creates a team from BSC's string; it
+ * links or leaves. Discarding the string with it left the operator on a card
+ * with no team and no indication of which team it was meant to be — we had the
+ * answer and threw it away on the way to not trusting it. The fix keeps it on
+ * the row as `bscTeamName` and shows it here.
+ */
+describe("MissingTeamFixer — the marketplace hint (NEO-236)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    suggestions = [];
+    teamRows = undefined;
+  });
+
+  it("shows the marketplace's team name when the card carries one", () => {
+    renderFixer({ bscTeamName: "New York Yankees" });
+
+    expect(screen.getByText("Marketplace says:")).toBeTruthy();
+    expect(screen.getByText("New York Yankees")).toBeTruthy();
+  });
+
+  it("shows nothing at all when the card carries no hint", () => {
+    renderFixer();
+
+    expect(screen.queryByText("Marketplace says:")).toBeNull();
+  });
+
+  /**
+   * The hint is a CLAIM, not a suggestion. The chips above the picker are
+   * acceptable with one keystroke; this deliberately is not — creating a team
+   * takes a reviewed Location + Name, and a clickable marketplace string is
+   * exactly the shortcut NEO-236 removed. It is also plain text rather than an
+   * anchor or a `title`, the same rule the card number and name follow: a
+   * marketplace string is untrusted content on an admin screen.
+   */
+  it("renders the hint as inert text — never a button, link or title", () => {
+    const { container } = renderFixer({ bscTeamName: "New York Yankees" });
+
+    const hint = screen.getByText("New York Yankees");
+    expect(hint.closest("button")).toBeNull();
+    expect(hint.closest("a")).toBeNull();
+    expect(hint.getAttribute("title")).toBeNull();
+    // And it did not become one of the acceptable suggestion chips.
+    expect(container.querySelectorAll("button[aria-pressed]")).toHaveLength(0);
   });
 });

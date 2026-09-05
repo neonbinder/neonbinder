@@ -972,6 +972,14 @@ export const getCardChecklist = query({
       // NEO-90: set once the BSC per-card team-enrichment queue has
       // checked this card, regardless of outcome (see schema.ts).
       teamCheckDoneAt: v.optional(v.number()),
+      // NEO-236: the team name BSC returned that matched no row of ours.
+      // `MissingTeamFixer` shows it as "Marketplace says: …" so the operator
+      // has the marketplace's answer in front of them while they create the
+      // Location + Name. Required here rather than optional-in-spirit: this
+      // validator is STRICT (see the note below), so omitting a field the
+      // table now carries throws `Object contains extra field` for every row
+      // that has one. A hint only — nothing derives a team from it.
+      bscTeamName: v.optional(v.string()),
       // NEO-102: the two halves of "does this card still need a human to
       // settle its team?". Returned because the checklist derives that badge
       // client-side through `features/cardAttention.ts` — the same pure
@@ -8132,6 +8140,18 @@ function buildMatchMaps(
  * index-range limit. It is the next thing that would need chunking if
  * `MAX_CARDS_PER_COMMIT` were ever actually approached; see the note there.
  */
+/**
+ * NEO-236 security review — how many unlinked team names the prelude reports.
+ *
+ * These are raw marketplace strings of unbounded length and unbounded number:
+ * a first sync of a large set can leave hundreds unlinked at once. The
+ * operator needs a sample to act on, not the whole list, and
+ * `unresolvedTeamCount` carries the number that actually matters. Mirrors
+ * `ambiguousKeys` / `staleDecisionIds`, which cap at 20 — 200 here because
+ * this list is the operator's worklist rather than a diagnostic sample.
+ */
+const UNRESOLVED_TEAM_NAMES_CAP = 200;
+
 export const commitCardChecklistPrelude = internalMutation({
   args: {
     selectorOptionId: v.id("selectorOptions"),
@@ -8181,7 +8201,15 @@ export const commitCardChecklistPrelude = internalMutation({
     // lane picks it up. Returned so the action can log what went unlinked
     // rather than leaving it as an absence nobody can see. Deliberate skips
     // are NOT here — see `skippedTeamNames`.
+    //
+    // CAPPED at `UNRESOLVED_TEAM_NAMES_CAP` entries; `unresolvedTeamCount` is
+    // the true total. A first sync of a large set can leave hundreds of names
+    // unlinked, and each is raw marketplace text of unbounded length — an
+    // uncapped list is an unbounded return value built from third-party
+    // strings. Same shape as `ambiguousKeys`/`staleDecisionIds` above: a
+    // sample to act on, beside a count you can trust.
     unresolvedTeamNames: v.array(v.string()),
+    unresolvedTeamCount: v.number(),
     inheritedFeatures: v.optional(v.record(v.string(), v.string())),
     setNameAncestorId: v.optional(v.id("selectorOptions")),
     setNameValue: v.optional(v.string()),
@@ -8838,7 +8866,12 @@ export const commitCardChecklistPrelude = internalMutation({
       reviewRowIds: reviewRows.map((r) => r._id),
       skippedPlayerNames,
       skippedTeamNames,
-      unresolvedTeamNames: Array.from(unresolvedTeamNames).filter(Boolean),
+      // NEO-236 security review: bounded. See the validator's note above —
+      // the count is the total, the array is the sample.
+      unresolvedTeamNames: Array.from(unresolvedTeamNames)
+        .filter(Boolean)
+        .slice(0, UNRESOLVED_TEAM_NAMES_CAP),
+      unresolvedTeamCount: Array.from(unresolvedTeamNames).filter(Boolean).length,
       inheritedFeatures: inheritedFeaturesOrUndefined,
       setNameAncestorId,
       setNameValue,
@@ -8866,6 +8899,7 @@ type CommitPrelude = {
   skippedTeamNames: string[];
   /** NEO-236 — see the returns validator. */
   unresolvedTeamNames: string[];
+  unresolvedTeamCount: number;
   inheritedFeatures?: Record<string, string>;
   setNameAncestorId?: Id<"selectorOptions">;
   setNameValue?: string;
@@ -11327,7 +11361,7 @@ export const commitCardChecklist = action({
       match.collisions.length > 0 ||
       prelude.ambiguousMatchKeys.length > 0 ||
       staleDecisionIds.length > 0 ||
-      prelude.unresolvedTeamNames.length > 0 ||
+      prelude.unresolvedTeamCount > 0 ||
       unmatchedExistingIds.length > 0;
     if (somethingToReport) {
       console.log(
@@ -11364,7 +11398,7 @@ export const commitCardChecklist = action({
           // marketplace text, which this line does not carry (see the note
           // above). The names themselves come back on the prelude for the
           // surfaces that are allowed to show them.
-          unresolvedTeamCount: prelude.unresolvedTeamNames.length,
+          unresolvedTeamCount: prelude.unresolvedTeamCount,
           // Rows upstream no longer lists. Reported only — a marketplace
           // dropping a card does not delete a NeonBinder row.
           unmatchedExistingCount: unmatchedExistingIds.length,

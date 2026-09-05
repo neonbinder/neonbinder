@@ -653,6 +653,31 @@ export const saveTeamFields = mutation({
       if (args.name !== undefined && !args.name.trim()) {
         throw new Error("Team name cannot be empty");
       }
+
+      // NEO-236 security review: the same bound `findOrCreate` puts on a NEW
+      // team, applied to an edit. It was missing here, which made this the
+      // way around the cap — create "Padres", then rename it to anything.
+      // The cap exists because a team name is a globally-shared string that
+      // spine labels, listing titles and every picker render, and because it
+      // is what a Wikidata lookup gets pointed at.
+      //
+      // On the COMPOSED name, for the same reason as `findOrCreate`: a
+      // 100-character location beside a 100-character nickname is a
+      // 201-character team however it was typed. Refused rather than
+      // truncated, matching the create path — silently storing something
+      // other than what was typed is how a mangled name becomes canonical.
+      // The LENGTH only, never the name: this reaches Sentry and the browser
+      // console through Convex's error path.
+      const mergedFullName = teamFullName({
+        name: nextName,
+        location: nextLocation,
+      });
+      if (mergedFullName.length > MAX_TEAM_NAME_LENGTH) {
+        throw new ConvexError(
+          `A team name is ${mergedFullName.length} characters; the limit is ${MAX_TEAM_NAME_LENGTH}.`,
+        );
+      }
+
       const fields = teamRowFields({ name: nextName, location: nextLocation });
 
       if (fields.nameNormalized !== existing.nameNormalized) {

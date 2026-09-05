@@ -958,26 +958,44 @@ ${hallOfFameSparqlBlocks(qid, hofQid)}
  * fields that NO creation path writes, checked against every path that can
  * insert a row and then enqueue it:
  *
- *   teams — `selectorOptions` prelude `resolveTeamIdByName`, and
- *           `teams.findOrCreate` (the operator surfaces). Both insert exactly
- *           `{name, location?, nameNormalized, sportId, leagueId,
- *           lastUpdated}`. NEO-236 note: `location` is NOT a creation field —
- *           no creation path writes one, so it stays a valid marker.
+ *   teams — `selectorOptions` prelude `createTeamFromOperatorInput`, and
+ *           `teams.findOrCreate` (the operator surfaces: TeamPicker's
+ *           "+ Create", MissingTeamFixer, Team Management). Both insert
+ *           exactly `{name, location?, nameNormalized, sportId, leagueId,
+ *           lastUpdated}`. `convex/seedTeamColors.ts` inserts the same shape
+ *           from the bundled dataset.
  *   players — the `selectorOptions` prelude create path, which is the only one
  *           that inserts a player row outside Team/Player Management.
  *
- * `leagueId` and `lastUpdated` are therefore NOT markers, and must never
- * become ones: every creation path sets both, so either would make the guard
- * skip every brand-new row and silently disable enrichment entirely. That is
- * the one failure mode this design has, and it is why the markers are listed
- * explicitly here rather than derived from "any enrichment field".
+ * `leagueId`, `lastUpdated` and — since NEO-236 — `location` are therefore NOT
+ * markers, and must never become ones: every creation path can set all three,
+ * so any of them would make the guard skip a brand-new row and silently
+ * disable enrichment for it. That is the one failure mode this design has, and
+ * it is why the markers are listed explicitly here rather than derived from
+ * "any enrichment field".
+ *
+ * ## Why `location` had to be dropped (NEO-236)
+ *
+ * It was a valid marker for exactly as long as `teams.location` was something
+ * only enrichment could produce. NEO-236 made Location the FIRST HALF OF THE
+ * CREATION FORM — Jason: "Location & Team Name should be the input" — so every
+ * team an operator creates for a real franchise arrives carrying one. Leaving
+ * it in the marker set meant those teams were skipped here before any lookup
+ * ran: no colours, no years, no `wikidataId`, no `espnId`, and no error
+ * anywhere. Precisely the "silently disable enrichment" failure this docblock
+ * warns about, reached through the front door.
+ *
+ * Nothing is lost by dropping it. An operator's location is still protected —
+ * `teams.applyEnrichmentInternal` gap-fills `location` only when the row has
+ * none, so enrichment cannot overwrite what they typed. The marker was
+ * guarding the LOOKUP; the gap-fill guards the VALUE, and only the second one
+ * was ever load-bearing for "never overwrite a human".
  *
  * Everything below IS a marker: no insert path writes any of them, and each is
- * something enrichment (or an operator) put there. A row carrying even one has
- * already been answered.
+ * something enrichment (or an operator, through Team Management's editor) put
+ * there. A row carrying even one has already been answered.
  */
 function teamEnrichmentMarkers(team: {
-  location?: string;
   yearsActive?: unknown;
   colors?: { primary?: string; secondary?: string };
   colorSource?: unknown;
@@ -985,7 +1003,7 @@ function teamEnrichmentMarkers(team: {
   externalIds?: { wikidataId?: string; espnId?: string };
 }): string[] {
   const markers: string[] = [];
-  if (team.location) markers.push("location");
+  // NOT `location` — it is a creation input since NEO-236. See the docblock.
   if (team.yearsActive) markers.push("yearsActive");
   if (team.colors?.primary || team.colors?.secondary) markers.push("colors");
   if (team.colorSource) markers.push("colorSource");
@@ -1021,6 +1039,14 @@ function playerEnrichmentMarkers(player: {
  * single most expensive enrichment call (one entity lookup + N team
  * resolutions per player); the calling action treats it as best-effort.
  */
+/**
+ * NEO-236 — bound on a Wikidata team label copied into a log line.
+ *
+ * The same 120 a stored team name is capped at (`teams.MAX_TEAM_NAME_LENGTH`),
+ * so a real franchise is never cut. See `career_team_unmatched` below.
+ */
+const MAX_LOGGED_TEAM_NAME_LENGTH = 120;
+
 export const enrichPlayer = internalAction({
   args: { playerId: v.id("players"), force: v.optional(v.boolean()) },
   returns: v.null(),
@@ -1113,11 +1139,19 @@ export const enrichPlayer = internalAction({
         // Structured, and the name is a VALUE rather than concatenated into
         // the message — it comes from query.wikidata.org with no operator in
         // the path and must not be able to shape a log line.
+        //
+        // NEO-236 security review: TRUNCATED as well. A Wikidata label is
+        // third-party text of no fixed length, and this line fires once per
+        // unmatched stint on a path that walks a whole career — an
+        // adversarially long label would otherwise be copied verbatim into the
+        // deployment log on every pass. 120 is the length a team name is
+        // allowed to be anywhere else in the product, so nothing legitimate is
+        // cut, and the value here is a diagnostic rather than data.
         console.log(
           JSON.stringify({
             msg: "career_team_unmatched",
             player: player.name,
-            team: ct.name,
+            team: ct.name.slice(0, MAX_LOGGED_TEAM_NAME_LENGTH),
           }),
         );
         continue;

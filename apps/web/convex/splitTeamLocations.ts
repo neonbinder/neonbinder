@@ -96,6 +96,23 @@ const BATCH_SIZE = 50;
 const MAX_BATCHES = 1000;
 
 /**
+ * NEO-236 security review — how many names each report list carries.
+ *
+ * `noSource`, `notPrefix` and `keyMismatch` are the operator's hand-split
+ * worklist, and every entry is a team name of unbounded length. Uncapped, a
+ * deployment with thousands of unsplittable rows (a college-heavy table) builds
+ * an unbounded array in the driver's memory and returns the whole thing through
+ * a `convex run` result.
+ *
+ * Capped rather than dropped, because the LIST is the point of a dry run: the
+ * counts say how many, and these say which. `counts.skipped_no_source`,
+ * `skipped_not_prefix` and `skipped_key_mismatch` remain the true totals, so a
+ * truncated list is always readable against a number you can trust. Mirrors
+ * `staleDecisionIds`/`ambiguousKeys` in `selectorOptions.ts`.
+ */
+const REPORT_LIST_CAP = 200;
+
+/**
  * The arming check, asserted at BOTH layers — the entry point and every batch
  * mutation it loops.
  *
@@ -267,6 +284,12 @@ type SportForSplit = {
 
 type SplitRunResult = {
   dryRun: boolean;
+  /**
+   * NEO-236 security review: false when the driver hit `MAX_BATCHES` with the
+   * table still not walked. Every count and list in the same result is then a
+   * PARTIAL answer, and a dry run read as complete would understate the work.
+   */
+  isComplete: boolean;
   counts: Counts;
   espnLeagues: Array<{ sport: string; teams: number | null }>;
   noSource: NoSourceRow[];
@@ -498,6 +521,18 @@ export const run = internalAction({
   },
   returns: v.object({
     dryRun: v.boolean(),
+    /**
+     * Did the loop actually reach the end of the table?
+     *
+     * `false` means it stopped at `MAX_BATCHES` with rows still unwalked — a
+     * cursor that is not advancing, or a table larger than this task was built
+     * for. Everything else in this result is then a PARTIAL answer: the counts
+     * undercount, the lists are short, and a real run that reported `false`
+     * has left rows unsplit. Reported rather than thrown, because the work
+     * already done is real and the operator needs to see it; but nothing may
+     * read the counts as final while this is `false`.
+     */
+    isComplete: v.boolean(),
     counts: countsValidator,
     /**
      * How many current teams ESPN returned per sport. `null` means the sport
@@ -510,6 +545,8 @@ export const run = internalAction({
     espnLeagues: v.array(
       v.object({ sport: v.string(), teams: v.union(v.number(), v.null()) }),
     ),
+    // Each capped at `REPORT_LIST_CAP`; the matching `counts.skipped_*` entry
+    // is the true total. See the constant's note.
     noSource: v.array(v.object({ name: v.string(), sport: v.string() })),
     notPrefix: v.array(
       v.object({ name: v.string(), sport: v.string(), espnLocation: v.string() }),
@@ -577,7 +614,22 @@ export const run = internalAction({
     const notPrefix: NotPrefixRow[] = [];
     const keyMismatch: string[] = [];
 
+    /**
+     * Append without letting the list grow past the cap. The COUNTS are
+     * accumulated in full either way, so a truncated list is always readable
+     * against a total — see `REPORT_LIST_CAP`.
+     */
+    const appendCapped = <T,>(into: T[], from: T[]): void => {
+      if (into.length >= REPORT_LIST_CAP) return;
+      into.push(...from.slice(0, REPORT_LIST_CAP - into.length));
+    };
+
     let cursor: string | null = null;
+    // NEO-236 security review: the loop reports whether it FINISHED. Without
+    // this, exhausting `MAX_BATCHES` was indistinguishable from walking the
+    // whole table — the operator reads a dry run's counts as the full picture
+    // and a real run as done, when in both cases rows were never reached.
+    let isComplete = false;
     for (let batch = 0; batch < MAX_BATCHES; batch += 1) {
       const result: ApplyBatchResult = await ctx.runMutation(
         internal.splitTeamLocations.applyBatch,
@@ -590,10 +642,13 @@ export const run = internalAction({
       for (const key of Object.keys(counts) as Array<keyof Counts>) {
         counts[key] += result.counts[key];
       }
-      noSource.push(...result.noSource);
-      notPrefix.push(...result.notPrefix);
-      keyMismatch.push(...result.keyMismatch);
-      if (result.isDone) break;
+      appendCapped(noSource, result.noSource);
+      appendCapped(notPrefix, result.notPrefix);
+      appendCapped(keyMismatch, result.keyMismatch);
+      if (result.isDone) {
+        isComplete = true;
+        break;
+      }
       cursor = result.continueCursor;
     }
 
@@ -601,11 +656,20 @@ export const run = internalAction({
       JSON.stringify({
         msg: "split_team_locations_done",
         dryRun: args.dryRun,
+        isComplete,
         ...counts,
         espnLeagues,
       }),
     );
 
-    return { dryRun: args.dryRun, counts, espnLeagues, noSource, notPrefix, keyMismatch };
+    return {
+      dryRun: args.dryRun,
+      isComplete,
+      counts,
+      espnLeagues,
+      noSource,
+      notPrefix,
+      keyMismatch,
+    };
   },
 });

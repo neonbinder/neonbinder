@@ -562,6 +562,25 @@ export default defineSchema({
     // has no team (an insert/subset card) would be re-fetched forever on
     // every future sync. Not touched by `lastUpdated`-driven logic.
     teamCheckDoneAt: v.optional(v.number()),
+    // NEO-236: the team name BSC returned that we could not match to a row.
+    //
+    // The BSC per-card lookup used to CREATE a `teams` row from whatever
+    // string it got back. It links-or-leaves now (creation takes Location +
+    // Name from an operator, and a background queue has neither), and without
+    // this column the miss threw the marketplace's answer away — leaving the
+    // operator to work out from nothing which team a card was meant to carry.
+    // Kept so `MissingTeamFixer` can show them "Marketplace says: …" and let
+    // them split it into a real Location + Name.
+    //
+    // A HINT, and only a hint. It is NOT a team, and nothing may treat it as
+    // one: `features/cardAttention.ts` still badges the card "missing team",
+    // and this is deliberately not `pendingTeamNames` (which the attention
+    // rule reads as the card HAVING a team). Written only by
+    // `cardChecklist.applyBscTeamResolution`, capped at 120 characters to
+    // match `MAX_TEAM_NAME_LENGTH`, and never read by any matching or
+    // creation logic — a marketplace string is input for a human, never a
+    // source of truth.
+    bscTeamName: v.optional(v.string()),
     // NEO-102: an OPERATOR decided this card carries no team at all.
     //
     // DISTINCT FROM `teamCheckDoneAt` above, which means only that the BSC

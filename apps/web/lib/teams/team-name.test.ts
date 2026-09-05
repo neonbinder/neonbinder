@@ -82,11 +82,35 @@ describe("splitTeamName", () => {
     });
   });
 
-  test("is case-insensitive and returns the location as passed", () => {
+  /**
+   * NEO-236 security review — the caller's spelling decides WHERE to cut, not
+   * what the pieces read as.
+   *
+   * Returning the argument would let ESPN's house style rewrite a stored name:
+   * splitting our "St Louis Blues" on their "St. Louis" would re-punctuate the
+   * row, and this case would re-case it. `applyEnrichmentInternal` writes both
+   * halves straight back onto the row, so the split has to be a pure
+   * rearrangement of the string we already hold.
+   */
+  test("matches case-insensitively but returns OUR spelling of the location", () => {
     expect(splitTeamName("SAN DIEGO PADRES", "san diego")).toEqual({
-      location: "san diego",
+      location: "SAN DIEGO",
       name: "PADRES",
     });
+  });
+
+  test("a punctuation difference is not a match at all — the strict split refuses", () => {
+    // The real case: ESPN answers "St. Louis"; our row says "St Louis". This
+    // comparison is character-exact apart from case, so the period makes it a
+    // MISS and the row is left whole — which is the conservative answer for
+    // the background enrichment path, the only caller of this function.
+    //
+    // The operator-run migration (`convex/splitTeamLocations.ts`) does accept
+    // this pair, through its own word-boundary equivalence fallback, and that
+    // one likewise returns our spelling. The looser match is sanctioned there
+    // because a human runs it and reads its report; it is deliberately NOT
+    // available to a background writer.
+    expect(splitTeamName("St Louis Blues", "St. Louis")).toBeNull();
   });
 
   test("trims and collapses whitespace on both sides", () => {

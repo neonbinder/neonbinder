@@ -202,6 +202,85 @@ describe("teams.applyEnrichmentInternal — the location split (NEO-236)", () =>
     expect(team!.name).toBe("Boston Red Sox");
   });
 
+  /**
+   * NEO-236 security review — ESPN decides WHERE to cut, never how the pieces
+   * are spelled.
+   *
+   * `splitTeamName` returns a slice of the name we already hold, so a source
+   * with a different house style cannot re-case or re-punctuate a name an
+   * operator typed. Pinned end-to-end here (not just on the pure helper)
+   * because this mutation writes both halves straight back onto the row.
+   */
+  test("ESPN's casing does not re-case our stored name", async () => {
+    const t = convexTest(schema, modules);
+    const { teamId } = await t.run(async (ctx) => {
+      const sportId = await ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Baseball",
+        platformData: {},
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+      });
+      const teamId = await ctx.db.insert("teams", {
+        name: "SAN DIEGO PADRES",
+        nameNormalized: normalizeTeamName("SAN DIEGO PADRES"),
+        sportId,
+        lastUpdated: 1_700_000_000_000,
+      });
+      return { teamId };
+    });
+
+    await t.mutation(internal.teams.applyEnrichmentInternal, {
+      id: teamId,
+      location: "san diego",
+    });
+
+    const team = await getTeam(t, teamId);
+    // OUR spelling on both halves, not ESPN's.
+    expect(team!.location).toBe("SAN DIEGO");
+    expect(team!.name).toBe("PADRES");
+  });
+
+  /**
+   * The punctuation twin, and it refuses outright.
+   *
+   * ESPN writes "St. Louis"; our row says "St Louis Blues". The strict split
+   * is character-exact apart from case, so the period is a miss and NOTHING is
+   * written — the row keeps "St Louis" and does not acquire a re-punctuated
+   * "St. Louis". Refusing is the right answer for a background writer: the
+   * operator-run migration has a word-boundary equivalence fallback for
+   * exactly this pair (and it, too, returns our spelling), and that looser
+   * match stays behind a human who reads its report.
+   */
+  test("an ESPN location differing only in punctuation writes nothing — no re-punctuated name", async () => {
+    const t = convexTest(schema, modules);
+    const { teamId } = await t.run(async (ctx) => {
+      const sportId = await ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Hockey",
+        platformData: {},
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+      });
+      const teamId = await ctx.db.insert("teams", {
+        name: "St Louis Blues",
+        nameNormalized: normalizeTeamName("St Louis Blues"),
+        sportId,
+        lastUpdated: 1_700_000_000_000,
+      });
+      return { teamId };
+    });
+
+    await t.mutation(internal.teams.applyEnrichmentInternal, {
+      id: teamId,
+      location: "St. Louis",
+    });
+
+    const team = await getTeam(t, teamId);
+    expect(team!.location).toBeUndefined();
+    expect(team!.name).toBe("St Louis Blues");
+  });
+
   test("a partial-word prefix does not split — 'Bost' is not a location", async () => {
     const t = convexTest(schema, modules);
     const { teamId } = await seedTeam(t);

@@ -854,6 +854,71 @@ describe("both enrichment paths agree on a Gwynn-shaped fixture (NEO-235)", () =
     ]);
   });
 
+  /**
+   * NEO-236 security review — the logged label is truncated.
+   *
+   * A Wikidata team label is third-party text of no fixed length, and this
+   * line fires once per unmatched stint on a path that walks a whole career.
+   * An adversarially long label would otherwise be copied verbatim into the
+   * deployment log on every enrichment pass. 120 is the length a team name is
+   * allowed to be everywhere else in the product, so nothing legitimate is cut
+   * — the value here is a diagnostic, not data.
+   */
+  test("an absurdly long career-team label is truncated in the log line", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedGwynnSport(t);
+    const playerId = await t.run(async (ctx) =>
+      ctx.db.insert("players", {
+        name: "Tony Gwynn",
+        nameNormalized: "tony gwynn",
+        sportId,
+        createdByUserId: "user_test",
+        lastUpdated: 1_700_000_000_000,
+      }),
+    );
+
+    const longLabel = "Z".repeat(5000);
+    const logged: string[] = [];
+    const logSpy = vi
+      .spyOn(console, "log")
+      .mockImplementation((...args: unknown[]) => {
+        logged.push(String(args[0]));
+      });
+    try {
+      vi.stubGlobal(
+        "fetch",
+        makePlayerFetchStub({
+          qid: "Q1145222",
+          detail: {
+            careerTeams: [
+              {
+                teamQid: "Q999999",
+                teamLabel: longLabel,
+                fromYear: 1982,
+                toYear: 2001,
+              },
+            ],
+          },
+        }),
+      );
+      await t.action(internal.adapters.wikidata.enrichPlayer, { playerId });
+    } finally {
+      logSpy.mockRestore();
+    }
+
+    const unmatched = logged
+      .map((line) => {
+        try {
+          return JSON.parse(line) as { msg?: string; team?: string };
+        } catch {
+          return null;
+        }
+      })
+      .filter((entry) => entry?.msg === "career_team_unmatched");
+    expect(unmatched).toHaveLength(1);
+    expect(unmatched[0]!.team).toHaveLength(120);
+  });
+
   test("runEntityReviewLookup stores the same verdict, plus the undated team by name", async () => {
     const t = convexTest(schema, modules);
     const sportId = await seedGwynnSport(t);

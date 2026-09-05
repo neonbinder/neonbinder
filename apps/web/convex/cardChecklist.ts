@@ -254,6 +254,19 @@ export const getForBscTeamCheck = internalQuery({
   },
 });
 
+/**
+ * NEO-236 — bound on the marketplace string kept in `cardChecklist.bscTeamName`.
+ *
+ * The same 120 as `teams.MAX_TEAM_NAME_LENGTH`, and for the same reason: this
+ * is what an operator would copy into the create form, so anything a team name
+ * could not be is not worth keeping. Truncated rather than refused — unlike a
+ * stored team name this is only a hint, and dropping the whole hint because it
+ * was long helps nobody. Duplicated rather than imported to keep this module
+ * off `teams.ts`'s import graph, which is what let the NEO-236 rewrite take
+ * the team lookup out of here cleanly.
+ */
+const MAX_BSC_TEAM_NAME_LENGTH = 120;
+
 export const applyBscTeamResolution = internalMutation({
   args: {
     cardChecklistId: v.id("cardChecklist"),
@@ -344,13 +357,33 @@ export const applyBscTeamResolution = internalMutation({
       // The card is not lost: an empty `teamOnCardIds` with no
       // `teamNoneConfirmedAt` is exactly what the attention walker's
       // missing-team lane looks for, and the operator resolves it there.
-      await ctx.db.patch(row._id, { teamCheckDoneAt: Date.now() });
+      //
+      // BSC's string is KEPT on the row as `bscTeamName`. Discarding it left
+      // the operator staring at a card with no team and no clue which team it
+      // was meant to be — the marketplace had the answer and we threw it away
+      // on the way to not trusting it. `MissingTeamFixer` renders it as
+      // "Marketplace says: …" so they can create the right Location + Name.
+      //
+      // A hint, never a team. It is deliberately NOT written to
+      // `pendingTeamNames`, which `features/cardAttention.ts` reads as the
+      // card HAVING a team — that would take the card out of the very lane
+      // this branch exists to leave it in. Capped at the same length a stored
+      // team name is capped at: this is a third party's string reaching an
+      // admin screen, and nothing downstream should have to bound it again.
+      await ctx.db.patch(row._id, {
+        teamCheckDoneAt: Date.now(),
+        bscTeamName: teamName.slice(0, MAX_BSC_TEAM_NAME_LENGTH),
+      });
       return { applied: false, unmatched: true };
     }
 
     await ctx.db.patch(row._id, {
       teamOnCardIds: [existing._id],
       teamCheckDoneAt: Date.now(),
+      // A matched card has a real team now, so the hint has nothing left to
+      // say — and a stale "Marketplace says: …" beside a resolved team reads
+      // as a disagreement rather than as history.
+      bscTeamName: undefined,
       lastUpdated: Date.now(),
     });
 

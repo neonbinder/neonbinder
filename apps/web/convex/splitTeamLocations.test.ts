@@ -723,5 +723,71 @@ describe("NEO-236 splitTeamLocations — dry run and idempotence", () => {
     const rows = await allTeams(t);
     expect(rows.every((r) => r.location === "Springfield")).toBe(true);
     expect(rows.every((r) => r.name.startsWith("Isotopes"))).toBe(true);
+    // NEO-236 security review: a run that actually reached the end says so.
+    expect(result.isComplete).toBe(true);
+  });
+});
+
+/**
+ * NEO-236 security review — the run reports its own limits.
+ *
+ * Two ways this task can hand back a PARTIAL answer while looking complete:
+ * the batch loop can stop at `MAX_BATCHES` with rows unwalked, and the report
+ * lists are capped. Both were silent. An operator reads a dry run's counts to
+ * decide whether to run it for real, and reads the lists as the hand-split
+ * worklist — so "there are 32 to do by hand" being quietly wrong is the
+ * failure that matters here, exactly like "the dry run lied".
+ */
+describe("NEO-236 splitTeamLocations — the report says what it does not cover", () => {
+  beforeEach(() => {
+    process.env.ALLOW_SPLIT_TEAM_LOCATIONS = "true";
+  });
+
+  test("isComplete is true on an ordinary single-batch run", async () => {
+    const t = convexTest(schema, modules);
+    await seed(t, [
+      { value: "Baseball", espn: MLB, teams: [{ name: "San Diego Padres" }] },
+    ]);
+    espn.lists.set(MLB.path, [
+      { displayName: "San Diego Padres", location: "San Diego" },
+    ]);
+
+    const result = await runSplit(t, true);
+    expect(result.isComplete).toBe(true);
+  });
+
+  test("isComplete is true even when there is nothing at all to walk", async () => {
+    // An empty table finishes; "nothing to do" and "gave up" must not look
+    // the same to the operator.
+    const t = convexTest(schema, modules);
+    await seed(t, [{ value: "Baseball", espn: MLB, teams: [] }]);
+    espn.lists.set(MLB.path, []);
+
+    const result = await runSplit(t, true);
+    expect(result.isComplete).toBe(true);
+    expect(result.counts.scanned).toBe(0);
+  });
+
+  test("the hand-split worklist is capped at 200, and the count stays true", async () => {
+    // 260 rows in a sport ESPN does not carry — the college-heavy shape a real
+    // deployment has. Every one is `skipped_no_source`, so the COUNT must say
+    // 260 while the list hands back a bounded worklist. Uncapped, this is an
+    // unbounded array of third-party strings built in the driver's memory and
+    // returned through `convex run`.
+    const t = convexTest(schema, modules);
+    const teams = Array.from({ length: 260 }, (_, i) => ({
+      name: `Springfield State Isotopes ${i} baseball`,
+    }));
+    await seed(t, [{ value: "Baseball", teams }]);
+
+    const result = await runSplit(t, true);
+
+    expect(result.counts.scanned).toBe(260);
+    expect(result.counts.skipped_no_source).toBe(260);
+    // The list is a sample; the count is the answer.
+    expect(result.noSource).toHaveLength(200);
+    expect(result.isComplete).toBe(true);
+    // And it is a real sample, not 200 copies of one row.
+    expect(new Set(result.noSource.map((r) => r.name)).size).toBe(200);
   });
 });

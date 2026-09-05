@@ -11,6 +11,22 @@ import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import { teamFullName, teamShortName } from "@/lib/teams/team-name";
 
 /**
+ * NEO-236 security review — the browser-side half of `teams.saveTeamFields`'s
+ * length cap.
+ *
+ * A courtesy bound, not the enforcement. The SERVER checks the COMPOSED name
+ * ("San Diego" + " " + "Padres") against this same number and refuses with a
+ * `ConvexError`, which is what actually protects the row; `maxLength` here
+ * just stops the operator typing a paragraph into a field that was always
+ * going to be rejected. Deliberately per-field rather than a live composed
+ * count: a maxLength that moves as you type the other box silently eats
+ * keystrokes, and a refusal an operator can read beats an input that fights
+ * them. Keep this in step with `MAX_TEAM_NAME_LENGTH` in convex/teams.ts.
+ */
+const MAX_TEAM_NAME_LENGTH = 120;
+
+
+/**
  * NEO-156 — Team Management.
  *
  * Replaces NEO-147's flat colors worklist, which listed every team needing
@@ -452,6 +468,7 @@ function TeamDetail({
           label="Location"
           value={location}
           placeholder="San Diego"
+          maxLength={MAX_TEAM_NAME_LENGTH}
           aria-describedby={describedBy}
           aria-invalid={saveError ? true : undefined}
           onChange={(e) => {
@@ -466,6 +483,7 @@ function TeamDetail({
           label="Name"
           value={name}
           placeholder="Padres"
+          maxLength={MAX_TEAM_NAME_LENGTH}
           aria-describedby={describedBy}
           aria-invalid={saveError ? true : undefined}
           onChange={(e) => {

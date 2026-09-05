@@ -197,6 +197,15 @@ describe("applyBscTeamResolution", () => {
 
     const card = await getCard(t, cardId);
     expect(card!.teamOnCardIds ?? []).toEqual([]);
+    // NEO-236 security review: BSC's answer is KEPT as a hint. Discarding it
+    // left the operator with a teamless card and no idea which team it was
+    // meant to carry — `MissingTeamFixer` renders this as "Marketplace says:".
+    expect(card!.bscTeamName).toBe("New York Yankees");
+    // A hint, NOT a team: `pendingTeamNames` is what
+    // `features/cardAttention.ts` reads as the card HAVING a team, so writing
+    // it there would take the card out of the missing-team lane this branch
+    // exists to leave it in.
+    expect(card!.pendingTeamNames ?? []).toEqual([]);
     // Stamped anyway: the lookup HAS been and gone, and leaving it unset would
     // re-enqueue a live BSC request for this card on every backfill pass.
     expect(card!.teamCheckDoneAt).toBeTypeOf("number");
@@ -232,6 +241,64 @@ describe("applyBscTeamResolution", () => {
     const card = await getCard(t, cardId);
     expect(card!.teamOnCardIds).toEqual([existingTeamId]);
     expect(card!.teamCheckDoneAt).toBeTypeOf("number");
+    // NEO-236: a matched card carries no hint — the question is answered, and
+    // a leftover "Marketplace says: …" beside a real team reads as a
+    // disagreement rather than as history.
+    expect(card!.bscTeamName).toBeUndefined();
+  });
+
+  test("a later match CLEARS a hint left by an earlier miss", async () => {
+    const t = convexTest(schema, modules);
+    const { variantTypeId, sportId } = await seedTree(t);
+    const cardId = await insertCard(t, variantTypeId, "1", { bsc: "bsc-1" });
+
+    // First pass: no such team yet, so the string is parked as a hint.
+    await t.mutation(internal.cardChecklist.applyBscTeamResolution, {
+      cardChecklistId: cardId,
+      teamName: "New York Yankees",
+    });
+    expect((await getCard(t, cardId))!.bscTeamName).toBe("New York Yankees");
+
+    // The operator reads the hint and creates the team as Location + Name.
+    const teamId = await t.run(async (ctx) =>
+      ctx.db.insert("teams", {
+        name: "Yankees",
+        location: "New York",
+        nameNormalized: "new yankees york",
+        sportId,
+        lastUpdated: Date.now(),
+      }),
+    );
+
+    // A re-run now links it, and the hint goes with the question.
+    await t.run(async (ctx) =>
+      ctx.db.patch(cardId, { teamCheckDoneAt: undefined }),
+    );
+    await t.mutation(internal.cardChecklist.applyBscTeamResolution, {
+      cardChecklistId: cardId,
+      teamName: "New York Yankees",
+    });
+
+    const card = await getCard(t, cardId);
+    expect(card!.teamOnCardIds).toEqual([teamId]);
+    expect(card!.bscTeamName).toBeUndefined();
+  });
+
+  test("an absurdly long marketplace string is truncated, not stored whole", async () => {
+    // A third party's string reaching an admin screen. Truncated rather than
+    // refused: unlike a stored team name this is only a hint, and dropping the
+    // whole hint because it was long helps nobody.
+    const t = convexTest(schema, modules);
+    const { variantTypeId } = await seedTree(t);
+    const cardId = await insertCard(t, variantTypeId, "1", { bsc: "bsc-1" });
+
+    await t.mutation(internal.cardChecklist.applyBscTeamResolution, {
+      cardChecklistId: cardId,
+      teamName: "Y".repeat(500),
+    });
+
+    const card = await getCard(t, cardId);
+    expect(card!.bscTeamName).toHaveLength(120);
   });
 
   test("no-team-found case (empty string) only sets teamCheckDoneAt", async () => {

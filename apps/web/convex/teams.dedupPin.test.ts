@@ -316,6 +316,65 @@ describe("NEO-236: saveTeamFields owns the key, and defends it", () => {
     expect(padres!.nameNormalized).toBe(normalizeTeamName(FULL_NAME));
   });
 
+  /**
+   * NEO-236 security review — the create path's length cap applied to an edit.
+   *
+   * `findOrCreate` has refused an over-long name since NEO-208, but
+   * `saveTeamFields` did not — which made the edit form the way around it:
+   * create "Padres", then rename it to anything at all. A team name is a
+   * globally-shared string rendered on spine labels, in listing titles and in
+   * every picker, and it is what a Wikidata lookup gets pointed at.
+   */
+  test("an over-long name is refused on EDIT, not just on create", async () => {
+    const t = convexTest(schema, modules);
+    const { teamId } = await seedSplitPadres(t);
+
+    await expect(
+      t.withIdentity(ADMIN).mutation(api.teams.saveTeamFields, {
+        id: teamId,
+        name: "z".repeat(121),
+      }),
+    ).rejects.toThrow(/the limit is 120/);
+
+    const padres = await t.run(async (ctx) => ctx.db.get(teamId));
+    expect(padres!.name).toBe("Padres");
+  });
+
+  test("the cap is on the COMPOSED name — two legal halves can still be too long", async () => {
+    const t = convexTest(schema, modules);
+    const { teamId } = await seedSplitPadres(t);
+
+    // Each half is well under the cap; together with the joining space they
+    // are 121. However it was typed, that is a 121-character team.
+    await expect(
+      t.withIdentity(ADMIN).mutation(api.teams.saveTeamFields, {
+        id: teamId,
+        location: "L".repeat(60),
+        name: "N".repeat(60),
+      }),
+    ).rejects.toThrow(/121 characters; the limit is 120/);
+
+    const padres = await t.run(async (ctx) => ctx.db.get(teamId));
+    expect(padres!.location).toBe("San Diego");
+  });
+
+  test("a composed name exactly at the cap is allowed", async () => {
+    const t = convexTest(schema, modules);
+    const { teamId } = await seedSplitPadres(t);
+
+    // 59 + 1 + 60 = 120. The bound is inclusive, so this is the last legal
+    // name rather than the first illegal one.
+    await t.withIdentity(ADMIN).mutation(api.teams.saveTeamFields, {
+      id: teamId,
+      location: "L".repeat(59),
+      name: "N".repeat(60),
+    });
+
+    const padres = await t.run(async (ctx) => ctx.db.get(teamId));
+    expect(padres!.location).toHaveLength(59);
+    expect(padres!.name).toHaveLength(60);
+  });
+
   test("an empty name is still refused", async () => {
     const t = convexTest(schema, modules);
     const { teamId } = await seedSplitPadres(t);

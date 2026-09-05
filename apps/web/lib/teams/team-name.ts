@@ -95,6 +95,26 @@ function collapse(value: string): string {
  * Whitespace is collapsed in both the comparison and the returned parts, so a
  * double-spaced input cannot produce a value that fails the round-trip
  * invariant in the module docstring.
+ *
+ * ## The returned location is OUR spelling, not the caller's
+ *
+ * The comparison is case-insensitive, but the `location` that comes back is
+ * sliced out of `fullName` — the string WE already store — and never echoed
+ * from the `location` argument. That distinction is the whole safety of the
+ * operation as an in-place edit:
+ *
+ *   ("St Louis Blues", "St. Louis") → { location: "St Louis", name: "Blues" }
+ *
+ * ESPN writes "St. Louis" and our row says "St Louis"; the caller
+ * (`teams.applyEnrichmentInternal`) patches `location` and `name` from this
+ * result, so echoing the argument would silently re-punctuate a name a human
+ * may have typed. The same applies to case — "SAN DIEGO PADRES" split on
+ * "san diego" yields "SAN DIEGO", not "san diego" — which would otherwise
+ * re-case the stored name on the strength of a third party's house style.
+ *
+ * The dedup key survives either way (`normalizeTeamName` lowercases and strips
+ * punctuation), so this is not about identity. It is about the split being a
+ * REARRANGEMENT of the name we hold and nothing more.
  */
 export function splitTeamName(
   fullName: string,
@@ -110,5 +130,7 @@ export function splitTeamName(
   if (full[loc.length] !== " ") return null;
   const name = full.slice(loc.length + 1).trim();
   if (!name) return null;
-  return { location: loc, name };
+  // Both halves are sliced out of `full` — see "OUR spelling" above. The
+  // `location` argument decides WHERE to cut, never what the pieces read as.
+  return { location: full.slice(0, loc.length), name };
 }

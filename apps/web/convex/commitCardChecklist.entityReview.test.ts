@@ -1372,9 +1372,49 @@ describe("commitCardChecklist: an unresolvable team name is reported, never inve
     expect(prelude.teamIdByName).toEqual([]);
     expect(prelude.createdTeamIds).toEqual([]);
     expect(prelude.unresolvedTeamNames).toEqual(["Wichita Wind Surge"]);
+    expect(prelude.unresolvedTeamCount).toBe(1);
 
     const teams = await t.run(async (ctx) => ctx.db.query("teams").collect());
     expect(teams).toEqual([]);
+  });
+
+  /**
+   * NEO-236 security review — the unlinked list is bounded; the count is not.
+   *
+   * A first sync of a large set can leave hundreds of team names unlinked at
+   * once, and each is raw marketplace text of unbounded length — so an
+   * uncapped `unresolvedTeamNames` is an unbounded return value assembled from
+   * third-party strings. Capped at 200 with `unresolvedTeamCount` carrying the
+   * real number, the same shape `ambiguousKeys` and `staleDecisionIds` already
+   * use. The count is what the commit's log line and its "anything to review?"
+   * check read, so truncating the list cannot make work disappear.
+   */
+  test("unresolvedTeamNames is capped at 200 while unresolvedTeamCount stays true", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+
+    const teamNames = Array.from(
+      { length: 260 },
+      (_, i) => `Unknown Ballclub ${i}`,
+    );
+
+    const prelude = await asAdmin.mutation(
+      internal.selectorOptions.commitCardChecklistPrelude,
+      {
+        selectorOptionId: variantTypeId,
+        sportId,
+        playerNames: [],
+        teamNames,
+      },
+    );
+
+    expect(prelude.unresolvedTeamCount).toBe(260);
+    expect(prelude.unresolvedTeamNames).toHaveLength(200);
+    // A real sample, not one name repeated.
+    expect(new Set(prelude.unresolvedTeamNames).size).toBe(200);
+    // And still nothing created — the cap is about the REPORT, not the rule.
+    expect(await t.run(async (ctx) => ctx.db.query("teams").collect())).toEqual([]);
   });
 
   test("a 'create' decision with NO operator Location + Name creates nothing", async () => {
