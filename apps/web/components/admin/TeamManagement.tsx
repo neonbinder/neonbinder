@@ -231,6 +231,10 @@ function TeamDetail({
    */
   const previewId = useId();
   const errorId = useId();
+  // NEO-236: the Location/Name rule, described by BOTH fields rather than sat
+  // silently beside them — the split is only obvious once you have been told
+  // what counts as a location.
+  const helpId = useId();
 
   // Re-seed on selection change. Keyed on _id so editing a field does not
   // clobber itself; this is React's documented "adjust state when props
@@ -260,7 +264,7 @@ function TeamDetail({
   const fullName = teamFullName(team);
   const draftFullName = teamFullName({ name, location });
   const describedBy =
-    [name.trim() ? previewId : null, saveError ? errorId : null]
+    [helpId, name.trim() ? previewId : null, saveError ? errorId : null]
       .filter(Boolean)
       .join(" ") || undefined;
 
@@ -461,8 +465,11 @@ function TeamDetail({
           "Location", not "City": the leading part of a franchise name is a
           place and not reliably a city — Tampa Bay, New England, Golden State
           — and labelling the field "City" was what made operators leave it
-          blank for those teams. It is optional, and legitimately empty for
-          colleges, national sides and corporate-named clubs.
+          blank for those teams. Location is wherever the team is FROM, which
+          includes a school: "Wisconsin" / "Badgers", "San Diego State" /
+          "Aztecs". It is empty only when the name carries no place at all
+          ("Athletics", "Liverpool", "Orix Buffaloes"), which is why the rule
+          is printed under the two boxes rather than left to be guessed.
         */}
         <Input
           label="Location"
@@ -491,6 +498,17 @@ function TeamDetail({
             setSaveError(null);
           }}
         />
+
+        {/* Examples deliberately avoid a plain city pair: a city is the case
+            operators already get right. A state and a bay teach the two they
+            do not, and the last clause names the only reason to leave Location
+            empty. Kept clear of the literal "San Diego" — that string is how
+            the E2E flow finds this screen's empty Location box. */}
+        <p id={helpId} className="sm:col-span-2 -mt-1 text-xs text-slate-400">
+          Location is where they&rsquo;re from &mdash; city, state, region or
+          school. Wisconsin / Badgers, Tampa Bay / Buccaneers. Leave it blank
+          only if the name has no place in it, like Athletics.
+        </p>
 
         {name.trim() && (
           <p id={previewId} className="sm:col-span-2 -mt-1 text-xs text-slate-400">

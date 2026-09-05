@@ -6,9 +6,16 @@
  *
  * The leading part of a franchise name is a *place*, not reliably a city.
  * "Tampa Bay" is a bay, "New England" is a region, "Golden State" is a
- * state-ish nickname, "Carolina" is two states, and college and national
- * sides ("Aztecs", "Nippon-Ham Fighters") carry none at all. Calling the
- * field `city` invited exactly the wrong validation and the wrong UI label.
+ * state-ish nickname, "Carolina" is two states, and a college side is named
+ * for its school ("Wisconsin" / "Badgers", "San Diego State" / "Aztecs").
+ * Calling the field `city` invited exactly the wrong validation, the wrong UI
+ * label, and — worse — invited operators to leave the field EMPTY for every
+ * team whose place is not a city.
+ *
+ * Location is wherever the team is FROM: a city, a state, a region or a
+ * school. It is empty only when the name carries no place at all — the
+ * place IS the name ("Liverpool"), or there is none ("Athletics", the
+ * corporate-named "Orix Buffaloes").
  *
  * ## The invariant this module exists to protect
  *
@@ -88,9 +95,11 @@ function collapse(value: string): string {
  * string sit at the front of that one", nothing more. `("San Diego State
  * Aztecs baseball", "San Diego")` → `{ location: "San Diego", name: "State
  * Aztecs baseball" }` is the CORRECT result of that question even though a
- * human would not split a college side that way. Deciding whether a split
- * should be applied is the caller's job — for the backfill that means an
- * operator confirming it, never this function deciding on its own.
+ * human splitting that row would say Location "San Diego State", Name "Aztecs
+ * baseball" — the school is the location, and the sport suffix stays with the
+ * name. Deciding whether a split should be applied is the caller's job — for
+ * the backfill that means an operator confirming it, never this function
+ * deciding on its own.
  *
  * Whitespace is collapsed in both the comparison and the returned parts, so a
  * double-spaced input cannot produce a value that fails the round-trip

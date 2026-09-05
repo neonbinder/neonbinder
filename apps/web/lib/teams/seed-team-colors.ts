@@ -51,11 +51,34 @@ export interface SeedTeam {
    *
    * Split by hand, row by row, rather than derived: this is NeonBinder's own
    * reference data and a heuristic would get it wrong in both directions.
-   * "Real Salt Lake" has no location part ("Real" is the club's name), while
-   * "New England Patriots" and "Golden State Warriors" have two-word ones that
-   * no first-token rule finds. The English clubs carry none at all — Liverpool
-   * FC is not "the Liverpool FC of Liverpool" — which is the same shape a
-   * college side or a Japanese corporate club has.
+   * "New England Patriots" and "Golden State Warriors" have two-word places no
+   * first-token rule finds, and so do "Brighton & Hove Albion" and "West
+   * Bromwich Albion".
+   *
+   * ## The rule these rows were split by
+   *
+   * Location is wherever the club is FROM — city, state, region or school —
+   * so SPLIT whenever the name opens with the place and something follows it,
+   * whether that something is a nickname ("Manchester" / "United",
+   * "Tottenham" / "Hotspur") or a club-type word ("Toronto" / "FC", "Orlando
+   * City" / "SC", "Leicester" / "City").
+   *
+   * KEEP WHOLE only where splitting would REORDER or INVENT:
+   *
+   *  - the club word leads — "FC Dallas", "AFC Bournemouth", "Sporting Kansas
+   *    City". The place is in there, but not at the front, and moving it would
+   *    rewrite the name rather than split it.
+   *  - the club's own name leads — "Real Salt Lake" ("Real" is the club, not a
+   *    place).
+   *  - the place IS the whole name, with no nickname left over — "Liverpool",
+   *    "Arsenal", "Everton", "Chelsea", "Burnley", "Watford", "Southampton",
+   *    "Crystal Palace".
+   *  - the name carries no place at all — a Japanese corporate club ("Orix
+   *    Buffaloes"), or a franchise that has dropped its city ("Athletics").
+   *
+   * A college side is NOT in that last group: its school is its location
+   * ("San Diego State" / "Aztecs"). The dataset carries no NCAA rows, but the
+   * rule is the same one operators apply on /admin/teams.
    *
    * Compose the display name with `teamFullName` (lib/teams/team-name.ts);
    * nothing here should concatenate the two by hand.
@@ -136,24 +159,24 @@ export const RENAMED_FRANCHISES: Record<string, TeamNameParts> = {
 export const SEED_TEAMS: SeedTeam[] = [
   { name: "AFC Bournemouth", league: "epl", hex: ["#e62333", "#000000"] },
   { name: "Arsenal", league: "epl", hex: ["#ef0107", "#023474", "#9c824a"] },
-  { name: "Brighton & Hove Albion", league: "epl", hex: ["#0055a9", "#f8bc1b"] },
+  { location: "Brighton & Hove", name: "Albion", league: "epl", hex: ["#0055a9", "#f8bc1b"] },
   { name: "Burnley", league: "epl", hex: ["#8ccce5", "#53162f", "#f9ec34"] },
   { name: "Chelsea", league: "epl", hex: ["#034694", "#dba111", "#ed1c24"] },
   { name: "Crystal Palace", league: "epl", hex: ["#1b458f", "#c4122e", "#a7a5a6"] },
   { name: "Everton", league: "epl", hex: ["#274488"] },
-  { name: "Huddersfield Town", league: "epl", hex: ["#0073d2"] },
-  { name: "Leicester City", league: "epl", hex: ["#fdbe11", "#0053a0"] },
+  { location: "Huddersfield", name: "Town", league: "epl", hex: ["#0073d2"] },
+  { location: "Leicester", name: "City", league: "epl", hex: ["#fdbe11", "#0053a0"] },
   { name: "Liverpool", league: "epl", hex: ["#00a398", "#d00027", "#fef667"] },
-  { name: "Manchester City", league: "epl", hex: ["#98c5e9", "#00285e", "#f4bc46"] },
-  { name: "Manchester United", league: "epl", hex: ["#da020e", "#ffe500", "#000000"] },
-  { name: "Newcastle United", league: "epl", hex: ["#241f20", "#00b8f4", "#c3a572"] },
+  { location: "Manchester", name: "City", league: "epl", hex: ["#98c5e9", "#00285e", "#f4bc46"] },
+  { location: "Manchester", name: "United", league: "epl", hex: ["#da020e", "#ffe500", "#000000"] },
+  { location: "Newcastle", name: "United", league: "epl", hex: ["#241f20", "#00b8f4", "#c3a572"] },
   { name: "Southampton", league: "epl", hex: ["#ed1a3b", "#211e1f", "#ffc20e"] },
-  { name: "Stoke City", league: "epl", hex: ["#e03a3e", "#1b449c"] },
-  { name: "Swansea City", league: "epl", hex: ["#000000"] },
-  { name: "Tottenham Hotspur", league: "epl", hex: ["#001c58"] },
+  { location: "Stoke", name: "City", league: "epl", hex: ["#e03a3e", "#1b449c"] },
+  { location: "Swansea", name: "City", league: "epl", hex: ["#000000"] },
+  { location: "Tottenham", name: "Hotspur", league: "epl", hex: ["#001c58"] },
   { name: "Watford", league: "epl", hex: ["#fbee23", "#ed2127", "#000000"] },
-  { name: "West Bromwich Albion", league: "epl", hex: ["#091453"] },
-  { name: "West Ham United", league: "epl", hex: ["#60223b", "#f7c240", "#5299c6"] },
+  { location: "West Bromwich", name: "Albion", league: "epl", hex: ["#091453"] },
+  { location: "West Ham", name: "United", league: "epl", hex: ["#60223b", "#f7c240", "#5299c6"] },
   { location: "Arizona", name: "Diamondbacks", league: "mlb", hex: ["#a71930", "#000000", "#e3d4ad"] },
   { location: "Atlanta", name: "Braves", league: "mlb", hex: ["#ce1141", "#13274f"] },
   { location: "Baltimore", name: "Orioles", league: "mlb", hex: ["#df4601", "#000000"] },
@@ -188,23 +211,23 @@ export const SEED_TEAMS: SeedTeam[] = [
   { location: "Chicago", name: "Fire", league: "mls", hex: ["#af2626", "#0a174a", "#8a8d8f"] },
   { location: "Colorado", name: "Rapids", league: "mls", hex: ["#91022d", "#85b7ea", "#8a8d8f", "#313f49"] },
   { location: "Columbus", name: "Crew", league: "mls", hex: ["#000000", "#ffdb00", "#8a8d8f"] },
-  { name: "DC United", league: "mls", hex: ["#000000", "#dd0000"] },
+  { location: "DC", name: "United", league: "mls", hex: ["#000000", "#dd0000"] },
   { name: "FC Dallas", league: "mls", hex: ["#cf0032", "#07175c", "#8a8d8f"] },
   { location: "Houston", name: "Dynamo", league: "mls", hex: ["#f36600", "#2e2926", "#85b7ea"] },
   { location: "LA", name: "Galaxy", league: "mls", hex: ["#00245d", "#004689", "#f1aa00", "#ffd200"] },
   { location: "Minnesota", name: "United FC", league: "mls", hex: ["#cfd4d8", "#6caddf", "#000000"] },
   { location: "Montreal", name: "Impact", league: "mls", hex: ["#122089", "#000000", "#7a878f"] },
   { location: "New England", name: "Revolution", league: "mls", hex: ["#0a2141", "#d80016", "#8a8d8f"] },
-  { name: "New York City FC", league: "mls", hex: ["#6caddf", "#00285e", "#fd4f00"] },
+  { location: "New York City", name: "FC", league: "mls", hex: ["#6caddf", "#00285e", "#fd4f00"] },
   { location: "New York", name: "Red Bulls", league: "mls", hex: ["#d50031", "#012055", "#ffc800", "#8a8d8f"] },
-  { name: "Orlando City SC", league: "mls", hex: ["#633492", "#fde192"] },
+  { location: "Orlando City", name: "SC", league: "mls", hex: ["#633492", "#fde192"] },
   { location: "Philadelphia", name: "Union", league: "mls", hex: ["#002d55", "#5090cd", "#b38707", "#b49759", "#f4f4f4"] },
   { location: "Portland", name: "Timbers", league: "mls", hex: ["#004812", "#ebe72b"] },
   { name: "Real Salt Lake", league: "mls", hex: ["#a50531", "#013474", "#f2d11a"] },
   { location: "San Jose", name: "Earthquakes", league: "mls", hex: ["#0051ba", "#000000", "#b1b4b2"] },
   { location: "Seattle", name: "Sounders FC", league: "mls", hex: ["#4f8a10", "#11568c", "#212930"] },
   { name: "Sporting Kansas City", league: "mls", hex: ["#91b0d5", "#002b5c", "#9fa1a4"] },
-  { name: "Toronto FC", league: "mls", hex: ["#d80016", "#313f49", "#a1aaad"] },
+  { location: "Toronto", name: "FC", league: "mls", hex: ["#d80016", "#313f49", "#a1aaad"] },
   { location: "Vancouver", name: "Whitecaps FC", league: "mls", hex: ["#12264c", "#85b7ea", "#838383"] },
   { location: "Atlanta", name: "Hawks", league: "nba", hex: ["#e03a3e", "#c1d32f", "#26282a"] },
   { location: "Boston", name: "Celtics", league: "nba", hex: ["#007a33", "#ba9653", "#963821"] },

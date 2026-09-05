@@ -260,6 +260,65 @@ export async function findOrCreateLeague(
 }
 
 /**
+ * NEO-236 — the league THE OPERATOR chose for a team they are creating, or
+ * undefined when they chose nothing.
+ *
+ * This is the counterpart to {@link resolveDefaultLeagueId}, and the difference
+ * between the two is the whole point of the New Team step. The default resolver
+ * answers "what league does this sport's top flight use", which is the right
+ * answer for a team that arrived with no context and the WRONG one for a team
+ * pulled off a player's career list: Travis Bazzana's "Sydney Blue Sox" are not
+ * in Major League Baseball, and attaching the sport default to them is how a
+ * club side ends up filed under MLB with nobody having said so.
+ *
+ * Two ways to answer, and they are ordered by how much is already known:
+ *
+ *  - `leagueId` — the operator picked an existing row. Validated against the
+ *    SPORT before it is trusted: the validator proves the id is in `leagues`,
+ *    not that it belongs to this team's sport, and a cross-sport league on a
+ *    team is a row no per-sport query can explain.
+ *  - `leagueName` — the operator accepted a suggestion for a league we do not
+ *    hold yet (a Wikidata P118 label, typically). `findOrCreateLeague` applies
+ *    the same name-or-alias dedup every other writer does, so "ABL" lands on
+ *    the Australian Baseball League if we already know it under that name.
+ *
+ * Returning undefined means "the operator did not choose" — NOT "no league".
+ * The caller decides what that means for it; `teams.findOrCreate` falls back to
+ * the sport default there, and only there.
+ */
+export async function resolveOperatorLeagueId(
+  ctx: MutationCtx,
+  args: {
+    sportId: Id<"selectorOptions">;
+    leagueId?: Id<"leagues">;
+    leagueName?: string;
+  },
+): Promise<Id<"leagues"> | undefined> {
+  if (args.leagueId) {
+    const row = await ctx.db.get(args.leagueId);
+    // Refused rather than ignored: an operator who picked a league and got a
+    // team without one would have no way to tell, and the row would be wrong
+    // in a way only a later audit finds.
+    if (!row) throw new ConvexError("That league no longer exists.");
+    if (row.sportId !== args.sportId) {
+      // The league's own name is safe to name here — it is reference data the
+      // operator just picked off a list, not typed content.
+      throw new ConvexError(`${row.name} is a league in another sport.`);
+    }
+    return row._id;
+  }
+  const typed = args.leagueName?.trim();
+  if (!typed) return undefined;
+  // Same bounds as every other operator-typed league name — this one arrives
+  // from a "Create league X" button whose X is a Wikidata label, so it is text
+  // nobody on our side vetted.
+  return await findOrCreateLeague(ctx, {
+    name: requireValidLeagueName(typed),
+    sportId: args.sportId,
+  });
+}
+
+/**
  * The league a newly-created team in this sport belongs to, creating the row
  * on first use.
  *

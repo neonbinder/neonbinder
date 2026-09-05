@@ -194,9 +194,12 @@ const MAX_CAREER_TEAM_CREATES = 64;
 /**
  * NEO-236: normalize one Location + Name, or answer "this is not usable".
  *
- * Trims both and drops an empty location — a blank Location is "this team has
- * none", a real answer for a college or a national side, not an unfinished
- * form. The length bound is on the COMPOSED name, because that is what lands
+ * Trims both and drops an empty location — a blank Location is "this name
+ * carries no place at all" ("Athletics", "Orix Buffaloes"), a real answer
+ * rather than an unfinished form. A college side is NOT one of those: its
+ * school is its location ("San Diego State" / "Aztecs").
+ *
+ * The length bound is on the COMPOSED name, because that is what lands
  * in `teams.name` + `teams.location` and what `teams.findOrCreate` measures.
  *
  * ## Why this returns null instead of throwing
@@ -988,9 +991,11 @@ async function decideAllRemaining(
     // the raw string. The bulk path has no per-row form to read that from, so
     // it writes exactly what the wizard would have PRE-FILLED for this row and
     // the operator would have confirmed unedited: the ESPN location split off
-    // the front when it is a whole-word prefix, otherwise the whole name with
-    // no location. Nothing is guessed — `splitTeamName` is mechanical and only
-    // fires on a location the lookup actually returned.
+    // the front when it is a whole-word prefix, otherwise the whole name and
+    // an empty Location — an UNSPLIT row for an operator to split on
+    // /admin/teams, never a claim that the team has no place. Nothing is
+    // guessed — `splitTeamName` is mechanical and only fires on a location the
+    // lookup actually returned.
     //
     // The two tickets compose well here: because NEO-221 holds pending rows
     // back from the create path, every team row this branch pre-fills has its

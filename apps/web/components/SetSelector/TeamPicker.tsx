@@ -144,6 +144,10 @@ export default function TeamPicker({
   const [createLocation, setCreateLocation] = useState("");
   const [createName, setCreateName] = useState<string | null>(null);
   const previewId = useId();
+  // NEO-236: the "city, state, region or school" hint under the Location box.
+  // Described by the Location field only — the hint is about that field, and
+  // the Name field and the create button already point at the preview.
+  const locationHintId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -349,9 +353,9 @@ export default function TeamPicker({
     try {
       if (!sportId) return;
       // `location` is omitted rather than sent empty: the server models "no
-      // location" as an absent optional (colleges, national sides, Orix
-      // Buffaloes), and an empty string would be a third state meaning the
-      // same thing.
+      // location" as an absent optional — for the handful of names that carry
+      // no place at all ("Athletics", "Liverpool", "Orix Buffaloes") — and an
+      // empty string would be a third state meaning the same thing.
       const id = await findOrCreate({
         name,
         sportId,
@@ -669,7 +673,7 @@ export default function TeamPicker({
                     // label is "Location (optional)", so the accessible name
                     // has to contain that whole string, "(optional)" included.
                     aria-label="New team location (optional)"
-                    aria-describedby={previewId}
+                    aria-describedby={`${locationHintId} ${previewId}`}
                     placeholder="San Diego"
                     onChange={(e) => {
                       setCreateError(null);
@@ -679,6 +683,19 @@ export default function TeamPicker({
                     className="w-full p-1.5 text-sm"
                   />
                 </label>
+                {/* NEO-236 — the rule, kept to ONE line on purpose. This
+                    popover is `w-64` and already 261px tall at 1024x629; the
+                    flows that tap its "+ Create team" row measure that height
+                    (see checklist-attention-walker-missing-team.yaml), so the
+                    hint says the part operators get wrong — a location is not
+                    only a city — and leaves "when to leave it blank" to the
+                    "(optional)" in the label above it. */}
+                <p
+                  id={locationHintId}
+                  className="px-0.5 text-[11px] text-gray-600 dark:text-gray-400"
+                >
+                  City, state, region or school.
+                </p>
                 <label className="block space-y-0.5">
                   <span className="block text-[11px] text-gray-600 dark:text-gray-400">
                     Team name

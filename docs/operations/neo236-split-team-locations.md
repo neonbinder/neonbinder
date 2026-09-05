@@ -219,7 +219,7 @@ The counts sum to `scanned`; every row lands in exactly one bucket.
 |---|---|---|
 | `split_espn` | Patched. ESPN named the place part and it was a whole-word prefix. | Nothing. |
 | `skipped_already_split` | The row already carries a `location`. | Nothing — this is what makes a re-run a no-op. |
-| `skipped_no_source` | No ESPN team in that sport shares this row's dedup key: colleges, NPB/KBO, minor-league affiliates, E2E leftovers, defunct franchises. Listed in `noSource`. | Split by hand (§6), or leave whole if it has no location. |
+| `skipped_no_source` | No ESPN team in that sport shares this row's dedup key: colleges, NPB/KBO, minor-league affiliates, E2E leftovers, defunct franchises. Listed in `noSource`. **This is a gap in ESPN's league lists, not a statement that the row has no location** — ESPN does not carry college or NPB sides at all. | Split by hand (§6). |
 | `skipped_not_prefix` | ESPN matched the team but its `location` does not sit at the front of our name as whole words, under either test in §1 — "Los Angeles" against a row reading "LA Angels", or "New York" against "Yankees, New York". Listed in `notPrefix` with ESPN's answer beside it. A pure punctuation difference does **not** land here. | Split by hand. Forcing it would be a rename, not a split. |
 | `skipped_key_mismatch` | The row's stored `nameNormalized` is not what its own name normalises to — a hand-written or pre-`teamRowFields` key. Listed in `keyMismatch`. | Look at it. Re-deriving the key here would silently repoint every card that resolves through that team, so the task will not do it. |
 
@@ -241,9 +241,32 @@ Split them on **`/admin/teams`**: pick the team, move the place part out of
 full name and refuses if another team already owns it, so a bad split is caught
 at save time rather than discovered as a duplicate later.
 
-Leave a row whole when it genuinely has no location — colleges ("San Diego
-State Aztecs"), national sides, and corporate-named clubs ("Orix Buffaloes")
-carry none, and inventing one is exactly what this task exists not to do.
+**Location is wherever the team is from — a city, a state, a region or a
+school.** That is the whole rule, and it is the same one the form prints under
+the two boxes:
+
+| Whole row | Location | Name |
+|---|---|---|
+| San Diego State Aztecs men's basketball | `San Diego State` | `Aztecs men's basketball` |
+| Wisconsin Badgers baseball | `Wisconsin` | `Badgers baseball` |
+| Golden State Warriors | `Golden State` | `Warriors` |
+| Tampa Bay Buccaneers | `Tampa Bay` | `Buccaneers` |
+
+A college row's location is its **school**, not the city the school sits in:
+"San Diego State", not "San Diego". **The sport suffix stays with the Name** —
+`Aztecs men's basketball`, not a third field and not dropped. It is part of how
+the row is told apart from the school's other sides, and moving or deleting it
+would rename the team. Split it differently if you prefer (`Aztecs` with the
+suffix cut, say) only when you actually mean to rename the row, and expect the
+save to refuse if that collides with another team in the sport.
+
+Leave a row whole ONLY when its name has no place in it: the place *is* the
+name with no nickname after it ("Liverpool"), the club word leads ("FC
+Dallas", "Sporting Kansas City"), the club's own name leads ("Real Salt
+Lake"), or there is no place at all ("Athletics", the corporate-named "Orix
+Buffaloes", most national sides under a bare country nickname). Inventing a
+location, or reordering a name to manufacture one, is exactly what this task
+exists not to do.
 
 ---
 

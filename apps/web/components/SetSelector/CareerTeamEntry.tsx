@@ -31,9 +31,11 @@ import { Input } from "../primitives/Input";
  * a career team the commit has to CREATE lands as a properly split row instead
  * of one whose whole name sits in `name`.
  *
- * Location stays optional and blank by default: a college side, a national
- * team or "Orix Buffaloes" has none, and a blank Location is a real answer
- * rather than an unfinished form. Picking a suggestion fills Name with the
+ * Location stays optional and blank by default: nothing here guesses where a
+ * place ends and a nickname begins. Blank is the FINAL answer only for a name
+ * that carries no place at all ("Athletics", "Orix Buffaloes") — for everyone
+ * else it is where the team is from, school included ("San Diego State" /
+ * "Aztecs"), and the operator says so. Picking a suggestion fills Name with the
  * whole existing name and clears Location — the composed string then matches
  * that row exactly, so commit LINKS to it and creates nothing.
  *

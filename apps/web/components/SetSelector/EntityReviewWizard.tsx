@@ -163,9 +163,11 @@ type TeamCreateDraft = { location: string; name: string };
  * returned, and only when `splitTeamName` finds it as a whole-word prefix of
  * the reviewed name: "San Diego" off "San Diego Padres" splits, "Anaheim" off
  * "Los Angeles Angels" does not, and neither does "Sa". Everything else starts
- * with a blank Location and the whole reviewed name in Name, which is exactly
- * how a location-less row (a college side, "Orix Buffaloes") should be created
- * and is byte-for-byte how these rows were created before the split existed.
+ * with a blank Location and the whole reviewed name in Name — byte-for-byte
+ * how these rows were created before the split existed, and the operator's cue
+ * to split it themselves. A blank Location is the FINAL answer only for a name
+ * that carries no place at all ("Athletics", "Orix Buffaloes"); a college
+ * side's location is its school ("San Diego State" / "Aztecs").
  *
  * There is no first-token heuristic here and there must never be one: NB has
  * no code path that guesses a location without a source. The operator is the
@@ -617,7 +619,8 @@ export default function EntityReviewWizard({
     [careerTeamCreateByRow, current],
   );
 
-  /** Untouched labels read their default: the label itself, no location. */
+  /** Untouched labels read their default: the label itself, Location empty —
+   *  an unsplit pair for the operator to split, not a claim of no place. */
   const careerCreateFor = (label: string): TeamCreateDraft =>
     careerCreates[label] ?? { location: "", name: label };
 
@@ -1890,6 +1893,18 @@ export default function EntityReviewWizard({
                                 />
                               </div>
                             </div>
+                            {/* NEO-236 — the rule, in the one place a team is
+                                actually born from a marketplace string. The
+                                checklist label arrives whole ("San Diego State
+                                Aztecs"), so the operator's job here is to say
+                                which half is the place; "city" is the reading
+                                that makes them leave it blank for a school. */}
+                            <p className="text-xs text-gray-500">
+                              Location is where they&rsquo;re from &mdash; city,
+                              state, region or school. Wisconsin / Badgers, San
+                              Diego State / Aztecs. Leave it blank only if the
+                              name has no place in it.
+                            </p>
                             {/* The composed name, so the operator never has to
                                 imagine what the two fields add up to. gray-400 for
                                 contrast — see the note on the per-chip tag. */}

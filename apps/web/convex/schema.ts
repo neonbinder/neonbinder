@@ -1046,9 +1046,11 @@ export default defineSchema({
     // carrying it and no `leagueId`.
     league: v.optional(v.string()),
     // NEO-236: the place part of the franchise name — "San Diego" in "San
-    // Diego Padres". Location, not city: Tampa Bay, New England, Golden State;
-    // optional — colleges, national teams and corporate-named clubs carry
-    // none. `name` holds only the nickname once a row is split, and
+    // Diego Padres". Location, not city: wherever the team is FROM, so a bay
+    // (Tampa Bay), a region (New England), a state (Wisconsin / Badgers) and a
+    // school (San Diego State / Aztecs) all belong here. Optional, and empty
+    // only when the name carries no place at all — "Athletics", "Liverpool",
+    // "Orix Buffaloes". `name` holds only the nickname once a row is split, and
     // `nameNormalized` keeps the WHOLE name (see lib/teams/team-name.ts):
     // because `normalizeTeamName` token-sorts, splitting a row cannot change
     // its dedup key, which is what lets the split roll out a row at a time.
@@ -1260,9 +1262,10 @@ export default defineSchema({
         //
         // Optional because every row written before NEO-236 predates the
         // field, and because it is meaningless on a player-kind decision.
-        // `location` is separately optional: colleges, national sides and
-        // corporate-named clubs ("Orix Buffaloes") have none, and a blank
-        // Location is a real answer rather than an unfinished form.
+        // `location` is separately optional: a handful of names carry no
+        // place at all ("Athletics", "Orix Buffaloes"), and for those a blank
+        // Location is a real answer rather than an unfinished form. A college
+        // side is not one of those — its school is its location.
         create: v.optional(v.object({
           location: v.optional(v.string()),
           name: v.string(),

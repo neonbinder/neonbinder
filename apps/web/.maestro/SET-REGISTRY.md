@@ -405,7 +405,9 @@ optional and `name` ("Padres") is the nickname; the name the product shows
 everywhere except the two admin master rows is the two composed. A prefix in
 the table below is a NAME, and every flow here leaves Location EMPTY, so the
 full name and the short name are the same string and every existing matcher is
-unchanged. **`admin/team-management-edit-a-team.yaml` is the one exception**:
+unchanged. That is a fixture convenience, not the product rule: Location is
+wherever a real team is from — city, state, region or school — and only a name
+with no place in it ("Athletics", "Liverpool") is meant to ship blank. **`admin/team-management-edit-a-team.yaml` is the one exception**:
 it types `Loc${WORKER_INDEX}` into the Location box, so from the moment it
 saves, its team answers to `Loc<w> TMT-<w>-<attempt>` (heading, picker option,
 chip, `Saved …` line, master-row `aria-label`) while the master row still

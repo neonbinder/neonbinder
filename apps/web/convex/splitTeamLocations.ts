@@ -38,8 +38,9 @@
  *
  * Jason, 2026-09-05: no code path may invent a location. A first-token
  * heuristic would turn "Nippon-Ham Fighters" into ("Nippon-Ham", "Fighters")
- * and "San Diego State Aztecs men's basketball" into a college side located in
- * San Diego — both wrong, both unreviewable once written. So the split is
+ * and "San Diego State Aztecs men's basketball" into a team located in "San
+ * Diego" when its location is the whole school, "San Diego State" — both
+ * wrong, both unreviewable once written. So the split is
  * applied only where ESPN's own per-league team list names a team whose
  * display name is *the same team* (identical dedup key) and whose `location`
  * corresponds to a leading run of whole words in the row's name — either
@@ -219,8 +220,11 @@ type Outcome =
   /**
    * No ESPN team in this row's sport shares its dedup key: colleges, NPB/KBO,
    * minor-league affiliates, E2E leftovers, and every row in a sport with no
-   * `sportConfig.espn` or whose league list did not come back. Listed by name
-   * so an operator can split it by hand.
+   * `sportConfig.espn` or whose league list did not come back. This says
+   * NOTHING about whether the row has a location — ESPN's league lists simply
+   * do not carry college or NPB sides, and a college side's location is its
+   * school ("San Diego State" / "Aztecs"). Listed by name so an operator can
+   * split it by hand.
    */
   | "skipped_no_source"
   /**

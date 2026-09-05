@@ -3,7 +3,12 @@ import { internal } from "./_generated/api";
 import { ConvexError, v } from "convex/values";
 import type { Id } from "./_generated/dataModel";
 import { getCurrentUserId, requireAdmin, requireSignedIn } from "./auth";
-import { findOrCreateLeague, resolveDefaultLeagueId } from "./leagues";
+import {
+  findOrCreateLeague,
+  resolveDefaultLeagueId,
+  // NEO-236: the operator's own league choice, which outranks the sport default.
+  resolveOperatorLeagueId,
+} from "./leagues";
 import { normalizePlayerName } from "./players";
 import { MANUAL_COLOR_SOURCE_URL } from "./teamColorSources";
 import { longestToken, nameTokens, rankTeamCandidates } from "./lib/entityNearMatch";
@@ -53,8 +58,11 @@ const teamDocValidator = v.object({
   leagueId: v.optional(v.id("leagues")),
   league: v.optional(v.string()),
   // NEO-236: the place part of the franchise name — "San Diego" in "San Diego
-  // Padres". Location, not city (Tampa Bay, New England, Golden State), and
-  // optional: colleges, national teams and corporate-named clubs carry none.
+  // Padres". Location, not city: it is wherever the team is FROM, so a bay
+  // (Tampa Bay), a region (New England), a state (Wisconsin / Badgers) and a
+  // school (San Diego State / Aztecs) all belong here. Optional, and empty
+  // only when the name carries no place at all — "Athletics", "Liverpool",
+  // "Orix Buffaloes".
   // `nameNormalized` always keys the WHOLE name; see lib/teams/team-name.ts.
   location: v.optional(v.string()),
   yearsActive: v.optional(v.object({
@@ -117,8 +125,10 @@ const MAX_TEAM_NAME_LENGTH = 120;
  * Jason, 2026-09-05: "We simply shouldn't allow for full string creation.
  * Location & Team Name should be the input." Both operator creation surfaces
  * (TeamPicker's "+ Create", MissingTeamFixer) collect the two parts and pass
- * them separately; `location` is optional because colleges, national sides and
- * corporate-named clubs genuinely have none.
+ * them separately; `location` is optional because a handful of names carry no
+ * place at all ("Athletics", "Liverpool", "Orix Buffaloes"). A college side is
+ * NOT one of those — its school is its location ("San Diego State" /
+ * "Aztecs").
  *
  * `name` alone still resolves an EXISTING row correctly whatever the caller
  * splits it as, because the lookup key is derived from the composed full name
@@ -130,6 +140,22 @@ export const findOrCreate = mutation({
     name: v.string(),
     location: v.optional(v.string()),
     sportId: v.id("selectorOptions"),
+    /**
+     * NEO-236 — the league the operator chose in the New Team dialog, if any.
+     *
+     * At most one of the two is meaningful: `leagueId` picks a row that exists,
+     * `leagueName` accepts a suggestion for one that does not yet (created
+     * through `findOrCreateLeague`, so it dedupes by name-or-alias like every
+     * other league writer). Both optional, because the pickers that create a
+     * team without ever showing a league still exist and still work.
+     *
+     * When either is given it WINS: the sport default is never applied over an
+     * operator's answer. That is the defect this argument exists to close — a
+     * college or club side created off a player's career list used to be filed
+     * under the sport's top flight because nothing else was on offer.
+     */
+    leagueId: v.optional(v.id("leagues")),
+    leagueName: v.optional(v.string()),
   },
   returns: v.id("teams"),
   handler: async (ctx, args): Promise<Id<"teams">> => {
@@ -181,16 +207,32 @@ export const findOrCreate = mutation({
     }
 
     const existing = await findTeamByFullName(ctx, args.sportId, fullName);
-    // NOT enqueued — see the creation-only note on the insert below.
+    // NOT enqueued — see the creation-only note on the insert below. A league
+    // the operator picked is deliberately NOT applied to a found row either:
+    // this mutation's contract is find-or-create, and re-filing an existing
+    // team is Team Management's job, done deliberately and with a screen in
+    // front of it.
     if (existing) return existing._id;
+
+    /**
+     * NEO-236 — the operator's league, or the sport's default when they gave
+     * none. The order is the whole fix: `resolveDefaultLeagueId` is consulted
+     * ONLY when nothing was chosen, so a New Team dialog that says "Australian
+     * Baseball League" can no longer be silently overruled by "MLB".
+     */
+    const operatorLeagueId = await resolveOperatorLeagueId(ctx, {
+      sportId: args.sportId,
+      leagueId: args.leagueId,
+      leagueName: args.leagueName,
+    });
 
     const id = await ctx.db.insert("teams", {
       ...teamRowFields({ name, location: args.location }),
       sportId: args.sportId,
       // NEO-156: every creation path attaches a league. Undefined when the
-      // sport has no configured one (a custom sport) — legitimate, and
-      // assignable later in Team Management.
-      leagueId: await resolveDefaultLeagueId(ctx, args.sportId),
+      // sport has no configured one (a custom sport) AND the operator named
+      // none — legitimate, and assignable later in Team Management.
+      leagueId: operatorLeagueId ?? (await resolveDefaultLeagueId(ctx, args.sportId)),
       lastUpdated: Date.now(),
     });
 
@@ -699,8 +741,8 @@ export const saveTeamFields = mutation({
       patch.name = fields.name;
       patch.nameNormalized = fields.nameNormalized;
       // `undefined` here is the CLEAR: `args.location === null` means the
-      // operator emptied the field, and a team with no location is a normal
-      // team (a college, a national side), not a broken one.
+      // operator emptied the field, and a team whose name carries no place
+      // ("Athletics", "Liverpool") is a normal team, not a broken one.
       patch.location = fields.location;
     }
     if (args.leagueId !== undefined) {
