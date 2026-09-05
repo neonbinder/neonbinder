@@ -79,6 +79,7 @@ import type * as setReconciliation from "../setReconciliation.js";
 import type * as shipmentTracking from "../shipmentTracking.js";
 import type * as shipping from "../shipping.js";
 import type * as sku from "../sku.js";
+import type * as splitTeamLocations from "../splitTeamLocations.js";
 import type * as sportConfig from "../sportConfig.js";
 import type * as teamColorSources from "../teamColorSources.js";
 import type * as teams from "../teams.js";
@@ -164,6 +165,7 @@ declare const fullApi: ApiFromModules<{
   shipmentTracking: typeof shipmentTracking;
   shipping: typeof shipping;
   sku: typeof sku;
+  splitTeamLocations: typeof splitTeamLocations;
   sportConfig: typeof sportConfig;
   teamColorSources: typeof teamColorSources;
   teams: typeof teams;
