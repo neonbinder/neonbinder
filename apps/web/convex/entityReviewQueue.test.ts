@@ -1891,7 +1891,7 @@ describe("recordDecision — NEO-236 team create payload", () => {
     });
   });
 
-  test("refuses a blank name — it composes to nothing and can create nothing", async () => {
+  test("refuses a blank name with a readable message the operator can act on", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const selectorOptionId = await seedSelectorOption(t);
@@ -1910,7 +1910,14 @@ describe("recordDecision — NEO-236 team create payload", () => {
         action: "create",
         create: { location: "San Diego", name: "   " },
       }),
-    ).rejects.toThrow(/Team name cannot be empty/);
+      // NEO-236 security review, finding 3: a ConvexError, not a plain Error.
+      // Only ConvexError survives Convex's error boundary with its message
+      // intact — a plain Error reaches the operator as a redacted "Server
+      // Error", which tells them nothing about what to change. Refusing is
+      // right HERE because these two fields are what the operator typed into
+      // the wizard, and dropping them would report the row decided while
+      // creating nothing.
+    ).rejects.toThrow(/Enter a team name before adding it/);
   });
 
   test("refuses a composed name past the stored-name limit", async () => {
@@ -1934,7 +1941,7 @@ describe("recordDecision — NEO-236 team create payload", () => {
         action: "create",
         create: { location: "L".repeat(70), name: "N".repeat(70) },
       }),
-    ).rejects.toThrow(/the limit is 120/);
+    ).rejects.toThrow(/A team name is 141 characters; the limit is 120/);
   });
 
   test("drops a `create` sent on a PLAYER row — it is meaningless there", async () => {
@@ -2219,5 +2226,194 @@ describe("recordAllRemainingAsCreate — NEO-236 team pre-fill", () => {
 
     const row = await t.run(async (ctx) => ctx.db.get(rowId));
     expect(row!.decision).toEqual({ action: "skip" });
+  });
+});
+
+// ===========================================================================
+// NEO-236 security review, finding 3 — text the operator never typed must not
+// be able to abort an action
+//
+// Two paths feed the Location + Name validator strings nobody chose: the bulk
+// fast path pre-fills from `row.name`, a raw and unbounded marketplace string,
+// and the wizard defaults each career-team pair to a raw Wikidata P54 label.
+// Both are now fail-soft. Only the wizard's own two inputs still refuse, and
+// they refuse readably.
+// ===========================================================================
+
+describe("NEO-236 — an unusable name never aborts the whole action", () => {
+  test("an over-long row name leaves THAT row create-less and decides the rest", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+
+    // A checklist string no team name may be. Nothing bounds `name` on a queue
+    // row — it is whatever the marketplace sent.
+    const longName = "L".repeat(200);
+    const longRowId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId,
+      batchId: "b1",
+      kind: "team",
+      name: longName,
+      status: "ready",
+    });
+    const okRowId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId,
+      batchId: "b1",
+      kind: "team",
+      name: "San Diego Padres",
+      status: "ready",
+      enrichment: { location: "San Diego" },
+    });
+    const playerRowId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId,
+      batchId: "b1",
+      kind: "player",
+      name: "Mike Trout",
+      status: "ready",
+    });
+
+    // Before the fix this rejected, decided NOTHING, and surfaced as a
+    // redacted "Server Error" with no clue which row caused it.
+    const decided = await asAdmin.mutation(
+      api.entityReviewQueue.recordAllRemainingAsCreate,
+      { selectorOptionId, batchId: "b1" },
+    );
+    expect(decided).toBe(3);
+
+    // The offending row IS decided — just with no create payload, which the
+    // commit prelude reads as "create nothing, report the name unresolved".
+    const longRow = await t.run(async (ctx) => ctx.db.get(longRowId));
+    expect(longRow!.decision).toEqual({ action: "create" });
+
+    // Its neighbours are untouched by it.
+    const okRow = await t.run(async (ctx) => ctx.db.get(okRowId));
+    expect(okRow!.decision).toEqual({
+      action: "create",
+      create: { location: "San Diego", name: "Padres" },
+    });
+    const playerRow = await t.run(async (ctx) => ctx.db.get(playerRowId));
+    expect(playerRow!.decision).toEqual({ action: "create" });
+  });
+
+  test("a blank row name is fail-soft the same way", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId,
+      batchId: "b1",
+      kind: "team",
+      name: "   ",
+      status: "ready",
+    });
+
+    await expect(
+      asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
+        selectorOptionId,
+        batchId: "b1",
+      }),
+    ).resolves.toBe(1);
+
+    const row = await t.run(async (ctx) => ctx.db.get(rowId));
+    expect(row!.decision).toEqual({ action: "create" });
+  });
+
+  test("an over-long createTeams entry is DROPPED, and the rest of the decision lands", async () => {
+    // The wizard defaults each career-team pair to the Wikidata label, so an
+    // over-long label is text the operator never typed. Throwing would lose
+    // the whole create decision — the player row, its exclusions, its
+    // hand-typed stints — over one career team.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId,
+      batchId: "b1",
+      kind: "player",
+      name: "Tony Gwynn",
+      status: "ready",
+    });
+
+    const longLabel = "L".repeat(200);
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: rowId,
+      action: "create",
+      manualCareerTeams: [{ name: "San Diego Padres", fromYear: 1982 }],
+      excludedCareerTeamNames: ["Some Wrong Team"],
+      createTeams: [
+        { sourceName: longLabel, name: longLabel },
+        { sourceName: "Padres", location: "San Diego", name: "Padres" },
+      ],
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(rowId));
+    expect(row!.decision).toEqual({
+      action: "create",
+      manualCareerTeams: [{ name: "San Diego Padres", fromYear: 1982 }],
+      excludedCareerTeamNames: ["Some Wrong Team"],
+      // Only the usable pair survives. The dropped label falls back to
+      // link-or-leave at commit: linked if we hold the team, otherwise that one
+      // stint is omitted.
+      createTeams: [
+        { sourceName: "Padres", location: "San Diego", name: "Padres" },
+      ],
+    });
+  });
+
+  test("a blank createTeams name is dropped rather than refused", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId,
+      batchId: "b1",
+      kind: "player",
+      name: "Tony Gwynn",
+      status: "ready",
+    });
+
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: rowId,
+      action: "create",
+      createTeams: [
+        { sourceName: "Aztecs", name: "   " },
+        { sourceName: "Padres", name: "Padres" },
+      ],
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(rowId));
+    expect(row!.decision).toEqual({
+      action: "create",
+      createTeams: [{ sourceName: "Padres", name: "Padres" }],
+    });
+  });
+
+  test("dropping every entry leaves no createTeams key at all", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      sportId: selectorOptionId,
+      batchId: "b1",
+      kind: "player",
+      name: "Tony Gwynn",
+      status: "ready",
+    });
+
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: rowId,
+      action: "create",
+      createTeams: [{ sourceName: "Aztecs", name: "" }],
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(rowId));
+    expect(row!.decision).toEqual({ action: "create" });
   });
 });

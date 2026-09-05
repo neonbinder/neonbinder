@@ -2227,3 +2227,108 @@ describe("EntityReviewWizard — the create refusal is described where it is cau
     ).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// NEO-236 security review, finding 3 — a refused decision is SEEN
+// ---------------------------------------------------------------------------
+
+describe("EntityReviewWizard — a refused create decision reaches the operator", () => {
+  it("refuses an over-long composed name before the round trip", () => {
+    currentRows = [makeRow({ kind: "team", name: "Padres", status: "ready" })];
+    renderWizard();
+
+    // Neither half is over the limit; together they are. The bound is on the
+    // composed name because that is what gets stored.
+    fireEvent.change(screen.getByLabelText("Location"), {
+      target: { value: "L".repeat(70) },
+    });
+    fireEvent.change(screen.getByLabelText("Team name"), {
+      target: { value: "N".repeat(70) },
+    });
+
+    const primary = screen.getByRole("button", { name: "Add as New Team" });
+    expect(primary.getAttribute("aria-disabled")).toBe("true");
+    expect(
+      screen.getByText("That name is 141 characters; the limit is 120."),
+    ).toBeTruthy();
+
+    fireEvent.click(primary);
+    expect(mockRecordDecision).not.toHaveBeenCalled();
+  });
+
+  it("surfaces the server's own words when the mutation refuses anyway", async () => {
+    // The client guard above and this one are independent on purpose: a stale
+    // bundle must not be able to get the write through, and when the server
+    // refuses, its message is the one written for the operator to read.
+    mockRecordDecision.mockRejectedValueOnce({
+      data: "A team name is 141 characters; the limit is 120.",
+    });
+    currentRows = [makeRow({ kind: "team", name: "Padres", status: "ready" })];
+    renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Team" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe(
+      "A team name is 141 characters; the limit is 120.",
+    );
+  });
+
+  it("falls back to a readable sentence when the error carries no message", async () => {
+    // A plain Error reaches the browser already redacted to "Server Error", so
+    // echoing it would tell the operator nothing.
+    mockRecordDecision.mockRejectedValueOnce(new Error("Server Error"));
+    currentRows = [makeRow({ kind: "team", name: "Padres", status: "ready" })];
+    renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Team" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe(
+      "Couldn't save that decision. Check the name and try again.",
+    );
+  });
+
+  it("does not swallow a refusal on a player row either", async () => {
+    mockRecordDecision.mockRejectedValueOnce({ data: "Nope." });
+    currentRows = [
+      makeRow({ kind: "player", name: "Mike Trout", status: "ready" }),
+    ];
+    renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Player" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("Nope.");
+  });
+
+  it("clears the refusal when the wizard advances to another row", async () => {
+    // A refusal belongs to the row it was raised on.
+    mockRecordDecision.mockRejectedValueOnce({ data: "Nope." });
+    const first = makeRow({ kind: "team", name: "Padres", status: "ready" });
+    currentRows = [first];
+    const { rerender } = renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Team" }));
+    expect((await screen.findByRole("alert")).textContent).toBe("Nope.");
+
+    currentRows = [
+      { ...first, decision: { action: "create" } },
+      makeRow({ kind: "team", name: "Angels", status: "ready" }),
+    ];
+    rerender(
+      <EntityReviewWizard
+        isOpen
+        selectorOptionId={"selopt-1" as unknown as Id<"selectorOptions">}
+        batchId="batch-1"
+        cardCount={3}
+        onConfirm={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.queryByRole("alert")).toBeNull();
+    });
+  });
+});

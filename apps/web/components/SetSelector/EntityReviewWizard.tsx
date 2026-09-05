@@ -110,6 +110,13 @@ const MAX_RESOLVE_NAMES = 64;
 const MAX_CAREER_TEAM_CREATES = 64;
 
 /**
+ * Mirrors MAX_TEAM_FULL_NAME_LENGTH in convex/entityReviewQueue.ts (and
+ * MAX_TEAM_NAME_LENGTH in convex/teams.ts). Applied to the COMPOSED name,
+ * because that is what gets stored and what the server measures.
+ */
+const MAX_TEAM_FULL_NAME_LENGTH = 120;
+
+/**
  * NEO-236 (a11y + E2E): STABLE ids for the team Location + Name pair, not
  * `useId()`.
  *
@@ -160,6 +167,24 @@ export function teamCreatePrefill(row: {
   return split
     ? { location: split.location, name: split.name }
     : { location: "", name: row.name.trim() };
+}
+
+/**
+ * The server's own words for a refused decision, or a usable fallback.
+ *
+ * Matched STRUCTURALLY rather than with `instanceof ConvexError` — the same
+ * reasoning as `RenameEntityControl`'s `refusalMessage`: a mocked or rethrown
+ * error in a test, or a version skew in the convex client, must still surface
+ * what the server said. A plain `Error` reaches the browser already redacted to
+ * "Server Error", so anything that is not a ConvexError string gets a sentence
+ * the operator can act on instead of a shrug.
+ */
+function decisionErrorMessage(e: unknown): string {
+  if (typeof e === "object" && e !== null) {
+    const data = (e as { data?: unknown }).data;
+    if (typeof data === "string" && data.length > 0) return data;
+  }
+  return "Couldn't save that decision. Check the name and try again.";
 }
 
 /** `teamFullName` over a draft, for the "Shows as:" line and for matching. */
@@ -268,6 +293,17 @@ export default function EntityReviewWizard({
   // bulk looked identical to a partial one — the button simply re-enabled and
   // the counter didn't move. Surface it instead.
   const [bulkError, setBulkError] = useState<string | null>(null);
+  /**
+   * NEO-236 security review, finding 3 — a REJECTED per-row decision.
+   *
+   * Every call site is `void handleCreate(...)`, so without this a server
+   * refusal was swallowed exactly the way NEO-110 describes for the bulk
+   * actions: the button re-enabled, the counter did not move, and the operator
+   * had no idea the row was still undecided. `recordDecision` throws a
+   * `ConvexError` when the Location + Name it was handed cannot compose into a
+   * team, and that message is written for them to read.
+   */
+  const [decideError, setDecideError] = useState<string | null>(null);
   const confirmButtonRef = useRef<HTMLButtonElement>(null);
   /**
    * NEO-212 (a11y): the id the career-team checkbox group points at. A bare
@@ -454,6 +490,9 @@ export default function EntityReviewWizard({
     // eslint-disable-next-line react-hooks/set-state-in-effect -- closes the link-search when the wizard advances so it cannot stay open on the wrong row
     setLinkingOpen(false);
     setStagedCareerTeams([]);
+    // A refusal belongs to the row it was raised on; carrying it forward would
+    // accuse the next row of a problem it does not have.
+    setDecideError(null);
   }, [current?._id]);
 
   // Focus the final Save button as soon as it appears so Enter immediately
@@ -520,8 +559,11 @@ export default function EntityReviewWizard({
    */
   const decide = async (fn: () => Promise<unknown>) => {
     setDeciding(true);
+    setDecideError(null);
     try {
       await fn();
+    } catch (e) {
+      setDecideError(decisionErrorMessage(e));
     } finally {
       setDeciding(false);
     }
@@ -696,9 +738,17 @@ export default function EntityReviewWizard({
   const createBlocked: string | null = (() => {
     if (!current) return null;
     if (current.kind === "team") {
-      return teamCreate.name.trim()
-        ? null
-        : "Enter a team name before adding it.";
+      if (!teamCreate.name.trim()) return "Enter a team name before adding it.";
+      // Mirrors MAX_TEAM_FULL_NAME_LENGTH in convex/entityReviewQueue.ts,
+      // which refuses the same composed name. Checked here so the operator is
+      // told while they are still typing, rather than by a rejected mutation
+      // after they press the button; the server still refuses independently,
+      // because a stale bundle must not be able to get the write through.
+      const composed = draftFullName(teamCreate);
+      if (composed.length > MAX_TEAM_FULL_NAME_LENGTH) {
+        return `That name is ${composed.length} characters; the limit is ${MAX_TEAM_FULL_NAME_LENGTH}.`;
+      }
+      return null;
     }
     const missing = acceptedUnmatchedCareerTeams.filter(
       (label) => careerCreateFor(label).name.trim() === "",
@@ -1413,6 +1463,16 @@ export default function EntityReviewWizard({
                     {createBlocked && (
                       <p id={createBlockedId} className="text-xs text-[#FF2EB3]">
                         {createBlocked}
+                      </p>
+                    )}
+                    {/* This one IS role="alert": unlike `createBlocked`, which
+                        is a standing precondition the operator can read at any
+                        time, a refusal is a discrete event that happened
+                        because they pressed a button — and nothing else on
+                        screen changes to tell them. */}
+                    {decideError && (
+                      <p role="alert" className="text-xs text-[#FF2EB3]">
+                        {decideError}
                       </p>
                     )}
 

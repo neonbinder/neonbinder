@@ -6,7 +6,7 @@ import {
 } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { RunResult } from "@convex-dev/workpool";
 import { getCurrentUserId, requireAdmin } from "./auth";
@@ -190,36 +190,77 @@ const MAX_TEAM_FULL_NAME_LENGTH = 120;
 const MAX_CAREER_TEAM_CREATES = 64;
 
 /**
- * NEO-236: validate and normalize one operator-supplied Location + Name.
+ * NEO-236: normalize one Location + Name, or answer "this is not usable".
  *
- * Trims both, drops an empty location (a blank Location is "this team has
- * none", which is a real answer for a college or a national side — not an
- * unfinished form), and refuses an empty name: an empty name cannot compose
- * into anything, so it is always UI or operator error rather than a no-op
- * worth swallowing. The length bound is applied to the COMPOSED name because
- * that is what lands in `teams.name` + `teams.location` and what
- * `teams.findOrCreate` would have measured.
+ * Trims both and drops an empty location — a blank Location is "this team has
+ * none", a real answer for a college or a national side, not an unfinished
+ * form. The length bound is on the COMPOSED name, because that is what lands
+ * in `teams.name` + `teams.location` and what `teams.findOrCreate` measures.
+ *
+ * ## Why this returns null instead of throwing
+ *
+ * Security review, finding 3. Two callers feed this text the operator NEVER
+ * TYPED: the bulk fast path pre-fills from `row.name`, which is a raw,
+ * unbounded marketplace string, and the wizard defaults each career-team pair
+ * to a raw Wikidata P54 label. A throw there aborted the whole action — one
+ * 200-character checklist row turned "Add All Remaining as New" into a
+ * redacted "Server Error" and decided nothing, with no way for the operator to
+ * find or fix the offending row.
+ *
+ * So the shared rule is fail-soft, and each caller decides what an unusable
+ * pair means for it. Dropping is safe because every path already handles the
+ * absence: the commit prelude treats a missing `create` as "nothing inserted,
+ * name reported unresolved", which is the attention walker's missing-team lane
+ * — the operator still gets the row, just later and with a UI in front of it.
+ * `requireTeamCreate` is the one place a refusal is still right.
  *
  * Deliberately does NOT normalize case or punctuation — that is the dedup
  * key's job (`teamRowFields`), and the operator's own spelling is what should
  * be stored.
  */
-function normalizeTeamCreate(input: {
+function toTeamCreate(input: {
+  location?: string;
+  name: string;
+}): { location?: string; name: string } | null {
+  const name = input.name.trim().replace(/\s+/g, " ");
+  if (name.length === 0) return null;
+  const location = input.location?.trim().replace(/\s+/g, " ") || undefined;
+  const fullLength = location ? location.length + 1 + name.length : name.length;
+  if (fullLength > MAX_TEAM_FULL_NAME_LENGTH) return null;
+  return { name, ...(location ? { location } : {}) };
+}
+
+/**
+ * NEO-236: the same, where a refusal IS the right answer — the operator typed
+ * these two fields into the wizard's Location and Team name inputs and pressed
+ * a button that says it will create a team.
+ *
+ * Silently dropping here would be the worse failure: the wizard would report
+ * the row decided, commit would create nothing, and the only trace would be a
+ * name in `unresolvedTeamNames`. So it throws — as `ConvexError`, not a plain
+ * `Error`, because only `ConvexError` survives Convex's error boundary with
+ * its message intact; a plain `Error` reaches the browser redacted to "Server
+ * Error" and tells the operator nothing about what to change.
+ *
+ * The message carries the LENGTH, never the name — the same rule
+ * `teams.findOrCreate` follows, because this string reaches Sentry and the
+ * browser console.
+ */
+function requireTeamCreate(input: {
   location?: string;
   name: string;
 }): { location?: string; name: string } {
+  const normalized = toTeamCreate(input);
+  if (normalized) return normalized;
   const name = input.name.trim().replace(/\s+/g, " ");
   if (name.length === 0) {
-    throw new Error("Team name cannot be empty");
+    throw new ConvexError("Enter a team name before adding it.");
   }
   const location = input.location?.trim().replace(/\s+/g, " ") || undefined;
   const fullLength = location ? location.length + 1 + name.length : name.length;
-  if (fullLength > MAX_TEAM_FULL_NAME_LENGTH) {
-    throw new Error(
-      `A team name is ${fullLength} characters; the limit is ${MAX_TEAM_FULL_NAME_LENGTH}.`,
-    );
-  }
-  return { name, ...(location ? { location } : {}) };
+  throw new ConvexError(
+    `A team name is ${fullLength} characters; the limit is ${MAX_TEAM_FULL_NAME_LENGTH}.`,
+  );
 }
 
 /**
@@ -249,8 +290,22 @@ function normalizeCareerTeamCreates(
     }
     const key = sourceName.toLowerCase();
     if (seen.has(key)) continue;
+    // NEO-236 security review, finding 3: an unusable pair is DROPPED, not
+    // thrown on. The wizard defaults each of these to a raw Wikidata P54
+    // label, so an over-long label is text the operator never typed — and
+    // throwing would abort the whole create decision (the player row, its
+    // exclusions, its hand-typed stints) over one career team. Dropped, the
+    // label falls back to link-or-leave: commit still links it if we hold the
+    // team, and otherwise omits that one stint.
+    //
+    // `sourceName` still throws, and the asymmetry is deliberate: a blank
+    // sourceName cannot come from typing at all (the wizard always supplies
+    // the label it is answering), so it is a client bug worth failing loudly
+    // on rather than a value to tolerate.
+    const create = toTeamCreate(entry);
+    if (!create) continue;
     seen.add(key);
-    out.push({ sourceName, ...normalizeTeamCreate(entry) });
+    out.push({ sourceName, ...create });
   }
   return out;
 }
@@ -577,7 +632,7 @@ export const recordDecision = mutation({
       // on a team row would suggest commit consults it there (it does not).
       const create =
         row.kind === "team" && args.create
-          ? normalizeTeamCreate(args.create)
+          ? requireTeamCreate(args.create)
           : undefined;
       const createTeams =
         row.kind === "player" && args.createTeams
@@ -658,8 +713,8 @@ async function decideAllRemaining(
   let count = 0;
   for (const row of rows) {
     if (row.decision) continue;
-    // Spread rather than passing `decision` through: each row stores its own
-    // object rather than sharing one reference across the whole batch.
+    // Each row is patched with its OWN fresh object literal, never a shared
+    // reference to `decision`.
     //
     // NEO-236: a team row's create decision carries the Location + Name the
     // commit prelude will build from, because the prelude has NO fallback to
@@ -670,12 +725,26 @@ async function decideAllRemaining(
     // no location. Nothing is guessed — `splitTeamName` is mechanical and only
     // fires on a location the lookup actually returned — and a row bulk-created
     // this way lands identically to how it landed before the split existed.
-    await ctx.db.patch(row._id, {
-      decision:
-        decision.action === "create" && row.kind === "team"
-          ? { ...decision, create: prefilledTeamCreate(row) }
-          : { ...decision },
-    });
+    //
+    // NEO-236 security review, finding 3: a row whose name will not compose
+    // into a team is decided WITHOUT a create payload rather than aborting the
+    // batch. One 200-character checklist row used to turn this whole action
+    // into a redacted "Server Error" that decided nothing; now it decides every
+    // other row, and that one is left for the commit prelude to report as
+    // unresolved — the attention walker's missing-team lane.
+    //
+    // Branched rather than spread-with-a-conditional-key so `create` cannot
+    // even be expressed on the "skip" arm, which does not carry one.
+    if (decision.action === "create") {
+      const prefill = row.kind === "team" ? prefilledTeamCreate(row) : null;
+      await ctx.db.patch(row._id, {
+        decision: prefill
+          ? { action: "create", create: prefill }
+          : { action: "create" },
+      });
+    } else {
+      await ctx.db.patch(row._id, { decision: { action: "skip" } });
+    }
     count++;
   }
   return count;
@@ -689,10 +758,14 @@ async function decideAllRemaining(
  */
 function prefilledTeamCreate(
   row: Doc<"entityReviewQueue">,
-): { location?: string; name: string } {
+): { location?: string; name: string } | null {
   const location = row.enrichment?.location;
   const split = location ? splitTeamName(row.name, location) : null;
-  return normalizeTeamCreate(split ?? { name: row.name });
+  // Null when the row's own name is unusable — blank, or longer than a team
+  // name may be. `row.name` is a raw marketplace string with no bound on it,
+  // and this path has no operator to tell, so the row is simply left without a
+  // create payload (see `toTeamCreate`).
+  return toTeamCreate(split ?? { name: row.name });
 }
 
 /**
