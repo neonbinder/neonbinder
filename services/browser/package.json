@@ -19,14 +19,14 @@
   "dependencies": {
     "@google-cloud/secret-manager": "^7.0.0",
     "express": "^5.2.1",
-    "express-rate-limit": "^8.6.2",
+    "express-rate-limit": "^8.7.0",
     "helmet": "^8.3.0",
-    "puppeteer": "^25.8.0"
+    "puppeteer": "^25.9.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
     "@types/express-rate-limit": "^6.0.2",
-    "@types/node": "^26.2.0",
+    "@types/node": "^26.4.1",
     "dotenv-cli": "^11.0.0",
     "ts-node": "^10.9.1",
     "typescript": "^7.0.2"
