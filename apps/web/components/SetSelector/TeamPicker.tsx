@@ -1,6 +1,7 @@
 import {
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -146,6 +147,9 @@ export default function TeamPicker({
   const inputRef = useRef<HTMLInputElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const createSubmitRef = useRef<HTMLButtonElement>(null);
+  /** False→true edge detector for the scroll-into-view effect below. */
+  const createFormShown = useRef(false);
 
   // Reset highlight whenever the typed query changes.
   useEffect(() => {
@@ -263,6 +267,50 @@ export default function TeamPicker({
   // field leaves the form standing and only the submit goes inert.
   const showCreateOption =
     query.trim().length > 0 && !hasExactMatch && !!sportId;
+
+  /**
+   * NEO-236 — bring the create form's submit into view the moment the form
+   * appears.
+   *
+   * The popover is `absolute` and grew from ~112px to ~261px when the create
+   * row became a two-field form, and an absolutely-positioned child is still
+   * CLIPPED by any `overflow-y-auto` ancestor. `CardAttentionWalker`'s body is
+   * `min-h-80 max-h-[70vh] overflow-y-auto` — a 320px box at 1024x629 — so
+   * with the trigger two thirds of the way down it, "+ Create team" landed
+   * ~25px below the clip and an operator had to scroll the dialog to reach
+   * the button they had just asked for.
+   *
+   * Scrolling the container beats flipping the popover above the trigger:
+   * flipping trades a clip at the bottom for a clip at the top in a box this
+   * short, and it needs live measurement against whichever ancestor happens
+   * to scroll. `block: "nearest"` needs none of that — it scrolls the nearest
+   * scrollable ancestor by the MINIMUM required, and does nothing at all when
+   * the form already fits, which is every other place this picker renders.
+   * One line, and it holds for any small container it is dropped into later.
+   *
+   * The submit, not the form: it is the last element and the one that was
+   * clipped, so pulling it into view brings the fields above it along. It
+   * carries `scroll-mb-2` so it does not land flush against the clip edge.
+   *
+   * `useLayoutEffect`, so the scroll lands before paint and the clipped state
+   * is never shown. Fires on the false→true edge only: without that guard
+   * every keystroke that keeps the form open would re-scroll and fight an
+   * operator who had scrolled the dialog themselves.
+   */
+  useLayoutEffect(() => {
+    if (!showCreateOption) {
+      createFormShown.current = false;
+      return;
+    }
+    if (createFormShown.current) return;
+    createFormShown.current = true;
+    // Optional-called: not every environment this renders in implements
+    // scrollIntoView, and a missing scroll must never break creating a team.
+    createSubmitRef.current?.scrollIntoView?.({
+      block: "nearest",
+      inline: "nearest",
+    });
+  }, [showCreateOption]);
 
   /**
    * The name the form will actually submit: the operator's edit if they made
@@ -665,6 +713,7 @@ export default function TeamPicker({
                   </span>
                 </p>
                 <button
+                  ref={createSubmitRef}
                   type="button"
                   // NEO-208: `aria-disabled`, not `disabled` — the control
                   // stays mounted and focusable for the duration of the
@@ -704,7 +753,7 @@ export default function TeamPicker({
                         ? `Create team ${previewFullName}`
                         : "Create team"
                   }
-                  className={`w-full text-left px-2 py-1 text-sm rounded ${
+                  className={`w-full scroll-mb-2 text-left px-2 py-1 text-sm rounded ${
                     highlightIdx === matches.length
                       ? "bg-[#00D558]/20 text-[#00D558]"
                       : "hover:bg-gray-100 dark:hover:bg-gray-700"

@@ -911,4 +911,100 @@ describe("TeamPicker", () => {
       expect(screen.queryByLabelText("New team location (optional)")).toBeNull();
     });
   });
+
+  // -------------------------------------------------------------------------
+  // NEO-236 — the create form is reachable inside a short scroll container
+  //
+  // The popover is `absolute`, which an `overflow-y-auto` ancestor still clips.
+  // `CardAttentionWalker`'s body is a 320px box, and the two-field form pushed
+  // "+ Create team" ~25px past its clip edge — the button an operator had just
+  // asked for was off screen until they scrolled the dialog by hand. jsdom and
+  // happy-dom do no layout, so what is pinned here is the BEHAVIOUR that fixes
+  // it: the submit is scrolled into view once, on the edge where the form
+  // appears, and never again while it stays open.
+  // -------------------------------------------------------------------------
+
+  describe("scrolls its create form into view", () => {
+    let scrollSpy: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      scrollSpy = vi.fn();
+      // Assigned rather than spied: happy-dom does not implement
+      // scrollIntoView, so there is nothing for `vi.spyOn` to wrap.
+      Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+        value: scrollSpy,
+        writable: true,
+        configurable: true,
+      });
+    });
+
+    it("scrolls the submit into view, minimally, when the form appears", () => {
+      currentCandidates = [];
+      renderPicker({ sportId: SPORT_ID });
+      openPopover();
+
+      fireEvent.change(screen.getByLabelText("Search teams"), {
+        target: { value: "Padres" },
+      });
+
+      expect(scrollSpy).toHaveBeenCalledTimes(1);
+      // `nearest` is the whole point: it scrolls by the minimum needed and
+      // does nothing when the form already fits, so the picker's other three
+      // call sites are untouched.
+      expect(scrollSpy).toHaveBeenCalledWith({
+        block: "nearest",
+        inline: "nearest",
+      });
+      expect(scrollSpy.mock.instances[0]).toBe(
+        screen.getByLabelText("Create team Padres"),
+      );
+    });
+
+    it("does not scroll again while the form stays open", () => {
+      currentCandidates = [];
+      renderPicker({ sportId: SPORT_ID });
+      openPopover();
+
+      const search = screen.getByLabelText("Search teams");
+      fireEvent.change(search, { target: { value: "Padres" } });
+      fireEvent.change(search, { target: { value: "Padre" } });
+      fireEvent.change(screen.getByLabelText("New team location (optional)"), {
+        target: { value: "San Diego" },
+      });
+
+      // Re-scrolling on every keystroke would fight an operator who had
+      // scrolled the dialog themselves.
+      expect(scrollSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("scrolls again when the form comes back after an exact match hid it", () => {
+      currentCandidates = [makeTeam("t1", "Padres", "San Diego")];
+      renderPicker({ sportId: SPORT_ID });
+      openPopover();
+
+      const search = screen.getByLabelText("Search teams");
+      fireEvent.change(search, { target: { value: "Padres" } });
+      expect(scrollSpy).toHaveBeenCalledTimes(1);
+
+      // An exact full-name match suppresses the form entirely...
+      fireEvent.change(search, { target: { value: "San Diego Padres" } });
+      expect(scrollSpy).toHaveBeenCalledTimes(1);
+
+      // ...and it is a fresh appearance when the operator types past it.
+      fireEvent.change(search, { target: { value: "San Diego Padres II" } });
+      expect(scrollSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it("never scrolls when no create form is offered", () => {
+      currentCandidates = [makeTeam("t1", "Padres", "San Diego")];
+      renderPicker({ sportId: SPORT_ID });
+      openPopover();
+
+      fireEvent.change(screen.getByLabelText("Search teams"), {
+        target: { value: "san diego padres" },
+      });
+
+      expect(scrollSpy).not.toHaveBeenCalled();
+    });
+  });
 });
