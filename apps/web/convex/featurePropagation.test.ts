@@ -716,6 +716,15 @@ describe("commitCardChecklist (ancestor feature inheritance)", () => {
     await asAdmin.mutation(api.players.findOrCreate, { name: "Mike Trout", sportId: subtreeIds.sportId });
     await asAdmin.mutation(api.players.findOrCreate, { name: "Aaron Judge", sportId: subtreeIds.sportId });
 
+    // NEO-220: `players.findOrCreate` schedules a Wikidata enrichment on its
+    // insert branch, and convex-test runs a scheduled function in the
+    // background without waiting for it — a test that returns while it is
+    // still running races the worker teardown (see drain-scheduled.ts).
+    // Drained HERE rather than at the end of the test: the commit below
+    // schedules its own BSC team backfill, and a later drain would pull that
+    // outbound call forward instead of leaving it exactly as it was.
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+
     await asAdmin.action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: subtreeIds.variantTypeId,
       sportId: subtreeIds.sportId,
@@ -959,6 +968,15 @@ describe("commitCardChecklist generates listingTitle/listingDescription (NEO-24/
     // review-decision path.
     await asAdmin.mutation(api.players.findOrCreate, { name: "Elly De La Cruz", sportId });
 
+    // NEO-220: `players.findOrCreate` schedules a Wikidata enrichment on its
+    // insert branch, and convex-test runs a scheduled function in the
+    // background without waiting for it — a test that returns while it is
+    // still running races the worker teardown (see drain-scheduled.ts).
+    // Drained HERE rather than at the end of the test: the commit below
+    // schedules its own BSC team backfill, and a later drain would pull that
+    // outbound call forward instead of leaving it exactly as it was.
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+
     await asAdmin.action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
       sportId,
@@ -1083,6 +1101,15 @@ describe("commitCardChecklist generates listingTitle/listingDescription (NEO-24/
       "An Absurdly Long Player Full Name That Alone Exceeds The Entire Title Budget";
     await asAdmin.mutation(api.players.findOrCreate, { name: hugeName, sportId });
 
+    // NEO-220: `players.findOrCreate` schedules a Wikidata enrichment on its
+    // insert branch, and convex-test runs a scheduled function in the
+    // background without waiting for it — a test that returns while it is
+    // still running races the worker teardown (see drain-scheduled.ts).
+    // Drained HERE rather than at the end of the test: the commit below
+    // schedules its own BSC team backfill, and a later drain would pull that
+    // outbound call forward instead of leaving it exactly as it was.
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+
     await asAdmin.action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
       sportId,
@@ -1132,6 +1159,15 @@ describe("commitCardChecklist generates listingTitle/listingDescription (NEO-24/
       sportId,
     });
 
+    // NEO-220: `players.findOrCreate` schedules a Wikidata enrichment on its
+    // insert branch, and convex-test runs a scheduled function in the
+    // background without waiting for it — a test that returns while it is
+    // still running races the worker teardown (see drain-scheduled.ts).
+    // Drained HERE rather than at the end of the test: the commit below
+    // schedules its own BSC team backfill, and a later drain would pull that
+    // outbound call forward instead of leaving it exactly as it was.
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+
     await asAdmin.action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
       sportId,
@@ -1180,6 +1216,15 @@ describe("commitCardChecklist generates listingTitle/listingDescription (NEO-24/
       name: "Seattle Mariners",
       sportId,
     });
+
+    // NEO-220: `players.findOrCreate` schedules a Wikidata enrichment on its
+    // insert branch, and convex-test runs a scheduled function in the
+    // background without waiting for it — a test that returns while it is
+    // still running races the worker teardown (see drain-scheduled.ts).
+    // Drained HERE rather than at the end of the test: the commit below
+    // schedules its own BSC team backfill, and a later drain would pull that
+    // outbound call forward instead of leaving it exactly as it was.
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
 
     await asAdmin.action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
@@ -1232,6 +1277,15 @@ describe("commitCardChecklist generates listingTitle/listingDescription (NEO-24/
       name: "Julio Rodriguez",
       sportId,
     });
+
+    // NEO-220: `players.findOrCreate` schedules a Wikidata enrichment on its
+    // insert branch, and convex-test runs a scheduled function in the
+    // background without waiting for it — a test that returns while it is
+    // still running races the worker teardown (see drain-scheduled.ts).
+    // Drained HERE rather than at the end of the test: the commit below
+    // schedules its own BSC team backfill, and a later drain would pull that
+    // outbound call forward instead of leaving it exactly as it was.
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
 
     await asAdmin.action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,

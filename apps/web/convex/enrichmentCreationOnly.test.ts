@@ -42,6 +42,7 @@ import { Id } from "./_generated/dataModel";
 import { normalizeTeamName } from "./teams";
 import { normalizePlayerName } from "./players";
 import { normalizeLeagueName } from "./leagues";
+import { drainScheduled } from "./test-support/drain-scheduled";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -822,6 +823,12 @@ describe("players.findOrCreate enqueues enrichment on INSERT only (NEO-220)", ()
     // And it carries the id it just inserted, not some other row.
     const rows = await t.run(async (ctx) => ctx.db.query("players").collect());
     expect(rows.map((r) => r._id)).toEqual([playerId]);
+
+    // Read the queue FIRST, then settle it. See drain-scheduled.ts: an
+    // undrained scheduled function keeps running into worker teardown, and the
+    // console log it emits there races the shutdown and fails the whole job
+    // while every test still reports green.
+    await drainScheduled(t);
   });
 
   test("a player it FOUND is not enqueued at all", async () => {
@@ -841,6 +848,7 @@ describe("players.findOrCreate enqueues enrichment on INSERT only (NEO-220)", ()
       .mutation(api.players.findOrCreate, { name: "Shohei Ohtani", sportId });
 
     expect(await scheduledEnrichmentCount(t, "playerIds")).toBe(0);
+    await drainScheduled(t);
   });
 
   test("the second call for the same name enqueues nothing more", async () => {
@@ -864,6 +872,7 @@ describe("players.findOrCreate enqueues enrichment on INSERT only (NEO-220)", ()
     });
     expect(second).toBe(first);
     expect(await scheduledEnrichmentCount(t, "playerIds")).toBe(1);
+    await drainScheduled(t);
   });
 
   test("a rejected call — over-long name — enqueues nothing and creates nothing", async () => {
@@ -881,6 +890,7 @@ describe("players.findOrCreate enqueues enrichment on INSERT only (NEO-220)", ()
     expect(
       await t.run(async (ctx) => ctx.db.query("players").collect()),
     ).toHaveLength(0);
+    await drainScheduled(t);
   });
 
   test("a sportId that is not a SPORT row is refused, so no orphan player is created", async () => {
@@ -911,6 +921,7 @@ describe("players.findOrCreate enqueues enrichment on INSERT only (NEO-220)", ()
     expect(
       await t.run(async (ctx) => ctx.db.query("players").collect()),
     ).toHaveLength(0);
+    await drainScheduled(t);
   });
 
   test("a non-admin caller enqueues nothing — the gate runs before the insert", async () => {
@@ -926,5 +937,6 @@ describe("players.findOrCreate enqueues enrichment on INSERT only (NEO-220)", ()
     ).rejects.toThrow(/Admin access required/);
 
     expect(await scheduledEnrichmentCount(t, "playerIds")).toBe(0);
+    await drainScheduled(t);
   });
 });

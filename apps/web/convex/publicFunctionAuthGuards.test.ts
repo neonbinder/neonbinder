@@ -54,6 +54,7 @@ import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
+import { drainScheduled } from "./test-support/drain-scheduled";
 import { Id } from "./_generated/dataModel";
 
 // convex-test v0.0.53 with Vitest uses import.meta.glob to discover modules.
@@ -257,6 +258,12 @@ describe("NEO-220 — players.findOrCreate is admin-gated, and a refusal writes 
     const rows = await t.run(async (ctx) => ctx.db.query("players").collect());
     expect(rows).toHaveLength(1);
     expect(rows[0].name).toBe("Shohei Ohtani");
+
+    // The one test in this block that actually INSERTS, so the only one that
+    // schedules the creation-time enrichment. The two refusals above throw in
+    // `requireAdmin`, before the insert, and schedule nothing. See
+    // drain-scheduled.ts for why leaving it running would fail the job.
+    await drainScheduled(t);
   });
 });
 

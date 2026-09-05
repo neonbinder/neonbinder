@@ -19,6 +19,7 @@ import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
+import { drainScheduled } from "./test-support/drain-scheduled";
 import type { Id } from "./_generated/dataModel";
 
 const modules = (
@@ -382,6 +383,12 @@ describe("previewListingTitle (NEO-101)", () => {
       name: "Julio Rodriguez",
       sportId,
     });
+    // NEO-220: settle the enrichment that creation schedules BEFORE the test
+    // goes on. Drained here rather than at the end of the test on purpose —
+    // `commitCardChecklist` below schedules its own BSC team backfill, and a
+    // drain after it would pull that outbound call forward into this test
+    // instead of leaving it exactly as it was. See drain-scheduled.ts.
+    await drainScheduled(t);
 
     await asAdmin.action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
