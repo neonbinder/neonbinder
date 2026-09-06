@@ -222,14 +222,15 @@ npm run lint             # ESLint
 npm run test:e2e         # Maestro E2E locally (see E2E Testing below)
 ```
 
-> **Never run `npm run dev:backend` / `npm run dev:all` / `npx convex dev` against the
-> shared dev Convex deployment.** Since NEO-249, shared dev is a **CI-managed mirror of
-> `main`** — the `deploy-dev-convex` job in `release.yml` pushes it after every
-> production release, so `npx convex dev` from a worktree would immediately clobber it
-> with local/uncommitted function code, then silently drift again the moment someone
-> next merges to `main`. This is exactly the failure mode NEO-249 fixed. Feature-branch
-> work always targets **that branch's own PR Convex preview** instead — see
-> "Debugging a red flow against the PR's own services" below for the verified recipe.
+> **The dev Convex deployment is a developer's *personal* deployment, not a shared dev
+> server (NEO-249).** Convex `dev` deployments are per-developer by design, and
+> **nobody deploys to dev from CI** — no workflow pushes it. Run `npm run dev:backend`
+> (`npx convex dev`) against your own dev deployment when you want to test locally, or
+> at the same time you push to a PR. When you need to exercise the PR's *own* backend
+> code, point local Vite at **that PR's Convex preview** instead — see "Debugging a red
+> flow against the PR's own services" above for the verified recipe (keep
+> `MAESTRO_PARALLELISM=1` and the port-3001 / `VITE_DEV_DISABLE_HTTPS=1` notes). Now
+> that every PR gets its own preview, the dev deployment is mostly unused.
 > `dev-backend.sh`'s behavior is unchanged by this — it still does exactly what its
 > comments say — this is a policy about when to run it, not a code change.
 

@@ -1,13 +1,13 @@
 #!/bin/bash
 
-# NEO-249: this wraps `npx convex dev`, which targets the SHARED dev Convex
-# deployment (there is one dev deployment per project, shared across every
-# worktree/agent). That deployment is now a CI-managed mirror of `main`
-# (release.yml's deploy-dev-convex job pushes it after every production
-# release) — do not run this script against shared dev. It will immediately
-# overwrite it with local/uncommitted function code, then drift again on the
-# next merge to main. Point Vite at your PR's own Convex preview instead (see
-# the root CLAUDE.md, "Debugging a red flow against the PR's own services").
+# NEO-249: this wraps `npx convex dev`, which targets a Convex *dev*
+# deployment. A dev deployment is a DEVELOPER'S PERSONAL deployment, not a
+# shared dev server, and nobody deploys to dev from CI — no workflow pushes
+# it. Run this against your own dev deployment when you want to test locally,
+# or at the same time you push to a PR. When you need to exercise the PR's own
+# backend code, point local Vite at that PR's Convex preview instead (see the
+# root CLAUDE.md, "Debugging a red flow against the PR's own services"). Now
+# that every PR gets its own preview, the dev deployment is mostly unused.
 # This comment does not change the script's behavior below.
 
 # Check if a URL was provided as the first argument
