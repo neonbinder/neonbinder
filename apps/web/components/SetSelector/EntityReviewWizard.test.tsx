@@ -5049,3 +5049,121 @@ describe("EntityReviewWizard — teams come first even as the batch drains", () 
     expect(screen.getByRole("heading", { name: "Bernie Geoffrion" })).toBeTruthy();
   });
 });
+
+describe("EntityReviewWizard — a started row is not taken away", () => {
+  /**
+   * The teams-first yield lets the walk revise its own pick. Once the operator
+   * has begun on the row, it must not — most of what they would lose is per-row
+   * state that a jump discards (staged stints, the entry form's text).
+   *
+   * Each test drives the real edit path rather than setting a flag, so the
+   * signal and the thing it is meant to protect cannot drift apart.
+   */
+  function playerThenLateTeam() {
+    const player = makeRow({
+      kind: "player",
+      name: "Bernie Geoffrion",
+      status: "ready",
+      enrichment: {
+        careerTeams: [{ name: "Montreal Canadiens", fromYear: 1950, toYear: 1964 }],
+      },
+    });
+    const team = makeRow({
+      kind: "team",
+      name: "New York Rangers",
+      status: "pending",
+    });
+    return { player, team };
+  }
+
+  /** The team's lookup lands while the player is on screen. */
+  function settleTeam(
+    rerender: (ui: React.ReactElement) => void,
+    player: Row,
+    team: Row,
+  ) {
+    currentRows = [player, { ...team, status: "ready" }];
+    rerenderWizard(rerender);
+  }
+
+  it("yields when nothing has been touched", async () => {
+    const { player, team } = playerThenLateTeam();
+    currentRows = [player, team];
+    currentResolvedNames = [{ name: "Montreal Canadiens", existingTeamId: "t_habs" }];
+    const { rerender } = renderWizard();
+    expect(screen.getByRole("heading", { name: "Bernie Geoffrion" })).toBeTruthy();
+
+    settleTeam(rerender, player, team);
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: "New Team: New York Rangers" }),
+      ).toBeTruthy(),
+    );
+  });
+
+  it("stays put once a career-team chip has been unticked", async () => {
+    const { player, team } = playerThenLateTeam();
+    currentRows = [player, team];
+    currentResolvedNames = [{ name: "Montreal Canadiens", existingTeamId: "t_habs" }];
+    const { rerender } = renderWizard();
+
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "Include career team Montreal Canadiens" }),
+    );
+    settleTeam(rerender, player, team);
+
+    expect(screen.getByRole("heading", { name: "Bernie Geoffrion" })).toBeTruthy();
+    expect(
+      screen.queryByRole("heading", { name: "New Team: New York Rangers" }),
+    ).toBeNull();
+  });
+
+  it("stays put once the link search is open", async () => {
+    const { player, team } = playerThenLateTeam();
+    currentRows = [player, team];
+    currentResolvedNames = [{ name: "Montreal Canadiens", existingTeamId: "t_habs" }];
+    const { rerender } = renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Link to existing instead" }));
+    settleTeam(rerender, player, team);
+
+    expect(screen.getByRole("heading", { name: "Bernie Geoffrion" })).toBeTruthy();
+  });
+
+  it("stays put once there is text in the career-team entry", async () => {
+    // The signal that has to travel up out of CareerTeamEntry.
+    const { player, team } = playerThenLateTeam();
+    currentRows = [player, team];
+    currentResolvedNames = [{ name: "Montreal Canadiens", existingTeamId: "t_habs" }];
+    const { rerender } = renderWizard();
+
+    fireEvent.change(screen.getByLabelText("Career team name"), {
+      target: { value: "Que" },
+    });
+    settleTeam(rerender, player, team);
+
+    expect(screen.getByRole("heading", { name: "Bernie Geoffrion" })).toBeTruthy();
+  });
+
+  it("yields again once that text is cleared", async () => {
+    const { player, team } = playerThenLateTeam();
+    currentRows = [player, team];
+    currentResolvedNames = [{ name: "Montreal Canadiens", existingTeamId: "t_habs" }];
+    const { rerender } = renderWizard();
+
+    const entry = screen.getByLabelText("Career team name");
+    fireEvent.change(entry, { target: { value: "Que" } });
+    settleTeam(rerender, player, team);
+    expect(screen.getByRole("heading", { name: "Bernie Geoffrion" })).toBeTruthy();
+
+    // Nothing left to lose, so the walk may move on again.
+    fireEvent.change(entry, { target: { value: "" } });
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: "New Team: New York Rangers" }),
+      ).toBeTruthy(),
+    );
+  });
+});

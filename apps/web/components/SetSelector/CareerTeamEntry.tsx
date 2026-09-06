@@ -91,6 +91,7 @@ export default function CareerTeamEntry({
   sportId,
   stagedNames,
   onAdd,
+  onDirtyChange,
 }: {
   /** NEO-96: the sport-level selectorOptions row id, not its display name. */
   sportId: Id<"selectorOptions">;
@@ -101,6 +102,16 @@ export default function CareerTeamEntry({
    */
   stagedNames: string[];
   onAdd: (entry: CareerTeamDraft) => void;
+  /**
+   * NEO-236 — "the operator has started filling this in".
+   *
+   * The wizard's walk may revise its own choice of row while nobody has begun
+   * work on it (teams jump the queue as their lookups land). Half-typed text in
+   * THIS form is work, and it lives here rather than in the wizard, so the
+   * wizard cannot see it without being told. Fires on the transitions only, not
+   * per keystroke.
+   */
+  onDirtyChange?: (dirty: boolean) => void;
 }) {
   const [name, setName] = useState("");
   const [debouncedName, setDebouncedName] = useState("");
@@ -116,6 +127,33 @@ export default function CareerTeamEntry({
   const comboRef = useRef<HTMLDivElement>(null);
 
   const maxYear = new Date().getFullYear() + 1;
+
+  /**
+   * Anything typed into any of the three fields counts. A name alone is enough:
+   * it is the half the operator cannot get back by re-picking a suggestion.
+   */
+  const dirty =
+    name.trim() !== "" || fromYear.trim() !== "" || toYear.trim() !== "";
+
+  /*
+   * Emitted on the TRANSITIONS only, and through a ref rather than a dep.
+   *
+   * The parent's handler is an inline arrow, so it is a new function every
+   * render; depending on it would fire this effect every render, and since the
+   * handler sets parent state that is a render loop. Holding it in a ref and
+   * gating on the value's own change makes the call count equal to the number
+   * of times the answer actually changed — twice per stint, typically.
+   */
+  const onDirtyChangeRef = useRef(onDirtyChange);
+  useEffect(() => {
+    onDirtyChangeRef.current = onDirtyChange;
+  }, [onDirtyChange]);
+  const lastDirtyRef = useRef<boolean | null>(null);
+  useEffect(() => {
+    if (lastDirtyRef.current === dirty) return;
+    lastDirtyRef.current = dirty;
+    onDirtyChangeRef.current?.(dirty);
+  }, [dirty]);
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedName(name), SEARCH_DEBOUNCE_MS);

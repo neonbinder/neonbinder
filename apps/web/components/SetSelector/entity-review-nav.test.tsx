@@ -786,3 +786,73 @@ describe("resolveNav — Jason's 118-row counter-example", () => {
     expect(resolveNav(rows, onPlayer)).toBe(onPlayer);
   });
 });
+
+describe("resolveNav — the walk stops revising once the operator has started", () => {
+  /**
+   * The teams-first yield lets the walk change its OWN mind about which row to
+   * present. That has to stop the moment there is work on the row to lose:
+   * a staged stint, an unticked chip, half-typed text in the career-team entry,
+   * an open link search. Most of it is per-row state a jump discards outright.
+   */
+  const team = (id: string, over: Partial<NavRow> = {}): NavRow => ({
+    _id: id,
+    status: "ready",
+    kind: "team",
+    ...over,
+  });
+  const player = (id: string): NavRow => ({
+    _id: id,
+    status: "ready",
+    kind: "player",
+  });
+
+  const rows = [player("p1"), team("t1")];
+  const onPlayer = { rowId: "p1", explicit: false };
+
+  it("yields on a CLEAN row — the default is unchanged", () => {
+    expect(resolveNav(rows, onPlayer)).toEqual({ rowId: "t1", explicit: false });
+    expect(resolveNav(rows, onPlayer, {})).toEqual({ rowId: "t1", explicit: false });
+    expect(resolveNav(rows, onPlayer, { pinnedRowHasEdits: false })).toEqual({
+      rowId: "t1",
+      explicit: false,
+    });
+  });
+
+  it("does NOT yield once the row has edits", () => {
+    expect(resolveNav(rows, onPlayer, { pinnedRowHasEdits: true })).toBe(onPlayer);
+  });
+
+  it("still moves a DECIDED row on, edits or not", () => {
+    // The guard covers "the walk changing its mind", not "this row is finished".
+    const decided = [
+      { ...player("p1"), decision: { action: "create" } as NavDecision },
+      team("t1"),
+    ];
+    expect(resolveNav(decided, onPlayer, { pinnedRowHasEdits: true })).toEqual({
+      rowId: "t1",
+      explicit: false,
+    });
+  });
+
+  it("still moves off a player blocked by its OWN staged team, edits or not", () => {
+    // Unanswerable is not the same as unfinished — its chips would read "needs
+    // a team decision" and its create would be held, so staying is no kindness.
+    const blocked = [
+      {
+        ...player("p1"),
+        enrichment: { careerTeams: [{ name: "Montreal Canadiens" }] },
+      },
+      { ...careerTeamOf("t-habs", "p1"), name: "Montreal Canadiens" },
+    ];
+    expect(resolveNav(blocked, onPlayer, { pinnedRowHasEdits: true })).toEqual({
+      rowId: "t-habs",
+      explicit: false,
+    });
+  });
+
+  it("still moves on when the presented row vanishes", () => {
+    expect(
+      resolveNav([team("t1")], onPlayer, { pinnedRowHasEdits: true }),
+    ).toEqual({ rowId: "t1", explicit: false });
+  });
+});

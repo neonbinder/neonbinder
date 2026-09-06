@@ -298,6 +298,14 @@ export default function EntityReviewWizard({
   const stageCareerTeams = useMutation(api.entityReviewQueue.stageCareerTeamRows);
 
   const [linkingOpen, setLinkingOpen] = useState(false);
+  /**
+   * NEO-236 — the career-team entry form has text in it.
+   *
+   * Reported up by `CareerTeamEntry` because the text lives there, and the
+   * walk's "may I move you off this row?" test needs to know. Reset with the
+   * rest of the per-row state when the presented row changes.
+   */
+  const [careerEntryDirty, setCareerEntryDirty] = useState(false);
   // Manual career-team entries the admin has staged for the CURRENT player
   // row (only ever populated for a player). Held here (not in CareerTeamEntry)
   // so it resets per-row alongside linkingOpen and is passed through to
@@ -800,14 +808,37 @@ export default function EntityReviewWizard({
    * The ONLY thing that advances the presented row. `resolveNav` returns the
    * same object when nothing should move, so this cannot loop.
    */
+  /**
+   * NEO-236 — has the operator started on the row that is on screen?
+   *
+   * Gates ONLY the teams-first yield (see `resolveNav`): the walk may revise
+   * its own pick while the row is untouched, and must stop once there is work
+   * on it to lose. Every item here is per-row state that a jump discards or
+   * hides:
+   *
+   *  - `linkingOpen` — the link search is open, i.e. they are choosing a target;
+   *  - a staged manual stint;
+   *  - an unticked career-team chip (the list starts fully ticked, so anything
+   *    in here is a deliberate exclusion);
+   *  - text typed into the career-team entry, reported up by that component;
+   *  - a New Team form the operator has edited (team rows never yield, so this
+   *    is belt-and-braces rather than load-bearing).
+   */
+  const pinnedRowHasEdits =
+    linkingOpen ||
+    careerEntryDirty ||
+    stagedCareerTeams.length > 0 ||
+    (current ? (excludedCareerTeamsByRow[current._id]?.length ?? 0) > 0 : false) ||
+    (current ? teamCreateByRow[current._id] !== undefined : false);
+
   useEffect(() => {
     if (!rows) return;
-    const next = resolveNav(rows, nav);
+    const next = resolveNav(rows, nav, { pinnedRowHasEdits });
     if (next === nav) return;
     navRef.current = next;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- the presented row follows the batch; the rule that decides when is pure and tested in entity-review-nav.test.tsx
     setNav(next);
-  }, [rows, nav]);
+  }, [rows, nav, pinnedRowHasEdits]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- one-way latch: a batch that has had rows can never un-have them
@@ -870,6 +901,7 @@ export default function EntityReviewWizard({
     // eslint-disable-next-line react-hooks/set-state-in-effect -- closes the link-search when the wizard advances so it cannot stay open on the wrong row
     setLinkingOpen(false);
     setStagedCareerTeams([]);
+    setCareerEntryDirty(false);
     // NEO-236's `decideError` is gone: NEO-221's `rowError` supersedes it and
     // is already per-row — cleared at the top of `decide` and rendered only
     // when `rowError.rowId` is the presented row — so a refusal cannot follow
@@ -2341,6 +2373,7 @@ export default function EntityReviewWizard({
                             <CareerTeamEntry
                               sportId={current.sportId}
                               stagedNames={stagedTeamNames}
+                              onDirtyChange={setCareerEntryDirty}
                               onAdd={(entry) => {
                                 setStagedCareerTeams((prev) => [...prev, entry]);
                                 // NEO-236 — a hand-typed team that matches

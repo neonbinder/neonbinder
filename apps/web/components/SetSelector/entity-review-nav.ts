@@ -311,6 +311,24 @@ export function summarizeDecisions(rows: readonly NavRow[]): {
 export function resolveNav<T extends NavRow>(
   rows: readonly T[],
   nav: NavState,
+  /**
+   * NEO-236 — has the operator started work on the row that is on screen?
+   *
+   * The teams-first rule lets the walk revise its OWN pick (an implicit pin),
+   * which is what stopped the wizard stranding an operator on a player while
+   * answerable teams piled up behind it. But "the walk may change its mind"
+   * has to stop being true the moment the operator has begun: half-typed text
+   * in the career-team entry, a staged stint, an unticked chip or an open link
+   * search is work, and most of it is per-row state that a jump discards.
+   *
+   * Only gates the teams-first clause. A decided row, a vanished row, and a
+   * player waiting on its own staged teams all still move the walk on — those
+   * are not "the walk changing its mind", they are the row being finished or
+   * unanswerable.
+   *
+   * Defaults to false, so every existing caller keeps today's behaviour.
+   */
+  opts: { pinnedRowHasEdits?: boolean } = {},
 ): NavState {
   const presented =
     nav.rowId === null ? null : (rows.find((r) => r._id === nav.rowId) ?? null);
@@ -342,7 +360,9 @@ export function resolveNav<T extends NavRow>(
          * this — that is the NEO-221 promise about not losing your place, and
          * it is what keeps this from undoing a deliberate move.
          */
-        (presented.kind === "player" && hasSettledUndecidedTeam(rows)) ||
+        (presented.kind === "player" &&
+          !opts.pinnedRowHasEdits &&
+          hasSettledUndecidedTeam(rows)) ||
         // NEO-236 — an implicit pin YIELDS to steps staged under it.
         //
         // This is the defect Jason hit on CI run 5: on the first player of a
