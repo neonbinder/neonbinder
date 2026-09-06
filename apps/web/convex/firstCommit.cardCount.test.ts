@@ -29,7 +29,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
-import { drainScheduled } from "../lib/testing/drain-scheduled";
+import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
 
 const modules = (
   import.meta as unknown as {
@@ -316,6 +316,22 @@ describe("the seed's first Base commit saves every card", () => {
     expect(saved.filter((r) => r.platformData?.bsc?.ref).length).toBe(
       BSC_TOTAL,
     );
+    // NEO-247: draining alone is not enough on this path. The commit's
+    // finalize step schedules `processBscTeamEnrichmentQueue`, which pops ONE
+    // card, resolves it, and reschedules the tail behind
+    // `BSC_TEAM_ENRICH_DELAY_MS` (300ms). `finishAllScheduledFunctions` can
+    // only force work whose scheduled time has already passed, so the delayed
+    // tail survives the drain, outlives `afterEach`'s `unstubAllGlobals()` —
+    // which puts the network GUARD back in place of this file's throwing stub
+    // — and then fires against it. With 335 cards enqueued the chain is long,
+    // and whether the 300ms timer lands before the file ends depends on how
+    // loaded the run is: green alone, red in a full parallel suite.
+    //
+    // Same drain-then-cancel pair as the sibling
+    // `commitCardChecklist.chunking.test.ts`, and for the same reason — this
+    // file is about the first commit's CARD COUNT, not about BSC team
+    // enrichment, so discarding the tail is the honest description.
     await drainScheduled(t);
+    await cancelScheduled(t);
   });
 });
