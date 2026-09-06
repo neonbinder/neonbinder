@@ -1,6 +1,6 @@
 appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
-name: "Entity review — Skip marks a name as not a person, and Skip Remaining decides every row that is left, lookups included"
+name: "Entity review — Skip marks a name as not a person, and the footer skip decides every row that is left, lookups included"
 tags:
   - set-selector
   - regression
@@ -19,7 +19,7 @@ tags:
 #     (c) one tap records exactly ONE decision — "1 of N reviewed" with a
 #         "Decided (1)" history. A control that rendered but wrote nothing
 #         leaves the header at "0 of N";
-#     (d) "Skip Remaining" decides every row that is left, INCLUDING ones whose
+#     (d) "Skip remaining names" decides every row that is left, INCLUDING ones whose
 #         Wikidata lookup has not come back. "Confirm & Save" renders only once
 #         EVERY row carries a decision (`allDecided`), so its appearance IS that
 #         assertion — and the bulk links unmount at the same moment, which is
@@ -123,7 +123,7 @@ tags:
     text: "Decided \\(1\\)"
 
 # ============================================================
-# STEP 4 — R2(d): "Skip Remaining" clears the rest, lookups included
+# STEP 4 — R2(d): "Skip remaining names" clears the rest, lookups included
 #
 # The bulk skip cancels any armed auto-add and decides every remaining row
 # whether or not its lookup has settled. 120s: the ceiling covers a batch still
@@ -131,7 +131,7 @@ tags:
 # ============================================================
 
 - tapOn:
-    text: ".*Skip Remaining \\([0-9]+\\).*"
+    text: ".*Skip remaining names \\([0-9]+\\).*"
 - extendedWaitUntil:
     visible:
       text: ".*Confirm & Save.*"
@@ -139,7 +139,7 @@ tags:
 # The same fact read the other way round: the bulk links render only while a
 # row is still undecided, so their absence is `allDecided` confirming itself.
 - assertNotVisible:
-    text: ".*Skip Remaining \\([0-9]+\\).*"
+    text: ".*Skip remaining names \\([0-9]+\\).*"
 
 # ============================================================
 # STEP 5 — EXIT WITHOUT WRITING ANYTHING (R7)

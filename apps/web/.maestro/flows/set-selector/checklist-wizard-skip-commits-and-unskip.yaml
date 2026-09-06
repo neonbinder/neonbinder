@@ -14,7 +14,7 @@ tags:
 #
 # R2 — HARD ASSERTIONS:
 #     (a) the review starts with nothing decided — "0 of N reviewed";
-#     (b) "Skip Remaining" decides EVERY row in one go, lookups included — the
+#     (b) "Skip remaining names" decides EVERY row in one go, lookups included — the
 #         wizard's own "All reviewed — save N cards?" and the appearance of
 #         "Confirm & Save" (which renders only once `allDecided`) both say so;
 #     (c) every one of those decisions is a SKIP, not a create — the history
@@ -121,7 +121,7 @@ tags:
 #
 # 120s: the bulk skip covers rows whose live Wikidata lookup has not landed yet.
 - tapOn:
-    text: ".*Skip Remaining \\([0-9]+\\).*"
+    text: ".*Skip remaining names \\([0-9]+\\).*"
 - extendedWaitUntil:
     visible:
       text: ".*Confirm & Save.*"

@@ -21,9 +21,11 @@ tags:
 #         history reads "Added as new";
 #     (d) the commit lands ("Saved N cards");
 #     (e) THE POINT: `/admin/teams` now holds a team by the staged name, and the
-#         list narrows to exactly "1 of N teams" for it. That row can only have
-#         come from commit-time `resolveTeamIdByName` — nothing else in this
-#         flow creates a team, and the name is unique to this worker and attempt.
+#         list narrows to exactly "1 of N teams" for it. Since NEO-236 that row
+#         is written from the team's OWN New Team step rather than from the
+#         player's decision, so this also proves that step's answer survived the
+#         commit. Nothing else in this flow creates a team, and the name is
+#         unique to this worker and attempt.
 #
 # ── WHAT THIS STILL DOES NOT PROVE, AND WHY ─────────────────────────────────
 #   That the team is attached to THAT player's `teamYears`. The wizard picks
@@ -159,6 +161,32 @@ tags:
 # STEP 3 — R2(c): the decision carries it
 # ============================================================
 
+# ⚠️ NEO-236 — THE STAGED TEAM NOW HAS ITS OWN STEP, AND IT BLOCKS THE CREATE.
+# Staging a hand-typed career team calls `stageCareerTeams`, which mints a
+# review row of its own ("New Team: <name>") so the step can ask for the
+# Location, Name and League. Until that row is decided, `createBlocked` is set:
+# the player's primary button stays MOUNTED but `aria-disabled`, and tapping it
+# is a silent no-op (`if (createBlocked) return`). A flow that went straight to
+# "Add as New Player" here would tap a dead button and fail on the next assert.
+#
+# The footer offers the route the operator would take — a "Decide team" link
+# (`aria-label="Decide team <name>"`), present only while a step is waiting —
+# and one tap on the step's primary action accepts the pre-filled Location,
+# Name and League, which is what main's own 1996 flow and setup.yaml do.
+#
+# 30s on the first wait: the step appears only once `stageCareerTeams` has
+# round-tripped.
+- extendedWaitUntil:
+    visible:
+      id: "Decide team .*"
+    timeout: 30000
+- tapOn:
+    id: "Decide team .*"
+- extendedWaitUntil:
+    visible: "New Team: .*"
+    timeout: 15000
+- tapOn: "Add as New Team"
+
 - tapOn: "Add as New Player"
 - extendedWaitUntil:
     visible:
@@ -171,7 +199,7 @@ tags:
 # ============================================================
 
 - tapOn:
-    text: ".*Skip Remaining \\([0-9]+\\).*"
+    text: ".*Skip remaining names \\([0-9]+\\).*"
 - extendedWaitUntil:
     visible:
       text: ".*Confirm & Save.*"

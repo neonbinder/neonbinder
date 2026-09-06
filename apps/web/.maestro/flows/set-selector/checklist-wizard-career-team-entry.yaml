@@ -244,6 +244,32 @@ tags:
 # it stays true whatever kind the next row is.
 # ============================================================
 
+# ⚠️ NEO-236 — THE STAGED TEAM NOW HAS ITS OWN STEP, AND IT BLOCKS THE CREATE.
+# Staging a hand-typed career team calls `stageCareerTeams`, which mints a
+# review row of its own ("New Team: <name>") so the step can ask for the
+# Location, Name and League. Until that row is decided, `createBlocked` is set:
+# the player's primary button stays MOUNTED but `aria-disabled`, and tapping it
+# is a silent no-op (`if (createBlocked) return`). A flow that went straight to
+# "Add as New Player" here would tap a dead button and fail on the next assert.
+#
+# The footer offers the route the operator would take — a "Decide team" link
+# (`aria-label="Decide team <name>"`), present only while a step is waiting —
+# and one tap on the step's primary action accepts the pre-filled Location,
+# Name and League, which is what main's own 1996 flow and setup.yaml do.
+#
+# 30s on the first wait: the step appears only once `stageCareerTeams` has
+# round-tripped.
+- extendedWaitUntil:
+    visible:
+      id: "Decide team .*"
+    timeout: 30000
+- tapOn:
+    id: "Decide team .*"
+- extendedWaitUntil:
+    visible: "New Team: .*"
+    timeout: 15000
+- tapOn: "Add as New Team"
+
 - tapOn: "Add as New Player"
 - extendedWaitUntil:
     visible:

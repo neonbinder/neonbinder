@@ -175,7 +175,7 @@ tags:
 # ============================================================
 
 - tapOn:
-    text: ".*Skip Remaining \\([0-9]+\\).*"
+    text: ".*Skip remaining names \\([0-9]+\\).*"
 - extendedWaitUntil:
     visible:
       text: ".*Confirm & Save.*"
