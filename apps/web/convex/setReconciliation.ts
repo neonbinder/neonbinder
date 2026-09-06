@@ -588,8 +588,8 @@ export const fetchRawOptions = action({
       if (skippedSides.length > 0) {
         console.log(
           `[fetchRawOptions] skipping ${skippedSides.join(",")} for ${level} — ` +
-            `bsc_missing=${resolution.bsc.missing.join(",")} ` +
-            `sl_missing=${resolution.sportlots.missing.join(",")}`,
+            `bsc_missing=${missingSummary(resolution.bsc)} ` +
+            `sl_missing=${missingSummary(resolution.sportlots)}`,
         );
       }
       if (skippedSides.length === 2) {
@@ -1303,9 +1303,9 @@ export const storeReconciledOptions = mutation({
         if (chainResolution[side].resolvable) return true;
         console.warn(
           `[storeReconciledOptions] dropping ${side} from coveredSides — the ` +
-            `parent chain carries no ${side} ids (missing: ` +
-            `${chainResolution[side].missing.join(", ")}). Nothing will be ` +
-            `unlinked on that side.`,
+            `parent chain carries no ${side} ids — ` +
+            `missing=${missingSummary(chainResolution[side])}. Nothing will ` +
+            `be unlinked on that side.`,
         );
         return false;
       });

@@ -1514,9 +1514,9 @@ export const storeSelectorOptions = mutation({
         if (chainResolution[side].resolvable) return true;
         console.warn(
           `[storeSelectorOptions] dropping ${side} from coveredSides — the ` +
-            `parent chain carries no ${side} ids (missing: ` +
-            `${chainResolution[side].missing.join(", ")}). Nothing will be ` +
-            `unlinked on that side.`,
+            `parent chain carries no ${side} ids — ` +
+            `missing=${missingSummary(chainResolution[side])}. Nothing will ` +
+            `be unlinked on that side.`,
         );
         return false;
       });
@@ -6429,8 +6429,8 @@ export const ensureSelectorOptions = action({
       if (!resolution.bsc.resolvable && !resolution.sportlots.resolvable) {
         console.log(
           `[ensureSelectorOptions] no marketplace ids on this path — ` +
-            `level=${level} bsc_missing=${resolution.bsc.missing.join(",")} ` +
-            `sl_missing=${resolution.sportlots.missing.join(",")}`,
+            `level=${level} bsc_missing=${missingSummary(resolution.bsc)} ` +
+            `sl_missing=${missingSummary(resolution.sportlots)}`,
         );
         await ctx.runMutation(internal.selectorOptions.setSelectorSyncStatus, {
           level,
@@ -6810,10 +6810,12 @@ export const fetchAggregatedOptions = action({
           bscPlatformFilters,
           `skipped:`,
           [
-            ...(resolution.bsc.resolvable ? [] : [`bsc(${resolution.bsc.missing.join(",")})`]),
+            ...(resolution.bsc.resolvable
+              ? []
+              : [`bsc=${missingSummary(resolution.bsc)}`]),
             ...(resolution.sportlots.resolvable
               ? []
-              : [`sportlots(${resolution.sportlots.missing.join(",")})`]),
+              : [`sportlots=${missingSummary(resolution.sportlots)}`]),
           ].join(" "),
         );
       }
@@ -7322,7 +7324,7 @@ export const syncSetsAcrossManufacturers = action({
       if (!resolution.bsc.resolvable) {
         console.log(
           `[syncSetsAcrossManufacturers] no BSC ids on this path — ` +
-            `missing=${resolution.bsc.missing.join(",")}`,
+            `missing=${missingSummary(resolution.bsc)}`,
         );
         return {
           ...EMPTY_SYNC_RESULT,
