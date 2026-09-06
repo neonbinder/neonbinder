@@ -27,6 +27,7 @@ import {
   nextUndecided,
   resolveNav,
   summarizeDecisions,
+  type NavDecision,
   type NavRow,
 } from "./entity-review-nav";
 
@@ -36,6 +37,36 @@ function row(
   decision?: NavRow["decision"],
 ): NavRow {
   return { _id: id, status, decision };
+}
+
+/** A player row — the only kind the NEO-236 blocking rule applies TO. */
+function player(
+  id: string,
+  status: NavRow["status"] = "ready",
+  decision?: NavRow["decision"],
+): NavRow {
+  return { _id: id, status, decision, kind: "player" };
+}
+
+/**
+ * A team row the batch staged for a player's career list — the only kind the
+ * blocking rule applies FROM. `getBatch` emits these AHEAD of their player,
+ * which is what makes Jason's "New Team, New Team, then the player" order fall
+ * out of `nextUndecided` once they are settled.
+ */
+function careerTeamOf(
+  id: string,
+  playerRowId: string,
+  status: NavRow["status"] = "ready",
+  decision?: NavRow["decision"],
+): NavRow {
+  return {
+    _id: id,
+    status,
+    decision,
+    kind: "team",
+    source: { kind: "careerTeamOf", playerRowId },
+  };
 }
 
 describe("nextUndecided", () => {
@@ -63,6 +94,214 @@ describe("nextUndecided", () => {
 
   it("returns null for an empty batch", () => {
     expect(nextUndecided([])).toBeNull();
+  });
+});
+
+/**
+ * NEO-236 — a player waits for the teams its own career list staged.
+ *
+ * Jason, 2026-09-05: "I think we should show 3 modals in the walker: 1. New
+ * Team: Sydney Blue Sox 2. New Team: Oregon State Beavers 3. New Player Travis
+ * Bazzana which can now use the 2 new teams that were created."
+ *
+ * `getBatch` already emits the staged team rows ahead of their player, which is
+ * enough only while those rows are SETTLED — the "step over a pending row" rule
+ * above would otherwise put the player first and hand the operator a step they
+ * cannot complete (every chip reading "needs a team decision", the primary
+ * blocked). So the player is held until each of its staged teams carries an
+ * answer, whatever that answer is.
+ */
+describe("nextUndecided — a player waits on its staged career teams", () => {
+  it("presents the staged team first even though the player was inserted first", () => {
+    const rows = [player("p1"), careerTeamOf("t1", "p1")];
+    expect(nextUndecided(rows)?._id).toBe("t1");
+  });
+
+  it("walks Jason's sequence: both teams, then the player", () => {
+    const sydney = careerTeamOf("t-sydney", "p1");
+    const oregon = careerTeamOf("t-oregon", "p1");
+    const bazzana = player("p1");
+
+    // `getBatch` order: the staged teams sit ahead of the player they came
+    // from, so a settled batch simply reads left to right.
+    let rows = [sydney, oregon, bazzana];
+    expect(nextUndecided(rows)?._id).toBe("t-sydney");
+
+    rows = [{ ...sydney, decision: { action: "create" } }, oregon, bazzana];
+    expect(nextUndecided(rows)?._id).toBe("t-oregon");
+
+    rows = [
+      { ...sydney, decision: { action: "create" } },
+      { ...oregon, decision: { action: "create" } },
+      bazzana,
+    ];
+    expect(nextUndecided(rows)?._id).toBe("p1");
+  });
+
+  it("stops blocking once the team is decided, whatever the decision is", () => {
+    for (const decision of [
+      { action: "create" } as const,
+      { action: "link", linkedTeamId: "team_1" } as const,
+      // "Skip" means "that is not a team". The player's own step is where that
+      // is dealt with — untick the chip, or change the team's decision — so
+      // refusing to present the player would leave nowhere to do either.
+      { action: "skip" } as const,
+    ]) {
+      const rows = [player("p1"), careerTeamOf("t1", "p1", "ready", decision)];
+      expect(nextUndecided(rows)?._id).toBe("p1");
+    }
+  });
+
+  it("keeps holding the player while its staged team is still being looked up", () => {
+    // The pending team is stepped over by the general rule AND still blocks the
+    // player, so there is nothing to present. The wizard says it is still
+    // looking names up, which is exactly what is happening.
+    const rows = [player("p1"), careerTeamOf("t1", "p1", "pending")];
+    expect(nextUndecided(rows)).toBeNull();
+  });
+
+  it("holds only on ITS OWN staged teams", () => {
+    // Two players in one batch. p2's outstanding team is not p1's problem, so
+    // p1 is offered normally while p2 waits.
+    const rows = [player("p1"), careerTeamOf("t2", "p2", "pending"), player("p2")];
+    expect(nextUndecided(rows)?._id).toBe("p1");
+
+    // With p1 answered there is genuinely nothing left to show: t2 is still
+    // being looked up and p2 is waiting on it.
+    const p1Done = [
+      player("p1", "ready", { action: "create" }),
+      careerTeamOf("t2", "p2", "pending"),
+      player("p2"),
+    ];
+    expect(nextUndecided(p1Done)).toBeNull();
+
+    // t2 lands, and it is what comes next — ahead of the player it belongs to.
+    const t2Ready = [
+      player("p1", "ready", { action: "create" }),
+      careerTeamOf("t2", "p2"),
+      player("p2"),
+    ];
+    expect(nextUndecided(t2Ready)?._id).toBe("t2");
+  });
+
+  it("never blocks a TEAM row, even one that is itself staged", () => {
+    // The rule is about a player waiting on its teams. A team row waiting on a
+    // team row would be a cycle with no operator step to break it.
+    const rows = [careerTeamOf("t1", "p1"), careerTeamOf("t2", "p1")];
+    expect(nextUndecided(rows)?._id).toBe("t1");
+  });
+
+  it("leaves rows that carry no kind/source untouched", () => {
+    // Every pre-NEO-236 caller passes three-field literals; the rule has to be
+    // inert for them rather than needing them all updated.
+    const rows = [row("a"), row("b")];
+    expect(nextUndecided(rows)?._id).toBe("a");
+  });
+
+  it("cannot deadlock: a blocker is either reachable or still being looked up", () => {
+    // A blocking row is by definition undecided, so it is either settled — and
+    // then reached FIRST, because it sorts ahead of the player — or pending,
+    // and the lookup pool (or `sweepStalePendingRows`) settles it. There is no
+    // third state in which the walk has nothing to offer and nothing arriving.
+    const blocked = [player("p1"), careerTeamOf("t1", "p1", "pending")];
+    expect(nextUndecided(blocked)).toBeNull();
+
+    const settled = [player("p1"), careerTeamOf("t1", "p1", "ready")];
+    expect(nextUndecided(settled)?._id).toBe("t1");
+
+    const answered = [
+      player("p1"),
+      careerTeamOf("t1", "p1", "ready", { action: "create" }),
+    ];
+    expect(nextUndecided(answered)?._id).toBe("p1");
+  });
+
+  it("counts a blocked player as undecided, not as done", () => {
+    // The progress line must not claim a row is finished because the walk is
+    // not showing it.
+    const rows = [player("p1"), careerTeamOf("t1", "p1", "pending")];
+    expect(countDecided(rows)).toBe(0);
+    expect(countPendingUndecided(rows)).toBe(1);
+  });
+});
+
+describe("resolveNav — the staged-team hold", () => {
+  it("presents nothing while every remaining row is blocked or pending", () => {
+    // The loop guard again: null in, null out, SAME object.
+    const nav = { rowId: null, explicit: false };
+    const rows = [player("p1"), careerTeamOf("t1", "p1", "pending")];
+    expect(resolveNav(rows, nav)).toBe(nav);
+  });
+
+  it("moves to the player the moment its last staged team is answered", () => {
+    const rows = [player("p1"), careerTeamOf("t1", "p1")];
+    const onTeam = resolveNav(rows, { rowId: null, explicit: false });
+    expect(onTeam).toEqual({ rowId: "t1", explicit: false });
+
+    const decided = [
+      player("p1"),
+      careerTeamOf("t1", "p1", "ready", { action: "create" }),
+    ];
+    expect(resolveNav(decided, onTeam)).toEqual({ rowId: "p1", explicit: false });
+  });
+
+  it("YIELDS an implicitly-presented player the moment its staged teams appear", () => {
+    /*
+     * Jason, CI run 5, on the FIRST player of a fresh batch: he was shown the
+     * New Player step with its career chips, and never saw a New Team step at
+     * all.
+     *
+     * This is the sequence. The player's lookup is what STAGES its career
+     * teams, and the wizard is already presenting that player when the lookup
+     * lands (it is the first settled row in the batch). The staged rows are
+     * inserted ahead of it by `walkOrder` and `nextUndecided` correctly refuses
+     * to offer the player — but `resolveNav` never asked, because a present,
+     * undecided, implicitly-presented row was not "stale". So the pin won and
+     * the New Team steps were never shown.
+     *
+     * An IMPLICIT pin is the wizard's own walk, not a decision the operator
+     * made, so it must yield. The explicit case below is the one that stays.
+     */
+    const before = [player("p1")];
+    const onPlayer = resolveNav(before, { rowId: null, explicit: false });
+    expect(onPlayer).toEqual({ rowId: "p1", explicit: false });
+
+    // The lookup lands and stages two steps for this very player.
+    const after = [
+      player("p1"),
+      careerTeamOf("t1", "p1"),
+      careerTeamOf("t2", "p1"),
+    ];
+    expect(resolveNav(after, onPlayer)).toEqual({ rowId: "t1", explicit: false });
+  });
+
+  it("comes back to the player once those steps are answered", () => {
+    const rows = [
+      player("p1"),
+      careerTeamOf("t1", "p1", "ready", { action: "create" }),
+      careerTeamOf("t2", "p1", "ready", { action: "create" }),
+    ];
+    expect(resolveNav(rows, { rowId: "t2", explicit: false })).toEqual({
+      rowId: "p1",
+      explicit: false,
+    });
+  });
+
+  it("holds at nothing when the newly staged steps are still looking up", () => {
+    // Not a regression to the old behaviour: the player must not be presented
+    // (its chips would be unanswerable), and neither can a pending step be.
+    const onPlayer = { rowId: "p1", explicit: false };
+    const after = [player("p1"), careerTeamOf("t1", "p1", "pending")];
+    expect(resolveNav(after, onPlayer)).toEqual({ rowId: null, explicit: false });
+  });
+
+  it("still lets the operator pin a blocked player explicitly", () => {
+    // Back / "Change decision" reaches a row the walk would not offer. It has
+    // to stay put: its own step is where an unanswerable career team gets
+    // unticked.
+    const rows = [player("p1"), careerTeamOf("t1", "p1")];
+    const nav = { rowId: "p1", explicit: true };
+    expect(resolveNav(rows, nav)).toBe(nav);
   });
 });
 
@@ -220,5 +459,447 @@ describe("describeDecision", () => {
   it("describes an undecided row", () => {
     expect(describeDecision(undefined)).toBe("Not yet decided");
     expect(describeDecision(null)).toBe("Not yet decided");
+  });
+});
+
+describe("resolveNav — a blocker staged under ANOTHER player still blocks", () => {
+  /**
+   * Jason, 2026-09-06, on a 522-row hockey batch: the wizard presented "Guy
+   * Lafleur" with three chips reading "needs a team decision" and no step
+   * anywhere to answer them — "There does not appear to be anywhere that a
+   * decision is needed that I can see."
+   *
+   * Staging dedupes a career team across the WHOLE batch, so in a set full of
+   * NHL players the first player to name the Montreal Canadiens gets the step
+   * and every later one gets none. The blocker rule keyed on
+   * `source.playerRowId`, so it saw no blocker for Lafleur and let him through;
+   * the chip keyed on the name across the batch, so it correctly reported the
+   * step as unanswered. Two different keys for one question.
+   *
+   * The answer is the TEAM, identified by its name — whose lookup happened to
+   * raise the step is not part of it.
+   */
+  const playerWithCareer = (id: string, teams: string[]): NavRow => ({
+    _id: id,
+    status: "ready",
+    kind: "player",
+    enrichment: { careerTeams: teams.map((name) => ({ name })) },
+  });
+
+  it("holds a player whose career team was staged for someone else", () => {
+    const rows = [
+      // Staged while an EARLIER player was looked up — so it points at THEM,
+      // and only its name ties it to Lafleur.
+      { ...careerTeamOf("t-habs", "p-earlier"), name: "Montreal Canadiens" },
+      playerWithCareer("p-lafleur", ["Montreal Canadiens"]),
+    ];
+    expect(nextUndecided(rows)?._id).toBe("t-habs");
+    expect(
+      resolveNav(rows, { rowId: "p-lafleur", explicit: false }),
+    ).toEqual({ rowId: "t-habs", explicit: false });
+  });
+
+  it("releases the player once that shared step is answered", () => {
+    const rows = [
+      {
+        ...careerTeamOf("t-habs", "p-earlier", "ready", { action: "create" }),
+        name: "Montreal Canadiens",
+      },
+      playerWithCareer("p-lafleur", ["Montreal Canadiens"]),
+    ];
+    expect(nextUndecided(rows)?._id).toBe("p-lafleur");
+  });
+
+  it("matches the label the way the rest of the wizard does, not byte-for-byte", () => {
+    const rows = [
+      { ...careerTeamOf("t-habs", "p-earlier"), name: "montreal  canadiens" },
+      playerWithCareer("p-lafleur", ["Montreal Canadiens"]),
+    ];
+    expect(nextUndecided(rows)?._id).toBe("t-habs");
+  });
+
+  it("walks four staged clubs before their player, then the player", () => {
+    // Deciding one step must land on the NEXT step, never on the player.
+    const clubs = ["Quebec Remparts", "Montreal Canadiens", "New York Rangers", "Quebec Nordiques"];
+    const staged = clubs.map((n, i) => ({
+      ...careerTeamOf(`t-${i}`, "p-lafleur"),
+      name: n,
+    }));
+    const player = playerWithCareer("p-lafleur", clubs);
+
+    let rows: NavRow[] = [...staged, player];
+    expect(nextUndecided(rows)?._id).toBe("t-0");
+
+    // t-0 answered — the walk must go to t-1, not to the player.
+    rows = [
+      { ...staged[0], decision: { action: "create" } },
+      ...staged.slice(1),
+      player,
+    ];
+    expect(
+      resolveNav(rows, { rowId: "t-0", explicit: false })?.rowId,
+    ).toBe("t-1");
+  });
+});
+
+describe("nextUndecided — teams are always at the front of the queue", () => {
+  /**
+   * Jason, 2026-09-06: "What if we just always pop new teams to the top of the
+   * queue? … subsequent cards would always have all of the teams before it.
+   * That would help with the look up info as there are a lot of these hockey
+   * players that don't have years in the wikidata and then the teams need to be
+   * mapped manually."
+   *
+   * Answering teams first is what makes the PLAYERS easier: every team created
+   * early is one more row a later player's stints can resolve against by name.
+   */
+  const team = (id: string, over: Partial<NavRow> = {}): NavRow => ({
+    _id: id,
+    status: "ready",
+    kind: "team",
+    ...over,
+  });
+  const player = (id: string, over: Partial<NavRow> = {}): NavRow => ({
+    _id: id,
+    status: "ready",
+    kind: "player",
+    ...over,
+  });
+
+  it("takes a team from the BACK of the batch before a player at the front", () => {
+    const rows = [player("p1"), player("p2"), team("t1")];
+    expect(nextUndecided(rows)?._id).toBe("t1");
+  });
+
+  it("keeps array order among the teams themselves", () => {
+    const rows = [player("p1"), team("t1"), team("t2")];
+    expect(nextUndecided(rows)?._id).toBe("t1");
+    expect(
+      nextUndecided([player("p1"), { ...team("t1"), decision: { action: "create" } as NavDecision }, team("t2")])
+        ?._id,
+    ).toBe("t2");
+  });
+
+  it("falls through to players once every team is decided", () => {
+    const rows = [
+      player("p1"),
+      { ...team("t1"), decision: { action: "create" } as NavDecision },
+      { ...team("t2"), decision: { action: "skip" } as NavDecision },
+    ];
+    expect(nextUndecided(rows)?._id).toBe("p1");
+  });
+
+  it("does not offer a team whose own lookup has not landed", () => {
+    // Not settled, so the player is next — and the blocker rule still guards
+    // the case where that pending team is one the player needs.
+    const rows = [player("p1"), team("t-pending", { status: "pending" })];
+    expect(nextUndecided(rows)?._id).toBe("p1");
+  });
+
+  it("a team staged mid-batch is presented before the NEXT player", () => {
+    // The shape the wizard actually produces: a player's lookup lands, stages
+    // its clubs, and the walk must take those before moving to another player.
+    const before = [
+      { ...player("p1"), decision: { action: "create" } as NavDecision },
+      player("p2"),
+    ];
+    expect(nextUndecided(before)?._id).toBe("p2");
+
+    const after = [
+      { ...player("p1"), decision: { action: "create" } as NavDecision },
+      careerTeamOf("t-new", "p1"),
+      player("p2"),
+    ];
+    expect(nextUndecided(after)?._id).toBe("t-new");
+  });
+
+  it("DOES move off a player the walk chose when a team is waiting", () => {
+    /*
+     * REVERSED deliberately, and it is worth saying why the first version was
+     * wrong rather than just changing the expectation.
+     *
+     * Round 4 read "do not interrupt a player the operator is on" as protecting
+     * any presented player. Jason's 118-row batch showed what that costs: the
+     * pool settles 5-wide, 105 of 118 rows are players, so the walk pins a
+     * player before any team has settled — and then never re-asks. He was left
+     * on a player whose chips said "needs a team decision" while 13 answerable
+     * teams sat in the batch.
+     *
+     * An implicit pin is the WALK's choice, not the operator's, so the walk may
+     * revise it. What "do not interrupt" protects is the operator's OWN
+     * navigation, and that is the explicit pin below — which still wins.
+     */
+    const rows = [player("p1"), team("t-unrelated")];
+    expect(resolveNav(rows, { rowId: "p1", explicit: false })).toEqual({
+      rowId: "t-unrelated",
+      explicit: false,
+    });
+  });
+
+  it("still does not interrupt a player the OPERATOR pinned", () => {
+    const rows = [player("p1"), team("t-unrelated")];
+    const pinned = { rowId: "p1", explicit: true };
+    expect(resolveNav(rows, pinned)).toBe(pinned);
+  });
+
+  it("moves to the team queue as soon as that player is decided", () => {
+    const rows = [
+      { ...player("p1"), decision: { action: "create" } as NavDecision },
+      team("t-unrelated"),
+      player("p2"),
+    ];
+    expect(
+      resolveNav(rows, { rowId: "p1", explicit: false }),
+    ).toEqual({ rowId: "t-unrelated", explicit: false });
+  });
+
+  it("converges after a bulk add: every player decided, teams walked, then done", () => {
+    // What "Add remaining players as new" leaves behind, and what the E2E
+    // setup flow's repeat-loop drains.
+    const bulkDone = [
+      { ...player("p1"), decision: { action: "create" } as NavDecision },
+      { ...player("p2"), decision: { action: "create" } as NavDecision },
+      team("t1"),
+      team("t2"),
+    ];
+    expect(nextUndecided(bulkDone)?._id).toBe("t1");
+
+    const oneLeft = [
+      ...bulkDone.slice(0, 2),
+      { ...team("t1"), decision: { action: "create" } as NavDecision },
+      team("t2"),
+    ];
+    expect(nextUndecided(oneLeft)?._id).toBe("t2");
+
+    const allDone = [
+      ...bulkDone.slice(0, 2),
+      { ...team("t1"), decision: { action: "create" } as NavDecision },
+      { ...team("t2"), decision: { action: "create" } as NavDecision },
+    ];
+    expect(nextUndecided(allDone)).toBeNull();
+    expect(resolveNav(allDone, { rowId: "t2", explicit: false })).toEqual({
+      rowId: null,
+      explicit: false,
+    });
+  });
+});
+
+describe("resolveNav — Jason's 118-row counter-example", () => {
+  /**
+   * Live on preview `cool-moose-396`, batch `8cc1be2c-…`: 118 rows — 13 TEAM
+   * rows all `status: "ready"` and undecided (6 checklist + 7 careerTeamOf),
+   * 105 players — and the wizard was sitting on a PLAYER, with the only decided
+   * row being one earlier player.
+   *
+   * `nextUndecided` was already teams-first, so a FRESH resolve picks a team.
+   * The hole is that `resolveNav` only consults it when the pin goes STALE, and
+   * an implicitly-pinned, undecided player is never stale. The batch drains
+   * 5-wide over a real Wikidata round trip, and with 105 of 118 rows being
+   * players the first row to settle is almost always a player — so the walk
+   * pins that player before any team has settled, and then never re-asks.
+   */
+  const team = (id: string, over: Partial<NavRow> = {}): NavRow => ({
+    _id: id,
+    status: "ready",
+    kind: "team",
+    ...over,
+  });
+  const player = (id: string, over: Partial<NavRow> = {}): NavRow => ({
+    _id: id,
+    status: "ready",
+    kind: "player",
+    ...over,
+  });
+
+  /** 13 settled undecided teams among 105 players, one player decided. */
+  function batch(): NavRow[] {
+    const players = Array.from({ length: 105 }, (_, i) =>
+      player(`p${i}`, i < 13 ? { status: "error" } : {}),
+    );
+    players[0] = { ...players[0], decision: { action: "create" } as NavDecision };
+    const teams = Array.from({ length: 13 }, (_, i) =>
+      i < 6 ? team(`ct${i}`) : { ...careerTeamOf(`st${i}`, "p40"), name: `Club ${i}` },
+    );
+    // Server order: the checklist teams and staged rows are scattered through
+    // the batch, not gathered at the front.
+    return [...players.slice(0, 40), ...teams, ...players.slice(40)];
+  }
+
+  it("opens on a team, not a player, when the batch is already settled", () => {
+    const rows = batch();
+    expect(resolveNav(rows, { rowId: null, explicit: false })).toEqual({
+      rowId: "ct0",
+      explicit: false,
+    });
+  });
+
+  it("YIELDS a player the walk landed on before the teams settled", () => {
+    // The actual sequence: everything pending, one player settles first and is
+    // pinned, and the 13 teams settle a moment later.
+    const pendingAll: NavRow[] = [
+      player("p-first", { status: "pending" }),
+      team("t1", { status: "pending" }),
+    ];
+    const nothingYet = resolveNav(pendingAll, { rowId: null, explicit: false });
+    expect(nothingYet).toEqual({ rowId: null, explicit: false });
+
+    const playerSettled = [player("p-first"), team("t1", { status: "pending" })];
+    const onPlayer = resolveNav(playerSettled, nothingYet);
+    expect(onPlayer).toEqual({ rowId: "p-first", explicit: false });
+
+    // …and now the team settles. The walk chose this player, so the walk may
+    // change its mind: a team is what should be in front of the operator.
+    const teamSettled = [player("p-first"), team("t1")];
+    expect(resolveNav(teamSettled, onPlayer)).toEqual({
+      rowId: "t1",
+      explicit: false,
+    });
+  });
+
+  it("does NOT yield a player the OPERATOR pinned", () => {
+    // Back, "Change decision" and "Decide team" all pin explicitly. Those are
+    // the operator's own navigation and the teams-first rule must not undo it —
+    // that is the NEO-221 promise about not losing your place.
+    const rows = [player("p1"), team("t1")];
+    const pinned = { rowId: "p1", explicit: true };
+    expect(resolveNav(rows, pinned)).toBe(pinned);
+  });
+
+  it("leaves a presented TEAM alone — no loop between two teams", () => {
+    const rows = [team("t1"), team("t2")];
+    const onTeam = { rowId: "t1", explicit: false };
+    expect(resolveNav(rows, onTeam)).toBe(onTeam);
+  });
+
+  it("keeps a player once every team is answered", () => {
+    const rows = [
+      player("p1"),
+      { ...team("t1"), decision: { action: "create" } as NavDecision },
+    ];
+    const onPlayer = { rowId: "p1", explicit: false };
+    expect(resolveNav(rows, onPlayer)).toBe(onPlayer);
+  });
+
+  it("does not yield to a team whose own lookup has not landed", () => {
+    const rows = [player("p1"), team("t1", { status: "pending" })];
+    const onPlayer = { rowId: "p1", explicit: false };
+    expect(resolveNav(rows, onPlayer)).toBe(onPlayer);
+  });
+});
+
+describe("resolveNav — the walk stops revising once the operator has started", () => {
+  /**
+   * The teams-first yield lets the walk change its OWN mind about which row to
+   * present. That has to stop the moment there is work on the row to lose:
+   * a staged stint, an unticked chip, half-typed text in the career-team entry,
+   * an open link search. Most of it is per-row state a jump discards outright.
+   */
+  const team = (id: string, over: Partial<NavRow> = {}): NavRow => ({
+    _id: id,
+    status: "ready",
+    kind: "team",
+    ...over,
+  });
+  const player = (id: string): NavRow => ({
+    _id: id,
+    status: "ready",
+    kind: "player",
+  });
+
+  const rows = [player("p1"), team("t1")];
+  const onPlayer = { rowId: "p1", explicit: false };
+
+  it("yields on a CLEAN row — the default is unchanged", () => {
+    expect(resolveNav(rows, onPlayer)).toEqual({ rowId: "t1", explicit: false });
+    expect(resolveNav(rows, onPlayer, {})).toEqual({ rowId: "t1", explicit: false });
+    expect(resolveNav(rows, onPlayer, { pinnedRowHasEdits: false })).toEqual({
+      rowId: "t1",
+      explicit: false,
+    });
+  });
+
+  it("does NOT yield once the row has edits", () => {
+    expect(resolveNav(rows, onPlayer, { pinnedRowHasEdits: true })).toBe(onPlayer);
+  });
+
+  it("still moves a DECIDED row on, edits or not", () => {
+    // The guard covers "the walk changing its mind", not "this row is finished".
+    const decided = [
+      { ...player("p1"), decision: { action: "create" } as NavDecision },
+      team("t1"),
+    ];
+    expect(resolveNav(decided, onPlayer, { pinnedRowHasEdits: true })).toEqual({
+      rowId: "t1",
+      explicit: false,
+    });
+  });
+
+  it("still moves off a player blocked by its OWN staged team, edits or not", () => {
+    // Unanswerable is not the same as unfinished — its chips would read "needs
+    // a team decision" and its create would be held, so staying is no kindness.
+    const blocked = [
+      {
+        ...player("p1"),
+        enrichment: { careerTeams: [{ name: "Montreal Canadiens" }] },
+      },
+      { ...careerTeamOf("t-habs", "p1"), name: "Montreal Canadiens" },
+    ];
+    expect(resolveNav(blocked, onPlayer, { pinnedRowHasEdits: true })).toEqual({
+      rowId: "t-habs",
+      explicit: false,
+    });
+  });
+
+  it("still moves on when the presented row vanishes", () => {
+    expect(
+      resolveNav([team("t1")], onPlayer, { pinnedRowHasEdits: true }),
+    ).toEqual({ rowId: "t1", explicit: false });
+  });
+});
+
+describe("resolveNav — a CHECKLIST team row answers a career chip too", () => {
+  /**
+   * Jason, on the Canadiens: the batch held a plain team row for "Montreal
+   * Canadiens" (a name off the checklist, no `source`), and a player whose
+   * career list names that club still read "needs a team decision".
+   *
+   * Both predicates opened with `source?.kind !== "careerTeamOf"`, so only a
+   * STAGED row could answer a chip. But the question a chip asks is "does the
+   * batch hold an answer for this team?" — and a checklist team row is exactly
+   * that answer. Where the row came from decides what its step SAYS, never
+   * whether it counts.
+   */
+  const player = (id: string, teams: string[]): NavRow => ({
+    _id: id,
+    status: "ready",
+    kind: "player",
+    enrichment: { careerTeams: teams.map((name) => ({ name })) },
+  });
+  const checklistTeam = (id: string, name: string, over: Partial<NavRow> = {}): NavRow => ({
+    _id: id,
+    status: "ready",
+    kind: "team",
+    name,
+    ...over,
+  });
+
+  it("holds a player whose career team is an undecided CHECKLIST row", () => {
+    const rows = [
+      checklistTeam("t-habs", "Montreal Canadiens"),
+      player("p1", ["Montreal Canadiens"]),
+    ];
+    expect(
+      resolveNav(rows, { rowId: "p1", explicit: false }),
+    ).toEqual({ rowId: "t-habs", explicit: false });
+  });
+
+  it("releases the player once that checklist row is answered", () => {
+    const rows = [
+      checklistTeam("t-habs", "Montreal Canadiens", {
+        decision: { action: "create" } as NavDecision,
+      }),
+      player("p1", ["Montreal Canadiens"]),
+    ];
+    expect(nextUndecided(rows)?._id).toBe("p1");
   });
 });

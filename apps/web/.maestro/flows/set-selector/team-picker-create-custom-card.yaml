@@ -1,14 +1,14 @@
 appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
-name: "Team picker — create a brand-new team via '+ Create' and attach it to a card; it persists across reopen"
+name: "Team picker — create a brand-new team via the New Team dialog and attach it to a card; it persists across reopen"
 tags:
   - set-selector
   - regression
 ---
-# R1 — SINGLE FEATURE: the TeamPicker "Add team" popover now offers a
-# "+ Create '<name>'" option (via the now-used teams.findOrCreate) when the
-# typed name has no exact match — creating a brand-new team and attaching it on
-# the spot. This closes a real gap: NEITHER BSC nor SportLots checklist sync
+# R1 — SINGLE FEATURE: the TeamPicker "Add team" popover offers a
+# "+ New team '<name>'" row when the typed name has no exact match; taking it
+# opens the New Team dialog (NEO-236), whose Create button writes the team via
+# teams.findOrCreate and attaches it on the spot. This closes a real gap: NEITHER BSC nor SportLots checklist sync
 # ever populates the `teams` table (each adapter's own comment assumes the OTHER
 # supplies team data), so "Add team" routinely had zero candidates and no way to
 # add one. An operator can now type any team name and create+attach it.
@@ -16,9 +16,11 @@ tags:
 # R2 — HARD ASSERTIONS, no silent fall-through:
 #   - Precondition: the panel + Team picker (aria "Team picker") + "Add team"
 #     trigger are present.
-#   - The typed UNIQUE name has no existing match, so "+ Create '<name>'" MUST
-#     appear (id "Create team <name>"); choosing it MUST produce a chip whose
-#     remove button is "Remove team <name>". A no-op create leaves no chip → fail.
+#   - The typed UNIQUE name has no existing match, so "+ New team '<name>'" MUST
+#     appear (id "New team <name>"); taking it MUST open the dialog headed
+#     "New team: <name>", and that dialog's "Create team <name>" button MUST
+#     produce a chip whose remove button is "Remove team <name>". A no-op create
+#     leaves no chip → fail.
 #   - PERSISTENCE: after closing and reopening the drawer, the chip is STILL
 #     there — the created team durably attached to the card. NEO-216 removed the
 #     Save button, so the write goes out on the tap and the drawer's
@@ -33,8 +35,8 @@ tags:
 #   via util-add-custom-card.
 #
 # WHY A UNIQUE NAME ("NBTeam-${ATTEMPT_ID}"): guarantees no exact match in the
-#   candidate pool (teams under the synthetic sport), so Create is always
-#   offered. findOrCreate is idempotent, so a re-run is harmless.
+#   candidate pool (teams under the synthetic sport), so the "+ New team" row is
+#   always offered. findOrCreate is idempotent, so a re-run is harmless.
 #
 # PER-WORKER DATA ISOLATION: E2E Test Sport ${WORKER_INDEX} -> 2026 -> Topps ->
 #   tpc-<WORKER_INDEX> (custom set, Insert VT, "Base" insert). The created teams
@@ -93,9 +95,45 @@ tags:
     id: "Search teams"
 - inputText: "NBTeam-${ATTEMPT_ID}"
 
-# No existing team matches this unique name → the "+ Create" row appears.
+# No existing team matches this unique name → the popover's one create
+# affordance appears: `+ New team "<typed>"…` (accessible name
+# `New team <typed>`), which OPENS the New Team dialog rather than writing.
 - assertVisible:
-    id: "Create team NBTeam-${ATTEMPT_ID}"
+    id: "New team NBTeam-${ATTEMPT_ID}"
+- tapOn:
+    id: "New team NBTeam-${ATTEMPT_ID}"
+
+# The New Team dialog — portalled to `document.body` at `z-[60]`, `fixed inset-0`
+# and centred, so nothing clips it. It is where the three questions a team row
+# needs (Location, Team name, League) are answered and where the write happens.
+#
+# TWO assertions, because they say two different things.
+#
+# The HEADING is the dialog's `aria-labelledby` target, so it is what a screen
+# reader announces on arrival — "New team: <what I typed>" is the dialog being
+# correctly LABELLED. (It briefly was not: opening by CLICK used to blank the
+# name, because the picker's focus-out handler read a stale "is the dialog open"
+# flag and cleared the query behind the portal. Fixed under NEO-236 with a
+# synchronous ref; this assertion is what keeps it fixed.)
+#
+# The NAME BOX and its VALUE is the dialog being correctly SEEDED — maestro-web
+# reports an input by its value, so this says the search text really reached the
+# field the operator is about to submit.
+- assertVisible: "New team: NBTeam-${ATTEMPT_ID}"
+- assertVisible:
+    id: "New team name"
+    text: "NBTeam-${ATTEMPT_ID}"
+
+# THE WRITE. Nothing is typed in the dialog: Team name is pre-filled with what
+# was searched, Location stays blank and no League is picked, so the COMPOSED
+# name is exactly what was typed and every later matcher is unchanged.
+#
+# `Create team <composed full name>` is the same accessible name this flow always
+# used — it moved from the popover row onto the dialog's own button. Tapped by id
+# rather than driven with a second Enter: Create and Cancel are NeonButtons with
+# an identical class string, and maestro-web's pressKey re-finds the focused
+# element by an XPath that falls back to that class, so an Enter aimed at Create
+# could land on Cancel.
 - tapOn:
     id: "Create team NBTeam-${ATTEMPT_ID}"
 
@@ -104,7 +142,7 @@ tags:
     id: "Remove team NBTeam-${ATTEMPT_ID}"
 
 # ============================================================
-# THE WRITE — NEO-216: choosing "+ Create" both creates the team entity
+# THE WRITE — NEO-216: the dialog's Create button both creates the team entity
 # (findOrCreate) AND links it to this card in one gesture. The drawer has no
 # Save button and no draft: TeamPicker sends `updateCard.teamOnCardIds` on the
 # tap itself, and the drawer's one status region confirms it.

@@ -14,10 +14,13 @@ import { sortTeamYears } from "../../lib/players/team-tenure";
 // below is where an EXTERNAL string first becomes something we call an id, so
 // it is the right place to decide whether it is one.
 import { isWikidataQid } from "../../lib/players/wikidata-id";
+// NEO-236: every outward-facing lookup (ESPN's displayName, Wikidata's label)
+// is keyed on the COMPOSED full name, never on the stored nickname.
+import { teamFullName } from "../../lib/teams/team-name";
 
 /**
  * Wikidata SPARQL adapter — enriches players (HoF, career teams) and
- * teams (city, league, years active) from query.wikidata.org. No API
+ * teams (location, league, years active) from query.wikidata.org. No API
  * key required.
  *
  * Concurrency model (NEO-99): every SPARQL caller — the review-wizard
@@ -497,6 +500,7 @@ async function findPlayerQid(
 }
 
 async function findTeamQid(
+  /** The COMPOSED full name — Wikidata labels franchises "San Diego Padres". */
   name: string,
   sportQid: string | undefined,
 ): Promise<string | null> {
@@ -642,8 +646,9 @@ async function findLeagueQid(
 
 /**
  * Player enrichment result, shared by both consumers:
- *  - `enrichPlayer` (id-based, post-creation) resolves `careerTeams` names
- *    to real team ids via teams.findOrCreateInternal before persisting.
+ *  - `enrichPlayer` (id-based, post-creation) resolves `careerTeams` names to
+ *    real team ids via `teams.findByFullNameInternal` before persisting, and
+ *    DROPS any it cannot match (NEO-236 — it never creates a team).
  *  - `runEntityReviewLookup` (NEO-92, name-based, pre-creation preview)
  *    stores `careerTeams` as bare names — resolving to real team rows is
  *    deferred to commit time (only once "create" is the confirmed decision)
@@ -656,7 +661,25 @@ export interface PlayerLookupResult {
    * Sorted earliest-stint-first (see `sortTeamYears`), and one entry PER
    * STINT — a player who left a franchise and came back has two.
    */
-  careerTeams: Array<{ name: string; fromYear: number; toYear?: number }>;
+  careerTeams: Array<{
+    name: string;
+    fromYear: number;
+    toYear?: number;
+    /**
+     * NEO-236 — the team's OWN Wikidata QID, from the P54 statement's value.
+     *
+     * Carried through because the review wizard now stages a real team row for
+     * a career team we do not hold, and that row needs its own enrichment. A
+     * name search for "Sydney Blue Sox" against EntitySearch is a guess that
+     * can land on the wrong entity or on nothing; the QID Wikidata just handed
+     * us for this membership is the same club, by construction. Optional
+     * because the value is only a QID when the IRI parses as one.
+     *
+     * This is a Wikidata id travelling as LINKAGE, not as truth: it selects
+     * which upstream record to read, and nothing user-facing is keyed on it.
+     */
+    wikidataId?: string;
+  }>;
   /**
    * NEO-235 — teams Wikidata links the player to with NO usable start year,
    * by name, sorted alphabetically. Absent (not `[]`) when there are none.
@@ -701,7 +724,8 @@ export interface PlayerLookupResult {
 export interface TeamLookupResult {
   wikidataId?: string;
   league?: string;
-  city?: string;
+  /** NEO-236: the place part of the team name. Location, not city. */
+  location?: string;
   yearsActive?: { from: number; to?: number };
   colors?: { primary?: string; secondary?: string };
   espnId?: string;
@@ -797,7 +821,12 @@ ${hallOfFameSparqlBlocks(qid, hofQid)}
   const result = await runSparql(detailQuery);
   if (!result) return null;
 
-  const careerTeams: Array<{ name: string; fromYear: number; toYear?: number }> = [];
+  const careerTeams: Array<{
+    name: string;
+    fromYear: number;
+    toYear?: number;
+    wikidataId?: string;
+  }> = [];
   // NEO-235: undated memberships, keyed by team QID so the same team repeated
   // across cross-product rows is named once. Values are the en labels.
   const undatedByTeamQid = new Map<string, string>();
@@ -873,6 +902,9 @@ ${hallOfFameSparqlBlocks(qid, hofQid)}
               name: row.teamLabel.value,
               fromYear: match.fromYear,
               toYear: match.toYear,
+              // NEO-236: `teamWdId` is already proven non-null by the guard
+              // above (it is the stint dedup key), so this is never a guess.
+              wikidataId: teamWdId,
             });
           } else if (match?.kind === "undated") {
             undatedByTeamQid.set(teamWdId, row.teamLabel.value);
@@ -952,24 +984,44 @@ ${hallOfFameSparqlBlocks(qid, hofQid)}
  * fields that NO creation path writes, checked against every path that can
  * insert a row and then enqueue it:
  *
- *   teams — `selectorOptions` prelude `resolveTeamIdByName`, and
- *           `teams.findOrCreateInternal`. Both insert exactly
- *           `{name, nameNormalized, sportId, leagueId, lastUpdated}`.
+ *   teams — `selectorOptions` prelude `createTeamFromOperatorInput`, and
+ *           `teams.findOrCreate` (the operator surfaces: TeamPicker's
+ *           "+ Create", MissingTeamFixer, Team Management). Both insert
+ *           exactly `{name, location?, nameNormalized, sportId, leagueId,
+ *           lastUpdated}`. `convex/seedTeamColors.ts` inserts the same shape
+ *           from the bundled dataset.
  *   players — the `selectorOptions` prelude create path, which is the only one
  *           that inserts a player row outside Team/Player Management.
  *
- * `leagueId` and `lastUpdated` are therefore NOT markers, and must never
- * become ones: every creation path sets both, so either would make the guard
- * skip every brand-new row and silently disable enrichment entirely. That is
- * the one failure mode this design has, and it is why the markers are listed
- * explicitly here rather than derived from "any enrichment field".
+ * `leagueId`, `lastUpdated` and — since NEO-236 — `location` are therefore NOT
+ * markers, and must never become ones: every creation path can set all three,
+ * so any of them would make the guard skip a brand-new row and silently
+ * disable enrichment for it. That is the one failure mode this design has, and
+ * it is why the markers are listed explicitly here rather than derived from
+ * "any enrichment field".
+ *
+ * ## Why `location` had to be dropped (NEO-236)
+ *
+ * It was a valid marker for exactly as long as `teams.location` was something
+ * only enrichment could produce. NEO-236 made Location the FIRST HALF OF THE
+ * CREATION FORM — Jason: "Location & Team Name should be the input" — so every
+ * team an operator creates for a real franchise arrives carrying one. Leaving
+ * it in the marker set meant those teams were skipped here before any lookup
+ * ran: no colours, no years, no `wikidataId`, no `espnId`, and no error
+ * anywhere. Precisely the "silently disable enrichment" failure this docblock
+ * warns about, reached through the front door.
+ *
+ * Nothing is lost by dropping it. An operator's location is still protected —
+ * `teams.applyEnrichmentInternal` gap-fills `location` only when the row has
+ * none, so enrichment cannot overwrite what they typed. The marker was
+ * guarding the LOOKUP; the gap-fill guards the VALUE, and only the second one
+ * was ever load-bearing for "never overwrite a human".
  *
  * Everything below IS a marker: no insert path writes any of them, and each is
- * something enrichment (or an operator) put there. A row carrying even one has
- * already been answered.
+ * something enrichment (or an operator, through Team Management's editor) put
+ * there. A row carrying even one has already been answered.
  */
 function teamEnrichmentMarkers(team: {
-  city?: string;
   yearsActive?: unknown;
   colors?: { primary?: string; secondary?: string };
   colorSource?: unknown;
@@ -977,7 +1029,7 @@ function teamEnrichmentMarkers(team: {
   externalIds?: { wikidataId?: string; espnId?: string };
 }): string[] {
   const markers: string[] = [];
-  if (team.city) markers.push("city");
+  // NOT `location` — it is a creation input since NEO-236. See the docblock.
   if (team.yearsActive) markers.push("yearsActive");
   if (team.colors?.primary || team.colors?.secondary) markers.push("colors");
   if (team.colorSource) markers.push("colorSource");
@@ -1007,11 +1059,20 @@ function playerEnrichmentMarkers(player: {
  * Internal action — given a player record, look up its Wikidata QID,
  * pull career teams + HoF status, and persist via applyEnrichmentInternal.
  *
- * Resolves each `careerTeams` name through teams.findOrCreateInternal so
- * `teamYears` points at our own teams table, not Wikidata QIDs. This is the
+ * Resolves each `careerTeams` name through `teams.findByFullNameInternal` so
+ * `teamYears` points at our own teams table, not Wikidata QIDs — and skips any
+ * stint whose team we do not already hold (NEO-236; see the loop). This is the
  * single most expensive enrichment call (one entity lookup + N team
  * resolutions per player); the calling action treats it as best-effort.
  */
+/**
+ * NEO-236 — bound on a Wikidata team label copied into a log line.
+ *
+ * The same 120 a stored team name is capped at (`teams.MAX_TEAM_NAME_LENGTH`),
+ * so a real franchise is never cut. See `career_team_unmatched` below.
+ */
+const MAX_LOGGED_TEAM_NAME_LENGTH = 120;
+
 export const enrichPlayer = internalAction({
   args: { playerId: v.id("players"), force: v.optional(v.boolean()) },
   returns: v.null(),
@@ -1061,21 +1122,66 @@ export const enrichPlayer = internalAction({
     // differently depending on which path happened to build it.
     //
     // Two different `name` strings CAN resolve to one teamId (Wikidata
-    // spellings differ across statements, and findOrCreateInternal folds on a
-    // normalized name), which is why the key is the resolved id and not the
+    // spellings differ across statements, and the lookup folds on a normalized
+    // name), which is why the key is the resolved id and not the
     // name. A repeat of the same `(teamId, fromYear)` is a genuine duplicate;
     // a second stint at that team starting a different year is not.
+    //
+    // ── NEO-236: a career team is LINKED, never created ─────────────────────
+    //
+    // Until now this called `teams.findOrCreateInternal`, so enriching one
+    // player minted a globally-shared `teams` row per Wikidata P54 label it
+    // had never seen — a row nobody chose, with a name nobody reviewed, that
+    // every picker and spine label then offered. Jason, 2026-09-05: creation
+    // takes Location + Name as its input, and this path has neither; it is
+    // "still looking up the team … and if there is a match we are linking to
+    // the team still", and on a miss the stint is left for operator review.
+    //
+    // So an unmatched stint is DROPPED from `teamYears` rather than
+    // materialised. That is a real loss of a fact Wikidata had, and it is the
+    // intended trade: `players.teamYears` requires a `teamId`, there is
+    // nowhere on the row to park a bare name (the same constraint that
+    // produced `undatedCareerTeams` in NEO-235), and inventing the team to
+    // have somewhere to point is precisely what NEO-236 removes. The miss is
+    // logged per stint so the aggregate is visible; the review wizard (WP5) is
+    // where an operator turns one of these into a real team.
     const teamYearByKey = new Map<
       string,
       { teamId: Id<"teams">; fromYear: number; toYear?: number }
     >();
     for (const ct of result.careerTeams) {
-      const teamId = await ctx.runMutation(internal.teams.findOrCreateInternal, {
-        name: ct.name,
-        // Career teams inherit the player's sport by REFERENCE now, so they
-        // can no longer land under a differently-cased duplicate.
-        sportId: player.sportId,
-      });
+      const teamId: Id<"teams"> | null = await ctx.runQuery(
+        internal.teams.findByFullNameInternal,
+        {
+          // Wikidata gives a FULL name; the lookup composes ours from
+          // `location` + `name`, so a split row still matches.
+          name: ct.name,
+          // Career teams inherit the player's sport by REFERENCE, so they
+          // can no longer land under a differently-cased duplicate.
+          sportId: player.sportId,
+        },
+      );
+      if (!teamId) {
+        // Structured, and the name is a VALUE rather than concatenated into
+        // the message — it comes from query.wikidata.org with no operator in
+        // the path and must not be able to shape a log line.
+        //
+        // NEO-236 security review: TRUNCATED as well. A Wikidata label is
+        // third-party text of no fixed length, and this line fires once per
+        // unmatched stint on a path that walks a whole career — an
+        // adversarially long label would otherwise be copied verbatim into the
+        // deployment log on every pass. 120 is the length a team name is
+        // allowed to be anywhere else in the product, so nothing legitimate is
+        // cut, and the value here is a diagnostic rather than data.
+        console.log(
+          JSON.stringify({
+            msg: "career_team_unmatched",
+            player: player.name,
+            team: ct.name.slice(0, MAX_LOGGED_TEAM_NAME_LENGTH),
+          }),
+        );
+        continue;
+      }
       teamYearByKey.set(`${teamId}|${ct.fromYear}`, {
         teamId,
         fromYear: ct.fromYear,
@@ -1096,30 +1202,56 @@ export const enrichPlayer = internalAction({
 
 /**
  * NEO-91: multi-source. ESPN (adapters/espn.ts) is tried first — reliable
- * hex colors and city for any CURRENT team, confirmed live against
+ * hex colors and location for any CURRENT team, confirmed live against
  * NBA/NFL/MLB/NHL — but it has zero historical/defunct-franchise coverage.
  * Wikidata always runs too: it's the only source for `yearsActive`/
- * `wikidataId`, and the only source for `city`/`league` when ESPN found no
- * match (a defunct team). When both resolve a city, ESPN's wins (more
- * likely accurate for anything currently active); ESPN's league (the exact
- * name from SPORT_TO_ESPN_LEAGUE, not a guess) also wins over Wikidata's
- * label when present.
+ * `wikidataId`, and the `league` fallback when ESPN found no match (a defunct
+ * team). ESPN's league (the exact name from the sport row's `sportConfig.espn`,
+ * not a guess) wins over Wikidata's label when present.
+ *
+ * NEO-236: `location` comes from ESPN or from nowhere. Wikidata's P159/P276 is
+ * a headquarters, not the place part of a team name, and it was routinely
+ * neither — see the note on the SPARQL below.
  */
 /**
  * Pure(-ish) lookup — no db writes. Already side-effect-free (unlike the
  * player lookup, a team has no nested "career teams" to defer). Tries ESPN
- * first (reliable colors/city/league for CURRENT teams), then Wikidata
- * (sole source of yearsActive/wikidataId, and the only source for
- * city/league when ESPN found no match — a defunct team). Returns null
- * only when NEITHER source matches.
+ * first (reliable colors/location/league for CURRENT teams), then Wikidata
+ * (sole source of yearsActive/wikidataId, and the `league` fallback when ESPN
+ * found no match — a defunct team). Returns null only when NEITHER source
+ * matches.
  */
 export async function lookupTeamEnrichment(
+  /** The COMPOSED full name — "San Diego Padres", not "Padres" (NEO-236). */
   name: string,
   sport: SportEnrichmentContext,
+  /**
+   * NEO-236 — a team QID the CALLER already holds, which skips the name search.
+   *
+   * Set only where the id is a fact rather than a guess: a career team staged
+   * off a player's P54 statements arrives with the QID Wikidata itself
+   * attached to that membership, so searching EntitySearch for its English
+   * label would be strictly worse — it can miss (the sport filter `wdt:P641`
+   * is absent on plenty of club and college sides), and it can land on a
+   * different entity that happens to share a name.
+   *
+   * ESPN is still consulted by NAME, because ESPN has no notion of a QID and
+   * its list is keyed on `displayName`. A club side ESPN has never heard of
+   * simply gets no location, which is the correct answer rather than a guess.
+   *
+   * Ignored unless it is a real `Q<digits>` id — the value crosses a
+   * marketplace-shaped trust boundary (it was read out of a SPARQL response
+   * and stored on a throwaway review row), and it is interpolated into a
+   * query below.
+   */
+  knownQid?: string,
 ): Promise<TeamLookupResult | null> {
   const espnInfo = await fetchEspnTeamInfo(sport.espn, name);
 
-  const qid = await findTeamQid(name, sport.wikidata?.sportQid);
+  const qid =
+    knownQid && isWikidataQid(knownQid)
+      ? knownQid
+      : await findTeamQid(name, sport.wikidata?.sportQid);
   if (!qid) {
     if (!espnInfo) {
       // NEO-208: structured for the same reason as the player no-match log
@@ -1138,21 +1270,30 @@ export async function lookupTeamEnrichment(
     }
     return {
       league: espnInfo.league,
-      city: espnInfo.city,
+      location: espnInfo.location,
       colors: { primary: espnInfo.colorPrimary, secondary: espnInfo.colorAlternate },
       espnId: espnInfo.espnId,
     };
   }
 
-  // P159 (headquarters location) is inconsistent for sports teams —
-  // confirmed empty for Washington Nationals and LA Rams (which instead
-  // had it, if at all, under P276 "location"), present for the Celtics.
-  // Ask for both, prefer P159.
+  // NEO-236 — Wikidata is NOT a location source, and P159/P276 are gone from
+  // this query rather than merely unread.
+  //
+  // They were asked for as "headquarters location" and treated as the place
+  // part of the team name. They are not the same thing, and the dev data
+  // proved it: "Nishi-Shinjuku" for the Chiba Lotte Marines, "Aichi
+  // Prefecture" for the Chunichi Dragons, "Tokorozawa" for the Saitama Seibu
+  // Lions — twelve rows, none of which is the prefix of the team's name and
+  // several of which are not even a city. `teams.location` is the word at the
+  // front of "San Diego Padres"; ESPN's `location` answers exactly that
+  // question and is the only automatic source for it.
+  //
+  // Wikidata stays for the two things it is good for here: `yearsActive` (its
+  // only source anywhere) and the `league` fallback for a defunct team ESPN
+  // has never heard of.
   const detailQuery = `
-    SELECT ?league ?leagueLabel ?city159 ?city159Label ?city276 ?city276Label ?inception ?dissolved WHERE {
+    SELECT ?league ?leagueLabel ?inception ?dissolved WHERE {
       OPTIONAL { wd:${qid} wdt:P118 ?league . }
-      OPTIONAL { wd:${qid} wdt:P159 ?city159 . }
-      OPTIONAL { wd:${qid} wdt:P276 ?city276 . }
       OPTIONAL { wd:${qid} wdt:P571 ?inception . }
       OPTIONAL { wd:${qid} wdt:P576 ?dissolved . }
       SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
@@ -1162,7 +1303,6 @@ export async function lookupTeamEnrichment(
   const result = await runSparql(detailQuery);
   const row = result?.results.bindings[0];
 
-  const wikidataCity = row?.city159Label?.value ?? row?.city276Label?.value;
   const fromYear = yearFromBinding(row?.inception);
   const toYear = yearFromBinding(row?.dissolved);
   const yearsActive = fromYear !== undefined ? { from: fromYear, to: toYear } : undefined;
@@ -1170,7 +1310,8 @@ export async function lookupTeamEnrichment(
   return {
     wikidataId: qid,
     league: espnInfo?.league ?? row?.leagueLabel?.value,
-    city: espnInfo?.city ?? wikidataCity,
+    // ESPN or nothing — see the note on the SPARQL above.
+    location: espnInfo?.location,
     yearsActive,
     colors: espnInfo
       ? { primary: espnInfo.colorPrimary, secondary: espnInfo.colorAlternate }
@@ -1225,12 +1366,15 @@ export const enrichTeam = internalAction({
     // league row misses on both sources, and a survey of all 58 prod teams
     // found espnId on 0 of them.
     if (sportCtx) {
-      const result = await lookupTeamEnrichment(team.name, sportCtx);
+      // NEO-236: the FULL name. ESPN matches on `displayName` and Wikidata on
+      // the entity label, both of which are "San Diego Padres" — a split row's
+      // `name` alone ("Padres") matches neither.
+      const result = await lookupTeamEnrichment(teamFullName(team), sportCtx);
       if (result) {
         await ctx.runMutation(internal.teams.applyEnrichmentInternal, {
           id: args.teamId,
           league: result.league,
-          city: result.city,
+          location: result.location,
           yearsActive: result.yearsActive,
           colors: result.colors,
           wikidataId: result.wikidataId,
@@ -1309,7 +1453,12 @@ export const runEntityReviewLookup = internalAction({
         ? null
         : row.kind === "player"
           ? await lookupPlayerEnrichment(row.name, sportCtx)
-          : await lookupTeamEnrichment(row.name, sportCtx);
+          : // NEO-236: a row staged off a player's career list carries the QID
+            // Wikidata attached to that P54 membership. Reading THAT record is
+            // not a search — it is the same club by construction, which is what
+            // gets "Sydney Blue Sox" its league instead of a null match from an
+            // EntitySearch that has no `wdt:P641` to filter on.
+            await lookupTeamEnrichment(row.name, sportCtx, row.source?.wikidataId);
       await ctx.runMutation(internal.entityReviewQueue.applyLookupResult, {
         id: args.rowId,
         status: result ? "ready" : "error",

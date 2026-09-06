@@ -10,9 +10,12 @@ import { normalizeEntityName } from "../../convex/lib/entityNearMatch";
 // `wikidataUrl` returns null unless it is really a `Q<digits>` id — see
 // lib/players/wikidata-id.ts.
 import { wikidataUrl, wikipediaUrl } from "../../lib/players/wikidata-id";
+// NEO-236: the team name split. Pure, no Convex — see lib/teams/team-name.ts.
+import { teamFullName } from "../../lib/teams/team-name";
 import { isEditableTarget } from "../../lib/dom/is-editable-target";
 import NeonButton from "../modules/NeonButton";
 import { ConfirmDialog } from "../modules/confirm-dialog";
+import { Input } from "../primitives/Input";
 import { CopyButton } from "../primitives/CopyButton";
 import {
   NearMatchPanel,
@@ -21,9 +24,18 @@ import {
 } from "../entities/NearMatchPanel";
 import EntityLinkSearch from "./EntityLinkSearch";
 import CareerTeamEntry, { type CareerTeamDraft } from "./CareerTeamEntry";
+// NEO-236: the one form a team is created from, shared with NewTeamDialog.
+import NewTeamForm, {
+  draftFullName,
+  newTeamPrefill,
+  type NewTeamDraft,
+} from "./NewTeamForm";
 import { deriveStagedTeamNames } from "./entity-review-staging";
 import {
+  countBulkCreatable,
+  countPendingBulkCreatable,
   countPendingUndecided,
+  countUndecided,
   describeDecision,
   resolveNav,
   summarizeDecisions,
@@ -116,6 +128,64 @@ import {
  */
 const MAX_RESOLVE_NAMES = 64;
 
+/**
+ * Mirrors MAX_TEAM_FULL_NAME_LENGTH in convex/entityReviewQueue.ts (and
+ * MAX_TEAM_NAME_LENGTH in convex/teams.ts). Applied to the COMPOSED name,
+ * because that is what gets stored and what the server measures.
+ */
+const MAX_TEAM_FULL_NAME_LENGTH = 120;
+
+/**
+ * NEO-236 (a11y + E2E): STABLE ids for the team Location + Name pair, not
+ * `useId()`.
+ *
+ * Two reasons, and they point the same way. `Input` never emits an id of its
+ * own precisely because maestro-web builds `resource-id = node.id ||
+ * node.ariaLabel`, so an id it cannot predict would replace the label a flow
+ * targets by — a generated `:r7:` is exactly that. And these fields want a
+ * visible `<label htmlFor>` rather than an `aria-label`, because two adjacent
+ * text inputs are the one case where a label earns its line, which needs an id
+ * to point at.
+ *
+ * Safe as constants: the wizard is a portal-rendered modal that exists at most
+ * once, the same premise `entity-review-wizard-title` already rests on.
+ */
+const TEAM_LOCATION_FIELD_ID = "entity-review-team-location";
+const TEAM_NAME_FIELD_ID = "entity-review-team-name";
+/** NEO-236 — the League pill group on the New Team step, same reasoning. */
+const TEAM_LEAGUE_FIELD_ID = "entity-review-team-league";
+
+/**
+ * NEO-236 — what the Location + Name pair shows for a team row before the
+ * operator touches it.
+ *
+ * Location is pre-filled ONLY from an ESPN location the lookup actually
+ * returned, and only when `splitTeamName` finds it as a whole-word prefix of
+ * the reviewed name: "San Diego" off "San Diego Padres" splits, "Anaheim" off
+ * "Los Angeles Angels" does not, and neither does "Sa". Everything else starts
+ * with a blank Location and the whole reviewed name in Name — byte-for-byte
+ * how these rows were created before the split existed, and the operator's cue
+ * to split it themselves. A blank Location is the FINAL answer only for a name
+ * that carries no place at all ("Athletics", "Orix Buffaloes"); a college
+ * side's location is its school ("San Diego State" / "Aztecs").
+ *
+ * There is no first-token heuristic here and there must never be one: NB has
+ * no code path that guesses a location without a source. The operator is the
+ * fallback.
+ *
+ * Mirrored server-side by `prefilledTeamCreate` in convex/entityReviewQueue.ts,
+ * which is what "Add All Remaining as New" writes for a team row — so
+ * confirming one row and confirming the batch mean the same thing.
+ */
+export function teamCreatePrefill(row: {
+  name: string;
+  enrichment?: { location?: string } | null;
+}): NewTeamDraft {
+  return newTeamPrefill({
+    name: row.name,
+    ...(row.enrichment?.location ? { location: row.enrichment.location } : {}),
+  });
+}
 /** Past this many decided rows the history list collapses behind a disclosure. */
 const DECIDED_LIST_INLINE_MAX = 5;
 
@@ -139,9 +209,25 @@ const AUTO_ADD_BATCH_THRESHOLD = 5;
  */
 const AUTO_ADD_MAX_CALLS = 400;
 
-/** A Convex rejection's message, or a written-for-the-operator fallback. */
-const errorMessage = (e: unknown, fallback: string) =>
-  e instanceof Error && e.message ? e.message : fallback;
+/**
+ * A Convex rejection's message, or a written-for-the-operator fallback.
+ *
+ * NEO-236: `data` is read FIRST, and structurally rather than with
+ * `instanceof ConvexError` — the same reasoning as `RenameEntityControl`'s
+ * `refusalMessage`, so a mocked or rethrown error in a test, or a version skew
+ * in the convex client, still surfaces what the server actually said.
+ * `recordDecision` throws a `ConvexError` when the Location + Name it was
+ * handed cannot compose into a team, and that string is written for the
+ * operator to read; a plain `Error` arrives already redacted to "Server Error",
+ * which is why the fallback exists.
+ */
+const errorMessage = (e: unknown, fallback: string) => {
+  if (typeof e === "object" && e !== null) {
+    const data = (e as { data?: unknown }).data;
+    if (typeof data === "string" && data.length > 0) return data;
+  }
+  return e instanceof Error && e.message ? e.message : fallback;
+};
 
 /** What the final step is about to write, as counted by the PARENT. */
 export type EntityReviewSummary = {
@@ -208,8 +294,18 @@ export default function EntityReviewWizard({
   const recordAllRemainingAsSkip = useMutation(
     api.entityReviewQueue.recordAllRemainingAsSkip,
   );
+  // NEO-236 — turn a player's career teams into their own New Team steps.
+  const stageCareerTeams = useMutation(api.entityReviewQueue.stageCareerTeamRows);
 
   const [linkingOpen, setLinkingOpen] = useState(false);
+  /**
+   * NEO-236 — the career-team entry form has text in it.
+   *
+   * Reported up by `CareerTeamEntry` because the text lives there, and the
+   * walk's "may I move you off this row?" test needs to know. Reset with the
+   * rest of the per-row state when the presented row changes.
+   */
+  const [careerEntryDirty, setCareerEntryDirty] = useState(false);
   // Manual career-team entries the admin has staged for the CURRENT player
   // row (only ever populated for a player). Held here (not in CareerTeamEntry)
   // so it resets per-row alongside linkingOpen and is passed through to
@@ -227,6 +323,29 @@ export default function EntityReviewWizard({
   const [excludedCareerTeamsByRow, setExcludedCareerTeamsByRow] = useState<
     Record<string, string[]>
   >({});
+  /**
+   * NEO-236 — the Location + Name the operator is creating a TEAM row from,
+   * keyed by review-row id.
+   *
+   * Keyed rather than reset per row for the same reason
+   * `excludedCareerTeamsByRow` is: a correction the operator has already typed
+   * ("this is Golden State / Warriors, not Golden / State Warriors") must
+   * survive NEO-221's back-navigation. Absent means "untouched", and an
+   * untouched row shows `teamCreatePrefill` — so the pre-fill stays live while
+   * a slow enrichment lookup lands, and stops the moment the operator types.
+   */
+  const [teamCreateByRow, setTeamCreateByRow] = useState<
+    Record<string, NewTeamDraft>
+  >({});
+  /*
+   * NEO-236 — there is no per-career-team draft state any more.
+   *
+   * A career team the batch has to create is a review row of its own now (see
+   * `entityReviewQueue.stageCareerTeamRows`), walked BEFORE the player and
+   * answered on the same New Team step a checklist team gets — Location, Name
+   * and, the part the inline pairs could never ask, League. The player's step
+   * reads those rows rather than collecting a second copy of the answer.
+   */
 
   /**
    * NEO-221 — WHICH ROW IS ON SCREEN. See `entity-review-nav.ts` for the rule
@@ -260,6 +379,22 @@ export default function EntityReviewWizard({
   const [decidingRowId, setDecidingRowId] = useState<Id<"entityReviewQueue"> | null>(
     null,
   );
+  /** NEO-236 — player rows this session has already asked the server to stage
+   *  career-team steps for. A ref, not state: see the effect. */
+  const stagedPlayersRef = useRef<Set<string>>(new Set());
+  /**
+   * NEO-236 — a career team the operator asked to decide that the batch holds
+   * no step for.
+   *
+   * Staging normally covers every accepted career team, but not always: it caps
+   * at 64 per player and skips a name too long to compose into a team. Those
+   * chips said "needs a team decision" with no way out beside them.
+   *
+   * Pressing `Decide team` now STAGES the step and then pins it. The row does
+   * not exist when the mutation returns, so the normalized label is parked here
+   * and an effect claims the row when the reactive batch brings it in.
+   */
+  const awaitingStageRef = useRef<string | null>(null);
   const decidingRef = useRef<Id<"entityReviewQueue"> | null>(null);
   /** A rejected per-row decide, shown inline under the row it belongs to. */
   const [rowError, setRowError] = useState<{
@@ -331,6 +466,20 @@ export default function EntityReviewWizard({
    * "Include career team X" with no clue what the list as a whole is for.
    */
   const careerTeamsLabelId = useId();
+  /** Names the "you can't confirm yet" message so the primary action can point
+   *  `aria-describedby` at it. */
+  const createBlockedId = useId();
+  /**
+   * NEO-236 (a11y) — id prefix for the per-career-team status lines.
+   *
+   * Each chip's "-> <team>" / "needs a team decision" line sits inside the
+   * checkbox's own `<label>`, but the checkbox carries an explicit `aria-label`
+   * ("Include career team X") which WINS over the label's text — so the status
+   * was on screen and absent from everything a screen reader announces.
+   * `aria-describedby` says it without disturbing the accessible name every
+   * `.maestro` flow targets.
+   */
+  const careerTeamStatusIdBase = useId();
 
   const total = rows?.length ?? 0;
   const decided = useMemo(() => rows?.filter((r) => r.decision).length ?? 0, [rows]);
@@ -338,8 +487,16 @@ export default function EntityReviewWizard({
     () => rows?.filter((r) => r.status === "pending").length ?? 0,
     [rows],
   );
+  /** What the OPERATOR is waiting on — every kind of row. Drives the status
+   *  line, which is why it must not be narrowed to players. */
   const pendingUndecided = useMemo(
     () => countPendingUndecided(rows ?? []),
+    [rows],
+  );
+  /** What the BULK CREATE will still have work to do for once lookups land —
+   *  players only, so arming it can actually converge. */
+  const pendingBulkCreatable = useMemo(
+    () => countPendingBulkCreatable(rows ?? []),
     [rows],
   );
   const outcome = useMemo(() => summarizeDecisions(rows ?? []), [rows]);
@@ -414,7 +571,9 @@ export default function EntityReviewWizard({
   /** id → display name, for `describeDecision`'s "Linked to {name}". */
   const linkedNameById = useMemo(() => {
     const map = new Map<string, string>();
-    for (const t of linkedTeams ?? []) map.set(t._id, t.name);
+    // NEO-236: the composed full name. A split row's `name` is the nickname
+    // alone ("Padres"), which does not identify the team it belongs to.
+    for (const t of linkedTeams ?? []) map.set(t._id, teamFullName(t));
     for (const p of linkedPlayers ?? []) map.set(p._id, p.name);
     return map;
   }, [linkedTeams, linkedPlayers]);
@@ -430,8 +589,10 @@ export default function EntityReviewWizard({
       deriveStagedTeamNames({
         rows: rows ?? [],
         currentRowId: current?._id ?? null,
-        localChips: stagedCareerTeams,
-        linkedTeamNames: (linkedTeams ?? []).map((t) => t.name),
+        // NEO-236: a chip holds Location + Name; the staging list is full
+        // names, because that is the key commit dedupes on.
+        localChips: stagedCareerTeams.map((c) => ({ name: teamFullName(c) })),
+        linkedTeamNames: (linkedTeams ?? []).map((t) => teamFullName(t)),
       }).map((s) => s.name),
     [rows, current?._id, stagedCareerTeams, linkedTeams],
   );
@@ -459,7 +620,7 @@ export default function EntityReviewWizard({
       if (excluded.has(normalizeEntityName(ct.name))) continue;
       push(ct.name);
     }
-    for (const chip of stagedCareerTeams) push(chip.name);
+    for (const chip of stagedCareerTeams) push(teamFullName(chip));
     return names;
   }, [current, excludedCareerTeamsByRow, stagedCareerTeams]);
 
@@ -474,23 +635,197 @@ export default function EntityReviewWizard({
       : "skip",
   );
 
+  /**
+   * ── NEO-236: what will happen to each career team on this player ──────────
+   *
+   * The wizard used to answer this with three inline inputs per unmatched
+   * label. It now answers it by READING the batch: a career team the commit
+   * would have to create is a review row of its own, staged ahead of the player
+   * (`entityReviewQueue.stageCareerTeamRows`) and answered on a New Team step.
+   * So the player's step reports rather than collects, and each chip says which
+   * of four things is true of it.
+   */
+  const stagedTeamRowsForCurrent = useMemo(() => {
+    const byName = new Map<string, NonNullable<typeof rows>[number]>();
+    if (!current || current.kind !== "player" || !rows) return byName;
+    for (const row of rows) {
+      if (row.kind !== "team") continue;
+      /*
+       * ANY team row in the batch, keyed by NAME — not just the rows staged for
+       * this player, and not just STAGED rows at all.
+       *
+       * Jason, on the Canadiens: the batch held a plain team row for "Montreal
+       * Canadiens" (a name off the checklist, no `source`) and this player's
+       * chip still read "needs a team decision" after it had been answered.
+       * This opened with `source?.kind !== "careerTeamOf"`, so only a staged row
+       * could answer a chip.
+       *
+       * The question a chip asks is "does the batch hold an answer for this
+       * team?" — and a checklist team row is exactly that answer. Where a row
+       * came from decides what its STEP says ("Needed by: …"), never whether it
+       * counts.
+       *
+       * Staging dedupes a career team across the entire batch — the first
+       * player to propose "Sydney Blue Sox" gets the step, and every later
+       * player that shares that club gets none, because one step is all the
+       * batch needs. Filtering by `source.playerRowId` therefore made every
+       * player after the first report "needs a team decision" for a team the
+       * batch was already creating, and blocked their Confirm on a question
+       * that had already been answered.
+       *
+       * `playerRowId` still does real work — it names the step ("Needed by:
+       * Travis Bazzana") and it is what the walk's blocking rule reads. It is
+       * simply not what decides whether a LABEL has an answer; the answer is
+       * the team, and the team is identified by its name.
+       */
+      const key = normalizeEntityName(row.name);
+      if (!key) continue;
+      // A decided row wins over an undecided one holding the same name. The two
+      // can only coexist transiently (staging dedupes against the batch), and
+      // when they do the ANSWER is the interesting one.
+      const held = byName.get(key);
+      if (held?.decision && !row.decision) continue;
+      byName.set(key, row);
+    }
+    return byName;
+  }, [rows, current]);
+
+  /**
+   * `resolved` — we already hold this team, so the stint links to it.
+   * `creating` — a staged step in THIS batch is answered "add as new", and the
+   *   label is the composed name the operator gave it.
+   * `linked` — that step was answered by pointing at an existing row instead.
+   * `waiting` — nobody has answered it yet, or it was skipped as "not a team".
+   *   The stint cannot land, so Confirm is held until the operator answers the
+   *   step or unticks the chip.
+   */
+  const careerTeamStatus = (
+    label: string,
+  ):
+    | { kind: "resolved" | "creating" | "linked"; name: string }
+    | { kind: "checking" }
+    // NEO-236 — `stagedRowId` is the step that answers this label, when the
+    // batch holds one. Without it the chip said "needs a team decision" and
+    // pointed nowhere, which is exactly what Jason hit: "There does not appear
+    // to be anywhere that a decision is needed that I can see."
+    | { kind: "waiting"; stagedRowId?: Id<"entityReviewQueue"> } => {
+    const key = normalizeEntityName(label);
+    const resolved = (resolvedTeamNames ?? []).find(
+      (r) => normalizeEntityName(r.name) === key,
+    );
+    if (resolved?.existingTeamId) {
+      return { kind: "resolved", name: resolved.existingName ?? label };
+    }
+    const staged = stagedTeamRowsForCurrent.get(key);
+    /*
+     * The match query has not answered yet, and this chip has no staged step
+     * of its own to answer from. `undefined` from `resolveNames` is "not
+     * answered", NOT "no match" — and the difference matters here in a way it
+     * did not before: every chip whose team ALREADY EXISTS has no staged step
+     * by construction (staging skips a team we hold), so reading an unanswered
+     * query as "unanswered by the operator" would paint a whole career pink
+     * and block Confirm for as long as the round trip takes.
+     *
+     * `checking` says nothing on screen and blocks nothing. When the answer
+     * lands it becomes `resolved` or, genuinely, `waiting`.
+     */
+    if (resolvedTeamNames === undefined && !staged?.decision) {
+      return { kind: "checking" };
+    }
+    const decision = staged?.decision;
+    if (decision?.action === "create" && decision.create) {
+      return {
+        kind: "creating",
+        name: teamFullName({
+          name: decision.create.name,
+          ...(decision.create.location
+            ? { location: decision.create.location }
+            : {}),
+        }),
+      };
+    }
+    if (decision?.action === "link" && decision.linkedTeamId) {
+      return {
+        kind: "linked",
+        name: linkedNameById.get(decision.linkedTeamId) ?? label,
+      };
+    }
+    return staged ? { kind: "waiting", stagedRowId: staged._id } : { kind: "waiting" };
+  };
+
+  /** The first career team on this row that has a step waiting to be answered
+   *  — what the footer's blocked line offers to jump to. */
+  const firstBlockingStep = (): { name: string; rowId: Id<"entityReviewQueue"> } | null => {
+    for (const label of unansweredCareerTeams) {
+      const status = careerTeamStatus(label);
+      if (status.kind === "waiting" && status.stagedRowId) {
+        return { name: label, rowId: status.stagedRowId };
+      }
+    }
+    return null;
+  };
+
   /** "Will create 2 new teams: X, Y · 1 already exist" — either half is
    *  omitted when its count is zero, so the line never says "0 new teams". */
+  /**
+   * One line under the career list saying where this player's stints will land.
+   *
+   * NEO-236 reworded it, because "Will create N new teams" stopped being true
+   * of THIS step. A team the batch does not hold gets a New Team step of its
+   * own, and until that step is answered nothing is being created — so the line
+   * reports three states rather than two, and only claims a creation once the
+   * team's own step has actually said create.
+   *
+   * Built from `careerTeamStatus` rather than from `resolvedTeamNames` alone,
+   * so it cannot drift from what the chips beside it say.
+   */
   const teamSummary = useMemo(() => {
     if (!resolvedTeamNames || resolvedTeamNames.length === 0) return null;
-    const willCreate = resolvedTeamNames.filter((r) => !r.existingTeamId);
-    const alreadyExist = resolvedTeamNames.length - willCreate.length;
+    const creating: string[] = [];
+    const waiting: string[] = [];
+    let alreadyExist = 0;
+    // The accepted labels, computed here rather than read off
+    // `acceptedCareerTeams`: that one is declared below the `isOpen` early
+    // return, and a hook may not reach past it.
+    const accepted = (current?.enrichment?.careerTeams ?? [])
+      .map((ct) => ct.name)
+      .filter(
+        (label, idx, all) =>
+          all.indexOf(label) === idx && !excludedForCurrent.includes(label),
+      );
+    for (const label of accepted) {
+      const status = careerTeamStatus(label);
+      if (status.kind === "resolved" || status.kind === "linked") {
+        alreadyExist += 1;
+      } else if (status.kind === "creating") {
+        creating.push(status.name);
+      } else if (status.kind === "waiting") {
+        waiting.push(label);
+      }
+      // "checking" says nothing until the match query answers.
+    }
     const parts: string[] = [];
-    if (willCreate.length > 0) {
+    if (creating.length > 0) {
       parts.push(
-        `Will create ${willCreate.length} new ${
-          willCreate.length === 1 ? "team" : "teams"
-        }: ${willCreate.map((r) => r.name).join(", ")}`,
+        `Will create ${creating.length} new ${
+          creating.length === 1 ? "team" : "teams"
+        }: ${creating.join(", ")}`,
+      );
+    }
+    if (waiting.length > 0) {
+      parts.push(
+        `${waiting.length} ${
+          waiting.length === 1 ? "team needs" : "teams need"
+        } their own step: ${waiting.join(", ")}`,
       );
     }
     if (alreadyExist > 0) parts.push(`${alreadyExist} already exist`);
     return parts.length > 0 ? parts.join(" · ") : null;
-  }, [resolvedTeamNames]);
+    // `careerTeamStatus` closes over `resolvedTeamNames`, the staged rows and
+    // the linked-name map, all of which are already deps here by way of the two
+    // listed; adding the function itself would re-run this on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resolvedTeamNames, stagedTeamRowsForCurrent, current, excludedForCurrent, linkedNameById]);
 
   // ------------------------------------------------------------------------
   // Effects
@@ -504,19 +839,114 @@ export default function EntityReviewWizard({
    * The ONLY thing that advances the presented row. `resolveNav` returns the
    * same object when nothing should move, so this cannot loop.
    */
+  /**
+   * NEO-236 — has the operator started on the row that is on screen?
+   *
+   * Gates ONLY the teams-first yield (see `resolveNav`): the walk may revise
+   * its own pick while the row is untouched, and must stop once there is work
+   * on it to lose. Every item here is per-row state that a jump discards or
+   * hides:
+   *
+   *  - `linkingOpen` — the link search is open, i.e. they are choosing a target;
+   *  - a staged manual stint;
+   *  - an unticked career-team chip (the list starts fully ticked, so anything
+   *    in here is a deliberate exclusion);
+   *  - text typed into the career-team entry, reported up by that component;
+   *  - a New Team form the operator has edited (team rows never yield, so this
+   *    is belt-and-braces rather than load-bearing).
+   */
+  const pinnedRowHasEdits =
+    linkingOpen ||
+    careerEntryDirty ||
+    stagedCareerTeams.length > 0 ||
+    (current ? (excludedCareerTeamsByRow[current._id]?.length ?? 0) > 0 : false) ||
+    (current ? teamCreateByRow[current._id] !== undefined : false);
+
   useEffect(() => {
     if (!rows) return;
-    const next = resolveNav(rows, nav);
+    const next = resolveNav(rows, nav, { pinnedRowHasEdits });
     if (next === nav) return;
     navRef.current = next;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- the presented row follows the batch; the rule that decides when is pure and tested in entity-review-nav.test.tsx
     setNav(next);
-  }, [rows, nav]);
+  }, [rows, nav, pinnedRowHasEdits]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- one-way latch: a batch that has had rows can never un-have them
     if (rows && rows.length > 0 && !hadRows) setHadRows(true);
   }, [rows, hadRows]);
+
+  /**
+   * NEO-236 — claim the step `Decide team` just asked to have staged.
+   *
+   * The insert happens server-side, so the row arrives on the next `getBatch`
+   * push rather than in the mutation's return. Pinned EXPLICITLY: the operator
+   * asked for this row by name, and the walk's teams-first rule would otherwise
+   * be free to offer some other team first.
+   */
+  useEffect(() => {
+    const waiting = awaitingStageRef.current;
+    if (!waiting || !rows) return;
+    const staged = rows.find(
+      (r) => r.kind === "team" && normalizeEntityName(r.name) === waiting,
+    );
+    if (!staged) return;
+    awaitingStageRef.current = null;
+    const next: NavState = { rowId: staged._id, explicit: true };
+    navRef.current = next;
+    // No `set-state-in-effect` disable needed here, unlike the nav effect
+    // above: this one is guarded by a ref that is cleared before the set, so
+    // the lint rule can see it cannot re-enter.
+    setNav(next);
+  }, [rows]);
+
+  /**
+   * NEO-236 — the belt-and-braces staging pass.
+   *
+   * `applyLookupResult` stages a player's career teams the moment its
+   * enrichment lands, which is what puts the New Team steps AHEAD of the player
+   * in the walk. This covers what that cannot reach: a batch whose lookups
+   * landed before this shipped, and a row whose enrichment arrived by some
+   * other route. On every ordinary row it is one idempotent call that inserts
+   * nothing.
+   *
+   * Guarded by a REF keyed on the row id, not by a piece of state: the effect
+   * re-runs whenever `rows` updates (which is often, reactively), and a state
+   * flag would be read from a stale render closure exactly when two updates
+   * land in one frame. One call per row per session is the bound.
+   *
+   * When it DID add steps, the wizard hands navigation back to its own rule —
+   * `nextUndecided` holds a player whose staged teams are unanswered, so the
+   * walk moves to the first of those instead of sitting on a player whose chips
+   * all read "needs a team decision".
+   */
+  useEffect(() => {
+    if (!current || current.kind !== "player") return;
+    if (current.decision) return;
+    if ((current.enrichment?.careerTeams?.length ?? 0) === 0) return;
+    if (stagedPlayersRef.current.has(current._id)) return;
+    stagedPlayersRef.current.add(current._id);
+    void stageCareerTeams({ reviewRowId: current._id })
+      .then((added) => {
+        if (added === 0) return;
+        // The same two lines `resumeWalking` runs — written out because that
+        // helper is declared below this effect, and reaching forward to it is
+        // the shape the lint rule (rightly) rejects.
+        const next: NavState = { rowId: null, explicit: false };
+        navRef.current = next;
+        setNav(next);
+      })
+      .catch(() => {
+        // The steps are missing, so the player's chips will say so and Confirm
+        // will hold. Retrying on a schedule would be a client-driven write
+        // loop; the operator's own "Change decision" is the way back.
+      });
+    // `stageCareerTeams` is stable for the life of the dialog and is
+    // deliberately not a dep — including a `useMutation` result,
+    // whose identity stability is the hook's business, would re-run this on
+    // every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [current]);
 
   // Closing the "Link to Existing" search whenever the presented row changes
   // so it doesn't stay open for the wrong row. Keyed on the row id, so it no
@@ -526,6 +956,11 @@ export default function EntityReviewWizard({
     // eslint-disable-next-line react-hooks/set-state-in-effect -- closes the link-search when the wizard advances so it cannot stay open on the wrong row
     setLinkingOpen(false);
     setStagedCareerTeams([]);
+    setCareerEntryDirty(false);
+    // NEO-236's `decideError` is gone: NEO-221's `rowError` supersedes it and
+    // is already per-row — cleared at the top of `decide` and rendered only
+    // when `rowError.rowId` is the presented row — so a refusal cannot follow
+    // the operator onto the next name.
   }, [current?._id]);
 
   // Focus the final Save button as soon as it appears so Enter immediately
@@ -590,7 +1025,18 @@ export default function EntityReviewWizard({
    */
   useEffect(() => {
     if (!autoAddPending || !rows) return;
-    const undecided = rows.filter((r) => !r.decision);
+    /*
+     * NEO-236 — PLAYERS only, and this is a convergence requirement rather
+     * than a nicety.
+     *
+     * The bulk create no longer decides team rows (Jason: "it should only
+     * apply to players"), so an armed loop that watched every undecided row
+     * would sit forever on the New Team steps it is not allowed to touch:
+     * `settled > 0` would stay true, every call would decide 0, and the cap
+     * would be the only thing that eventually stopped it — after 400 pointless
+     * mutations and an error message blaming the operator.
+     */
+    const undecided = rows.filter((r) => !r.decision && r.kind !== "team");
     if (undecided.length === 0) {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- the arming is over because there is nothing left to add
       setAutoAddPending(false);
@@ -756,21 +1202,49 @@ export default function EntityReviewWizard({
     }
   };
 
+  /**
+   * NEO-236 — one create decision, built from whatever the current row's kind
+   * actually needs.
+   *
+   * A TEAM row carries `create`: the Location, Name and League the commit
+   * prelude builds the row from, and the ONLY thing it will build one from.
+   *
+   * A PLAYER row carries only its stints and its exclusions. The `createTeams`
+   * list it used to carry is gone — every career team that needs creating has
+   * a review row of its own now, and recording the answer in two places is how
+   * the two end up disagreeing.
+   *
+   * `manualCareerTeams` carries FULL names, because that is what the prelude
+   * looks up against `teams`.
+   */
   const handleCreate = async (
     reviewRowId: Id<"entityReviewQueue">,
-    manualCareerTeams?: CareerTeamDraft[],
-    excludedCareerTeamNames?: string[],
+    payload: {
+      manualCareerTeams?: CareerTeamDraft[];
+      excludedCareerTeamNames?: string[];
+      create?: {
+        location?: string;
+        name: string;
+        leagueId?: Id<"leagues"> | null;
+        leagueName?: string;
+      };
+    } = {},
   ) =>
     decide(reviewRowId, () =>
       recordDecision({
         reviewRowId,
         action: "create",
-        manualCareerTeams:
-          manualCareerTeams && manualCareerTeams.length ? manualCareerTeams : undefined,
-        excludedCareerTeamNames:
-          excludedCareerTeamNames && excludedCareerTeamNames.length
-            ? excludedCareerTeamNames
-            : undefined,
+        manualCareerTeams: payload.manualCareerTeams?.length
+          ? payload.manualCareerTeams.map((ct) => ({
+              name: teamFullName(ct),
+              fromYear: ct.fromYear,
+              ...(ct.toYear !== undefined ? { toYear: ct.toYear } : {}),
+            }))
+          : undefined,
+        excludedCareerTeamNames: payload.excludedCareerTeamNames?.length
+          ? payload.excludedCareerTeamNames
+          : undefined,
+        create: payload.create,
       }),
     );
   const handleLink = async (
@@ -807,6 +1281,49 @@ export default function EntityReviewWizard({
     navRef.current = next;
     setNav(next);
     void decide(rowId, () => clearDecision({ reviewRowId: rowId }), "drop");
+  };
+
+  /**
+   * NEO-236 — go to the step that answers a blocked career-team chip, ready to
+   * be answered.
+   *
+   * An UNDECIDED step is simply presented. A step that already carries a
+   * decision is one the operator SKIPPED — "not a team" — and the chip beside
+   * it still says the stint has nowhere to land, so landing them on a read-only
+   * "Already decided: Skipped" panel would be a second dead end. Clearing it
+   * first is what they asked for by pressing a control called "Decide team":
+   * the step comes up live, with its Location, Name and League ready to fill
+   * in. That is the same gesture as the decided list's "Change".
+   */
+  const goToTeamStep = (rowId: Id<"entityReviewQueue">) => {
+    const row = rows?.find((r) => r._id === rowId);
+    if (row?.decision) {
+      handleChangeDecision(rowId);
+      return;
+    }
+    presentDecided(rowId);
+  };
+
+  /**
+   * NEO-236 — `Decide team` for a label the batch holds no step for.
+   *
+   * Stages one, then the effect above pins it when the server's insert lands.
+   * Idempotent server-side, so a double press cannot mint two steps.
+   */
+  const stageThenGoToTeamStep = (
+    playerRowId: Id<"entityReviewQueue">,
+    label: string,
+  ) => {
+    awaitingStageRef.current = normalizeEntityName(label);
+    void stageCareerTeams({
+      reviewRowId: playerRowId,
+      careerTeamNames: [label],
+    }).catch(() => {
+      // Nothing was staged, so there is nothing to go to. The chip still says
+      // the team needs a decision, which remains true — and unticking it is
+      // still the other way out.
+      awaitingStageRef.current = null;
+    });
   };
 
   /** Present a decided row read-only, without touching it. */
@@ -905,7 +1422,7 @@ export default function EntityReviewWizard({
     // rather than leaving the operator to click again for each straggler. The
     // cap counts per arming, so re-clicking after it trips is a fresh budget —
     // which is the point: a deliberate click is not a runaway loop.
-    if (pendingUndecided > 0) {
+    if (pendingBulkCreatable > 0) {
       autoAddCallsRef.current = 0;
       autoAddRef.current = true;
       setAutoAddPending(true);
@@ -926,6 +1443,25 @@ export default function EntityReviewWizard({
   const kindLabel = (kind: "player" | "team") => (kind === "player" ? "Player" : "Team");
   /** "not a person" / "not a team" — the skip control says what it is denying. */
   const notAWhat = (kind: "player" | "team") => (kind === "player" ? "person" : "team");
+
+  /**
+   * NEO-236 — the Location + Name pair for the current TEAM row.
+   *
+   * Reads the operator's edit when there is one and `teamCreatePrefill`
+   * otherwise, so the pre-fill keeps tracking a late-arriving enrichment
+   * lookup right up until the first keystroke.
+   */
+  const teamCreate: NewTeamDraft =
+    current && current.kind === "team"
+      ? (teamCreateByRow[current._id] ?? teamCreatePrefill(current))
+      : { location: "", name: "", leagueId: undefined, leagueName: undefined };
+
+  const patchTeamCreate = (rowId: string, patch: Partial<NewTeamDraft>) => {
+    setTeamCreateByRow((prev) => ({
+      ...prev,
+      [rowId]: { ...(prev[rowId] ?? teamCreate), ...patch },
+    }));
+  };
 
   const toggleCareerTeam = (rowId: string, teamName: string) => {
     setExcludedCareerTeamsByRow((prev) => {
@@ -953,6 +1489,104 @@ export default function EntityReviewWizard({
       })
     : [];
 
+  // ── NEO-236: what a create on this row would actually write ─────────────
+
+  /** Every still-checked Wikidata proposal, deduped, in display order. */
+  const acceptedCareerTeams = sortedCareerTeams
+    .map((ct) => ct.name)
+    .filter(
+      (label, idx, all) =>
+        all.indexOf(label) === idx && !excludedForCurrent.includes(label),
+    );
+
+  /**
+   * Accepted proposals with no answer yet — no existing team, and no staged
+   * step that has been decided. These are what Confirm waits on.
+   */
+  const unansweredCareerTeams = acceptedCareerTeams.filter(
+    (label) => careerTeamStatus(label).kind === "waiting",
+  );
+
+  /**
+   * Why the create action cannot fire yet, or null.
+   *
+   * A TEAM row: a blank name, or a composed one over the length cap. Both are
+   * things the operator can fix where they are standing, and the server refuses
+   * them independently — a stale bundle must not be able to get the write
+   * through.
+   *
+   * A PLAYER row: a career team nobody has answered. NEO-236 moved that answer
+   * out of this step and onto the team's own New Team step, so the fix is
+   * elsewhere — either answer that step, or untick the chip. The message says
+   * both, because "blocked" with no way forward is the worst state a walker can
+   * be in. It is normally unreachable: `nextUndecided` holds a player back
+   * until its staged teams are answered, so this fires only for a team decided
+   * "skip" (which creates nothing) or a step the operator reopened.
+   */
+  const createBlocked: string | null = (() => {
+    if (!current) return null;
+    if (current.kind === "team") {
+      if (!teamCreate.name.trim()) return "Enter a team name before adding it.";
+      // Mirrors MAX_TEAM_FULL_NAME_LENGTH in convex/entityReviewQueue.ts,
+      // which refuses the same composed name.
+      const composed = draftFullName(teamCreate);
+      if (composed.length > MAX_TEAM_FULL_NAME_LENGTH) {
+        return `That name is ${composed.length} characters; the limit is ${MAX_TEAM_FULL_NAME_LENGTH}.`;
+      }
+      return null;
+    }
+    if (unansweredCareerTeams.length > 0) {
+      return unansweredCareerTeams.length === 1
+        ? `${unansweredCareerTeams[0]} still needs a team decision, or untick it.`
+        : `${unansweredCareerTeams.length} career teams still need a team decision, or untick them.`;
+    }
+    return null;
+  })();
+
+  /**
+   * NEO-236 — the step the footer's blocked line offers to jump to.
+   *
+   * The message said N teams need a decision and pointed nowhere. This is the
+   * first one that actually has a step waiting, so the line can offer to go
+   * there instead of leaving the operator to find it.
+   */
+  const blockingStep = createBlocked ? firstBlockingStep() : null;
+
+  /**
+   * The create decision this row would record, built once for both the primary
+   * button and the demoted "…anyway" link.
+   *
+   * NEO-236: a PLAYER decision no longer carries `createTeams`. Every career
+   * team that needs creating has a review row of its own, answered on its own
+   * step, and the prelude builds the `teams` row from THAT decision before it
+   * resolves this player's stints by name. Two places recording the same answer
+   * is how they end up disagreeing; the server validator still accepts the old
+   * shape so a batch mid-review across a deploy still commits.
+   */
+  const buildCreatePayload = () => {
+    if (!current) return {};
+    if (current.kind === "team") {
+      const location = teamCreate.location.trim();
+      return {
+        create: {
+          name: teamCreate.name.trim(),
+          ...(location ? { location } : {}),
+          // `leagueId` is sent VERBATIM including null — null is the operator
+          // saying "no league", and the server tells it apart from an omitted
+          // key, which still lets its own fallbacks apply.
+          ...(teamCreate.leagueId !== undefined
+            ? { leagueId: teamCreate.leagueId }
+            : {}),
+          ...(teamCreate.leagueName ? { leagueName: teamCreate.leagueName } : {}),
+        },
+      };
+    }
+    return {
+      manualCareerTeams: stagedCareerTeams,
+      excludedCareerTeamNames: excludedForCurrent,
+    };
+  };
+
   const exactMatch = (nearMatches ?? []).find((m) => m.confidence === "exact") ?? null;
   const showExactHierarchy = hasExact(nearMatches) && exactMatch !== null;
   const hasCloseOnly = !showExactHierarchy && (nearMatches?.length ?? 0) > 0;
@@ -968,6 +1602,18 @@ export default function EntityReviewWizard({
       ? nearMatches.filter((m) => m._id !== exactMatch._id)
       : nearMatches;
   const remaining = total - decided;
+  /**
+   * NEO-236 — the two bulk buttons act on DIFFERENT sets, so they count
+   * different things and their labels say which.
+   *
+   * `remainingPlayers` is what "Add remaining players as new" will decide:
+   * Jason narrowed it to players, because a team row's own step is the only
+   * place its League gets a human answer. `remainingNames` is every undecided
+   * row, which is what "Skip remaining" still rules on — a skip creates
+   * nothing, so there is no league to get wrong.
+   */
+  const remainingPlayers = countBulkCreatable(rows);
+  const remainingNames = countUndecided(rows);
   const busy = decidingRowId !== null;
 
   /** Decided rows, in batch order, for the history list. */
@@ -1014,7 +1660,7 @@ export default function EntityReviewWizard({
   const footerStatus: string | null = expired
     ? null
     : autoAddPending
-      ? `Adding ${remaining} more as their lookups finish…`
+      ? `Adding ${remainingPlayers} more as their lookups finish…`
       : pendingUndecided > 0
         ? `${pendingUndecided} still looking up — wait or skip`
         : null;
@@ -1027,6 +1673,178 @@ export default function EntityReviewWizard({
     ["Linked to existing", outcome.linked],
     ["Skipped as not a name", outcome.skipped],
   ];
+
+  /**
+   * ── The decision for the row on screen, rendered in the FIXED FOOTER ──────
+   *
+   * CI run 8 caught these at y=620-652 on the 1024x629 CI viewport — below the
+   * footer and below the dialog — because they were the last elements of a
+   * scrolling body whose content had grown (the Wikidata lines, the
+   * Location/Name pair, and a league picker rendering every league in the
+   * sport). Maestro cannot scroll an inner overflow box, and an operator should
+   * never have to hunt for the button they have just decided to press.
+   *
+   * So the decision lives where NEO-110 already proved things must live when
+   * they may not move. The row's CONTENT still scrolls — that is what a body is
+   * for — but the decision about it does not.
+   *
+   * Null in every state with no live row: nothing presented, a row being
+   * reviewed read-only (its own panel carries "Change decision" / "Next"), the
+   * link sub-panel open (it owns the screen and its own Cancel), and an expired
+   * batch. That is also what makes this mutually exclusive with "Confirm &
+   * Save" — a presented row means not every row is decided.
+   *
+   * Every accessible name is unchanged from when these sat in the body:
+   * `Add as New {Player|Team}`, `Link to Existing…`, `Skip … — not a …` and
+   * `Back` are each an E2E contract and a screen reader's only handle.
+   */
+  const decisionControls =
+    !expired && current && !reviewingDecided && !linkingOpen ? (
+      /*
+        a11y (SC 2.4.3 / 2.4.6 / 4.1.2) — NAMED, because the decision no longer
+        sits under the heading it is about.
+
+        In the body these controls were the next thing after
+        `<h3>New Team: Sydney Blue Sox</h3>`, so "Add as New Team" needed no
+        further context: a screen reader had just read the name. From the footer
+        they are separated from that heading by the whole scrolling body, and a
+        keyboard operator arriving by Tab (or a virtual cursor arriving from the
+        bottom) hears "Add as New Team, button" with nothing saying WHICH name.
+        The accessible names themselves are an E2E contract and must not move,
+        so the row identity goes on the group instead — announced on entry,
+        exactly like the read-only `Decision for {name}` panel this replaces
+        when a decided row is being read back. The two are mutually exclusive by
+        construction, so the shared phrasing can never be ambiguous.
+      */
+      <div
+        role="group"
+        aria-label={`Decision for ${current.name}`}
+        className="flex flex-wrap items-center gap-3"
+        aria-busy={busy}
+      >
+        {/*
+          ONE primary button element, one JSX slot, both states.
+
+          `nearMatches` resolves asynchronously while this row is on screen, so
+          `showExactHierarchy` can flip UNDER a keyboard user who has already
+          tabbed to the primary. A ternary that swaps WHICH element renders here
+          unmounts the focused node and focus falls to <body> (WCAG 2.2 SC
+          3.2.2 / 2.4.3). Label, handler and variant are props on a single
+          element instead.
+
+          NEO-221: `aria-disabled`, never native `disabled`. A disabled button
+          leaves the tab order, so a keyboard operator who tabbed here would be
+          thrown out of the footer for the length of a round-trip; NeonButton
+          already paints aria-disabled the same way.
+        */}
+        <NeonButton
+          secondary={!showExactHierarchy && hasCloseOnly}
+          style={
+            !showExactHierarchy && hasCloseOnly ? { color: "#000000" } : undefined
+          }
+          aria-disabled={
+            busy || (createBlocked !== null && !(showExactHierarchy && exactMatch))
+              ? true
+              : undefined
+          }
+          aria-describedby={createBlocked ? createBlockedId : undefined}
+          aria-label={
+            showExactHierarchy && exactMatch
+              ? `Link to ${exactMatch.name}`
+              : `Add as New ${kindLabel(current.kind)}`
+          }
+          onClick={() => {
+            if (busy) return;
+            if (showExactHierarchy && exactMatch) {
+              void handleLink(
+                current._id,
+                current.kind,
+                exactMatch._id as Id<"players"> | Id<"teams">,
+              );
+              return;
+            }
+            if (createBlocked) return;
+            void handleCreate(current._id, buildCreatePayload());
+          }}
+        >
+          {showExactHierarchy && exactMatch
+            ? `Link to ${exactMatch.name}`
+            : `Add as New ${kindLabel(current.kind)}`}
+        </NeonButton>
+
+        {/*
+          Demoted to a text link when an exact match exists — and the visible
+          text and the accessible name are THE SAME STRING (WCAG 2.2 SC 2.5.3).
+
+          a11y (SC 2.5.8 Target Size) — `py-2 -my-2` on this and on the two
+          links after it. A `text-xs` link with no vertical padding is exactly
+          its 16px line-height tall, under the 24x24 minimum, and these are the
+          row's decision ALTERNATIVES, not decoration. The negative margin gives
+          the padding back to the layout, so the flex line stays 16px and the
+          footer's height does not move — the same convention `Back` and `Stop`
+          already use here.
+        */}
+        {showExactHierarchy && (
+          <button
+            type="button"
+            aria-disabled={busy || createBlocked !== null ? true : undefined}
+            aria-describedby={createBlocked ? createBlockedId : undefined}
+            onClick={() => {
+              if (busy) return;
+              if (createBlocked) return;
+              void handleCreate(current._id, buildCreatePayload());
+            }}
+            className="py-2 -my-2 text-xs text-gray-400 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none underline decoration-dotted aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
+          >
+            Add as New {kindLabel(current.kind)} anyway
+          </button>
+        )}
+
+        <button
+          type="button"
+          aria-disabled={busy}
+          onClick={() => {
+            if (busy) return;
+            setLinkingOpen(true);
+          }}
+          aria-label="Link to existing instead"
+          className="py-2 -my-2 text-xs text-gray-400 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none underline decoration-dotted aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
+        >
+          Link to Existing…
+        </button>
+
+        {/*
+          NEO-212: the third way out. "Checklist", "Team Card" and subset
+          headers land in the player column constantly, and before this the
+          operator's only options were to mint a junk row or cancel the batch.
+        */}
+        <button
+          type="button"
+          aria-disabled={busy}
+          onClick={() => {
+            if (busy) return;
+            void handleSkip(current._id);
+          }}
+          aria-label={`Skip ${current.name} — not a ${notAWhat(current.kind)}`}
+          className="py-2 -my-2 text-xs text-gray-400 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none underline decoration-dotted aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
+        >
+          Skip — not a {notAWhat(current.kind)}
+        </button>
+
+        {backTargetId && (
+          // a11y (2.5.8): p-2 -m-2 grows the tap target without moving the
+          // visible text or its siblings in this row.
+          <button
+            type="button"
+            onClick={() => presentDecided(backTargetId)}
+            aria-label="Back to previous decision"
+            className="p-2 -m-2 text-xs text-gray-400 hover:text-[#00B7FF] focus:text-[#00B7FF] focus:outline-none underline decoration-dotted"
+          >
+            Back
+          </button>
+        )}
+      </div>
+    ) : null;
 
   return createPortal(
     // See BaseSetPicker.tsx / SetAttributesPanel.tsx for why createPortal
@@ -1160,7 +1978,15 @@ export default function EntityReviewWizard({
                       reader reads out when navigating by heading. */}
                   <div className="flex flex-wrap items-center gap-2">
                     <h3 className="text-sm font-semibold text-gray-200">
-                      {current.name}
+                      {/* NEO-236, Jason's own words for this step: "1. New
+                          Team: Sydney Blue Sox". The raw name, because that is
+                          the thing being answered — the composed result is on
+                          the "Shows as" line below, where it belongs. Only
+                          while the step is live: a decided row is being read
+                          back, not created. */}
+                      {current.kind === "team" && !reviewingDecided
+                        ? `New Team: ${current.name}`
+                        : current.name}
                     </h3>
                     {/* NEO-212 (audit G10): these names are copied out into
                         Wikidata, Google and the marketplaces constantly during
@@ -1271,17 +2097,35 @@ export default function EntityReviewWizard({
                                 the group rather than being relabelled. */}
                             <div role="group" aria-labelledby={careerTeamsLabelId}>
                             <ul className="space-y-1">
-                              {sortedCareerTeams.map((ct) => {
+                              {sortedCareerTeams.map((ct, ctIdx) => {
                                 const label = `${ct.name} (${ct.fromYear}–${
                                   ct.toYear ?? "present"
                                 })`;
+                                const status = careerTeamStatus(ct.name);
+                                const excluded = excludedForCurrent.includes(ct.name);
+                                // NEO-236 (a11y): exactly the condition the
+                                // status line renders under, so the checkbox
+                                // never points `aria-describedby` at an id that
+                                // is not in the document.
+                                const showStatus =
+                                  !excluded && status.kind !== "checking";
+                                const statusId = `${careerTeamStatusIdBase}-${ctIdx}`;
                                 return (
                                   <li key={`${ct.name}-${ct.fromYear}`}>
-                                    <label className="flex items-center gap-2">
+                                    <label className="flex flex-wrap items-center gap-2">
                                       <input
                                         type="checkbox"
-                                        checked={!excludedForCurrent.includes(ct.name)}
+                                        checked={!excluded}
                                         aria-label={`Include career team ${ct.name}`}
+                                        // NEO-236 (a11y): where this stint will
+                                        // land is beside the box for a sighted
+                                        // operator; this is how a screen-reader
+                                        // operator gets the same fact, since
+                                        // the explicit aria-label above
+                                        // suppresses the wrapping label's text.
+                                        aria-describedby={
+                                          showStatus ? statusId : undefined
+                                        }
                                         disabled={reviewingDecided}
                                         onChange={() =>
                                           toggleCareerTeam(current._id, ct.name)
@@ -1289,7 +2133,121 @@ export default function EntityReviewWizard({
                                         className="accent-[#00D558]"
                                       />
                                       <span>{label}</span>
+                                      {/*
+                                        NEO-236 — where this stint will LAND.
+                                        The inline Location/Name pair that used
+                                        to sit here is gone: the team it was
+                                        about has its own New Team step now,
+                                        walked before this player, so this line
+                                        reports the answer rather than asking
+                                        for it a second time.
+
+                                        Nothing is announced live — the header's
+                                        progress line already owns `role=status`
+                                        — and an unticked chip says nothing at
+                                        all, because excluding it is the answer.
+                                      */}
                                     </label>
+                                    {/*
+                                      NEO-236 — OUTSIDE the <label>, and that
+                                      is a correctness fix rather than a
+                                      layout one. `Decide team` is a button,
+                                      and a button inside a label has its
+                                      activation redirected to the labelled
+                                      control by the browser — so pressing it
+                                      toggled the career-team checkbox and
+                                      navigated nowhere. Nesting an
+                                      interactive control inside a label is
+                                      invalid HTML for exactly this reason.
+
+                                      The checkbox still points at this line
+                                      with `aria-describedby`, which resolves
+                                      document-wide and does not care that the
+                                      two are now siblings.
+                                    */}
+                                    {showStatus &&
+                                      (status.kind === "waiting" ? (
+                                        /* Not colour alone (SC 1.4.1): this
+                                           says something different IN WORDS
+                                           from the resolved case beside it,
+                                           and #FF2EB3 on the gray-900 panel
+                                           is 5.32:1 (SC 1.4.3). */
+                                        <span
+                                          id={statusId}
+                                          className="inline-flex items-center gap-2 text-xs text-[#FF2EB3]"
+                                        >
+                                          needs a team decision
+                                          {/*
+                                            NEO-236 — the way OUT of the dead
+                                            end. The message named a problem
+                                            and pointed nowhere: "There does
+                                            not appear to be anywhere that a
+                                            decision is needed that I can
+                                            see." This goes to the step that
+                                            answers it; answering that step
+                                            hands navigation back, so the
+                                            operator lands on the next one or
+                                            back here.
+
+                                            Rendered only when a step exists —
+                                            a jump to nothing would be the
+                                            same dead end with a button on it.
+
+                                            SC 2.5.3: the accessible name
+                                            CONTAINS the visible text, so a
+                                            voice-control user saying "decide
+                                            team" matches it.
+                                          */}
+                                          {/* Always offered now: when the
+                                              batch holds no step for this
+                                              label (staging caps at 64 per
+                                              player, and skips a name too long
+                                              to compose), pressing it stages
+                                              one and then goes there. */}
+                                          {(
+                                            <button
+                                              type="button"
+                                              aria-label={`Decide team ${ct.name}`}
+                                              onClick={() =>
+                                                status.stagedRowId
+                                                  ? goToTeamStep(status.stagedRowId)
+                                                  : stageThenGoToTeamStep(
+                                                      current._id,
+                                                      ct.name,
+                                                    )
+                                              }
+                                              className="py-2 -my-2 text-[#00B7FF] underline decoration-dotted hover:text-[#00D558] focus-visible:text-[#00D558] focus:outline-none"
+                                            >
+                                              Decide team
+                                            </button>
+                                          )}
+                                        </span>
+                                      ) : (
+                                        <span
+                                          id={statusId}
+                                          className="text-xs text-gray-400"
+                                        >
+                                          {/*
+                                            NEO-236 — the team, and nothing
+                                            about its bookkeeping.
+
+                                            This carried "(new team, not saved
+                                            yet)" for a team the batch was
+                                            creating. Jason: "'not saved yet'
+                                            is equally confusing. Do we need
+                                            anything there at all?" No — an
+                                            ANSWERED stint reads the same
+                                            whether the team already existed or
+                                            this review will create it, because
+                                            there is nothing for the operator to
+                                            do about the difference. Only the
+                                            states that still need an action
+                                            keep their words: "needs a team
+                                            decision" and its "Decide team".
+                                          */}
+                                          → {status.name}
+                                        </span>
+                                      ))}
                                   </li>
                                 );
                               })}
@@ -1303,7 +2261,9 @@ export default function EntityReviewWizard({
                     ) : (
                       <>
                         {current.enrichment.league && <p>League: {current.enrichment.league}</p>}
-                        {current.enrichment.city && <p>City: {current.enrichment.city}</p>}
+                        {current.enrichment.location && (
+                          <p>Location: {current.enrichment.location}</p>
+                        )}
                         {current.enrichment.yearsActive && (
                           <p>
                             Active: {current.enrichment.yearsActive.from}
@@ -1414,28 +2374,82 @@ export default function EntityReviewWizard({
                       />
                     ) : (
                       <div className="flex flex-col gap-2" aria-busy={busy}>
+                        {/*
+                          ── NEO-236: the New Team step ────────────────────────
+
+                          Jason, 2026-09-05: "How does this dialog know which
+                          League the new team is in? I think we need to show a
+                          new team dialog instead of that inline thing." So the
+                          create action means "store what this form says" —
+                          Location, Name and League — and the checklist string
+                          ("SD PADRES", "Padres  ") is only ever the start.
+
+                          The same `NewTeamForm` the pickers open in a modal, so
+                          the two surfaces cannot disagree about what a team is
+                          made of. Rendered for BOTH near-match states: when an
+                          exact match exists the primary becomes "Link to …" and
+                          creating survives as the "…anyway" link, which still
+                          needs somewhere to read its fields from.
+                        */}
+                        {current.kind === "team" && (
+                          <NewTeamForm
+                            sportId={current.sportId}
+                            draft={teamCreate}
+                            onChange={(patch) =>
+                              patchTeamCreate(current._id, patch)
+                            }
+                            leagueSuggestion={current.enrichment?.league}
+                            /* Only on a row the batch staged for itself: a
+                               checklist team was asked for directly, and saying
+                               who needs it would be answering a question nobody
+                               asked. */
+                            neededBy={
+                              current.source?.kind === "careerTeamOf"
+                                ? (rows.find(
+                                    (r) => r._id === current.source?.playerRowId,
+                                  )?.name ?? undefined)
+                                : undefined
+                            }
+                            describedBy={
+                              createBlocked ? createBlockedId : undefined
+                            }
+                            locationFieldId={TEAM_LOCATION_FIELD_ID}
+                            nameFieldId={TEAM_NAME_FIELD_ID}
+                            leagueGroupId={TEAM_LEAGUE_FIELD_ID}
+                          />
+                        )}
+
                         {current.kind === "player" && (
                           <div className="space-y-1.5">
                             <p className="text-sm text-gray-400">
                               Add career team history manually
-                              <span className="text-gray-500"> (optional)</span>:
+                              {/* gray-400, not gray-500: 3.67:1 on the gray-900
+                                  panel fails SC 1.4.3. */}
+                              <span className="text-gray-400"> (optional)</span>:
                             </p>
                             {stagedCareerTeams.length > 0 && (
                               <ul className="flex flex-wrap gap-1.5" aria-label="Staged career teams">
                                 {stagedCareerTeams.map((ct, idx) => (
                                   <li key={`${ct.name}-${ct.fromYear}-${idx}`}>
                                     <span className="inline-flex items-center gap-1 rounded-full border border-gray-700 bg-gray-800 px-2 py-0.5 text-xs text-gray-200">
-                                      {ct.name} ({ct.fromYear}
+                                      {/* NEO-236: the composed name, so the
+                                          chip reads as the team that will be
+                                          created rather than as its nickname. */}
+                                      {teamFullName(ct)} ({ct.fromYear}
                                       {ct.toYear ? `–${ct.toYear}` : "–present"})
                                       <button
                                         type="button"
-                                        aria-label={`Remove ${ct.name}`}
+                                        aria-label={`Remove ${teamFullName(ct)}`}
                                         onClick={() =>
                                           setStagedCareerTeams((prev) =>
                                             prev.filter((_, i) => i !== idx),
                                           )
                                         }
-                                        className="text-gray-500 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none"
+                                        // gray-400, not gray-500 (SC 1.4.3: 3.04:1 on
+                                        // the gray-800 chip), and a real focus
+                                        // ring rather than a colour swap behind
+                                        // `focus:outline-none` (SC 2.4.7).
+                                        className="text-gray-400 hover:text-[#FF2EB3] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] focus-visible:ring-offset-1 focus-visible:ring-offset-gray-800 rounded"
                                       >
                                         ×
                                       </button>
@@ -1447,9 +2461,27 @@ export default function EntityReviewWizard({
                             <CareerTeamEntry
                               sportId={current.sportId}
                               stagedNames={stagedTeamNames}
-                              onAdd={(entry) =>
-                                setStagedCareerTeams((prev) => [...prev, entry])
-                              }
+                              onDirtyChange={setCareerEntryDirty}
+                              onAdd={(entry) => {
+                                setStagedCareerTeams((prev) => [...prev, entry]);
+                                // NEO-236 — a hand-typed team that matches
+                                // nothing gets its own New Team step, exactly
+                                // as a Wikidata proposal does. Idempotent
+                                // server-side, and it inserts nothing at all
+                                // when the name already resolves to a team, so
+                                // typing an existing name is still a link.
+                                void stageCareerTeams({
+                                  reviewRowId: current._id,
+                                  careerTeamNames: [entry.name],
+                                }).catch(() => {
+                                  // The chip is already staged locally and the
+                                  // stint will still be recorded; what is lost
+                                  // is the step that would have created the
+                                  // team, which `careerTeamStatus` then reports
+                                  // as "needs a team decision". Nothing to say
+                                  // here that the chip does not already say.
+                                });
+                              }}
                             />
                             {/* What the create is actually about to write. Not a
                                 role="status" — the header progress line already
@@ -1463,142 +2495,6 @@ export default function EntityReviewWizard({
                           </div>
                         )}
 
-                        {/*
-                          ONE primary button element, one JSX slot, both states.
-
-                          `nearMatches` resolves asynchronously while this row is
-                          on screen, so `showExactHierarchy` can flip UNDER a
-                          keyboard user who has already tabbed to the primary. A
-                          ternary that swaps WHICH element renders here unmounts
-                          the focused node and focus falls to <body> (WCAG 2.2 SC
-                          3.2.2 / 2.4.3). Label, handler and variant are props on
-                          a single element instead.
-
-                          NEO-221: `aria-disabled`, never native `disabled`. A
-                          disabled button leaves the tab order, so a keyboard
-                          operator who tabbed here would be thrown out of the
-                          action row for the length of a round-trip; NeonButton
-                          already paints aria-disabled the same way.
-                        */}
-                        <NeonButton
-                          // Close-but-not-exact matches keep the label and lose the
-                          // green: still the primary action, no longer the one the
-                          // eye lands on before it has read the panel above.
-                          secondary={!showExactHierarchy && hasCloseOnly}
-                          // NEO-212 (a11y): NeonButton's `secondary` paints white
-                          // on #00C2FF — 2.07:1, well under SC 1.4.3's 4.5:1. That
-                          // is a defect in the shared primitive and fixing it there
-                          // would repaint every `secondary` button in the app, so
-                          // this call site overrides only the foreground. Black on
-                          // #00C2FF is 10.2:1, and the blue/green distinction that
-                          // carries the demotion is untouched.
-                          style={
-                            !showExactHierarchy && hasCloseOnly
-                              ? { color: "#000000" }
-                              : undefined
-                          }
-                          aria-disabled={busy}
-                          aria-label={
-                            showExactHierarchy && exactMatch
-                              ? `Link to ${exactMatch.name}`
-                              : `Add as New ${kindLabel(current.kind)}`
-                          }
-                          onClick={() => {
-                            if (busy) return;
-                            if (showExactHierarchy && exactMatch) {
-                              void handleLink(
-                                current._id,
-                                current.kind,
-                                exactMatch._id as Id<"players"> | Id<"teams">,
-                              );
-                              return;
-                            }
-                            void handleCreate(
-                              current._id,
-                              current.kind === "player" ? stagedCareerTeams : undefined,
-                              current.kind === "player" ? excludedForCurrent : undefined,
-                            );
-                          }}
-                        >
-                          {showExactHierarchy && exactMatch
-                            ? `Link to ${exactMatch.name}`
-                            : `Add as New ${kindLabel(current.kind)}`}
-                        </NeonButton>
-                        {/*
-                          Demoted to a text link when an exact match exists — and
-                          the visible text and the accessible name are THE SAME
-                          STRING (WCAG 2.2 SC 2.5.3, label in name).
-
-                          Safe for E2E: this branch renders ONLY when an exact
-                          near match exists, and every Maestro flow that reaches
-                          this wizard types a unique nonsense name that matches
-                          nothing.
-                        */}
-                        {showExactHierarchy && (
-                          <button
-                            type="button"
-                            aria-disabled={busy}
-                            onClick={() => {
-                              if (busy) return;
-                              void handleCreate(
-                                current._id,
-                                current.kind === "player" ? stagedCareerTeams : undefined,
-                                current.kind === "player" ? excludedForCurrent : undefined,
-                              );
-                            }}
-                            className="self-start text-xs text-gray-400 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none underline decoration-dotted aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
-                          >
-                            Add as New {kindLabel(current.kind)} anyway
-                          </button>
-                        )}
-
-                        <div className="flex items-center gap-4">
-                          <button
-                            type="button"
-                            aria-disabled={busy}
-                            onClick={() => {
-                              if (busy) return;
-                              setLinkingOpen(true);
-                            }}
-                            aria-label="Link to existing instead"
-                            className="text-xs text-gray-400 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none underline decoration-dotted aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
-                          >
-                            Link to Existing…
-                          </button>
-                          {/*
-                            NEO-212: the third way out. "Checklist", "Team Card"
-                            and subset headers land in the player column
-                            constantly, and before this the operator's only
-                            options were to mint a junk player row or cancel the
-                            whole batch.
-                          */}
-                          <button
-                            type="button"
-                            aria-disabled={busy}
-                            onClick={() => {
-                              if (busy) return;
-                              void handleSkip(current._id);
-                            }}
-                            aria-label={`Skip ${current.name} — not a ${notAWhat(current.kind)}`}
-                            className="text-xs text-gray-400 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none underline decoration-dotted aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
-                          >
-                            Skip — not a {notAWhat(current.kind)}
-                          </button>
-                          {backTargetId && (
-                            // a11y (2.5.8): p-2 -m-2, same convention as
-                            // TrackingCode's Copy button — grows the tap
-                            // target without moving the visible text or its
-                            // siblings in this row.
-                            <button
-                              type="button"
-                              onClick={() => presentDecided(backTargetId)}
-                              aria-label="Back to previous decision"
-                              className="p-2 -m-2 text-xs text-gray-400 hover:text-[#00B7FF] focus:text-[#00B7FF] focus:outline-none underline decoration-dotted"
-                            >
-                              Back
-                            </button>
-                          )}
-                        </div>
                       </div>
                     )}
                   </>
@@ -1686,7 +2582,10 @@ export default function EntityReviewWizard({
                 onToggle={(e) => setDecidedListOpen(e.currentTarget.open)}
                 className="border-t border-gray-800 pt-3"
               >
-                <summary className="cursor-pointer text-xs text-gray-500 hover:text-gray-300 focus:text-gray-300 focus:outline-none">
+                {/* gray-400, not gray-500 (SC 1.4.3): gray-500 on this
+                    dialog's gray-900 ground measures 3.67:1, under the 4.5:1
+                    floor. gray-400 is 6.99:1. */}
+                <summary className="cursor-pointer text-xs text-gray-400 hover:text-gray-300 focus:text-gray-300 focus:outline-none">
                   Decided ({decidedRows.length})
                 </summary>
                 <ul aria-label="Decided names" className="mt-2 space-y-1">
@@ -1696,7 +2595,10 @@ export default function EntityReviewWizard({
                       className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs"
                     >
                       <span className="text-gray-200">{row.name}</span>
-                      <span className="text-gray-500">
+                      {/* Same 1.4.3 correction: this line states what the
+                          batch will DO with the name beside it, so it is
+                          content rather than decoration. */}
+                      <span className="text-gray-400">
                         {describeDecision(row.decision, linkedNameFor(row.decision))}
                       </span>
                       <button
@@ -1752,48 +2654,44 @@ export default function EntityReviewWizard({
               "Confirm & Save" and the bulk links never do: the links render
               only while `!allDecided`, and the confirm only once `allDecided`.
             */}
-            <div className="flex items-center justify-between gap-4">
-            <div className="flex min-w-0 items-center gap-4 overflow-hidden whitespace-nowrap">
-              {/*
-                The bulk links stay MOUNTED while the auto-add is armed rather
-                than being swapped out for the status line — nothing in row 1
-                may move mid-session. `aria-disabled` and not `disabled`, for
-                the same reason as the per-row decision controls: a keyboard
-                operator who has tabbed here must not be ejected from the
-                footer.
+            <div
+              /*
+               * NEO-110, audit finding — ROW 1 IS RESERVED FOR TWO LINES.
+               *
+               * Its left group wraps, and it wraps MID-SESSION: when
+               * `nearMatches` resolves with an exact hit, the primary's label
+               * grows from "Add as New Team" to "Link to {name}" AND the
+               * "…anyway" link appears in the same commit, pushing the group to
+               * a second line. A taller row 1 makes the footer taller and the
+               * body shorter, which moves the very button this whole change
+               * exists to pin down — the NEO-110 hazard, arriving from a new
+               * direction.
+               *
+               * So the space is reserved whether it is used or not. It costs
+               * ~32px of body height permanently, which is a trade worth making
+               * twice over: the body just got ~226px BACK from bounding the
+               * league picker, and a reserved gap cannot move under a cursor.
+               */
+              className="flex min-h-[4.25rem] items-center justify-between gap-4"
+            >
+            {/*
+              ROW 1 LEFT — THE DECISION FOR THE ROW ON SCREEN.
+              These used to be the last elements of the scrolling body, which is
+              how CI run 8 caught them at y=620-652 on a 1024x629 viewport:
+              below the footer and below the dialog itself. Maestro cannot
+              scroll an inner overflow box, and an operator should never have to
+              hunt for the button they have just decided to press.
 
-                Only the CREATE link goes inert. "Skip Remaining" stays live on
-                purpose — row 2 says "wait or skip", and taking the skip away
-                while it says so would be advertising an exit and locking it.
+              So the primary action lives where NEO-110 already proved things
+              must live when they may not move — the fixed footer. The row's
+              CONTENT still scrolls (that is what a body is for); the decision
+              about it does not.
 
-                No aria-label on either: the visible text IS the accessible
-                name, and Maestro matches `.*Add All Remaining as New.*`.
-              */}
-              {!expired && !allDecided && remaining > 0 && (
-                <>
-                  <button
-                    type="button"
-                    onClick={handleBulkCreate}
-                    disabled={bulkPending !== null || saving}
-                    aria-disabled={autoAddPending}
-                    className="text-xs text-gray-400 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none underline decoration-dotted disabled:opacity-50 aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
-                  >
-                    {bulkPending === "create"
-                      ? "Adding all remaining…"
-                      : `Add All Remaining as New (${remaining})`}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleBulkSkip}
-                    disabled={bulkPending !== null || saving}
-                    className="text-xs text-gray-400 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none underline decoration-dotted disabled:opacity-50"
-                  >
-                    {bulkPending === "skip"
-                      ? "Skipping remaining…"
-                      : `Skip Remaining (${remaining})`}
-                  </button>
-                </>
-              )}
+              Mutually exclusive with "Confirm & Save" on the right by
+              construction: a presented row means not every row is decided.
+            */}
+            <div className="flex min-w-0 flex-wrap items-center gap-3">
+              {decisionControls}
             </div>
             {/* The buttons never yield: if row 1 is ever too narrow, the bulk
                 links clip, not the way out of the dialog. */}
@@ -1905,12 +2803,78 @@ export default function EntityReviewWizard({
               than a stack: the operator is either waiting on lookups or
               watching them be added, never both.
             */}
-            <p
-              className="flex min-h-4 items-center gap-3 text-xs text-gray-400"
-              role="status"
-              aria-live="polite"
-            >
-              {footerStatus}
+            <div className="flex min-h-6 items-center gap-3">
+              {/*
+                The live region is its OWN element and holds only text. The bulk
+                links sit beside it, deliberately outside it: a button inside a
+                live region is re-announced every time the count next to it
+                ticks, which turns a drain into a stream of interruptions.
+
+                `flex-1 min-w-0 truncate` — this is the variable-length half, so
+                it is the half that gives way. Row 2 has always been where
+                length lives (NEO-110); the bulk links moved here from row 1 for
+                exactly that reason, their labels carrying counts that change as
+                the batch drains.
+              */}
+              {/*
+                NEO-236 — why the create cannot fire, beside the control it is
+                about. Deliberately NOT `role="alert"` and deliberately OUTSIDE
+                the live region below: this is a standing precondition the
+                operator can read at any time, not an event (a refusal that
+                already HAPPENED lands in `rowError`, up in the body with the
+                row it belongs to). The create controls point at it by id.
+              */}
+              {createBlocked && (
+                <p
+                  /* `text-xs` restored: the row-2 rewrite moved it off the
+                     wrapper and it was never put back on the message. Without
+                     it this inherits Radix's 16px body size, which is not the
+                     `text-xs` line `min-h-6` reserves the footer's height
+                     for. */
+                  className="flex min-w-0 flex-1 items-center gap-2 text-xs text-[#FF2EB3]"
+                >
+                  {/*
+                    The id sits on the TEXT, not on this flex wrapper: the
+                    create controls point at it with `aria-describedby`, and a
+                    description should be the reason alone — not the reason
+                    plus the label of the button beside it. The message
+                    truncates; the way out of it does not.
+                  */}
+                  <span id={createBlockedId} className="min-w-0 truncate">
+                    {createBlocked}
+                  </span>
+                  {/* NEO-236 — the same route as the blocked chip's, for the
+                      operator reading the footer rather than the list. Goes to
+                      the FIRST step still waiting. */}
+                  {blockingStep && (
+                    <button
+                      type="button"
+                      aria-label={`Decide team ${blockingStep.name}`}
+                      onClick={() => goToTeamStep(blockingStep.rowId)}
+                      className="shrink-0 py-2 -my-2 text-[#00B7FF] underline decoration-dotted hover:text-[#00D558] focus-visible:text-[#00D558] focus:outline-none"
+                    >
+                      Decide team
+                    </button>
+                  )}
+                </p>
+              )}
+              {/*
+                Always mounted, even with nothing to say: a live region that
+                unmounts between messages announces unreliably.
+              */}
+              <p
+                /* `text-xs text-gray-400` restored — see the blocked-reason
+                   note above. Inherited, this was Radix's `--gray-12` at 16px:
+                   not a contrast failure, but not the muted status line the
+                   footer's reserved height is measured against either. */
+                className={`min-w-0 truncate text-xs text-gray-400 ${
+                  createBlocked ? "shrink-0" : "flex-1"
+                }`}
+                role="status"
+                aria-live="polite"
+              >
+                {footerStatus}
+              </p>
               {footerStatus !== null && autoAddPending && (
                 // a11y (2.5.8): p-2 -m-2 grows the target past 24px without
                 // moving the text or the row's reserved height.
@@ -1920,12 +2884,77 @@ export default function EntityReviewWizard({
                     autoAddRef.current = false;
                     setAutoAddPending(false);
                   }}
-                  className="p-2 -m-2 text-gray-400 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none underline decoration-dotted"
+                  className="shrink-0 p-2 -m-2 text-xs text-gray-400 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none underline decoration-dotted"
                 >
                   Stop
                 </button>
               )}
-            </p>
+              {/*
+                The bulk links stay MOUNTED while the auto-add is armed rather
+                than being swapped out — nothing here may vanish mid-session.
+                `aria-disabled` and not `disabled`, for the same reason as the
+                per-row decision controls: a keyboard operator who has tabbed
+                here must not be ejected from the footer.
+
+                Only the CREATE link goes inert. "Skip remaining names" stays
+                live on purpose — the status beside it says "wait or skip", and
+                taking the skip away while it says so would be advertising an
+                exit and locking it.
+
+                No aria-label on either: the visible text IS the accessible
+                name, and Maestro matches `.*Add remaining players as new.*`.
+              */}
+              {!expired && !allDecided && remainingNames > 0 && (
+                <div
+                  /*
+                   * a11y (SC 3.3.1), audit finding: the bulk links yield to the
+                   * BLOCKED REASON, and only to that.
+                   *
+                   * They are `shrink-0 whitespace-nowrap` normally, and the
+                   * status line beside them is what gives way — that is row 2's
+                   * standing rule. But the two links measure ~384px of a 624px
+                   * row, so with a reason showing as well the reason was
+                   * squeezed to nothing: an inert primary button whose reason
+                   * was invisible to a sighted operator while remaining
+                   * perfectly correct for a screen reader.
+                   *
+                   * A reason is transient and rare; the links are permanent.
+                   * So while one is up the links become truncatable and the
+                   * reason takes the width. Nothing moves vertically either
+                   * way, which is what row 1 is protected by.
+                   */
+                  className={`flex items-center gap-3 whitespace-nowrap ${
+                    createBlocked ? "min-w-0 overflow-hidden" : "shrink-0"
+                  }`}
+                >
+                  <button
+                    type="button"
+                    onClick={handleBulkCreate}
+                    disabled={bulkPending !== null || saving}
+                    aria-disabled={autoAddPending}
+                    // a11y (SC 2.5.8): `py-2 -my-2`, the same convention as
+                    // `Stop` beside them — a 32px hit area out of a 16px
+                    // `text-xs` line, given back to the layout so row 2's
+                    // height is the same whether these are mounted or not.
+                    className="py-2 -my-2 text-xs text-gray-400 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none underline decoration-dotted disabled:opacity-50 aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
+                  >
+                    {bulkPending === "create"
+                      ? "Adding players…"
+                      : `Add remaining players as new (${remainingPlayers})`}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleBulkSkip}
+                    disabled={bulkPending !== null || saving}
+                    className="py-2 -my-2 text-xs text-gray-400 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none underline decoration-dotted disabled:opacity-50"
+                  >
+                    {bulkPending === "skip"
+                      ? "Skipping names…"
+                      : `Skip remaining names (${remainingNames})`}
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>

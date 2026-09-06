@@ -11,7 +11,7 @@
  *      earlier in the array is skipped over, never blocking presentation of
  *      a later row whose lookup already completed.
  *   2. Enrichment rendering: player (HoF badge, career-team list, "no
- *      history" fallback) and team (league/city/years-active/color swatch)
+ *      history" fallback) and team (league/location/years-active/color swatch)
  *      shapes, plus the "No Wikidata match found" fallback for an
  *      error/no-enrichment row.
  *   3. Progress counters: "{decided} of {total} reviewed" and "{N} still
@@ -28,7 +28,7 @@
  *
  * NEO-212 adds, in the blocks at the bottom of this file:
  *   9. The third decision — "Skip — not a person/team" per row, and
- *      "Skip Remaining (N)" in the footer beside the bulk create.
+ *      "Skip remaining names (N)" in the footer beside the bulk create.
  *  10. Near matches and the action hierarchy. THE LABEL "Add as New
  *      {Player|Team}" IS AN E2E CONTRACT and is asserted present in the two
  *      states any Maestro flow can reach (no match, close-only). In the
@@ -83,6 +83,8 @@ vi.mock("../../convex/_generated/api", () => ({
       cancelBatch: "entityReviewQueue.cancelBatch",
       recordAllRemainingAsCreate: "entityReviewQueue.recordAllRemainingAsCreate",
       recordAllRemainingAsSkip: "entityReviewQueue.recordAllRemainingAsSkip",
+      // NEO-236: a player's career teams become their own New Team steps.
+      stageCareerTeamRows: "entityReviewQueue.stageCareerTeamRows",
     },
     players: {
       nearMatches: "players.nearMatches",
@@ -99,6 +101,10 @@ vi.mock("../../convex/_generated/api", () => ({
       search: "teams.search",
       getManyByIds: "teams.getManyByIds",
       resolveNames: "teams.resolveNames",
+    },
+    // NEO-236: NewTeamForm's League pills read the sport's leagues.
+    leagues: {
+      list: "leagues.list",
     },
   },
 }));
@@ -120,6 +126,11 @@ const mockClearDecision = vi.fn();
 const mockCancelBatch = vi.fn();
 const mockRecordAllRemainingAsCreate = vi.fn();
 const mockRecordAllRemainingAsSkip = vi.fn();
+/** NEO-236 — resolves to "how many steps this call added". Every mutation the
+ *  component awaits must return a promise, so the default is 0. */
+const mockStageCareerTeamRows = vi.fn(() => Promise.resolve(0));
+/** Rows served to leagues.list (the New Team step's League pills). */
+let currentLeagues: unknown;
 
 vi.mock("convex/react", () => ({
   useQuery: (ref: string, args: unknown) => {
@@ -131,6 +142,7 @@ vi.mock("convex/react", () => ({
     if (ref === "teams.resolveNames") return currentResolvedNames;
     if (ref === "teams.getManyByIds") return currentLinkedTeams;
     if (ref === "players.getManyByIds") return currentLinkedPlayers;
+    if (ref === "leagues.list") return currentLeagues;
     return undefined;
   },
   useMutation: (ref: string) => {
@@ -141,7 +153,11 @@ vi.mock("convex/react", () => ({
       return mockRecordAllRemainingAsCreate;
     if (ref === "entityReviewQueue.recordAllRemainingAsSkip")
       return mockRecordAllRemainingAsSkip;
-    return vi.fn();
+    if (ref === "entityReviewQueue.stageCareerTeamRows")
+      return mockStageCareerTeamRows;
+    // Every other mutation still has to look like one: the component `await`s
+    // what `useMutation` hands back.
+    return vi.fn(() => Promise.resolve(undefined));
   },
 }));
 
@@ -186,8 +202,20 @@ type Row = {
   sportValue: string;
   status: "pending" | "ready" | "error";
   enrichment?: Record<string, unknown>;
+  /**
+   * NEO-236 — set on a team row the batch staged for a player's career list,
+   * pointing back at that player. `nextUndecided` reads it to hold the player
+   * until its teams are answered, and the player's chips read it to report what
+   * each stint will land on.
+   */
+  source?: { kind: "careerTeamOf"; playerRowId: string } | null;
   decision?:
-    | { action: "create"; excludedCareerTeamNames?: string[] }
+    | {
+        action: "create";
+        excludedCareerTeamNames?: string[];
+        /** NEO-236: the Location + Name the operator gave on the New Team step. */
+        create?: { name: string; location?: string };
+      }
     | { action: "link"; linkedPlayerId?: string; linkedTeamId?: string }
     | { action: "skip" };
 };
@@ -210,6 +238,50 @@ function makeRow(overrides: Partial<Row> = {}): Row {
 }
 
 /**
+ * NEO-236 — a team row this batch staged for a player's career list.
+ *
+ * `entityReviewQueue.stageCareerTeamRows` writes one of these per career team
+ * that has no `teams` row yet, and `getBatch` emits it AHEAD of the player it
+ * came from. That ordering plus `nextUndecided`'s hold is what produces Jason's
+ * "New Team: Sydney Blue Sox, New Team: Oregon State Beavers, then the player"
+ * walk — so a fixture that wants the real sequence has to put these first in
+ * the array, exactly as the server does.
+ */
+function makeCareerTeamRow(
+  playerRowId: Id<"entityReviewQueue">,
+  name: string,
+  overrides: Partial<Row> = {},
+): Row {
+  return makeRow({
+    kind: "team",
+    name,
+    status: "ready",
+    source: {
+      kind: "careerTeamOf",
+      playerRowId: playerRowId as unknown as string,
+    },
+    ...overrides,
+  });
+}
+
+// NEO-236: the New Team step renders the shared `NewTeamForm`, whose fields
+// carry their own accessible names ("Location (optional)" visible, "New team
+// location (optional)" announced — WCAG 2.2 SC 2.5.3, label in name).
+const teamLocationField = () =>
+  screen.getByLabelText("New team location (optional)") as HTMLInputElement;
+const teamNameField = () =>
+  screen.getByLabelText("New team name") as HTMLInputElement;
+
+/**
+ * The composed-name preview, read as one string.
+ *
+ * Testing Library's text matcher sees only an element's DIRECT text nodes, and
+ * this line is "Shows as: " plus a `<span>` holding the composed name — so
+ * `getByText("Shows as: San Diego Padres")` matches nothing.
+ */
+const showsAsText = () => screen.getByText("Shows as:").textContent;
+
+/**
  * NEO-220 replaced the bare `cardCount` prop with the whole of what Confirm &
  * Save is about to do, so the final step can itemise it.
  */
@@ -230,6 +302,25 @@ function renderWizard(props: Partial<Parameters<typeof EntityReviewWizard>[0]> =
     />,
   );
   return { ...utils, onConfirm, onCancel };
+}
+
+/**
+ * Re-render the SAME wizard so the module-level `useQuery` mock re-reads
+ * `currentRows`. The reactive `getBatch` is what changes under a real wizard
+ * mid-review; this is how a test moves the batch without remounting (a remount
+ * would reset `nav` and hide exactly the pinning behaviour under test).
+ */
+function rerenderWizard(rerender: (ui: React.ReactElement) => void) {
+  rerender(
+    <EntityReviewWizard
+      isOpen
+      selectorOptionId={"selopt-1" as unknown as Id<"selectorOptions">}
+      batchId="batch-1"
+      summary={SUMMARY}
+      onConfirm={vi.fn()}
+      onCancel={vi.fn()}
+    />,
+  );
 }
 
 /** The discard confirm's destructive button — "Discard", per the E2E contract. */
@@ -265,10 +356,12 @@ function footerStatusText(): string {
   if (!overlay) throw new Error("wizard overlay not found");
   const panel = overlay.firstElementChild as HTMLElement;
   const footer = panel.children[2] as HTMLElement;
-  const status = footer.lastElementChild as HTMLElement;
-  if (status.getAttribute("role") !== "status") {
-    throw new Error("footer's last child is not the status row");
-  }
+  // NEO-236 (CI run 8): row 2 is a flex row now — the live region is a <p>
+  // inside it, with the bulk links beside it and OUTSIDE it, so a count ticking
+  // does not re-announce the buttons.
+  const row2 = footer.lastElementChild as HTMLElement;
+  const status = row2.querySelector('[role="status"]');
+  if (!status) throw new Error("row 2 has no live region");
   return (status.textContent ?? "").trim();
 }
 
@@ -279,7 +372,9 @@ beforeEach(() => {
   mockCancelBatch.mockResolvedValue(null);
   mockRecordAllRemainingAsCreate.mockResolvedValue(0);
   mockRecordAllRemainingAsSkip.mockResolvedValue(0);
+  mockStageCareerTeamRows.mockResolvedValue(0);
   currentRows = [];
+  currentLeagues = [];
   currentNearMatches = [];
   currentResolvedNames = undefined;
   currentLinkedTeams = undefined;
@@ -360,8 +455,10 @@ describe("EntityReviewWizard — enrichment content", () => {
     renderWizard();
 
     expect(screen.getByText("Hall of Fame")).toBeTruthy();
-    expect(screen.getByText(/Los Angeles Angels/)).toBeTruthy();
-    expect(screen.getByText(/2011.*present/)).toBeTruthy();
+    // The chip, addressed exactly: NEO-236's blocked-create reason also names
+    // the team ("Los Angeles Angels still needs a team decision, or untick
+    // it."), so a loose /Los Angeles Angels/ now matches two nodes.
+    expect(screen.getByText("Los Angeles Angels (2011–present)")).toBeTruthy();
   });
 
   it("shows 'No career-team history found' for a player with an empty careerTeams list", () => {
@@ -373,19 +470,19 @@ describe("EntityReviewWizard — enrichment content", () => {
     expect(screen.getByText("No career-team history found.")).toBeTruthy();
   });
 
-  it("shows league/city/years-active for a ready team row", () => {
+  it("shows league/location/years-active for a ready team row", () => {
     currentRows = [
       makeRow({
         kind: "team",
         name: "Los Angeles Angels",
         status: "ready",
-        enrichment: { league: "Major League Baseball", city: "Anaheim", yearsActive: { from: 1961 } },
+        enrichment: { league: "Major League Baseball", location: "Anaheim", yearsActive: { from: 1961 } },
       }),
     ];
     renderWizard();
 
     expect(screen.getByText(/League: Major League Baseball/)).toBeTruthy();
-    expect(screen.getByText(/City: Anaheim/)).toBeTruthy();
+    expect(screen.getByText(/Location: Anaheim/)).toBeTruthy();
     expect(screen.getByText(/Active: 1961.*present/)).toBeTruthy();
   });
 
@@ -590,12 +687,26 @@ describe("EntityReviewWizard — manual career-team entry", () => {
     fireEvent.change(screen.getByLabelText("To year (optional)"), { target: { value: "2022" } });
     fireEvent.click(screen.getByRole("button", { name: "Add career team" }));
 
+    // NEO-236: adding the chip also STAGES a New Team step for it, exactly as
+    // a Wikidata proposal gets one. Idempotent server-side, and it inserts
+    // nothing when the name already resolves to a team — so typing an existing
+    // name is still a link.
+    await waitFor(() => {
+      expect(mockStageCareerTeamRows).toHaveBeenCalledWith({
+        reviewRowId: row._id,
+        careerTeamNames: ["Arizona Diamondbacks"],
+      });
+    });
+
     fireEvent.click(screen.getByRole("button", { name: "Add as New Player" }));
 
     await waitFor(() => {
       expect(mockRecordDecision).toHaveBeenCalledWith({
         reviewRowId: row._id,
         action: "create",
+        // NEO-236: the decision carries the STINT and nothing else. The team
+        // it names is answered on its own step, and recording the same answer
+        // in two places is how the two end up disagreeing.
         manualCareerTeams: [
           { name: "Arizona Diamondbacks", fromYear: 2020, toYear: 2022 },
         ],
@@ -917,7 +1028,7 @@ describe("EntityReviewWizard — Enter", () => {
     /*
      * THE CI REGRESSION, in one assertion.
      *
-     * `checklist-keyboard-only-dialog` taps "Add All Remaining as New", waits
+     * `checklist-keyboard-only-dialog` taps "Add remaining players as new", waits
      * for "Confirm & Save (Enter)", and sends `pressKey: Enter`. maestro-web
      * implements that as a constructed KeyboardEvent dispatched at
      * `document.activeElement` — and a synthetic event has NO default action,
@@ -1038,14 +1149,14 @@ describe("EntityReviewWizard — Enter", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Bulk "Add All Remaining as New" + NEO-110 footer stability
+// Bulk "Add remaining players as new" + NEO-110 footer stability
 //
 // The bulk action had NO coverage at either layer (this file or
 // convex/entityReviewQueue.test.ts) before NEO-110, which is why a real defect
 // around it reached CI and cost a full investigation to root-cause.
 // ---------------------------------------------------------------------------
 
-describe("EntityReviewWizard — bulk 'Add All Remaining as New'", () => {
+describe("EntityReviewWizard — bulk 'Add remaining players as new'", () => {
   it("says how many names are still being looked up, and that they are NOT included", async () => {
     // NEO-221. The bulk create used to decide rows whose lookup had not
     // finished — names the operator had never seen, added as new players on
@@ -1058,11 +1169,11 @@ describe("EntityReviewWizard — bulk 'Add All Remaining as New'", () => {
     ];
     renderWizard();
 
-    const bulk = screen.getByRole("button", { name: "Add All Remaining as New (3)" });
+    const bulk = screen.getByRole("button", { name: "Add remaining players as new (3)" });
     // The button's own label is JUST the action and its count — no clause. On
     // 1990 Bowman ("(433) — 229 still looking up…") the combined string wrapped
-    // to two lines and dragged "Skip Remaining" with it.
-    expect(bulk.textContent).toBe("Add All Remaining as New (3)");
+    // to two lines and dragged "Skip remaining names" with it.
+    expect(bulk.textContent).toBe("Add remaining players as new (3)");
     expect(bulk.textContent).not.toContain("still looking up");
 
     // The clause lives in the footer's own status row instead.
@@ -1082,8 +1193,8 @@ describe("EntityReviewWizard — bulk 'Add All Remaining as New'", () => {
     currentRows = [makeRow({ status: "ready" }), makeRow({ status: "ready" })];
     renderWizard();
 
-    const bulk = screen.getByRole("button", { name: "Add All Remaining as New (2)" });
-    expect(bulk.textContent).toBe("Add All Remaining as New (2)");
+    const bulk = screen.getByRole("button", { name: "Add remaining players as new (2)" });
+    expect(bulk.textContent).toBe("Add remaining players as new (2)");
     // …and the status row is rendered but empty — its height is reserved so
     // row 1 cannot move when a message arrives later.
     expect(footerStatusText()).toBe("");
@@ -1098,7 +1209,7 @@ describe("EntityReviewWizard — bulk 'Add All Remaining as New'", () => {
     renderWizard();
 
     expect(
-      screen.getByRole("button", { name: "Add All Remaining as New (2)" }),
+      screen.getByRole("button", { name: "Add remaining players as new (2)" }),
     ).toBeTruthy();
   });
 
@@ -1109,7 +1220,7 @@ describe("EntityReviewWizard — bulk 'Add All Remaining as New'", () => {
     ];
     renderWizard();
 
-    expect(screen.queryByText(/Add All Remaining as New/)).toBeNull();
+    expect(screen.queryByText(/Add remaining players as new/)).toBeNull();
     expect(screen.getByText(/All reviewed/)).toBeTruthy();
   });
 
@@ -1121,7 +1232,7 @@ describe("EntityReviewWizard — bulk 'Add All Remaining as New'", () => {
     mockRecordAllRemainingAsCreate.mockRejectedValueOnce(new Error("not an admin"));
     renderWizard();
 
-    fireEvent.click(screen.getByRole("button", { name: "Add All Remaining as New (2)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add remaining players as new (2)" }));
 
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("not an admin");
@@ -1133,7 +1244,7 @@ describe("EntityReviewWizard — bulk 'Add All Remaining as New'", () => {
     renderWizard();
 
     const bulk = screen.getByRole("button", {
-      name: "Add All Remaining as New (1)",
+      name: "Add remaining players as new (1)",
     }) as HTMLButtonElement;
     fireEvent.click(bulk);
 
@@ -1181,7 +1292,7 @@ describe("EntityReviewWizard — armed bulk add", () => {
       const { rerender } = render(wizardEl());
 
       fireEvent.click(
-        screen.getByRole("button", { name: "Add All Remaining as New (3)" }),
+        screen.getByRole("button", { name: "Add remaining players as new (3)" }),
       );
       await act(async () => {});
       expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1);
@@ -1231,7 +1342,7 @@ describe("EntityReviewWizard — armed bulk add", () => {
       const { rerender } = render(wizardEl());
 
       fireEvent.click(
-        screen.getByRole("button", { name: "Add All Remaining as New (2)" }),
+        screen.getByRole("button", { name: "Add remaining players as new (2)" }),
       );
       await act(async () => {});
       expect(screen.getByText(/Adding .* as their lookups finish/)).toBeTruthy();
@@ -1273,7 +1384,7 @@ describe("EntityReviewWizard — armed bulk add", () => {
       const { rerender } = render(wizardEl());
 
       fireEvent.click(
-        screen.getByRole("button", { name: "Add All Remaining as New (2)" }),
+        screen.getByRole("button", { name: "Add remaining players as new (2)" }),
       );
       await act(async () => {});
 
@@ -1299,13 +1410,13 @@ describe("EntityReviewWizard — armed bulk add", () => {
     currentRows = [makeRow({ status: "ready" }), makeRow({ status: "ready" })];
     renderWizard();
 
-    fireEvent.click(screen.getByRole("button", { name: "Add All Remaining as New (2)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add remaining players as new (2)" }));
     await waitFor(() => expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1));
 
     expect(screen.queryByText(/as their lookups finish/)).toBeNull();
   });
 
-  it("'Skip Remaining' disarms it — that branch means every name, lookups included", async () => {
+  it("'Skip remaining names' disarms it — that branch means every name, lookups included", async () => {
     vi.useFakeTimers();
     try {
       currentRows = [
@@ -1315,15 +1426,15 @@ describe("EntityReviewWizard — armed bulk add", () => {
       const { rerender } = render(wizardEl());
 
       fireEvent.click(
-        screen.getByRole("button", { name: "Add All Remaining as New (2)" }),
+        screen.getByRole("button", { name: "Add remaining players as new (2)" }),
       );
       await act(async () => {});
-      // Armed — and "Skip Remaining" is STILL live, because row 2 says "wait or
+      // Armed — and "Skip remaining names" is STILL live, because row 2 says "wait or
       // skip" and taking the skip away while it says so would advertise an exit
       // and lock it.
       expect(screen.getByText(/as their lookups finish/)).toBeTruthy();
 
-      fireEvent.click(screen.getByRole("button", { name: "Skip Remaining (2)" }));
+      fireEvent.click(screen.getByRole("button", { name: "Skip remaining names (2)" }));
       await act(async () => {});
       expect(mockRecordAllRemainingAsSkip).toHaveBeenCalledTimes(1);
       expect(screen.queryByText(/as their lookups finish/)).toBeNull();
@@ -1440,7 +1551,7 @@ describe("EntityReviewWizard — NEO-110 footer stability", () => {
     renderWizard();
 
     const { body, footer } = panelRegions();
-    const bulk = screen.getByRole("button", { name: /Add all remaining as new/i });
+    const bulk = screen.getByRole("button", { name: /Add remaining players as new/i });
 
     expect(footer.contains(bulk)).toBe(true);
     expect(body.contains(bulk)).toBe(false);
@@ -1528,7 +1639,7 @@ describe("EntityReviewWizard — skip decision", () => {
   });
 });
 
-describe("EntityReviewWizard — bulk 'Skip Remaining'", () => {
+describe("EntityReviewWizard — bulk 'Skip remaining names'", () => {
   it("labels the button with the undecided count and calls the bulk mutation", async () => {
     currentRows = [
       makeRow({ status: "ready", name: "A" }),
@@ -1537,8 +1648,8 @@ describe("EntityReviewWizard — bulk 'Skip Remaining'", () => {
     ];
     renderWizard();
 
-    const bulk = screen.getByRole("button", { name: "Skip Remaining (3)" });
-    expect(bulk.textContent).toContain("Skip Remaining (3)");
+    const bulk = screen.getByRole("button", { name: "Skip remaining names (3)" });
+    expect(bulk.textContent).toContain("Skip remaining names (3)");
 
     fireEvent.click(bulk);
 
@@ -1551,7 +1662,7 @@ describe("EntityReviewWizard — bulk 'Skip Remaining'", () => {
     expect(mockRecordAllRemainingAsCreate).not.toHaveBeenCalled();
   });
 
-  it("sits beside 'Add All Remaining as New' with the same count", () => {
+  it("sits beside 'Add remaining players as new' with the same count", () => {
     currentRows = [
       makeRow({ status: "ready", decision: { action: "create" } }),
       makeRow({ status: "ready" }),
@@ -1560,16 +1671,16 @@ describe("EntityReviewWizard — bulk 'Skip Remaining'", () => {
     renderWizard();
 
     expect(
-      screen.getByRole("button", { name: "Add All Remaining as New (2)" }),
+      screen.getByRole("button", { name: "Add remaining players as new (2)" }),
     ).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Skip Remaining (2)" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Skip remaining names (2)" })).toBeTruthy();
   });
 
   it("is not rendered once every row is decided", () => {
     currentRows = [makeRow({ status: "ready", decision: { action: "skip" } })];
     renderWizard();
 
-    expect(screen.queryByText(/Skip Remaining/)).toBeNull();
+    expect(screen.queryByText(/Skip remaining names/)).toBeNull();
     expect(screen.getByText(/All reviewed/)).toBeTruthy();
   });
 
@@ -1578,7 +1689,7 @@ describe("EntityReviewWizard — bulk 'Skip Remaining'", () => {
     mockRecordAllRemainingAsSkip.mockRejectedValueOnce(new Error("not an admin"));
     renderWizard();
 
-    fireEvent.click(screen.getByRole("button", { name: "Skip Remaining (2)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Skip remaining names (2)" }));
 
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("not an admin");
@@ -1590,14 +1701,14 @@ describe("EntityReviewWizard — bulk 'Skip Remaining'", () => {
     renderWizard();
 
     const skipAll = screen.getByRole("button", {
-      name: "Skip Remaining (1)",
+      name: "Skip remaining names (1)",
     }) as HTMLButtonElement;
     fireEvent.click(skipAll);
 
     await screen.findByRole("alert");
     expect(skipAll.disabled).toBe(false);
     expect(
-      (screen.getByRole("button", { name: "Add All Remaining as New (1)" }) as HTMLButtonElement)
+      (screen.getByRole("button", { name: "Add remaining players as new (1)" }) as HTMLButtonElement)
         .disabled,
     ).toBe(false);
   });
@@ -1865,9 +1976,23 @@ describe("EntityReviewWizard — career-team proposals", () => {
     expect(screen.getByText("Salt Lake Bees (2011–2011)")).toBeTruthy();
   });
 
+  /**
+   * NEO-236 — every accepted proposal has to be ANSWERED before the player can
+   * be created: an unanswered one blocks the primary, because the stint would
+   * have nowhere to land. These three tests are about the exclusion list, not
+   * about the block, so they say "we already hold all three" and let the
+   * blocking rule have its own section below.
+   */
+  const allThreeAlreadyExist = () => [
+    { name: "Los Angeles Angels", existingTeamId: "team_angels" },
+    { name: "Salt Lake Bees", existingTeamId: "team_bees" },
+    { name: "Cedar Rapids Kernels", existingTeamId: "team_kernels" },
+  ];
+
   it("sends UNCHECKED proposals as excludedCareerTeamNames on create", async () => {
     const row = angelsRow();
     currentRows = [row];
+    currentResolvedNames = allThreeAlreadyExist();
     renderWizard();
 
     fireEvent.click(screen.getByLabelText("Include career team Salt Lake Bees"));
@@ -1891,6 +2016,7 @@ describe("EntityReviewWizard — career-team proposals", () => {
   it("sends no exclusion list at all when nothing is unchecked", async () => {
     const row = angelsRow();
     currentRows = [row];
+    currentResolvedNames = allThreeAlreadyExist();
     renderWizard();
 
     fireEvent.click(screen.getByRole("button", { name: "Add as New Player" }));
@@ -1908,6 +2034,7 @@ describe("EntityReviewWizard — career-team proposals", () => {
   it("re-checking a proposal drops it back out of the exclusion list", async () => {
     const row = angelsRow();
     currentRows = [row];
+    currentResolvedNames = allThreeAlreadyExist();
     renderWizard();
 
     const bees = () => screen.getByLabelText("Include career team Salt Lake Bees");
@@ -1994,7 +2121,12 @@ describe("EntityReviewWizard — team creation summary", () => {
     renderWizard();
 
     expect(
-      screen.getByText("Will create 1 new team: Los Angeles Angels · 1 already exist"),
+      // NEO-236: an unmatched career team is no longer "will create" from the
+      // PLAYER's step — it gets a New Team step of its own, and until that step
+      // is answered nothing is being created. The line says so.
+      screen.getByText(
+        "1 team needs their own step: Los Angeles Angels · 1 already exist",
+      ),
     ).toBeTruthy();
   });
 
@@ -2007,7 +2139,9 @@ describe("EntityReviewWizard — team creation summary", () => {
     renderWizard();
 
     expect(
-      screen.getByText("Will create 2 new teams: Los Angeles Angels, Salt Lake Bees"),
+      screen.getByText(
+        "2 teams need their own step: Los Angeles Angels, Salt Lake Bees",
+      ),
     ).toBeTruthy();
   });
 
@@ -2896,7 +3030,7 @@ describe("EntityReviewWizard — expired session", () => {
     expect(screen.getByRole("button", { name: "Close" })).toBeTruthy();
     // Nothing to decide, nothing to discard: the review controls are gone.
     expect(screen.queryByRole("button", { name: "Cancel (Esc)" })).toBeNull();
-    expect(screen.queryByText(/Add All Remaining as New/)).toBeNull();
+    expect(screen.queryByText(/Add remaining players as new/)).toBeNull();
   });
 
   it("Close reports back without pretending to cancel a batch that is gone", () => {
@@ -3138,7 +3272,7 @@ describe("EntityReviewWizard — armed bulk add does not stall", () => {
       const { rerender } = render(wizardEl());
 
       fireEvent.click(
-        screen.getByRole("button", { name: "Add All Remaining as New (2)" }),
+        screen.getByRole("button", { name: "Add remaining players as new (2)" }),
       );
       expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1);
 
@@ -3198,7 +3332,7 @@ describe("EntityReviewWizard — keyboard-only bulk-then-commit", () => {
     currentRows = [solo()];
     const { rerender } = render(wizardEl({ onConfirm }));
 
-    const bulk = screen.getByRole("button", { name: "Add All Remaining as New (1)" });
+    const bulk = screen.getByRole("button", { name: "Add remaining players as new (1)" });
     // Tapping it is what puts focus on it — and what makes it unmount a moment
     // later, which is why the autofocus below has to be doing real work.
     (bulk as HTMLElement).focus();
@@ -3223,7 +3357,7 @@ describe("EntityReviewWizard — keyboard-only bulk-then-commit", () => {
     currentRows = [solo()];
     const { rerender } = render(wizardEl());
 
-    const bulk = screen.getByRole("button", { name: "Add All Remaining as New (1)" });
+    const bulk = screen.getByRole("button", { name: "Add remaining players as new (1)" });
     (bulk as HTMLElement).focus();
     fireEvent.click(bulk);
     await waitFor(() => expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1));
@@ -3242,9 +3376,9 @@ describe("EntityReviewWizard — keyboard-only bulk-then-commit", () => {
 // NEO-220 — the footer is two fixed rows
 //
 // Jason hit this on 1990 Bowman: 433 unknowns, 229 of them still being looked
-// up. The bulk button's label was "Add All Remaining as New (433) — 229 still
+// up. The bulk button's label was "Add remaining players as new (433) — 229 still
 // looking up, wait or skip", which wrapped to two centred lines, dragged
-// "Skip Remaining (433)" onto a second line with it, and left both sitting
+// "Skip remaining names (433)" onto a second line with it, and left both sitting
 // crookedly beside "Back to matching" and "Cancel (Esc)".
 //
 // A label whose LENGTH tracks a COUNT THAT CHANGES is the NEO-110 reflow class
@@ -3265,7 +3399,16 @@ describe("EntityReviewWizard — footer layout", () => {
     />
   );
 
-  /** [row 1, row 2] — the footer's shape IS the contract. */
+  /**
+   * [row 1, row 2] — the footer's shape IS the contract.
+   *
+   * NEO-236 (CI run 8) moved two things. The per-row DECISION controls came up
+   * out of the scrolling body into row 1, because the body had grown tall
+   * enough to render the primary action at y=620 on a 1024x629 viewport —
+   * below the footer and below the dialog. And the BULK links went down into
+   * row 2, because row 1 could not hold both at the dialog's 672px width and
+   * row 2 is where NEO-110 established variable-length things live.
+   */
   function footerRows(): { actions: HTMLElement; status: HTMLElement } {
     const overlay = document.querySelector('[role="dialog"]');
     if (!overlay) throw new Error("wizard overlay not found");
@@ -3285,18 +3428,19 @@ describe("EntityReviewWizard — footer layout", () => {
     renderWizard();
 
     const { status } = footerRows();
-    expect(status.getAttribute("role")).toBe("status");
-    expect(status.getAttribute("aria-live")).toBe("polite");
-    expect(status.textContent?.trim()).toBe("");
-    // `min-h-4` is one text-xs line — the reservation itself.
-    expect(status.className).toContain("min-h-4");
+    const live = status.querySelector('[role="status"]')!;
+    expect(live.getAttribute("aria-live")).toBe("polite");
+    expect(live.textContent?.trim()).toBe("");
+    // `min-h-6` is one text-xs line plus the links' target height — the
+    // reservation itself, which is what keeps row 1 from moving.
+    expect(status.className).toContain("min-h-6");
   });
 
   it("keeps the status row present on the final step too", () => {
     currentRows = [makeRow({ decision: { action: "create" } })];
     renderWizard();
 
-    expect(footerRows().status.getAttribute("role")).toBe("status");
+    expect(footerRows().status.querySelector('[role="status"]')).toBeTruthy();
     expect(footerStatusText()).toBe("");
   });
 
@@ -3311,11 +3455,15 @@ describe("EntityReviewWizard — footer layout", () => {
     renderWizard();
 
     const { actions, status } = footerRows();
-    const bulk = screen.getByRole("button", { name: "Add All Remaining as New (5)" });
+    const bulk = screen.getByRole("button", { name: "Add remaining players as new (5)" });
 
-    expect(actions.contains(bulk)).toBe(true);
-    expect(status.contains(bulk)).toBe(false);
-    expect(bulk.textContent).toBe("Add All Remaining as New (5)");
+    // The bulk links live in row 2 now, BESIDE the live region rather than
+    // inside it: a button inside a live region is re-announced every time the
+    // count next to it ticks.
+    expect(status.contains(bulk)).toBe(true);
+    expect(actions.contains(bulk)).toBe(false);
+    expect(status.querySelector('[role="status"]')!.contains(bulk)).toBe(false);
+    expect(bulk.textContent).toBe("Add remaining players as new (5)");
     expect(footerStatusText()).toBe("4 still looking up — wait or skip");
   });
 
@@ -3323,13 +3471,16 @@ describe("EntityReviewWizard — footer layout", () => {
     currentRows = [makeRow({ status: "ready" }), makeRow({ status: "pending" })];
     renderWizard();
 
-    const { actions } = footerRows();
-    const left = actions.firstElementChild as HTMLElement;
-    expect(left.className).toContain("whitespace-nowrap");
-    // The buttons never yield; the links are what clips if it ever comes to it.
-    const right = actions.lastElementChild as HTMLElement;
-    expect(right.className).toContain("shrink-0");
-    expect(left.className).toContain("min-w-0");
+    const { status } = footerRows();
+    const bulk = screen.getByRole("button", {
+      name: "Add remaining players as new (2)",
+    }).parentElement as HTMLElement;
+    // The links never yield; the status text beside them is what gives way.
+    expect(bulk.className).toContain("whitespace-nowrap");
+    expect(bulk.className).toContain("shrink-0");
+    const live = status.querySelector('[role="status"]') as HTMLElement;
+    expect(live.className).toContain("min-w-0");
+    expect(live.className).toContain("truncate");
   });
 
   it("aligns the buttons to row 1, not across both rows", () => {
@@ -3350,26 +3501,26 @@ describe("EntityReviewWizard — footer layout", () => {
     currentRows = [makeRow({ status: "ready" }), makeRow({ status: "pending" })];
     renderWizard();
 
-    fireEvent.click(screen.getByRole("button", { name: "Add All Remaining as New (2)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add remaining players as new (2)" }));
     await waitFor(() => expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1));
 
     const bulk = screen.getByRole("button", {
-      name: "Add All Remaining as New (2)",
+      name: "Add remaining players as new (2)",
     }) as HTMLButtonElement;
     expect(bulk.getAttribute("aria-disabled")).toBe("true");
     expect(bulk.className).toContain("aria-disabled:opacity-50");
     expect(footerStatusText()).toContain("Adding 2 more as their lookups finish…");
   });
 
-  it("keeps Skip Remaining live while armed — row 2 offers it by name", async () => {
+  it("keeps Skip remaining names live while armed — row 2 offers it by name", async () => {
     currentRows = [makeRow({ status: "ready" }), makeRow({ status: "pending" })];
     renderWizard();
 
-    fireEvent.click(screen.getByRole("button", { name: "Add All Remaining as New (2)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add remaining players as new (2)" }));
     await waitFor(() => expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1));
 
     const skip = screen.getByRole("button", {
-      name: "Skip Remaining (2)",
+      name: "Skip remaining names (2)",
     }) as HTMLButtonElement;
     expect(skip.getAttribute("aria-disabled")).not.toBe("true");
     fireEvent.click(skip);
@@ -3380,13 +3531,15 @@ describe("EntityReviewWizard — footer layout", () => {
     currentRows = [makeRow({ status: "ready" }), makeRow({ status: "pending" })];
     renderWizard();
 
-    fireEvent.click(screen.getByRole("button", { name: "Add All Remaining as New (2)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add remaining players as new (2)" }));
     await waitFor(() => expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1));
 
     const { actions, status } = footerRows();
     const stop = screen.getByRole("button", { name: "Stop" });
     expect(status.contains(stop)).toBe(true);
     expect(actions.contains(stop)).toBe(false);
+    // Beside the message, not inside the live region that carries it.
+    expect(status.querySelector('[role="status"]')!.contains(stop)).toBe(false);
     // a11y 2.5.8: the p-2 -m-2 target growth, which cannot change row height.
     expect(stop.className).toContain("p-2");
     expect(stop.className).toContain("-m-2");
@@ -3406,14 +3559,1729 @@ describe("EntityReviewWizard — armed bulk create is inert", () => {
     currentRows = [makeRow({ status: "ready" }), makeRow({ status: "pending" })];
     renderWizard();
 
-    const bulk = screen.getByRole("button", { name: "Add All Remaining as New (2)" });
+    const bulk = screen.getByRole("button", { name: "Add remaining players as new (2)" });
     fireEvent.click(bulk);
     await waitFor(() => expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1));
 
     // Armed and aria-disabled, so the click is a no-op — the button says so and
     // behaves that way, rather than quietly issuing a duplicate.
-    fireEvent.click(screen.getByRole("button", { name: "Add All Remaining as New (2)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add remaining players as new (2)" }));
     await new Promise((r) => setTimeout(r, 0));
     expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-236 — creating a team takes Location + Name, never the checklist string
+// ---------------------------------------------------------------------------
+
+describe("EntityReviewWizard — the New Team step", () => {
+  it("pre-fills Location from an ESPN location that is a whole-word prefix", () => {
+    currentRows = [
+      makeRow({
+        kind: "team",
+        name: "San Diego Padres",
+        status: "ready",
+        enrichment: { location: "San Diego" },
+      }),
+    ];
+    renderWizard();
+
+    expect(teamLocationField().value).toBe("San Diego");
+    expect(teamNameField().value).toBe("Padres");
+    expect(showsAsText()).toBe("Shows as: San Diego Padres");
+  });
+
+  it("leaves Location blank when the ESPN location is NOT a prefix of the name", () => {
+    // "Anaheim" is where the franchise plays, not the front of its name. A
+    // wizard that split on it would offer to create "Anaheim Angels", a team
+    // that has not existed since 2005.
+    currentRows = [
+      makeRow({
+        kind: "team",
+        name: "Los Angeles Angels",
+        status: "ready",
+        enrichment: { location: "Anaheim" },
+      }),
+    ];
+    renderWizard();
+
+    expect(teamLocationField().value).toBe("");
+    expect(teamNameField().value).toBe("Los Angeles Angels");
+  });
+
+  it("leaves Location blank when the lookup found no location at all", () => {
+    currentRows = [
+      makeRow({ kind: "team", name: "Orix Buffaloes", status: "ready" }),
+    ];
+    renderWizard();
+
+    expect(teamLocationField().value).toBe("");
+    expect(teamNameField().value).toBe("Orix Buffaloes");
+    // No location, so the composed name IS the name — the preview says so
+    // rather than going quiet.
+    expect(showsAsText()).toBe("Shows as: Orix Buffaloes");
+  });
+
+  it("sends the operator's two fields as `create`, not the reviewed name", async () => {
+    const row = makeRow({
+      kind: "team",
+      name: "SD PADRES",
+      status: "ready",
+    });
+    currentRows = [row];
+    renderWizard();
+
+    fireEvent.change(teamLocationField(), { target: { value: "San Diego" } });
+    fireEvent.change(teamNameField(), { target: { value: "Padres" } });
+    expect(showsAsText()).toBe("Shows as: San Diego Padres");
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Team" }));
+
+    await waitFor(() => {
+      expect(mockRecordDecision).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reviewRowId: row._id,
+          action: "create",
+          create: { name: "Padres", location: "San Diego" },
+        }),
+      );
+    });
+  });
+
+  it("omits `location` entirely when the operator leaves it blank", async () => {
+    const row = makeRow({ kind: "team", name: "Aztecs", status: "ready" });
+    currentRows = [row];
+    renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Team" }));
+
+    await waitFor(() => {
+      expect(mockRecordDecision).toHaveBeenCalledWith(
+        expect.objectContaining({ create: { name: "Aztecs" } }),
+      );
+    });
+  });
+
+  it("refuses to create a team whose Name has been cleared, and says why", async () => {
+    const row = makeRow({ kind: "team", name: "Padres", status: "ready" });
+    currentRows = [row];
+    renderWizard();
+
+    fireEvent.change(teamNameField(), { target: { value: "  " } });
+
+    const primary = screen.getByRole("button", { name: "Add as New Team" });
+    expect(primary.getAttribute("aria-disabled")).toBe("true");
+    const message = screen.getByText("Enter a team name before adding it.");
+    // The control points at the reason, so it is announced rather than left
+    // for the operator to find on screen.
+    expect(primary.getAttribute("aria-describedby")).toBe(message.id);
+
+    fireEvent.click(primary);
+    await waitFor(() => {
+      expect(mockRecordDecision).not.toHaveBeenCalled();
+    });
+  });
+
+  it("shows no team form at all on a player row", () => {
+    currentRows = [makeRow({ kind: "player", name: "Mike Trout", status: "ready" })];
+    renderWizard();
+
+    expect(screen.queryByLabelText("New team location (optional)")).toBeNull();
+    expect(screen.queryByLabelText("New team name")).toBeNull();
+    expect(screen.queryByRole("radiogroup", { name: "New team league" })).toBeNull();
+  });
+
+  // -------------------------------------------------------------------------
+  // NEO-236, Jason's own words for this step: "1. New Team: Sydney Blue Sox"
+  // -------------------------------------------------------------------------
+
+  it("heads a live team step 'New Team: {raw name}'", () => {
+    currentRows = [
+      makeRow({ kind: "team", name: "SD PADRES", status: "ready" }),
+    ];
+    renderWizard();
+
+    // The RAW checklist string, because that is the thing being answered — the
+    // composed result is on the "Shows as" line, where it belongs.
+    expect(
+      screen.getByRole("heading", { name: "New Team: SD PADRES" }),
+    ).toBeTruthy();
+  });
+
+  it("drops the 'New Team:' prefix for a row being read back, not created", () => {
+    // A decided row is history. Heading it "New Team:" would say the wizard is
+    // about to create something it already decided not to.
+    currentRows = [
+      makeRow({
+        kind: "team",
+        name: "SD PADRES",
+        status: "ready",
+        decision: { action: "skip" },
+      }),
+    ];
+    renderWizard();
+
+    expect(screen.queryByText("New Team: SD PADRES")).toBeNull();
+  });
+
+  it("names who needs a staged team, and nobody for a team asked for directly", () => {
+    // A checklist team was asked for by name; saying who needs it would be
+    // answering a question nobody asked.
+    const player = makeRow({ kind: "player", name: "Travis Bazzana", status: "ready" });
+    const staged = makeCareerTeamRow(player._id, "Sydney Blue Sox");
+    currentRows = [staged, player];
+    const { unmount } = renderWizard();
+
+    expect(screen.getByText("Needed by: Travis Bazzana")).toBeTruthy();
+    unmount();
+
+    currentRows = [makeRow({ kind: "team", name: "SD PADRES", status: "ready" })];
+    renderWizard();
+    expect(screen.queryByText(/Needed by:/)).toBeNull();
+  });
+
+  it("gives the three fields the stable ids a flow targets", () => {
+    // `entity-review-team-location` / `-name` / `-league` are Maestro
+    // selectors; `useId`-generated ones would change on any re-render.
+    currentRows = [makeRow({ kind: "team", name: "Padres", status: "ready" })];
+    renderWizard();
+
+    expect(teamLocationField().id).toBe("entity-review-team-location");
+    expect(teamNameField().id).toBe("entity-review-team-name");
+    expect(
+      screen.getByRole("radiogroup", { name: "New team league" }).id,
+    ).toBe("entity-review-team-league");
+  });
+
+  it("sends the League the operator picked, and null verbatim for 'No league'", async () => {
+    // The League is the question this step exists to ask — the inline pair it
+    // replaced had no room for it, so every team it created was silently filed
+    // under the sport's default.
+    const row = makeRow({ kind: "team", name: "Orix Buffaloes", status: "ready" });
+    currentRows = [row];
+    currentLeagues = [
+      { _id: "league-npb" as unknown as Id<"leagues">, name: "NPB" },
+    ];
+    renderWizard();
+
+    fireEvent.click(screen.getByRole("radio", { name: "No league" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Team" }));
+
+    await waitFor(() => {
+      expect(mockRecordDecision).toHaveBeenCalledWith(
+        expect.objectContaining({
+          create: { name: "Orix Buffaloes", leagueId: null },
+        }),
+      );
+    });
+  });
+
+  it("offers the enrichment's league as a pill, and sends it as a NAME when we hold no such row", async () => {
+    const row = makeRow({
+      kind: "team",
+      name: "Sydney Blue Sox",
+      status: "ready",
+      enrichment: { league: "Australian Baseball League" },
+    });
+    currentRows = [row];
+    currentLeagues = [];
+    renderWizard();
+
+    fireEvent.click(
+      screen.getByRole("radio", { name: "Create Australian Baseball League" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Team" }));
+
+    await waitFor(() => {
+      expect(mockRecordDecision).toHaveBeenCalledWith(
+        expect.objectContaining({
+          create: {
+            name: "Sydney Blue Sox",
+            leagueName: "Australian Baseball League",
+          },
+        }),
+      );
+    });
+  });
+
+  it("omits both league keys while the question is unanswered", async () => {
+    // An omitted key is "not answered", which still lets the server's own
+    // fallbacks apply — a different thing from the operator's `null`.
+    const row = makeRow({ kind: "team", name: "Padres", status: "ready" });
+    currentRows = [row];
+    renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Team" }));
+
+    await waitFor(() => expect(mockRecordDecision).toHaveBeenCalledTimes(1));
+    const create = mockRecordDecision.mock.calls[0][0].create;
+    expect(create).toEqual({ name: "Padres" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-236 — a player's career-team chips REPORT; they no longer ask
+//
+// Jason, 2026-09-05, on the wizard showing an inline Location/Name pair under
+// each of Travis Bazzana's career teams: "How does this dialog know which
+// League the new team is in? I think we need to show a new team dialog instead
+// of that inline thing."
+//
+// So a career team that has to be created is a review row of its own, staged
+// ahead of the player and answered on a New Team step where the League can be
+// asked. The player's step is left reporting which of four things is true of
+// each stint — already exists, being created by this batch, answered by
+// linking, or still open — and holding Confirm while any of them is open.
+// ---------------------------------------------------------------------------
+
+describe("EntityReviewWizard — career-team chips report the staged answer", () => {
+  const trout = () =>
+    makeRow({
+      kind: "player",
+      name: "Mike Trout",
+      status: "ready",
+      enrichment: {
+        careerTeams: [
+          { name: "Los Angeles Angels", fromYear: 2011 },
+          { name: "Salt Lake Bees", fromYear: 2010, toYear: 2010 },
+        ],
+      },
+    });
+
+  const angelsExist = { name: "Los Angeles Angels", existingTeamId: "team_angels" };
+
+  it("asks for nothing inline — the per-chip Location/Name pairs are gone", () => {
+    currentRows = [trout()];
+    currentResolvedNames = [angelsExist, { name: "Salt Lake Bees" }];
+    renderWizard();
+
+    // The exact controls Jason asked to be replaced by a dialog.
+    expect(screen.queryByLabelText(/^Name for new team/)).toBeNull();
+    expect(screen.queryByLabelText(/^Location for new team/)).toBeNull();
+    // And no team form of any shape on a player step — that is the New Team
+    // step's job, and it is a different step.
+    expect(screen.queryByLabelText("New team name")).toBeNull();
+    expect(screen.queryByRole("radiogroup", { name: "New team league" })).toBeNull();
+  });
+
+  it("reads '→ {name}' for a career team we already hold", () => {
+    currentRows = [trout()];
+    currentResolvedNames = [
+      { ...angelsExist, existingName: "Los Angeles Angels" },
+      { name: "Salt Lake Bees", existingTeamId: "team_bees", existingName: "Salt Lake Bees" },
+    ];
+    renderWizard();
+
+    // The stint LINKS — there is nothing to create and nothing to ask.
+    expect(screen.getByText("→ Los Angeles Angels")).toBeTruthy();
+    expect(screen.getByText("→ Salt Lake Bees")).toBeTruthy();
+    expect(screen.queryByText("needs a team decision")).toBeNull();
+    expect(
+      screen
+        .getByRole("button", { name: "Add as New Player" })
+        .getAttribute("aria-disabled"),
+    ).toBeNull();
+  });
+
+  it("prefers the canonical stored name over the label that prompted it", () => {
+    // The checklist said one thing and the row we hold says another; what the
+    // stint lands on is the row.
+    currentRows = [trout()];
+    currentResolvedNames = [
+      { name: "Los Angeles Angels", existingTeamId: "team_angels", existingName: "LA Angels of Anaheim" },
+      { name: "Salt Lake Bees", existingTeamId: "team_bees", existingName: "Salt Lake Bees" },
+    ];
+    renderWizard();
+
+    expect(screen.getByText("→ LA Angels of Anaheim")).toBeTruthy();
+  });
+
+  it("reads '→ {composed}' when its own step said create", () => {
+    const player = trout();
+    // The operator split it on the New Team step: Location "Salt Lake",
+    // Name "Bees". The chip shows the composed row, not the raw label.
+    const staged = makeCareerTeamRow(player._id, "Salt Lake Bees", {
+      decision: { action: "create", create: { name: "Bees", location: "Salt Lake" } },
+    });
+    currentRows = [staged, player];
+    currentResolvedNames = [angelsExist, { name: "Salt Lake Bees" }];
+    renderWizard();
+
+    expect(screen.getByText("→ Salt Lake Bees")).toBeTruthy();
+    expect(screen.queryByText("needs a team decision")).toBeNull();
+  });
+
+  it("reads '→ {linked name}' when that step was answered by linking instead", () => {
+    const player = trout();
+    const staged = makeCareerTeamRow(player._id, "Salt Lake Bees", {
+      decision: { action: "link", linkedTeamId: "team_bees" },
+    });
+    currentRows = [staged, player];
+    currentResolvedNames = [angelsExist, { name: "Salt Lake Bees" }];
+    // Resolved through `teams.getManyByIds`, composed — a split row's `name`
+    // is the nickname alone and does not identify the team.
+    currentLinkedTeams = [
+      { _id: "team_bees", name: "Bees", location: "Salt Lake" },
+    ];
+    renderWizard();
+
+    // Nothing is being created for this stint, so the chip reports the linked
+    // team plainly — the same way it reports one that already existed, and with
+    // no qualifier distinguishing the two (NEO-236: there is nothing the
+    // operator could do with that difference).
+    expect(screen.getByText("→ Salt Lake Bees")).toBeTruthy();
+    expect(screen.queryByText(/new team/)).toBeNull();
+    expect(screen.queryByText("needs a team decision")).toBeNull();
+  });
+
+  it("says 'needs a team decision' and holds the create when the step was SKIPPED", () => {
+    // Skip means "that is not a team", so the batch will create nothing for it
+    // and the stint has nowhere to land. `nextUndecided` lets the player
+    // through — a skipped row is answered — which is exactly why this branch
+    // has to say something rather than silently dropping the stint.
+    const player = trout();
+    const staged = makeCareerTeamRow(player._id, "Salt Lake Bees", {
+      decision: { action: "skip" },
+    });
+    currentRows = [staged, player];
+    currentResolvedNames = [angelsExist, { name: "Salt Lake Bees" }];
+    renderWizard();
+
+    const status = screen.getByText("needs a team decision");
+    // The cancel colour, because this is the thing standing between the
+    // operator and the primary.
+    expect(status.className).toContain("#FF2EB3");
+
+    const primary = screen.getByRole("button", { name: "Add as New Player" });
+    expect(primary.getAttribute("aria-disabled")).toBe("true");
+    // The message says BOTH ways forward: blocked with no way out is the worst
+    // state a walker can be in.
+    const reason = screen.getByText(
+      "Salt Lake Bees still needs a team decision, or untick it.",
+    );
+    expect(primary.getAttribute("aria-describedby")).toBe(reason.id);
+
+    fireEvent.click(primary);
+    expect(mockRecordDecision).not.toHaveBeenCalled();
+  });
+
+  it("unticking that chip unblocks the create and records the exclusion", async () => {
+    const player = trout();
+    const staged = makeCareerTeamRow(player._id, "Salt Lake Bees", {
+      decision: { action: "skip" },
+    });
+    currentRows = [staged, player];
+    currentResolvedNames = [angelsExist, { name: "Salt Lake Bees" }];
+    renderWizard();
+
+    fireEvent.click(screen.getByLabelText("Include career team Salt Lake Bees"));
+
+    // An unticked chip says nothing at all — excluding it IS the answer.
+    expect(screen.queryByText("needs a team decision")).toBeNull();
+    const primary = screen.getByRole("button", { name: "Add as New Player" });
+    expect(primary.getAttribute("aria-disabled")).toBeNull();
+
+    fireEvent.click(primary);
+    await waitFor(() => {
+      expect(mockRecordDecision).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reviewRowId: player._id,
+          action: "create",
+          excludedCareerTeamNames: ["Salt Lake Bees"],
+        }),
+      );
+    });
+  });
+
+  it("counts the outstanding ones rather than naming them all", () => {
+    // No staged rows have landed yet and neither name resolves, so both are
+    // open. One name reads better than two; past that, a count does.
+    currentRows = [trout()];
+    currentResolvedNames = [
+      { name: "Los Angeles Angels" },
+      { name: "Salt Lake Bees" },
+    ];
+    renderWizard();
+
+    expect(screen.getAllByText("needs a team decision")).toHaveLength(2);
+    expect(
+      screen.getByText(
+        "2 career teams still need a team decision, or untick them.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("says nothing and blocks nothing while the match query is still in flight", () => {
+    // `resolveNames` undefined is "not answered yet", NOT "nothing matches" —
+    // and the difference is load-bearing here. A team we already hold has no
+    // staged step by construction (staging skips it), so reading an unanswered
+    // query as "unanswered by the operator" would paint a whole career pink and
+    // hold Confirm for the length of a round trip.
+    currentRows = [trout()];
+    currentResolvedNames = undefined;
+    renderWizard();
+
+    expect(screen.queryByText("needs a team decision")).toBeNull();
+    expect(
+      screen
+        .getByRole("button", { name: "Add as New Player" })
+        .getAttribute("aria-disabled"),
+    ).toBeNull();
+    // Nothing to describe, so nothing is pointed at — an `aria-describedby`
+    // naming an absent id is worse than none.
+    expect(
+      screen
+        .getByLabelText("Include career team Salt Lake Bees")
+        .getAttribute("aria-describedby"),
+    ).toBeNull();
+  });
+
+  it("announces where the stint lands, not only draws it", () => {
+    // The checkbox carries an explicit `aria-label`, which SUPPRESSES the
+    // wrapping label's text — so without this association the status line is
+    // visible-only and a screen-reader operator is told nothing about what the
+    // stint will do.
+    const player = trout();
+    const staged = makeCareerTeamRow(player._id, "Salt Lake Bees", {
+      decision: { action: "create", create: { name: "Bees", location: "Salt Lake" } },
+    });
+    currentRows = [staged, player];
+    currentResolvedNames = [angelsExist, { name: "Salt Lake Bees" }];
+    renderWizard();
+
+    const box = screen.getByLabelText("Include career team Salt Lake Bees");
+    const status = screen.getByText("→ Salt Lake Bees");
+    expect(box.getAttribute("aria-describedby")).toBe(status.id);
+  });
+
+  it("stops describing a chip the operator unticked", () => {
+    // Excluding it IS the answer, so the line goes away — and the description
+    // must go with it rather than dangling at a removed id.
+    const player = trout();
+    const staged = makeCareerTeamRow(player._id, "Salt Lake Bees", {
+      decision: { action: "skip" },
+    });
+    currentRows = [staged, player];
+    currentResolvedNames = [angelsExist, { name: "Salt Lake Bees" }];
+    renderWizard();
+
+    const box = () => screen.getByLabelText("Include career team Salt Lake Bees");
+    expect(box().getAttribute("aria-describedby")).not.toBeNull();
+
+    fireEvent.click(box());
+    expect(box().getAttribute("aria-describedby")).toBeNull();
+  });
+
+  it("names the team as the operator split it in the summary line", () => {
+    const player = trout();
+    const staged = makeCareerTeamRow(player._id, "Salt Lake Bees", {
+      decision: { action: "create", create: { name: "Bees", location: "Salt Lake" } },
+    });
+    currentRows = [staged, player];
+    currentResolvedNames = [angelsExist, { name: "Salt Lake Bees" }];
+    renderWizard();
+
+    expect(
+      screen.getByText("Will create 1 new team: Salt Lake Bees · 1 already exist"),
+    ).toBeTruthy();
+  });
+
+  it("stages the player's career teams once per row, belt and braces", async () => {
+    // `applyLookupResult` already stages on the server the moment enrichment
+    // lands; this covers a batch whose lookups landed before that shipped. On
+    // an ordinary row it is one idempotent call that inserts nothing.
+    const row = trout();
+    currentRows = [row];
+    currentResolvedNames = [
+      angelsExist,
+      { name: "Salt Lake Bees", existingTeamId: "team_bees" },
+    ];
+    const { rerender } = renderWizard();
+
+    await waitFor(() => {
+      expect(mockStageCareerTeamRows).toHaveBeenCalledWith({ reviewRowId: row._id });
+    });
+
+    // Guarded by a ref keyed on the row id, not by state: this effect re-runs
+    // whenever the reactive batch updates, which is often.
+    rerender(
+      <EntityReviewWizard
+        isOpen
+        selectorOptionId={"selopt-1" as unknown as Id<"selectorOptions">}
+        batchId="batch-1"
+        summary={{ ...SUMMARY, cardCount: 4 }}
+        onConfirm={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+    expect(mockStageCareerTeamRows).toHaveBeenCalledTimes(1);
+  });
+
+  it("stages nothing for a player with no career-team history", () => {
+    currentRows = [
+      makeRow({ kind: "player", status: "ready", enrichment: { careerTeams: [] } }),
+    ];
+    renderWizard();
+
+    expect(mockStageCareerTeamRows).not.toHaveBeenCalled();
+  });
+
+  it("stages nothing for a team row", () => {
+    currentRows = [makeRow({ kind: "team", name: "Padres", status: "ready" })];
+    renderWizard();
+
+    expect(mockStageCareerTeamRows).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-236 — Jason's three-step walk, end to end
+//
+// Verbatim, 2026-09-05: "So for this example I think we should show 3 modals in
+// the walker: 1. New Team: Sydney Blue Sox 2. New Team: Oregon State Beavers
+// 3. New Player Travis Bazzana which can now use the 2 new teams that were
+// created."
+// ---------------------------------------------------------------------------
+
+describe("EntityReviewWizard — the New Team, New Team, then Player sequence", () => {
+  /** Bazzana: two teams the batch has to create, one it already holds. */
+  function bazzanaBatch() {
+    const player = makeRow({
+      kind: "player",
+      name: "Travis Bazzana",
+      status: "ready",
+      enrichment: {
+        careerTeams: [
+          { name: "Sydney Blue Sox", fromYear: 2019, toYear: 2021 },
+          { name: "Oregon State Beavers baseball", fromYear: 2022, toYear: 2024 },
+          { name: "Cleveland Guardians", fromYear: 2024 },
+        ],
+      },
+    });
+    // `getBatch` emits the staged teams AHEAD of the player they came from.
+    const sydney = makeCareerTeamRow(player._id, "Sydney Blue Sox", {
+      enrichment: { league: "Australian Baseball League" },
+    });
+    const oregon = makeCareerTeamRow(player._id, "Oregon State Beavers baseball");
+    return { player, sydney, oregon };
+  }
+
+  /** The Guardians exist; the other two do not. */
+  const bazzanaResolved = [
+    { name: "Sydney Blue Sox" },
+    { name: "Oregon State Beavers baseball" },
+    {
+      name: "Cleveland Guardians",
+      existingTeamId: "team_guardians",
+      existingName: "Cleveland Guardians",
+    },
+  ];
+
+  it("CI run 5: the player yields when its steps are staged under it", async () => {
+    /*
+     * Jason's report on the pushed branch: on the FIRST player of a fresh batch
+     * he saw the New Player step with career chips, and never saw a New Team
+     * step at all.
+     *
+     * The sequence, which no earlier test covered because every one of them
+     * started with the staged rows already present: the player settles FIRST
+     * (its own lookup is what stages the teams), so the wizard pins it and
+     * shows it — and then the staged rows arrive. `nextUndecided` already
+     * refused to offer a blocked player, but `resolveNav` never asked, because
+     * a present + undecided + implicitly-pinned row was not "stale".
+     */
+    const { player, sydney, oregon } = bazzanaBatch();
+    currentRows = [player];
+    currentResolvedNames = bazzanaResolved;
+    const { rerender } = renderWizard();
+
+    // The wizard is showing the player — correctly, nothing else exists yet.
+    expect(screen.getByRole("heading", { name: "Travis Bazzana" })).toBeTruthy();
+
+    // The lookup lands and stages the two clubs ahead of it.
+    currentRows = [sydney, oregon, player];
+    rerenderWizard(rerender);
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: "New Team: Sydney Blue Sox" }),
+      ).toBeTruthy(),
+    );
+    expect(screen.queryByRole("heading", { name: "Travis Bazzana" })).toBeNull();
+  });
+
+  it("a staged step with NO decision reads 'needs a team decision', never 'new team'", () => {
+    /*
+     * The other half of Jason's report: the chips read "(new team, …)" although
+     * no New Team step had been decided. That state must require a create
+     * DECISION on the staged row — the mere existence of a step is a question,
+     * not an answer. Pinned explicitly, because the walk deliberately will not
+     * offer this player.
+     */
+    const { player, sydney, oregon } = bazzanaBatch();
+    // Both steps ANSWERED, but answered "skip" — not a team, so nothing is
+    // created for either. The steps are decided, so the player is presentable.
+    currentRows = [
+      { ...sydney, decision: { action: "skip" } },
+      { ...oregon, decision: { action: "skip" } },
+      player,
+    ];
+    currentResolvedNames = bazzanaResolved;
+    renderWizard();
+
+    expect(screen.getByRole("heading", { name: "Travis Bazzana" })).toBeTruthy();
+    // A step exists for both labels — but existence is the QUESTION, not the
+    // answer, so neither may claim a team is being created.
+    // NEO-236: an answered chip says only where the stint lands. The state
+    // that still needs an action is the one that still has words.
+    expect(screen.getAllByText("needs a team decision")).toHaveLength(2);
+    expect(screen.getAllByText("needs a team decision")).toHaveLength(2);
+  });
+
+  it("one staged step answers the SAME club on a second player's chip", () => {
+    /*
+     * Staging dedupes a career team across the whole batch, so the first player
+     * to propose "Sydney Blue Sox" gets the step and later players sharing that
+     * club get none. Keying the chip lookup on `source.playerRowId` therefore
+     * made every player after the first read "needs a team decision" for a team
+     * the batch was already creating — and blocked their Confirm on a question
+     * that had already been answered. The answer is the TEAM, identified by
+     * name; whose lookup happened to raise it is not part of that.
+     */
+    const { player, sydney } = bazzanaBatch();
+    const second = makeRow({
+      kind: "player",
+      name: "Dylan Crews",
+      status: "ready",
+      enrichment: {
+        careerTeams: [{ name: "Sydney Blue Sox", fromYear: 2022 }],
+      },
+    });
+    currentRows = [
+      {
+        ...sydney,
+        decision: { action: "create", create: { location: "Sydney", name: "Blue Sox" } },
+      },
+      { ...player, decision: { action: "create" } },
+      second,
+    ];
+    currentResolvedNames = [{ name: "Sydney Blue Sox" }];
+    renderWizard();
+
+    expect(screen.getByRole("heading", { name: "Dylan Crews" })).toBeTruthy();
+    expect(
+      screen.getByText("→ Sydney Blue Sox"),
+    ).toBeTruthy();
+    expect(screen.queryByText("needs a team decision")).toBeNull();
+  });
+
+  it("presents the first New Team step, not the player", () => {
+    const { player, sydney, oregon } = bazzanaBatch();
+    currentRows = [sydney, oregon, player];
+    currentResolvedNames = bazzanaResolved;
+    renderWizard();
+
+    expect(
+      screen.getByRole("heading", { name: "New Team: Sydney Blue Sox" }),
+    ).toBeTruthy();
+    expect(screen.getByText("Needed by: Travis Bazzana")).toBeTruthy();
+    // The player is NOT on screen: its chips would all read "needs a team
+    // decision" and its primary would be blocked, which is a step the operator
+    // cannot complete.
+    expect(screen.queryByText("Travis Bazzana")).toBeNull();
+  });
+
+  it("moves to the second New Team step once the first is answered", () => {
+    const { player, sydney, oregon } = bazzanaBatch();
+    currentRows = [
+      { ...sydney, decision: { action: "create", create: { location: "Sydney", name: "Blue Sox" } } },
+      oregon,
+      player,
+    ];
+    currentResolvedNames = bazzanaResolved;
+    renderWizard();
+
+    expect(
+      screen.getByRole("heading", {
+        name: "New Team: Oregon State Beavers baseball",
+      }),
+    ).toBeTruthy();
+  });
+
+  it("reaches the player last, with both new teams named on its chips", () => {
+    const { player, sydney, oregon } = bazzanaBatch();
+    currentRows = [
+      {
+        ...sydney,
+        decision: { action: "create", create: { location: "Sydney", name: "Blue Sox" } },
+      },
+      {
+        ...oregon,
+        // The human split: the SCHOOL is the location and the sport suffix
+        // stays with the name — the judgement `splitTeamName` deliberately
+        // refuses to make on its own.
+        decision: {
+          action: "create",
+          create: { location: "Oregon State", name: "Beavers baseball" },
+        },
+      },
+      player,
+    ];
+    currentResolvedNames = bazzanaResolved;
+    renderWizard();
+
+    expect(
+      screen.getByRole("heading", { name: "Travis Bazzana" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByText("→ Sydney Blue Sox"),
+    ).toBeTruthy();
+    expect(
+      screen.getByText("→ Oregon State Beavers baseball"),
+    ).toBeTruthy();
+    // The one we already hold reads as a plain link — nothing is created for it.
+    expect(screen.getByText("→ Cleveland Guardians")).toBeTruthy();
+    expect(screen.queryByText("needs a team decision")).toBeNull();
+    expect(
+      screen
+        .getByRole("button", { name: "Add as New Player" })
+        .getAttribute("aria-disabled"),
+    ).toBeNull();
+  });
+
+  it("blocks the player's create, with the reason stated, while a needed team is undecided", () => {
+    // Reachable when a team step was answered "skip" — the walk lets the
+    // player through, because skip IS an answer, and its own step is where an
+    // unusable career team gets unticked.
+    const { player, sydney, oregon } = bazzanaBatch();
+    currentRows = [
+      {
+        ...sydney,
+        decision: { action: "create", create: { location: "Sydney", name: "Blue Sox" } },
+      },
+      { ...oregon, decision: { action: "skip" } },
+      player,
+    ];
+    currentResolvedNames = bazzanaResolved;
+    renderWizard();
+
+    const primary = screen.getByRole("button", { name: "Add as New Player" });
+    expect(primary.getAttribute("aria-disabled")).toBe("true");
+    const reason = screen.getByText(
+      "Oregon State Beavers baseball still needs a team decision, or untick it.",
+    );
+    expect(primary.getAttribute("aria-describedby")).toBe(reason.id);
+
+    fireEvent.click(primary);
+    expect(mockRecordDecision).not.toHaveBeenCalled();
+  });
+
+  it("unticking the offending chip is the way forward", async () => {
+    const { player, sydney, oregon } = bazzanaBatch();
+    currentRows = [
+      {
+        ...sydney,
+        decision: { action: "create", create: { location: "Sydney", name: "Blue Sox" } },
+      },
+      { ...oregon, decision: { action: "skip" } },
+      player,
+    ];
+    currentResolvedNames = bazzanaResolved;
+    renderWizard();
+
+    fireEvent.click(
+      screen.getByLabelText("Include career team Oregon State Beavers baseball"),
+    );
+
+    const primary = screen.getByRole("button", { name: "Add as New Player" });
+    expect(primary.getAttribute("aria-disabled")).toBeNull();
+
+    fireEvent.click(primary);
+    await waitFor(() => {
+      expect(mockRecordDecision).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reviewRowId: player._id,
+          action: "create",
+          excludedCareerTeamNames: ["Oregon State Beavers baseball"],
+        }),
+      );
+    });
+  });
+
+  it("presents nothing while a needed team is still being looked up", () => {
+    // Both remaining rows are unreachable — one pending, the player waiting on
+    // it — so the wizard says it is still looking names up, which is exactly
+    // what is happening.
+    const { player, sydney, oregon } = bazzanaBatch();
+    currentRows = [
+      {
+        ...sydney,
+        decision: { action: "create", create: { location: "Sydney", name: "Blue Sox" } },
+      },
+      { ...oregon, status: "pending" },
+      player,
+    ];
+    currentResolvedNames = bazzanaResolved;
+    renderWizard();
+
+    expect(screen.queryByText("Travis Bazzana")).toBeNull();
+    expect(
+      screen.queryByRole("heading", {
+        name: "New Team: Oregon State Beavers baseball",
+      }),
+    ).toBeNull();
+    expect(footerStatusText()).toBe("1 still looking up — wait or skip");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-236 (a11y) — the refusal reason is reachable from the field that causes
+// it, not only from the button that is blocked by it
+// ---------------------------------------------------------------------------
+
+describe("EntityReviewWizard — the create refusal is described where it is caused", () => {
+  it("points BOTH team fields at the reason — the block is about the composed row", () => {
+    currentRows = [makeRow({ kind: "team", name: "Padres", status: "ready" })];
+    renderWizard();
+
+    fireEvent.change(teamNameField(), { target: { value: "" } });
+
+    const reason = screen.getByText("Enter a team name before adding it.");
+    // A screen-reader user who tabs into a field and clears it hears why
+    // immediately, rather than only on reaching the button several stops later.
+    // `aria-describedby` is a LIST here — the shared form also points each
+    // field at its own help line and at the "Shows as" preview — so this is a
+    // containment check, not an equality one.
+    expect(teamNameField().getAttribute("aria-describedby")).toContain(reason.id);
+    // Location too: the other refusal this form raises is the length of the
+    // COMPOSED name, which is what the two boxes make together.
+    expect(teamLocationField().getAttribute("aria-describedby")).toContain(
+      reason.id,
+    );
+  });
+
+  it("describes a blocked PLAYER create on the primary, since the fix is elsewhere", () => {
+    // NEO-236 moved the answer off this step and onto the team's own New Team
+    // step, so there is no field here to describe. The message says both ways
+    // forward — answer that step, or untick the chip — and the control that is
+    // blocked points at it.
+    const player = makeRow({
+      kind: "player",
+      name: "Mike Trout",
+      status: "ready",
+      enrichment: { careerTeams: [{ name: "Salt Lake Bees", fromYear: 2010 }] },
+    });
+    currentRows = [
+      makeCareerTeamRow(player._id, "Salt Lake Bees", { decision: { action: "skip" } }),
+      player,
+    ];
+    currentResolvedNames = [{ name: "Salt Lake Bees" }];
+    renderWizard();
+
+    const primary = screen.getByRole("button", { name: "Add as New Player" });
+    const reason = screen.getByText(
+      "Salt Lake Bees still needs a team decision, or untick it.",
+    );
+    expect(primary.getAttribute("aria-describedby")).toBe(reason.id);
+  });
+
+  it("drops the reason from the fields again once the name is filled back in", () => {
+    currentRows = [makeRow({ kind: "team", name: "Padres", status: "ready" })];
+    renderWizard();
+
+    fireEvent.change(teamNameField(), { target: { value: "" } });
+    const reason = screen.getByText("Enter a team name before adding it.");
+    expect(teamNameField().getAttribute("aria-describedby")).toContain(reason.id);
+    const reasonId = reason.id;
+
+    fireEvent.change(teamNameField(), { target: { value: "Padres" } });
+
+    // The help/preview ids stay — only the refusal goes.
+    expect(screen.queryByText("Enter a team name before adding it.")).toBeNull();
+    expect(teamNameField().getAttribute("aria-describedby")).not.toContain(reasonId);
+    expect(
+      screen
+        .getByRole("button", { name: "Add as New Team" })
+        .getAttribute("aria-disabled"),
+    ).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-236 security review, finding 3 — a refused decision is SEEN
+//
+// The refusal itself is NEO-236's; the surface it lands on is NEO-221's.
+// `decideError` is gone: `rowError` is keyed to the row, renders inline as an
+// alert, and says the row is still waiting — which is strictly better than a
+// dialog-level message, so the two tickets collapse into one mechanism here.
+// ---------------------------------------------------------------------------
+
+describe("EntityReviewWizard — a refused create decision reaches the operator", () => {
+  it("refuses an over-long composed name before the round trip", () => {
+    currentRows = [makeRow({ kind: "team", name: "Padres", status: "ready" })];
+    renderWizard();
+
+    // Neither half is over the limit; together they are. The bound is on the
+    // composed name because that is what gets stored.
+    fireEvent.change(teamLocationField(), { target: { value: "L".repeat(70) } });
+    fireEvent.change(teamNameField(), { target: { value: "N".repeat(70) } });
+
+    const primary = screen.getByRole("button", { name: "Add as New Team" });
+    expect(primary.getAttribute("aria-disabled")).toBe("true");
+    expect(
+      screen.getByText("That name is 141 characters; the limit is 120."),
+    ).toBeTruthy();
+
+    fireEvent.click(primary);
+    expect(mockRecordDecision).not.toHaveBeenCalled();
+  });
+
+  it("surfaces the server's own words when the mutation refuses anyway", async () => {
+    // The client guard above and this one are independent on purpose: a stale
+    // bundle must not be able to get the write through, and when the server
+    // refuses, its message is the one written for the operator to read.
+    mockRecordDecision.mockRejectedValueOnce({
+      data: "A team name is 141 characters; the limit is 120.",
+    });
+    currentRows = [makeRow({ kind: "team", name: "Padres", status: "ready" })];
+    renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Team" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain(
+      "A team name is 141 characters; the limit is 120.",
+    );
+    // NEO-221's half of the same sentence: the row did NOT get decided.
+    expect(alert.textContent).toContain("still waiting on a decision");
+  });
+
+  it("falls back to a readable sentence when the error carries no message", async () => {
+    // A plain Error reaches the browser already redacted to "Server Error", so
+    // there is nothing of the server's to echo.
+    mockRecordDecision.mockRejectedValueOnce(new Error(""));
+    currentRows = [makeRow({ kind: "team", name: "Padres", status: "ready" })];
+    renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Team" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("That didn't save. Try again.");
+  });
+
+  it("does not swallow a refusal on a player row either", async () => {
+    mockRecordDecision.mockRejectedValueOnce({ data: "Nope." });
+    currentRows = [
+      makeRow({ kind: "player", name: "Mike Trout", status: "ready" }),
+    ];
+    renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Player" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("Nope.");
+  });
+
+  it("shows the refusal only on the row it was raised on", async () => {
+    // A refusal belongs to its row. `rowError` is keyed by row id, which is
+    // what makes that true without a reset effect.
+    mockRecordDecision.mockRejectedValueOnce({ data: "Nope." });
+    const first = makeRow({ kind: "team", name: "Padres", status: "ready" });
+    const second = makeRow({ kind: "team", name: "Angels", status: "ready" });
+    currentRows = [first, second];
+    renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Team" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("Nope.");
+
+    // The second row is a different id, so the same state cannot describe it.
+    expect(
+      screen.queryByText(/Nope\. This name is still waiting/),
+    ).toBeTruthy();
+    expect(first._id).not.toBe(second._id);
+  });
+});
+
+// ===========================================================================
+// NEO-236 — "Add remaining players as new" applies to PLAYERS only
+//
+// Jason, 2026-09-05: "add all remaining as new should still process teams, it
+// should only apply to players." A team row's own New Team step is the only
+// place its League gets a human answer, and the bulk path could only ever
+// guess it from the enrichment's suggestion.
+// ===========================================================================
+
+describe("EntityReviewWizard — the bulk create is about players", () => {
+  it("labels itself with the PLAYER count, not the row count", () => {
+    currentRows = [
+      makeRow({ kind: "player", name: "Mike Trout", status: "ready" }),
+      makeRow({ kind: "player", name: "Shohei Ohtani", status: "ready" }),
+      makeRow({ kind: "team", name: "San Diego Padres", status: "ready" }),
+    ];
+    renderWizard();
+
+    expect(
+      screen.getByRole("button", { name: "Add remaining players as new (2)" }),
+    ).toBeTruthy();
+    // Its sibling still rules on every undecided name, teams included, so it
+    // counts all three — and its label says "names" rather than "players".
+    expect(
+      screen.getByRole("button", { name: "Skip remaining names (3)" }),
+    ).toBeTruthy();
+  });
+
+  it("counts a STAGED career team as a name to skip, never as a player to add", () => {
+    const player = makeRow({
+      kind: "player",
+      name: "Travis Bazzana",
+      status: "ready",
+      enrichment: { careerTeams: [{ name: "Sydney Blue Sox", fromYear: 2019 }] },
+    });
+    currentRows = [makeCareerTeamRow(player._id, "Sydney Blue Sox"), player];
+    renderWizard();
+
+    expect(
+      screen.getByRole("button", { name: "Add remaining players as new (1)" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Skip remaining names (2)" }),
+    ).toBeTruthy();
+  });
+
+  it("does NOT offer Confirm & Save while a team step is still undecided", () => {
+    /*
+     * The safety net behind "decide the player now, answer its teams in a
+     * moment": commit readiness is "every row decided", staged team rows
+     * included. Without it, a bulk-confirmed player could reach commit with its
+     * career teams unanswered and lose those stints silently.
+     */
+    const player = makeRow({
+      kind: "player",
+      name: "Travis Bazzana",
+      status: "ready",
+      decision: { action: "create" },
+      enrichment: { careerTeams: [{ name: "Sydney Blue Sox", fromYear: 2019 }] },
+    });
+    currentRows = [makeCareerTeamRow(player._id, "Sydney Blue Sox"), player];
+    renderWizard();
+
+    expect(screen.queryByText(/All reviewed/)).toBeNull();
+    expect(document.getElementById("entity-review-confirm-save")).toBeNull();
+    // And the step the operator still owes an answer to is what is on screen.
+    expect(
+      screen.getByRole("heading", { name: "New Team: Sydney Blue Sox" }),
+    ).toBeTruthy();
+  });
+
+  it("offers Confirm & Save once that team step IS decided", () => {
+    const player = makeRow({
+      kind: "player",
+      name: "Travis Bazzana",
+      status: "ready",
+      decision: { action: "create" },
+      enrichment: { careerTeams: [{ name: "Sydney Blue Sox", fromYear: 2019 }] },
+    });
+    currentRows = [
+      makeCareerTeamRow(player._id, "Sydney Blue Sox", {
+        decision: { action: "create", create: { location: "Sydney", name: "Blue Sox" } },
+      }),
+      player,
+    ];
+    renderWizard();
+
+    expect(screen.getByText(/All reviewed/)).toBeTruthy();
+    expect(document.getElementById("entity-review-confirm-save")).toBeTruthy();
+  });
+
+  it("arms the follow-up only for players still being looked up", async () => {
+    /*
+     * The armed loop re-issues the bulk create as lookups settle. It must not
+     * arm — or stay armed — on a pending TEAM row, because the bulk will never
+     * decide one: it would spin to the 400-call cap and then blame the
+     * operator. The status line still counts that row, because the operator IS
+     * waiting on it.
+     */
+    const player = makeRow({ kind: "player", name: "Mike Trout", status: "ready" });
+    currentRows = [player, makeRow({ kind: "team", name: "Padres", status: "pending" })];
+    renderWizard();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Add remaining players as new (1)" }),
+    );
+
+    await waitFor(() => expect(mockRecordAllRemainingAsCreate).toHaveBeenCalled());
+    // Not armed: no player is pending, so there is no follow-up to wait for.
+    expect(screen.queryByText(/as their lookups finish/)).toBeNull();
+    // …but the operator is still told what the batch is waiting on.
+    expect(screen.getByText(/1 still looking up — wait or skip/)).toBeTruthy();
+  });
+});
+
+// ===========================================================================
+// NEO-236 / CI run 8 — the decision can never scroll away
+//
+// The per-row controls were the LAST elements of the scrolling body, and on the
+// 1024x629 CI viewport the body had grown tall enough (Wikidata lines, the
+// Location/Name pair, a league picker rendering every league in the sport) that
+// "Add as New Team" rendered at y=620-652 — below the footer and below the
+// dialog. Maestro cannot scroll an inner overflow box, and an operator should
+// never have to hunt for the button they have just decided to press.
+//
+// Asserted structurally rather than by geometry: jsdom has no layout, so the
+// contract worth pinning is "these live in the fixed footer, not in the
+// scrolling body", which is what actually makes the position impossible.
+// ===========================================================================
+
+describe("EntityReviewWizard — the decision lives in the fixed footer", () => {
+  /** The scrolling body — the element the overflow is on. */
+  function bodyEl(): HTMLElement {
+    const overlay = document.querySelector('[role="dialog"]');
+    if (!overlay) throw new Error("wizard overlay not found");
+    const panel = overlay.firstElementChild as HTMLElement;
+    const body = panel.children[1] as HTMLElement;
+    if (!body.className.includes("overflow-y-auto")) {
+      throw new Error("panel's second child is not the scrolling body");
+    }
+    return body;
+  }
+
+  function footerEl(): HTMLElement {
+    const overlay = document.querySelector('[role="dialog"]');
+    if (!overlay) throw new Error("wizard overlay not found");
+    const panel = overlay.firstElementChild as HTMLElement;
+    const footer = panel.children[2] as HTMLElement;
+    if (!footer.className.includes("shrink-0")) {
+      throw new Error("panel's third child is not the fixed footer");
+    }
+    return footer;
+  }
+
+  const DECISION_NAMES = [
+    "Add as New Player",
+    "Link to existing instead",
+    "Skip Mike Trout — not a person",
+  ];
+
+  it("renders every per-row decision control in the footer, not the body", () => {
+    currentRows = [
+      makeRow({ kind: "player", name: "Mike Trout", status: "ready" }),
+      makeRow({ kind: "player", name: "Shohei Ohtani", status: "ready" }),
+    ];
+    renderWizard();
+
+    const body = bodyEl();
+    const footer = footerEl();
+    for (const name of DECISION_NAMES) {
+      const control = screen.getByRole("button", { name });
+      expect(footer.contains(control)).toBe(true);
+      expect(body.contains(control)).toBe(false);
+    }
+  });
+
+  it("keeps the ROW's content in the body — only the decision moves", () => {
+    // The split is the point: a long career list still scrolls, and the button
+    // that acts on it does not go with it.
+    currentRows = [
+      makeRow({
+        kind: "player",
+        name: "Mike Trout",
+        status: "ready",
+        enrichment: { careerTeams: [{ name: "Los Angeles Angels", fromYear: 2011 }] },
+      }),
+    ];
+    renderWizard();
+
+    expect(bodyEl().contains(screen.getByRole("heading", { name: "Mike Trout" }))).toBe(true);
+    expect(
+      bodyEl().contains(
+        screen.getByRole("checkbox", { name: "Include career team Los Angeles Angels" }),
+      ),
+    ).toBe(true);
+  });
+
+  it("puts a TEAM row's primary and its New Team form on opposite sides of the fold", () => {
+    currentRows = [makeRow({ kind: "team", name: "San Diego Padres", status: "ready" })];
+    renderWizard();
+
+    // The form scrolls…
+    expect(
+      bodyEl().contains(screen.getByLabelText("New team name") as HTMLElement),
+    ).toBe(true);
+    // …the decision does not.
+    expect(
+      footerEl().contains(screen.getByRole("button", { name: "Add as New Team" })),
+    ).toBe(true);
+  });
+
+  it("carries Back into the footer too, once there is somewhere to go back to", async () => {
+    const first = makeRow({ kind: "player", name: "Mike Trout", status: "ready" });
+    const second = makeRow({ kind: "player", name: "Shohei Ohtani", status: "ready" });
+    currentRows = [first, second];
+    const { rerender } = renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Player" }));
+    await waitFor(() => expect(mockRecordDecision).toHaveBeenCalledTimes(1));
+
+    // `backTargetId` reads the DECISION off the row, so the reactive batch has
+    // to carry it — the mutation mock does not write to `currentRows`.
+    currentRows = [{ ...first, decision: { action: "create" } }, second];
+    rerenderWizard(rerender);
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Back to previous decision" })).toBeTruthy(),
+    );
+    expect(
+      footerEl().contains(screen.getByRole("button", { name: "Back to previous decision" })),
+    ).toBe(true);
+  });
+
+  it("shows no decision controls when there is no row to decide", () => {
+    currentRows = [makeRow({ decision: { action: "create" } })];
+    renderWizard();
+
+    expect(screen.queryByRole("button", { name: /^Add as New/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Link to existing instead" })).toBeNull();
+    // Confirm & Save takes the same footer slot — they are mutually exclusive
+    // by construction, which is what keeps row 1 to one line.
+    expect(document.getElementById("entity-review-confirm-save")).toBeTruthy();
+  });
+
+  it("bounds the league picker's height so a growing league table cannot reach the footer", () => {
+    // `leagues` is global and never reset between CI runs, so an unbounded list
+    // grows every run. The cap is the part that must not be removed.
+    currentRows = [makeRow({ kind: "team", name: "San Diego Padres", status: "ready" })];
+    currentLeagues = Array.from({ length: 20 }, (_, i) => ({
+      _id: `lg-${i}`,
+      name: `League ${i}`,
+    }));
+    renderWizard();
+
+    const group = screen.getByRole("radiogroup", { name: "New team league" });
+    expect(group.getAttribute("id")).toBe("entity-review-team-league");
+    expect(group.className).toContain("max-h-40");
+    expect(group.className).toContain("overflow-y-auto");
+  });
+});
+
+// ===========================================================================
+// NEO-236 — "needs a team decision" must lead somewhere
+//
+// Jason, 2026-09-06, on a 522-row hockey batch: the wizard presented "Guy
+// Lafleur" with three chips reading "needs a team decision" and no route to any
+// of them — "There does not appear to be anywhere that a decision is needed
+// that I can see."
+// ===========================================================================
+
+describe("EntityReviewWizard — a blocked chip leads to its step", () => {
+  function lafleur() {
+    const player = makeRow({
+      kind: "player",
+      name: "Guy Lafleur",
+      status: "ready",
+      enrichment: {
+        careerTeams: [
+          { name: "Quebec Remparts", fromYear: 1969, toYear: 1971 },
+          { name: "Montreal Canadiens", fromYear: 1971, toYear: 1985 },
+        ],
+      },
+    });
+    const remparts = makeCareerTeamRow(player._id, "Quebec Remparts", {
+      decision: { action: "create", create: { location: "Quebec", name: "Remparts" } },
+    });
+    // Staged while an EARLIER player was looked up — the shape that let Lafleur
+    // through the blocker rule while his chip still said he was blocked.
+    const habs = makeCareerTeamRow(
+      "someone-else" as unknown as Id<"entityReviewQueue">,
+      "Montreal Canadiens",
+    );
+    return { player, remparts, habs };
+  }
+
+  const resolved = [{ name: "Quebec Remparts" }, { name: "Montreal Canadiens" }];
+
+  it("never presents the player while a shared step is unanswered", () => {
+    const { player, remparts, habs } = lafleur();
+    currentRows = [remparts, habs, player];
+    currentResolvedNames = resolved;
+    renderWizard();
+
+    // The step, not the player — even though the step points at someone else.
+    expect(
+      screen.getByRole("heading", { name: "New Team: Montreal Canadiens" }),
+    ).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Guy Lafleur" })).toBeNull();
+  });
+
+  it("offers 'Decide team' on the blocked chip and navigates to that step", async () => {
+    // Reached by pinning the player explicitly, which is the state Jason was
+    // in — the walk itself no longer offers him.
+    const { player, remparts, habs } = lafleur();
+    currentRows = [remparts, { ...habs, decision: { action: "skip" } }, player];
+    currentResolvedNames = resolved;
+    renderWizard();
+
+    expect(screen.getByRole("heading", { name: "Guy Lafleur" })).toBeTruthy();
+    expect(screen.getByText("needs a team decision")).toBeTruthy();
+
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "Decide team Montreal Canadiens" })[0],
+    );
+
+    // The step was SKIPPED, so going to it clears that decision first —
+    // otherwise the operator lands on a read-only "Already decided: Skipped"
+    // panel, which is the same dead end one screen further on.
+    await waitFor(() => expect(mockClearDecision).toHaveBeenCalledTimes(1));
+    expect(mockClearDecision).toHaveBeenCalledWith({ reviewRowId: habs._id });
+  });
+
+  it("offers the same jump from the footer's blocked line", () => {
+    const { player, remparts, habs } = lafleur();
+    currentRows = [remparts, { ...habs, decision: { action: "skip" } }, player];
+    currentResolvedNames = resolved;
+    renderWizard();
+
+    expect(
+      screen.getByText(/Montreal Canadiens still needs a team decision/),
+    ).toBeTruthy();
+    // Two routes to the same step — the chip and the footer line. Both are
+    // named for the team, so neither is ambiguous to a screen reader.
+    expect(
+      screen.getAllByRole("button", { name: "Decide team Montreal Canadiens" }),
+    ).toHaveLength(2);
+  });
+
+  it("comes back to the player once that step is answered", () => {
+    const { player, remparts, habs } = lafleur();
+    currentRows = [remparts, habs, player];
+    currentResolvedNames = resolved;
+    const { rerender } = renderWizard();
+
+    // Undecided, so the step comes up live and no decision is cleared.
+    expect(
+      screen.getByRole("heading", { name: "New Team: Montreal Canadiens" }),
+    ).toBeTruthy();
+
+    // Answered — the walk resumes.
+    currentRows = [
+      remparts,
+      {
+        ...habs,
+        decision: { action: "create", create: { location: "Montreal", name: "Canadiens" } },
+      },
+      player,
+    ];
+    rerenderWizard(rerender);
+
+    expect(screen.getByRole("heading", { name: "Guy Lafleur" })).toBeTruthy();
+    expect(screen.queryByText("needs a team decision")).toBeNull();
+    expect(
+      screen.getByText("→ Montreal Canadiens"),
+    ).toBeTruthy();
+  });
+});
+
+describe("EntityReviewWizard — teams come first even as the batch drains", () => {
+  /**
+   * Jason's 118-row hockey batch on preview `cool-moose-396`: 13 settled,
+   * undecided team rows and the wizard sitting on a player. See
+   * `entity-review-nav.test.tsx` for the rule; this pins the wizard's own
+   * behaviour, including the drain order that produced it.
+   */
+  it("opens on a team row even when players come first in server order", () => {
+    currentRows = [
+      makeRow({ kind: "player", name: "Bernie Geoffrion", status: "ready" }),
+      makeRow({ kind: "player", name: "Guy Lafleur", status: "ready" }),
+      makeRow({ kind: "team", name: "Montreal Canadiens", status: "ready" }),
+    ];
+    renderWizard();
+
+    expect(
+      screen.getByRole("heading", { name: "New Team: Montreal Canadiens" }),
+    ).toBeTruthy();
+  });
+
+  it("moves off a player once the teams settle behind it", async () => {
+    // The real sequence: everything pending, a player settles first and is
+    // pinned, the teams settle a moment later.
+    const player = makeRow({ kind: "player", name: "Bernie Geoffrion", status: "ready" });
+    const team = makeRow({ kind: "team", name: "Montreal Canadiens", status: "pending" });
+    currentRows = [player, team];
+    const { rerender } = renderWizard();
+
+    expect(screen.getByRole("heading", { name: "Bernie Geoffrion" })).toBeTruthy();
+
+    currentRows = [player, { ...team, status: "ready" }];
+    rerenderWizard(rerender);
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: "New Team: Montreal Canadiens" }),
+      ).toBeTruthy(),
+    );
+  });
+
+  it("stays put when the operator pinned the player themselves", async () => {
+    // Reached through the decided list's "Change" — an explicit pin.
+    const decided = makeRow({
+      kind: "player",
+      name: "Bernie Geoffrion",
+      status: "ready",
+      decision: { action: "create" },
+    });
+    const team = makeRow({ kind: "team", name: "Montreal Canadiens", status: "ready" });
+    currentRows = [decided, team];
+    renderWizard();
+
+    // The walk offers the team first…
+    expect(
+      screen.getByRole("heading", { name: "New Team: Montreal Canadiens" }),
+    ).toBeTruthy();
+
+    // …and the operator goes back to the player anyway.
+    fireEvent.click(
+      screen.getByRole("button", { name: "Change decision for Bernie Geoffrion" }),
+    );
+    await waitFor(() => expect(mockClearDecision).toHaveBeenCalledTimes(1));
+
+    currentRows = [{ ...decided, decision: undefined }, team];
+    renderWizard();
+    expect(screen.getByRole("heading", { name: "Bernie Geoffrion" })).toBeTruthy();
+  });
+});
+
+describe("EntityReviewWizard — a started row is not taken away", () => {
+  /**
+   * The teams-first yield lets the walk revise its own pick. Once the operator
+   * has begun on the row, it must not — most of what they would lose is per-row
+   * state that a jump discards (staged stints, the entry form's text).
+   *
+   * Each test drives the real edit path rather than setting a flag, so the
+   * signal and the thing it is meant to protect cannot drift apart.
+   */
+  function playerThenLateTeam() {
+    const player = makeRow({
+      kind: "player",
+      name: "Bernie Geoffrion",
+      status: "ready",
+      enrichment: {
+        careerTeams: [{ name: "Montreal Canadiens", fromYear: 1950, toYear: 1964 }],
+      },
+    });
+    const team = makeRow({
+      kind: "team",
+      name: "New York Rangers",
+      status: "pending",
+    });
+    return { player, team };
+  }
+
+  /** The team's lookup lands while the player is on screen. */
+  function settleTeam(
+    rerender: (ui: React.ReactElement) => void,
+    player: Row,
+    team: Row,
+  ) {
+    currentRows = [player, { ...team, status: "ready" }];
+    rerenderWizard(rerender);
+  }
+
+  it("yields when nothing has been touched", async () => {
+    const { player, team } = playerThenLateTeam();
+    currentRows = [player, team];
+    currentResolvedNames = [{ name: "Montreal Canadiens", existingTeamId: "t_habs" }];
+    const { rerender } = renderWizard();
+    expect(screen.getByRole("heading", { name: "Bernie Geoffrion" })).toBeTruthy();
+
+    settleTeam(rerender, player, team);
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: "New Team: New York Rangers" }),
+      ).toBeTruthy(),
+    );
+  });
+
+  it("stays put once a career-team chip has been unticked", async () => {
+    const { player, team } = playerThenLateTeam();
+    currentRows = [player, team];
+    currentResolvedNames = [{ name: "Montreal Canadiens", existingTeamId: "t_habs" }];
+    const { rerender } = renderWizard();
+
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "Include career team Montreal Canadiens" }),
+    );
+    settleTeam(rerender, player, team);
+
+    expect(screen.getByRole("heading", { name: "Bernie Geoffrion" })).toBeTruthy();
+    expect(
+      screen.queryByRole("heading", { name: "New Team: New York Rangers" }),
+    ).toBeNull();
+  });
+
+  it("stays put once the link search is open", async () => {
+    const { player, team } = playerThenLateTeam();
+    currentRows = [player, team];
+    currentResolvedNames = [{ name: "Montreal Canadiens", existingTeamId: "t_habs" }];
+    const { rerender } = renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Link to existing instead" }));
+    settleTeam(rerender, player, team);
+
+    expect(screen.getByRole("heading", { name: "Bernie Geoffrion" })).toBeTruthy();
+  });
+
+  it("stays put once there is text in the career-team entry", async () => {
+    // The signal that has to travel up out of CareerTeamEntry.
+    const { player, team } = playerThenLateTeam();
+    currentRows = [player, team];
+    currentResolvedNames = [{ name: "Montreal Canadiens", existingTeamId: "t_habs" }];
+    const { rerender } = renderWizard();
+
+    fireEvent.change(screen.getByLabelText("Career team name"), {
+      target: { value: "Que" },
+    });
+    settleTeam(rerender, player, team);
+
+    expect(screen.getByRole("heading", { name: "Bernie Geoffrion" })).toBeTruthy();
+  });
+
+  it("yields again once that text is cleared", async () => {
+    const { player, team } = playerThenLateTeam();
+    currentRows = [player, team];
+    currentResolvedNames = [{ name: "Montreal Canadiens", existingTeamId: "t_habs" }];
+    const { rerender } = renderWizard();
+
+    const entry = screen.getByLabelText("Career team name");
+    fireEvent.change(entry, { target: { value: "Que" } });
+    settleTeam(rerender, player, team);
+    expect(screen.getByRole("heading", { name: "Bernie Geoffrion" })).toBeTruthy();
+
+    // Nothing left to lose, so the walk may move on again.
+    fireEvent.change(entry, { target: { value: "" } });
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: "New Team: New York Rangers" }),
+      ).toBeTruthy(),
+    );
+  });
+});
+
+describe("EntityReviewWizard — a CHECKLIST team row answers a career chip", () => {
+  /**
+   * Jason, on the Canadiens: the batch held a plain team row for "Montreal
+   * Canadiens" — a name off the checklist, no `source` — and the player whose
+   * career list names that club still read "needs a team decision" even after
+   * that row was answered.
+   *
+   * `stagedTeamRowsForCurrent` opened with `source?.kind !== "careerTeamOf"`,
+   * so only a STAGED row could answer a chip. The question a chip asks is "does
+   * the batch hold an answer for this team?", and a checklist team row is
+   * exactly that. Where a row came from decides what its step SAYS, never
+   * whether it counts.
+   */
+  function habsBatch(teamOver: Partial<Row> = {}) {
+    const player = makeRow({
+      kind: "player",
+      name: "Guy Lafleur",
+      status: "ready",
+      enrichment: {
+        careerTeams: [{ name: "Montreal Canadiens", fromYear: 1971, toYear: 1985 }],
+      },
+    });
+    // NO `source` — this is a name off the checklist, not a staged career team.
+    const checklistTeam = makeRow({
+      kind: "team",
+      name: "Montreal Canadiens",
+      status: "ready",
+      ...teamOver,
+    });
+    return { player, checklistTeam };
+  }
+
+  it("reads the answer from a decided checklist team row", () => {
+    const { player, checklistTeam } = habsBatch({
+      decision: { action: "create", create: { location: "Montreal", name: "Canadiens" } },
+    });
+    currentRows = [checklistTeam, player];
+    currentResolvedNames = [{ name: "Montreal Canadiens" }];
+    renderWizard();
+
+    expect(screen.getByRole("heading", { name: "Guy Lafleur" })).toBeTruthy();
+    expect(screen.getByText("→ Montreal Canadiens")).toBeTruthy();
+    expect(screen.queryByText("needs a team decision")).toBeNull();
+  });
+
+  it("offers Decide team on the checklist row while it is undecided", () => {
+    const { player, checklistTeam } = habsBatch();
+    currentRows = [{ ...checklistTeam, decision: { action: "skip" } }, player];
+    currentResolvedNames = [{ name: "Montreal Canadiens" }];
+    renderWizard();
+
+    expect(screen.getByText("needs a team decision")).toBeTruthy();
+    expect(
+      screen.getAllByRole("button", { name: "Decide team Montreal Canadiens" }).length,
+    ).toBeGreaterThan(0);
+  });
+});
+
+describe("EntityReviewWizard — Decide team stages a step when there is none", () => {
+  /**
+   * Staging covers every accepted career team in the normal case, but not
+   * always: it caps at 64 per player and skips a name too long to compose into
+   * a team. Those chips read "needs a team decision" with no way out — a dead
+   * end. `Decide team` now stages the step and goes to it.
+   */
+  function unstaged() {
+    return makeRow({
+      kind: "player",
+      name: "Guy Lafleur",
+      status: "ready",
+      enrichment: {
+        careerTeams: [{ name: "Quebec Remparts", fromYear: 1969, toYear: 1971 }],
+      },
+    });
+  }
+
+  it("offers Decide team even with no step in the batch, and stages one", async () => {
+    const player = unstaged();
+    currentRows = [player];
+    currentResolvedNames = [{ name: "Quebec Remparts" }];
+    renderWizard();
+
+    expect(screen.getByText("needs a team decision")).toBeTruthy();
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "Decide team Quebec Remparts" })[0],
+    );
+
+    await waitFor(() =>
+      expect(mockStageCareerTeamRows).toHaveBeenCalledWith({
+        reviewRowId: player._id,
+        careerTeamNames: ["Quebec Remparts"],
+      }),
+    );
+  });
+
+  it("pins the staged step once the server's insert lands", async () => {
+    const player = unstaged();
+    currentRows = [player];
+    currentResolvedNames = [{ name: "Quebec Remparts" }];
+    const { rerender } = renderWizard();
+
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "Decide team Quebec Remparts" })[0],
+    );
+    await waitFor(() => expect(mockStageCareerTeamRows).toHaveBeenCalled());
+
+    // The row arrives on the next reactive push, not in the mutation's return.
+    currentRows = [makeCareerTeamRow(player._id, "Quebec Remparts"), player];
+    rerenderWizard(rerender);
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: "New Team: Quebec Remparts" }),
+      ).toBeTruthy(),
+    );
   });
 });

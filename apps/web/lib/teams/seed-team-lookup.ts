@@ -11,6 +11,7 @@ import {
   type SeedLeagueCode,
   type SeedTeam,
 } from "./seed-team-colors";
+import { teamFullName, type TeamNameParts } from "./team-name";
 
 /**
  * Match key for a team name.
@@ -54,15 +55,23 @@ export function seedMatchKey(raw: string): string {
  * lookup for "Cleveland Guardians" finds the row the dataset still calls
  * "Cleveland Indians". Both keys point at the same row rather than the row
  * being renamed, because the seeding path needs the original name too.
+ *
+ * NEO-236: keyed on the COMPOSED FULL name, and that is not an implementation
+ * detail. Every caller arrives holding a full string — a `teams` row's
+ * composed name, a teamcolorcodes.com page title, a marketplace payload — and
+ * the source sites themselves are named "san diego padres". Keying on the
+ * nickname would collide the two Chicago and two Los Angeles franchises in
+ * baseball outright.
  */
 const BY_KEY: Map<string, SeedTeam> = (() => {
   const map = new Map<string, SeedTeam>();
   for (const team of SEED_TEAMS) {
-    const key = seedMatchKey(team.name);
+    const full = teamFullName(team);
+    const key = seedMatchKey(full);
     if (!map.has(key)) map.set(key, team);
-    const current = RENAMED_FRANCHISES[team.name];
+    const current = RENAMED_FRANCHISES[full];
     if (current) {
-      const currentKey = seedMatchKey(current);
+      const currentKey = seedMatchKey(teamFullName(current));
       if (!map.has(currentKey)) map.set(currentKey, team);
     }
   }
@@ -91,7 +100,10 @@ export function findSeedColors(teamName: string): SeedColorMatch | null {
   return {
     primary: team.hex[0],
     secondary: team.hex[1],
-    matchedName: team.name,
+    // NEO-236: the dataset's own FULL name — this is provenance shown to an
+    // operator in Team Management ("matched: San Diego Padres"), and a bare
+    // nickname would not tell them which row it matched.
+    matchedName: teamFullName(team),
     league: team.league,
   };
 }
@@ -102,11 +114,29 @@ export function findSeedTeam(teamName: string): SeedTeam | null {
 }
 
 /**
- * The name a franchise is known by TODAY.
+ * The FULL name a franchise is known by TODAY, given its full name in the
+ * dataset. Unchanged in and out for the 163 rows that are not stale.
  *
- * Seeding uses this so a stale dataset name never creates a second row for a
- * franchise we already hold — see `RENAMED_FRANCHISES`.
+ * Seeding uses `currentFranchiseParts` below; this string form is what callers
+ * comparing against a scraped or marketplace name want — see
+ * `RENAMED_FRANCHISES`.
  */
 export function currentFranchiseName(seedName: string): string {
-  return RENAMED_FRANCHISES[seedName] ?? seedName;
+  const renamed = RENAMED_FRANCHISES[seedName];
+  return renamed ? teamFullName(renamed) : seedName;
+}
+
+/**
+ * NEO-236 — the Location + Name a seeded row should be CREATED with.
+ *
+ * The seeder needs the two parts, not a string it would have to split again:
+ * `teams` stores them separately and `teamRowFields` derives the dedup key
+ * from the composition. For a renamed franchise that is the current name's
+ * split ("Cleveland" / "Guardians"), which is why `RENAMED_FRANCHISES` stores
+ * parts rather than a string.
+ */
+export function currentFranchiseParts(team: SeedTeam): TeamNameParts {
+  const renamed = RENAMED_FRANCHISES[teamFullName(team)];
+  if (renamed) return renamed;
+  return { name: team.name, location: team.location };
 }
