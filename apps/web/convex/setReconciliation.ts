@@ -39,12 +39,18 @@ import {
   unlinkedEntryValidator,
   type UnlinkedEntry,
 } from "./selectorSyncStore";
-import { soleBscBaseVariantId, syncWrittenBscFacet } from "./bscFacets";
+import {
+  resolveBscFacetFilters,
+  soleBscBaseVariantId,
+  syncWrittenBscFacet,
+} from "./bscFacets";
 import { selectorOptionFields } from "./schema";
 // NEO-239 — the per-side "can this marketplace be asked?" rule, shared with
 // selectorOptions.ts so the reconciler and the aggregator cannot disagree.
 import {
+  BSC_NO_LINKED_SET_MESSAGE,
   NO_MARKETPLACE_IDS_MESSAGE,
+  missingSummary,
   SL_ATTACH_REQUIRED_LEVELS,
   notifiableSkippedSides,
   resolvableSides,
@@ -582,8 +588,8 @@ export const fetchRawOptions = action({
       if (skippedSides.length > 0) {
         console.log(
           `[fetchRawOptions] skipping ${skippedSides.join(",")} for ${level} — ` +
-            `bsc_missing=${resolution.bsc.missing.join(",")} ` +
-            `sl_missing=${resolution.sportlots.missing.join(",")}`,
+            `bsc_missing=${missingSummary(resolution.bsc)} ` +
+            `sl_missing=${missingSummary(resolution.sportlots)}`,
         );
       }
       if (skippedSides.length === 2) {
@@ -796,6 +802,11 @@ type AttachContext = {
   slManufacturer?: string;
   bscSport?: string[];
   bscYear?: string[];
+  /**
+   * NEO-252 — the BSC set(s) this path names, from `resolveBscFacetFilters`,
+   * so a set attached at the LEAF counts exactly as one attached at the
+   * setName ancestor does.
+   */
   bscSetName?: string[];
   /** Display name of the row's own set, for the BSC breadcrumb. */
   setLabel?: string;
@@ -864,12 +875,30 @@ async function resolveAttachContext(
       case "setName":
         out.setName = ancestor.value;
         out.setLabel = ancestor.value;
-        out.bscSetName = bscIds.length > 0 ? bscIds : undefined;
+        // `bscSetName` is NOT read here — see the facet plan below.
         break;
       default:
         break;
     }
   }
+
+  // NEO-252 — which BSC SET this path names, taken from the facet plan the
+  // checklist fetch would build rather than from the setName ancestor's own
+  // slots.
+  //
+  // Same fact, wider aperture, and the difference is a real shape: NEO-189 lets
+  // an NB row draw from BSC sets attached at the LEAF (Base ← Series 1 +
+  // Series 2), and it is also how a set NeonBinder built first gets its first
+  // BSC link — the operator attaches the BSC set on the variant row, because
+  // that is where this dialog lives. Reading only the ancestor called all of
+  // those "no BSC set" and sent the operator an error naming their own set.
+  //
+  // `setLabel` deliberately still comes from the ancestor above: it is the
+  // breadcrumb's NB display text, not a marketplace id, and the leaf's label
+  // would name a variant rather than the set the pane is scoped to.
+  const planSetName = resolveBscFacetFilters(chain).filters.setName;
+  if (planSetName && planSetName.length > 0) out.bscSetName = planSetName;
+
   return out;
 }
 
@@ -915,7 +944,7 @@ export const fetchSlAttachSets = action({
     if (!cxt.resolution.sportlots.resolvable) {
       console.log(
         `[fetchSlAttachSets] no SportLots ids on this path — ` +
-          `missing=${cxt.resolution.sportlots.missing.join(",")}`,
+          `missing=${missingSummary(cxt.resolution.sportlots)}`,
       );
       return {
         success: true,
@@ -1033,7 +1062,7 @@ export const fetchBscAttachOptions = action({
     if (!platformFilters.sport || !platformFilters.year) {
       console.log(
         `[fetchBscAttachOptions] no BSC ids to scope the pool — ` +
-          `missing=${cxt.resolution.bsc.missing.join(",")}`,
+          `missing=${missingSummary(cxt.resolution.bsc)}`,
       );
       return {
         success: true,
@@ -1048,12 +1077,19 @@ export const fetchBscAttachOptions = action({
         ? (args.setSlug ?? cxt.bscSetName?.[0])
         : undefined;
     if (args.view === "variants" && !setSlug) {
+      // NEO-252 — a SKIP with a fixed sentence, not a failure with an NB value
+      // in it. Nothing is wrong here: the path simply names no BSC set to list
+      // the variants of, which is the ordinary state of a set NeonBinder built
+      // before linking it. The dialog reads this by equality and hops to the
+      // set list, which is the pane that fixes it.
+      console.log(
+        `[fetchBscAttachOptions] no BSC set on this path — ` +
+          `missing=${missingSummary(cxt.resolution.bsc)}`,
+      );
       return {
-        success: false,
+        success: true,
         options: [],
-        message:
-          `Missing platformData.bsc on: setName=${cxt.setName ?? "(unknown)"}. ` +
-          `Browse the year's sets to pick one explicitly.`,
+        message: BSC_NO_LINKED_SET_MESSAGE,
       };
     }
     if (setSlug) platformFilters.setName = [setSlug];
@@ -1267,9 +1303,9 @@ export const storeReconciledOptions = mutation({
         if (chainResolution[side].resolvable) return true;
         console.warn(
           `[storeReconciledOptions] dropping ${side} from coveredSides — the ` +
-            `parent chain carries no ${side} ids (missing: ` +
-            `${chainResolution[side].missing.join(", ")}). Nothing will be ` +
-            `unlinked on that side.`,
+            `parent chain carries no ${side} ids — ` +
+            `missing=${missingSummary(chainResolution[side])}. Nothing will ` +
+            `be unlinked on that side.`,
         );
         return false;
       });

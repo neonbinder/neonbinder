@@ -7,7 +7,10 @@ import type { Id } from "../../convex/_generated/dataModel";
 import NeonButton from "../modules/NeonButton";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import { Input } from "../primitives/Input";
-import { NO_MARKETPLACE_IDS_MESSAGE } from "../../convex/marketplaceResolvability";
+import {
+  BSC_NO_LINKED_SET_MESSAGE,
+  NO_MARKETPLACE_IDS_MESSAGE,
+} from "../../convex/marketplaceResolvability";
 
 /**
  * Combined attach dialog (NEO-6 phase 1, reworked in NEO-196). Lists BSC and
@@ -151,6 +154,23 @@ export default function AttachSetsDialog({
    */
   const [bscSkipNote, setBscSkipNote] = useState<string | null>(null);
   const [slSkipNote, setSlSkipNote] = useState<string | null>(null);
+  /**
+   * NEO-252 — the path names no BSC set, so the variants rung has nothing to
+   * list and the pane opens one rung up on the SET LIST instead.
+   *
+   * Held separately from `bscSkipNote` because it must SURVIVE the fetch that
+   * the hop itself triggers. Every fetch clears `bscSkipNote` on the way in; if
+   * this lived there the explanation would be wiped by the very request it
+   * caused, and the operator would find the pane silently on a rung they did
+   * not choose. Cleared on a genuine choice — reopening the dialog, or browsing
+   * into a set — because by then it no longer describes what they are looking
+   * at.
+   *
+   * Matched by EQUALITY against the server's own constant, like the skip notes
+   * above: a successful call's `message` is a count, and a count must never be
+   * read as an explanation.
+   */
+  const [bscNoSetNote, setBscNoSetNote] = useState<string | null>(null);
   const [bscLoading, setBscLoading] = useState(false);
   const [slLoading, setSlLoading] = useState(false);
   // Per-pane, not shared: one marketplace being down must not blank the other,
@@ -207,6 +227,7 @@ export default function AttachSetsDialog({
       setBscView("variants");
       setBscSetSlug(undefined);
       setBscSetLabel(undefined);
+      setBscNoSetNote(null);
       setErrorMsg(null);
     }
   }, [isOpen]);
@@ -278,6 +299,14 @@ export default function AttachSetsDialog({
           return;
         }
         if (isSkipMessage(result)) setBscSkipNote(result.message);
+        // NEO-252 — "no BSC set on this path" is a skip, not a failure, and it
+        // names its own remedy: the set list. Hopping there is the whole fix —
+        // the operator opened this dialog to attach a BSC set, and the rung
+        // that lists them is one they would otherwise have to find.
+        if (isNoLinkedSetMessage(result)) {
+          setBscNoSetNote(result.message);
+          if (bscView === "variants") setBscView("sets");
+        }
         // The variants view drops what is already attached; the set list does
         // NOT. NEO-189 made a set attachable, but it is still the only way to
         // reach a sibling set's variants — filtering an attached set out of
@@ -435,6 +464,9 @@ export default function AttachSetsDialog({
     setBscSetLabel(candidate.value);
     setBscView("variants");
     setBscSearch("");
+    // The operator has picked a set to look inside, so the note that explained
+    // why there was none no longer describes the pane.
+    setBscNoSetNote(null);
   };
   const backToVariants = () => {
     setBscView("variants");
@@ -489,11 +521,25 @@ export default function AttachSetsDialog({
             }
             breadcrumb={
               bscView === "sets" ? (
-                <BreadcrumbButton
-                  label={`Back to ${shownSetLabel}`}
-                  ariaLabel={`Back to BSC set ${shownSetLabel}`}
-                  onClick={backToVariants}
-                />
+                // a11y/correctness (accessibility audit, NEO-252 follow-up) —
+                // when the hop above fired because there is no linked BSC set
+                // (`bscNoSetNote` set, `bscSetSlug` still undefined),
+                // `shownSetLabel` falls back to the NB variant's OWN label,
+                // and a "Back to <that label>" button would claim there is a
+                // set rung to return to. Clicking it re-fetches `view:
+                // "variants"` with no `setSlug`, which answers the same
+                // no-linked-set note and hops right back here — a wasted
+                // call, a loading flash, a re-announced note, and for a
+                // keyboard/screen-reader operator a control that visibly does
+                // nothing. Render no breadcrumb at all in that state; there is
+                // nowhere for it to go back TO.
+                bscNoSetNote !== null && bscSetSlug === undefined ? null : (
+                  <BreadcrumbButton
+                    label={`Back to ${shownSetLabel}`}
+                    ariaLabel={`Back to BSC set ${shownSetLabel}`}
+                    onClick={backToVariants}
+                  />
+                )
               ) : (
                 <BreadcrumbButton
                   label={allBscSetsLabel}
@@ -503,6 +549,7 @@ export default function AttachSetsDialog({
               )
             }
             count={filteredBsc.length}
+            notice={bscNoSetNote}
             search={bscSearch}
             onSearch={setBscSearch}
             searchAriaLabel="Search BSC sets"
@@ -635,6 +682,23 @@ function isSkipMessage(result: {
 }
 
 /**
+ * NEO-252 — did BSC answer "this path names no set to list variants of"?
+ *
+ * A sibling of `isSkipMessage` rather than a case inside it: they mean
+ * different things and the pane does different things with them. "No ids at
+ * all" is terminal for this dialog's BSC side; "no SET" is one rung away from
+ * fixed, so it hops instead of stopping.
+ */
+function isNoLinkedSetMessage(result: {
+  options: unknown[];
+  message?: string;
+}): result is { options: unknown[]; message: string } {
+  return (
+    result.options.length === 0 && result.message === BSC_NO_LINKED_SET_MESSAGE
+  );
+}
+
+/**
  * Shared pane chrome — heading, optional breadcrumb, search box, count, and
  * the loading / error / empty states. Both marketplaces render the same shell
  * so the two sides read as one control surface even though only BSC has a
@@ -645,6 +709,7 @@ function Pane({
   title,
   subtitle,
   breadcrumb,
+  notice = null,
   count,
   search,
   onSearch,
@@ -670,6 +735,14 @@ function Pane({
    */
   subtitle?: string;
   breadcrumb?: React.ReactNode;
+  /**
+   * A standing explanation of the pane's STATE, shown whether or not the list
+   * is empty — unlike `emptyNote`, which only speaks when there is nothing to
+   * show. NEO-252 uses it for the one case where the pane moved on its own: it
+   * has to say so, or the operator reads a rung they did not pick as the rung
+   * they asked for.
+   */
+  notice?: string | null;
   count: number;
   search: string;
   onSearch: (q: string) => void;
@@ -704,6 +777,18 @@ function Pane({
         )}
         {breadcrumb && <div className="mt-1.5">{breadcrumb}</div>}
       </header>
+      {notice && (
+        // `status`, not `alert`: it is announced because the pane changed
+        // under the operator, and it is not an interruption because nothing
+        // went wrong. Accent blue on a hairline rule keeps it out of the pink
+        // this dialog reserves for a marketplace that actually failed.
+        <p
+          role="status"
+          className="mb-2 border-l-2 border-[#00B7FF] pl-2 text-xs leading-snug text-gray-300"
+        >
+          {notice}
+        </p>
+      )}
       <Input
         bare
         type="text"

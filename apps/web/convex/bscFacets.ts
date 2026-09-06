@@ -265,6 +265,57 @@ export function resolveBscFacetFilters(
 }
 
 /**
+ * NEO-239 / NEO-252 — the facets a CHECKLIST request cannot go out without,
+ * and the ONE definition of them.
+ *
+ * A checklist request scoped by anything less than this returns a SUPERSET,
+ * with a 200 and no error. `variant` is on the list because without it BSC
+ * answers with the base cards plus every insert and every parallel in the set
+ * — NEO-22's ~5000-card superset, delivered as a success.
+ *
+ * It lives HERE, beside `resolveBscFacetFilters`, because the question is
+ * about the FILTERS that function produces and nothing else. It used to be a
+ * private copy in `adapters/buysportscards.ts` while `resolvableSides` in
+ * `marketplaceResolvability.ts` expressed the same requirement a second way —
+ * as a walk over NB LEVELS. Two statements of one rule is a rule that will
+ * eventually disagree with itself, and it did: NEO-252's bug is exactly that
+ * gap. A BSC `setName` id attached to the LEAF (the NEO-189 split: an NB Base
+ * row drawing from BSC's Series 1 and Series 2) satisfies the query builder's
+ * `setName` facet, but the level walk was looking for an id on the setName
+ * ANCESTOR and did not find one — so the chain gate skipped BSC for a request
+ * the adapter would have accepted.
+ */
+export const BSC_CHECKLIST_REQUIRED_FACETS = [
+  "sport",
+  "year",
+  "setName",
+  "variant",
+] as const;
+
+/**
+ * Which required facets this filter set cannot supply — i.e. "can BSC be asked
+ * for a checklist at all?", answered from the request that would actually be
+ * sent.
+ *
+ * Takes the OUTPUT of `resolveBscFacetFilters`, so it judges the same object
+ * the wire would carry. Every caller that gates a BSC checklist fetch defers
+ * to this: the chain gate (`resolvableSides`), the adapter's own boundary lock
+ * (`fetchBscChecklist`), and the operator-facing panel (`bscSourceView`).
+ *
+ * Returns FACET NAMES — `"variant"`, `"setName"` — and never an NB row value.
+ * The names are marketplace vocabulary about a request shape, which is safe to
+ * log and (mapped to a fixed label) safe to show; a row's display value is
+ * neither (NEO-47).
+ */
+export function missingBscChecklistScope(
+  filters: Record<string, readonly string[] | undefined>,
+): string[] {
+  return BSC_CHECKLIST_REQUIRED_FACETS.filter(
+    (facet) => !filters[facet]?.length,
+  );
+}
+
+/**
  * Cap on BSC requests per checklist fetch. Mirrors `MAX_SL_FAN_OUT` in
  * `fetchCardChecklist` and, like it, is defence in depth: `MAX_ATTACHED_PER_SIDE`
  * already bounds what an operator can attach, but a row could carry extras
@@ -378,6 +429,18 @@ export type BscSourceView = {
      * fact into four.
      */
     own: BscScopeSlot[];
+    /**
+     * NEO-252 — the required facets `filters` cannot supply, from
+     * `missingBscChecklistScope`. Non-empty means the checklist fetch will
+     * SKIP BuySportsCards for this row however many chips are above it.
+     *
+     * That state was previously invisible: the panel happily listed the BSC
+     * sources a row draws from while the fetch refused to ask BSC at all, and
+     * nothing on any screen connected the two. Facet NAMES only — the panel
+     * maps them to a fixed vocabulary and never renders one raw, and no NB row
+     * value is in here to render (NEO-47).
+     */
+    missing: string[];
   };
   /** Slots that resolve to no facet at all. Inert in the fetch; shown anyway. */
   untagged: BscUntaggedSlot[];
@@ -433,9 +496,10 @@ export function bscSourceView(
     }
   }
 
+  const filters = resolveBscFacetFilters(chain).filters;
   return {
     sources,
-    scope: { filters: resolveBscFacetFilters(chain).filters, own },
+    scope: { filters, own, missing: missingBscChecklistScope(filters) },
     untagged,
   };
 }

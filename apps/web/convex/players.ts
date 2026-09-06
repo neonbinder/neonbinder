@@ -13,6 +13,9 @@ import { sortTeamYears } from "../lib/players/team-tenure";
 // See lib/players/wikidata-id.ts for why the render sites needed a chokepoint
 // they could share with the write path.
 import { isWikidataQid } from "../lib/players/wikidata-id";
+// NEO-251: one home for the bound — shared with the SportLots parser and the
+// pairing modal's roster field. See the note on the re-export below.
+import { MAX_PLAYER_NAME_LENGTH } from "../lib/players/name-limits";
 
 /**
  * Lowercase + collapse whitespace + strip punctuation + token-sort. Used
@@ -132,12 +135,21 @@ export const findByNameAndSport = query({
 });
 
 /**
- * Bound on an operator-typed player name — same value and same reasoning as
+ * Bound on a player name — same value and same reasoning as
  * `teams.MAX_TEAM_NAME_LENGTH`. Over-length is refused rather than trimmed:
  * silently storing something other than what was typed is how a mangled name
  * becomes canonical for every listing title and spine label downstream.
+ *
+ * NEO-251 moved the NUMBER to `lib/players/name-limits.ts` and re-exports it
+ * here. It is no longer only an operator-typed bound: the SportLots parser
+ * refuses an over-length subject against it, and the pairing modal's custom
+ * roster field refuses one too, so an adapter or an operator cannot produce a
+ * name the mutations below would then reject at the end of a 900-card commit.
+ * Three enforcement points that must not be able to disagree therefore need
+ * one home, and it cannot be this file — the modal is a browser bundle and
+ * this module pulls in `./_generated/server`.
  */
-const MAX_PLAYER_NAME_LENGTH = 120;
+export { MAX_PLAYER_NAME_LENGTH } from "../lib/players/name-limits";
 
 /**
  * Create-if-missing player by name + sport. Idempotent — calling twice

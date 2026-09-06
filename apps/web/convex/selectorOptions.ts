@@ -51,6 +51,14 @@ import { sortTeamYears } from "../lib/players/team-tenure";
 // NEO-189: bounded retry for Convex's optimistic-concurrency conflict, used
 // by every phase of the chunked commit below.
 import { runWithOccRetry } from "../lib/errors/occ-retry";
+// NEO-251 security review: marketplace text is chosen by whoever listed the
+// card, and a log line is not an inert sink. See lib/marketplace/safe-text.ts.
+import { safeMarketplaceText } from "../lib/marketplace/safe-text";
+// NEO-251 security review: the bound every path a player name can take is held
+// to. `players` crosses the browser on the way back in, so it is re-asserted at
+// each entry point rather than trusted from the adapter. (`MAX_CARD_PLAYERS` /
+// `MAX_CARD_TEAMS` are already imported below.)
+import { MAX_PLAYER_NAME_LENGTH } from "../lib/players/name-limits";
 // NEO-199: the SAME comparison CardPairingModal uses on a hand-linked pair.
 // An auto-matched disagreement and a manual one have to be the same thing —
 // see the note in lib/cards/card-name.ts.
@@ -59,7 +67,16 @@ import { runWithOccRetry } from "../lib/errors/occ-retry";
 // with. The content-diff review reuses it verbatim to decide whether a changed
 // field is a reformatting or a rewrite — a second fold would mean two screens
 // in one pipeline disagreeing about what counts as cosmetic.
-import { conflictingNames, nameKey } from "../lib/cards/card-name";
+// NEO-251: the roster half of the same question, shared the same way — and
+// `playersKey` is also what the sync-review diff compares stored `playerIds`
+// against, so "these two lists say the same thing" means one thing in the
+// modal, in the merge and in the diff.
+import {
+  conflictingNames,
+  conflictingPlayers,
+  nameKey,
+  playersKey,
+} from "../lib/cards/card-name";
 import { sportConfigDefaultsFor } from "./sportConfig";
 // NEO-211: the one matcher + the one value-validation path, shared with
 // setReconciliation.ts so review, write and suggestion can never disagree.
@@ -128,6 +145,7 @@ import {
 import {
   NO_MARKETPLACE_IDS_MESSAGE,
   notifiableSkippedSides,
+  missingSummary,
   resolvableSides,
   rowHasBscFacet,
   slotLabelCanNameRow,
@@ -367,11 +385,44 @@ const NB_CONTENT_FIELD_SET: ReadonlySet<string> = new Set(NB_CONTENT_FIELDS);
  * that means "absent" — `/0` is not a print run — so folding it in would only
  * ever hide a real difference.
  *
- * Arrays compare ELEMENT-WISE IN ORDER. Order is meaningful here: `playerIds`
- * on a multi-player card lists them as the card does, and that ordering feeds
- * the generated listing title.
+ * Arrays compare ELEMENT-WISE IN ORDER by default. Order is meaningful for
+ * `playerIds` as IDS — that ordering is what the generated listing title is
+ * built from — and for `attributes`.
+ *
+ * ## NEO-251 — `"nameSet"`, and how far it folds
+ *
+ * The review diff compares players and teams BY NAME (see
+ * `diffChecklistAgainstExisting`: the incoming card holds names, and the ids it
+ * would resolve to do not exist yet). On that comparison the ORDER is not
+ * information. The two marketplaces enumerate co-subjects in whatever order
+ * their own page did, and NB owns the order it stored — so a reordering is not
+ * a change to what the card says. Reported as a tier-1 "who is on this card"
+ * diff, every multi-subject row in a set becomes a question with no answer,
+ * which is the shape of warning operators learn to click through.
+ *
+ * So `"nameSet"` sorts both sides and then compares them EXACTLY. It folds the
+ * order and NOTHING ELSE — deliberately not through `playersKey`, even though
+ * that is the key `conflictingPlayers` uses:
+ *
+ *   `playersKey` folds diacritics and punctuation, so "Jose Ramirez" →
+ *   "José Ramírez" would come back "no change", and NB could never adopt the
+ *   correctly-spelled name from upstream. That change is not noise; it is
+ *   exactly what `foldEqual` and the formatting-only bucket exist to offer
+ *   cheaply. The two functions answer different questions — "did the operator
+ *   pick that marketplace's answer?" folds spelling; "did anything change?"
+ *   must not.
+ *
+ * The ID comparison at the commit's own re-diff is deliberately NOT switched
+ * over: those are `Id<"players">` values, where order is the card's own and a
+ * set fold would hide a genuine reordering of a stored roster.
  */
-function sameContentValue(stored: unknown, incoming: unknown): boolean {
+type ContentCompare = "ordered" | "nameSet";
+
+function sameContentValue(
+  stored: unknown,
+  incoming: unknown,
+  compare: ContentCompare = "ordered",
+): boolean {
   const emptyish = (x: unknown) =>
     x === undefined ||
     x === null ||
@@ -380,6 +431,13 @@ function sameContentValue(stored: unknown, incoming: unknown): boolean {
     (Array.isArray(x) && x.length === 0);
   if (emptyish(stored) && emptyish(incoming)) return true;
   if (Array.isArray(stored) && Array.isArray(incoming)) {
+    if (compare === "nameSet") {
+      const sorted = (xs: unknown[]) =>
+        xs.map((x) => String(x).trim()).sort();
+      const a = sorted(stored);
+      const b = sorted(incoming);
+      return a.length === b.length && a.every((value, i) => value === b[i]);
+    }
     return (
       stored.length === incoming.length &&
       stored.every((value, i) => value === incoming[i])
@@ -1469,9 +1527,9 @@ export const storeSelectorOptions = mutation({
         if (chainResolution[side].resolvable) return true;
         console.warn(
           `[storeSelectorOptions] dropping ${side} from coveredSides — the ` +
-            `parent chain carries no ${side} ids (missing: ` +
-            `${chainResolution[side].missing.join(", ")}). Nothing will be ` +
-            `unlinked on that side.`,
+            `parent chain carries no ${side} ids — ` +
+            `missing=${missingSummary(chainResolution[side])}. Nothing will ` +
+            `be unlinked on that side.`,
         );
         return false;
       });
@@ -2249,12 +2307,113 @@ const MAX_LABEL_LENGTH = 200;
 // use while still bounding the blast radius.
 const MAX_CARDS_PER_COMMIT = 5000;
 
-function assertCardBatchWithinLimits(cards: unknown[], fnName: string): void {
+/**
+ * NEO-251 (security review) — the shape this bound needs to see.
+ *
+ * Deliberately structural rather than `previewCardValidator`'s type: the three
+ * callers pass three slightly different card shapes (the commit's carries
+ * `applyFields`), and the check only needs the name-bearing fields.
+ */
+type CardNameBearing = {
+  cardNumber?: string;
+  players?: string[];
+  teams?: string[];
+  team?: string;
+  playersConflict?: { bsc: string[]; sportlots: string[] };
+};
+
+/**
+ * NEO-251 (security review) — bound the batch AND every name inside it.
+ *
+ * The card COUNT was already bounded here. What was not, until now, is what a
+ * card carries: `players` and `teams` were bare `v.array(v.string())` on the
+ * wire, so the ceiling on "how many names, how long" was whatever the adapter
+ * happened to produce — and the adapter's input is a marketplace page. That
+ * matters more since NEO-251 gave SportLots a player parser: a subject string
+ * is now split into names, and a parser regression turns one description into
+ * an arbitrary list that reaches `players.findOrCreate` one commit later.
+ *
+ * The values enforced are the ones the WRITE path already enforces
+ * (`MAX_CARD_PLAYERS`, `MAX_CARD_TEAMS`, `MAX_PLAYER_NAME_LENGTH`), moved
+ * forward to the boundary so a batch is refused while the operator is still
+ * looking at it rather than half-way through a 900-card commit. Called from
+ * all three entry points — the review diff, entity resolution and the commit —
+ * because each is separately reachable by a browser and none may assume
+ * another ran first.
+ *
+ * Refused by LENGTH and by COUNT, never by echoing the offending text: this
+ * message reaches Sentry and the browser console through Convex's error path,
+ * and that is the convention `players.ts` set for exactly that reason.
+ */
+function assertCardBatchWithinLimits(
+  cards: ReadonlyArray<CardNameBearing>,
+  fnName: string,
+): void {
   if (cards.length > MAX_CARDS_PER_COMMIT) {
     throw new Error(
       `${fnName}: ${cards.length} cards exceeds the ${MAX_CARDS_PER_COMMIT}-card limit for a single call`,
     );
   }
+  cards.forEach((card, index) => {
+    // The card NUMBER is NB's own value and safe to name; a card without one
+    // is identified by position rather than by any marketplace string.
+    const where = card.cardNumber
+      ? `card #${card.cardNumber}`
+      : `card at index ${index}`;
+    const players = card.players ?? [];
+    if (players.length > MAX_CARD_PLAYERS) {
+      throw new Error(
+        `${fnName}: ${where} carries ${players.length} players, above the ${MAX_CARD_PLAYERS}-player limit`,
+      );
+    }
+    for (const name of players) {
+      if (name.length > MAX_PLAYER_NAME_LENGTH) {
+        throw new Error(
+          `${fnName}: ${where} carries a player name of ${name.length} characters; the limit is ${MAX_PLAYER_NAME_LENGTH}.`,
+        );
+      }
+    }
+    // The commit resolves `teams` first and falls back to the legacy singular
+    // `team`, so the bound has to see the same union the write does.
+    const teams = card.teams?.length
+      ? card.teams
+      : card.team
+        ? [card.team]
+        : [];
+    if (teams.length > MAX_CARD_TEAMS) {
+      throw new Error(
+        `${fnName}: ${where} carries ${teams.length} teams, above the ${MAX_CARD_TEAMS}-team limit`,
+      );
+    }
+    for (const name of teams) {
+      if (name.length > MAX_PLAYER_NAME_LENGTH) {
+        throw new Error(
+          `${fnName}: ${where} carries a team name of ${name.length} characters; the limit is ${MAX_PLAYER_NAME_LENGTH}.`,
+        );
+      }
+    }
+    // NEO-251 — the conflict field is two more rosters, on the same terms.
+    // `startCandidateBatch` bounds it on the way OUT to the browser; this
+    // bounds it on the way back in, because those are two different trust
+    // boundaries and only one of them is reachable by a client.
+    const conflict = card.playersConflict;
+    if (conflict) {
+      for (const side of ["bsc", "sportlots"] as const) {
+        if (conflict[side].length > MAX_CARD_PLAYERS) {
+          throw new Error(
+            `${fnName}: ${where} carries ${conflict[side].length} ${side} players in its roster conflict, above the ${MAX_CARD_PLAYERS}-player limit`,
+          );
+        }
+        for (const name of conflict[side]) {
+          if (name.length > MAX_PLAYER_NAME_LENGTH) {
+            throw new Error(
+              `${fnName}: ${where} carries a ${side} player name of ${name.length} characters in its roster conflict; the limit is ${MAX_PLAYER_NAME_LENGTH}.`,
+            );
+          }
+        }
+      }
+    }
+  });
 }
 //
 // A canonical NeonBinder variant (variantType / insert / parallel row) can
@@ -6287,8 +6446,8 @@ export const ensureSelectorOptions = action({
       if (!resolution.bsc.resolvable && !resolution.sportlots.resolvable) {
         console.log(
           `[ensureSelectorOptions] no marketplace ids on this path — ` +
-            `level=${level} bsc_missing=${resolution.bsc.missing.join(",")} ` +
-            `sl_missing=${resolution.sportlots.missing.join(",")}`,
+            `level=${level} bsc_missing=${missingSummary(resolution.bsc)} ` +
+            `sl_missing=${missingSummary(resolution.sportlots)}`,
         );
         await ctx.runMutation(internal.selectorOptions.setSelectorSyncStatus, {
           level,
@@ -6668,10 +6827,12 @@ export const fetchAggregatedOptions = action({
           bscPlatformFilters,
           `skipped:`,
           [
-            ...(resolution.bsc.resolvable ? [] : [`bsc(${resolution.bsc.missing.join(",")})`]),
+            ...(resolution.bsc.resolvable
+              ? []
+              : [`bsc=${missingSummary(resolution.bsc)}`]),
             ...(resolution.sportlots.resolvable
               ? []
-              : [`sportlots(${resolution.sportlots.missing.join(",")})`]),
+              : [`sportlots=${missingSummary(resolution.sportlots)}`]),
           ].join(" "),
         );
       }
@@ -7180,7 +7341,7 @@ export const syncSetsAcrossManufacturers = action({
       if (!resolution.bsc.resolvable) {
         console.log(
           `[syncSetsAcrossManufacturers] no BSC ids on this path — ` +
-            `missing=${resolution.bsc.missing.join(",")}`,
+            `missing=${missingSummary(resolution.bsc)}`,
         );
         return {
           ...EMPTY_SYNC_RESULT,
@@ -7577,6 +7738,24 @@ interface ReconciledCard {
    */
   nameConflict?: { bsc: string; sportlots: string };
   /**
+   * NEO-251 — the two marketplaces list different PLAYERS on this card.
+   *
+   * Sibling of `nameConflict`, and separate from it because the two fields
+   * fail independently: a card can carry the same title on both sides and a
+   * different roster underneath it. `players` above still carries BSC's
+   * answer, exactly as before; this is what the merge used to throw away.
+   *
+   * `preferred` is a HINT the modal may use to pre-select SportLots, set only
+   * when the NB row this card matches ALREADY carries SportLots' roster —
+   * i.e. an operator settled this same disagreement on an earlier sync. It is
+   * never derived from a marketplace's own opinion about which side is right.
+   */
+  playersConflict?: {
+    bsc: string[];
+    sportlots: string[];
+    preferred?: "bsc" | "sportlots";
+  };
+  /**
    * Reconciliation marker for cards that landed on only one side. UI
    * surfaces these as needing human review; reconciled cards (from both
    * sides) carry no such tag.
@@ -7628,6 +7807,24 @@ const previewCardFields = {
   // stripping legal rather than a second shape.
   nameConflict: v.optional(
     v.object({ bsc: v.string(), sportlots: v.string() }),
+  ),
+  // NEO-251 — the roster equivalent, on exactly the same terms: OPTIONAL,
+  // absent on every agreeing row, lifted onto the pair and stripped from the
+  // card by `CardPairingModal` so a confirmed card is byte-identical to what
+  // it was before this field existed.
+  //
+  // `commitCardValidator` spreads these fields, so the commit ACCEPTS AND
+  // IGNORES it. That is deliberate rather than incidental: an SPA bundle
+  // loaded before this deploy and one loaded after both post to the same
+  // backend for as long as a tab stays open, and a strict commit shape would
+  // turn the older bundle's payload into a validation error at the last step
+  // of a 900-card review.
+  playersConflict: v.optional(
+    v.object({
+      bsc: v.array(v.string()),
+      sportlots: v.array(v.string()),
+      preferred: v.optional(v.union(v.literal("bsc"), v.literal("sportlots"))),
+    }),
   ),
   unmatched: v.optional(v.union(v.literal("bsc"), v.literal("sl"))),
 };
@@ -7818,12 +8015,20 @@ export const fetchCardChecklist = action({
       // `fetchSportLotsChecklist` scopes itself from the deepest variant row's
       // slot id and `fetchBscChecklist` from the facet plan, so the served-level
       // and per-level scope tables above do not describe it.
-      const resolution = resolvableSides(chain);
+      //
+      // NEO-252 — and `bscScope: "checklist"` for the same reason, one level
+      // deeper: BSC's half of the gate is judged on the FACET FILTERS below
+      // (`bscFacetPlan`), which is the object the request carries, rather than
+      // on a walk over NB levels. The two disagreed for the NEO-189 shape (a
+      // BSC `setName` id attached to the leaf), and the disagreement always
+      // fell the same way — the gate skipped a side the adapter would have
+      // answered.
+      const resolution = resolvableSides(chain, { bscScope: "checklist" });
       if (!resolution.bsc.resolvable && !resolution.sportlots.resolvable) {
         console.log(
           `[fetchCardChecklist] no marketplace ids on this path — ` +
-            `bsc_missing=${resolution.bsc.missing.join(",")} ` +
-            `sl_missing=${resolution.sportlots.missing.join(",")}`,
+            `bsc_missing=${missingSummary(resolution.bsc)} ` +
+            `sl_missing=${missingSummary(resolution.sportlots)}`,
         );
         // Nothing to pair. The set's own hand-added cards can still carry
         // unresolved pendingPlayerNames / pendingTeamNames, but resolving those
@@ -7839,12 +8044,12 @@ export const fetchCardChecklist = action({
       }
       if (!resolution.bsc.resolvable) {
         console.log(
-          `[fetchCardChecklist] BSC skipped — missing=${resolution.bsc.missing.join(",")}`,
+          `[fetchCardChecklist] BSC skipped — missing=${missingSummary(resolution.bsc)}`,
         );
       }
       if (!resolution.sportlots.resolvable) {
         console.log(
-          `[fetchCardChecklist] SportLots skipped — missing=${resolution.sportlots.missing.join(",")}`,
+          `[fetchCardChecklist] SportLots skipped — missing=${missingSummary(resolution.sportlots)}`,
         );
       }
 
@@ -8190,11 +8395,21 @@ export const fetchCardChecklist = action({
         slByPlatformRef.set(c.platformRef, c);
       }
       if (indistinguishableSlRefs.length > 0) {
+        // NEO-251 security review — a SportLots ref IS the card description,
+        // i.e. text chosen by whoever listed the card, and this line is read in
+        // a terminal and in Convex's dashboard. `safeMarketplaceText` neutralises
+        // the newline that would forge a second log entry and the bidi controls
+        // that would reorder the line as an operator reads it, and caps each ref
+        // so a 900-card set cannot emit one line of tens of kilobytes. The COUNT
+        // is what an operator acts on; the sample is a debugging aid.
         console.warn(
           `[fetchCardChecklist] ${indistinguishableSlRefs.length} SportLots row(s) ` +
             `are indistinguishable (same card number AND description) — only ` +
             `ordinal position separates them and that is not stable. Not guessed: ` +
-            indistinguishableSlRefs.slice(0, 5).join(" | "),
+            indistinguishableSlRefs
+              .slice(0, 5)
+              .map(safeMarketplaceText)
+              .join(" | "),
         );
       }
       // A stored ref that no longer appears in the marketplace's response is
@@ -8207,7 +8422,7 @@ export const fetchCardChecklist = action({
         console.warn(
           `[fetchCardChecklist] ${orphanedSlRefs.length} stored SportLots ref(s) ` +
             `no longer resolve — the marketplace changed the description: ` +
-            orphanedSlRefs.slice(0, 5).join(" | "),
+            orphanedSlRefs.slice(0, 5).map(safeMarketplaceText).join(" | "),
         );
       }
 
@@ -8308,7 +8523,28 @@ export const fetchCardChecklist = action({
           ...(sl?.attributes ?? []),
         ]));
         const printRun = bsc.printRun ?? sl?.printRun;
-        const players = bsc.players ?? (sl?.players ?? undefined);
+        // NEO-251 — recorded BEFORE the `players` default below throws one of
+        // the two rosters away, for the same reason `nameConflict` is recorded
+        // before the name default: this is the AUTO path, where most of a
+        // 660-row set is merged without an operator ever seeing the two rows
+        // side by side. `players` still resolves to BSC exactly as before, so
+        // the modal's `chosen: "bsc"` is a truthful statement about what the
+        // card is carrying rather than a guess.
+        const playersConflict = sl
+          ? conflictingPlayers(bsc.players, sl.players)
+          : undefined;
+        // NEO-251: an EMPTY roster is an absent one. `??` only falls through
+        // on null/undefined, so a BSC row carrying a literal `[]` used to beat
+        // a real SportLots roster and drop it silently — and no conflict was
+        // raised either, because one empty side is genuinely not a
+        // disagreement (`conflictingPlayers` requires both). Both adapters send
+        // an absent key today (`players.length ? players : undefined`), so this
+        // changes nothing in practice; it is here because SportLots supplies
+        // rosters now, which is what makes "absent" versus "empty" worth being
+        // right about. `mergePair` in CardPairingModal reads the same way.
+        const players = bsc.players?.length
+          ? bsc.players
+          : (sl?.players ?? undefined);
         const teamsArr = bsc.teams ?? (sl?.teams ?? undefined);
 
         // NEO-199 — recorded BEFORE the merge below throws one of the two
@@ -8369,6 +8605,9 @@ export const fetchCardChecklist = action({
           // is strict, and an explicit `undefined` is not the same as an absent
           // optional on the wire.
           ...(nameConflict ? { nameConflict } : {}),
+          // Spread for the same reason `nameConflict` is: `previewCardValidator`
+          // is strict, and an explicit `undefined` is not an absent optional.
+          ...(playersConflict ? { playersConflict } : {}),
           ...(sl ? {} : { unmatched: "sl" as const }),
         };
         out.push(candidate);
@@ -8406,6 +8645,65 @@ export const fetchCardChecklist = action({
         };
         out.push(slOnly);
         unmatchedSlCards.push(slOnly);
+      }
+
+      // 3b. NEO-251 — did an operator already settle this same roster
+      //     disagreement on an earlier sync?
+      //
+      //     The merge defaults `players` to BSC every time, so a card the
+      //     operator settled as SportLots comes back on the NEXT sync
+      //     defaulting to BSC again, and the review screen asks the same
+      //     question with the same wrong default. `preferred` is how the modal
+      //     is told which way the answer went last time.
+      //
+      //     It is EVIDENCE, not a decision, and it is NB's own evidence: the
+      //     committed NB row's players are read, and if they mean the same
+      //     thing as SportLots' list then SportLots is what an operator chose.
+      //     No marketplace is asked which side is right — that would be exactly
+      //     the "marketplace as source of truth" the product invariant forbids.
+      //
+      //     Bounded: only conflicted, BSC-linked, already-committed rows are
+      //     considered, and their player ids are deduped into ONE batch read.
+      //     A set where the marketplaces agree pays nothing at all.
+      const conflictedByBscRef = new Map<string, ReconciledCard>();
+      for (const card of out) {
+        const ref = card.platformData.bsc?.ref;
+        if (ref && card.playersConflict) conflictedByBscRef.set(ref, card);
+      }
+      if (conflictedByBscRef.size > 0) {
+        const rowsByBscRef = new Map<string, (typeof committed)[number]>();
+        for (const row of committed) {
+          const ref = row.platformData?.bsc?.ref;
+          if (ref) rowsByBscRef.set(ref, row);
+        }
+        const neededPlayerIds = new Set<Id<"players">>();
+        for (const ref of conflictedByBscRef.keys()) {
+          for (const id of rowsByBscRef.get(ref)?.playerIds ?? []) {
+            neededPlayerIds.add(id);
+          }
+        }
+        if (neededPlayerIds.size > 0) {
+          const playerDocs = await ctx.runQuery(api.players.getManyByIds, {
+            ids: [...neededPlayerIds],
+          });
+          const playerNameById = new Map<string, string>();
+          for (const doc of playerDocs) playerNameById.set(doc._id, doc.name);
+          for (const [ref, card] of conflictedByBscRef) {
+            const conflict = card.playersConflict;
+            if (!conflict) continue;
+            const storedIds = rowsByBscRef.get(ref)?.playerIds ?? [];
+            // A dangling id is not evidence of anything — it cannot be shown
+            // to mean either side — so a row with one simply carries no hint.
+            const storedNames = storedIds
+              .map((id) => playerNameById.get(id))
+              .filter((n): n is string => n !== undefined);
+            if (storedNames.length !== storedIds.length) continue;
+            if (storedNames.length === 0) continue;
+            if (playersKey(storedNames) === playersKey(conflict.sportlots)) {
+              conflict.preferred = "sportlots";
+            }
+          }
+        }
       }
 
       // 4. NEO-90: resolve team names for regular BSC cards that don't
@@ -8459,6 +8757,9 @@ export const fetchCardChecklist = action({
         // NEO-199: the streamed path is the only path. A conflict missing here
         // is a conflict the operator never sees.
         nameConflict: card.nameConflict,
+        // NEO-251: same rule — the streamed path is the only path, so a roster
+        // conflict missing here is one the operator never sees.
+        playersConflict: card.playersConflict,
         bucket,
         confidence,
       });
@@ -9045,6 +9346,33 @@ export const commitCardChecklistPrelude = internalMutation({
       throw new Error(
         `commitCardChecklist: sportId ${args.sportId} is not a sport-level row`,
       );
+    }
+
+    // NEO-251 (security review) — the LAST place these names can be bounded
+    // before they become `players` / `teams` rows.
+    //
+    // The action flattens every card's names into these two arrays, so a bound
+    // enforced per card upstream says nothing about what arrives here: this
+    // mutation is separately reachable, and it is the one that INSERTS. Both
+    // bounds are re-asserted rather than assumed, by length and by count, and
+    // neither message echoes a name (see `players.ts`).
+    const MAX_DISTINCT_NAMES = MAX_CARDS_PER_COMMIT * MAX_CARD_PLAYERS;
+    for (const [kind, names, limit] of [
+      ["player", args.playerNames, MAX_PLAYER_NAME_LENGTH],
+      ["team", args.teamNames, MAX_PLAYER_NAME_LENGTH],
+    ] as const) {
+      if (names.length > MAX_DISTINCT_NAMES) {
+        throw new ConvexError(
+          `commitCardChecklistPrelude: ${names.length} distinct ${kind} names exceeds the ${MAX_DISTINCT_NAMES} limit for a single commit.`,
+        );
+      }
+      for (const name of names) {
+        if (name.length > limit) {
+          throw new ConvexError(
+            `commitCardChecklistPrelude: a ${kind} name is ${name.length} characters; the limit is ${limit}.`,
+          );
+        }
+      }
     }
 
     // Helper — same normalization as players.ts.
@@ -11387,17 +11715,117 @@ export const diffChecklistAgainstExisting = query({
           )
         : c.attributes;
 
+      /**
+       * NEO-251 — a disagreement the operator has ALREADY settled, on a field
+       * the two marketplaces still disagree about.
+       *
+       * The merge defaults `players` to BSC and `cardName` to BSC on every
+       * sync, unconditionally. So a card an operator settled as SportLots last
+       * time arrives here carrying BSC's answer against an NB row carrying
+       * SportLots' — a tier-1 "who is on this card" diff, on every re-sync,
+       * forever, with the operator's own decision on the wrong side of it. That
+       * is not a change upstream made; it is the merge's default colliding with
+       * a settled row, and re-asking a question that has been answered is how a
+       * review screen teaches people to skip it.
+       *
+       * The suppression is narrow on purpose, and narrower than "the stored
+       * value is one of the two answers":
+       *
+       *  - Only the LOSING side counts. Equality with the side the merge
+       *    picked produces no diff anyway, so writing the rule against the
+       *    loser is what makes it say something — and it makes the condition
+       *    exactly "the operator chose the other one".
+       *  - Only the CONFLICTED field. The card is NOT short-circuited: a
+       *    settled roster still lets a genuine rookie-flag, print-run or
+       *    cardName change through, and the card lands in `contentChanges`
+       *    on the strength of them.
+       *  - Only a marketplace answer. A stored value matching NEITHER side is
+       *    the operator's own — a hand-typed roster or name — and an upstream
+       *    change against it is a real change they must still see.
+       *
+       * THE CARD MUST STILL BE CARRYING THE MERGE DEFAULT. This is the
+       * condition that stops the rule swallowing an operator's decision, and it
+       * is not a refinement — without it the suppression is actively wrong.
+       *
+       * The first version derived "the losing side" from the incoming card,
+       * which is only the merge's answer while nobody has touched it. Once the
+       * operator flips a row to SportLots in the pairing dialog, `c.players` IS
+       * SportLots — so "the side the card is not carrying" becomes BSC, and a
+       * row stored as BSC on the previous sync matched it and had its field
+       * dropped. The card then bucketed `identical`, the review was skipped,
+       * and the commit ran with no `applyFields`: the operator watched
+       * themselves choose SportLots and NeonBinder silently kept BSC. A guard
+       * meant to stop the screen re-asking an answered question was instead
+       * discarding the answer.
+       *
+       * So the merge default is read off the CONFLICT (`bsc`, which is what
+       * `players`/`cardName` resolve to whenever BSC is non-empty, and a
+       * conflict requires both sides non-empty), and the incoming value has to
+       * still equal it. A card that does not is one the operator moved, and a
+       * moved card is exactly what the review exists to write.
+       *
+       * That check alone is not the whole story: an operator can also re-pick
+       * BSC deliberately over a stored SportLots roster, which leaves the card
+       * carrying the default and is indistinguishable from here. That case is
+       * settled on the client, which omits the conflict entirely once a row has
+       * been touched (see `PairingConflicts.touched` and `withConflicts` in
+       * CardChecklist). The two guards are independent on purpose: this one
+       * needs no client cooperation, and the client one covers what the server
+       * cannot see.
+       *
+       * ACCEPTED COST, stated plainly: while a disagreement stands UNTOUCHED,
+       * an upstream change TO THE CONFLICTED FIELD is invisible until the
+       * operator re-decides it. If SportLots later corrects its roster on a
+       * card the operator settled as SportLots, the diff stays quiet — the row
+       * still equals a side that is still offered. That is the trade for not
+       * re-asking a settled question on every sync forever, and it is bounded
+       * to one field on the rows that carry a live conflict.
+       *
+       * `nameConflict` gets the same treatment for the same reason; it is the
+       * older field and had the same defect.
+       */
+      const settledConflictFields = new Set<NbContentField>();
+      if (c.playersConflict && storedPlayers.length > 0) {
+        // What the merge produces on this card, by construction: `players`
+        // resolves to BSC whenever BSC has a roster, and `conflictingPlayers`
+        // only speaks when BOTH sides are non-empty. Read off the conflict
+        // rather than off the card, so an operator's choice cannot redefine
+        // which side counts as "the default".
+        const mergeDefault = playersKey(c.playersConflict.bsc);
+        const losing = playersKey(c.playersConflict.sportlots);
+        const untouched = playersKey(incomingPlayers) === mergeDefault;
+        if (untouched && playersKey(storedPlayers) === losing) {
+          settledConflictFields.add("playerIds");
+        }
+      }
+      if (c.nameConflict && row.cardName) {
+        const mergeDefault = nameKey(c.nameConflict.bsc);
+        const losing = nameKey(c.nameConflict.sportlots);
+        const untouched = nameKey(c.cardName) === mergeDefault;
+        if (untouched && nameKey(row.cardName) === losing) {
+          settledConflictFields.add("cardName");
+        }
+      }
+
       const comparisons: Array<{
         name: NbContentField;
         stored: unknown;
         incoming: unknown;
+        compare?: ContentCompare;
       }> = [
         { name: "cardName", stored: row.cardName, incoming: c.cardName },
-        { name: "playerIds", stored: storedPlayers, incoming: incomingPlayers },
+        {
+          name: "playerIds",
+          stored: storedPlayers,
+          incoming: incomingPlayers,
+          // Names, not ids — order is the marketplaces', not the card's.
+          compare: "nameSet",
+        },
         {
           name: "teamOnCardIds",
           stored: storedTeams,
           incoming: incomingTeams,
+          compare: "nameSet",
         },
         {
           name: "attributes",
@@ -11415,7 +11843,11 @@ export const diffChecklistAgainstExisting = query({
       ];
 
       const fields = comparisons
-        .filter(({ stored, incoming }) => !sameContentValue(stored, incoming))
+        .filter(({ name }) => !settledConflictFields.has(name))
+        .filter(
+          ({ stored, incoming, compare }) =>
+            !sameContentValue(stored, incoming, compare),
+        )
         .map(({ name, stored, incoming }) => {
           const oldValue = displayContentValue(stored);
           const newValue = displayContentValue(incoming);
@@ -12209,6 +12641,27 @@ export const commitCardChecklist = action({
     // per-transaction ceiling, not the per-commit one: the prelude is still
     // O(distinct names) in a single transaction.
     assertCardBatchWithinLimits(args.cards, "commitCardChecklist");
+    // NEO-251 (security review) — a card on its way to being WRITTEN has one
+    // roster, not an open question. `CardPairingModal` lifts the conflict onto
+    // the pair and strips it before `onConfirm`, and this is the server-side
+    // proof of that rather than a trust in it: the commit is reachable by any
+    // client, and a payload that still carries the field is a client that
+    // skipped the decision the field exists to force. Refused rather than
+    // ignored, because ignoring it would commit BSC's roster over a
+    // disagreement nobody settled — silently, which is the whole defect.
+    //
+    // `previewCardFields` still ACCEPTS the key: the validator's job is to let
+    // an older or newer bundle's shape through to a readable error here, not to
+    // fail with `ArgumentValidationError` at the last step of a 900-card
+    // review. The card NUMBER is NB's own value; no marketplace text is echoed.
+    for (const [index, card] of args.cards.entries()) {
+      if (!card.playersConflict) continue;
+      throw new ConvexError(
+        `commitCardChecklist: ${
+          card.cardNumber ? `card #${card.cardNumber}` : `card at index ${index}`
+        } still carries an unsettled players conflict. Settle it in the pairing dialog before committing.`,
+      );
+    }
     // Checked before ANY phase writes, so an over-long delete list costs the
     // operator nothing. Finalize re-checks — it is separately callable.
     const operatorDeleteIds = args.operatorDeleteIds ?? [];

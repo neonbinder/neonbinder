@@ -168,4 +168,85 @@ describe("countPairingEdits", () => {
       ),
     ).toBe(6); // 1 manual + 1 name + 3 kept + 1 unlinked
   });
+
+  /**
+   * NEO-251 — the roster conflict counts on exactly the same terms as the name
+   * one, and SEPARATELY from it. Two answered questions on one row is twice the
+   * work to redo, and a confirm that says "1" understates what is about to go.
+   */
+  test("a roster conflict left on its BSC default is not an edit", () => {
+    expect(
+      countPairingEdits(
+        state({
+          matched: [
+            {
+              card: { ref: "a" },
+              confidence: 1,
+              playersConflict: { chosen: "bsc" },
+            },
+          ],
+          seedMatchedKeys: new Set(["a"]),
+        }),
+        keyOf,
+      ),
+    ).toBe(0);
+  });
+
+  test("counts a roster conflict settled on SportLots", () => {
+    expect(
+      countPairingEdits(
+        state({
+          matched: [
+            {
+              card: { ref: "a" },
+              confidence: 1,
+              playersConflict: { chosen: "sportlots" },
+            },
+          ],
+          seedMatchedKeys: new Set(["a"]),
+        }),
+        keyOf,
+      ),
+    ).toBe(1);
+  });
+
+  test("counts a typed roster even when the choice fell back to BSC", () => {
+    expect(
+      countPairingEdits(
+        state({
+          matched: [
+            {
+              card: { ref: "a" },
+              confidence: 1,
+              playersConflict: {
+                chosen: "bsc",
+                custom: ["Carl Yastrzemski"],
+              },
+            },
+          ],
+          seedMatchedKeys: new Set(["a"]),
+        }),
+        keyOf,
+      ),
+    ).toBe(1);
+  });
+
+  test("a name conflict and a roster conflict on one row count as two", () => {
+    expect(
+      countPairingEdits(
+        state({
+          matched: [
+            {
+              card: { ref: "a" },
+              confidence: 1,
+              nameConflict: { chosen: "sportlots" },
+              playersConflict: { chosen: "sportlots" },
+            },
+          ],
+          seedMatchedKeys: new Set(["a"]),
+        }),
+        keyOf,
+      ),
+    ).toBe(2);
+  });
 });

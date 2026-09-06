@@ -2543,3 +2543,243 @@ describe("CardChecklist — NEO-221: a parked session that nothing can reach", (
     await resyncAndExpectOnlyTheNewBatch();
   });
 });
+
+/**
+ * NEO-251 — the disagreement reaches the DIFF and stops there.
+ *
+ * This is the wiring half of a rule whose two ends are already proven
+ * elsewhere, and it is the half that was missing:
+ *
+ *  - `convex/diffChecklistAgainstExisting.test.ts` proves the diff suppresses a
+ *    field when the incoming card carries the conflict and the stored value is
+ *    the side the merge did NOT pick (the operator settled it last sync).
+ *  - `convex/playersConflict.guards.test.ts` proves `commitCardChecklist`
+ *    THROWS on a card still carrying `playersConflict`.
+ *
+ * So the conflict must reach exactly one of the two calls. `CardPairingModal`
+ * hands back committable cards plus an index-keyed `conflictsByIndex`, and
+ * `withConflicts` puts them together for the diff query alone. Without this
+ * test the server-side suppression is unreachable in production and nothing
+ * fails.
+ */
+describe("CardChecklist — NEO-251: conflicts reach the diff, not the commit", () => {
+  const conflictedCandidate = {
+    ...streamedCandidate,
+    players: ["Mike Yastrzemski"],
+    playersConflict: {
+      bsc: ["Mike Yastrzemski"],
+      sportlots: ["Mike Yastrzemski", "Carl Yastrzemski"],
+    },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.cards = [];
+    state.variantRow = { value: "Test Set" };
+    state.ancestorChain = [{ _id: SPORT_ID, level: "sport", value: "Baseball" }];
+    state.liveCandidates = null;
+    state.teams = [];
+    state.players = [];
+    state.skippedNames = [];
+  });
+
+  /** Stream one conflicted matched candidate and press Confirm. */
+  async function confirmConflictedPairing() {
+    state.liveCandidates = {
+      ready: 1,
+      total: 1,
+      cards: [conflictedCandidate],
+    };
+    mockFetchChecklist.mockResolvedValue({
+      success: true,
+      message: "Fetched 1 card",
+      candidateCount: 1,
+    });
+    // Nothing to settle — which is the POINT on the re-sync this models: the
+    // stored row already carries SportLots' roster because the operator chose
+    // it last time, so the server suppresses the field and the review is
+    // skipped entirely.
+    mockDiffChecklist.mockResolvedValue(NOTHING_TO_REVIEW);
+    mockResolveEntities.mockResolvedValue({
+      unknownPlayers: [],
+      unknownTeams: [],
+      batchId: "batch-1",
+    });
+    mockCommitChecklist.mockResolvedValue({ saved: 1 });
+    mockDiscardCandidates.mockResolvedValue(undefined);
+
+    renderChecklist();
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    });
+    expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Confirm card matches"));
+    });
+  }
+
+  it("hands the diff both marketplaces' rosters", async () => {
+    await confirmConflictedPairing();
+
+    await waitFor(() => expect(mockDiffChecklist).toHaveBeenCalled());
+    const [, args] = mockDiffChecklist.mock.calls[0];
+    expect(args.cards[0].playersConflict).toEqual({
+      bsc: ["Mike Yastrzemski"],
+      sportlots: ["Mike Yastrzemski", "Carl Yastrzemski"],
+    });
+    // The card still carries the merge's default, exactly as the server sent
+    // it — the conflict ADDS the loser, it does not swap the winner.
+    expect(args.cards[0].players).toEqual(["Mike Yastrzemski"]);
+  });
+
+  it("hands entity resolution and the commit a card with no conflict on it", async () => {
+    await confirmConflictedPairing();
+
+    await waitFor(() => expect(mockResolveEntities).toHaveBeenCalled());
+    expect(mockResolveEntities.mock.calls[0][0].cards[0]).not.toHaveProperty(
+      "playersConflict",
+    );
+
+    await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalled());
+    expect(mockCommitChecklist.mock.calls[0][0].cards[0]).not.toHaveProperty(
+      "playersConflict",
+    );
+  });
+
+  /**
+   * THE FLIP, end to end through the real pairing dialog.
+   *
+   * The operator opens the re-sync and moves this row to SportLots. What must
+   * reach the diff is the card carrying THEIR choice and NO conflict entry:
+   * the entry means "nobody settled this", and with it in place the server
+   * suppresses `playerIds`, the review is skipped, the commit runs with no
+   * `applyFields`, and the flip is discarded without a word.
+   *
+   * The two halves of this rule are proven separately —
+   * `CardPairingModal.test.tsx` pins that a touched row withholds its entry,
+   * and `convex/diffChecklistAgainstExisting.test.ts` pins that a card without
+   * one reports the change. This is the wiring that has to hold them together.
+   */
+  it("a row the operator FLIPPED reaches the diff with no conflict on it", async () => {
+    state.liveCandidates = { ready: 1, total: 1, cards: [conflictedCandidate] };
+    mockFetchChecklist.mockResolvedValue({
+      success: true,
+      message: "Fetched 1 card",
+      candidateCount: 1,
+    });
+    mockDiffChecklist.mockResolvedValue(NOTHING_TO_REVIEW);
+    mockResolveEntities.mockResolvedValue({
+      unknownPlayers: [],
+      unknownTeams: [],
+      batchId: "batch-1",
+    });
+    mockCommitChecklist.mockResolvedValue({ saved: 1 });
+    mockDiscardCandidates.mockResolvedValue(undefined);
+
+    renderChecklist();
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    });
+    expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+
+    // Settle it the other way, in the real dialog.
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole("radio", {
+          name: /^SportLots: Mike Yastrzemski \/ Carl Yastrzemski/,
+        }),
+      );
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Confirm card matches"));
+    });
+
+    await waitFor(() => expect(mockDiffChecklist).toHaveBeenCalled());
+    const [, args] = mockDiffChecklist.mock.calls[0];
+    expect(args.cards[0].players).toEqual([
+      "Mike Yastrzemski",
+      "Carl Yastrzemski",
+    ]);
+    // No entry — so the server has nothing to suppress against, and the change
+    // is reported like any other.
+    expect(args.cards[0].playersConflict).toBeUndefined();
+  });
+
+  /**
+   * The re-pick, which `chosen` cannot distinguish from an untouched row: the
+   * operator confirms BSC over a stored SportLots roster. The card is
+   * unchanged, and the conflict must still be withheld.
+   */
+  it("a row the operator RE-PICKED on its default also arrives with no conflict", async () => {
+    state.liveCandidates = { ready: 1, total: 1, cards: [conflictedCandidate] };
+    mockFetchChecklist.mockResolvedValue({
+      success: true,
+      message: "Fetched 1 card",
+      candidateCount: 1,
+    });
+    mockDiffChecklist.mockResolvedValue(NOTHING_TO_REVIEW);
+    mockResolveEntities.mockResolvedValue({
+      unknownPlayers: [],
+      unknownTeams: [],
+      batchId: "batch-1",
+    });
+    mockCommitChecklist.mockResolvedValue({ saved: 1 });
+    mockDiscardCandidates.mockResolvedValue(undefined);
+
+    renderChecklist();
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    });
+    expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole("radio", { name: /^BSC: Mike Yastrzemski —/ }),
+      );
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Confirm card matches"));
+    });
+
+    await waitFor(() => expect(mockDiffChecklist).toHaveBeenCalled());
+    const [, args] = mockDiffChecklist.mock.calls[0];
+    expect(args.cards[0].players).toEqual(["Mike Yastrzemski"]);
+    expect(args.cards[0].playersConflict).toBeUndefined();
+  });
+
+  it("leaves an agreeing card untouched on the way to the diff", async () => {
+    state.liveCandidates = { ready: 1, total: 1, cards: [streamedCandidate] };
+    mockFetchChecklist.mockResolvedValue({
+      success: true,
+      message: "Fetched 1 card",
+      candidateCount: 1,
+    });
+    mockDiffChecklist.mockResolvedValue(NOTHING_TO_REVIEW);
+    mockResolveEntities.mockResolvedValue({
+      unknownPlayers: [],
+      unknownTeams: [],
+      batchId: "batch-1",
+    });
+    mockCommitChecklist.mockResolvedValue({ saved: 1 });
+    mockDiscardCandidates.mockResolvedValue(undefined);
+
+    renderChecklist();
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    });
+    expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Confirm card matches"));
+    });
+
+    await waitFor(() => expect(mockDiffChecklist).toHaveBeenCalled());
+    const [, args] = mockDiffChecklist.mock.calls[0];
+    // `toBeUndefined`, not `not.toHaveProperty`: the candidate→PairingCard
+    // mapping assigns both fields unconditionally, so an agreeing row carries
+    // the KEYS with no value. That is what `v.optional` accepts and what the
+    // modal's `seedMatched` treats as "nothing to lift" — the assertion that
+    // matters is that no disagreement was invented.
+    expect(args.cards[0].playersConflict).toBeUndefined();
+    expect(args.cards[0].nameConflict).toBeUndefined();
+  });
+});

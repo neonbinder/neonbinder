@@ -1,0 +1,68 @@
+<!--
+  HAND-AUTHORED sample of the two `listcards.tpl` cells this parser reads.
+  It is NOT a page capture, and it must never become one.
+
+  Why not a capture: reaching `listcards.tpl` at all requires an authenticated
+  SportLots seller session, so a real response carries account navigation, the
+  seller's own bin and pricing context, hidden form inputs including `selset`,
+  and session-bearing URLs. This repo is PUBLIC. Committing such a page would
+  publish operational detail about a live account in exchange for realism the
+  parser cannot use — it only ever sees the text between two <td> tags.
+
+  So the shape is reproduced instead, from row text already recorded in this
+  repo's own SportLots tests: set 189991 (2021 Topps Heritage) in
+  convex/adapters/sportlots.test.ts's parseSlVariationMarker block, and the
+  base/variation pair verified live against set 328996 in
+  convex/sportlots.test.ts. Those are public checklist strings — card numbers
+  and player names — and nothing else. The house convention is the same
+  (__fixtures__/bsc-heritage-2021-cards.json keeps the derived shape, not the
+  828KB response it came from); a bare row table is the ceiling here.
+
+  Only <table>, <tr> and <td> appear below, and a test asserts that: no nav,
+  no <form>, no <input>, no <a>, no <script>, no session markup. Adding any of
+  those fails `the fixture is a minimal row table, not a page capture`.
+
+  The rows exercise the parser end to end: single names, a two-subject `|`
+  row, a period-initial, literal UTF-8 accents (what `response.text()` hands
+  the adapter), a trailing team abbreviation, a generational suffix, an
+  HTML-entity apostrophe, a variation row (tinted number cell =
+  "smallcolorleft"), and two rows that must yield NO players at all.
+
+  Note `&eacute;` is deliberately NOT in the decoder's bounded entity set — an
+  unknown entity stays literal text and that row simply yields no players.
+-->
+<table>
+  <tr>
+    <td class="smallleft">1</td><td class="smallleft">Alec Bohm</td>
+  </tr>
+  <tr>
+    <td class="smallleft">11</td><td class="smallleft">Alec Bohm|Spencer Howard</td>
+  </tr>
+  <tr>
+    <td class="smallcolorleft">11</td><td class="smallleft">Alec Bohm [ VAR Action Image ]</td>
+  </tr>
+  <tr>
+    <td class="smallleft">12</td><td class="smallleft">J.T. Realmuto</td>
+  </tr>
+  <tr>
+    <td class="smallleft">13</td><td class="smallleft">Bryce Harper PHI</td>
+  </tr>
+  <tr>
+    <td class="smallleft">27</td><td class="smallleft">Fernando Tatis Jr. RC</td>
+  </tr>
+  <tr>
+    <td class="smallleft">45</td><td class="smallleft">José Ramírez</td>
+  </tr>
+  <tr>
+    <td class="smallleft">62</td><td class="smallleft">Peter O&#39;Brien</td>
+  </tr>
+  <tr>
+    <td class="smallleft">88</td><td class="smallleft">Yadier Molina AU /99</td>
+  </tr>
+  <tr>
+    <td class="smallleft">300</td><td class="smallleft">Checklist</td>
+  </tr>
+  <tr>
+    <td class="smallleft">301</td><td class="smallleft">Yankee Stadium</td>
+  </tr>
+</table>

@@ -1523,6 +1523,33 @@ export default defineSchema({
     nameConflict: v.optional(
       v.object({ bsc: v.string(), sportlots: v.string() }),
     ),
+    // NEO-251 — BSC and SportLots list different PLAYERS on this card. The
+    // sibling of `nameConflict` above and written under the same rule: only on
+    // a `matched` row whose two sides disagreed (see `conflictingPlayers` in
+    // lib/cards/card-name.ts), so a set where the rosters agree stores nothing
+    // extra on any of its ~900 rows.
+    //
+    // Separate from `nameConflict` rather than folded into it because the two
+    // fields fail independently. BSC hands back a structured `players[]` while
+    // SportLots hands back one subject string; a card can carry the same title
+    // on both sides and still carry a different roster ("Alec Bohm|Spencer
+    // Howard" against a BSC row listing only Bohm). Those names become
+    // `playerIds`, which the listing title is generated from — so an unreported
+    // disagreement surfaces to a buyer instead of to the operator.
+    //
+    // `players` above is still BSC's answer; this is the one the merge used to
+    // discard. `preferred` is a HINT only, never a decision: it says the NB row
+    // this card matches already carries SportLots' roster, which is evidence an
+    // operator settled it that way on an earlier sync.
+    playersConflict: v.optional(
+      v.object({
+        bsc: v.array(v.string()),
+        sportlots: v.array(v.string()),
+        preferred: v.optional(
+          v.union(v.literal("bsc"), v.literal("sportlots")),
+        ),
+      }),
+    ),
 
     // ── which column of the modal this belongs in ──────────────────────────
     bucket: v.union(
