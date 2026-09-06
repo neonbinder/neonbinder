@@ -18,12 +18,35 @@
  */
 
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
 import { normalizePlayerName } from "./players";
 import { nameKey } from "../lib/cards/card-name";
+import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
+
+beforeEach(() => {
+  // NEO-188/NEO-247: a commit that LANDS schedules a BSC per-card team lookup
+  // (processBscTeamEnrichmentQueue) as a side effect of the `bsc-1` ref every
+  // fixture card carries. This file has nothing to say about team resolution.
+  // A THROWING stub rather than a canned 200 — same convention as
+  // convex/cardChecklist.bscTeamEnrichment.test.ts's NEO-220 fix: the adapter
+  // already swallows a request failure ("network unavailable" is a state it
+  // handles), and it cannot write anything derived from a payload this file
+  // invented.
+  vi.stubGlobal(
+    "fetch",
+    (async (url: string | URL) => {
+      throw new Error(
+        `NEO-247: this test file must not reach the network: ${String(url)}`,
+      );
+    }) as unknown as typeof fetch,
+  );
+});
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -326,6 +349,10 @@ describe("the commit refuses an unsettled roster conflict (NEO-251)", () => {
     );
     expect(rows).toHaveLength(1);
     expect(rows[0].cardNumber).toBe("1");
+    // NEO-247: settle (and discard) the enrichment this commit scheduled before
+    // the test returns, so nothing is still running into worker teardown.
+    await drainScheduled(t);
+    await cancelScheduled(t);
   });
 });
 
@@ -398,5 +425,9 @@ describe("diacritics do not fold in the player dedup key (NEO-251, deferred)", (
     // but the person on it is not the person NB already knows about.
     expect(rows[0].playerIds ?? []).toEqual([]);
     expect(rows[0].pendingPlayerNames).toEqual(["José Ramírez"]);
+    // NEO-247: settle (and discard) the enrichment this commit scheduled before
+    // the test returns, so nothing is still running into worker teardown.
+    await drainScheduled(t);
+    await cancelScheduled(t);
   });
 });
