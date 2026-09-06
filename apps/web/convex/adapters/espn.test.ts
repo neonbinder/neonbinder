@@ -86,7 +86,7 @@ describe("fetchEspnTeamInfo", () => {
     // Case-insensitive: fixture is title-case, lookup is lowercased.
     const result = await fetchEspnTeamInfo({ path: "baseball/mlb", leagueName: "Major League Baseball" }, "washington nationals");
 
-    expect(requestedUrl).toBe("https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/teams");
+    expect(requestedUrl).toBe("https://site.web.api.espn.com/apis/site/v2/sports/baseball/mlb/teams");
     expect(result).toEqual({
       espnId: "19",
       location: "Washington",

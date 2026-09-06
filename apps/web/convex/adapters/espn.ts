@@ -10,7 +10,7 @@
  * Wikidata rather than replacing it.
  */
 
-const ESPN_API_BASE = "https://site.api.espn.com/apis/site/v2/sports";
+const ESPN_API_BASE = "https://site.web.api.espn.com/apis/site/v2/sports";
 
 // NEO-96: `SPORT_TO_ESPN_LEAGUE`, a display-name-keyed map, used to live here
 // and be consulted at runtime with `teams.sport`. It moved to

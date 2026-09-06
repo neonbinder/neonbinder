@@ -1259,7 +1259,7 @@ describe("lookupTeamEnrichment: knownQid (NEO-236)", () => {
   }): typeof fetch {
     return (async (url: string | URL) => {
       const u = String(url);
-      if (u.includes("site.api.espn.com")) {
+      if (u.includes("site.web.api.espn.com")) {
         return jsonResponse({ sports: [{ leagues: [{ teams: [] }] }] });
       }
       if (!u.includes("query.wikidata.org")) {
