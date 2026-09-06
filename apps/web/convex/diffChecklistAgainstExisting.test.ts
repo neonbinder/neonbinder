@@ -1081,6 +1081,70 @@ describe("diffChecklistAgainstExisting — settled conflicts (NEO-251)", () => {
   });
 
   /**
+   * THE FLIP. The operator opens the re-sync and moves this row to SportLots.
+   *
+   * The card that reaches the diff therefore carries SportLots' roster, not the
+   * merge default — and the stored row still carries BSC from the previous
+   * sync. Reported, or the review is skipped, the commit runs with no
+   * `applyFields`, and the operator watches themselves choose SportLots while
+   * NeonBinder keeps BSC.
+   *
+   * This is what the first version of the rule got wrong: it derived "the
+   * losing side" from the incoming card, so a flipped card made BSC the loser,
+   * BSC was what was stored, and the field was dropped.
+   */
+  test("a card FLIPPED to SportLots still reports the change", async () => {
+    const t = convexTest(schema, modules);
+    const row = await committedThenResynced(
+      t,
+      {
+        cardNumber: "1",
+        cardName: "Card One",
+        bscRef: "bsc-1",
+        players: ["Mike Yastrzemski"],
+      },
+      {
+        cardNumber: "1",
+        cardName: "Card One",
+        bscRef: "bsc-1",
+        // The operator's choice, not the merge's default.
+        players: ["Mike Yastrzemski", "Carl Yastrzemski"],
+        playersConflict: {
+          bsc: ["Mike Yastrzemski"],
+          sportlots: ["Mike Yastrzemski", "Carl Yastrzemski"],
+        },
+      },
+    );
+
+    expect(row.fields.map((f) => f.name)).toContain("playerIds");
+    expect(row.bucket).toBe("contentChanges");
+  });
+
+  /** The same flip on the older field, which had the identical defect. */
+  test("a cardName FLIPPED to SportLots still reports the change", async () => {
+    const t = convexTest(schema, modules);
+    const row = await committedThenResynced(
+      t,
+      {
+        cardNumber: "1",
+        cardName: "Mike Yastrzemski",
+        bscRef: "bsc-1",
+      },
+      {
+        cardNumber: "1",
+        cardName: "Carl Yastrzemski",
+        bscRef: "bsc-1",
+        nameConflict: {
+          bsc: "Mike Yastrzemski",
+          sportlots: "Carl Yastrzemski",
+        },
+      },
+    );
+
+    expect(row.fields.map((f) => f.name)).toContain("cardName");
+  });
+
+  /**
    * A stored roster matching NEITHER marketplace is the OPERATOR'S OWN — a
    * roster they typed. An upstream value against it is a real disagreement with
    * a human decision, and it must still be shown.

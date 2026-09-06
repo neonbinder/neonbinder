@@ -140,6 +140,7 @@ import {
 import {
   NO_MARKETPLACE_IDS_MESSAGE,
   notifiableSkippedSides,
+  missingSummary,
   resolvableSides,
   rowHasBscFacet,
   slotLabelCanNameRow,
@@ -8007,8 +8008,8 @@ export const fetchCardChecklist = action({
       if (!resolution.bsc.resolvable && !resolution.sportlots.resolvable) {
         console.log(
           `[fetchCardChecklist] no marketplace ids on this path — ` +
-            `bsc_missing=${resolution.bsc.missing.join(",")} ` +
-            `sl_missing=${resolution.sportlots.missing.join(",")}`,
+            `bsc_missing=${missingSummary(resolution.bsc)} ` +
+            `sl_missing=${missingSummary(resolution.sportlots)}`,
         );
         // Nothing to pair. The set's own hand-added cards can still carry
         // unresolved pendingPlayerNames / pendingTeamNames, but resolving those
@@ -8024,12 +8025,12 @@ export const fetchCardChecklist = action({
       }
       if (!resolution.bsc.resolvable) {
         console.log(
-          `[fetchCardChecklist] BSC skipped — missing=${resolution.bsc.missing.join(",")}`,
+          `[fetchCardChecklist] BSC skipped — missing=${missingSummary(resolution.bsc)}`,
         );
       }
       if (!resolution.sportlots.resolvable) {
         console.log(
-          `[fetchCardChecklist] SportLots skipped — missing=${resolution.sportlots.missing.join(",")}`,
+          `[fetchCardChecklist] SportLots skipped — missing=${missingSummary(resolution.sportlots)}`,
         );
       }
 
@@ -11323,8 +11324,38 @@ export const diffChecklistAgainstExisting = query({
        *    the operator's own — a hand-typed roster or name — and an upstream
        *    change against it is a real change they must still see.
        *
-       * ACCEPTED COST, stated plainly: while a disagreement stands, an
-       * upstream change TO THE CONFLICTED FIELD is invisible until the
+       * THE CARD MUST STILL BE CARRYING THE MERGE DEFAULT. This is the
+       * condition that stops the rule swallowing an operator's decision, and it
+       * is not a refinement — without it the suppression is actively wrong.
+       *
+       * The first version derived "the losing side" from the incoming card,
+       * which is only the merge's answer while nobody has touched it. Once the
+       * operator flips a row to SportLots in the pairing dialog, `c.players` IS
+       * SportLots — so "the side the card is not carrying" becomes BSC, and a
+       * row stored as BSC on the previous sync matched it and had its field
+       * dropped. The card then bucketed `identical`, the review was skipped,
+       * and the commit ran with no `applyFields`: the operator watched
+       * themselves choose SportLots and NeonBinder silently kept BSC. A guard
+       * meant to stop the screen re-asking an answered question was instead
+       * discarding the answer.
+       *
+       * So the merge default is read off the CONFLICT (`bsc`, which is what
+       * `players`/`cardName` resolve to whenever BSC is non-empty, and a
+       * conflict requires both sides non-empty), and the incoming value has to
+       * still equal it. A card that does not is one the operator moved, and a
+       * moved card is exactly what the review exists to write.
+       *
+       * That check alone is not the whole story: an operator can also re-pick
+       * BSC deliberately over a stored SportLots roster, which leaves the card
+       * carrying the default and is indistinguishable from here. That case is
+       * settled on the client, which omits the conflict entirely once a row has
+       * been touched (see `PairingConflicts.touched` and `withConflicts` in
+       * CardChecklist). The two guards are independent on purpose: this one
+       * needs no client cooperation, and the client one covers what the server
+       * cannot see.
+       *
+       * ACCEPTED COST, stated plainly: while a disagreement stands UNTOUCHED,
+       * an upstream change TO THE CONFLICTED FIELD is invisible until the
        * operator re-decides it. If SportLots later corrects its roster on a
        * card the operator settled as SportLots, the diff stays quiet — the row
        * still equals a side that is still offered. That is the trade for not
@@ -11336,26 +11367,23 @@ export const diffChecklistAgainstExisting = query({
        */
       const settledConflictFields = new Set<NbContentField>();
       if (c.playersConflict && storedPlayers.length > 0) {
-        const stored = playersKey(storedPlayers);
-        // The side the merge did NOT put on the card. `players` resolves to
-        // BSC whenever BSC has a roster, so this is normally SportLots — but
-        // it is derived rather than assumed, so a merge that changes its
-        // preference cannot silently invert this rule.
-        const losing =
-          playersKey(incomingPlayers) === playersKey(c.playersConflict.bsc)
-            ? c.playersConflict.sportlots
-            : c.playersConflict.bsc;
-        if (stored === playersKey(losing)) {
+        // What the merge produces on this card, by construction: `players`
+        // resolves to BSC whenever BSC has a roster, and `conflictingPlayers`
+        // only speaks when BOTH sides are non-empty. Read off the conflict
+        // rather than off the card, so an operator's choice cannot redefine
+        // which side counts as "the default".
+        const mergeDefault = playersKey(c.playersConflict.bsc);
+        const losing = playersKey(c.playersConflict.sportlots);
+        const untouched = playersKey(incomingPlayers) === mergeDefault;
+        if (untouched && playersKey(storedPlayers) === losing) {
           settledConflictFields.add("playerIds");
         }
       }
       if (c.nameConflict && row.cardName) {
-        const stored = nameKey(row.cardName);
-        const losing =
-          nameKey(c.cardName) === nameKey(c.nameConflict.bsc)
-            ? c.nameConflict.sportlots
-            : c.nameConflict.bsc;
-        if (stored === nameKey(losing)) {
+        const mergeDefault = nameKey(c.nameConflict.bsc);
+        const losing = nameKey(c.nameConflict.sportlots);
+        const untouched = nameKey(c.cardName) === mergeDefault;
+        if (untouched && nameKey(row.cardName) === losing) {
           settledConflictFields.add("cardName");
         }
       }

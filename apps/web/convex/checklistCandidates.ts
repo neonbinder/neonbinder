@@ -6,7 +6,7 @@ import { cardPlatformWireDataValidator } from "./schema";
 import { cardNumberStem } from "../lib/cards/variations";
 // NEO-251 security review: the same two bounds the write path enforces, applied
 // at this boundary too — see `startCandidateBatch`'s handler.
-import { MAX_CARD_PLAYERS } from "./features/cardAttention";
+import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "./features/cardAttention";
 import { MAX_PLAYER_NAME_LENGTH } from "../lib/players/name-limits";
 
 /**
@@ -149,38 +149,71 @@ export const startCandidateBatch = internalMutation({
       .collect();
     for (const row of stale) await ctx.db.delete(row._id);
 
-    // NEO-251 (security review) — bound the rosters before any of them is
-    // stored.
+    // NEO-251 (security review) — bound every name on a candidate before any of
+    // it is stored.
     //
-    // The same two numbers the WRITE path enforces (`MAX_CARD_PLAYERS`,
-    // `MAX_PLAYER_NAME_LENGTH`), applied here because this is a different
-    // boundary from the commit's: a candidate row is written once and then read
-    // back into an operator's browser on every tick of a reactive subscription,
-    // so an adapter regression that turned one subject string into hundreds of
-    // "names" would be paid for on every one of those reads, on every row of a
-    // ~900-card batch — long before anything reached a commit.
+    // The same numbers the WRITE path enforces (`MAX_CARD_PLAYERS`,
+    // `MAX_CARD_TEAMS`, `MAX_PLAYER_NAME_LENGTH`), applied here because this is
+    // a DIFFERENT boundary from the commit's: a candidate row is written once
+    // and then read back into an operator's browser on every tick of a reactive
+    // subscription, so an adapter regression that turned one subject string
+    // into hundreds of "names" would be paid for on every one of those reads,
+    // on every row of a ~900-card batch — long before anything reached a
+    // commit, and whether or not the operator ever pressed Confirm.
+    //
+    // `players` and `teams` are bounded as well as the conflict arrays. They
+    // are the same shape from the same source (an adapter parsing a marketplace
+    // page), they are stored in the same row, and they are read back on the
+    // same subscription — bounding only the conflict would have left the larger
+    // and far more common field open.
     //
     // The whole batch is REFUSED rather than trimmed. A truncated roster is a
     // wrong roster that looks right, and this is the field a listing's players
     // are generated from; a failed fetch is recoverable, silently listing the
     // wrong player is not. Reported by COUNT and by LENGTH, never by echoing a
     // name (the `players.ts` convention) — the card number is NB's own value.
+    const assertNames = (
+      cardNumber: string,
+      names: string[],
+      max: number,
+      /** What is being counted: "players", "bsc players in its roster conflict". */
+      subject: string,
+      /** The noun in the limit phrase and the name message: "player" / "team". */
+      unit: string,
+    ) => {
+      if (names.length > max) {
+        throw new Error(
+          `startCandidateBatch: card #${cardNumber} carries ${names.length} ${subject}, above the ${max}-${unit} limit`,
+        );
+      }
+      for (const name of names) {
+        if (name.length > MAX_PLAYER_NAME_LENGTH) {
+          throw new Error(
+            `startCandidateBatch: card #${cardNumber} carries a ${unit} name of ${name.length} characters; the limit is ${MAX_PLAYER_NAME_LENGTH}.`,
+          );
+        }
+      }
+    };
+
     for (const c of args.candidates) {
+      assertNames(
+        c.cardNumber,
+        c.players ?? [],
+        MAX_CARD_PLAYERS,
+        "players",
+        "player",
+      );
+      assertNames(c.cardNumber, c.teams ?? [], MAX_CARD_TEAMS, "teams", "team");
       const conflict = c.playersConflict;
       if (!conflict) continue;
       for (const side of ["bsc", "sportlots"] as const) {
-        if (conflict[side].length > MAX_CARD_PLAYERS) {
-          throw new Error(
-            `startCandidateBatch: card #${c.cardNumber} carries ${conflict[side].length} ${side} players, above the ${MAX_CARD_PLAYERS}-player limit`,
-          );
-        }
-        for (const name of conflict[side]) {
-          if (name.length > MAX_PLAYER_NAME_LENGTH) {
-            throw new Error(
-              `startCandidateBatch: card #${c.cardNumber} carries a ${side} player name of ${name.length} characters; the limit is ${MAX_PLAYER_NAME_LENGTH}.`,
-            );
-          }
-        }
+        assertNames(
+          c.cardNumber,
+          conflict[side],
+          MAX_CARD_PLAYERS,
+          `${side} players in its roster conflict`,
+          "player",
+        );
       }
     }
 

@@ -167,7 +167,11 @@ describe("startCandidateBatch bounds the roster conflict (NEO-251)", () => {
   const batch = (
     t: ReturnType<typeof convexTest>,
     leafId: Id<"selectorOptions">,
-    playersConflict: { bsc: string[]; sportlots: string[] },
+    candidate: {
+      players?: string[];
+      teams?: string[];
+      playersConflict?: { bsc: string[]; sportlots: string[] };
+    },
   ) =>
     t.mutation(internal.checklistCandidates.startCandidateBatch, {
       selectorOptionId: leafId,
@@ -179,7 +183,7 @@ describe("startCandidateBatch bounds the roster conflict (NEO-251)", () => {
           cardNumber: "1",
           cardName: "Card One",
           platformData: { bsc: { ref: "bsc-1" } },
-          playersConflict,
+          ...candidate,
           bucket: "matched" as const,
           confidence: 1,
         },
@@ -190,7 +194,9 @@ describe("startCandidateBatch bounds the roster conflict (NEO-251)", () => {
     const t = convexTest(schema, modules);
     const { leafId } = await seedTree(t);
     await expect(
-      batch(t, leafId, { bsc: ["Alec Bohm"], sportlots: tooMany }),
+      batch(t, leafId, {
+        playersConflict: { bsc: ["Alec Bohm"], sportlots: tooMany },
+      }),
     ).rejects.toThrow(/20-player limit/);
   });
 
@@ -198,19 +204,65 @@ describe("startCandidateBatch bounds the roster conflict (NEO-251)", () => {
     const t = convexTest(schema, modules);
     const { leafId } = await seedTree(t);
     const call = batch(t, leafId, {
-      bsc: [tooLong],
-      sportlots: ["Alec Bohm"],
+      playersConflict: { bsc: [tooLong], sportlots: ["Alec Bohm"] },
     });
     await expect(call).rejects.toThrow(/121 characters; the limit is 120/);
     await expect(call).rejects.not.toThrow(new RegExp(tooLong));
+  });
+
+  /**
+   * NEO-251 follow-up — the candidate's OWN `players`/`teams`, not only its
+   * conflict arrays.
+   *
+   * They are the same shape from the same source (an adapter parsing a
+   * marketplace page), stored in the same row and read back on the same
+   * subscription — and they are the larger and far more common field. Bounding
+   * only the conflict left the ordinary case open.
+   */
+  test("the candidate's own players are bounded", async () => {
+    const t = convexTest(schema, modules);
+    const { leafId } = await seedTree(t);
+    await expect(
+      batch(t, leafId, { players: tooMany }),
+    ).rejects.toThrow(/20-player limit/);
+  });
+
+  test("the candidate's own teams are bounded", async () => {
+    const t = convexTest(schema, modules);
+    const { leafId } = await seedTree(t);
+    await expect(
+      batch(t, leafId, {
+        teams: Array.from({ length: 21 }, (_, i) => `Team ${i}`),
+      }),
+    ).rejects.toThrow(/-team limit/);
+  });
+
+  test("an over-length player name on the candidate is refused without echoing it", async () => {
+    const t = convexTest(schema, modules);
+    const { leafId } = await seedTree(t);
+    const call = batch(t, leafId, { players: [tooLong] });
+    await expect(call).rejects.toThrow(
+      /player name of 121 characters; the limit is 120/,
+    );
+    await expect(call).rejects.not.toThrow(new RegExp(tooLong));
+  });
+
+  test("an over-length team name on the candidate is refused", async () => {
+    const t = convexTest(schema, modules);
+    const { leafId } = await seedTree(t);
+    await expect(batch(t, leafId, { teams: [tooLong] })).rejects.toThrow(
+      /team name of 121 characters; the limit is 120/,
+    );
   });
 
   test("a legitimate conflict writes, and comes back on the streamed view", async () => {
     const t = convexTest(schema, modules);
     const { leafId } = await seedTree(t);
     await batch(t, leafId, {
-      bsc: ["Mike Yastrzemski"],
-      sportlots: ["Mike Yastrzemski", "Carl Yastrzemski"],
+      playersConflict: {
+        bsc: ["Mike Yastrzemski"],
+        sportlots: ["Mike Yastrzemski", "Carl Yastrzemski"],
+      },
     });
 
     const live = await t
