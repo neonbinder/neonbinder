@@ -7,6 +7,16 @@ import {
   platformServesLevel,
   unsupportedLevelMessage,
 } from "../platformLevels";
+// NEO-251: the parser below refuses against NB's OWN bounds rather than
+// re-declaring them. A number duplicated here would drift from the mutation
+// that actually enforces it, and the adapter would start minting names the
+// player table rejects.
+//
+// The name bound lives in `lib/` rather than in `convex/players.ts` because
+// the pairing modal enforces it too and a browser bundle cannot import
+// `./_generated/server`. See the note in that file.
+import { MAX_PLAYER_NAME_LENGTH } from "../../lib/players/name-limits";
+import { MAX_CARD_PLAYERS } from "../features/cardAttention";
 import { displayVariationLabel } from "../../lib/cards/variations";
 import { api, internal } from "../_generated/api";
 import { getCurrentUserId, requireAdmin } from "../auth";
@@ -1064,9 +1074,11 @@ const SL_ENTITY_PATTERN = /&(?:amp|lt|gt|quot|apos|nbsp|#39|#x27);/gi;
 /**
  * Decode the bounded entity set above, once, without re-scanning.
  *
- * Applied per row before ANY field is derived, so `cardName`, `platformRef`
- * and the player parse all see the same decoded text — an apostrophe in
- * "Peter O&#39;Brien" is a real apostrophe everywhere or nowhere.
+ * Applied per row at the head of the DERIVATION path, so `cardName`, the
+ * attributes, the variation label and the player parse all see the same
+ * decoded text — an apostrophe in "Peter O&#39;Brien" is a real apostrophe in
+ * every derived field or in none. It is NOT applied to `platformRef`, which
+ * is an identity key and must stay byte-identical to what SL served.
  */
 export function decodeSlEntities(text: string): string {
   return text.replace(
@@ -1140,11 +1152,26 @@ const SL_TEAM_ABBREVIATION = /^[A-Z]{2,3}$/;
 // eslint-disable-next-line no-control-regex
 const SL_CONTROL_CHARS = /[\u0000-\u001F\u007F]/;
 
-const SL_MAX_SUBJECTS = 4;
+/**
+ * The parse cap on subjects per card, and its ceiling.
+ *
+ * `MAX_CARD_PLAYERS` (20) is what the DB side of NB actually accepts on a
+ * card. This parser stops far short of it on purpose: past four subjects a
+ * SportLots row is a checklist line, not a card, and guessing names off one
+ * is how nonsense reaches NB's player table. Written as a `Math.min` against
+ * the shared constant rather than as a bare 4 so the relationship cannot
+ * invert: if the DB bound is ever lowered below four, this parser tightens
+ * with it instead of emitting rows the DB will refuse.
+ */
+const SL_MAX_SUBJECTS = Math.min(4, MAX_CARD_PLAYERS);
 /** A person's name, after the team abbreviation is stripped. */
 const SL_MAX_NAME_TOKENS = 4;
 const SL_MIN_NAME_TOKENS = 2;
-const SL_MAX_SUBJECT_LENGTH = 120;
+/**
+ * The same bound `convex/players.ts` refuses an over-length name against, so
+ * this adapter cannot mint a name the player mutations would reject.
+ */
+const SL_MAX_SUBJECT_LENGTH = MAX_PLAYER_NAME_LENGTH;
 
 /**
  * NEO-251 — derive player names from a SportLots description residual.
@@ -1156,6 +1183,10 @@ const SL_MAX_SUBJECT_LENGTH = 120;
  * the product invariant exists to prevent — NB owns players; SportLots is
  * only ever the initial input.
  *
+ * A refusal is SILENT and total: `{}`, with no message, no thrown error and
+ * no log line. There is deliberately nowhere for the rejected text to be
+ * echoed — the caller learns a count of names, never the string that failed.
+ *
  * The rules, in order:
  *
  *  1. Decode the bounded entity set once.
@@ -1164,9 +1195,11 @@ const SL_MAX_SUBJECT_LENGTH = 120;
  *     double-encoded payload cannot slip past a pre-decode check.
  *  3. Split into subjects on `|`, ` / ` and ` & ` (the last two require
  *     surrounding spaces, so "A/B" and "R&B" are one subject, not two).
- *  4. More than 4 subjects → reject. A five-name row is a checklist line.
+ *  4. More than `SL_MAX_SUBJECTS` (4, under NB's own `MAX_CARD_PLAYERS`)
+ *     subjects → reject. A five-name row is a checklist line.
  *  5. Per subject: collapse whitespace, trim; reject if empty, longer than
- *     120 characters, or containing any digit.
+ *     `MAX_PLAYER_NAME_LENGTH` (NB's own bound, 120), or containing any
+ *     digit.
  *  6. Reject on a whole-word stoplist hit.
  *  7. Strip a trailing 2-3 letter ALL-CAPS token when at least 2 tokens
  *     precede it — that is SportLots' team abbreviation, and it is dropped,
@@ -1443,20 +1476,24 @@ export const fetchSportLotsChecklist = action({
 
         while ((match = cardRegex.exec(html)) !== null) {
           const cardNumber = match[1].trim();
-          // NEO-251: decode SL's HTML entities ONCE, here, before anything is
-          // derived from the text. `cardName`, `platformRef` and the player
-          // parse then all agree about what the row actually says — an
-          // apostrophe in "Peter O&#39;Brien" is a real apostrophe in every
-          // field or in none. Doing it later would leave platformRef holding
-          // the encoded form while cardName held the decoded one, and
-          // platformRef is the key that disambiguates SL variation rows.
-          const fullDescription = decodeSlEntities(match[2].trim());
+          // The description EXACTLY as SportLots served it. Never normalised,
+          // never decoded — see the platformRef note below.
+          const fullDescription = match[2].trim();
 
           if (!cardNumber || !fullDescription) continue;
 
+          // NEO-251: decode SL's HTML entities ONCE, at the head of the
+          // DERIVATION path only. Everything downstream of here — cardName,
+          // attributes, the variation label, the player parse — sees the same
+          // decoded text, so an apostrophe in "Peter O&#39;Brien" is a real
+          // apostrophe in every derived field or in none.
+          //
+          // `fullDescription` itself deliberately stays raw. See platformRef.
+          const decodedDescription = decodeSlEntities(fullDescription);
+
           // Strip a leading "#NNN" if the description echoes the card number,
           // then run the token tokenizer to lift attributes / print run.
-          let working = fullDescription;
+          let working = decodedDescription;
           const echo = working.indexOf(`#${cardNumber}`);
           if (echo !== -1) {
             working = working.substring(echo + cardNumber.length + 1).trim();
@@ -1474,7 +1511,7 @@ export const fetchSportLotsChecklist = action({
 
           const { attributes, printRun, residual } =
             tokenizeSlDescription(withoutVariation);
-          const cardName = residual || withoutVariation || fullDescription;
+          const cardName = residual || withoutVariation || decodedDescription;
 
           // NEO-251: player names off the same residual `cardName` is built
           // from. `cardName` itself is untouched — this only ADDS a field.
@@ -1500,6 +1537,18 @@ export const fetchSportLotsChecklist = action({
             // so only the full text disambiguates which SL row this card
             // actually matched. sportlotsRef stays the bare number — that's
             // still the correct key for BSC↔SL reconciliation matching below.
+            //
+            // NEO-251, THE REASON THIS IS `fullDescription` AND NOT THE
+            // DECODED STRING: this ref is an IDENTITY KEY, not display text.
+            // `buildCommitPrelude` matches stored rows on it byte-for-byte
+            // (`existingIdBySlRef` in selectorOptions.ts), and
+            // `fetchCardChecklist` warns about `orphanedSlRefs` for every
+            // stored ref the fetch no longer returns. Decoding it would
+            // change the key of every already-stored row whose description
+            // contains an entity — each one would go orphaned AND be
+            // re-inserted as a new card. A key is compared, never read, so it
+            // gains nothing from decoding and loses the one property it
+            // needs: stability. Decode for display; never for identity.
             platformRef: fullDescription,
             sportlotsRef: cardNumber,
           });

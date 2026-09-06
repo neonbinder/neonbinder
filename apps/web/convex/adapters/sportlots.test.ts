@@ -7,6 +7,8 @@ import {
   parseSlVariationMarker,
   stripBrandPrefixForLabel,
 } from "./sportlots";
+import { MAX_PLAYER_NAME_LENGTH } from "../../lib/players/name-limits";
+import { MAX_CARD_PLAYERS } from "../features/cardAttention";
 
 /**
  * NEO-189 — SportLots variation markers.
@@ -349,6 +351,57 @@ describe("parseSlSubjects", () => {
       expect(parseSlSubjects("&lt;b&gt;Mike&lt;/b&gt; Trout")).toEqual({});
     });
 
+    test("a numeric-entity payload is left literal by the closed decoder", () => {
+      // `&#60;` / `&#62;` are NOT in the entity set, so they are never
+      // resolved into `<`/`>`. They survive as literal text, whose `&`, `#`
+      // and `;` then fail the per-token allowlist. Two independent reasons
+      // this yields nothing, which is the point of a closed set.
+      expect(parseSlSubjects("&#60;script&#62; Mike Trout")).toEqual({});
+      expect(parseSlSubjects("&#x3C;script&#x3E; Mike Trout")).toEqual({});
+    });
+
+    test("invisible Unicode inside a token is refused", () => {
+      // The per-token rule is an ALLOWLIST (`\p{Lu}` then `[\p{L}'\-.]`), so
+      // anything that is not a letter, apostrophe, hyphen or period fails by
+      // construction — no blocklist to keep current. These are the
+      // characters that would let two visually identical names be different
+      // strings, or reverse how a name renders in a listing title.
+      //
+      // U+202E RIGHT-TO-LEFT OVERRIDE:
+      expect(parseSlSubjects("Mike Tro\u202Eut")).toEqual({});
+      // U+200D ZERO WIDTH JOINER and U+200B ZERO WIDTH SPACE:
+      expect(parseSlSubjects("Mike Tr\u200Dout")).toEqual({});
+      expect(parseSlSubjects("Mike Tr\u200Bout")).toEqual({});
+      // U+00AD SOFT HYPHEN — a format char, not the `-` the rule allows:
+      expect(parseSlSubjects("Mike Tr\u00ADout")).toEqual({});
+      // The same name without the invisible character is accepted, so these
+      // assertions are about the character and not about the name.
+      expect(parseSlSubjects("Mike Trout")).toEqual({ players: ["Mike Trout"] });
+    });
+
+    test("NBSP is decoded to a real space and then treated as a separator", () => {
+      // `&nbsp;` is in the closed set. Decoded, it becomes an ordinary space,
+      // so "Mike&nbsp;Trout" is a normal two-token name rather than one
+      // 11-character token that would fail the allowlist.
+      expect(parseSlSubjects("Mike&nbsp;Trout")).toEqual({
+        players: ["Mike Trout"],
+      });
+      // A RAW U+00A0 reaches the same place by a different route: JS `\s`
+      // matches it, so the whitespace collapse turns it into an ordinary
+      // space before tokenising. Encoded or literal, the outcome is one
+      // clean name — and critically, NO emitted name can contain an NBSP,
+      // because the collapse runs before anything is joined back together.
+      const raw = parseSlSubjects("Mike\u00A0Trout");
+      expect(raw).toEqual({ players: ["Mike Trout"] });
+      expect(raw.players![0]).not.toMatch(/\u00A0/);
+
+      // Contrast with the zero-width characters above, which `\s` does NOT
+      // match: those stay inside the token and are refused by the allowlist.
+      // The two behaviours are consistent — no invisible character ever
+      // survives into an emitted name; it is either normalised or refused.
+      expect(parseSlSubjects("Mike\u200BTrout")).toEqual({});
+    });
+
     test("a double-encoded payload is caught by the same post-decode guard", () => {
       // Decoding runs in ONE pass and does not re-scan its own output, so
       // this yields the literal text "&lt;script&gt;". Nothing executes and
@@ -380,6 +433,40 @@ describe("parseSlSubjects", () => {
         expect(name).not.toMatch(/\s{2,}/);
         // eslint-disable-next-line no-control-regex
         expect(name).not.toMatch(/[\u0000-\u001F\u007F<>]/);
+      }
+    });
+
+    test("the parse caps sit under NB's own bounds, not beside them", () => {
+      // The parser refuses against the SAME numbers the DB enforces
+      // (`players.MAX_PLAYER_NAME_LENGTH`, `cardAttention.MAX_CARD_PLAYERS`),
+      // so it cannot mint a name or a row count that the mutations
+      // downstream would then reject. Asserted rather than assumed, because
+      // the failure mode of a drifted copy is a commit that half-succeeds.
+      expect(MAX_PLAYER_NAME_LENGTH).toBe(120);
+      expect(parseSlSubjects(`Mike ${"A".repeat(MAX_PLAYER_NAME_LENGTH - 5)}`))
+        .toEqual({ players: [`Mike ${"A".repeat(MAX_PLAYER_NAME_LENGTH - 5)}`] });
+      expect(parseSlSubjects(`Mike ${"A".repeat(MAX_PLAYER_NAME_LENGTH - 4)}`))
+        .toEqual({});
+
+      // The subject cap is deliberately far tighter than the DB ceiling.
+      expect(MAX_CARD_PLAYERS).toBeGreaterThanOrEqual(4);
+    });
+
+    test("a refusal returns nothing at all — it never echoes the input", () => {
+      // The refusal channel is `{}`: no message, no error, no log line, so
+      // there is nowhere for an attacker-controlled string to be reflected
+      // back into a client or a log. Asserting the SHAPE is what keeps a
+      // future "helpful" `{ reason: ... }` from being added without thought.
+      const refusals = [
+        "<script>alert(1)</script>",
+        "Checklist",
+        `Mike ${"A".repeat(400)}`,
+        "Mike\u202ETrout",
+      ];
+      for (const input of refusals) {
+        const result = parseSlSubjects(input);
+        expect(Object.keys(result)).toEqual([]);
+        expect(JSON.stringify(result)).toBe("{}");
       }
     });
 
@@ -483,13 +570,29 @@ describe("parseSlSubjects over a recorded listcards.tpl page", () => {
     expect(players("Yankee Stadium")).toBeUndefined();
   });
 
-  test("the fixture carries no session or account markup", () => {
-    // The scrub is part of the fixture's contract, not a one-time cleanup.
-    // The provenance comment NAMES the things that were removed, so it is
-    // stripped before the check — otherwise the note describing the scrub
-    // would be the only thing failing it.
+  test("the fixture is a minimal row table, not a page capture", () => {
+    // This is the fixture's contract, not a one-time cleanup. Reaching
+    // `listcards.tpl` needs an authenticated seller session, so a real
+    // response carries account nav, the seller's bin and pricing context,
+    // hidden form inputs and session-bearing URLs — and this repo is PUBLIC.
+    // The header comment NAMES those things in explaining why they are
+    // absent, so it is stripped before the check; otherwise the note would be
+    // the only thing failing it.
     const markup = html.replace(/<!--[\s\S]*?-->/g, "");
-    expect(markup).not.toMatch(/Cookie|sessionid|PHPSESSID|selset|login\.tpl/i);
-    expect(markup).not.toMatch(/<(?:script|form|input|a)\b/i);
+
+    // Allowlist the tag set rather than blocklisting bad ones — a blocklist
+    // silently permits whatever a future paste introduces.
+    const tags = new Set(
+      [...markup.matchAll(/<\/?([a-z][a-z0-9]*)\b/gi)].map((m) =>
+        m[1].toLowerCase(),
+      ),
+    );
+    expect([...tags].sort()).toEqual(["table", "td", "tr"]);
+
+    expect(markup).not.toMatch(
+      /Cookie|sessionid|PHPSESSID|selset|login\.tpl|logout|password/i,
+    );
+    // No attributes beyond the two cell classes the parser keys on.
+    expect(markup).not.toMatch(/\b(?:href|src|action|value|name|id)\s*=/i);
   });
 });

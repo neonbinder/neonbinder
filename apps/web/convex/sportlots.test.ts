@@ -311,17 +311,68 @@ describe("fetchSportLotsChecklist platformRef carries the full per-row descripti
     // delimiter and all. This ticket only ADDS a field.
     expect(pair.cardName).toBe("Alec Bohm|Spencer Howard");
 
-    // Entities are decoded ONCE per row, before anything derives from the
-    // text, so cardName and platformRef agree with the parsed name.
+    // Entities are decoded at the head of the DERIVATION path, so cardName
+    // and players are decoded — but platformRef is NOT. See the dedicated
+    // test below for why that asymmetry is the whole point.
     expect(apostrophe.players).toEqual(["Peter O'Brien"]);
     expect(apostrophe.cardName).toBe("Peter O'Brien");
-    expect(apostrophe.platformRef).toBe("Peter O'Brien");
+    expect(apostrophe.platformRef).toBe("Peter O&#39;Brien");
 
     // Non-people yield nothing rather than a guess.
     expect(checklist.players).toBeUndefined();
     expect(checklist.cardName).toBe("Checklist");
     expect(stadium.players).toBeUndefined();
     expect(stadium.cardName).toBe("Yankee Stadium");
+  });
+
+  test("NEO-251 — platformRef stays BYTE-IDENTICAL to what SportLots served, entities and all", async () => {
+    // The bug this pins, found in the NEO-251 security audit. The first cut
+    // decoded the description before ANY field derived from it, platformRef
+    // included. But platformRef is an IDENTITY KEY, not display text:
+    //
+    //   * buildCommitPrelude matches stored rows on it byte-for-byte
+    //     (`existingIdBySlRef`), and
+    //   * fetchCardChecklist warns on `orphanedSlRefs` for every stored ref
+    //     the fetch stops returning.
+    //
+    // So decoding it would have re-keyed every already-stored row whose
+    // description contains an entity: each one reported orphaned AND
+    // re-inserted as a brand new card, across a whole set, on the next sync.
+    // Decode for display; never for identity.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const raw = "Tom &amp; Jerry Sub&#39;Set";
+    const html = `
+      <table>
+        <tr><td class="smallleft">7</td><td class="smallleft">${raw}</td></tr>
+      </table>
+    `;
+    vi.stubGlobal("fetch", makeListcardsFetch({ html, calls: [] }));
+
+    const result = await asAdmin.action(
+      api.adapters.sportlots.fetchSportLotsChecklist,
+      {
+        parentFilters: { sport: "Baseball", year: "2026", setName: "Topps" },
+        platformFilters: { variantType: "12345" },
+      },
+    );
+
+    expect(result.success).toBe(true);
+    const [row] = result.cards;
+
+    // The stored key is the raw served bytes — no decoding, no
+    // normalisation, no trimming beyond the cell trim.
+    expect(row.platformRef).toBe(raw);
+    expect(row.platformRef).toContain("&amp;");
+    expect(row.platformRef).toContain("&#39;");
+
+    // …while the DERIVED, human-facing field is decoded.
+    expect(row.cardName).toBe("Tom & Jerry Sub'Set");
+
+    // And this particular row yields no players, which is incidental to the
+    // point above but worth pinning: " & " splits it into subjects that do
+    // not survive the token rules.
+    expect(row.players).toBeUndefined();
   });
 });
 
