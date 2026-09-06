@@ -92,13 +92,22 @@ tags:
 # scroller that Maestro cannot drive (see checklist-pairing-dialog-cancel). The
 # footer is a flex sibling OUTSIDE that scroller, so Confirm is always on screen.
 #
-# Waiting for the button's TEXT to read "Confirm" (not "Loading…") is how this
-# waits out the candidate stream — the accessible name is the same either way,
-# so only the text can express it.
+# ⚠️ WAIT FOR THE FETCH, NOT THE DIALOG (NEO-195; enforced by
+# scripts/maestro-pairing-sync.test.mjs). Since the fetch STREAMS,
+# `Match Cards` becoming visible means the FIRST candidates arrived (~6s), not
+# that the fetch resolved (~40s on this set). Two things break if a flow taps
+# Confirm at that point: Confirm is gated on `isStreaming` and `handleConfirm`
+# returns early, so the tap silently does nothing and the failure surfaces on a
+# later step that blames the wrong thing; and the row counts are still moving.
+#
+# Confirm's own TEXT is the sync point, because it is what a person would look
+# at: "Loading…" while streaming, "Confirm" once the action resolves. The
+# accessible name is "Confirm card matches" in both states, so only the text can
+# express the difference — which is why this is a separate wait from the tap
+# below rather than one combined selector.
 - extendedWaitUntil:
     visible:
-      id: "Confirm card matches"
-      text: "Confirm"
+      text: "^Confirm$"
     timeout: 120000
 - tapOn:
     id: "Confirm card matches"
