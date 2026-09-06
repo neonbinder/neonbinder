@@ -1,4 +1,4 @@
-import { useId, useMemo, useRef, type ReactNode, type Ref } from "react";
+import { useId, useMemo, useRef, useState, type ReactNode, type Ref } from "react";
 import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -240,6 +240,8 @@ export default function NewTeamForm({
 
   const pick = (patch: Partial<NewTeamDraft>) => {
     if (disabled) return;
+    // Choosing does not close the list — see `leagueListOpen`.
+    setLeagueListOpen(true);
     // The two league answers are alternatives, so setting either clears the
     // other. Without this a draft could carry an id AND a name, and which one
     // the server honoured would depend on its resolution order rather than on
@@ -302,7 +304,46 @@ export default function NewTeamForm({
     choose: () => pick({ leagueId: null }),
   });
 
-  const checkedPillIndex = leaguePills.findIndex((p) => p.checked);
+  const answeredIndex = leaguePills.findIndex((p) => p.checked);
+
+  /**
+   * ── Why the whole league list is not on screen by default ────────────────
+   *
+   * CI run 8: this picker measured 250px on the 1024x629 viewport, which is
+   * what pushed the review wizard's primary action off the bottom of its
+   * dialog. It renders one pill per league in the sport, `leagues` is global,
+   * and nothing resets it between CI runs — so it grows every run, and on a
+   * real deployment it grows as the league table fills with MiLB and defunct
+   * franchises. A picker whose height is a function of a table that only ever
+   * gets bigger is not a picker, it is a leak.
+   *
+   * When there is already a standing answer — the enrichment's suggestion, or a
+   * league the operator picked — the list collapses to THAT one pill plus a
+   * "Change league" disclosure: ~24px instead of 250px, and it says the thing
+   * the operator actually needs to read, which is which league this team is
+   * about to be filed under. With no standing answer there is nothing to
+   * summarise, so the list opens as itself.
+   *
+   * Expanded, it is bounded at `max-h-40` and scrolls. That bound is the part
+   * that must not be removed: the disclosure is a nicety, the height cap is
+   * what stops a growing table from reaching the footer again.
+   */
+  /**
+   * `null` = follow the default (open only while there is nothing to
+   * summarise); `true`/`false` = the operator said so.
+   *
+   * A plain boolean was wrong in a way a test caught immediately: with no
+   * standing answer the list is open, and the moment an arrow key or a click
+   * picked a league there WAS one — so the list collapsed out from under an
+   * operator who was still choosing. Picking therefore pins it open, and only
+   * the disclosure's own "Done" closes it.
+   */
+  const [leagueListOpen, setLeagueListOpen] = useState<boolean | null>(null);
+  const collapsible = answeredIndex !== -1;
+  const listOpen = leagueListOpen ?? !collapsible;
+  const visiblePills = listOpen ? leaguePills : [leaguePills[answeredIndex]];
+
+  const checkedPillIndex = visiblePills.findIndex((p) => p.checked);
   /** Roving tabindex: the checked pill is the group's single Tab stop, and
    *  when nothing is checked yet the first pill is — matching a native radio
    *  group with no initial selection. */
@@ -339,8 +380,11 @@ export default function NewTeamForm({
     // group the operator is working in.
     e.preventDefault();
     const from = checkedPillIndex === -1 ? 0 : checkedPillIndex;
-    leaguePills[
-      (from + step + leaguePills.length) % leaguePills.length
+    // Over the VISIBLE pills: collapsed, there is one option and the arrows
+    // have nothing to move between, which is the honest behaviour rather than
+    // silently changing a league the operator cannot see.
+    visiblePills[
+      (from + step + visiblePills.length) % visiblePills.length
     ].choose();
     refocusCheckedPill();
   };
@@ -402,16 +446,21 @@ export default function NewTeamForm({
         the name has no place in it.
       </p>
 
+      <div className="flex flex-wrap items-center gap-1.5">
       <div
         ref={leagueGroupRef}
         role="radiogroup"
         {...(leagueGroupId ? { id: leagueGroupId } : {})}
         aria-label="New team league"
-        className="flex flex-wrap items-center gap-1.5"
+        // `max-h-40 overflow-y-auto` only while open — see `leagueListOpen`.
+        // Collapsed it holds one pill and a cap would be noise.
+        className={`flex flex-wrap items-center gap-1.5${
+          listOpen ? " max-h-40 overflow-y-auto" : ""
+        }`}
         onKeyDown={onLeagueKeyDown}
       >
         <span className="text-xs text-gray-400 mr-1">League</span>
-        {leaguePills.map((pill, idx) => (
+        {visiblePills.map((pill, idx) => (
           /* The "Create <name>" pill, when there is one, is a league nothing in
              this sport answers to yet — worded as the commitment it is, because
              pressing it creates a league as well as a team. */
@@ -423,6 +472,21 @@ export default function NewTeamForm({
             // Roving tabindex — see `tabStopIndex`. One Tab stop for the whole
             // group; the arrow keys move within it.
             tabIndex={idx === tabStopIndex ? 0 : -1}
+            /*
+              a11y (SC 4.1.2 Name, Role, Value) — the SET, not the slice of it
+              on screen.
+
+              Collapsed, this group renders exactly one `role="radio"`, and a
+              screen reader derives set position from the DOM: it would announce
+              "Australian Baseball League, radio button, checked, 1 of 1" and a
+              screen-reader operator would reasonably conclude the sport has one
+              league. `aria-posinset`/`aria-setsize` are counted against the FULL
+              `leaguePills` list in both states, so the announcement is "3 of 41"
+              either way and the "Change league" disclosure beside it reads as
+              the way to the other 40 rather than as a puzzle.
+            */
+            aria-posinset={(listOpen ? idx : answeredIndex) + 1}
+            aria-setsize={leaguePills.length}
             disabled={disabled}
             onClick={() => pill.choose()}
             className={pillClass(pill.checked)}
@@ -437,6 +501,40 @@ export default function NewTeamForm({
             Loading leagues…
           </span>
         )}
+      </div>
+      {collapsible && (
+        /* Outside the radiogroup on purpose: it is not one of the options, and
+           a non-radio child of a radiogroup is a shape assistive tech cannot
+           read. `aria-expanded` names the state; the label names the action. */
+        <button
+          type="button"
+          aria-expanded={listOpen}
+          aria-controls={leagueGroupId}
+          disabled={disabled}
+          onClick={() => {
+            const next = !listOpen;
+            setLeagueListOpen(next);
+            // Opening a scrollable list on a league that may be well down it —
+            // bring the current answer into view rather than making them hunt.
+            if (next) {
+              requestAnimationFrame(() => {
+                leagueGroupRef.current
+                  ?.querySelector<HTMLElement>('[role="radio"][aria-checked="true"]')
+                  ?.scrollIntoView({ block: "nearest" });
+              });
+            }
+          }}
+          /* a11y (SC 2.5.8 Target Size): a `text-xs` underline button with no
+             vertical padding is 16px tall — the exact shape this project has
+             already fixed twice (SyncDoneNotice's Dismiss, the sync-review
+             pills). `py-2 -my-2` gives it a 32px hit area and hands the padding
+             back to the layout, so the collapsed picker is still one pill high
+             and the CI-run-8 height win is untouched. */
+          className="py-2 -my-2 text-xs text-gray-400 underline decoration-dotted hover:text-[#00D558] focus-visible:text-[#00D558] focus:outline-none disabled:opacity-50"
+        >
+          {listOpen ? "Done" : "Change league"}
+        </button>
+      )}
       </div>
 
       {/* The whole point of three fields: the operator reads the row they are

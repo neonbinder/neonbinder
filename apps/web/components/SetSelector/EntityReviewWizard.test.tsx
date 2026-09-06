@@ -356,10 +356,12 @@ function footerStatusText(): string {
   if (!overlay) throw new Error("wizard overlay not found");
   const panel = overlay.firstElementChild as HTMLElement;
   const footer = panel.children[2] as HTMLElement;
-  const status = footer.lastElementChild as HTMLElement;
-  if (status.getAttribute("role") !== "status") {
-    throw new Error("footer's last child is not the status row");
-  }
+  // NEO-236 (CI run 8): row 2 is a flex row now — the live region is a <p>
+  // inside it, with the bulk links beside it and OUTSIDE it, so a count ticking
+  // does not re-announce the buttons.
+  const row2 = footer.lastElementChild as HTMLElement;
+  const status = row2.querySelector('[role="status"]');
+  if (!status) throw new Error("row 2 has no live region");
   return (status.textContent ?? "").trim();
 }
 
@@ -3397,7 +3399,16 @@ describe("EntityReviewWizard — footer layout", () => {
     />
   );
 
-  /** [row 1, row 2] — the footer's shape IS the contract. */
+  /**
+   * [row 1, row 2] — the footer's shape IS the contract.
+   *
+   * NEO-236 (CI run 8) moved two things. The per-row DECISION controls came up
+   * out of the scrolling body into row 1, because the body had grown tall
+   * enough to render the primary action at y=620 on a 1024x629 viewport —
+   * below the footer and below the dialog. And the BULK links went down into
+   * row 2, because row 1 could not hold both at the dialog's 672px width and
+   * row 2 is where NEO-110 established variable-length things live.
+   */
   function footerRows(): { actions: HTMLElement; status: HTMLElement } {
     const overlay = document.querySelector('[role="dialog"]');
     if (!overlay) throw new Error("wizard overlay not found");
@@ -3417,18 +3428,19 @@ describe("EntityReviewWizard — footer layout", () => {
     renderWizard();
 
     const { status } = footerRows();
-    expect(status.getAttribute("role")).toBe("status");
-    expect(status.getAttribute("aria-live")).toBe("polite");
-    expect(status.textContent?.trim()).toBe("");
-    // `min-h-4` is one text-xs line — the reservation itself.
-    expect(status.className).toContain("min-h-4");
+    const live = status.querySelector('[role="status"]')!;
+    expect(live.getAttribute("aria-live")).toBe("polite");
+    expect(live.textContent?.trim()).toBe("");
+    // `min-h-6` is one text-xs line plus the links' target height — the
+    // reservation itself, which is what keeps row 1 from moving.
+    expect(status.className).toContain("min-h-6");
   });
 
   it("keeps the status row present on the final step too", () => {
     currentRows = [makeRow({ decision: { action: "create" } })];
     renderWizard();
 
-    expect(footerRows().status.getAttribute("role")).toBe("status");
+    expect(footerRows().status.querySelector('[role="status"]')).toBeTruthy();
     expect(footerStatusText()).toBe("");
   });
 
@@ -3445,8 +3457,12 @@ describe("EntityReviewWizard — footer layout", () => {
     const { actions, status } = footerRows();
     const bulk = screen.getByRole("button", { name: "Add remaining players as new (5)" });
 
-    expect(actions.contains(bulk)).toBe(true);
-    expect(status.contains(bulk)).toBe(false);
+    // The bulk links live in row 2 now, BESIDE the live region rather than
+    // inside it: a button inside a live region is re-announced every time the
+    // count next to it ticks.
+    expect(status.contains(bulk)).toBe(true);
+    expect(actions.contains(bulk)).toBe(false);
+    expect(status.querySelector('[role="status"]')!.contains(bulk)).toBe(false);
     expect(bulk.textContent).toBe("Add remaining players as new (5)");
     expect(footerStatusText()).toBe("4 still looking up — wait or skip");
   });
@@ -3455,13 +3471,16 @@ describe("EntityReviewWizard — footer layout", () => {
     currentRows = [makeRow({ status: "ready" }), makeRow({ status: "pending" })];
     renderWizard();
 
-    const { actions } = footerRows();
-    const left = actions.firstElementChild as HTMLElement;
-    expect(left.className).toContain("whitespace-nowrap");
-    // The buttons never yield; the links are what clips if it ever comes to it.
-    const right = actions.lastElementChild as HTMLElement;
-    expect(right.className).toContain("shrink-0");
-    expect(left.className).toContain("min-w-0");
+    const { status } = footerRows();
+    const bulk = screen.getByRole("button", {
+      name: "Add remaining players as new (2)",
+    }).parentElement as HTMLElement;
+    // The links never yield; the status text beside them is what gives way.
+    expect(bulk.className).toContain("whitespace-nowrap");
+    expect(bulk.className).toContain("shrink-0");
+    const live = status.querySelector('[role="status"]') as HTMLElement;
+    expect(live.className).toContain("min-w-0");
+    expect(live.className).toContain("truncate");
   });
 
   it("aligns the buttons to row 1, not across both rows", () => {
@@ -3519,6 +3538,8 @@ describe("EntityReviewWizard — footer layout", () => {
     const stop = screen.getByRole("button", { name: "Stop" });
     expect(status.contains(stop)).toBe(true);
     expect(actions.contains(stop)).toBe(false);
+    // Beside the message, not inside the live region that carries it.
+    expect(status.querySelector('[role="status"]')!.contains(stop)).toBe(false);
     // a11y 2.5.8: the p-2 -m-2 target growth, which cannot change row height.
     expect(stop.className).toContain("p-2");
     expect(stop.className).toContain("-m-2");
@@ -4690,5 +4711,151 @@ describe("EntityReviewWizard — the bulk create is about players", () => {
     expect(screen.queryByText(/as their lookups finish/)).toBeNull();
     // …but the operator is still told what the batch is waiting on.
     expect(screen.getByText(/1 still looking up — wait or skip/)).toBeTruthy();
+  });
+});
+
+// ===========================================================================
+// NEO-236 / CI run 8 — the decision can never scroll away
+//
+// The per-row controls were the LAST elements of the scrolling body, and on the
+// 1024x629 CI viewport the body had grown tall enough (Wikidata lines, the
+// Location/Name pair, a league picker rendering every league in the sport) that
+// "Add as New Team" rendered at y=620-652 — below the footer and below the
+// dialog. Maestro cannot scroll an inner overflow box, and an operator should
+// never have to hunt for the button they have just decided to press.
+//
+// Asserted structurally rather than by geometry: jsdom has no layout, so the
+// contract worth pinning is "these live in the fixed footer, not in the
+// scrolling body", which is what actually makes the position impossible.
+// ===========================================================================
+
+describe("EntityReviewWizard — the decision lives in the fixed footer", () => {
+  /** The scrolling body — the element the overflow is on. */
+  function bodyEl(): HTMLElement {
+    const overlay = document.querySelector('[role="dialog"]');
+    if (!overlay) throw new Error("wizard overlay not found");
+    const panel = overlay.firstElementChild as HTMLElement;
+    const body = panel.children[1] as HTMLElement;
+    if (!body.className.includes("overflow-y-auto")) {
+      throw new Error("panel's second child is not the scrolling body");
+    }
+    return body;
+  }
+
+  function footerEl(): HTMLElement {
+    const overlay = document.querySelector('[role="dialog"]');
+    if (!overlay) throw new Error("wizard overlay not found");
+    const panel = overlay.firstElementChild as HTMLElement;
+    const footer = panel.children[2] as HTMLElement;
+    if (!footer.className.includes("shrink-0")) {
+      throw new Error("panel's third child is not the fixed footer");
+    }
+    return footer;
+  }
+
+  const DECISION_NAMES = [
+    "Add as New Player",
+    "Link to existing instead",
+    "Skip Mike Trout — not a person",
+  ];
+
+  it("renders every per-row decision control in the footer, not the body", () => {
+    currentRows = [
+      makeRow({ kind: "player", name: "Mike Trout", status: "ready" }),
+      makeRow({ kind: "player", name: "Shohei Ohtani", status: "ready" }),
+    ];
+    renderWizard();
+
+    const body = bodyEl();
+    const footer = footerEl();
+    for (const name of DECISION_NAMES) {
+      const control = screen.getByRole("button", { name });
+      expect(footer.contains(control)).toBe(true);
+      expect(body.contains(control)).toBe(false);
+    }
+  });
+
+  it("keeps the ROW's content in the body — only the decision moves", () => {
+    // The split is the point: a long career list still scrolls, and the button
+    // that acts on it does not go with it.
+    currentRows = [
+      makeRow({
+        kind: "player",
+        name: "Mike Trout",
+        status: "ready",
+        enrichment: { careerTeams: [{ name: "Los Angeles Angels", fromYear: 2011 }] },
+      }),
+    ];
+    renderWizard();
+
+    expect(bodyEl().contains(screen.getByRole("heading", { name: "Mike Trout" }))).toBe(true);
+    expect(
+      bodyEl().contains(
+        screen.getByRole("checkbox", { name: "Include career team Los Angeles Angels" }),
+      ),
+    ).toBe(true);
+  });
+
+  it("puts a TEAM row's primary and its New Team form on opposite sides of the fold", () => {
+    currentRows = [makeRow({ kind: "team", name: "San Diego Padres", status: "ready" })];
+    renderWizard();
+
+    // The form scrolls…
+    expect(
+      bodyEl().contains(screen.getByLabelText("New team name") as HTMLElement),
+    ).toBe(true);
+    // …the decision does not.
+    expect(
+      footerEl().contains(screen.getByRole("button", { name: "Add as New Team" })),
+    ).toBe(true);
+  });
+
+  it("carries Back into the footer too, once there is somewhere to go back to", async () => {
+    const first = makeRow({ kind: "player", name: "Mike Trout", status: "ready" });
+    const second = makeRow({ kind: "player", name: "Shohei Ohtani", status: "ready" });
+    currentRows = [first, second];
+    const { rerender } = renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Player" }));
+    await waitFor(() => expect(mockRecordDecision).toHaveBeenCalledTimes(1));
+
+    // `backTargetId` reads the DECISION off the row, so the reactive batch has
+    // to carry it — the mutation mock does not write to `currentRows`.
+    currentRows = [{ ...first, decision: { action: "create" } }, second];
+    rerenderWizard(rerender);
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Back to previous decision" })).toBeTruthy(),
+    );
+    expect(
+      footerEl().contains(screen.getByRole("button", { name: "Back to previous decision" })),
+    ).toBe(true);
+  });
+
+  it("shows no decision controls when there is no row to decide", () => {
+    currentRows = [makeRow({ decision: { action: "create" } })];
+    renderWizard();
+
+    expect(screen.queryByRole("button", { name: /^Add as New/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Link to existing instead" })).toBeNull();
+    // Confirm & Save takes the same footer slot — they are mutually exclusive
+    // by construction, which is what keeps row 1 to one line.
+    expect(document.getElementById("entity-review-confirm-save")).toBeTruthy();
+  });
+
+  it("bounds the league picker's height so a growing league table cannot reach the footer", () => {
+    // `leagues` is global and never reset between CI runs, so an unbounded list
+    // grows every run. The cap is the part that must not be removed.
+    currentRows = [makeRow({ kind: "team", name: "San Diego Padres", status: "ready" })];
+    currentLeagues = Array.from({ length: 20 }, (_, i) => ({
+      _id: `lg-${i}`,
+      name: `League ${i}`,
+    }));
+    renderWizard();
+
+    const group = screen.getByRole("radiogroup", { name: "New team league" });
+    expect(group.getAttribute("id")).toBe("entity-review-team-league");
+    expect(group.className).toContain("max-h-40");
+    expect(group.className).toContain("overflow-y-auto");
   });
 });

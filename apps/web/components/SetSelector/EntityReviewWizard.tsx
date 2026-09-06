@@ -1519,6 +1519,178 @@ export default function EntityReviewWizard({
     ["Skipped as not a name", outcome.skipped],
   ];
 
+  /**
+   * ── The decision for the row on screen, rendered in the FIXED FOOTER ──────
+   *
+   * CI run 8 caught these at y=620-652 on the 1024x629 CI viewport — below the
+   * footer and below the dialog — because they were the last elements of a
+   * scrolling body whose content had grown (the Wikidata lines, the
+   * Location/Name pair, and a league picker rendering every league in the
+   * sport). Maestro cannot scroll an inner overflow box, and an operator should
+   * never have to hunt for the button they have just decided to press.
+   *
+   * So the decision lives where NEO-110 already proved things must live when
+   * they may not move. The row's CONTENT still scrolls — that is what a body is
+   * for — but the decision about it does not.
+   *
+   * Null in every state with no live row: nothing presented, a row being
+   * reviewed read-only (its own panel carries "Change decision" / "Next"), the
+   * link sub-panel open (it owns the screen and its own Cancel), and an expired
+   * batch. That is also what makes this mutually exclusive with "Confirm &
+   * Save" — a presented row means not every row is decided.
+   *
+   * Every accessible name is unchanged from when these sat in the body:
+   * `Add as New {Player|Team}`, `Link to Existing…`, `Skip … — not a …` and
+   * `Back` are each an E2E contract and a screen reader's only handle.
+   */
+  const decisionControls =
+    !expired && current && !reviewingDecided && !linkingOpen ? (
+      /*
+        a11y (SC 2.4.3 / 2.4.6 / 4.1.2) — NAMED, because the decision no longer
+        sits under the heading it is about.
+
+        In the body these controls were the next thing after
+        `<h3>New Team: Sydney Blue Sox</h3>`, so "Add as New Team" needed no
+        further context: a screen reader had just read the name. From the footer
+        they are separated from that heading by the whole scrolling body, and a
+        keyboard operator arriving by Tab (or a virtual cursor arriving from the
+        bottom) hears "Add as New Team, button" with nothing saying WHICH name.
+        The accessible names themselves are an E2E contract and must not move,
+        so the row identity goes on the group instead — announced on entry,
+        exactly like the read-only `Decision for {name}` panel this replaces
+        when a decided row is being read back. The two are mutually exclusive by
+        construction, so the shared phrasing can never be ambiguous.
+      */
+      <div
+        role="group"
+        aria-label={`Decision for ${current.name}`}
+        className="flex flex-wrap items-center gap-3"
+        aria-busy={busy}
+      >
+        {/*
+          ONE primary button element, one JSX slot, both states.
+
+          `nearMatches` resolves asynchronously while this row is on screen, so
+          `showExactHierarchy` can flip UNDER a keyboard user who has already
+          tabbed to the primary. A ternary that swaps WHICH element renders here
+          unmounts the focused node and focus falls to <body> (WCAG 2.2 SC
+          3.2.2 / 2.4.3). Label, handler and variant are props on a single
+          element instead.
+
+          NEO-221: `aria-disabled`, never native `disabled`. A disabled button
+          leaves the tab order, so a keyboard operator who tabbed here would be
+          thrown out of the footer for the length of a round-trip; NeonButton
+          already paints aria-disabled the same way.
+        */}
+        <NeonButton
+          secondary={!showExactHierarchy && hasCloseOnly}
+          style={
+            !showExactHierarchy && hasCloseOnly ? { color: "#000000" } : undefined
+          }
+          aria-disabled={
+            busy || (createBlocked !== null && !(showExactHierarchy && exactMatch))
+              ? true
+              : undefined
+          }
+          aria-describedby={createBlocked ? createBlockedId : undefined}
+          aria-label={
+            showExactHierarchy && exactMatch
+              ? `Link to ${exactMatch.name}`
+              : `Add as New ${kindLabel(current.kind)}`
+          }
+          onClick={() => {
+            if (busy) return;
+            if (showExactHierarchy && exactMatch) {
+              void handleLink(
+                current._id,
+                current.kind,
+                exactMatch._id as Id<"players"> | Id<"teams">,
+              );
+              return;
+            }
+            if (createBlocked) return;
+            void handleCreate(current._id, buildCreatePayload());
+          }}
+        >
+          {showExactHierarchy && exactMatch
+            ? `Link to ${exactMatch.name}`
+            : `Add as New ${kindLabel(current.kind)}`}
+        </NeonButton>
+
+        {/*
+          Demoted to a text link when an exact match exists — and the visible
+          text and the accessible name are THE SAME STRING (WCAG 2.2 SC 2.5.3).
+
+          a11y (SC 2.5.8 Target Size) — `py-2 -my-2` on this and on the two
+          links after it. A `text-xs` link with no vertical padding is exactly
+          its 16px line-height tall, under the 24x24 minimum, and these are the
+          row's decision ALTERNATIVES, not decoration. The negative margin gives
+          the padding back to the layout, so the flex line stays 16px and the
+          footer's height does not move — the same convention `Back` and `Stop`
+          already use here.
+        */}
+        {showExactHierarchy && (
+          <button
+            type="button"
+            aria-disabled={busy || createBlocked !== null ? true : undefined}
+            aria-describedby={createBlocked ? createBlockedId : undefined}
+            onClick={() => {
+              if (busy) return;
+              if (createBlocked) return;
+              void handleCreate(current._id, buildCreatePayload());
+            }}
+            className="py-2 -my-2 text-xs text-gray-400 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none underline decoration-dotted aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
+          >
+            Add as New {kindLabel(current.kind)} anyway
+          </button>
+        )}
+
+        <button
+          type="button"
+          aria-disabled={busy}
+          onClick={() => {
+            if (busy) return;
+            setLinkingOpen(true);
+          }}
+          aria-label="Link to existing instead"
+          className="py-2 -my-2 text-xs text-gray-400 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none underline decoration-dotted aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
+        >
+          Link to Existing…
+        </button>
+
+        {/*
+          NEO-212: the third way out. "Checklist", "Team Card" and subset
+          headers land in the player column constantly, and before this the
+          operator's only options were to mint a junk row or cancel the batch.
+        */}
+        <button
+          type="button"
+          aria-disabled={busy}
+          onClick={() => {
+            if (busy) return;
+            void handleSkip(current._id);
+          }}
+          aria-label={`Skip ${current.name} — not a ${notAWhat(current.kind)}`}
+          className="py-2 -my-2 text-xs text-gray-400 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none underline decoration-dotted aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
+        >
+          Skip — not a {notAWhat(current.kind)}
+        </button>
+
+        {backTargetId && (
+          // a11y (2.5.8): p-2 -m-2 grows the tap target without moving the
+          // visible text or its siblings in this row.
+          <button
+            type="button"
+            onClick={() => presentDecided(backTargetId)}
+            aria-label="Back to previous decision"
+            className="p-2 -m-2 text-xs text-gray-400 hover:text-[#00B7FF] focus:text-[#00B7FF] focus:outline-none underline decoration-dotted"
+          >
+            Back
+          </button>
+        )}
+      </div>
+    ) : null;
+
   return createPortal(
     // See BaseSetPicker.tsx / SetAttributesPanel.tsx for why createPortal
     // needs a nested <Theme> — it escapes the root Theme's CSS scope.
@@ -2099,159 +2271,6 @@ export default function EntityReviewWizard({
                           </div>
                         )}
 
-                        {/*
-                          ONE primary button element, one JSX slot, both states.
-
-                          `nearMatches` resolves asynchronously while this row is
-                          on screen, so `showExactHierarchy` can flip UNDER a
-                          keyboard user who has already tabbed to the primary. A
-                          ternary that swaps WHICH element renders here unmounts
-                          the focused node and focus falls to <body> (WCAG 2.2 SC
-                          3.2.2 / 2.4.3). Label, handler and variant are props on
-                          a single element instead.
-
-                          NEO-221: `aria-disabled`, never native `disabled`. A
-                          disabled button leaves the tab order, so a keyboard
-                          operator who tabbed here would be thrown out of the
-                          action row for the length of a round-trip; NeonButton
-                          already paints aria-disabled the same way.
-                        */}
-                        <NeonButton
-                          // Close-but-not-exact matches keep the label and lose the
-                          // green: still the primary action, no longer the one the
-                          // eye lands on before it has read the panel above.
-                          secondary={!showExactHierarchy && hasCloseOnly}
-                          // NEO-212 (a11y): NeonButton's `secondary` paints white
-                          // on #00C2FF — 2.07:1, well under SC 1.4.3's 4.5:1. That
-                          // is a defect in the shared primitive and fixing it there
-                          // would repaint every `secondary` button in the app, so
-                          // this call site overrides only the foreground. Black on
-                          // #00C2FF is 10.2:1, and the blue/green distinction that
-                          // carries the demotion is untouched.
-                          style={
-                            !showExactHierarchy && hasCloseOnly
-                              ? { color: "#000000" }
-                              : undefined
-                          }
-                          // NEO-221's in-flight guard and NEO-236's
-                          // "this cannot compose into a team" guard are both
-                          // reasons this control must not fire. Linking is
-                          // never blocked by the latter; only creating is.
-                          aria-disabled={
-                            busy ||
-                            (createBlocked !== null &&
-                              !(showExactHierarchy && exactMatch))
-                              ? true
-                              : undefined
-                          }
-                          aria-describedby={createBlocked ? createBlockedId : undefined}
-                          aria-label={
-                            showExactHierarchy && exactMatch
-                              ? `Link to ${exactMatch.name}`
-                              : `Add as New ${kindLabel(current.kind)}`
-                          }
-                          onClick={() => {
-                            if (busy) return;
-                            if (showExactHierarchy && exactMatch) {
-                              void handleLink(
-                                current._id,
-                                current.kind,
-                                exactMatch._id as Id<"players"> | Id<"teams">,
-                              );
-                              return;
-                            }
-                            if (createBlocked) return;
-                            void handleCreate(current._id, buildCreatePayload());
-                          }}
-                        >
-                          {showExactHierarchy && exactMatch
-                            ? `Link to ${exactMatch.name}`
-                            : `Add as New ${kindLabel(current.kind)}`}
-                        </NeonButton>
-                        {/*
-                          Demoted to a text link when an exact match exists — and
-                          the visible text and the accessible name are THE SAME
-                          STRING (WCAG 2.2 SC 2.5.3, label in name).
-
-                          Safe for E2E: this branch renders ONLY when an exact
-                          near match exists, and every Maestro flow that reaches
-                          this wizard types a unique nonsense name that matches
-                          nothing.
-                        */}
-                        {showExactHierarchy && (
-                          <button
-                            type="button"
-                            aria-disabled={busy || createBlocked !== null ? true : undefined}
-                            aria-describedby={createBlocked ? createBlockedId : undefined}
-                            onClick={() => {
-                              if (busy) return;
-                              if (createBlocked) return;
-                              void handleCreate(current._id, buildCreatePayload());
-                            }}
-                            className="self-start text-xs text-gray-400 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none underline decoration-dotted aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
-                          >
-                            Add as New {kindLabel(current.kind)} anyway
-                          </button>
-                        )}
-
-                        <div className="flex items-center gap-4">
-                          <button
-                            type="button"
-                            aria-disabled={busy}
-                            onClick={() => {
-                              if (busy) return;
-                              setLinkingOpen(true);
-                            }}
-                            aria-label="Link to existing instead"
-                            className="text-xs text-gray-400 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none underline decoration-dotted aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
-                          >
-                            Link to Existing…
-                          </button>
-                          {/*
-                            NEO-212: the third way out. "Checklist", "Team Card"
-                            and subset headers land in the player column
-                            constantly, and before this the operator's only
-                            options were to mint a junk player row or cancel the
-                            whole batch.
-                          */}
-                          <button
-                            type="button"
-                            aria-disabled={busy}
-                            onClick={() => {
-                              if (busy) return;
-                              void handleSkip(current._id);
-                            }}
-                            aria-label={`Skip ${current.name} — not a ${notAWhat(current.kind)}`}
-                            className="text-xs text-gray-400 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none underline decoration-dotted aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
-                          >
-                            Skip — not a {notAWhat(current.kind)}
-                          </button>
-                          {/* NEO-236. Not role="alert": this is a standing
-                              precondition the operator can read at any time,
-                              not an event — a refusal that already HAPPENED
-                              lands in `rowError` above. It appears as soon as a
-                              name is blank or over-long and disappears when it
-                              is fixed, and the create controls point at it. */}
-                          {createBlocked && (
-                            <p id={createBlockedId} className="text-xs text-[#FF2EB3]">
-                              {createBlocked}
-                            </p>
-                          )}
-                          {backTargetId && (
-                            // a11y (2.5.8): p-2 -m-2, same convention as
-                            // TrackingCode's Copy button — grows the tap
-                            // target without moving the visible text or its
-                            // siblings in this row.
-                            <button
-                              type="button"
-                              onClick={() => presentDecided(backTargetId)}
-                              aria-label="Back to previous decision"
-                              className="p-2 -m-2 text-xs text-gray-400 hover:text-[#00B7FF] focus:text-[#00B7FF] focus:outline-none underline decoration-dotted"
-                            >
-                              Back
-                            </button>
-                          )}
-                        </div>
                       </div>
                     )}
                   </>
@@ -2411,48 +2430,44 @@ export default function EntityReviewWizard({
               "Confirm & Save" and the bulk links never do: the links render
               only while `!allDecided`, and the confirm only once `allDecided`.
             */}
-            <div className="flex items-center justify-between gap-4">
-            <div className="flex min-w-0 items-center gap-4 overflow-hidden whitespace-nowrap">
-              {/*
-                The bulk links stay MOUNTED while the auto-add is armed rather
-                than being swapped out for the status line — nothing in row 1
-                may move mid-session. `aria-disabled` and not `disabled`, for
-                the same reason as the per-row decision controls: a keyboard
-                operator who has tabbed here must not be ejected from the
-                footer.
+            <div
+              /*
+               * NEO-110, audit finding — ROW 1 IS RESERVED FOR TWO LINES.
+               *
+               * Its left group wraps, and it wraps MID-SESSION: when
+               * `nearMatches` resolves with an exact hit, the primary's label
+               * grows from "Add as New Team" to "Link to {name}" AND the
+               * "…anyway" link appears in the same commit, pushing the group to
+               * a second line. A taller row 1 makes the footer taller and the
+               * body shorter, which moves the very button this whole change
+               * exists to pin down — the NEO-110 hazard, arriving from a new
+               * direction.
+               *
+               * So the space is reserved whether it is used or not. It costs
+               * ~32px of body height permanently, which is a trade worth making
+               * twice over: the body just got ~226px BACK from bounding the
+               * league picker, and a reserved gap cannot move under a cursor.
+               */
+              className="flex min-h-[4.25rem] items-center justify-between gap-4"
+            >
+            {/*
+              ROW 1 LEFT — THE DECISION FOR THE ROW ON SCREEN.
+              These used to be the last elements of the scrolling body, which is
+              how CI run 8 caught them at y=620-652 on a 1024x629 viewport:
+              below the footer and below the dialog itself. Maestro cannot
+              scroll an inner overflow box, and an operator should never have to
+              hunt for the button they have just decided to press.
 
-                Only the CREATE link goes inert. "Skip Remaining" stays live on
-                purpose — row 2 says "wait or skip", and taking the skip away
-                while it says so would be advertising an exit and locking it.
+              So the primary action lives where NEO-110 already proved things
+              must live when they may not move — the fixed footer. The row's
+              CONTENT still scrolls (that is what a body is for); the decision
+              about it does not.
 
-                No aria-label on either: the visible text IS the accessible
-                name, and Maestro matches `.*Add All Remaining as New.*`.
-              */}
-              {!expired && !allDecided && remainingNames > 0 && (
-                <>
-                  <button
-                    type="button"
-                    onClick={handleBulkCreate}
-                    disabled={bulkPending !== null || saving}
-                    aria-disabled={autoAddPending}
-                    className="text-xs text-gray-400 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none underline decoration-dotted disabled:opacity-50 aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
-                  >
-                    {bulkPending === "create"
-                      ? "Adding players…"
-                      : `Add remaining players as new (${remainingPlayers})`}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleBulkSkip}
-                    disabled={bulkPending !== null || saving}
-                    className="text-xs text-gray-400 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none underline decoration-dotted disabled:opacity-50"
-                  >
-                    {bulkPending === "skip"
-                      ? "Skipping names…"
-                      : `Skip remaining names (${remainingNames})`}
-                  </button>
-                </>
-              )}
+              Mutually exclusive with "Confirm & Save" on the right by
+              construction: a presented row means not every row is decided.
+            */}
+            <div className="flex min-w-0 flex-wrap items-center gap-3">
+              {decisionControls}
             </div>
             {/* The buttons never yield: if row 1 is ever too narrow, the bulk
                 links clip, not the way out of the dialog. */}
@@ -2564,12 +2579,57 @@ export default function EntityReviewWizard({
               than a stack: the operator is either waiting on lookups or
               watching them be added, never both.
             */}
-            <p
-              className="flex min-h-4 items-center gap-3 text-xs text-gray-400"
-              role="status"
-              aria-live="polite"
-            >
-              {footerStatus}
+            <div className="flex min-h-6 items-center gap-3">
+              {/*
+                The live region is its OWN element and holds only text. The bulk
+                links sit beside it, deliberately outside it: a button inside a
+                live region is re-announced every time the count next to it
+                ticks, which turns a drain into a stream of interruptions.
+
+                `flex-1 min-w-0 truncate` — this is the variable-length half, so
+                it is the half that gives way. Row 2 has always been where
+                length lives (NEO-110); the bulk links moved here from row 1 for
+                exactly that reason, their labels carrying counts that change as
+                the batch drains.
+              */}
+              {/*
+                NEO-236 — why the create cannot fire, beside the control it is
+                about. Deliberately NOT `role="alert"` and deliberately OUTSIDE
+                the live region below: this is a standing precondition the
+                operator can read at any time, not an event (a refusal that
+                already HAPPENED lands in `rowError`, up in the body with the
+                row it belongs to). The create controls point at it by id.
+              */}
+              {createBlocked && (
+                <p
+                  id={createBlockedId}
+                  /* `text-xs` restored: the row-2 rewrite moved it off the
+                     wrapper and it was never put back on the message. Without
+                     it this inherits Radix's 16px body size, which is not the
+                     `text-xs` line `min-h-6` reserves the footer's height
+                     for. */
+                  className="min-w-0 flex-1 truncate text-xs text-[#FF2EB3]"
+                >
+                  {createBlocked}
+                </p>
+              )}
+              {/*
+                Always mounted, even with nothing to say: a live region that
+                unmounts between messages announces unreliably.
+              */}
+              <p
+                /* `text-xs text-gray-400` restored — see the blocked-reason
+                   note above. Inherited, this was Radix's `--gray-12` at 16px:
+                   not a contrast failure, but not the muted status line the
+                   footer's reserved height is measured against either. */
+                className={`min-w-0 truncate text-xs text-gray-400 ${
+                  createBlocked ? "shrink-0" : "flex-1"
+                }`}
+                role="status"
+                aria-live="polite"
+              >
+                {footerStatus}
+              </p>
               {footerStatus !== null && autoAddPending && (
                 // a11y (2.5.8): p-2 -m-2 grows the target past 24px without
                 // moving the text or the row's reserved height.
@@ -2579,12 +2639,77 @@ export default function EntityReviewWizard({
                     autoAddRef.current = false;
                     setAutoAddPending(false);
                   }}
-                  className="p-2 -m-2 text-gray-400 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none underline decoration-dotted"
+                  className="shrink-0 p-2 -m-2 text-xs text-gray-400 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none underline decoration-dotted"
                 >
                   Stop
                 </button>
               )}
-            </p>
+              {/*
+                The bulk links stay MOUNTED while the auto-add is armed rather
+                than being swapped out — nothing here may vanish mid-session.
+                `aria-disabled` and not `disabled`, for the same reason as the
+                per-row decision controls: a keyboard operator who has tabbed
+                here must not be ejected from the footer.
+
+                Only the CREATE link goes inert. "Skip remaining names" stays
+                live on purpose — the status beside it says "wait or skip", and
+                taking the skip away while it says so would be advertising an
+                exit and locking it.
+
+                No aria-label on either: the visible text IS the accessible
+                name, and Maestro matches `.*Add remaining players as new.*`.
+              */}
+              {!expired && !allDecided && remainingNames > 0 && (
+                <div
+                  /*
+                   * a11y (SC 3.3.1), audit finding: the bulk links yield to the
+                   * BLOCKED REASON, and only to that.
+                   *
+                   * They are `shrink-0 whitespace-nowrap` normally, and the
+                   * status line beside them is what gives way — that is row 2's
+                   * standing rule. But the two links measure ~384px of a 624px
+                   * row, so with a reason showing as well the reason was
+                   * squeezed to nothing: an inert primary button whose reason
+                   * was invisible to a sighted operator while remaining
+                   * perfectly correct for a screen reader.
+                   *
+                   * A reason is transient and rare; the links are permanent.
+                   * So while one is up the links become truncatable and the
+                   * reason takes the width. Nothing moves vertically either
+                   * way, which is what row 1 is protected by.
+                   */
+                  className={`flex items-center gap-3 whitespace-nowrap ${
+                    createBlocked ? "min-w-0 overflow-hidden" : "shrink-0"
+                  }`}
+                >
+                  <button
+                    type="button"
+                    onClick={handleBulkCreate}
+                    disabled={bulkPending !== null || saving}
+                    aria-disabled={autoAddPending}
+                    // a11y (SC 2.5.8): `py-2 -my-2`, the same convention as
+                    // `Stop` beside them — a 32px hit area out of a 16px
+                    // `text-xs` line, given back to the layout so row 2's
+                    // height is the same whether these are mounted or not.
+                    className="py-2 -my-2 text-xs text-gray-400 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none underline decoration-dotted disabled:opacity-50 aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
+                  >
+                    {bulkPending === "create"
+                      ? "Adding players…"
+                      : `Add remaining players as new (${remainingPlayers})`}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleBulkSkip}
+                    disabled={bulkPending !== null || saving}
+                    className="py-2 -my-2 text-xs text-gray-400 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none underline decoration-dotted disabled:opacity-50"
+                  >
+                    {bulkPending === "skip"
+                      ? "Skipping names…"
+                      : `Skip remaining names (${remainingNames})`}
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>

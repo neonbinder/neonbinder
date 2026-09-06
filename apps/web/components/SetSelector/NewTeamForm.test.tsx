@@ -131,6 +131,21 @@ function renderForm(
   return render(<Harness {...props} />);
 }
 
+/**
+ * Reveal the whole league list.
+ *
+ * NEO-236 (CI run 8): the picker collapses to the standing answer plus a
+ * "Change league" disclosure whenever there IS one, because rendering every
+ * league in the sport measured 250px and pushed the review wizard's primary
+ * action off the bottom of its dialog. With no standing answer there is nothing
+ * to summarise and the list is already open, so this is a no-op then — which is
+ * why it probes rather than asserts.
+ */
+function openLeagueList(): void {
+  const toggle = screen.queryByRole("button", { name: "Change league" });
+  if (toggle) fireEvent.click(toggle);
+}
+
 const locationField = () =>
   screen.getByLabelText("New team location (optional)") as HTMLInputElement;
 const nameField = () => screen.getByLabelText("New team name") as HTMLInputElement;
@@ -224,6 +239,7 @@ describe("draftFullName", () => {
 describe("NewTeamForm — fields", () => {
   it("renders the draft into the two boxes", () => {
     renderForm({ initial: { ...EMPTY, location: "San Diego", name: "Padres" } });
+    openLeagueList();
 
     expect(locationField().value).toBe("San Diego");
     expect(nameField().value).toBe("Padres");
@@ -231,6 +247,7 @@ describe("NewTeamForm — fields", () => {
 
   it("composes the two boxes into the 'Shows as' preview as they are typed", () => {
     renderForm();
+    openLeagueList();
 
     fireEvent.change(nameField(), { target: { value: "Padres" } });
     expect(previewText()).toBe("Shows as: Padres");
@@ -241,6 +258,7 @@ describe("NewTeamForm — fields", () => {
 
   it("shows an em dash rather than an empty preview while both boxes are blank", () => {
     renderForm();
+    openLeagueList();
     expect(previewText()).toBe("Shows as: —");
   });
 
@@ -248,6 +266,7 @@ describe("NewTeamForm — fields", () => {
     // WCAG 2.2 SC 2.5.3 (label in name): the visible label is "Location
     // (optional)", so a voice-control user saying it has to match.
     renderForm();
+    openLeagueList();
     expect(locationField().getAttribute("aria-label")).toBe(
       "New team location (optional)",
     );
@@ -256,6 +275,7 @@ describe("NewTeamForm — fields", () => {
 
   it("spells out what counts as a location, because the split is not obvious", () => {
     renderForm();
+    openLeagueList();
     expect(
       screen.getByText(/Location is where they are from/),
     ).toBeTruthy();
@@ -267,6 +287,8 @@ describe("NewTeamForm — fields", () => {
     unmount();
 
     renderForm();
+
+    openLeagueList();
     expect(screen.queryByText(/Needed by:/)).toBeNull();
   });
 
@@ -278,6 +300,7 @@ describe("NewTeamForm — fields", () => {
     // the preview, and Location at the help line — so this is a containment
     // check, not an equality one.
     renderForm({ describedBy: "why-blocked" });
+    openLeagueList();
 
     expect(locationField().getAttribute("aria-describedby")).toContain(
       "why-blocked",
@@ -290,6 +313,7 @@ describe("NewTeamForm — fields", () => {
     // at, so tabbing into Location announced "New team location (optional),
     // edit text" and nothing about what a location IS.
     renderForm({ initial: { ...EMPTY, location: "San Diego", name: "Padres" } });
+    openLeagueList();
 
     const help = screen.getByText(/^Location is where they are from/);
     const preview = screen.getByText("Shows as:");
@@ -311,6 +335,7 @@ describe("NewTeamForm — fields", () => {
 
   it("emits no dangling or empty aria-describedby when the host gives no reason", () => {
     renderForm();
+    openLeagueList();
 
     for (const field of [locationField(), nameField()]) {
       const value = field.getAttribute("aria-describedby");
@@ -324,6 +349,7 @@ describe("NewTeamForm — fields", () => {
   it("disables every control while the host is busy", () => {
     currentLeagues = [{ _id: lid("l1"), name: "MLB" }];
     renderForm({ disabled: true });
+    openLeagueList();
 
     expect(locationField().disabled).toBe(true);
     expect(nameField().disabled).toBe(true);
@@ -340,6 +366,7 @@ describe("NewTeamForm — fields", () => {
     currentLeagues = [{ _id: lid("l1"), name: "MLB" }];
     const onChangeSpy = vi.fn();
     renderForm({ disabled: true, onChangeSpy });
+    openLeagueList();
 
     fireEvent.click(screen.getByRole("radio", { name: "MLB" }));
     expect(onChangeSpy).not.toHaveBeenCalled();
@@ -354,6 +381,7 @@ describe("NewTeamForm — Enter in a field", () => {
   it("calls onSubmit from either box and swallows the key", () => {
     const onSubmit = vi.fn();
     renderForm({ onSubmit });
+    openLeagueList();
 
     const nameEvent = fireEvent.keyDown(nameField(), { key: "Enter" });
     // `false` from fireEvent means preventDefault was called: the key must not
@@ -368,12 +396,14 @@ describe("NewTeamForm — Enter in a field", () => {
     // The wizard's primary action is a walker button, not a submit, so Enter
     // there belongs to whatever the wizard does with it.
     renderForm();
+    openLeagueList();
     expect(fireEvent.keyDown(nameField(), { key: "Enter" })).toBe(true);
   });
 
   it("ignores other keys", () => {
     const onSubmit = vi.fn();
     renderForm({ onSubmit });
+    openLeagueList();
 
     fireEvent.keyDown(nameField(), { key: "a" });
     expect(onSubmit).not.toHaveBeenCalled();
@@ -401,6 +431,7 @@ describe("NewTeamForm — the League control", () => {
 
   it("queries the leagues of THIS sport", () => {
     renderForm();
+    openLeagueList();
     expect(queryCalls).toContainEqual({
       ref: "leagues.list",
       args: { sportId: SPORT_ID },
@@ -410,6 +441,7 @@ describe("NewTeamForm — the League control", () => {
   it("says it is still loading rather than rendering an empty group", () => {
     currentLeagues = undefined;
     renderForm();
+    openLeagueList();
 
     // SC 4.1.3: the group changes shape under the operator when the query
     // lands, so the wait is announced rather than only drawn.
@@ -429,6 +461,7 @@ describe("NewTeamForm — the League control", () => {
       initial: { ...EMPTY, leagueName: "Something Else" },
       onChangeSpy,
     });
+    openLeagueList();
 
     fireEvent.click(screen.getByRole("radio", { name: "MLB" }));
 
@@ -447,6 +480,7 @@ describe("NewTeamForm — the League control", () => {
     currentLeagues = [{ _id: lid("l1"), name: "MLB" }];
     const onChangeSpy = vi.fn();
     renderForm({ onChangeSpy });
+    openLeagueList();
 
     fireEvent.click(screen.getByRole("radio", { name: "No league" }));
 
@@ -462,6 +496,7 @@ describe("NewTeamForm — the League control", () => {
   it("checks nothing by default when there is no suggestion to fall back on", () => {
     currentLeagues = [{ _id: lid("l1"), name: "MLB" }];
     renderForm();
+    openLeagueList();
 
     expect(
       screen.getByRole("radio", { name: "MLB" }).getAttribute("aria-checked"),
@@ -477,6 +512,7 @@ describe("NewTeamForm — the League control", () => {
       { _id: lid("l2"), name: "NPB" },
     ];
     renderForm({ initial: { ...EMPTY, leagueId: lid("l2") } });
+    openLeagueList();
 
     expect(
       screen.getByRole("radio", { name: "NPB" }).getAttribute("aria-checked"),
@@ -511,6 +547,7 @@ describe("NewTeamForm — the League group's keyboard", () => {
       { _id: lid("l2"), name: "NPB" },
     ];
     renderForm();
+    openLeagueList();
 
     expect(pillTabIndexes()).toEqual([
       { label: "MLB", tabIndex: 0 },
@@ -525,6 +562,7 @@ describe("NewTeamForm — the League group's keyboard", () => {
       { _id: lid("l2"), name: "NPB" },
     ];
     renderForm({ initial: { ...EMPTY, leagueId: lid("l2") } });
+    openLeagueList();
 
     expect(pillTabIndexes()).toEqual([
       { label: "MLB", tabIndex: -1 },
@@ -536,6 +574,7 @@ describe("NewTeamForm — the League group's keyboard", () => {
   it("puts the Tab stop on the suggestion while it is the standing answer", () => {
     currentLeagues = [{ _id: lid("l1"), name: "MLB" }];
     renderForm({ leagueSuggestion: "Australian Baseball League" });
+    openLeagueList();
 
     expect(pillTabIndexes()).toEqual([
       { label: "Create Australian Baseball League", tabIndex: 0 },
@@ -550,6 +589,7 @@ describe("NewTeamForm — the League group's keyboard", () => {
       { _id: lid("l2"), name: "NPB" },
     ];
     renderForm();
+    openLeagueList();
 
     const group = screen.getByRole("radiogroup", { name: "New team league" });
     fireEvent.keyDown(group, { key: "ArrowRight" });
@@ -571,6 +611,7 @@ describe("NewTeamForm — the League group's keyboard", () => {
       { _id: lid("l2"), name: "NPB" },
     ];
     renderForm({ initial: { ...EMPTY, leagueId: lid("l2") } });
+    openLeagueList();
 
     const group = screen.getByRole("radiogroup", { name: "New team league" });
     fireEvent.keyDown(group, { key: "ArrowLeft" });
@@ -590,6 +631,7 @@ describe("NewTeamForm — the League group's keyboard", () => {
   it("wraps forward off the end", () => {
     currentLeagues = [{ _id: lid("l1"), name: "MLB" }];
     renderForm({ initial: { ...EMPTY, leagueId: null } });
+    openLeagueList();
 
     const group = screen.getByRole("radiogroup", { name: "New team league" });
     expect(
@@ -613,6 +655,7 @@ describe("NewTeamForm — the League group's keyboard", () => {
       { _id: lid("l2"), name: "NPB" },
     ];
     renderForm();
+    openLeagueList();
 
     const group = screen.getByRole("radiogroup", { name: "New team league" });
     screen.getByRole("radio", { name: "MLB" }).focus();
@@ -626,6 +669,7 @@ describe("NewTeamForm — the League group's keyboard", () => {
   it("swallows the arrow key so it cannot scroll the host out from under the group", () => {
     currentLeagues = [{ _id: lid("l1"), name: "MLB" }];
     renderForm();
+    openLeagueList();
 
     const group = screen.getByRole("radiogroup", { name: "New team league" });
     // `false` from fireEvent means preventDefault was called.
@@ -638,6 +682,7 @@ describe("NewTeamForm — the League group's keyboard", () => {
     currentLeagues = [{ _id: lid("l1"), name: "MLB" }];
     const onChangeSpy = vi.fn();
     renderForm({ disabled: true, onChangeSpy });
+    openLeagueList();
 
     fireEvent.keyDown(
       screen.getByRole("radiogroup", { name: "New team league" }),
@@ -661,6 +706,7 @@ describe("NewTeamForm — the league suggestion", () => {
       { _id: lid("l2"), name: "Australian Baseball League" },
     ];
     renderForm({ leagueSuggestion: "Australian Baseball League" });
+    openLeagueList();
 
     expect(
       screen
@@ -677,6 +723,7 @@ describe("NewTeamForm — the league suggestion", () => {
       { _id: lid("l2"), name: "Australian Baseball League" },
     ];
     renderForm({ leagueSuggestion: "Australian Baseball League" });
+    openLeagueList();
 
     fireEvent.click(screen.getByRole("radio", { name: "MLB" }));
 
@@ -696,6 +743,7 @@ describe("NewTeamForm — the league suggestion", () => {
     // and exact-after-normalizing.
     currentLeagues = [{ _id: lid("l1"), name: "St. Louis Amateur League" }];
     renderForm({ leagueSuggestion: "St Louis Amateur League" });
+    openLeagueList();
 
     expect(screen.queryByRole("radio", { name: /^Create / })).toBeNull();
     expect(
@@ -708,6 +756,7 @@ describe("NewTeamForm — the league suggestion", () => {
   it("offers 'Create {name}' only when this sport holds no matching league", () => {
     currentLeagues = [{ _id: lid("l1"), name: "MLB" }];
     renderForm({ leagueSuggestion: "Australian Baseball League" });
+    openLeagueList();
 
     const create = screen.getByRole("radio", {
       name: "Create Australian Baseball League",
@@ -726,6 +775,7 @@ describe("NewTeamForm — the league suggestion", () => {
       leagueSuggestion: "Australian Baseball League",
       onChangeSpy,
     });
+    openLeagueList();
 
     fireEvent.click(
       screen.getByRole("radio", { name: "Create Australian Baseball League" }),
@@ -740,6 +790,7 @@ describe("NewTeamForm — the league suggestion", () => {
   it("offers no suggestion pill when the lookup proposed nothing", () => {
     currentLeagues = [{ _id: lid("l1"), name: "MLB" }];
     renderForm();
+    openLeagueList();
 
     expect(screen.queryByRole("radio", { name: /^Create / })).toBeNull();
     expect(screen.getAllByRole("radio").map((el) => el.textContent)).toEqual([
@@ -751,6 +802,7 @@ describe("NewTeamForm — the league suggestion", () => {
   it("treats a whitespace-only suggestion as no suggestion", () => {
     currentLeagues = [];
     renderForm({ leagueSuggestion: "   " });
+    openLeagueList();
 
     expect(screen.getAllByRole("radio").map((el) => el.textContent)).toEqual([
       "No league",
@@ -768,6 +820,7 @@ describe("NewTeamForm — the league suggestion", () => {
 
     currentLeagues = [{ _id: lid("l1"), name: "MLB" }];
     renderForm({ leagueSuggestion: "MLB" });
+    openLeagueList();
     expect(screen.queryByRole("radio", { name: "Create MLB" })).toBeNull();
     expect(
       screen.getByRole("radio", { name: "MLB" }).getAttribute("aria-checked"),
