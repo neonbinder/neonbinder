@@ -283,6 +283,76 @@ function rowSignature(row: Player): string {
 const MAX_RESOLVE_NAMES = 64;
 
 /**
+ * NEO-254 — a unique "Open …" label for every near-match row on screen.
+ *
+ * ## Why this is needed at all
+ *
+ * `players.nearMatches` stopped reading the exact key with `.first()`, so a
+ * forked name — the very thing the birth-year field on this form now produces
+ * — comes back as TWO rows both `confidence: "exact"`. The add form renders
+ * one control per row (one promoted to the primary, the rest in the panel),
+ * and a label built from the name alone made both of them `Open Bob Allen`:
+ * two controls with one accessible name, on the screen whose entire purpose is
+ * telling those two people apart. A screen-reader user hears the same option
+ * twice, and a Maestro `tapOn` matches whichever comes first.
+ *
+ * ## Only when it is needed
+ *
+ * A name that appears once keeps the bare `Open {name}` it has always had.
+ * That is not timidity about churn — it is the correct label: there is nothing
+ * to distinguish it FROM, and appending a birth year to the single-match case
+ * would be noise on the common path (and would silently rename a control the
+ * E2E flows already target).
+ *
+ * ## The ordinal fallback
+ *
+ * The birth year is the distinguishing fact, so it is used when there is one.
+ * Two rows that share a name AND have no year are still two different people,
+ * and "no birth year" twice is the same collision in different words — so the
+ * position stands in, exactly as `candidateLinkLabel` does in the review
+ * wizard. Weak information, but unique, and the operator can act on "the
+ * second one" after reading the list.
+ */
+function openLabelsFor(matches: ReadonlyArray<NearMatch>): Map<string, string> {
+  const byName = new Map<string, NearMatch[]>();
+  for (const match of matches) {
+    const group = byName.get(match.name);
+    if (group) group.push(match);
+    else byName.set(match.name, [match]);
+  }
+
+  const labels = new Map<string, string>();
+  for (const [name, group] of byName) {
+    if (group.length === 1) {
+      labels.set(group[0]._id, `Open ${name}`);
+      continue;
+    }
+    // Provisional labels from the distinguishing fact…
+    const provisional = group.map((m) =>
+      m.birthYear !== undefined
+        ? `Open ${name}, b. ${m.birthYear}`
+        : `Open ${name}, no birth year`,
+    );
+    // …then an ordinal for any that STILL collide, which is the undated pair
+    // and (in principle) two rows sharing a year.
+    const seen = new Map<string, number>();
+    for (const label of provisional) {
+      seen.set(label, (seen.get(label) ?? 0) + 1);
+    }
+    group.forEach((m, i) => {
+      const label = provisional[i];
+      labels.set(
+        m._id,
+        (seen.get(label) ?? 0) > 1
+          ? `${label} (${i + 1} of ${group.length})`
+          : label,
+      );
+    });
+  }
+  return labels;
+}
+
+/**
  * NEO-254 — evaluated once per module load rather than per render.
  *
  * `maxBirthYear()` reads the clock, and recomputing it inside render would
@@ -392,6 +462,17 @@ function AddPlayerForm({
   const panelMatches = exact
     ? (matches ?? []).filter((m) => m._id !== exact._id)
     : matches;
+  /**
+   * NEO-254 — computed over EVERY match, not just the panel's share.
+   *
+   * The promoted primary is one of these rows and the panel holds the rest, so
+   * a label set built from the panel alone would leave the primary saying
+   * `Open Bob Allen` while the row beside it said `Open Bob Allen, b. 1975` —
+   * unique, but the primary would not say which man it opens. One computation
+   * over the whole list gives both halves the same treatment.
+   */
+  const openLabels = openLabelsFor(matches ?? []);
+  const openLabel = (m: NearMatch) => openLabels.get(m._id) ?? `Open ${m.name}`;
   // Client-side mirror of `assertBirthYear`, so a typo is caught while the
   // field is still in front of the operator. The server re-validates; this is
   // the fast half of defense in depth, not the guarantee.
@@ -501,7 +582,7 @@ function AddPlayerForm({
         matches={panelMatches}
         // Not "Link to": this button opens the row for editing, it does not
         // link anything to anything.
-        pickLabel={(n) => `Open ${n}`}
+        pickLabel={(_n, match) => openLabel(match)}
         onPick={(id) => onCreated(id as Id<"players">)}
       />
 
@@ -534,7 +615,13 @@ function AddPlayerForm({
           disabled={exact ? false : !canCreate}
           aria-label={exact ? undefined : `Create player ${trimmed}`}
         >
-          {exact ? `Open ${exact.name}` : busy ? "Adding…" : "Create player"}
+          {/* NEO-254: the disambiguated label, which is byte-identical to
+              `Open {name}` whenever the name matches exactly one row — so the
+              common case, and every E2E flow that targets it, is unchanged.
+              Rendered as the visible TEXT rather than an aria-label override,
+              so the accessible name and what is on screen stay the same string
+              (WCAG 2.2 SC 2.5.3). */}
+          {exact ? openLabel(exact) : busy ? "Adding…" : "Create player"}
         </NeonButton>
         {exact && (
           <button

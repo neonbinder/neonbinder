@@ -895,6 +895,12 @@ export const nearMatches = query({
       _id: v.id("players"),
       name: v.string(),
       confidence: v.union(v.literal("exact"), v.literal("close")),
+      // NEO-254: the one fact that separates two rows this query now returns
+      // TOGETHER. Since the exact key stopped being read with `.first()`, a
+      // forked name comes back as two `exact` rows, and a caller rendering a
+      // control per row would give both the same accessible name. Optional
+      // because a row created before the column, or by a picker, has none.
+      birthYear: v.optional(v.number()),
     }),
   ),
   handler: async (ctx, args) => {
@@ -924,7 +930,7 @@ export const nearMatches = query({
     // Keyed by id so the exact hit and a search hit for the same row collapse.
     const candidates = new Map<
       Id<"players">,
-      { _id: Id<"players">; name: string }
+      { _id: Id<"players">; name: string; birthYear?: number }
     >();
 
     const normalized = normalizePlayerName(name);
@@ -942,7 +948,11 @@ export const nearMatches = query({
        */
       const exact = await sameNamePlayers(ctx, normalized, args.sportId);
       for (const row of exact) {
-        candidates.set(row._id, { _id: row._id, name: row.name });
+        candidates.set(row._id, {
+          _id: row._id,
+          name: row.name,
+          birthYear: row.birthYear,
+        });
       }
     }
 
@@ -961,7 +971,11 @@ export const nearMatches = query({
       if (fallbackTerm) hits = await searchPlayers(fallbackTerm);
     }
     for (const hit of hits) {
-      candidates.set(hit._id, { _id: hit._id, name: hit.name });
+      candidates.set(hit._id, {
+        _id: hit._id,
+        name: hit.name,
+        birthYear: hit.birthYear,
+      });
     }
 
     const rows = [...candidates.values()];
@@ -971,6 +985,11 @@ export const nearMatches = query({
         _id: rows[index]._id,
         name: rows[index].name,
         confidence,
+        // Omitted rather than sent as `undefined`, matching every other
+        // optional field this file returns.
+        ...(rows[index].birthYear !== undefined
+          ? { birthYear: rows[index].birthYear }
+          : {}),
       }));
   },
 });

@@ -1636,6 +1636,103 @@ describe("NEO-254: birth year", () => {
     await waitFor(() => expect(screen.getByText("Added Bob Allen.")).toBeTruthy());
   });
 
+  it("gives two exact same-name rows DIFFERENT Open labels", async () => {
+    /*
+     * The collision a fork creates. `players.nearMatches` no longer reads the
+     * exact key with `.first()`, so both Bob Allens come back `exact`: one is
+     * promoted to the primary, the other renders in the panel, and a label
+     * built from the name alone made both `Open Bob Allen` — two controls with
+     * one accessible name on the screen meant to tell those people apart.
+     */
+    nearMatches = [
+      { _id: "p-old", name: "Bob Allen", confidence: "exact", birthYear: 1960 },
+      { _id: "p-new", name: "Bob Allen", confidence: "exact", birthYear: 1975 },
+    ];
+    const { container } = render(<PlayerManagement />);
+    openAddForm(container);
+    fireEvent.change(screen.getByLabelText("New player name"), {
+      target: { value: "Bob Allen" },
+    });
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Open Bob Allen, b. 1960" }),
+      ).toBeTruthy(),
+    );
+    // The panel appends its own "— same name" tag to an exact row's
+    // accessible name (NEO-212: a warning only sighted operators receive is
+    // not a warning). Uniqueness holds with or without it.
+    expect(
+      screen.getByRole("button", { name: "Open Bob Allen, b. 1975 — same name" }),
+    ).toBeTruthy();
+    // The ambiguous label is gone entirely — including from the promoted
+    // primary, which would otherwise not say which man it opens.
+    expect(screen.queryByRole("button", { name: "Open Bob Allen" })).toBeNull();
+
+    const openNames = screen
+      .getAllByRole("button")
+      .map((b) => b.getAttribute("aria-label") ?? b.textContent ?? "")
+      .filter((n) => n.startsWith("Open Bob Allen"));
+    expect(openNames).toHaveLength(2);
+    expect(new Set(openNames).size).toBe(2);
+
+    // And the E2E-targeted create control is untouched.
+    expect(
+      screen.getByRole("button", { name: "Create player Bob Allen anyway" }),
+    ).toBeTruthy();
+  });
+
+  it("falls back to an ordinal when neither same-name row has a birth year", async () => {
+    // "no birth year" twice is the same collision in different words.
+    nearMatches = [
+      { _id: "p-a", name: "Bob Allen", confidence: "exact" },
+      { _id: "p-b", name: "Bob Allen", confidence: "exact" },
+    ];
+    const { container } = render(<PlayerManagement />);
+    openAddForm(container);
+    fireEvent.change(screen.getByLabelText("New player name"), {
+      target: { value: "Bob Allen" },
+    });
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", {
+          name: "Open Bob Allen, no birth year (1 of 2)",
+        }),
+      ).toBeTruthy(),
+    );
+    expect(
+      screen.getByRole("button", {
+        name: "Open Bob Allen, no birth year (2 of 2) — same name",
+      }),
+    ).toBeTruthy();
+  });
+
+  it("leaves the single-match label exactly as it was", async () => {
+    // Not timidity about churn: with nothing to distinguish it from, the bare
+    // label is the correct one — and the E2E flows target it.
+    nearMatches = [
+      {
+        _id: "p-griffey",
+        name: "Ken Griffey Jr.",
+        confidence: "exact",
+        birthYear: 1969,
+      },
+    ];
+    const { container } = render(<PlayerManagement />);
+    openAddForm(container);
+    fireEvent.change(screen.getByLabelText("New player name"), {
+      target: { value: "Ken Griffey Jr." },
+    });
+
+    await waitFor(() =>
+      expect(
+        screen.getAllByRole("button", { name: "Open Ken Griffey Jr." }),
+      ).toHaveLength(1),
+    );
+    expect(screen.queryByText(/b\. 1969/)).toBeNull();
+  });
+
   it("omits the key entirely when the field is left blank", async () => {
     // Most players are the only one of their name, and demanding a year for
     // them would be a tax on the common case.
