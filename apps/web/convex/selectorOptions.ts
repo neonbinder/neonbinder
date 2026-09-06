@@ -119,6 +119,9 @@ import { findSportForSelectorOption } from "./cardChecklist";
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "./features/cardAttention";
 import { normalizePlayerName } from "./players";
 import { normalizeTeamName } from "./teams";
+// NEO-253: the shared normalisation core, imported rather than transcribed —
+// this file used to carry two separate hand copies of it.
+import { normalizeEntityName } from "../lib/entities/normalize-name";
 import { findOrCreateLeague, resolveDefaultLeagueId } from "./leagues";
 import {
   cardPlatformDataValidator,
@@ -7494,22 +7497,20 @@ export const syncSetsAcrossManufacturers = action({
 });
 
 /**
- * Lowercase + strip punctuation + token-sort. Same shape as
- * normalizePlayerName/normalizeTeamName in convex/players.ts and
- * convex/teams.ts — kept inline here to avoid pulling those modules into
- * the action runtime (Convex bundles per-file). Used both for fuzzy
+ * Fold + lowercase + strip punctuation + token-sort. Used both for fuzzy
  * matching during reconciliation and for matching against the existing
  * players/teams tables.
+ *
+ * NEO-253: was an inline transcription of `normalizePlayerName` /
+ * `normalizeTeamName`, kept local to avoid pulling those modules into the
+ * action runtime (Convex bundles per-file). It now aliases the shared core in
+ * `lib/entities/normalize-name.ts`, which has no Convex imports at all, so the
+ * bundling argument for the copy no longer applies — while the divergence the
+ * copy invited (this one silently kept the old, unfolded behaviour for a name
+ * the tables would have folded) does.
  */
 function normalizeName(raw: string): string {
-  return raw
-    .toLowerCase()
-    .replace(/[.,'"`’]/g, "")
-    .replace(/[^a-z0-9\s-]/g, " ")
-    .split(/\s+/)
-    .filter(Boolean)
-    .sort()
-    .join(" ");
+  return normalizeEntityName(raw);
 }
 
 /**
@@ -9321,15 +9322,16 @@ export const commitCardChecklistPrelude = internalMutation({
       }
     }
 
-    // Helper — same normalization as players.ts/teams.ts
-    const norm = (s: string) =>
-      s.toLowerCase()
-        .replace(/[.,'"`’]/g, "")
-        .replace(/[^a-z0-9\s-]/g, " ")
-        .split(/\s+/)
-        .filter(Boolean)
-        .sort()
-        .join(" ");
+    // NEO-253: the SAME function `players`/`teams` dedupe on, not a copy of it.
+    //
+    // This local helper keys five separate things inside one transaction — the
+    // review-row lookup, the `entityReviewSkips` upsert, the excluded
+    // career-team set, and both `resolve*IdByName` reads — so a transcription
+    // that drifted by one character would not merely mis-key one of them, it
+    // would make the prelude disagree with the tables it writes into. It was a
+    // hand copy until this ticket, and it was the copy that still shredded
+    // accented names after `nameKey` had learned to fold them.
+    const norm = normalizeEntityName;
 
     // Resolve every player/team name appearing on any card to an Id where
     // possible. Build name → Id maps so the per-card resolution in the chunks

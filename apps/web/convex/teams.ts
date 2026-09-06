@@ -11,21 +11,21 @@ import { longestToken, rankTeamCandidates } from "./lib/entityNearMatch";
 // lib/players/wikidata-id.ts. Named for players only because that is where the
 // id first appeared; the shape is the same for every Wikidata entity.
 import { isWikidataQid } from "../lib/players/wikidata-id";
+// NEO-253: shared with players, leagues and the browser-side review wizard.
+import { normalizeEntityName } from "../lib/entities/normalize-name";
 
 /**
- * Lowercase + strip punctuation + token-sort. Same shape as the player
- * normalizer — keeps "Yankees, New York" and "New York Yankees" deduped
- * to one row. Used as the dedup key on `teams.nameNormalized`.
+ * The dedup key on `teams.nameNormalized`.
+ *
+ * NEO-253: an alias for the shared implementation in
+ * `lib/entities/normalize-name.ts`, which is now the ONLY copy of the chain —
+ * previously this function and `normalizePlayerName` were two hand-maintained
+ * transcriptions of the same regexes. Same key as the player side, deliberately
+ * so: "Montréal Expos" and "Montreal Expos" are one franchise for exactly the
+ * reason "José Ramírez" and "Jose Ramirez" are one person.
  */
 export function normalizeTeamName(raw: string): string {
-  return raw
-    .toLowerCase()
-    .replace(/[.,'"`’]/g, "")
-    .replace(/[^a-z0-9\s-]/g, " ")
-    .split(/\s+/)
-    .filter(Boolean)
-    .sort()
-    .join(" ");
+  return normalizeEntityName(raw);
 }
 
 /**
