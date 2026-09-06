@@ -616,13 +616,23 @@ tags:
       # early — and the `runFlow when` inside means an iteration that finds no
       # step to answer costs one hierarchy read and nothing else.
       #
-      # `maxRuns` is a runaway guard, not a budget: it must exceed the number
+      # `times` is a runaway guard, not a budget: it must exceed the number
       # of distinct new teams a real Base set can surface (~30 checklist teams
       # plus the staged career teams behind them). The extendedWaitUntil below
       # is still the real gate — if this loop ends early, that wait fails
       # loudly rather than the flow committing a half-reviewed batch.
+      #
+      # `times` AND `while` TOGETHER, and that pairing is the whole point.
+      # Maestro's repeat carries both — `YamlRepeatCommand` exposes `getTimes()`
+      # and `getWhile()`, and the parsed command comes back as
+      # `RepeatCommand(times=250, condition=Condition(notVisible=…))`, so the
+      # loop runs while the condition holds and stops at whichever of the two
+      # comes first. There is NO `maxRuns` in that schema: it was invented, and
+      # an unknown property is a HARD PARSE ERROR that kills the entire flow
+      # before a single command runs — which is exactly how it took the seed
+      # job down, with a message pointing at a line nobody had just edited.
       - repeat:
-          maxRuns: 250
+          times: 250
           while:
             notVisible:
               text: ".*Confirm & Save.*"

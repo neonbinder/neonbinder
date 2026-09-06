@@ -463,7 +463,7 @@ tags:
       # the first time it caught the batch between lookups. See
       # setup.yaml for the long version.
       - repeat:
-          maxRuns: 250
+          times: 250
           while:
             notVisible:
               text: ".*Confirm & Save.*"
