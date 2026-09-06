@@ -71,7 +71,7 @@ function countingFetch(): { fetch: typeof fetch; calls: () => number } {
   const impl = (async (url: string | URL) => {
     calls++;
     const u = String(url);
-    if (u.includes("site.api.espn.com")) {
+    if (u.includes("site.web.api.espn.com")) {
       return new Response(
         JSON.stringify({ sports: [{ leagues: [{ teams: [] }] }] }),
         { status: 200, headers: { "Content-Type": "application/json" } },
@@ -263,7 +263,7 @@ describe("enrichTeam — creation-only (NEO-203)", () => {
     // location, so the gap-fill declines it and the name is untouched.
     vi.stubGlobal("fetch", (async (url: string | URL) => {
       const u = String(url);
-      if (u.includes("site.api.espn.com")) {
+      if (u.includes("site.web.api.espn.com")) {
         return new Response(
           JSON.stringify({
             sports: [
