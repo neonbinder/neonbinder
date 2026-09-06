@@ -86,11 +86,17 @@ export function candidateLinkLabel(
 
 export default function SameNamePlayerPanel({
   candidates,
+  scanCapped,
   disabled,
   onPick,
 }: {
   /** Empty renders nothing — see the server builder: it returns [] below two. */
   candidates: ReadonlyArray<SameNameCandidate>;
+  /**
+   * The server stopped counting at its scan cap, so this list is "at least
+   * this many" rather than "this many". See the note on the line it renders.
+   */
+  scanCapped?: boolean;
   /** True while another decision is in flight. See the wizard's `busy`. */
   disabled?: boolean;
   onPick: (playerId: string) => void;
@@ -107,10 +113,27 @@ export default function SameNamePlayerPanel({
             way out is the button below this panel, so it is described rather
             than repeated as a control here. */}
         <p className="text-xs text-gray-400">
-          {candidates.length} players are already filed under this name. Pick
-          the one on this card, or add a new player below.
+          {scanCapped
+            ? `More than ${candidates.length} players are already filed under this name.`
+            : `${candidates.length} players are already filed under this name.`}{" "}
+          Pick the one on this card, or add a new player below.
         </p>
       </div>
+      {/*
+        NEO-254 — the list is not the whole list.
+
+        A silently truncated candidate list is worse than no list: the operator
+        reads eight names, concludes none of them is the man on the card, and
+        creates a ninth — which is precisely the duplicate this panel exists to
+        prevent, arriving with the panel's own blessing. So the truncation is
+        stated, and the way out (the full search, one control below) is named.
+      */}
+      {scanCapped && (
+        <p className="text-xs text-gray-400">
+          Only the first {candidates.length} are shown — use Link to Existing to
+          search them all.
+        </p>
+      )}
       <ul className="space-y-1" aria-label="Players already filed under this name">
         {candidates.map((candidate, index) => {
           const detail = candidateDetail(candidate);

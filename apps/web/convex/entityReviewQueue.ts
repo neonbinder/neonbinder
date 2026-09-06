@@ -10,7 +10,15 @@ import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { RunResult } from "@convex-dev/workpool";
 import { getCurrentUserId, requireAdmin } from "./auth";
-import { buildExistingPlayerCandidates, normalizePlayerName } from "./players";
+import {
+  buildExistingPlayerCandidates,
+  isAmbiguousPlayerName,
+  normalizePlayerName,
+} from "./players";
+// NEO-254: ONE floor, shared with `players.savePlayerFields` (the other route
+// into the same `players.teamYears` column) and with the wizard's own year
+// fields. The three used to be separate literals and two of them disagreed.
+import { MIN_CAREER_YEAR } from "../lib/players/career-years";
 import { normalizeTeamName } from "./teams";
 
 /**
@@ -100,11 +108,6 @@ const decisionValidator = v.union(
   v.object({ action: v.literal("skip") }),
 );
 
-// Earliest plausible year for a career-team entry — 1869 (first openly
-// professional baseball club). A deliberately loose lower bound: the point is
-// to reject nonsense (year 0, negative, a mistyped 5-digit year), not to
-// encode sport-specific history.
-const MIN_CAREER_YEAR = 1869;
 
 // Upper bound on how many career-team entries an admin can attach to a single
 // player row in the wizard. Not a security boundary (this path is admin-gated)
@@ -322,6 +325,42 @@ function toPublicRow<T extends { createdByUserId: string }>(
  * The `batchId` is preserved throughout, because the client is already holding
  * it and a new one would strand the open wizard.
  */
+/**
+ * NEO-254 — the enrichment a review row is BORN with.
+ *
+ * ## Why ambiguity is attached here and not only when the lookup lands
+ *
+ * `applyLookupResult` computes `existingCandidates` too, and for a while that
+ * was the only place it happened. That left the marker missing on every row
+ * whose lookup never produced one:
+ *
+ *   - `backstopEntityReviewRowImpl` settles a stranded row to "error" without
+ *     going near `players`;
+ *   - `sweepStalePendingRows` does the same for a row the pool lost entirely;
+ *   - and any row already sitting in the queue at deploy time never re-runs
+ *     its lookup at all.
+ *
+ * A row in any of those states is indistinguishable, to every consumer, from
+ * a name nobody has ever heard of — so the wizard would promote one of two
+ * same-name players to its one-tap primary, and the bulk create would mint a
+ * third. The ambiguity is knowable the moment the row is inserted, from
+ * `players` alone, with no network anywhere in it. So it is written then, and
+ * the lookup merely REFRESHES it.
+ *
+ * Returns `undefined` rather than an empty object for an unambiguous name, so
+ * an ordinary row is stored byte-identical to how it was before this existed.
+ */
+async function initialEnrichmentFor(
+  ctx: MutationCtx,
+  kind: "player" | "team",
+  name: string,
+  sportId: Id<"selectorOptions">,
+): Promise<{ existingCandidates: Awaited<ReturnType<typeof buildExistingPlayerCandidates>> } | undefined> {
+  if (kind !== "player") return undefined;
+  const existingCandidates = await buildExistingPlayerCandidates(ctx, name, sportId);
+  return existingCandidates.length > 0 ? { existingCandidates } : undefined;
+}
+
 export const startBatch = internalMutation({
   args: {
     selectorOptionId: v.id("selectorOptions"),
@@ -395,6 +434,9 @@ export const startBatch = internalMutation({
       const addedIds: Array<Id<"entityReviewQueue">> = [];
       for (const [key, { kind, name }] of incoming) {
         if (existingKeys.has(key)) continue;
+        // NEO-254 — see `initialEnrichmentFor`. A row added by a resume is as
+        // liable to be an ambiguous name as one from a fresh batch.
+        const enrichment = await initialEnrichmentFor(ctx, kind, name, args.sportId);
         addedIds.push(
           await ctx.db.insert("entityReviewQueue", {
             selectorOptionId: args.selectorOptionId,
@@ -404,6 +446,7 @@ export const startBatch = internalMutation({
             name,
             sportId: args.sportId,
             status: "pending",
+            ...(enrichment ? { enrichment } : {}),
           }),
         );
       }
@@ -423,6 +466,9 @@ export const startBatch = internalMutation({
     const batchId = crypto.randomUUID();
     const ids: Array<Id<"entityReviewQueue">> = [];
     for (const name of args.playerNames) {
+      // NEO-254 — the row knows it is a choice before any lookup runs. See
+      // `initialEnrichmentFor` for why that cannot wait for the lookup.
+      const enrichment = await initialEnrichmentFor(ctx, "player", name, args.sportId);
       ids.push(
         await ctx.db.insert("entityReviewQueue", {
           selectorOptionId: args.selectorOptionId,
@@ -432,6 +478,7 @@ export const startBatch = internalMutation({
           name,
           sportId: args.sportId,
           status: "pending",
+          ...(enrichment ? { enrichment } : {}),
         }),
       );
     }
@@ -789,6 +836,15 @@ export const clearDecision = mutation({
  * client's auto-add loop; they simply stay in the walk until answered.
  * Skip is unaffected for the same reason as above: it creates nothing, so
  * there is no wrong row to create.
+ *
+ * The test is `players.isAmbiguousPlayerName` — the LIVE index — and NOT the
+ * stored `enrichment.existingCandidates` marker, even though the marker is now
+ * written at enqueue time. The marker records what was true when the row was
+ * written; a preload run, a colleague's commit or a merge between then and
+ * this click can turn an ordinary name into an ambiguous one, and this is the
+ * one caller that turns "not ambiguous" straight into an INSERT. It reads at
+ * most one index lookup per undecided player row in the batch, which is the
+ * same order as the loop it sits in.
  */
 async function decideAllRemaining(
   ctx: MutationCtx,
@@ -821,7 +877,8 @@ async function decideAllRemaining(
     // caller turn one off without the other.
     if (
       !includePending &&
-      (row.enrichment?.existingCandidates?.length ?? 0) > 0
+      row.kind === "player" &&
+      (await isAmbiguousPlayerName(ctx, row.name, row.sportId))
     ) {
       continue;
     }

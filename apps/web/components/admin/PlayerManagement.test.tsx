@@ -77,7 +77,12 @@ vi.mock("../../convex/_generated/api", () => ({
       savePlayerFields: "players.savePlayerFields",
       enrichFromWikidata: "players.enrichFromWikidata",
     },
-    teams: { getManyByIds: "teams.getManyByIds" },
+    teams: {
+      getManyByIds: "teams.getManyByIds",
+      // NEO-254: the undated-leads section resolves its names to team rows so
+      // "Add years" can put the team in the picker.
+      resolveNames: "teams.resolveNames",
+    },
     selectorOptions: {
       getSelectorOptions: "selectorOptions.getSelectorOptions",
     },
@@ -217,7 +222,26 @@ const ENRICHED_TROUT = {
   lastUpdated: 2,
 };
 
+/**
+ * NEO-254 — a player carrying undated Wikidata leads and a birth year.
+ *
+ * "San Diego State Aztecs" has a `teams` row in this fixture's world (see
+ * `resolvedUndatedNames`), "United States national team" does not — the two
+ * branches of "Add years".
+ */
+const GWYNN = {
+  _id: "p-gwynn",
+  _creationTime: 5,
+  name: "Tony Gwynn",
+  nameNormalized: "gwynn tony",
+  sportId: "sport-baseball",
+  birthYear: 1960,
+  undatedCareerTeams: ["San Diego State Aztecs", "United States national team"],
+  lastUpdated: 1,
+};
+
 const PLAYERS_BY_ID: Record<string, unknown> = {
+  "p-gwynn": GWYNN,
   "p-griffey": GRIFFEY,
   "p-trout": TROUT,
   "p-rice": RICE,
@@ -353,6 +377,12 @@ const BORDERLINE_PLAYER = {
 let management: unknown;
 let searchResults: unknown;
 let nearMatches: unknown;
+/** NEO-254: what `teams.resolveNames` answers for the undated leads. */
+let resolvedUndatedNames: Array<{
+  name: string;
+  existingTeamId?: string;
+  existingName?: string;
+}>;
 
 function routeQuery(ref: string, args: Record<string, unknown>): unknown {
   switch (ref) {
@@ -377,6 +407,8 @@ function routeQuery(ref: string, args: Record<string, unknown>): unknown {
       return TEAMS.filter((t) =>
         (args.ids as string[]).includes(t._id),
       );
+    case "teams.resolveNames":
+      return resolvedUndatedNames;
     default:
       return undefined;
   }
@@ -397,6 +429,8 @@ beforeEach(() => {
   };
   searchResults = [GRIFFEY, TROUT];
   nearMatches = undefined;
+  resolvedUndatedNames = [];
+  PLAYERS_BY_ID["p-gwynn"] = GWYNN;
   mockCreateByAdmin.mockResolvedValue({ id: "p-trout", created: true });
   mockSavePlayerFields.mockResolvedValue(null);
   mockEnrich.mockResolvedValue(null);
@@ -1511,5 +1545,285 @@ describe("PlayerManagement — the ?player deep link", () => {
     expect(url()).toBe("?player=p-trout");
     expect(screen.getByLabelText("Filter players")).toHaveProperty("value", "r");
     expect(listRow(/Mike Trout/).getAttribute("aria-current")).toBe("true");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-254 — birth year, and the undated Wikidata leads
+// ---------------------------------------------------------------------------
+
+/**
+ * Render the screen with Gwynn in the list and his detail panel open.
+ *
+ * The list has to hold him BEFORE the first render — `management` is read
+ * during render, and setting it afterwards leaves the row that the click is
+ * looking for un-drawn.
+ */
+function renderWithGwynn() {
+  management = {
+    players: [GWYNN, GRIFFEY, TROUT],
+    totalCount: 3,
+    truncated: false,
+  };
+  const utils = render(<PlayerManagement />);
+  fireEvent.click(screen.getByRole("button", { name: /Tony Gwynn/ }));
+  return utils;
+}
+
+describe("NEO-254: birth year", () => {
+  it("sends the birth year the add form was given", async () => {
+    // Without this field a SECOND person with an existing name cannot be
+    // created through the UI at all: `createByAdmin` refuses an ambiguous name,
+    // and the form's own near-match hierarchy pushes creation behind
+    // "Create anyway". The field IS the mechanism, not decoration on it.
+    const { container } = render(<PlayerManagement />);
+    openAddForm(container);
+
+    fireEvent.change(screen.getByLabelText("New player name"), {
+      target: { value: "Bob Allen" },
+    });
+    fireEvent.change(screen.getByLabelText("Birth year (optional)"), {
+      target: { value: "1937" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create player Bob Allen" }));
+
+    await waitFor(() =>
+      expect(mockCreateByAdmin).toHaveBeenCalledWith({
+        name: "Bob Allen",
+        sportId: "sport-baseball",
+        birthYear: 1937,
+      }),
+    );
+  });
+
+  it("omits the key entirely when the field is left blank", async () => {
+    // Most players are the only one of their name, and demanding a year for
+    // them would be a tax on the common case.
+    const { container } = render(<PlayerManagement />);
+    openAddForm(container);
+    fireEvent.change(screen.getByLabelText("New player name"), {
+      target: { value: "Daulton Varsho" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Create player Daulton Varsho" }),
+    );
+
+    await waitFor(() => expect(mockCreateByAdmin).toHaveBeenCalledTimes(1));
+    expect(Object.keys(mockCreateByAdmin.mock.calls[0][0])).toEqual([
+      "name",
+      "sportId",
+    ]);
+  });
+
+  it("does NOT say 'already exists' when the create goes through", async () => {
+    // `created: true` is the server saying it minted a new row — which is
+    // exactly what a differing birth year buys against an existing same-name
+    // player. Reporting "already exists" there would tell the operator their
+    // second Bob Allen was not created when it was.
+    mockCreateByAdmin.mockResolvedValue({ id: "p-new", created: true });
+    const { container } = render(<PlayerManagement />);
+    openAddForm(container);
+    fireEvent.change(screen.getByLabelText("New player name"), {
+      target: { value: "Bob Allen" },
+    });
+    fireEvent.change(screen.getByLabelText("Birth year (optional)"), {
+      target: { value: "1937" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create player Bob Allen" }));
+
+    await waitFor(() => expect(screen.getByText("Added Bob Allen.")).toBeTruthy());
+    expect(screen.queryByText(/already exists/)).toBeNull();
+  });
+
+  it("shows the server's ambiguity refusal verbatim", async () => {
+    // The message IS the instruction — how many rows share the name, and that
+    // the operator has to pick one. Swallowing it into "Could not add that
+    // player" would say nothing they can act on.
+    mockCreateByAdmin.mockRejectedValue(
+      new ConvexError(
+        "2 players are already filed under Bob Allen. Pick the right one instead of adding another.",
+      ),
+    );
+    const { container } = render(<PlayerManagement />);
+    openAddForm(container);
+    fireEvent.change(screen.getByLabelText("New player name"), {
+      target: { value: "Bob Allen" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create player Bob Allen" }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(
+          "2 players are already filed under Bob Allen. Pick the right one instead of adding another.",
+        ),
+      ).toBeTruthy(),
+    );
+  });
+
+  it("refuses to send a birth year outside the bounds", async () => {
+    const { container } = render(<PlayerManagement />);
+    openAddForm(container);
+    fireEvent.change(screen.getByLabelText("New player name"), {
+      target: { value: "Bob Allen" },
+    });
+    fireEvent.change(screen.getByLabelText("Birth year (optional)"), {
+      target: { value: "1700" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create player Bob Allen" }));
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockCreateByAdmin).not.toHaveBeenCalled();
+    expect(screen.getByText(/Use a whole year between 1850 and/)).toBeTruthy();
+  });
+
+  it("shows the birth year on the list row", () => {
+    // NEO-235 stripped this row back to "which of the people with similar
+    // names is this?". A birth year is the one thing on a player that answers
+    // it, so it belongs by that edit's own rule.
+    renderWithGwynn();
+    expect(
+      within(screen.getByRole("button", { name: /Tony Gwynn/ })).getByText("b. 1960"),
+    ).toBeTruthy();
+  });
+
+  it("edits the birth year from the detail panel", async () => {
+    renderWithGwynn();
+    fireEvent.change(screen.getByLabelText("Birth year"), {
+      target: { value: "1961" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^Save$/ }));
+
+    await waitFor(() =>
+      expect(mockSavePlayerFields).toHaveBeenCalledWith({
+        id: "p-gwynn",
+        birthYear: 1961,
+      }),
+    );
+  });
+
+  it("clears the birth year with null when the field is emptied", async () => {
+    // "" and "unset" are different states, and a year nobody is sure of is
+    // better absent than wrong — the wizard's candidate list acts on it.
+    renderWithGwynn();
+    fireEvent.change(screen.getByLabelText("Birth year"), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Save$/ }));
+
+    await waitFor(() =>
+      expect(mockSavePlayerFields).toHaveBeenCalledWith({
+        id: "p-gwynn",
+        birthYear: null,
+      }),
+    );
+  });
+
+  it("will not save an out-of-bounds birth year", async () => {
+    renderWithGwynn();
+    fireEvent.change(screen.getByLabelText("Birth year"), {
+      target: { value: "20999" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^Save$/ }));
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockSavePlayerFields).not.toHaveBeenCalled();
+  });
+});
+
+describe("NEO-254: undated Wikidata leads on the Players page", () => {
+  it("lists the leads under their own heading", () => {
+    renderWithGwynn();
+    expect(screen.getByText("Also on Wikidata, no years yet")).toBeTruthy();
+    const list = screen.getByRole("list", { name: "Undated Wikidata teams" });
+    expect(within(list).getAllByRole("listitem")).toHaveLength(2);
+  });
+
+  it("renders no section for a player with no leads", () => {
+    render(<PlayerManagement />);
+    selectGriffey();
+    expect(screen.queryByText("Also on Wikidata, no years yet")).toBeNull();
+  });
+
+  it("Add years prefills the picker and focuses the from-year field", () => {
+    // The team is already on screen; making the operator retype it into the
+    // picker would be the detour this affordance exists to remove.
+    resolvedUndatedNames = [
+      { name: "San Diego State Aztecs", existingTeamId: "t-mariners" },
+      { name: "United States national team" },
+    ];
+    renderWithGwynn();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Add years for San Diego State Aztecs" }),
+    );
+
+    expect(
+      screen.getByText("Set the years for San Diego State Aztecs, then Add stint."),
+    ).toBeTruthy();
+    expect(document.activeElement).toBe(screen.getByLabelText("Stint from year"));
+  });
+
+  it("says what is missing when the lead has no team row yet", () => {
+    // A college programme usually has no `teams` row. Saying so beats a button
+    // that silently does nothing.
+    resolvedUndatedNames = [
+      { name: "San Diego State Aztecs", existingTeamId: "t-mariners" },
+      { name: "United States national team" },
+    ];
+    renderWithGwynn();
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Add years for United States national team",
+      }),
+    );
+
+    expect(
+      screen.getByText(
+        "No team named United States national team yet. Pick or add it below, then set the years.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("Remove saves immediately, without waiting for the Save button", async () => {
+    // Dismissing a wrong suggestion is a decision about a suggestion, not an
+    // edit to the player. Making it wait behind Save would mean an unsaved
+    // name edit could not be abandoned without also un-dismissing this.
+    renderWithGwynn();
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Remove San Diego State Aztecs from the undated list",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(mockSavePlayerFields).toHaveBeenCalledWith({
+        id: "p-gwynn",
+        undatedCareerTeams: ["United States national team"],
+      }),
+    );
+    await waitFor(() =>
+      expect(screen.getByText("Removed San Diego State Aztecs.")).toBeTruthy(),
+    );
+  });
+
+  it("saving a stint sends only teamYears — the server prunes the lead", () => {
+    // One gesture, one Save. A second write to keep the list in step with the
+    // stint is a thing that can get out of step; the `teamYears` branch of
+    // `savePlayerFields` derives the prune from what was saved.
+    renderWithGwynn();
+
+    fireEvent.click(screen.getByRole("button", { name: "Pick Seattle Mariners" }));
+    fireEvent.change(screen.getByLabelText("Stint from year"), {
+      target: { value: "1979" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add stint" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Save$/ }));
+
+    return waitFor(() => {
+      expect(mockSavePlayerFields).toHaveBeenCalledWith({
+        id: "p-gwynn",
+        teamYears: [{ teamId: "t-mariners", fromYear: 1979 }],
+      });
+    });
   });
 });

@@ -122,6 +122,9 @@ import {
   normalizeUndatedCareerTeams,
   PLAYER_AMBIGUITY_SCAN_LIMIT,
 } from "./players";
+// NEO-254: the key `normalizeUndatedCareerTeams` dedupes on. Imported rather
+// than re-derived so the prune and the store cannot drift apart.
+import { normalizeEntityName } from "./lib/entityNearMatch";
 import { normalizeTeamName } from "./teams";
 import { findOrCreateLeague, resolveDefaultLeagueId } from "./leagues";
 import {
@@ -9604,14 +9607,44 @@ export const commitCardChecklistPrelude = internalMutation({
       }
       if (decision.action === "link") {
         if (decision.linkedPlayerId) {
+          /**
+           * NEO-254 — the linked row is RE-VALIDATED, not trusted.
+           *
+           * A decision is recorded when the operator makes it and consumed
+           * when they hit Confirm, and a review session is a human-paced thing
+           * that can span a long while. Between the two, the row they picked
+           * can be deleted or merged away by another operator or by an admin
+           * tool — and this branch used to write the id into `playerIdByName`
+           * on the strength of the decision alone. The card then carried a
+           * `playerIds` entry pointing at nothing: invisible to every query
+           * that joins through it, unfixable by any later pass, and with
+           * nothing anywhere saying it had happened.
+           *
+           * The `db.get` was ALREADY here — it read the linked row's canonical
+           * spelling — and its result was simply discarded when the row was
+           * gone. Reading it once and acting on the answer costs nothing extra.
+           *
+           * The sport is checked too, for the reason `savePlayerFields` checks
+           * it on a stint: a cross-sport player is unreachable by every query
+           * that matters (all of them key on the sport row id), so linking to
+           * one is the same dangling reference wearing a valid id.
+           *
+           * Treated as UNREVIEWED rather than failed: the operator's answer
+           * has become unanswerable, which is exactly the state
+           * `unreviewedPlayerNames` reports and stamps on the card. The commit
+           * still lands — refusing it would cost them the whole sync over one
+           * name — and they are told which name to look at again.
+           */
+          const linked = await ctx.db.get(decision.linkedPlayerId);
+          if (!linked || linked.sportId !== args.sportId) {
+            unreviewedPlayerNames.push(name);
+            continue;
+          }
           playerIdByName.set(name, decision.linkedPlayerId);
           // The LINKED row's own spelling is what the old write loop's
-          // `db.get(...).name` produced, so read it here (once) rather than
-          // assuming the reviewed name matches it.
-          if (!playerNameById.has(decision.linkedPlayerId)) {
-            const linked = await ctx.db.get(decision.linkedPlayerId);
-            if (linked) playerNameById.set(decision.linkedPlayerId, linked.name);
-          }
+          // `db.get(...).name` produced, so use it here rather than assuming
+          // the reviewed name matches it.
+          playerNameById.set(decision.linkedPlayerId, linked.name);
         }
         continue;
       }
@@ -9710,15 +9743,24 @@ export const commitCardChecklistPrelude = internalMutation({
        * lists are built from labels, and punctuation must not be able to
        * defeat the comparison and re-file a lead that was already chased.
        */
+      //
+      // `normalizeEntityName`, not this function's local `norm`, and that is
+      // load-bearing rather than tidiness: `normalizeUndatedCareerTeams`
+      // dedupes the stored list on `normalizeEntityName`, so pruning against a
+      // second, separately-maintained copy of the same algorithm is a drift
+      // waiting to happen — the day the two disagree, a lead the operator
+      // dated survives in the list beside the stint that closed it.
       const datedNameKeys = new Set<string>();
       for (const ct of enrichment?.careerTeams ?? []) {
         if (excludedCareerTeamNames.has(norm(ct.name))) continue;
-        datedNameKeys.add(norm(ct.name));
+        datedNameKeys.add(normalizeEntityName(ct.name));
       }
-      for (const ct of manualCareerTeams) datedNameKeys.add(norm(ct.name));
+      for (const ct of manualCareerTeams) {
+        datedNameKeys.add(normalizeEntityName(ct.name));
+      }
       const undatedCareerTeams = normalizeUndatedCareerTeams(
         (enrichment?.undatedCareerTeams ?? []).filter(
-          (teamName) => !datedNameKeys.has(norm(teamName)),
+          (teamName) => !datedNameKeys.has(normalizeEntityName(teamName)),
         ),
       );
       const id = await ctx.db.insert("players", {

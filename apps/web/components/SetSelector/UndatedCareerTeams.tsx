@@ -1,7 +1,7 @@
 import { useId, useRef, useState } from "react";
 import { Input } from "../primitives/Input";
-import { MIN_CAREER_YEAR } from "./CareerTeamEntry";
 import type { CareerTeamDraft } from "./CareerTeamEntry";
+import { MIN_CAREER_YEAR, maxCareerYear } from "../../lib/players/career-years";
 
 /**
  * NEO-254 — the Wikidata teams with no years on them, and a way to put years
@@ -43,10 +43,12 @@ import type { CareerTeamDraft } from "./CareerTeamEntry";
  *
  * ## Year bounds
  *
- * `MIN_CAREER_YEAR` (1869) rather than the Players page's 1850, and that is
- * deliberate: this form feeds `entityReviewQueue.recordDecision`, which
- * refuses anything under 1869. Validating against the looser bound would let
- * the operator type a year the very next round-trip rejects.
+ * `MIN_CAREER_YEAR` from `lib/players/career-years`, which is now the ONE
+ * floor every path that writes a career year validates against — this form's
+ * server (`entityReviewQueue.recordDecision`) and the Players page's
+ * (`players.savePlayerFields`) alike. They used to be separate literals, 1869
+ * and 1850, so a stint was storable through one editor and refused by the
+ * other.
  */
 
 /** Local per-name form state. Only ever one open at a time — see `openFor`. */
@@ -102,7 +104,7 @@ export default function UndatedCareerTeams({
 
   if (names.length === 0) return null;
 
-  const maxYear = new Date().getFullYear() + 1;
+  const maxYear = maxCareerYear();
 
   const open = (name: string) => {
     setOpenFor(name);

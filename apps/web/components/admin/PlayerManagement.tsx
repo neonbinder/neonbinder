@@ -16,6 +16,9 @@ import { userFacingMessage } from "@/lib/errors/user-facing-message";
 // through the current year). `primaryTeamId` below sums it per team rather than
 // re-deriving it — see that function for why it is not `pickDefaultTeamYear`.
 import { tenureYears } from "@/lib/players/team-tenure";
+// NEO-254: the birth-year bounds, shared with `players.assertBirthYear` so
+// the field cannot offer a year the round-trip then refuses.
+import { MIN_BIRTH_YEAR, maxBirthYear } from "@/lib/players/career-years";
 // NEO-235: the same two helpers TeamManagement's contrast readout uses, so the
 // row and that readout can never disagree about what a colour pair scores.
 import { contrastRatio, normalizeHexColor } from "@/lib/print/contrast";
@@ -237,12 +240,17 @@ function fieldSignature(fields: {
   name: string;
   isHallOfFame: boolean;
   wikidataId: string;
+  // NEO-254: the draft holds it as a STRING (it is an input), so the signature
+  // compares the trimmed string. "" and "1960" are the two states that matter
+  // and both survive the round-trip through `rowSignature` below.
+  birthYear: string;
   stints: Stint[];
 }): string {
   return JSON.stringify([
     fields.name.trim(),
     fields.isHallOfFame,
     fields.wikidataId.trim(),
+    fields.birthYear.trim(),
     sortStints(fields.stints).map((s) => [
       s.teamId,
       s.fromYear,
@@ -257,6 +265,7 @@ function rowSignature(row: Player): string {
     name: row.name,
     isHallOfFame: row.isHallOfFame ?? false,
     wikidataId: row.externalIds?.wikidataId ?? "",
+    birthYear: row.birthYear === undefined ? "" : String(row.birthYear),
     stints: row.teamYears ?? [],
   });
 }
@@ -272,6 +281,15 @@ function rowSignature(row: Player): string {
  * rather than truncating, so the caller has to know the number.
  */
 const MAX_RESOLVE_NAMES = 64;
+
+/**
+ * NEO-254 — evaluated once per module load rather than per render.
+ *
+ * `maxBirthYear()` reads the clock, and recomputing it inside render would
+ * make two otherwise identical renders differ on New Year's Eve. The server
+ * re-derives it per call, which is where it matters.
+ */
+const MAX_BIRTH_YEAR = maxBirthYear();
 
 const FIELD_BOX_HEIGHT = "min-h-[2.625rem]";
 
@@ -316,6 +334,18 @@ function AddPlayerForm({
   const [sportId, setSportId] = useState<string>(defaultSportId ?? "");
   const [debouncedName, setDebouncedName] = useState("");
   const [busy, setBusy] = useState(false);
+  /**
+   * NEO-254 — the birth year, and the only way to add a SECOND person with a
+   * name we already have.
+   *
+   * Without it this form could not create one at all: `createByAdmin` refuses
+   * an ambiguous name outright, and with one existing row the form's own
+   * near-match hierarchy promotes "Open {name}" and pushes creation behind
+   * "Create anyway". So the field is not decoration on the add form — it is
+   * the mechanism. Optional, because most players are the only one of their
+   * name and demanding a year for them would be a tax on the common case.
+   */
+  const [birthYear, setBirthYear] = useState("");
 
   useEffect(() => {
     const timer = setTimeout(
@@ -355,7 +385,18 @@ function AddPlayerForm({
   const panelMatches = exact
     ? (matches ?? []).filter((m) => m._id !== exact._id)
     : matches;
-  const canCreate = trimmed.length > 0 && sportId.length > 0 && !busy;
+  // Client-side mirror of `assertBirthYear`, so a typo is caught while the
+  // field is still in front of the operator. The server re-validates; this is
+  // the fast half of defense in depth, not the guarantee.
+  const trimmedBirthYear = birthYear.trim();
+  const birthYearNum = trimmedBirthYear === "" ? undefined : Number(trimmedBirthYear);
+  const birthYearValid =
+    birthYearNum === undefined ||
+    (Number.isInteger(birthYearNum) &&
+      birthYearNum >= MIN_BIRTH_YEAR &&
+      birthYearNum <= MAX_BIRTH_YEAR);
+  const canCreate =
+    trimmed.length > 0 && sportId.length > 0 && birthYearValid && !busy;
 
   const create = async () => {
     if (!canCreate) return;
@@ -365,6 +406,7 @@ function AddPlayerForm({
       const result = await createByAdmin({
         name: trimmed,
         sportId: sportId as Id<"selectorOptions">,
+        ...(birthYearNum !== undefined ? { birthYear: birthYearNum } : {}),
       });
       onStatus(
         result.created
@@ -373,6 +415,18 @@ function AddPlayerForm({
       );
       onCreated(result.id);
     } catch (e) {
+      /**
+       * NEO-254 — the ambiguity refusal reaches the operator verbatim.
+       *
+       * `createByAdmin` throws a `ConvexError` naming how many players already
+       * carry this name when it cannot tell which one is meant, and that
+       * message IS the instruction: pick one, or give a birth year that
+       * separates them. `userFacingMessage` already prefers `.data` (the only
+       * part that survives production's redaction) over the generic fallback,
+       * so nothing extra is needed to route it — but it must not be swallowed
+       * into "Could not add that player", which says nothing the operator can
+       * act on.
+       */
       onStatus({
         text: userFacingMessage(e, "Could not add that player."),
         isError: true,
@@ -414,6 +468,26 @@ function AddPlayerForm({
           ))}
         </select>
       </div>
+
+      {/* Under Sport, because it is the tiebreaker rather than the subject —
+          and captioned with what it is FOR, since an operator adding a player
+          nobody shares a name with has no reason to guess why it is here. */}
+      <Input
+        label="Birth year (optional)"
+        type="number"
+        inputMode="numeric"
+        min={MIN_BIRTH_YEAR}
+        max={MAX_BIRTH_YEAR}
+        value={birthYear}
+        placeholder="1969"
+        aria-invalid={birthYearValid ? undefined : true}
+        onChange={(e) => setBirthYear(e.target.value)}
+        helperText={
+          birthYearValid
+            ? "Tells this player apart from anyone else with the same name."
+            : `Use a whole year between ${MIN_BIRTH_YEAR} and ${MAX_BIRTH_YEAR}.`
+        }
+      />
 
       <NearMatchPanel
         kind="player"
@@ -500,6 +574,17 @@ function PlayerDetail({
   const [wikidataId, setWikidataId] = useState(
     player.externalIds?.wikidataId ?? "",
   );
+  /**
+   * NEO-254 — held as a string, like every other field here.
+   *
+   * "" means CLEARED, and that is a real state distinct from a year: a birth
+   * year nobody is sure of is better absent than wrong, because the review
+   * wizard's candidate list and `findOrCreate`'s tiebreaker both act on it.
+   * `savePlayerFields` takes `null` for that, the same shape `wikidataId` uses.
+   */
+  const [birthYear, setBirthYear] = useState(
+    player.birthYear === undefined ? "" : String(player.birthYear),
+  );
   const [stints, setStints] = useState<Stint[]>(
     sortStints(player.teamYears ?? []),
   );
@@ -568,6 +653,7 @@ function PlayerDetail({
     setName(row.name);
     setIsHallOfFame(row.isHallOfFame ?? false);
     setWikidataId(row.externalIds?.wikidataId ?? "");
+    setBirthYear(row.birthYear === undefined ? "" : String(row.birthYear));
     setStints(sortStints(row.teamYears ?? []));
     setSeeded({ id: row._id, signature: rowSignature(row) });
     setRowMovedUnderDraft(false);
@@ -578,6 +664,7 @@ function PlayerDetail({
     name,
     isHallOfFame,
     wikidataId,
+    birthYear,
     stints,
   });
 
@@ -682,9 +769,24 @@ function PlayerDetail({
   const hofChanged = isHallOfFame !== (player.isHallOfFame ?? false);
   const qidChanged = trimmedQid !== (player.externalIds?.wikidataId ?? "");
   const stintsChanged = !stintsEqual(stints, player.teamYears ?? []);
-  const dirty = nameChanged || hofChanged || qidChanged || stintsChanged;
+
+  // NEO-254 — same client-side mirror of `assertBirthYear` as the add form.
+  const trimmedBirthYear = birthYear.trim();
+  const birthYearNum =
+    trimmedBirthYear === "" ? undefined : Number(trimmedBirthYear);
+  const birthYearValid =
+    birthYearNum === undefined ||
+    (Number.isInteger(birthYearNum) &&
+      birthYearNum >= MIN_BIRTH_YEAR &&
+      birthYearNum <= MAX_BIRTH_YEAR);
+  const birthYearChanged =
+    trimmedBirthYear !==
+    (player.birthYear === undefined ? "" : String(player.birthYear));
+
+  const dirty =
+    nameChanged || hofChanged || qidChanged || birthYearChanged || stintsChanged;
   const canSave =
-    dirty && trimmedName.length > 0 && qidValid && busy === null;
+    dirty && trimmedName.length > 0 && qidValid && birthYearValid && busy === null;
 
   const addStint = () => {
     setStintError(null);
@@ -802,6 +904,12 @@ function PlayerDetail({
         ...(nameChanged ? { name: trimmedName } : {}),
         ...(hofChanged ? { isHallOfFame } : {}),
         ...(qidChanged ? { wikidataId: trimmedQid || null } : {}),
+        // NEO-254: `null` CLEARS, matching `wikidataId` above — an empty field
+        // is the operator saying they do not know, which is a different and
+        // more useful answer than leaving a wrong year on the row.
+        ...(birthYearChanged
+          ? { birthYear: birthYearNum === undefined ? null : birthYearNum }
+          : {}),
         ...(stintsChanged ? { teamYears: sortStints(stints) } : {}),
       });
       setStatus({ text: `Saved ${trimmedName}.`, isError: false });
@@ -931,6 +1039,30 @@ function PlayerDetail({
           >
             Sport: {sportLabel}
           </p>
+        </div>
+
+        {/* NEO-254 — its own row above the Wikidata/HoF pair, and captioned
+            with what it is FOR. It is the field that tells two players with
+            one name apart, so it is what the review wizard's candidate list
+            renders and what `findOrCreate`'s tiebreaker reads; an operator
+            correcting it is fixing those, not filling in trivia. */}
+        <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
+          <Input
+            label="Birth year"
+            type="number"
+            inputMode="numeric"
+            min={MIN_BIRTH_YEAR}
+            max={MAX_BIRTH_YEAR}
+            value={birthYear}
+            placeholder="1969"
+            aria-invalid={birthYearValid ? undefined : true}
+            onChange={(e) => setBirthYear(e.target.value)}
+            helperText={
+              birthYearValid
+                ? "Tells this player apart from anyone with the same name. Clear it to unset."
+                : `Use a whole year between ${MIN_BIRTH_YEAR} and ${MAX_BIRTH_YEAR}.`
+            }
+          />
         </div>
 
         <div className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2 sm:items-end">
@@ -1658,6 +1790,19 @@ export default function PlayerManagement() {
                         {sportLabel && (
                           <span className="shrink-0 text-slate-400">
                             {sportLabel}
+                          </span>
+                        )}
+                        {/* NEO-254 — the ONE fact NEO-235 moved out of this row
+                            that belongs back in it. That edit's rule was "the
+                            row answers 'which of the people with similar names
+                            is this?', and nothing else"; a birth year is the
+                            only thing on a player that answers it, and after
+                            the bulk preload this list really does hold two Bob
+                            Allens. Same muted treatment as the sport, and only
+                            when the row has one. */}
+                        {player.birthYear !== undefined && (
+                          <span className="shrink-0 text-slate-400">
+                            b. {player.birthYear}
                           </span>
                         )}
                         {/* The team nod, held apart from the sport by a hairline

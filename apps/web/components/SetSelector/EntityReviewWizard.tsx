@@ -5,6 +5,8 @@ import { useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import { normalizeEntityName } from "../../convex/lib/entityNearMatch";
+// NEO-254: the server's scan cap, so the panel can say when it was hit.
+import { PLAYER_AMBIGUITY_SCAN_LIMIT } from "../../lib/players/name-limits";
 // NEO-212 security review: an enrichment `wikidataId` arrives from
 // query.wikidata.org, so it is external input on its way into an `href`.
 // `wikidataUrl` returns null unless it is really a `Q<digits>` id — see
@@ -14,11 +16,12 @@ import { isEditableTarget } from "../../lib/dom/is-editable-target";
 import NeonButton from "../modules/NeonButton";
 import { ConfirmDialog } from "../modules/confirm-dialog";
 import { CopyButton } from "../primitives/CopyButton";
-import {
-  NearMatchPanel,
-  hasExact,
-  type NearMatch,
-} from "../entities/NearMatchPanel";
+// `hasExact` is deliberately no longer imported: NEO-254 needs to know
+// whether there is EXACTLY ONE exact match, not whether there is at least one,
+// and the boolean cannot answer that. The admin add form still uses it — the
+// question it asks there ("is a duplicate possible at all?") is the one
+// `hasExact` was written for.
+import { NearMatchPanel, type NearMatch } from "../entities/NearMatchPanel";
 import EntityLinkSearch from "./EntityLinkSearch";
 import CareerTeamEntry, { type CareerTeamDraft } from "./CareerTeamEntry";
 import SameNamePlayerPanel from "./SameNamePlayerPanel";
@@ -956,20 +959,6 @@ export default function EntityReviewWizard({
     : [];
 
   /**
-   * NEO-254 — the NB rows already filed under this exact name.
-   *
-   * Server-built (`players.buildExistingPlayerCandidates`, via
-   * `applyLookupResult`) and present only when there are TWO OR MORE, so this
-   * is empty for every ordinary name and the panel below never renders. Not
-   * shown on a decided row: the read-only panel states the outcome, and a list
-   * of link buttons under it would offer to re-decide something that already
-   * has a "Change decision" control.
-   */
-  const sameNameCandidates =
-    current && !reviewingDecided && current.kind === "player"
-      ? (current.enrichment?.existingCandidates ?? [])
-      : [];
-
   /**
    * NEO-254 — Wikidata teams with no years, minus the ones the operator has
    * already dated on this row.
@@ -987,7 +976,74 @@ export default function EntityReviewWizard({
     );
   })();
 
-  const exactMatch = (nearMatches ?? []).find((m) => m.confidence === "exact") ?? null;
+  const exactRows = (nearMatches ?? []).filter((m) => m.confidence === "exact");
+  const exactMatch = exactRows[0] ?? null;
+
+  /**
+   * NEO-254 — the NB rows already filed under this exact name.
+   *
+   * Normally the server's own list (`players.buildExistingPlayerCandidates`,
+   * attached when the row is enqueued and refreshed when its lookup lands),
+   * which carries the birth year and career line that make the choice
+   * possible. Present only when there are TWO OR MORE, so this is empty for
+   * every ordinary name and the panel never renders.
+   *
+   * Not shown on a decided row: the read-only panel states the outcome, and a
+   * list of link buttons under it would offer to re-decide something that
+   * already has a "Change decision" control.
+   *
+   * ## The fallback, and why it is not "no panel"
+   *
+   * The stored list is missing on a row the completion backstop or the
+   * stale-row sweep settled without ever reading `players`, and on any row
+   * queued before this shipped. `nearMatches` still sees the truth — it reads
+   * the exact key live — so when it returns more than one exact row, those
+   * rows ARE the candidates and are used as such, minus the detail the server
+   * would have supplied.
+   *
+   * Falling back to nothing was the tempting option and it is wrong twice
+   * over. `NearMatchPanel` would render the list instead, and it labels an
+   * exact row `Link to {name} — same name` — so two rows sharing a name get
+   * two controls with byte-identical accessible names, on the one screen where
+   * telling them apart is the entire task. `SameNamePlayerPanel` already
+   * solves that (it folds a position into the label when a row has no
+   * distinguishing fact), so the degraded path gets the component built for
+   * the job rather than the one that cannot express it.
+   */
+  const storedSameNameCandidates =
+    current && !reviewingDecided && current.kind === "player"
+      ? (current.enrichment?.existingCandidates ?? [])
+      : [];
+  const sameNameCandidates =
+    storedSameNameCandidates.length > 0
+      ? storedSameNameCandidates
+      : current && !reviewingDecided && current.kind === "player" && exactRows.length > 1
+        ? exactRows.map((m) => ({
+            playerId: m._id,
+            name: m.name,
+            // No birth year and no career: this path has only what the
+            // near-match query returns. The panel renders "Nothing on file
+            // yet" for them, which is honest — it is what we can see from
+            // here, not a claim about the row.
+            careerSummary: "",
+          }))
+        : [];
+  /**
+   * NEO-254 — did the server stop counting?
+   *
+   * `buildExistingPlayerCandidates` reads at most `PLAYER_AMBIGUITY_SCAN_LIMIT`
+   * rows, so a stored list exactly that long means "at least this many", not
+   * "this many". Saying so matters: a panel that silently shows eight of
+   * eleven "John Smith"s invites the operator to conclude none of them is
+   * right and create a twelfth, which is the failure this whole panel exists
+   * to stop.
+   *
+   * Only ever true of the STORED list. The fallback above is bounded by
+   * `players.nearMatches`' own limit, which is a different number and a
+   * different question, and claiming the scan cap for it would be a guess.
+   */
+  const sameNameScanCapped =
+    storedSameNameCandidates.length >= PLAYER_AMBIGUITY_SCAN_LIMIT;
   /**
    * NEO-254 — never promote one of several same-name rows to the primary
    * action.
@@ -999,9 +1055,22 @@ export default function EntityReviewWizard({
    * panel above lists every one of them instead, and the primary action goes
    * back to being "Add as New Player" — which is the honest default: if the
    * operator wanted one of ours, they have just been shown all of ours.
+   *
+   * ## Two conditions, because the stored marker can be missing
+   *
+   * `sameNameCandidates` comes off `enrichment`, which is written when the row
+   * is enqueued and refreshed when its lookup lands. Neither happens for a row
+   * the completion backstop or the stale-row sweep settled to "error", nor for
+   * one that was already queued when this shipped. So the marker's absence is
+   * NOT proof the name is unambiguous.
+   *
+   * `exactRows.length === 1` is the independent check, and it needs no stored
+   * state at all: `players.nearMatches` reads the exact key live, so two exact
+   * rows in its answer means two people share this name whatever `enrichment`
+   * does or does not say. Either condition alone is enough to demote the
+   * primary; both have to pass to promote it.
    */
-  const showExactHierarchy =
-    sameNameCandidates.length === 0 && hasExact(nearMatches) && exactMatch !== null;
+  const showExactHierarchy = sameNameCandidates.length === 0 && exactRows.length === 1;
   const hasCloseOnly = !showExactHierarchy && (nearMatches?.length ?? 0) > 0;
   /**
    * What the panel is left to show once the primary action has been promoted.
@@ -1260,6 +1329,7 @@ export default function EntityReviewWizard({
                       below becomes the tiebreaker rather than the subject. */}
                   <SameNamePlayerPanel
                     candidates={sameNameCandidates}
+                    scanCapped={sameNameScanCapped}
                     disabled={busy}
                     onPick={(playerId) => {
                       if (busy) return;
@@ -1386,6 +1456,12 @@ export default function EntityReviewWizard({
                         {/* NEO-254 — under the dated list, because these are
                             not career data yet. See UndatedCareerTeams. */}
                         <UndatedCareerTeams
+                          // NEO-254: keyed by the ROW, so stepping to another
+                          // name remounts it. Its open form and half-typed
+                          // years are state about one player; carried across a
+                          // row change they would offer to date the previous
+                          // player's team on this one's record.
+                          key={current._id}
                           names={undatedCareerTeams}
                           disabled={busy}
                           onAdd={(entry) =>

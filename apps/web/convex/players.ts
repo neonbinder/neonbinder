@@ -27,7 +27,21 @@ import {
 import { isWikidataQid } from "../lib/players/wikidata-id";
 // NEO-251: one home for the bound — shared with the SportLots parser and the
 // pairing modal's roster field. See the note on the re-export below.
-import { MAX_PLAYER_NAME_LENGTH } from "../lib/players/name-limits";
+import {
+  MAX_PLAYER_NAME_LENGTH,
+  PLAYER_AMBIGUITY_SCAN_LIMIT,
+} from "../lib/players/name-limits";
+// NEO-254 — this file used to carry its own 1850 while
+// `entityReviewQueue.recordDecision` refused anything under 1869. Both guard
+// `players.teamYears`, so a stint was storable through one editor and refused
+// by the other. One constant now; see lib/players/career-years.ts for why the
+// answer is 1869.
+import {
+  MIN_BIRTH_YEAR,
+  MIN_CAREER_YEAR,
+  maxBirthYear,
+  maxCareerYear,
+} from "../lib/players/career-years";
 
 /**
  * Lowercase + collapse whitespace + strip punctuation + token-sort. Used
@@ -141,8 +155,30 @@ function toPublicPlayer<T extends { createdByUserId?: string }>(doc: T): Omit<T,
 }
 
 /**
- * Look up a player by sport + normalized name. Returns null if not found.
+ * Look up THE player with this sport + normalized name, or null.
+ *
  * Public query — `createdByUserId` is omitted from the response.
+ *
+ * ## NEO-254 — null now means "not exactly one", not "not found"
+ *
+ * `(nameNormalized, sportId)` is a dedup key, not a unique one. This used to
+ * `.collect()` the whole cross-sport `by_name_normalized` index and hand back
+ * `.find(...)` — the first row of however many shared the name, presented to
+ * every caller as though it were the only one. That is the same coin flip the
+ * write paths in this file were carrying, and it is worse here, because the
+ * shape of the answer (`player | null`) actively tells the caller there was
+ * nothing to choose between.
+ *
+ * Two or more matches now return null. The question this query asks is "which
+ * player is this name?", and when the answer is "one of these two" there is no
+ * honest way to express it in this shape — so it says it does not know, which
+ * is true, rather than picking. A caller that needs to tell the two cases
+ * apart uses `resolveNameForReview`, whose `matchCount` was added for exactly
+ * that and which is what the review gate now calls.
+ *
+ * Also narrowed to the compound index: a common surname matches in every sport
+ * we track, and collecting all of them to throw most away was a read the
+ * narrow index makes unnecessary.
  */
 export const findByNameAndSport = query({
   args: {
@@ -153,27 +189,19 @@ export const findByNameAndSport = query({
   handler: async (ctx, args) => {
     await requireSignedIn(ctx);
     const normalized = normalizePlayerName(args.name);
-    const matches = await ctx.db
-      .query("players")
-      .withIndex("by_name_normalized", (q) => q.eq("nameNormalized", normalized))
-      .collect();
-    const found = matches.find((p) => p.sportId === args.sportId);
-    return found ? toPublicPlayer(found) : null;
+    if (!normalized) return null;
+    const matches = await sameNamePlayers(ctx, normalized, args.sportId);
+    return matches.length === 1 ? toPublicPlayer(matches[0]) : null;
   },
 });
 
 /**
- * NEO-254 — how many same-name rows any lookup in this file reads before it
- * stops counting.
- *
- * Not a page size: nothing here needs the whole list, only "none / exactly one
- * / more than one", and the third answer is settled by the second row. Reading
- * a bounded window rather than `.collect()`ing keeps a pathological name (a
- * checklist header that normalizes to something a thousand rows share) from
- * turning a hot-path lookup into an unbounded read. Eight leaves room for the
- * candidate list the review wizard renders while staying trivially cheap.
+ * NEO-254 — re-exported from `lib/players/name-limits.ts`, which is where it
+ * has to live: the review wizard's candidate panel reads it too, and that is a
+ * browser bundle. Same split, same reasoning as `MAX_PLAYER_NAME_LENGTH`
+ * above.
  */
-export const PLAYER_AMBIGUITY_SCAN_LIMIT = 8;
+export { PLAYER_AMBIGUITY_SCAN_LIMIT } from "../lib/players/name-limits";
 
 /**
  * NEO-254 — the rows already filed under this exact dedup key, capped.
@@ -203,6 +231,58 @@ async function sameNamePlayers(
       q.eq("nameNormalized", nameNormalized).eq("sportId", sportId),
     )
     .take(PLAYER_AMBIGUITY_SCAN_LIMIT);
+}
+
+/**
+ * NEO-254 — refuse a birth year that cannot be one.
+ *
+ * Shared by the three write paths that accept one (`findOrCreate`,
+ * `createByAdmin`, `savePlayerFields`) so they cannot disagree about what
+ * the column holds — the same drift the two career-year floors had before
+ * `lib/players/career-years.ts` existed.
+ *
+ * The refusal carries the value, which is both safe and useful here: it is a
+ * NUMBER the operator just typed, not a name, so there is nothing in it to
+ * leak, and seeing it back is how they spot the transposed digits.
+ */
+function assertBirthYear(birthYear: number): void {
+  const maxYear = maxBirthYear();
+  if (
+    !Number.isInteger(birthYear) ||
+    birthYear < MIN_BIRTH_YEAR ||
+    birthYear > maxYear
+  ) {
+    throw new ConvexError(
+      `A birth year must be a whole year between ${MIN_BIRTH_YEAR} and ${maxYear}.`,
+    );
+  }
+}
+
+/**
+ * NEO-254 — is this name a question rather than a lookup?
+ *
+ * True when two or more `players` rows already share it in this sport. The
+ * LIVE answer, read from the index at the moment it is asked — deliberately
+ * not the stored `enrichment.existingCandidates` marker, which is only as good
+ * as the moment it was written.
+ *
+ * That distinction is the whole reason this exists. The marker is attached
+ * when a review row is enqueued and refreshed when its lookup lands, and
+ * between those two points a preload run, another operator's commit, or a
+ * merge can turn an ordinary name into an ambiguous one. Anything that would
+ * CREATE a row off the back of "this name is fine" has to ask the index, not
+ * the marker — otherwise a bulk action mints a duplicate for a name that
+ * became ambiguous five seconds ago, which is the failure this ticket is
+ * about, arriving one deploy later.
+ */
+export async function isAmbiguousPlayerName(
+  ctx: QueryCtx | MutationCtx,
+  name: string,
+  sportId: Id<"selectorOptions">,
+): Promise<boolean> {
+  const normalized = normalizePlayerName(name);
+  if (!normalized) return false;
+  return (await sameNamePlayers(ctx, normalized, sportId)).length > 1;
 }
 
 /**
@@ -367,6 +447,11 @@ export const findOrCreate = mutation({
     if (!sportRow || sportRow.level !== "sport") {
       throw new ConvexError("A player must be created under a sport.");
     }
+
+    // NEO-254: refused before it is used to disambiguate OR stored. A bad year
+    // that merely failed to match would silently become "no tiebreaker" and
+    // the caller would get an ambiguity error naming the wrong problem.
+    if (args.birthYear !== undefined) assertBirthYear(args.birthYear);
 
     const normalized = normalizePlayerName(name);
     /**
@@ -936,6 +1021,18 @@ export const applyEnrichmentInternal = internalMutation({
     }))),
     isHallOfFame: v.optional(v.boolean()),
     wikidataId: v.optional(v.string()),
+    /**
+     * NEO-254 — the lookup's undated career teams (NEO-235's
+     * `undatedCareerTeams`), by name.
+     *
+     * The commit prelude has stored these since NEO-254 landed, but this
+     * mutation is the OTHER way a player gets Wikidata data — the admin's
+     * "Re-enrich from Wikidata", and the automatic enrichment behind
+     * `findOrCreate` and `createByAdmin`. Without it, a player created through
+     * the admin form never received its leads at all, and a forced re-enrich
+     * on a preloaded or wizard-created player silently dropped the ones it had.
+     */
+    undatedCareerTeams: v.optional(v.array(v.string())),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -946,10 +1043,43 @@ export const applyEnrichmentInternal = internalMutation({
       teamYears?: Array<{ teamId: Id<"teams">; fromYear: number; toYear?: number }>;
       isHallOfFame?: boolean;
       externalIds?: { wikidataId?: string };
+      undatedCareerTeams?: string[];
       lastUpdated: number;
     } = { lastUpdated: Date.now() };
 
     if (args.teamYears !== undefined) patch.teamYears = args.teamYears;
+
+    if (args.undatedCareerTeams !== undefined) {
+      /**
+       * NEO-254 — MERGED with what is already on the row, never replacing it.
+       *
+       * Every other field here is a blind full write, and that is defensible
+       * for them: this path only runs at creation or on the operator's own
+       * explicit "this answer is wrong, look again", where replacing is the
+       * request. It is NOT defensible for this one. A lead is a standing
+       * question addressed to a human, and a re-enrich that dropped a name the
+       * operator had been meaning to date would destroy the only record that
+       * Wikidata ever mentioned it — the exact loss NEO-254 exists to stop,
+       * arriving through the remedy for it.
+       *
+       * A name that has since been DATED is pruned rather than merged back in,
+       * on the row's own `teamYears`, so a re-enrich cannot resurrect a lead
+       * the operator already closed. Same rule and same key as
+       * `savePlayerFields`; the team names come from the row's stints, which
+       * are read here anyway.
+       */
+      const datedKeys = new Set<string>();
+      for (const stint of patch.teamYears ?? existing.teamYears ?? []) {
+        const team = await ctx.db.get(stint.teamId);
+        if (team) datedKeys.add(normalizeEntityName(team.name));
+      }
+      const merged = normalizeUndatedCareerTeams([
+        ...(existing.undatedCareerTeams ?? []),
+        ...args.undatedCareerTeams,
+      ]).filter((name) => !datedKeys.has(normalizeEntityName(name)));
+      patch.undatedCareerTeams = merged.length > 0 ? merged : undefined;
+    }
+
     if (args.isHallOfFame !== undefined) patch.isHallOfFame = args.isHallOfFame;
     // NEO-212 security review: an id that is not `Q<digits>` is DROPPED, not
     // stored. The value here originates at query.wikidata.org, so it is
@@ -993,10 +1123,13 @@ export const applyEnrichmentInternal = internalMutation({
  * Note what is NOT an exception: the entity-review wizard's preview lookup.
  * That runs on unresolved NAMES before any row exists (`runEntityReviewLookup`
  * writes only to `entityReviewQueue`), and `resolveUnknownsAndStartBatch`
- * queues a name only after `players.findByNameAndSport` returned nothing. A
- * "link" decision — the operator pointing an unknown name at an existing
- * player — likewise triggers no lookup for that player: the commit prelude
- * reads the linked row once for its spelling and enqueues nothing.
+ * queues a name only when `players.resolveNameForReview` reports a match count
+ * other than exactly one — NEO-254 moved the gate off `findByNameAndSport`,
+ * whose `player | null` answer could not distinguish "nothing matched" from
+ * "several did". Neither outcome enriches an existing row. A "link" decision —
+ * the operator pointing an unknown name at an existing player — likewise
+ * triggers no lookup for that player: the commit prelude reads the linked row
+ * once, to validate it and take its spelling, and enqueues nothing.
  */
 export const enrichFromWikidata = action({
   args: { id: v.id("players") },
@@ -1048,12 +1181,6 @@ export const enrichFromWikidata = action({
 const PLAYER_MANAGEMENT_CAP = 500;
 
 
-/**
- * Earliest plausible career year. Baseball's first professional league (the
- * National Association) formed in 1871; 1850 leaves room for the pre-league
- * amateur era without admitting an obvious typo like `195` or `19999`.
- */
-const MIN_CAREER_YEAR = 1850;
 
 /**
  * NEO-212 security review: upper bound on how many career stints one
@@ -1194,6 +1321,9 @@ export const createByAdmin = mutation({
       throw new ConvexError("A player must be created under a sport.");
     }
 
+    // NEO-254 — see the identical check in `findOrCreate` above.
+    if (args.birthYear !== undefined) assertBirthYear(args.birthYear);
+
     const nameNormalized = normalizePlayerName(name);
     // The compound index, not `by_name_normalized` + a client-side sport
     // filter: a common surname matches across every sport we track, and the
@@ -1312,6 +1442,17 @@ export const savePlayerFields = mutation({
       ),
     ),
     /**
+     * NEO-254 — the player's birth year, or `null` to clear it.
+     *
+     * Editable because it is the field that tells two same-name players apart,
+     * and therefore the field an operator most needs to be able to correct: a
+     * wrong one makes the review wizard's candidate list actively misleading,
+     * and `findOrCreate`'s tiebreaker resolve to the wrong man. Clearable for
+     * the same reason `wikidataId` is — "" and "unset" are different states,
+     * and a year nobody is sure of is better absent than wrong.
+     */
+    birthYear: v.optional(v.union(v.number(), v.null())),
+    /**
      * NEO-254 — the undated Wikidata team names still awaiting a human,
      * replaced wholesale. An empty array clears the list, which is how the
      * operator says "none of these leads is worth chasing".
@@ -1338,9 +1479,21 @@ export const savePlayerFields = mutation({
       isHallOfFame?: boolean;
       externalIds?: { wikidataId?: string; lahmanId?: string; nflverseId?: string };
       teamYears?: PlayerTeamYear[];
+      birthYear?: number;
       undatedCareerTeams?: string[];
       lastUpdated: number;
     } = { lastUpdated: Date.now() };
+
+    if (args.birthYear !== undefined) {
+      if (args.birthYear === null) {
+        // Dropped entirely, so a cleared row is indistinguishable from one
+        // that never carried a year — the rule `externalIds` follows below.
+        patch.birthYear = undefined;
+      } else {
+        assertBirthYear(args.birthYear);
+        patch.birthYear = args.birthYear;
+      }
+    }
 
     /**
      * NEO-254 — the undated list this call will leave on the row.
@@ -1428,10 +1581,7 @@ export const savePlayerFields = mutation({
         );
       }
 
-      // The upper bound is next year, not this one: a card printed in the
-      // autumn routinely carries the following season, and refusing that would
-      // make the editor wrong every winter.
-      const maxYear = new Date().getFullYear() + 1;
+      const maxYear = maxCareerYear();
       const seen = new Set<string>();
       // NEO-254: the team names this save puts a stint against, on the key the
       // undated list dedupes on. Collected inside the loop below, which already

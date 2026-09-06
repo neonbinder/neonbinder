@@ -9,10 +9,10 @@
  *     wizard's manual mechanism (and therefore `recordDecision`) takes —
  *     `toYear` OMITTED rather than undefined when it was left blank, because
  *     that is the difference between "still there" and a malformed stint.
- *  3. **The wizard's bounds, not the Players page's.** This form feeds
- *     `entityReviewQueue.recordDecision`, which refuses a year under 1869. A
- *     client that validated against `savePlayerFields`' looser 1850 would let
- *     the operator type something the very next round-trip rejects.
+ *  3. **The one shared floor.** Both server validators that guard
+ *     `players.teamYears` now read `MIN_CAREER_YEAR` from
+ *     `lib/players/career-years`; this form validates against the same
+ *     constant so it can never offer a year the round-trip then refuses.
  *  4. **Every control is uniquely addressable.** The visible text repeats down
  *     the list ("Add years", "Add years", …), so the team name is in the
  *     ACCESSIBLE NAME — for a screen reader, and for the Maestro `tapOn` that
@@ -34,7 +34,7 @@ vi.mock("convex/react", () => ({
 vi.mock("../../convex/_generated/api", () => ({ api: { teams: { search: "teams.search" } } }));
 
 import UndatedCareerTeams from "./UndatedCareerTeams";
-import { MIN_CAREER_YEAR } from "./CareerTeamEntry";
+import { MIN_CAREER_YEAR } from "../../lib/players/career-years";
 
 const NAMES = ["San Diego State Aztecs", "United States national team"];
 

@@ -25,6 +25,7 @@ import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
+import { normalizeUndatedCareerTeams } from "./players";
 import type { Id } from "./_generated/dataModel";
 
 const modules = (import.meta as unknown as {
@@ -691,5 +692,433 @@ describe("NEO-254: 'Add All Remaining as New' will not answer a choice for you",
     expect((await t.run(async (ctx) => ctx.db.get(ambiguous)))!.decision).toEqual({
       action: "skip",
     });
+  });
+});
+
+// ===========================================================================
+// normalizeUndatedCareerTeams — the bounds on a lead list
+// ===========================================================================
+
+describe("NEO-254: normalizeUndatedCareerTeams drops what it cannot store", () => {
+  test("caps the list, keeping the first 64 in input order before sorting", async () => {
+    const names = Array.from({ length: 65 }, (_, i) => `Team ${String(i).padStart(3, "0")}`);
+    const kept = normalizeUndatedCareerTeams(names);
+    expect(kept).toHaveLength(64);
+    // The 65th is dropped — the cap is taken off the input, then the survivors
+    // are sorted, so it is not the alphabetically-last name that goes.
+    expect(kept).not.toContain("Team 064");
+    expect(kept).toContain("Team 000");
+  });
+
+  test("DROPS an over-long name rather than truncating it", async () => {
+    // Half a team name is a wrong team name, and it would then be shown to an
+    // operator as if somebody had meant it.
+    const long = "A".repeat(121);
+    const kept = normalizeUndatedCareerTeams(["San Diego Padres", long]);
+    expect(kept).toEqual(["San Diego Padres"]);
+  });
+
+  test("keeps a name exactly at the length bound", async () => {
+    const atBound = "B".repeat(120);
+    expect(normalizeUndatedCareerTeams([atBound])).toEqual([atBound]);
+  });
+
+  test("dedupes on the team key, and the FIRST spelling wins", async () => {
+    // The key is the one `teams` dedupes on, so punctuation and word order
+    // collapse exactly as they would in that table.
+    expect(
+      normalizeUndatedCareerTeams([
+        "St. Louis Cardinals",
+        "St Louis Cardinals",
+        "Cardinals, St. Louis",
+      ]),
+    ).toEqual(["St. Louis Cardinals"]);
+  });
+
+  test("drops blanks and names that normalize to nothing", async () => {
+    expect(normalizeUndatedCareerTeams(["  ", "", "!!!", "Padres"])).toEqual([
+      "Padres",
+    ]);
+  });
+
+  test("returns the survivors alphabetically", async () => {
+    expect(normalizeUndatedCareerTeams(["Yankees", "Aztecs", "Padres"])).toEqual([
+      "Aztecs",
+      "Padres",
+      "Yankees",
+    ]);
+  });
+
+  test("trims before storing", async () => {
+    expect(normalizeUndatedCareerTeams(["  Padres  "])).toEqual(["Padres"]);
+  });
+});
+
+// ===========================================================================
+// The bulk create asks the INDEX, not the stored marker
+// ===========================================================================
+
+describe("NEO-254: bulk create re-reads ambiguity rather than trusting the row", () => {
+  test("a row with NO stored candidates is still left alone when the index says two", async () => {
+    // The marker is written at enqueue and refreshed at lookup. Neither
+    // happens for a row the completion backstop or the stale sweep settled to
+    // "error", nor for one queued before this shipped — and a name can become
+    // ambiguous after the row was written, when a preload run or a colleague's
+    // commit lands. This caller turns "not ambiguous" straight into an INSERT,
+    // so it has to ask the index.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    await insertPlayer(t, sportId, { name: "Bob Allen", nameNormalized: "allen bob" });
+    await insertPlayer(t, sportId, { name: "Bob Allen", nameNormalized: "allen bob" });
+
+    const selectorOptionId = await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Base",
+        platformData: {},
+        children: [],
+        lastUpdated: Date.now(),
+      }),
+    );
+    const stranded = await t.run(async (ctx) =>
+      ctx.db.insert("entityReviewQueue", {
+        selectorOptionId,
+        batchId: "batch-1",
+        createdByUserId: ADMIN_IDENTITY.subject,
+        kind: "player" as const,
+        name: "Bob Allen",
+        sportId,
+        // Exactly what the backstop leaves behind: settled, and with no
+        // enrichment ever written.
+        status: "error" as const,
+      }),
+    );
+
+    const decided = await asAdmin.mutation(
+      api.entityReviewQueue.recordAllRemainingAsCreate,
+      { selectorOptionId, batchId: "batch-1" },
+    );
+
+    expect(decided).toBe(0);
+    expect((await t.run(async (ctx) => ctx.db.get(stranded)))!.decision).toBeUndefined();
+  });
+
+  test("a TEAM row is never subject to the player ambiguity test", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    await insertPlayer(t, sportId, { name: "Bob Allen", nameNormalized: "allen bob" });
+    await insertPlayer(t, sportId, { name: "Bob Allen", nameNormalized: "allen bob" });
+
+    const selectorOptionId = await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Base",
+        platformData: {},
+        children: [],
+        lastUpdated: Date.now(),
+      }),
+    );
+    const teamRow = await t.run(async (ctx) =>
+      ctx.db.insert("entityReviewQueue", {
+        selectorOptionId,
+        batchId: "batch-1",
+        createdByUserId: ADMIN_IDENTITY.subject,
+        kind: "team" as const,
+        // Same string, but it is a team name — the player index says nothing
+        // about it.
+        name: "Bob Allen",
+        sportId,
+        status: "ready" as const,
+      }),
+    );
+
+    const decided = await asAdmin.mutation(
+      api.entityReviewQueue.recordAllRemainingAsCreate,
+      { selectorOptionId, batchId: "batch-1" },
+    );
+
+    expect(decided).toBe(1);
+    expect((await t.run(async (ctx) => ctx.db.get(teamRow)))!.decision).toEqual({
+      action: "create",
+    });
+  });
+});
+
+// ===========================================================================
+// findByNameAndSport
+// ===========================================================================
+
+describe("NEO-254: findByNameAndSport answers null rather than one-of-many", () => {
+  test("returns the single match", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    const only = await insertPlayer(t, sportId, {
+      name: "Tony Gwynn",
+      nameNormalized: "gwynn tony",
+    });
+    const found = await asAdmin.query(api.players.findByNameAndSport, {
+      name: "Tony Gwynn",
+      sportId,
+    });
+    expect(found?._id).toBe(only);
+  });
+
+  test("returns null when two rows share the name", async () => {
+    // `player | null` cannot express "one of these two", and the shape tells
+    // the caller there was nothing to choose between — which is how an
+    // ambiguous name got bound to an arbitrary row. Saying "I don't know" is
+    // the only honest answer available in this shape.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    await insertPlayer(t, sportId, { name: "Bob Allen", nameNormalized: "allen bob" });
+    await insertPlayer(t, sportId, { name: "Bob Allen", nameNormalized: "allen bob" });
+
+    expect(
+      await asAdmin.query(api.players.findByNameAndSport, {
+        name: "Bob Allen",
+        sportId,
+      }),
+    ).toBeNull();
+  });
+
+  test("ignores a same-name row in another sport", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    const only = await insertPlayer(t, sportId, {
+      name: "Bob Allen",
+      nameNormalized: "allen bob",
+    });
+    const otherSportId = await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Football",
+        platformData: {},
+        children: [],
+        lastUpdated: Date.now(),
+      }),
+    );
+    await insertPlayer(t, otherSportId, {
+      name: "Bob Allen",
+      nameNormalized: "allen bob",
+    });
+
+    const found = await asAdmin.query(api.players.findByNameAndSport, {
+      name: "Bob Allen",
+      sportId,
+    });
+    expect(found?._id).toBe(only);
+  });
+});
+
+// ===========================================================================
+// applyEnrichmentInternal — the OTHER way a player gets Wikidata data
+// ===========================================================================
+
+describe("NEO-254: re-enrichment carries the undated leads", () => {
+  test("an enrichment result's undated names land on the row", async () => {
+    // A player created through the admin form (or through a picker's
+    // "+ Create") gets its Wikidata data down this path, never through the
+    // commit prelude — so without this it never received its leads at all.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const playerId = await insertPlayer(t, sportId, {
+      name: "Tony Gwynn",
+      nameNormalized: "gwynn tony",
+    });
+
+    await t.mutation(internal.players.applyEnrichmentInternal, {
+      id: playerId,
+      isHallOfFame: true,
+      undatedCareerTeams: ["San Diego State Aztecs", "United States national team"],
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(playerId));
+    expect(row!.undatedCareerTeams).toEqual([
+      "San Diego State Aztecs",
+      "United States national team",
+    ]);
+  });
+
+  test("a re-enrich NEVER removes a lead the operator has not dated", async () => {
+    // Every other field here is a blind full write, and that is right for
+    // them: this path runs at creation or on the operator's explicit "look
+    // again". It is wrong for a lead, which is a standing question addressed
+    // to a human — dropping one would destroy the only record that Wikidata
+    // ever mentioned it, which is the loss this ticket exists to stop.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const playerId = await insertPlayer(t, sportId, {
+      name: "Tony Gwynn",
+      nameNormalized: "gwynn tony",
+      undatedCareerTeams: ["Chicago Cubs"],
+    });
+
+    await t.mutation(internal.players.applyEnrichmentInternal, {
+      id: playerId,
+      undatedCareerTeams: ["San Diego State Aztecs"],
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(playerId));
+    expect(row!.undatedCareerTeams).toEqual([
+      "Chicago Cubs",
+      "San Diego State Aztecs",
+    ]);
+  });
+
+  test("omitting the arg leaves existing leads alone", async () => {
+    // A lookup that found nothing undated must not read as "clear them".
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const playerId = await insertPlayer(t, sportId, {
+      name: "Tony Gwynn",
+      nameNormalized: "gwynn tony",
+      undatedCareerTeams: ["Chicago Cubs"],
+    });
+
+    await t.mutation(internal.players.applyEnrichmentInternal, {
+      id: playerId,
+      isHallOfFame: true,
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(playerId));
+    expect(row!.undatedCareerTeams).toEqual(["Chicago Cubs"]);
+  });
+
+  test("a lead the operator already DATED is not resurrected", async () => {
+    // The other half of "never removes": a re-enrich must not hand back a
+    // question the operator has already closed.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const aztecs = await insertTeam(
+      t,
+      sportId,
+      "San Diego State Aztecs",
+      "aztecs diego san state",
+    );
+    const playerId = await insertPlayer(t, sportId, {
+      name: "Tony Gwynn",
+      nameNormalized: "gwynn tony",
+      teamYears: [{ teamId: aztecs, fromYear: 1979, toYear: 1981 }],
+    });
+
+    await t.mutation(internal.players.applyEnrichmentInternal, {
+      id: playerId,
+      undatedCareerTeams: ["San Diego State Aztecs", "Chicago Cubs"],
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(playerId));
+    expect(row!.undatedCareerTeams).toEqual(["Chicago Cubs"]);
+  });
+
+  test("a lead dated by the SAME call is pruned against the new stints", async () => {
+    // `teamYears` and `undatedCareerTeams` arrive together on an enrichment.
+    // The prune reads the stints this call is writing, not the ones it is
+    // replacing, or a newly-dated team would survive as a lead.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const aztecs = await insertTeam(
+      t,
+      sportId,
+      "San Diego State Aztecs",
+      "aztecs diego san state",
+    );
+    const playerId = await insertPlayer(t, sportId, {
+      name: "Tony Gwynn",
+      nameNormalized: "gwynn tony",
+    });
+
+    await t.mutation(internal.players.applyEnrichmentInternal, {
+      id: playerId,
+      teamYears: [{ teamId: aztecs, fromYear: 1979 }],
+      undatedCareerTeams: ["San Diego State Aztecs", "Chicago Cubs"],
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(playerId));
+    expect(row!.undatedCareerTeams).toEqual(["Chicago Cubs"]);
+  });
+});
+
+// ===========================================================================
+// Birth year on the write paths
+// ===========================================================================
+
+describe("NEO-254: birth year is validated wherever it is written", () => {
+  test("savePlayerFields stores and clears it", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    const playerId = await insertPlayer(t, sportId, {
+      name: "Tony Gwynn",
+      nameNormalized: "gwynn tony",
+    });
+
+    await asAdmin.mutation(api.players.savePlayerFields, {
+      id: playerId,
+      birthYear: 1960,
+    });
+    expect((await t.run(async (ctx) => ctx.db.get(playerId)))!.birthYear).toBe(1960);
+
+    await asAdmin.mutation(api.players.savePlayerFields, {
+      id: playerId,
+      birthYear: null,
+    });
+    // Dropped entirely, so a cleared row is indistinguishable from one that
+    // never carried a year.
+    expect(
+      (await t.run(async (ctx) => ctx.db.get(playerId)))!.birthYear,
+    ).toBeUndefined();
+  });
+
+  test("refuses a year outside the bounds, on every write path", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    const playerId = await insertPlayer(t, sportId, {
+      name: "Tony Gwynn",
+      nameNormalized: "gwynn tony",
+    });
+
+    for (const bad of [1700, 20999, 1960.5]) {
+      await expect(
+        asAdmin.mutation(api.players.savePlayerFields, { id: playerId, birthYear: bad }),
+      ).rejects.toThrow(/birth year must be a whole year/);
+      await expect(
+        asAdmin.mutation(api.players.createByAdmin, {
+          name: "Bob Allen",
+          sportId,
+          birthYear: bad,
+        }),
+      ).rejects.toThrow(/birth year must be a whole year/);
+      await expect(
+        asAdmin.mutation(api.players.findOrCreate, {
+          name: "Bob Allen",
+          sportId,
+          birthYear: bad,
+        }),
+      ).rejects.toThrow(/birth year must be a whole year/);
+    }
+  });
+
+  test("a bad year is refused BEFORE it is used as a tiebreaker", async () => {
+    // Otherwise it would silently become "no tiebreaker" and the caller would
+    // get an ambiguity error naming the wrong problem.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    await insertPlayer(t, sportId, { name: "Bob Allen", nameNormalized: "allen bob" });
+    await insertPlayer(t, sportId, { name: "Bob Allen", nameNormalized: "allen bob" });
+
+    await expect(
+      asAdmin.mutation(api.players.findOrCreate, {
+        name: "Bob Allen",
+        sportId,
+        birthYear: 99,
+      }),
+    ).rejects.toThrow(/birth year must be a whole year/);
   });
 });
