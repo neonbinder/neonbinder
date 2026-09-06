@@ -162,6 +162,27 @@ async function seedTree(
       children: [],
       lastUpdated: Date.now(),
     });
+    // NEO-252 — the variantType row this chain used to skip.
+    //
+    // It was absent, and the fixture passed anyway because the two gates
+    // disagreed: `resolvableSides` walked NB LEVELS and found no variantType
+    // row to be missing a tag, so BSC was called — while the real
+    // `fetchBscChecklist` refuses any request with no `variant` facet, which is
+    // exactly what this chain produced. The adapter is mocked here, so the
+    // refusal never showed. Now that both gates ask
+    // `missingBscChecklistScope` the fixture has to be a shape the adapter
+    // would actually accept, which is also the shape production has.
+    const variantTypeId = await ctx.db.insert("selectorOptions", {
+      level: "variantType",
+      value: "Insert",
+      platformData: { bsc: { b0: "insert" } },
+      platformFacets: { bsc: { b0: "variant" } },
+      primaryPlatformId: { bsc: "b0" },
+      platformSlotSeq: { bsc: 1 },
+      parentId: setNameId,
+      children: [],
+      lastUpdated: Date.now(),
+    });
     // The insert row: its own BSC series set, plus the SHARED SportLots set
     // that a sibling series also maps to.
     return await ctx.db.insert("selectorOptions", {
@@ -173,7 +194,7 @@ async function seedTree(
       },
       primaryPlatformId: { bsc: "b0", sportlots: "s0" },
       platformSlotSeq: { bsc: 1, sportlots: 1 },
-      parentId: setNameId,
+      parentId: variantTypeId,
       children: [],
       lastUpdated: Date.now(),
     });

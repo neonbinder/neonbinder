@@ -22,6 +22,14 @@
  *  - A SETTLED NAME CONFLICT — `chosen` moved off the "bsc" default, or the
  *    operator typed their own name (`custom` present). BSC-and-untouched is the
  *    seeded default, so it is not evidence of anything.
+ *  - A SETTLED PLAYERS CONFLICT (NEO-251) — the same rule, on the roster. It
+ *    counts SEPARATELY from a name conflict on the same row, because the two
+ *    are two decisions: a row where the operator settled both cost twice the
+ *    thought of one where they settled one, and a discard confirm that says
+ *    "1" over two answered questions is understating what is about to be lost.
+ *    This is also why `playersConflict.preferred` does not seed `chosen` in the
+ *    modal — a server-supplied default that moved `chosen` off "bsc" would make
+ *    an untouched row count as work here.
  *  - An UNLINKED AUTO-PAIR — the server matched it, the operator took it apart.
  *    Invisible to every other signal: after the unlink both halves sit in the
  *    unmatched columns looking exactly like cards that never matched. Hence
@@ -40,10 +48,22 @@ export type PairingNameConflictLike = {
   custom?: string;
 };
 
+/**
+ * NEO-251 — the roster conflict, structurally. `custom` is a LIST here rather
+ * than a string, which is the whole reason this is a second type instead of a
+ * reuse: the two are the same decision about differently-shaped values, and a
+ * shared `custom?: unknown` would let a caller pass either to either.
+ */
+export type PairingPlayersConflictLike = {
+  chosen: "bsc" | "sportlots" | "custom";
+  custom?: string[];
+};
+
 export type PairingMatchedLike<Card> = {
   card: Card;
   confidence: number;
   nameConflict?: PairingNameConflictLike;
+  playersConflict?: PairingPlayersConflictLike;
 };
 
 export type PairingEditState<Card> = {
@@ -72,6 +92,10 @@ export function countPairingEdits<Card>(
     if (pair.confidence === 0) edits += 1;
     const conflict = pair.nameConflict;
     if (conflict && (conflict.chosen !== "bsc" || conflict.custom !== undefined)) {
+      edits += 1;
+    }
+    const players = pair.playersConflict;
+    if (players && (players.chosen !== "bsc" || players.custom !== undefined)) {
       edits += 1;
     }
   }
