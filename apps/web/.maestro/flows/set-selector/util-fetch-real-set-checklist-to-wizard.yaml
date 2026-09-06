@@ -55,18 +55,6 @@ tags:
 #   SET             the real set to drill. Defaults to the read-only fixture.
 #   SPORT / YEAR / MANUFACTURER
 #                   the set's ancestors. Default to Baseball / 2024 / Topps.
-#   KEEP_BSC_ONLY   pass "true" for a set mapped on BSC ONLY, where nothing
-#                   auto-matches and every card lands in the "BSC only" column.
-#                   Measured: `Topps Big League` and `Topps Brooklyn Collection`
-#                   are matched on both sides and need this OFF (their unmatched
-#                   columns are omitted entirely, so the control does not exist);
-#                   `Panini Basketball Hall of Fame` and
-#                   `Panini Boston Celtics NBA Champions` are BSC-only and need
-#                   it ON, or Confirm saves 0 cards.
-#                   It is an explicit flag rather than a `when: visible` guard
-#                   because every caller owns exactly one set and therefore
-#                   KNOWS its shape — a guard would poll ~7s for nothing on the
-#                   sets that do not need it (R10).
 #
 # ── RETURN CONTRACT ─────────────────────────────────────────────────────────
 #   The entity-review wizard is OPEN, every row undecided ("0 of N reviewed"),
@@ -109,18 +97,6 @@ tags:
 # scroller that Maestro cannot drive (see checklist-pairing-dialog-cancel). The
 # footer is a flex sibling OUTSIDE that scroller, so Confirm is always on screen.
 #
-# ── KEEP THE BSC-ONLY COLUMN, on the sets that have one ─────────────────────
-# A set mapped on BSC alone has nothing to pair against, so every card sits in
-# "BSC only" and is DISCARDED unless kept — Confirm would report "0 cards will
-# be saved". Sets matched on both sides omit the unmatched columns entirely and
-# must skip this. See KEEP_BSC_ONLY above for why this is a flag, not a guard.
-- runFlow:
-    when:
-      true: ${KEEP_BSC_ONLY}
-    commands:
-      - tapOn:
-          id: "Keep all BSC-only cards"
-
 # ⚠️ WAIT FOR THE FETCH, NOT THE DIALOG (NEO-195; enforced by
 # scripts/maestro-pairing-sync.test.mjs). Since the fetch STREAMS,
 # `Match Cards` becoming visible means the FIRST candidates arrived (~6s), not

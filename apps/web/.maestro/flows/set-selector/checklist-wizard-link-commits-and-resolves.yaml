@@ -37,8 +37,9 @@ tags:
 #   queries `players.search({ query, sportId })` — scoped to the row's SPORT —
 #   and the only players `setup.yaml` ever creates are the ~494 from 2024 Topps
 #   Chrome, all baseball. A basketball or football fixture has an EMPTY roster
-#   and nothing to link to, which is exactly why the other two committing flows
-#   (skip, career-team) can use Panini basketball sets and this one cannot.
+#   and nothing to link to. All three committing fixtures are baseball for other
+#   reasons too (one sport keeps the seed cheap), but for THIS flow it is a hard
+#   requirement rather than a convenience.
 #   VERIFIED on this fixture, not assumed: typing "Ohtani" into the link panel
 #   returned `Link to Shohei Ohtani`.
 #
@@ -71,8 +72,8 @@ tags:
 
 # ============================================================
 # SETUP — this flow's OWN real set, real fetch, wizard open
-# Matched on BOTH marketplaces, so its unmatched columns are omitted entirely
-# and KEEP_BSC_ONLY must stay off (the control does not exist).
+# Mapped on both marketplaces, so every card auto-matches and the unmatched
+# columns are omitted entirely — nothing to keep before confirming.
 # ============================================================
 
 - runFlow:

@@ -28,9 +28,9 @@ tags:
 #         back at the next sync rather than being gone for good.
 #
 # ── THE FIXTURE, AND WHY THIS FLOW MAY COMMIT ───────────────────────────────
-#   `Basketball → 2024 → Panini → Panini Basketball Hall of Fame → Base`.
-#   Measured on PR #235's preview, 2026-09-06: 13 BSC-only cards → **25 unknown
-#   names (13 players + 12 teams)**, wizard opens, first row a player.
+#   `Baseball → 2024 → Topps → Topps Chicago Cubs → Base`.
+#   Measured on PR #235's preview, 2026-09-06: 17 cards matched on both
+#   marketplaces → **11 unknown names, all players, 0 teams**; wizard opens.
 #
 #   THIS FLOW IS THE SOLE WRITER OF THIS SET. Nothing else reads or writes it,
 #   so committing cannot disturb anything: there is no reader to race, and no
@@ -46,10 +46,9 @@ tags:
 #   would open the wizard on nothing. CI reseeds the preview every run, so the
 #   drain never outlives one run. A local re-run needs a fresh seed.
 #
-#   NO KIND GUARD NEEDED: the skip control exists on both kinds
-#   ("Skip {name} — not a {person|team}"), so this flow works on whichever row
-#   settles first and never gambles on it. That is just as well here — this
-#   fixture is 12/25 teams.
+#   NO KIND GUARD NEEDED, twice over: the skip control exists on both kinds
+#   ("Skip {name} — not a {person|team}"), and this fixture surfaces no unknown
+#   teams at all.
 #
 # R3 — DEDUP: the skip CONTROL is checklist-wizard-skip-not-a-person (read-only,
 #   on the shared Big League fixture). This flow adds only the commit side.
@@ -65,18 +64,14 @@ tags:
 
 # ============================================================
 # SETUP — this flow's OWN real set, real fetch, wizard open
-# BSC-only mapping, so the whole checklist arrives in the "BSC only" column and
-# must be kept or Confirm would save nothing.
+# Mapped on both marketplaces, so every card auto-matches and the unmatched
+# columns are omitted entirely — nothing to keep before confirming.
 # ============================================================
 
 - runFlow:
     file: util-fetch-real-set-checklist-to-wizard.yaml
     env:
-      SPORT: "Basketball"
-      YEAR: "2024"
-      MANUFACTURER: "Panini"
-      SET: "Panini Basketball Hall of Fame"
-      KEEP_BSC_ONLY: "true"
+      SET: "Topps Chicago Cubs"
 
 # ============================================================
 # STEP 1 — R2(a)
@@ -122,7 +117,7 @@ tags:
 #
 # 60s, not the 7s default: `commitCardChecklist` writes every kept card and
 # re-resolves the batch on the way through. MEASURE IT on the first green run
-# and trim — 13 cards should be quick.
+# and trim — 17 cards should be quick.
 # ============================================================
 
 - tapOn:

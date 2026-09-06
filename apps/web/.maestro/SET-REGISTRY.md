@@ -20,8 +20,8 @@ These are provisioned once by `flows/setup.yaml` at the head of every run and ar
 | Baseball → 2024 → Topps → Topps Chrome | `Base` (full checklist), `Insert` → "Future Stars" (~20 cards), `Parallel` → "Gold Wave Refractors" (~300 cards) | `flows/setup.yaml` |
 | Baseball → 2024 → Topps → Topps Big League | `Base` — variant types synced and Base MAPPED, checklist deliberately EMPTY (NEO-248 wizard fixture) | `flows/setup.yaml` |
 | Baseball → 2024 → Topps → Topps 206 | none — variant types sync on first use; Base stays **UNMAPPED** (NOT pre-synced) | `flows/set-selector/base-mapping-cancel-recovers.yaml` — **sole writer**, and it writes nothing |
-| Basketball → 2024 → Panini → Panini Basketball Hall of Fame | `Base` — variant types synced, Base MAPPED **BSC-only**, checklist deliberately EMPTY | `flows/setup.yaml` (structure); **sole writer** `checklist-wizard-skip-commits-and-unskip.yaml` |
-| Basketball → 2024 → Panini → Panini Boston Celtics NBA Champions | `Base` — same shape | `flows/setup.yaml` (structure); **sole writer** `checklist-wizard-career-team-commits.yaml` |
+| Baseball → 2024 → Topps → Topps Chicago Cubs | `Base` — variant types synced, Base MAPPED on BOTH sides, checklist deliberately EMPTY | `flows/setup.yaml` (structure); **sole writer** `checklist-wizard-skip-commits-and-unskip.yaml` |
+| Baseball → 2024 → Topps → Topps Baltimore Orioles | `Base` — same shape | `flows/setup.yaml` (structure); **sole writer** `checklist-wizard-career-team-commits.yaml` |
 | Baseball → 2024 → Topps → Topps Brooklyn Collection | `Base` — same shape | `flows/setup.yaml` (structure); **sole writer** `checklist-wizard-link-commits-and-resolves.yaml` |
 | Baseball → 1996 → Score → Score | `Insert` (reconciled in-flow, NOT pre-synced) | `flows/set-selector/inserts-1996-score-one-nb-set-two-bsc-sources.yaml` — **sole writer** |
 | Hockey → 2024 → Topps → Topps NHL Sticker Collection | none — the flow never goes below `Variant Types` (NOT pre-synced) | `flows/set-selector/set-rename-survives-resync-and-suggests-bsc-name.yaml` — **sole writer** |
@@ -307,8 +307,8 @@ anything:
 
 | flow | fixture |
 |---|---|
-| `checklist-wizard-skip-commits-and-unskip` | Panini Basketball Hall of Fame |
-| `checklist-wizard-career-team-commits` | Panini Boston Celtics NBA Champions |
+| `checklist-wizard-skip-commits-and-unskip` | Topps Chicago Cubs |
+| `checklist-wizard-career-team-commits` | Topps Baltimore Orioles |
 | `checklist-wizard-link-commits-and-resolves` | Topps Brooklyn Collection |
 
 See "The three COMMITTING entity-review fixtures" below.
@@ -327,13 +327,37 @@ gets its **own real set**.
 
 | flow | fixture | shape | measured unknowns |
 |---|---|---|---|
-| `checklist-wizard-skip-commits-and-unskip` | Basketball → 2024 → Panini → **Panini Basketball Hall of Fame** | 13 cards, BSC-only | **25 — 13 players + 12 teams** |
-| `checklist-wizard-career-team-commits` | Basketball → 2024 → Panini → **Panini Boston Celtics NBA Champions** | 30 cards, BSC-only | **21 — 20 players + 1 team** |
-| `checklist-wizard-link-commits-and-resolves` | Baseball → 2024 → Topps → **Topps Brooklyn Collection** | 50 cards, matched on both sides | **12 — 11 players + 1 team** |
+| `checklist-wizard-skip-commits-and-unskip` | Baseball → 2024 → Topps → **Topps Chicago Cubs** | 17 cards, matched both sides | **11 — all players, 0 teams** |
+| `checklist-wizard-career-team-commits` | Baseball → 2024 → Topps → **Topps Baltimore Orioles** | 17 cards, matched both sides | **8 — all players, 0 teams** |
+| `checklist-wizard-link-commits-and-resolves` | Baseball → 2024 → Topps → **Topps Brooklyn Collection** | 50 cards, matched both sides | **12 — 11 players + 1 team** |
 
 All measured live on PR #235's preview, 2026-09-06: each syncs its variant types
-cleanly (no reconcile dialog), each opens the wizard, and each presented a
-player row first.
+cleanly (a single `Base`, no reconcile dialog), each maps cleanly on BOTH sides,
+and each opens the wizard on a player row.
+
+#### ⚠️ BOTH SIDES MUST BE MAPPED — the rule that broke CI run 34045516761
+
+An earlier version of these fixtures mapped Base on **BSC only**, to avoid
+attaching a wrong SportLots set. That cannot work, and the reason is a
+deliberate product rule rather than a bug: `baseHasMapping` in
+`components/modules/SetSelector.tsx` is `slotIds(row, "sportlots").length > 0`.
+Only the SportLots slot is exclusively written by `BaseSetPicker` — the BSC slug
+is auto-populated by "Sync Variant Types", so testing it would suppress the
+auto-prompt on every freshly synced Base.
+
+A BSC-only mapping therefore never counts as mapped:
+
+* `Re-map Base` never renders (the seed's own assertion failed on this), and
+* `BaseMappingForm` keeps auto-opening its picker on every fresh mount, which
+  would block the checklist for whichever flow arrived next.
+
+**So a fixture set must be one whose SportLots side has a real counterpart**,
+and specifically one where the picker's FIRST candidate is correct — that is
+what `util-drill-to-base-variant` picks. Measured: `Baltimore Orioles`,
+`Chicago Cubs` and the Brooklyn Collection match all rank first. Two Panini
+basketball sets were dropped for exactly this: their SportLots lists are ~3111
+rows whose top matches were unrelated ("Caitlin Clark Collection" variants), so
+they could only ever have been mapped BSC-only.
 
 #### Concurrency: one set, one writer — parallel-safe by construction
 
@@ -357,36 +381,31 @@ re-run needs a fresh seed; `MAESTRO_NO_DEPS=1` will not do.
 
 #### Why these sets, specifically
 
-* **A non-baseball sport guarantees unknown players.** The only players
-  `setup.yaml` ever creates are the ~494 from 2024 Topps Chrome, all baseball,
-  so every basketball name is unknown by construction rather than by luck.
-* **The link flow must nevertheless be BASEBALL.** `EntityLinkSearch` queries
-  `players.search({ query, sportId })`, scoped to the row's sport — a basketball
-  fixture has an empty roster and nothing to link to. Topps Brooklyn Collection
-  is baseball, so `Link to Shohei Ohtani` resolves (verified live) while its own
-  11 players stay unknown.
-* **The career-team flow needs a player-dominant set.** It acts on controls only
-  a player row renders, and 20:1 makes the kind guard a rare branch. The Hall of
-  Fame set is 13:12 and would fire it half the time — which is why it went to
-  the skip flow instead, where the control exists on both kinds and no guard is
-  needed at all.
-* **Base is mapped BSC-only** for the two Panini sets. Their SportLots candidate
-  lists are ~3111 rows whose best matches are unrelated ("Caitlin Clark
-  Collection" variants were offered for the Celtics set), and SportLots returns
-  no player names anyway. Consequence for the flows: nothing auto-matches, every
-  card lands in "BSC only", and the util must be called with
-  `KEEP_BSC_ONLY: "true"` or Confirm saves 0 cards. Topps Brooklyn Collection is
-  matched on both sides and must NOT set that flag — its unmatched columns are
-  omitted entirely, so the control does not exist.
-* **All four names are collision-free** under their own manufacturer.
+* **Team sets have unknown players.** `setup.yaml` only ever creates the ~494
+  players from 2024 Topps Chrome — its 200-card base plus two inserts — so a
+  team set's commons sit outside that roster. Measured 8–12 unknowns each.
+* **The link flow needs BASEBALL specifically.** `EntityLinkSearch` queries
+  `players.search({ query, sportId })`, scoped to the row's sport, so the link
+  TARGET must share the fixture's sport. `Link to Shohei Ohtani` resolves on
+  Topps Brooklyn Collection (verified live) while its own 11 players stay
+  unknown. All three fixtures are baseball anyway, which also keeps the seed
+  cheap — no second sport to cold-sync.
+* **Two of the three surface NO unknown teams at all**, so the flows that act on
+  player-only controls (career-team) need no kind guard and pay no poll for one.
+  Only the link flow's fixture has a team (1 of 12), and it keeps its guard.
+* **Name-collision note.** `Topps Chicago Cubs` is a strict prefix of
+  `Topps Chicago Cubs Season Ticket Holder`. That is safe: the drill selects by
+  `text:`, which Maestro anchors to the whole node, so it cannot match the
+  longer row. Only `id:` selectors are regex finds.
 
 #### `setup.yaml` provisions structure only
 
-Sets synced, variant types synced, Base mapped, **checklist EMPTY** — asserted.
-Basketball is a cold sport, so its Years/Manufacturers/Sets columns are synced
-there too, once, via `util-drill-to-cold-real-set.yaml`; the per-set mapping is
-`util-map-base-bsc-only.yaml`. **Never fetch these sets in the seed**: it would
-create their players and empty every wizard they exist to fill.
+Variant types synced and Base mapped on both sides via
+`util-drill-to-base-variant.yaml`, then **checklist EMPTY** — asserted per set.
+All three live under Baseball → 2024 → Topps, which the seed has already synced,
+so they add no new sport, year or manufacturer. **Never fetch these sets in the
+seed**: it would create their players and empty every wizard they exist to
+fill.
 
 ### Topps 206 — the unmapped-Base fixture for `base-mapping-cancel-recovers` (NEO-248) ✅ APPROVED
 

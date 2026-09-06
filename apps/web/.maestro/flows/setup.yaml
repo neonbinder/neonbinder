@@ -63,12 +63,11 @@ tags:
 #     MAPPED, checklist deliberately EMPTY — the NEO-248 entity-review fixture.
 #     Its ~87 players must stay UNKNOWN, so nothing here fetches it.           [this flow]
 #   - THREE MORE entity-review fixtures, same shape (structure only, Base MAPPED
-#     BSC-only, checklist EMPTY), one per COMMITTING flow (NEO-248):
-#       Basketball → 2024 → Panini → Panini Basketball Hall of Fame
-#       Basketball → 2024 → Panini → Panini Boston Celtics NBA Champions
-#       Baseball   → 2024 → Topps  → Topps Brooklyn Collection
-#     Basketball is a cold sport here — its Years/Manufacturers/Sets columns are
-#     synced by this flow. Their players must stay UNKNOWN too.               [this flow]
+#     on BOTH sides, checklist EMPTY), one per COMMITTING flow (NEO-248):
+#       Baseball → 2024 → Topps → Topps Chicago Cubs
+#       Baseball → 2024 → Topps → Topps Baltimore Orioles
+#       Baseball → 2024 → Topps → Topps Brooklyn Collection
+#     Their players must stay UNKNOWN too, so nothing here fetches them.      [this flow]
 #
 # NOT pre-synced (sync lazily if you need them): any other year / manufacturer /
 # set (e.g. Topps Update, Topps Pro Debut, Topps Wonderland), any other sport,
@@ -1174,63 +1173,66 @@ tags:
 # ============================================================================
 # STEP N+1 — PROVISION THE THREE COMMITTING-FLOW FIXTURES (NEO-248)
 #
-# STRUCTURE ONLY, exactly as for Topps Big League above: sets synced, variant
-# types synced, Base MAPPED. **No checklist is fetched here** — these sets exist
-# to hand their flow a wizard full of unknown names, and committing them in the
-# seed would make those names known and empty every wizard.
+# STRUCTURE ONLY, exactly as for Topps Big League above: variant types synced,
+# Base MAPPED on BOTH marketplaces. **No checklist is fetched here** — these
+# sets exist to hand their flow a wizard full of unknown names, and committing
+# them in the seed would make those names known and empty every wizard.
 #
 # ONE SET PER FLOW, and that is the isolation model. CI cannot serialize two
 # flows — `run-e2e-queue.sh` filters only `util`/`wip`/`setup`, and the
 # `isolated` / `serial-marketplace` / dep-graph lanes exist only in the LOCAL
 # `run-e2e-smoke.sh` — so the only isolation that actually holds is "one set,
-# one writer". Each of these three sets has exactly one flow that touches it,
-# and no flow reads another's, so the three commit concurrently without
-# interfering. See .maestro/SET-REGISTRY.md.
+# one writer". Each set below has exactly one flow that touches it, and no flow
+# reads another's, so the three commit concurrently without interfering.
 #
-#   Panini Basketball Hall of Fame      → checklist-wizard-skip-commits-and-unskip
-#   Panini Boston Celtics NBA Champions → checklist-wizard-career-team-commits
-#   Topps Brooklyn Collection           → checklist-wizard-link-commits-and-resolves
+#   Topps Chicago Cubs        → checklist-wizard-skip-commits-and-unskip
+#   Topps Baltimore Orioles   → checklist-wizard-career-team-commits
+#   Topps Brooklyn Collection → checklist-wizard-link-commits-and-resolves
 #
-# BSC-ONLY MAPPING for the two Panini sets, deliberately. Their SportLots
-# candidate lists are 3111 rows ranked by a name match that finds nothing
-# sensible (measured: the top rows for the Celtics set are "Caitlin Clark
-# Collection" variants), so linking one would pull an unrelated set's cards into
-# the checklist. BSC alone is what these fixtures need: BSC is the only side
-# that returns player names at all (`fetchSportLotsChecklist` never populates
-# `players`/`teams`), which is the whole reason the wizard opens.
+# ⚠️ BOTH SIDES MUST BE MAPPED, and that is not a preference — it is what the
+# product means by "mapped". `baseHasMapping` in SetSelector.tsx is
+# `slotIds(row, "sportlots").length > 0`, deliberately: the BSC slug is
+# auto-populated by "Sync Variant Types", so testing it would suppress the
+# auto-prompt on every freshly synced Base. A BSC-ONLY mapping therefore never
+# counts as mapped — `Re-map Base` never renders and `BaseMappingForm` keeps
+# auto-opening its picker on every fresh mount, which blocks the checklist for
+# whatever flow arrives next. CI run 34045516761 failed on exactly that.
+#
+# These three sets are chosen so the picker's FIRST SportLots candidate is the
+# right one (measured: "Baltimore Orioles", "Chicago Cubs", and the Brooklyn
+# Collection match), which is what `util-drill-to-base-variant` picks. That is
+# also why the two Panini basketball sets were dropped: their SportLots lists
+# are ~3111 rows whose top matches were unrelated ("Caitlin Clark Collection"),
+# so they could only have been mapped BSC-only. Baseball keeps the seed cheap
+# too — no second sport to cold-sync.
 # ============================================================================
 
-# ── Basketball → 2024 → Panini: a sport this deployment has never opened, so
-#    every column pays a cold marketplace round-trip. That is what the cold
-#    drill util is for.
 - runFlow:
-    file: set-selector/util-drill-to-cold-real-set.yaml
+    file: set-selector/util-drill-to-base-variant.yaml
     env:
-      SPORT: "Basketball"
-      YEAR: "2024"
-      MANUFACTURER: "Panini"
-
-# The cold drill above has warmed Basketball's Sports/Years/Manufacturers/Sets
-# columns, so each set below can use the WARM drill inside the mapping util.
-- runFlow:
-    file: set-selector/util-map-base-bsc-only.yaml
-    env:
-      SPORT: "Basketball"
-      YEAR: "2024"
-      MANUFACTURER: "Panini"
-      SET: "Panini Basketball Hall of Fame"
+      SET: "Topps Chicago Cubs"
+- scrollUntilVisible:
+    element:
+      text: "No cards in this checklist yet."
+    centerElement: true
+    timeout: 15000
 
 - runFlow:
-    file: set-selector/util-map-base-bsc-only.yaml
+    file: set-selector/util-drill-to-base-variant.yaml
     env:
-      SPORT: "Basketball"
-      YEAR: "2024"
-      MANUFACTURER: "Panini"
-      SET: "Panini Boston Celtics NBA Champions"
+      SET: "Topps Baltimore Orioles"
+- scrollUntilVisible:
+    element:
+      text: "No cards in this checklist yet."
+    centerElement: true
+    timeout: 15000
 
-# ── Baseball → 2024 → Topps was synced at the head of this flow, so this one
-#    needs no cold drill at all.
 - runFlow:
-    file: set-selector/util-map-base-bsc-only.yaml
+    file: set-selector/util-drill-to-base-variant.yaml
     env:
       SET: "Topps Brooklyn Collection"
+- scrollUntilVisible:
+    element:
+      text: "No cards in this checklist yet."
+    centerElement: true
+    timeout: 15000

@@ -34,15 +34,15 @@ tags:
 #   itself stays with the entity-review unit files.
 #
 # ── THE FIXTURE ─────────────────────────────────────────────────────────────
-#   `Basketball → 2024 → Panini → Panini Boston Celtics NBA Champions → Base`.
-#   Measured on PR #235's preview, 2026-09-06: 30 BSC-only cards → **21 unknown
-#   names (20 players + 1 team)**, wizard opens, first row a player.
+#   `Baseball → 2024 → Topps → Topps Baltimore Orioles → Base`.
+#   Measured on PR #235's preview, 2026-09-06: 17 cards matched on both
+#   marketplaces → **8 unknown names, ALL PLAYERS, 0 teams**; wizard opens.
 #
-#   PLAYER-DOMINANT ON PURPOSE. This flow needs a PLAYER row, and 20:1 is the
-#   most lopsided of the three committing fixtures — the sibling Hall of Fame
-#   set is 13:12 and would make the kind guard fire half the time. Basketball is
-#   also safe here in a way it is not for the link flow: nothing needs an
-#   existing roster player, only an unknown one.
+#   ALL-PLAYER ON PURPOSE, and that is why this flow needs NO KIND GUARD. It
+#   acts on controls only a player row renders, and this fixture cannot present
+#   a team row because it surfaces no unknown teams at all. The earlier design
+#   used a basketball set and carried a guard to survive a 20:1 player/team mix;
+#   an all-player fixture removes the branch instead of hedging it.
 #
 #   THIS FLOW IS THE SOLE WRITER OF THIS SET. Nothing else reads or writes it,
 #   so committing races nothing. CI cannot serialize two flows
@@ -52,9 +52,9 @@ tags:
 #   because CI reseeds the preview every run.
 #
 #   ⚠️ THIS FLOW CREATES ONE PLAYER AND ONE TEAM, deliberately, and they are
-#   global. The player is one of this set's own basketball unknowns, which no
-#   other flow touches; the team is named per worker and attempt so it can never
-#   collide. Every other unknown is skipped, so exactly one player is minted.
+#   global. The player is one of this set's own unknowns, which no other flow
+#   touches; the team is named per worker and attempt so it can never collide.
+#   Every other unknown is skipped, so exactly one player is minted.
 
 # ============================================================
 # LAUNCH + SIGN IN
@@ -83,42 +83,33 @@ tags:
 
 # ============================================================
 # SETUP — this flow's OWN real set, real fetch, wizard open
-# BSC-only mapping, so the whole checklist arrives in the "BSC only" column.
+# Mapped on both marketplaces, so every card auto-matches and the unmatched
+# columns are omitted entirely — nothing to keep before confirming.
 # ============================================================
 
 - runFlow:
     file: util-fetch-real-set-checklist-to-wizard.yaml
     env:
-      SPORT: "Basketball"
-      YEAR: "2024"
-      MANUFACTURER: "Panini"
-      SET: "Panini Boston Celtics NBA Champions"
-      KEEP_BSC_ONLY: "true"
+      SET: "Topps Baltimore Orioles"
 
 - assertVisible:
     text: "0 of [0-9]+ reviewed.*"
 
 # ============================================================
-# STEP 1 — THE KIND GUARD (see the read-only sibling for the full reasoning)
-# Wait for the row to become ACTIONABLE first, then skip a team row if that is
-# what came up. On the 20-in-21 path this costs one poll and does nothing.
+# STEP 1 — WAIT FOR THE ROW TO SETTLE
+# A row renders no action controls at all until its background Wikidata lookup
+# comes back, so everything below reads an empty row without this. 30s: that is
+# a live external round-trip.
+#
+# NO KIND GUARD — this fixture surfaces 0 unknown teams (measured), so the
+# presented row is always a player and there is no branch to hedge. That also
+# removes the ~7s poll the guarded version spent doing nothing.
 # ============================================================
 
 - extendedWaitUntil:
     visible:
       id: "Add as New (Player|Team)"
     timeout: 30000
-- runFlow:
-    when:
-      visible:
-        id: "Skip .* not a team"
-    commands:
-      - tapOn:
-          id: "Skip .* not a team"
-      - extendedWaitUntil:
-          visible:
-            id: "Add as New (Player|Team)"
-          timeout: 30000
 
 # ============================================================
 # STEP 2 — R2(a)+(b): stage a career team on the player row
@@ -182,6 +173,10 @@ tags:
 # The filter takes focus on arrival (NEO-156), so no tapOn before typing; the
 # count assertion is what proves the keystrokes landed. Composed with the count
 # so it cannot pass against an unfiltered list that merely contains the name.
+#
+# The staged team is a BASEBALL team now (the fixture's sport), which changes
+# nothing here: `resolveTeamIdByName` get-or-creates by name and this one is
+# unique to the worker and attempt.
 # ============================================================
 
 - openLink: ${APP_URL || "http://localhost:3000"}/admin/teams
