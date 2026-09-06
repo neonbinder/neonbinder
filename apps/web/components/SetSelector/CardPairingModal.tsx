@@ -182,7 +182,9 @@ export type PairingConflicts = {
  * filtered in step with `heldBackIndices`; a record simply misses.
  *
  * Only matched pairs can appear: a kept single has one marketplace and nothing
- * to disagree with.
+ * to disagree with. And only UNSETTLED ones — a row the operator decided in
+ * this session is withheld, because the entry's whole meaning to the diff is
+ * "nobody has answered this yet" (see `MatchedPair.touched`).
  */
 export type PairingResult = {
   cards: PairingCard[];
@@ -325,6 +327,37 @@ type MatchedPair = {
    * controls.
    */
   playersConflict?: PlayersConflict;
+  /**
+   * NEO-251 — has the operator made a DECISION about this row in this session?
+   *
+   * Set by any of the four settle actions (`CHOOSE_NAME`, `CHOOSE_PLAYERS`,
+   * `RENAME`, `EDIT_PLAYERS`), and it is the reason the row's conflict is
+   * withheld from `conflictsByIndex` at Confirm — see `PairingResult`.
+   *
+   * ## Why `chosen` cannot answer this
+   *
+   * The obvious test — "`chosen` has moved off its `"bsc"` default" — is wrong
+   * in the one direction that costs data. An operator whose NB row already
+   * carries SportLots' roster (they settled it on a previous sync) can open
+   * this screen and deliberately pick BSC. That is a real decision, and it
+   * leaves `chosen === "bsc"`: identical, from the outside, to a row nobody
+   * looked at. Treated as untouched, the diff suppresses the field and their
+   * re-pick is discarded in silence.
+   *
+   * So this is a record of the GESTURE, not of the value it produced. It is
+   * therefore also set when the operator clicks the pill that is already
+   * checked — that dispatch is otherwise a no-op, and it is exactly the shape
+   * the re-pick takes.
+   *
+   * Deliberately NOT set by a refused or empty edit. A blank field, an
+   * over-length name and a re-typed identical value all return the same state
+   * object; nothing was decided, so nothing is recorded.
+   *
+   * `countPairingEdits` is intentionally left reading `chosen`/`custom`
+   * instead: it answers "how much work would a discard throw away", and a bare
+   * re-pick of the default changes nothing that a re-open would not reproduce.
+   */
+  touched?: boolean;
 };
 
 type State = {
@@ -869,6 +902,30 @@ function mergePair(bsc: PairingCard, sl: PairingCard): PairingCard {
   };
 }
 
+/**
+ * NEO-251 — record that the operator decided something about one row, without
+ * changing anything else about it.
+ *
+ * Only reached from the two `CHOOSE_*` cases when the side asked for is already
+ * the side that is chosen. That dispatch used to be a pure no-op, and had to
+ * stop being one: re-picking the checked pill is how an operator confirms BSC
+ * over a stored SportLots answer, and it is the case `chosen` alone cannot see
+ * (see `MatchedPair.touched`).
+ *
+ * Returns the SAME state object once the row is already touched, so a second
+ * click on the same pill costs no render and no re-sort.
+ */
+function markTouched(state: State, index: number): State {
+  const pair = state.matched[index];
+  if (!pair || pair.touched) return state;
+  return {
+    ...state,
+    matched: state.matched.map((m, i) =>
+      i === index ? { ...m, touched: true } : m,
+    ),
+  };
+}
+
 function baseReducer(state: State, action: Action): State {
   switch (action.type) {
     /**
@@ -1088,7 +1145,13 @@ function baseReducer(state: State, action: Action): State {
     case "CHOOSE_NAME": {
       const pair = state.matched[action.index];
       if (!pair?.nameConflict) return state;
-      if (pair.nameConflict.chosen === action.side) return state;
+      // NEO-251: re-picking the side that is ALREADY chosen is still a
+      // decision, and on a row whose NB value came from the other side it is
+      // the whole decision. Recorded rather than dropped — see
+      // `MatchedPair.touched`.
+      if (pair.nameConflict.chosen === action.side) {
+        return markTouched(state, action.index);
+      }
       const conflict = pair.nameConflict;
       const cardName =
         action.side === "bsc"
@@ -1109,6 +1172,7 @@ function baseReducer(state: State, action: Action): State {
                 ...pair,
                 card: { ...pair.card, cardName },
                 nameConflict: { ...conflict, chosen: action.side },
+                touched: true,
               }
             : m,
         ),
@@ -1157,7 +1221,9 @@ function baseReducer(state: State, action: Action): State {
         return {
           ...state,
           matched: state.matched.map((m, i) =>
-            i === action.index ? { ...pair, card: { ...pair.card, cardName } } : m,
+            i === action.index
+              ? { ...pair, card: { ...pair.card, cardName }, touched: true }
+              : m,
           ),
         };
       }
@@ -1182,7 +1248,12 @@ function baseReducer(state: State, action: Action): State {
         ...state,
         matched: state.matched.map((m, i) =>
           i === action.index
-            ? { ...pair, card: { ...pair.card, cardName }, nameConflict }
+            ? {
+                ...pair,
+                card: { ...pair.card, cardName },
+                nameConflict,
+                touched: true,
+              }
             : m,
         ),
       };
@@ -1198,7 +1269,10 @@ function baseReducer(state: State, action: Action): State {
     case "CHOOSE_PLAYERS": {
       const pair = state.matched[action.index];
       if (!pair?.playersConflict) return state;
-      if (pair.playersConflict.chosen === action.side) return state;
+      // Same as `CHOOSE_NAME` above: the re-pick is the decision.
+      if (pair.playersConflict.chosen === action.side) {
+        return markTouched(state, action.index);
+      }
       const conflict = pair.playersConflict;
       const players =
         action.side === "bsc"
@@ -1218,6 +1292,7 @@ function baseReducer(state: State, action: Action): State {
                 ...pair,
                 card: { ...pair.card, players },
                 playersConflict: { ...conflict, chosen: action.side },
+                touched: true,
               }
             : m,
         ),
@@ -1284,7 +1359,12 @@ function baseReducer(state: State, action: Action): State {
         ...state,
         matched: state.matched.map((m, i) =>
           i === action.index
-            ? { ...pair, card: { ...pair.card, players: next }, playersConflict }
+            ? {
+                ...pair,
+                card: { ...pair.card, players: next },
+                playersConflict,
+                touched: true,
+              }
             : m,
         ),
       };
@@ -2073,6 +2153,19 @@ export default function CardPairingModal({
       const conflictsByIndex: Record<number, PairingConflicts> = {};
       state.matched.forEach((m, index) => {
         if (!m.nameConflict && !m.playersConflict) return;
+        // NEO-251 — a row the operator DECIDED in this session contributes
+        // nothing.
+        //
+        // The entry exists to tell the diff "nobody has settled this, so a
+        // stored value equal to the losing side is last session's answer, not
+        // an upstream change". Once the operator has touched the row that
+        // sentence is false, and leaving the entry in place makes the diff
+        // suppress the very field they just decided — the review is skipped,
+        // the commit runs with no `applyFields`, and their choice is discarded
+        // without a word. Withheld rather than flagged, so the rule stays a
+        // property of what is on the wire rather than of a boolean two layers
+        // read differently.
+        if (m.touched) return;
         conflictsByIndex[index] = {
           // The two answers only — `chosen` / `custom` / `preferred` are this
           // screen's state and mean nothing downstream.

@@ -3366,12 +3366,18 @@ describe("CardPairingModal — marketplace player conflicts (NEO-251)", () => {
   });
 
   /**
-   * Settling the conflict changes the CARD, never the record of what the two
-   * marketplaces said. The diff needs both answers whichever one won, since
-   * "the stored value is the side the merge did not pick" is exactly the
-   * condition it tests.
+   * THE FLIP, from this end.
+   *
+   * A `conflictsByIndex` entry means one thing to the diff: "nobody has settled
+   * this, so an NB row equal to the losing side is last session's answer rather
+   * than an upstream change — say nothing." Once the operator picks SportLots
+   * that sentence is false, and leaving the entry in place makes the diff
+   * suppress the very field they just decided: the review is skipped, the
+   * commit runs with no `applyFields`, and the flip is discarded in silence.
+   *
+   * So the card carries their choice and the entry is WITHHELD.
    */
-  test("choosing SportLots does not rewrite the reported disagreement", async () => {
+  test("choosing SportLots withholds the conflict, so the flip is diffed", async () => {
     const { onConfirm } = renderModal({
       autoMatched: [autoPlayersConflict()],
     });
@@ -3386,12 +3392,127 @@ describe("CardPairingModal — marketplace player conflicts (NEO-251)", () => {
       "Mike Yastrzemski",
       "Carl Yastrzemski",
     ]);
+    expect(onConfirm.mock.calls[0][0].conflictsByIndex).toEqual({});
+  });
+
+  /**
+   * The case `chosen` cannot see, and the reason `touched` records the GESTURE
+   * rather than the value.
+   *
+   * The operator's NB row already carries SportLots' roster from a previous
+   * sync; this time they deliberately pick BSC. `chosen` is `"bsc"` — its
+   * seeded default — so the row is indistinguishable from one nobody opened.
+   * Reported as untouched, the diff would suppress `playerIds` and keep the
+   * stored SportLots roster, silently overriding the choice they just made.
+   */
+  test("re-picking the DEFAULT side is a decision, and withholds the conflict too", async () => {
+    const { onConfirm } = renderModal({
+      autoMatched: [autoPlayersConflict()],
+    });
+
+    // The pill that is already checked.
+    fireEvent.click(
+      screen.getByRole("radio", { name: /^BSC: Mike Yastrzemski —/ }),
+    );
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    // The card is unchanged — that is exactly why `chosen` cannot carry this.
+    expect(onConfirm.mock.calls[0][0].cards[0].players).toEqual([
+      "Mike Yastrzemski",
+    ]);
+    expect(onConfirm.mock.calls[0][0].conflictsByIndex).toEqual({});
+  });
+
+  test("re-picking the default name conflict withholds it as well", async () => {
+    const { onConfirm } = renderModal({
+      autoMatched: [
+        {
+          card: {
+            ...pairedCard("227c", "Mike Yastrzemski"),
+            nameConflict: {
+              bsc: "Mike Yastrzemski",
+              sportlots: "Carl Yastrzemski",
+            },
+          } satisfies PairingCard,
+          confidence: 1,
+        },
+      ],
+    });
+
+    fireEvent.click(
+      screen.getByRole("radio", { name: /^BSC: Mike Yastrzemski —/ }),
+    );
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    expect(onConfirm.mock.calls[0][0].cards[0].cardName).toBe(
+      "Mike Yastrzemski",
+    );
+    expect(onConfirm.mock.calls[0][0].conflictsByIndex).toEqual({});
+  });
+
+  /**
+   * A row nobody touched still reports its disagreement — that is the whole
+   * point of the entry, and the half that stops the screen re-asking an
+   * answered question on every re-sync.
+   */
+  test("an untouched conflicted row still reports its disagreement", async () => {
+    const { onConfirm } = renderModal({
+      autoMatched: [autoPlayersConflict()],
+    });
+
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
     expect(
       onConfirm.mock.calls[0][0].conflictsByIndex[0].playersConflict,
     ).toEqual({
       bsc: ["Mike Yastrzemski"],
       sportlots: ["Mike Yastrzemski", "Carl Yastrzemski"],
     });
+  });
+
+  test("typing a custom roster also withholds the conflict", async () => {
+    const { onConfirm } = renderModal({
+      autoMatched: [autoPlayersConflict()],
+    });
+
+    const field = screen.getByLabelText(
+      "Players for #227c (separate names with |)",
+    );
+    fireEvent.change(field, {
+      target: { value: "Carl Yastrzemski | Willie Mays" },
+    });
+    fireEvent.keyDown(field, { key: "Enter" });
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    expect(onConfirm.mock.calls[0][0].conflictsByIndex).toEqual({});
+  });
+
+  /**
+   * A REFUSED edit decides nothing, so it must not be mistaken for one. If it
+   * were, an operator who typed an over-length name and gave up would have the
+   * row's suppression switched off for good — the screen would re-ask the
+   * question it was supposed to stop asking.
+   */
+  test("a refused edit is not a decision", async () => {
+    const { onConfirm } = renderModal({
+      autoMatched: [autoPlayersConflict()],
+    });
+
+    const field = screen.getByLabelText(
+      "Players for #227c (separate names with |)",
+    );
+    fireEvent.change(field, { target: { value: "A".repeat(121) } });
+    fireEvent.keyDown(field, { key: "Enter" });
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    expect(
+      onConfirm.mock.calls[0][0].conflictsByIndex[0].playersConflict,
+    ).toBeTruthy();
   });
 
   /**
