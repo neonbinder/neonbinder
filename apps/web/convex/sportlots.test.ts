@@ -254,6 +254,74 @@ describe("fetchSportLotsChecklist platformRef carries the full per-row descripti
     expect(row1.platformRef).toBe("Aaron Judge");
     expect(row2.platformRef).toBe("Aaron Judge [ VAR All-Star Logo ]");
     expect(row1.platformRef).not.toBe(row2.platformRef);
+
+    // NEO-251: both rows now carry the player name. Before this, EVERY
+    // SportLots row returned `players: undefined`, so an SL-only set
+    // committed with 100% of its cards "needs attention" and the
+    // entity-review wizard never opened for it at all.
+    expect(row1.players).toEqual(["Aaron Judge"]);
+    // The variation row too — the ` [ VAR … ] ` marker is lifted before the
+    // parse, so the variation's subject is the same person as its parent's.
+    expect(row2.players).toEqual(["Aaron Judge"]);
+
+    // …and NEITHER row carries a team. SportLots does not print one; the
+    // 2-3 letter code it sometimes appends is stripped off the name and
+    // dropped, because mapping it to an NB team would mean looking an NB row
+    // up by a marketplace display string. See the note on
+    // tokenizeSlDescription.
+    for (const row of result.cards) {
+      expect(row.team).toBeUndefined();
+      expect(row.teams).toBeUndefined();
+    }
+  });
+
+  test("NEO-251 — rows that are not people carry no players, and cardName is unchanged either way", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const html = `
+      <table>
+        <tr><td class="smallleft">1</td><td class="smallleft">Mike Trout LAA RC</td></tr>
+        <tr><td class="smallleft">2</td><td class="smallleft">Alec Bohm|Spencer Howard</td></tr>
+        <tr><td class="smallleft">3</td><td class="smallleft">Peter O&#39;Brien</td></tr>
+        <tr><td class="smallleft">300</td><td class="smallleft">Checklist</td></tr>
+        <tr><td class="smallleft">301</td><td class="smallleft">Yankee Stadium</td></tr>
+      </table>
+    `;
+    vi.stubGlobal("fetch", makeListcardsFetch({ html, calls: [] }));
+
+    const result = await asAdmin.action(
+      api.adapters.sportlots.fetchSportLotsChecklist,
+      {
+        parentFilters: { sport: "Baseball", year: "2026", setName: "Topps" },
+        platformFilters: { variantType: "12345" },
+      },
+    );
+
+    expect(result.success).toBe(true);
+    const [trout, pair, apostrophe, checklist, stadium] = result.cards;
+
+    // The team abbreviation is stripped from the NAME and emitted nowhere;
+    // the RC token is the tokenizer's, as before.
+    expect(trout.players).toEqual(["Mike Trout"]);
+    expect(trout.cardName).toBe("Mike Trout LAA");
+    expect(trout.attributes).toContain("RC");
+
+    expect(pair.players).toEqual(["Alec Bohm", "Spencer Howard"]);
+    // cardName is UNCHANGED by NEO-251 — it is still the whole residual,
+    // delimiter and all. This ticket only ADDS a field.
+    expect(pair.cardName).toBe("Alec Bohm|Spencer Howard");
+
+    // Entities are decoded ONCE per row, before anything derives from the
+    // text, so cardName and platformRef agree with the parsed name.
+    expect(apostrophe.players).toEqual(["Peter O'Brien"]);
+    expect(apostrophe.cardName).toBe("Peter O'Brien");
+    expect(apostrophe.platformRef).toBe("Peter O'Brien");
+
+    // Non-people yield nothing rather than a guess.
+    expect(checklist.players).toBeUndefined();
+    expect(checklist.cardName).toBe("Checklist");
+    expect(stadium.players).toBeUndefined();
+    expect(stadium.cardName).toBe("Yankee Stadium");
   });
 });
 

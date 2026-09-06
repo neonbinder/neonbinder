@@ -1,5 +1,9 @@
+import fs from "node:fs";
+import path from "node:path";
 import { describe, expect, test } from "vitest";
 import {
+  decodeSlEntities,
+  parseSlSubjects,
   parseSlVariationMarker,
   stripBrandPrefixForLabel,
 } from "./sportlots";
@@ -205,5 +209,287 @@ describe("stripBrandPrefixForLabel", () => {
     expect(stripBrandPrefixForLabel("Toppstown Retro", "Topps")).toBe(
       "Toppstown Retro",
     );
+  });
+});
+
+/**
+ * NEO-251 — `parseSlSubjects`.
+ *
+ * The bug this closes: SportLots rows never carried `players`, so an SL-only
+ * set committed with 100% of its cards flagged "needs attention" and the
+ * entity-review wizard never opened for it. SL's description IS the player
+ * name; nothing else in the row is.
+ *
+ * The parser's stance is asymmetric on purpose. A missed name costs the
+ * operator one manual entry in a wizard that already exists for exactly that.
+ * An invented name writes marketplace-derived garbage into NB's own player
+ * data — the thing the product invariant is there to stop. So every rule
+ * below fails toward `{}`, and a single doubtful subject rejects the whole
+ * row rather than emitting the subjects around it.
+ */
+describe("parseSlSubjects", () => {
+  describe("names it accepts", () => {
+    test("a plain two-token name", () => {
+      expect(parseSlSubjects("Coby Mayo")).toEqual({ players: ["Coby Mayo"] });
+    });
+
+    test("SL's `|` delimiter splits a multi-player row into two subjects", () => {
+      // The real 2021 Topps Heritage #11 row.
+      expect(parseSlSubjects("Alec Bohm|Spencer Howard")).toEqual({
+        players: ["Alec Bohm", "Spencer Howard"],
+      });
+    });
+
+    test("a generational suffix is part of the name, not noise", () => {
+      expect(parseSlSubjects("Fernando Tatis Jr.")).toEqual({
+        players: ["Fernando Tatis Jr."],
+      });
+    });
+
+    test("period-initials survive", () => {
+      expect(parseSlSubjects("J.T. Realmuto")).toEqual({
+        players: ["J.T. Realmuto"],
+      });
+    });
+
+    test("accents are KEPT, not stripped or rejected", () => {
+      // An ASCII-only token class would have turned this into a rejection,
+      // which quietly costs names on a large fraction of a baseball set.
+      expect(parseSlSubjects("José Ramírez")).toEqual({
+        players: ["José Ramírez"],
+      });
+    });
+
+    test("a trailing team abbreviation is stripped and never emitted", () => {
+      // SL prints no team — it prints a 2-3 letter code whose meaning varies
+      // by sport and era. Mapping it to an NB team would mean looking an NB
+      // row up by a marketplace display string, which the invariant forbids.
+      // So it is removed from the name and dropped.
+      const result = parseSlSubjects("Mike Trout LAA");
+      expect(result).toEqual({ players: ["Mike Trout"] });
+      expect(result).not.toHaveProperty("teams");
+      expect(result).not.toHaveProperty("team");
+    });
+
+    test("mascots parse as subjects — SL files them as cards like any other", () => {
+      expect(parseSlSubjects("Mr. Met")).toEqual({ players: ["Mr. Met"] });
+      expect(parseSlSubjects("Billy the Marlin")).toEqual({
+        players: ["Billy the Marlin"],
+      });
+      expect(parseSlSubjects("Wally the Green Monster")).toEqual({
+        players: ["Wally the Green Monster"],
+      });
+    });
+
+    test("two people who differ only by suffix are two people", () => {
+      // The dedupe is case-insensitive on the WHOLE name, so "Jr." vs "Sr."
+      // must not collapse. A father/son subset card that emitted one name
+      // would silently lose half the card's subjects.
+      expect(parseSlSubjects("Ken Griffey Jr.|Ken Griffey Sr.")).toEqual({
+        players: ["Ken Griffey Jr.", "Ken Griffey Sr."],
+      });
+    });
+
+    test("a repeated subject is deduped rather than emitted twice", () => {
+      // Note the dedupe never rescues a MALFORMED repeat: "Mike Trout|mike
+      // trout" is rejected outright, because the lowercase copy fails the
+      // token rule before dedupe is ever reached. Validation first, dedupe
+      // second — that ordering is what keeps a bad subject from being
+      // laundered by a good one beside it.
+      expect(parseSlSubjects("Mike Trout|Mike Trout")).toEqual({
+        players: ["Mike Trout"],
+      });
+      expect(parseSlSubjects("Mike Trout|mike trout")).toEqual({});
+    });
+  });
+
+  describe("rows it refuses", () => {
+    const refused = (desc: string) => expect(parseSlSubjects(desc)).toEqual({});
+
+    test("a bare checklist line", () => {
+      // Single-token subjects are rejected wholesale. "Checklist" and
+      // "Ichiro" are indistinguishable to this parser, and it is the
+      // checklist rows that are common.
+      refused("Checklist");
+    });
+
+    test("stoplist words veto the subject even beside a plausible name", () => {
+      refused("Team Checklist");
+      refused("Yankee Stadium");
+      refused("Header Card");
+      refused("New York Yankees Team Card");
+    });
+
+    test("anything with a digit", () => {
+      refused("1998 Topps");
+    });
+
+    test("a single-token name — a real one, and that is the point", () => {
+      // Ichiro Suzuki really is printed as "Ichiro" on some cards. Accepting
+      // it would mean accepting every one-word non-name too, so this is a
+      // deliberate, documented false negative.
+      refused("Ichiro");
+    });
+
+    test("five subjects — that is a checklist line, not a card", () => {
+      refused("Mike Trout|Aaron Judge|Bryce Harper|Juan Soto|Shohei Ohtani");
+    });
+  });
+
+  describe("hostile input", () => {
+    test("`&` decodes and the result is then judged on its merits", () => {
+      // "Tom &amp; Jerry" decodes to "Tom & Jerry", which splits on ` & `
+      // into two SINGLE-token subjects — and single tokens are refused. The
+      // sequencing matters: decode first, judge second.
+      expect(parseSlSubjects("Tom &amp; Jerry")).toEqual({});
+    });
+
+    test("markup is rejected AFTER decoding, so encoding it does not help", () => {
+      expect(parseSlSubjects("<b>Mike</b> Trout")).toEqual({});
+      expect(parseSlSubjects("&lt;b&gt;Mike&lt;/b&gt; Trout")).toEqual({});
+    });
+
+    test("a double-encoded payload is caught by the same post-decode guard", () => {
+      // Decoding runs in ONE pass and does not re-scan its own output, so
+      // this yields the literal text "&lt;script&gt;". Nothing executes and
+      // nothing is emitted.
+      expect(parseSlSubjects("&amp;lt;script&amp;gt; Mike Trout")).toEqual({});
+    });
+
+    test("control characters, newline included", () => {
+      expect(parseSlSubjects("Mike\nTrout")).toEqual({});
+      expect(parseSlSubjects("Mike\u0000 Trout")).toEqual({});
+      expect(parseSlSubjects("Mike Trout\u007F")).toEqual({});
+      expect(parseSlSubjects("Mike Trout\r\nSpencer Howard")).toEqual({});
+    });
+
+    test("an over-long subject is refused rather than truncated", () => {
+      // Truncating would emit a name no one printed. 121 chars of a
+      // structurally valid two-token name still fails the length cap.
+      const long = `Mike ${"A".repeat(120)}`;
+      expect(long.length).toBeGreaterThan(120);
+      expect(parseSlSubjects(long)).toEqual({});
+    });
+
+    test("every accepted name is trimmed, collapsed and within the cap", () => {
+      const { players } = parseSlSubjects("  Alec   Bohm | Spencer  Howard  ");
+      expect(players).toEqual(["Alec Bohm", "Spencer Howard"]);
+      for (const name of players ?? []) {
+        expect(name).toBe(name.trim());
+        expect(name.length).toBeLessThanOrEqual(120);
+        expect(name).not.toMatch(/\s{2,}/);
+        // eslint-disable-next-line no-control-regex
+        expect(name).not.toMatch(/[\u0000-\u001F\u007F<>]/);
+      }
+    });
+
+    test("the contract's bounds hold: 1-4 names or nothing at all", () => {
+      const { players } = parseSlSubjects("A. One|B. Two|C. Three|D. Four");
+      expect(players).toHaveLength(4);
+      expect(players!.length).toBeLessThanOrEqual(4);
+    });
+  });
+});
+
+describe("decodeSlEntities", () => {
+  test("decodes the bounded set", () => {
+    expect(decodeSlEntities("Peter O&#39;Brien")).toBe("Peter O'Brien");
+    expect(decodeSlEntities("Tom &amp; Jerry")).toBe("Tom & Jerry");
+    expect(decodeSlEntities("A&nbsp;B")).toBe("A B");
+    expect(decodeSlEntities("&QUOT;x&QUOT;")).toBe('"x"');
+  });
+
+  test("leaves an entity OUTSIDE the set as literal text", () => {
+    // The closed set is the security property: an attacker cannot invent an
+    // entity name and have it resolved. The cost is that a genuinely accented
+    // page using `&eacute;` yields no players for that row — a false negative,
+    // which is the direction this adapter fails in.
+    expect(decodeSlEntities("Jos&eacute;")).toBe("Jos&eacute;");
+    expect(decodeSlEntities("&#60;script&#62;")).toBe("&#60;script&#62;");
+  });
+
+  test("one pass only — a decoded result is never re-scanned", () => {
+    expect(decodeSlEntities("&amp;lt;")).toBe("&lt;");
+    expect(decodeSlEntities("&amp;amp;")).toBe("&amp;");
+  });
+});
+
+/**
+ * The recorded page fixture.
+ *
+ * Unit cases above are hand-written strings; this runs the parser over rows
+ * as they actually arrive from `listcards.tpl`, matched with the adapter's
+ * own `cardRegex`. It is the check that the two <td> cells, the entity
+ * encoding and the tokenizer's leftovers line up in practice and not just in
+ * a test author's imagination.
+ */
+describe("parseSlSubjects over a recorded listcards.tpl page", () => {
+  // Same pattern the adapter uses. A variation row's NUMBER cell is
+  // "smallcolorleft"; the description cell is always "smallleft".
+  const CARD_REGEX =
+    /<td class="small(?:color)?left">([^<]+)<\/td>\s*<td class="smallleft">([^<]+)<\/td>/gi;
+
+  const html = fs.readFileSync(
+    path.join(__dirname, "__fixtures__", "sl-listcards-sample.html"),
+    "utf-8",
+  );
+
+  /** Mirrors the adapter's per-row derivation, minus the network. */
+  const rows = (): Array<{ cardNumber: string; description: string }> => {
+    const out: Array<{ cardNumber: string; description: string }> = [];
+    CARD_REGEX.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = CARD_REGEX.exec(html)) !== null) {
+      out.push({
+        cardNumber: match[1].trim(),
+        description: decodeSlEntities(match[2].trim()),
+      });
+    }
+    return out;
+  };
+
+  test("the fixture parses into the rows we recorded", () => {
+    expect(rows()).toHaveLength(11);
+  });
+
+  test("player rows yield names; non-player rows yield none", () => {
+    const players = (description: string) =>
+      parseSlSubjects(
+        // The adapter feeds the tokenizer residual, so strip the same things
+        // the tokenizer does for the two rows that carry markers.
+        description
+          .replace(/\s*\[\s*(?:VAR\s+)?[^\]]+?\s*\]\s*/i, " ")
+          .replace(/\/\d{1,5}\b/, "")
+          .replace(/\b(?:AUTO|AU|ROOKIE|RC|RELIC|PATCH|JSY|JERSEY|SP|SSP)\b/i, "")
+          .replace(/\s+/g, " ")
+          .trim(),
+      ).players;
+
+    expect(players("Alec Bohm")).toEqual(["Alec Bohm"]);
+    expect(players("Alec Bohm|Spencer Howard")).toEqual([
+      "Alec Bohm",
+      "Spencer Howard",
+    ]);
+    expect(players("Alec Bohm [ VAR Action Image ]")).toEqual(["Alec Bohm"]);
+    expect(players("J.T. Realmuto")).toEqual(["J.T. Realmuto"]);
+    expect(players("Bryce Harper PHI")).toEqual(["Bryce Harper"]);
+    expect(players("Fernando Tatis Jr. RC")).toEqual(["Fernando Tatis Jr."]);
+    expect(players("José Ramírez")).toEqual(["José Ramírez"]);
+    expect(players("Peter O'Brien")).toEqual(["Peter O'Brien"]);
+    expect(players("Yadier Molina AU /99")).toEqual(["Yadier Molina"]);
+
+    // The two rows that must stay empty.
+    expect(players("Checklist")).toBeUndefined();
+    expect(players("Yankee Stadium")).toBeUndefined();
+  });
+
+  test("the fixture carries no session or account markup", () => {
+    // The scrub is part of the fixture's contract, not a one-time cleanup.
+    // The provenance comment NAMES the things that were removed, so it is
+    // stripped before the check — otherwise the note describing the scrub
+    // would be the only thing failing it.
+    const markup = html.replace(/<!--[\s\S]*?-->/g, "");
+    expect(markup).not.toMatch(/Cookie|sessionid|PHPSESSID|selset|login\.tpl/i);
+    expect(markup).not.toMatch(/<(?:script|form|input|a)\b/i);
   });
 });

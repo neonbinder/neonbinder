@@ -1,0 +1,65 @@
+<!--
+  A recorded SportLots `listcards.tpl` response, reduced to the rows this
+  parser reads.
+
+  Provenance: the row shapes are the ones already recorded in this repo's
+  SportLots tests — set 189991 (2021 Topps Heritage) read as a logged-in
+  seller on 2026-08-27 (see convex/adapters/sportlots.test.ts's
+  parseSlVariationMarker block) plus the base/variation pair verified live
+  against set 328996 (convex/sportlots.test.ts). This file is NOT a fresh
+  live pull: NEO-251 deliberately did not re-fetch SportLots.
+
+  What was removed, and why: everything outside the two <td> cells the
+  `cardRegex` matches. That means the whole page chrome — the login banner,
+  the seller's own name and dealer bin, the pricing/quantity form inputs, the
+  `selset` hidden field, every `Cookie`/session marker and every URL carrying
+  a session id. Nothing here identifies an account, and nothing here is a
+  credential. The card rows themselves are public checklist data.
+
+  The mix is chosen to exercise the parser end to end: single names, a
+  two-subject `|` row, a name with a period-initial, an accented name, a
+  trailing team abbreviation, a generational suffix, an HTML-entity
+  apostrophe, a variation row (tinted number cell = "smallcolorleft"), and two
+  rows that must yield NO players at all (a checklist line and a stadium
+  card).
+
+  Note the accented row carries LITERAL UTF-8 accents, which is what
+  `response.text()` hands the adapter. `&eacute;` is deliberately NOT in the
+  decoder's bounded entity set — an unknown entity is left as literal text and
+  the row simply yields no players.
+-->
+<table border="0" cellpadding="2" cellspacing="0" width="100%">
+  <tr>
+    <td class="smallleft">1</td><td class="smallleft">Alec Bohm</td>
+  </tr>
+  <tr>
+    <td class="smallleft">11</td><td class="smallleft">Alec Bohm|Spencer Howard</td>
+  </tr>
+  <tr>
+    <td class="smallcolorleft">11</td><td class="smallleft">Alec Bohm [ VAR Action Image ]</td>
+  </tr>
+  <tr>
+    <td class="smallleft">12</td><td class="smallleft">J.T. Realmuto</td>
+  </tr>
+  <tr>
+    <td class="smallleft">13</td><td class="smallleft">Bryce Harper PHI</td>
+  </tr>
+  <tr>
+    <td class="smallleft">27</td><td class="smallleft">Fernando Tatis Jr. RC</td>
+  </tr>
+  <tr>
+    <td class="smallleft">45</td><td class="smallleft">José Ramírez</td>
+  </tr>
+  <tr>
+    <td class="smallleft">62</td><td class="smallleft">Peter O&#39;Brien</td>
+  </tr>
+  <tr>
+    <td class="smallleft">88</td><td class="smallleft">Yadier Molina AU /99</td>
+  </tr>
+  <tr>
+    <td class="smallleft">300</td><td class="smallleft">Checklist</td>
+  </tr>
+  <tr>
+    <td class="smallleft">301</td><td class="smallleft">Yankee Stadium</td>
+  </tr>
+</table>
