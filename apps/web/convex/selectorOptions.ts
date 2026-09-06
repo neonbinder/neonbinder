@@ -3556,14 +3556,32 @@ function normalizePendingNames(
  * NEO-246 — the SAME bounds as `normalizePendingNames`, applied by DROPPING
  * rather than refusing.
  *
- * Why two spellings of one rule. `normalizePendingNames` guards the two
- * OPERATOR-facing mutations, where a refusal is the honest answer: a person
- * typed something and can be told it was not stored. This guards the commit
- * chunk, which merges names an ADAPTER derived from a marketplace with names
- * already sitting on the row, on a path with no operator standing in front of
- * it. Throwing there would fail a whole chunk of a sync — hundreds of cards
- * nobody has a problem with — because one upstream row carried an essay in a
- * player field. So the commit takes what fits and moves on.
+ * ## This is not the guard against a bad payload
+ *
+ * That one is `assertCardBatchWithinLimits`, at the TOP of
+ * `commitCardChecklist` / `resolveChecklistEntities` /
+ * `diffChecklistAgainstExisting` (NEO-251 security review). `players` and
+ * `teams` cross an operator's browser as bare `v.array(v.string())`, so an
+ * oversized or hostile INPUT is refused at that boundary, whole, before any
+ * phase runs and before a row is written. The bounds are closed upstream too:
+ * both marketplace parsers cap what they emit, so a real upstream row cannot
+ * arrive over-cap in the first place.
+ *
+ * ## What is left for this to do, and why it must not throw
+ *
+ * Two cases the boundary cannot see, because neither is a property of the
+ * payload:
+ *
+ *  1. **The merge.** This runs inside `commitCardChecklistChunk`, which unions
+ *     the names already sitting on the row with the ones this sync stamped.
+ *     Both lists can be comfortably inside the cap and their union still over
+ *     it — 15 waiting on the operator plus 10 freshly found is 25. Nothing
+ *     about the incoming card is wrong, so refusing it would fail a whole
+ *     chunk of a sync — hundreds of cards nobody has a problem with — over
+ *     arithmetic. The commit takes what fits and moves on.
+ *  2. **Legacy rows.** A row stamped before any of this existed is over the
+ *     cap in the DATABASE, where no input validator will ever reach it. Its
+ *     next commit repairs it.
  *
  * That is not a licence to store anything: the point of bounding it here at
  * all is that `updateCard` now REFUSES what it used to accept, and the walker's

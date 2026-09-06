@@ -1737,61 +1737,132 @@ describe("resolveChecklistEntities: an open batch is reconciled even when nothin
 // the commit stamped over the cap would be a row the operator could never
 // save. The fix for a bad row would itself be refused.
 //
-// The commit's half of the agreement is NOT a refusal, deliberately: these
-// names are marketplace-derived and arrive on an internal path with no
-// operator in front of it, so one upstream row carrying an essay in a player
-// field must not fail a whole chunk of a sync. It drops what does not fit and
-// keeps going (see `boundPendingNames`).
+// TWO different mechanisms hold that agreement, at two different places, and
+// the split is the point:
+//
+//  1. THE BOUNDARY REFUSES. `assertCardBatchWithinLimits` (NEO-251 security
+//     review) runs at the top of `commitCardChecklist` — and of
+//     `resolveChecklistEntities` and `diffChecklistAgainstExisting` — and
+//     throws on a card carrying more than `MAX_CARD_PLAYERS` / `MAX_CARD_TEAMS`
+//     names, or a name over `MAX_PLAYER_NAME_LENGTH`. `players` crosses an
+//     operator's browser as a bare `v.array(v.string())`, so this is the trust
+//     boundary; hostile or oversized INPUT is refused there, before any phase
+//     runs and before a single row is written. An earlier draft of NEO-246 had
+//     the commit truncate this case instead; that argument is retired, because
+//     silently storing 20 of the 25 names a caller sent is a worse answer than
+//     telling them the payload is wrong while they are still looking at it.
+//     The bounds are also closed upstream, in the adapters, so a real
+//     marketplace row cannot reach the boundary over-cap in the first place
+//     (see convex/adapters/buysportscards.test.ts).
+//
+//  2. THE CHUNK DROPS. `boundPendingNames` still trims inside
+//     `commitCardChecklistChunk`, and it is NOT redundant with the boundary.
+//     It covers the two cases the boundary cannot see: a LEGACY row stamped
+//     over the cap before any of this existed, and — the ordinary one — the
+//     MERGE of a row's stored backlog with the names this sync stamped, whose
+//     union can exceed the cap while each side is comfortably inside it. That
+//     case must stay a drop: nothing about the incoming payload is wrong, so
+//     refusing it would fail a whole chunk of a sync over arithmetic.
+//
+// The tests below are ordered that way: refusals first, then the merge, then
+// the legacy repair.
 // ===========================================================================
 
-describe("commitCardChecklist: pending-name bounds (NEO-246)", () => {
-  test("a card with more unreviewed names than the cap stores exactly the cap, and the commit still lands", async () => {
+describe("commitCardChecklist: pending-name bounds (NEO-246, NEO-251)", () => {
+  test("a card carrying more players than the cap is REFUSED, and nothing is written", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
 
     // Five past the cap. A real multi-player card never lists this many; an
-    // adapter emitting a checklist blob into the player field does.
+    // adapter emitting a checklist blob into the player field does — which is
+    // why the adapters bound it too, and why this is refused rather than
+    // quietly trimmed if one ever gets through.
     const names = Array.from(
       { length: MAX_CARD_PLAYERS + 5 },
       (_, i) => `Unknown Player ${String(i).padStart(2, "0")}`,
     );
-    for (const name of names) {
-      await insertUndecidedReviewRow(t, {
+
+    await expect(
+      asAdmin.action(api.selectorOptions.commitCardChecklist, {
         selectorOptionId: variantTypeId,
         sportId,
+        cards: [makeCard({ cardNumber: "1", players: names })],
         batchId: "batch-1",
-        kind: "player",
-        name,
-      });
-    }
+      }),
+    ).rejects.toThrow(
+      new RegExp(
+        `card #1 carries ${MAX_CARD_PLAYERS + 5} players, above the ${MAX_CARD_PLAYERS}-player limit`,
+      ),
+    );
 
-    const result = await asAdmin.action(api.selectorOptions.commitCardChecklist, {
-      selectorOptionId: variantTypeId,
-      sportId,
-      cards: [makeCard({ cardNumber: "1", players: names })],
-      batchId: "batch-1",
-    });
-
-    // The commit LANDS. Refusing would cost the operator the whole sync over
-    // one bad upstream row.
-    expect(result.success).toBe(true);
-    expect(result.count).toBe(1);
-
-    const [card] = await readCards(t, variantTypeId);
-    expect(card.pendingPlayerNames).toHaveLength(MAX_CARD_PLAYERS);
-    // First-seen order, so the truncation is deterministic rather than
-    // whichever names a Set happened to yield.
-    expect(card.pendingPlayerNames).toEqual(names.slice(0, MAX_CARD_PLAYERS));
-
-    // And the operator is told about what was STORED, not what arrived — a
-    // name dropped on the floor is not one they have to deal with.
-    expect(result.unreviewedNameCount).toBe(MAX_CARD_PLAYERS);
+    // The refusal is at the boundary, so the batch is refused WHOLE — no card
+    // row, not even the part of the payload that was fine.
+    expect(await readCards(t, variantTypeId)).toHaveLength(0);
   });
 
-  test("the stored list is one the walker's fixer can then save", async () => {
-    // The load-bearing assertion of this whole change: the two writers agree.
-    // Take the row the commit just wrote, and send it back through
+  test("an over-long name is REFUSED, and the message does not echo it", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+
+    // 121 characters — one past MAX_PLAYER_NAME_LENGTH.
+    const essay = "z".repeat(121);
+
+    const err = await asAdmin
+      .action(api.selectorOptions.commitCardChecklist, {
+        selectorOptionId: variantTypeId,
+        sportId,
+        cards: [makeCard({ cardNumber: "1", players: ["Real Unknown", essay] })],
+        batchId: "batch-1",
+      })
+      .then(
+        () => {
+          throw new Error("expected the commit to refuse the over-long name");
+        },
+        (e: unknown) => e as Error,
+      );
+
+    expect(err.message).toMatch(
+      /carries a player name of 121 characters; the limit is 120\./,
+    );
+    // The message reaches Sentry and the browser console, so it names the
+    // LENGTH and never the text — the same convention `players.ts` set.
+    expect(err.message).not.toContain(essay);
+
+    expect(await readCards(t, variantTypeId)).toHaveLength(0);
+  });
+
+  test("the TEAM side is refused by its own, narrower cap", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+
+    const teams = Array.from(
+      { length: MAX_CARD_TEAMS + 3 },
+      (_, i) => `Unknown Team ${i}`,
+    );
+
+    await expect(
+      asAdmin.action(api.selectorOptions.commitCardChecklist, {
+        selectorOptionId: variantTypeId,
+        sportId,
+        cards: [makeCard({ cardNumber: "1", teams })],
+        batchId: "batch-1",
+      }),
+    ).rejects.toThrow(
+      new RegExp(
+        `card #1 carries ${MAX_CARD_TEAMS + 3} teams, above the ${MAX_CARD_TEAMS}-team limit`,
+      ),
+    );
+
+    expect(await readCards(t, variantTypeId)).toHaveLength(0);
+  });
+
+  test("a full-cap card commits, and the stored list is one the walker's fixer can then save", async () => {
+    // The load-bearing assertion of this whole change: the three writers
+    // agree. Take the row the commit just wrote — at exactly the cap, the
+    // largest list the boundary lets through — and send it back through
     // `updateCard` exactly as `UnreviewedNameFixer` does when it answers the
     // team side and leaves the player names alone.
     const t = convexTest(schema, modules);
@@ -1799,7 +1870,7 @@ describe("commitCardChecklist: pending-name bounds (NEO-246)", () => {
     const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
 
     const names = Array.from(
-      { length: MAX_CARD_PLAYERS + 5 },
+      { length: MAX_CARD_PLAYERS },
       (_, i) => `Unknown Player ${String(i).padStart(2, "0")}`,
     );
     for (const name of names) {
@@ -1811,15 +1882,25 @@ describe("commitCardChecklist: pending-name bounds (NEO-246)", () => {
         name,
       });
     }
-    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
-      selectorOptionId: variantTypeId,
-      sportId,
-      cards: [makeCard({ cardNumber: "1", players: names })],
-      batchId: "batch-1",
-    });
+
+    const result = await asAdmin.action(
+      api.selectorOptions.commitCardChecklist,
+      {
+        selectorOptionId: variantTypeId,
+        sportId,
+        cards: [makeCard({ cardNumber: "1", players: names })],
+        batchId: "batch-1",
+      },
+    );
+    expect(result.success).toBe(true);
+    expect(result.count).toBe(1);
 
     const [card] = await readCards(t, variantTypeId);
     const stored = card.pendingPlayerNames!;
+    // First-seen order, kept verbatim — nothing was dropped at the cap.
+    expect(stored).toEqual(names);
+    // The operator is told about what was STORED.
+    expect(result.unreviewedNameCount).toBe(MAX_CARD_PLAYERS);
 
     // The fixer's payload for "answered the team side, player names untouched".
     await expect(
@@ -1836,14 +1917,32 @@ describe("commitCardChecklist: pending-name bounds (NEO-246)", () => {
     expect(after!.pendingPlayerNames).toEqual(stored);
   });
 
-  test("an over-long name is dropped, not stored and not counted", async () => {
+  test("a stored backlog plus a freshly stamped list that together exceed the cap is a DROP, not a refusal", async () => {
+    // The case the boundary cannot see and must not be asked to: BOTH payloads
+    // are well inside the cap, and it is their union on the row that is not.
+    // 15 already waiting on the operator + 10 this sync just found = 25, and
+    // the row keeps the first 20 with the stored backlog outranking the new
+    // names. Refusing here would fail a chunk of a sync over arithmetic
+    // nobody's payload got wrong.
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
 
-    // 121 characters — one past MAX_PENDING_NAME_LENGTH.
-    const essay = "z".repeat(121);
-    for (const name of ["Real Unknown", essay]) {
+    const stored = Array.from(
+      { length: 15 },
+      (_, i) => `Backlog ${String(i).padStart(2, "0")}`,
+    );
+    const stamped = Array.from(
+      { length: 10 },
+      (_, i) => `Freshly Found ${String(i).padStart(2, "0")}`,
+    );
+    expect(stored.length).toBeLessThanOrEqual(MAX_CARD_PLAYERS);
+    expect(stamped.length).toBeLessThanOrEqual(MAX_CARD_PLAYERS);
+    expect(stored.length + stamped.length).toBeGreaterThan(MAX_CARD_PLAYERS);
+
+    // Create the row first, through the commit, with a payload the boundary is
+    // happy with.
+    for (const name of stored) {
       await insertUndecidedReviewRow(t, {
         selectorOptionId: variantTypeId,
         sportId,
@@ -1852,51 +1951,53 @@ describe("commitCardChecklist: pending-name bounds (NEO-246)", () => {
         name,
       });
     }
-
-    const result = await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
       sportId,
-      cards: [makeCard({ cardNumber: "1", players: ["Real Unknown", essay] })],
+      cards: [makeCard({ cardNumber: "1", players: stored })],
       batchId: "batch-1",
     });
 
-    expect(result.success).toBe(true);
-    const [card] = await readCards(t, variantTypeId);
-    expect(card.pendingPlayerNames).toEqual(["Real Unknown"]);
-    // One name is waiting on the operator, not two.
-    expect(result.unreviewedNameCount).toBe(1);
-  });
-
-  test("the TEAM side is bounded by its own, narrower cap", async () => {
-    const t = convexTest(schema, modules);
-    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
-
-    const teams = Array.from(
-      { length: MAX_CARD_TEAMS + 3 },
-      (_, i) => `Unknown Team ${i}`,
-    );
-    for (const name of teams) {
+    // The next sync finds ten more unreviewed names on the same card.
+    for (const name of stamped) {
       await insertUndecidedReviewRow(t, {
         selectorOptionId: variantTypeId,
         sportId,
-        batchId: "batch-1",
-        kind: "team",
+        batchId: "batch-2",
+        kind: "player",
         name,
       });
     }
+    const result = await asAdmin.action(
+      api.selectorOptions.commitCardChecklist,
+      {
+        selectorOptionId: variantTypeId,
+        sportId,
+        cards: [makeCard({ cardNumber: "1", players: stamped })],
+        batchId: "batch-2",
+      },
+    );
 
-    const result = await asAdmin.action(api.selectorOptions.commitCardChecklist, {
-      selectorOptionId: variantTypeId,
-      sportId,
-      cards: [makeCard({ cardNumber: "1", teams })],
-      batchId: "batch-1",
-    });
-
+    // It LANDS.
     expect(result.success).toBe(true);
-    const [card] = await readCards(t, variantTypeId);
-    expect(card.pendingTeamNames).toEqual(teams.slice(0, MAX_CARD_TEAMS));
-    expect(result.unreviewedNameCount).toBe(MAX_CARD_TEAMS);
+
+    const [merged] = await readCards(t, variantTypeId);
+    expect(merged.pendingPlayerNames).toHaveLength(MAX_CARD_PLAYERS);
+    // Stored first, so the operator's existing backlog outranks a name this
+    // sync just found; the truncation is deterministic rather than whichever
+    // names a Set happened to yield.
+    expect(merged.pendingPlayerNames).toEqual(
+      [...stored, ...stamped].slice(0, MAX_CARD_PLAYERS),
+    );
+
+    // And the merged row is one the fixer can save — which is the reason the
+    // drop exists at all.
+    await expect(
+      asAdmin.mutation(api.selectorOptions.updateCard, {
+        id: merged._id,
+        pendingPlayerNames: merged.pendingPlayerNames!,
+      }),
+    ).resolves.toBeNull();
   });
 
   test("a row stamped over the cap before this landed is REPAIRED by the next commit, keeping the names it already had", async () => {
