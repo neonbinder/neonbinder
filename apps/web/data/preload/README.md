@@ -8,7 +8,7 @@ they are read by exactly one module, `apps/web/convex/preloadPlayers.ts`.
 | File | Size | Players | Teams | Leagues |
 |---|---:|---:|---:|---:|
 | `mlb.json` | ~2.3 MB | 21,227 | 141 | 6 |
-| `nfl.json` | ~3.6 MB | 33,248 | 119 | 4 |
+| `nfl.json` | ~3.5 MB | 33,268 | 119 | 4 |
 
 **Do not import these anywhere else.** Convex bundles per module against a
 32 MiB cap; a second importer puts 5.9 MB of card data into an unrelated
@@ -105,11 +105,44 @@ franchise histories. The generator **fails** on any pair the table does not
 resolve, and a unit test proves the committed file is entirely explicable by
 the table.
 
-**Player identity.** Baseball uses the Lahman `playerID`. Football uses the
-`gsis_id` where the source has one (19,030 players), else a synthetic
-`name:<slug>|<birth-date>` key (14,101), else — for 117 rows with neither an id
-nor a birth date — `name:<slug>|s<first season>`, flagged `lowConfidence: true`
-so the loader can report them.
+**Player identity.** Baseball uses the Lahman `playerID` (`gwynnto01`).
+Football uses the `gsis_id` where the source has one (19,030 players), and
+otherwise a synthetic key:
+
+| Source has | Emitted id | Count |
+|---|---|---:|
+| `gsis_id` | the id itself, `00-0014313` | 19,030 |
+| name + birth date | `name:<slug>\|b<birthYear>#<n>` | 14,101 |
+| name only | `name:<slug>\|s<firstSeason>#<n>`, `lowConfidence: true` | 137 |
+
+**The emitted id never contains a full date of birth.** It is written to
+`players.externalIds.nflverseId`, which the public player queries return and
+which is committed here in a public repo; a date of birth for 14,000 named
+people is personal data that neither NB nor the loader needs. The birth date is
+used to GROUP roster rows inside the generator and stops there. The birth
+*year* is what tells two players apart in the UI, and `#<n>` — an ordinal over
+the distinct birth dates sharing a (name, birth year), oldest first — settles
+the rest. 14 of the 14,101 birth-year keys currently need an ordinal above 1
+(two different people with one name and one birth year); 20 of the 137
+season keys do.
+
+**A `lowConfidence` player is one run of consecutive seasons on one team**, not
+a career. With nothing but a name, that is the most that can be claimed: "Don
+Smith" is a 1929 Orange Tornadoes lineman *and* a 1930 Newark Tornadoes back,
+and grouping by name alone folded them into one row with a two-team career.
+Rows are keyed per (name, team, season) and merged only across consecutive
+seasons on the same team, so the `s<firstSeason>` in the id actually
+discriminates. This deliberately errs toward two rows for one person rather
+than one row for two people — an operator can merge, but cannot un-merge.
+
+**Changing an id format is not free.** The loader's idempotency rests entirely
+on finding its own rows by source id. A deployment already loaded under an
+older key format will not match those rows on the next run: every affected
+player falls through to the name path, where it is adopted (filling in the new
+id) if it is unambiguous, and SKIPPED AND REPORTED if it is not. Nothing is
+duplicated silently and nothing is overwritten — but a re-key means a run whose
+`playersSkippedAmbiguous` is worth reading line by line, and it should be
+announced rather than discovered.
 
 **Both files carry `location` / `nickname` alongside `name`,** so the NEO-236
 Location/Name split is a one-line change in the loader rather than a
@@ -125,6 +158,9 @@ node scripts/build-preload-data.mjs --sport nfl
 
 Output is deterministic apart from `source.generatedAt` (a date, not a
 timestamp), so a regenerate against unchanged inputs produces a two-line diff.
+Records are written **one per line** — compact within a line, no indentation —
+so a regenerate is reviewable: a whole-file single line makes every change look
+like "the entire 3 MB was replaced".
 The script prints its counts and every fold it made to stderr — read them.
 
 Then run the tests, which check the committed files rather than the generator's

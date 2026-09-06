@@ -144,11 +144,11 @@ the run.
 | `teamsCreated` / `teamsAdopted` | Created vs. matched an existing row by name. On a re-run: 0 created, all adopted. |
 | `playersCreated` | New `players` rows. |
 | `playersAdopted` | Matched an existing row — either one this task created on an earlier run (found by source id) or an unambiguous NB row it filled in. |
-| `playersSkippedAmbiguous` | **The one to read.** Several existing rows share the name and nothing distinguishes them, so nothing was written. Each is logged as `preload_player_skipped_ambiguous` with the name, birth year and candidate count: `npx convex logs` (or the dashboard) to list them. Resolve by hand in `/admin/players`; re-running will not fix it. |
+| `playersSkippedAmbiguous` | **The one to read.** Nothing was written for these. Each is logged as `preload_player_skipped_ambiguous` with a `reason`: `several_same_birth_year` (two existing rows share the name and the year), `undated_candidates` (a candidate could be them and nothing says so), `different_source_id` (the only candidate already carries another source player's id — adopting it would merge two people), or `too_many_candidates` (more rows share the name than the bounded scan reads). `npx convex logs` (or the dashboard) lists them. Resolve by hand in `/admin/players`; re-running will not fix it. |
 | `playersSkippedNoSport` | Non-zero means the sport has never been synced. Nothing was written. Sync the sport and run again. |
 | `truncatedStints` | Players whose career exceeded the 64-stint cap; the earliest 64 were kept. Expect 0 — the longest real career in either dataset is 18. Non-zero means the datasets changed shape and someone should look. |
 | `droppedStints` | Stints whose team row could not be found. Expect 0 after a normal run; non-zero in a dry run is expected (the teams it would have created do not exist). |
-| `nextStart` | `null` when the whole file was processed. A number means the action hit its 6-minute budget and stopped cleanly — re-run with `"start": <that number>`. |
+| `nextStart` | `null` when the whole file was processed. A number means the action stopped cleanly and there is more to do — either it hit its 6-minute budget, or a chunk found no transaction headroom (logged as `preload_chunk_no_headroom`). Re-run with `"start": <that number>`. It is a resume point, not an error. |
 
 ### Resuming
 

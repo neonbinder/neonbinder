@@ -63,7 +63,7 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { findOrCreateLeague, normalizeLeagueName, resolveDefaultLeagueId } from "./leagues";
 import { normalizeTeamName } from "./teams";
-import { normalizePlayerName } from "./players";
+import { normalizePlayerName, PLAYER_AMBIGUITY_SCAN_LIMIT } from "./players";
 import { sortTeamYears } from "../lib/players/team-tenure";
 import type { TransactionMetrics } from "convex/server";
 import type { PreloadFile } from "../lib/players/preload/preload-shape";
@@ -298,7 +298,7 @@ export const loadTeamsChunk = internalMutation({
         .withIndex("by_name_normalized_and_sport_id", (q) =>
           q.eq("nameNormalized", nameNormalized).eq("sportId", sportId),
         )
-        .collect();
+        .take(1);
       const existing = matches[0];
 
       const yearsActive = {
@@ -390,6 +390,21 @@ export const loadTeamsChunk = internalMutation({
  *    adopted: that is the shape of a row the checklist flow created from a
  *    card, with nothing on it that could contradict the dataset.
  *  - Anything else → ambiguous. Skip and report.
+ *
+ * Two hard refusals sit on top of those, and both were security-review
+ * findings rather than product rules:
+ *
+ *  - **A candidate already carrying a DIFFERENT source id in this sport's
+ *    slot is never adopted.** The caller looked this exact id up on its own
+ *    index first and found nothing, so a row holding another one was created
+ *    for a different source player; adopting it would re-point the linkage and
+ *    quietly merge two people. Ambiguous, `different_source_id`.
+ *  - **More candidates than `PLAYER_AMBIGUITY_SCAN_LIMIT` is ambiguous by
+ *    itself**, because the caller only read that many plus one and no answer
+ *    over a truncated candidate list can be trusted.
+ *
+ * Every ambiguous outcome names its `reason`, which reaches the operator in
+ * the `preload_player_skipped_ambiguous` log line.
  */
 /**
  * The `externalIds` slot for this sport's source id, as a literal object.
@@ -407,19 +422,63 @@ function sourceIdField(
 type PlayerMatch =
   | { kind: "create" }
   | { kind: "adopt"; row: Doc<"players"> }
-  | { kind: "ambiguous"; candidates: number };
+  | { kind: "ambiguous"; reason: AmbiguityReason; candidates: number };
+
+/** Why a source player was skipped. Each appears verbatim in the log line. */
+export type AmbiguityReason =
+  /** More rows share the name than the bounded scan can even see. */
+  | "too_many_candidates"
+  /** Several existing rows carry the same birth year. */
+  | "several_same_birth_year"
+  /** The only candidate already carries a DIFFERENT source id in this slot. */
+  | "different_source_id"
+  /** Undated candidates that could be this person, and nothing to choose by. */
+  | "undated_candidates";
 
 export function matchExistingPlayer(
   candidates: Doc<"players">[],
   sourceBirthYear: number | undefined,
+  idField: "lahmanId" | "nflverseId",
+  sourceId: string,
 ): PlayerMatch {
   if (candidates.length === 0) return { kind: "create" };
 
+  // Bounded above by the caller's `.take(LIMIT + 1)`. More rows than that
+  // share the name and no answer here could be trusted.
+  if (candidates.length > PLAYER_AMBIGUITY_SCAN_LIMIT) {
+    return {
+      kind: "ambiguous",
+      reason: "too_many_candidates",
+      candidates: candidates.length,
+    };
+  }
+
+  /**
+   * A row already carrying a DIFFERENT id in this sport's slot belongs to
+   * somebody else — the caller looked this exact source id up on its own index
+   * first and found nothing, so a row holding another one was created for a
+   * different source player. Adopting it would silently re-point the linkage
+   * and merge two people, which is the one thing worse than skipping.
+   */
+  const claimedByAnother = (row: Doc<"players">): boolean => {
+    const existing = row.externalIds?.[idField];
+    return existing !== undefined && existing !== sourceId;
+  };
+
+  const adopt = (row: Doc<"players">): PlayerMatch =>
+    claimedByAnother(row)
+      ? { kind: "ambiguous", reason: "different_source_id", candidates: 1 }
+      : { kind: "adopt", row };
+
   if (sourceBirthYear !== undefined) {
     const sameBirthYear = candidates.filter((c) => c.birthYear === sourceBirthYear);
-    if (sameBirthYear.length === 1) return { kind: "adopt", row: sameBirthYear[0] };
+    if (sameBirthYear.length === 1) return adopt(sameBirthYear[0]);
     if (sameBirthYear.length > 1) {
-      return { kind: "ambiguous", candidates: sameBirthYear.length };
+      return {
+        kind: "ambiguous",
+        reason: "several_same_birth_year",
+        candidates: sameBirthYear.length,
+      };
     }
     if (candidates.every((c) => c.birthYear !== undefined)) return { kind: "create" };
   }
@@ -430,10 +489,14 @@ export function matchExistingPlayer(
       only.birthYear === undefined &&
       (only.teamYears === undefined || only.teamYears.length === 0) &&
       !only.externalIds?.wikidataId;
-    if (bare) return { kind: "adopt", row: only };
+    if (bare) return adopt(only);
   }
 
-  return { kind: "ambiguous", candidates: candidates.length };
+  return {
+    kind: "ambiguous",
+    reason: "undated_candidates",
+    candidates: candidates.length,
+  };
 }
 
 export const loadPlayersChunk = internalMutation({
@@ -498,7 +561,7 @@ export const loadPlayersChunk = internalMutation({
           .withIndex("by_name_normalized_and_sport_id", (q) =>
             q.eq("nameNormalized", normalizeTeamName(name)).eq("sportId", sportId),
           )
-          .collect();
+          .take(1);
         id = matches[0]?._id ?? null;
       }
       teamIdByIndex.set(index, id);
@@ -525,13 +588,13 @@ export const loadPlayersChunk = internalMutation({
               .withIndex("by_lahman_id", (q) =>
                 q.eq("externalIds.lahmanId", source.id),
               )
-              .collect()
+              .take(1)
           : await ctx.db
               .query("players")
               .withIndex("by_nflverse_id", (q) =>
                 q.eq("externalIds.nflverseId", source.id),
               )
-              .collect();
+              .take(1);
       if (bySourceId.length > 0) {
         playersAdopted += 1;
         continue;
@@ -539,20 +602,33 @@ export const loadPlayersChunk = internalMutation({
 
       // 2. An existing NB row for the same name in this sport.
       const nameNormalized = normalizePlayerName(source.name);
+      // BOUNDED, not `.collect()`. `(nameNormalized, sportId)` is a dedup key
+      // and not a unique one — that is the whole premise of this task — so a
+      // name shared by a pathological number of rows would otherwise turn one
+      // player into an unbounded read inside a chunk that has 99 more to do.
+      // One past the limit, so "more than we are willing to look at" is
+      // distinguishable from "exactly the limit". Same bound, for the same
+      // reason, as `sameNamePlayers` in convex/players.ts.
       const candidates = await ctx.db
         .query("players")
         .withIndex("by_name_normalized_and_sport_id", (q) =>
           q.eq("nameNormalized", nameNormalized).eq("sportId", sportId),
         )
-        .collect();
+        .take(PLAYER_AMBIGUITY_SCAN_LIMIT + 1);
 
-      const decision = matchExistingPlayer(candidates, source.birthYear);
+      const decision = matchExistingPlayer(
+        candidates,
+        source.birthYear,
+        idField,
+        source.id,
+      );
       if (decision.kind === "ambiguous") {
         playersSkippedAmbiguous += 1;
         console.log(
           JSON.stringify({
             msg: "preload_player_skipped_ambiguous",
             sport: args.sport,
+            reason: decision.reason,
             sourceId: source.id,
             name: source.name,
             birthYear: source.birthYear ?? null,
@@ -584,6 +660,10 @@ export const loadPlayersChunk = internalMutation({
         const row = decision.row;
         // GAP-FILL ONLY, every field. The dataset is initial input; a career
         // an operator entered, or an enrichment already stored, outranks it.
+        // Safe to spread only because `matchExistingPlayer` refuses to adopt a
+        // row whose slot already holds a DIFFERENT source id — otherwise this
+        // line would re-point another source player's linkage and merge two
+        // people. Do not relax that guard without changing this too.
         const patch: Record<string, unknown> = {
           externalIds: { ...(row.externalIds ?? {}), ...sourceIdField(idField, source.id) },
         };
@@ -786,11 +866,18 @@ export const run = internalAction({
         players: slice,
         dryRun,
       });
-      if (result.processed === 0) {
-        // A chunk that handles nothing would loop forever. This cannot happen
-        // with a non-empty slice, so treat it as a bug rather than retrying.
-        throw new Error(
-          `preloadPlayers: chunk at ${index} processed 0 of ${slice.length} players`,
+      if (result.processed < 0 || result.processed > slice.length) {
+        // A contract violation, not a resource limit: `processed` outside the
+        // slice would make `index` move backwards or skip rows silently.
+        // ConvexError because production redacts a plain Error's message and
+        // this one names the number the operator needs.
+        throw new ConvexError(
+          "preloadPlayers: chunk at " +
+            index +
+            " reported processed=" +
+            result.processed +
+            " for a slice of " +
+            slice.length,
         );
       }
       summary.playersCreated += result.playersCreated;
@@ -798,6 +885,21 @@ export const run = internalAction({
       summary.playersSkippedAmbiguous += result.playersSkippedAmbiguous;
       summary.truncatedStints += result.truncatedStints;
       summary.droppedStints += result.droppedStints;
+      if (result.processed === 0) {
+        // The chunk found no transaction headroom even for its first player.
+        // Not a bug and not a retry: report where to resume and stop, exactly
+        // as the time budget above does. Looping would spin forever, and
+        // throwing would lose the `nextStart` the operator needs.
+        summary.nextStart = index;
+        console.log(
+          JSON.stringify({
+            msg: "preload_chunk_no_headroom",
+            sport: args.sport,
+            start: index,
+          }),
+        );
+        break;
+      }
       index += result.processed;
     }
 

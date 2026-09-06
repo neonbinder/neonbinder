@@ -10,7 +10,13 @@
 import path from "node:path";
 import { describe, expect, test } from "vitest";
 
-import { buildMlb, buildNfl, parseCsv, parseCsvObjects } from "./build-preload-data.mjs";
+import {
+  buildMlb,
+  buildNfl,
+  parseCsv,
+  parseCsvObjects,
+  serializePreloadFile,
+} from "./build-preload-data.mjs";
 
 const FIXTURES = path.resolve(import.meta.dirname, "__fixtures__");
 const GOOD = path.join(FIXTURES, "preload");
@@ -160,7 +166,7 @@ describe("buildNfl", () => {
   test("every roster status counts as membership", () => {
     const { file } = nfl();
     // Otto Graham is ACT in 1946 and RES in 1947; both are on the team.
-    expect(player(file, "name:otto-graham|1921-12-06").stints[0]).toEqual([
+    expect(player(file, "name:otto-graham|b1921#1").stints[0]).toEqual([
       teamNames(file).indexOf("Cleveland Browns"),
       1946,
       1947,
@@ -169,21 +175,62 @@ describe("buildNfl", () => {
     expect(player(file, "00-0031235")).toBeDefined();
   });
 
-  test("identity falls back from source id to name+birthdate to name alone", () => {
+  test("identity falls back from source id to name+birth year to name alone", () => {
     const { file } = nfl();
     expect(player(file, "00-0031234").lowConfidence).toBeUndefined();
-    expect(player(file, "name:otto-graham|1921-12-06").birthYear).toBe(1921);
-    expect(player(file, "name:otto-graham|1921-12-06").lowConfidence).toBeUndefined();
+    expect(player(file, "name:otto-graham|b1921#1").birthYear).toBe(1921);
+    expect(player(file, "name:otto-graham|b1921#1").lowConfidence).toBeUndefined();
     // No id and no birth date: keyed by name and first season, and flagged.
-    const guy = player(file, "name:no-birthdate-guy|s1946");
+    const guy = player(file, "name:no-birthdate-guy|s1946#1");
     expect(guy.lowConfidence).toBe(true);
     expect(guy.birthYear).toBeUndefined();
+  });
+
+  test("NO emitted id carries a full date of birth", () => {
+    // Security review: `nflverseId` is committed publicly here and returned by
+    // the public player queries. The birth date groups rows inside the
+    // generator and must never leave it; the YEAR is what the UI needs.
+    for (const p of nfl().file.players) {
+      expect(p.id).not.toMatch(/\d{4}-\d{2}-\d{2}/);
+    }
+    expect(player(nfl().file, "name:otto-graham|b1921#1")).toBeDefined();
+  });
+
+  test("an ordinal separates two people who share a name AND a birth year", () => {
+    // The ordinal is unconditional so the shape never varies, and it is what
+    // replaces the birth date's discriminating power.
+    for (const p of nfl().file.players) {
+      if (p.id.startsWith("name:")) expect(p.id).toMatch(/#\d+$/);
+    }
+  });
+
+  test("undated rows split per team and per NON-CONSECUTIVE season", () => {
+    // Security review: grouping these by name alone folded different people
+    // into one player — the `|s<firstSeason>` suffix was applied AFTER the
+    // merge and could never separate them.
+    const { file } = nfl();
+    const browns = teamNames(file).indexOf("Cleveland Browns");
+
+    // Same team, 1946 and 1948 — a gap, so two people as far as we can tell.
+    expect(player(file, "name:ghost-player|s1946#1").stints).toEqual([[browns, 1946, 1946]]);
+    expect(player(file, "name:ghost-player|s1948#2").stints).toEqual([[browns, 1948, 1948]]);
+
+    // Different teams in consecutive seasons — also two, for the same reason.
+    expect(player(file, "name:no-birthdate-guy|s1946#1")).toBeDefined();
+    expect(player(file, "name:no-birthdate-guy|s1947#2")).toBeDefined();
+
+    // Consecutive seasons on ONE team is the only thing that merges.
+    expect(player(file, "name:twin-season|s1946#1").stints).toEqual([
+      [browns, 1946, 1947],
+    ]);
+    expect(file.players.filter((p) => p.name === "Twin Season")).toHaveLength(1);
   });
 
   test("a roster row with no name is skipped and warned about", () => {
     const { stats } = nfl();
     expect(stats.warnings.join(" ")).toContain("no full_name");
-    expect(stats.players).toBe(4);
+    expect(stats.players).toBe(8);
+    expect(stats.lowConfidence).toBe(5);
   });
 
   test("FAILS on a (code, season) the era table does not resolve", () => {
@@ -219,7 +266,22 @@ describe("both files", () => {
   });
 
   test("is deterministic — two builds of the same inputs are byte-identical", () => {
-    expect(JSON.stringify(mlb().file)).toBe(JSON.stringify(mlb().file));
-    expect(JSON.stringify(nfl().file)).toBe(JSON.stringify(nfl().file));
+    expect(serializePreloadFile(mlb().file)).toBe(serializePreloadFile(mlb().file));
+    expect(serializePreloadFile(nfl().file)).toBe(serializePreloadFile(nfl().file));
+  });
+
+  test("serialises one record per line, and still parses", () => {
+    // Compact per line, one line per row: a regenerate is reviewable in a diff
+    // instead of reading as "the whole 3 MB changed".
+    const text = serializePreloadFile(nfl().file);
+    expect(JSON.parse(text).players).toHaveLength(nfl().file.players.length);
+    expect(text).not.toContain("\n  ");
+    const lines = text.trimEnd().split("\n");
+    expect(lines.length).toBeGreaterThan(nfl().file.players.length);
+    // Every player line is one whole record.
+    for (const line of lines) {
+      if (!line.startsWith('{"id":')) continue;
+      expect(() => JSON.parse(line.replace(/,$/, ""))).not.toThrow();
+    }
   });
 });

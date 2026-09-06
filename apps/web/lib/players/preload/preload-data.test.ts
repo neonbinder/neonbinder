@@ -235,14 +235,56 @@ describe("nfl.json specifics", () => {
     expect(NFL.players.some((p) => /^\d{2}-\d{7}$/.test(p.id))).toBe(true);
   });
 
+  test("NO id carries a full date of birth", () => {
+    // Security review. `nflverseId` is written to `players.externalIds`, which
+    // the public player queries return, and it is committed here in a public
+    // repo. A date of birth for 14,000 named people is personal data neither
+    // NB nor the loader needs; the birth YEAR plus an ordinal does the same
+    // job. The birth date groups rows inside the generator and stops there.
+    const leaked = NFL.players.filter((p) => /\d{4}-\d{2}-\d{2}/.test(p.id));
+    expect(leaked.map((p) => p.id)).toEqual([]);
+    // …and the same for baseball, whose ids are opaque Lahman playerIDs.
+    expect(MLB.players.filter((p) => /\d{4}-\d{2}-\d{2}/.test(p.id))).toEqual([]);
+  });
+
+  test("every name key carries a birth year or a first season, plus an ordinal", () => {
+    const nameKeys = NFL.players.filter((p) => p.id.startsWith("name:"));
+    expect(nameKeys.length).toBeGreaterThan(10_000);
+    for (const p of nameKeys) {
+      expect(p.id).toMatch(/^name:[a-z0-9-]+\|(b\d{4}|s\d{4})#\d+$/);
+      // A `b` key states the year it names; an `s` key has no birth year at all.
+      const dated = /\|b(\d{4})#/.exec(p.id);
+      if (dated) expect(p.birthYear).toBe(Number(dated[1]));
+      else expect(p.birthYear).toBeUndefined();
+    }
+    // The ordinal earns its place: some names really do collide within a year.
+    expect(nameKeys.some((p) => /#[2-9]\d*$/.test(p.id))).toBe(true);
+  });
+
   test("only name-keyed players can be low confidence, and few are", () => {
     const low = NFL.players.filter((p) => p.lowConfidence);
     expect(low.length).toBeGreaterThan(0);
     expect(low.length).toBeLessThan(500);
     for (const p of low) {
-      expect(p.id.startsWith("name:")).toBe(true);
+      // Keyed on the FIRST SEASON of one run, never a birth year.
+      expect(p.id).toMatch(/^name:[a-z0-9-]+\|s\d{4}#\d+$/);
       // No birth date is exactly why they are flagged.
       expect(p.birthYear).toBeUndefined();
+    }
+  });
+
+  test("a low-confidence player is one run on ONE team, never a merged career", () => {
+    // Security review: grouping these by name alone folded two different
+    // people — "Don Smith" was a 1929 Orange Tornadoes lineman and a 1930
+    // Newark back — into a single row with a two-team "career".
+    for (const p of NFL.players) {
+      if (!p.lowConfidence) continue;
+      expect(p.stints).toHaveLength(1);
+      const [teamIndex, from] = p.stints[0];
+      expect(Number.isInteger(teamIndex)).toBe(true);
+      // The id names the run's first season, so it actually discriminates.
+      expect(p.id.endsWith(`|s${from}#1`) || /\|s\d{4}#\d+$/.test(p.id)).toBe(true);
+      expect(p.id).toContain(`|s${from}#`);
     }
   });
 

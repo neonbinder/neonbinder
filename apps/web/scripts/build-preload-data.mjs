@@ -32,6 +32,13 @@
  *
  * Both throw. Adding the row to `lib/players/preload/` is the fix.
  *
+ * ## No emitted id carries a date of birth
+ *
+ * `nflverseId` reaches the public player queries and is committed here in a
+ * public repo. Birth dates GROUP roster rows inside `buildNfl` and never leave
+ * it; the emitted key carries the birth YEAR plus an ordinal. Changing that
+ * format re-keys a deployment's rows — see data/preload/README.md.
+ *
  * ## Product invariant
  *
  * These datasets are INITIAL INPUT. Nothing here decides NB behaviour, and the
@@ -663,68 +670,178 @@ export function buildNfl({ rawDir, generatedAt }) {
   const { teams, franchiseDisagreements } = foldTeamEras(eraEntries, maxSeason);
   const teamIndexByName = new Map(teams.map((t, i) => [t.name, i]));
 
-  // Identity, in the order the source supports it:
-  //  1. gsis_id — 19k players, every one from the late 1990s on.
+  // ## Identity, in the order the source supports it
+  //
+  //  1. `gsis_id` — 19,030 players, every one from the late 1990s on.
   //  2. name + birth date — the pre-id rows. Two people share a name often;
   //     almost nobody shares a name AND a birth date.
-  //  3. name alone — 117 rows where the source has neither. Flagged
-  //     `lowConfidence` so the loader can report them rather than pretending.
-  const byPlayer = new Map();
+  //  3. name alone — the rows with neither, flagged `lowConfidence`.
+  //
+  // ## The emitted id must not carry a date of birth
+  //
+  // `nflverseId` is written to `players.externalIds`, which is returned by the
+  // public player queries AND committed to a public repo inside this file. A
+  // full date of birth for 14,101 named people is personal data that neither
+  // NB nor the loader needs: the birth YEAR is what tells two players apart in
+  // the UI, and an ordinal settles the rest. So the birth date is used to
+  // GROUP rows here and never leaves this function.
+  //
+  //   name:<slug>|b<birthYear>#<n>   dated rows, n over distinct birth dates
+  //   name:<slug>|s<firstSeason>#<n> undated rows, n over that name's runs
+  //
+  // Both carry an ordinal unconditionally so the two forms cannot collide and
+  // so the shape never varies. See data/preload/README.md for what re-keying
+  // costs a deployment that has already loaded these players.
+  const gsisPlayers = new Map();
+  // slug -> birthDate -> group. Dated rows with no gsis id.
+  const datedBySlug = new Map();
+  // slug -> teamName -> Set(seasons). Undated rows with no gsis id.
+  const undatedBySlug = new Map();
+
+  const newGroup = () => ({ names: new Map(), seasons: [], birthDate: "" });
+  // A gsis id can carry several spellings across seasons (300 of them do).
+  // Keep the most recent, so the row reads as the name the player is known by
+  // now rather than a rookie-year typo.
+  const noteName = (names, name, season) => {
+    const prev = names.get(name);
+    if (prev === undefined || season > prev) names.set(name, season);
+  };
+
   for (let i = 0; i < rows.length; i += 1) {
     const r = rows[i];
-    const key = r.gsisId
-      ? `gsis:${r.gsisId}`
-      : r.birthDate
-        ? `name:${nflNameKey(r.name)}|${r.birthDate}`
-        : `noid:${nflNameKey(r.name)}`;
-    let p = byPlayer.get(key);
-    if (!p) {
-      p = {
-        key,
-        gsisId: r.gsisId,
-        birthDate: r.birthDate,
-        names: new Map(),
-        seasons: [],
-        lowConfidence: !r.gsisId && !r.birthDate,
-      };
-      byPlayer.set(key, p);
+    const teamIndex = teamIndexByName.get(rowTeamName[i]);
+    const slug = nflNameKey(r.name);
+    const birthYear = r.birthDate ? intOrNull(r.birthDate.slice(0, 4)) : null;
+
+    if (r.gsisId) {
+      let g = gsisPlayers.get(r.gsisId);
+      if (!g) {
+        g = newGroup();
+        gsisPlayers.set(r.gsisId, g);
+      }
+      noteName(g.names, r.name, r.season);
+      if (!g.birthDate && r.birthDate) g.birthDate = r.birthDate;
+      g.seasons.push({ season: r.season, teamIndex });
+      continue;
     }
-    // A gsis id can carry several spellings across seasons (300 of them do).
-    // Take the most recent, so the row reads as the name the player is known
-    // by now rather than a rookie-year typo.
-    const prevSeason = p.names.get(r.name);
-    if (prevSeason === undefined || r.season > prevSeason) p.names.set(r.name, r.season);
-    if (!p.birthDate && r.birthDate) p.birthDate = r.birthDate;
-    p.seasons.push({ season: r.season, teamIndex: teamIndexByName.get(rowTeamName[i]) });
+
+    if (r.birthDate && birthYear !== null) {
+      if (!datedBySlug.has(slug)) datedBySlug.set(slug, new Map());
+      const bySlug = datedBySlug.get(slug);
+      let g = bySlug.get(r.birthDate);
+      if (!g) {
+        g = newGroup();
+        g.birthDate = r.birthDate;
+        bySlug.set(r.birthDate, g);
+      }
+      noteName(g.names, r.name, r.season);
+      g.seasons.push({ season: r.season, teamIndex });
+      continue;
+    }
+
+    // No id and no birth date. Grouping these by NAME alone would fold two
+    // different people into one player — "Don Smith" is a 1929 Dayton lineman
+    // and a 1930 Portsmouth back, and the earlier `|s<firstSeason>` suffix was
+    // applied AFTER the merge, so it could never separate them. Keyed per
+    // (name, team, season) here and merged below only across CONSECUTIVE
+    // seasons on one team, which is the most that can be claimed from a row
+    // carrying nothing but a name.
+    if (!undatedBySlug.has(slug)) undatedBySlug.set(slug, new Map());
+    const byTeam = undatedBySlug.get(slug);
+    const teamName = rowTeamName[i];
+    if (!byTeam.has(teamName)) byTeam.set(teamName, new Map());
+    const bySeason = byTeam.get(teamName);
+    if (!bySeason.has(r.season)) bySeason.set(r.season, []);
+    bySeason.get(r.season).push({ name: r.name, teamIndex });
   }
 
-  const players = [];
-  let lowConfidence = 0;
-  for (const p of byPlayer.values()) {
+  /** The most recent spelling in a group. */
+  const pickName = (names) => {
     let name = "";
     let bestSeason = -1;
-    for (const [candidate, season] of p.names) {
+    for (const [candidate, season] of names) {
       if (season > bestSeason || (season === bestSeason && candidate < name)) {
         bestSeason = season;
         name = candidate;
       }
     }
-    const firstSeason = Math.min(...p.seasons.map((s) => s.season));
-    const id = p.gsisId
-      ? p.gsisId
-      : p.birthDate
-        ? `name:${nflNameKey(name)}|${p.birthDate}`
-        : `name:${nflNameKey(name)}|s${firstSeason}`;
-    const birthYear = p.birthDate ? intOrNull(p.birthDate.slice(0, 4)) : null;
-    if (p.lowConfidence) lowConfidence += 1;
+    return name;
+  };
+
+  const players = [];
+  let lowConfidence = 0;
+
+  for (const [gsisId, g] of gsisPlayers) {
+    const birthYear = g.birthDate ? intOrNull(g.birthDate.slice(0, 4)) : null;
     players.push({
-      id,
-      name,
+      id: gsisId,
+      name: pickName(g.names),
       ...(birthYear ? { birthYear } : {}),
-      ...(p.lowConfidence ? { lowConfidence: true } : {}),
-      stints: buildStints(p.seasons),
+      stints: buildStints(g.seasons),
     });
   }
+
+  for (const [slug, byBirthDate] of datedBySlug) {
+    // Ordinal over the distinct birth dates that share a (name, birth year),
+    // oldest first. Almost always a single entry; the ordinal exists so the
+    // rare collision does not need a different id shape.
+    const byYear = new Map();
+    for (const birthDate of [...byBirthDate.keys()].sort()) {
+      const year = intOrNull(birthDate.slice(0, 4));
+      if (!byYear.has(year)) byYear.set(year, []);
+      byYear.get(year).push(birthDate);
+    }
+    for (const [year, dates] of byYear) {
+      dates.forEach((birthDate, index) => {
+        const g = byBirthDate.get(birthDate);
+        players.push({
+          id: `name:${slug}|b${year}#${index + 1}`,
+          name: pickName(g.names),
+          birthYear: year,
+          stints: buildStints(g.seasons),
+        });
+      });
+    }
+  }
+
+  for (const [slug, byTeam] of undatedBySlug) {
+    // One player per maximal run of consecutive seasons on one team.
+    const runs = [];
+    for (const teamName of [...byTeam.keys()].sort()) {
+      const bySeason = byTeam.get(teamName);
+      const seasons = [...bySeason.keys()].sort((a, b) => a - b);
+      let run = null;
+      for (const season of seasons) {
+        const entry = { season, rows: bySeason.get(season) };
+        if (run && season === run.to + 1) {
+          run.to = season;
+          run.entries.push(entry);
+          continue;
+        }
+        run = { teamName, from: season, to: season, entries: [entry] };
+        runs.push(run);
+      }
+    }
+    runs.sort((a, b) => a.from - b.from || (a.teamName < b.teamName ? -1 : 1));
+    runs.forEach((run, index) => {
+      const names = new Map();
+      const seasons = [];
+      for (const entry of run.entries) {
+        for (const row of entry.rows) {
+          noteName(names, row.name, entry.season);
+          seasons.push({ season: entry.season, teamIndex: row.teamIndex });
+        }
+      }
+      lowConfidence += 1;
+      players.push({
+        id: `name:${slug}|s${run.from}#${index + 1}`,
+        name: pickName(names),
+        lowConfidence: true,
+        stints: buildStints(seasons),
+      });
+    });
+  }
+
   players.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 
   const duplicateIds = players.length - new Set(players.map((p) => p.id)).size;
@@ -785,6 +902,31 @@ export function buildNfl({ rawDir, generatedAt }) {
 // CLI
 // ---------------------------------------------------------------------------
 
+/**
+ * Serialise a preload file with ONE RECORD PER LINE.
+ *
+ * Still compact — no indentation, no spaces inside a record — so the size cost
+ * is one newline per row (~55 KB across both files). What it buys is a
+ * regenerate that `git diff` can actually show: a whole-file single line makes
+ * every change look like "the entire 3 MB was replaced", and a reviewer cannot
+ * tell a re-key of 14,000 ids from a one-player fix.
+ */
+export function serializePreloadFile(file) {
+  const list = (rows) =>
+    rows.length === 0 ? "[]" : "[\n" + rows.map((r) => JSON.stringify(r)).join(",\n") + "\n]";
+  return (
+    '{"source":' +
+    JSON.stringify(file.source) +
+    ',"leagues":' +
+    list(file.leagues) +
+    ',"teams":' +
+    list(file.teams) +
+    ',"players":' +
+    list(file.players) +
+    "}\n"
+  );
+}
+
 function parseArgs(argv) {
   const args = { raw: path.join(WEB_ROOT, "data/preload/raw"), out: path.join(WEB_ROOT, "data/preload"), sport: "both" };
   for (let i = 0; i < argv.length; i += 1) {
@@ -832,13 +974,13 @@ export function main(argv = process.argv.slice(2)) {
   if (args.sport === "mlb" || args.sport === "both") {
     const { file, stats } = buildMlb({ rawDir: args.raw, generatedAt });
     const out = path.join(args.out, "mlb.json");
-    writeFileSync(out, JSON.stringify(file));
+    writeFileSync(out, serializePreloadFile(file));
     report(`mlb.json (${path.relative(WEB_ROOT, out)})`, stats);
   }
   if (args.sport === "nfl" || args.sport === "both") {
     const { file, stats } = buildNfl({ rawDir: args.raw, generatedAt });
     const out = path.join(args.out, "nfl.json");
-    writeFileSync(out, JSON.stringify(file));
+    writeFileSync(out, serializePreloadFile(file));
     report(`nfl.json (${path.relative(WEB_ROOT, out)})`, stats);
   }
 }

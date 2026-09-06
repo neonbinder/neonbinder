@@ -26,7 +26,7 @@ import { internal } from "./_generated/api";
 import schema from "./schema";
 import type { Doc, Id } from "./_generated/dataModel";
 import { matchExistingPlayer } from "./preloadPlayers";
-import { normalizePlayerName } from "./players";
+import { normalizePlayerName, PLAYER_AMBIGUITY_SCAN_LIMIT } from "./players";
 import { normalizeTeamName } from "./teams";
 
 const modules = (
@@ -581,6 +581,56 @@ describe("phase 2 — players", () => {
     expect(row.teamYears![63].fromYear).toBe(1963);
   });
 
+  test("SKIPS a row that already carries a different source id", async () => {
+    // Security review: without this the adoption path spreads the new id over
+    // the old one and two source players silently share a row.
+    const { t, sportId } = await loaded();
+    await t.run(async (ctx) =>
+      ctx.db.insert("players", {
+        name: "Tony Gwynn",
+        nameNormalized: normalizePlayerName("Tony Gwynn"),
+        sportId,
+        birthYear: 1960,
+        externalIds: { lahmanId: "gwynnto99" },
+        lastUpdated: NOW,
+      }),
+    );
+
+    const result = await loadPlayers(t, [PLAYERS[0]]);
+
+    expect(result.playersSkippedAmbiguous).toBe(1);
+    expect(result.playersCreated).toBe(0);
+    expect(result.playersAdopted).toBe(0);
+    const rows = await players(t);
+    expect(rows).toHaveLength(1);
+    // The other source player's linkage is untouched.
+    expect(rows[0].externalIds?.lahmanId).toBe("gwynnto99");
+    expect(rows[0].birthYear).toBe(1960);
+  });
+
+  test("SKIPS a name shared by more rows than the bounded scan will read", async () => {
+    const { t, sportId } = await loaded();
+    await t.run(async (ctx) => {
+      for (let i = 0; i <= PLAYER_AMBIGUITY_SCAN_LIMIT; i += 1) {
+        await ctx.db.insert("players", {
+          name: "Tony Gwynn",
+          nameNormalized: normalizePlayerName("Tony Gwynn"),
+          sportId,
+          birthYear: 1900 + i,
+          lastUpdated: NOW,
+        });
+      }
+    });
+
+    const result = await loadPlayers(t, [PLAYERS[0]]);
+
+    // Every candidate is dated differently, so the "all dated → create" rule
+    // would otherwise fire on a list we only partly read.
+    expect(result.playersSkippedAmbiguous).toBe(1);
+    expect(result.playersCreated).toBe(0);
+    expect(await players(t)).toHaveLength(PLAYER_AMBIGUITY_SCAN_LIMIT + 1);
+  });
+
   test("reports the unsynced sport rather than creating players without one", async () => {
     arm();
     const t = convexTest(schema, modules);
@@ -594,6 +644,14 @@ describe("phase 2 — players", () => {
 });
 
 describe("matchExistingPlayer", () => {
+  /** The two extra arguments are fixed for every case but the two that test them. */
+  const match = (
+    candidates: Doc<"players">[],
+    birthYear: number | undefined,
+    idField: "lahmanId" | "nflverseId" = "lahmanId",
+    sourceId = "gwynnto01",
+  ) => matchExistingPlayer(candidates, birthYear, idField, sourceId);
+
   const row = (over: Partial<Doc<"players">> = {}) =>
     ({
       _id: "x" as unknown as Id<"players">,
@@ -606,54 +664,148 @@ describe("matchExistingPlayer", () => {
     }) as Doc<"players">;
 
   test("no candidate is a new row", () => {
-    expect(matchExistingPlayer([], 1970)).toEqual({ kind: "create" });
+    expect(match([], 1970)).toEqual({ kind: "create" });
   });
 
   test("exactly one candidate on the birth year is them", () => {
     const hit = row({ birthYear: 1970 });
-    expect(matchExistingPlayer([hit, row({ birthYear: 1980 })], 1970)).toEqual({
+    expect(match([hit, row({ birthYear: 1980 })], 1970)).toEqual({
       kind: "adopt",
       row: hit,
     });
   });
 
   test("two candidates on the birth year is ambiguous", () => {
-    const result = matchExistingPlayer(
-      [row({ birthYear: 1970 }), row({ birthYear: 1970 })],
-      1970,
-    );
-    expect(result.kind).toBe("ambiguous");
+    const result = match([row({ birthYear: 1970 }), row({ birthYear: 1970 })], 1970);
+    expect(result).toMatchObject({
+      kind: "ambiguous",
+      reason: "several_same_birth_year",
+    });
   });
 
   test("every candidate dated differently means this is somebody new", () => {
     expect(
-      matchExistingPlayer([row({ birthYear: 1965 }), row({ birthYear: 1980 })], 1970),
+      match([row({ birthYear: 1965 }), row({ birthYear: 1980 })], 1970),
     ).toEqual({ kind: "create" });
   });
 
   test("a single bare row is adopted", () => {
     const bare = row();
-    expect(matchExistingPlayer([bare], 1970)).toEqual({ kind: "adopt", row: bare });
+    expect(match([bare], 1970)).toEqual({ kind: "adopt", row: bare });
     // …and so is one with an empty career array, which is the same thing.
     const empty = row({ teamYears: [] });
-    expect(matchExistingPlayer([empty], undefined)).toEqual({
-      kind: "adopt",
-      row: empty,
-    });
+    expect(match([empty], undefined)).toEqual({ kind: "adopt", row: empty });
   });
 
   test("a single undated row that already has a career or a Wikidata id is not", () => {
     const withCareer = row({
       teamYears: [{ teamId: "t" as unknown as Id<"teams">, fromYear: 1990 }],
     });
-    expect(matchExistingPlayer([withCareer], 1970).kind).toBe("ambiguous");
+    expect(match([withCareer], 1970)).toMatchObject({
+      kind: "ambiguous",
+      reason: "undated_candidates",
+    });
 
     const withQid = row({ externalIds: { wikidataId: "Q1" } });
-    expect(matchExistingPlayer([withQid], 1970).kind).toBe("ambiguous");
+    expect(match([withQid], 1970).kind).toBe("ambiguous");
   });
 
   test("several undated candidates are ambiguous", () => {
-    expect(matchExistingPlayer([row(), row()], 1970).kind).toBe("ambiguous");
+    expect(match([row(), row()], 1970).kind).toBe("ambiguous");
+  });
+
+  test("NEVER adopts a row already carrying a different source id", () => {
+    // Security review: adopting it would re-point another source player's
+    // linkage and merge two people into one row.
+    const claimed = row({ birthYear: 1970, externalIds: { lahmanId: "someoneelse01" } });
+    expect(match([claimed], 1970)).toEqual({
+      kind: "ambiguous",
+      reason: "different_source_id",
+      candidates: 1,
+    });
+
+    // …the bare-row branch is guarded too, not just the birth-year one.
+    const bareButClaimed = row({ externalIds: { nflverseId: "00-0000001" } });
+    expect(match([bareButClaimed], undefined, "nflverseId", "00-0009999")).toEqual({
+      kind: "ambiguous",
+      reason: "different_source_id",
+      candidates: 1,
+    });
+  });
+
+  test("a row carrying OUR id in the slot is still adoptable", () => {
+    // Only a DIFFERENT id disqualifies. This is the shape of a run whose
+    // externalIds write landed but whose index read raced it.
+    const ours = row({ birthYear: 1970, externalIds: { lahmanId: "gwynnto01" } });
+    expect(match([ours], 1970)).toEqual({ kind: "adopt", row: ours });
+  });
+
+  test("an id in the OTHER sport's slot does not disqualify a row", () => {
+    const otherSlot = row({ birthYear: 1970, externalIds: { nflverseId: "00-0000001" } });
+    expect(match([otherSlot], 1970)).toEqual({ kind: "adopt", row: otherSlot });
+  });
+
+  test("more candidates than the scan limit is ambiguous on its own", () => {
+    // The caller reads LIMIT + 1, so "9 rows" means "at least 9" and no answer
+    // over a truncated list can be trusted.
+    const many = Array.from({ length: PLAYER_AMBIGUITY_SCAN_LIMIT + 1 }, (_, i) =>
+      row({ birthYear: 1970 + i }),
+    );
+    expect(match(many, 1970)).toMatchObject({
+      kind: "ambiguous",
+      reason: "too_many_candidates",
+    });
+  });
+});
+
+describe("running out of transaction headroom", () => {
+  /**
+   * `transactionLimits` makes convex-test enforce Convex's per-execution
+   * budgets, which is the only way to reach the headroom valve deliberately:
+   * on the real datasets a 100-player chunk never comes close.
+   *
+   * 200 documents is chosen so the mutation's own sport-row read leaves the
+   * valve's 200-document margin unmet before the first player, which is the
+   * awkward case — a chunk that makes NO progress.
+   */
+  const tight = () =>
+    convexTest({ schema, modules, transactionLimits: { documentsRead: 200 } });
+
+  test("a chunk with no headroom returns processed 0 and writes nothing", async () => {
+    arm();
+    const t = tight();
+    await seedSport(t);
+
+    const result = await t.mutation(internal.preloadPlayers.loadPlayersChunk, {
+      sport: "baseball",
+      teamNames: TEAM_NAMES,
+      players: PLAYERS,
+      dryRun: false,
+    });
+
+    expect(result.processed).toBe(0);
+    expect(result.playersCreated).toBe(0);
+    expect(await players(t)).toHaveLength(0);
+  });
+
+  test("the action reports nextStart instead of throwing, and is resumable", async () => {
+    // Before the security review this threw a plain Error — redacted in
+    // production, and it took the resume point with it.
+    arm();
+    const t = tight();
+    await seedSport(t);
+
+    const summary = await t.action(internal.preloadPlayers.run, {
+      sport: "baseball",
+      confirm: "PRELOAD",
+      dryRun: true,
+      start: 500,
+    });
+
+    // Exactly where the operator has to resume from — not null, and not 0.
+    expect(summary.nextStart).toBe(500);
+    expect(summary.playersCreated).toBe(0);
+    expect(await players(t)).toHaveLength(0);
   });
 });
 
