@@ -460,3 +460,83 @@ describe("describeDecision", () => {
     expect(describeDecision(null)).toBe("Not yet decided");
   });
 });
+
+describe("resolveNav — a blocker staged under ANOTHER player still blocks", () => {
+  /**
+   * Jason, 2026-09-06, on a 522-row hockey batch: the wizard presented "Guy
+   * Lafleur" with three chips reading "needs a team decision" and no step
+   * anywhere to answer them — "There does not appear to be anywhere that a
+   * decision is needed that I can see."
+   *
+   * Staging dedupes a career team across the WHOLE batch, so in a set full of
+   * NHL players the first player to name the Montreal Canadiens gets the step
+   * and every later one gets none. The blocker rule keyed on
+   * `source.playerRowId`, so it saw no blocker for Lafleur and let him through;
+   * the chip keyed on the name across the batch, so it correctly reported the
+   * step as unanswered. Two different keys for one question.
+   *
+   * The answer is the TEAM, identified by its name — whose lookup happened to
+   * raise the step is not part of it.
+   */
+  const playerWithCareer = (id: string, teams: string[]): NavRow => ({
+    _id: id,
+    status: "ready",
+    kind: "player",
+    enrichment: { careerTeams: teams.map((name) => ({ name })) },
+  });
+
+  it("holds a player whose career team was staged for someone else", () => {
+    const rows = [
+      // Staged while an EARLIER player was looked up — so it points at THEM,
+      // and only its name ties it to Lafleur.
+      { ...careerTeamOf("t-habs", "p-earlier"), name: "Montreal Canadiens" },
+      playerWithCareer("p-lafleur", ["Montreal Canadiens"]),
+    ];
+    expect(nextUndecided(rows)?._id).toBe("t-habs");
+    expect(
+      resolveNav(rows, { rowId: "p-lafleur", explicit: false }),
+    ).toEqual({ rowId: "t-habs", explicit: false });
+  });
+
+  it("releases the player once that shared step is answered", () => {
+    const rows = [
+      {
+        ...careerTeamOf("t-habs", "p-earlier", "ready", { action: "create" }),
+        name: "Montreal Canadiens",
+      },
+      playerWithCareer("p-lafleur", ["Montreal Canadiens"]),
+    ];
+    expect(nextUndecided(rows)?._id).toBe("p-lafleur");
+  });
+
+  it("matches the label the way the rest of the wizard does, not byte-for-byte", () => {
+    const rows = [
+      { ...careerTeamOf("t-habs", "p-earlier"), name: "montreal  canadiens" },
+      playerWithCareer("p-lafleur", ["Montreal Canadiens"]),
+    ];
+    expect(nextUndecided(rows)?._id).toBe("t-habs");
+  });
+
+  it("walks four staged clubs before their player, then the player", () => {
+    // Deciding one step must land on the NEXT step, never on the player.
+    const clubs = ["Quebec Remparts", "Montreal Canadiens", "New York Rangers", "Quebec Nordiques"];
+    const staged = clubs.map((n, i) => ({
+      ...careerTeamOf(`t-${i}`, "p-lafleur"),
+      name: n,
+    }));
+    const player = playerWithCareer("p-lafleur", clubs);
+
+    let rows: NavRow[] = [...staged, player];
+    expect(nextUndecided(rows)?._id).toBe("t-0");
+
+    // t-0 answered — the walk must go to t-1, not to the player.
+    rows = [
+      { ...staged[0], decision: { action: "create" } },
+      ...staged.slice(1),
+      player,
+    ];
+    expect(
+      resolveNav(rows, { rowId: "t-0", explicit: false })?.rowId,
+    ).toBe("t-1");
+  });
+});

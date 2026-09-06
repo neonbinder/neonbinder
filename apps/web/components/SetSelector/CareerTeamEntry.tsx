@@ -83,7 +83,7 @@ export type CareerTeamDraft = {
   toYear?: number;
 };
 
-/** One dropdown row. `staged` drives the "this batch" tag and the ordering. */
+/** One dropdown row. `staged` drives the "not saved yet" tag and the ordering. */
 type Suggestion = { key: string; name: string; staged: boolean };
 
 export default function CareerTeamEntry({
@@ -108,6 +108,11 @@ export default function CareerTeamEntry({
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
   const [highlightIdx, setHighlightIdx] = useState(0);
   const nameInputRef = useRef<HTMLInputElement>(null);
+  /** Where focus goes after a suggestion is taken — the next thing to fill in. */
+  const fromYearRef = useRef<HTMLInputElement>(null);
+  /** The input + its listbox. Blur out of THIS closes the list; blur between
+   *  its two halves does not. */
+  const comboRef = useRef<HTMLDivElement>(null);
 
   const maxYear = new Date().getFullYear() + 1;
 
@@ -224,6 +229,8 @@ export default function CareerTeamEntry({
     setFromYear("");
     setToYear("");
     setSuggestionsOpen(false);
+    // Safe to refocus now: the list opens on TYPING, not on focus. See the
+    // note on `pickSuggestion`.
     nameInputRef.current?.focus();
   };
 
@@ -231,19 +238,57 @@ export default function CareerTeamEntry({
    * A suggestion is an existing (or already-staged) team's WHOLE name, and it
    * goes into the box verbatim — byte-for-byte the name the prelude will look
    * up, which is what makes it link rather than create.
+   *
+   * ## Why taking a suggestion used to leave the list open
+   *
+   * Jason, 2026-09-06, on "Buffalo Sabres": "I can't find any way to dismiss
+   * the green list." This closed the list and then called
+   * `nameInputRef.current.focus()` — and the input carried
+   * `onFocus={() => setSuggestionsOpen(true)}`, so the refocus immediately
+   * reopened what the line above had just closed. The list then covered the
+   * From/To year fields underneath, which are the very next thing to fill in,
+   * and nothing could dismiss it: blur was unhandled too.
+   *
+   * The `onFocus` auto-open is GONE rather than worked around with a
+   * suppression flag. Focusing a text box should not drop a list over the
+   * fields below it; the list belongs to typing (and to ArrowDown, for a
+   * keyboard operator who wants it back). That removes the whole class of bug
+   * rather than this one instance of it.
+   *
+   * Focus lands on FROM YEAR, not back on the name: the team is chosen, and
+   * the stint is not finished until it has a year.
    */
   const pickSuggestion = (teamName: string) => {
     setName(teamName);
     setDebouncedName(teamName);
     setSuggestionsOpen(false);
-    nameInputRef.current?.focus();
+    fromYearRef.current?.focus();
+  };
+
+  /**
+   * Focus left the combobox entirely — close the list.
+   *
+   * Deferred, and checked against `document.activeElement` rather than the
+   * event's `relatedTarget`: `relatedTarget` on blur/focusout is unreliable
+   * across environments (notably jsdom, where it comes back null for an
+   * ordinary focus move), so the read has to happen after focus has actually
+   * settled. Same reasoning, same shape as `TeamPicker.handleRootBlur`.
+   *
+   * Scoped to the combobox, so moving between the input and one of its own
+   * options does not count as leaving.
+   */
+  const handleComboBlur = () => {
+    setTimeout(() => {
+      if (comboRef.current?.contains(document.activeElement)) return;
+      setSuggestionsOpen(false);
+    }, 0);
   };
 
   return (
     <div className="border border-gray-700 rounded-md bg-gray-900/60 p-2 space-y-1.5">
       {/* NEO-236: one box. The team's Location is asked on its own New Team
           step, which is also the only place its League can be asked. */}
-      <div className="relative">
+      <div className="relative" ref={comboRef} onBlur={handleComboBlur}>
         <Input
           bare
           ref={nameInputRef}
@@ -258,7 +303,6 @@ export default function CareerTeamEntry({
             setName(e.target.value);
             setSuggestionsOpen(true);
           }}
-          onFocus={() => setSuggestionsOpen(true)}
           onKeyDown={(e) => {
             if (e.key === "ArrowDown") {
               e.preventDefault();
@@ -325,7 +369,7 @@ export default function CareerTeamEntry({
                   // name rather than borrowing the saved-team one and lying.
                   aria-label={
                     s.staged
-                      ? `Use ${s.name} from this batch`
+                      ? `Use ${s.name}, not saved yet`
                       : `Use existing team ${s.name}`
                   }
                   onMouseEnter={() => setHighlightIdx(idx)}
@@ -342,7 +386,7 @@ export default function CareerTeamEntry({
                       aria-hidden="true"
                       className="shrink-0 rounded bg-gray-700 px-1.5 py-0.5 text-xs text-gray-300"
                     >
-                      this batch
+                      not saved yet
                     </span>
                   )}
                 </button>
@@ -371,6 +415,7 @@ export default function CareerTeamEntry({
       <div className="flex items-center gap-2">
         <Input
           bare
+          ref={fromYearRef}
           type="number"
           value={fromYear}
           placeholder="From year"

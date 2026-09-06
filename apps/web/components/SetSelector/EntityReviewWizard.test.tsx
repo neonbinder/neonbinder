@@ -4859,3 +4859,120 @@ describe("EntityReviewWizard — the decision lives in the fixed footer", () => 
     expect(group.className).toContain("overflow-y-auto");
   });
 });
+
+// ===========================================================================
+// NEO-236 — "needs a team decision" must lead somewhere
+//
+// Jason, 2026-09-06, on a 522-row hockey batch: the wizard presented "Guy
+// Lafleur" with three chips reading "needs a team decision" and no route to any
+// of them — "There does not appear to be anywhere that a decision is needed
+// that I can see."
+// ===========================================================================
+
+describe("EntityReviewWizard — a blocked chip leads to its step", () => {
+  function lafleur() {
+    const player = makeRow({
+      kind: "player",
+      name: "Guy Lafleur",
+      status: "ready",
+      enrichment: {
+        careerTeams: [
+          { name: "Quebec Remparts", fromYear: 1969, toYear: 1971 },
+          { name: "Montreal Canadiens", fromYear: 1971, toYear: 1985 },
+        ],
+      },
+    });
+    const remparts = makeCareerTeamRow(player._id, "Quebec Remparts", {
+      decision: { action: "create", create: { location: "Quebec", name: "Remparts" } },
+    });
+    // Staged while an EARLIER player was looked up — the shape that let Lafleur
+    // through the blocker rule while his chip still said he was blocked.
+    const habs = makeCareerTeamRow(
+      "someone-else" as unknown as Id<"entityReviewQueue">,
+      "Montreal Canadiens",
+    );
+    return { player, remparts, habs };
+  }
+
+  const resolved = [{ name: "Quebec Remparts" }, { name: "Montreal Canadiens" }];
+
+  it("never presents the player while a shared step is unanswered", () => {
+    const { player, remparts, habs } = lafleur();
+    currentRows = [remparts, habs, player];
+    currentResolvedNames = resolved;
+    renderWizard();
+
+    // The step, not the player — even though the step points at someone else.
+    expect(
+      screen.getByRole("heading", { name: "New Team: Montreal Canadiens" }),
+    ).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Guy Lafleur" })).toBeNull();
+  });
+
+  it("offers 'Decide team' on the blocked chip and navigates to that step", async () => {
+    // Reached by pinning the player explicitly, which is the state Jason was
+    // in — the walk itself no longer offers him.
+    const { player, remparts, habs } = lafleur();
+    currentRows = [remparts, { ...habs, decision: { action: "skip" } }, player];
+    currentResolvedNames = resolved;
+    renderWizard();
+
+    expect(screen.getByRole("heading", { name: "Guy Lafleur" })).toBeTruthy();
+    expect(screen.getByText("needs a team decision")).toBeTruthy();
+
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "Decide team Montreal Canadiens" })[0],
+    );
+
+    // The step was SKIPPED, so going to it clears that decision first —
+    // otherwise the operator lands on a read-only "Already decided: Skipped"
+    // panel, which is the same dead end one screen further on.
+    await waitFor(() => expect(mockClearDecision).toHaveBeenCalledTimes(1));
+    expect(mockClearDecision).toHaveBeenCalledWith({ reviewRowId: habs._id });
+  });
+
+  it("offers the same jump from the footer's blocked line", () => {
+    const { player, remparts, habs } = lafleur();
+    currentRows = [remparts, { ...habs, decision: { action: "skip" } }, player];
+    currentResolvedNames = resolved;
+    renderWizard();
+
+    expect(
+      screen.getByText(/Montreal Canadiens still needs a team decision/),
+    ).toBeTruthy();
+    // Two routes to the same step — the chip and the footer line. Both are
+    // named for the team, so neither is ambiguous to a screen reader.
+    expect(
+      screen.getAllByRole("button", { name: "Decide team Montreal Canadiens" }),
+    ).toHaveLength(2);
+  });
+
+  it("comes back to the player once that step is answered", () => {
+    const { player, remparts, habs } = lafleur();
+    currentRows = [remparts, habs, player];
+    currentResolvedNames = resolved;
+    const { rerender } = renderWizard();
+
+    // Undecided, so the step comes up live and no decision is cleared.
+    expect(
+      screen.getByRole("heading", { name: "New Team: Montreal Canadiens" }),
+    ).toBeTruthy();
+
+    // Answered — the walk resumes.
+    currentRows = [
+      remparts,
+      {
+        ...habs,
+        decision: { action: "create", create: { location: "Montreal", name: "Canadiens" } },
+      },
+      player,
+    ];
+    rerenderWizard(rerender);
+
+    expect(screen.getByRole("heading", { name: "Guy Lafleur" })).toBeTruthy();
+    expect(screen.queryByText("needs a team decision")).toBeNull();
+    expect(
+      screen.getByText("→ Montreal Canadiens (new team, not saved yet)"),
+    ).toBeTruthy();
+  });
+});

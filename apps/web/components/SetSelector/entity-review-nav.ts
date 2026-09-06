@@ -37,6 +37,8 @@
  */
 
 /** The three terminal decisions a review row can carry. */
+import { normalizeEntityName } from "../../convex/lib/entityNearMatch";
+
 export type NavDecision =
   | { action: "create" }
   | { action: "link"; linkedPlayerId?: string; linkedTeamId?: string }
@@ -59,6 +61,10 @@ export type NavRow = {
    */
   kind?: "player" | "team";
   source?: { kind: "careerTeamOf"; playerRowId: string } | null;
+  /** A team row's own name, and a player row's career-team labels — the two
+   *  sides the blocker rule matches on. Optional so a test may omit them. */
+  name?: string;
+  enrichment?: { careerTeams?: readonly { name: string }[] } | null;
 };
 
 /**
@@ -89,12 +95,41 @@ function waitingOnStagedTeams(
   rows: readonly NavRow[],
 ): boolean {
   if (row.kind !== "player") return false;
-  return rows.some(
-    (other) =>
-      other.source?.kind === "careerTeamOf" &&
-      other.source.playerRowId === row._id &&
-      !other.decision,
+
+  /*
+   * TWO ways a staged step can belong to this player, and the second is the
+   * one Jason's 522-row hockey batch found.
+   *
+   * Staging dedupes a career team across the WHOLE batch, so in a set full of
+   * NHL players the first one to name the Montreal Canadiens gets the step and
+   * every later player sharing that club gets none. Keyed only on
+   * `source.playerRowId`, this saw no blocker for Guy Lafleur and let him
+   * through — while his chips, which key on the NAME across the batch,
+   * correctly reported three teams as unanswered. He was handed a step that
+   * said "needs a team decision" three times with nowhere to go: "There does
+   * not appear to be anywhere that a decision is needed that I can see."
+   *
+   * So the answer is the TEAM, identified by its name. Whose lookup happened to
+   * raise the step is not part of the question — it only decides which step
+   * says "Needed by".
+   *
+   * `normalizeEntityName` is the same key the chips and the staging dedupe use,
+   * so the three cannot disagree about whether a label is answered.
+   */
+  const careerKeys = new Set(
+    (row.enrichment?.careerTeams ?? [])
+      .map((ct) => normalizeEntityName(ct.name))
+      .filter(Boolean),
   );
+
+  return rows.some((other) => {
+    if (other.source?.kind !== "careerTeamOf") return false;
+    if (other.decision) return false;
+    if (other.source.playerRowId === row._id) return true;
+    return (
+      other.name !== undefined && careerKeys.has(normalizeEntityName(other.name))
+    );
+  });
 }
 
 /**

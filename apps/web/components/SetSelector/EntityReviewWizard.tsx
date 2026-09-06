@@ -665,7 +665,11 @@ export default function EntityReviewWizard({
   ):
     | { kind: "resolved" | "creating" | "linked"; name: string }
     | { kind: "checking" }
-    | { kind: "waiting" } => {
+    // NEO-236 — `stagedRowId` is the step that answers this label, when the
+    // batch holds one. Without it the chip said "needs a team decision" and
+    // pointed nowhere, which is exactly what Jason hit: "There does not appear
+    // to be anywhere that a decision is needed that I can see."
+    | { kind: "waiting"; stagedRowId?: Id<"entityReviewQueue"> } => {
     const key = normalizeEntityName(label);
     const resolved = (resolvedTeamNames ?? []).find(
       (r) => normalizeEntityName(r.name) === key,
@@ -707,7 +711,19 @@ export default function EntityReviewWizard({
         name: linkedNameById.get(decision.linkedTeamId) ?? label,
       };
     }
-    return { kind: "waiting" };
+    return staged ? { kind: "waiting", stagedRowId: staged._id } : { kind: "waiting" };
+  };
+
+  /** The first career team on this row that has a step waiting to be answered
+   *  — what the footer's blocked line offers to jump to. */
+  const firstBlockingStep = (): { name: string; rowId: Id<"entityReviewQueue"> } | null => {
+    for (const label of unansweredCareerTeams) {
+      const status = careerTeamStatus(label);
+      if (status.kind === "waiting" && status.stagedRowId) {
+        return { name: label, rowId: status.stagedRowId };
+      }
+    }
+    return null;
   };
 
   /** "Will create 2 new teams: X, Y · 1 already exist" — either half is
@@ -1180,6 +1196,27 @@ export default function EntityReviewWizard({
     void decide(rowId, () => clearDecision({ reviewRowId: rowId }), "drop");
   };
 
+  /**
+   * NEO-236 — go to the step that answers a blocked career-team chip, ready to
+   * be answered.
+   *
+   * An UNDECIDED step is simply presented. A step that already carries a
+   * decision is one the operator SKIPPED — "not a team" — and the chip beside
+   * it still says the stint has nowhere to land, so landing them on a read-only
+   * "Already decided: Skipped" panel would be a second dead end. Clearing it
+   * first is what they asked for by pressing a control called "Decide team":
+   * the step comes up live, with its Location, Name and League ready to fill
+   * in. That is the same gesture as the decided list's "Change".
+   */
+  const goToTeamStep = (rowId: Id<"entityReviewQueue">) => {
+    const row = rows?.find((r) => r._id === rowId);
+    if (row?.decision) {
+      handleChangeDecision(rowId);
+      return;
+    }
+    presentDecided(rowId);
+  };
+
   /** Present a decided row read-only, without touching it. */
   const presentDecided = (rowId: Id<"entityReviewQueue">) => {
     const next: NavState = { rowId, explicit: true };
@@ -1396,6 +1433,15 @@ export default function EntityReviewWizard({
     }
     return null;
   })();
+
+  /**
+   * NEO-236 — the step the footer's blocked line offers to jump to.
+   *
+   * The message said N teams need a decision and pointed nowhere. This is the
+   * first one that actually has a step waiting, so the line can offer to go
+   * there instead of leaving the operator to find it.
+   */
+  const blockingStep = createBlocked ? firstBlockingStep() : null;
 
   /**
    * The create decision this row would record, built once for both the primary
@@ -1992,39 +2038,89 @@ export default function EntityReviewWizard({
                                         — and an unticked chip says nothing at
                                         all, because excluding it is the answer.
                                       */}
-                                      {showStatus &&
-                                        (status.kind === "waiting" ? (
-                                          /* Not colour alone (SC 1.4.1): this
-                                             says something different IN WORDS
-                                             from the resolved case beside it,
-                                             and #FF2EB3 on the gray-900 panel
-                                             is 5.32:1 (SC 1.4.3). */
-                                          <span
-                                            id={statusId}
-                                            className="text-xs text-[#FF2EB3]"
-                                          >
-                                            needs a team decision
-                                          </span>
-                                        ) : (
-                                          <span
-                                            id={statusId}
-                                            className="text-xs text-gray-400"
-                                          >
-                                            → {status.name}
-                                            {/* NEO-236: "batch" is our word,
-                                                not the operator's — it names
-                                                an internal review row, and no
-                                                copy should expose an internal
-                                                rule. "not saved yet" says the
-                                                thing they actually need to
-                                                know: this team does not exist
-                                                until Confirm & Save. */}
-                                            {status.kind === "creating"
-                                              ? " (new team, not saved yet)"
-                                              : ""}
-                                          </span>
-                                        ))}
                                     </label>
+                                    {/*
+                                      NEO-236 — OUTSIDE the <label>, and that
+                                      is a correctness fix rather than a
+                                      layout one. `Decide team` is a button,
+                                      and a button inside a label has its
+                                      activation redirected to the labelled
+                                      control by the browser — so pressing it
+                                      toggled the career-team checkbox and
+                                      navigated nowhere. Nesting an
+                                      interactive control inside a label is
+                                      invalid HTML for exactly this reason.
+
+                                      The checkbox still points at this line
+                                      with `aria-describedby`, which resolves
+                                      document-wide and does not care that the
+                                      two are now siblings.
+                                    */}
+                                    {showStatus &&
+                                      (status.kind === "waiting" ? (
+                                        /* Not colour alone (SC 1.4.1): this
+                                           says something different IN WORDS
+                                           from the resolved case beside it,
+                                           and #FF2EB3 on the gray-900 panel
+                                           is 5.32:1 (SC 1.4.3). */
+                                        <span
+                                          id={statusId}
+                                          className="inline-flex items-center gap-2 text-xs text-[#FF2EB3]"
+                                        >
+                                          needs a team decision
+                                          {/*
+                                            NEO-236 — the way OUT of the dead
+                                            end. The message named a problem
+                                            and pointed nowhere: "There does
+                                            not appear to be anywhere that a
+                                            decision is needed that I can
+                                            see." This goes to the step that
+                                            answers it; answering that step
+                                            hands navigation back, so the
+                                            operator lands on the next one or
+                                            back here.
+
+                                            Rendered only when a step exists —
+                                            a jump to nothing would be the
+                                            same dead end with a button on it.
+
+                                            SC 2.5.3: the accessible name
+                                            CONTAINS the visible text, so a
+                                            voice-control user saying "decide
+                                            team" matches it.
+                                          */}
+                                          {status.stagedRowId && (
+                                            <button
+                                              type="button"
+                                              aria-label={`Decide team ${ct.name}`}
+                                              onClick={() =>
+                                                goToTeamStep(status.stagedRowId!)
+                                              }
+                                              className="py-2 -my-2 text-[#00B7FF] underline decoration-dotted hover:text-[#00D558] focus-visible:text-[#00D558] focus:outline-none"
+                                            >
+                                              Decide team
+                                            </button>
+                                          )}
+                                        </span>
+                                      ) : (
+                                        <span
+                                          id={statusId}
+                                          className="text-xs text-gray-400"
+                                        >
+                                          → {status.name}
+                                          {/* NEO-236: "batch" is our word,
+                                              not the operator's — it names
+                                              an internal review row, and no
+                                              copy should expose an internal
+                                              rule. "not saved yet" says the
+                                              thing they actually need to
+                                              know: this team does not exist
+                                              until Confirm & Save. */}
+                                          {status.kind === "creating"
+                                            ? " (new team, not saved yet)"
+                                            : ""}
+                                        </span>
+                                      ))}
                                   </li>
                                 );
                               })}
@@ -2602,15 +2698,36 @@ export default function EntityReviewWizard({
               */}
               {createBlocked && (
                 <p
-                  id={createBlockedId}
                   /* `text-xs` restored: the row-2 rewrite moved it off the
                      wrapper and it was never put back on the message. Without
                      it this inherits Radix's 16px body size, which is not the
                      `text-xs` line `min-h-6` reserves the footer's height
                      for. */
-                  className="min-w-0 flex-1 truncate text-xs text-[#FF2EB3]"
+                  className="flex min-w-0 flex-1 items-center gap-2 text-xs text-[#FF2EB3]"
                 >
-                  {createBlocked}
+                  {/*
+                    The id sits on the TEXT, not on this flex wrapper: the
+                    create controls point at it with `aria-describedby`, and a
+                    description should be the reason alone — not the reason
+                    plus the label of the button beside it. The message
+                    truncates; the way out of it does not.
+                  */}
+                  <span id={createBlockedId} className="min-w-0 truncate">
+                    {createBlocked}
+                  </span>
+                  {/* NEO-236 — the same route as the blocked chip's, for the
+                      operator reading the footer rather than the list. Goes to
+                      the FIRST step still waiting. */}
+                  {blockingStep && (
+                    <button
+                      type="button"
+                      aria-label={`Decide team ${blockingStep.name}`}
+                      onClick={() => goToTeamStep(blockingStep.rowId)}
+                      className="shrink-0 py-2 -my-2 text-[#00B7FF] underline decoration-dotted hover:text-[#00D558] focus-visible:text-[#00D558] focus:outline-none"
+                    >
+                      Decide team
+                    </button>
+                  )}
                 </p>
               )}
               {/*

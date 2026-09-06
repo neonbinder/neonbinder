@@ -6,7 +6,7 @@
  *   1. Free-text add: a name that matches no existing team is still accepted
  *      (unlike EntityLinkSearch, which is pick-existing-only) — that name
  *      becomes a new team via get-or-create at commit time.
- *   2. Typeahead: STAGED names (this batch's pending teams) come first and are
+ *   2. Typeahead: STAGED names (teams this review will create) come first and are
  *      tagged, then `teams.search` results the staged list does not already
  *      cover. Picking one fills the name field without adding.
  *   3. The "Did you mean {existing}?" prompt for a name that is close to
@@ -191,7 +191,7 @@ describe("CareerTeamEntry — search source", () => {
 // ---------------------------------------------------------------------------
 
 describe("CareerTeamEntry — staged suggestions", () => {
-  it("lists staged names BEFORE search results, tagged 'this batch'", () => {
+  it("lists staged names BEFORE search results, tagged 'not saved yet'", () => {
     // The ordering is the point: a saved team is discoverable by typing its
     // full name; one that exists only as a pending decision in this batch is
     // not, so it has to be the thing the operator sees first.
@@ -202,13 +202,13 @@ describe("CareerTeamEntry — staged suggestions", () => {
 
     const options = screen.getAllByRole("option");
     expect(options[0].getAttribute("aria-label")).toBe(
-      "Use Toronto Blue Jays from this batch",
+      "Use Toronto Blue Jays, not saved yet",
     );
     expect(options[1].getAttribute("aria-label")).toBe(
       "Use existing team Toronto Maple Leafs",
     );
-    expect(options[0].textContent).toContain("this batch");
-    expect(options[1].textContent).not.toContain("this batch");
+    expect(options[0].textContent).toContain("not saved yet");
+    expect(options[1].textContent).not.toContain("not saved yet");
   });
 
   it("appends search results without duplicating a staged name", () => {
@@ -223,7 +223,7 @@ describe("CareerTeamEntry — staged suggestions", () => {
       .getAllByRole("option")
       .map((el) => el.getAttribute("aria-label"));
     expect(labels).toEqual([
-      "Use Toronto Blue Jays from this batch",
+      "Use Toronto Blue Jays, not saved yet",
       "Use existing team Tampa Bay Rays",
     ]);
   });
@@ -242,7 +242,7 @@ describe("CareerTeamEntry — staged suggestions", () => {
 
     typeName("Toronto");
     fireEvent.click(
-      screen.getByRole("option", { name: "Use Toronto Blue Jays from this batch" }),
+      screen.getByRole("option", { name: "Use Toronto Blue Jays, not saved yet" }),
     );
 
     expect((screen.getByLabelText("Career team name") as HTMLInputElement).value).toBe(
@@ -530,5 +530,115 @@ describe("CareerTeamEntry — Escape", () => {
 
     expect((screen.getByLabelText("From year") as HTMLInputElement).value).toBe("2023");
     expect(onRootKeyDown).not.toHaveBeenCalled();
+  });
+});
+
+// ===========================================================================
+// NEO-236 — the suggestion list has to go away
+//
+// Jason, 2026-09-06, on player "Rob Blake" after typing "Buffalo Sabres":
+// "I can't find any way to dismiss the green list. it should go away once I've
+// selected a team or the box has lost focus."
+//
+// Root cause: `pickSuggestion` closed the list and then called
+// `nameInputRef.current.focus()`, while the input carried
+// `onFocus={() => setSuggestionsOpen(true)}` — so the refocus reopened what the
+// line above had just closed. The list then covered the From/To year fields,
+// which are the very next thing to fill in, and blur was unhandled entirely.
+// ===========================================================================
+
+describe("CareerTeamEntry — dismissing the suggestion list", () => {
+  const listbox = () => screen.queryByRole("listbox", { name: "Existing team suggestions" });
+
+  it("closes on picking a suggestion, and puts focus in From year", () => {
+    currentTeams = [{ _id: "t1", name: "Buffalo Sabres" }];
+    renderEntry();
+    typeName("Buffalo");
+
+    expect(listbox()).toBeTruthy();
+    fireEvent.click(screen.getByRole("option", { name: "Use existing team Buffalo Sabres" }));
+
+    expect(listbox()).toBeNull();
+    // The team is chosen; the stint is not finished until it has a year.
+    expect(document.activeElement).toBe(screen.getByLabelText("From year"));
+    expect((screen.getByLabelText("Career team name") as HTMLInputElement).value).toBe(
+      "Buffalo Sabres",
+    );
+  });
+
+  it("stays closed after picking — focusing the box again must not reopen it", () => {
+    // The regression itself: the list is opened by TYPING, never by focus.
+    currentTeams = [{ _id: "t1", name: "Buffalo Sabres" }];
+    renderEntry();
+    typeName("Buffalo");
+    fireEvent.click(screen.getByRole("option", { name: "Use existing team Buffalo Sabres" }));
+
+    fireEvent.focus(screen.getByLabelText("Career team name"));
+    expect(listbox()).toBeNull();
+  });
+
+  it("closes when focus leaves the combobox for the year field", () => {
+    currentTeams = [{ _id: "t1", name: "Buffalo Sabres" }];
+    renderEntry();
+    typeName("Buffalo");
+    expect(listbox()).toBeTruthy();
+
+    // jsdom does not move focus on `fireEvent.blur`, so drive the real move.
+    screen.getByLabelText("From year").focus();
+    fireEvent.blur(screen.getByLabelText("Career team name"));
+    act(() => {
+      vi.advanceTimersByTime(0);
+    });
+
+    expect(listbox()).toBeNull();
+  });
+
+  it("does NOT close while focus moves within the combobox", () => {
+    currentTeams = [{ _id: "t1", name: "Buffalo Sabres" }];
+    renderEntry();
+    typeName("Buffalo");
+
+    screen.getByRole("option", { name: "Use existing team Buffalo Sabres" }).focus();
+    fireEvent.blur(screen.getByLabelText("Career team name"));
+    act(() => {
+      vi.advanceTimersByTime(0);
+    });
+
+    expect(listbox()).toBeTruthy();
+  });
+
+  it("closes on Escape without letting it reach the wizard", () => {
+    // NEO-220: Escape at the dialog root discards the whole review session, so
+    // this field's Escape must never get there.
+    currentTeams = [{ _id: "t1", name: "Buffalo Sabres" }];
+    const onEscape = vi.fn();
+    render(
+      <div onKeyDown={onEscape}>
+        <CareerTeamEntry sportId={SPORT_ID} stagedNames={[]} onAdd={vi.fn()} />
+      </div>,
+    );
+    fireEvent.change(screen.getByLabelText("Career team name"), {
+      target: { value: "Buffalo" },
+    });
+    act(() => {
+      vi.advanceTimersByTime(DEBOUNCE_MS);
+    });
+    expect(listbox()).toBeTruthy();
+
+    fireEvent.keyDown(screen.getByLabelText("Career team name"), { key: "Escape" });
+
+    expect(listbox()).toBeNull();
+    expect(onEscape).not.toHaveBeenCalled();
+  });
+
+  it("reopens on ArrowDown, for a keyboard operator who wants it back", () => {
+    currentTeams = [{ _id: "t1", name: "Buffalo Sabres" }];
+    renderEntry();
+    typeName("Buffalo");
+    fireEvent.click(screen.getByRole("option", { name: "Use existing team Buffalo Sabres" }));
+    expect(listbox()).toBeNull();
+
+    fireEvent.keyDown(screen.getByLabelText("Career team name"), { key: "ArrowDown" });
+    expect(listbox()).toBeTruthy();
   });
 });
