@@ -260,6 +260,41 @@ describe("fetchBscAttachOptions — the set comes from the facet plan", () => {
     expect(recorded).toHaveLength(0);
   });
 
+  test("the LOG carries no NB row value either — the leak must not just move", async () => {
+    // NEO-252, second pass. The client message was fixed by removing the set
+    // name from it; the skip log beside it then printed `cxt.resolution.bsc
+    // .missing`, whose entries are `label()` — `setName=<the operator's set
+    // name>`. That is the same value with a different audience, and a Convex
+    // log is retained and searchable, so it is not the safer place it looks.
+    //
+    // Note this resolution is LEVEL-scoped (the attach context passes
+    // `slRequired`, not `bscScope`), so its entries really are the row-naming
+    // kind — this path is exactly where the raw join was worst.
+    const t = convexTest(schema, modules);
+    const rowId = await seedHandTypedSet(t, {});
+
+    await t
+      .withIdentity(ADMIN)
+      .action(api.setReconciliation.fetchBscAttachOptions, {
+        selectorOptionId: rowId,
+        view: "variants",
+      });
+
+    const logged = (console.log as unknown as {
+      mock: { calls: unknown[][] };
+    }).mock.calls
+      .map((call) => call.map((arg) => String(arg)).join(" "))
+      .join("\n");
+
+    // The line was written…
+    expect(logged).toContain("[fetchBscAttachOptions] no BSC set on this path");
+    // …with the count and the level NAMES, and none of the operator's text.
+    expect(logged).toContain("missing=2 (setName,variantType)");
+    for (const displayValue of NB_DISPLAY_VALUES) {
+      expect(logged).not.toContain(displayValue);
+    }
+  });
+
   test("that message carries no NB row value — the old one carried the set NAME", async () => {
     // The regression this file exists for, stated directly. `message` is
     // client-facing text, so a row's display value must not be in it whatever

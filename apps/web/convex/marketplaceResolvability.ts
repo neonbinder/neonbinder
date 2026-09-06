@@ -468,6 +468,61 @@ export function resolvableSides(
 }
 
 /**
+ * NEO-252 — a LOG-SAFE rendering of `SideResolution.missing`.
+ *
+ * ## Why `missing` cannot simply be logged
+ *
+ * `missing` mixes three vocabularies, and only two of them are safe to write
+ * down anywhere:
+ *
+ *   `facet=variant`   a BSC facet name          — marketplace vocabulary, safe
+ *   `level=insert`    the level being fetched   — NB taxonomy name, safe
+ *   `unlinked set`    a fixed sentinel          — safe
+ *   `setName=<value>` an NB ROW                 — the row's DISPLAY VALUE
+ *
+ * The last one is `label()`, and it is the operator's own text: a set they
+ * named, a sport they typed. NEO-47's rule keeps it out of
+ * `selectorSyncStatus.message` because that is reactive state served to the
+ * browser — and the reason it holds there holds here too. A Convex log is
+ * retained, searchable, and read by people who are not the operator, so
+ * "it's only a log line" is a weaker claim than it sounds: the value is the
+ * same value, and shipping it to a different audience is still shipping it.
+ *
+ * ## What this keeps
+ *
+ * The COUNT and the NAMES — which is the whole diagnostic payload. "BSC is
+ * missing 2: setName, variantType" tells you which rungs of the chain owe an
+ * id, which is what you act on; the operator's word for those rows adds
+ * nothing you could not get from the row id already in the log line.
+ *
+ * `missing` itself is deliberately unchanged. It is the structured value the
+ * tests assert on and the only place the row is identified at all, so the fix
+ * is at the point of RENDERING rather than at the point of construction —
+ * a future caller that needs the row still has it, and a future caller that
+ * just wants to log reaches for this and cannot get it wrong.
+ */
+export function missingSummary(resolution: SideResolution): string {
+  const names = resolution.missing.map(missingName);
+  return names.length === 0
+    ? "0"
+    : `${names.length} (${names.join(",")})`;
+}
+
+/**
+ * Prefixes whose right-hand side is marketplace or taxonomy vocabulary rather
+ * than an NB row's display value, and so survives whole.
+ */
+const SAFE_MISSING_PREFIXES: ReadonlySet<string> = new Set(["facet", "level"]);
+
+/** One `missing` entry, stripped to its name. */
+function missingName(entry: string): string {
+  const eq = entry.indexOf("=");
+  if (eq === -1) return entry; // `unlinked set`, or a bare level from label()
+  const prefix = entry.slice(0, eq);
+  return SAFE_MISSING_PREFIXES.has(prefix) ? entry : prefix;
+}
+
+/**
  * The skipped sides an operator should be TOLD about: ones this marketplace
  * models at this level, that were skipped only because the chain carries none
  * of the ids they need.

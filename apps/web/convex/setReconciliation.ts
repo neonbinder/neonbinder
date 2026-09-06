@@ -50,6 +50,7 @@ import { selectorOptionFields } from "./schema";
 import {
   BSC_NO_LINKED_SET_MESSAGE,
   NO_MARKETPLACE_IDS_MESSAGE,
+  missingSummary,
   SL_ATTACH_REQUIRED_LEVELS,
   notifiableSkippedSides,
   resolvableSides,
@@ -943,7 +944,7 @@ export const fetchSlAttachSets = action({
     if (!cxt.resolution.sportlots.resolvable) {
       console.log(
         `[fetchSlAttachSets] no SportLots ids on this path — ` +
-          `missing=${cxt.resolution.sportlots.missing.join(",")}`,
+          `missing=${missingSummary(cxt.resolution.sportlots)}`,
       );
       return {
         success: true,
@@ -1061,7 +1062,7 @@ export const fetchBscAttachOptions = action({
     if (!platformFilters.sport || !platformFilters.year) {
       console.log(
         `[fetchBscAttachOptions] no BSC ids to scope the pool — ` +
-          `missing=${cxt.resolution.bsc.missing.join(",")}`,
+          `missing=${missingSummary(cxt.resolution.bsc)}`,
       );
       return {
         success: true,
@@ -1083,7 +1084,7 @@ export const fetchBscAttachOptions = action({
       // set list, which is the pane that fixes it.
       console.log(
         `[fetchBscAttachOptions] no BSC set on this path — ` +
-          `missing=${cxt.resolution.bsc.missing.join(",")}`,
+          `missing=${missingSummary(cxt.resolution.bsc)}`,
       );
       return {
         success: true,

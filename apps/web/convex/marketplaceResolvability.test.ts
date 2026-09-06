@@ -30,6 +30,7 @@ import {
   NO_MARKETPLACE_IDS_MESSAGE,
   SL_ATTACH_REQUIRED_LEVELS,
   SL_REQUIRED_LEVELS,
+  missingSummary,
   resolvableSides,
   resolvedSideList,
   rowHasBscFacet,
@@ -724,5 +725,106 @@ describe("the SL unlinked-set rule (NEO-252)", () => {
     );
     expect(bscFirst.sportlots.resolvable).toBe(true);
     expect(slFirst.sportlots.resolvable).toBe(true);
+  });
+});
+
+// ===========================================================================
+// missingSummary — what a LOG is allowed to say about a skip
+// ===========================================================================
+
+/**
+ * `missing` names NB ROWS, and `label()` renders them as `<level>=<value>` —
+ * the operator's own text for a set or a sport they typed. NEO-47 keeps that
+ * out of `selectorSyncStatus.message` because it is served to the browser; the
+ * same reasoning applies to a Convex log, which is retained, searchable, and
+ * read by people who are not the operator.
+ *
+ * NEO-252 introduced a client message with the value REMOVED from it and then
+ * logged the value in its place, which is the leak moving rather than closing.
+ * This function is what every skip log renders through now.
+ */
+describe("missingSummary", () => {
+  test("strips an NB row's DISPLAY VALUE, keeping the level name", () => {
+    const out = resolvableSides([
+      row("sport", { value: "Secret Internal Sport" }),
+      row("setName", { value: "Jason's Private Set" }),
+    ]);
+
+    const line = missingSummary(out.bsc);
+    expect(line).toBe("2 (sport,setName)");
+    expect(line).not.toContain("Secret Internal Sport");
+    expect(line).not.toContain("Jason's Private Set");
+  });
+
+  test("keeps `facet=` whole — it is marketplace vocabulary, not a row", () => {
+    const out = resolvableSides(
+      [row("sport", { value: "Secret Internal Sport" })],
+      { bscScope: "checklist" },
+    );
+    expect(missingSummary(out.bsc)).toBe(
+      "4 (facet=sport,facet=year,facet=setName,facet=variant)",
+    );
+  });
+
+  test("keeps `level=` whole — that is the level being fetched, not a row", () => {
+    // BSC has no `manufacturer` axis, so a manufacturer sync pushes
+    // `level=manufacturer`. The right-hand side there is NB TAXONOMY, the same
+    // string the caller passed in, and it is the whole diagnostic.
+    const out = resolvableSides([linkedSport, linkedYear], {
+      level: "manufacturer",
+    });
+    expect(missingSummary(out.bsc)).toBe("1 (level=manufacturer)");
+  });
+
+  test("keeps the `unlinked set` sentinel — fixed text, nothing to strip", () => {
+    const out = resolvableSides(
+      [
+        linkedSport,
+        linkedYear,
+        row("setName", { value: "My Hand Typed Set" }),
+        row("variantType", { value: "My Hand Typed Variant" }),
+      ],
+      { level: "insert" },
+    );
+    expect(missingSummary(out.sportlots)).toBe("1 (unlinked set)");
+  });
+
+  test("a resolvable side summarises as 0", () => {
+    const out = resolvableSides([linkedSport, linkedYear]);
+    expect(missingSummary(out.sportlots)).toBe("0");
+  });
+
+  test("NO chain shape can put a row value in the summary", () => {
+    // The property, over the same table the parity block uses plus the shapes
+    // whose `missing` entries are `label()`-derived. Every row here is named
+    // something that could not occur as a level, a facet or a slug, so any
+    // leak is visible whatever route the entry took into `missing`.
+    const POISON = "ZZ Operator Typed Value";
+    const chain: ResolvableRow[] = [
+      row("sport", { value: POISON }),
+      row("year", { value: POISON }),
+      row("manufacturer", { value: POISON }),
+      row("setName", { value: POISON }),
+      row("variantType", { value: POISON }),
+      row("insert", { value: POISON }),
+    ];
+
+    for (const opts of [
+      undefined,
+      { level: "year" },
+      { level: "insert" },
+      { level: "parallel" },
+      { level: "manufacturer" },
+      { bscScope: "checklist" as const },
+      { slRequired: SL_ATTACH_REQUIRED_LEVELS },
+    ]) {
+      const out = resolvableSides(chain, opts);
+      for (const side of ["bsc", "sportlots"] as const) {
+        expect(missingSummary(out[side])).not.toContain(POISON);
+        // …while `missing` itself still identifies the row, which is the point
+        // of splitting rendering from construction.
+        expect(out[side].missing.length).toBeGreaterThan(0);
+      }
+    }
   });
 });
