@@ -45,7 +45,10 @@
 
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { NO_MARKETPLACE_IDS_MESSAGE } from "../../convex/marketplaceResolvability";
+import {
+  BSC_NO_LINKED_SET_MESSAGE,
+  NO_MARKETPLACE_IDS_MESSAGE,
+} from "../../convex/marketplaceResolvability";
 
 // ---------------------------------------------------------------------------
 // Module mocks — declared before the component import
@@ -769,5 +772,145 @@ describe("AttachSetsDialog — failures and keyboard", () => {
     fireEvent.keyDown(document, { key: "Escape" });
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(mockAttach).not.toHaveBeenCalled();
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// NEO-252 — the path names no BSC set, so the pane opens on the set list
+// ---------------------------------------------------------------------------
+
+/**
+ * A set NeonBinder built before either marketplace listed it has no BSC set to
+ * show variants OF. The dialog's job in that state is obvious in hindsight and
+ * was exactly inverted before: it rendered a red alert quoting the operator's
+ * own set name and left them on an empty variants rung, when the set list —
+ * one rung up, already built, already searchable — is the thing that fixes it.
+ *
+ * So the server answers `success: true` with a fixed sentence, and the pane
+ * hops. The note is what makes the hop legible: a pane that silently moves to a
+ * rung nobody chose reads as a bug.
+ */
+describe("AttachSetsDialog — no BSC set on the path (NEO-252)", () => {
+  /** BSC has no set to scope the variants view; the set list still answers. */
+  function noLinkedSetResponder() {
+    return vi.fn(async (args: { view: "sets" | "variants" }) => {
+      if (args.view === "sets") {
+        return { success: true, options: YEAR_SETS, message: "BSC: 3 set(s)" };
+      }
+      return {
+        success: true,
+        options: [],
+        message: BSC_NO_LINKED_SET_MESSAGE,
+      };
+    });
+  }
+
+  test("opens on the SET LIST instead of an empty variants pane", async () => {
+    mockFetchBsc.mockImplementation(noLinkedSetResponder());
+
+    renderDialog();
+
+    // The set list is what renders — the rung that can supply the missing set.
+    await waitFor(() =>
+      expect(within(bscPane()).getByLabelText("Toggle Topps Chrome")).toBeTruthy(),
+    );
+    // Two calls: the variants attempt it opens with, then the hop.
+    expect(mockFetchBsc.mock.calls.map((c) => c[0].view)).toEqual([
+      "variants",
+      "sets",
+    ]);
+  });
+
+  test("says WHY it moved, and keeps saying it after the hop's own fetch", async () => {
+    // The note has to outlive the request the hop triggers. Held in
+    // `bscSkipNote` it would be cleared by that very fetch, leaving the pane on
+    // a rung the operator did not pick with nothing explaining it.
+    mockFetchBsc.mockImplementation(noLinkedSetResponder());
+
+    renderDialog();
+
+    await waitFor(() =>
+      expect(within(bscPane()).getByLabelText("Toggle Topps Chrome")).toBeTruthy(),
+    );
+    expect(within(bscPane()).getByText(BSC_NO_LINKED_SET_MESSAGE)).toBeTruthy();
+  });
+
+  test("it is a NOTE, not an error — nothing failed here", () => {
+    // A red alert sends the operator looking for a marketplace outage. The
+    // pane is working; the path simply has no BSC set yet.
+    mockFetchBsc.mockImplementation(noLinkedSetResponder());
+
+    renderDialog();
+
+    return waitFor(() => {
+      expect(within(bscPane()).getByText(BSC_NO_LINKED_SET_MESSAGE)).toBeTruthy();
+      expect(within(bscPane()).queryByRole("alert")).toBeNull();
+      // The SportLots pane is untouched, as with any BSC-side skip.
+      expect(within(slPane()).getByLabelText("Toggle Topps Chrome")).toBeTruthy();
+    });
+  });
+
+  test("browsing into a set clears the note — it no longer describes the pane", async () => {
+    // Once the operator picks a set, the variants rung has one and the
+    // explanation is stale. Left up it would contradict the breadcrumb.
+    mockFetchBsc.mockImplementation(
+      vi.fn(async (args: { view: "sets" | "variants"; setSlug?: string }) => {
+        if (args.view === "sets") {
+          return { success: true, options: YEAR_SETS, message: "BSC: 3 set(s)" };
+        }
+        if (args.setSlug === "topps-heritage") {
+          return {
+            success: true,
+            options: SIBLING_SET_VARIANTS,
+            setSlug: "topps-heritage",
+            message: "BSC: 2 variant(s)",
+          };
+        }
+        return { success: true, options: [], message: BSC_NO_LINKED_SET_MESSAGE };
+      }),
+    );
+
+    renderDialog();
+    // Wait for the SET LIST, not just the note: the note lands with the first
+    // response and the list only after the hop's own fetch, so waiting on the
+    // note alone races the rung it announces.
+    await waitFor(() =>
+      expect(
+        within(bscPane()).getByLabelText("Browse BSC set Topps Heritage"),
+      ).toBeTruthy(),
+    );
+    expect(within(bscPane()).getByText(BSC_NO_LINKED_SET_MESSAGE)).toBeTruthy();
+
+    fireEvent.click(
+      within(bscPane()).getByLabelText("Browse BSC set Topps Heritage"),
+    );
+
+    await waitFor(() =>
+      expect(
+        within(bscPane()).getByLabelText("Toggle Heritage Chrome Refractor"),
+      ).toBeTruthy(),
+    );
+    expect(within(bscPane()).queryByText(BSC_NO_LINKED_SET_MESSAGE)).toBeNull();
+  });
+
+  test("a REACHED set with no variants keeps the ordinary empty copy", async () => {
+    // The equality check earning its keep, as with the other skip sentences: a
+    // successful variants call also carries a message, and it is a count.
+    mockFetchBsc.mockResolvedValue({
+      success: true,
+      options: [],
+      setSlug: "topps-series-1",
+      message: "BSC: 0 variant(s)",
+    });
+
+    renderDialog();
+
+    await waitFor(() =>
+      expect(within(bscPane()).getByText(/Every BSC variant in this set/)).toBeTruthy(),
+    );
+    // No hop: the pane was answered, it just has nothing in it.
+    expect(mockFetchBsc.mock.calls.map((c) => c[0].view)).toEqual(["variants"]);
+    expect(within(bscPane()).queryByText(BSC_NO_LINKED_SET_MESSAGE)).toBeNull();
   });
 });

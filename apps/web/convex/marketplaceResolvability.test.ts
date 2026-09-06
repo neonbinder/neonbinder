@@ -22,6 +22,10 @@
 
 import { describe, expect, test } from "vitest";
 import {
+  missingBscChecklistScope,
+  resolveBscFacetFilters,
+} from "./bscFacets";
+import {
   BSC_REQUIRED_LEVELS,
   NO_MARKETPLACE_IDS_MESSAGE,
   SL_ATTACH_REQUIRED_LEVELS,
@@ -338,5 +342,297 @@ describe("rowHasBscFacet", () => {
     expect(rowHasBscFacet(tagged, "variant")).toBe(true);
     expect(rowHasBscFacet(tagged, "setName")).toBe(true);
     expect(rowHasBscFacet(tagged, "variantName")).toBe(false);
+  });
+});
+
+
+// ===========================================================================
+// NEO-252 — the CHECKLIST gate is judged per FACET, not per level
+// ===========================================================================
+
+/**
+ * The bug, in one sentence: the gate and the request builder answered "can BSC
+ * be asked?" two different ways, and the gate's way could not see an id
+ * attached to the leaf.
+ *
+ * `resolveBscFacetFilters` buckets ids by what each one IS (NEO-189 facet
+ * tags), so a BSC `setName` id attached to a variantType row scopes the query
+ * by a set. `resolvableSides`' level walk instead looked for an id ON the
+ * setName ancestor row — and a set NeonBinder built itself has none, because
+ * the operator attached the BSC set where the attach dialog lives: the variant
+ * row. So the checklist skipped BSC for a request the adapter would have run.
+ *
+ * `bscScope: "checklist"` is the fix, and it is an OPT-IN rather than the new
+ * default because the level rule is still the right answer for the callers
+ * that are not fetching a checklist — see the parity block's closing tests.
+ */
+describe("resolvableSides — bscScope: 'checklist' (NEO-252)", () => {
+  /** Sport and year linked; the set is NB's own, with no ids at all. */
+  const handTypedSet = row("setName", { value: "My Hand Typed Set" });
+
+  test("a leaf-attached BSC set + variant tag RESOLVES a hand-typed set", () => {
+    // The headline case. Nothing on the setName row, everything on the leaf —
+    // and the request this licenses is fully scoped: sport, year, setName,
+    // variant.
+    const chain = [
+      linkedSport,
+      linkedYear,
+      handTypedSet,
+      row("variantType", {
+        value: "Base",
+        bsc: { b0: "base", b1: "2024-topps" },
+        facets: { b0: "variant", b1: "setName" },
+      }),
+    ];
+
+    expect(resolvableSides(chain, { bscScope: "checklist" }).bsc).toEqual({
+      served: true,
+      resolvable: true,
+      missing: [],
+    });
+    // …and this is a CHANGE, not a restatement: the per-level rule refuses the
+    // very same chain, which is exactly the disagreement the ticket is about.
+    expect(resolvableSides(chain).bsc.resolvable).toBe(false);
+  });
+
+  test("leaf setName + variantName but NO variant tag is refused, naming the facet", () => {
+    // The other half of the ticket's scope decision: `variant` stays mandatory
+    // (Jason, 2026-09-05). Without it BSC answers with the base cards plus
+    // every insert and parallel in the set — a ~5000-card superset returned as
+    // a 200. A `variantName` tag does not stand in for it: it narrows WITHIN
+    // the variant axis, it does not supply one.
+    const out = resolvableSides(
+      [
+        linkedSport,
+        linkedYear,
+        handTypedSet,
+        row("variantType", { value: "My Hand Typed Variant" }),
+        row("insert", {
+          value: "Homefield Advantage",
+          bsc: { b0: "2024-topps", b1: "homefield-advantage" },
+          facets: { b0: "setName", b1: "variantName" },
+        }),
+      ],
+      { bscScope: "checklist" },
+    );
+
+    expect(out.bsc.resolvable).toBe(false);
+    expect(out.bsc.missing).toEqual(["facet=variant"]);
+  });
+
+  test("what is missing is a FACET NAME — never a row, never a row's value", () => {
+    // NEO-47's property, restated for the new vocabulary. `missing` is logged,
+    // and the level rule's entries are `setName=<the operator's set name>`. The
+    // facet rule cannot produce that shape at all: its entire output alphabet
+    // is the four facet names.
+    const out = resolvableSides(
+      [row("sport", { value: "Secret Internal Sport" })],
+      { bscScope: "checklist" },
+    );
+
+    expect(out.bsc.missing).toEqual([
+      "facet=sport",
+      "facet=year",
+      "facet=setName",
+      "facet=variant",
+    ]);
+    expect(JSON.stringify(out.bsc)).not.toContain("Secret Internal Sport");
+  });
+
+  test("an untagged variantType slug still resolves nothing — NEO-189 holds", () => {
+    // The corrupt class: a mis-saved Base mapping wrote a setName slug into a
+    // variantType row. Untagged, `resolveBscFacetFilters` drops it (the level
+    // rule answers `undefined` at variantType), so it supplies no `variant`
+    // and the facet gate refuses — the same verdict the level gate reached, by
+    // a different road. Reading the tag rather than the row is what keeps the
+    // two agreeing here.
+    const out = resolvableSides(
+      [
+        linkedSport,
+        linkedYear,
+        linkedSetName,
+        row("variantType", { value: "Base", bsc: { b0: "base" } }),
+      ],
+      { bscScope: "checklist" },
+    );
+    expect(out.bsc.resolvable).toBe(false);
+    expect(out.bsc.missing).toEqual(["facet=variant"]);
+  });
+});
+
+// ===========================================================================
+// The parity property — the gate and the request cannot disagree
+// ===========================================================================
+
+/**
+ * This is the invariant NEO-252 actually buys, and it is worth more than any
+ * one case above: for every chain, the checklist gate's verdict IS
+ * `missingBscChecklistScope` applied to the filters the request would carry.
+ *
+ * Stated as a property over a table rather than as four more examples, because
+ * the failure mode it guards is a future edit adding a condition to one side —
+ * which is precisely how the original divergence appeared.
+ */
+describe("resolvableSides ⇄ resolveBscFacetFilters parity (NEO-252)", () => {
+  const CHAINS: Array<[string, ResolvableRow[]]> = [
+    ["empty", []],
+    ["hand-typed sport only", [row("sport", { value: "E2E Test Sport 3" })]],
+    ["sport linked, nothing else", [linkedSport]],
+    ["sport + year linked", [linkedSport, linkedYear]],
+    ["sport + year + set linked, no variant row", [linkedSport, linkedYear, linkedSetName]],
+    [
+      "the fully conventional chain",
+      [linkedSport, linkedYear, linkedSetName, taggedBase],
+    ],
+    [
+      "hand-typed set, BSC set attached at the leaf",
+      [
+        linkedSport,
+        linkedYear,
+        row("setName", { value: "My Hand Typed Set" }),
+        row("variantType", {
+          value: "Base",
+          bsc: { b0: "base", b1: "2024-topps" },
+          facets: { b0: "variant", b1: "setName" },
+        }),
+      ],
+    ],
+    [
+      "the NEO-189 split — one Base row, two BSC sets",
+      [
+        linkedSport,
+        linkedYear,
+        linkedSetName,
+        row("variantType", {
+          value: "Base",
+          bsc: { b0: "base", b1: "series-1", b2: "series-2" },
+          facets: { b0: "variant", b1: "setName", b2: "setName" },
+        }),
+      ],
+    ],
+    [
+      "untagged variantType — the corrupt class",
+      [
+        linkedSport,
+        linkedYear,
+        linkedSetName,
+        row("variantType", { value: "Base", bsc: { b0: "base" } }),
+      ],
+    ],
+    [
+      "an insert under a tagged Base",
+      [
+        linkedSport,
+        linkedYear,
+        linkedSetName,
+        taggedBase,
+        row("insert", {
+          value: "Homefield Advantage",
+          bsc: { b0: "homefield-advantage" },
+          facets: { b0: "variantName" },
+        }),
+      ],
+    ],
+    [
+      "a chain broken in the middle",
+      [linkedSport, row("year", { value: "2024", bsc: {} }), linkedSetName, taggedBase],
+    ],
+  ];
+
+  test.each(CHAINS)(
+    "%s — the gate's verdict is the filters' own verdict",
+    (_name, chain) => {
+      const gate = resolvableSides(chain, { bscScope: "checklist" });
+      const filters = resolveBscFacetFilters(chain).filters;
+      const missing = missingBscChecklistScope(filters);
+
+      expect(gate.bsc.resolvable).toBe(missing.length === 0);
+      expect(gate.bsc.missing).toEqual(missing.map((f) => `facet=${f}`));
+    },
+  );
+
+  test("a LEVEL sync is not covered by the property — it asks a different question", () => {
+    // `bscScope` defaults to "level", and it must: a selector sync's request
+    // body is built per level, and its parent chain legitimately stops above
+    // the levels a checklist needs. Judging the year sync by the checklist's
+    // facets would refuse every sync that has not reached a set yet.
+    const chain = [linkedSport];
+    expect(resolvableSides(chain, { level: "year" }).bsc.resolvable).toBe(true);
+    expect(
+      missingBscChecklistScope(resolveBscFacetFilters(chain).filters),
+    ).not.toEqual([]);
+  });
+
+  test("the level rule is untouched at a level sync, tag requirement included", () => {
+    // The NEO-239 behaviour, re-pinned now that a second rule exists beside it.
+    const untaggedBase = row("variantType", { value: "Base", bsc: { b0: "base" } });
+    const out = resolvableSides(
+      [linkedSport, linkedYear, linkedSetName, untaggedBase],
+      { level: "insert" },
+    );
+    expect(out.bsc.resolvable).toBe(false);
+    expect(out.bsc.missing).toEqual(["variantType=Base"]);
+  });
+});
+
+// ===========================================================================
+// SportLots' "is this a marketplace set at all" test reads the facet plan
+// ===========================================================================
+
+describe("the SL unlinked-set rule (NEO-252)", () => {
+  /**
+   * At `insert` and `parallel` SportLots answers with every set for the year
+   * and brand, so it only means "this set's variants" once the set is a
+   * marketplace set at all. The test was `rowHasSideId(setRow, "bsc")` — which
+   * missed the same leaf attachment the BSC gate did, and refused SportLots on
+   * a set that demonstrably IS linked to a BSC set.
+   */
+  const handTypedSet = row("setName", { value: "My Hand Typed Set" });
+
+  test("a BSC set attached at the LEAF counts as linked", () => {
+    const out = resolvableSides(
+      [
+        linkedSport,
+        linkedYear,
+        handTypedSet,
+        row("variantType", {
+          value: "Base",
+          bsc: { b0: "base", b1: "2024-topps" },
+          facets: { b0: "variant", b1: "setName" },
+        }),
+      ],
+      { level: "insert" },
+    );
+    expect(out.sportlots.resolvable).toBe(true);
+    expect(out.sportlots.missing).toEqual([]);
+  });
+
+  test("a set linked NOWHERE on the path is still refused", () => {
+    // The ten-flow case the rule exists for: NB's own set, no marketplace id
+    // anywhere on the path, and SL's year+brand list offered as its variants.
+    const out = resolvableSides(
+      [
+        linkedSport,
+        linkedYear,
+        handTypedSet,
+        row("variantType", { value: "My Hand Typed Variant" }),
+      ],
+      { level: "insert" },
+    );
+    expect(out.sportlots.resolvable).toBe(false);
+    expect(out.sportlots.missing).toEqual(["unlinked set"]);
+  });
+
+  test("an SL id on the setName row still counts — the OR is intact", () => {
+    const out = resolvableSides(
+      [
+        linkedSport,
+        linkedYear,
+        row("setName", { value: "Topps", sportlots: { s0: "884412" } }),
+        row("variantType", { value: "Base" }),
+      ],
+      { level: "insert" },
+    );
+    expect(out.sportlots.resolvable).toBe(true);
   });
 });

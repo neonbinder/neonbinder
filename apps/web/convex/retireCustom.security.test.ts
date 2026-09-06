@@ -387,6 +387,80 @@ describe("R2 — `fetchBscChecklist` refuses an under-scoped request", () => {
       expect(sent).not.toContain(displayValue.toLowerCase());
     }
   });
+
+  test("NEO-252: the same holds for a HAND-TYPED CHAIN the gate now lets through", async () => {
+    // The test above hands the adapter its facets directly, which proves the
+    // adapter clean but says nothing about which chains reach it. NEO-252
+    // widened that: a BSC set attached to the LEAF of an otherwise NB-only path
+    // now satisfies the checklist gate, so hand-typed rows reach the wire on a
+    // route they previously could not.
+    //
+    // That is the intended behaviour — a row has marketplace ids or it does
+    // not, and both behave the same — and it is also exactly when a
+    // display-value leak would first be reachable in production. So the
+    // negative assertion is re-run with the chain, not the facets, as the
+    // input: every value on the wire must still come from a slot.
+    const recorded: Array<Record<string, string[]>> = [];
+    vi.stubGlobal("fetch", recordingFetch(recorded));
+    const t = convexTest(schema, modules);
+
+    const rowId = await t.run(async (ctx) => {
+      const sportId = await ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "E2E Test Sport 3",
+        sportConfig: { skuCode: "BB", league: "MLB" },
+        platformData: { bsc: { b0: "baseball" } },
+        children: [],
+        lastUpdated: SENTINEL,
+      });
+      const yearId = await ctx.db.insert("selectorOptions", {
+        level: "year",
+        value: "Nineteen Ninety Six",
+        platformData: { bsc: { b0: "1996" } },
+        parentId: sportId,
+        children: [],
+        lastUpdated: SENTINEL,
+      });
+      const setNameId = await ctx.db.insert("selectorOptions", {
+        level: "setName",
+        value: "My Hand Typed Set",
+        platformData: {},
+        parentId: yearId,
+        children: [],
+        lastUpdated: SENTINEL,
+      });
+      return ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "My Hand Typed Variant",
+        platformData: { bsc: { b0: "base", b1: "1996-score" } },
+        platformFacets: { bsc: { b0: "variant", b1: "setName" } },
+        primaryPlatformId: { bsc: "b0" },
+        platformSlotSeq: { bsc: 2 },
+        parentId: setNameId,
+        children: [],
+        lastUpdated: SENTINEL,
+      });
+    });
+
+    await t
+      .withIdentity(ADMIN)
+      .action(api.selectorOptions.fetchCardChecklist, {
+        selectorOptionId: rowId,
+      });
+
+    // It DID go out — the gate no longer refuses this shape.
+    expect(recorded).toHaveLength(1);
+    const sent = Object.values(recorded[0]).flat().join(" ");
+    for (const displayValue of [
+      "E2E Test Sport 3",
+      "Nineteen Ninety Six",
+      "My Hand Typed Set",
+      "My Hand Typed Variant",
+    ]) {
+      expect(sent).not.toContain(displayValue);
+      expect(sent).not.toContain(displayValue.toLowerCase());
+    }
+  });
 });
 
 // ===========================================================================

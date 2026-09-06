@@ -22,8 +22,10 @@
 
 import { describe, expect, test } from "vitest";
 import {
+  BSC_CHECKLIST_REQUIRED_FACETS,
   BSC_SOURCE_FACETS,
   MAX_BSC_FAN_OUT,
+  missingBscChecklistScope,
   isBscBaseVariantId,
   soleBscBaseVariantId,
   legacyBscFacetForLevel,
@@ -539,14 +541,69 @@ describe("bscSourceView", () => {
   test("a hand-made row with no ids has nothing in any bucket", () => {
     // NEO-239: no marketplace ids is an ordinary state, not a special kind of
     // row. Every list is simply empty, and the panel says "No sets attached."
+    //
+    // `scope.missing` is the exception, and deliberately so (NEO-252): with no
+    // filters at all, every required facet is missing. The PANEL is what keeps
+    // that quiet — it renders the skip line only when there are sources to
+    // qualify — because a row with nothing attached has already said so.
     const row = leaf("insert", {});
     const view = bscSourceView(row, [row]);
 
     expect(view).toEqual({
       sources: [],
-      scope: { filters: {}, own: [] },
+      scope: {
+        filters: {},
+        own: [],
+        missing: ["sport", "year", "setName", "variant"],
+      },
       untagged: [],
     });
+  });
+
+  test("scope.missing is the FETCH's refusal, reached the same way (NEO-252)", () => {
+    // The panel must not have its own opinion about whether BSC will be asked
+    // either — same rule as `scope.filters` above, one question deeper. A row
+    // showing sources while the fetch skips the side is the state NEO-252 made
+    // visible, so this pins that the panel's answer comes from the function the
+    // adapter refuses on.
+    const row = leaf(
+      "variantType",
+      { b0: "2024-topps" },
+      { b0: "setName" },
+    );
+    const chain = [
+      node("sport", { b0: "baseball" }),
+      node("year", { b0: "2024" }),
+      // NB's own set — no ids. The BSC set hangs off the leaf instead.
+      node("setName", {}),
+      row,
+    ];
+
+    const view = bscSourceView(row, chain);
+
+    // A source IS listed: the leaf's setName id genuinely scopes the query.
+    expect(view.sources.map((s) => s.facet)).toEqual(["setName"]);
+    // …and BSC is still skipped, for want of the variant axis. Both facts at
+    // once is exactly the state the panel now has words for.
+    expect(view.scope.missing).toEqual(["variant"]);
+    expect(view.scope.missing).toEqual(
+      missingBscChecklistScope(resolveBscFacetFilters(chain).filters),
+    );
+  });
+
+  test("a fully-scoped chain has nothing missing", () => {
+    const row = leaf(
+      "variantType",
+      { b0: "base", b1: "2024-topps" },
+      { b0: "variant", b1: "setName" },
+    );
+    const chain = [
+      node("sport", { b0: "baseball" }),
+      node("year", { b0: "2024" }),
+      node("setName", {}),
+      row,
+    ];
+    expect(bscSourceView(row, chain).scope.missing).toEqual([]);
   });
 
   test("scope.filters is the FETCH's own answer, not a second opinion", () => {
@@ -585,5 +642,80 @@ describe("bscSourceView", () => {
       { slot: "b2", facet: "variant" as const, id: "promo", label: "Promo" },
     ];
     expect(bscScopeQualifier(own)).toBe("base cards + promo cards");
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// missingBscChecklistScope — the one definition of "can BSC be asked" (NEO-252)
+// ---------------------------------------------------------------------------
+
+/**
+ * Three callers gate a BSC checklist fetch on this: the chain gate
+ * (`resolvableSides` with `bscScope: "checklist"`), the adapter's own boundary
+ * lock inside `fetchBscChecklist`, and the operator-facing panel via
+ * `bscSourceView`. They used to state the rule twice — the adapter over facets,
+ * the gate over NB levels — and the two drifted apart the moment NEO-189 let an
+ * id sit on a row whose level does not name its facet.
+ */
+describe("missingBscChecklistScope", () => {
+  test("the required facets are pinned as data", () => {
+    // These four ARE the rule; every gate defers to this list.
+    expect([...BSC_CHECKLIST_REQUIRED_FACETS]).toEqual([
+      "sport",
+      "year",
+      "setName",
+      "variant",
+    ]);
+  });
+
+  const FULL = {
+    sport: ["baseball"],
+    year: ["2024"],
+    setName: ["2024-topps"],
+    variant: ["base"],
+  };
+
+  test.each([
+    ["a fully-scoped filter set", FULL, []],
+    ["no filters at all", {}, ["sport", "year", "setName", "variant"]],
+    ["missing variant", { ...FULL, variant: undefined }, ["variant"]],
+    ["missing setName", { ...FULL, setName: undefined }, ["setName"]],
+    ["missing year", { ...FULL, year: undefined }, ["year"]],
+    ["missing sport", { ...FULL, sport: undefined }, ["sport"]],
+    // An EMPTY array is the shape `resolveBscFacetFilters` never emits but a
+    // caller can spread: a facet key present with nothing in it scopes exactly
+    // as much as an absent one, so it must count as missing. A regression
+    // testing `facet in filters` would pass every case above and fail this.
+    ["an EMPTY array is not a value", { ...FULL, variant: [] }, ["variant"]],
+    [
+      "several missing come back in scope order",
+      { setName: ["2024-topps"] },
+      ["sport", "year", "variant"],
+    ],
+  ])("%s", (_name, filters, expected) => {
+    expect(missingBscChecklistScope(filters)).toEqual(expected);
+  });
+
+  test("a NARROWING facet is never required", () => {
+    // `variantName` and any other extra narrow a query that is already
+    // correctly scoped. Requiring them would refuse a Base row, which has none.
+    expect(missingBscChecklistScope(FULL)).toEqual([]);
+    expect(
+      missingBscChecklistScope({ ...FULL, variantName: ["gold-foil"] }),
+    ).toEqual([]);
+  });
+
+  test("returns facet names, so no NB row value can travel with it", () => {
+    // NEO-47. The output alphabet is closed: whatever the filters contain, the
+    // answer is drawn only from the four facet names.
+    const out = missingBscChecklistScope({
+      setName: ["a-slug-that-came-from-an-nb-row"],
+    });
+    for (const entry of out) {
+      expect(BSC_CHECKLIST_REQUIRED_FACETS as readonly string[]).toContain(
+        entry,
+      );
+    }
   });
 });

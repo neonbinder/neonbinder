@@ -256,6 +256,24 @@ export default function MultiSourcePanel({
   // it drew from two places (the reported bug). It is the qualifier now, and
   // the same one hangs off every source because it narrows all of them.
   const bscQualifier = bscView ? bscScopeQualifier(bscView.scope.own) : undefined;
+
+  // NEO-252 — the row has BSC sources, and the checklist fetch will not ask
+  // BSC anyway.
+  //
+  // That combination was completely invisible: the panel listed the sets a row
+  // draws from while `resolvableSides` skipped the side outright, and the
+  // operator's only evidence was a checklist that came back SportLots-only.
+  // `scope.missing` is the same answer the fetch reaches
+  // (`missingBscChecklistScope`), so the panel cannot claim a skip the fetch
+  // would not make, or stay quiet about one it would.
+  //
+  // Shown only when there ARE sources: a column reading "No sets attached."
+  // has already said everything, and adding a second sentence to it would
+  // make an ordinary empty row look broken.
+  const bscSkipNote =
+    bscView && bscView.sources.length > 0 && bscView.scope.missing.length > 0
+      ? bscSkipSentence(bscView.scope.missing)
+      : null;
   const bscChips: SlotChip[] = (bscView?.sources ?? []).map((s) => ({
     slot: s.slot,
     id: s.id,
@@ -306,6 +324,7 @@ export default function MultiSourcePanel({
           side="bsc"
           chips={bscChips}
           untagged={bscView?.untagged ?? []}
+          skipNote={bscSkipNote}
           countFor={(slot) => countFor("bsc", slot)}
           onDetach={(slot, opts) =>
             detach({
@@ -358,6 +377,37 @@ export default function MultiSourcePanel({
 }
 
 /**
+ * NEO-252 — what each REQUIRED BSC facet is called to an operator.
+ *
+ * A closed, fixed vocabulary, and that is the security property as much as the
+ * copy one: the sentence below is built only from these four strings, so no NB
+ * row value can reach it however the chain is shaped (NEO-47). `setName` reads
+ * "set" and `variant` reads "variant type" because those are the columns the
+ * operator is looking at — the BSC facet names are the marketplace's words for
+ * NB's rows, and naming the row is what makes the sentence actionable.
+ */
+const REQUIRED_FACET_LABEL: Record<string, string> = {
+  sport: "sport",
+  year: "year",
+  setName: "set",
+  variant: "variant type",
+};
+
+/**
+ * One sentence, naming ONE facet — the first one missing, in the scope order
+ * sport → year → set → variant type.
+ *
+ * Listing all of them would be more complete and less useful: the facets nest,
+ * so a path missing its year is also missing everything under it, and four
+ * clauses describe one broken link four times. The first is the one to fix.
+ */
+function bscSkipSentence(missing: readonly string[]): string | null {
+  const label = missing.map((f) => REQUIRED_FACET_LABEL[f]).find(Boolean);
+  if (!label) return null;
+  return `BuySportsCards will be skipped: no ${label} on this path.`;
+}
+
+/**
  * What each BSC SOURCE facet is CALLED in this panel.
  *
  * No `variant` entry, and it is not an omission: a `variant` slot is scope and
@@ -373,6 +423,7 @@ function SideColumn({
   side,
   chips,
   untagged = [],
+  skipNote = null,
   countFor,
   onDetach,
   onRename,
@@ -385,6 +436,11 @@ function SideColumn({
    * them, on a level whose level-rule is silent. The fetch ignores them.
    */
   untagged?: Array<{ slot: string; id: string; label: string }>;
+  /**
+   * NEO-252 — "this side will not be asked", when the chips above say cards
+   * come from it. Fixed text; see `bscSkipSentence`.
+   */
+  skipNote?: string | null;
   countFor: (slot: string) => number | undefined;
   onDetach: (slot: string, opts?: DetachOptions) => Promise<unknown>;
   onRename: (slot: string, label: string) => Promise<unknown>;
@@ -395,6 +451,18 @@ function SideColumn({
       <header className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">
         {SIDE_LABEL[side]}
       </header>
+      {skipNote && (
+        // Sits ABOVE the chips, because it changes what they mean: read after
+        // the list it is a footnote, read before it the list is qualified.
+        //
+        // Accent blue on a hairline rule, not the pink this UI uses for
+        // failures — nothing here is broken or lost, the request simply is not
+        // scoped enough to send. Colouring it as an error would send the
+        // operator looking for an outage.
+        <p className="mb-2 border-l-2 border-[#00B7FF] pl-2 text-xs leading-snug text-gray-300">
+          {skipNote}
+        </p>
+      )}
       {chips.length === 0 && untagged.length === 0 ? (
         <div className="text-xs text-gray-400 italic">No sets attached.</div>
       ) : (

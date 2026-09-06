@@ -7801,7 +7801,15 @@ export const fetchCardChecklist = action({
       // `fetchSportLotsChecklist` scopes itself from the deepest variant row's
       // slot id and `fetchBscChecklist` from the facet plan, so the served-level
       // and per-level scope tables above do not describe it.
-      const resolution = resolvableSides(chain);
+      //
+      // NEO-252 — and `bscScope: "checklist"` for the same reason, one level
+      // deeper: BSC's half of the gate is judged on the FACET FILTERS below
+      // (`bscFacetPlan`), which is the object the request carries, rather than
+      // on a walk over NB levels. The two disagreed for the NEO-189 shape (a
+      // BSC `setName` id attached to the leaf), and the disagreement always
+      // fell the same way — the gate skipped a side the adapter would have
+      // answered.
+      const resolution = resolvableSides(chain, { bscScope: "checklist" });
       if (!resolution.bsc.resolvable && !resolution.sportlots.resolvable) {
         console.log(
           `[fetchCardChecklist] no marketplace ids on this path — ` +
