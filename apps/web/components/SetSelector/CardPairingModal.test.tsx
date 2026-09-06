@@ -3803,7 +3803,7 @@ describe("CardPairingModal — marketplace player conflicts (NEO-251)", () => {
     ).toBeTruthy();
     expect(
       screen.getByLabelText(
-        "Collapse matched cards, 1 with a name conflict, 1 with a player conflict",
+        "Collapse matched cards, 1 with a player conflict, 1 with a name conflict",
       ),
     ).toBeTruthy();
   });

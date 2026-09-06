@@ -2401,17 +2401,20 @@ export default function CardPairingModal({
                 // aria-label overrides the button's own text for assistive
                 // tech, so a silent label would hide the very thing the
                 // visible badge exists to announce.
-                // NEO-251 appends a SECOND clause rather than replacing the
-                // first: the name-conflict wording is addressed verbatim by
-                // the Maestro flow and by the unit assertions, and a row with
-                // no roster conflict must produce the string it always did.
+                // NEO-251 adds a SECOND clause rather than replacing the
+                // first, and puts it BEFORE the name-conflict clause: the
+                // Maestro flow addresses this label with the full-match regex
+                // `Collapse matched cards, .* with a name conflict`, so the
+                // name-conflict wording must stay the LAST thing in the
+                // string (PR #236 run 1 failed on exactly that). A row with no
+                // roster conflict still produces the string it always did.
                 aria-label={
                   `${matchedCollapsed ? "Expand" : "Collapse"} matched cards` +
-                  (nameConflictCount > 0
-                    ? `, ${nameConflictCount} with a name conflict`
-                    : "") +
                   (playersConflictCount > 0
                     ? `, ${playersConflictCount} with a player conflict`
+                    : "") +
+                  (nameConflictCount > 0
+                    ? `, ${nameConflictCount} with a name conflict`
                     : "")
                 }
               >
