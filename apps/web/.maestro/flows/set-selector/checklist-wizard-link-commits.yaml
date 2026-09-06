@@ -110,21 +110,12 @@ tags:
 # a flake with no relationship to linking.
 # ============================================================
 
-- extendedWaitUntil:
-    visible:
-      id: "Add as New (Player|Team)"
-    timeout: 30000
-- runFlow:
-    when:
-      visible:
-        id: "Skip .* not a team"
-    commands:
-      - tapOn:
-          id: "Skip .* not a team"
-      - extendedWaitUntil:
-          visible:
-            id: "Add as New (Player|Team)"
-          timeout: 30000
+# NEO-236 — the wizard does not open on a player row, and the first player it
+# shows can move out from under you while its career teams are staged. The util
+# walks to a settled player row the operator's way (see its header for the two
+# behaviours and the evidence). Every row it answers is a SKIP, so this flow's
+# own decision is the only non-skip in the Decided list.
+- runFlow: util-wizard-walk-to-player-row.yaml
 
 # ============================================================
 # STEP 3 — R2(b)+(c): link the unknown onto the roster player

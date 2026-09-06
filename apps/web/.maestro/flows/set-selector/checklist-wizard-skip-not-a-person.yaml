@@ -99,10 +99,12 @@ tags:
 # Waiting for the row's stable PRIMARY control first is the fix: it renders only
 # once the lookup has come back, so the row has its final height before the tap.
 # 30s, because that wait is a live external round-trip.
-- extendedWaitUntil:
-    visible:
-      id: "Add as New (Player|Team)"
-    timeout: 30000
+# NEO-236 — the wizard does not open on a player row, and the first player it
+# shows can move out from under you while its career teams are staged. The util
+# walks to a settled player row the operator's way (see its header for the two
+# behaviours and the evidence). Every row it answers is a CREATE, so the single
+# "Skipped" this flow then makes can only be its own.
+- runFlow: util-wizard-walk-to-player-row-creating-teams.yaml
 - extendedWaitUntil:
     visible:
       id: "Skip .* not a (person|team)"
@@ -116,11 +118,14 @@ tags:
 
 - tapOn:
     id: "Skip .* not a (person|team)"
+# The drain above answered every team step as a CREATE, so the skip just made
+# is the ONLY "Skipped" in the history — a sharper claim than a count, which
+# the drain has moved off 1. `Decided (N)` proves the list is up at all.
 - extendedWaitUntil:
     visible:
-      text: "1 of [0-9]+ reviewed.*"
+      text: "Skipped"
 - assertVisible:
-    text: "Decided \\(1\\)"
+    text: "Decided \\([0-9]+\\)"
 
 # ============================================================
 # STEP 4 — R2(d): "Skip remaining names" clears the rest, lookups included

@@ -5,6 +5,32 @@ tags:
   - set-selector
   - regression
 ---
+# ⛔ BLOCKED ON A PRODUCT FINDING (NEO-248, measured 2026-09-06) — this flow is
+# RED and must not be "fixed" by weakening its assertions.
+#
+# Pressing "Add career team" with a hand-typed team name navigates the wizard
+# AWAY from the player row, to that team's own "New Team" step, before the
+# staged chip is ever rendered. `onAdd` stages the entry locally AND calls
+# `stageCareerTeams` server-side; the inserted team row makes
+# `waitingOnStagedTeams(player, rows)` true, so `resolveNav` treats the player
+# as not-ready and moves on. Coming back, the row-change effect has already run
+# `setStagedCareerTeams([])`, and `stageCareerTeams` was only ever sent
+# `careerTeamNames` — never the years — so the from/to years the operator typed
+# are GONE.
+#
+# Measured end to end on this preview: type name + 2001 + 2005 → Add → the
+# wizard shows "New Team: <typed name>" (asserted, passes) → "Add as New Team"
+# → back on the player row (asserted, passes) → the chip
+# "<typed name> (2001–2005)" is NOT VISIBLE (asserted absent, passes).
+# Reproduced identically on two different sets, so it is not fixture-specific.
+#
+# That breaks claims (c), (d) and (e) below: the staged chip, the optional
+# to-year, removing a staged entry, and carrying a staged entry into the
+# decision are all unobservable while the same gesture that creates them
+# navigates away and discards them. Asserting the lossy behaviour instead would
+# be writing the defect down as correct. The flow stays as written; it goes
+# green when the product keeps the operator on the row (or persists the years).
+
 # R1 — ONE FEATURE (NEO-92 follow-up): the CareerTeamEntry mini-form the review
 # wizard renders inline for a PLAYER row. Wikidata does not know every player —
 # the fixture's very first row came back "No career-team history found." — and
@@ -131,22 +157,12 @@ tags:
 # guard evaluated before that would poll an empty row, conclude "not a team",
 # and fall through — the failure would then land on the career-form assert with
 # a completely misleading message.
-- extendedWaitUntil:
-    visible:
-      id: "Add as New (Player|Team)"
-    timeout: 30000
-- runFlow:
-    when:
-      visible:
-        id: "Skip .* not a team"
-    commands:
-      - tapOn:
-          id: "Skip .* not a team"
-      # The next row has to settle before STEP 2 reads it, for the same reason.
-      - extendedWaitUntil:
-          visible:
-            id: "Add as New (Player|Team)"
-          timeout: 30000
+# NEO-236 — the wizard does not open on a player row, and the first player it
+# shows can move out from under you while its career teams are staged. The util
+# walks to a settled player row the operator's way (see its header for the two
+# behaviours and the evidence). Every row it answers is a SKIP, so this flow's
+# own decision is the only non-skip in the Decided list.
+- runFlow: util-wizard-walk-to-player-row.yaml
 
 # ============================================================
 # STEP 2 — R2(a): a PLAYER row, with the manual-entry affordance on it

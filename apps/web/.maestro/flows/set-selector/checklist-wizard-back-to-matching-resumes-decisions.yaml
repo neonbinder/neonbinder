@@ -88,17 +88,22 @@ tags:
 # Wikidata lookup — a live external round-trip — has come back or errored.
 # ============================================================
 
-- extendedWaitUntil:
-    visible:
-      id: "Add as New (Player|Team)"
-    timeout: 30000
+# NEO-236 — the wizard does not open on a player row, and the first player it
+# shows can move out from under you while its career teams are staged. The util
+# walks to a settled player row the operator's way (see its header for the two
+# behaviours and the evidence). Every row it answers is a SKIP, so this flow's
+# own decision is the only non-skip in the Decided list.
+- runFlow: util-wizard-walk-to-player-row.yaml
 - tapOn:
-    id: "Add as New (Player|Team)"
+    id: "Add as New Player"
+# The drain above answered every team step as a SKIP, so the create just made
+# is the ONLY "Added as new" in the history — a sharper claim than a count,
+# which the drain has moved off 1. `Decided (N)` proves the list is up at all.
 - extendedWaitUntil:
     visible:
-      text: "1 of [0-9]+ reviewed.*"
+      text: "Added as new"
 - assertVisible:
-    text: "Decided \\(1\\)"
+    text: "Decided \\([0-9]+\\)"
 
 # ============================================================
 # STEP 3 — R2(c): THE FEATURE — leave review WITHOUT discarding it
@@ -129,10 +134,12 @@ tags:
 - extendedWaitUntil:
     visible: "Confirm New Players & Teams"
     timeout: 60000
+# THE POINT OF THE FLOW: the create survived the round trip. Still the only
+# "Added as new" among the drained skips, so this cannot pass by accident.
 - assertVisible:
-    text: "1 of [0-9]+ reviewed.*"
+    text: "Added as new"
 - assertVisible:
-    text: "Decided \\(1\\)"
+    text: "Decided \\([0-9]+\\)"
 
 # ============================================================
 # STEP 5 — EXIT WITHOUT WRITING ANYTHING (R7)
