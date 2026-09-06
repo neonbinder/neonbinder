@@ -117,7 +117,11 @@ import {
 } from "./platformLevels";
 import { findSportForSelectorOption } from "./cardChecklist";
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "./features/cardAttention";
-import { normalizePlayerName } from "./players";
+import {
+  normalizePlayerName,
+  normalizeUndatedCareerTeams,
+  PLAYER_AMBIGUITY_SCAN_LIMIT,
+} from "./players";
 import { normalizeTeamName } from "./teams";
 import { findOrCreateLeague, resolveDefaultLeagueId } from "./leagues";
 import {
@@ -1103,11 +1107,31 @@ async function resolveUnknownsAndStartBatch(
 
   for (const [normalized, name] of playerByNorm) {
     if (skippedKeys.has(`player:${normalized}`)) continue;
-    const existing = await ctx.runQuery(api.players.findByNameAndSport, {
+    /**
+     * NEO-254 — THE "needs review" GATE for players, and the reason it is no
+     * longer `findByNameAndSport`.
+     *
+     * That query answers "a player, or null", which cannot express the case
+     * this ticket exists for. `(nameNormalized, sportId)` is a DEDUP key, not
+     * a unique one, and after the bulk preload a great many real names match
+     * more than one row — same name, same sport, different people. Handing
+     * back one of them read here as "known, nothing to review", so the name
+     * never reached an operator and the commit prelude then bound every card
+     * carrying it to whichever row the index happened to return first.
+     *
+     * The rule is the card-number invariant's rule (#7), applied to a name:
+     *   0 matches  → unknown, review it (unchanged);
+     *   1 match    → resolved, no review (unchanged);
+     *   2 or more  → UNRESOLVED. Only a human can say which one, so it goes
+     *                to the wizard, where `enrichment.existingCandidates`
+     *                puts the matching rows in front of them for a one-click
+     *                link.
+     */
+    const resolved = await ctx.runQuery(internal.players.resolveNameForReview, {
       name,
       sportId: args.sportId,
     });
-    if (!existing) unknownPlayers.push(name);
+    if (resolved.matchCount !== 1) unknownPlayers.push(name);
   }
   for (const [normalized, name] of teamByNorm) {
     if (skippedKeys.has(`team:${normalized}`)) continue;
@@ -9527,15 +9551,39 @@ export const commitCardChecklistPrelude = internalMutation({
     const createdPlayerIds: Array<Id<"players">> = [];
     for (const name of allPlayerNames) {
       const normalized = norm(name);
-      // Compound index returns 0 or 1 row per lookup — independent of how
-      // many cross-sport duplicates of this normalized name exist.
-      const existing = await ctx.db
+      /**
+       * NEO-254 — the compound index returns as many rows as share this key,
+       * and that number is the decision.
+       *
+       * This was `.first()`, whose comment claimed the index "returns 0 or 1
+       * row per lookup". It returns 0 or 1 per (name, SPORT) pair — which is
+       * not the same as 0 or 1 full stop, because nothing makes that pair
+       * unique. Two people named Bob Allen played in the majors; the bulk
+       * preload (plan decision 3) puts both on file, and `.first()` then
+       * silently attached every "Bob Allen" card in the set to one of them.
+       *
+       * Bounded rather than collected: the branch only needs "none / one /
+       * more than one", and a name that normalizes to something a thousand
+       * rows share must not turn a per-name lookup inside a commit into an
+       * unbounded read.
+       *
+       *   exactly 1 → adopt it, exactly as before;
+       *   0 or >1   → fall through to the operator's decision below. For 0
+       *               that is the behaviour this loop always had. For >1 it
+       *               is the fix: a `link` decision names WHICH row (the
+       *               wizard listed them), a `create` decision means the
+       *               operator looked at those rows and said this is somebody
+       *               else, and NO decision leaves the card unlinked and the
+       *               name reported as unreviewed — never bound by a guess.
+       */
+      const existingMatches = await ctx.db
         .query("players")
         .withIndex("by_name_normalized_and_sport_id", (q) =>
           q.eq("nameNormalized", normalized).eq("sportId", args.sportId),
         )
-        .first();
-      if (existing) {
+        .take(PLAYER_AMBIGUITY_SCAN_LIMIT);
+      if (existingMatches.length === 1) {
+        const existing = existingMatches[0];
         playerIdByName.set(name, existing._id);
         playerNameById.set(existing._id, existing.name);
         continue;
@@ -9639,6 +9687,40 @@ export const commitCardChecklistPrelude = internalMutation({
       }
       const teamYears: Array<{ teamId: Id<"teams">; fromYear: number; toYear?: number }> =
         sortTeamYears(Array.from(teamYearByKey.values()));
+      /**
+       * NEO-254 — the Wikidata teams nobody put years to, kept as leads.
+       *
+       * `enrichment.undatedCareerTeams` (NEO-235) is every P54 membership with
+       * no usable start year. They cannot become `teamYears` — that shape
+       * requires a `fromYear`, and inventing one fabricates a stint that never
+       * happened — so the wizard shows them and lets the operator date any of
+       * them by hand, which turns that one into an ordinary
+       * `manualCareerTeams` entry and it lands in the loop above like any
+       * other stint.
+       *
+       * What is stored here is the REMAINDER: the leads the operator did not
+       * date. Before this they were shown once and then deleted with the
+       * batch, so a name the operator had no time for was gone for good and
+       * the only way back to it was to re-run the lookup. Now the Players page
+       * can show them and a human can finish the job later.
+       *
+       * Matched on the normalized name against everything that DID become a
+       * stint — Wikidata's own dated entries and the hand-typed ones alike —
+       * for the same reason the exclusion list is matched that way: the two
+       * lists are built from labels, and punctuation must not be able to
+       * defeat the comparison and re-file a lead that was already chased.
+       */
+      const datedNameKeys = new Set<string>();
+      for (const ct of enrichment?.careerTeams ?? []) {
+        if (excludedCareerTeamNames.has(norm(ct.name))) continue;
+        datedNameKeys.add(norm(ct.name));
+      }
+      for (const ct of manualCareerTeams) datedNameKeys.add(norm(ct.name));
+      const undatedCareerTeams = normalizeUndatedCareerTeams(
+        (enrichment?.undatedCareerTeams ?? []).filter(
+          (teamName) => !datedNameKeys.has(norm(teamName)),
+        ),
+      );
       const id = await ctx.db.insert("players", {
         name: name.trim(),
         nameNormalized: normalized,
@@ -9646,9 +9728,17 @@ export const commitCardChecklistPrelude = internalMutation({
         createdByUserId: userId,
         lastUpdated: Date.now(),
         ...(teamYears.length ? { teamYears } : {}),
+        ...(undatedCareerTeams.length ? { undatedCareerTeams } : {}),
         ...(enrichment?.isHallOfFame !== undefined
           ? { isHallOfFame: enrichment.isHallOfFame }
           : {}),
+        // NEO-254: `birthYear` from the lookup is deliberately NOT written
+        // here. It is the field that tells two same-name players apart, and a
+        // Wikidata birth year for a name the operator has just told us is a
+        // NEW person would be the previous person's — the wizard's whole
+        // candidate list exists because the lookup and the operator can
+        // disagree about who this is. It is written only by the preload, from
+        // a dataset keyed on the player rather than on their name.
         ...(enrichment?.wikidataId
           ? { externalIds: { wikidataId: enrichment.wikidataId } }
           : {}),

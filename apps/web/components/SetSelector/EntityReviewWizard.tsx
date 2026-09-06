@@ -21,6 +21,8 @@ import {
 } from "../entities/NearMatchPanel";
 import EntityLinkSearch from "./EntityLinkSearch";
 import CareerTeamEntry, { type CareerTeamDraft } from "./CareerTeamEntry";
+import SameNamePlayerPanel from "./SameNamePlayerPanel";
+import UndatedCareerTeams from "./UndatedCareerTeams";
 import { deriveStagedTeamNames } from "./entity-review-staging";
 import {
   countPendingUndecided,
@@ -953,8 +955,53 @@ export default function EntityReviewWizard({
       })
     : [];
 
+  /**
+   * NEO-254 — the NB rows already filed under this exact name.
+   *
+   * Server-built (`players.buildExistingPlayerCandidates`, via
+   * `applyLookupResult`) and present only when there are TWO OR MORE, so this
+   * is empty for every ordinary name and the panel below never renders. Not
+   * shown on a decided row: the read-only panel states the outcome, and a list
+   * of link buttons under it would offer to re-decide something that already
+   * has a "Change decision" control.
+   */
+  const sameNameCandidates =
+    current && !reviewingDecided && current.kind === "player"
+      ? (current.enrichment?.existingCandidates ?? [])
+      : [];
+
+  /**
+   * NEO-254 — Wikidata teams with no years, minus the ones the operator has
+   * already dated on this row.
+   *
+   * Filtered against the staged chips because dating a lead moves it: it
+   * becomes an ordinary staged career team, and leaving the bare name in this
+   * list as well would read as two different teams — one with years, one
+   * without — for the same club.
+   */
+  const undatedCareerTeams = (() => {
+    if (!current || reviewingDecided || current.kind !== "player") return [];
+    const staged = new Set(stagedCareerTeams.map((ct) => normalizeEntityName(ct.name)));
+    return (current.enrichment?.undatedCareerTeams ?? []).filter(
+      (name) => !staged.has(normalizeEntityName(name)),
+    );
+  })();
+
   const exactMatch = (nearMatches ?? []).find((m) => m.confidence === "exact") ?? null;
-  const showExactHierarchy = hasExact(nearMatches) && exactMatch !== null;
+  /**
+   * NEO-254 — never promote one of several same-name rows to the primary
+   * action.
+   *
+   * `showExactHierarchy` turns the main button into "Link to {name}" for the
+   * one exact match. With two people on file under that name there is no "the"
+   * exact match, and promoting whichever the ranking returned first is a
+   * one-tap path to the wrong man. When `sameNameCandidates` is populated the
+   * panel above lists every one of them instead, and the primary action goes
+   * back to being "Add as New Player" — which is the honest default: if the
+   * operator wanted one of ours, they have just been shown all of ours.
+   */
+  const showExactHierarchy =
+    sameNameCandidates.length === 0 && hasExact(nearMatches) && exactMatch !== null;
   const hasCloseOnly = !showExactHierarchy && (nearMatches?.length ?? 0) > 0;
   /**
    * What the panel is left to show once the primary action has been promoted.
@@ -963,10 +1010,26 @@ export default function EntityReviewWizard({
    * a Maestro `tapOn` alike. Any OTHER row is a genuinely different entity and
    * still belongs in the list, whatever its confidence.
    */
-  const panelMatches =
-    showExactHierarchy && nearMatches
-      ? nearMatches.filter((m) => m._id !== exactMatch._id)
-      : nearMatches;
+  const panelMatches = (() => {
+    const base =
+      showExactHierarchy && nearMatches
+        ? nearMatches.filter((m) => m._id !== exactMatch._id)
+        : nearMatches;
+    if (sameNameCandidates.length === 0 || !base) return base;
+    /**
+     * NEO-254 — the same-name rows belong to ONE list.
+     *
+     * `players.nearMatches` returns every row on the exact key now, so without
+     * this both panels would render a `Link to {name}` control for each of the
+     * two Bob Allens: four buttons, two accessible names, and the operator
+     * with no way to tell which pair is which. The same-name panel wins them
+     * because it is the only one that shows a birth year and a career line —
+     * the two things that make the choice possible. What is left here is what
+     * this panel is actually for: names that are CLOSE but not identical.
+     */
+    const owned = new Set(sameNameCandidates.map((c) => c.playerId as string));
+    return base.filter((m) => !owned.has(m._id));
+  })();
   const remaining = total - decided;
   const busy = decidingRowId !== null;
 
@@ -1187,6 +1250,27 @@ export default function EntityReviewWizard({
                     </p>
                   )}
 
+                  {/* NEO-254 — FIRST, above everything Wikidata said.
+
+                      When two NB rows already carry this name, the operator's
+                      question is "which of ours is this?", and no amount of
+                      Wikidata detail answers it: both rows are ours, both are
+                      real, and the lookup only ever describes one person. So
+                      the choice between them leads, and the source record
+                      below becomes the tiebreaker rather than the subject. */}
+                  <SameNamePlayerPanel
+                    candidates={sameNameCandidates}
+                    disabled={busy}
+                    onPick={(playerId) => {
+                      if (busy) return;
+                      void handleLink(
+                        current._id,
+                        "player",
+                        playerId as Id<"players">,
+                      );
+                    }}
+                  />
+
                   {/* NEO-212: the operator's escape hatch when the enrichment
                       below is not enough to tell two people apart — the source
                       record itself, one click away. */}
@@ -1299,6 +1383,15 @@ export default function EntityReviewWizard({
                         ) : (
                           <p>No career-team history found.</p>
                         )}
+                        {/* NEO-254 — under the dated list, because these are
+                            not career data yet. See UndatedCareerTeams. */}
+                        <UndatedCareerTeams
+                          names={undatedCareerTeams}
+                          disabled={busy}
+                          onAdd={(entry) =>
+                            setStagedCareerTeams((prev) => [...prev, entry])
+                          }
+                        />
                       </>
                     ) : (
                       <>

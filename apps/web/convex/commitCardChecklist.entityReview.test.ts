@@ -1724,3 +1724,367 @@ describe("resolveChecklistEntities: an open batch is reconciled even when nothin
     ).toHaveLength(0);
   });
 });
+
+// ===========================================================================
+// NEO-254 — the prelude never guesses between two players with one name
+// ===========================================================================
+
+/** A bare `players` row on the exact dedup key, with no review row behind it. */
+async function insertBarePlayer(
+  t: ReturnType<typeof convexTest>,
+  sportId: Id<"selectorOptions">,
+  name: string,
+  nameNormalized: string,
+  extra: { birthYear?: number } = {},
+): Promise<Id<"players">> {
+  return t.run(async (ctx) =>
+    ctx.db.insert("players", {
+      name,
+      nameNormalized,
+      sportId,
+      lastUpdated: Date.now(),
+      ...extra,
+    }),
+  );
+}
+
+describe("NEO-254: an ambiguous player name is resolved by the operator, never by the index", () => {
+  test("exactly ONE existing row is still adopted silently", async () => {
+    // The unchanged half, pinned so the guard cannot be tightened into
+    // demanding a decision for every name that already resolves.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    const only = await insertBarePlayer(t, sportId, "Tony Gwynn", "gwynn tony");
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardNumber: "1", players: ["Tony Gwynn"] })],
+    });
+
+    const cards = await readCards(t, variantTypeId);
+    expect(cards[0].playerIds).toEqual([only]);
+    // No second row minted, and no decision was needed.
+    expect(
+      await t.run(async (ctx) => ctx.db.query("players").collect()),
+    ).toHaveLength(1);
+  });
+
+  test("TWO existing rows and no decision links NOTHING and reports the name", async () => {
+    // The failure this ticket exists for. `.first()` bound the card to
+    // whichever Bob Allen the index returned, silently. Now the name is
+    // treated exactly like an unreviewed one: the card keeps it as text, the
+    // commit still lands, and the operator is told.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    await insertBarePlayer(t, sportId, "Bob Allen", "allen bob", { birthYear: 1867 });
+    await insertBarePlayer(t, sportId, "Bob Allen", "allen bob", { birthYear: 1937 });
+
+    const result = await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardNumber: "1", players: ["Bob Allen"] })],
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.unreviewedNameCount).toBe(1);
+
+    const cards = await readCards(t, variantTypeId);
+    expect(cards[0].playerIds ?? []).toEqual([]);
+    expect(cards[0].pendingPlayerNames).toEqual(["Bob Allen"]);
+    // And no third Bob Allen was minted to paper over the ambiguity.
+    expect(
+      await t.run(async (ctx) => ctx.db.query("players").collect()),
+    ).toHaveLength(2);
+  });
+
+  test("a LINK decision names which of the two, and that one is used", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    await insertBarePlayer(t, sportId, "Bob Allen", "allen bob", { birthYear: 1867 });
+    const younger = await insertBarePlayer(t, sportId, "Bob Allen", "allen bob", {
+      birthYear: 1937,
+    });
+
+    await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      batchId: "batch-1",
+      kind: "player",
+      name: "Bob Allen",
+      decision: { action: "link", linkedPlayerId: younger },
+    });
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardNumber: "1", players: ["Bob Allen"] })],
+      batchId: "batch-1",
+    });
+
+    const cards = await readCards(t, variantTypeId);
+    expect(cards[0].playerIds).toEqual([younger]);
+    expect(
+      await t.run(async (ctx) => ctx.db.query("players").collect()),
+    ).toHaveLength(2);
+  });
+
+  test("a CREATE decision on an ambiguous name mints a third row on purpose", async () => {
+    // Two Bob Allens on file and the operator says this is a THIRD man. That
+    // is a real answer — the wizard showed them both — and the commit must
+    // take it rather than quietly reusing one of the rows they rejected.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    await insertBarePlayer(t, sportId, "Bob Allen", "allen bob", { birthYear: 1867 });
+    await insertBarePlayer(t, sportId, "Bob Allen", "allen bob", { birthYear: 1937 });
+
+    await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      batchId: "batch-1",
+      kind: "player",
+      name: "Bob Allen",
+      decision: { action: "create" },
+      enrichment: { wikidataId: "Q999" },
+    });
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardNumber: "1", players: ["Bob Allen"] })],
+      batchId: "batch-1",
+    });
+
+    const players = await t.run(async (ctx) => ctx.db.query("players").collect());
+    expect(players).toHaveLength(3);
+    const created = players.find((p) => p.externalIds?.wikidataId === "Q999")!;
+    const cards = await readCards(t, variantTypeId);
+    expect(cards[0].playerIds).toEqual([created._id]);
+  });
+});
+
+// ===========================================================================
+// NEO-254 — undated Wikidata teams survive the commit as leads
+// ===========================================================================
+
+describe("NEO-254: undated career teams the operator did not date are kept on the player", () => {
+  test("an undated team is stored by name and creates no team row", async () => {
+    // NEO-235's rule: a membership with no start year cannot become a stint,
+    // because inventing the year fabricates history. Before this it was shown
+    // once and thrown away with the batch.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+
+    await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      batchId: "batch-1",
+      kind: "player",
+      name: "Tony Gwynn",
+      decision: { action: "create" },
+      enrichment: {
+        careerTeams: [{ name: "San Diego Padres", fromYear: 1982, toYear: 2001 }],
+        undatedCareerTeams: ["San Diego State Aztecs baseball", "United States national team"],
+      },
+    });
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardNumber: "1", players: ["Tony Gwynn"] })],
+      batchId: "batch-1",
+    });
+
+    const player = await t.run(async (ctx) =>
+      ctx.db
+        .query("players")
+        .withIndex("by_name_normalized_and_sport_id", (q) =>
+          q.eq("nameNormalized", "gwynn tony").eq("sportId", sportId),
+        )
+        .first(),
+    );
+    // Alphabetical, deduped — see normalizeUndatedCareerTeams.
+    expect(player!.undatedCareerTeams).toEqual([
+      "San Diego State Aztecs baseball",
+      "United States national team",
+    ]);
+    // The dated team became a stint; the undated ones did not.
+    expect(player!.teamYears).toHaveLength(1);
+    // And no `teams` row was minted for a name with no years — resolving one
+    // is get-or-CREATE, so merely asking for its id would have created it.
+    const teams = await t.run(async (ctx) => ctx.db.query("teams").collect());
+    expect(teams.map((x) => x.name)).toEqual(["San Diego Padres"]);
+  });
+
+  test("a team the operator DATED becomes a stint and leaves the undated list", async () => {
+    // The wizard's "Add years" affordance turns a lead into an ordinary
+    // manual career team. Both halves have to move together: the stint
+    // appears, and the bare name does not linger beside it.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+
+    await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      batchId: "batch-1",
+      kind: "player",
+      name: "Tony Gwynn",
+      decision: {
+        action: "create",
+        manualCareerTeams: [
+          { name: "San Diego State Aztecs baseball", fromYear: 1979, toYear: 1981 },
+        ],
+      },
+      enrichment: {
+        undatedCareerTeams: ["San Diego State Aztecs baseball", "United States national team"],
+      },
+    });
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardNumber: "1", players: ["Tony Gwynn"] })],
+      batchId: "batch-1",
+    });
+
+    const player = await t.run(async (ctx) =>
+      ctx.db
+        .query("players")
+        .withIndex("by_name_normalized_and_sport_id", (q) =>
+          q.eq("nameNormalized", "gwynn tony").eq("sportId", sportId),
+        )
+        .first(),
+    );
+    expect(player!.undatedCareerTeams).toEqual(["United States national team"]);
+    expect(player!.teamYears).toHaveLength(1);
+    const team = await t.run(async (ctx) => ctx.db.get(player!.teamYears![0].teamId));
+    expect(team!.name).toBe("San Diego State Aztecs baseball");
+    expect(player!.teamYears![0]).toMatchObject({ fromYear: 1979, toYear: 1981 });
+  });
+
+  test("the field is omitted entirely when every lead was dated", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+
+    await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      batchId: "batch-1",
+      kind: "player",
+      name: "Tony Gwynn",
+      decision: {
+        action: "create",
+        manualCareerTeams: [{ name: "SD State Aztecs", fromYear: 1979 }],
+      },
+      enrichment: { undatedCareerTeams: ["SD State Aztecs"] },
+    });
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardNumber: "1", players: ["Tony Gwynn"] })],
+      batchId: "batch-1",
+    });
+
+    const player = await t.run(async (ctx) =>
+      ctx.db
+        .query("players")
+        .withIndex("by_name_normalized_and_sport_id", (q) =>
+          q.eq("nameNormalized", "gwynn tony").eq("sportId", sportId),
+        )
+        .first(),
+    );
+    expect(player!.undatedCareerTeams).toBeUndefined();
+  });
+
+  test("a name Wikidata dated AND left undated is not stored twice over", async () => {
+    // Wikidata can return the same team both ways across two P54 statements.
+    // The dated one wins; the lead is spent.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+
+    await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      batchId: "batch-1",
+      kind: "player",
+      name: "Tony Gwynn",
+      decision: { action: "create" },
+      enrichment: {
+        careerTeams: [{ name: "San Diego Padres", fromYear: 1982 }],
+        undatedCareerTeams: ["San Diego Padres"],
+      },
+    });
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardNumber: "1", players: ["Tony Gwynn"] })],
+      batchId: "batch-1",
+    });
+
+    const player = await t.run(async (ctx) =>
+      ctx.db
+        .query("players")
+        .withIndex("by_name_normalized_and_sport_id", (q) =>
+          q.eq("nameNormalized", "gwynn tony").eq("sportId", sportId),
+        )
+        .first(),
+    );
+    expect(player!.undatedCareerTeams).toBeUndefined();
+    expect(player!.teamYears).toHaveLength(1);
+  });
+
+  test("an EXCLUDED career team that is also undated stays a lead", async () => {
+    // The operator unchecked the dated proposal, so no stint is written — but
+    // they did not say the team is wrong, only that those years are. The bare
+    // name is still worth keeping.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+
+    await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      batchId: "batch-1",
+      kind: "player",
+      name: "Tony Gwynn",
+      decision: {
+        action: "create",
+        excludedCareerTeamNames: ["San Diego Padres"],
+      },
+      enrichment: {
+        careerTeams: [{ name: "San Diego Padres", fromYear: 1982 }],
+        undatedCareerTeams: ["San Diego Padres"],
+      },
+    });
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardNumber: "1", players: ["Tony Gwynn"] })],
+      batchId: "batch-1",
+    });
+
+    const player = await t.run(async (ctx) =>
+      ctx.db
+        .query("players")
+        .withIndex("by_name_normalized_and_sport_id", (q) =>
+          q.eq("nameNormalized", "gwynn tony").eq("sportId", sportId),
+        )
+        .first(),
+    );
+    expect(player!.teamYears).toBeUndefined();
+    expect(player!.undatedCareerTeams).toEqual(["San Diego Padres"]);
+    // The excluded team was never resolved, so no `teams` row exists for it.
+    expect(await t.run(async (ctx) => ctx.db.query("teams").collect())).toHaveLength(0);
+  });
+});

@@ -10,7 +10,7 @@ import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { RunResult } from "@convex-dev/workpool";
 import { getCurrentUserId, requireAdmin } from "./auth";
-import { normalizePlayerName } from "./players";
+import { buildExistingPlayerCandidates, normalizePlayerName } from "./players";
 import { normalizeTeamName } from "./teams";
 
 /**
@@ -51,6 +51,15 @@ const enrichmentValidator = v.object({
   description: v.optional(v.string()),
   birthYear: v.optional(v.number()),
   enwikiTitle: v.optional(v.string()),
+  // NEO-254, player-only: the NB rows already filed under this name, present
+  // only when there is MORE THAN ONE of them. See schema.ts, and
+  // `players.buildExistingPlayerCandidates` for who fills it in.
+  existingCandidates: v.optional(v.array(v.object({
+    playerId: v.id("players"),
+    name: v.string(),
+    birthYear: v.optional(v.number()),
+    careerSummary: v.string(),
+  }))),
   league: v.optional(v.string()),
   city: v.optional(v.string()),
   yearsActive: v.optional(v.object({
@@ -763,6 +772,23 @@ export const clearDecision = mutation({
  *     enrichment is ever read — so waiting on the lookup buys the operator
  *     precisely nothing, and making them wait to say "none of this is an
  *     entity" would be a worse wizard, not a safer one. Skip passes `true`.
+ *
+ * ## NEO-254 — and create also skips a row that is a CHOICE
+ *
+ * The same argument, one step further. A row carrying
+ * `enrichment.existingCandidates` is one where two or more NB players are
+ * already filed under this name, and the wizard is about to put them in front
+ * of the operator to pick from. "Everything else is new" is a statement about
+ * names nobody has heard of; it is not an answer to "which of these two Bob
+ * Allens is on the card", and treating it as one mints a third Bob Allen
+ * silently — the exact failure NEO-254 exists to remove, arriving through a
+ * different door.
+ *
+ * So create leaves those rows undecided and the operator rules on each one
+ * individually. They are `ready`, not `pending`, so they do not re-arm the
+ * client's auto-add loop; they simply stay in the walk until answered.
+ * Skip is unaffected for the same reason as above: it creates nothing, so
+ * there is no wrong row to create.
  */
 async function decideAllRemaining(
   ctx: MutationCtx,
@@ -788,6 +814,17 @@ async function decideAllRemaining(
   for (const row of rows) {
     if (row.decision) continue;
     if (!includePending && row.status === "pending") continue;
+    // NEO-254 — see the doc above. `includePending` is reused as the
+    // create-versus-skip discriminator here deliberately: both exclusions
+    // exist for the same reason (create consumes something the operator has
+    // not looked at yet) and splitting them into two flags would let a future
+    // caller turn one off without the other.
+    if (
+      !includePending &&
+      (row.enrichment?.existingCandidates?.length ?? 0) > 0
+    ) {
+      continue;
+    }
     // Spread rather than passing `decision` through: each row stores its own
     // object rather than sharing one reference across the whole batch.
     await ctx.db.patch(row._id, {
@@ -1020,9 +1057,46 @@ export const applyLookupResult = internalMutation({
     // Decided: the operator has ruled and commit is imminent or done. Writing
     // here would only contend with the commit's read of this same row.
     if (row.decision) return null;
+
+    /**
+     * NEO-254 — attach NB's OWN answer to the same question the lookup asked.
+     *
+     * A row reaches the wizard for one of two reasons now: nothing in
+     * `players` matches the name, or SEVERAL things do (see
+     * `players.resolveNameForReview`). In the second case the operator's first
+     * question is not "what does Wikidata say", it is "which of the people we
+     * already have is this?", and until now the wizard had no way to answer
+     * it: `nearMatches` gave bare names with no birth year and no career, and
+     * only one of them at that.
+     *
+     * Computed HERE rather than in the action that calls this, for two
+     * reasons. It is a `players` read, and this mutation already holds the
+     * transaction; and it must happen on BOTH branches — a name Wikidata has
+     * never heard of is exactly as ambiguous as one it knows, and the error
+     * branch sends no enrichment at all, so a client-side merge would have
+     * shown candidates only for the lucky half.
+     *
+     * `buildExistingPlayerCandidates` returns [] unless there are two or more,
+     * so an ordinary new name stores nothing extra and the wizard renders
+     * exactly what it did before.
+     */
+    const existingCandidates =
+      row.kind === "player"
+        ? await buildExistingPlayerCandidates(ctx, row.name, row.sportId)
+        : [];
+
+    // The enrichment object is only MINTED for candidates when the lookup
+    // itself found nothing; a `status: "error"` row with candidates on it is
+    // still an error row, and the wizard keys its "No Wikidata match found."
+    // on `status`, not on the presence of this object.
+    const enrichment =
+      existingCandidates.length > 0
+        ? { ...(args.enrichment ?? {}), existingCandidates }
+        : args.enrichment;
+
     await ctx.db.patch(args.id, {
       status: args.status,
-      enrichment: args.enrichment,
+      enrichment,
     });
     return null;
   },

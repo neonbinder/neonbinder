@@ -266,6 +266,13 @@ function rowSignature(row: Player): string {
  * Anything that has to sit on the same baseline as a field — the read-only
  * sport, the Hall of Fame checkbox — matches it rather than guessing.
  */
+/**
+ * NEO-254 — mirrors `RESOLVE_NAMES_MAX` in convex/teams.ts, exactly as the
+ * review wizard's own copy does. `teams.resolveNames` REFUSES more than this
+ * rather than truncating, so the caller has to know the number.
+ */
+const MAX_RESOLVE_NAMES = 64;
+
 const FIELD_BOX_HEIGHT = "min-h-[2.625rem]";
 
 /**
@@ -501,6 +508,14 @@ function PlayerDetail({
   const [pendingTo, setPendingTo] = useState("");
   const [stintError, setStintError] = useState<string | null>(null);
   const [nameTakenId, setNameTakenId] = useState<Id<"players"> | null>(null);
+  /**
+   * NEO-254 — what "Add years" just did, said next to the add-stint row it
+   * just set up. Its own line rather than `stintError`: this is a nudge, not a
+   * refusal, and it must not be painted in the error colour.
+   */
+  const [undatedHint, setUndatedHint] = useState<string | null>(null);
+  /** Focus target for "Add years" — see `startDatingUndated`. */
+  const fromYearRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState<string | null>(null);
   /**
    * NEO-212 (a11y/UX): the panel's own status line, rendered directly under the
@@ -615,6 +630,43 @@ function PlayerDetail({
     return ids;
   }, [stints, pendingTeam]);
   const teamRows = useQuery(api.teams.getManyByIds, { ids: teamIds });
+
+  /**
+   * NEO-254 — the row's undated Wikidata leads, read LIVE rather than drafted.
+   *
+   * Deliberately outside the draft/`fieldSignature` machinery above. A lead is
+   * not a field of the player: dating one produces a stint (which IS drafted,
+   * and saves with everything else), and dismissing one is a single decision
+   * that should not wait behind a Save button. Keeping it out also means
+   * `rowSignature` is unchanged by either action, so neither can trip the
+   * "this row moved under your draft" notice.
+   */
+  const undatedNames = player.undatedCareerTeams ?? [];
+  /**
+   * Which of those names already has a `teams` row, so "Add years" can put the
+   * team in the picker instead of making the operator retype a name that is
+   * already on screen. A lead with no team row yet is the normal case for a
+   * college programme, and it is handled by saying so rather than by pretending
+   * the picker was filled.
+   */
+  const resolvedUndated = useQuery(
+    api.teams.resolveNames,
+    // Skipped past the server's own cap rather than left to throw: over-length
+    // is a REFUSAL there (a truncated answer would be a wrong count for its
+    // other caller), and this panel would rather lose the picker prefill on a
+    // freak row than take the whole detail view down with it. Same bound and
+    // same guard the review wizard's `MAX_RESOLVE_NAMES` applies.
+    undatedNames.length > 0 && undatedNames.length <= MAX_RESOLVE_NAMES
+      ? { names: undatedNames, sportId: player.sportId }
+      : "skip",
+  );
+  const undatedTeamIdByName = useMemo(() => {
+    const map = new Map<string, Id<"teams">>();
+    for (const row of resolvedUndated ?? []) {
+      if (row.existingTeamId) map.set(row.name, row.existingTeamId);
+    }
+    return map;
+  }, [resolvedUndated]);
   const teamNameById = useMemo(() => {
     const map = new Map<string, string>();
     for (const row of teamRows ?? []) map.set(row._id as string, row.name);
@@ -675,6 +727,65 @@ function PlayerDetail({
   const removeStint = (index: number) => {
     setStints(stints.filter((_, i) => i !== index));
     setStintError(null);
+  };
+
+  /**
+   * NEO-254 — "Add years" on an undated lead.
+   *
+   * Sets the add-stint row up and hands the operator the year field. It does
+   * NOT save: the stint goes into the draft like any other, and the name
+   * leaves the undated list server-side when that draft is saved (see the
+   * `teamYears` branch of `savePlayerFields`). One gesture, one Save, and no
+   * second write to keep in step with the first.
+   */
+  const startDatingUndated = (teamName: string) => {
+    setStintError(null);
+    const teamId = undatedTeamIdByName.get(teamName);
+    setPendingFrom("");
+    setPendingTo("");
+    if (teamId) {
+      setPendingTeam(teamId);
+      setUndatedHint(`Set the years for ${teamName}, then Add stint.`);
+      fromYearRef.current?.focus();
+    } else {
+      // No team row under that name yet, so there is nothing to put in the
+      // picker. Say what is missing rather than silently doing nothing — the
+      // operator can create the team from the picker itself.
+      setPendingTeam(null);
+      setUndatedHint(`No team named ${teamName} yet. Pick or add it below, then set the years.`);
+    }
+  };
+
+  /**
+   * NEO-254 — drop a lead that is simply wrong.
+   *
+   * Wikidata's undated memberships are routinely a college programme, a
+   * national team or a one-day roster move, and without this the only way to
+   * clear one would be to invent a stint for it. Saved immediately and on its
+   * own: it is a decision about a suggestion, not an edit to the player, and
+   * making it wait behind Save would mean an unsaved name edit could not be
+   * abandoned without also un-dismissing this.
+   */
+  const dismissUndated = async (teamName: string) => {
+    setUndatedHint(null);
+    setBusy("undated");
+    try {
+      await savePlayerFields({
+        id: player._id,
+        undatedCareerTeams: undatedNames.filter((n) => n !== teamName),
+      });
+      setStatus({ text: `Removed ${teamName}.`, isError: false });
+    } catch (e) {
+      setStatus({
+        text:
+          e instanceof Error && e.message
+            ? `Couldn't remove ${teamName}. ${e.message}`
+            : `Couldn't remove ${teamName}. Try again.`,
+        isError: true,
+      });
+    } finally {
+      setBusy(null);
+    }
   };
 
   const save = async () => {
@@ -980,6 +1091,9 @@ function PlayerDetail({
             <span className={STINT_LABEL_CLASS}>Stint from year</span>
             <Input
               bare
+              // NEO-254: "Add years" on an undated lead lands the operator
+              // here, with the team already picked.
+              ref={fromYearRef}
               type="number"
               value={pendingFrom}
               onChange={(e) => setPendingFrom(e.target.value)}
@@ -1020,7 +1134,84 @@ function PlayerDetail({
             {stintError}
           </p>
         )}
+
+        {undatedHint && (
+          <p role="status" className="text-sm text-slate-300">
+            {undatedHint}
+          </p>
+        )}
       </div>
+
+      {/*
+        NEO-254 — leads, not history, so they get their own section under the
+        career one and a dashed rule rather than the solid border the stint
+        list wears. Dashed already means "nothing here yet" on this page (the
+        empty career state above), and that is precisely the claim: a team line
+        with the years blanked out.
+
+        Rendered only when the row has any, so an ordinary player's panel is
+        untouched.
+      */}
+      {undatedNames.length > 0 && (
+        <div className="space-y-3 border-t border-slate-800 pt-4">
+          <div>
+            <h3 className="text-base font-semibold">Also on Wikidata, no years yet</h3>
+            <p className="text-sm text-slate-400">
+              Nobody has put years to these. Add a stint and the name drops off
+              the list.
+            </p>
+          </div>
+          <ul
+            aria-label="Undated Wikidata teams"
+            className="divide-y divide-slate-800 rounded-md border border-dashed border-slate-700"
+          >
+            {undatedNames.map((teamName) => (
+              <li
+                key={teamName}
+                className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-3 px-3 py-1.5 text-sm text-slate-300"
+              >
+                <span className="truncate">{teamName}</span>
+                <button
+                  type="button"
+                  // The visible text repeats down the list, so the team goes
+                  // into the accessible name — every control here is uniquely
+                  // addressable by a screen reader and by Maestro.
+                  aria-label={`Add years for ${teamName}`}
+                  // NEO-254 (a11y): `aria-disabled` with a guarded handler, not
+                  // native `disabled`, on both controls in this list. A
+                  // disabled button leaves the tab order, so a keyboard
+                  // operator part-way down the leads would be thrown back out
+                  // of it for the length of a round-trip — and this list is
+                  // walked one row at a time. The page's Save/Re-enrich buttons
+                  // stay natively disabled: they are a single control at the
+                  // end of the panel, not a list position worth holding.
+                  aria-disabled={busy !== null}
+                  onClick={() => {
+                    if (busy !== null) return;
+                    startDatingUndated(teamName);
+                  }}
+                  className="min-h-6 shrink-0 rounded px-2 py-1 text-xs text-neon-blue underline underline-offset-2 transition-colors hover:bg-neon-blue/10 focus:outline-none focus:ring-2 focus:ring-neon-blue aria-disabled:opacity-40"
+                >
+                  Add years
+                </button>
+                <button
+                  type="button"
+                  aria-label={`Remove ${teamName} from the undated list`}
+                  // See the note on "Add years" above — same rule, same list.
+                  aria-disabled={busy !== null}
+                  onClick={() => {
+                    if (busy !== null) return;
+                    void dismissUndated(teamName);
+                  }}
+                  className="min-h-6 shrink-0 rounded px-2 py-1 text-xs text-neon-pink transition-colors hover:bg-neon-pink/10 focus:outline-none focus:ring-2 focus:ring-neon-pink aria-disabled:opacity-40"
+                >
+                  Remove
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <div className="flex flex-wrap gap-2 border-t border-slate-800 pt-4">
         <NeonButton type="button" onClick={() => void save()} disabled={!canSave}>

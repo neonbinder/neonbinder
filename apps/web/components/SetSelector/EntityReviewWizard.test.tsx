@@ -3417,3 +3417,201 @@ describe("EntityReviewWizard — armed bulk create is inert", () => {
     expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// NEO-254 — same-name candidates and undated Wikidata teams
+//
+// The panels have their own files (SameNamePlayerPanel.test.tsx,
+// UndatedCareerTeams.test.tsx). What is asserted HERE is the wiring only the
+// wizard owns: which panel gets the same-name rows, what happens to the action
+// hierarchy when there is no single "the" exact match, and that dating a lead
+// reaches `recordDecision` as an ordinary manual career team.
+// ---------------------------------------------------------------------------
+
+describe("NEO-254: an ambiguous name is a choice, not a promoted primary", () => {
+  const CANDIDATES = [
+    {
+      playerId: "player-old",
+      name: "Bob Allen",
+      birthYear: 1867,
+      careerSummary: "Phillies 1890–1894",
+    },
+    {
+      playerId: "player-young",
+      name: "Bob Allen",
+      birthYear: 1937,
+      careerSummary: "Padres 1961–present",
+    },
+  ];
+
+  it("shows the candidates and does NOT promote one of them to the primary", () => {
+    // `players.nearMatches` returns every row on the exact key now, so without
+    // the guard `showExactHierarchy` would turn the main button into "Link to
+    // Bob Allen" for whichever came first — a one-tap path to the wrong man.
+    currentRows = [
+      makeRow({ name: "Bob Allen", enrichment: { existingCandidates: CANDIDATES } }),
+    ];
+    currentNearMatches = [
+      { _id: "player-old", name: "Bob Allen", confidence: "exact" },
+      { _id: "player-young", name: "Bob Allen", confidence: "exact" },
+    ];
+    renderWizard();
+
+    expect(screen.getByText("Same name, different people")).toBeTruthy();
+    // The primary is still creation, not a link to one of two identical names.
+    expect(screen.getByRole("button", { name: "Add as New Player" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Link to Bob Allen" })).toBeNull();
+  });
+
+  it("keeps the same-name rows out of the Possible matches panel", () => {
+    // Both panels render a link control per row. Left alone, the two Bob
+    // Allens would appear in each — four buttons, two accessible names, and no
+    // way to tell which pair is which.
+    currentRows = [
+      makeRow({ name: "Bob Allen", enrichment: { existingCandidates: CANDIDATES } }),
+    ];
+    currentNearMatches = [
+      { _id: "player-old", name: "Bob Allen", confidence: "exact" },
+      { _id: "player-young", name: "Bob Allen", confidence: "exact" },
+      { _id: "player-other", name: "Bobby Allen", confidence: "close" },
+    ];
+    renderWizard();
+
+    // Only the genuinely-different name is left for the fuzzy panel.
+    expect(screen.getByRole("button", { name: "Link to Bobby Allen" })).toBeTruthy();
+    const labels = screen
+      .getAllByRole("button")
+      .map((b) => b.getAttribute("aria-label") ?? b.textContent ?? "");
+    expect(new Set(labels).size).toBe(labels.length);
+  });
+
+  it("picking a candidate records a link decision naming that player", async () => {
+    currentRows = [
+      makeRow({ name: "Bob Allen", enrichment: { existingCandidates: CANDIDATES } }),
+    ];
+    currentNearMatches = [];
+    renderWizard();
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Link to Bob Allen, b. 1937 · Padres 1961–present",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(mockRecordDecision).toHaveBeenCalledWith({
+        reviewRowId: "row-" + nextRowId,
+        action: "link",
+        linkedPlayerId: "player-young",
+        linkedTeamId: undefined,
+      }),
+    );
+  });
+
+  it("shows no candidate panel for an ordinary name", () => {
+    currentRows = [makeRow({ enrichment: { wikidataId: "Q1" } })];
+    currentNearMatches = [];
+    renderWizard();
+    expect(screen.queryByText("Same name, different people")).toBeNull();
+  });
+});
+
+describe("NEO-254: undated Wikidata teams in the player step", () => {
+  it("lists the undated teams under the dated ones", () => {
+    currentRows = [
+      makeRow({
+        name: "Tony Gwynn",
+        enrichment: {
+          careerTeams: [{ name: "San Diego Padres", fromYear: 1982, toYear: 2001 }],
+          undatedCareerTeams: ["San Diego State Aztecs"],
+        },
+      }),
+    ];
+    currentNearMatches = [];
+    renderWizard();
+
+    expect(screen.getByText("Also on Wikidata, no years yet")).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Add years for San Diego State Aztecs" }),
+    ).toBeTruthy();
+  });
+
+  it("dating a lead stages it as a career team and drops it from the list", () => {
+    currentRows = [
+      makeRow({
+        name: "Tony Gwynn",
+        enrichment: { undatedCareerTeams: ["San Diego State Aztecs"] },
+      }),
+    ];
+    currentNearMatches = [];
+    renderWizard();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Add years for San Diego State Aztecs" }),
+    );
+    fireEvent.change(
+      screen.getByLabelText("From year for San Diego State Aztecs"),
+      { target: { value: "1979" } },
+    );
+    fireEvent.change(
+      screen.getByLabelText("To year for San Diego State Aztecs (optional)"),
+      { target: { value: "1981" } },
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Save years for San Diego State Aztecs" }),
+    );
+
+    // It is now a staged chip…
+    const staged = screen.getByRole("list", { name: "Staged career teams" });
+    expect(within(staged).getByText(/San Diego State Aztecs/)).toBeTruthy();
+    // …and no longer a lead, so it is not offered in both places at once.
+    expect(
+      screen.queryByRole("button", { name: "Add years for San Diego State Aztecs" }),
+    ).toBeNull();
+  });
+
+  it("carries a dated lead into the create decision as a manual career team", async () => {
+    currentRows = [
+      makeRow({
+        name: "Tony Gwynn",
+        enrichment: { undatedCareerTeams: ["San Diego State Aztecs"] },
+      }),
+    ];
+    currentNearMatches = [];
+    renderWizard();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Add years for San Diego State Aztecs" }),
+    );
+    fireEvent.change(
+      screen.getByLabelText("From year for San Diego State Aztecs"),
+      { target: { value: "1979" } },
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Save years for San Diego State Aztecs" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Player" }));
+
+    await waitFor(() =>
+      expect(mockRecordDecision).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "create",
+          manualCareerTeams: [
+            { name: "San Diego State Aztecs", fromYear: 1979 },
+          ],
+        }),
+      ),
+    );
+  });
+
+  it("renders no undated section when the lookup returned none", () => {
+    currentRows = [
+      makeRow({
+        enrichment: { careerTeams: [{ name: "Angels", fromYear: 2011 }] },
+      }),
+    ];
+    currentNearMatches = [];
+    renderWizard();
+    expect(screen.queryByText("Also on Wikidata, no years yet")).toBeNull();
+  });
+});

@@ -1,14 +1,26 @@
 import { query, mutation, internalMutation, internalQuery, action } from "./_generated/server";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { ConvexError, v } from "convex/values";
 import { getCurrentUserId, requireAdmin, requireSignedIn } from "./auth";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import {
   longestToken,
   nameTokens,
+  // NEO-254: `undatedCareerTeams` holds TEAM names, so it dedupes on the key
+  // `teams` dedupes on — and this IS that key (`teams.normalizeTeamName` is the
+  // same function). Imported from here rather than from `./teams`, which
+  // already imports `normalizePlayerName` from this file: a cycle between two
+  // Convex modules is not worth a shorter import path.
+  normalizeEntityName,
   rankPlayerCandidates,
 } from "./lib/entityNearMatch";
 import { sortTeamYears } from "../lib/players/team-tenure";
+import {
+  CAREER_SUMMARY_MAX_TEAMS,
+  formatCareerSummary,
+  type CareerSummaryStint,
+} from "../lib/players/career-summary";
 // NEO-212 security review: `Q<digits>` is validated in exactly one place now.
 // See lib/players/wikidata-id.ts for why the render sites needed a chokepoint
 // they could share with the write path.
@@ -73,8 +85,20 @@ const playerDocPublicValidator = v.object({
     toYear: v.optional(v.number()),
   }))),
   isHallOfFame: v.optional(v.boolean()),
+  // NEO-254. `birthYear` is the field that tells two same-name players apart,
+  // so it is public: the review wizard's candidate list and the Players page
+  // both put it in front of an operator choosing between them. See schema.ts.
+  birthYear: v.optional(v.number()),
+  // NEO-254 — Wikidata teams nobody has dated yet. Read-only context on the
+  // Players page; never career data. See schema.ts.
+  undatedCareerTeams: v.optional(v.array(v.string())),
   externalIds: v.optional(v.object({
     wikidataId: v.optional(v.string()),
+    // NEO-254 preload linkage. Carried through the public shape only because
+    // this validator has to accept every field the row can hold; no UI reads
+    // them, and nothing user-facing may key on them.
+    lahmanId: v.optional(v.string()),
+    nflverseId: v.optional(v.string()),
   })),
   lastUpdated: v.number(),
 });
@@ -92,8 +116,12 @@ const playerDocValidator = v.object({
     toYear: v.optional(v.number()),
   }))),
   isHallOfFame: v.optional(v.boolean()),
+  birthYear: v.optional(v.number()),
+  undatedCareerTeams: v.optional(v.array(v.string())),
   externalIds: v.optional(v.object({
     wikidataId: v.optional(v.string()),
+    lahmanId: v.optional(v.string()),
+    nflverseId: v.optional(v.string()),
   })),
   createdByUserId: v.optional(v.string()),
   lastUpdated: v.number(),
@@ -135,6 +163,119 @@ export const findByNameAndSport = query({
 });
 
 /**
+ * NEO-254 — how many same-name rows any lookup in this file reads before it
+ * stops counting.
+ *
+ * Not a page size: nothing here needs the whole list, only "none / exactly one
+ * / more than one", and the third answer is settled by the second row. Reading
+ * a bounded window rather than `.collect()`ing keeps a pathological name (a
+ * checklist header that normalizes to something a thousand rows share) from
+ * turning a hot-path lookup into an unbounded read. Eight leaves room for the
+ * candidate list the review wizard renders while staying trivially cheap.
+ */
+export const PLAYER_AMBIGUITY_SCAN_LIMIT = 8;
+
+/**
+ * NEO-254 — the rows already filed under this exact dedup key, capped.
+ *
+ * ## Why this is not `.first()`
+ *
+ * `(nameNormalized, sportId)` is a DEDUP key, not a UNIQUE key: nothing in the
+ * schema stops a second "Bob Allen" from existing, and after the bulk preload
+ * (plan decision 3) a great many of them do — same name, same sport, different
+ * people. Every caller in this file used to take the first row the index
+ * returned and treat it as *the* player, which silently attached one man's
+ * cards to another man's row and gave the operator no clue it had happened.
+ *
+ * The rule this enables is the same one the card-number invariant states:
+ * never key logic on a value that is not unique without an exactly-one guard.
+ * Zero rows and one row keep behaving exactly as they always did; two or more
+ * is a question for a human, and every caller here raises it as one.
+ */
+async function sameNamePlayers(
+  ctx: QueryCtx | MutationCtx,
+  nameNormalized: string,
+  sportId: Id<"selectorOptions">,
+): Promise<Array<Doc<"players">>> {
+  return await ctx.db
+    .query("players")
+    .withIndex("by_name_normalized_and_sport_id", (q) =>
+      q.eq("nameNormalized", nameNormalized).eq("sportId", sportId),
+    )
+    .take(PLAYER_AMBIGUITY_SCAN_LIMIT);
+}
+
+/**
+ * NEO-254 — pick the one candidate a birth year identifies, if it identifies
+ * exactly one.
+ *
+ * A birth year is the only thing on a player row that reliably separates two
+ * people with one name, which is why the preload writes it. It disambiguates
+ * only when it is DECISIVE: two rows sharing both the name and the year are
+ * still a question, and a year that matches nothing is not evidence that the
+ * caller means a new person — the existing rows may simply predate the column.
+ * Both of those return null, and the caller refuses rather than guessing.
+ */
+function candidateForBirthYear(
+  candidates: ReadonlyArray<Doc<"players">>,
+  birthYear: number | undefined,
+): Doc<"players"> | null {
+  if (birthYear === undefined) return null;
+  const hits = candidates.filter((p) => p.birthYear === birthYear);
+  return hits.length === 1 ? hits[0] : null;
+}
+
+/**
+ * NEO-254 — how many undated Wikidata team names one player row may carry, and
+ * how long each may be.
+ *
+ * Same guard-rail reasoning as `MAX_PLAYER_TEAM_YEARS` below: an array written
+ * from an upstream payload reaches a globally-shared row, and "the operator is
+ * an admin" is not the same as "this cannot be driven by a UI bug". The length
+ * bound is deliberately generous — the longest real thing this holds is a
+ * college programme's full name ("San Diego State Aztecs baseball").
+ */
+const MAX_UNDATED_CAREER_TEAMS = 64;
+const MAX_UNDATED_CAREER_TEAM_NAME_LENGTH = 120;
+
+/**
+ * NEO-254 — clean a list of undated career-team names for storage.
+ *
+ * ## Why this DROPS rather than throws
+ *
+ * Every other bounded array in this file refuses an over-long input, because
+ * every one of them is data. This one is not: a name here is a LEAD — "Wikidata
+ * says maybe, nobody has confirmed the years" — and its only job is to survive
+ * until a human looks at it. The list is built inside `commitCardChecklist`'s
+ * prelude, at the end of a commit that may have written nine hundred cards, so
+ * a single freak Wikidata label must not be able to fail that commit. Dropping
+ * what cannot be stored and keeping the rest is the outcome that loses least.
+ *
+ * Truncating an over-long name would be worse than dropping it: a half a team
+ * name is a wrong team name, and it would then be shown to an operator as if
+ * somebody had meant it.
+ *
+ * Deduped on the key `teams` itself dedupes on, first spelling winning, then
+ * sorted alphabetically so the same lookup reads back the same way twice.
+ */
+export function normalizeUndatedCareerTeams(
+  names: ReadonlyArray<string>,
+): string[] {
+  const seen = new Set<string>();
+  const kept: string[] = [];
+  for (const raw of names) {
+    const name = raw.trim();
+    if (!name || name.length > MAX_UNDATED_CAREER_TEAM_NAME_LENGTH) continue;
+    const key = normalizeEntityName(name);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    kept.push(name);
+    if (kept.length >= MAX_UNDATED_CAREER_TEAMS) break;
+  }
+  return kept.sort((a, b) => a.localeCompare(b));
+}
+
+/**
  * Bound on a player name — same value and same reasoning as
  * `teams.MAX_TEAM_NAME_LENGTH`. Over-length is refused rather than trimmed:
  * silently storing something other than what was typed is how a mangled name
@@ -171,6 +312,16 @@ export const findOrCreate = mutation({
   args: {
     name: v.string(),
     sportId: v.id("selectorOptions"),
+    /**
+     * NEO-254 — which of several same-name players the caller means.
+     *
+     * Consulted ONLY when the name is ambiguous (two or more rows already
+     * share it in this sport). With no match it is stored on the new row; with
+     * exactly one match it is ignored, because one match was never a question
+     * and letting a mistyped year fork a second row would defeat the dedupe
+     * this mutation exists for.
+     */
+    birthYear: v.optional(v.number()),
   },
   returns: v.id("players"),
   handler: async (ctx, args): Promise<Id<"players">> => {
@@ -218,18 +369,45 @@ export const findOrCreate = mutation({
     }
 
     const normalized = normalizePlayerName(name);
-    const matches = await ctx.db
-      .query("players")
-      .withIndex("by_name_normalized", (q) => q.eq("nameNormalized", normalized))
-      .collect();
-    const existing = matches.find((p) => p.sportId === args.sportId);
+    /**
+     * NEO-254 — the compound index, bounded, instead of `by_name_normalized`
+     * collected across every sport and then filtered in memory. Two changes in
+     * one: the read is narrow (a common surname matches in every sport we
+     * track), and it can SEE that there is more than one match instead of
+     * calling `.find` and taking whichever row came back first.
+     */
+    const candidates = await sameNamePlayers(ctx, normalized, args.sportId);
     // NOT enqueued — see the creation-only note on the insert below.
-    if (existing) return existing._id;
+    if (candidates.length === 1) return candidates[0]._id;
+    if (candidates.length > 1) {
+      /**
+       * NEO-254 — two or more people are already filed under this name, and
+       * this mutation has no way to know which one a typeahead meant.
+       *
+       * Returning the first row is the failure this guard exists to stop: it
+       * attaches a card to a player who did not appear on it, silently, and
+       * the operator's only clue is a career history that grows a team the man
+       * never played for. Refusing is the honest answer — the picker's search
+       * already lists both rows, so the way forward is to pick one.
+       *
+       * A `birthYear` settles it when it is decisive; see
+       * `candidateForBirthYear` for why "matches nothing" is not decisive.
+       */
+      const byBirthYear = candidateForBirthYear(candidates, args.birthYear);
+      if (byBirthYear) return byBirthYear._id;
+      // The name is what the CALLER typed, so echoing it leaks nothing they do
+      // not already hold — unlike the other rows' `createdByUserId`, which is
+      // why this counts rather than lists them.
+      throw new ConvexError(
+        `${candidates.length} players are already filed under ${name}. Pick the right one instead of adding another.`,
+      );
+    }
 
     const id = await ctx.db.insert("players", {
       name,
       nameNormalized: normalized,
       sportId: args.sportId,
+      ...(args.birthYear !== undefined ? { birthYear: args.birthYear } : {}),
       createdByUserId: userId,
       lastUpdated: Date.now(),
     });
@@ -272,6 +450,139 @@ export const findOrCreate = mutation({
     return id;
   },
 });
+
+/**
+ * NEO-254 — "is this name already resolved, and is it resolved to exactly one
+ * person?" — the read that decides whether a checklist name opens the review
+ * wizard.
+ *
+ * ## Why this exists instead of another `findByNameAndSport` call
+ *
+ * `resolveUnknownsAndStartBatch` (selectorOptions.ts) used to ask
+ * `findByNameAndSport`, whose answer is a player or null — a shape that cannot
+ * express the case this ticket is about. After the bulk preload a name can
+ * match SEVERAL rows, and "here is one of them" reads to the caller as "this
+ * name is known, no review needed", which is how an ambiguous name got
+ * silently bound to an arbitrary row without ever reaching an operator.
+ *
+ * The public query keeps its old shape (it is signed-in-readable reference
+ * data with other consumers); this one is internal, answers the question the
+ * gate actually has, and returns a COUNT rather than the rows — the caller
+ * only branches on none / one / more than one, and the rows themselves are
+ * rebuilt for the wizard by `buildExistingPlayerCandidates` below when and
+ * only when a batch is really being opened.
+ *
+ * `matchCount` is capped at `PLAYER_AMBIGUITY_SCAN_LIMIT`; "8" means "at least
+ * 8", which is the same branch as "2".
+ */
+export const resolveNameForReview = internalQuery({
+  args: {
+    name: v.string(),
+    sportId: v.id("selectorOptions"),
+  },
+  returns: v.object({
+    matchCount: v.number(),
+    playerId: v.optional(v.id("players")),
+  }),
+  handler: async (ctx, args) => {
+    const normalized = normalizePlayerName(args.name);
+    // A name that normalizes to nothing (punctuation only) can never match a
+    // stored key. Reported as no match, so it goes to review rather than being
+    // silently treated as resolved.
+    if (!normalized) return { matchCount: 0 };
+    const candidates = await sameNamePlayers(ctx, normalized, args.sportId);
+    return {
+      matchCount: candidates.length,
+      // Only when it is unambiguous. Handing back one id out of several is the
+      // exact thing this query was written to stop.
+      ...(candidates.length === 1 ? { playerId: candidates[0]._id } : {}),
+    };
+  },
+});
+
+/**
+ * NEO-254 — the NB rows already filed under this name, shaped for the review
+ * wizard's "which of these is it?" list.
+ *
+ * Returns [] unless there are TWO OR MORE. One match is not a choice: the
+ * commit prelude adopts it exactly as it always has, and putting a lone
+ * candidate in front of the operator would turn every ordinary name into a
+ * decision. Called by `entityReviewQueue.applyLookupResult`, which is where
+ * the enrichment for a review row is written.
+ *
+ * `careerSummary` is rendered HERE, on the server, from `teamYears` joined to
+ * `teams`. The alternative — shipping ids and letting the wizard join — costs
+ * one round trip per candidate on a panel whose whole value is being readable
+ * at a glance, and it would put the same format in two places.
+ *
+ * Bounded twice over: at most `PLAYER_AMBIGUITY_SCAN_LIMIT` candidates, and at
+ * most `CAREER_SUMMARY_MAX_TEAMS + 1` team reads each, so the worst case is a
+ * couple of dozen point lookups inside a mutation that is otherwise a patch.
+ *
+ * Exported as a plain function rather than registered as a query: its caller is
+ * a mutation, and a mutation cannot `ctx.runQuery` itself.
+ */
+export async function buildExistingPlayerCandidates(
+  ctx: QueryCtx | MutationCtx,
+  name: string,
+  sportId: Id<"selectorOptions">,
+): Promise<
+  Array<{
+    playerId: Id<"players">;
+    name: string;
+    birthYear?: number;
+    careerSummary: string;
+  }>
+> {
+  const normalized = normalizePlayerName(name);
+  if (!normalized) return [];
+  const candidates = await sameNamePlayers(ctx, normalized, sportId);
+  if (candidates.length < 2) return [];
+
+  const teamNameById = new Map<string, string>();
+  const results: Array<{
+    playerId: Id<"players">;
+    name: string;
+    birthYear?: number;
+    careerSummary: string;
+  }> = [];
+
+  for (const player of candidates) {
+    // `sortTeamYears` because the summary reads chronologically and nothing
+    // guarantees the stored order (a row written before that sort existed, or
+    // one hand-edited since, can be in any order).
+    const allStints = sortTeamYears(player.teamYears ?? []);
+    // Only the stints that will actually be NAMED are resolved. Each name is a
+    // point lookup, this runs for up to eight candidates, and the rest of the
+    // career is reported as a count rather than read — see `extra` below.
+    const named = allStints.slice(0, CAREER_SUMMARY_MAX_TEAMS);
+    const resolved: CareerSummaryStint[] = [];
+    for (const stint of named) {
+      const key = stint.teamId as string;
+      if (!teamNameById.has(key)) {
+        const team = await ctx.db.get(stint.teamId);
+        // A dangling team id renders as a placeholder rather than throwing:
+        // this is a disambiguation hint, and one unreadable stint must not
+        // cost the operator the whole candidate.
+        teamNameById.set(key, team?.name ?? "Unknown team");
+      }
+      resolved.push({
+        teamName: teamNameById.get(key)!,
+        fromYear: stint.fromYear,
+        ...(stint.toYear !== undefined ? { toYear: stint.toYear } : {}),
+      });
+    }
+    results.push({
+      playerId: player._id,
+      name: player.name,
+      ...(player.birthYear !== undefined ? { birthYear: player.birthYear } : {}),
+      careerSummary: formatCareerSummary(resolved, {
+        extra: allStints.length - resolved.length,
+      }),
+    });
+  }
+  return results;
+}
 
 /**
  * List players for the picker UI. Filterable by sport for binder shells
@@ -456,13 +767,21 @@ export const nearMatches = query({
 
     const normalized = normalizePlayerName(name);
     if (normalized) {
-      const exact = await ctx.db
-        .query("players")
-        .withIndex("by_name_normalized_and_sport_id", (q) =>
-          q.eq("nameNormalized", normalized).eq("sportId", args.sportId),
-        )
-        .first();
-      if (exact) candidates.set(exact._id, { _id: exact._id, name: exact.name });
+      /**
+       * NEO-254 — every row on the exact key, not just the first.
+       *
+       * `.first()` was defensible while the key behaved as if it were unique.
+       * It is not unique, and the bulk preload makes that ordinary: with two
+       * "Bob Allen"s on file this panel showed ONE of them as an exact match,
+       * and the wizard then promoted that single row to its primary "Link to
+       * Bob Allen" button — a one-tap path to binding a card to the wrong man,
+       * with the other row nowhere on screen. Listing them all is what turns
+       * that into the choice it always was.
+       */
+      const exact = await sameNamePlayers(ctx, normalized, args.sportId);
+      for (const row of exact) {
+        candidates.set(row._id, { _id: row._id, name: row.name });
+      }
     }
 
     const searchPlayers = async (term: string) =>
@@ -843,6 +1162,8 @@ export const createByAdmin = mutation({
   args: {
     name: v.string(),
     sportId: v.id("selectorOptions"),
+    /** NEO-254 — see the identical arg on `findOrCreate` above. */
+    birthYear: v.optional(v.number()),
   },
   returns: v.object({
     id: v.id("players"),
@@ -877,19 +1198,29 @@ export const createByAdmin = mutation({
     // The compound index, not `by_name_normalized` + a client-side sport
     // filter: a common surname matches across every sport we track, and the
     // narrow read is the difference on a table this size.
-    const existing = await ctx.db
-      .query("players")
-      .withIndex("by_name_normalized_and_sport_id", (q) =>
-        q.eq("nameNormalized", nameNormalized).eq("sportId", args.sportId),
-      )
-      .first();
+    //
+    // NEO-254: bounded `.take()` rather than `.first()`, for the reason spelled
+    // out on `sameNamePlayers` — the key is a dedup key, not a unique one.
+    const candidates = await sameNamePlayers(ctx, nameNormalized, args.sportId);
     // NOT enqueued — see the creation-only note on the insert below.
-    if (existing) return { id: existing._id, created: false };
+    if (candidates.length === 1) return { id: candidates[0]._id, created: false };
+    if (candidates.length > 1) {
+      // NEO-254 — same guard, same reasoning, as `findOrCreate` above. Here
+      // the operator is looking at the Player Management form rather than a
+      // typeahead, so the refusal lands somewhere they can act on it: the page
+      // has a search that lists both rows.
+      const byBirthYear = candidateForBirthYear(candidates, args.birthYear);
+      if (byBirthYear) return { id: byBirthYear._id, created: false };
+      throw new ConvexError(
+        `${candidates.length} players are already filed under ${name}. Pick the right one instead of adding another.`,
+      );
+    }
 
     const id = await ctx.db.insert("players", {
       name,
       nameNormalized,
       sportId: args.sportId,
+      ...(args.birthYear !== undefined ? { birthYear: args.birthYear } : {}),
       createdByUserId: userId,
       lastUpdated: Date.now(),
     });
@@ -980,6 +1311,19 @@ export const savePlayerFields = mutation({
         }),
       ),
     ),
+    /**
+     * NEO-254 — the undated Wikidata team names still awaiting a human,
+     * replaced wholesale. An empty array clears the list, which is how the
+     * operator says "none of these leads is worth chasing".
+     *
+     * Usually omitted: a name normally leaves this list by being DATED, and
+     * the `teamYears` branch below prunes it automatically for that case, so
+     * the page does not have to send both halves of one gesture and cannot get
+     * them out of step. This arg is the other exit — dismissing a lead that is
+     * simply wrong (Wikidata's college and national-team memberships are
+     * routinely neither) without inventing a stint to get rid of it.
+     */
+    undatedCareerTeams: v.optional(v.array(v.string())),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -992,10 +1336,25 @@ export const savePlayerFields = mutation({
       name?: string;
       nameNormalized?: string;
       isHallOfFame?: boolean;
-      externalIds?: { wikidataId?: string };
+      externalIds?: { wikidataId?: string; lahmanId?: string; nflverseId?: string };
       teamYears?: PlayerTeamYear[];
+      undatedCareerTeams?: string[];
       lastUpdated: number;
     } = { lastUpdated: Date.now() };
+
+    /**
+     * NEO-254 — the undated list this call will leave on the row.
+     *
+     * Seeded from the argument when one was sent, otherwise from what is
+     * already stored, and then pruned by the `teamYears` branch below. Held as
+     * one variable rather than two branches so the two exits from the list
+     * (dismissed by hand, dated into a stint) cannot disagree about the
+     * result when a single save does both.
+     */
+    let undated = normalizeUndatedCareerTeams(
+      args.undatedCareerTeams ?? existing.undatedCareerTeams ?? [],
+    );
+    let undatedChanged = args.undatedCareerTeams !== undefined;
 
     if (args.name !== undefined) {
       const trimmed = args.name.trim();
@@ -1074,6 +1433,10 @@ export const savePlayerFields = mutation({
       // make the editor wrong every winter.
       const maxYear = new Date().getFullYear() + 1;
       const seen = new Set<string>();
+      // NEO-254: the team names this save puts a stint against, on the key the
+      // undated list dedupes on. Collected inside the loop below, which already
+      // reads every team document, so pruning costs no extra reads.
+      const datedTeamKeys = new Set<string>();
 
       for (const stint of args.teamYears) {
         const team = await ctx.db.get(stint.teamId);
@@ -1116,9 +1479,40 @@ export const savePlayerFields = mutation({
           );
         }
         seen.add(key);
+        datedTeamKeys.add(normalizeEntityName(team.name));
       }
 
       patch.teamYears = sortTeamYears(args.teamYears);
+
+      /**
+       * NEO-254 — a dated team is no longer an undated one.
+       *
+       * The whole point of the undated list is that nobody has put years to
+       * these names yet. The moment a stint exists for one, leaving it in the
+       * list would show the operator a lead they have already chased, next to
+       * the stint that closed it — the list would only ever grow, and it would
+       * stop meaning anything.
+       *
+       * Derived from what was SAVED rather than driven by a separate flag, so
+       * it works whichever route added the stint: the "Add years" affordance
+       * next to the lead, or the operator simply using the career-history
+       * editor and never noticing the list at all.
+       */
+      const kept = undated.filter(
+        (name) => !datedTeamKeys.has(normalizeEntityName(name)),
+      );
+      if (kept.length !== undated.length) {
+        undated = kept;
+        undatedChanged = true;
+      }
+    }
+
+    if (undatedChanged) {
+      // Dropped entirely once empty, so a cleared row is indistinguishable
+      // from one that never had a lead on it — the same rule `externalIds`
+      // follows above, and what keeps the Players page from rendering an
+      // empty "also on Wikidata" heading over nothing.
+      patch.undatedCareerTeams = undated.length > 0 ? undated : undefined;
     }
 
     await ctx.db.patch(args.id, patch);

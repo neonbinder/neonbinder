@@ -881,13 +881,45 @@ export default defineSchema({
       toYear: v.optional(v.number()),
     }))),
     isHallOfFame: v.optional(v.boolean()),
+    // NEO-254: the one fact that tells two players with the same name apart
+    // (Lahman alone has 750 first-plus-last collisions, and both Tony Gwynns
+    // are real). Written by the bulk preload from the source dataset; optional
+    // because every hand-created and Wikidata-enriched row predates it.
+    birthYear: v.optional(v.number()),
+    /**
+     * NEO-254 — team NAMES Wikidata links to this player with no usable start
+     * year, which the operator did NOT date during review.
+     *
+     * `teamYears` requires a `fromYear`, and inventing one from the player's
+     * work period fabricates a stint that never happened (the NEO-235 Gwynn
+     * rule). Before this column those names were surfaced once in the review
+     * wizard and then thrown away with the batch, so a lead the operator did
+     * not have time to chase was gone for good. Stored so the Players page can
+     * show them and a human can add the years later; a name leaves this list
+     * the moment a stint for that team is saved on the row.
+     *
+     * NOT career data and never rendered as such — a name here means "Wikidata
+     * says maybe, nobody has confirmed the years". Deduped, alphabetical, and
+     * bounded (see PLAYER_UNDATED_CAREER_TEAM limits in convex/players.ts) for
+     * the same reason every other array on this row is: it is written from an
+     * upstream payload, and an unbounded one reaches a globally-shared row.
+     */
+    undatedCareerTeams: v.optional(v.array(v.string())),
     externalIds: v.optional(v.object({
       wikidataId: v.optional(v.string()), // e.g. "Q123456"
+      // NEO-254: linkage back to the bulk-preload datasets, so a re-run finds
+      // the row it created last time instead of minting a second one. Linkage
+      // only — nothing user-facing reads these.
+      lahmanId: v.optional(v.string()),   // Lahman `playerID`, e.g. "gwynnto01"
+      nflverseId: v.optional(v.string()), // nflverse gsis_id, e.g. "00-0014313"
     })),
     createdByUserId: v.optional(v.string()),
     lastUpdated: v.number(),
   })
     .index("by_name_normalized", ["nameNormalized"])
+    // NEO-254: idempotency keys for the bulk preload (see convex/preloadPlayers.ts).
+    .index("by_lahman_id", ["externalIds.lahmanId"])
+    .index("by_nflverse_id", ["externalIds.nflverseId"])
     // Compound index for the hot path in commitCardChecklist's per-player
     // resolution: lookup by normalized name AND sport in one indexed read.
     // Without this, the by_name_normalized index returned every row sharing
@@ -1168,6 +1200,30 @@ export default defineSchema({
       // Title of the English Wikipedia article (enwiki sitelink), so the wizard
       // can link out to the full article for a human to confirm against.
       enwikiTitle: v.optional(v.string()),
+      /**
+       * NEO-254, player-only — the NB player rows that already carry this
+       * row's normalized name in this sport.
+       *
+       * Present only when there is more than one. ONE match is not a choice:
+       * the commit prelude adopts it silently, exactly as it always has, and
+       * the name never reaches the wizard at all. Two or more IS a choice, and
+       * it is a choice only a human can make — the bulk preload (decision 3)
+       * makes same-name players ordinary rather than exotic, and `.first()` on
+       * the dedupe index would have quietly attached every 1990 "Bob Allen"
+       * card to whichever row Convex returned first.
+       *
+       * Written by `applyLookupResult` from the `players` table, not by a
+       * marketplace or by Wikidata: this is NB's own data, offered back to the
+       * operator as the FIRST thing they see. `careerSummary` is rendered
+       * server-side ("Padres 1982-2001") so the wizard does not have to join
+       * `teamYears` to `teams` per candidate to draw a one-line identity.
+       */
+      existingCandidates: v.optional(v.array(v.object({
+        playerId: v.id("players"),
+        name: v.string(),
+        birthYear: v.optional(v.number()),
+        careerSummary: v.string(),
+      }))),
       // team-only
       league: v.optional(v.string()),
       city: v.optional(v.string()),
