@@ -894,6 +894,31 @@ describe("AttachSetsDialog — no BSC set on the path (NEO-252)", () => {
     expect(within(bscPane()).queryByText(BSC_NO_LINKED_SET_MESSAGE)).toBeNull();
   });
 
+  /**
+   * a11y (accessibility audit) — after the hop, `shownSetLabel` falls back to
+   * the NB variant's own label (there is no linked BSC set to name), so a
+   * "Back to <that label>" breadcrumb must not render: there is no set rung
+   * to go back to, and clicking it would just re-fetch `variants` with no
+   * `setSlug`, get the same no-linked-set note back, and hop right back to
+   * the set list — a bounce a keyboard/screen-reader operator can trigger but
+   * that visibly does nothing.
+   */
+  test("no 'Back to' breadcrumb renders after the no-linked-set hop", async () => {
+    mockFetchBsc.mockImplementation(noLinkedSetResponder());
+
+    renderDialog();
+
+    await waitFor(() =>
+      expect(within(bscPane()).getByLabelText("Toggle Topps Chrome")).toBeTruthy(),
+    );
+    expect(
+      within(bscPane()).queryByLabelText(/^Back to BSC set/),
+    ).toBeNull();
+    // Only the two calls the hop itself makes — nothing extra fired because
+    // there was no breadcrumb button to click.
+    expect(mockFetchBsc).toHaveBeenCalledTimes(2);
+  });
+
   test("a REACHED set with no variants keeps the ordinary empty copy", async () => {
     // The equality check earning its keep, as with the other skip sentences: a
     // successful variants call also carries a message, and it is a count.

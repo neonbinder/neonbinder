@@ -563,6 +563,22 @@ describe("MultiSourcePanel — the BSC skip line (NEO-252)", () => {
     ).toBeTruthy();
   });
 
+  /**
+   * a11y (accessibility audit) — this line appears and disappears in response
+   * to detaching a chip, with focus staying on the (now gone) detach button's
+   * replacement heading rather than moving to the sentence itself. Without a
+   * live region, a screen-reader operator who just detached their last BSC
+   * slot is never told BSC will now be skipped.
+   */
+  test("the skip sentence is a polite live region", () => {
+    chainWithLeaf({ b0: "2024-topps" }, { b0: "setName" });
+    render(<MultiSourcePanel selectorOptionId={ROW_ID} />);
+
+    expect(
+      within(bscColumn()).getByRole("status").textContent,
+    ).toBe("BuySportsCards will be skipped: no variant type on this path.");
+  });
+
   test("the sentence is built from a FIXED vocabulary — no NB row value in it", () => {
     // NEO-47, at the last surface it could leak from. Every row on this chain
     // is deliberately named something unmistakable; the line names the facet

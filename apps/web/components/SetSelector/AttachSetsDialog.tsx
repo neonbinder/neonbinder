@@ -521,11 +521,25 @@ export default function AttachSetsDialog({
             }
             breadcrumb={
               bscView === "sets" ? (
-                <BreadcrumbButton
-                  label={`Back to ${shownSetLabel}`}
-                  ariaLabel={`Back to BSC set ${shownSetLabel}`}
-                  onClick={backToVariants}
-                />
+                // a11y/correctness (accessibility audit, NEO-252 follow-up) —
+                // when the hop above fired because there is no linked BSC set
+                // (`bscNoSetNote` set, `bscSetSlug` still undefined),
+                // `shownSetLabel` falls back to the NB variant's OWN label,
+                // and a "Back to <that label>" button would claim there is a
+                // set rung to return to. Clicking it re-fetches `view:
+                // "variants"` with no `setSlug`, which answers the same
+                // no-linked-set note and hops right back here — a wasted
+                // call, a loading flash, a re-announced note, and for a
+                // keyboard/screen-reader operator a control that visibly does
+                // nothing. Render no breadcrumb at all in that state; there is
+                // nowhere for it to go back TO.
+                bscNoSetNote !== null && bscSetSlug === undefined ? null : (
+                  <BreadcrumbButton
+                    label={`Back to ${shownSetLabel}`}
+                    ariaLabel={`Back to BSC set ${shownSetLabel}`}
+                    onClick={backToVariants}
+                  />
+                )
               ) : (
                 <BreadcrumbButton
                   label={allBscSetsLabel}

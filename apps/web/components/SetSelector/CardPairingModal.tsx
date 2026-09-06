@@ -1689,6 +1689,26 @@ export default function CardPairingModal({
     text: string;
   } | null>(null);
   /**
+   * a11y (accessibility audit, NEO-251) — WCAG 3.3.1 Error Identification for
+   * the two silent-refusal paths `RENAME` and `EDIT_PLAYERS` added over an
+   * unbounded field: an over-length name or an over-count roster used to be
+   * discarded with the input simply reverting to its old value and NOTHING
+   * announced, sighted or not. These hold the message to show (and, for the
+   * roster field, block the draft-clearing that was erasing what the operator
+   * typed) until they correct it or move on. Keyed like `editingKey` /
+   * `playersDraft` for the same reason: only one field can be in error at a
+   * time, and a stale key must not paint an error on a row the operator has
+   * moved off of.
+   */
+  const [nameError, setNameError] = useState<{
+    key: string;
+    message: string;
+  } | null>(null);
+  const [playersError, setPlayersError] = useState<{
+    key: string;
+    message: string;
+  } | null>(null);
+  /**
    * Has the OPEN edit session already been settled?
    *
    * `finishEdit` has two triggers that a real browser fires as a PAIR, not as
@@ -1880,8 +1900,37 @@ export default function CardPairingModal({
   const commitPlayersDraft = (index: number, key: string) => {
     if (!playersDraft || playersDraft.key !== key) return;
     const { text } = playersDraft;
+    const players = splitPlayers(text);
+    // a11y (accessibility audit, NEO-251) — mirror `EDIT_PLAYERS`'s own two
+    // bounds BEFORE dispatching. The reducer already refuses these silently
+    // (by design — see its comment), but until now this caller cleared
+    // `playersDraft` unconditionally right above, so a refusal erased the
+    // operator's typed roster with no error shown, sighted or not (WCAG
+    // 3.3.1). On a refusal here the draft is left in place — the field keeps
+    // showing exactly what was typed — and a `role="alert"` message is
+    // rendered next to it (see the field's `aria-describedby` below).
+    if (players.length > 0) {
+      if (players.length > MAX_CARD_PLAYERS) {
+        setPlayersError({
+          key,
+          message: `A card can carry at most ${MAX_CARD_PLAYERS} players — remove some to save.`,
+        });
+        return;
+      }
+      const overLong = players.find(
+        (name) => name.length > MAX_PLAYER_NAME_LENGTH,
+      );
+      if (overLong) {
+        setPlayersError({
+          key,
+          message: `Player names are limited to ${MAX_PLAYER_NAME_LENGTH} characters — shorten it to save.`,
+        });
+        return;
+      }
+    }
+    setPlayersError(null);
     setPlayersDraft(null);
-    dispatch({ type: "EDIT_PLAYERS", index, players: splitPlayers(text) });
+    dispatch({ type: "EDIT_PLAYERS", index, players });
   };
 
   const visibleBsc = useMemo(
@@ -2329,7 +2378,24 @@ export default function CardPairingModal({
                       // unmount, so without this an Escape would be followed
                       // by a commit of the very draft it cancelled.
                       if (editSessionDoneRef.current) return;
+                      // a11y (NEO-251 audit) — mirror the reducer's own
+                      // length bound BEFORE dispatching, so an over-length
+                      // name can be reported instead of vanishing into
+                      // `RENAME`'s silent no-op. Checked ahead of the
+                      // `editSessionDoneRef` flip and the `setEditingKey`
+                      // below: on a refusal neither runs, so the editor stays
+                      // open, the typed text is untouched, and the field's own
+                      // autofocus-on-render effect (below) pulls focus back in
+                      // if a blur already carried it away.
+                      if (commit && editDraft.trim().length > MAX_PLAYER_NAME_LENGTH) {
+                        setNameError({
+                          key: rowKey,
+                          message: `Card names are limited to ${MAX_PLAYER_NAME_LENGTH} characters — shorten it to save.`,
+                        });
+                        return;
+                      }
                       editSessionDoneRef.current = true;
+                      setNameError(null);
                       if (commit) {
                         dispatch({
                           type: "RENAME",
@@ -2398,6 +2464,14 @@ export default function CardPairingModal({
                                 // checklist-pairing-dialog-cancel.yaml) match
                                 // two elements.
                                 aria-label={`Edit name for #${m.card.cardNumber}`}
+                                aria-invalid={
+                                  nameError?.key === rowKey || undefined
+                                }
+                                aria-describedby={
+                                  nameError?.key === rowKey
+                                    ? `name-edit-error-${domKey(m.card)}`
+                                    : undefined
+                                }
                                 onKeyDown={(e) => {
                                   if (e.key === "Enter") {
                                     e.preventDefault();
@@ -2428,6 +2502,21 @@ export default function CardPairingModal({
                                   · {m.card.cardVariation}
                                 </span>
                               )}
+                              {nameError?.key === rowKey && (
+                                // role="alert" — an assertive live region that
+                                // announces itself the instant it mounts, which
+                                // is when a refusal happens (see `finishEdit`).
+                                // A `<p aria-describedby>` alone would only be
+                                // heard if the field were re-focused, and the
+                                // field never lost the DOM in this path.
+                                <span
+                                  id={`name-edit-error-${domKey(m.card)}`}
+                                  role="alert"
+                                  className="text-xs text-[#FF2EB3]"
+                                >
+                                  {nameError.message}
+                                </span>
+                              )}
                             </>
                           ) : (
                             <button
@@ -2446,6 +2535,7 @@ export default function CardPairingModal({
                                 // the name, and the commit would take it.
                                 setEditDraft(m.card.cardName);
                                 setEditingKey(rowKey);
+                                setNameError(null);
                                 // A fresh session is unsettled, whatever the
                                 // last one did.
                                 editSessionDoneRef.current = false;
@@ -2601,20 +2691,61 @@ export default function CardPairingModal({
                               the choice above answerable. */}
                           <Input
                             bare
+                            // a11y/correctness (audit, NEO-251) — this field
+                            // holds a `|`-joined LIST of names, and
+                            // `MAX_PLAYER_NAME_LENGTH` bounds a single one. A
+                            // native `maxLength` here capped the whole joined
+                            // string at one name's limit, which silently
+                            // truncated (no message, nothing announced) any
+                            // roster of a few ordinarily-named players well
+                            // before it hit the per-name or per-count bound
+                            // the reducer actually enforces below — making
+                            // `EDIT_PLAYERS`'s own over-length message
+                            // unreachable by typing. The real bounds are
+                            // reported, with a message, by `commitPlayersDraft`
+                            // instead.
                             className="w-full min-w-0 text-xs px-1.5 py-0.5"
                             type="text"
-                            maxLength={MAX_PLAYER_NAME_LENGTH}
+                            // a11y (audit, NEO-251) — WCAG 3.3.2: the field
+                            // carries no visible label at all, only the
+                            // `aria-label` below, so a sighted operator who
+                            // has not opened a screen reader has nothing
+                            // telling them what to type or how to separate
+                            // names. The placeholder repeats the
+                            // `aria-label`'s own instruction rather than
+                            // inventing new wording.
+                            placeholder="Name | Name | Name"
+                            ref={(el) => {
+                              // Refocus after a refusal: `commitPlayersDraft`
+                              // runs on blur too (tabbing away), by which
+                              // point the browser has already moved focus
+                              // elsewhere. Re-pulling it back — same trick the
+                              // name editor's ref uses above — means the error
+                              // message just rendered is announced from a
+                              // field the operator can immediately correct,
+                              // not one they have already left.
+                              if (
+                                el &&
+                                playersError?.key === rowKey &&
+                                document.activeElement !== el
+                              ) {
+                                el.focus();
+                              }
+                            }}
                             value={
                               playersDraft?.key === rowKey
                                 ? playersDraft.text
                                 : joinCustomPlayers(m.card.players ?? [])
                             }
-                            onChange={(e) =>
+                            onChange={(e) => {
                               setPlayersDraft({
                                 key: rowKey,
                                 text: e.target.value,
-                              })
-                            }
+                              });
+                              if (playersError?.key === rowKey) {
+                                setPlayersError(null);
+                              }
+                            }}
                             // Named by the row's SCOPE and distinguished from
                             // the radiogroup above it, which is `Players for
                             // <scope>`: two differently-roled controls sharing
@@ -2623,6 +2754,14 @@ export default function CardPairingModal({
                             // parenthetical is also where the separator is
                             // stated, since nothing else on screen says it.
                             aria-label={`Players for ${scope} (separate names with |)`}
+                            aria-invalid={
+                              playersError?.key === rowKey || undefined
+                            }
+                            aria-describedby={
+                              playersError?.key === rowKey
+                                ? `players-edit-error-${domKey(m.card)}`
+                                : undefined
+                            }
                             onKeyDown={(e) => {
                               if (e.key === "Enter") {
                                 e.preventDefault();
@@ -2635,10 +2774,24 @@ export default function CardPairingModal({
                                 // every pairing decision on the screen.
                                 e.stopPropagation();
                                 setPlayersDraft(null);
+                                setPlayersError(null);
                               }
                             }}
                             onBlur={() => commitPlayersDraft(i, rowKey)}
                           />
+                          {playersError?.key === rowKey && (
+                            // role="alert" for the same reason as the name
+                            // editor's: this mounts at the instant of refusal,
+                            // so it needs to announce itself rather than wait
+                            // to be discovered.
+                            <span
+                              id={`players-edit-error-${domKey(m.card)}`}
+                              role="alert"
+                              className="text-xs text-[#FF2EB3]"
+                            >
+                              {playersError.message}
+                            </span>
+                          )}
                         </ConflictRadioGroup>
                       )}
                     </li>

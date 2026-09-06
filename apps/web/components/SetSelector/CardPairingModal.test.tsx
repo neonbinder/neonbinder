@@ -2768,6 +2768,33 @@ describe("CardPairingModal — renaming a row that already has a name conflict",
       screen.getByRole("radiogroup", { name: "Name for #227c" }).className,
     ).toContain("flex-wrap");
   });
+
+  /**
+   * a11y (accessibility audit) — WCAG 3.3.1 Error Identification. Before this,
+   * an over-length name was refused by `RENAME`'s own silent no-op with the
+   * editor simply closing over the card's OLD name — nothing told the
+   * operator their edit did not take, sighted or not.
+   */
+  test("an over-length rename is refused with an announced error, and the editor stays open", () => {
+    renderModal({ autoMatched: [conflicted()] });
+    openEditor("#227c Mike Yastrzemski");
+    fireEvent.change(editor(), { target: { value: "A".repeat(121) } });
+    fireEvent.keyDown(editor(), { key: "Enter" });
+
+    expect(screen.getByRole("alert").textContent).toMatch(
+      /limited to 120 characters/,
+    );
+    // The editor is still open, with the typed (over-length) text intact —
+    // the operator can shorten it and try again rather than having to
+    // rediscover what they typed.
+    expect(screen.getByLabelText("Edit name for #227c")).toBeTruthy();
+    expect(editor().value).toBe("A".repeat(121));
+    // Nothing committed: the radiogroup still shows BSC's name winning.
+    expect(
+      screen.getByRole("radio", { name: /^BSC: Mike Yastrzemski —/ })
+        .getAttribute("aria-checked"),
+    ).toBe("true");
+  });
 });
 
 /**
@@ -3510,6 +3537,36 @@ describe("CardPairingModal — marketplace player conflicts (NEO-251)", () => {
       );
 
       expect(screen.queryByRole("radio", { name: /^Custom:/ })).toBeNull();
+    });
+
+    /**
+     * a11y (accessibility audit) — WCAG 3.3.1 Error Identification. Before
+     * this, both refusals above cleared the draft unconditionally, so the
+     * field silently reverted to the row's old roster with the operator's
+     * typed text simply gone and nothing announced, sighted or not.
+     */
+    test("an over-length name announces an error and keeps the typed text", () => {
+      renderModal({ autoMatched: [autoPlayersConflict()] });
+      const overLong = "A".repeat(121);
+      const field = typeRoster(overLong);
+
+      expect(screen.getByRole("alert").textContent).toMatch(
+        /limited to 120 characters/,
+      );
+      expect((field as HTMLInputElement).value).toBe(overLong);
+    });
+
+    test("too many players announces an error and keeps the typed text", () => {
+      renderModal({ autoMatched: [autoPlayersConflict()] });
+      const tooMany = Array.from({ length: 21 }, (_, i) => `Player ${i}`).join(
+        " | ",
+      );
+      const field = typeRoster(tooMany);
+
+      expect(screen.getByRole("alert").textContent).toMatch(
+        /at most 20 players/,
+      );
+      expect((field as HTMLInputElement).value).toBe(tooMany);
     });
   });
 

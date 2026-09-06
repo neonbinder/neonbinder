@@ -459,7 +459,18 @@ function SideColumn({
         // failures — nothing here is broken or lost, the request simply is not
         // scoped enough to send. Colouring it as an error would send the
         // operator looking for an outage.
-        <p className="mb-2 border-l-2 border-[#00B7FF] pl-2 text-xs leading-snug text-gray-300">
+        //
+        // a11y (accessibility audit) — `role="status"` (a polite live region,
+        // matching AttachSetsDialog's own Pane `notice`) because this line
+        // appears and disappears in response to detaching a chip, with focus
+        // staying on the chip's own (now-removed) detach button rather than
+        // moving here. Without it, a screen-reader operator who just detached
+        // their last BSC set slot gets no indication that BSC will now be
+        // skipped — the one moment this sentence exists to cover.
+        <p
+          role="status"
+          className="mb-2 border-l-2 border-[#00B7FF] pl-2 text-xs leading-snug text-gray-300"
+        >
           {skipNote}
         </p>
       )}
