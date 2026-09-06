@@ -1,17 +1,17 @@
 appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
-name: "Entity review — a committed link resolves the name for good, so re-syncing the set raises no review at all"
+name: "Entity review — a Link to Existing decision is carried through Confirm & Save into the committed checklist"
 tags:
   - set-selector
   - regression
 ---
-# R1 — ONE FEATURE (NEO-92): what a COMMITTED link is worth. The sibling
+# R1 — ONE FEATURE (NEO-92): a link decision survives the COMMIT. The sibling
 # read-only flow (checklist-wizard-link-to-existing-player) proves the link
 # ACTION — that the panel finds a roster player and records "Linked to <name>"
-# rather than a create. It stops at the decision. This flow proves the decision
-# STICKS: after the commit, every name in this set is resolved, so **re-syncing
-# it raises no entity review at all**. That is the operator-visible payoff —
-# you resolve a name once and the marketplace stops asking.
+# rather than a create — and then discards the batch. This flow carries that
+# same decision through `Confirm & Save`, so the link is exercised against
+# `commitCardChecklist`'s own re-resolution of the linked id rather than only
+# against the wizard's render.
 #
 # R2 — HARD ASSERTIONS:
 #     (a) the review starts with nothing decided — "0 of N reviewed";
@@ -21,12 +21,19 @@ tags:
 #         records a LINK — the history reads "Linked to Shohei Ohtani", the one
 #         string neither a create ("Added as new") nor a skip ("Skipped") can
 #         produce;
-#     (d) the commit lands ("Saved N cards");
-#     (e) THE POINT: a SECOND sync of the same set commits straight through —
-#         "Saved N cards" again with NO wizard. Every name is now either linked
-#         or skipped, so `resolveUnknownsAndStartBatch` finds nothing to review.
-#         The negative is paired with that positive terminal signal so it cannot
-#         pass on a dead page.
+#     (d) the commit lands cleanly ("Saved N cards") with the link on the batch.
+#         `commitCardChecklist` re-resolves each decision as it writes, so a
+#         link that had not survived `recordDecision` fails here rather than
+#         passing quietly.
+#
+# ── WHY THERE IS NO RE-SYNC STEP ────────────────────────────────────────────
+#   An earlier version ended by re-syncing and asserting the wizard did not
+#   reopen — "resolve a name once and the marketplace stops asking". That
+#   assertion is unsound: MEASURED TWICE locally, a re-sync of an
+#   already-committed checklist raises no entity review AT ALL, regardless of
+#   how the names were decided. It would therefore have passed whether or not
+#   the link persisted, which is exactly the shape of assertion R2 forbids. It
+#   also doubled the flow's runtime for that non-claim.
 #
 # ── THE FIXTURE, AND WHY IT IS BASEBALL ─────────────────────────────────────
 #   `Baseball → 2024 → Topps → Topps Brooklyn Collection → Base`.
@@ -125,10 +132,29 @@ tags:
 # a 200ms typeahead debounce; anything slower is a product finding.
 # ============================================================
 
-- tapOn:
-    id: "Link to existing instead"
-- assertVisible:
-    id: "Search existing players"
+# ⚠️ RETRY THE OPEN, because the row can grow UNDER the tap. When the wizard
+# finds a NEAR MATCH for the presented name it renders a `NearMatchPanel` of
+# `Link to {name}` buttons ABOVE this action row, and that panel arrives on its
+# own query — after the row first paints. Maestro reads bounds, then clicks
+# ~330ms later, so a panel landing in that window pushes "Link to Existing…"
+# down and the click lands on nothing: no error, no decision recorded, and the
+# assert below fails with the row still showing "Link to Existing…".
+# Measured locally on Topps Brooklyn Collection, where "Victor Scott II" draws a
+# near match for "Victor Scott".
+#
+# The retry re-taps and re-checks, so a genuinely broken link panel still fails.
+- retry:
+    maxRetries: 2
+    commands:
+      - tapOn:
+          id: "Link to existing instead"
+          retryTapIfNoChange: true
+      # Doubles as the R2 precondition: this panel is labelled for PLAYERS, so a
+      # team row would fail here rather than silently linking the wrong kind.
+      - extendedWaitUntil:
+          visible:
+            id: "Search existing players"
+          timeout: 10000
 - tapOn:
     id: "Search existing players"
 - inputText: "Ohtani"
@@ -160,40 +186,3 @@ tags:
     visible:
       text: ".*Saved [0-9]+ cards.*"
     timeout: 60000
-
-# ============================================================
-# STEP 5 — R2(e): THE POINT — re-syncing raises no review
-#
-# Every name is now resolved: one linked, the rest skipped. A second fetch
-# therefore finds nothing to review and commits straight through. This is the
-# end-to-end proof that the link and the skips PERSISTED — a decision that had
-# not been written would come back as an unknown here.
-#
-# The wizard heading is the right negative to pair with the positive: it was on
-# screen a moment ago, so its absence is meaningful rather than vacuous, and the
-# "Saved N cards" wait beside it means this cannot pass on a dead page.
-#
-# 120s for the live re-fetch, then the pairing dialog again.
-# ============================================================
-
-- scrollUntilVisible:
-    element:
-      id: "Sync card checklist"
-    centerElement: true
-    timeout: 15000
-- tapOn:
-    id: "Sync card checklist"
-- extendedWaitUntil:
-    visible: ".*Match Cards.*"
-    timeout: 120000
-- extendedWaitUntil:
-    visible:
-      text: "^Confirm$"
-    timeout: 120000
-- tapOn:
-    id: "Confirm card matches"
-- extendedWaitUntil:
-    visible:
-      text: ".*Saved [0-9]+ cards.*"
-    timeout: 120000
-- assertNotVisible: "Confirm New Players & Teams"

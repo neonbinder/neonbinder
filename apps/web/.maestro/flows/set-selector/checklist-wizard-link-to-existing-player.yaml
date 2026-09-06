@@ -123,10 +123,29 @@ tags:
     visible:
       id: "Link to existing instead"
     timeout: 30000
-- tapOn:
-    id: "Link to existing instead"
-- assertVisible:
-    id: "Search existing players"
+# ⚠️ RETRY THE OPEN, because the row can grow UNDER the tap. When the wizard
+# finds a NEAR MATCH for the presented name it renders a `NearMatchPanel` of
+# `Link to {name}` buttons ABOVE this action row, and that panel arrives on its
+# own query — after the row first paints. Maestro reads bounds, then clicks
+# ~330ms later, so a panel landing in that window pushes "Link to Existing…"
+# down and the click lands on nothing: no error, no decision recorded, and the
+# assert below fails with the row still showing "Link to Existing…".
+# Measured locally on Topps Brooklyn Collection, where "Victor Scott II" draws a
+# near match for "Victor Scott".
+#
+# The retry re-taps and re-checks, so a genuinely broken link panel still fails.
+- retry:
+    maxRetries: 2
+    commands:
+      - tapOn:
+          id: "Link to existing instead"
+          retryTapIfNoChange: true
+      # Doubles as the R2 precondition: this panel is labelled for PLAYERS, so a
+      # team row would fail here rather than silently linking the wrong kind.
+      - extendedWaitUntil:
+          visible:
+            id: "Search existing players"
+          timeout: 10000
 - tapOn:
     id: "Search existing players"
 - inputText: "Ohtani"

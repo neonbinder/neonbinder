@@ -22,7 +22,7 @@ These are provisioned once by `flows/setup.yaml` at the head of every run and ar
 | Baseball → 2024 → Topps → Topps 206 | none — variant types sync on first use; Base stays **UNMAPPED** (NOT pre-synced) | `flows/set-selector/base-mapping-cancel-recovers.yaml` — **sole writer**, and it writes nothing |
 | Baseball → 2024 → Topps → Topps Chicago Cubs | `Base` — variant types synced, Base MAPPED on BOTH sides, checklist deliberately EMPTY | `flows/setup.yaml` (structure); **sole writer** `checklist-wizard-skip-commits-and-unskip.yaml` |
 | Baseball → 2024 → Topps → Topps Baltimore Orioles | `Base` — same shape | `flows/setup.yaml` (structure); **sole writer** `checklist-wizard-career-team-commits.yaml` |
-| Baseball → 2024 → Topps → Topps Brooklyn Collection | `Base` — same shape | `flows/setup.yaml` (structure); **sole writer** `checklist-wizard-link-commits-and-resolves.yaml` |
+| Baseball → 2024 → Topps → Topps Brooklyn Collection | `Base` — same shape | `flows/setup.yaml` (structure); **sole writer** `checklist-wizard-link-commits.yaml` |
 | Baseball → 1996 → Score → Score | `Insert` (reconciled in-flow, NOT pre-synced) | `flows/set-selector/inserts-1996-score-one-nb-set-two-bsc-sources.yaml` — **sole writer** |
 | Hockey → 2024 → Topps → Topps NHL Sticker Collection | none — the flow never goes below `Variant Types` (NOT pre-synced) | `flows/set-selector/set-rename-survives-resync-and-suggests-bsc-name.yaml` — **sole writer** |
 
@@ -309,7 +309,7 @@ anything:
 |---|---|
 | `checklist-wizard-skip-commits-and-unskip` | Topps Chicago Cubs |
 | `checklist-wizard-career-team-commits` | Topps Baltimore Orioles |
-| `checklist-wizard-link-commits-and-resolves` | Topps Brooklyn Collection |
+| `checklist-wizard-link-commits` | Topps Brooklyn Collection |
 
 See "The three COMMITTING entity-review fixtures" below.
 
@@ -329,7 +329,7 @@ gets its **own real set**.
 |---|---|---|---|
 | `checklist-wizard-skip-commits-and-unskip` | Baseball → 2024 → Topps → **Topps Chicago Cubs** | 17 cards, matched both sides | **11 — all players, 0 teams** |
 | `checklist-wizard-career-team-commits` | Baseball → 2024 → Topps → **Topps Baltimore Orioles** | 17 cards, matched both sides | **8 — all players, 0 teams** |
-| `checklist-wizard-link-commits-and-resolves` | Baseball → 2024 → Topps → **Topps Brooklyn Collection** | 50 cards, matched both sides | **12 — 11 players + 1 team** |
+| `checklist-wizard-link-commits` | Baseball → 2024 → Topps → **Topps Brooklyn Collection** | 50 cards, matched both sides | **12 — 11 players + 1 team** |
 
 All measured live on PR #235's preview, 2026-09-06: each syncs its variant types
 cleanly (a single `Base`, no reconcile dialog), each maps cleanly on BOTH sides,
@@ -398,14 +398,35 @@ re-run needs a fresh seed; `MAESTRO_NO_DEPS=1` will not do.
   `text:`, which Maestro anchors to the whole node, so it cannot match the
   longer row. Only `id:` selectors are regex finds.
 
-#### `setup.yaml` provisions structure only
+#### Each flow provisions its OWN set — the seed does not
 
-Variant types synced and Base mapped on both sides via
-`util-drill-to-base-variant.yaml`, then **checklist EMPTY** — asserted per set.
-All three live under Baseball → 2024 → Topps, which the seed has already synced,
-so they add no new sport, year or manufacturer. **Never fetch these sets in the
-seed**: it would create their players and empty every wizard they exist to
-fill.
+`setup.yaml` deliberately provisions NOTHING for these three. Doing so cost
+~2 minutes of SERIAL seed time and pushed the seed past its 600s wall
+(run 34048184342); the seed runs once, before every runner starts, so anything
+added there taxes every PR.
+
+Instead each flow provisions its own set on its own runner, in parallel.
+`util-fetch-real-set-checklist-to-wizard.yaml` already handles the cold
+first-time path with no extra step: the warm drill's closing
+`visible: "Base"` (60s) covers the cold variant-type sync, and
+`util-drill-to-base-variant.yaml`'s `when: visible "Select Base Set"` branch
+maps BOTH sides (45s) and is simply skipped once the set is mapped — so it is
+idempotent. Measured cold, end to end: 98s / 104s / ~110s against a 600s
+per-flow timeout (`MAESTRO_FLOW_TIMEOUT_SEC` in `run-e2e-queue.sh`).
+
+**Never fetch these sets in the seed**: it would create their players and empty
+every wizard they exist to fill.
+
+#### A re-sync raises no entity review — do not assert on one
+
+Measured twice: once a set's checklist is committed, re-syncing it produces no
+entity review at all, whatever decisions were taken. Any assertion of the form
+"resolve a name once and it stops being asked about" therefore passes
+regardless of what it claims to prove, and an earlier version of the link flow
+carried exactly that. It also means these flows need a set that has never been
+committed on the deployment — which CI guarantees by reseeding every run, and
+which a LOCAL re-run does not: re-running one of these against an
+already-committed preview fails at the wizard wait, correctly.
 
 ### Topps 206 — the unmapped-Base fixture for `base-mapping-cancel-recovers` (NEO-248) ✅ APPROVED
 
