@@ -31,6 +31,10 @@ import schema from "./schema";
 import { Id } from "./_generated/dataModel";
 import { normalizePlayerName } from "./players";
 import { normalizeTeamName } from "./teams";
+// NEO-236's key derivation — the ONE place a team row's identity fields are
+// built. Exercised directly so the fold is pinned at the derivation and not
+// only at the query that happens to call it today.
+import { teamRowFields } from "./lib/teamRow";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
 
 const modules = (import.meta as unknown as {
@@ -210,6 +214,113 @@ describe("teams.findByNameAndSport folds accents (NEO-253)", () => {
         sportId,
       });
     expect(found?.name).toBe("Montreal Expos");
+  });
+});
+
+/**
+ * NEO-236 introduced a SECOND shape for the same key: a team row stores `name`
+ * ("Expos") and an optional `location` ("Montréal") separately, and
+ * `nameNormalized` is derived from the two COMPOSED. The fold has to survive
+ * that composition, or the split reintroduces exactly the duplicate this ticket
+ * closed — a source spelling "Montreal Expos" would miss the split row and the
+ * wizard would offer to create a franchise NB already holds, this time with the
+ * accent sitting in a field the old lookup never even read.
+ *
+ * The equivalence pinned here is two-dimensional and both axes matter:
+ *
+ *   ("Montréal", "Expos")  ≡  ("Montreal", "Expos")   — the fold
+ *   ("Montreal", "Expos")  ≡  (—, "Montreal Expos")   — the split (NEO-236)
+ *
+ * so all four spellings are one row. The second axis is main's own invariant
+ * (`normalizeTeamName` token-sorts, so moving a word between the fields cannot
+ * change the key); it is asserted here alongside the fold because it is the
+ * composition of the two that a caller actually depends on.
+ */
+describe("the location-composed team key folds accents (NEO-236 + NEO-253)", () => {
+  test("teamRowFields derives one key from all four spellings", () => {
+    const keys = [
+      teamRowFields({ name: "Expos", location: "Montréal" }),
+      teamRowFields({ name: "Expos", location: "Montreal" }),
+      teamRowFields({ name: "Montréal Expos" }),
+      teamRowFields({ name: "Montreal Expos" }),
+    ].map((f) => f.nameNormalized);
+    expect(new Set(keys).size).toBe(1);
+    expect(keys[0]).toBe(normalizeTeamName("Montreal Expos"));
+
+    // The fold decides identity and never rewrites what NB stores: each row
+    // keeps the halves it was given, accents included.
+    expect(teamRowFields({ name: "Expos", location: "Montréal" })).toMatchObject(
+      { name: "Expos", location: "Montréal" },
+    );
+  });
+
+  test("an ASCII full name finds the accented SPLIT row", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("teams", {
+        ...teamRowFields({ name: "Expos", location: "Montréal" }),
+        sportId,
+        lastUpdated: Date.now(),
+      });
+    });
+
+    const found = await t
+      .withIdentity(USER)
+      .query(api.teams.findByNameAndSport, {
+        name: "Montreal Expos",
+        sportId,
+      });
+    expect(found?.location).toBe("Montréal");
+    expect(found?.name).toBe("Expos");
+  });
+
+  test("an accented full name finds the ASCII split row", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("teams", {
+        ...teamRowFields({ name: "Expos", location: "Montreal" }),
+        sportId,
+        lastUpdated: Date.now(),
+      });
+    });
+
+    const found = await t
+      .withIdentity(USER)
+      .query(api.teams.findByNameAndSport, {
+        name: "Montréal Expos",
+        sportId,
+      });
+    expect(found?.location).toBe("Montreal");
+  });
+
+  test("findOrCreate on the accented halves returns the row the ASCII full name made", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const asUser = t.withIdentity(USER);
+
+    const first = await asUser.mutation(api.teams.findOrCreate, {
+      name: "Montreal Expos",
+      sportId,
+    });
+    const second = await asUser.mutation(api.teams.findOrCreate, {
+      name: "Expos",
+      location: "Montréal",
+      sportId,
+    });
+    expect(second).toBe(first);
+
+    const rows = await t.run(async (ctx) => ctx.db.query("teams").collect());
+    expect(rows).toHaveLength(1);
+    // Created from a full name, so that is what it still stores — the second
+    // call resolved onto it and did not re-split or re-spell it.
+    expect(rows[0].name).toBe("Montreal Expos");
+    expect(rows[0].location).toBeUndefined();
+
+    // `findOrCreate`'s INSERT branch schedules enrichment work; settle it here
+    // rather than letting it race teardown. See the file note.
+    await drainScheduled(t);
   });
 });
 
