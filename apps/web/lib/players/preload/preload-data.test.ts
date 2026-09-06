@@ -98,39 +98,55 @@ describe.each(cases)("%s", (fileName, file, minPlayers, minTeams) => {
     expect(new Set(codes).size).toBe(codes.length);
   });
 
+  // These three walk every player (and every one of ~120k stints). An
+  // `expect` per iteration is what made the stint walk time out at vitest's
+  // 5s default on the CI runner (green on a laptop, red on ubuntu-latest), so
+  // each collects violations in plain code and asserts ONCE, with the first
+  // few offenders in the failure message.
+
   test("players: unique ids, a name, and at least one stint", () => {
     const ids = new Set<string>();
+    const violations: string[] = [];
     for (const p of file.players) {
-      expect(p.id).toBeTruthy();
-      expect(ids.has(p.id)).toBe(false);
+      if (!p.id) violations.push("missing id");
+      else if (ids.has(p.id)) violations.push(`duplicate id ${p.id}`);
       ids.add(p.id);
-      expect(p.name.trim()).not.toBe("");
-      expect(p.stints.length).toBeGreaterThan(0);
+      if (p.name.trim() === "") violations.push(`${p.id}: blank name`);
+      if (p.stints.length === 0) violations.push(`${p.id}: no stints`);
     }
+    expect(violations.slice(0, 5)).toEqual([]);
   });
 
   test("players: every stint indexes a real team, earliest first", () => {
+    const teamCount = file.teams.length;
+    const violations: string[] = [];
     for (const p of file.players) {
       let previousFrom = -Infinity;
       for (const [teamIndex, from, to] of p.stints) {
-        expect(Number.isInteger(teamIndex)).toBe(true);
-        expect(teamIndex).toBeGreaterThanOrEqual(0);
-        expect(teamIndex).toBeLessThan(file.teams.length);
-        expect(from).toBeLessThanOrEqual(to);
-        expect(from).toBeGreaterThanOrEqual(1871);
-        expect(to).toBeLessThanOrEqual(2030);
-        expect(from).toBeGreaterThanOrEqual(previousFrom);
+        const bad =
+          !Number.isInteger(teamIndex) ||
+          teamIndex < 0 ||
+          teamIndex >= teamCount ||
+          from > to ||
+          from < 1871 ||
+          to > 2030 ||
+          from < previousFrom;
+        if (bad) violations.push(`${p.id}: [${teamIndex}, ${from}, ${to}]`);
         previousFrom = from;
       }
     }
+    expect(violations.slice(0, 5)).toEqual([]);
   });
 
   test("players: a birth year, when present, is plausible", () => {
+    const violations: string[] = [];
     for (const p of file.players) {
       if (p.birthYear === undefined) continue;
-      expect(p.birthYear).toBeGreaterThan(1820);
-      expect(p.birthYear).toBeLessThan(2020);
+      if (p.birthYear <= 1820 || p.birthYear >= 2020) {
+        violations.push(`${p.id}: ${p.birthYear}`);
+      }
     }
+    expect(violations.slice(0, 5)).toEqual([]);
   });
 
   test("players: sorted by id, so a regenerate diffs cleanly", () => {
