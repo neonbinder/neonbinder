@@ -19,6 +19,7 @@ These are provisioned once by `flows/setup.yaml` at the head of every run and ar
 |---|---|---|
 | Baseball → 2024 → Topps → Topps Chrome | `Base` (full checklist), `Insert` → "Future Stars" (~20 cards), `Parallel` → "Gold Wave Refractors" (~300 cards) | `flows/setup.yaml` |
 | Baseball → 2024 → Topps → Topps Big League | `Base` — variant types synced and Base MAPPED, checklist deliberately EMPTY (NEO-248 wizard fixture) | `flows/setup.yaml` |
+| Baseball → 2024 → Topps → Topps 206 | none — variant types sync on first use; Base stays **UNMAPPED** (NOT pre-synced) | `flows/set-selector/base-mapping-cancel-recovers.yaml` — **sole writer**, and it writes nothing |
 | Baseball → 1996 → Score → Score | `Insert` (reconciled in-flow, NOT pre-synced) | `flows/set-selector/inserts-1996-score-one-nb-set-two-bsc-sources.yaml` — **sole writer** |
 | Hockey → 2024 → Topps → Topps NHL Sticker Collection | none — the flow never goes below `Variant Types` (NOT pre-synced) | `flows/set-selector/set-rename-survives-resync-and-suggests-bsc-name.yaml` — **sole writer** |
 
@@ -301,6 +302,38 @@ READ-ONLY (Cancel → Discard).
 are retired along with `fcd-` and `kod-`: these flows create nothing. The
 discard confirm and the Enter commit live in STEP 6 of
 `inserts-1996-score-one-nb-set-two-bsc-sources.yaml`.
+
+### Topps 206 — the unmapped-Base fixture for `base-mapping-cancel-recovers` (NEO-248) ⚠️ NEEDS OWNER APPROVAL
+
+`base-mapping-cancel-recovers` needs a real set whose **Base is UNMAPPED**, so
+that selecting Base auto-opens `BaseSetPicker` and the Cancel → message → Retry
+recovery can be exercised. It used to use `Topps Big League`; it cannot any
+more, because Big League is now the wizard fixture and `setup.yaml` maps its
+Base in the seed job. A mapped Base renders `Re-map Base` instead of opening the
+picker, and the flow fails on its first assertion — CI run 34006917636.
+
+**The two needs are irreconcilable on one set** (one requires Base unmapped, the
+other requires it mapped), so they get different sets.
+
+Verified live on PR #235's preview, 2026-09-05:
+
+| | |
+| -- | -- |
+| variant types | `Base` (BSC pill), `Insert`, `Parallel` — clean sync, no reconcile dialog |
+| Base state | UNMAPPED — "BSC — No sets attached" |
+| picker | auto-opens with `Topps 206 — set listing (BSC)` pre-filled; SportLots candidates `206` and `Base Set`, both "likely match" |
+| cancel | "Base mapping cancelled — nothing was linked. Click Retry to pick a set, or Close to leave it unmapped" + a working `Retry` |
+
+**It writes nothing.** The flow cancels twice and never confirms, so Base is
+still unmapped when it finishes — idempotent, no restore step needed. **No other
+flow may map this set's Base**, or this one loses its precondition the same way
+it just did.
+
+**Name-collision note.** `Topps 206` is a strict prefix of `Topps 206 NPB`. That
+is safe for the drill because Maestro `text:` matchers are full-node-anchored;
+only `id:` selectors are regex FINDS. (`Topps 206 NPB` itself is unusable as a
+fixture — it has only an `Insert` variant type and opens a 2534-row
+`Reconcile Inserts` dialog on first drill.)
 
 ### Topps Big League — the entity-review wizard fixture (NEO-248) ⚠️ NEEDS OWNER APPROVAL
 

@@ -57,13 +57,39 @@ tags:
     visible: ".*Build set parameters using marketplace APIs.*"
     timeout: 45000
 
-# ── DRILL Baseball → 2024 → Topps → Topps Big League (R9) ────────────────────
+# ── DRILL Baseball → 2024 → Topps → Topps 206 (R9) ──────────────────────────
 # Cold variant-type sync for this fresh set is absorbed inside the util (its
 # sanctioned 60s "Base" ceiling).
+#
+# ⚠️ THIS FLOW NEEDS A SET WHOSE BASE IS **UNMAPPED**, and that is the whole
+# reason it moved off `Topps Big League` (NEO-248). Big League is now the
+# entity-review wizard fixture, and `setup.yaml` MAPS its Base in the seed job
+# so the four `checklist-wizard-*` flows do not race each other to create that
+# mapping. A mapped Base renders `Re-map Base` instead of auto-opening the
+# picker, so this flow's very first assertion fails — which is exactly how CI
+# run 34006917636 failed.
+#
+# The two needs are irreconcilable on one set: this flow requires Base UNmapped,
+# the wizard flows require it mapped. So they get different sets.
+#
+# `Topps 206` verified live on PR #235's preview, 2026-09-05: variant types sync
+# clean (Base with a BSC pill, Insert, Parallel — no reconcile), Base is
+# unmapped ("BSC — No sets attached"), and selecting it auto-opens the picker
+# with `Topps 206 — set listing (BSC)` pre-filled and SportLots candidates
+# `206` / `Base Set` both flagged "likely match". Cancel then produces
+# "Base mapping cancelled — nothing was linked…" with a working Retry.
+#
+# THIS FLOW LEAVES BASE UNMAPPED — it cancels twice and never confirms — so it
+# is idempotent and nothing else has to restore state. Do not let any other
+# flow map `Topps 206`'s Base.
+#
+# `Topps 206` is a strict prefix of `Topps 206 NPB`, which is safe here: Maestro
+# `text:` matchers are full-node-anchored, so the drill's `text: "Topps 206"`
+# cannot match the NPB row. Only `id:` selectors are regex FINDS.
 - runFlow:
     file: util-drill-to-2024-topps-chrome.yaml
     env:
-      SET: "Topps Big League"
+      SET: "Topps 206"
 
 # ── SELECT "Base" → auto-opens BaseSetPicker (unmapped → autoOpen=true) ──────
 # Center before tapping so the row is fully in view (R8).

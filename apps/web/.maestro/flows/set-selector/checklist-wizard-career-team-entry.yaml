@@ -104,6 +104,15 @@ tags:
 # discards.
 # ============================================================
 
+# ORDER MATTERS. Wait for the row to become ACTIONABLE first: a row renders no
+# action controls at all until its background Wikidata lookup settles, so a kind
+# guard evaluated before that would poll an empty row, conclude "not a team",
+# and fall through — the failure would then land on the career-form assert with
+# a completely misleading message.
+- extendedWaitUntil:
+    visible:
+      id: "Add as New (Player|Team)"
+    timeout: 30000
 - runFlow:
     when:
       visible:
@@ -111,6 +120,11 @@ tags:
     commands:
       - tapOn:
           id: "Skip .* not a team"
+      # The next row has to settle before STEP 2 reads it, for the same reason.
+      - extendedWaitUntil:
+          visible:
+            id: "Add as New (Player|Team)"
+          timeout: 30000
 
 # ============================================================
 # STEP 2 — R2(a): a PLAYER row, with the manual-entry affordance on it
@@ -121,10 +135,12 @@ tags:
 # to match it as a substring.
 # ============================================================
 
-- extendedWaitUntil:
-    visible:
-      text: ".*Add career team history manually.*"
-    timeout: 30000
+# The CONTROL, not the prose. `CareerTeamEntry`'s team input carries a stable
+# aria-label; the heading beside it is a <p> split by a nested <span>
+# ("Add career team history manually" + " (optional)" + ":"), so its node text
+# is copy that can be reworded without touching behaviour. The input's presence
+# is the same claim — this section renders only for `current.kind === "player"`
+# — expressed against something that will not drift.
 - assertVisible:
     id: "Career team name"
 
@@ -189,12 +205,21 @@ tags:
 # STEP 6 — R2(e): the decision carries the staged entry, and the wizard moves on
 #
 # Two readings of the same event, each saying something the other does not: the
-# history (the decision was a CREATE, not a link or a skip) and the absence of
-# the career-team form (the wizard advanced past the player row).
+# history (the decision was a CREATE, not a link or a skip) and the STAGED CHIP
+# being gone (the wizard advanced off the row we staged it on).
 #
-# The negative matcher is .*-wrapped on purpose: a bare anchored regex would
-# never full-match "Add career team history manually (optional):" and would
-# therefore pass whether the form was there or not.
+# ⚠️ DO NOT assert the career-team FORM disappeared. It does not. The fixture
+# queues ~89 unknown players, so the row after this one is almost always
+# another player — and the form renders for every player row. CI run
+# 34006917636 failed on exactly that: the wizard had correctly advanced
+# ("1 of 90 reviewed", now showing `Austin Hays`) and the form was still on
+# screen, as it should be.
+#
+# The staged chip is the correct signal and is exactly scoped:
+# `setStagedCareerTeams([])` runs in an effect keyed on `[current?._id]`, so
+# staged entries survive everything EXCEPT an actual row change (NEO-221). Its
+# absence therefore means the presented row changed — which is the claim — and
+# it stays true whatever kind the next row is.
 # ============================================================
 
 - tapOn: "Add as New Player"
@@ -202,7 +227,7 @@ tags:
     visible:
       text: "Added as new"
 - assertNotVisible:
-    text: ".*Add career team history manually.*"
+    text: ".*CareerTeam-${output.ATTEMPT_TOKEN}.*"
 
 # ============================================================
 # STEP 7 — EXIT WITHOUT WRITING ANYTHING (R7)

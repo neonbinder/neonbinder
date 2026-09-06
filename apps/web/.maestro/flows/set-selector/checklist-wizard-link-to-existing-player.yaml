@@ -86,6 +86,15 @@ tags:
 # has nothing to do with linking. The skip writes nothing — this flow discards.
 # ============================================================
 
+# ORDER MATTERS. Wait for the row to become ACTIONABLE first: a row renders no
+# action controls at all until its background Wikidata lookup settles, so a kind
+# guard evaluated before that would poll an empty row, conclude "not a team",
+# and fall through — the failure would then land on the link-panel assert with a
+# completely misleading message.
+- extendedWaitUntil:
+    visible:
+      id: "Add as New (Player|Team)"
+    timeout: 30000
 - runFlow:
     when:
       visible:
@@ -93,6 +102,11 @@ tags:
     commands:
       - tapOn:
           id: "Skip .* not a team"
+      # The next row has to settle before STEP 3 reads it, for the same reason.
+      - extendedWaitUntil:
+          visible:
+            id: "Add as New (Player|Team)"
+          timeout: 30000
 
 # ============================================================
 # STEP 3 — R2(b)+(c): a PLAYER row, and the roster row it will take
