@@ -27,3 +27,5 @@
 =======
 - [Discard-confirm dialog family (NEO-220/221)](discard-confirm-dialog-family-neo220.md) — the "one confirm for every discard" pattern (ConfirmDialog as portal sibling, isEditableTarget, drag-escape guard) done right 3-4 times; ParallelGroupingModal missing role=dialog/Tab-trap entirely, two dialogs missing trigger-capture-restore-on-close, and a same-tick (no-await) unmount/remount that goes stale exactly like the documented async-gap case — plus a park-effect race when adding one above an already-open child dialog with its own
 >>>>>>> origin/main
+- [Hoisting a per-row decision into a fixed footer](footer-hoisted-decision-controls.md) — why the move is a 2.4.3 win, the group-name it costs, the `text-*` classes a replaced wrapper silently drops, `py-2 -my-2` vs `p-2 -m-2` in a height-reserved row, and the flex-priority squeeze that hides a blocked-create reason (NEO-236)
+- [Collapsed radiogroup lies about set size](collapsed-radiogroup-posinset.md) — aria-posinset/aria-setsize against the FULL option list; why not to drop the role, and why the missing aria-controls is fine (NEO-236)
