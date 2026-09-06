@@ -274,7 +274,7 @@ describe("commit prelude: staged career-team rows become teams BEFORE the player
     expect(player!.teamYears).toHaveLength(2);
     // Resolved by name against the rows the staged pass just created — the
     // whole reason that pass runs ahead of the player loop.
-    const stintTeamIds = player!.teamYears!.map((ty) => ty.teamId);
+    const stintTeamIds = player!.teamYears!.map((ty: { teamId: Id<"teams"> }) => ty.teamId);
     expect(new Set(stintTeamIds)).toEqual(
       new Set([byName.get("Blue Sox")!._id, byName.get("Beavers")!._id]),
     );
@@ -529,7 +529,7 @@ describe("commit prelude: staged career-team rows become teams BEFORE the player
     expect(teams).toHaveLength(1);
     expect(teams[0]._id).toBe(existingTeamId);
     const player = await playerNamed(t, "Tony Gwynn");
-    expect(player!.teamYears!.map((ty) => ty.teamId)).toEqual([existingTeamId]);
+    expect(player!.teamYears!.map((ty: { teamId: Id<"teams"> }) => ty.teamId)).toEqual([existingTeamId]);
   });
 
   test("a staged row left UNDECIDED creates nothing and does not break the commit", async () => {
