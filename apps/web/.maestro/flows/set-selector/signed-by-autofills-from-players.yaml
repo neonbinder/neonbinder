@@ -214,16 +214,36 @@ tags:
       # NEO-92 bulk-confirm: this LOCAL-ONLY fallback runs only when the checklist
       # is empty (setup track did not pre-sync); in CI the setup track populates
       # it and this whole block is skipped. A fresh real-Base fetch surfaces
-      # HUNDREDS of unknowns, so tap the footer "Add All Remaining as New (N)"
-      # button (one recordAllRemainingAsCreate call marks every not-yet-decided
-      # row as "create", including still-pending ones) rather than draining them,
-      # then confirm & save.
+      # HUNDREDS of unknowns, so tap the footer "Add remaining players as new
+      # (N)" button (one recordAllRemainingAsCreate call marks every settled
+      # not-yet-decided PLAYER as "create") rather than draining them, answer
+      # the New Team steps it leaves, then confirm & save.
       - runFlow:
           when:
             visible: "Confirm New Players & Teams"
           commands:
             - tapOn:
-                text: ".*Add All Remaining as New.*"
+                text: ".*Add remaining players as new.*"
+            # NEO-236 — the bulk tap decides PLAYERS only, so every New Team
+            # step it leaves behind has to be answered before the batch can
+            # commit. One tap per step accepts the Location, Name and League
+            # the step is already showing, which is what an operator who agrees
+            # with the pre-fill would do. Keyed on the terminal state rather
+            # than on a step being visible: players and their staged teams
+            # drain at the same time, so a loop keyed on "New Team:" would exit
+            # the first time it caught the batch between lookups. See
+            # setup.yaml for the long version.
+            - repeat:
+                maxRuns: 250
+                while:
+                  notVisible:
+                    text: ".*Confirm & Save.*"
+                commands:
+                  - runFlow:
+                      when:
+                        visible: "New Team: .*"
+                      commands:
+                        - tapOn: "Add as New Team"
             # NEO-221 — the bulk add now decides only rows whose Wikidata lookup has
             # SETTLED, staying armed for the rest, so this wait is gated on that live
             # external round-trip rather than on one mutation. Raised for that reason;

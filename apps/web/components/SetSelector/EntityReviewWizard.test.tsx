@@ -28,7 +28,7 @@
  *
  * NEO-212 adds, in the blocks at the bottom of this file:
  *   9. The third decision — "Skip — not a person/team" per row, and
- *      "Skip Remaining (N)" in the footer beside the bulk create.
+ *      "Skip remaining names (N)" in the footer beside the bulk create.
  *  10. Near matches and the action hierarchy. THE LABEL "Add as New
  *      {Player|Team}" IS AN E2E CONTRACT and is asserted present in the two
  *      states any Maestro flow can reach (no match, close-only). In the
@@ -1026,7 +1026,7 @@ describe("EntityReviewWizard — Enter", () => {
     /*
      * THE CI REGRESSION, in one assertion.
      *
-     * `checklist-keyboard-only-dialog` taps "Add All Remaining as New", waits
+     * `checklist-keyboard-only-dialog` taps "Add remaining players as new", waits
      * for "Confirm & Save (Enter)", and sends `pressKey: Enter`. maestro-web
      * implements that as a constructed KeyboardEvent dispatched at
      * `document.activeElement` — and a synthetic event has NO default action,
@@ -1147,14 +1147,14 @@ describe("EntityReviewWizard — Enter", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Bulk "Add All Remaining as New" + NEO-110 footer stability
+// Bulk "Add remaining players as new" + NEO-110 footer stability
 //
 // The bulk action had NO coverage at either layer (this file or
 // convex/entityReviewQueue.test.ts) before NEO-110, which is why a real defect
 // around it reached CI and cost a full investigation to root-cause.
 // ---------------------------------------------------------------------------
 
-describe("EntityReviewWizard — bulk 'Add All Remaining as New'", () => {
+describe("EntityReviewWizard — bulk 'Add remaining players as new'", () => {
   it("says how many names are still being looked up, and that they are NOT included", async () => {
     // NEO-221. The bulk create used to decide rows whose lookup had not
     // finished — names the operator had never seen, added as new players on
@@ -1167,11 +1167,11 @@ describe("EntityReviewWizard — bulk 'Add All Remaining as New'", () => {
     ];
     renderWizard();
 
-    const bulk = screen.getByRole("button", { name: "Add All Remaining as New (3)" });
+    const bulk = screen.getByRole("button", { name: "Add remaining players as new (3)" });
     // The button's own label is JUST the action and its count — no clause. On
     // 1990 Bowman ("(433) — 229 still looking up…") the combined string wrapped
-    // to two lines and dragged "Skip Remaining" with it.
-    expect(bulk.textContent).toBe("Add All Remaining as New (3)");
+    // to two lines and dragged "Skip remaining names" with it.
+    expect(bulk.textContent).toBe("Add remaining players as new (3)");
     expect(bulk.textContent).not.toContain("still looking up");
 
     // The clause lives in the footer's own status row instead.
@@ -1191,8 +1191,8 @@ describe("EntityReviewWizard — bulk 'Add All Remaining as New'", () => {
     currentRows = [makeRow({ status: "ready" }), makeRow({ status: "ready" })];
     renderWizard();
 
-    const bulk = screen.getByRole("button", { name: "Add All Remaining as New (2)" });
-    expect(bulk.textContent).toBe("Add All Remaining as New (2)");
+    const bulk = screen.getByRole("button", { name: "Add remaining players as new (2)" });
+    expect(bulk.textContent).toBe("Add remaining players as new (2)");
     // …and the status row is rendered but empty — its height is reserved so
     // row 1 cannot move when a message arrives later.
     expect(footerStatusText()).toBe("");
@@ -1207,7 +1207,7 @@ describe("EntityReviewWizard — bulk 'Add All Remaining as New'", () => {
     renderWizard();
 
     expect(
-      screen.getByRole("button", { name: "Add All Remaining as New (2)" }),
+      screen.getByRole("button", { name: "Add remaining players as new (2)" }),
     ).toBeTruthy();
   });
 
@@ -1218,7 +1218,7 @@ describe("EntityReviewWizard — bulk 'Add All Remaining as New'", () => {
     ];
     renderWizard();
 
-    expect(screen.queryByText(/Add All Remaining as New/)).toBeNull();
+    expect(screen.queryByText(/Add remaining players as new/)).toBeNull();
     expect(screen.getByText(/All reviewed/)).toBeTruthy();
   });
 
@@ -1230,7 +1230,7 @@ describe("EntityReviewWizard — bulk 'Add All Remaining as New'", () => {
     mockRecordAllRemainingAsCreate.mockRejectedValueOnce(new Error("not an admin"));
     renderWizard();
 
-    fireEvent.click(screen.getByRole("button", { name: "Add All Remaining as New (2)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add remaining players as new (2)" }));
 
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("not an admin");
@@ -1242,7 +1242,7 @@ describe("EntityReviewWizard — bulk 'Add All Remaining as New'", () => {
     renderWizard();
 
     const bulk = screen.getByRole("button", {
-      name: "Add All Remaining as New (1)",
+      name: "Add remaining players as new (1)",
     }) as HTMLButtonElement;
     fireEvent.click(bulk);
 
@@ -1290,7 +1290,7 @@ describe("EntityReviewWizard — armed bulk add", () => {
       const { rerender } = render(wizardEl());
 
       fireEvent.click(
-        screen.getByRole("button", { name: "Add All Remaining as New (3)" }),
+        screen.getByRole("button", { name: "Add remaining players as new (3)" }),
       );
       await act(async () => {});
       expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1);
@@ -1340,7 +1340,7 @@ describe("EntityReviewWizard — armed bulk add", () => {
       const { rerender } = render(wizardEl());
 
       fireEvent.click(
-        screen.getByRole("button", { name: "Add All Remaining as New (2)" }),
+        screen.getByRole("button", { name: "Add remaining players as new (2)" }),
       );
       await act(async () => {});
       expect(screen.getByText(/Adding .* as their lookups finish/)).toBeTruthy();
@@ -1382,7 +1382,7 @@ describe("EntityReviewWizard — armed bulk add", () => {
       const { rerender } = render(wizardEl());
 
       fireEvent.click(
-        screen.getByRole("button", { name: "Add All Remaining as New (2)" }),
+        screen.getByRole("button", { name: "Add remaining players as new (2)" }),
       );
       await act(async () => {});
 
@@ -1408,13 +1408,13 @@ describe("EntityReviewWizard — armed bulk add", () => {
     currentRows = [makeRow({ status: "ready" }), makeRow({ status: "ready" })];
     renderWizard();
 
-    fireEvent.click(screen.getByRole("button", { name: "Add All Remaining as New (2)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add remaining players as new (2)" }));
     await waitFor(() => expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1));
 
     expect(screen.queryByText(/as their lookups finish/)).toBeNull();
   });
 
-  it("'Skip Remaining' disarms it — that branch means every name, lookups included", async () => {
+  it("'Skip remaining names' disarms it — that branch means every name, lookups included", async () => {
     vi.useFakeTimers();
     try {
       currentRows = [
@@ -1424,15 +1424,15 @@ describe("EntityReviewWizard — armed bulk add", () => {
       const { rerender } = render(wizardEl());
 
       fireEvent.click(
-        screen.getByRole("button", { name: "Add All Remaining as New (2)" }),
+        screen.getByRole("button", { name: "Add remaining players as new (2)" }),
       );
       await act(async () => {});
-      // Armed — and "Skip Remaining" is STILL live, because row 2 says "wait or
+      // Armed — and "Skip remaining names" is STILL live, because row 2 says "wait or
       // skip" and taking the skip away while it says so would advertise an exit
       // and lock it.
       expect(screen.getByText(/as their lookups finish/)).toBeTruthy();
 
-      fireEvent.click(screen.getByRole("button", { name: "Skip Remaining (2)" }));
+      fireEvent.click(screen.getByRole("button", { name: "Skip remaining names (2)" }));
       await act(async () => {});
       expect(mockRecordAllRemainingAsSkip).toHaveBeenCalledTimes(1);
       expect(screen.queryByText(/as their lookups finish/)).toBeNull();
@@ -1549,7 +1549,7 @@ describe("EntityReviewWizard — NEO-110 footer stability", () => {
     renderWizard();
 
     const { body, footer } = panelRegions();
-    const bulk = screen.getByRole("button", { name: /Add all remaining as new/i });
+    const bulk = screen.getByRole("button", { name: /Add remaining players as new/i });
 
     expect(footer.contains(bulk)).toBe(true);
     expect(body.contains(bulk)).toBe(false);
@@ -1637,7 +1637,7 @@ describe("EntityReviewWizard — skip decision", () => {
   });
 });
 
-describe("EntityReviewWizard — bulk 'Skip Remaining'", () => {
+describe("EntityReviewWizard — bulk 'Skip remaining names'", () => {
   it("labels the button with the undecided count and calls the bulk mutation", async () => {
     currentRows = [
       makeRow({ status: "ready", name: "A" }),
@@ -1646,8 +1646,8 @@ describe("EntityReviewWizard — bulk 'Skip Remaining'", () => {
     ];
     renderWizard();
 
-    const bulk = screen.getByRole("button", { name: "Skip Remaining (3)" });
-    expect(bulk.textContent).toContain("Skip Remaining (3)");
+    const bulk = screen.getByRole("button", { name: "Skip remaining names (3)" });
+    expect(bulk.textContent).toContain("Skip remaining names (3)");
 
     fireEvent.click(bulk);
 
@@ -1660,7 +1660,7 @@ describe("EntityReviewWizard — bulk 'Skip Remaining'", () => {
     expect(mockRecordAllRemainingAsCreate).not.toHaveBeenCalled();
   });
 
-  it("sits beside 'Add All Remaining as New' with the same count", () => {
+  it("sits beside 'Add remaining players as new' with the same count", () => {
     currentRows = [
       makeRow({ status: "ready", decision: { action: "create" } }),
       makeRow({ status: "ready" }),
@@ -1669,16 +1669,16 @@ describe("EntityReviewWizard — bulk 'Skip Remaining'", () => {
     renderWizard();
 
     expect(
-      screen.getByRole("button", { name: "Add All Remaining as New (2)" }),
+      screen.getByRole("button", { name: "Add remaining players as new (2)" }),
     ).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Skip Remaining (2)" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Skip remaining names (2)" })).toBeTruthy();
   });
 
   it("is not rendered once every row is decided", () => {
     currentRows = [makeRow({ status: "ready", decision: { action: "skip" } })];
     renderWizard();
 
-    expect(screen.queryByText(/Skip Remaining/)).toBeNull();
+    expect(screen.queryByText(/Skip remaining names/)).toBeNull();
     expect(screen.getByText(/All reviewed/)).toBeTruthy();
   });
 
@@ -1687,7 +1687,7 @@ describe("EntityReviewWizard — bulk 'Skip Remaining'", () => {
     mockRecordAllRemainingAsSkip.mockRejectedValueOnce(new Error("not an admin"));
     renderWizard();
 
-    fireEvent.click(screen.getByRole("button", { name: "Skip Remaining (2)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Skip remaining names (2)" }));
 
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("not an admin");
@@ -1699,14 +1699,14 @@ describe("EntityReviewWizard — bulk 'Skip Remaining'", () => {
     renderWizard();
 
     const skipAll = screen.getByRole("button", {
-      name: "Skip Remaining (1)",
+      name: "Skip remaining names (1)",
     }) as HTMLButtonElement;
     fireEvent.click(skipAll);
 
     await screen.findByRole("alert");
     expect(skipAll.disabled).toBe(false);
     expect(
-      (screen.getByRole("button", { name: "Add All Remaining as New (1)" }) as HTMLButtonElement)
+      (screen.getByRole("button", { name: "Add remaining players as new (1)" }) as HTMLButtonElement)
         .disabled,
     ).toBe(false);
   });
@@ -2119,7 +2119,12 @@ describe("EntityReviewWizard — team creation summary", () => {
     renderWizard();
 
     expect(
-      screen.getByText("Will create 1 new team: Los Angeles Angels · 1 already exist"),
+      // NEO-236: an unmatched career team is no longer "will create" from the
+      // PLAYER's step — it gets a New Team step of its own, and until that step
+      // is answered nothing is being created. The line says so.
+      screen.getByText(
+        "1 team needs their own step: Los Angeles Angels · 1 already exist",
+      ),
     ).toBeTruthy();
   });
 
@@ -2132,7 +2137,9 @@ describe("EntityReviewWizard — team creation summary", () => {
     renderWizard();
 
     expect(
-      screen.getByText("Will create 2 new teams: Los Angeles Angels, Salt Lake Bees"),
+      screen.getByText(
+        "2 teams need their own step: Los Angeles Angels, Salt Lake Bees",
+      ),
     ).toBeTruthy();
   });
 
@@ -3021,7 +3028,7 @@ describe("EntityReviewWizard — expired session", () => {
     expect(screen.getByRole("button", { name: "Close" })).toBeTruthy();
     // Nothing to decide, nothing to discard: the review controls are gone.
     expect(screen.queryByRole("button", { name: "Cancel (Esc)" })).toBeNull();
-    expect(screen.queryByText(/Add All Remaining as New/)).toBeNull();
+    expect(screen.queryByText(/Add remaining players as new/)).toBeNull();
   });
 
   it("Close reports back without pretending to cancel a batch that is gone", () => {
@@ -3263,7 +3270,7 @@ describe("EntityReviewWizard — armed bulk add does not stall", () => {
       const { rerender } = render(wizardEl());
 
       fireEvent.click(
-        screen.getByRole("button", { name: "Add All Remaining as New (2)" }),
+        screen.getByRole("button", { name: "Add remaining players as new (2)" }),
       );
       expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1);
 
@@ -3323,7 +3330,7 @@ describe("EntityReviewWizard — keyboard-only bulk-then-commit", () => {
     currentRows = [solo()];
     const { rerender } = render(wizardEl({ onConfirm }));
 
-    const bulk = screen.getByRole("button", { name: "Add All Remaining as New (1)" });
+    const bulk = screen.getByRole("button", { name: "Add remaining players as new (1)" });
     // Tapping it is what puts focus on it — and what makes it unmount a moment
     // later, which is why the autofocus below has to be doing real work.
     (bulk as HTMLElement).focus();
@@ -3348,7 +3355,7 @@ describe("EntityReviewWizard — keyboard-only bulk-then-commit", () => {
     currentRows = [solo()];
     const { rerender } = render(wizardEl());
 
-    const bulk = screen.getByRole("button", { name: "Add All Remaining as New (1)" });
+    const bulk = screen.getByRole("button", { name: "Add remaining players as new (1)" });
     (bulk as HTMLElement).focus();
     fireEvent.click(bulk);
     await waitFor(() => expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1));
@@ -3367,9 +3374,9 @@ describe("EntityReviewWizard — keyboard-only bulk-then-commit", () => {
 // NEO-220 — the footer is two fixed rows
 //
 // Jason hit this on 1990 Bowman: 433 unknowns, 229 of them still being looked
-// up. The bulk button's label was "Add All Remaining as New (433) — 229 still
+// up. The bulk button's label was "Add remaining players as new (433) — 229 still
 // looking up, wait or skip", which wrapped to two centred lines, dragged
-// "Skip Remaining (433)" onto a second line with it, and left both sitting
+// "Skip remaining names (433)" onto a second line with it, and left both sitting
 // crookedly beside "Back to matching" and "Cancel (Esc)".
 //
 // A label whose LENGTH tracks a COUNT THAT CHANGES is the NEO-110 reflow class
@@ -3436,11 +3443,11 @@ describe("EntityReviewWizard — footer layout", () => {
     renderWizard();
 
     const { actions, status } = footerRows();
-    const bulk = screen.getByRole("button", { name: "Add All Remaining as New (5)" });
+    const bulk = screen.getByRole("button", { name: "Add remaining players as new (5)" });
 
     expect(actions.contains(bulk)).toBe(true);
     expect(status.contains(bulk)).toBe(false);
-    expect(bulk.textContent).toBe("Add All Remaining as New (5)");
+    expect(bulk.textContent).toBe("Add remaining players as new (5)");
     expect(footerStatusText()).toBe("4 still looking up — wait or skip");
   });
 
@@ -3475,26 +3482,26 @@ describe("EntityReviewWizard — footer layout", () => {
     currentRows = [makeRow({ status: "ready" }), makeRow({ status: "pending" })];
     renderWizard();
 
-    fireEvent.click(screen.getByRole("button", { name: "Add All Remaining as New (2)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add remaining players as new (2)" }));
     await waitFor(() => expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1));
 
     const bulk = screen.getByRole("button", {
-      name: "Add All Remaining as New (2)",
+      name: "Add remaining players as new (2)",
     }) as HTMLButtonElement;
     expect(bulk.getAttribute("aria-disabled")).toBe("true");
     expect(bulk.className).toContain("aria-disabled:opacity-50");
     expect(footerStatusText()).toContain("Adding 2 more as their lookups finish…");
   });
 
-  it("keeps Skip Remaining live while armed — row 2 offers it by name", async () => {
+  it("keeps Skip remaining names live while armed — row 2 offers it by name", async () => {
     currentRows = [makeRow({ status: "ready" }), makeRow({ status: "pending" })];
     renderWizard();
 
-    fireEvent.click(screen.getByRole("button", { name: "Add All Remaining as New (2)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add remaining players as new (2)" }));
     await waitFor(() => expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1));
 
     const skip = screen.getByRole("button", {
-      name: "Skip Remaining (2)",
+      name: "Skip remaining names (2)",
     }) as HTMLButtonElement;
     expect(skip.getAttribute("aria-disabled")).not.toBe("true");
     fireEvent.click(skip);
@@ -3505,7 +3512,7 @@ describe("EntityReviewWizard — footer layout", () => {
     currentRows = [makeRow({ status: "ready" }), makeRow({ status: "pending" })];
     renderWizard();
 
-    fireEvent.click(screen.getByRole("button", { name: "Add All Remaining as New (2)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add remaining players as new (2)" }));
     await waitFor(() => expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1));
 
     const { actions, status } = footerRows();
@@ -3531,13 +3538,13 @@ describe("EntityReviewWizard — armed bulk create is inert", () => {
     currentRows = [makeRow({ status: "ready" }), makeRow({ status: "pending" })];
     renderWizard();
 
-    const bulk = screen.getByRole("button", { name: "Add All Remaining as New (2)" });
+    const bulk = screen.getByRole("button", { name: "Add remaining players as new (2)" });
     fireEvent.click(bulk);
     await waitFor(() => expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1));
 
     // Armed and aria-disabled, so the click is a no-op — the button says so and
     // behaves that way, rather than quietly issuing a duplicate.
-    fireEvent.click(screen.getByRole("button", { name: "Add All Remaining as New (2)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add remaining players as new (2)" }));
     await new Promise((r) => setTimeout(r, 0));
     expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1);
   });
@@ -4568,5 +4575,120 @@ describe("EntityReviewWizard — a refused create decision reaches the operator"
       screen.queryByText(/Nope\. This name is still waiting/),
     ).toBeTruthy();
     expect(first._id).not.toBe(second._id);
+  });
+});
+
+// ===========================================================================
+// NEO-236 — "Add remaining players as new" applies to PLAYERS only
+//
+// Jason, 2026-09-05: "add all remaining as new should still process teams, it
+// should only apply to players." A team row's own New Team step is the only
+// place its League gets a human answer, and the bulk path could only ever
+// guess it from the enrichment's suggestion.
+// ===========================================================================
+
+describe("EntityReviewWizard — the bulk create is about players", () => {
+  it("labels itself with the PLAYER count, not the row count", () => {
+    currentRows = [
+      makeRow({ kind: "player", name: "Mike Trout", status: "ready" }),
+      makeRow({ kind: "player", name: "Shohei Ohtani", status: "ready" }),
+      makeRow({ kind: "team", name: "San Diego Padres", status: "ready" }),
+    ];
+    renderWizard();
+
+    expect(
+      screen.getByRole("button", { name: "Add remaining players as new (2)" }),
+    ).toBeTruthy();
+    // Its sibling still rules on every undecided name, teams included, so it
+    // counts all three — and its label says "names" rather than "players".
+    expect(
+      screen.getByRole("button", { name: "Skip remaining names (3)" }),
+    ).toBeTruthy();
+  });
+
+  it("counts a STAGED career team as a name to skip, never as a player to add", () => {
+    const player = makeRow({
+      kind: "player",
+      name: "Travis Bazzana",
+      status: "ready",
+      enrichment: { careerTeams: [{ name: "Sydney Blue Sox", fromYear: 2019 }] },
+    });
+    currentRows = [makeCareerTeamRow(player._id, "Sydney Blue Sox"), player];
+    renderWizard();
+
+    expect(
+      screen.getByRole("button", { name: "Add remaining players as new (1)" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Skip remaining names (2)" }),
+    ).toBeTruthy();
+  });
+
+  it("does NOT offer Confirm & Save while a team step is still undecided", () => {
+    /*
+     * The safety net behind "decide the player now, answer its teams in a
+     * moment": commit readiness is "every row decided", staged team rows
+     * included. Without it, a bulk-confirmed player could reach commit with its
+     * career teams unanswered and lose those stints silently.
+     */
+    const player = makeRow({
+      kind: "player",
+      name: "Travis Bazzana",
+      status: "ready",
+      decision: { action: "create" },
+      enrichment: { careerTeams: [{ name: "Sydney Blue Sox", fromYear: 2019 }] },
+    });
+    currentRows = [makeCareerTeamRow(player._id, "Sydney Blue Sox"), player];
+    renderWizard();
+
+    expect(screen.queryByText(/All reviewed/)).toBeNull();
+    expect(document.getElementById("entity-review-confirm-save")).toBeNull();
+    // And the step the operator still owes an answer to is what is on screen.
+    expect(
+      screen.getByRole("heading", { name: "New Team: Sydney Blue Sox" }),
+    ).toBeTruthy();
+  });
+
+  it("offers Confirm & Save once that team step IS decided", () => {
+    const player = makeRow({
+      kind: "player",
+      name: "Travis Bazzana",
+      status: "ready",
+      decision: { action: "create" },
+      enrichment: { careerTeams: [{ name: "Sydney Blue Sox", fromYear: 2019 }] },
+    });
+    currentRows = [
+      makeCareerTeamRow(player._id, "Sydney Blue Sox", {
+        decision: { action: "create", create: { location: "Sydney", name: "Blue Sox" } },
+      }),
+      player,
+    ];
+    renderWizard();
+
+    expect(screen.getByText(/All reviewed/)).toBeTruthy();
+    expect(document.getElementById("entity-review-confirm-save")).toBeTruthy();
+  });
+
+  it("arms the follow-up only for players still being looked up", async () => {
+    /*
+     * The armed loop re-issues the bulk create as lookups settle. It must not
+     * arm — or stay armed — on a pending TEAM row, because the bulk will never
+     * decide one: it would spin to the 400-call cap and then blame the
+     * operator. The status line still counts that row, because the operator IS
+     * waiting on it.
+     */
+    const player = makeRow({ kind: "player", name: "Mike Trout", status: "ready" });
+    currentRows = [player, makeRow({ kind: "team", name: "Padres", status: "pending" })];
+    renderWizard();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Add remaining players as new (1)" }),
+    );
+
+    await waitFor(() => expect(mockRecordAllRemainingAsCreate).toHaveBeenCalled());
+    // Not armed: no player is pending, so there is no follow-up to wait for.
+    expect(screen.queryByText(/as their lookups finish/)).toBeNull();
+    // …but the operator is still told what the batch is waiting on.
+    expect(screen.getByText(/1 still looking up — wait or skip/)).toBeTruthy();
   });
 });

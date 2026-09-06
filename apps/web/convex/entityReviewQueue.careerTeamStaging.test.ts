@@ -651,12 +651,48 @@ describe("getBatch walk order: a staged career team is walked BEFORE its player"
 // recordAllRemainingAsCreate — the League half of the pre-fill (NEO-236)
 // ===========================================================================
 
-describe("recordAllRemainingAsCreate: the bulk pre-fill resolves the League without writing one", () => {
-  test("records the ID of a league we already hold", async () => {
+describe("recordAllRemainingAsCreate: the bulk never answers the League question", () => {
+  /**
+   * This block used to pin the bulk path's League PRE-FILL — resolve the
+   * enrichment's suggestion to an id when we hold it, carry it as a name when
+   * we do not, and write no league row of its own.
+   *
+   * Jason removed the question rather than the answer: "add all remaining as
+   * new should still process teams, it should only apply to players." A league
+   * chosen by a suggestion nobody read is the defect this ticket exists to
+   * close, and the bulk path was the last place it could still happen. So the
+   * contract is now the stronger one — the bulk decides no team row at all, and
+   * therefore records no league and creates none.
+   */
+  test("a team row with a league suggestion is left undecided, and no league row is written", async () => {
     const t = convexTest(schema, modules);
-    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const sportId = await seedSport(t);
-    const leagueId = await t.run(async (ctx) =>
+    const teamRowId = await insertRow(t, {
+      sportId,
+      kind: "team",
+      name: "Sydney Blue Sox",
+      status: "ready",
+      enrichment: { league: "Australian Baseball League" },
+    });
+
+    await t
+      .withIdentity(ADMIN_IDENTITY)
+      .mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
+        selectorOptionId: sportId,
+        batchId: BATCH,
+      });
+
+    expect(
+      await t.run(async (ctx) => (await ctx.db.get(teamRowId))!.decision === undefined),
+    ).toBe(true);
+    // Reading must not write — and now nothing reads it either.
+    expect(await t.run(async (ctx) => ctx.db.query("leagues").collect())).toEqual([]);
+  });
+
+  test("an existing league is NOT auto-selected onto a staged career team", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await t.run(async (ctx) =>
       ctx.db.insert("leagues", {
         name: "Australian Baseball League",
         nameNormalized: "australian baseball league",
@@ -664,123 +700,29 @@ describe("recordAllRemainingAsCreate: the bulk pre-fill resolves the League with
         lastUpdated: Date.now(),
       }),
     );
-    const rowId = await insertRow(t, {
-      sportId,
-      kind: "team",
-      name: "Sydney Blue Sox",
-      status: "ready",
-      enrichment: { location: "Sydney", league: "Australian Baseball League" },
-    });
-
-    await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
-      selectorOptionId: sportId,
-      batchId: BATCH,
-    });
-
-    const row = await t.run(async (ctx) => ctx.db.get(rowId));
-    // Exactly what the operator picking that league off the New Team step's
-    // list would have recorded.
-    expect(row!.decision).toEqual({
-      action: "create",
-      create: { location: "Sydney", name: "Blue Sox", leagueId },
-    });
-  });
-
-  test("records a NAME for a league we do not hold, and creates no league row", async () => {
-    // `findLeagueByName`, not `findOrCreateLeague`: reading must not write. A
-    // batch the operator cancels would otherwise leave a league row behind for
-    // a team that was never created.
-    const t = convexTest(schema, modules);
-    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const sportId = await seedSport(t);
-    const rowId = await insertRow(t, {
-      sportId,
-      kind: "team",
-      name: "Sydney Blue Sox",
-      status: "ready",
-      enrichment: { location: "Sydney", league: "Australian Baseball League" },
-    });
-
-    await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
-      selectorOptionId: sportId,
-      batchId: BATCH,
-    });
-
-    const row = await t.run(async (ctx) => ctx.db.get(rowId));
-    expect(row!.decision).toEqual({
-      action: "create",
-      create: {
-        location: "Sydney",
-        name: "Blue Sox",
-        leagueName: "Australian Baseball League",
-      },
-    });
-    expect(await t.run(async (ctx) => ctx.db.query("leagues").collect())).toEqual([]);
-  });
-
-  test("a lookup that found no league leaves the create payload with neither half", async () => {
-    const t = convexTest(schema, modules);
-    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const sportId = await seedSport(t);
-    const rowId = await insertRow(t, {
-      sportId,
-      kind: "team",
-      name: "Orix Buffaloes",
-      status: "ready",
-    });
-
-    await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
-      selectorOptionId: sportId,
-      batchId: BATCH,
-    });
-
-    const row = await t.run(async (ctx) => ctx.db.get(rowId));
-    // No `leagueId` key at all — absent means "not answered", which is the one
-    // state that still lets the prelude's own fallbacks apply.
-    expect(row!.decision).toEqual({
-      action: "create",
-      create: { name: "Orix Buffaloes" },
-    });
-  });
-
-  test("stages a confirmed player's career teams, so a bulk create still produces their New Team steps", async () => {
-    // Belt-and-braces for the cases NEO-221's "don't decide a pending row"
-    // rule does not cover — a batch whose lookups landed before this shipped,
-    // and a row that errored and was given career teams by hand. The player is
-    // decided EITHER WAY: its stints resolve by NAME in the prelude, against
-    // teams the staged rows create first.
-    const t = convexTest(schema, modules);
-    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const sportId = await seedSport(t);
     const playerRowId = await insertRow(t, {
       sportId,
       kind: "player",
       name: "Travis Bazzana",
       status: "ready",
-      enrichment: {
-        careerTeams: [
-          { name: "Sydney Blue Sox", fromYear: 2019 },
-          { name: "Oregon State Beavers", fromYear: 2022 },
-        ],
-      },
+      enrichment: { careerTeams: [{ name: "Sydney Blue Sox", fromYear: 2019 }] },
     });
 
-    const decided = await asAdmin.mutation(
-      api.entityReviewQueue.recordAllRemainingAsCreate,
-      { selectorOptionId: sportId, batchId: BATCH },
-    );
-    expect(decided).toBe(1);
+    await t
+      .withIdentity(ADMIN_IDENTITY)
+      .mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
+        selectorOptionId: sportId,
+        batchId: BATCH,
+      });
 
+    // The step exists to be answered; the bulk did not answer it.
     const staged = await stagedRows(t);
-    expect(staged.map((r) => r.name)).toEqual([
-      "Sydney Blue Sox",
-      "Oregon State Beavers",
-    ]);
-    // Staged rows are pending and undecided — the bulk create ruled on the
-    // rows that were open when it ran, not on the ones it created.
-    expect(staged.every((r) => r.decision === undefined)).toBe(true);
-    const player = await t.run(async (ctx) => ctx.db.get(playerRowId));
-    expect(player!.decision).toEqual({ action: "create" });
+    expect(staged).toHaveLength(1);
+    expect(staged[0].decision).toBeUndefined();
+    // The player, on the other hand, IS decided.
+    expect(await t.run(async (ctx) => (await ctx.db.get(playerRowId))!.decision)).toEqual({
+      action: "create",
+    });
   });
 });
 

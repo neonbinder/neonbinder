@@ -10,16 +10,11 @@ import { ConvexError, v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { RunResult } from "@convex-dev/workpool";
 import { getCurrentUserId, requireAdmin } from "./auth";
-// NEO-236: pure, no Convex imports — see lib/teams/team-name.ts.
-import { splitTeamName } from "../lib/teams/team-name";
 import { normalizePlayerName } from "./players";
 import { normalizeTeamName } from "./teams";
 // NEO-236: the ONE team lookup. Staging asks "do we already hold this career
 // team?" and must ask it exactly the way every writer keys the table.
 import { findTeamByFullName } from "./lib/teamRow";
-// NEO-236: the league a New Team step's suggestion resolves to, WITHOUT
-// creating one — the wizard offers "Create league X" as a separate answer.
-import { findLeagueByName } from "./leagues";
 
 /**
  * NEO-92: backs the step-through "new players & teams" review wizard that
@@ -1437,58 +1432,43 @@ async function decideAllRemaining(
     // Each row is patched with its OWN fresh object literal, never a shared
     // reference to `decision`.
     //
-    // NEO-236: a team row's create decision carries the Location + Name the
-    // commit prelude will build from, because the prelude has NO fallback to
-    // the raw string. The bulk path has no per-row form to read that from, so
-    // it writes exactly what the wizard would have PRE-FILLED for this row and
-    // the operator would have confirmed unedited: the ESPN location split off
-    // the front when it is a whole-word prefix, otherwise the whole name and
-    // an empty Location — an UNSPLIT row for an operator to split on
-    // /admin/teams, never a claim that the team has no place. Nothing is
-    // guessed — `splitTeamName` is mechanical and only fires on a location the
-    // lookup actually returned.
-    //
-    // The two tickets compose well here: because NEO-221 holds pending rows
-    // back from the create path, every team row this branch pre-fills has its
-    // lookup in hand, so an ESPN location that exists is an ESPN location this
-    // sees. Before that, a bulk create could race the lookup and split nothing.
-    //
-    // NEO-236 security review, finding 3: a row whose name will not compose
-    // into a team is decided WITHOUT a create payload rather than aborting the
-    // batch. One 200-character checklist row used to turn this whole action
-    // into a redacted "Server Error" that decided nothing; now it decides every
-    // other row, and that one is left for the commit prelude to report as
-    // unresolved — the attention walker's missing-team lane.
-    //
-    // Branched rather than spread-with-a-conditional-key so `create` cannot
-    // even be expressed on the "skip" arm, which does not carry one.
-    //
     // NEO-221: one timestamp for the whole call — this IS one operator action,
     // and stamping each row a millisecond apart would only make the sweep's
     // arithmetic harder to read.
+    //
+    // Branched rather than spread-with-a-conditional-key so a `create` payload
+    // cannot even be expressed on the "skip" arm, which does not carry one.
     if (decision.action === "create") {
       /*
-       * NEO-236 — a player confirmed in bulk still gets its career-team steps.
+       * ── NEO-236: the bulk create decides PLAYERS ONLY ────────────────────
        *
-       * Normally they are already there: `applyLookupResult` stages them as the
-       * enrichment lands, and NEO-221 keeps this path from deciding a row whose
-       * lookup has not. This call is the belt-and-braces for the cases that
-       * rule does not cover — a batch whose lookups landed before this shipped,
-       * and a row that reached "error" and was later given career teams by
-       * hand. Idempotent, so on the common path it reads a few index ranges and
-       * inserts nothing.
+       * Jason, 2026-09-05, verbatim: "add all remaining as new should still
+       * process teams, it should only apply to players."
        *
-       * The player is decided EITHER WAY. Its stints resolve by name in the
-       * prelude, against teams the staged rows create first — so deciding the
-       * player before its teams are answered loses nothing.
+       * A team row is left UNDECIDED here, whichever kind it is — a name off
+       * the checklist or a career team this batch staged. Both get their own
+       * New Team step, because both need the one question this path cannot
+       * answer: which LEAGUE. The old behaviour pre-filled that from the
+       * enrichment's suggestion, so a club side pulled off a player's career
+       * list could be filed under a league no human ever looked at — which is
+       * the whole defect this ticket exists to close, re-entering through the
+       * one door that was still open.
+       *
+       * Nothing is lost by deciding the player first. Its stints resolve by
+       * NAME in the commit prelude, against teams the staged steps create
+       * ahead of it, so a player decided now and a team answered in a moment
+       * still land on each other. And the batch cannot commit early: the
+       * wizard's Confirm & Save appears only once EVERY row is decided, staged
+       * team rows included.
+       *
+       * Staging still runs, and has to: it is what puts those steps in the
+       * batch to be answered. Idempotent, so on the common path (the lookup
+       * already staged them) it reads a few index ranges and inserts nothing.
        */
-      if (row.kind === "player") await stageCareerTeamRowsImpl(ctx, row);
-      const prefill =
-        row.kind === "team" ? await prefilledTeamCreate(ctx, row) : null;
+      if (row.kind !== "player") continue;
+      await stageCareerTeamRowsImpl(ctx, row);
       await ctx.db.patch(row._id, {
-        decision: prefill
-          ? { action: "create", create: prefill }
-          : { action: "create" },
+        decision: { action: "create" },
         lastTouchedAt: now,
       });
     } else {
@@ -1502,58 +1482,9 @@ async function decideAllRemaining(
   return count;
 }
 
-/**
- * NEO-236: the Location + Name the wizard shows for a team row before the
- * operator touches anything. Shared by the bulk fast path here and mirrored by
- * `teamCreatePrefill` in EntityReviewWizard.tsx, so "confirm one row" and
- * "confirm the whole batch" cannot disagree about what an untouched row means.
- */
-async function prefilledTeamCreate(
-  ctx: MutationCtx,
-  row: Doc<"entityReviewQueue">,
-): Promise<TeamCreate | null> {
-  const location = row.enrichment?.location;
-  const split = location ? splitTeamName(row.name, location) : null;
-  // Null when the row's own name is unusable — blank, or longer than a team
-  // name may be. `row.name` is a raw marketplace string with no bound on it,
-  // and this path has no operator to tell, so the row is simply left without a
-  // create payload (see `toTeamCreate`).
-  const base = toTeamCreate(split ?? { name: row.name });
-  if (!base) return null;
-
-  /*
-   * NEO-236 — the League half of the pre-fill.
-   *
-   * The lookup's `league` is a NAME (ESPN's league name, or Wikidata's P118
-   * label), and the two answers it can produce are genuinely different
-   * decisions, so they are recorded differently:
-   *
-   *  - it names a league we hold — recorded as that row's ID, which is exactly
-   *    what the operator picking it off the New Team step's list would record;
-   *  - it names one we do not — recorded as a NAME, which the prelude resolves
-   *    through `findOrCreateLeague`. That is the "Create league X" answer, and
-   *    the bulk path taking it is deliberate: the whole contract of "Add All
-   *    Remaining as New" is that it writes what an operator confirming each
-   *    row unedited would have written, and the New Team step pre-selects
-   *    exactly this.
-   *
-   * `findLeagueByName` and not `findOrCreateLeague`: reading must not write.
-   * A batch the operator ends up cancelling would otherwise leave a league row
-   * behind for a team that was never created.
-   */
-  const suggested = row.enrichment?.league?.trim();
-  if (!suggested) return base;
-  const existing = await findLeagueByName(ctx, {
-    name: suggested,
-    sportId: row.sportId,
-  });
-  return existing
-    ? { ...base, leagueId: existing._id }
-    : { ...base, leagueName: suggested };
-}
 
 /**
- * Bulk fast-path: mark every not-yet-decided row in this batch as
+ * Bulk fast-path: mark every not-yet-decided PLAYER row in this batch as
  * "create", in one mutation. A first-time real-set sync can surface
  * hundreds of genuinely-new names (the common case, not the exception —
  * e.g. every rookie in a brand-new set) where reviewing one at a time has
@@ -1571,6 +1502,14 @@ async function prefilledTeamCreate(
  * The return value is what makes that loop safe to drive from the client: it
  * is how many rows THIS call decided, so a re-call that finds nothing settled
  * yet returns 0 rather than looking like a failure.
+ *
+ * ## NEO-236 — teams are NOT decided here, and the count says players
+ *
+ * Jason, 2026-09-05: "add all remaining as new should still process teams, it
+ * should only apply to players." Every team row — a checklist name or a career
+ * team this batch staged — is left undecided for its own New Team step,
+ * because that step asks which LEAGUE and this path can only guess. So the
+ * returned count is a count of PLAYERS, and the button that calls this says so.
  */
 export const recordAllRemainingAsCreate = mutation({
   args: {
@@ -1595,6 +1534,11 @@ export const recordAllRemainingAsCreate = mutation({
  * Same admin gate, same batch scoping, same already-decided rule and same
  * return (how many rows THIS call decided) as the create variant; both run
  * through `decideAllRemaining` so the two cannot drift.
+ *
+ * Unlike its create twin, this one still rules on EVERY kind of row, teams
+ * included (NEO-236 narrowed only the create path). "None of this is an entity"
+ * is a statement about names, not about players specifically, and a skip
+ * creates nothing that could be filed under the wrong league.
  *
  * NEO-221 answered the question this comment used to leave open, and answered
  * it DIFFERENTLY for the two paths: skip still includes rows whose lookup is

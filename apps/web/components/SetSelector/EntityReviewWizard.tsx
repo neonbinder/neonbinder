@@ -32,7 +32,10 @@ import NewTeamForm, {
 } from "./NewTeamForm";
 import { deriveStagedTeamNames } from "./entity-review-staging";
 import {
+  countBulkCreatable,
+  countPendingBulkCreatable,
   countPendingUndecided,
+  countUndecided,
   describeDecision,
   resolveNav,
   summarizeDecisions,
@@ -463,8 +466,16 @@ export default function EntityReviewWizard({
     () => rows?.filter((r) => r.status === "pending").length ?? 0,
     [rows],
   );
+  /** What the OPERATOR is waiting on — every kind of row. Drives the status
+   *  line, which is why it must not be narrowed to players. */
   const pendingUndecided = useMemo(
     () => countPendingUndecided(rows ?? []),
+    [rows],
+  );
+  /** What the BULK CREATE will still have work to do for once lookups land —
+   *  players only, so arming it can actually converge. */
+  const pendingBulkCreatable = useMemo(
+    () => countPendingBulkCreatable(rows ?? []),
     [rows],
   );
   const outcome = useMemo(() => summarizeDecisions(rows ?? []), [rows]);
@@ -701,40 +712,65 @@ export default function EntityReviewWizard({
 
   /** "Will create 2 new teams: X, Y · 1 already exist" — either half is
    *  omitted when its count is zero, so the line never says "0 new teams". */
+  /**
+   * One line under the career list saying where this player's stints will land.
+   *
+   * NEO-236 reworded it, because "Will create N new teams" stopped being true
+   * of THIS step. A team the batch does not hold gets a New Team step of its
+   * own, and until that step is answered nothing is being created — so the line
+   * reports three states rather than two, and only claims a creation once the
+   * team's own step has actually said create.
+   *
+   * Built from `careerTeamStatus` rather than from `resolvedTeamNames` alone,
+   * so it cannot drift from what the chips beside it say.
+   */
   const teamSummary = useMemo(() => {
     if (!resolvedTeamNames || resolvedTeamNames.length === 0) return null;
-    const willCreate: string[] = [];
+    const creating: string[] = [];
+    const waiting: string[] = [];
     let alreadyExist = 0;
-    for (const r of resolvedTeamNames) {
-      if (r.existingTeamId) {
-        alreadyExist += 1;
-        continue;
-      }
-      // The name as the operator SPLIT it on the team's own step, when they
-      // have got that far — otherwise the label that prompted it.
-      const staged = stagedTeamRowsForCurrent.get(normalizeEntityName(r.name));
-      const create =
-        staged?.decision?.action === "create" ? staged.decision.create : null;
-      willCreate.push(
-        create
-          ? teamFullName({
-              name: create.name,
-              ...(create.location ? { location: create.location } : {}),
-            })
-          : r.name,
+    // The accepted labels, computed here rather than read off
+    // `acceptedCareerTeams`: that one is declared below the `isOpen` early
+    // return, and a hook may not reach past it.
+    const accepted = (current?.enrichment?.careerTeams ?? [])
+      .map((ct) => ct.name)
+      .filter(
+        (label, idx, all) =>
+          all.indexOf(label) === idx && !excludedForCurrent.includes(label),
       );
+    for (const label of accepted) {
+      const status = careerTeamStatus(label);
+      if (status.kind === "resolved" || status.kind === "linked") {
+        alreadyExist += 1;
+      } else if (status.kind === "creating") {
+        creating.push(status.name);
+      } else if (status.kind === "waiting") {
+        waiting.push(label);
+      }
+      // "checking" says nothing until the match query answers.
     }
     const parts: string[] = [];
-    if (willCreate.length > 0) {
+    if (creating.length > 0) {
       parts.push(
-        `Will create ${willCreate.length} new ${
-          willCreate.length === 1 ? "team" : "teams"
-        }: ${willCreate.filter(Boolean).join(", ")}`,
+        `Will create ${creating.length} new ${
+          creating.length === 1 ? "team" : "teams"
+        }: ${creating.join(", ")}`,
+      );
+    }
+    if (waiting.length > 0) {
+      parts.push(
+        `${waiting.length} ${
+          waiting.length === 1 ? "team needs" : "teams need"
+        } their own step: ${waiting.join(", ")}`,
       );
     }
     if (alreadyExist > 0) parts.push(`${alreadyExist} already exist`);
     return parts.length > 0 ? parts.join(" · ") : null;
-  }, [resolvedTeamNames, stagedTeamRowsForCurrent]);
+    // `careerTeamStatus` closes over `resolvedTeamNames`, the staged rows and
+    // the linked-name map, all of which are already deps here by way of the two
+    // listed; adding the function itself would re-run this on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resolvedTeamNames, stagedTeamRowsForCurrent, current, excludedForCurrent, linkedNameById]);
 
   // ------------------------------------------------------------------------
   // Effects
@@ -886,7 +922,18 @@ export default function EntityReviewWizard({
    */
   useEffect(() => {
     if (!autoAddPending || !rows) return;
-    const undecided = rows.filter((r) => !r.decision);
+    /*
+     * NEO-236 — PLAYERS only, and this is a convergence requirement rather
+     * than a nicety.
+     *
+     * The bulk create no longer decides team rows (Jason: "it should only
+     * apply to players"), so an armed loop that watched every undecided row
+     * would sit forever on the New Team steps it is not allowed to touch:
+     * `settled > 0` would stay true, every call would decide 0, and the cap
+     * would be the only thing that eventually stopped it — after 400 pointless
+     * mutations and an error message blaming the operator.
+     */
+    const undecided = rows.filter((r) => !r.decision && r.kind !== "team");
     if (undecided.length === 0) {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- the arming is over because there is nothing left to add
       setAutoAddPending(false);
@@ -1229,7 +1276,7 @@ export default function EntityReviewWizard({
     // rather than leaving the operator to click again for each straggler. The
     // cap counts per arming, so re-clicking after it trips is a fresh budget —
     // which is the point: a deliberate click is not a runaway loop.
-    if (pendingUndecided > 0) {
+    if (pendingBulkCreatable > 0) {
       autoAddCallsRef.current = 0;
       autoAddRef.current = true;
       setAutoAddPending(true);
@@ -1400,6 +1447,18 @@ export default function EntityReviewWizard({
       ? nearMatches.filter((m) => m._id !== exactMatch._id)
       : nearMatches;
   const remaining = total - decided;
+  /**
+   * NEO-236 — the two bulk buttons act on DIFFERENT sets, so they count
+   * different things and their labels say which.
+   *
+   * `remainingPlayers` is what "Add remaining players as new" will decide:
+   * Jason narrowed it to players, because a team row's own step is the only
+   * place its League gets a human answer. `remainingNames` is every undecided
+   * row, which is what "Skip remaining" still rules on — a skip creates
+   * nothing, so there is no league to get wrong.
+   */
+  const remainingPlayers = countBulkCreatable(rows);
+  const remainingNames = countUndecided(rows);
   const busy = decidingRowId !== null;
 
   /** Decided rows, in batch order, for the history list. */
@@ -1446,7 +1505,7 @@ export default function EntityReviewWizard({
   const footerStatus: string | null = expired
     ? null
     : autoAddPending
-      ? `Adding ${remaining} more as their lookups finish…`
+      ? `Adding ${remainingPlayers} more as their lookups finish…`
       : pendingUndecided > 0
         ? `${pendingUndecided} still looking up — wait or skip`
         : null;
@@ -2369,7 +2428,7 @@ export default function EntityReviewWizard({
                 No aria-label on either: the visible text IS the accessible
                 name, and Maestro matches `.*Add All Remaining as New.*`.
               */}
-              {!expired && !allDecided && remaining > 0 && (
+              {!expired && !allDecided && remainingNames > 0 && (
                 <>
                   <button
                     type="button"
@@ -2379,8 +2438,8 @@ export default function EntityReviewWizard({
                     className="text-xs text-gray-400 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none underline decoration-dotted disabled:opacity-50 aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
                   >
                     {bulkPending === "create"
-                      ? "Adding all remaining…"
-                      : `Add All Remaining as New (${remaining})`}
+                      ? "Adding players…"
+                      : `Add remaining players as new (${remainingPlayers})`}
                   </button>
                   <button
                     type="button"
@@ -2389,8 +2448,8 @@ export default function EntityReviewWizard({
                     className="text-xs text-gray-400 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none underline decoration-dotted disabled:opacity-50"
                   >
                     {bulkPending === "skip"
-                      ? "Skipping remaining…"
-                      : `Skip Remaining (${remaining})`}
+                      ? "Skipping names…"
+                      : `Skip remaining names (${remainingNames})`}
                   </button>
                 </>
               )}

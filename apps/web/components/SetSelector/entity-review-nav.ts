@@ -146,6 +146,56 @@ export function countPendingUndecided(rows: readonly NavRow[]): number {
   );
 }
 
+/**
+ * The same, narrowed to the rows the bulk create can act on.
+ *
+ * The two are NOT interchangeable, and conflating them is a mistake worth
+ * naming: the status line ("N still looking up — wait or skip") is about what
+ * the OPERATOR is waiting on, which includes the New Team steps; the ARMING
+ * decision is about what the bulk create will still have work to do for, which
+ * is players only. Counting teams in the second makes the loop spin; leaving
+ * them out of the first makes the wizard look idle while it is not.
+ */
+export function countPendingBulkCreatable(rows: readonly NavRow[]): number {
+  return rows.reduce(
+    (n, r) =>
+      r.status === "pending" && !r.decision && isBulkCreatable(r) ? n + 1 : n,
+    0,
+  );
+}
+
+/**
+ * NEO-236 — is this a row "Add remaining players as new" would actually decide?
+ *
+ * Jason: "add all remaining as new should still process teams, it should only
+ * apply to players." So a TEAM row — a checklist name or a career team this
+ * batch staged — is never decided by that button, and every count attached to
+ * it has to agree, or the wizard lies twice over:
+ *
+ *  - the label would promise to add rows it will not touch, and
+ *  - the armed "keep adding as lookups finish" loop would never converge,
+ *    because it waits on a count that can no longer reach zero.
+ *
+ * A row with no `kind` (an older caller, or a test literal) counts as bulk
+ * creatable, which preserves every pre-NEO-236 caller's arithmetic.
+ */
+function isBulkCreatable(row: NavRow): boolean {
+  return row.kind !== "team";
+}
+
+/** Undecided rows the bulk create will act on — the number its label shows. */
+export function countBulkCreatable(rows: readonly NavRow[]): number {
+  return rows.reduce(
+    (n, r) => (!r.decision && isBulkCreatable(r) ? n + 1 : n),
+    0,
+  );
+}
+
+/** Undecided rows of ANY kind — what "Skip remaining" acts on, unchanged. */
+export function countUndecided(rows: readonly NavRow[]): number {
+  return rows.reduce((n, r) => (r.decision ? n : n + 1), 0);
+}
+
 /** What the batch will actually do, for the final step's summary. */
 export function summarizeDecisions(rows: readonly NavRow[]): {
   created: number;

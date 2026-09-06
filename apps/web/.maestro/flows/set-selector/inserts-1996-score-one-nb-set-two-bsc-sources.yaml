@@ -449,10 +449,30 @@ tags:
 
       # ── 6b. BULK-DECIDE THE REST AND COMMIT ───────────────────────────
       # The one decision above is absorbed by the bulk (it is already decided,
-      # so "Add All Remaining as New" simply leaves it alone) — 6a writes no
+      # so "Add remaining players as new" simply leaves it alone) — 6a writes no
       # extra player and the 220-card total below is unchanged by it.
       - tapOn:
-          text: ".*Add All Remaining as New.*"
+          text: ".*Add remaining players as new.*"
+      # NEO-236 — the bulk tap decides PLAYERS only, so every New Team
+      # step it leaves behind has to be answered before the batch can
+      # commit. One tap per step accepts the Location, Name and League
+      # the step is already showing, which is what an operator who agrees
+      # with the pre-fill would do. Keyed on the terminal state rather
+      # than on a step being visible: players and their staged teams
+      # drain at the same time, so a loop keyed on "New Team:" would exit
+      # the first time it caught the batch between lookups. See
+      # setup.yaml for the long version.
+      - repeat:
+          maxRuns: 250
+          while:
+            notVisible:
+              text: ".*Confirm & Save.*"
+          commands:
+            - runFlow:
+                when:
+                  visible: "New Team: .*"
+                commands:
+                  - tapOn: "Add as New Team"
       # NEO-221 — the bulk add now decides only rows whose Wikidata lookup has
       # SETTLED, staying armed for the rest, so this wait is gated on that live
       # external round-trip rather than on one mutation. Raised for that reason;

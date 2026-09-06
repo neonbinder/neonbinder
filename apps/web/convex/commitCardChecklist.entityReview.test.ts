@@ -1780,18 +1780,24 @@ describe("commitCardChecklist: career teams link on a match and are dropped with
   });
 });
 
-describe("commitCardChecklist: the bulk fast path still creates teams end to end", () => {
-  test("'Add All Remaining as New' on a team row lands a real, split teams row", async () => {
-    // The path every wizard Maestro flow takes past a row it does not care
-    // about. It has no per-row form to read a Location + Name from, so
-    // `recordAllRemainingAsCreate` writes the pre-fill and the prelude builds
-    // from that — if the two ever drift, bulk-confirming a batch silently
-    // creates nothing, which is invisible until someone counts the teams.
-    const t = convexTest(schema, modules);
-    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
-
-    await t.run(async (ctx) =>
+describe("commitCardChecklist: a team is created by its OWN step, not by the bulk", () => {
+  /**
+   * NEO-236. Jason, 2026-09-05: "add all remaining as new should still process
+   * teams, it should only apply to players."
+   *
+   * This block used to pin the opposite — that the bulk wrote a team row's
+   * pre-fill and the prelude built from it. That pre-fill included the LEAGUE,
+   * chosen from the enrichment's suggestion with no human in the loop, which is
+   * the defect this ticket exists to close. So the contract is inverted: the
+   * bulk leaves the team alone, and the row is created from the answer given on
+   * its own New Team step.
+   */
+  async function seedTeamRow(
+    t: ReturnType<typeof convexTest>,
+    variantTypeId: Id<"selectorOptions">,
+    sportId: Id<"selectorOptions">,
+  ) {
+    return t.run(async (ctx) =>
       ctx.db.insert("entityReviewQueue", {
         selectorOptionId: variantTypeId,
         batchId: "batch-1",
@@ -1805,22 +1811,62 @@ describe("commitCardChecklist: the bulk fast path still creates teams end to end
         enrichment: { location: "San Diego" },
       }),
     );
+  }
+
+  const teamCard = () => [
+    makeCard({ cardNumber: "1", cardName: "Team Card", teams: ["San Diego Padres"] }),
+  ];
+
+  test("the bulk alone creates NO team, and the card keeps the name unresolved", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    await seedTeamRow(t, variantTypeId, sportId);
 
     await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
       selectorOptionId: variantTypeId,
       batchId: "batch-1",
     });
-
     await asAdmin.action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
       sportId,
-      cards: [
-        makeCard({
-          cardNumber: "1",
-          cardName: "Team Card",
-          teams: ["San Diego Padres"],
-        }),
-      ],
+      cards: teamCard(),
+      batchId: "batch-1",
+    });
+
+    // Nothing invented. In the product the wizard would not have offered
+    // "Confirm & Save" at all while that step was open — this asserts the
+    // server half of that promise, which is what holds if a client ever
+    // commits early.
+    expect(await t.run(async (ctx) => ctx.db.query("teams").collect())).toEqual([]);
+    const card = await t.run(async (ctx) =>
+      ctx.db
+        .query("cardChecklist")
+        .withIndex("by_selector_option", (q) =>
+          q.eq("selectorOptionId", variantTypeId),
+        )
+        .first(),
+    );
+    expect(card!.teamOnCardIds ?? []).toEqual([]);
+  });
+
+  test("answering the New Team step lands a real, split teams row on the card", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    const rowId = await seedTeamRow(t, variantTypeId, sportId);
+
+    // What one tap on the step's primary action records: the Location and Name
+    // the step was already showing.
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: rowId,
+      action: "create",
+      create: { location: "San Diego", name: "Padres" },
+    });
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: teamCard(),
       batchId: "batch-1",
     });
 

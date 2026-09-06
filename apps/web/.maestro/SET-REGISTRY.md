@@ -416,6 +416,54 @@ PRINTS `TMT-<w>-<attempt>`. Any new flow that sets a Location must register it
 here the same way, because the composed string is what every other surface
 matches on.
 
+### NEO-236 — the review wizard's bulk add is about PLAYERS only
+
+Jason, 2026-09-05: *"add all remaining as new should still process teams, it
+should only apply to players."* The footer button is now
+**`Add remaining players as new (N)`**, where N counts undecided PLAYERS, and
+its sibling is **`Skip remaining names (N)`**, where N counts every undecided
+row (skip still rules on teams — a skip creates nothing that could be filed
+under the wrong league).
+
+The consequence for flows: **the bulk tap no longer reaches "Confirm & Save" on
+its own.** Every team the batch does not already hold — a checklist team name,
+or a career team staged off a player's Wikidata history — gets its own
+**New Team step** (`New Team: <name>`), because that step asks which LEAGUE and
+the bulk path could only ever guess it from the enrichment's suggestion.
+
+Three flows press that button — `setup.yaml`,
+`set-selector/signed-by-autofills-from-players.yaml` and
+`set-selector/inserts-1996-score-one-nb-set-two-bsc-sources.yaml` — and each
+now answers those steps with the same loop:
+
+```yaml
+- repeat:
+    maxRuns: 250
+    while:
+      notVisible:
+        text: ".*Confirm & Save.*"
+    commands:
+      - runFlow:
+          when:
+            visible: "New Team: .*"
+          commands:
+            - tapOn: "Add as New Team"
+```
+
+One tap per step, accepting the Location, Name and League the step already
+shows — what an operator who agrees with the pre-fill would do. Keyed on the
+TERMINAL state (`Confirm & Save` not yet visible) rather than on a step being
+visible, because players and their staged teams drain at the same time and a
+loop keyed on `New Team:` exits the first time it catches the batch between
+lookups. `maxRuns` is a runaway guard; the `extendedWaitUntil` on
+`Confirm & Save` after the loop is still the real gate.
+
+**Do not answer these with a seed.** `e2e-baseline.sh` says it outright —
+NEO-214 removed the seed-teams fixture — and the standing rule is that E2E
+fixtures come from the UI. Creating a real set's worth of teams through Team
+Management first would cost far more wall-clock and would exercise the wrong
+screen.
+
 Two consequences worth knowing before writing a picker step:
 
 * The typeahead matches and de-duplicates on the COMPOSED name, so typing a
