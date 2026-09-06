@@ -613,13 +613,33 @@ describe("nextUndecided — teams are always at the front of the queue", () => {
     expect(nextUndecided(after)?._id).toBe("t-new");
   });
 
-  it("does NOT interrupt a player the operator is already on", () => {
-    // An implicit pin yields only to a blocker for THAT player. An unrelated
-    // team row landing mid-review must not snatch the screen away — that is the
-    // NEO-221 defect this whole pinning model exists to prevent.
+  it("DOES move off a player the walk chose when a team is waiting", () => {
+    /*
+     * REVERSED deliberately, and it is worth saying why the first version was
+     * wrong rather than just changing the expectation.
+     *
+     * Round 4 read "do not interrupt a player the operator is on" as protecting
+     * any presented player. Jason's 118-row batch showed what that costs: the
+     * pool settles 5-wide, 105 of 118 rows are players, so the walk pins a
+     * player before any team has settled — and then never re-asks. He was left
+     * on a player whose chips said "needs a team decision" while 13 answerable
+     * teams sat in the batch.
+     *
+     * An implicit pin is the WALK's choice, not the operator's, so the walk may
+     * revise it. What "do not interrupt" protects is the operator's OWN
+     * navigation, and that is the explicit pin below — which still wins.
+     */
     const rows = [player("p1"), team("t-unrelated")];
-    const onPlayer = { rowId: "p1", explicit: false };
-    expect(resolveNav(rows, onPlayer)).toBe(onPlayer);
+    expect(resolveNav(rows, { rowId: "p1", explicit: false })).toEqual({
+      rowId: "t-unrelated",
+      explicit: false,
+    });
+  });
+
+  it("still does not interrupt a player the OPERATOR pinned", () => {
+    const rows = [player("p1"), team("t-unrelated")];
+    const pinned = { rowId: "p1", explicit: true };
+    expect(resolveNav(rows, pinned)).toBe(pinned);
   });
 
   it("moves to the team queue as soon as that player is decided", () => {
@@ -661,5 +681,108 @@ describe("nextUndecided — teams are always at the front of the queue", () => {
       rowId: null,
       explicit: false,
     });
+  });
+});
+
+describe("resolveNav — Jason's 118-row counter-example", () => {
+  /**
+   * Live on preview `cool-moose-396`, batch `8cc1be2c-…`: 118 rows — 13 TEAM
+   * rows all `status: "ready"` and undecided (6 checklist + 7 careerTeamOf),
+   * 105 players — and the wizard was sitting on a PLAYER, with the only decided
+   * row being one earlier player.
+   *
+   * `nextUndecided` was already teams-first, so a FRESH resolve picks a team.
+   * The hole is that `resolveNav` only consults it when the pin goes STALE, and
+   * an implicitly-pinned, undecided player is never stale. The batch drains
+   * 5-wide over a real Wikidata round trip, and with 105 of 118 rows being
+   * players the first row to settle is almost always a player — so the walk
+   * pins that player before any team has settled, and then never re-asks.
+   */
+  const team = (id: string, over: Partial<NavRow> = {}): NavRow => ({
+    _id: id,
+    status: "ready",
+    kind: "team",
+    ...over,
+  });
+  const player = (id: string, over: Partial<NavRow> = {}): NavRow => ({
+    _id: id,
+    status: "ready",
+    kind: "player",
+    ...over,
+  });
+
+  /** 13 settled undecided teams among 105 players, one player decided. */
+  function batch(): NavRow[] {
+    const players = Array.from({ length: 105 }, (_, i) =>
+      player(`p${i}`, i < 13 ? { status: "error" } : {}),
+    );
+    players[0] = { ...players[0], decision: { action: "create" } as NavDecision };
+    const teams = Array.from({ length: 13 }, (_, i) =>
+      i < 6 ? team(`ct${i}`) : { ...careerTeamOf(`st${i}`, "p40"), name: `Club ${i}` },
+    );
+    // Server order: the checklist teams and staged rows are scattered through
+    // the batch, not gathered at the front.
+    return [...players.slice(0, 40), ...teams, ...players.slice(40)];
+  }
+
+  it("opens on a team, not a player, when the batch is already settled", () => {
+    const rows = batch();
+    expect(resolveNav(rows, { rowId: null, explicit: false })).toEqual({
+      rowId: "ct0",
+      explicit: false,
+    });
+  });
+
+  it("YIELDS a player the walk landed on before the teams settled", () => {
+    // The actual sequence: everything pending, one player settles first and is
+    // pinned, and the 13 teams settle a moment later.
+    const pendingAll: NavRow[] = [
+      player("p-first", { status: "pending" }),
+      team("t1", { status: "pending" }),
+    ];
+    const nothingYet = resolveNav(pendingAll, { rowId: null, explicit: false });
+    expect(nothingYet).toEqual({ rowId: null, explicit: false });
+
+    const playerSettled = [player("p-first"), team("t1", { status: "pending" })];
+    const onPlayer = resolveNav(playerSettled, nothingYet);
+    expect(onPlayer).toEqual({ rowId: "p-first", explicit: false });
+
+    // …and now the team settles. The walk chose this player, so the walk may
+    // change its mind: a team is what should be in front of the operator.
+    const teamSettled = [player("p-first"), team("t1")];
+    expect(resolveNav(teamSettled, onPlayer)).toEqual({
+      rowId: "t1",
+      explicit: false,
+    });
+  });
+
+  it("does NOT yield a player the OPERATOR pinned", () => {
+    // Back, "Change decision" and "Decide team" all pin explicitly. Those are
+    // the operator's own navigation and the teams-first rule must not undo it —
+    // that is the NEO-221 promise about not losing your place.
+    const rows = [player("p1"), team("t1")];
+    const pinned = { rowId: "p1", explicit: true };
+    expect(resolveNav(rows, pinned)).toBe(pinned);
+  });
+
+  it("leaves a presented TEAM alone — no loop between two teams", () => {
+    const rows = [team("t1"), team("t2")];
+    const onTeam = { rowId: "t1", explicit: false };
+    expect(resolveNav(rows, onTeam)).toBe(onTeam);
+  });
+
+  it("keeps a player once every team is answered", () => {
+    const rows = [
+      player("p1"),
+      { ...team("t1"), decision: { action: "create" } as NavDecision },
+    ];
+    const onPlayer = { rowId: "p1", explicit: false };
+    expect(resolveNav(rows, onPlayer)).toBe(onPlayer);
+  });
+
+  it("does not yield to a team whose own lookup has not landed", () => {
+    const rows = [player("p1"), team("t1", { status: "pending" })];
+    const onPlayer = { rowId: "p1", explicit: false };
+    expect(resolveNav(rows, onPlayer)).toBe(onPlayer);
   });
 });

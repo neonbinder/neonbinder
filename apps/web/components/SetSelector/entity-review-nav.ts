@@ -191,6 +191,19 @@ export function nextUndecided<T extends NavRow>(rows: readonly T[]): T | null {
   );
 }
 
+/**
+ * Is any TEAM row settled, undecided, and therefore ready to be answered?
+ *
+ * The teams-first rule's precondition. Deliberately not "is any team row
+ * undecided": a team whose own lookup has not landed cannot be answered yet, so
+ * yielding to it would park the operator on nothing.
+ */
+function hasSettledUndecidedTeam(rows: readonly NavRow[]): boolean {
+  return rows.some(
+    (r) => r.kind === "team" && r.status !== "pending" && !r.decision,
+  );
+}
+
 /** Rows carrying any decision — the wizard's progress numerator. */
 export function countDecided(rows: readonly NavRow[]): number {
   return rows.reduce((n, r) => (r.decision ? n + 1 : n), 0);
@@ -307,6 +320,29 @@ export function resolveNav<T extends NavRow>(
     presented === null ||
     (!nav.explicit &&
       (!!presented.decision ||
+        /*
+         * NEO-236 — a player the WALK chose yields while any team waits.
+         *
+         * Jason's 118-row batch: 13 settled undecided teams, and the wizard
+         * sitting on a player. `nextUndecided` was already teams-first, so a
+         * FRESH resolve picked a team correctly — the hole was that
+         * `resolveNav` only consults it when the pin goes STALE, and an
+         * implicitly-pinned undecided player never is.
+         *
+         * That matters because of how a batch actually drains: everything
+         * starts `pending`, the pool resolves 5-wide over a real Wikidata round
+         * trip, and with 105 of 118 rows being players the first row to settle
+         * is almost always a player. The walk pins it, the 13 teams settle a
+         * moment later, and nothing ever re-asks. The operator gets exactly
+         * what Jason got — a player whose chips say "needs a team decision"
+         * while every team it needs is sitting there answered by nobody.
+         *
+         * Only an IMPLICIT pin yields. An explicit one is the operator's own
+         * navigation (Back, "Change decision", "Decide team") and outranks
+         * this — that is the NEO-221 promise about not losing your place, and
+         * it is what keeps this from undoing a deliberate move.
+         */
+        (presented.kind === "player" && hasSettledUndecidedTeam(rows)) ||
         // NEO-236 — an implicit pin YIELDS to steps staged under it.
         //
         // This is the defect Jason hit on CI run 5: on the first player of a

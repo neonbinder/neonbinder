@@ -4980,3 +4980,72 @@ describe("EntityReviewWizard — a blocked chip leads to its step", () => {
     ).toBeTruthy();
   });
 });
+
+describe("EntityReviewWizard — teams come first even as the batch drains", () => {
+  /**
+   * Jason's 118-row hockey batch on preview `cool-moose-396`: 13 settled,
+   * undecided team rows and the wizard sitting on a player. See
+   * `entity-review-nav.test.tsx` for the rule; this pins the wizard's own
+   * behaviour, including the drain order that produced it.
+   */
+  it("opens on a team row even when players come first in server order", () => {
+    currentRows = [
+      makeRow({ kind: "player", name: "Bernie Geoffrion", status: "ready" }),
+      makeRow({ kind: "player", name: "Guy Lafleur", status: "ready" }),
+      makeRow({ kind: "team", name: "Montreal Canadiens", status: "ready" }),
+    ];
+    renderWizard();
+
+    expect(
+      screen.getByRole("heading", { name: "New Team: Montreal Canadiens" }),
+    ).toBeTruthy();
+  });
+
+  it("moves off a player once the teams settle behind it", async () => {
+    // The real sequence: everything pending, a player settles first and is
+    // pinned, the teams settle a moment later.
+    const player = makeRow({ kind: "player", name: "Bernie Geoffrion", status: "ready" });
+    const team = makeRow({ kind: "team", name: "Montreal Canadiens", status: "pending" });
+    currentRows = [player, team];
+    const { rerender } = renderWizard();
+
+    expect(screen.getByRole("heading", { name: "Bernie Geoffrion" })).toBeTruthy();
+
+    currentRows = [player, { ...team, status: "ready" }];
+    rerenderWizard(rerender);
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: "New Team: Montreal Canadiens" }),
+      ).toBeTruthy(),
+    );
+  });
+
+  it("stays put when the operator pinned the player themselves", async () => {
+    // Reached through the decided list's "Change" — an explicit pin.
+    const decided = makeRow({
+      kind: "player",
+      name: "Bernie Geoffrion",
+      status: "ready",
+      decision: { action: "create" },
+    });
+    const team = makeRow({ kind: "team", name: "Montreal Canadiens", status: "ready" });
+    currentRows = [decided, team];
+    renderWizard();
+
+    // The walk offers the team first…
+    expect(
+      screen.getByRole("heading", { name: "New Team: Montreal Canadiens" }),
+    ).toBeTruthy();
+
+    // …and the operator goes back to the player anyway.
+    fireEvent.click(
+      screen.getByRole("button", { name: "Change decision for Bernie Geoffrion" }),
+    );
+    await waitFor(() => expect(mockClearDecision).toHaveBeenCalledTimes(1));
+
+    currentRows = [{ ...decided, decision: undefined }, team];
+    renderWizard();
+    expect(screen.getByRole("heading", { name: "Bernie Geoffrion" })).toBeTruthy();
+  });
+});
