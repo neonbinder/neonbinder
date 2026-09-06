@@ -78,3 +78,9 @@ ds-bundle/
 .design-sync/learnings/
 .design-sync/node_modules
 .vitest-results.json
+
+# NEO-254 — bulk-preload RAW inputs (Lahman CSVs, nflverse rosters).
+# ~40 MB of third-party CSV that only `scripts/build-preload-data.mjs` reads.
+# The DERIVED files it writes — data/preload/mlb.json and nfl.json — ARE
+# committed; see data/preload/README.md for how to fetch these raw inputs again.
+/data/preload/raw/

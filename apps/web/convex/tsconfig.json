@@ -11,6 +11,10 @@
     "jsx": "react-jsx",
     "skipLibCheck": true,
     "allowSyntheticDefaultImports": true,
+    /* NEO-254: convex/preloadPlayers.ts imports the committed preload datasets
+     * (data/preload/{mlb,nfl}.json). It is the only JSON import under this
+     * project, and the only module allowed to import those files. */
+    "resolveJsonModule": true,
 
     /* These compiler options are required by Convex */
     "target": "ESNext",

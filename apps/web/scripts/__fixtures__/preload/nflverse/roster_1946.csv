@@ -1,0 +1,3 @@
+season,team,position,full_name,birth_date,gsis_id,status,headshot_url
+1946,CLE,QB,Otto Graham,1921-12-06,,ACT,"https://example.test/a,b.png"
+1946,BUF,RB,No Birthdate Guy,,,ACT,
