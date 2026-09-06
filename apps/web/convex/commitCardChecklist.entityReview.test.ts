@@ -1901,6 +1901,9 @@ describe("commitCardChecklist: pending-name bounds (NEO-246, NEO-251)", () => {
     expect(stored).toEqual(names);
     // The operator is told about what was STORED.
     expect(result.unreviewedNameCount).toBe(MAX_CARD_PLAYERS);
+    // The plain path: nothing to merge with, nothing over the cap, so nothing
+    // is dropped and the count needs no correction.
+    expect(result.droppedPendingNameCount).toBe(0);
 
     // The fixer's payload for "answered the team side, player names untouched".
     await expect(
@@ -1981,20 +1984,20 @@ describe("commitCardChecklist: pending-name bounds (NEO-246, NEO-251)", () => {
     // It LANDS.
     expect(result.success).toBe(true);
 
-    // `unreviewedNameCount` is THIS COMMIT'S stamped contribution, not the
-    // row's backlog: it is a set of names built in the action, before the
-    // chunk merges them with what the row already carried. So it reports the
-    // ten names this sync found, not the twenty now sitting on the card.
-    //
-    // KNOWN GAP, pinned here rather than left for someone to discover: five of
-    // those ten lost the truncation and were never stored, so the number is
-    // five higher than what the operator will actually find on the card. The
-    // count is computed one layer above the merge that drops them, and closing
-    // it means the chunk reporting back which stamped names survived — a
-    // change to its return shape, across every chunk, which is a decision of
-    // its own rather than a line in this test. Every other path counts
-    // exactly, because nothing is dropped there.
-    expect(result.unreviewedNameCount).toBe(stamped.length);
+    // `unreviewedNameCount` is what this commit left WAITING on the operator,
+    // and that is not the same as what it stamped. Ten names were stamped;
+    // five of them lost the truncation and never reached the row, so five is
+    // the number of new names the operator will actually find. The chunk
+    // reports its drops back (`droppedPendingNameCount`) precisely so the
+    // action can subtract them here rather than quoting a figure five higher
+    // than the card.
+    expect(result.unreviewedNameCount).toBe(5);
+    expect(result.droppedPendingNameCount).toBe(5);
+    // Stated as the relationship, not just the arithmetic, so a change to
+    // either half is caught rather than absorbed.
+    expect(
+      result.unreviewedNameCount + result.droppedPendingNameCount,
+    ).toBe(stamped.length);
 
     const [merged] = await readCards(t, variantTypeId);
     expect(merged.pendingPlayerNames).toHaveLength(MAX_CARD_PLAYERS);
@@ -2057,12 +2060,25 @@ describe("commitCardChecklist: pending-name bounds (NEO-246, NEO-251)", () => {
       kind: "player",
       name: "Freshly Found",
     });
-    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
-      selectorOptionId: variantTypeId,
-      sportId,
-      cards: [makeCard({ cardNumber: "1", players: ["Freshly Found"] })],
-      batchId: "batch-2",
-    });
+    const repair = await asAdmin.action(
+      api.selectorOptions.commitCardChecklist,
+      {
+        selectorOptionId: variantTypeId,
+        sportId,
+        cards: [makeCard({ cardNumber: "1", players: ["Freshly Found"] })],
+        batchId: "batch-2",
+      },
+    );
+
+    // The repair drops six names — the five legacy ones over the cap plus the
+    // one this sync stamped, which the backlog outranked. Only one of them was
+    // ever stamped, so the subtraction bottoms out: ZERO new names are waiting
+    // on the operator, which is the honest answer. This is the floor in
+    // `unreviewedNameCount` doing its job — the drop count and the stamped set
+    // measure different populations, and the floor is what keeps a repair from
+    // reporting a negative.
+    expect(repair.droppedPendingNameCount).toBe(6);
+    expect(repair.unreviewedNameCount).toBe(0);
 
     const [repaired] = await readCards(t, variantTypeId);
     expect(repaired.pendingPlayerNames).toEqual(

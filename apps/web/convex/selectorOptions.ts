@@ -10121,6 +10121,17 @@ export const commitCardChecklistChunk = internalMutation({
     // How many matched rows actually had a content field written, for the
     // action's commit log. A count, never the values.
     contentAppliedCount: v.number(),
+    // NEO-246 — how many pending names `boundPendingNames` dropped across this
+    // chunk's cards.
+    //
+    // The action counts the unreviewed names it STAMPS, one layer above this
+    // transaction, so without this it reports names that never reached a row:
+    // the merge below unions a row's stored backlog with the names this sync
+    // stamped, and the union can exceed the cap while each side is inside it.
+    // Stored names come first in that concatenation, so every name the bound
+    // drops is one this commit stamped — which is why a COUNT is enough to
+    // correct the action's total, and no name has to leave this mutation.
+    droppedPendingNameCount: v.number(),
   }),
   handler: async (
     ctx,
@@ -10130,6 +10141,7 @@ export const commitCardChecklistChunk = internalMutation({
     bscTeamEnrichmentIds: Array<Id<"cardChecklist">>;
     staleDecisionIds: Array<Id<"cardChecklist">>;
     contentAppliedCount: number;
+    droppedPendingNameCount: number;
   }> => {
     // NEO-219 security condition 2 — fail closed on a row deleted mid-commit.
     //
@@ -10177,6 +10189,10 @@ export const commitCardChecklistChunk = internalMutation({
     const bscTeamEnrichmentIds: Array<Id<"cardChecklist">> = [];
     const staleDecisionIds: Array<Id<"cardChecklist">> = [];
     let contentAppliedCount = 0;
+    // NEO-246 — see the return validator. Accumulated across every
+    // `boundPendingNames` call in this chunk, on both the update and the
+    // insert branch.
+    let droppedPendingNameCount = 0;
 
     for (const card of args.cards) {
       // Deliberately `rowsById.get`, not `ctx.db.get`: the map is this
@@ -10298,7 +10314,11 @@ export const commitCardChecklistChunk = internalMutation({
           incoming: string[] | undefined,
           settled: Set<string>,
           limit: number,
-        ): { changed: boolean; next: string[] | undefined } => {
+        ): {
+          changed: boolean;
+          next: string[] | undefined;
+          dropped: number;
+        } => {
           const merged: string[] = [];
           const seen = new Set<string>();
           for (const raw of [...(stored ?? []), ...(incoming ?? [])]) {
@@ -10325,7 +10345,14 @@ export const commitCardChecklistChunk = internalMutation({
           const changed =
             next.length !== before.length ||
             next.some((n, i) => n !== before[i]);
-          return { changed, next: next.length > 0 ? next : undefined };
+          // Measured against `merged`, not against `incoming`: a name the
+          // `settled` filter removed above was ANSWERED, not dropped, and the
+          // operator should not be told it is still waiting on them.
+          return {
+            changed,
+            next: next.length > 0 ? next : undefined,
+            dropped: merged.length - next.length,
+          };
         };
         const nextPendingPlayers = mergePendingNames(
           existing.pendingPlayerNames,
@@ -10339,6 +10366,8 @@ export const commitCardChecklistChunk = internalMutation({
           settledTeamNames,
           MAX_PENDING_TEAM_NAMES,
         );
+        droppedPendingNameCount +=
+          nextPendingPlayers.dropped + nextPendingTeams.dropped;
 
         await ctx.db.patch(existing._id, {
           ...contentPatch,
@@ -10471,6 +10500,15 @@ export const commitCardChecklistChunk = internalMutation({
           card.pendingTeamNames ?? [],
           MAX_PENDING_TEAM_NAMES,
         );
+        // Normally zero on this branch — an insert has no stored backlog to
+        // merge with, and the action already bounded the payload — but counted
+        // rather than assumed, so a caller that skipped that bound is reported
+        // instead of quietly inflating the action's total.
+        droppedPendingNameCount +=
+          (card.pendingPlayerNames ?? []).length -
+          insertPendingPlayerNames.length +
+          ((card.pendingTeamNames ?? []).length -
+            insertPendingTeamNames.length);
 
         const newCardId: Id<"cardChecklist"> = await ctx.db.insert("cardChecklist", {
           selectorOptionId: args.selectorOptionId,
@@ -10549,6 +10587,7 @@ export const commitCardChecklistChunk = internalMutation({
       bscTeamEnrichmentIds,
       staleDecisionIds,
       contentAppliedCount,
+      droppedPendingNameCount,
     };
   },
 });
@@ -12372,6 +12411,11 @@ export const commitCardChecklist = action({
     // invite them into a banner or an error string, and marketplace-sourced
     // person names have no business in either.
     unreviewedNameCount: v.number(),
+    // NEO-246 — pending names the chunks dropped (the merge of a row's stored
+    // backlog with what this sync stamped can exceed the cap even when each
+    // side is inside it). A COUNT, never the names: what was dropped is
+    // marketplace-derived text.
+    droppedPendingNameCount: v.number(),
   }),
   handler: async (ctx, args): Promise<{
     success: boolean;
@@ -12388,6 +12432,7 @@ export const commitCardChecklist = action({
     staleDecisions: number;
     operatorDeleted: number;
     unreviewedNameCount: number;
+    droppedPendingNameCount: number;
   }> => {
     // Enforced HERE, before any phase runs, so a non-admin call writes
     // nothing at all — the phases below re-check, but this is the boundary.
@@ -12667,6 +12712,9 @@ export const commitCardChecklist = action({
     const bscTeamEnrichmentIds: Array<Id<"cardChecklist">> = [];
     const staleDecisionIds: Array<Id<"cardChecklist">> = [];
     let contentAppliedCount = 0;
+    // NEO-246 — names the chunks' `boundPendingNames` dropped. Subtracted from
+    // `stampedUnreviewedNames.size` below.
+    let droppedPendingNameCount = 0;
     const chunkCount = Math.ceil(chunkCards.length / CARDS_PER_COMMIT_CHUNK);
     for (let start = 0; start < chunkCards.length; start += CARDS_PER_COMMIT_CHUNK) {
       const slice = chunkCards.slice(start, start + CARDS_PER_COMMIT_CHUNK);
@@ -12676,6 +12724,7 @@ export const commitCardChecklist = action({
         bscTeamEnrichmentIds: Array<Id<"cardChecklist">>;
         staleDecisionIds: Array<Id<"cardChecklist">>;
         contentAppliedCount: number;
+        droppedPendingNameCount: number;
       } = await phase(
         `chunk ${index}/${chunkCount} (cards ${start + 1}-${start + slice.length} of ${chunkCards.length})`,
         () =>
@@ -12702,6 +12751,7 @@ export const commitCardChecklist = action({
       bscTeamEnrichmentIds.push(...result.bscTeamEnrichmentIds);
       staleDecisionIds.push(...result.staleDecisionIds);
       contentAppliedCount += result.contentAppliedCount;
+      droppedPendingNameCount += result.droppedPendingNameCount;
     }
 
     // ── NEO-189: which card varies which ────────────────────────────────────
@@ -12832,7 +12882,11 @@ export const commitCardChecklist = action({
       match.collisions.length > 0 ||
       prelude.ambiguousMatchKeys.length > 0 ||
       staleDecisionIds.length > 0 ||
-      unmatchedExistingIds.length > 0;
+      unmatchedExistingIds.length > 0 ||
+      // NEO-246 — a merge that outgrew the cap is operationally interesting on
+      // its own: it means rows are accumulating unanswered names faster than
+      // the operator is clearing them.
+      droppedPendingNameCount > 0;
     if (somethingToReport) {
       console.log(
         JSON.stringify({
@@ -12866,6 +12920,10 @@ export const commitCardChecklist = action({
           // dropping a card does not delete a NeonBinder row.
           unmatchedExistingCount: unmatchedExistingIds.length,
           unmatchedExistingIds: unmatchedExistingIds.slice(0, 20),
+          // NEO-246 — pending names dropped because a row's merged list
+          // outgrew the cap. The COUNT only: the names are marketplace-derived
+          // text, and this line is structured logging, not a diff.
+          droppedPendingNameCount,
         }),
       );
     }
@@ -12891,7 +12949,31 @@ export const commitCardChecklist = action({
       // NEO-221: players and teams together and deduped — the operator is
       // being told "these names got no link", and which table a name would
       // have landed in is not the part they need.
-      unreviewedNameCount: stampedUnreviewedNames.size,
+      //
+      // NEO-246 — minus what the chunks dropped. `stampedUnreviewedNames` is
+      // built one layer above the chunk, from each card's payload, so on its
+      // own it counts names that never reached a row: the chunk's merge unions
+      // a row's stored backlog with the names this sync stamped, and the union
+      // can exceed the cap while each side is inside it. Stored names come
+      // first in that merge, so every dropped name is a stamped one and the
+      // subtraction is exact for the case that produces it.
+      //
+      // Floored at 0, and the floor is not decoration: the two quantities are
+      // measured differently — a SET of names commit-wide against a COUNT of
+      // drops per card — so one name stamped on two cards and dropped on both
+      // subtracts twice. Correcting that would mean the chunk returning the
+      // names themselves, which is a worse trade: this number exists to tell
+      // an operator how many names are waiting on them, and the systematic
+      // over-count it removes is the one a real re-sync produces every time.
+      unreviewedNameCount: Math.max(
+        0,
+        stampedUnreviewedNames.size - droppedPendingNameCount,
+      ),
+      // NEO-246 — surfaced on its own so an operator-facing layer can say what
+      // happened to them, rather than leaving the difference between "20 names
+      // arrived" and "15 are waiting" invisible. Not rendered anywhere yet: a
+      // user-facing string needs a brand-voice draft and Jason's sign-off.
+      droppedPendingNameCount,
     };
   },
 });
