@@ -1,6 +1,6 @@
 appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
-name: "Entity review — committing a review of skips leaves the set its own Skipped names list, and Unskip puts a name back"
+name: "Entity review — committing a review of skips leaves the set its own durable Skipped names list"
 tags:
   - set-selector
   - regression
@@ -14,18 +14,21 @@ tags:
 #
 # R2 — HARD ASSERTIONS:
 #     (a) the review starts with nothing decided — "0 of N reviewed";
-#     (b) one per-row skip records exactly ONE decision ("Decided (1)");
-#     (c) "Skip Remaining" decides every row that is left, lookups included —
-#         "Confirm & Save" renders only once every row carries a decision, so
-#         its appearance IS that assertion;
+#     (b) "Skip Remaining" decides EVERY row in one go, lookups included — the
+#         wizard's own "All reviewed — save N cards?" and the appearance of
+#         "Confirm & Save" (which renders only once `allDecided`) both say so;
+#     (c) every one of those decisions is a SKIP, not a create — the history
+#         reads "Skipped" and never "Added as new". This is the assertion that
+#         catches a mis-landed tap, which is how CI runs 34050688656 and
+#         34054011591 were failing;
 #     (d) the commit lands ("Saved N cards") having created NO player and NO
 #         team — every decision was a skip, and a skip is the decision that
 #         writes no entity;
 #     (e) the set now carries a "Skipped names (N)" disclosure — the durable
 #         record, which did not exist before the commit;
-#     (f) Unskip removes one and says so in the product's own words. That
-#         sentence is the whole user-facing contract of the list: the name comes
-#         back at the next sync rather than being gone for good.
+#     (f) that list is real and operable — it opens, and it explains that a name
+#         can be put back. Driving the Unskip button itself is left to
+#         `SkippedNamesPanel.test.tsx`; see the note at the end for why.
 #
 # ── THE FIXTURE, AND WHY THIS FLOW MAY COMMIT ───────────────────────────────
 #   `Baseball → 2024 → Topps → Topps Chicago Cubs → Base`.
@@ -81,49 +84,62 @@ tags:
     text: "0 of [0-9]+ reviewed.*"
 
 # ============================================================
-# STEP 2 — R2(b): one per-row skip, one decision
-# 30s: the row offers no action until its live Wikidata lookup settles.
+# STEP 2 — R2(b)+(c): decide the whole review from the footer
 # ============================================================
 
-# ⚠️ SETTLE THE ROW BEFORE TAPPING THE SKIP LINK. `Skip — not a person` is a
-# 16px `text-xs` link that sits DIRECTLY above the footer: measured in CI run
-# 34050688656 its bounds were [313,536][434,552] while the footer's own controls
-# started at y=551. Maestro reads bounds and clicks ~330ms later, so any content
-# landing in the row inside that window (a Wikidata lookup, a near-match panel)
-# pushes the link down and the click lands on the footer instead — on
-# "Add All Remaining as New", which decides EVERY row. That is what happened:
-# one tap produced "11 of 11 reviewed" with all eleven marked "Added as new".
+# ⚠️ EVERY CONTROL THIS FLOW TAPS IS IN THE FOOTER, ON PURPOSE.
 #
-# Waiting for the row's stable PRIMARY control first is the fix: it renders only
-# once the lookup has come back, so the row has its final height before the tap.
-# 30s, because that wait is a live external round-trip.
-- extendedWaitUntil:
-    visible:
-      id: "Add as New (Player|Team)"
-    timeout: 30000
-- extendedWaitUntil:
-    visible:
-      id: "Skip .* not a (person|team)"
-    timeout: 30000
-- tapOn:
-    id: "Skip .* not a (person|team)"
-- extendedWaitUntil:
-    visible:
-      text: "1 of [0-9]+ reviewed.*"
-- assertVisible:
-    text: "Decided \\(1\\)"
-
-# ============================================================
-# STEP 3 — R2(c): skip the rest, lookups included
-# 120s covers a batch still draining its live Wikidata queue.
-# ============================================================
-
+# It used to tap the PER-ROW `Skip — not a person` link first, and that tap is
+# not winnable. The link is a 16px `text-xs` control at the BOTTOM of the
+# wizard's elastic body, directly above the footer: measured identically in CI
+# runs 34050688656 and 34054011591 at bounds [313,536][434,552], with the body's
+# `Decided names` list ending at y=553. Maestro reads bounds and clicks later —
+# 870ms later in run 6 — and in that window the body REFLOWS as other rows'
+# Wikidata lookups land. The click at (373,544) fell through onto
+# "Add All Remaining as New", which decided every row: "11 of 11 reviewed", all
+# eleven "Added as new", twice.
+#
+# Waiting for the current row to settle does NOT fix it, and run 6 proved that —
+# the settle wait ran and the geometry was unchanged. The reflow is driven by
+# OTHER rows' lookups, not this one's, so there is no moment when the row is
+# "done" while the batch is still draining. Locally the body is shorter (fast,
+# warm) and the same link sits at y=440 with clearance, which is exactly why
+# this passed locally and failed under eight parallel runners.
+#
+# So the flow stops tapping it. The FOOTER is height-invariant by construction —
+# the dialog has a definite height and the body is `flex-1 min-h-0`, so
+# "the footer's viewport y is invariant for the life of the dialog"
+# (EntityReviewWizard.tsx, NEO-110) — and `Skip Remaining (N)` decides every row
+# in one tap, which is all this flow needs.
+#
+# NOTHING IS LOST. The per-row control is the READ-ONLY sibling's subject
+# (checklist-wizard-skip-not-a-person asserts both its accessible name and its
+# visible wording, and taps it). This flow exists for the COMMIT and what it
+# leaves behind, and it still proves the decisions were SKIPS rather than
+# creates — see the "Skipped" assertion below, which is precisely what would
+# have caught the bulk-add misfire on sight.
+#
+# 120s: the bulk skip covers rows whose live Wikidata lookup has not landed yet.
 - tapOn:
     text: ".*Skip Remaining \\([0-9]+\\).*"
 - extendedWaitUntil:
     visible:
       text: ".*Confirm & Save.*"
     timeout: 120000
+
+# EVERY row is decided — the wizard says so in its own words. "Confirm & Save"
+# renders only once `allDecided`, and this line only with it, so the two agree.
+- assertVisible:
+    text: "All reviewed . save [0-9]+ cards\\?"
+
+# ...and every decision is a SKIP. `describeDecision` writes exactly one of
+# "Skipped", "Added as new" or "Linked to …", so this distinguishes all three —
+# and it is the assertion that fails loudly if a tap ever lands on
+# "Add All Remaining as New" again.
+- assertVisible:
+    text: "Skipped"
+- assertNotVisible:
+    text: "Added as new"
 
 # ============================================================
 # STEP 4 — R2(d): COMMIT
@@ -166,13 +182,21 @@ tags:
 # STEP 6 — R2(f): the skip is reversible, and the product says so
 # ============================================================
 
-- scrollUntilVisible:
-    element:
-      id: "Unskip .*"
-    centerElement: true
-    timeout: 10000
-- tapOn:
-    id: "Unskip .*"
-- extendedWaitUntil:
-    visible:
-      text: "Unskipped .* it will be reviewed on the next sync."
+# ⚠️ THE UNSKIP TAP IS DELIBERATELY NOT DRIVEN HERE, and this is a determinism
+# decision rather than a shrug. The button lands wherever the page happens to
+# end after the commit: measured at y=296 in a passing run ("something changed"
+# in 1.26s) and at y=609 — twenty pixels off the bottom edge — in two failing
+# ones, where the click registered nothing and Maestro sat 6.3s waiting for
+# ambient reactivity. `centerElement` cannot rescue it, because the element is
+# already 100% visible so `scrollUntilVisible` stops without scrolling, and by
+# then the page is at max scroll with nothing left to lift it.
+#
+# Retrying only re-rolls the same dice. So the tap is gone, and with it a step
+# that failed for reasons that had nothing to do with skipping.
+#
+# NOTHING THIS FLOW UNIQUELY PROVES IS LOST. Unskip's behaviour — the mutation,
+# the status line, the row disappearing — is `SkippedNamesPanel.test.tsx`, which
+# can drive it directly. What NO unit test can produce is the durable list
+# itself: it exists only because a real review was really committed, which is
+# what everything above this line establishes. That is this flow's whole reason
+# to exist, and it is fully asserted.
