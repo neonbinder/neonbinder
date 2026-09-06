@@ -23,5 +23,5 @@
 - [Capture the browser console with CDP](patterns_capture_browser_console_with_cdp.md) — Maestro logs no console; 30 lines of raw CDP turns a blank error-boundary screenshot into a named root cause
 - [NEO-219 confirm surfaces](reference_neo219_confirm_surfaces.md) — custom entry needs TWO Enters; Base picker needs an explicit pick; chips confirm detach; empty rows have a delete control
 - [CI's seed resets the preview under your local run](reference_ci_seed_resets_the_preview_under_your_local_run.md) — columns emptying + "no <ancestor> ancestor" mid-flow is a concurrent global reset, not a product bug; check `gh run view` seed startedAt first
-- [NEO-254 same-name panel is E2E-unreachable](reference_neo254_same_name_panel_unreachable_from_ui.md) — every UI creation path refuses a second same-name player; only the terminal-only preload makes the state
+- [NEO-254 two same-name players via birth year](reference_neo254_same_name_players_via_birth_year.md) — only `/admin/players` "Create anyway" + a new birth year forks; pickers never do; the wizard panel is still untriggerable
 - [NEO-254 undated Wikidata teams — which surface](reference_neo254_undated_career_teams_surfaces.md) — wizard only (Players page needs a COMMIT to write `players.undatedCareerTeams`); selectors + 27% per-row hit rate

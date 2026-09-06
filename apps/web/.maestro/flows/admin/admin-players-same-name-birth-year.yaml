@@ -1,60 +1,61 @@
 appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/admin/players&worker=${WORKER_INDEX || "0"}
-name: "Player Management — the birth year is bounded, is stored and shown on the row, and never lets a repeated name quietly become a second player"
+name: "Player Management — a birth year is bounded, is shown on the row, and is what lets a repeated name become a genuinely second player"
 tags:
   - regression
   - admin
 ---
 # R1 — ONE FEATURE (NEO-254): the **birth year** on `/admin/players`. It is the
-# field that tells two people with one name apart, so this flow proves the three
-# things the operator can observe about it: it refuses a year outside its
-# bounds, it is stored and printed on the master row as "b. 1960", and it does
-# NOT turn a repeated name into a second player.
+# field that tells two people with one name apart, and on this form it is also
+# the MECHANISM by which the second of them gets created. This flow drives the
+# whole of that: the field's bounds, the year showing up on the master row, and
+# the three-way adopt / fork decision the add form makes.
 #
-# ── ⚠️ WHAT THIS FLOW WAS ASKED TO PROVE AND CANNOT ─────────────────────────
-# The brief was to mint TWO players under one name (A with birth year 1960, B
-# with 1975) and then drive the wizard's "Same name, different people" panel.
-# **That is not reachable, and the birth-year field does not make it reachable.**
-# `players.createByAdmin` reads the same-name rows and returns BEFORE the birth
-# year is ever considered:
+# `players.createByAdmin` → `adoptOrForkOnCreate`:
+#   * no birth year, one row on file          → ADOPT ("already exists")
+#   * a birth year no row on file carries     → FORK  ("Added <name>.")
+#   * a birth year exactly one row carries    → ADOPT
+# `players.findOrCreate` (the pickers) deliberately does NOT fork — one match
+# there is an answer, because a picker's job is to LINK, not to create.
 #
-#     const candidates = await sameNamePlayers(ctx, nameNormalized, args.sportId);
-#     if (candidates.length === 1) return { id: candidates[0]._id, created: false };
-#     if (candidates.length > 1) { ...birthYear tiebreaker... }
-#
-# so with exactly one row on file, a create carrying ANY birth year adopts that
-# row. The tiebreaker only ever picks between rows that already exist; it never
-# forks a new one. Verified twice: the branch's own unit test
-# ("createByAdmin still reports `created: false` for the single existing row",
-# convex/playersAmbiguity.test.ts) asserts it, and a throwaway convex-test
-# probe driving the exact A(1960) → B(none) → B(1975) sequence on 2026-09-06
-# ended with ONE row, `b. 1960`, and `created: false` on both B attempts.
-#
-# The form's "Create anyway" button is therefore a control that cannot do what
-# it says while exactly one same-name row exists — raised as a product finding,
-# not worked around here. Steps 5 and 6 below assert the behaviour that IS
-# real. **If the product later decides a distinct birth year should fork a
-# second person, STEP 6 is the assertion to change** — it is deliberately the
-# tripwire for that decision rather than silence about it.
-#
-# R2 — HARD ASSERTIONS, none of them satisfiable by an inert page:
+# R2 — HARD ASSERTIONS, none satisfiable by an inert page:
 #     (a) an out-of-bounds year is REFUSED client-side: the field says what it
 #         wants and the create button is inert — the form is still open, still
 #         holding the typed name, and no "Added …" was ever said;
-#     (b) a valid year lets the same create through — "Added <name>." is said
-#         only for a row that was INSERTED (a found row says "already exists");
-#     (c) the year is stored: the master row prints "b. 1960" after a search
-#         that re-reads it from the database;
-#     (d) repeating the name DEMOTES creation — the primary button becomes
-#         "Open <name>" and creation moves behind "Create anyway", which is the
-#         near-match hierarchy firing on a row this flow just made;
-#     (e) taking "Create anyway" — with and then without a birth year — adopts
-#         the existing row rather than adding a second, and the list still holds
-#         exactly one player under that name.
+#     (b) a valid year lets that same create through — "Added <name>." is said
+#         only for an INSERTED row (an adopted one says "already exists");
+#     (c) the year is stored: after a server-side search re-reads the row from
+#         the database, the master row prints "b. 1960";
+#     (d) repeating the name DEMOTES creation — the primary becomes
+#         "Open <name>" and creation moves behind "Create anyway". That control
+#         exists only when an exact match came back, so waiting for it also
+#         proves the first row persisted;
+#     (e) "Create anyway" with NO year ADOPTS: the page says the player already
+#         exists and the list still reads "1 matches";
+#     (f) "Create anyway" with a year nobody carries FORKS: "Added <name>." and
+#         the list grows to "2 matches" holding BOTH "b. 1960" and "b. 1975" —
+#         which is the state the review wizard's "Same name, different people"
+#         panel exists for, and which nothing in the product could produce from
+#         the UI before this ticket.
+#
+# ── WHAT THIS FLOW DELIBERATELY DOES NOT PROVE ──────────────────────────────
+# The PlayerPicker's refusal. Once two rows share the name, a picker's
+# "+ Create" (`players.findOrCreate`) throws
+# "2 players are already filed under <name>. Pick the right one instead of
+# adding another." into the picker's own role="alert" and adds no chip —
+# verified by convex-test probe on 2026-09-06. It is NOT asserted here because
+# every PlayerPicker in the product (CardDetailPanel, CardChecklist's quick-add,
+# UnreviewedNameFixer) is mounted inside `/admin/set-builder` behind a full
+# Sport→Year→Manufacturer→Set→Variant drill. Reaching one read-only would mean
+# this flow creating and OWNING a per-worker set + variant — rows it would then
+# have to register in SET-REGISTRY.md — which is state left behind, a second
+# feature on a second screen (R1), and a set-builder fixture bolted onto the one
+# admin flow that today leans on no fixture at all. The refusal is covered where
+# it is cheap: `PlayerPicker.test.tsx` and `convex/playersAmbiguity.test.ts`.
 #
 # R3 — DEDUP: `player-management-add-and-career-history.yaml` owns hand-adding a
 #   player and its career history; it never types a birth year, never repeats a
-#   name, and never touches the near-match hierarchy. Nothing else in the suite
+#   name and never touches the near-match hierarchy. Nothing else in the suite
 #   goes near `/admin/players`.
 #
 # R4 — the entry URL is the whole setup. No in-body login, no credential step.
@@ -63,20 +64,19 @@ tags:
 #   marketplace is touched, so nothing here earns a long timeout.
 #
 # R7 / R7a — no set, checklist, card or variant is touched, so this flow owns no
-#   SET-REGISTRY.md entry. It DOES create one globally-shared `players` row and
-#   there is no delete-player mutation anywhere in the product, so that row is
-#   permanent — the same footprint the sibling admin flow already carries. It is
-#   made harmless by the name: "Samename<attempt token>" is unique per worker
-#   AND per attempt, so no two runners or retries can collide, and nothing else
-#   in the suite or the product will ever search for it.
+#   SET-REGISTRY.md entry. It DOES create TWO globally-shared `players` rows and
+#   there is no delete-player mutation anywhere in the product, so they are
+#   permanent — the same footprint the sibling admin flow already carries, one
+#   row larger. They are made harmless by the name: "Samename<attempt token>" is
+#   unique per worker AND per attempt, so no two runners or retries can collide,
+#   and nothing else in the suite or the product will ever search for it.
 #
 #   ⚠️ THE NAME MUST BE A SINGLE TOKEN. `players.search` is a Convex SEARCH
 #   index and matches on TOKENS: a hyphenated "Samename-w3-a1-23945" tokenizes
 #   into four terms, so it would answer to any other flow's "Samename-…" row and
-#   the exact-match hierarchy in STEP 5 could resolve against somebody else's
-#   player. Stripping the hyphens out of ATTEMPT_ID makes it one term that
-#   nothing else can share. Same rule, same reason, as the wizard's career-team
-#   flow.
+#   the exact-match hierarchy below could resolve against somebody else's
+#   player. Stripping the hyphens out of ATTEMPT_ID makes it one term nothing
+#   else can share. Same rule, same reason, as the wizard's career-team flow.
 #
 # R10 — no conditional branches at all, so there is no poll on a normally-absent
 #   element and no path to the end that skips the feature.
@@ -182,10 +182,10 @@ tags:
 - tapOn:
     id: "Create player Samename${output.ATTEMPT_TOKEN}"
 
-# "Added <name>." is said ONLY for a row that was INSERTED — a create that found
-# an existing row says "That player already exists — opened it." instead, which
-# is exactly the string STEP 5 asserts. So this line is the create, not the
-# adopt.
+# "Added <name>." is said ONLY for a row that was INSERTED — a create that
+# adopted an existing row says "That player already exists — opened it."
+# instead, which is exactly the string STEP 5 asserts. So this line is the
+# create, not the adopt.
 - extendedWaitUntil:
     visible: ".*Added Samename${output.ATTEMPT_TOKEN}.*"
 
@@ -201,6 +201,9 @@ tags:
 # Maestro reports an input's current value as its text, so the filter box itself
 # answers to this name. The counter renders between the box and the list, so
 # "below the counter" is a list row and only a list row.
+#
+# The filter is left holding this name for the rest of the flow — the search is
+# a live Convex query, so STEP 6's second row appears in it without retyping.
 # ============================================================
 
 - tapOn: "Filter players"
@@ -214,17 +217,18 @@ tags:
       text: "1 matches"
 
 # ============================================================
-# STEP 5 — R2(d)+(e): THE SAME NAME AGAIN, WITH NO BIRTH YEAR
+# STEP 5 — R2(d)+(e): THE SAME NAME AGAIN, WITH NO BIRTH YEAR → ADOPT
 #
-# The form is reopened and the identical name typed. `players.nearMatches` now
-# finds the row this flow made, and the screen REACTS: the green button becomes
+# The form is reopened and the identical name typed. `players.nearMatches` finds
+# the row this flow made, and the screen REACTS: the green button becomes
 # "Open <name>" and creation is demoted to a plain "Create anyway" link. Waiting
-# for that demoted control is the assertion — it exists only when an exact match
-# came back, so it proves the row persisted and that the hierarchy fired.
+# for that demoted control is an assertion in itself — it exists only when an
+# exact match came back (~300ms after typing stops), so it proves the row
+# persisted and that the hierarchy fired.
 #
-# Taking "Create anyway" then adopts the existing row: `createByAdmin` returns
-# `created: false` and the page says so. That is the guard this ticket is about
-# — a repeated name never quietly becomes a second person.
+# Taking "Create anyway" with NO year offers the mutation no tiebreaker, so
+# `adoptOrForkOnCreate` adopts the single candidate. That is the guard half of
+# the feature: a repeated name does not become a second person by accident.
 # ============================================================
 
 - tapOn: "Add player"
@@ -243,14 +247,25 @@ tags:
 - extendedWaitUntil:
     visible: "That player already exists — opened it."
 
+# Nothing was added. The list is still the one row, still carrying the year it
+# was created with — so the adopt neither inserted nor overwrote.
+- assertVisible: "1 matches"
+- assertVisible:
+    text: ".*b. 1960.*"
+    below:
+      text: "1 matches"
+
 # ============================================================
-# STEP 6 — R2(e): AND A DISTINCT BIRTH YEAR CHANGES NOTHING
+# STEP 6 — R2(f): THE FEATURE — A YEAR NOBODY CARRIES FORKS A SECOND PERSON
 #
-# ⚠️ THIS IS THE TRIPWIRE. See the header: the birth year is a tiebreaker
-# BETWEEN existing rows, never a fork into a new one, because `createByAdmin`
-# returns on `candidates.length === 1` before it is read. A build that decides
-# 1975 should mint a second person will fail here — deliberately, so that
-# decision is made in review rather than discovered in production.
+# 1975 against a single row born 1960. `adoptOrForkOnCreate` reads that as the
+# operator asserting a different man — they have been shown the existing row and
+# pressed the button that says "anyway" — so it INSERTS rather than adopting.
+# Measured with a convex-test probe on 2026-09-06: `created: true`, two rows.
+#
+# This is the only way in the product to reach two same-name players from the
+# UI, and therefore the only thing that makes the review wizard's "Same name,
+# different people" panel reachable at all outside the terminal-only preload.
 # ============================================================
 
 - tapOn: "Add player"
@@ -268,18 +283,23 @@ tags:
     centerElement: true
 - tapOn:
     id: "Create player Samename${output.ATTEMPT_TOKEN} anyway"
-- extendedWaitUntil:
-    visible: "That player already exists — opened it."
 
-# THE LIST IS THE PROOF, not the message. One row, still carrying the year it
-# was created with — so neither B attempt inserted anything and neither
-# overwrote the year on the row it adopted.
-- tapOn: "Filter players"
-- eraseText: 40
-- inputText: "Samename${output.ATTEMPT_TOKEN}"
+# "Added", not "already exists" — the same string STEP 3 earned and STEP 5 was
+# refused. One line, and it separates a fork from an adopt outright.
 - extendedWaitUntil:
-    visible: "1 matches"
+    visible: ".*Added Samename${output.ATTEMPT_TOKEN}.*"
+
+# THE LIST IS THE PROOF, not the message. The filter has held this name since
+# STEP 4 and the search behind it is a live Convex query, so the count moving
+# 1 → 2 is the database answering: two rows now share this name, and they are
+# told apart by the one field that can tell them apart.
+- extendedWaitUntil:
+    visible: "2 matches"
 - assertVisible:
     text: ".*b. 1960.*"
     below:
-      text: "1 matches"
+      text: "2 matches"
+- assertVisible:
+    text: ".*b. 1975.*"
+    below:
+      text: "2 matches"
