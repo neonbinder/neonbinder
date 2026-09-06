@@ -751,3 +751,142 @@ describe("commit prelude: a pre-NEO-236 decision carrying createTeams is unchang
     expect(card!.listingTitle).toContain("San Diego Padres");
   });
 });
+
+// ===========================================================================
+// NEO-236 security review, finding 1 — the prelude re-checks the stored league
+// ===========================================================================
+
+describe("commit prelude: a stored league that stopped being usable is DROPPED, not written", () => {
+  /**
+   * A decision is a durable record read some time after it was made. Between
+   * `recordDecision` (which refuses both of these outright, because an operator
+   * is present) and the commit, the league row can be deleted, and a stale or
+   * hostile client can have got a cross-sport id past the wizard. Writing
+   * either onto a `teams` row produces the shape NEO-208's sport check exists
+   * to prevent — a row no per-sport query can explain.
+   *
+   * The prelude therefore fails SOFT: it drops the league and falls through to
+   * `leagueName`, then the enrichment, then the sport default. Throwing would
+   * abort a whole checklist commit over one team's league, with no operator in
+   * front of it to say so.
+   */
+  test("a DELETED league falls through to the operator's leagueName", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedTree(t);
+
+    const goneLeagueId = await t.run(async (ctx) =>
+      ctx.db.insert("leagues", {
+        name: "Gone League",
+        nameNormalized: "gone league",
+        sportId,
+        lastUpdated: Date.now(),
+      }),
+    );
+    await t.run(async (ctx) => ctx.db.delete(goneLeagueId));
+
+    const playerRowId = await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      kind: "player",
+      name: "Travis Bazzana",
+      decision: { action: "create" },
+      enrichment: { careerTeams: [{ name: "Sydney Blue Sox", fromYear: 2019 }] },
+    });
+    await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      kind: "team",
+      name: "Sydney Blue Sox",
+      source: { kind: "careerTeamOf", playerRowId },
+      decision: {
+        action: "create",
+        create: {
+          location: "Sydney",
+          name: "Blue Sox",
+          leagueId: goneLeagueId,
+          leagueName: "Australian Baseball League",
+        } satisfies TeamCreate,
+      },
+    });
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardName: "Travis Bazzana", players: ["Travis Bazzana"] })],
+      batchId: BATCH,
+    });
+
+    const teams = await allTeams(t);
+    expect(teams).toHaveLength(1);
+    // The dangling id is gone; the operator's own typed answer stands in.
+    expect(await leagueNameOf(t, teams[0].leagueId)).toBe("Australian Baseball League");
+  });
+
+  test("a CROSS-SPORT league is dropped and the sport default applies when nothing else answers", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedTree(t);
+
+    const otherSportId = await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Football",
+        platformData: {},
+        children: [],
+        lastUpdated: Date.now(),
+      }),
+    );
+    const foreignLeagueId = await t.run(async (ctx) =>
+      ctx.db.insert("leagues", {
+        name: "National Football League",
+        nameNormalized: "national football league",
+        sportId: otherSportId,
+        lastUpdated: Date.now(),
+      }),
+    );
+
+    const playerRowId = await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      kind: "player",
+      name: "Travis Bazzana",
+      decision: { action: "create" },
+      enrichment: { careerTeams: [{ name: "Sydney Blue Sox", fromYear: 2019 }] },
+    });
+    await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      kind: "team",
+      name: "Sydney Blue Sox",
+      source: { kind: "careerTeamOf", playerRowId },
+      decision: {
+        action: "create",
+        create: {
+          location: "Sydney",
+          name: "Blue Sox",
+          leagueId: foreignLeagueId,
+        } satisfies TeamCreate,
+      },
+    });
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardName: "Travis Bazzana", players: ["Travis Bazzana"] })],
+      batchId: BATCH,
+    });
+
+    const teams = await allTeams(t);
+    expect(teams).toHaveLength(1);
+    // NOT the football league. `leagueChosen` also went false, so the sport's
+    // own default is allowed back in rather than leaving the team league-less.
+    const landed = await leagueNameOf(t, teams[0].leagueId);
+    expect(landed).not.toBe("National Football League");
+    expect(landed).toBe("Major League Baseball");
+
+    // And the foreign league was not touched or re-parented on the way past.
+    const foreign = await t.run(async (ctx) => ctx.db.get(foreignLeagueId));
+    expect(foreign!.sportId).toBe(otherSportId);
+  });
+});

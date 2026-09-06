@@ -783,3 +783,318 @@ describe("recordAllRemainingAsCreate: the bulk pre-fill resolves the League with
     expect(player!.decision).toEqual({ action: "create" });
   });
 });
+
+// ===========================================================================
+// NEO-236 security review — the five conditions on a807220
+// ===========================================================================
+
+describe("security review 2: an unbounded career-team name never reaches the row or the index", () => {
+  /**
+   * Both sources are text nobody on our side vetted — a Wikidata P54 label, and
+   * the `careerTeamNames` a client hands the public mutation. The over-long one
+   * is SKIPPED, not thrown on: one absurd label must not cost the player every
+   * other step it was staged alongside.
+   */
+  const OVER_LONG = "Z".repeat(121);
+
+  test("skips an over-long name from enrichment, and stages the rest of the list", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const playerRowId = await insertRow(t, { sportId, kind: "player", name: "Travis Bazzana" });
+
+    await landLookup(t, playerRowId, [
+      { name: OVER_LONG, fromYear: 2018 },
+      { name: "Sydney Blue Sox", fromYear: 2019 },
+    ]);
+
+    const staged = await stagedRows(t);
+    expect(staged.map((r) => r.name)).toEqual(["Sydney Blue Sox"]);
+  });
+
+  test("skips an over-long name handed to the public mutation", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const playerRowId = await insertRow(t, {
+      sportId,
+      kind: "player",
+      name: "Travis Bazzana",
+      status: "ready",
+    });
+
+    const added = await t
+      .withIdentity(ADMIN_IDENTITY)
+      .mutation(api.entityReviewQueue.stageCareerTeamRows, {
+        reviewRowId: playerRowId,
+        careerTeamNames: [OVER_LONG, "Sydney Blue Sox"],
+      });
+
+    expect(added).toBe(1);
+    expect((await stagedRows(t)).map((r) => r.name)).toEqual(["Sydney Blue Sox"]);
+  });
+
+  test("the boundary itself is allowed — 120 characters composes into a team", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const playerRowId = await insertRow(t, { sportId, kind: "player", name: "Travis Bazzana" });
+
+    await landLookup(t, playerRowId, [{ name: "Z".repeat(120), fromYear: 2018 }]);
+
+    expect((await stagedRows(t)).length).toBe(1);
+  });
+});
+
+describe("security review 3: the 64 cap is per PLAYER, not per invocation", () => {
+  /**
+   * `added.length` alone bounded one call, and three callers can stage for the
+   * same player — so N calls could mint 64N steps. The count comes from
+   * `by_source_player`, an indexed read rather than a collect of the batch.
+   */
+  test("a second call cannot push the player past 64 staged steps", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const playerRowId = await insertRow(t, {
+      sportId,
+      kind: "player",
+      name: "Travis Bazzana",
+      status: "ready",
+    });
+
+    const first = await t
+      .withIdentity(ADMIN_IDENTITY)
+      .mutation(api.entityReviewQueue.stageCareerTeamRows, {
+        reviewRowId: playerRowId,
+        careerTeamNames: Array.from({ length: 64 }, (_, i) => `Club ${i}`),
+      });
+    expect(first).toBe(64);
+
+    // Entirely NEW names, so nothing is deduped away — only the cap can stop them.
+    const second = await t
+      .withIdentity(ADMIN_IDENTITY)
+      .mutation(api.entityReviewQueue.stageCareerTeamRows, {
+        reviewRowId: playerRowId,
+        careerTeamNames: ["Sydney Blue Sox", "Oregon State Beavers"],
+      });
+
+    expect(second).toBe(0);
+    expect((await stagedRows(t)).length).toBe(64);
+  });
+
+  test("the cap is per player — a second player still gets its own steps", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const a = await insertRow(t, { sportId, kind: "player", name: "Travis Bazzana", status: "ready" });
+    const b = await insertRow(t, { sportId, kind: "player", name: "Dylan Crews", status: "ready" });
+
+    await t.withIdentity(ADMIN_IDENTITY).mutation(api.entityReviewQueue.stageCareerTeamRows, {
+      reviewRowId: a,
+      careerTeamNames: Array.from({ length: 64 }, (_, i) => `Club ${i}`),
+    });
+    const forB = await t
+      .withIdentity(ADMIN_IDENTITY)
+      .mutation(api.entityReviewQueue.stageCareerTeamRows, {
+        reviewRowId: b,
+        careerTeamNames: ["Sydney Blue Sox"],
+      });
+
+    expect(forB).toBe(1);
+  });
+});
+
+describe("security review 4: a staged step whose player was reconciled away is dropped", () => {
+  /**
+   * The `source` exemption keeps a staged row through reconciliation because
+   * its name is never in the incoming list — right while its player is still in
+   * the batch, wrong once the player is gone, because the step then blocks
+   * "all reviewed" on a team nothing needs.
+   */
+  test("drops an UNDECIDED staged row when its player leaves the incoming set", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const playerRowId = await insertRow(t, { sportId, kind: "player", name: "Travis Bazzana" });
+    await landLookup(t, playerRowId, [{ name: "Sydney Blue Sox", fromYear: 2018 }]);
+    expect((await stagedRows(t)).length).toBe(1);
+
+    // The player is no longer carried by any card, and was never ruled on.
+    await t.mutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId: sportId,
+      createdByUserId: ADMIN_IDENTITY.subject,
+      sportId,
+      playerNames: [],
+      teamNames: [],
+    });
+
+    expect(await stagedRows(t)).toEqual([]);
+    expect(await t.run(async (ctx) => ctx.db.get(playerRowId))).toBeNull();
+  });
+
+  test("KEEPS a staged row whose player is still incoming", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const playerRowId = await insertRow(t, { sportId, kind: "player", name: "Travis Bazzana" });
+    await landLookup(t, playerRowId, [{ name: "Sydney Blue Sox", fromYear: 2018 }]);
+
+    await t.mutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId: sportId,
+      createdByUserId: ADMIN_IDENTITY.subject,
+      sportId,
+      playerNames: ["Travis Bazzana"],
+      teamNames: [],
+    });
+
+    expect((await stagedRows(t)).length).toBe(1);
+  });
+
+  test("KEEPS a DECIDED staged row even when its player is gone — the operator ruled on it", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const playerRowId = await insertRow(t, { sportId, kind: "player", name: "Travis Bazzana" });
+    await landLookup(t, playerRowId, [{ name: "Sydney Blue Sox", fromYear: 2018 }]);
+    const stagedId = (await stagedRows(t))[0]._id as Id<"entityReviewQueue">;
+    await t.run(async (ctx) =>
+      ctx.db.patch(stagedId, { decision: { action: "create", create: { name: "Blue Sox", location: "Sydney" } } }),
+    );
+
+    await t.mutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId: sportId,
+      createdByUserId: ADMIN_IDENTITY.subject,
+      sportId,
+      playerNames: [],
+      teamNames: [],
+    });
+
+    expect((await stagedRows(t)).length).toBe(1);
+  });
+
+  test("a DECIDED player keeps its staged step alive too", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const playerRowId = await insertRow(t, { sportId, kind: "player", name: "Travis Bazzana" });
+    await landLookup(t, playerRowId, [{ name: "Sydney Blue Sox", fromYear: 2018 }]);
+    await t.run(async (ctx) => ctx.db.patch(playerRowId, { decision: { action: "create" } }));
+
+    await t.mutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId: sportId,
+      createdByUserId: ADMIN_IDENTITY.subject,
+      sportId,
+      playerNames: [],
+      teamNames: [],
+    });
+
+    expect((await stagedRows(t)).length).toBe(1);
+  });
+});
+
+describe("security review 1: recordDecision refuses a league it cannot stand behind", () => {
+  /**
+   * `teams.findOrCreate` already refuses a deleted or cross-sport league via
+   * `resolveOperatorLeagueId`, so without this the SAME operator answer was
+   * accepted on one path and rejected on the other. A throw is right here
+   * because the operator is present; the prelude drops instead.
+   */
+  async function seedOtherSport(t: ReturnType<typeof convexTest>) {
+    return t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Football",
+        platformData: {},
+        children: [],
+        lastUpdated: Date.now(),
+      }),
+    );
+  }
+
+  test("accepts a league that exists in this sport", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const rowId = await insertRow(t, { sportId, kind: "team", name: "Sydney Blue Sox", status: "ready" });
+    const leagueId = await t.run(async (ctx) =>
+      ctx.db.insert("leagues", {
+        name: "Australian Baseball League",
+        nameNormalized: "australian baseball league",
+        sportId,
+        lastUpdated: Date.now(),
+      }),
+    );
+
+    await t.withIdentity(ADMIN_IDENTITY).mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: rowId,
+      action: "create",
+      create: { location: "Sydney", name: "Blue Sox", leagueId },
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(rowId));
+    expect((row!.decision as { create: { leagueId: unknown } }).create.leagueId).toBe(leagueId);
+  });
+
+  test("refuses a league that no longer exists", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const rowId = await insertRow(t, { sportId, kind: "team", name: "Sydney Blue Sox", status: "ready" });
+    const leagueId = await t.run(async (ctx) =>
+      ctx.db.insert("leagues", {
+        name: "Gone",
+        nameNormalized: "gone",
+        sportId,
+        lastUpdated: Date.now(),
+      }),
+    );
+    await t.run(async (ctx) => ctx.db.delete(leagueId));
+
+    await expect(
+      t.withIdentity(ADMIN_IDENTITY).mutation(api.entityReviewQueue.recordDecision, {
+        reviewRowId: rowId,
+        action: "create",
+        create: { name: "Blue Sox", leagueId },
+      }),
+    ).rejects.toThrow(/no longer exists/);
+
+    // The row is left UNDECIDED — the refusal happens before the patch.
+    // Asserted as a boolean computed INSIDE `t.run`: a returned `undefined`
+    // comes back as `null` through Convex's value encoding, which would make
+    // `toBeUndefined()` fail for a reason that has nothing to do with the row.
+    expect(
+      await t.run(async (ctx) => (await ctx.db.get(rowId))!.decision === undefined),
+    ).toBe(true);
+  });
+
+  test("refuses a league belonging to another sport", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const otherSportId = await seedOtherSport(t);
+    const rowId = await insertRow(t, { sportId, kind: "team", name: "Sydney Blue Sox", status: "ready" });
+    const leagueId = await t.run(async (ctx) =>
+      ctx.db.insert("leagues", {
+        name: "National Football League",
+        nameNormalized: "national football league",
+        sportId: otherSportId,
+        lastUpdated: Date.now(),
+      }),
+    );
+
+    await expect(
+      t.withIdentity(ADMIN_IDENTITY).mutation(api.entityReviewQueue.recordDecision, {
+        reviewRowId: rowId,
+        action: "create",
+        create: { name: "Blue Sox", leagueId },
+      }),
+    ).rejects.toThrow(/National Football League/);
+    expect(
+      await t.run(async (ctx) => (await ctx.db.get(rowId))!.decision === undefined),
+    ).toBe(true);
+  });
+
+  test("a deliberate `null` — no league — is still accepted", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const rowId = await insertRow(t, { sportId, kind: "team", name: "Sydney Blue Sox", status: "ready" });
+
+    await t.withIdentity(ADMIN_IDENTITY).mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: rowId,
+      action: "create",
+      create: { name: "Blue Sox", leagueId: null },
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(rowId));
+    expect((row!.decision as { create: { leagueId: unknown } }).create.leagueId).toBeNull();
+  });
+});

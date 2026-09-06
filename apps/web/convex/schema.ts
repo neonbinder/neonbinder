@@ -1390,6 +1390,13 @@ export default defineSchema({
     // NEO-236: "does this batch already hold this name?", asked once per career
     // team a player's lookup proposes. See `nameNormalized` above for why this
     // must not be a collect.
+    // NEO-236 security review, finding 3: "how many career-team steps does this
+    // player already have?", asked once per staging pass so the 64 cap is a
+    // bound PER PLAYER rather than per invocation. An indexed read on the
+    // nested field, for the same reason the name index exists — staging runs
+    // from `applyLookupResult`, where a collect of the batch is the NEO-189
+    // optimistic-concurrency storm.
+    .index("by_source_player", ["source.playerRowId"])
     .index("by_batch_and_kind_and_name", [
       "selectorOptionId",
       "batchId",

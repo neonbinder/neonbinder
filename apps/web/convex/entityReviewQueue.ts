@@ -620,6 +620,23 @@ export const startBatch = internalMutation({
 
       const now = Date.now();
       const existingKeys = new Set<string>();
+      /*
+       * NEO-236 security review, finding 4 — a staged step whose player is gone.
+       *
+       * The exemption below keeps every `careerTeamOf` row through
+       * reconciliation, because its name is never in the incoming list. That is
+       * right while the player it was staged for is still in the batch, and
+       * wrong once the player has been reconciled away: the step then asks the
+       * operator to create a team that nothing needs, and blocks "all reviewed"
+       * on it forever. So an UNDECIDED orphan is dropped in the same pass. A
+       * DECIDED one is kept, for the same reason every decided row is — the
+       * operator ruled on it, and the prelude will still honour that ruling.
+       */
+      const survivingRowIds = new Set(
+        existingRows
+          .filter((row) => incoming.has(keyFor(row.kind, row.name)) || row.decision !== undefined)
+          .map((row) => row._id as string),
+      );
       for (const row of existingRows) {
         const key = keyFor(row.kind, row.name);
         // Recorded BEFORE the drop test, so a decided row that is no longer
@@ -649,6 +666,18 @@ export const startBatch = internalMutation({
         ) {
           // Gone from the incoming set and never ruled on — a question about
           // a name no card carries. A DECIDED row is kept; see the doc above.
+          await ctx.db.delete(row._id);
+          continue;
+        }
+        // NEO-236 security review, finding 4: a staged step is exempt from the
+        // test above, but not from being orphaned. Its player is judged by the
+        // SAME rule (still incoming, or decided), so a step and the player that
+        // needs it are dropped together or kept together.
+        if (
+          row.source?.kind === "careerTeamOf" &&
+          row.decision === undefined &&
+          !survivingRowIds.has(row.source.playerRowId as string)
+        ) {
           await ctx.db.delete(row._id);
           continue;
         }
@@ -819,18 +848,50 @@ async function stageCareerTeamRowsImpl(
     ).map(normalizeTeamName),
   );
 
+  /*
+   * NEO-236 security review, finding 3 — the cap is PER PLAYER, not per call.
+   *
+   * `added.length` alone bounded one invocation, and three callers can stage
+   * for the same player (the lookup landing, the wizard's belt-and-braces pass,
+   * and every hand-typed career team), so N calls could mint 64N steps. Counted
+   * through `by_source_player` rather than by collecting the batch: staging
+   * runs inside `applyLookupResult`, which the pool calls five-wide while the
+   * commit prelude may be reading the same rows — see NEO-189.
+   */
+  const alreadyStagedForPlayer = (
+    await ctx.db
+      .query("entityReviewQueue")
+      .withIndex("by_source_player", (q) =>
+        q.eq("source.playerRowId", playerRow._id),
+      )
+      .collect()
+  ).length;
+
   const added: Array<Id<"entityReviewQueue">> = [];
   const seen = new Set<string>();
   for (const proposal of proposals) {
-    // The same bound the per-decision create list carried, for the same reason:
-    // a guard rail on an unbounded write, not a security boundary.
-    if (added.length >= MAX_CAREER_TEAM_CREATES) break;
+    // A guard rail on an unbounded write, not a security boundary — and it
+    // counts the steps this player ALREADY has, so re-entry cannot grow past it.
+    if (alreadyStagedForPlayer + added.length >= MAX_CAREER_TEAM_CREATES) break;
     const name = proposal.name.trim().replace(/\s+/g, " ");
     if (!name) continue;
     const nameNormalized = normalizeTeamName(name);
     if (!nameNormalized || seen.has(nameNormalized)) continue;
     seen.add(nameNormalized);
     if (excluded.has(nameNormalized)) continue;
+    /*
+     * NEO-236 security review, finding 2 — an unbounded name never reaches the
+     * row or the index.
+     *
+     * Both sources are text nobody on our side vetted: a Wikidata P54 label,
+     * and the `careerTeamNames` a client hands the public mutation. Without
+     * this, an arbitrarily long string landed in `name` AND in the indexed
+     * `nameNormalized`. SKIPPED rather than thrown on, exactly as
+     * `normalizeCareerTeamCreates` drops an unusable pair: one absurd label
+     * must not cost the player every other career-team step. The stint itself
+     * still resolves if we already hold the team.
+     */
+    if (name.length > MAX_TEAM_FULL_NAME_LENGTH) continue;
 
     const alreadyInBatch = await ctx.db
       .query("entityReviewQueue")
@@ -1159,6 +1220,41 @@ export const recordDecision = mutation({
         row.kind === "team" && args.create
           ? requireTeamCreate(args.create)
           : undefined;
+      /*
+       * NEO-236 security review, finding 1 — the league is CHECKED here, and
+       * refused rather than dropped.
+       *
+       * `normalizeLeagueChoice` passes `leagueId` through untouched: the
+       * validator proves it is an id in `leagues`, not that the row still
+       * exists or that it belongs to this team's sport. `teams.findOrCreate`
+       * already refuses both through `resolveOperatorLeagueId`, so without this
+       * the SAME operator answer was accepted on one path and rejected on the
+       * other.
+       *
+       * A throw is right here and only here: the operator is standing in front
+       * of the wizard, they picked this league off a list moments ago, and the
+       * two ways it can be wrong — the row was deleted under them, or a stale
+       * client offered another sport's league — are both things they need to be
+       * told about rather than have silently corrected. The commit prelude has
+       * no operator, so it drops instead (see `reviewedTeamFields`).
+       *
+       * `ConvexError`, not `Error`: only its `data` survives Convex's error
+       * boundary intact, and the wizard renders that string. Mirrors the
+       * `linkedTeamId` sport check below.
+       */
+      if (create?.leagueId) {
+        const league = await ctx.db.get(create.leagueId);
+        if (!league) {
+          throw new ConvexError("That league no longer exists.");
+        }
+        if (league.sportId !== row.sportId) {
+          // The league's own name is safe to name: it is reference data the
+          // operator just picked off a list, not typed content.
+          throw new ConvexError(
+            `${league.name} is a league in ${await sportLabel(ctx, league.sportId)}, not ${await sportLabel(ctx, row.sportId)}.`,
+          );
+        }
+      }
       const createTeams =
         row.kind === "player" && args.createTeams
           ? normalizeCareerTeamCreates(args.createTeams)

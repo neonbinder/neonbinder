@@ -9356,6 +9356,25 @@ export const commitCardChecklistPrelude = internalMutation({
      * cleared it, and writing it behind that decision would overwrite the
      * answer. A blank Location is a blank Location.
      */
+    /**
+     * NEO-236 security review, finding 1 — did the operator actually answer the
+     * League question with something still usable?
+     *
+     * `leagueChosen` suppresses the sport-default fallback, so it must be true
+     * only when the stored answer survives the same re-check
+     * `reviewedTeamFields` applies. A `null` (deliberate "no league") IS an
+     * answer; a dangling or cross-sport id is not, and treating it as one would
+     * leave the team with no league at all rather than the sport's default.
+     */
+    const leagueAnswered = async (create: {
+      leagueId?: Id<"leagues"> | null;
+    }): Promise<boolean> => {
+      if (create.leagueId === undefined) return false;
+      if (create.leagueId === null) return true;
+      const league = await ctx.db.get(create.leagueId);
+      return !!league && league.sportId === args.sportId;
+    };
+
     const reviewedTeamFields = async (
       create: {
         location?: string;
@@ -9366,7 +9385,34 @@ export const commitCardChecklistPrelude = internalMutation({
       enrichment: (typeof reviewRows)[number]["enrichment"],
     ): Promise<Partial<Doc<"teams">>> => {
       let leagueId: Id<"leagues"> | undefined;
-      if (create.leagueId !== undefined) {
+      /*
+       * NEO-236 security review, finding 1 — the stored league is RE-CHECKED
+       * before it is written, and an unusable one is DROPPED, not thrown on.
+       *
+       * A decision is a durable record read some time after it was made, and
+       * two things can have changed in between: the league row can have been
+       * deleted, and (via a stale or hostile client that got past
+       * `recordDecision`'s check) it can belong to another sport. Writing
+       * either onto a `teams` row produces exactly the shape NEO-208's sport
+       * check exists to prevent — a row no per-sport query can explain.
+       *
+       * Fail-soft, because this runs inside `commitCardChecklist` with no
+       * operator in front of it: throwing would abort a whole checklist commit
+       * over one team's league. Dropping falls through to the operator's
+       * `leagueName`, then the enrichment, then the sport default — every one
+       * of which is a better answer than a wrong league, and none of which
+       * loses the team itself. `recordDecision` is where a live operator is
+       * told (there it throws); this is the boundary that has to hold anyway.
+       */
+      const storedLeagueId = create.leagueId ?? undefined;
+      const storedLeagueUsable = storedLeagueId
+        ? await (async () => {
+            const league = await ctx.db.get(storedLeagueId);
+            if (!league) return false;
+            return league.sportId === args.sportId;
+          })()
+        : true;
+      if (create.leagueId !== undefined && storedLeagueUsable) {
         // `null` is "no league", and it stays undefined here so nothing is
         // written — `createTeamFromOperatorInput` reads `leagueChosen` to know
         // the difference between that and "not answered".
@@ -9464,12 +9510,14 @@ export const commitCardChecklistPrelude = internalMutation({
         // sat in the wizard, and its result is on `row.enrichment`.
         enqueueEnrichment: false,
         extra: await reviewedTeamFields(create, row.enrichment),
-        leagueChosen: create.leagueId !== undefined,
+        // NEO-236 security review, finding 1: a league that failed the re-check
+        // above is NOT an answer, so it must not suppress the sport default —
+        // `reviewedTeamFields` has already fallen through to `leagueName` or
+        // the enrichment, and if both were empty the row is better off with the
+        // sport's default than with nothing.
+        leagueChosen: await leagueAnswered(create),
       });
       stagedTeamIdByLabel.set(norm(row.name), id);
-      // The label is answered, so it is no longer an unresolved name — the
-      // player loop may have recorded it on a previous commit attempt.
-      unresolvedTeamNames.delete(row.name.trim());
       if (created) createdTeamIds.push(id);
     }
 
@@ -9550,7 +9598,7 @@ export const commitCardChecklistPrelude = internalMutation({
         // staged-career-team pass above. The operator's League choice wins over
         // the enrichment's suggestion — see `reviewedTeamFields`.
         extra: await reviewedTeamFields(create, enrichment),
-        leagueChosen: create.leagueId !== undefined,
+        leagueChosen: await leagueAnswered(create),
       });
       teamIdByName.set(name, id);
       teamNameById.set(id, teamFullName(create));
