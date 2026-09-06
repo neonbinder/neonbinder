@@ -5167,3 +5167,121 @@ describe("EntityReviewWizard — a started row is not taken away", () => {
     );
   });
 });
+
+describe("EntityReviewWizard — a CHECKLIST team row answers a career chip", () => {
+  /**
+   * Jason, on the Canadiens: the batch held a plain team row for "Montreal
+   * Canadiens" — a name off the checklist, no `source` — and the player whose
+   * career list names that club still read "needs a team decision" even after
+   * that row was answered.
+   *
+   * `stagedTeamRowsForCurrent` opened with `source?.kind !== "careerTeamOf"`,
+   * so only a STAGED row could answer a chip. The question a chip asks is "does
+   * the batch hold an answer for this team?", and a checklist team row is
+   * exactly that. Where a row came from decides what its step SAYS, never
+   * whether it counts.
+   */
+  function habsBatch(teamOver: Partial<Row> = {}) {
+    const player = makeRow({
+      kind: "player",
+      name: "Guy Lafleur",
+      status: "ready",
+      enrichment: {
+        careerTeams: [{ name: "Montreal Canadiens", fromYear: 1971, toYear: 1985 }],
+      },
+    });
+    // NO `source` — this is a name off the checklist, not a staged career team.
+    const checklistTeam = makeRow({
+      kind: "team",
+      name: "Montreal Canadiens",
+      status: "ready",
+      ...teamOver,
+    });
+    return { player, checklistTeam };
+  }
+
+  it("reads the answer from a decided checklist team row", () => {
+    const { player, checklistTeam } = habsBatch({
+      decision: { action: "create", create: { location: "Montreal", name: "Canadiens" } },
+    });
+    currentRows = [checklistTeam, player];
+    currentResolvedNames = [{ name: "Montreal Canadiens" }];
+    renderWizard();
+
+    expect(screen.getByRole("heading", { name: "Guy Lafleur" })).toBeTruthy();
+    expect(screen.getByText("→ Montreal Canadiens")).toBeTruthy();
+    expect(screen.queryByText("needs a team decision")).toBeNull();
+  });
+
+  it("offers Decide team on the checklist row while it is undecided", () => {
+    const { player, checklistTeam } = habsBatch();
+    currentRows = [{ ...checklistTeam, decision: { action: "skip" } }, player];
+    currentResolvedNames = [{ name: "Montreal Canadiens" }];
+    renderWizard();
+
+    expect(screen.getByText("needs a team decision")).toBeTruthy();
+    expect(
+      screen.getAllByRole("button", { name: "Decide team Montreal Canadiens" }).length,
+    ).toBeGreaterThan(0);
+  });
+});
+
+describe("EntityReviewWizard — Decide team stages a step when there is none", () => {
+  /**
+   * Staging covers every accepted career team in the normal case, but not
+   * always: it caps at 64 per player and skips a name too long to compose into
+   * a team. Those chips read "needs a team decision" with no way out — a dead
+   * end. `Decide team` now stages the step and goes to it.
+   */
+  function unstaged() {
+    return makeRow({
+      kind: "player",
+      name: "Guy Lafleur",
+      status: "ready",
+      enrichment: {
+        careerTeams: [{ name: "Quebec Remparts", fromYear: 1969, toYear: 1971 }],
+      },
+    });
+  }
+
+  it("offers Decide team even with no step in the batch, and stages one", async () => {
+    const player = unstaged();
+    currentRows = [player];
+    currentResolvedNames = [{ name: "Quebec Remparts" }];
+    renderWizard();
+
+    expect(screen.getByText("needs a team decision")).toBeTruthy();
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "Decide team Quebec Remparts" })[0],
+    );
+
+    await waitFor(() =>
+      expect(mockStageCareerTeamRows).toHaveBeenCalledWith({
+        reviewRowId: player._id,
+        careerTeamNames: ["Quebec Remparts"],
+      }),
+    );
+  });
+
+  it("pins the staged step once the server's insert lands", async () => {
+    const player = unstaged();
+    currentRows = [player];
+    currentResolvedNames = [{ name: "Quebec Remparts" }];
+    const { rerender } = renderWizard();
+
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "Decide team Quebec Remparts" })[0],
+    );
+    await waitFor(() => expect(mockStageCareerTeamRows).toHaveBeenCalled());
+
+    // The row arrives on the next reactive push, not in the mutation's return.
+    currentRows = [makeCareerTeamRow(player._id, "Quebec Remparts"), player];
+    rerenderWizard(rerender);
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: "New Team: Quebec Remparts" }),
+      ).toBeTruthy(),
+    );
+  });
+});

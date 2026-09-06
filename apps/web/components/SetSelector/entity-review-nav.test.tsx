@@ -856,3 +856,50 @@ describe("resolveNav — the walk stops revising once the operator has started",
     ).toEqual({ rowId: "t1", explicit: false });
   });
 });
+
+describe("resolveNav — a CHECKLIST team row answers a career chip too", () => {
+  /**
+   * Jason, on the Canadiens: the batch held a plain team row for "Montreal
+   * Canadiens" (a name off the checklist, no `source`), and a player whose
+   * career list names that club still read "needs a team decision".
+   *
+   * Both predicates opened with `source?.kind !== "careerTeamOf"`, so only a
+   * STAGED row could answer a chip. But the question a chip asks is "does the
+   * batch hold an answer for this team?" — and a checklist team row is exactly
+   * that answer. Where the row came from decides what its step SAYS, never
+   * whether it counts.
+   */
+  const player = (id: string, teams: string[]): NavRow => ({
+    _id: id,
+    status: "ready",
+    kind: "player",
+    enrichment: { careerTeams: teams.map((name) => ({ name })) },
+  });
+  const checklistTeam = (id: string, name: string, over: Partial<NavRow> = {}): NavRow => ({
+    _id: id,
+    status: "ready",
+    kind: "team",
+    name,
+    ...over,
+  });
+
+  it("holds a player whose career team is an undecided CHECKLIST row", () => {
+    const rows = [
+      checklistTeam("t-habs", "Montreal Canadiens"),
+      player("p1", ["Montreal Canadiens"]),
+    ];
+    expect(
+      resolveNav(rows, { rowId: "p1", explicit: false }),
+    ).toEqual({ rowId: "t-habs", explicit: false });
+  });
+
+  it("releases the player once that checklist row is answered", () => {
+    const rows = [
+      checklistTeam("t-habs", "Montreal Canadiens", {
+        decision: { action: "create" } as NavDecision,
+      }),
+      player("p1", ["Montreal Canadiens"]),
+    ];
+    expect(nextUndecided(rows)?._id).toBe("p1");
+  });
+});

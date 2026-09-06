@@ -123,9 +123,18 @@ function waitingOnStagedTeams(
   );
 
   return rows.some((other) => {
-    if (other.source?.kind !== "careerTeamOf") return false;
+    // ANY team row, not just a staged one: a checklist team row named for one
+    // of this player's clubs answers that chip exactly as a staged row does.
+    // Where the row came from decides what its step says, never whether it
+    // counts.
+    if (other.kind !== "team") return false;
     if (other.decision) return false;
-    if (other.source.playerRowId === row._id) return true;
+    if (
+      other.source?.kind === "careerTeamOf" &&
+      other.source.playerRowId === row._id
+    ) {
+      return true;
+    }
     return (
       other.name !== undefined && careerKeys.has(normalizeEntityName(other.name))
     );

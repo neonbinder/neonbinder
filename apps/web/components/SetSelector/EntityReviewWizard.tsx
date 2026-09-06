@@ -382,6 +382,19 @@ export default function EntityReviewWizard({
   /** NEO-236 — player rows this session has already asked the server to stage
    *  career-team steps for. A ref, not state: see the effect. */
   const stagedPlayersRef = useRef<Set<string>>(new Set());
+  /**
+   * NEO-236 — a career team the operator asked to decide that the batch holds
+   * no step for.
+   *
+   * Staging normally covers every accepted career team, but not always: it caps
+   * at 64 per player and skips a name too long to compose into a team. Those
+   * chips said "needs a team decision" with no way out beside them.
+   *
+   * Pressing `Decide team` now STAGES the step and then pins it. The row does
+   * not exist when the mutation returns, so the normalized label is parked here
+   * and an effect claims the row when the reactive batch brings it in.
+   */
+  const awaitingStageRef = useRef<string | null>(null);
   const decidingRef = useRef<Id<"entityReviewQueue"> | null>(null);
   /** A rejected per-row decide, shown inline under the row it belongs to. */
   const [rowError, setRowError] = useState<{
@@ -636,10 +649,21 @@ export default function EntityReviewWizard({
     const byName = new Map<string, NonNullable<typeof rows>[number]>();
     if (!current || current.kind !== "player" || !rows) return byName;
     for (const row of rows) {
-      if (row.source?.kind !== "careerTeamOf") continue;
+      if (row.kind !== "team") continue;
       /*
-       * Keyed by NAME across the whole batch, deliberately NOT filtered to the
-       * rows staged for THIS player.
+       * ANY team row in the batch, keyed by NAME — not just the rows staged for
+       * this player, and not just STAGED rows at all.
+       *
+       * Jason, on the Canadiens: the batch held a plain team row for "Montreal
+       * Canadiens" (a name off the checklist, no `source`) and this player's
+       * chip still read "needs a team decision" after it had been answered.
+       * This opened with `source?.kind !== "careerTeamOf"`, so only a staged row
+       * could answer a chip.
+       *
+       * The question a chip asks is "does the batch hold an answer for this
+       * team?" — and a checklist team row is exactly that answer. Where a row
+       * came from decides what its STEP says ("Needed by: …"), never whether it
+       * counts.
        *
        * Staging dedupes a career team across the entire batch — the first
        * player to propose "Sydney Blue Sox" gets the step, and every later
@@ -654,7 +678,14 @@ export default function EntityReviewWizard({
        * simply not what decides whether a LABEL has an answer; the answer is
        * the team, and the team is identified by its name.
        */
-      byName.set(normalizeEntityName(row.name), row);
+      const key = normalizeEntityName(row.name);
+      if (!key) continue;
+      // A decided row wins over an undecided one holding the same name. The two
+      // can only coexist transiently (staging dedupes against the batch), and
+      // when they do the ANSWER is the interesting one.
+      const held = byName.get(key);
+      if (held?.decision && !row.decision) continue;
+      byName.set(key, row);
     }
     return byName;
   }, [rows, current]);
@@ -844,6 +875,30 @@ export default function EntityReviewWizard({
     // eslint-disable-next-line react-hooks/set-state-in-effect -- one-way latch: a batch that has had rows can never un-have them
     if (rows && rows.length > 0 && !hadRows) setHadRows(true);
   }, [rows, hadRows]);
+
+  /**
+   * NEO-236 — claim the step `Decide team` just asked to have staged.
+   *
+   * The insert happens server-side, so the row arrives on the next `getBatch`
+   * push rather than in the mutation's return. Pinned EXPLICITLY: the operator
+   * asked for this row by name, and the walk's teams-first rule would otherwise
+   * be free to offer some other team first.
+   */
+  useEffect(() => {
+    const waiting = awaitingStageRef.current;
+    if (!waiting || !rows) return;
+    const staged = rows.find(
+      (r) => r.kind === "team" && normalizeEntityName(r.name) === waiting,
+    );
+    if (!staged) return;
+    awaitingStageRef.current = null;
+    const next: NavState = { rowId: staged._id, explicit: true };
+    navRef.current = next;
+    // No `set-state-in-effect` disable needed here, unlike the nav effect
+    // above: this one is guarded by a ref that is cleared before the set, so
+    // the lint rule can see it cannot re-enter.
+    setNav(next);
+  }, [rows]);
 
   /**
    * NEO-236 — the belt-and-braces staging pass.
@@ -1247,6 +1302,28 @@ export default function EntityReviewWizard({
       return;
     }
     presentDecided(rowId);
+  };
+
+  /**
+   * NEO-236 — `Decide team` for a label the batch holds no step for.
+   *
+   * Stages one, then the effect above pins it when the server's insert lands.
+   * Idempotent server-side, so a double press cannot mint two steps.
+   */
+  const stageThenGoToTeamStep = (
+    playerRowId: Id<"entityReviewQueue">,
+    label: string,
+  ) => {
+    awaitingStageRef.current = normalizeEntityName(label);
+    void stageCareerTeams({
+      reviewRowId: playerRowId,
+      careerTeamNames: [label],
+    }).catch(() => {
+      // Nothing was staged, so there is nothing to go to. The chip still says
+      // the team needs a decision, which remains true — and unticking it is
+      // still the other way out.
+      awaitingStageRef.current = null;
+    });
   };
 
   /** Present a decided row read-only, without touching it. */
@@ -2121,12 +2198,23 @@ export default function EntityReviewWizard({
                                             voice-control user saying "decide
                                             team" matches it.
                                           */}
-                                          {status.stagedRowId && (
+                                          {/* Always offered now: when the
+                                              batch holds no step for this
+                                              label (staging caps at 64 per
+                                              player, and skips a name too long
+                                              to compose), pressing it stages
+                                              one and then goes there. */}
+                                          {(
                                             <button
                                               type="button"
                                               aria-label={`Decide team ${ct.name}`}
                                               onClick={() =>
-                                                goToTeamStep(status.stagedRowId!)
+                                                status.stagedRowId
+                                                  ? goToTeamStep(status.stagedRowId)
+                                                  : stageThenGoToTeamStep(
+                                                      current._id,
+                                                      ct.name,
+                                                    )
                                               }
                                               className="py-2 -my-2 text-[#00B7FF] underline decoration-dotted hover:text-[#00D558] focus-visible:text-[#00D558] focus:outline-none"
                                             >
