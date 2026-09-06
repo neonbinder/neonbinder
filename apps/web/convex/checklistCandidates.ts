@@ -4,6 +4,10 @@ import { Id } from "./_generated/dataModel";
 import { requireAdmin, getCurrentUserIdentity } from "./auth";
 import { cardPlatformWireDataValidator } from "./schema";
 import { cardNumberStem } from "../lib/cards/variations";
+// NEO-251 security review: the same two bounds the write path enforces, applied
+// at this boundary too — see `startCandidateBatch`'s handler.
+import { MAX_CARD_PLAYERS } from "./features/cardAttention";
+import { MAX_PLAYER_NAME_LENGTH } from "../lib/players/name-limits";
 
 /**
  * NEO-195 — the streaming half of a checklist fetch.
@@ -54,6 +58,21 @@ const bucketValidator = v.union(
   v.literal("slOnly"),
 );
 
+/**
+ * NEO-251 — both marketplaces' player lists for one card, plus an optional
+ * hint.
+ *
+ * `preferred` is evidence, never a decision: it is set only when the NB row
+ * this card matches already carries SportLots' roster, which means an operator
+ * settled it that way on an earlier sync. The modal still defaults to BSC and
+ * still makes the operator choose — NB owns the answer.
+ */
+const playersConflictValidator = v.object({
+  bsc: v.array(v.string()),
+  sportlots: v.array(v.string()),
+  preferred: v.optional(v.union(v.literal("bsc"), v.literal("sportlots"))),
+});
+
 /** One candidate as the action hands it over. */
 const candidateInputValidator = v.object({
   cardNumber: v.string(),
@@ -73,9 +92,16 @@ const candidateInputValidator = v.object({
   nameConflict: v.optional(
     v.object({ bsc: v.string(), sportlots: v.string() }),
   ),
+  // NEO-251 — the same, for the player LIST. `nameConflict` is about the card's
+  // title; this is about who the card says is on it, which is a separate field
+  // that fails separately (BSC sends a structured array, SportLots one subject
+  // string that `parseSlSubjects` splits). Count- and length-bounded by
+  // `startCandidateBatch`'s handler, not by this validator — see there.
+  playersConflict: v.optional(playersConflictValidator),
   bucket: bucketValidator,
   confidence: v.optional(v.number()),
 });
+
 
 /**
  * Open a batch: drop anything left from THIS OPERATOR's previous run on this
@@ -122,6 +148,41 @@ export const startCandidateBatch = internalMutation({
       )
       .collect();
     for (const row of stale) await ctx.db.delete(row._id);
+
+    // NEO-251 (security review) — bound the rosters before any of them is
+    // stored.
+    //
+    // The same two numbers the WRITE path enforces (`MAX_CARD_PLAYERS`,
+    // `MAX_PLAYER_NAME_LENGTH`), applied here because this is a different
+    // boundary from the commit's: a candidate row is written once and then read
+    // back into an operator's browser on every tick of a reactive subscription,
+    // so an adapter regression that turned one subject string into hundreds of
+    // "names" would be paid for on every one of those reads, on every row of a
+    // ~900-card batch — long before anything reached a commit.
+    //
+    // The whole batch is REFUSED rather than trimmed. A truncated roster is a
+    // wrong roster that looks right, and this is the field a listing's players
+    // are generated from; a failed fetch is recoverable, silently listing the
+    // wrong player is not. Reported by COUNT and by LENGTH, never by echoing a
+    // name (the `players.ts` convention) — the card number is NB's own value.
+    for (const c of args.candidates) {
+      const conflict = c.playersConflict;
+      if (!conflict) continue;
+      for (const side of ["bsc", "sportlots"] as const) {
+        if (conflict[side].length > MAX_CARD_PLAYERS) {
+          throw new Error(
+            `startCandidateBatch: card #${c.cardNumber} carries ${conflict[side].length} ${side} players, above the ${MAX_CARD_PLAYERS}-player limit`,
+          );
+        }
+        for (const name of conflict[side]) {
+          if (name.length > MAX_PLAYER_NAME_LENGTH) {
+            throw new Error(
+              `startCandidateBatch: card #${c.cardNumber} carries a ${side} player name of ${name.length} characters; the limit is ${MAX_PLAYER_NAME_LENGTH}.`,
+            );
+          }
+        }
+      }
+    }
 
     for (const c of args.candidates) {
       await ctx.db.insert("checklistCandidates", {
@@ -260,6 +321,7 @@ export const getReadyCandidates = query({
         nameConflict: v.optional(
           v.object({ bsc: v.string(), sportlots: v.string() }),
         ),
+        playersConflict: v.optional(playersConflictValidator),
         bucket: bucketValidator,
         confidence: v.optional(v.number()),
         stem: v.string(),
@@ -305,6 +367,10 @@ export const getReadyCandidates = query({
         // the ~70s of team enrichment that follows, so a conflict withheld here
         // is a conflict the operator reviews the row without.
         nameConflict: r.nameConflict,
+        // NEO-251: same reasoning one field over — a roster disagreement
+        // withheld from the streamed view is one the operator reviews the row
+        // without.
+        playersConflict: r.playersConflict,
         bucket: r.bucket,
         confidence: r.confidence,
         stem: r.stem,

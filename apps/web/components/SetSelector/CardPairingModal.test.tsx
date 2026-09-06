@@ -976,10 +976,15 @@ describe("CardPairingModal — marketplace name conflicts (NEO-189)", () => {
 
     /**
      * `previewCardValidator` was widened so the second name could reach the
-     * client — not so it could travel onwards. `resolveEntities` and
-     * `commitCardChecklist` receive the same card shape they always did.
+     * client — not so it could ride on a card that is about to be written.
+     * `resolveEntities` and `commitCardChecklist` receive the same card shape
+     * they always did.
+     *
+     * NEO-251 did not change that. The disagreement now travels back out of
+     * this dialog, but BESIDE the cards (`conflictsByIndex`), so that only the
+     * sync-review diff sees it — see the test below and `PairingResult`.
      */
-    test("the wire field is lifted onto the pair and never reaches onConfirm", async () => {
+    test("the wire field is lifted onto the pair and never reaches the CARD", async () => {
       const { onConfirm } = renderModal({ autoMatched: [yaz()] });
 
       fireEvent.click(screen.getByLabelText("Confirm card matches"));
@@ -988,6 +993,28 @@ describe("CardPairingModal — marketplace name conflicts (NEO-189)", () => {
       expect(onConfirm.mock.calls[0][0].cards[0]).not.toHaveProperty(
         "nameConflict",
       );
+    });
+
+    /**
+     * NEO-251 — the diff has to be told what the two marketplaces said, or it
+     * cannot tell an operator's settled answer apart from an upstream change.
+     * The two ANSWERS only: `chosen` and `custom` are this screen's state and
+     * the operator has already spent them.
+     */
+    test("the disagreement travels beside the cards, keyed by index", async () => {
+      const { onConfirm } = renderModal({ autoMatched: [yaz()] });
+
+      fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+      await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+      expect(onConfirm.mock.calls[0][0].conflictsByIndex).toEqual({
+        0: {
+          nameConflict: {
+            bsc: "Mike Yastrzemski",
+            sportlots: "Mike Yastrzemski|Carl Yastrzemski",
+          },
+        },
+      });
     });
 
     /**
@@ -3175,5 +3202,499 @@ describe("CardPairingModal — discard guard", () => {
 
     expect(filter.value).toBe("");
     expect(onClose).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * NEO-251 — the roster conflict, end to end on the manual and auto paths.
+ *
+ * The name-conflict suite above is the older half of the same control; both now
+ * render through `ConflictRadioGroup`, so these tests are also what keeps the
+ * extraction honest — a change that broke the shared component for one conflict
+ * would have to break it for both.
+ */
+describe("CardPairingModal — marketplace player conflicts (NEO-251)", () => {
+  const yazBsc: PairingCard = {
+    ...bscCard("227c", "Yastrzemski"),
+    players: ["Mike Yastrzemski"],
+  };
+  const yazSl: PairingCard = {
+    ...slCard("227c", "Yastrzemski"),
+    players: ["Mike Yastrzemski", "Carl Yastrzemski"],
+  };
+
+  /** A server-merged pair as `fetchCardChecklist` hands it over. */
+  const autoPlayersConflict = (
+    overrides: Partial<PairingCard["playersConflict"]> = {},
+  ) => ({
+    card: {
+      ...pairedCard("227c", "Yastrzemski"),
+      players: ["Mike Yastrzemski"],
+      playersConflict: {
+        bsc: ["Mike Yastrzemski"],
+        sportlots: ["Mike Yastrzemski", "Carl Yastrzemski"],
+        ...overrides,
+      },
+    } satisfies PairingCard,
+    confidence: 1,
+  });
+
+  const linkYaz = () => {
+    fireEvent.click(screen.getByLabelText("Select BSC card #227c Yastrzemski"));
+    fireEvent.click(
+      screen.getByLabelText("Link selected BSC card to #227c Yastrzemski"),
+    );
+  };
+
+  test("an auto-matched roster disagreement renders both lists, BSC winning", () => {
+    renderModal({ autoMatched: [autoPlayersConflict()] });
+
+    expect(
+      screen.getByRole("group", { name: "Players conflict on #227c" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("radio", {
+        name: "BSC: Mike Yastrzemski — use these players for #227c",
+      }).getAttribute("aria-checked"),
+    ).toBe("true");
+    expect(
+      screen.getByRole("radio", {
+        name: "SportLots: Mike Yastrzemski / Carl Yastrzemski — use these players for #227c",
+      }).getAttribute("aria-checked"),
+    ).toBe("false");
+  });
+
+  test("a hand-linked pair raises the same control", () => {
+    renderModal({ unmatchedBsc: [yazBsc], unmatchedSl: [yazSl] });
+    linkYaz();
+
+    expect(
+      screen.getByRole("group", { name: "Players conflict on #227c" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("radiogroup", { name: "Players for #227c" }),
+    ).toBeTruthy();
+  });
+
+  test("choosing SportLots puts ITS roster on the confirmed card", async () => {
+    const { onConfirm } = renderModal({
+      autoMatched: [autoPlayersConflict()],
+    });
+
+    fireEvent.click(
+      screen.getByRole("radio", { name: /^SportLots: Mike Yastrzemski \/ Carl/ }),
+    );
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    expect(onConfirm.mock.calls[0][0].cards[0].players).toEqual([
+      "Mike Yastrzemski",
+      "Carl Yastrzemski",
+    ]);
+  });
+
+  /**
+   * The conflict is a decision the SCREEN makes; a card on its way to
+   * `commitCardChecklist` has one roster, not an open question. The commit
+   * refuses a payload that still carries the field, so this is also what keeps
+   * an ordinary confirm from being rejected server-side.
+   */
+  test("the confirmed card carries no playersConflict", async () => {
+    const { onConfirm } = renderModal({
+      autoMatched: [autoPlayersConflict()],
+    });
+
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    expect(onConfirm.mock.calls[0][0].cards[0]).not.toHaveProperty(
+      "playersConflict",
+    );
+  });
+
+  /**
+   * ...but the disagreement itself is handed back BESIDE the cards, because
+   * the sync-review diff cannot tell a settled answer apart from an upstream
+   * change without it. `CardChecklist` puts the two back together for the diff
+   * query alone (`withConflicts`); nothing downstream of it sees the field.
+   */
+  test("the disagreement travels in conflictsByIndex, not on the card", async () => {
+    const { onConfirm } = renderModal({
+      autoMatched: [autoPlayersConflict({ preferred: "sportlots" })],
+    });
+
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    // The two ANSWERS only — no `chosen`, no `preferred`. Those are this
+    // screen's state and mean nothing to the diff.
+    expect(onConfirm.mock.calls[0][0].conflictsByIndex).toEqual({
+      0: {
+        playersConflict: {
+          bsc: ["Mike Yastrzemski"],
+          sportlots: ["Mike Yastrzemski", "Carl Yastrzemski"],
+        },
+      },
+    });
+  });
+
+  /**
+   * Settling the conflict changes the CARD, never the record of what the two
+   * marketplaces said. The diff needs both answers whichever one won, since
+   * "the stored value is the side the merge did not pick" is exactly the
+   * condition it tests.
+   */
+  test("choosing SportLots does not rewrite the reported disagreement", async () => {
+    const { onConfirm } = renderModal({
+      autoMatched: [autoPlayersConflict()],
+    });
+
+    fireEvent.click(
+      screen.getByRole("radio", { name: /^SportLots: Mike Yastrzemski \/ Carl/ }),
+    );
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    expect(onConfirm.mock.calls[0][0].cards[0].players).toEqual([
+      "Mike Yastrzemski",
+      "Carl Yastrzemski",
+    ]);
+    expect(
+      onConfirm.mock.calls[0][0].conflictsByIndex[0].playersConflict,
+    ).toEqual({
+      bsc: ["Mike Yastrzemski"],
+      sportlots: ["Mike Yastrzemski", "Carl Yastrzemski"],
+    });
+  });
+
+  /**
+   * A kept single has one marketplace and nothing to disagree with, and it is
+   * emitted AFTER the matched pairs — so a conflict's index cannot drift onto
+   * it.
+   */
+  test("an agreeing pair contributes no entry at all", async () => {
+    const { onConfirm } = renderModal({
+      autoMatched: [
+        { card: pairedCard("1", "Ken Griffey Jr."), confidence: 1 },
+        autoPlayersConflict(),
+      ],
+    });
+
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    const byIndex = onConfirm.mock.calls[0][0].conflictsByIndex;
+    // #1 sorts before #227c, so the conflicted card is at index 1.
+    expect(Object.keys(byIndex)).toEqual(["1"]);
+    expect(onConfirm.mock.calls[0][0].cards[1].cardNumber).toBe("227c");
+  });
+
+  /**
+   * A card with NO conflict must reach `onConfirm` exactly as it did before
+   * this ticket existed — no new key, present-and-undefined included. That is
+   * what makes the commit's "playersConflict must be absent" assertion safe.
+   */
+  test("an agreeing card's payload is byte-identical to pre-NEO-251", async () => {
+    const plain = pairedCard("1", "Ken Griffey Jr.");
+    const { onConfirm } = renderModal({
+      autoMatched: [{ card: plain, confidence: 1 }],
+    });
+
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    expect(onConfirm.mock.calls[0][0].cards[0]).toEqual(plain);
+    expect(
+      Object.keys(onConfirm.mock.calls[0][0].cards[0]).sort(),
+    ).toEqual(Object.keys(plain).sort());
+    expect(onConfirm.mock.calls[0][0].conflictsByIndex).toEqual({});
+  });
+
+  describe("the custom roster field", () => {
+    const typeRoster = (text: string) => {
+      const field = screen.getByLabelText(
+        "Players for #227c (separate names with |)",
+      );
+      fireEvent.change(field, { target: { value: text } });
+      fireEvent.keyDown(field, { key: "Enter" });
+      return field;
+    };
+
+    test("a roster neither marketplace listed becomes a third, checked option", () => {
+      renderModal({ autoMatched: [autoPlayersConflict()] });
+      typeRoster("Carl Yastrzemski | Willie Mays");
+
+      const custom = screen.getByRole("radio", {
+        name: "Custom: Carl Yastrzemski / Willie Mays — use these players for #227c",
+      });
+      expect(custom.getAttribute("aria-checked")).toBe("true");
+      // Both marketplace answers are still one click away.
+      expect(
+        screen.getByRole("radio", { name: /^BSC: Mike Yastrzemski —/ })
+          .getAttribute("aria-checked"),
+      ).toBe("false");
+    });
+
+    test("` / ` is accepted as a separator too, since that is what the pills show", () => {
+      renderModal({ autoMatched: [autoPlayersConflict()] });
+      typeRoster("Carl Yastrzemski / Willie Mays");
+
+      expect(
+        screen.getByRole("radio", { name: /^Custom: Carl Yastrzemski \/ Willie Mays/ }),
+      ).toBeTruthy();
+    });
+
+    /**
+     * Retyping one marketplace's answer IS picking it. Anything else leaves the
+     * group showing "Custom: <BSC's roster>" checked beside an identical,
+     * unchecked "BSC: <BSC's roster>" — a control asking the operator to choose
+     * between two spellings of one decision.
+     */
+    test("typing BSC's roster back is the same as clicking BSC, not a third option", () => {
+      renderModal({ autoMatched: [autoPlayersConflict()] });
+      // Reordered and re-punctuated on purpose: order is not information in a
+      // roster, so this is still BSC's answer.
+      typeRoster("Mike Yastrzemski");
+
+      expect(
+        screen.getByRole("radio", { name: /^BSC: Mike Yastrzemski —/ })
+          .getAttribute("aria-checked"),
+      ).toBe("true");
+      expect(screen.queryByRole("radio", { name: /^Custom:/ })).toBeNull();
+    });
+
+    test("typing SportLots' roster in a different order picks SportLots", () => {
+      renderModal({ autoMatched: [autoPlayersConflict()] });
+      typeRoster("Carl Yastrzemski | Mike Yastrzemski");
+
+      expect(
+        screen
+          .getByRole("radio", { name: /^SportLots: Mike Yastrzemski \/ Carl/ })
+          .getAttribute("aria-checked"),
+      ).toBe("true");
+      expect(screen.queryByRole("radio", { name: /^Custom:/ })).toBeNull();
+    });
+
+    test("a blank field is a no-op, not a roster of nothing", () => {
+      renderModal({ autoMatched: [autoPlayersConflict()] });
+      typeRoster("   ");
+
+      expect(
+        screen.getByRole("radio", { name: /^BSC: Mike Yastrzemski —/ })
+          .getAttribute("aria-checked"),
+      ).toBe("true");
+      expect(screen.queryByRole("radio", { name: /^Custom:/ })).toBeNull();
+    });
+
+    /**
+     * NEO-251 security review — the operator's own text is bounded by the same
+     * two numbers the server enforces, so an over-length name is refused while
+     * the field is still in front of them rather than at the end of a 900-card
+     * commit.
+     */
+    test("an over-length name is refused rather than trimmed", () => {
+      renderModal({ autoMatched: [autoPlayersConflict()] });
+      typeRoster("A".repeat(121));
+
+      expect(screen.queryByRole("radio", { name: /^Custom:/ })).toBeNull();
+      expect(
+        screen.getByRole("radio", { name: /^BSC: Mike Yastrzemski —/ })
+          .getAttribute("aria-checked"),
+      ).toBe("true");
+    });
+
+    test("more than MAX_CARD_PLAYERS names is refused", () => {
+      renderModal({ autoMatched: [autoPlayersConflict()] });
+      typeRoster(
+        Array.from({ length: 21 }, (_, i) => `Player ${i}`).join(" | "),
+      );
+
+      expect(screen.queryByRole("radio", { name: /^Custom:/ })).toBeNull();
+    });
+  });
+
+  /**
+   * `mergePair`'s sibling of the server-side fix: an empty roster is an absent
+   * one. `??` only falls through on null/undefined, so a BSC row carrying `[]`
+   * used to beat a real SportLots roster and drop it — and raise no conflict
+   * either, since one empty side is genuinely nothing to choose between.
+   */
+  test("a hand-linked pair takes SportLots' roster over an empty BSC one", async () => {
+    const { onConfirm } = renderModal({
+      unmatchedBsc: [{ ...bscCard("227c", "Yastrzemski"), players: [] }],
+      unmatchedSl: [yazSl],
+    });
+    linkYaz();
+
+    expect(
+      screen.queryByRole("group", { name: /^Players conflict/ }),
+    ).toBeNull();
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    expect(onConfirm.mock.calls[0][0].cards[0].players).toEqual([
+      "Mike Yastrzemski",
+      "Carl Yastrzemski",
+    ]);
+  });
+
+  test("UNLINK gives each half its OWN roster back", () => {
+    renderModal({ autoMatched: [autoPlayersConflict()] });
+
+    fireEvent.click(screen.getByLabelText("Unlink #227c Yastrzemski"));
+
+    // Both halves are back in their columns, each carrying what its own
+    // marketplace said — so re-linking them raises the conflict again rather
+    // than finding two rows that now agree.
+    fireEvent.click(screen.getByLabelText("Select BSC card #227c Yastrzemski"));
+    fireEvent.click(
+      screen.getByLabelText("Link selected BSC card to #227c Yastrzemski"),
+    );
+    expect(
+      screen.getByRole("radio", {
+        name: "SportLots: Mike Yastrzemski / Carl Yastrzemski — use these players for #227c",
+      }),
+    ).toBeTruthy();
+  });
+
+  test("arrow keys move selection and wrap, as the APG pattern requires", () => {
+    renderModal({ autoMatched: [autoPlayersConflict()] });
+    const group = screen.getByRole("radiogroup", { name: "Players for #227c" });
+
+    fireEvent.keyDown(group, { key: "ArrowRight" });
+    expect(
+      screen
+        .getByRole("radio", { name: /^SportLots: Mike Yastrzemski \/ Carl/ })
+        .getAttribute("aria-checked"),
+    ).toBe("true");
+
+    // Wraps forward off the end...
+    fireEvent.keyDown(group, { key: "ArrowRight" });
+    expect(
+      screen
+        .getByRole("radio", { name: /^BSC: Mike Yastrzemski —/ })
+        .getAttribute("aria-checked"),
+    ).toBe("true");
+
+    // ...and backward off the start.
+    fireEvent.keyDown(group, { key: "ArrowLeft" });
+    expect(
+      screen
+        .getByRole("radio", { name: /^SportLots: Mike Yastrzemski \/ Carl/ })
+        .getAttribute("aria-checked"),
+    ).toBe("true");
+  });
+
+  test("the header counts roster conflicts on their own line", () => {
+    renderModal({ autoMatched: [autoPlayersConflict()] });
+
+    expect(screen.getByText(/1 player conflict/)).toBeTruthy();
+    expect(
+      screen.getByLabelText("Collapse matched cards, 1 with a player conflict"),
+    ).toBeTruthy();
+    // The name-conflict clause is ABSENT, not empty — the existing wording has
+    // to survive byte-for-byte for the Maestro flow that addresses it.
+    expect(screen.queryByText(/name conflict/)).toBeNull();
+  });
+
+  test("a row with BOTH conflicts shows both counts and both controls", () => {
+    renderModal({
+      autoMatched: [
+        {
+          card: {
+            ...pairedCard("227c", "Mike Yastrzemski"),
+            players: ["Mike Yastrzemski"],
+            nameConflict: {
+              bsc: "Mike Yastrzemski",
+              sportlots: "Mike Yastrzemski|Carl Yastrzemski",
+            },
+            playersConflict: {
+              bsc: ["Mike Yastrzemski"],
+              sportlots: ["Mike Yastrzemski", "Carl Yastrzemski"],
+            },
+          } satisfies PairingCard,
+          confidence: 1,
+        },
+      ],
+    });
+
+    expect(
+      screen.getByRole("group", { name: "Name conflict on #227c" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("group", { name: "Players conflict on #227c" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByLabelText(
+        "Collapse matched cards, 1 with a name conflict, 1 with a player conflict",
+      ),
+    ).toBeTruthy();
+  });
+
+  /**
+   * `preferred` is EVIDENCE, not a decision. NB owns the answer; the row says
+   * what NB already stores and still makes the operator choose — and seeding a
+   * non-default `chosen` would make an untouched row count as work in the
+   * discard confirm (`countPairingEdits`).
+   */
+  test("`preferred` renders as a hint and does not pre-select anything", () => {
+    renderModal({
+      autoMatched: [autoPlayersConflict({ preferred: "sportlots" })],
+    });
+
+    expect(
+      screen.getByText(
+        /NeonBinder currently stores: Mike Yastrzemski \/ Carl Yastrzemski/,
+      ),
+    ).toBeTruthy();
+    expect(
+      screen
+        .getByRole("radio", { name: /^BSC: Mike Yastrzemski —/ })
+        .getAttribute("aria-checked"),
+    ).toBe("true");
+  });
+
+  test("two conflicting rows on one number get distinct accessible names", () => {
+    renderModal({
+      autoMatched: [
+        {
+          card: {
+            ...pairedCard("227", "A"),
+            cardVariation: "Sliding",
+            players: ["Mike Yastrzemski"],
+            playersConflict: {
+              bsc: ["Mike Yastrzemski"],
+              sportlots: ["Carl Yastrzemski"],
+            },
+          } satisfies PairingCard,
+          confidence: 1,
+        },
+        {
+          card: {
+            ...pairedCard("227b", "B"),
+            cardNumber: "227",
+            cardVariation: "In Dugout",
+            platformData: {
+              bsc: { ref: "bsc-227b", setId: "dcap-s1" },
+              sportlots: { ref: "#A227b B", setId: "884412" },
+            },
+            players: ["Mickey Mantle"],
+            playersConflict: {
+              bsc: ["Mickey Mantle"],
+              sportlots: ["Willie Mays"],
+            },
+          } satisfies PairingCard,
+          confidence: 1,
+        },
+      ],
+    });
+
+    const names = screen
+      .getAllByRole("group")
+      .map((el) => el.getAttribute("aria-label"))
+      .sort();
+    expect(names).toEqual([
+      "Players conflict on #227 · In Dugout",
+      "Players conflict on #227 · Sliding",
+    ]);
   });
 });

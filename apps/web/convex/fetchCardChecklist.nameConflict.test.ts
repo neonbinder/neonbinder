@@ -177,6 +177,34 @@ function pairOn(n: string, bscName: string, slName: string) {
   });
 }
 
+/**
+ * NEO-251 — the same, but the two sides carry PLAYER LISTS rather than titles.
+ *
+ * The card names are held identical on purpose: the two conflicts are separate
+ * fields that fail separately, and a fixture that moved both at once could not
+ * tell a roster guard from a title guard firing.
+ */
+function playersPairOn(n: string, bscPlayers: string[], slPlayers: string[]) {
+  // An empty roster is sent as an ABSENT key, which is what both adapters do
+  // (`players: players.length ? players : undefined`). It matters: the merge is
+  // `bsc.players ?? sl.players`, so a literal `[]` from BSC would win over a
+  // real SportLots roster — see the test that pins that behaviour below.
+  mockState.bscCards.push({
+    cardNumber: n,
+    cardName: "Card " + n,
+    ...(bscPlayers.length ? { players: bscPlayers } : {}),
+    platformRef: `bsc-${n}`,
+    sourceBscSetSlug: "base",
+  });
+  mockState.slCards.push({
+    cardNumber: n,
+    cardName: "Card " + n,
+    ...(slPlayers.length ? { players: slPlayers } : {}),
+    platformRef: `2021 Topps #${n} Card ${n}`,
+    sourceSlSetId: "189991",
+  });
+}
+
 async function fetch(t: ReturnType<typeof convexTest>, id: Id<"selectorOptions">) {
   return t.withIdentity(ADMIN).action(api.selectorOptions.fetchCardChecklist, {
     selectorOptionId: id,
@@ -301,5 +329,230 @@ describe("fetchCardChecklist — auto-matched name disagreements (NEO-199)", () 
 
     expect(matched[0]).not.toHaveProperty("nameConflict");
     expect(matched[0].cardName).toBe("Wander Franco");
+  });
+});
+
+/**
+ * NEO-251 — the roster half of the same guard, on the AUTO-MATCHED path.
+ *
+ * Same shape as the name half above and for the same reason: most of a 660-row
+ * set auto-matches inside `fetchCardChecklist`, where `players = bsc.players ??
+ * sl.players` picked a winner and dropped the loser before the modal existed.
+ * These names become `playerIds`, which the listing title is generated from —
+ * so an unreported disagreement surfaces to a buyer rather than to an operator.
+ */
+describe("fetchCardChecklist — auto-matched player disagreements (NEO-251)", () => {
+  /** The motivating row, one field over: SportLots knows about Carl. */
+  test("a disagreeing pair reaches the client with BOTH rosters", async () => {
+    const t = convexTest(schema, modules);
+    const insertId = await seedTree(t);
+    playersPairOn(
+      "227c",
+      ["Mike Yastrzemski"],
+      ["Mike Yastrzemski", "Carl Yastrzemski"],
+    );
+
+    await fetch(t, insertId);
+    const { matched } = await buckets(t, insertId);
+
+    expect(matched).toHaveLength(1);
+    expect(matched[0].playersConflict).toEqual({
+      bsc: ["Mike Yastrzemski"],
+      sportlots: ["Mike Yastrzemski", "Carl Yastrzemski"],
+    });
+    // The committed default is unchanged: BSC still wins unless an operator
+    // says otherwise, which is what makes the modal's `chosen: "bsc"` a
+    // truthful statement rather than a guess.
+    expect(matched[0].players).toEqual(["Mike Yastrzemski"]);
+    // The TITLES agree, so nothing is said about them. The two guards are
+    // independent and this fixture proves it in both directions.
+    expect(matched[0]).not.toHaveProperty("nameConflict");
+  });
+
+  test("rows whose rosters merely READ differently carry no extra field", async () => {
+    const t = convexTest(schema, modules);
+    const insertId = await seedTree(t);
+    playersPairOn("1", ["Alec Bohm"], ["Alec Bohm"]); // identical
+    playersPairOn(
+      "2",
+      ["Alec Bohm", "Spencer Howard"],
+      ["Spencer Howard", "Alec Bohm"],
+    ); // list order
+    playersPairOn("3", ["Bohm, Alec"], ["Alec Bohm"]); // token order
+    playersPairOn("4", ["Jose Ramirez"], ["José Ramírez"]); // BSC strips accents
+    playersPairOn("5", ["Ken Griffey Jr."], ["Ken Griffey Jr"]); // punctuation
+
+    await fetch(t, insertId);
+    const { matched } = await buckets(t, insertId);
+
+    expect(matched).toHaveLength(5);
+    for (const m of matched) {
+      // `not.toHaveProperty`, not `toBeUndefined`: the point is that the key is
+      // ABSENT from the wire object, which is what keeps the payload flat on
+      // the ~99% of rows that agree.
+      expect(m).not.toHaveProperty("playersConflict");
+    }
+  });
+
+  test("a SportLots-only roster is not a disagreement — SportLots simply wins", async () => {
+    const t = convexTest(schema, modules);
+    const insertId = await seedTree(t);
+    playersPairOn("60", [], ["Wander Franco"]);
+
+    await fetch(t, insertId);
+    const { matched } = await buckets(t, insertId);
+
+    expect(matched[0]).not.toHaveProperty("playersConflict");
+    expect(matched[0].players).toEqual(["Wander Franco"]);
+  });
+
+  /**
+   * An EMPTY BSC roster is an ABSENT one, so SportLots wins.
+   *
+   * The merge used to be `bsc.players ?? sl.players`, and `[]` is not nullish —
+   * so a BSC row carrying a literal empty array beat a real SportLots roster
+   * and dropped it silently, with no conflict raised either (one empty side is
+   * genuinely not a disagreement, and `conflictingPlayers` requires both).
+   *
+   * Both adapters send an absent key rather than `[]` today
+   * (`players.length ? players : undefined`), so nothing observable changed.
+   * It is pinned because NEO-251 is what makes it matter: SportLots supplies
+   * rosters now, so "absent" versus "empty" is the difference between keeping
+   * and losing every one of them if an adapter ever starts emitting `[]`.
+   */
+  test("a literal empty BSC roster does not beat SportLots'", async () => {
+    const t = convexTest(schema, modules);
+    const insertId = await seedTree(t);
+    mockState.bscCards.push({
+      cardNumber: "61",
+      cardName: "Card 61",
+      players: [],
+      platformRef: "bsc-61",
+      sourceBscSetSlug: "base",
+    });
+    mockState.slCards.push({
+      cardNumber: "61",
+      cardName: "Card 61",
+      players: ["Wander Franco"],
+      platformRef: "2021 Topps #61 Card 61",
+      sourceSlSetId: "189991",
+    });
+
+    await fetch(t, insertId);
+    const { matched } = await buckets(t, insertId);
+
+    // Not a disagreement — there is nothing to choose between.
+    expect(matched[0]).not.toHaveProperty("playersConflict");
+    expect(matched[0].players).toEqual(["Wander Franco"]);
+  });
+
+  test("an unmatched row has nobody to disagree with, and says nothing", async () => {
+    const t = convexTest(schema, modules);
+    const insertId = await seedTree(t);
+    mockState.bscCards.push({
+      cardNumber: "10",
+      cardName: "Wander Franco",
+      players: ["Wander Franco"],
+      platformRef: "bsc-10",
+      sourceBscSetSlug: "base",
+    });
+    mockState.slCards.push({
+      cardNumber: "99",
+      cardName: "Julio Rodriguez",
+      players: ["Julio Rodriguez"],
+      platformRef: "2021 Topps #99 Julio Rodriguez",
+      sourceSlSetId: "189991",
+    });
+
+    await fetch(t, insertId);
+    const { bscOnly, slOnly } = await buckets(t, insertId);
+
+    expect(bscOnly[0]).not.toHaveProperty("playersConflict");
+    expect(slOnly[0]).not.toHaveProperty("playersConflict");
+  });
+
+  /**
+   * NEO-251 — `preferred`: the operator settled this same disagreement last
+   * sync, and the NB row still carries their answer.
+   *
+   * The evidence is NB's OWN — the committed row's players — never a
+   * marketplace's opinion about which side is right. Without it the merge
+   * defaults to BSC on every sync and the review screen re-asks an answered
+   * question with the same wrong default, forever.
+   */
+  test("a committed row carrying SportLots' roster is reported as preferred", async () => {
+    const t = convexTest(schema, modules);
+    const insertId = await seedTree(t);
+    await t.run(async (ctx) => {
+      const sportId = (await ctx.db.get(insertId))!.parentId!;
+      const mike = await ctx.db.insert("players", {
+        name: "Mike Yastrzemski",
+        nameNormalized: "mike yastrzemski",
+        sportId,
+        lastUpdated: Date.now(),
+      });
+      const carl = await ctx.db.insert("players", {
+        name: "Carl Yastrzemski",
+        nameNormalized: "carl yastrzemski",
+        sportId,
+        lastUpdated: Date.now(),
+      });
+      await ctx.db.insert("cardChecklist", {
+        selectorOptionId: insertId,
+        cardNumber: "227c",
+        cardName: "Card 227c",
+        playerIds: [mike, carl],
+        platformData: { bsc: { ref: "bsc-227c" } },
+        sortOrder: 0,
+        lastUpdated: Date.now(),
+      });
+    });
+    playersPairOn(
+      "227c",
+      ["Mike Yastrzemski"],
+      ["Mike Yastrzemski", "Carl Yastrzemski"],
+    );
+
+    await fetch(t, insertId);
+    const { matched } = await buckets(t, insertId);
+
+    expect(matched[0].playersConflict?.preferred).toBe("sportlots");
+    // Still a HINT: the merged card keeps BSC's roster, so the modal's default
+    // remains a truthful statement about what the card carries.
+    expect(matched[0].players).toEqual(["Mike Yastrzemski"]);
+  });
+
+  test("a committed row matching neither side reports no preference", async () => {
+    const t = convexTest(schema, modules);
+    const insertId = await seedTree(t);
+    await t.run(async (ctx) => {
+      const sportId = (await ctx.db.get(insertId))!.parentId!;
+      const other = await ctx.db.insert("players", {
+        name: "Willie Mays",
+        nameNormalized: "mays willie",
+        sportId,
+        lastUpdated: Date.now(),
+      });
+      await ctx.db.insert("cardChecklist", {
+        selectorOptionId: insertId,
+        cardNumber: "227c",
+        cardName: "Card 227c",
+        playerIds: [other],
+        platformData: { bsc: { ref: "bsc-227c" } },
+        sortOrder: 0,
+        lastUpdated: Date.now(),
+      });
+    });
+    playersPairOn(
+      "227c",
+      ["Mike Yastrzemski"],
+      ["Mike Yastrzemski", "Carl Yastrzemski"],
+    );
+
+    await fetch(t, insertId);
+    const { matched } = await buckets(t, insertId);
+
+    expect(matched[0].playersConflict).toBeTruthy();
+    expect(matched[0].playersConflict?.preferred).toBeUndefined();
   });
 });
