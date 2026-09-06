@@ -27,6 +27,7 @@ import {
   nextUndecided,
   resolveNav,
   summarizeDecisions,
+  type NavDecision,
   type NavRow,
 } from "./entity-review-nav";
 
@@ -538,5 +539,127 @@ describe("resolveNav — a blocker staged under ANOTHER player still blocks", ()
     expect(
       resolveNav(rows, { rowId: "t-0", explicit: false })?.rowId,
     ).toBe("t-1");
+  });
+});
+
+describe("nextUndecided — teams are always at the front of the queue", () => {
+  /**
+   * Jason, 2026-09-06: "What if we just always pop new teams to the top of the
+   * queue? … subsequent cards would always have all of the teams before it.
+   * That would help with the look up info as there are a lot of these hockey
+   * players that don't have years in the wikidata and then the teams need to be
+   * mapped manually."
+   *
+   * Answering teams first is what makes the PLAYERS easier: every team created
+   * early is one more row a later player's stints can resolve against by name.
+   */
+  const team = (id: string, over: Partial<NavRow> = {}): NavRow => ({
+    _id: id,
+    status: "ready",
+    kind: "team",
+    ...over,
+  });
+  const player = (id: string, over: Partial<NavRow> = {}): NavRow => ({
+    _id: id,
+    status: "ready",
+    kind: "player",
+    ...over,
+  });
+
+  it("takes a team from the BACK of the batch before a player at the front", () => {
+    const rows = [player("p1"), player("p2"), team("t1")];
+    expect(nextUndecided(rows)?._id).toBe("t1");
+  });
+
+  it("keeps array order among the teams themselves", () => {
+    const rows = [player("p1"), team("t1"), team("t2")];
+    expect(nextUndecided(rows)?._id).toBe("t1");
+    expect(
+      nextUndecided([player("p1"), { ...team("t1"), decision: { action: "create" } as NavDecision }, team("t2")])
+        ?._id,
+    ).toBe("t2");
+  });
+
+  it("falls through to players once every team is decided", () => {
+    const rows = [
+      player("p1"),
+      { ...team("t1"), decision: { action: "create" } as NavDecision },
+      { ...team("t2"), decision: { action: "skip" } as NavDecision },
+    ];
+    expect(nextUndecided(rows)?._id).toBe("p1");
+  });
+
+  it("does not offer a team whose own lookup has not landed", () => {
+    // Not settled, so the player is next — and the blocker rule still guards
+    // the case where that pending team is one the player needs.
+    const rows = [player("p1"), team("t-pending", { status: "pending" })];
+    expect(nextUndecided(rows)?._id).toBe("p1");
+  });
+
+  it("a team staged mid-batch is presented before the NEXT player", () => {
+    // The shape the wizard actually produces: a player's lookup lands, stages
+    // its clubs, and the walk must take those before moving to another player.
+    const before = [
+      { ...player("p1"), decision: { action: "create" } as NavDecision },
+      player("p2"),
+    ];
+    expect(nextUndecided(before)?._id).toBe("p2");
+
+    const after = [
+      { ...player("p1"), decision: { action: "create" } as NavDecision },
+      careerTeamOf("t-new", "p1"),
+      player("p2"),
+    ];
+    expect(nextUndecided(after)?._id).toBe("t-new");
+  });
+
+  it("does NOT interrupt a player the operator is already on", () => {
+    // An implicit pin yields only to a blocker for THAT player. An unrelated
+    // team row landing mid-review must not snatch the screen away — that is the
+    // NEO-221 defect this whole pinning model exists to prevent.
+    const rows = [player("p1"), team("t-unrelated")];
+    const onPlayer = { rowId: "p1", explicit: false };
+    expect(resolveNav(rows, onPlayer)).toBe(onPlayer);
+  });
+
+  it("moves to the team queue as soon as that player is decided", () => {
+    const rows = [
+      { ...player("p1"), decision: { action: "create" } as NavDecision },
+      team("t-unrelated"),
+      player("p2"),
+    ];
+    expect(
+      resolveNav(rows, { rowId: "p1", explicit: false }),
+    ).toEqual({ rowId: "t-unrelated", explicit: false });
+  });
+
+  it("converges after a bulk add: every player decided, teams walked, then done", () => {
+    // What "Add remaining players as new" leaves behind, and what the E2E
+    // setup flow's repeat-loop drains.
+    const bulkDone = [
+      { ...player("p1"), decision: { action: "create" } as NavDecision },
+      { ...player("p2"), decision: { action: "create" } as NavDecision },
+      team("t1"),
+      team("t2"),
+    ];
+    expect(nextUndecided(bulkDone)?._id).toBe("t1");
+
+    const oneLeft = [
+      ...bulkDone.slice(0, 2),
+      { ...team("t1"), decision: { action: "create" } as NavDecision },
+      team("t2"),
+    ];
+    expect(nextUndecided(oneLeft)?._id).toBe("t2");
+
+    const allDone = [
+      ...bulkDone.slice(0, 2),
+      { ...team("t1"), decision: { action: "create" } as NavDecision },
+      { ...team("t2"), decision: { action: "create" } as NavDecision },
+    ];
+    expect(nextUndecided(allDone)).toBeNull();
+    expect(resolveNav(allDone, { rowId: "t2", explicit: false })).toEqual({
+      rowId: null,
+      explicit: false,
+    });
   });
 });

@@ -3897,7 +3897,7 @@ describe("EntityReviewWizard — career-team chips report the staged answer", ()
     expect(screen.getByText("→ LA Angels of Anaheim")).toBeTruthy();
   });
 
-  it("reads '→ {composed} (new team, not saved yet)' when its own step said create", () => {
+  it("reads '→ {composed}' when its own step said create", () => {
     const player = trout();
     // The operator split it on the New Team step: Location "Salt Lake",
     // Name "Bees". The chip shows the composed row, not the raw label.
@@ -3908,7 +3908,7 @@ describe("EntityReviewWizard — career-team chips report the staged answer", ()
     currentResolvedNames = [angelsExist, { name: "Salt Lake Bees" }];
     renderWizard();
 
-    expect(screen.getByText("→ Salt Lake Bees (new team, not saved yet)")).toBeTruthy();
+    expect(screen.getByText("→ Salt Lake Bees")).toBeTruthy();
     expect(screen.queryByText("needs a team decision")).toBeNull();
   });
 
@@ -3926,11 +3926,13 @@ describe("EntityReviewWizard — career-team chips report the staged answer", ()
     ];
     renderWizard();
 
-    // No "(new team, not saved yet)": nothing is being created for this stint.
+    // Nothing is being created for this stint, so the chip reports the linked
+    // team plainly — the same way it reports one that already existed, and with
+    // no qualifier distinguishing the two (NEO-236: there is nothing the
+    // operator could do with that difference).
     expect(screen.getByText("→ Salt Lake Bees")).toBeTruthy();
-    expect(
-      screen.queryByText("→ Salt Lake Bees (new team, not saved yet)"),
-    ).toBeNull();
+    expect(screen.queryByText(/new team/)).toBeNull();
+    expect(screen.queryByText("needs a team decision")).toBeNull();
   });
 
   it("says 'needs a team decision' and holds the create when the step was SKIPPED", () => {
@@ -4049,7 +4051,7 @@ describe("EntityReviewWizard — career-team chips report the staged answer", ()
     renderWizard();
 
     const box = screen.getByLabelText("Include career team Salt Lake Bees");
-    const status = screen.getByText("→ Salt Lake Bees (new team, not saved yet)");
+    const status = screen.getByText("→ Salt Lake Bees");
     expect(box.getAttribute("aria-describedby")).toBe(status.id);
   });
 
@@ -4231,7 +4233,9 @@ describe("EntityReviewWizard — the New Team, New Team, then Player sequence", 
     expect(screen.getByRole("heading", { name: "Travis Bazzana" })).toBeTruthy();
     // A step exists for both labels — but existence is the QUESTION, not the
     // answer, so neither may claim a team is being created.
-    expect(screen.queryByText(/new team, not saved yet/)).toBeNull();
+    // NEO-236: an answered chip says only where the stint lands. The state
+    // that still needs an action is the one that still has words.
+    expect(screen.getAllByText("needs a team decision")).toHaveLength(2);
     expect(screen.getAllByText("needs a team decision")).toHaveLength(2);
   });
 
@@ -4267,7 +4271,7 @@ describe("EntityReviewWizard — the New Team, New Team, then Player sequence", 
 
     expect(screen.getByRole("heading", { name: "Dylan Crews" })).toBeTruthy();
     expect(
-      screen.getByText("→ Sydney Blue Sox (new team, not saved yet)"),
+      screen.getByText("→ Sydney Blue Sox"),
     ).toBeTruthy();
     expect(screen.queryByText("needs a team decision")).toBeNull();
   });
@@ -4331,10 +4335,10 @@ describe("EntityReviewWizard — the New Team, New Team, then Player sequence", 
       screen.getByRole("heading", { name: "Travis Bazzana" }),
     ).toBeTruthy();
     expect(
-      screen.getByText("→ Sydney Blue Sox (new team, not saved yet)"),
+      screen.getByText("→ Sydney Blue Sox"),
     ).toBeTruthy();
     expect(
-      screen.getByText("→ Oregon State Beavers baseball (new team, not saved yet)"),
+      screen.getByText("→ Oregon State Beavers baseball"),
     ).toBeTruthy();
     // The one we already hold reads as a plain link — nothing is created for it.
     expect(screen.getByText("→ Cleveland Guardians")).toBeTruthy();
@@ -4972,7 +4976,7 @@ describe("EntityReviewWizard — a blocked chip leads to its step", () => {
     expect(screen.getByRole("heading", { name: "Guy Lafleur" })).toBeTruthy();
     expect(screen.queryByText("needs a team decision")).toBeNull();
     expect(
-      screen.getByText("→ Montreal Canadiens (new team, not saved yet)"),
+      screen.getByText("→ Montreal Canadiens"),
     ).toBeTruthy();
   });
 });

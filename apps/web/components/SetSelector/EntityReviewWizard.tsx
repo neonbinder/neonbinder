@@ -2107,18 +2107,25 @@ export default function EntityReviewWizard({
                                           id={statusId}
                                           className="text-xs text-gray-400"
                                         >
+                                          {/*
+                                            NEO-236 — the team, and nothing
+                                            about its bookkeeping.
+
+                                            This carried "(new team, not saved
+                                            yet)" for a team the batch was
+                                            creating. Jason: "'not saved yet'
+                                            is equally confusing. Do we need
+                                            anything there at all?" No — an
+                                            ANSWERED stint reads the same
+                                            whether the team already existed or
+                                            this review will create it, because
+                                            there is nothing for the operator to
+                                            do about the difference. Only the
+                                            states that still need an action
+                                            keep their words: "needs a team
+                                            decision" and its "Decide team".
+                                          */}
                                           → {status.name}
-                                          {/* NEO-236: "batch" is our word,
-                                              not the operator's — it names
-                                              an internal review row, and no
-                                              copy should expose an internal
-                                              rule. "not saved yet" says the
-                                              thing they actually need to
-                                              know: this team does not exist
-                                              until Confirm & Save. */}
-                                          {status.kind === "creating"
-                                            ? " (new team, not saved yet)"
-                                            : ""}
                                         </span>
                                       ))}
                                   </li>

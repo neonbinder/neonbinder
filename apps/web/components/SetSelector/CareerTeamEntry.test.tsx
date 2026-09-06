@@ -191,7 +191,7 @@ describe("CareerTeamEntry — search source", () => {
 // ---------------------------------------------------------------------------
 
 describe("CareerTeamEntry — staged suggestions", () => {
-  it("lists staged names BEFORE search results, tagged 'not saved yet'", () => {
+  it("lists staged names BEFORE search results, with no tag of their own", () => {
     // The ordering is the point: a saved team is discoverable by typing its
     // full name; one that exists only as a pending decision in this batch is
     // not, so it has to be the thing the operator sees first.
@@ -202,13 +202,17 @@ describe("CareerTeamEntry — staged suggestions", () => {
 
     const options = screen.getAllByRole("option");
     expect(options[0].getAttribute("aria-label")).toBe(
-      "Use Toronto Blue Jays, not saved yet",
+      "Use Toronto Blue Jays",
     );
     expect(options[1].getAttribute("aria-label")).toBe(
-      "Use existing team Toronto Maple Leafs",
+      "Use Toronto Maple Leafs",
     );
-    expect(options[0].textContent).toContain("not saved yet");
-    expect(options[1].textContent).not.toContain("not saved yet");
+    // NEO-236: neither row says anything about WHERE it came from. A staged
+    // name still sorts first — it is the one the operator cannot find any other
+    // way — but "not saved yet" told them nothing they could act on, so both
+    // rows now read as the plain team name.
+    expect(options[0].textContent).toBe("Toronto Blue Jays");
+    expect(options[1].textContent).toBe("Toronto Maple Leafs");
   });
 
   it("appends search results without duplicating a staged name", () => {
@@ -223,8 +227,8 @@ describe("CareerTeamEntry — staged suggestions", () => {
       .getAllByRole("option")
       .map((el) => el.getAttribute("aria-label"));
     expect(labels).toEqual([
-      "Use Toronto Blue Jays, not saved yet",
-      "Use existing team Tampa Bay Rays",
+      "Use Toronto Blue Jays",
+      "Use Tampa Bay Rays",
     ]);
   });
 
@@ -242,7 +246,7 @@ describe("CareerTeamEntry — staged suggestions", () => {
 
     typeName("Toronto");
     fireEvent.click(
-      screen.getByRole("option", { name: "Use Toronto Blue Jays, not saved yet" }),
+      screen.getByRole("option", { name: "Use Toronto Blue Jays" }),
     );
 
     expect((screen.getByLabelText("Career team name") as HTMLInputElement).value).toBe(
@@ -261,7 +265,7 @@ describe("CareerTeamEntry — staged suggestions", () => {
 
     typeName("T");
     fireEvent.click(
-      screen.getByRole("option", { name: "Use existing team Toronto Blue Jays" }),
+      screen.getByRole("option", { name: "Use Toronto Blue Jays" }),
     );
 
     expect((screen.getByLabelText("Career team name") as HTMLInputElement).value).toBe(
@@ -421,7 +425,7 @@ describe("CareerTeamEntry — one box", () => {
 
     typeName("Padres");
     fireEvent.click(
-      screen.getByRole("option", { name: "Use existing team San Diego Padres" }),
+      screen.getByRole("option", { name: "Use San Diego Padres" }),
     );
 
     expect(
@@ -556,7 +560,7 @@ describe("CareerTeamEntry — dismissing the suggestion list", () => {
     typeName("Buffalo");
 
     expect(listbox()).toBeTruthy();
-    fireEvent.click(screen.getByRole("option", { name: "Use existing team Buffalo Sabres" }));
+    fireEvent.click(screen.getByRole("option", { name: "Use Buffalo Sabres" }));
 
     expect(listbox()).toBeNull();
     // The team is chosen; the stint is not finished until it has a year.
@@ -571,7 +575,7 @@ describe("CareerTeamEntry — dismissing the suggestion list", () => {
     currentTeams = [{ _id: "t1", name: "Buffalo Sabres" }];
     renderEntry();
     typeName("Buffalo");
-    fireEvent.click(screen.getByRole("option", { name: "Use existing team Buffalo Sabres" }));
+    fireEvent.click(screen.getByRole("option", { name: "Use Buffalo Sabres" }));
 
     fireEvent.focus(screen.getByLabelText("Career team name"));
     expect(listbox()).toBeNull();
@@ -598,7 +602,7 @@ describe("CareerTeamEntry — dismissing the suggestion list", () => {
     renderEntry();
     typeName("Buffalo");
 
-    screen.getByRole("option", { name: "Use existing team Buffalo Sabres" }).focus();
+    screen.getByRole("option", { name: "Use Buffalo Sabres" }).focus();
     fireEvent.blur(screen.getByLabelText("Career team name"));
     act(() => {
       vi.advanceTimersByTime(0);
@@ -635,7 +639,7 @@ describe("CareerTeamEntry — dismissing the suggestion list", () => {
     currentTeams = [{ _id: "t1", name: "Buffalo Sabres" }];
     renderEntry();
     typeName("Buffalo");
-    fireEvent.click(screen.getByRole("option", { name: "Use existing team Buffalo Sabres" }));
+    fireEvent.click(screen.getByRole("option", { name: "Use Buffalo Sabres" }));
     expect(listbox()).toBeNull();
 
     fireEvent.keyDown(screen.getByLabelText("Career team name"), { key: "ArrowDown" });

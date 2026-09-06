@@ -83,7 +83,8 @@ export type CareerTeamDraft = {
   toYear?: number;
 };
 
-/** One dropdown row. `staged` drives the "not saved yet" tag and the ordering. */
+/** One dropdown row. `staged` drives the ordering and the dedupe — never a
+ *  visible difference; see the option's `aria-label`. */
 type Suggestion = { key: string; name: string; staged: boolean };
 
 export default function CareerTeamEntry({
@@ -364,14 +365,24 @@ export default function CareerTeamEntry({
                   type="button"
                   role="option"
                   aria-selected={idx === highlightIdx}
-                  // A staged name is NOT an existing team — it is a team this
-                  // batch has not created yet — so it gets its own accessible
-                  // name rather than borrowing the saved-team one and lying.
-                  aria-label={
-                    s.staged
-                      ? `Use ${s.name}, not saved yet`
-                      : `Use existing team ${s.name}`
-                  }
+                  /*
+                   * NEO-236 — ONE name for every suggestion, saved or staged.
+                   *
+                   * Jason, 2026-09-06, on the tag this used to carry: "'not
+                   * saved yet' is equally confusing. Do we need anything there
+                   * at all? Is there any value in telling the user anything
+                   * about that?" There is not. Whether a team already exists or
+                   * this review is about to create it changes nothing the
+                   * operator can act on here — picking it does the same thing
+                   * either way, and the difference is bookkeeping we were
+                   * narrating at them.
+                   *
+                   * `staged` still earns its keep: it orders these rows (a
+                   * pending name is the one you cannot find any other way) and
+                   * it dedupes them against the saved half. It just no longer
+                   * says anything.
+                   */
+                  aria-label={`Use ${s.name}`}
                   onMouseEnter={() => setHighlightIdx(idx)}
                   onClick={() => pickSuggestion(s.name)}
                   className={`flex w-full items-center gap-2 px-2 py-1 text-left text-sm ${
@@ -381,14 +392,6 @@ export default function CareerTeamEntry({
                   }`}
                 >
                   <span className="flex-1 truncate">{s.name}</span>
-                  {s.staged && (
-                    <span
-                      aria-hidden="true"
-                      className="shrink-0 rounded bg-gray-700 px-1.5 py-0.5 text-xs text-gray-300"
-                    >
-                      not saved yet
-                    </span>
-                  )}
                 </button>
               </li>
             ))}

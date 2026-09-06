@@ -150,13 +150,42 @@ export type NavState = { rowId: string | null; explicit: boolean };
  * stepped over rather than blocking on a straggler.
  */
 export function nextUndecided<T extends NavRow>(rows: readonly T[]): T | null {
+  const settled = (r: T) => r.status !== "pending" && !r.decision;
+
+  /*
+   * ── NEO-236: EVERY undecided team comes before ANY undecided player ──────
+   *
+   * Jason, 2026-09-06: "What if we just always pop new teams to the top of the
+   * queue? … subsequent cards would always have all of the teams before it.
+   * That would help with the look up info as there are a lot of these hockey
+   * players that don't have years in the wikidata and then the teams need to be
+   * mapped manually."
+   *
+   * The point is not tidiness, it is that answering teams first makes the
+   * PLAYERS easier. Every team the operator creates early is one more row the
+   * later players' career stints can resolve against by name — so a batch that
+   * front-loads its teams turns a long tail of hand-mapping into a list of
+   * links. It also means the operator does one KIND of work at a time instead
+   * of alternating between two shapes of form.
+   *
+   * Array order is preserved WITHIN each pass, so `walkOrder`'s "a staged team
+   * sits with the player who needed it" still decides the order teams are
+   * asked in — this only decides that they are all asked first.
+   *
+   * A row with no `kind` (an older caller, or a test literal) falls through to
+   * the second pass, which is the pre-NEO-236 behaviour unchanged.
+   */
+  const team = rows.find((r) => settled(r) && r.kind === "team");
+  if (team) return team;
+
   return (
     rows.find(
       (r) =>
-        r.status !== "pending" &&
-        !r.decision &&
-        // NEO-236: a player whose staged career teams are still open is not
-        // ready to be reviewed — see `waitingOnStagedTeams`.
+        settled(r) &&
+        // A player whose staged career teams are still open is not ready to be
+        // reviewed — see `waitingOnStagedTeams`. Still needed even with teams
+        // sorted first, because a team whose own lookup has not landed is not
+        // `settled` and so is not offered by the pass above.
         !waitingOnStagedTeams(r, rows),
     ) ?? null
   );
