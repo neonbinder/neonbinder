@@ -75,7 +75,27 @@ afterEach(() => {
 });
 
 const HAND_TYPED_SET = "My Hand Typed Set";
+const HAND_TYPED_SPORT = "My Hand Typed Sport";
+const HAND_TYPED_YEAR = "Twenty Twenty Four";
+const HAND_TYPED_MFR = "My Hand Typed Brand";
+/**
+ * Deliberately NOT "Base": that is a substring of the legitimate `baseball`
+ * slug, so a negative assertion using it fails on a body that is perfectly
+ * clean. A display value chosen to collide with real marketplace vocabulary
+ * makes the test lie in the safe direction, which is the harder failure to
+ * notice.
+ */
+const HAND_TYPED_VARIANT = "My Hand Typed Variant";
 const BSC_SET_SLUG = "2024-topps";
+
+/** Every NB display value on the seeded chain. None may reach the wire. */
+const NB_DISPLAY_VALUES = [
+  HAND_TYPED_SPORT,
+  HAND_TYPED_YEAR,
+  HAND_TYPED_MFR,
+  HAND_TYPED_SET,
+  HAND_TYPED_VARIANT,
+];
 
 /** Records every filters body sent to BSC's aggregation endpoint. */
 function recordingBsc(recorded: Array<Record<string, string[]>>) {
@@ -115,7 +135,11 @@ async function seedHandTypedSet(
   return t.run(async (ctx) => {
     const sportId = await ctx.db.insert("selectorOptions", {
       level: "sport",
-      value: "Baseball",
+      // Display values deliberately unlike their slugs, so the negative
+      // assertion below can actually see a leak. `fetchBscAttachOptions` passes
+      // these to the adapter as `parentFilters`, which is telemetry — the
+      // request body is built from `platformFilters` alone (NEO-239).
+      value: HAND_TYPED_SPORT,
       sportConfig: { skuCode: "BB", league: "MLB" },
       platformData: { bsc: { b0: "baseball" }, sportlots: { s0: "BB" } },
       children: [],
@@ -123,7 +147,7 @@ async function seedHandTypedSet(
     });
     const yearId = await ctx.db.insert("selectorOptions", {
       level: "year",
-      value: "2024",
+      value: HAND_TYPED_YEAR,
       platformData: { bsc: { b0: "2024" }, sportlots: { s0: "2024" } },
       parentId: sportId,
       children: [],
@@ -131,7 +155,7 @@ async function seedHandTypedSet(
     });
     const mfrId = await ctx.db.insert("selectorOptions", {
       level: "manufacturer",
-      value: "Topps",
+      value: HAND_TYPED_MFR,
       platformData: { sportlots: { s0: "TP" } },
       parentId: yearId,
       children: [],
@@ -148,7 +172,7 @@ async function seedHandTypedSet(
     });
     return ctx.db.insert("selectorOptions", {
       level: "variantType",
-      value: "Base",
+      value: HAND_TYPED_VARIANT,
       platformData: { bsc: baseSlots },
       ...(baseFacets ? { platformFacets: { bsc: baseFacets } } : {}),
       ...(Object.keys(baseSlots).length > 0
@@ -188,6 +212,29 @@ describe("fetchBscAttachOptions — the set comes from the facet plan", () => {
     expect(recorded).toHaveLength(1);
     expect(recorded[0].setName).toEqual([BSC_SET_SLUG]);
     expect(res.options.map((o) => o.platformValue)).toContain("gold-foil");
+
+    // …and NOTHING on the wire is an NB display value.
+    //
+    // The same negative assertion the checklist tests carry, and it belongs
+    // here specifically because this action DOES hand the adapter NB names:
+    // `fetchBscAttachOptions` passes `parentFilters: { sport, year }` off the
+    // ancestor chain. NEO-239 deleted the branch that filled `filters` from
+    // those when no `platformFilters` arrived — an NB name building a
+    // marketplace query is the reverse dependency the invariant forbids, and
+    // it was fail-open, since a name BSC does not know scopes nothing and BSC
+    // answers 200 with a superset. `parentFilters` is telemetry now, and this
+    // is what pins it there.
+    const sent = Object.values(recorded[0]).flat().join(" ");
+    for (const displayValue of NB_DISPLAY_VALUES) {
+      expect(sent).not.toContain(displayValue);
+      expect(sent).not.toContain(displayValue.toLowerCase());
+    }
+    // Every value that DID go out is a slot id off the chain.
+    expect(recorded[0]).toEqual({
+      sport: ["baseball"],
+      year: ["2024"],
+      setName: [BSC_SET_SLUG],
+    });
   });
 
   test("no BSC set anywhere is a SKIP with fixed text, and no marketplace call", async () => {

@@ -635,4 +635,94 @@ describe("the SL unlinked-set rule (NEO-252)", () => {
     );
     expect(out.sportlots.resolvable).toBe(true);
   });
+
+  test("an SL-FIRST build is linked — SportLots files no set level at all", () => {
+    // Jason's 2027-Topps walkthrough, as a chain. SportLots has no setName
+    // rung: its unit of attachment is one flat set id, and NB files that id on
+    // the row it corresponds to — the variant. So a set built in NeonBinder and
+    // then matched to SportLots ends up with its ONLY set link on the Base row,
+    // and the setName row above it stays NB's own forever.
+    //
+    // Reading the setName row alone called that "unlinked set" and skipped
+    // SportLots on every insert and parallel sync beneath it, which is the
+    // whole SL-first build path.
+    const out = resolvableSides(
+      [
+        linkedSport,
+        linkedYear,
+        handTypedSet,
+        row("variantType", { value: "Base", sportlots: { s0: "884412" } }),
+      ],
+      { level: "insert" },
+    );
+    expect(out.sportlots.resolvable).toBe(true);
+    expect(out.sportlots.missing).toEqual([]);
+  });
+
+  test("an SL id DEEPER than the variant row counts too", () => {
+    // Nothing privileges the variantType rung; the id may sit on an insert or
+    // parallel row just as legitimately. The scan is "setName row or below".
+    const out = resolvableSides(
+      [
+        linkedSport,
+        linkedYear,
+        handTypedSet,
+        row("variantType", { value: "Insert" }),
+        row("insert", { value: "Homefield Advantage", sportlots: { s0: "884412" } }),
+      ],
+      { level: "insert" },
+    );
+    expect(out.sportlots.resolvable).toBe(true);
+  });
+
+  test("sport / year / manufacturer SL ids are SCOPE and never count as a link", () => {
+    // The rule would delete itself otherwise. `sprt`, `yr` and `brd` are
+    // already required by SL_SCOPE_BY_LEVEL at this level, so counting them as
+    // evidence would make every chain that gets this far "linked" — including
+    // the hand-made set whose whole-brand-year answer this exists to refuse.
+    // Note the manufacturer here carries an SL id and the verdict is still no.
+    const out = resolvableSides(
+      [
+        linkedSport,
+        linkedYear,
+        row("manufacturer", { value: "Topps", sportlots: { s0: "TP" } }),
+        handTypedSet,
+        row("variantType", { value: "My Hand Typed Variant" }),
+      ],
+      { level: "insert" },
+    );
+    expect(out.sportlots.resolvable).toBe(false);
+    expect(out.sportlots.missing).toEqual(["unlinked set"]);
+  });
+
+  test("BSC-first and SL-first are the same shape, judged the same way", () => {
+    // The symmetry the widening restored. Two builds of the same NB set — one
+    // that met BuySportsCards first, one that met SportLots first — and the
+    // only difference is which marketplace's id is on the Base row. Neither
+    // marketplace is privileged, and neither is the NB setName row.
+    const bscFirst = resolvableSides(
+      [
+        linkedSport,
+        linkedYear,
+        handTypedSet,
+        row("variantType", {
+          value: "Base",
+          bsc: { b0: "base", b1: "2024-topps" },
+          facets: { b0: "variant", b1: "setName" },
+        }),
+      ],
+      { level: "insert" },
+    );
+    const slFirst = resolvableSides(
+      [
+        linkedSport,
+        linkedYear,
+        handTypedSet,
+        row("variantType", { value: "Base", sportlots: { s0: "884412" } }),
+      ],
+      { level: "insert" },
+    );
+    expect(bscFirst.sportlots.resolvable).toBe(true);
+    expect(slFirst.sportlots.resolvable).toBe(true);
+  });
 });

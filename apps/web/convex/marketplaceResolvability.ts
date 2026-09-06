@@ -208,6 +208,14 @@ export const SL_SCOPE_BY_LEVEL: Readonly<Record<string, readonly string[]>> = {
  *
  * A BSC id is sufficient evidence: the set exists on a marketplace, and the
  * operator is here to pick its SportLots counterpart.
+ *
+ * NEO-252 widened WHERE each side's evidence may sit, without changing what
+ * counts as evidence. Both halves used to read the setName row's own slots,
+ * which quietly assumed a marketplace files sets the way NeonBinder does. BSC
+ * is now read from the facet plan, and SportLots from the setName row
+ * downward — SL has no set level at all, so an SL-first build leaves its only
+ * set link on the variant or insert row, and the old test called that set
+ * unlinked while the operator was looking at its SportLots id.
  */
 const SL_LINKED_SET_FETCH_LEVELS: ReadonlySet<string> = new Set([
   "insert",
@@ -409,16 +417,39 @@ export function resolvableSides(
     SL_LINKED_SET_FETCH_LEVELS.has(level)
   ) {
     //
-    // NEO-252 — the BSC half is read from the FACET PLAN, not from the setName
-    // row's own slots. `resolveBscFacetFilters` already generalises that read
-    // (a setName row's untagged BSC id resolves to the `setName` facet by the
-    // level rule), and it additionally counts the NEO-189 shape the row test
-    // missed: a BSC set attached to the LEAF, which is a real link to a real
-    // BSC set and is exactly how a hand-built set acquires its first one.
-    const setRow = chain.find((row) => row.level === "setName");
+    // NEO-252 — NEITHER half reads the setName row's own slots any more, and
+    // for the same reason on both sides: a marketplace link to this set does
+    // not have to live on the NB row NeonBinder happens to call the set.
+    //
+    // BSC is read from the FACET PLAN. `resolveBscFacetFilters` already
+    // generalises the old row test (a setName row's untagged BSC id resolves to
+    // the `setName` facet by the level rule) and additionally counts the
+    // NEO-189 shape it missed: a BSC set attached to the LEAF, which is a real
+    // link to a real BSC set and is how a hand-built set usually acquires its
+    // first one.
+    //
+    // SportLots is read from the setName row DOWNWARD, because SportLots has
+    // no set level at all — its unit of attachment is one flat set id, and NB
+    // files that id on the variant or insert row that corresponds to it. So an
+    // SL-first build (the operator syncs variant types, matches them to SL
+    // sets, and the NB setName row above stays NB's own) put the only SL link
+    // on a row the old test never looked at, and every insert/parallel sync
+    // under it reported "unlinked set" — the exact failure the rule exists to
+    // prevent, aimed at a set that IS linked.
+    //
+    // The scan starts AT the setName row, not at the root: `sprt`, `yr` and
+    // `brd` are query SCOPE, already required by `SL_SCOPE_BY_LEVEL` at these
+    // levels, and counting them would make every chain "linked" and delete the
+    // rule. A chain with no setName row has no set to call linked, so the SL
+    // half stays false there.
+    const setRowIndex = chain.findIndex((row) => row.level === "setName");
+    const slLinkedAtOrBelowSet =
+      setRowIndex !== -1 &&
+      chain
+        .slice(setRowIndex)
+        .some((row) => rowHasSideId(row, "sportlots"));
     const setIsLinked =
-      (bscFilters().setName?.length ?? 0) > 0 ||
-      (setRow !== undefined && rowHasSideId(setRow, "sportlots"));
+      (bscFilters().setName?.length ?? 0) > 0 || slLinkedAtOrBelowSet;
     if (!setIsLinked) missingSl.push("unlinked set");
   }
 
