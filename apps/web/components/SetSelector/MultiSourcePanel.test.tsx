@@ -500,3 +500,139 @@ describe("MultiSourcePanel — one confirm for every detach (NEO-219)", () => {
     expect(mutationSpies.detachPlatformId).not.toHaveBeenCalled();
   });
 });
+
+
+// ---------------------------------------------------------------------------
+// NEO-252 — the panel says when BSC will be skipped anyway
+// ---------------------------------------------------------------------------
+
+/**
+ * The state that had no words: a row listing the BSC sets its cards come from,
+ * while the checklist fetch skips BuySportsCards entirely.
+ *
+ * It is reachable the moment a set is built in NeonBinder first — the operator
+ * attaches the BSC set on the variant row (the only place the attach dialog
+ * offers), sees a chip, runs the checklist, and gets SportLots rows only. No
+ * error is raised anywhere, because nothing failed: the request was never
+ * scoped enough to send.
+ *
+ * The line comes from `bscSourceView(...).scope.missing`, which is the same
+ * `missingBscChecklistScope` answer the adapter refuses on, so the panel cannot
+ * promise a fetch that will not happen or stay quiet about one that will not.
+ */
+describe("MultiSourcePanel — the BSC skip line (NEO-252)", () => {
+  /** A chain whose leaf carries `slots`; the SET row is NB's own, no ids. */
+  function chainWithLeaf(
+    slots: Record<string, string>,
+    facets: Record<string, string>,
+  ) {
+    queryResults.getSelectorOptionById = {
+      _id: ROW_ID,
+      level: "variantType",
+      value: "My Hand Typed Variant",
+      platformData: { bsc: slots },
+      platformLabels: { bsc: { b0: "Topps", b1: "Base" } },
+      platformFacets: { bsc: facets },
+      primaryPlatformId: { bsc: "b0" },
+    };
+    queryResults.getAncestorChain = [
+      { _id: "sport-1", level: "sport", value: "Baseball", platformData: { bsc: { b0: "baseball" } } },
+      { _id: "year-1", level: "year", value: "2024", platformData: { bsc: { b0: "2024" } } },
+      { _id: "set-1", level: "setName", value: "My Hand Typed Set", platformData: {} },
+      {
+        _id: ROW_ID,
+        level: "variantType",
+        value: "My Hand Typed Variant",
+        platformData: { bsc: slots },
+        platformFacets: { bsc: facets },
+      },
+    ];
+  }
+
+  test("a source with no variant axis says so, naming the FACET", () => {
+    // The BSC set is attached and real; what is missing is the variant axis,
+    // without which BSC returns the base cards plus every insert and parallel
+    // in the set. So the source is listed AND the skip is stated.
+    chainWithLeaf({ b0: "2024-topps" }, { b0: "setName" });
+    render(<MultiSourcePanel selectorOptionId={ROW_ID} />);
+
+    const bsc = within(bscColumn());
+    expect(bsc.getByLabelText("Topps is attached as a BSC set")).toBeTruthy();
+    expect(
+      bsc.getByText("BuySportsCards will be skipped: no variant type on this path."),
+    ).toBeTruthy();
+  });
+
+  test("the sentence is built from a FIXED vocabulary — no NB row value in it", () => {
+    // NEO-47, at the last surface it could leak from. Every row on this chain
+    // is deliberately named something unmistakable; the line names the facet
+    // and nothing else.
+    chainWithLeaf({ b0: "2024-topps" }, { b0: "setName" });
+    render(<MultiSourcePanel selectorOptionId={ROW_ID} />);
+
+    const line = bscColumn().textContent ?? "";
+    for (const displayValue of ["My Hand Typed Set", "My Hand Typed Variant"]) {
+      expect(line).not.toContain(displayValue);
+    }
+    // …and it is not the facet KEY either, which would read
+    // "no variant on this path" and mean a different NB column.
+    expect(
+      within(bscColumn()).queryByText(/no variant on this path/),
+    ).toBeNull();
+  });
+
+  test("a fully-scoped row says nothing — silence is the healthy state", () => {
+    // Same row, plus the `variant` tag. Nothing to warn about, so no line: a
+    // notice that appears on every healthy row is the false-outage noise
+    // NEO-216 removed once already.
+    chainWithLeaf(
+      { b0: "2024-topps", b1: "base" },
+      { b0: "setName", b1: "variant" },
+    );
+    render(<MultiSourcePanel selectorOptionId={ROW_ID} />);
+
+    expect(
+      within(bscColumn()).queryByText(/BuySportsCards will be skipped/),
+    ).toBeNull();
+  });
+
+  test("a row with NO BSC sources says nothing either", () => {
+    // Everything is missing here, and the column already says "No sets
+    // attached." Adding "BuySportsCards will be skipped" to that would make an
+    // ordinary empty row look broken — and there is no fetch to warn about,
+    // because there is nothing to fetch from.
+    setRow({ platformData: {} });
+    render(<MultiSourcePanel selectorOptionId={ROW_ID} />);
+
+    const bsc = within(bscColumn());
+    expect(bsc.getByText("No sets attached.")).toBeTruthy();
+    expect(bsc.queryByText(/BuySportsCards will be skipped/)).toBeNull();
+  });
+
+  test("SportLots never carries the line — it is a BSC-only judgement", () => {
+    // `missingBscChecklistScope` says nothing about SportLots, which scopes
+    // itself from the deepest variant row's slot id. Rendering the line under
+    // both columns would claim a skip nobody computed.
+    chainWithLeaf({ b0: "2024-topps" }, { b0: "setName" });
+    queryResults.getSelectorOptionById = {
+      ...(queryResults.getSelectorOptionById as Record<string, unknown>),
+      platformData: {
+        bsc: { b0: "2024-topps" },
+        sportlots: { s0: "884412" },
+      },
+      platformLabels: {
+        bsc: { b0: "Topps" },
+        sportlots: { s0: "Topps Series 1" },
+      },
+    };
+    render(<MultiSourcePanel selectorOptionId={ROW_ID} />);
+
+    const sl = within(screen.getByText("SportLots").parentElement as HTMLElement);
+    expect(sl.queryByText(/will be skipped/)).toBeNull();
+    expect(
+      within(bscColumn()).getByText(
+        "BuySportsCards will be skipped: no variant type on this path.",
+      ),
+    ).toBeTruthy();
+  });
+});

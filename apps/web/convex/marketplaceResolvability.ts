@@ -42,6 +42,23 @@
  * ATTACH pool, where the whole request is "every SL set under this brand" and
  * an unscoped answer is a different, useless pool rather than a wider one.
  *
+ * ## The CHECKLIST asks a different question (NEO-252)
+ *
+ * Everything above is stated per NB LEVEL, which is the shape a SELECTOR sync
+ * request has. A checklist request does not have that shape: it is a bag of
+ * BSC FACET filters, bucketed by what each id IS rather than by the level of
+ * the row holding it (`resolveBscFacetFilters`). The two only look equivalent
+ * while every id sits on the level that names its facet.
+ *
+ * They stopped being equivalent at NEO-189, which is the whole reason the
+ * facet tags exist: an NB Base row may carry the `setName` ids for BSC's
+ * Series 1 and Series 2, and then the query IS scoped by a set while the
+ * setName ANCESTOR carries nothing. The level walk called that unresolvable
+ * and skipped BSC; the adapter, asked, would have answered. Callers gating a
+ * checklist fetch therefore pass `bscScope: "checklist"` and are judged on the
+ * filters themselves, via the one function `fetchBscChecklist` also refuses
+ * on (`missingBscChecklistScope`).
+ *
  * ## Levels absent from the chain are not "missing"
  *
  * Syncing `year` under a `sport` parent has no `setName` ancestor to be missing
@@ -56,7 +73,12 @@ import type {
 } from "./platformSlots";
 import { slotEntries, slotFacet } from "./platformSlots";
 import { platformServesLevel } from "./platformLevels";
-import { LEVEL_TO_BSC_FACET, legacyBscFacetForLevel } from "./bscFacets";
+import {
+  LEVEL_TO_BSC_FACET,
+  legacyBscFacetForLevel,
+  missingBscChecklistScope,
+  resolveBscFacetFilters,
+} from "./bscFacets";
 
 /** The minimum a chain node must expose to be judged. */
 export type ResolvableRow = {
@@ -97,7 +119,14 @@ export type SideResolution = {
 
 export type ChainResolution = Record<PlatformSide, SideResolution>;
 
-/** BSC facets that scope a query and have no NB display fallback. */
+/**
+ * BSC facets that scope a query and have no NB display fallback, expressed as
+ * the NB LEVELS a selector sync reads them from.
+ *
+ * NEO-252: this is the per-LEVEL rule only. The checklist fetch's requirement
+ * is `BSC_CHECKLIST_REQUIRED_FACETS` in `bscFacets.ts`, stated over facets, and
+ * the two are deliberately not merged — see the header.
+ */
 export const BSC_REQUIRED_LEVELS: ReadonlySet<string> = new Set([
   "sport",
   "year",
@@ -224,6 +253,25 @@ export const NO_MARKETPLACE_IDS_MESSAGE =
   "No marketplace ids on this path — nothing to sync. Add entries by hand, or " +
   "attach a marketplace id to this set to link one.";
 
+/**
+ * NEO-252 — what the BSC attach pane says when the path names no BSC set to
+ * list variants of.
+ *
+ * FIXED TEXT, and that is the whole point of it. What stood here interpolated
+ * the NB row's own display value — "Missing platformData.bsc on: setName=<the
+ * operator's set name>" — which is an NB value in a client-facing string
+ * (NEO-47) dressed up as a marketplace fact. It was also reported as a
+ * FAILURE, so a perfectly ordinary state (a set NeonBinder built first and has
+ * not linked yet) rendered as a red alert on a pane whose set list would have
+ * fixed it in two clicks.
+ *
+ * A skip, therefore, and one that names the way forward. The dialog reads this
+ * by EQUALITY against this constant and hops to the set list.
+ */
+export const BSC_NO_LINKED_SET_MESSAGE =
+  "No BuySportsCards set is linked on this path yet. Browse all BSC sets to " +
+  "pick one.";
+
 /** True when the row carries at least one marketplace id on `side`. */
 export function rowHasSideId(
   row: Pick<ResolvableRow, "platformData">,
@@ -259,10 +307,37 @@ function label(row: ResolvableRow): string {
  * `slRequired` lets the attach pool ask for its stricter rule without a second
  * near-identical helper — the two callers differ only in whether `manufacturer`
  * is load-bearing.
+ *
+ * `bscScope` picks WHICH BSC question is being asked, and the two are genuinely
+ * different questions rather than a strict/lax pair (NEO-252):
+ *
+ *   "level"     (default) — per NB LEVEL: every ancestor at a required level
+ *                 carries a BSC id, and a variantType row carries a
+ *                 `variant`-tagged one. This is the right test for a SELECTOR
+ *                 sync, whose request body is built per level, and for the
+ *                 store mutations' coverage narrowing, which asks "is this side
+ *                 reachable from the parent chain at all" about a chain that
+ *                 legitimately stops above the levels a checklist needs.
+ *   "checklist" — per BSC FACET, judged on the filters
+ *                 `resolveBscFacetFilters` would actually send. This is the
+ *                 right test for the CHECKLIST fetch, because that is the
+ *                 request it gates.
+ *
+ * The gap between them is the bug this option closes. The NEO-189 split — one
+ * NB Base row drawing from BSC's Series 1 and Series 2 — puts the `setName`
+ * facet's ids on the LEAF, where the level walk cannot see them: it looks for
+ * an id on the setName ANCESTOR, finds none, and skips a BSC side the adapter
+ * would have accepted. Judging the filters instead makes the gate and the
+ * request agree by construction, which is what the parity property in
+ * `marketplaceResolvability.test.ts` pins.
  */
 export function resolvableSides(
   chain: readonly ResolvableRow[],
-  opts?: { level?: string; slRequired?: ReadonlySet<string> },
+  opts?: {
+    level?: string;
+    slRequired?: ReadonlySet<string>;
+    bscScope?: "level" | "checklist";
+  },
 ): ChainResolution {
   const level = opts?.level;
   const slRequired =
@@ -273,6 +348,15 @@ export function resolvableSides(
 
   const missingBsc: string[] = [];
   const missingSl: string[] = [];
+
+  // One pass, shared by the checklist gate and the SL "is this set a
+  // marketplace set at all" test below, and computed only when one of them
+  // asks — `resolvableSides` runs on every selector sync.
+  let facetFilters: Record<string, string[]> | undefined;
+  const bscFilters = (): Record<string, string[]> => {
+    facetFilters ??= resolveBscFacetFilters(chain).filters;
+    return facetFilters;
+  };
 
   // A side that cannot answer at this level is unresolvable outright, whatever
   // ids the chain carries. `unsupported_level` is not an empty answer.
@@ -287,14 +371,29 @@ export function resolvableSides(
     missingSl.push(`level=${level}`);
   }
 
-  for (const row of chain) {
-    if (BSC_REQUIRED_LEVELS.has(row.level) && !rowHasSideId(row, "bsc")) {
-      missingBsc.push(label(row));
+  // The CHECKLIST gate: judged on the filters the request would carry, so the
+  // facet names are what is missing — never a row, and never a row's value.
+  if (opts?.bscScope === "checklist") {
+    for (const facet of missingBscChecklistScope(bscFilters())) {
+      missingBsc.push(`facet=${facet}`);
     }
-    // A variantType contributes BSC's `variant` facet, and only a TAGGED slot
-    // says which facet an id belongs to. No tag → nothing honest to filter on.
-    if (row.level === "variantType" && !rowHasBscFacet(row, "variant")) {
-      missingBsc.push(label(row));
+  }
+
+  for (const row of chain) {
+    // The per-LEVEL rule. Skipped wholesale under `bscScope: "checklist"`,
+    // where the facet answer above is the complete one: re-applying this on
+    // top would restore exactly the leaf-attachment blind spot the option
+    // exists to remove.
+    if (opts?.bscScope !== "checklist") {
+      if (BSC_REQUIRED_LEVELS.has(row.level) && !rowHasSideId(row, "bsc")) {
+        missingBsc.push(label(row));
+      }
+      // A variantType contributes BSC's `variant` facet, and only a TAGGED
+      // slot says which facet an id belongs to. No tag → nothing honest to
+      // filter on.
+      if (row.level === "variantType" && !rowHasBscFacet(row, "variant")) {
+        missingBsc.push(label(row));
+      }
     }
     if (slRequired.has(row.level) && !rowHasSideId(row, "sportlots")) {
       missingSl.push(label(row));
@@ -309,10 +408,17 @@ export function resolvableSides(
     opts?.slRequired === undefined &&
     SL_LINKED_SET_FETCH_LEVELS.has(level)
   ) {
+    //
+    // NEO-252 — the BSC half is read from the FACET PLAN, not from the setName
+    // row's own slots. `resolveBscFacetFilters` already generalises that read
+    // (a setName row's untagged BSC id resolves to the `setName` facet by the
+    // level rule), and it additionally counts the NEO-189 shape the row test
+    // missed: a BSC set attached to the LEAF, which is a real link to a real
+    // BSC set and is exactly how a hand-built set acquires its first one.
     const setRow = chain.find((row) => row.level === "setName");
     const setIsLinked =
-      setRow !== undefined &&
-      (rowHasSideId(setRow, "bsc") || rowHasSideId(setRow, "sportlots"));
+      (bscFilters().setName?.length ?? 0) > 0 ||
+      (setRow !== undefined && rowHasSideId(setRow, "sportlots"));
     if (!setIsLinked) missingSl.push("unlinked set");
   }
 
