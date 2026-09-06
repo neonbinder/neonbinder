@@ -4,6 +4,8 @@ import {
   parsePlayersField,
   parseVariationDescription,
 } from "./buysportscards";
+import { MAX_PLAYER_NAME_LENGTH } from "../../lib/players/name-limits";
+import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "../features/cardAttention";
 
 /**
  * Fixtures below are the exact real strings pulled live from BSC's
@@ -98,6 +100,89 @@ describe("parsePlayersField", () => {
   test("empty / whitespace-only input", () => {
     expect(parsePlayersField("")).toEqual({ players: [], teams: [] });
     expect(parsePlayersField("   ")).toEqual({ players: [], teams: [] });
+  });
+});
+
+/**
+ * NEO-246/NEO-251 — this parser cannot emit a card the commit boundary would
+ * refuse.
+ *
+ * `assertCardBatchWithinLimits` (convex/selectorOptions.ts) throws on a card
+ * carrying more than `MAX_CARD_PLAYERS` / `MAX_CARD_TEAMS` names or a name
+ * over `MAX_PLAYER_NAME_LENGTH`. That is the right answer for a payload a
+ * client hands us and the wrong one for a real upstream row, which would fail
+ * an operator's whole sync over a page NB merely read — so the bound is closed
+ * here as well. The strings below are shaped like the failure that motivates
+ * it: a checklist blob landing in the single free-text player field.
+ *
+ * Every bound is asserted against the imported constant, never a literal, so
+ * lowering a cap tightens the parser instead of stranding it above the DB.
+ */
+describe("parsePlayersField bounds what one card can carry (NEO-246, NEO-251)", () => {
+  const longName = "Z".repeat(MAX_PLAYER_NAME_LENGTH + 1);
+  const atLimitName = "Y".repeat(MAX_PLAYER_NAME_LENGTH);
+
+  test("a plain list past the player cap keeps the first MAX_CARD_PLAYERS, in order", () => {
+    const names = Array.from(
+      { length: MAX_CARD_PLAYERS + 7 },
+      (_, i) => `Player ${String(i).padStart(2, "0")}`,
+    );
+    const { players, teams } = parsePlayersField(names.join(", "));
+    expect(players).toHaveLength(MAX_CARD_PLAYERS);
+    expect(players).toEqual(names.slice(0, MAX_CARD_PLAYERS));
+    expect(teams).toEqual([]);
+  });
+
+  test("the parenthetical multi-player path is capped too", () => {
+    const names = Array.from(
+      { length: MAX_CARD_PLAYERS + 3 },
+      (_, i) => `Player ${String(i).padStart(2, "0")}`,
+    );
+    const parsed = parsePlayersField(
+      `National League Leaders RBI (${names.join(", ")}) LL`,
+    );
+    expect(parsed.players).toEqual(names.slice(0, MAX_CARD_PLAYERS));
+    // The surrounding description is a cardName concern, untouched by the cap.
+    expect(parsed.namePrefix).toBe("National League Leaders RBI LL");
+  });
+
+  test("an over-long name is DROPPED, not truncated — the rest of the row survives", () => {
+    const { players } = parsePlayersField(`Mike Trout, ${longName}, Zach Neto`);
+    expect(players).toEqual(["Mike Trout", "Zach Neto"]);
+    // Truncating would mint a person who does not exist and hand them to
+    // `players.findOrCreate` looking exactly like a real name.
+    expect(players.some((n) => n.startsWith("Z".repeat(20)))).toBe(false);
+  });
+
+  test("a name exactly at the length limit is kept", () => {
+    expect(parsePlayersField(atLimitName).players).toEqual([atLimitName]);
+  });
+
+  test("a Team Checklist row with an over-long team name emits nothing", () => {
+    // Both sides drop it: a team NB would refuse is not a team to link, and
+    // the players row this path also creates would carry the same bad name.
+    expect(parsePlayersField(`${longName} TC`)).toEqual({
+      players: [],
+      teams: [],
+    });
+  });
+
+  test("a list exactly AT the player cap is kept whole", () => {
+    // The other side of the off-by-one: the cap must not tighten below what
+    // the DB accepts, or the adapter drops names NB would have taken.
+    const names = Array.from(
+      { length: MAX_CARD_PLAYERS },
+      (_, i) => `Player ${String(i).padStart(2, "0")}`,
+    );
+    expect(parsePlayersField(names.join(", ")).players).toEqual(names);
+  });
+
+  test("a Team Checklist row stays within the narrower TEAM cap", () => {
+    // This path emits one name per side, so it is inside `MAX_CARD_TEAMS` by
+    // construction — asserted against the constant so a future multi-team
+    // parse cannot quietly outgrow it.
+    const { teams } = parsePlayersField("Kansas City Royals TC");
+    expect(teams.length).toBeLessThanOrEqual(MAX_CARD_TEAMS);
   });
 });
 

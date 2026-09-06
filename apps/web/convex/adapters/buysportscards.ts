@@ -25,6 +25,11 @@ import {
   platformServesLevel,
   unsupportedLevelMessage,
 } from "../platformLevels";
+// NEO-246/NEO-251: the same bounds the commit boundary
+// (`assertCardBatchWithinLimits`) enforces on a card, imported rather than
+// respelled so this parser cannot emit a card that boundary refuses.
+import { MAX_PLAYER_NAME_LENGTH } from "../../lib/players/name-limits";
+import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "../features/cardAttention";
 
 // Real BSC filter endpoint (ported from cardlister-server/script-frontend/src/listing-sites/bsc.ts).
 // The earlier www.buysportscards.com URL was a webpage path, not an API — CloudFront returned 403.
@@ -801,6 +806,38 @@ export function parseVariationDescription(
 const TEAM_CARD_SUFFIXES = ["TC"];
 
 /**
+ * NEO-246/NEO-251 — bound what this parser is allowed to emit for one card.
+ *
+ * `parsePlayersField` splits a single free-text BSC field, so its output
+ * length is a property of a marketplace page, not of anything NB controls: a
+ * row carrying a checklist blob in the player field, or an upstream change to
+ * how that field is punctuated, turns one string into an arbitrary list.
+ * `assertCardBatchWithinLimits` refuses such a card at the commit boundary —
+ * which is the right answer for a payload a client hands us, but a poor one
+ * for a real upstream row, because it fails the operator's whole sync over a
+ * page NB merely read. So the bound is closed HERE too, and the boundary
+ * becomes the backstop it was meant to be rather than the only guard.
+ *
+ * Same posture as the SportLots parser (`SL_MAX_SUBJECTS`,
+ * `SL_MAX_SUBJECT_LENGTH`): derived from the shared constants rather than
+ * respelled, so the parser can never emit a list the DB side refuses. It
+ * differs in severity on purpose — SportLots GUESSES names out of a
+ * description residual and rejects the whole row on any doubt, whereas BSC
+ * publishes a dedicated player field whose earlier entries are not made
+ * suspect by a long tail. So this DROPS the excess and keeps what fits.
+ *
+ * An over-length name is dropped, never truncated: a truncated name is a
+ * person who does not exist, and it would reach `players.findOrCreate` looking
+ * exactly like a real one. First-seen order is kept, so the truncation is
+ * deterministic and the names a human would read first are the ones that
+ * survive.
+ */
+function boundParsedNames(names: string[], limit: number): string[] {
+  const kept = names.filter((n) => n.length <= MAX_PLAYER_NAME_LENGTH);
+  return kept.length > limit ? kept.slice(0, limit) : kept;
+}
+
+/**
  * Parse BSC's raw `players` field (a single string) into clean player
  * names, any detected team name, and — for multi-player insert cards whose
  * player list is wrapped in parens with descriptive text around it (e.g.
@@ -833,7 +870,14 @@ export function parsePlayersField(raw: string): {
     const suffixPattern = new RegExp(`\\s+${suffix}$`);
     if (suffixPattern.test(trimmed)) {
       const teamName = trimmed.replace(suffixPattern, "").trim();
-      if (teamName) return { players: [teamName], teams: [teamName] };
+      if (teamName) {
+        // One name on both sides, so the count caps cannot bite here — the
+        // LENGTH one can, and an over-long team name drops off both.
+        return {
+          players: boundParsedNames([teamName], MAX_CARD_PLAYERS),
+          teams: boundParsedNames([teamName], MAX_CARD_TEAMS),
+        };
+      }
     }
   }
 
@@ -847,10 +891,13 @@ export function parsePlayersField(raw: string): {
   const parenMatch = trimmed.match(/^(.*)\(([^)]*)\)(.*)$/);
   if (parenMatch) {
     const [, before, inside, after] = parenMatch;
-    const players = inside
-      .split(/\s*[/,]\s*/)
-      .map((p) => p.trim())
-      .filter(Boolean);
+    const players = boundParsedNames(
+      inside
+        .split(/\s*[/,]\s*/)
+        .map((p) => p.trim())
+        .filter(Boolean),
+      MAX_CARD_PLAYERS,
+    );
     const namePrefix = `${before.trim()} ${after.trim()}`
       .trim()
       .replace(/\s+/g, " ");
@@ -862,10 +909,13 @@ export function parsePlayersField(raw: string): {
   }
 
   // 3. Fallback — today's behavior: a plain single- or multi-player string.
-  const players = trimmed
-    .split(/\s*[/,]\s*/)
-    .map((p) => p.trim())
-    .filter(Boolean);
+  const players = boundParsedNames(
+    trimmed
+      .split(/\s*[/,]\s*/)
+      .map((p) => p.trim())
+      .filter(Boolean),
+    MAX_CARD_PLAYERS,
+  );
   return { players, teams: [] };
 }
 
