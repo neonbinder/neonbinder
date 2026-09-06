@@ -304,6 +304,25 @@ function renderWizard(props: Partial<Parameters<typeof EntityReviewWizard>[0]> =
   return { ...utils, onConfirm, onCancel };
 }
 
+/**
+ * Re-render the SAME wizard so the module-level `useQuery` mock re-reads
+ * `currentRows`. The reactive `getBatch` is what changes under a real wizard
+ * mid-review; this is how a test moves the batch without remounting (a remount
+ * would reset `nav` and hide exactly the pinning behaviour under test).
+ */
+function rerenderWizard(rerender: (ui: React.ReactElement) => void) {
+  rerender(
+    <EntityReviewWizard
+      isOpen
+      selectorOptionId={"selopt-1" as unknown as Id<"selectorOptions">}
+      batchId="batch-1"
+      summary={SUMMARY}
+      onConfirm={vi.fn()}
+      onCancel={vi.fn()}
+    />,
+  );
+}
+
 /** The discard confirm's destructive button — "Discard", per the E2E contract. */
 function discardButton(): HTMLElement {
   return screen.getByRole("button", { name: "Discard" });
@@ -3850,7 +3869,7 @@ describe("EntityReviewWizard — career-team chips report the staged answer", ()
     expect(screen.getByText("→ LA Angels of Anaheim")).toBeTruthy();
   });
 
-  it("reads '→ {composed} (new team, this batch)' when its own step said create", () => {
+  it("reads '→ {composed} (new team, not saved yet)' when its own step said create", () => {
     const player = trout();
     // The operator split it on the New Team step: Location "Salt Lake",
     // Name "Bees". The chip shows the composed row, not the raw label.
@@ -3861,7 +3880,7 @@ describe("EntityReviewWizard — career-team chips report the staged answer", ()
     currentResolvedNames = [angelsExist, { name: "Salt Lake Bees" }];
     renderWizard();
 
-    expect(screen.getByText("→ Salt Lake Bees (new team, this batch)")).toBeTruthy();
+    expect(screen.getByText("→ Salt Lake Bees (new team, not saved yet)")).toBeTruthy();
     expect(screen.queryByText("needs a team decision")).toBeNull();
   });
 
@@ -3879,10 +3898,10 @@ describe("EntityReviewWizard — career-team chips report the staged answer", ()
     ];
     renderWizard();
 
-    // No "(new team, this batch)": nothing is being created for this stint.
+    // No "(new team, not saved yet)": nothing is being created for this stint.
     expect(screen.getByText("→ Salt Lake Bees")).toBeTruthy();
     expect(
-      screen.queryByText("→ Salt Lake Bees (new team, this batch)"),
+      screen.queryByText("→ Salt Lake Bees (new team, not saved yet)"),
     ).toBeNull();
   });
 
@@ -4002,7 +4021,7 @@ describe("EntityReviewWizard — career-team chips report the staged answer", ()
     renderWizard();
 
     const box = screen.getByLabelText("Include career team Salt Lake Bees");
-    const status = screen.getByText("→ Salt Lake Bees (new team, this batch)");
+    const status = screen.getByText("→ Salt Lake Bees (new team, not saved yet)");
     expect(box.getAttribute("aria-describedby")).toBe(status.id);
   });
 
@@ -4129,6 +4148,102 @@ describe("EntityReviewWizard — the New Team, New Team, then Player sequence", 
     },
   ];
 
+  it("CI run 5: the player yields when its steps are staged under it", async () => {
+    /*
+     * Jason's report on the pushed branch: on the FIRST player of a fresh batch
+     * he saw the New Player step with career chips, and never saw a New Team
+     * step at all.
+     *
+     * The sequence, which no earlier test covered because every one of them
+     * started with the staged rows already present: the player settles FIRST
+     * (its own lookup is what stages the teams), so the wizard pins it and
+     * shows it — and then the staged rows arrive. `nextUndecided` already
+     * refused to offer a blocked player, but `resolveNav` never asked, because
+     * a present + undecided + implicitly-pinned row was not "stale".
+     */
+    const { player, sydney, oregon } = bazzanaBatch();
+    currentRows = [player];
+    currentResolvedNames = bazzanaResolved;
+    const { rerender } = renderWizard();
+
+    // The wizard is showing the player — correctly, nothing else exists yet.
+    expect(screen.getByRole("heading", { name: "Travis Bazzana" })).toBeTruthy();
+
+    // The lookup lands and stages the two clubs ahead of it.
+    currentRows = [sydney, oregon, player];
+    rerenderWizard(rerender);
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: "New Team: Sydney Blue Sox" }),
+      ).toBeTruthy(),
+    );
+    expect(screen.queryByRole("heading", { name: "Travis Bazzana" })).toBeNull();
+  });
+
+  it("a staged step with NO decision reads 'needs a team decision', never 'new team'", () => {
+    /*
+     * The other half of Jason's report: the chips read "(new team, …)" although
+     * no New Team step had been decided. That state must require a create
+     * DECISION on the staged row — the mere existence of a step is a question,
+     * not an answer. Pinned explicitly, because the walk deliberately will not
+     * offer this player.
+     */
+    const { player, sydney, oregon } = bazzanaBatch();
+    // Both steps ANSWERED, but answered "skip" — not a team, so nothing is
+    // created for either. The steps are decided, so the player is presentable.
+    currentRows = [
+      { ...sydney, decision: { action: "skip" } },
+      { ...oregon, decision: { action: "skip" } },
+      player,
+    ];
+    currentResolvedNames = bazzanaResolved;
+    renderWizard();
+
+    expect(screen.getByRole("heading", { name: "Travis Bazzana" })).toBeTruthy();
+    // A step exists for both labels — but existence is the QUESTION, not the
+    // answer, so neither may claim a team is being created.
+    expect(screen.queryByText(/new team, not saved yet/)).toBeNull();
+    expect(screen.getAllByText("needs a team decision")).toHaveLength(2);
+  });
+
+  it("one staged step answers the SAME club on a second player's chip", () => {
+    /*
+     * Staging dedupes a career team across the whole batch, so the first player
+     * to propose "Sydney Blue Sox" gets the step and later players sharing that
+     * club get none. Keying the chip lookup on `source.playerRowId` therefore
+     * made every player after the first read "needs a team decision" for a team
+     * the batch was already creating — and blocked their Confirm on a question
+     * that had already been answered. The answer is the TEAM, identified by
+     * name; whose lookup happened to raise it is not part of that.
+     */
+    const { player, sydney } = bazzanaBatch();
+    const second = makeRow({
+      kind: "player",
+      name: "Dylan Crews",
+      status: "ready",
+      enrichment: {
+        careerTeams: [{ name: "Sydney Blue Sox", fromYear: 2022 }],
+      },
+    });
+    currentRows = [
+      {
+        ...sydney,
+        decision: { action: "create", create: { location: "Sydney", name: "Blue Sox" } },
+      },
+      { ...player, decision: { action: "create" } },
+      second,
+    ];
+    currentResolvedNames = [{ name: "Sydney Blue Sox" }];
+    renderWizard();
+
+    expect(screen.getByRole("heading", { name: "Dylan Crews" })).toBeTruthy();
+    expect(
+      screen.getByText("→ Sydney Blue Sox (new team, not saved yet)"),
+    ).toBeTruthy();
+    expect(screen.queryByText("needs a team decision")).toBeNull();
+  });
+
   it("presents the first New Team step, not the player", () => {
     const { player, sydney, oregon } = bazzanaBatch();
     currentRows = [sydney, oregon, player];
@@ -4188,10 +4303,10 @@ describe("EntityReviewWizard — the New Team, New Team, then Player sequence", 
       screen.getByRole("heading", { name: "Travis Bazzana" }),
     ).toBeTruthy();
     expect(
-      screen.getByText("→ Sydney Blue Sox (new team, this batch)"),
+      screen.getByText("→ Sydney Blue Sox (new team, not saved yet)"),
     ).toBeTruthy();
     expect(
-      screen.getByText("→ Oregon State Beavers baseball (new team, this batch)"),
+      screen.getByText("→ Oregon State Beavers baseball (new team, not saved yet)"),
     ).toBeTruthy();
     // The one we already hold reads as a plain link — nothing is created for it.
     expect(screen.getByText("→ Cleveland Guardians")).toBeTruthy();

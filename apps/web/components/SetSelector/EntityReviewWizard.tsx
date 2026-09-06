@@ -618,7 +618,23 @@ export default function EntityReviewWizard({
     if (!current || current.kind !== "player" || !rows) return byName;
     for (const row of rows) {
       if (row.source?.kind !== "careerTeamOf") continue;
-      if (row.source.playerRowId !== current._id) continue;
+      /*
+       * Keyed by NAME across the whole batch, deliberately NOT filtered to the
+       * rows staged for THIS player.
+       *
+       * Staging dedupes a career team across the entire batch — the first
+       * player to propose "Sydney Blue Sox" gets the step, and every later
+       * player that shares that club gets none, because one step is all the
+       * batch needs. Filtering by `source.playerRowId` therefore made every
+       * player after the first report "needs a team decision" for a team the
+       * batch was already creating, and blocked their Confirm on a question
+       * that had already been answered.
+       *
+       * `playerRowId` still does real work — it names the step ("Needed by:
+       * Travis Bazzana") and it is what the walk's blocking rule reads. It is
+       * simply not what decides whether a LABEL has an answer; the answer is
+       * the team, and the team is identified by its name.
+       */
       byName.set(normalizeEntityName(row.name), row);
     }
     return byName;
@@ -1764,8 +1780,16 @@ export default function EntityReviewWizard({
                                             className="text-xs text-gray-400"
                                           >
                                             → {status.name}
+                                            {/* NEO-236: "batch" is our word,
+                                                not the operator's — it names
+                                                an internal review row, and no
+                                                copy should expose an internal
+                                                rule. "not saved yet" says the
+                                                thing they actually need to
+                                                know: this team does not exist
+                                                until Confirm & Save. */}
                                             {status.kind === "creating"
-                                              ? " (new team, this batch)"
+                                              ? " (new team, not saved yet)"
                                               : ""}
                                           </span>
                                         ))}

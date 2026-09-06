@@ -191,7 +191,25 @@ export function resolveNav<T extends NavRow>(
   const stale =
     nav.rowId === null ||
     presented === null ||
-    (!nav.explicit && !!presented.decision);
+    (!nav.explicit &&
+      (!!presented.decision ||
+        // NEO-236 — an implicit pin YIELDS to steps staged under it.
+        //
+        // This is the defect Jason hit on CI run 5: on the first player of a
+        // fresh batch he was shown the New Player step and never saw a New Team
+        // step at all. The player's own lookup is what stages its career teams,
+        // and the wizard is already presenting that player when the lookup
+        // lands — so the rows appear ahead of it, `nextUndecided` correctly
+        // refuses to offer the player, and none of that mattered, because a
+        // present + undecided + implicitly-presented row was not "stale" and
+        // the rule was never consulted.
+        //
+        // An implicit pin is the WIZARD'S OWN WALK, not something the operator
+        // chose, so it has no claim to stay put once the walk's own rule says
+        // this row is not ready. An EXPLICIT pin still wins (see below): the
+        // operator asked for that row, and its step is where an unanswerable
+        // career team gets unticked.
+        waitingOnStagedTeams(presented, rows)));
   if (!stale) return nav;
 
   const nextId = nextUndecided(rows)?._id ?? null;

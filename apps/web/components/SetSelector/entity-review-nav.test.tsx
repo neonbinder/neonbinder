@@ -244,6 +244,56 @@ describe("resolveNav — the staged-team hold", () => {
     expect(resolveNav(decided, onTeam)).toEqual({ rowId: "p1", explicit: false });
   });
 
+  it("YIELDS an implicitly-presented player the moment its staged teams appear", () => {
+    /*
+     * Jason, CI run 5, on the FIRST player of a fresh batch: he was shown the
+     * New Player step with its career chips, and never saw a New Team step at
+     * all.
+     *
+     * This is the sequence. The player's lookup is what STAGES its career
+     * teams, and the wizard is already presenting that player when the lookup
+     * lands (it is the first settled row in the batch). The staged rows are
+     * inserted ahead of it by `walkOrder` and `nextUndecided` correctly refuses
+     * to offer the player — but `resolveNav` never asked, because a present,
+     * undecided, implicitly-presented row was not "stale". So the pin won and
+     * the New Team steps were never shown.
+     *
+     * An IMPLICIT pin is the wizard's own walk, not a decision the operator
+     * made, so it must yield. The explicit case below is the one that stays.
+     */
+    const before = [player("p1")];
+    const onPlayer = resolveNav(before, { rowId: null, explicit: false });
+    expect(onPlayer).toEqual({ rowId: "p1", explicit: false });
+
+    // The lookup lands and stages two steps for this very player.
+    const after = [
+      player("p1"),
+      careerTeamOf("t1", "p1"),
+      careerTeamOf("t2", "p1"),
+    ];
+    expect(resolveNav(after, onPlayer)).toEqual({ rowId: "t1", explicit: false });
+  });
+
+  it("comes back to the player once those steps are answered", () => {
+    const rows = [
+      player("p1"),
+      careerTeamOf("t1", "p1", "ready", { action: "create" }),
+      careerTeamOf("t2", "p1", "ready", { action: "create" }),
+    ];
+    expect(resolveNav(rows, { rowId: "t2", explicit: false })).toEqual({
+      rowId: "p1",
+      explicit: false,
+    });
+  });
+
+  it("holds at nothing when the newly staged steps are still looking up", () => {
+    // Not a regression to the old behaviour: the player must not be presented
+    // (its chips would be unanswerable), and neither can a pending step be.
+    const onPlayer = { rowId: "p1", explicit: false };
+    const after = [player("p1"), careerTeamOf("t1", "p1", "pending")];
+    expect(resolveNav(after, onPlayer)).toEqual({ rowId: null, explicit: false });
+  });
+
   it("still lets the operator pin a blocked player explicitly", () => {
     // Back / "Change decision" reaches a row the walk would not offer. It has
     // to stay put: its own step is where an unanswerable career team gets
