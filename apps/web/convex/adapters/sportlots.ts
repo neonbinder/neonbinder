@@ -1055,9 +1055,12 @@ function tokenizeSlDescription(desc: string): {
  * an unknown `&…;` sequence is left as literal text rather than resolved,
  * so nothing can be smuggled through by inventing an entity name. Decoding
  * runs in ONE pass — `String.replace` never re-scans what it substituted —
- * so `&amp;lt;` decodes to the literal `&lt;` and stops there. If a caller
- * decodes an already-decoded string, the second pass can produce a `<`, and
- * `parseSlSubjects`'s post-decode guard is what catches that.
+ * so `&amp;lt;` decodes to the literal `&lt;` and stops there.
+ *
+ * Call this ONCE per row, at the head of the derivation path. `parseSlSubjects`
+ * deliberately does not call it — decoding twice would resolve
+ * `&amp;lt;` all the way to `<`, and would mean no single place owned the
+ * question of what the row says.
  */
 const SL_ENTITY_REPLACEMENTS: Record<string, string> = {
   "&amp;": "&",
@@ -1102,16 +1105,58 @@ const SL_NAME_PARTICLES = new Set([
   "y",
 ]);
 
-/** Generational suffixes. Compared case-insensitively. */
-const SL_NAME_SUFFIXES = new Set(["jr.", "sr.", "ii", "iii", "iv", "v"]);
+/**
+ * Generational suffixes. Compared case-insensitively.
+ *
+ * The bare, period-less `JR`/`SR` are in here for a reason that is easy to
+ * miss: without them "Ken Griffey JR" hits the trailing-team-code rule below,
+ * `JR` gets stripped as if it were an abbreviation like `LAA`, and the row
+ * emits "Ken Griffey" — a DIFFERENT PERSON, silently, on a card that names
+ * the son. Wrong player data is worse than none, and a father/son pair is
+ * exactly where SportLots prints the bare form.
+ */
+const SL_NAME_SUFFIXES = new Set([
+  "jr",
+  "sr",
+  "jr.",
+  "sr.",
+  "ii",
+  "iii",
+  "iv",
+  "v",
+]);
 
 /**
  * Whole-word veto list. If any of these appears as a word anywhere in a
  * candidate subject, the WHOLE row is rejected — "Team Checklist", "Yankee
  * Stadium", "Header Card" and friends are not people, and a bad player name
  * committed against a card is worse than no player name at all.
+ *
+ * ## Why the second group exists
+ *
+ * The shape rules alone cannot see the difference between "Coby Mayo" and
+ * "Future Stars": both are two capitalised tokens. Subset and insert names
+ * are the single largest class of non-person text SportLots prints in the
+ * subject position, and they pass every structural test. Left unvetoed they
+ * do real damage twice over — a bogus player minted into NB's own table, and
+ * a spurious BSC-vs-SL disagreement on a card where nothing is actually
+ * wrong.
+ *
+ * ## Plural and descriptor-specific, on purpose
+ *
+ * These are surnames as well as descriptors, so the entries are chosen to
+ * catch the descriptor WITHOUT vetoing the person:
+ *
+ *   * `kings` vetoes "Diamond Kings"; "Michael King" still parses.
+ *   * `stars` vetoes "Future Stars"; a "Star" surname is untouched.
+ *   * `legends`, `winners`, `prospects` follow the same plural rule.
+ *
+ * That is why none of the singular forms appear here. When adding an entry,
+ * check it against the surname first — a false veto costs a real name, which
+ * is the cost this list is supposed to be avoiding.
  */
 const SL_SUBJECT_STOPWORDS = [
+  // Structural / non-card rows.
   "checklist",
   "team",
   "card",
@@ -1135,6 +1180,18 @@ const SL_SUBJECT_STOPWORDS = [
   "cup",
   "all-star",
   "mascot",
+  // Subset / insert descriptors. Plural where a singular is a real surname.
+  "stars",
+  "kings",
+  "prospects",
+  "legends",
+  "tribute",
+  "award",
+  "winners",
+  "draft",
+  "pick",
+  "future",
+  "clock",
 ].map((word) => new RegExp(`\\b${word.replace(/-/g, "\\-")}\\b`));
 
 /**
@@ -1187,12 +1244,26 @@ const SL_MAX_SUBJECT_LENGTH = MAX_PLAYER_NAME_LENGTH;
  * no log line. There is deliberately nowhere for the rejected text to be
  * echoed — the caller learns a count of names, never the string that failed.
  *
+ * ## Input contract: ALREADY DECODED, exactly once
+ *
+ * The caller decodes (`decodeSlEntities`) at the head of the derivation path
+ * and hands the result here. This function must NOT decode again. It used to,
+ * which meant production ran the decoder twice over every row and "decode
+ * exactly once" was true of neither path — a string reaching this parser had
+ * been through one more pass than the `cardName` beside it, so the two could
+ * in principle disagree about what the row said. One decode, one owner.
+ *
+ * A consequence worth stating: a double-encoded payload is no longer stopped
+ * by the `<`/`>` guard, because after the caller's single pass
+ * `&amp;lt;script&amp;gt;` is still the literal text `&lt;script&gt;`. It is
+ * refused anyway, one layer down, by the per-token allowlist — `&`, `;` and
+ * `/` are not name characters. Two independent reasons it cannot get through.
+ *
  * The rules, in order:
  *
- *  1. Decode the bounded entity set once.
- *  2. Reject if `<`, `>` or any control character (newline included)
- *     survives that decode. This runs AFTER decoding precisely so a
- *     double-encoded payload cannot slip past a pre-decode check.
+ *  1. Reject if `<`, `>` or any control character (newline included) is
+ *     present. This is the caller's single decode already applied, so an
+ *     entity-encoded `<` that resolved during it is caught here.
  *  3. Split into subjects on `|`, ` / ` and ` & ` (the last two require
  *     surrounding spaces, so "A/B" and "R&B" are one subject, not two).
  *  4. More than `SL_MAX_SUBJECTS` (4, under NB's own `MAX_CARD_PLAYERS`)
@@ -1201,10 +1272,12 @@ const SL_MAX_SUBJECT_LENGTH = MAX_PLAYER_NAME_LENGTH;
  *     `MAX_PLAYER_NAME_LENGTH` (NB's own bound, 120), or containing any
  *     digit.
  *  6. Reject on a whole-word stoplist hit.
- *  7. Strip a trailing 2-3 letter ALL-CAPS token when at least 2 tokens
- *     precede it — that is SportLots' team abbreviation, and it is dropped,
- *     never emitted (see the note on `tokenizeSlDescription`). A
- *     generational suffix ("Juan Carlos III") is exempt from the strip.
+ *  7. A trailing 2-3 letter ALL-CAPS token is SportLots' team abbreviation.
+ *     With at least 2 tokens in front of it, drop it — it is never emitted
+ *     (see the note on `tokenizeSlDescription`). With only ONE token in
+ *     front ("Ichiro SEA"), REJECT the subject: neither reading is safe.
+ *     A generational suffix, bare `JR`/`SR` included, is exempt — it is part
+ *     of the name, and stripping it would name the wrong person.
  *  8. The remaining token count must be 2-4. A single token is rejected:
  *     "Ichiro" is a real name, but so is "Checklist", and the adapter
  *     cannot tell them apart.
@@ -1214,10 +1287,12 @@ const SL_MAX_SUBJECT_LENGTH = MAX_PLAYER_NAME_LENGTH;
  *     least one name survives.
  */
 export function parseSlSubjects(residual: string): { players?: string[] } {
-  const decoded = decodeSlEntities(residual);
-  if (/[<>]/.test(decoded) || SL_CONTROL_CHARS.test(decoded)) return {};
+  // NOTE: this does NOT decode. It is handed text the caller has ALREADY
+  // decoded exactly once — see the docstring. The guard below therefore runs
+  // on the same bytes production derives every other field from.
+  if (/[<>]/.test(residual) || SL_CONTROL_CHARS.test(residual)) return {};
 
-  const parts = decoded.split(/\||\s\/\s|\s&\s/);
+  const parts = residual.split(/\||\s\/\s|\s&\s/);
   if (parts.length > SL_MAX_SUBJECTS) return {};
 
   const players: string[] = [];
@@ -1234,11 +1309,20 @@ export function parseSlSubjects(residual: string): { players?: string[] } {
 
     let tokens = subject.split(" ");
     const last = tokens[tokens.length - 1];
+    // A trailing 2-3 letter ALL-CAPS token is SportLots' team abbreviation —
+    // unless it is a generational suffix, which is part of the name.
     if (
-      tokens.length >= 3 &&
       SL_TEAM_ABBREVIATION.test(last) &&
       !SL_NAME_SUFFIXES.has(last.toLowerCase())
     ) {
+      // It can only be dropped if a whole name is left standing without it.
+      // With just one token in front ("Ichiro SEA") there are two readings —
+      // a one-word name plus a team code, or a genuine two-token name — and
+      // the parser cannot tell them apart. Emitting "Ichiro SEA" would put a
+      // marketplace team code inside an NB player name; stripping to "Ichiro"
+      // would emit the single-token name rule 8 exists to refuse. So refuse
+      // the subject instead of picking one.
+      if (tokens.length < 3) return {};
       tokens = tokens.slice(0, -1);
     }
     if (tokens.length < SL_MIN_NAME_TOKENS || tokens.length > SL_MAX_NAME_TOKENS)

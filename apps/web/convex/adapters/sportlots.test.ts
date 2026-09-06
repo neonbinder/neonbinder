@@ -283,6 +283,34 @@ describe("parseSlSubjects", () => {
       });
     });
 
+    test("a BARE JR/SR is a suffix, not a team code", () => {
+      // The bug this pins: `JR` matches the trailing-team-code shape exactly
+      // (2-3 letters, all caps). Stripping it turned "Ken Griffey JR" into
+      // "Ken Griffey" — a different person, silently, on a card that names
+      // the son. Wrong player data is worse than none.
+      expect(parseSlSubjects("Ken Griffey JR")).toEqual({
+        players: ["Ken Griffey JR"],
+      });
+      expect(parseSlSubjects("Ken Griffey SR")).toEqual({
+        players: ["Ken Griffey SR"],
+      });
+      // Lowercase and period forms reach the same place.
+      expect(parseSlSubjects("Ken Griffey Jr")).toEqual({
+        players: ["Ken Griffey Jr"],
+      });
+      // And a genuine team code in the same position is still dropped, so
+      // the exemption is narrow rather than a blanket "never strip".
+      expect(parseSlSubjects("Ken Griffey SEA")).toEqual({
+        players: ["Ken Griffey"],
+      });
+    });
+
+    test("a roman-numeral suffix is not mistaken for a team code either", () => {
+      expect(parseSlSubjects("Juan Carlos III")).toEqual({
+        players: ["Juan Carlos III"],
+      });
+    });
+
     test("two people who differ only by suffix are two people", () => {
       // The dedupe is case-insensitive on the WHOLE name, so "Jr." vs "Sr."
       // must not collapse. A father/son subset card that emitted one name
@@ -336,19 +364,83 @@ describe("parseSlSubjects", () => {
     test("five subjects — that is a checklist line, not a card", () => {
       refused("Mike Trout|Aaron Judge|Bryce Harper|Juan Soto|Shohei Ohtani");
     });
+
+    test("subset and insert descriptors, which pass every SHAPE rule", () => {
+      // The class the shape rules are blind to: two capitalised tokens, no
+      // digits, no markup — structurally identical to "Coby Mayo". Only the
+      // stoplist can tell them apart, and getting it wrong costs twice: a
+      // bogus player minted into NB's table, plus a spurious BSC-vs-SL
+      // disagreement on a card where nothing is actually wrong.
+      refused("Future Stars");
+      refused("Diamond Kings");
+      refused("Draft Pick");
+      refused("Turn Back The Clock");
+      refused("Rookie Prospects");
+      refused("Living Legends");
+      refused("Award Winners");
+      refused("Hobby Tribute");
+    });
+
+    test("a descriptor appended to a REAL name still rejects the row", () => {
+      // "Mike Trout Future Stars" is 4 tokens, all capitalised — it passes
+      // the token count and the token rule. Without the whole-word veto it
+      // would emit that entire string as a player name.
+      refused("Mike Trout Future Stars");
+      refused("Ken Griffey Jr. Legends");
+    });
+
+    test("the descriptor vetoes do NOT eat real surnames", () => {
+      // This is the cost side of the stoplist and the reason the entries are
+      // plural. A false veto silently loses a real name, which is the very
+      // failure the list exists to prevent.
+      expect(parseSlSubjects("Michael King")).toEqual({
+        players: ["Michael King"],
+      });
+      expect(parseSlSubjects("Bryce Harper")).toEqual({
+        players: ["Bryce Harper"],
+      });
+      expect(parseSlSubjects("Dave Winfield")).toEqual({
+        players: ["Dave Winfield"],
+      });
+      expect(parseSlSubjects("Bill Starr")).toEqual({ players: ["Bill Starr"] });
+    });
+
+    test("a trailing team code with only ONE name token in front is refused", () => {
+      // "Ichiro SEA" has two safe-looking readings and the parser cannot
+      // choose between them: strip the code and you emit the single-token
+      // name the rules refuse; keep it and you put a marketplace team
+      // abbreviation INSIDE an NB player name. So it refuses the subject.
+      refused("Ichiro SEA");
+      refused("Pele BRA");
+      // Contrast: two real name tokens in front, so the code is safely
+      // droppable and the name stands on its own.
+      expect(parseSlSubjects("Mike Trout LAA")).toEqual({
+        players: ["Mike Trout"],
+      });
+    });
   });
 
   describe("hostile input", () => {
+    // `parseSlSubjects` does NOT decode — the fetch loop decodes once and
+    // hands it the result. These cases compose the two the same way, so they
+    // exercise the path production actually runs rather than a second decode
+    // that only ever existed inside the parser.
+    const parseAsFetched = (served: string) =>
+      parseSlSubjects(decodeSlEntities(served));
+
     test("`&` decodes and the result is then judged on its merits", () => {
       // "Tom &amp; Jerry" decodes to "Tom & Jerry", which splits on ` & `
       // into two SINGLE-token subjects — and single tokens are refused. The
       // sequencing matters: decode first, judge second.
-      expect(parseSlSubjects("Tom &amp; Jerry")).toEqual({});
+      expect(parseAsFetched("Tom &amp; Jerry")).toEqual({});
     });
 
-    test("markup is rejected AFTER decoding, so encoding it does not help", () => {
+    test("markup is rejected whether it arrives raw or encoded", () => {
+      // Raw `<` hits the guard directly — the case that matters most, since
+      // it is what a single decode can produce.
       expect(parseSlSubjects("<b>Mike</b> Trout")).toEqual({});
-      expect(parseSlSubjects("&lt;b&gt;Mike&lt;/b&gt; Trout")).toEqual({});
+      // Encoded, it decodes to exactly that raw form and hits the same guard.
+      expect(parseAsFetched("&lt;b&gt;Mike&lt;/b&gt; Trout")).toEqual({});
     });
 
     test("a numeric-entity payload is left literal by the closed decoder", () => {
@@ -356,8 +448,8 @@ describe("parseSlSubjects", () => {
       // resolved into `<`/`>`. They survive as literal text, whose `&`, `#`
       // and `;` then fail the per-token allowlist. Two independent reasons
       // this yields nothing, which is the point of a closed set.
-      expect(parseSlSubjects("&#60;script&#62; Mike Trout")).toEqual({});
-      expect(parseSlSubjects("&#x3C;script&#x3E; Mike Trout")).toEqual({});
+      expect(parseAsFetched("&#60;script&#62; Mike Trout")).toEqual({});
+      expect(parseAsFetched("&#x3C;script&#x3E; Mike Trout")).toEqual({});
     });
 
     test("invisible Unicode inside a token is refused", () => {
@@ -383,7 +475,7 @@ describe("parseSlSubjects", () => {
       // `&nbsp;` is in the closed set. Decoded, it becomes an ordinary space,
       // so "Mike&nbsp;Trout" is a normal two-token name rather than one
       // 11-character token that would fail the allowlist.
-      expect(parseSlSubjects("Mike&nbsp;Trout")).toEqual({
+      expect(parseAsFetched("Mike&nbsp;Trout")).toEqual({
         players: ["Mike Trout"],
       });
       // A RAW U+00A0 reaches the same place by a different route: JS `\s`
@@ -402,11 +494,26 @@ describe("parseSlSubjects", () => {
       expect(parseSlSubjects("Mike\u200BTrout")).toEqual({});
     });
 
-    test("a double-encoded payload is caught by the same post-decode guard", () => {
-      // Decoding runs in ONE pass and does not re-scan its own output, so
-      // this yields the literal text "&lt;script&gt;". Nothing executes and
-      // nothing is emitted.
-      expect(parseSlSubjects("&amp;lt;script&amp;gt; Mike Trout")).toEqual({});
+    test("a double-encoded payload survives the single decode as literal text, then fails the allowlist", () => {
+      // The single decode does not re-scan its own output, so this becomes
+      // the literal text "&lt;script&gt; Mike Trout" — no `<` for the guard
+      // to catch. It is refused one layer down instead: `&` and `;` are not
+      // name characters, so the per-token allowlist rejects it. Worth pinning
+      // explicitly, because moving to a single decode moved WHICH rule stops
+      // this input, and the answer must still be "some rule does".
+      const decodedOnce = decodeSlEntities("&amp;lt;script&amp;gt; Mike Trout");
+      expect(decodedOnce).toBe("&lt;script&gt; Mike Trout");
+      expect(decodedOnce).not.toContain("<");
+      expect(parseSlSubjects(decodedOnce)).toEqual({});
+    });
+
+    test("a pre-decoded `<` still rejects — the guard is not vestigial", () => {
+      // The parser is handed already-decoded text, so this is the realistic
+      // shape of the attack it must stop: the caller's ONE decode turned
+      // `&lt;` into a real `<` and passed it straight in.
+      expect(parseSlSubjects(decodeSlEntities("&lt;script&gt; Mike Trout"))).toEqual({});
+      expect(parseSlSubjects("<script> Mike Trout")).toEqual({});
+      expect(parseSlSubjects("Mike Trout >")).toEqual({});
     });
 
     test("control characters, newline included", () => {
