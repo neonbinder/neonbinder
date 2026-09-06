@@ -10,8 +10,9 @@ tags:
 # WHAT THIS TESTS:
 #   1. The old free-text team input is gone — no "Team" text field visible in edit form.
 #   2. "+ Add team" button exists and opens the popover.
-#   3. Typing a name the app does not know offers "+ Create", and taking it adds
-#      a chip for the team it just created.
+#   3. Typing a name the app does not know offers "+ New team", taking it opens
+#      the New Team dialog, and that dialog's Create button adds a chip for the
+#      team it just made (NEO-236).
 #   4. Typing an existing name filters the typeahead list to it.
 #   5. The "Remove team <name>" button removes the chip.
 #   6. Typing a non-existent name shows "No matches." in the popover.
@@ -35,7 +36,7 @@ tags:
 #     and TeamPicker is sport-scoped
 #     in both directions: it filters its candidate list by the sport row and it
 #     TAGS a team it creates with the same one, which is also what enables its
-#     "+ Create" row at all (no sport row, no creation — NEO-96).
+#     "+ New team" row at all (no sport row, no creation — NEO-96).
 #
 #   THE TEAM IS THIS FLOW'S OWN (NEO-214):
 #     It used to pick "New York Yankees" and "New York Mets" out of a global
@@ -45,7 +46,7 @@ tags:
 #     exactly the right place to create one. It uses a single team named
 #     "TPT-<attempt>", where ATTEMPT_ID is already "w<worker>-a<attempt>-<rand>"
 #     and therefore unique per worker AND per attempt. Per-attempt matters
-#     mechanically: "+ Create <name>" is offered only while no team of that name
+#     mechanically: "+ New team <name>" is offered only while no team of that name
 #     exists, so a name a previous attempt left behind would render "Add <name>"
 #     instead and TEST 2 would be reaching for a control that is not there.
 #
@@ -149,9 +150,10 @@ tags:
     id: "Add team"
 
 # ============================================================
-# TEST 2 — Open the popover, type a name the app does not know, and take the
-# "+ Create" row it offers. This is the picker's escape hatch (teams.findOrCreate)
-# and it is what gives every later sub-test a team to find.
+# TEST 2 — Open the popover, type a name the app does not know, take the
+# "+ New team" row it offers and create the team in the dialog that opens. This
+# is the picker's escape hatch (teams.findOrCreate) and it is what gives every
+# later sub-test a team to find.
 # (In-place form-field taps use direct tapOn by aria-label — the form
 # is already in-viewport after the Edit tap above; no scroll needed.)
 # ============================================================
@@ -164,12 +166,48 @@ tags:
 - tapOn:
     id: "Search teams"
 - inputText: "TPT-${ATTEMPT_ID}"
-# The row is labelled with the name it would create, so this cannot be satisfied
-# by some other team's row — and it is offered only because no team of this name
-# exists, which is the precondition TEST 5 then reverses.
+# NEO-236 — the popover's ONE create affordance opens a dialog rather than
+# writing: `+ New team "<typed>"…`, accessible name `New team <typed>`. It is
+# labelled with the name it would create, so this cannot be satisfied by some
+# other team's row — and it is offered only because no team of this name exists,
+# which is the precondition TEST 5 then reverses.
 - assertVisible:
-    id: "Create team TPT-${ATTEMPT_ID}"
+    id: "New team TPT-${ATTEMPT_ID}"
 
+- tapOn:
+    id: "New team TPT-${ATTEMPT_ID}"
+
+# The New Team dialog — portalled to `document.body` at `z-[60]`, `fixed inset-0`
+# and centred, so nothing clips it. It is where the three questions a team row
+# needs (Location, Team name, League) are answered and where the write happens.
+#
+# TWO assertions, because they say two different things.
+#
+# The HEADING is the dialog's `aria-labelledby` target, so it is what a screen
+# reader announces on arrival — "New team: <what I typed>" is the dialog being
+# correctly LABELLED. (It briefly was not: opening by CLICK used to blank the
+# name, because the picker's focus-out handler read a stale "is the dialog open"
+# flag and cleared the query behind the portal. Fixed under NEO-236 with a
+# synchronous ref; this assertion is what keeps it fixed.)
+#
+# The NAME BOX and its VALUE is the dialog being correctly SEEDED — maestro-web
+# reports an input by its value, so this says the search text really reached the
+# field the operator is about to submit.
+- assertVisible: "New team: TPT-${ATTEMPT_ID}"
+- assertVisible:
+    id: "New team name"
+    text: "TPT-${ATTEMPT_ID}"
+
+# THE WRITE. Nothing is typed in the dialog: Team name is pre-filled with what
+# was searched, Location stays blank and no League is picked, so the COMPOSED
+# name is exactly what was typed and every later matcher is unchanged.
+#
+# `Create team <composed full name>` is the same accessible name this flow always
+# used — it moved from the popover row onto the dialog's own button. Tapped by id
+# rather than driven with a second Enter: Create and Cancel are NeonButtons with
+# an identical class string, and maestro-web's pressKey re-finds the focused
+# element by an XPath that falls back to that class, so an Enter aimed at Create
+# could land on Cancel.
 - tapOn:
     id: "Create team TPT-${ATTEMPT_ID}"
 
@@ -210,7 +248,7 @@ tags:
 #
 # The SAME team as TEST 2, and this time it is offered as a MATCH rather than as
 # a create: TEST 2 really persisted a row, so an exact name now suppresses the
-# "+ Create" row and the typeahead lists the team instead. That is the assertion
+# "+ New team" row and the typeahead lists the team instead. That is the assertion
 # in "Add TPT-…" — it can only be satisfied by a team that exists.
 # ============================================================
 
@@ -277,7 +315,7 @@ tags:
 # and TEST 5 already re-attached it — so re-adding would be reaching for a
 # control the picker does not render: `matches` drops every id already in
 # `value` (TeamPicker.tsx), and an exact case-insensitive name match also
-# suppresses the "+ Create" row, so typing "TPT-<attempt>" with the chip
+# suppresses the "+ New team" row, so typing "TPT-<attempt>" with the chip
 # attached shows "No matches." That is correct product behaviour, not a bug —
 # the flow simply has nothing left to add. What is still unproven at this point
 # is that the write reached the ROW behind the drawer and survives a reload,

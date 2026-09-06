@@ -218,17 +218,41 @@ describe("every team-creation path attaches a league", () => {
     expect(league!.abbreviation).toBe("MLB");
   });
 
-  test("teams.findOrCreateInternal", async () => {
+  /**
+   * NEO-236 — `findOrCreateInternal` became `findByFullNameInternal` and
+   * creates nothing, so it is no longer a team-creation path to check. What
+   * IS worth pinning is that it still RESOLVES: the automatic callers
+   * (Wikidata career teams, the BSC queue, the checklist backfill) link an
+   * existing team, and they must keep finding one that has been split.
+   */
+  test("teams.findByFullNameInternal resolves a split row and creates nothing", async () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
 
-    const teamId = await t.mutation(internal.teams.findOrCreateInternal, {
-      name: "Chiba Lotte Marines",
-      sportId,
-    });
+    await expect(
+      t.query(internal.teams.findByFullNameInternal, {
+        name: "Chiba Lotte Marines",
+        sportId,
+      }),
+    ).resolves.toBeNull();
+    expect(await t.run(async (ctx) => ctx.db.query("teams").collect())).toHaveLength(0);
 
-    const team = await t.run(async (ctx) => ctx.db.get(teamId));
-    expect(team!.leagueId).toBeDefined();
+    const teamId = await t.run(async (ctx) =>
+      ctx.db.insert("teams", {
+        name: "Marines",
+        location: "Chiba Lotte",
+        nameNormalized: "chiba lotte marines",
+        sportId,
+        lastUpdated: Date.now(),
+      }),
+    );
+
+    await expect(
+      t.query(internal.teams.findByFullNameInternal, {
+        name: "Chiba Lotte Marines",
+        sportId,
+      }),
+    ).resolves.toBe(teamId);
   });
 
   test("a sport with no configured league yields a team without one", async () => {

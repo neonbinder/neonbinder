@@ -32,6 +32,8 @@ import { rankTeamCandidates } from "./lib/entityNearMatch";
 // Leagues store a QID for the same reason players and teams do, so they
 // validate it in the same one place rather than growing a fourth regex.
 import { isWikidataQid } from "../lib/players/wikidata-id";
+// NEO-236: the team split — `teamsIn` orders by the composed full name.
+import { teamFullName } from "../lib/teams/team-name";
 
 /**
  * NEO-240 — where a league sits in the professional pyramid.
@@ -255,6 +257,68 @@ export async function findOrCreateLeague(
   await scheduleLeagueEnrichment(ctx, id);
 
   return id;
+}
+
+/**
+ * NEO-236 — the league THE OPERATOR chose for a team they are creating, or
+ * undefined when they chose nothing.
+ *
+ * This is the counterpart to {@link resolveDefaultLeagueId}, and the difference
+ * between the two is the whole point of the New Team step. The default resolver
+ * answers "what league does this sport's top flight use", which is the right
+ * answer for a team that arrived with no context and the WRONG one for a team
+ * pulled off a player's career list: Travis Bazzana's "Sydney Blue Sox" are not
+ * in Major League Baseball, and attaching the sport default to them is how a
+ * club side ends up filed under MLB with nobody having said so.
+ *
+ * Two ways to answer, and they are ordered by how much is already known:
+ *
+ *  - `leagueId` — the operator picked an existing row. Validated against the
+ *    SPORT before it is trusted: the validator proves the id is in `leagues`,
+ *    not that it belongs to this team's sport, and a cross-sport league on a
+ *    team is a row no per-sport query can explain.
+ *  - `leagueName` — the operator accepted a suggestion for a league we do not
+ *    hold yet (a Wikidata P118 label, typically). `findOrCreateLeague` applies
+ *    the same name-or-alias dedup every other writer does, so "ABL" lands on
+ *    the Australian Baseball League if we already know it under that name.
+ *
+ * Returning undefined means "the operator did not choose" — NOT "no league".
+ * The caller decides what that means for it; `teams.findOrCreate` falls back to
+ * the sport default there, and only there.
+ */
+export async function resolveOperatorLeagueId(
+  ctx: MutationCtx,
+  args: {
+    sportId: Id<"selectorOptions">;
+    /** `null` is an answer — "no league" — and is returned as null, distinct
+     *  from the `undefined` that means the question was never put. */
+    leagueId?: Id<"leagues"> | null;
+    leagueName?: string;
+  },
+): Promise<Id<"leagues"> | null | undefined> {
+  if (args.leagueId === null) return null;
+  if (args.leagueId) {
+    const row = await ctx.db.get(args.leagueId);
+    // Refused rather than ignored: an operator who picked a league and got a
+    // team without one would have no way to tell, and the row would be wrong
+    // in a way only a later audit finds.
+    if (!row) throw new ConvexError("That league no longer exists.");
+    if (row.sportId !== args.sportId) {
+      // The league's own name is safe to name here — it is reference data the
+      // operator just picked off a list, not typed content.
+      throw new ConvexError(`${row.name} is a league in another sport.`);
+    }
+    return row._id;
+  }
+  const typed = args.leagueName?.trim();
+  if (!typed) return undefined;
+  // Same bounds as every other operator-typed league name — this one arrives
+  // from a "Create league X" button whose X is a Wikidata label, so it is text
+  // nobody on our side vetted.
+  return await findOrCreateLeague(ctx, {
+    name: requireValidLeagueName(typed),
+    sportId: args.sportId,
+  });
 }
 
 /**
@@ -1022,7 +1086,7 @@ export const saveLeagueFields = mutation({
  * A narrow projection rather than the whole team document, and that is a
  * decision rather than an economy: this panel exists to say "here is what is
  * IN this league", so it returns the identifying name plus the two facts a
- * league view can sanity-check at a glance (the city, and the colours that
+ * league view can sanity-check at a glance (the location, and the colours that
  * make a wrong-league team obvious). Everything else about a team belongs to
  * Team Management, which owns editing it.
  *
@@ -1036,7 +1100,7 @@ export const teamsIn = query({
     v.object({
       _id: v.id("teams"),
       name: v.string(),
-      city: v.optional(v.string()),
+      location: v.optional(v.string()),
       colors: v.optional(
         v.object({
           primary: v.optional(v.string()),
@@ -1053,12 +1117,15 @@ export const teamsIn = query({
       .withIndex("by_league_id", (q) => q.eq("leagueId", args.leagueId))
       .collect();
 
+    // NEO-236: sorted by the FULL name, matching `teams.listForManagement` —
+    // this panel is read as an alphabetised list of the teams a league holds,
+    // and sorting on the nickname alone scatters that order.
     return rows
-      .sort((a, b) => a.name.localeCompare(b.name))
+      .sort((a, b) => teamFullName(a).localeCompare(teamFullName(b)))
       .map((team) => ({
         _id: team._id,
         name: team.name,
-        city: team.city,
+        location: team.location,
         colors: team.colors,
       }));
   },

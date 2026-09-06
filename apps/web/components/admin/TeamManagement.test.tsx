@@ -28,11 +28,19 @@
  * value silently becomes a sentinel, or fails to come back from one, is the
  * failure nobody sees until a team is saved into the wrong league.
  *
+ * NEO-236 splits a team's name in two — `name` is the nickname ("Yankees") and
+ * `location` is the place ("New York") — so this file also covers what that
+ * split owes each half of the screen: the master row prints the short name and
+ * carries the full one as its accessible name, the detail panel composes and
+ * previews it, and a name that collides with another team's is refused where
+ * the operator can fix it.
+ *
  * Mocking mirrors PlayerManagement.test.tsx: convex/react's hooks are module
  * mocked and routed by the (string-mocked) function reference.
  */
 
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { ConvexError } from "convex/values";
 import { MemoryRouter, useLocation } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -65,11 +73,21 @@ const SPORTS = [
   { _id: "sport-baseball", _creationTime: 0, level: "sport", value: "Baseball" },
 ];
 
+/**
+ * NEO-236 shapes: `name` is the nickname alone and `location` is the place.
+ * `nameNormalized` still keys the WHOLE name — `normalizeTeamName` token-sorts,
+ * so splitting a row cannot change its dedup key, and these fixtures say so.
+ *
+ * `t-aztecs` carries NO location, which is not an edge case: colleges, national
+ * sides and corporate-named clubs legitimately have none, and for them full ==
+ * short. Every branch of the row and the preview has a team here.
+ */
 const TEAMS = [
   {
     _id: "t-yankees",
     _creationTime: 0,
-    name: "New York Yankees",
+    name: "Yankees",
+    location: "New York",
     nameNormalized: "new york yankees",
     sportId: "sport-baseball",
     leagueId: "l-mlb",
@@ -78,10 +96,36 @@ const TEAMS = [
   {
     _id: "t-mariners",
     _creationTime: 0,
-    name: "Seattle Mariners",
-    nameNormalized: "seattle mariners",
+    name: "Mariners",
+    location: "Seattle",
+    nameNormalized: "mariners seattle",
     sportId: "sport-baseball",
     colors: { primary: "#0c2c56" },
+  },
+  {
+    _id: "t-aztecs",
+    _creationTime: 0,
+    name: "San Diego State Aztecs",
+    nameNormalized: "aztecs diego san state",
+    sportId: "sport-baseball",
+  },
+  // The pair the whole split exists for: one nickname, two franchises. They are
+  // told apart only by the location, and they have to sort next to each other.
+  {
+    _id: "t-sf-giants",
+    _creationTime: 0,
+    name: "Giants",
+    location: "San Francisco",
+    nameNormalized: "francisco giants san",
+    sportId: "sport-baseball",
+  },
+  {
+    _id: "t-ny-giants",
+    _creationTime: 0,
+    name: "Giants",
+    location: "New York",
+    nameNormalized: "giants new york",
+    sportId: "sport-baseball",
   },
 ];
 
@@ -207,10 +251,12 @@ describe("TeamManagement — the ?team deep link", () => {
 
     expect(row("Seattle Mariners").getAttribute("aria-current")).toBe("true");
     expect(row("New York Yankees").getAttribute("aria-current")).toBeNull();
-    // The detail panel, not just the row highlight.
-    expect(screen.getByLabelText("Name")).toHaveProperty(
+    // The detail panel, not just the row highlight. "Mariners", because Name
+    // holds the nickname on its own now — the place is in Location beside it.
+    expect(screen.getByLabelText("Name")).toHaveProperty("value", "Mariners");
+    expect(screen.getByLabelText("Location")).toHaveProperty(
       "value",
-      "Seattle Mariners",
+      "Seattle",
     );
     expect(scrollIntoView).toHaveBeenCalled();
 
@@ -564,5 +610,278 @@ describe("TeamManagement — adding a league from the League select", () => {
     expect(mockSaveTeamFields.mock.calls[0][0]).toMatchObject({
       leagueId: null,
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-236 — Location + Name
+// ---------------------------------------------------------------------------
+
+describe("TeamManagement — the master row", () => {
+  it("prints the nickname, with the location and league beneath it", () => {
+    renderAt("/admin/teams");
+
+    const yankees = row("New York Yankees");
+    // The nickname is the row's first line and starts at the left edge, so an
+    // alphabetical list can be run down with the eye. The location is the
+    // second line, not an inline prefix, for exactly that reason.
+    expect(yankees.textContent).toContain("Yankees");
+    expect(yankees.textContent).toContain("New York");
+    expect(yankees.textContent).not.toContain("New York Yankees");
+    // The league tag moved onto the metadata line with the location; it is
+    // still on the row.
+    expect(yankees.textContent).toContain("MLB");
+  });
+
+  it("carries the FULL name as its accessible name, exactly", () => {
+    // The handle every `.maestro` flow taps this row by: maestro-web builds
+    // `resource-id = node.id || node.ariaLabel`. Appending a state word here —
+    // "needs colors", a league — would break every one of those selectors
+    // silently, so this asserts the whole attribute rather than a substring.
+    renderAt("/admin/teams");
+
+    expect(row("New York Yankees").getAttribute("aria-label")).toBe(
+      "New York Yankees",
+    );
+    expect(row("Seattle Mariners").getAttribute("aria-label")).toBe(
+      "Seattle Mariners",
+    );
+  });
+
+  it("says the league and the attention state that the aria-label hides", () => {
+    // An `aria-label` REPLACES the accessible name, so the league tag and the
+    // "?"/"—" glyph stop being announced the moment the full name is set on the
+    // row. Both are real state on a list whose whole job is surfacing rows that
+    // need a human, so they are described instead — the label itself has to
+    // stay exactly the full name.
+    renderAt("/admin/teams");
+
+    const described = (name: string) => {
+      const id = row(name).getAttribute("aria-describedby");
+      return id ? document.getElementById(id)?.textContent : undefined;
+    };
+
+    expect(described("New York Yankees")).toBe("MLB. ");
+    // No colors on the Aztecs, and no league — so the description is the
+    // attention state alone.
+    expect(described("San Diego State Aztecs")).toBe("No colors yet.");
+    // The Mariners have colors and no league: nothing to describe, and no
+    // empty description left dangling.
+    expect(row("Seattle Mariners").getAttribute("aria-describedby")).toBeNull();
+
+    // The glyph itself is a glyph, not a word — it is not read twice.
+    const glyph = row("San Diego State Aztecs").querySelector(
+      "[aria-hidden='true']",
+    );
+    expect(glyph?.textContent).toBe("—");
+  });
+
+  it("leaves a team with no location on one line", () => {
+    // Colleges, national sides and corporate-named clubs carry no location and
+    // are not a broken state: full == short, and there is nothing to print
+    // underneath.
+    renderAt("/admin/teams");
+
+    const aztecs = row("San Diego State Aztecs");
+    expect(aztecs.getAttribute("aria-label")).toBe("San Diego State Aztecs");
+    expect(aztecs.textContent).toContain("San Diego State Aztecs");
+  });
+
+  it("filters on the composed name, not the nickname alone", () => {
+    // Typing what is in the operator's head. `name` holds only "Yankees" now,
+    // so a filter over the stored field would answer "no teams match" to the
+    // most obvious thing anyone could type.
+    renderAt("/admin/teams");
+
+    fireEvent.change(screen.getByLabelText("Filter teams"), {
+      target: { value: "new york" },
+    });
+
+    expect(row("New York Yankees")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Seattle Mariners/ })).toBeNull();
+  });
+});
+
+describe("TeamManagement — the order of the master list", () => {
+  const rowNames = () =>
+    Array.from(
+      document.querySelectorAll("li > button[aria-label]"),
+    ).map((el) => el.getAttribute("aria-label"));
+
+  it("orders by the name it PRINTS, then by location", () => {
+    // `listForManagement` returns them ordered by the composed full name,
+    // because that is what every other consumer wants — the mock hands them
+    // over in a deliberately different order again. This list is the one place
+    // showing the SHORT name on its first line, and a column of first lines
+    // running Yankees, Mets, Knicks with nothing saying they are all filed
+    // under "New" reads as no order at all.
+    renderAt("/admin/teams");
+
+    expect(rowNames()).toEqual([
+      // Two Giants, adjacent and in a stable order — which is the disambiguation
+      // the location is there to do.
+      "New York Giants",
+      "San Francisco Giants",
+      "Seattle Mariners",
+      "San Diego State Aztecs",
+      "New York Yankees",
+    ]);
+  });
+});
+
+describe("TeamManagement — the detail panel's composed name", () => {
+  it("heads the panel with the full name", () => {
+    renderAt("/admin/teams?team=t-yankees");
+
+    expect(
+      screen.getByRole("heading", { level: 4, name: "New York Yankees" }),
+    ).toBeTruthy();
+  });
+
+  it("previews what the two fields compose to, live", () => {
+    renderAt("/admin/teams?team=t-mariners");
+
+    const preview = () => screen.getByText(/^Shows as:/);
+    expect(preview().textContent).toBe("Shows as: Seattle Mariners");
+
+    fireEvent.change(screen.getByLabelText("Location"), {
+      target: { value: "San Diego" },
+    });
+    fireEvent.change(screen.getByLabelText("Name"), {
+      target: { value: "Padres" },
+    });
+
+    expect(preview().textContent).toBe("Shows as: San Diego Padres");
+
+    // Emptying Location is a legitimate answer, not a half-typed state, and the
+    // preview has to show what that actually produces.
+    fireEvent.change(screen.getByLabelText("Location"), {
+      target: { value: "" },
+    });
+    expect(preview().textContent).toBe("Shows as: Padres");
+  });
+
+  it("associates the preview with BOTH fields", () => {
+    // A `<p>` under two inputs is a visual convention; nothing in the
+    // accessibility tree connects them, so a screen-reader user tabbing into
+    // Location would never learn what the pair composes to.
+    renderAt("/admin/teams?team=t-mariners");
+
+    const previewId = screen.getByText(/^Shows as:/).id;
+    expect(previewId).toBeTruthy();
+    expect(
+      screen.getByLabelText("Location").getAttribute("aria-describedby"),
+    ).toContain(previewId);
+    expect(
+      screen.getByLabelText("Name").getAttribute("aria-describedby"),
+    ).toContain(previewId);
+  });
+
+  it("sends both halves, and clears the location with null", async () => {
+    renderAt("/admin/teams?team=t-mariners");
+
+    fireEvent.change(screen.getByLabelText("Location"), {
+      target: { value: "  San Diego  " },
+    });
+    fireEvent.change(screen.getByLabelText("Name"), {
+      target: { value: "Padres" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(mockSaveTeamFields).toHaveBeenCalled());
+    expect(mockSaveTeamFields.mock.calls[0][0]).toMatchObject({
+      id: "t-mariners",
+      name: "Padres",
+      location: "San Diego",
+    });
+  });
+
+  it("clears the location with null rather than an empty string", async () => {
+    // `undefined` would mean "leave it alone" to an optional arg, and "" would
+    // store a location that is not one. `null` is the only value that says
+    // remove it.
+    renderAt("/admin/teams?team=t-mariners");
+
+    fireEvent.change(screen.getByLabelText("Location"), {
+      target: { value: "   " },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(mockSaveTeamFields).toHaveBeenCalled());
+    expect(mockSaveTeamFields.mock.calls[0][0].location).toBeNull();
+  });
+
+  it("confirms the save by the composed name, not the nickname", async () => {
+    renderAt("/admin/teams?team=t-mariners");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText("Saved Seattle Mariners.")).toBeTruthy();
+  });
+});
+
+describe("TeamManagement — a name that is already taken", () => {
+  const REFUSAL = "Another team in this sport is already called New York Yankees.";
+
+  it("shows the refusal next to the fields instead of crashing", async () => {
+    // A ConvexError, not a plain Error: production redacts a plain Error's
+    // message to "Server Error", so the sentence the backend wrote for a person
+    // only crosses on `data` (see `userFacingMessage`).
+    mockSaveTeamFields.mockRejectedValue(new ConvexError(REFUSAL));
+    renderAt("/admin/teams?team=t-mariners");
+
+    fireEvent.change(screen.getByLabelText("Location"), {
+      target: { value: "New York" },
+    });
+    fireEvent.change(screen.getByLabelText("Name"), {
+      target: { value: "Yankees" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe(REFUSAL);
+    // The draft survives: the operator's typing is what they are about to fix,
+    // and re-typing it would be the screen punishing them for the refusal.
+    expect(screen.getByLabelText("Name")).toHaveProperty("value", "Yankees");
+    // And the panel is still there — the panel is where the fix happens.
+    expect(screen.getByRole("button", { name: "Save" })).toBeTruthy();
+  });
+
+  it("marks both fields invalid and points them at the message", async () => {
+    mockSaveTeamFields.mockRejectedValue(new ConvexError(REFUSAL));
+    renderAt("/admin/teams?team=t-mariners");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    const alertId = (await screen.findByRole("alert")).id;
+    for (const label of ["Location", "Name"]) {
+      const field = screen.getByLabelText(label);
+      expect(field.getAttribute("aria-invalid")).toBe("true");
+      expect(field.getAttribute("aria-describedby")).toContain(alertId);
+    }
+  });
+
+  it("takes the message away as soon as either field is edited", async () => {
+    mockSaveTeamFields.mockRejectedValue(new ConvexError(REFUSAL));
+    renderAt("/admin/teams?team=t-mariners");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByRole("alert");
+
+    fireEvent.change(screen.getByLabelText("Name"), {
+      target: { value: "Mariner" },
+    });
+
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByLabelText("Name").getAttribute("aria-invalid")).toBeNull();
+  });
+
+  it("falls back to plain words for a failure that carried no message", async () => {
+    // A plain Error reaches production as "[CONVEX M(teams:saveTeamFields)]
+    // [Request ID: …] Server Error", which is not a sentence to show anyone.
+    mockSaveTeamFields.mockRejectedValue(new Error("kaboom"));
+    renderAt("/admin/teams?team=t-mariners");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("Could not save this team. Try again.");
+    expect(alert.textContent).not.toContain("kaboom");
   });
 });

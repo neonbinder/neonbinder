@@ -100,6 +100,12 @@ vi.mock("../../convex/_generated/api", () => ({
       listForSet: "entityReviewSkips.listForSet",
       clearSkip: "entityReviewSkips.clearSkip",
     },
+    // NEO-236: TeamPicker's create row opens `NewTeamDialog`, whose shared
+    // `NewTeamForm` reads the sport's leagues for its League pills. The
+    // reference has to resolve even though this file never asserts on it —
+    // the routed `useQuery` mock returns undefined, which the form renders as
+    // "Loading leagues…".
+    leagues: { list: "leagues.list" },
   },
 }));
 
@@ -1330,9 +1336,9 @@ describe("CardChecklist — NEO-208 quick-add Team picker", () => {
       target: { value: "Savannah Bananas" },
     });
 
-    expect(
-      screen.getByLabelText('Create team Savannah Bananas'),
-    ).toBeTruthy();
+    // NEO-236: the affordance is now a row that OPENS the New Team dialog —
+    // `Create team {name}` moved onto that dialog's own Create button.
+    expect(screen.getByLabelText("New team Savannah Bananas")).toBeTruthy();
   });
 
   it("cannot create a team from a row with no sport ancestor", () => {
@@ -1347,7 +1353,7 @@ describe("CardChecklist — NEO-208 quick-add Team picker", () => {
     });
 
     // NEO-96: a team must reference a real sport row. No sport, no create.
-    expect(screen.queryByLabelText(/^Create team /)).toBeNull();
+    expect(screen.queryByRole("button", { name: /^New team / })).toBeNull();
   });
 
   /**
@@ -1374,8 +1380,14 @@ describe("CardChecklist — NEO-208 quick-add Team picker", () => {
       target: { value: "Savannah Bananas" },
     });
 
+    // NEO-236: two steps now — the row opens the dialog, and the dialog's own
+    // Create button is what writes. The second press is where the League gets
+    // answered, which is the whole reason the inline form was replaced.
+    fireEvent.click(screen.getByLabelText("New team Savannah Bananas"));
     await act(async () => {
-      fireEvent.click(screen.getByLabelText("Create team Savannah Bananas"));
+      fireEvent.click(
+        screen.getByRole("button", { name: "Create team Savannah Bananas" }),
+      );
     });
 
     expect(mockFindOrCreateTeam).toHaveBeenCalledWith({
@@ -1412,8 +1424,11 @@ describe("CardChecklist — NEO-208 quick-add Team picker", () => {
     fireEvent.change(screen.getByLabelText("Search teams"), {
       target: { value: "Savannah Bananas" },
     });
+    fireEvent.click(screen.getByLabelText("New team Savannah Bananas"));
     await act(async () => {
-      fireEvent.click(screen.getByLabelText("Create team Savannah Bananas"));
+      fireEvent.click(
+        screen.getByRole("button", { name: "Create team Savannah Bananas" }),
+      );
     });
     expect(mockFindOrCreateTeam).toHaveBeenCalledTimes(1);
 

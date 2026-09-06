@@ -665,10 +665,103 @@ same registration rule as sets applies — **pick an unused prefix and add a row
 here in the same commit**, so two flows never collide on a name.
 
 Every one of these is created through the product, never seeded: TeamPicker's
-`+ Create` row (`id: "Create team <name>"` → `teams.findOrCreate`), on whichever
-screen the flow is already standing. `/admin/teams` has no "add a team" control
+`+ New team` row (`id: "New team <typed>"`) opens the **New Team dialog**, whose
+`id: "Create team <composed full name>"` button calls `teams.findOrCreate` — on
+whichever screen the flow is already standing. `/admin/teams` has no "add a team" control
 by design — it edits teams, it does not invent them — so a flow that needs a
 team's COLOURS creates the team in a picker first and then colours it there.
+
+**NEO-236 — a team name is now two columns.** `location` ("San Diego") is
+optional and `name` ("Padres") is the nickname; the name the product shows
+everywhere except the two admin master rows is the two composed. A prefix in
+the table below is a NAME, and every flow here leaves Location EMPTY, so the
+full name and the short name are the same string and every existing matcher is
+unchanged. That is a fixture convenience, not the product rule: Location is
+wherever a real team is from — city, state, region or school — and only a name
+with no place in it ("Athletics", "Liverpool") is meant to ship blank. **`admin/team-management-edit-a-team.yaml` is the one exception**:
+it types `Loc${WORKER_INDEX}` into the Location box, so from the moment it
+saves, its team answers to `Loc<w> TMT-<w>-<attempt>` (heading, picker option,
+chip, `Saved …` line, master-row `aria-label`) while the master row still
+PRINTS `TMT-<w>-<attempt>`. Any new flow that sets a Location must register it
+here the same way, because the composed string is what every other surface
+matches on.
+
+### NEO-236 — the review wizard's bulk add is about PLAYERS only
+
+Jason, 2026-09-05: *"add all remaining as new should still process teams, it
+should only apply to players."* The footer button is now
+**`Add remaining players as new (N)`**, where N counts undecided PLAYERS, and
+its sibling is **`Skip remaining names (N)`**, where N counts every undecided
+row (skip still rules on teams — a skip creates nothing that could be filed
+under the wrong league).
+
+The consequence for flows: **the bulk tap no longer reaches "Confirm & Save" on
+its own.** Every team the batch does not already hold — a checklist team name,
+or a career team staged off a player's Wikidata history — gets its own
+**New Team step** (`New Team: <name>`), because that step asks which LEAGUE and
+the bulk path could only ever guess it from the enrichment's suggestion.
+
+Three flows press that button — `setup.yaml`,
+`set-selector/signed-by-autofills-from-players.yaml` and
+`set-selector/inserts-1996-score-one-nb-set-two-bsc-sources.yaml` — and each
+now answers those steps with the same loop:
+
+```yaml
+- repeat:
+    maxRuns: 250
+    while:
+      notVisible:
+        text: ".*Confirm & Save.*"
+    commands:
+      - runFlow:
+          when:
+            visible: "New Team: .*"
+          commands:
+            - tapOn: "Add as New Team"
+```
+
+One tap per step, accepting the Location, Name and League the step already
+shows — what an operator who agrees with the pre-fill would do. Keyed on the
+TERMINAL state (`Confirm & Save` not yet visible) rather than on a step being
+visible, because players and their staged teams drain at the same time and a
+loop keyed on `New Team:` exits the first time it catches the batch between
+lookups. `maxRuns` is a runaway guard; the `extendedWaitUntil` on
+`Confirm & Save` after the loop is still the real gate.
+
+**Do not answer these with a seed.** `e2e-baseline.sh` says it outright —
+NEO-214 removed the seed-teams fixture — and the standing rule is that E2E
+fixtures come from the UI. Creating a real set's worth of teams through Team
+Management first would cost far more wall-clock and would exercise the wrong
+screen.
+
+Two consequences worth knowing before writing a picker step:
+
+* The typeahead matches and de-duplicates on the COMPOSED name, so typing a
+  full name finds a split row and suppresses the create row. Reach for
+  `id: "Add <full name>"`, not `id: "New team <full name>"`, once a row with
+  that composed name exists.
+* **Creating a team is TWO steps now (NEO-236).** The popover holds ONE create
+  affordance — a row reading `+ New team "<typed>"…`, accessible name
+  `New team <typed>` — and taking it OPENS a portalled dialog. The dialog is
+  headed `New team: <typed>` and asks the three questions a `teams` row needs:
+  `New team location (optional)`, `New team name` (pre-filled with the typed
+  text) and a `New team league` radiogroup of pills (the sport's leagues, an
+  optional `Create <league>`, and `No league`), with a `Shows as:` preview. Its
+  Create button keeps the accessible name every flow already used —
+  `Create team <composed full name>` — so the only change to an existing flow is
+  the extra step that opens the dialog.
+  * A flow that leaves Location blank and picks no League composes to exactly
+    the typed name, which is why every matcher below is unchanged.
+  * **Tap the dialog's Create button by `id`, never a second `pressKey: Enter`.**
+    Create and Cancel are `NeonButton`s with an identical class string, and
+    maestro-web re-finds the focused element by an XPath that falls back to that
+    class — an Enter aimed at Create can land on Cancel.
+  * The dialog is portalled to `document.body` at `z-[60]` and centred, so no
+    scrolling ancestor can clip it. The POPOVER ROW still can: where the picker
+    sits inside a short scroll box (the attention walker's `max-h-[70vh]` body,
+    the bottom of the Players page's career editor), open the dialog with
+    `pressKey: Enter` on the search input — guarded by
+    `assertVisible: "No matches."` — instead of tapping the row.
 
 | Prefix | Owning flow | Shape |
 |---|---|---|
@@ -678,7 +771,7 @@ team's COLOURS creates the team in a picker first and then colours it there.
 | `PMT-` | `admin/player-management-add-and-career-history.yaml` | `-${WORKER_INDEX}-${ATTEMPT_ID}` |
 | `SLA-`, `SLB-` | `spine-label/player-team-colors-default-to-longest-tenure.yaml` | `-${WORKER_INDEX}-${ATTEMPT_ID}` (coloured `#132448` / `#002d72`) |
 | `TLF-` | `checklist-title-length-limits-and-fixer.yaml` | `-${ATTEMPT_ID}` — kept SHORT on purpose; the name lands in a generated listing title measured against an 80-character cap |
-| `TMT-` | `admin/team-management-edit-a-team.yaml` | `-${WORKER_INDEX}-${ATTEMPT_ID}` |
+| `TMT-` | `admin/team-management-edit-a-team.yaml` | `-${WORKER_INDEX}-${ATTEMPT_ID}`, and the ONLY team in the suite with a `location`: `Loc${WORKER_INDEX}`, so its composed name is `Loc<w> TMT-<w>-<attempt>` |
 | `TPT-` | `team-picker.yaml` | `-${ATTEMPT_ID}` |
 | `MintedTeam` | `checklist-wizard-career-team-commits.yaml` | `MintedTeam${ATTEMPT_TOKEN}` — **no separator** |
 | `ProbeTeam` / `TempTeam` | `checklist-wizard-career-team-entry.yaml` | `…${ATTEMPT_TOKEN}` — **no separator**, never persisted |
@@ -716,7 +809,7 @@ collided constantly. Correct form:
 - evalScript: '${output.ATTEMPT_TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'
 ```
 
-**Always per-ATTEMPT, not just per-worker.** `+ Create <name>` is offered only
+**Always per-ATTEMPT, not just per-worker.** `+ New team <name>` is offered only
 while no team of that name exists, so a name a previous attempt left behind
 renders `Add <name>` instead and the create step reaches for a control that is
 not there. (`ATTEMPT_ID` is `w<worker>-a<attempt>-<random>`, so it already

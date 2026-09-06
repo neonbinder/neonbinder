@@ -30,6 +30,10 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
+// NEO-236: fixtures derive their identity fields the same way production does,
+// so a seeded row is one the lookup could really have found.
+import { teamRowFields } from "./lib/teamRow";
+import { teamFullName } from "../lib/teams/team-name";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -70,6 +74,31 @@ async function seedTree(
     });
     await ctx.db.patch(setNameId, { children: [variantTypeId] });
     return variantTypeId;
+  });
+}
+
+/**
+ * NEO-236: a `teams` row for the BSC resolution to LINK to.
+ *
+ * The queue no longer creates teams — a background job has no operator and
+ * therefore no Location + Name — so a card only acquires a team if we already
+ * hold one whose composed full name matches the string BSC returns. Walks up
+ * from the variantType to the sport because `seedTree` hands back only the
+ * leaf, and every other caller depends on that shape.
+ */
+async function seedTeam(
+  t: ReturnType<typeof convexTest>,
+  variantTypeId: Id<"selectorOptions">,
+  parts: { name: string; location?: string },
+): Promise<Id<"teams">> {
+  return t.run(async (ctx) => {
+    const variant = await ctx.db.get(variantTypeId);
+    const setName = await ctx.db.get(variant!.parentId!);
+    return ctx.db.insert("teams", {
+      ...teamRowFields(parts),
+      sportId: setName!.parentId!,
+      lastUpdated: Date.now(),
+    });
   });
 }
 
@@ -134,9 +163,15 @@ afterEach(() => {
 // ===========================================================================
 
 describe("resolveBscCardTeam", () => {
-  test("200 response with a real teamName resolves the card and creates a team", async () => {
+  test("200 response with a real teamName LINKS the card to the team we already hold", async () => {
     const t = convexTest(schema, modules);
     const variantTypeId = await seedTree(t);
+    // NEO-236: seeded SPLIT, and BSC returns the whole name — the composed
+    // name is what the lookup keys on, so a split row still matches.
+    const yankeesId = await seedTeam(t, variantTypeId, {
+      location: "New York",
+      name: "Yankees",
+    });
     const cardId = await insertCard(t, variantTypeId, "1", "bsc-1");
 
     const calls: RecordedCall[] = [];
@@ -150,11 +185,17 @@ describe("resolveBscCardTeam", () => {
     });
 
     const card = await getCard(t, cardId);
-    expect(card!.teamOnCardIds).toHaveLength(1);
+    expect(card!.teamOnCardIds).toEqual([yankeesId]);
     expect(card!.teamCheckDoneAt).toBeTypeOf("number");
     const teamId: Id<"teams"> = card!.teamOnCardIds![0];
     const teamRow = await t.run(async (ctx) => ctx.db.get(teamId));
-    expect(teamRow!.name).toBe("New York Yankees");
+    expect(teamFullName(teamRow!)).toBe("New York Yankees");
+    // Linked, never minted: the queue has no operator and so no Location +
+    // Name to build a row from. The miss case is covered at the mutation
+    // boundary in cardChecklist.bscTeamEnrichment.test.ts, and end to end in
+    // featurePropagation.test.ts.
+    const allTeams = await t.run(async (ctx) => ctx.db.query("teams").collect());
+    expect(allTeams).toHaveLength(1);
 
     // Confirmed-unauthenticated endpoint: no Authorization header sent.
     expect(calls).toHaveLength(1);
@@ -295,6 +336,11 @@ describe("processBscTeamEnrichmentQueue", () => {
   test("drains ids one at a time, resolving each card", async () => {
     const t = convexTest(schema, modules);
     const variantTypeId = await seedTree(t);
+    // NEO-236: the drain LINKS, so the two teams BSC will name must exist.
+    // Location-less on purpose — these are the exact strings the stub returns,
+    // and a team with no location is an ordinary team.
+    const yankeesId = await seedTeam(t, variantTypeId, { name: "Yankees" });
+    const metsId = await seedTeam(t, variantTypeId, { name: "Mets" });
     const card1 = await insertCard(t, variantTypeId, "1", "bsc-1");
     const card2 = await insertCard(t, variantTypeId, "2", "bsc-2");
     const card3 = await insertCard(t, variantTypeId, "3", "bsc-3");
@@ -324,8 +370,8 @@ describe("processBscTeamEnrichmentQueue", () => {
     const c1 = await getCard(t, card1);
     const c2 = await getCard(t, card2);
     const c3 = await getCard(t, card3);
-    expect(c1!.teamOnCardIds).toHaveLength(1);
-    expect(c2!.teamOnCardIds).toHaveLength(1);
+    expect(c1!.teamOnCardIds).toEqual([yankeesId]);
+    expect(c2!.teamOnCardIds).toEqual([metsId]);
     expect(c3!.teamOnCardIds).toBeUndefined();
     expect(c3!.teamCheckDoneAt).toBeTypeOf("number"); // checked, just no team on file
   });

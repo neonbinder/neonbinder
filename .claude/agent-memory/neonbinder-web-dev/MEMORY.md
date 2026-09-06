@@ -10,3 +10,4 @@
 - [PlayerManagement deep-link test flakes under load](reference_playermanagement_deeplink_test_flakes_under_load.md) — fails in a full components run, passes alone; re-run before blaming your diff
 - [No inline sub-object forms](feedback-no-inline-sub-object-forms.md) — a "+ Add a new …" select option opens a modal that creates and selects; never inline fields saved by the parent form
 - [Reword duplicate aria-labels, never suffix](disambiguate-duplicate-aria-labels-by-rewording.md) — Maestro's `id:` is a regex find, so "Add player to new card" makes `id: "Add player"` match two elements
+- [Team Location is any place, school included](feedback-team-location-is-any-place-including-a-school.md) — never write that colleges/national sides "carry none"; blank only when the name has no place in it

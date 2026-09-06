@@ -247,6 +247,11 @@ jobs:
           # worker 0, so a separate bootstrap is pure duplication (~66s). Runner
           # jobs still bootstrap (they don't set this).
           MAESTRO_SKIP_BOOTSTRAP: "1"
+          # NEO-236: the setup flow answers one New Team step per team the
+          # first sync stages from the players' Wikidata careers (~380 steps at
+          # ~1s each on the Base sync alone), so setup takes ~13 min, not ~6.
+          # The default 600s flow timeout killed it mid-way on CI run 7.
+          MAESTRO_FLOW_TIMEOUT_SEC: "1500"
           REPORT_DIR: maestro-report
         run: |
           if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
