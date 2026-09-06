@@ -68,14 +68,36 @@ tags:
 # retired version of this flow failed in CI run 33875599981.
 #
 # Suggestions come from `teams.search`, a Convex SEARCH index — it matches on
-# TOKENS, not substrings. ATTEMPT_ID is "w<worker>-a<attempt>-<random>", so
-# every flow that names a team after it contributes the token "a1". Stripping
-# the hyphens fixes it: "w3-a1-23945" tokenizes as three terms, "w3a123945" as
-# one, and no other team in the deployment carries that token or a prefix of it.
-- evalScript: ${output.ATTEMPT_ID = output.ATTEMPT_ID || String(Date.now()).slice(-4)}
+# TOKENS, not substrings. Stripping the hyphens from the attempt id is what
+# keeps this name unmatchable: "w3-a1-23945" tokenizes as three terms,
+# "w3a123945" as one.
+#
+# ⚠️ NO SEPARATOR IN THESE NAMES, AND THAT IS THE WHOLE POINT. A hyphenated
+# name like `CareerTeam-<token>` tokenizes to ["CareerTeam", "<token>"], so it
+# matches ANY persisted team sharing the leading word — the per-attempt token
+# buys nothing. That is how run 34050688656 broke: the committing sibling had
+# left a `CareerTeam-4180` row behind, this flow typed `CareerTeam-9351`, the
+# suggestion list offered 4180, the dropdown covered "+ Add", and the tap landed
+# on the suggestion — which REPLACED the typed name.
+#
+# REPRODUCED LOCALLY and it is not fixed by renaming the other flow alone: with
+# `CareerTeam-4180` still in `teams`, typing `CareerTeam-w7a26340` failed
+# identically. `ProbeTeam<token>` / `TempTeam<token>` are SINGLE tokens that no
+# other name in the suite can share, so the list stays empty whatever else has
+# been persisted. Keep it that way: if a flow ever needs a team name here, give
+# it a separator-free one.
+# ⚠️ READ `ATTEMPT_ID`, NOT `output.ATTEMPT_ID`. The runner injects the attempt
+# id with `-e ATTEMPT_ID=…`, which Maestro exposes as the binding `${ATTEMPT_ID}`
+# — it never populates `output.ATTEMPT_ID`. The old form therefore ALWAYS fell
+# through to `String(Date.now()).slice(-4)`: a 4-digit token that recycles every
+# ten seconds, so two flows on two runners collide constantly. CI run
+# 34050688656 caught it — this flow typed `CareerTeam-9351` and the field came
+# back holding `CareerTeam-4180`, another runner's team.
+#
 # Single-quoted: the expression contains double quotes, and quoting the scalar
-# keeps YAML out of it.
-- evalScript: '${output.ATTEMPT_TOKEN = String(output.ATTEMPT_ID).split("-").join("")}'
+# keeps YAML out of it. `Date.now()` (full precision) is the standalone-run
+# fallback; the hyphen strip is explained where the name is typed.
+- evalScript: '${output.ATTEMPT_TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'
 
 # ============================================================
 # SETUP — real set, real fetch, wizard open
@@ -153,12 +175,12 @@ tags:
 
 - tapOn:
     id: "Career team name"
-- inputText: "CareerTeam-${output.ATTEMPT_TOKEN}"
+- inputText: "ProbeTeam${output.ATTEMPT_TOKEN}"
 - tapOn:
     id: "Add career team"
 - assertVisible:
     id: "Career team name"
-    text: ".*CareerTeam-${output.ATTEMPT_TOKEN}.*"
+    text: ".*ProbeTeam${output.ATTEMPT_TOKEN}.*"
 - assertNotVisible:
     id: "Staged career teams"
 
@@ -178,7 +200,7 @@ tags:
 - tapOn:
     id: "Add career team"
 - assertVisible:
-    text: ".*CareerTeam-${output.ATTEMPT_TOKEN} \\(2001.2005\\).*"
+    text: ".*ProbeTeam${output.ATTEMPT_TOKEN} \\(2001.2005\\).*"
 
 # ============================================================
 # STEP 5 — R2(d): the to-year is optional, and a staged entry can be removed
@@ -186,20 +208,20 @@ tags:
 
 - tapOn:
     id: "Career team name"
-- inputText: "TempTeam-${output.ATTEMPT_TOKEN}"
+- inputText: "TempTeam${output.ATTEMPT_TOKEN}"
 - tapOn:
     id: "From year"
 - inputText: "2010"
 - tapOn:
     id: "Add career team"
 - assertVisible:
-    text: ".*TempTeam-${output.ATTEMPT_TOKEN} \\(2010.present\\).*"
+    text: ".*TempTeam${output.ATTEMPT_TOKEN} \\(2010.present\\).*"
 - tapOn:
-    id: "Remove TempTeam-${output.ATTEMPT_TOKEN}"
+    id: "Remove TempTeam${output.ATTEMPT_TOKEN}"
 - assertNotVisible:
-    text: ".*TempTeam-${output.ATTEMPT_TOKEN}.*"
+    text: ".*TempTeam${output.ATTEMPT_TOKEN}.*"
 - assertVisible:
-    text: ".*CareerTeam-${output.ATTEMPT_TOKEN} \\(2001.2005\\).*"
+    text: ".*ProbeTeam${output.ATTEMPT_TOKEN} \\(2001.2005\\).*"
 
 # ============================================================
 # STEP 6 — R2(e): the decision carries the staged entry, and the wizard moves on
@@ -227,7 +249,7 @@ tags:
     visible:
       text: "Added as new"
 - assertNotVisible:
-    text: ".*CareerTeam-${output.ATTEMPT_TOKEN}.*"
+    text: ".*ProbeTeam${output.ATTEMPT_TOKEN}.*"
 
 # ============================================================
 # STEP 7 — EXIT WITHOUT WRITING ANYTHING (R7)

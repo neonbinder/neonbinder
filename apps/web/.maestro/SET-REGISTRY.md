@@ -680,6 +680,41 @@ team's COLOURS creates the team in a picker first and then colours it there.
 | `TLF-` | `checklist-title-length-limits-and-fixer.yaml` | `-${ATTEMPT_ID}` — kept SHORT on purpose; the name lands in a generated listing title measured against an 80-character cap |
 | `TMT-` | `admin/team-management-edit-a-team.yaml` | `-${WORKER_INDEX}-${ATTEMPT_ID}` |
 | `TPT-` | `team-picker.yaml` | `-${ATTEMPT_ID}` |
+| `MintedTeam` | `checklist-wizard-career-team-commits.yaml` | `MintedTeam${ATTEMPT_TOKEN}` — **no separator** |
+| `ProbeTeam` / `TempTeam` | `checklist-wizard-career-team-entry.yaml` | `…${ATTEMPT_TOKEN}` — **no separator**, never persisted |
+
+### ⚠️ A name typed into a team picker must be a SINGLE search token
+
+`teams.search` is a Convex SEARCH index: it matches on TOKENS split at
+non-alphanumerics, not on substrings. So `CareerTeam-<attempt>` tokenizes to
+["CareerTeam", "<attempt>"] and matches **any** persisted team sharing the
+leading word — the per-attempt suffix buys nothing.
+
+That is how CI run 34050688656 broke two flows at once. The committing
+career-team flow persisted `CareerTeam-4180`; the read-only sibling then typed
+`CareerTeam-9351`, the suggestion list offered 4180, its dropdown covered
+"+ Add", and the tap landed on the suggestion — which REPLACED the typed name.
+Renaming only the writer is NOT enough: reproduced locally, typing
+`CareerTeam-w7a26340` with `CareerTeam-4180` still in the table failed
+identically.
+
+**The rule: any name typed into a TeamPicker or the career-team form is
+separator-free** (`MintedTeam<token>`, `ProbeTeam<token>`), so it is one token
+nothing else can share. The `TMT-`/`PMT-`/`SLA-`/`CNAA-`/`TPT-`/`NBTeam-`/`TLF-`
+names above keep their hyphens only because each is created and consumed inside
+one flow that also removes it; the moment a flow PERSISTS a team another flow
+might see, it needs a separator-free name.
+
+**And derive the token from `${ATTEMPT_ID}`, not `output.ATTEMPT_ID`.** The
+runner injects it with `-e ATTEMPT_ID=…`, which Maestro exposes as the binding
+`${ATTEMPT_ID}`; it never populates `output.ATTEMPT_ID`. The older idiom
+`output.ATTEMPT_ID || String(Date.now()).slice(-4)` therefore ALWAYS fell
+through to a 4-digit value that recycles every ten seconds, so two runners
+collided constantly. Correct form:
+
+```yaml
+- evalScript: '${output.ATTEMPT_TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'
+```
 
 **Always per-ATTEMPT, not just per-worker.** `+ Create <name>` is offered only
 while no team of that name exists, so a name a previous attempt left behind

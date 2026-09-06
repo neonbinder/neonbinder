@@ -70,16 +70,36 @@ tags:
 # one suggestion row covers "From year" and "+ Add" beneath it, and it closes
 # only on a pick, a successful add, or Escape — which maestro-web cannot send.
 # A tap aimed at "+ Add" then lands on the suggestion and REPLACES the typed
-# name (CI run 33875599981).
+# name (CI runs 33875599981 and 34050688656).
 #
-# Suggestions come from `teams.search`, a Convex SEARCH index that matches on
-# TOKENS. ATTEMPT_ID is "w<worker>-a<attempt>-<random>", so every flow naming a
-# team after it shares the token "a1". Stripping the hyphens fixes it:
-# "w3-a1-23945" tokenizes as three terms, "w3a123945" as one that nothing else
-# carries.
-- evalScript: ${output.ATTEMPT_ID = output.ATTEMPT_ID || String(Date.now()).slice(-4)}
-# Single-quoted: the expression contains double quotes.
-- evalScript: '${output.ATTEMPT_TOKEN = String(output.ATTEMPT_ID).split("-").join("")}'
+# ⚠️ THIS FLOW IS THE ONE THAT PERSISTS A TEAM, so its name must share NO
+# `teams.search` token with any name another flow types. That index matches on
+# TOKENS, split on non-alphanumerics: `CareerTeam-<token>` — what the READ-ONLY
+# sibling (checklist-wizard-career-team-entry) types — tokenizes to
+# ["CareerTeam", "<token>"], so a row this flow left behind called
+# `CareerTeam-…` surfaces as a suggestion in that flow and steals its "+ Add"
+# tap. That is exactly how run 34050688656 broke it.
+#
+# `MintedTeam<token>` has NO separator at all, so it is a SINGLE token that
+# nothing else can match — not the sibling's "CareerTeam", not its per-attempt
+# token, and not any of the `TMT-`/`PMT-`/`SLA-`/`CNAA-`/`TPT-`/`NBTeam-`/`TLF-`
+# names the other team-creating flows use. The read-only sibling keeps
+# `CareerTeam-…` and never persists it, because it discards its batch.
+#
+# The token itself comes from the injected ATTEMPT_ID, hyphens stripped:
+# "w3-a1-23945" tokenizes as three terms, "w3a123945" as one.
+# ⚠️ READ `ATTEMPT_ID`, NOT `output.ATTEMPT_ID`. The runner injects the attempt
+# id with `-e ATTEMPT_ID=…`, which Maestro exposes as the binding `${ATTEMPT_ID}`
+# — it never populates `output.ATTEMPT_ID`. The old form therefore ALWAYS fell
+# through to `String(Date.now()).slice(-4)`: a 4-digit token that recycles every
+# ten seconds, so two flows on two runners collide constantly. CI run
+# 34050688656 caught it — this flow typed `CareerTeam-9351` and the field came
+# back holding `CareerTeam-4180`, another runner's team.
+#
+# Single-quoted: the expression contains double quotes, and quoting the scalar
+# keeps YAML out of it. `Date.now()` (full precision) is the standalone-run
+# fallback; the hyphen strip is explained where the name is typed.
+- evalScript: '${output.ATTEMPT_TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'
 
 # ============================================================
 # SETUP — this flow's OWN real set, real fetch, wizard open
@@ -123,7 +143,7 @@ tags:
     id: "Career team name"
 - tapOn:
     id: "Career team name"
-- inputText: "CareerTeam-${output.ATTEMPT_TOKEN}"
+- inputText: "MintedTeam${output.ATTEMPT_TOKEN}"
 - tapOn:
     id: "From year"
 - inputText: "2001"
@@ -133,7 +153,7 @@ tags:
 - tapOn:
     id: "Add career team"
 - assertVisible:
-    text: ".*CareerTeam-${output.ATTEMPT_TOKEN} \\(2001.2005\\).*"
+    text: ".*MintedTeam${output.ATTEMPT_TOKEN} \\(2001.2005\\).*"
 
 # ============================================================
 # STEP 3 — R2(c): the decision carries it
@@ -183,11 +203,11 @@ tags:
 - extendedWaitUntil:
     visible: ".*of .* teams.*"
     timeout: 30000
-- inputText: "CareerTeam-${output.ATTEMPT_TOKEN}"
+- inputText: "MintedTeam${output.ATTEMPT_TOKEN}"
 - extendedWaitUntil:
     visible: "1 of .* teams.*"
     timeout: 15000
 - assertVisible:
-    text: "CareerTeam-${output.ATTEMPT_TOKEN}"
+    text: "MintedTeam${output.ATTEMPT_TOKEN}"
     below:
       text: "1 of .* teams.*"

@@ -85,6 +85,22 @@ tags:
 # 30s: the row offers no action until its live Wikidata lookup settles.
 # ============================================================
 
+# ⚠️ SETTLE THE ROW BEFORE TAPPING THE SKIP LINK. `Skip — not a person` is a
+# 16px `text-xs` link that sits DIRECTLY above the footer: measured in CI run
+# 34050688656 its bounds were [313,536][434,552] while the footer's own controls
+# started at y=551. Maestro reads bounds and clicks ~330ms later, so any content
+# landing in the row inside that window (a Wikidata lookup, a near-match panel)
+# pushes the link down and the click lands on the footer instead — on
+# "Add All Remaining as New", which decides EVERY row. That is what happened:
+# one tap produced "11 of 11 reviewed" with all eleven marked "Added as new".
+#
+# Waiting for the row's stable PRIMARY control first is the fix: it renders only
+# once the lookup has come back, so the row has its final height before the tap.
+# 30s, because that wait is a live external round-trip.
+- extendedWaitUntil:
+    visible:
+      id: "Add as New (Player|Team)"
+    timeout: 30000
 - extendedWaitUntil:
     visible:
       id: "Skip .* not a (person|team)"
