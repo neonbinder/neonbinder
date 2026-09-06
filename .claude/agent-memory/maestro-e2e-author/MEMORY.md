@@ -23,4 +23,4 @@
 - [Capture the browser console with CDP](patterns_capture_browser_console_with_cdp.md) — Maestro logs no console; 30 lines of raw CDP turns a blank error-boundary screenshot into a named root cause
 - [NEO-219 confirm surfaces](reference_neo219_confirm_surfaces.md) — custom entry needs TWO Enters; Base picker needs an explicit pick; chips confirm detach; empty rows have a delete control
 - [CI's seed resets the preview under your local run](reference_ci_seed_resets_the_preview_under_your_local_run.md) — columns emptying + "no <ancestor> ancestor" mid-flow is a concurrent global reset, not a product bug; check `gh run view` seed startedAt first
-- [NEO-248 wizard fixture via an attached SL set](reference_neo248_wizard_fixture_via_attached_sl_set.md) — per-side resolvability makes a per-worker set SL-fetchable; never create a player on that fixture
+- [NEO-248 wizard fixture: SL-only is DISPROVEN, use a real BSC set](reference_neo248_wizard_fixture_via_attached_sl_set.md) — only BSC emits players; fixture is real Topps Big League Base (88 unknowns); CI has NO serialization so every reader must Cancel-Discard

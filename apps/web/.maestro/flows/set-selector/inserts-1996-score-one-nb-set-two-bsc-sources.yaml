@@ -380,11 +380,11 @@ tags:
 # and never carries a pending name, so those six were retired (NEO-220/221; the
 # reasoning is in .maestro/SET-REGISTRY.md).
 #
-# NEO-248 brought the wizard coverage back on PER-WORKER sets, by attaching one
-# real SportLots set id to a hand-typed set — see
-# util-attach-sl-set-and-open-wizard.yaml and its four consumers
+# NEO-248 brought the wizard coverage back on a REAL set —
+# Baseball / 2024 / Topps / Topps Big League / Base, via
+# util-fetch-real-set-checklist-to-wizard.yaml and its four consumers
 # (checklist-wizard-*). Those own Back, Skip, Link and the career-team
-# mini-form.
+# mini-form, and all four are read-only (Cancel → Discard).
 #
 # What stays HERE is what only this flow's fetch can pay for: a review of
 # HUNDREDS of names, drained in bulk. This flow already pays for that fetch, so

@@ -6,58 +6,47 @@ tags:
   - regression
 ---
 # R1 — ONE FEATURE (NEO-92 follow-up): the CareerTeamEntry mini-form the review
-# wizard renders inline for a PLAYER row. Wikidata does not know every player,
-# and the operator is the only party on that screen who can say where this one
-# played — so they may hand-add {team, fromYear, toYear?} entries, in addition
-# to whatever the background lookup found, before choosing "Add as New Player".
-# This flow proves that mini-form end to end.
+# wizard renders inline for a PLAYER row. Wikidata does not know every player —
+# the fixture's very first row came back "No career-team history found." — and
+# the operator is the only party on that screen who can say where this one
+# played. They may hand-add {team, fromYear, toYear?} entries before choosing
+# "Add as New Player". This flow proves that mini-form end to end.
 #
-# R2 — HARD ASSERTIONS, no silent fall-through:
-#     (a) the row on screen is a PLAYER row — the manual-entry affordance is
-#         asserted PRESENT before any feature action, as the precondition it is
-#         (a team row renders no career-team form at all);
-#     (b) VALIDATION IS ENFORCED, garbage not silently swallowed: with a team
-#         name but NO from-year, "+ Add" is inert — the typed name is STILL in
-#         the input (a successful add clears the form) and no staged list has
-#         rendered;
+# R2 — HARD ASSERTIONS:
+#     (a) the row under test is a PLAYER row — the manual-entry affordance is
+#         asserted PRESENT before any feature action (a team row renders no
+#         career-team form at all);
+#     (b) VALIDATION IS ENFORCED: with a team name but NO from-year, "+ Add" is
+#         inert — the typed name is STILL in the input (a successful add clears
+#         the form) and no staged list has rendered;
 #     (c) a VALID add stages a chip reading exactly "<name> (2001–2005)";
-#     (d) the to-year is genuinely OPTIONAL and says so — "(2010–present)" — and
-#         a staged entry can be removed again;
+#     (d) the to-year is genuinely OPTIONAL and says so — "(2010–present)" —
+#         and a staged entry can be removed again;
 #     (e) "Add as New Player" carries the one kept entry into a real decision:
-#         the counter moves to "1 of N reviewed", the history reads "Added as
-#         new", and the wizard has ADVANCED PAST the player row (its career-team
-#         form is gone). `recordDecision` re-validates the manual years
-#         server-side, so a payload it rejected would leave the wizard where it
-#         was rather than moving on.
+#         the history reads "Added as new" and the wizard has ADVANCED PAST the
+#         player row (its career-team form is gone). `recordDecision`
+#         re-validates the manual years server-side, so a payload it rejected
+#         would leave the wizard where it was rather than moving on.
 #
-# ── WHAT THIS FLOW DELIBERATELY DOES NOT PROVE, AND WHY ─────────────────────
+# ── WHAT THIS FLOW DELIBERATELY DOES NOT PROVE ──────────────────────────────
 #   The staged team is only WRITTEN at commit, where `resolveTeamIdByName`
 #   get-or-creates it and attaches it to the new player's `teamYears`. This flow
-#   does not commit: `players` is GLOBAL and empty at the head of every run, so
-#   creating one player here would make that marketplace name KNOWN to every
-#   worker that fetches the same SportLots source set afterwards — a name that is
-#   no longer unknown never reaches the wizard, so committing one create per
-#   worker would quietly drain the fixture the other three flows depend on. The
-#   flow therefore exits through Cancel → Discard (`cancelBatch`), which writes
-#   nothing at all.
+#   does not commit — see R7 — so commit-time team resolution stays with the
+#   unit files. There is also still no UI anywhere that renders a player's
+#   `teamYears`, so even a committing version could not read the history back.
 #
-#   Commit-time team resolution is covered by the entity-review unit files and by
-#   setup.yaml's own bulk commit. The half that is E2E-only — the mini-form and
-#   the decision it feeds — is what this flow owns.
+# R7 — READ-ONLY, AND THAT IS LOAD-BEARING. "Add as New Player" here records a
+#   DECISION on the batch; it does not create a player. The flow exits through
+#   Cancel → Discard (`cancelBatch`), so nothing is minted. That matters more
+#   here than anywhere else in the set: `players` is GLOBAL, and committing one
+#   create would make that marketplace name KNOWN — a name that is no longer
+#   unknown never reaches the wizard again, so one commit per worker would
+#   quietly drain the fixture the other three flows depend on. CI cannot
+#   serialize a writer against the readers either (`run-e2e-queue.sh` filters
+#   only `util`/`wip`/`setup`).
 #
-#   There is also still no UI anywhere that renders a player's `teamYears`, so
-#   even a committing version of this flow could not read the history back.
-#
-# R7a — writes go to a PRIVATE set. `cte-<worker>-<attempt>` is hand-typed under
-#   the real Baseball / 2024 / Topps ancestors; no shared row is touched. Per
-#   ATTEMPT as well as per worker: the SportLots id the util attaches persists,
-#   and a retry that found the set already attached would take a different path
-#   through the util than attempt 1 does. Registered in .maestro/SET-REGISTRY.md.
-#
-# R3 — DEDUP: Back is checklist-wizard-back-to-matching-resumes-decisions, Skip
-#   is checklist-wizard-skip-not-a-person, Link is
-#   checklist-wizard-link-to-existing-player. Only this flow touches the
-#   career-team mini-form.
+# R3 — DEDUP: Back / Skip / Link are the three sibling checklist-wizard-* flows.
+#   Only this one touches the career-team mini-form.
 
 # ============================================================
 # LAUNCH + SIGN IN
@@ -69,51 +58,67 @@ tags:
     timeout: 45000
 
 # ── A TEAM NAME THAT MATCHES NOTHING, AND THE TOKEN THAT MAKES IT SO ────────
-# The two names this flow types must return ZERO suggestions, and that is a hard
-# requirement rather than a nicety: CareerTeamEntry's suggestion dropdown is
-# `absolute z-10 left-0 right-0`, so the moment it has a single row it covers the
-# "From year" box and the "+ Add" button directly beneath it — and it closes only
-# on a pick, on a successful add, or on Escape, which maestro-web cannot send at
-# all. A tap aimed at "+ Add" then lands on the first suggestion, which REPLACES
-# the typed name. That is exactly how the retired version of this flow failed in
-# CI run 33875599981.
+# The two names this flow types must return ZERO suggestions, and that is a
+# hard requirement rather than a nicety: CareerTeamEntry's suggestion dropdown
+# is `absolute z-10 left-0 right-0`, so the moment it has a single row it
+# covers the "From year" box and the "+ Add" button directly beneath it — and
+# it closes only on a pick, on a successful add, or on Escape, which
+# maestro-web cannot send at all. A tap aimed at "+ Add" then lands on the
+# first suggestion, which REPLACES the typed name. That is exactly how the
+# retired version of this flow failed in CI run 33875599981.
 #
-# The suggestions come from `teams.search`, a Convex SEARCH index — it matches on
-# TOKENS, not substrings. ATTEMPT_ID is "w<worker>-a<attempt>-<random>", so every
-# flow that names a team after it contributes the token "a1". Stripping the
-# hyphens fixes it: "w3-a1-23945" tokenizes as three terms, "w3a123945" as one,
-# and no other team in the deployment carries that token or a prefix of it.
+# Suggestions come from `teams.search`, a Convex SEARCH index — it matches on
+# TOKENS, not substrings. ATTEMPT_ID is "w<worker>-a<attempt>-<random>", so
+# every flow that names a team after it contributes the token "a1". Stripping
+# the hyphens fixes it: "w3-a1-23945" tokenizes as three terms, "w3a123945" as
+# one, and no other team in the deployment carries that token or a prefix of it.
 - evalScript: ${output.ATTEMPT_ID = output.ATTEMPT_ID || String(Date.now()).slice(-4)}
 # Single-quoted: the expression contains double quotes, and quoting the scalar
 # keeps YAML out of it.
 - evalScript: '${output.ATTEMPT_TOKEN = String(output.ATTEMPT_ID).split("-").join("")}'
 
 # ============================================================
-# SETUP — a private set, one real SportLots source, wizard open
+# SETUP — real set, real fetch, wizard open
 # ============================================================
 
 - runFlow:
-    file: util-attach-sl-set-and-open-wizard.yaml
-    env:
-      SET_NAME: "cte-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    file: util-fetch-real-set-checklist-to-wizard.yaml
+
+- assertVisible:
+    text: "0 of [0-9]+ reviewed.*"
 
 # ============================================================
-# STEP 1 — R2(a): a PLAYER row, with the manual-entry affordance on it
+# STEP 1 — THE KIND GUARD: make sure the current row is a PLAYER
 #
-# 30s, not the 7s default: the row renders no action until its background
-# Wikidata lookup — a live external round-trip — has come back or errored.
+# The wizard presents ONE row at a time and which one settles first is a race
+# between live Wikidata lookups. The fixture queues overwhelmingly players
+# (measured: 87 players + 1 team), but "overwhelmingly" is a flake, so this
+# skips a TEAM row if that is what came up. The control only exists on a team
+# row, so on the common path this `when:` costs one poll and does nothing.
 #
+# A DELIBERATE R10 EXCEPTION, and the only one here: a `when: visible` on a
+# normally-ABSENT element polls the full default budget every run. That is the
+# price of determinism, it is bounded to a single poll, and the alternative is
+# a flow that fails roughly once in every eighty-eight runs for a reason that
+# has nothing to do with career teams. The skip writes nothing — this flow
+# discards.
+# ============================================================
+
+- runFlow:
+    when:
+      visible:
+        id: "Skip .* not a team"
+    commands:
+      - tapOn:
+          id: "Skip .* not a team"
+
+# ============================================================
+# STEP 2 — R2(a): a PLAYER row, with the manual-entry affordance on it
+#
+# 30s: the row renders no action until its live Wikidata lookup settles.
 # Maestro text matchers are full-node-anchored regexes and the <p> reads
-# "Add career team history manually (optional):", so the matcher is wrapped in
-# .* to match it as a substring.
-#
-# ⚠️ THE CURRENT ROW MUST BE A PLAYER. The wizard presents ONE row at a time and
-# which row settles first is a race between live Wikidata lookups, so this flow
-# depends on the approved SportLots source set queuing PLAYER unknowns only —
-# its teams must already be known (ordinary MLB clubs, which setup's Topps Chrome
-# commit creates). That is a stated criterion of the set; see
-# util-attach-sl-set-and-open-wizard.yaml. A team row fails here loudly, which is
-# the right signal: the source set is wrong, not the flow.
+# "Add career team history manually (optional):", so the matcher is .*-wrapped
+# to match it as a substring.
 # ============================================================
 
 - extendedWaitUntil:
@@ -122,13 +127,11 @@ tags:
     timeout: 30000
 - assertVisible:
     id: "Career team name"
-- assertVisible:
-    text: "0 of [0-9]+ reviewed.*"
 
 # ============================================================
-# STEP 2 — R2(b): a name with no from-year is REFUSED, silently doing nothing
-# "+ Add" is disabled while from-year is empty, so this tap must be a no-op. Two
-# independent readings of that: the name is still sitting in the input (a
+# STEP 3 — R2(b): a name with no from-year is REFUSED, silently doing nothing
+# "+ Add" is disabled while from-year is empty, so this tap must be a no-op.
+# Two independent readings: the name is still sitting in the input (a
 # successful add clears the form), and no staged list exists yet.
 # ============================================================
 
@@ -144,7 +147,7 @@ tags:
     id: "Staged career teams"
 
 # ============================================================
-# STEP 3 — R2(c): a complete entry stages a chip and clears the form
+# STEP 4 — R2(c): a complete entry stages a chip and clears the form
 # The chip reads "{name} ({fromYear}–{toYear})". The separator is an en dash
 # (U+2013), matched with "." to keep a literal non-ASCII character out of the
 # matcher; the parentheses are escaped.
@@ -162,9 +165,7 @@ tags:
     text: ".*CareerTeam-${output.ATTEMPT_TOKEN} \\(2001.2005\\).*"
 
 # ============================================================
-# STEP 4 — R2(d): the to-year is optional, and a staged entry can be removed
-# A second, throwaway entry with NO to-year reads "… (2010–present)"; removing
-# it leaves only the first, which is what the decision below then carries.
+# STEP 5 — R2(d): the to-year is optional, and a staged entry can be removed
 # ============================================================
 
 - tapOn:
@@ -185,13 +186,11 @@ tags:
     text: ".*CareerTeam-${output.ATTEMPT_TOKEN} \\(2001.2005\\).*"
 
 # ============================================================
-# STEP 5 — R2(e): the decision carries the staged entry, and the wizard moves on
+# STEP 6 — R2(e): the decision carries the staged entry, and the wizard moves on
 #
-# `recordDecision(create, manualCareerTeams)` re-validates the years server-side,
-# so a rejected payload would leave the wizard on this row. Three readings of the
-# same event, each saying something the others do not: the counter (a decision
-# was recorded), the history (it was a CREATE, not a link or a skip), and the
-# absence of the career-team form (the wizard advanced past the player row).
+# Two readings of the same event, each saying something the other does not: the
+# history (the decision was a CREATE, not a link or a skip) and the absence of
+# the career-team form (the wizard advanced past the player row).
 #
 # The negative matcher is .*-wrapped on purpose: a bare anchored regex would
 # never full-match "Add career team history manually (optional):" and would
@@ -201,32 +200,21 @@ tags:
 - tapOn: "Add as New Player"
 - extendedWaitUntil:
     visible:
-      text: "1 of [0-9]+ reviewed.*"
-- assertVisible:
-    text: "Decided \\(1\\)"
-- assertVisible:
-    text: "Added as new"
+      text: "Added as new"
 - assertNotVisible:
     text: ".*Add career team history manually.*"
 
 # ============================================================
-# STEP 6 — EXIT WITHOUT CREATING ANYTHING (see the header)
-#
-# Cancel raises the discard confirm, which names the one decision — a fourth
-# reading that the decision landed — and Discard runs `cancelBatch`. No player,
-# no team, no card is written, so the next worker to fetch this same SportLots
-# set still sees its names as unknown.
-#
-# "Discard" and the confirm's heading "Discard 1 decision?" are separate nodes
-# and Maestro's text matchers are full-node-anchored, so the button text cannot
-# match the heading.
+# STEP 7 — EXIT WITHOUT WRITING ANYTHING (R7)
+# The confirm's count is a regex: the kind guard may have put a second decision
+# on the books, and this flow does not claim to know which.
 # ============================================================
 
 - tapOn:
     text: "Cancel (Esc)"
     retryTapIfNoChange: true
 - assertVisible:
-    text: "Discard 1 decision.*"
+    text: "Discard [0-9]+ decisions?.*"
 - tapOn:
     text: "Discard"
 - extendedWaitUntil:

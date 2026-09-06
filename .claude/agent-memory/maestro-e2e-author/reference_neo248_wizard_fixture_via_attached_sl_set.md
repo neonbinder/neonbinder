@@ -1,11 +1,66 @@
 ---
 name: neo248-wizard-fixture-via-attached-sl-set
-description: How the entity-review wizard is reachable from a PER-WORKER set again after NEO-239 — attach one SportLots set id to a hand-typed set under real Baseball/2024/Topps; what the source set must satisfy, and why no flow on it may create a player
+description: DISPROVEN 2026-09-05 — a SportLots-only fetch never reaches the entity-review wizard (the SL adapter emits no players/teams); the working fixture is the REAL set Baseball/2024/Topps/Topps Big League/Base, 88 unknown names, all readers Cancel-Discard.
 metadata:
   type: project
 ---
 
-# NEO-248 — the wizard on a per-worker set, via one attached SportLots id
+# NEO-248 — the SL-only wizard fixture DOES NOT WORK (disproven live)
+
+> **⚠️ READ THIS FIRST. The design below was tested end to end against two PR
+> previews on 2026-09-05 and it CANNOT reach the entity-review wizard.**
+>
+> `fetchSportLotsChecklist` (`convex/adapters/sportlots.ts`) **declares**
+> `team` / `teams` / `players` in its return validator but its handler never
+> sets them — the card it pushes carries only `cardNumber`, `cardName`,
+> `attributes`, `printRun`, `autographType`, `isVariation`, `cardVariation`,
+> `platformRef`, `sportlotsRef`. The doc comment on `tokenizeSlDescription`
+> says so deliberately: *"Team extraction is intentionally NOT attempted here
+> … BSC supplies the canonical team in the merged record anyway."*
+>
+> So **a SportLots-only fetch yields zero unknown player/team names for ANY
+> set** — the wizard never opens and every card commits as "needs attention".
+> Measured: `Big League Gameday Drip` → "Saved 10 cards. 10 need attention",
+> no wizard, `players` unchanged at 494. Run 1 on the mascot set: 26 of 26 the
+> same. This is structural, not a bad choice of source set — no candidate list
+> fixes it.
+>
+> **Unknown names reach the wizard only from BSC** (`parsePlayersField` in
+> `convex/adapters/buysportscards.ts` emits `players`/`teams`) or from the
+> retired hand-added `pendingPlayerNames` path.
+>
+> A per-worker set cannot become BSC-resolvable either: `BSC_REQUIRED_LEVELS`
+> checks the row **at level `setName`**, and the attach dialog writes ids to the
+> **variant** row — so a hand-typed set stays unresolvable even though
+> `resolveBscFacetFilters` buckets ids by FACET and could have built a valid
+> query from a `setName`-tagged slot on the variant. Worth raising as a product
+> inconsistency: resolvability is judged per-LEVEL, the query is built per-FACET.
+>
+> **THE WORKING ANSWER (measured on PR #235's preview, 2026-09-05):** the real,
+> BSC-listed set `Baseball → 2024 → Topps → Topps Big League → Base`. It syncs
+> through the real hierarchy (Base/Insert/Parallel, no reconcile), pairs 310
+> cards, and opens the wizard on **88 unknown names — 87 players + 1 team**,
+> first row a player with the career-team form and "Back to matching" present.
+> `setup.yaml` provisions its structure and Base mapping and must NEVER fetch
+> its checklist — committing would make those 87 players known and destroy the
+> fixture.
+>
+> **All readers must Cancel → Discard.** CI has NO serialization: `run-e2e-queue.sh`
+> filters only `util`/`wip`/`setup`; `isolated`, `serial-marketplace` and the
+> dep-graph lanes exist ONLY in the local `run-e2e-smoke.sh`. "Sole writer"
+> (1996 Score) is a review convention, not a runtime mechanism. Concurrent
+> READS are safe — candidates are scoped to the fetching operator and batches
+> are keyed by selectorOption + user.
+>
+> Also rejected on PRODUCT grounds (Jason, 2026-09-05): hand-creating a set with
+> `+ Custom` and then attaching marketplace data to it. Hand-creating exists to
+> AVOID syncing; if a test syncs, it must sync through the real hierarchy. And
+> an insert set never has a "Base" variant.
+>
+> The rest of this note describes the attach-dialog mechanics accurately and is
+> kept for those details, which were confirmed live.
+
+## The original (disproven) idea
 
 **The problem.** Quick-add's Players field is a PlayerPicker, so a hand-added
 card is born LINKED and never carries a `pendingPlayerName`. A marketplace-free

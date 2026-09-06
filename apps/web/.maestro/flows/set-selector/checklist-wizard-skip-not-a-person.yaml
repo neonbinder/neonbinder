@@ -1,59 +1,56 @@
 appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
-name: "Entity review — Skip marks a name as not a person, mints nothing, and the set keeps a Skipped names list the operator can undo"
+name: "Entity review — Skip marks a name as not a person, and Skip Remaining decides every row that is left, lookups included"
 tags:
   - set-selector
   - regression
 ---
-# R1 — ONE FEATURE (NEO-212 + NEO-221): the THIRD way out of an unknown name.
-# "Checklist", "Team Card" and subset headers land in the player column of a
-# real marketplace checklist constantly, and before this the operator's only
-# options were to mint a junk player row or cancel the whole batch. Skip records
-# the name as "not a person", creates NOTHING, and the set remembers it — the
-# name is not offered again on the next sync, and the "Skipped names" list is
-# where that memory is visible and reversible.
+# R1 — ONE FEATURE (NEO-212): the THIRD way out of an unknown name. "Checklist",
+# "Team Card" and subset headers land in the player column of a real marketplace
+# checklist constantly, and before this the operator's only options were to mint
+# a junk player row or cancel the whole batch. Skip records the name as "not a
+# person" and creates NOTHING.
 #
 # R2 — HARD ASSERTIONS, no silent fall-through:
 #     (a) the review starts with nothing decided — "0 of N reviewed";
-#     (b) the per-row control is bound to a REAL row (matched by its accessible
-#         name, which composes the row's own name) AND says what it does
-#         ("Skip — not a person"). Two different claims, deliberately, and
-#         neither is a duplicate of the other;
+#     (b) the per-row control is bound to a REAL queued row (its accessible name
+#         composes the row's own name) AND says what it does ("Skip — not a
+#         person"). Two different claims; neither is a duplicate of the other;
 #     (c) one tap records exactly ONE decision — "1 of N reviewed" with a
 #         "Decided (1)" history. A control that rendered but wrote nothing
 #         leaves the header at "0 of N";
 #     (d) "Skip Remaining" decides every row that is left, INCLUDING ones whose
-#         Wikidata lookup has not come back — "Confirm & Save" renders only once
-#         every row carries a decision, so its appearance IS that assertion;
-#     (e) the commit lands ("Saved N cards") having created no player and no
-#         team, and the set now carries a "Skipped names (N)" list;
-#     (f) Unskip puts a name back — the status line says so in the product's own
-#         words, which is the operator-visible half of "this is reversible".
+#         Wikidata lookup has not come back. "Confirm & Save" renders only once
+#         EVERY row carries a decision (`allDecided`), so its appearance IS that
+#         assertion — and the bulk links unmount at the same moment, which is
+#         the same fact read the other way round.
 #
-# WHY THE LIST MATTERS AS MUCH AS THE SKIP. A skip that could not be seen or
-# undone would be an invisible, permanent edit made from a modal — the one
-# shape the product's own "review sessions cannot be lost by accident" rule
-# exists to prevent. So the panel is part of the feature, not a follow-up.
+# ── WHAT THIS FLOW NO LONGER COVERS, AND WHY ────────────────────────────────
+#   The "Skipped names" panel and its Unskip live behind a COMMIT: skip records
+#   are written by `commitCardChecklist`, not by `recordDecision`. This flow
+#   cannot commit — see R7 — so that half moved to the unit files
+#   (`entityReviewSkips`, `SkippedNamesPanel.test.tsx`), which already own it.
+#   Restoring it end-to-end needs a second real set with a single sanctioned
+#   writer, the 1996 Score shape; that is an owner decision, not something to
+#   sneak in by letting this flow write to a set three other flows read.
 #
-# R7 — THIS FLOW MINTS NO PLAYER, by construction rather than by care: every
-#   name is SKIPPED, and a skip is precisely the decision that writes no entity.
-#   `players` is GLOBAL and empty at the head of every run, so a name added here
-#   would stop being unknown for every worker that fetches the same SportLots
-#   set afterwards and would silently shrink their wizards. The cards ARE
-#   committed — they land on this flow's own private, per-attempt set — and the
-#   skip records are scoped to that set's id, so nothing here is observable to
-#   any other flow.
+# R7 — READ-ONLY, AND THAT IS LOAD-BEARING. Exits through Cancel → Discard
+#   (`cancelBatch`). Two independent reasons, either sufficient:
+#     * `players` is GLOBAL. Committing would not create players here (every
+#       row is skipped) but it WOULD write this set's 310 cards and its skip
+#       records, and the next fetch would be a re-sync rather than a first
+#       fetch — a different code path, and no unknowns for the sibling flows.
+#     * CI cannot serialize a writer against readers: `run-e2e-queue.sh` filters
+#       only `util`/`wip`/`setup`; the `isolated` and `serial-marketplace` lanes
+#       exist ONLY in the local `run-e2e-smoke.sh`.
 #
 # R3 — DEDUP: Back is checklist-wizard-back-to-matching-resumes-decisions, Link
 #   is checklist-wizard-link-to-existing-player, the career-team mini-form is
-#   checklist-wizard-career-team-entry, and the discard confirm is STEP 6a of
-#   inserts-1996-score-one-nb-set-two-bsc-sources.yaml. Only this flow skips.
+#   checklist-wizard-career-team-entry. Only this flow skips.
 #
-# R7a — writes go to a PRIVATE set. `skp-<worker>-<attempt>` is hand-typed under
-#   the real Baseball / 2024 / Topps ancestors; no shared row is touched. Per
-#   ATTEMPT as well as per worker, because this flow COMMITS: a retry must not
-#   find the previous attempt's cards, skips and attached SportLots id already
-#   on the set. Registered in .maestro/SET-REGISTRY.md.
+# NO KIND GUARD NEEDED. The skip control exists on both kinds
+#   ("Skip {name} — not a {person|team}"), so this flow works on whichever row
+#   settles first and never gambles on it.
 
 # ============================================================
 # LAUNCH + SIGN IN
@@ -65,16 +62,14 @@ tags:
     timeout: 45000
 
 # ============================================================
-# SETUP — a private set, one real SportLots source, wizard open
+# SETUP — real set, real fetch, wizard open
 # ============================================================
 
 - runFlow:
-    file: util-attach-sl-set-and-open-wizard.yaml
-    env:
-      SET_NAME: "skp-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    file: util-fetch-real-set-checklist-to-wizard.yaml
 
 # ============================================================
-# STEP 1 — R2(a): the review starts with nothing decided
+# STEP 1 — R2(a)
 # ============================================================
 
 - assertVisible:
@@ -83,18 +78,13 @@ tags:
 # ============================================================
 # STEP 2 — R2(b): the skip control, said both ways
 #
-# The accessible name composes the CURRENT ROW's own name
-# ("Skip {name} — not a {person|team}"), so matching it proves the control on
-# screen belongs to a real queued row rather than being static chrome. The
-# visible text is a separate claim: that what the operator READS says what the
-# control does. The em dash is matched with "." to keep a literal non-ASCII
-# character out of the matcher.
+# The accessible name composes the CURRENT ROW's own name, so matching it
+# proves the control belongs to a real queued row rather than being static
+# chrome. The visible text is a separate claim: that what the operator READS
+# says what the control does. The em dash is matched with "." to keep a literal
+# non-ASCII character out of the matcher.
 #
-# 30s, not the 7s default: the row offers no action until its background
-# Wikidata lookup — a live external round-trip — has come back or errored.
-#
-# WHICH row is on screen is deliberately not asserted; the wizard presents the
-# first row whose lookup settles, and hundreds race.
+# 30s: the row offers no action until its live Wikidata lookup settles.
 # ============================================================
 
 - extendedWaitUntil:
@@ -120,10 +110,8 @@ tags:
 # STEP 4 — R2(d): "Skip Remaining" clears the rest, lookups included
 #
 # The bulk skip cancels any armed auto-add and decides every remaining row
-# whether or not its lookup has settled. "Confirm & Save" renders only when
-# EVERY row carries a decision, so waiting for it is the assertion that the bulk
-# really covered the rest. 120s: the ceiling covers a batch still draining its
-# live Wikidata queue, and resolves the moment the wizard is done.
+# whether or not its lookup has settled. 120s: the ceiling covers a batch still
+# draining its live Wikidata queue and resolves the moment the wizard is done.
 # ============================================================
 
 - tapOn:
@@ -132,54 +120,25 @@ tags:
     visible:
       text: ".*Confirm & Save.*"
     timeout: 120000
+# The same fact read the other way round: the bulk links render only while a
+# row is still undecided, so their absence is `allDecided` confirming itself.
+- assertNotVisible:
+    text: ".*Skip Remaining \\([0-9]+\\).*"
 
 # ============================================================
-# STEP 5 — R2(e): commit, and the set remembers what was skipped
+# STEP 5 — EXIT WITHOUT WRITING ANYTHING (R7)
 #
-# The positive terminal signal proves the wizard closed AND the commit landed;
-# waiting on the modal vanishing would race the "Saving..." state (NEO-163).
+# Every row is decided now, so the confirm names them all. The count is a
+# regex and plural: it is the fixture's unknown total (88 when measured), which
+# is the marketplace's business, not this flow's claim.
 # ============================================================
 
 - tapOn:
-    text: ".*Confirm & Save.*"
-# 60s, not the 7s default: `commitCardChecklist` writes every kept card and
-# re-resolves the batch's decisions on the way through. It is the one non-
-# marketplace step here with a real server cost. MEASURE IT on the first green
-# run and trim — a ceiling nobody has measured is how 240s waits get written.
-- extendedWaitUntil:
-    visible:
-      text: ".*Saved [0-9]+ cards.*"
-    timeout: 60000
-
-# The panel renders above the checklist and only exists because this set now has
-# skip records — it returns null with none. The count is left as a regex: how
-# many names the source set surfaces is the marketplace's business, and pinning
-# it would make this flow fail on a data change it does not test.
-- scrollUntilVisible:
-    element:
-      id: "Skipped names \\([0-9]+\\) . not players or teams"
-    centerElement: true
-    timeout: 15000
-- tapOn:
-    id: "Skipped names \\([0-9]+\\) . not players or teams"
+    text: "Cancel (Esc)"
+    retryTapIfNoChange: true
 - assertVisible:
-    text: ".*Unskip a name to review it on the next sync.*"
-
-# ============================================================
-# STEP 6 — R2(f): the skip is reversible, and the product says so
-#
-# Unskip removes the record and announces the consequence in its own words. That
-# sentence is the whole user-facing contract of the list: the name comes back at
-# the next sync rather than being gone for good.
-# ============================================================
-
-- scrollUntilVisible:
-    element:
-      id: "Unskip .*"
-    centerElement: true
-    timeout: 10000
+    text: "Discard [0-9]+ decisions.*"
 - tapOn:
-    id: "Unskip .*"
+    text: "Discard"
 - extendedWaitUntil:
-    visible:
-      text: "Unskipped .* it will be reviewed on the next sync."
+    visible: "Fetch cancelled — no cards saved."
