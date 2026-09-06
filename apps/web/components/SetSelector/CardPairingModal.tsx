@@ -32,11 +32,24 @@ import { compareCardNumbers } from "@/lib/cards/card-number";
 // runs this exact function over an auto-matched pair before it discards the
 // losing name, so an auto-matched disagreement and a hand-linked one are
 // definitionally the same thing. See lib/cards/card-name.ts.
+// NEO-251: the roster half of the same question, shared the same way — and
+// `playersKey` is what decides whether a list the operator TYPED is really one
+// of the two marketplace answers.
 import {
   conflictingNames,
+  conflictingPlayers,
+  playersKey,
   type NameDisagreement,
+  type PlayersDisagreement,
 } from "@/lib/cards/card-name";
 import { isEditableTarget } from "../../lib/dom/is-editable-target";
+// NEO-251 security review — the two bounds the server enforces on every path a
+// player name can take, applied here as well so the operator finds out while
+// the field is still in front of them rather than at the end of a 900-card
+// commit. `MAX_CARD_PLAYERS` comes through the same `card-attention` seam the
+// rest of this screen's shared card rules do.
+import { MAX_CARD_PLAYERS } from "./card-attention";
+import { MAX_PLAYER_NAME_LENGTH } from "../../lib/players/name-limits";
 
 /**
  * NEO-137 — card-level pairing, before any NB card exists.
@@ -103,6 +116,36 @@ export type PairingCard = {
    * anywhere else.
    */
   nameConflict?: NameDisagreement;
+  /**
+   * NEO-251 — WIRE-ONLY, on exactly the same terms as `nameConflict` above:
+   * both marketplaces' PLAYER LISTS for this card, sent by `fetchCardChecklist`
+   * when they disagree about who is on it.
+   *
+   * A separate field rather than part of `nameConflict` because the two fail
+   * independently. The title and the roster are different fields on different
+   * shapes — BSC sends a structured `players[]`, SportLots one subject string
+   * the adapter splits — so a card whose two sides carry the same title can
+   * still carry a different roster, and `players: bsc.players ?? sl.players`
+   * threw the loser away in silence. Those names become `playerIds`, which the
+   * listing title is generated from, so the disagreement surfaced to a buyer
+   * rather than to the operator.
+   *
+   * `preferred` is the server's evidence that an operator settled this same
+   * disagreement on an earlier sync: the committed NB row already carries
+   * SportLots' roster. It is rendered as a HINT — "NeonBinder currently
+   * stores: …" — and deliberately does NOT pre-select the radio. Two reasons,
+   * and the second is the one that matters: NB owns the answer and a hint is
+   * evidence rather than a decision; and `countPairingEdits` reads a players
+   * conflict as settled once `chosen` has moved off `"bsc"`, so a seeded
+   * non-default would make an untouched row read as operator work in the
+   * discard confirm.
+   *
+   * Lifted onto the PAIR by `seedMatched` the moment it arrives, and never
+   * reaches `onConfirm`. Do not read it anywhere else.
+   */
+  playersConflict?: PlayersDisagreement & {
+    preferred?: "bsc" | "sportlots";
+  };
   platformData: {
     bsc?: { ref: string; setId?: string };
     sportlots?: { ref: string; setId?: string };
@@ -110,7 +153,43 @@ export type PairingCard = {
   unmatched?: "bsc" | "sl";
 };
 
-export type PairingResult = { cards: PairingCard[] };
+/**
+ * NEO-251 — what one card's two marketplaces disagreed about, as the sync
+ * review needs to hear it.
+ *
+ * The DISAGREEMENT only: no `chosen`, no `custom`, no `preferred`. Those are
+ * this screen's own state and the operator has already spent them; what the
+ * diff needs is the pair of answers that were on offer, so it can tell "the
+ * operator settled this last sync" apart from "upstream changed it".
+ */
+export type PairingConflicts = {
+  nameConflict?: NameDisagreement;
+  playersConflict?: PlayersDisagreement;
+};
+
+/**
+ * What Confirm hands back.
+ *
+ * `cards` is exactly what it always was: a card here is a COMMITTABLE card,
+ * carrying no open question. That invariant is load-bearing in two places —
+ * `commitCardChecklist` throws on a card still carrying `playersConflict`, and
+ * the byte-identical-payload test pins it — so the disagreements travel
+ * BESIDE the cards rather than on them.
+ *
+ * Keyed by index into `cards`, which is the vocabulary the sync review already
+ * speaks (`applyFieldsByIndex`, `baseVersionByIndex`, `heldBackIndices` all
+ * address the same array the same way). A parallel array would have to be
+ * filtered in step with `heldBackIndices`; a record simply misses.
+ *
+ * Only matched pairs can appear: a kept single has one marketplace and nothing
+ * to disagree with. And only UNSETTLED ones — a row the operator decided in
+ * this session is withheld, because the entry's whole meaning to the diff is
+ * "nobody has answered this yet" (see `MatchedPair.touched`).
+ */
+export type PairingResult = {
+  cards: PairingCard[];
+  conflictsByIndex: Record<number, PairingConflicts>;
+};
 
 /**
  * NEO-189 — the two marketplaces disagree about WHO IS ON the card.
@@ -165,6 +244,40 @@ type NameConflict = NameDisagreement & {
 };
 
 /**
+ * NEO-251 — the roster equivalent of `NameConflict`, and deliberately its
+ * mirror image rather than a variation on it.
+ *
+ * Same three options (BSC, SportLots, a list the operator typed), same
+ * `chosen`-lives-on-the-pair rule, same reversibility right up to Confirm. The
+ * one difference is the shape of the value: a LIST rather than a string, which
+ * is why `custom` is `string[]` and why "did the operator just retype one of
+ * the marketplace answers?" is decided by `playersKey` rather than by string
+ * equality — two sides listing the same two players in a different order are
+ * the same answer, and treating the reordering as a third option would put an
+ * unreachable-by-meaning choice in the group.
+ *
+ * That fold is a KNOWN divergence from `RENAME`, which matches on the exact
+ * trimmed string precisely so that a typed "José Ramírez" is not swallowed as
+ * "you picked BSC's Jose Ramirez". `playersKey` folds diacritics, so the same
+ * correction typed into the roster field IS swallowed. It is the contract this
+ * screen was specified against (order-insensitivity is the dominant case for a
+ * list); flagged here so the trade is visible rather than discovered.
+ */
+type PlayersConflict = PlayersDisagreement & {
+  /** Whose roster the merged card is carrying right now. */
+  chosen: "bsc" | "sportlots" | "custom";
+  /** A roster the OPERATOR typed, when neither marketplace had it right. */
+  custom?: string[];
+  /**
+   * NEO-251 — the side the NB row this card matches ALREADY carries, i.e.
+   * how this same disagreement was settled on an earlier sync.
+   *
+   * Displayed, never applied. See `PairingCard.playersConflict`.
+   */
+  preferred?: "bsc" | "sportlots";
+};
+
+/**
  * A pair as it ARRIVES — off the streamed `checklistCandidates` query, which
  * is the only wire the cards travel now that `fetchCardChecklist` returns just
  * a count and a message.
@@ -205,6 +318,46 @@ type MatchedPair = {
    * been a screen that looks like it is protecting you and mostly is not.
    */
   nameConflict?: NameConflict;
+  /**
+   * NEO-251 — set on ANY merged pair whose two sides list different PLAYERS,
+   * from either path, under the same rule as `nameConflict` above.
+   *
+   * Both can be set on one row: the marketplaces can disagree about the title
+   * AND about the roster, and they are two decisions, so the row shows two
+   * controls.
+   */
+  playersConflict?: PlayersConflict;
+  /**
+   * NEO-251 — has the operator made a DECISION about this row in this session?
+   *
+   * Set by any of the four settle actions (`CHOOSE_NAME`, `CHOOSE_PLAYERS`,
+   * `RENAME`, `EDIT_PLAYERS`), and it is the reason the row's conflict is
+   * withheld from `conflictsByIndex` at Confirm — see `PairingResult`.
+   *
+   * ## Why `chosen` cannot answer this
+   *
+   * The obvious test — "`chosen` has moved off its `"bsc"` default" — is wrong
+   * in the one direction that costs data. An operator whose NB row already
+   * carries SportLots' roster (they settled it on a previous sync) can open
+   * this screen and deliberately pick BSC. That is a real decision, and it
+   * leaves `chosen === "bsc"`: identical, from the outside, to a row nobody
+   * looked at. Treated as untouched, the diff suppresses the field and their
+   * re-pick is discarded in silence.
+   *
+   * So this is a record of the GESTURE, not of the value it produced. It is
+   * therefore also set when the operator clicks the pill that is already
+   * checked — that dispatch is otherwise a no-op, and it is exactly the shape
+   * the re-pick takes.
+   *
+   * Deliberately NOT set by a refused or empty edit. A blank field, an
+   * over-length name and a re-typed identical value all return the same state
+   * object; nothing was decided, so nothing is recorded.
+   *
+   * `countPairingEdits` is intentionally left reading `chosen`/`custom`
+   * instead: it answers "how much work would a discard throw away", and a bare
+   * re-pick of the default changes nothing that a re-open would not reproduce.
+   */
+  touched?: boolean;
 };
 
 type State = {
@@ -265,6 +418,32 @@ type Action =
    * the focus helpers re-query after a dispatch.
    */
   | { type: "RENAME"; index: number; cardName: string }
+  /**
+   * NEO-251 — which marketplace's PLAYER LIST the merged card keeps.
+   *
+   * The exact shape of `CHOOSE_NAME` one field over, including the `"custom"`
+   * guard: the reducer refuses a side whose value does not exist, so the
+   * radiogroup's "every rendered option is reachable and exactly one is
+   * checked" invariant is a property of the data rather than of three call
+   * sites agreeing.
+   */
+  | {
+      type: "CHOOSE_PLAYERS";
+      index: number;
+      side: "bsc" | "sportlots" | "custom";
+    }
+  /**
+   * NEO-251 — the operator types the card's real roster.
+   *
+   * The list arrives already split (the input splits on `|` or ` / `), so this
+   * action never parses. Same three outcomes as `RENAME`, with one deliberate
+   * difference: a typed list is matched against each marketplace side with
+   * `playersKey` rather than by exact string, because two lists naming the same
+   * players in a different order are the same answer and a third "Custom"
+   * option spelling one of the first two is a choice with no meaning. The cost
+   * of that fold is recorded on `PlayersConflict`.
+   */
+  | { type: "EDIT_PLAYERS"; index: number; players: string[] }
   // Keyed on candidateKey for exactly the same reason LINK is: two SportLots
   // rows filed under one number are two different cards, and a number-keyed
   // lookup moves whichever of them sorted first. The operator watches the row
@@ -530,6 +709,58 @@ function nameConflictOf(
 }
 
 /**
+ * NEO-251 — do these two candidates disagree about WHO IS ON the card?
+ *
+ * `nameConflictOf`'s sibling, sharing `conflictingPlayers` with the server for
+ * the same reason: an auto-matched roster disagreement and a hand-linked one
+ * have to be the same fact, because the operator cannot tell which path put the
+ * row in front of them.
+ *
+ * `chosen` starts on BSC because `mergePair` takes `bsc.players ?? sl.players`
+ * and a conflict requires both sides to be non-empty — so the default is a
+ * truthful statement about what the card is carrying, not a decision.
+ */
+function playersConflictOf(
+  bsc: PairingCard,
+  sl: PairingCard,
+): PlayersConflict | undefined {
+  const conflict = conflictingPlayers(bsc.players, sl.players);
+  return conflict ? { ...conflict, chosen: "bsc" } : undefined;
+}
+
+/** How a roster reads inside a pill: "Alec Bohm / Spencer Howard". */
+function joinPlayers(players: string[]): string {
+  return players.join(" / ");
+}
+
+/**
+ * How a roster reads inside the EDIT field: "Alec Bohm | Spencer Howard".
+ *
+ * Deliberately not `joinPlayers`. The field's own label names `|` as the
+ * separator, and a field pre-filled with a separator its label does not
+ * mention teaches the operator the wrong thing about what they may type. The
+ * pills keep ` / ` because they are prose, not input.
+ */
+function joinCustomPlayers(players: string[]): string {
+  return players.join(" | ");
+}
+
+/**
+ * The custom-roster field's own separator, and the one its label names.
+ *
+ * ` / ` is accepted too because it is what the pills show, and an operator
+ * copying a pill's text into the field should not be punished for it. Split on
+ * a SPACED slash only: "Ken Griffey Jr./Sr." is one name, and an unspaced
+ * slash inside a name is not a separator.
+ */
+function splitPlayers(text: string): string[] {
+  return text
+    .split(/\||\s+\/\s+/)
+    .map((name) => name.trim())
+    .filter(Boolean);
+}
+
+/**
  * NEO-199 — turn pairs as they ARRIVE into pairs this screen can reason about.
  *
  * Two jobs, and the second is the one that matters:
@@ -557,19 +788,50 @@ function nameConflictOf(
  */
 function seedMatched(incoming: IncomingPair[]): MatchedPair[] {
   return incoming.map((pair) => {
-    const wire = pair.card.nameConflict;
-    if (!wire) return pair;
+    const wireName = pair.card.nameConflict;
+    // NEO-251: the roster disagreement travels the same wire and is lifted and
+    // stripped on the same terms. Checked together so the common row — neither
+    // field present — still returns BY REFERENCE and allocates nothing; this
+    // runs on every `ABSORB`, i.e. every tick of a 908-card subscription.
+    const wirePlayers = pair.card.playersConflict;
+    if (!wireName && !wirePlayers) return pair;
     const card: PairingCard = { ...pair.card };
     delete card.nameConflict;
-    const conflict = conflictingNames(wire.bsc, wire.sportlots);
-    if (!conflict) return { card, confidence: pair.confidence };
-    // BSC by default: the server's merge took `bsc.cardName || sl.cardName`,
-    // and a conflict requires both sides to be non-empty, so `card.cardName` is
-    // necessarily BSC's. Same invariant `nameConflictOf` relies on above.
+    delete card.playersConflict;
+    // Both comparisons are RE-RUN rather than trusted, for the reason above:
+    // it is the same function the server used, so on a healthy payload it is a
+    // no-op — and it means a degenerate pair cannot render a radiogroup asking
+    // the operator to choose between two identical options.
+    const nameConflict = wireName
+      ? conflictingNames(wireName.bsc, wireName.sportlots)
+      : undefined;
+    const playersConflict = wirePlayers
+      ? conflictingPlayers(wirePlayers.bsc, wirePlayers.sportlots)
+      : undefined;
     return {
       card,
       confidence: pair.confidence,
-      nameConflict: { ...conflict, chosen: "bsc" },
+      // BSC by default on BOTH: the server's merge took `bsc.cardName ||
+      // sl.cardName` and `bsc.players ?? sl.players`, and a conflict requires
+      // both sides to be non-empty, so the card is necessarily carrying BSC's
+      // answer. Same invariant `nameConflictOf` / `playersConflictOf` rely on.
+      ...(nameConflict
+        ? { nameConflict: { ...nameConflict, chosen: "bsc" as const } }
+        : {}),
+      ...(playersConflict
+        ? {
+            playersConflict: {
+              ...playersConflict,
+              chosen: "bsc" as const,
+              // Evidence only — see `PairingCard.playersConflict`. Carried
+              // across so the row can SAY what NB already stores; it never
+              // moves `chosen`.
+              ...(wirePlayers?.preferred
+                ? { preferred: wirePlayers.preferred }
+                : {}),
+            },
+          }
+        : {}),
     };
   });
 }
@@ -613,7 +875,14 @@ function mergePair(bsc: PairingCard, sl: PairingCard): PairingCard {
     cardName: bsc.cardName || sl.cardName,
     team: bsc.team ?? sl.team,
     teams: bsc.teams ?? sl.teams,
-    players: bsc.players ?? sl.players,
+    // NEO-251: an EMPTY roster is an absent one. `??` only falls through on
+    // null/undefined, so a BSC row carrying a literal `[]` used to beat a real
+    // SportLots roster and drop it silently — with no conflict raised either,
+    // because one empty side is genuinely not a disagreement. Both adapters
+    // send an absent key today, so this changes nothing in practice; it is
+    // here because SportLots supplies rosters now, which is what makes the
+    // difference between "absent" and "empty" worth being right about.
+    players: bsc.players?.length ? bsc.players : sl.players,
     attributes: attributes.length ? attributes : undefined,
     isRookie: attributes.includes("RC") || undefined,
     isRelic: attributes.includes("RELIC") || undefined,
@@ -630,6 +899,30 @@ function mergePair(bsc: PairingCard, sl: PairingCard): PairingCard {
         ? { sportlots: sl.platformData.sportlots }
         : {}),
     },
+  };
+}
+
+/**
+ * NEO-251 — record that the operator decided something about one row, without
+ * changing anything else about it.
+ *
+ * Only reached from the two `CHOOSE_*` cases when the side asked for is already
+ * the side that is chosen. That dispatch used to be a pure no-op, and had to
+ * stop being one: re-picking the checked pill is how an operator confirms BSC
+ * over a stored SportLots answer, and it is the case `chosen` alone cannot see
+ * (see `MatchedPair.touched`).
+ *
+ * Returns the SAME state object once the row is already touched, so a second
+ * click on the same pill costs no render and no re-sort.
+ */
+function markTouched(state: State, index: number): State {
+  const pair = state.matched[index];
+  if (!pair || pair.touched) return state;
+  return {
+    ...state,
+    matched: state.matched.map((m, i) =>
+      i === index ? { ...m, touched: true } : m,
+    ),
   };
 }
 
@@ -769,6 +1062,8 @@ function baseReducer(state: State, action: Action): State {
       const slSide = state.unmatchedSl[si];
       // NEO-189: recorded BEFORE the merge throws one of the two names away.
       const nameConflict = nameConflictOf(bscSide, slSide);
+      // NEO-251: likewise, before `mergePair` drops one of the two rosters.
+      const playersConflict = playersConflictOf(bscSide, slSide);
       return {
         ...state,
         matched: [
@@ -779,6 +1074,7 @@ function baseReducer(state: State, action: Action): State {
             // hand-linked row is never mistaken for a high-confidence guess.
             confidence: 0,
             ...(nameConflict ? { nameConflict } : {}),
+            ...(playersConflict ? { playersConflict } : {}),
           },
         ],
         unmatchedBsc: state.unmatchedBsc.filter((_, i) => i !== bi),
@@ -803,6 +1099,15 @@ function baseReducer(state: State, action: Action): State {
         // card, not to either marketplace's row, and stamping it onto both
         // halves would destroy the disagreement the operator was correcting.
         cardName: pair.nameConflict?.bsc ?? pair.card.cardName,
+        // NEO-251: and its own ROSTER back, for exactly the same reason. The
+        // merged row carries one side's players, so spreading it onto both
+        // halves would stamp BSC's single subject over SportLots' pair — an
+        // unlink that does not undo the merge, and a disagreement that could
+        // never be detected again on a re-link because both rows now agree.
+        // Reads the CONFLICT, not `card.players`, so a roster the operator
+        // typed stays on the merged card rather than being stamped onto two
+        // marketplace rows that never claimed it.
+        players: pair.playersConflict?.bsc ?? pair.card.players,
         platformData: pair.card.platformData.bsc
           ? { bsc: pair.card.platformData.bsc }
           : {},
@@ -811,6 +1116,7 @@ function baseReducer(state: State, action: Action): State {
       const slSide: PairingCard = {
         ...pair.card,
         cardName: pair.nameConflict?.sportlots ?? pair.card.cardName,
+        players: pair.playersConflict?.sportlots ?? pair.card.players,
         platformData: pair.card.platformData.sportlots
           ? { sportlots: pair.card.platformData.sportlots }
           : {},
@@ -839,7 +1145,13 @@ function baseReducer(state: State, action: Action): State {
     case "CHOOSE_NAME": {
       const pair = state.matched[action.index];
       if (!pair?.nameConflict) return state;
-      if (pair.nameConflict.chosen === action.side) return state;
+      // NEO-251: re-picking the side that is ALREADY chosen is still a
+      // decision, and on a row whose NB value came from the other side it is
+      // the whole decision. Recorded rather than dropped — see
+      // `MatchedPair.touched`.
+      if (pair.nameConflict.chosen === action.side) {
+        return markTouched(state, action.index);
+      }
       const conflict = pair.nameConflict;
       const cardName =
         action.side === "bsc"
@@ -860,6 +1172,7 @@ function baseReducer(state: State, action: Action): State {
                 ...pair,
                 card: { ...pair.card, cardName },
                 nameConflict: { ...conflict, chosen: action.side },
+                touched: true,
               }
             : m,
         ),
@@ -894,13 +1207,23 @@ function baseReducer(state: State, action: Action): State {
       if (!pair) return state;
       const cardName = action.cardName.trim();
       if (!cardName) return state;
+      // NEO-251 security review — this name reaches `players.findOrCreate`
+      // through the entity wizard, which refuses over-length names at the
+      // write path. Refusing here too means the operator finds out while the
+      // field is still in front of them rather than at the end of a 900-card
+      // commit. Refused, never trimmed, for the reason `players.ts` gives:
+      // silently storing something other than what was typed is how a mangled
+      // name becomes canonical.
+      if (cardName.length > MAX_PLAYER_NAME_LENGTH) return state;
       const conflict = pair.nameConflict;
       if (!conflict) {
         if (cardName === pair.card.cardName) return state;
         return {
           ...state,
           matched: state.matched.map((m, i) =>
-            i === action.index ? { ...pair, card: { ...pair.card, cardName } } : m,
+            i === action.index
+              ? { ...pair, card: { ...pair.card, cardName }, touched: true }
+              : m,
           ),
         };
       }
@@ -925,7 +1248,123 @@ function baseReducer(state: State, action: Action): State {
         ...state,
         matched: state.matched.map((m, i) =>
           i === action.index
-            ? { ...pair, card: { ...pair.card, cardName }, nameConflict }
+            ? {
+                ...pair,
+                card: { ...pair.card, cardName },
+                nameConflict,
+                touched: true,
+              }
+            : m,
+        ),
+      };
+    }
+    /**
+     * NEO-251 — the operator settles a roster disagreement.
+     *
+     * `CHOOSE_NAME`'s shape exactly, one field over, and nothing here blocks
+     * Confirm for the same reason: a conflict is recoverable, and blocking
+     * would let one flagged row in a streamed 660-card set hold the whole
+     * commit hostage.
+     */
+    case "CHOOSE_PLAYERS": {
+      const pair = state.matched[action.index];
+      if (!pair?.playersConflict) return state;
+      // Same as `CHOOSE_NAME` above: the re-pick is the decision.
+      if (pair.playersConflict.chosen === action.side) {
+        return markTouched(state, action.index);
+      }
+      const conflict = pair.playersConflict;
+      const players =
+        action.side === "bsc"
+          ? conflict.bsc
+          : action.side === "sportlots"
+            ? conflict.sportlots
+            : conflict.custom;
+      // "custom" is only selectable once the operator has typed one — guarded
+      // here rather than at the call sites, so the radiogroup's invariant
+      // cannot be broken by a dispatch for an option that is not on screen.
+      if (players === undefined) return state;
+      return {
+        ...state,
+        matched: state.matched.map((m, i) =>
+          i === action.index
+            ? {
+                ...pair,
+                card: { ...pair.card, players },
+                playersConflict: { ...conflict, chosen: action.side },
+                touched: true,
+              }
+            : m,
+        ),
+      };
+    }
+    /**
+     * NEO-251 — the operator types the card's real roster.
+     *
+     * Only meaningful on a CONFLICTED row: unlike `cardName`, the player list
+     * is not shown on an ordinary row here, and the field that edits it is
+     * rendered as part of the conflict control. An unconflicted row therefore
+     * has no way to reach this and the reducer says so rather than inventing a
+     * second roster editor.
+     *
+     * A blank list is a no-op returning the SAME state object, which is what
+     * makes commit-on-blur safe: tabbing through the field without typing is
+     * genuinely nothing, not a rewrite to the same value.
+     */
+    case "EDIT_PLAYERS": {
+      const pair = state.matched[action.index];
+      const conflict = pair?.playersConflict;
+      if (!pair || !conflict) return state;
+      const players = action.players
+        .map((name) => name.trim())
+        .filter(Boolean);
+      if (players.length === 0) return state;
+      // NEO-251 security review — the same two bounds the server enforces on
+      // every write path, applied at the point the operator's own text becomes
+      // a roster. Refused rather than trimmed: a truncated roster is a wrong
+      // roster that looks right, and this list becomes `playerIds`, which the
+      // listing title is generated from. Reported by LENGTH, never by echoing
+      // the text back (players.ts convention).
+      if (players.length > MAX_CARD_PLAYERS) return state;
+      if (players.some((name) => name.length > MAX_PLAYER_NAME_LENGTH)) {
+        return state;
+      }
+      const typed = playersKey(players);
+      const chosen: PlayersConflict["chosen"] =
+        typed === playersKey(conflict.bsc)
+          ? "bsc"
+          : typed === playersKey(conflict.sportlots)
+            ? "sportlots"
+            : "custom";
+      const playersConflict: PlayersConflict =
+        chosen === "custom"
+          ? { ...conflict, chosen, custom: players }
+          : { ...conflict, chosen };
+      // Retyping one of the two marketplace answers means "I pick that one",
+      // so the card carries THAT side's spelling rather than the operator's
+      // re-keying of it — the same rule `RENAME` follows.
+      const next =
+        chosen === "bsc"
+          ? conflict.bsc
+          : chosen === "sportlots"
+            ? conflict.sportlots
+            : players;
+      if (
+        conflict.chosen === chosen &&
+        playersKey(pair.card.players ?? []) === playersKey(next)
+      ) {
+        return state;
+      }
+      return {
+        ...state,
+        matched: state.matched.map((m, i) =>
+          i === action.index
+            ? {
+                ...pair,
+                card: { ...pair.card, players: next },
+                playersConflict,
+                touched: true,
+              }
             : m,
         ),
       };
@@ -1058,7 +1497,11 @@ function label(card: PairingCard): string {
 function conflictScopeLabels(matched: MatchedPair[]): Map<string, string> {
   const byNumber = new Map<string, MatchedPair[]>();
   for (const m of matched) {
-    if (!m.nameConflict) continue;
+    // NEO-251: EITHER conflict puts the row in the naming scheme. The scope is
+    // a property of the ROW, not of which field is disputed — two rows on one
+    // number need telling apart whichever control they are carrying, and the
+    // two controls on a single row must agree about what that row is called.
+    if (!m.nameConflict && !m.playersConflict) continue;
     const rows = byNumber.get(m.card.cardNumber);
     if (rows) rows.push(m);
     else byNumber.set(m.card.cardNumber, [m]);
@@ -1086,6 +1529,158 @@ function conflictScopeLabels(matched: MatchedPair[]): Map<string, string> {
     });
   }
   return labels;
+}
+
+/**
+ * NEO-251 — ONE "the two marketplaces disagree, pick one" control.
+ *
+ * Extracted verbatim from the name-conflict block NEO-189 built, and then used
+ * for the roster conflict too. The extraction is the point: the two controls
+ * are the same decision about different fields, and a second hand-written copy
+ * is how a screen ends up with two radiogroups that behave differently under
+ * the arrow keys, announce themselves differently, and drift apart the first
+ * time either is fixed. The name-conflict markup is byte-for-byte what it was
+ * — same classes, same aria, same DOM order — because the Maestro flow and
+ * roughly forty unit assertions address it by its rendered text.
+ *
+ * `handleAttr` is a data attribute rather than an id because the focus helper
+ * re-queries this subtree AFTER a dispatch: `ordered()` re-sorts
+ * `state.matched` on every action, so an index or an element ref captured
+ * beforehand cannot be trusted to still mean the same row.
+ *
+ * Deliberately NOT parameterised: the accent. Both conflicts use the same pink
+ * rail and the same ⚠. A second alert colour on one row would make the two
+ * controls compete for the operator's eye and dilute what pink means on this
+ * screen — the words and the accessible names are what say which decision is
+ * which.
+ */
+type ConflictSide = "bsc" | "sportlots" | "custom";
+
+function ConflictRadioGroup({
+  handleAttr,
+  handleKey,
+  groupLabel,
+  warningId,
+  warning,
+  radioGroupLabel,
+  options,
+  chosen,
+  onChoose,
+  children,
+}: {
+  /** e.g. `data-name-conflict` — the row handle the focus helper re-queries. */
+  handleAttr: string;
+  handleKey: string;
+  /** Names the region: "Name conflict on #227c". */
+  groupLabel: string;
+  warningId: string;
+  /** The sentence explaining why there is a choice at all. */
+  warning: string;
+  /** Names the radiogroup: "Name for #227c". */
+  radioGroupLabel: string;
+  options: Array<{ side: ConflictSide; label: string; ariaLabel: string }>;
+  chosen: ConflictSide;
+  /**
+   * `viaKeyboard` exists because the two ways of choosing need different
+   * follow-through: an arrow key moves focus WITH selection (the APG pattern),
+   * so the caller has to re-focus the newly-checked radio after the render; a
+   * click already left focus on the right element.
+   */
+  onChoose: (side: ConflictSide, viaKeyboard: boolean) => void;
+  /** Extra controls under the pills — the roster conflict's own text field. */
+  children?: React.ReactNode;
+}) {
+  return (
+    <div
+      role="group"
+      // Named by the row's SCOPE, not by `label(m.card)`: see
+      // `conflictScopeLabels`. The name has to hold still while the operator
+      // uses the control it names.
+      aria-label={groupLabel}
+      // COLUMN, not a wrapping row. As `flex flex-wrap` the warning sentence
+      // and the pills sat side by side when they happened to fit and dropped
+      // below when they did not, so the same control was laid out differently
+      // on adjacent rows purely as a function of how long the two values were
+      // — the operator has to re-find the pills on every row. The sentence is
+      // the explanation and the pills are the decision; they read
+      // top-to-bottom, always. (The pills themselves still wrap — see the
+      // radiogroup's own `flex flex-wrap` below.)
+      className="flex flex-col items-start gap-1.5 border-l-2 border-[#FF2EB3] pl-2 py-1"
+      {...{ [handleAttr]: handleKey }}
+    >
+      <span id={warningId} className="text-xs text-[#FF2EB3]">
+        {/* Decorative — the sentence itself carries the meaning, so AT
+            shouldn't also be made to announce "warning sign" first. */}
+        <span aria-hidden="true">⚠</span> {warning}
+      </span>
+      {/*
+        a11y (NEO-189 audit) — this is a mutually exclusive,
+        always-exactly-one-chosen set, i.e. exactly the case the WAI-ARIA APG
+        radio-group pattern is for, not independent aria-pressed toggles (which
+        carry no guarantee, semantic or enforced, that they're mutually
+        exclusive, and give a keyboard user no arrow-key way to move between
+        them as a set). Kept visually as pill buttons per the design — only the
+        semantics and keyboard handling changed.
+      */}
+      <div
+        role="radiogroup"
+        aria-label={radioGroupLabel}
+        aria-describedby={warningId}
+        className="flex flex-wrap items-center gap-2"
+        onKeyDown={(e) => {
+          if (
+            !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)
+          ) {
+            return;
+          }
+          // The APG pattern moves focus WITH selection on a single-select
+          // radio group, and wraps at both ends. This used to be a toggle,
+          // which was only correct while there were exactly two options — an
+          // operator-typed value makes a third, and a toggle would have made
+          // it unreachable by keyboard while leaving it clickable by mouse.
+          // The order matches the rendered order, so "next" means the pill to
+          // the right.
+          e.preventDefault();
+          const at = options.findIndex((o) => o.side === chosen);
+          const step = e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 1;
+          const next =
+            options[(at + step + options.length) % options.length];
+          onChoose(next.side, true);
+        }}
+      >
+        {options.map((option) => (
+          <button
+            key={option.side}
+            type="button"
+            role="radio"
+            aria-checked={chosen === option.side}
+            // Roving tabindex: only the checked radio is a Tab stop, matching
+            // native radio-group behaviour and the APG pattern.
+            tabIndex={chosen === option.side ? 0 : -1}
+            // The accessible name STARTS WITH the visible label so it
+            // satisfies WCAG 2.5.3 Label in Name — a speech-input user saying
+            // "click BSC: <value>" has to match what is actually announced.
+            aria-label={option.ariaLabel}
+            onClick={() => onChoose(option.side, false)}
+            className={`text-xs rounded px-2 py-1.5 ${
+              chosen === option.side
+                ? "bg-cyan-900/60 text-cyan-100 ring-2 ring-[#00B7FF]"
+                : "bg-gray-700/60 text-gray-300"
+            }`}
+          >
+            {/* 1.4.1 Use of Color — the cyan/gray fill pair differs by hue
+                only (~1:1 lightness contrast), indistinguishable to a
+                colour-blind operator deciding which value wins. The checkmark
+                + ring give a non-colour cue for the state colour alone was
+                carrying. */}
+            {chosen === option.side && <span aria-hidden="true">✓ </span>}
+            {option.label}
+          </button>
+        ))}
+      </div>
+      {children}
+    </div>
+  );
 }
 
 export default function CardPairingModal({
@@ -1153,6 +1748,46 @@ export default function CardPairingModal({
   const [editingKey, setEditingKey] = useState<string | null>(null);
   /** The in-progress text. Only meaningful while `editingKey` is set. */
   const [editDraft, setEditDraft] = useState("");
+  /**
+   * NEO-251 — the in-progress text of ONE roster field, keyed on
+   * `candidateKey` for the same reason `editingKey` is: `ordered()` re-sorts
+   * `state.matched` after every dispatch and `ABSORB` inserts rows into it, so
+   * a held index would come to mean a different row and leave a half-typed
+   * roster sitting on somebody else's card.
+   *
+   * One draft at a time rather than a map: only one field can have focus, and
+   * a map would keep stale text alive for rows the operator has moved on from.
+   * With no draft the field simply renders the row's current roster, so
+   * `CHOOSE_PLAYERS` is reflected in it immediately.
+   *
+   * Unlike the title editor this field is always mounted, so Escape does not
+   * unmount it and there is no removal-blur to race — hence no
+   * `editSessionDoneRef` equivalent.
+   */
+  const [playersDraft, setPlayersDraft] = useState<{
+    key: string;
+    text: string;
+  } | null>(null);
+  /**
+   * a11y (accessibility audit, NEO-251) — WCAG 3.3.1 Error Identification for
+   * the two silent-refusal paths `RENAME` and `EDIT_PLAYERS` added over an
+   * unbounded field: an over-length name or an over-count roster used to be
+   * discarded with the input simply reverting to its old value and NOTHING
+   * announced, sighted or not. These hold the message to show (and, for the
+   * roster field, block the draft-clearing that was erasing what the operator
+   * typed) until they correct it or move on. Keyed like `editingKey` /
+   * `playersDraft` for the same reason: only one field can be in error at a
+   * time, and a stale key must not paint an error on a row the operator has
+   * moved off of.
+   */
+  const [nameError, setNameError] = useState<{
+    key: string;
+    message: string;
+  } | null>(null);
+  const [playersError, setPlayersError] = useState<{
+    key: string;
+    message: string;
+  } | null>(null);
   /**
    * Has the OPEN edit session already been settled?
    *
@@ -1226,6 +1861,13 @@ export default function CardPairingModal({
   // manual pairing happens in — and a warning inside a closed section is not a
   // warning.
   const nameConflictCount = state.matched.filter((m) => m.nameConflict).length;
+  // NEO-251: counted SEPARATELY rather than folded into one "conflicts" total.
+  // They are two different decisions on two different fields, and a single
+  // number would tell the operator how much work there is without telling them
+  // what kind — which is the half that decides whether to expand the section.
+  const playersConflictCount = state.matched.filter(
+    (m) => m.playersConflict,
+  ).length;
   // NEO-201: how each conflict row is named to assistive tech. Derived from
   // the WHOLE matched list rather than per row, because whether a row needs a
   // disambiguator at all is a property of its number's group, not of the row.
@@ -1273,8 +1915,16 @@ export default function CardPairingModal({
   }, []);
 
   /**
-   * NEO-189/a11y — focus the now-checked radio in a name-conflict
-   * radiogroup, by `domKey` rather than by array index: the
+   * NEO-189/a11y — focus the now-checked radio in a conflict radiogroup, by
+   * `domKey` rather than by array index.
+   *
+   * NEO-251 generalised it over the row HANDLE (`data-name-conflict` /
+   * `data-players-conflict`) rather than hard-coding the name one: a row can
+   * now carry two conflict controls, and sending an arrow key in the roster
+   * group to the title group's radio would move the operator's focus to a
+   * different decision than the one they were making.
+   *
+   * Keyed by `domKey` rather than by array index because: the
    * radiogroup's own arrow-key handler dispatches CHOOSE_NAME first, and by
    * the time this runs the DOM has to be re-queried anyway (the CHOSEN radio
    * — the one that must end up focused — only exists post-render), and
@@ -1282,15 +1932,18 @@ export default function CardPairingModal({
    * captured index or element ref from before the dispatch cannot be trusted
    * to still point at the same row afterward.
    */
-  const refocusSelectedRadio = useCallback((key: string) => {
-    requestAnimationFrame(() => {
-      dialogRef.current
-        ?.querySelector<HTMLElement>(
-          `[data-name-conflict="${key}"] [role="radio"][tabindex="0"]`,
-        )
-        ?.focus();
-    });
-  }, []);
+  const refocusSelectedRadio = useCallback(
+    (handleAttr: string, key: string) => {
+      requestAnimationFrame(() => {
+        dialogRef.current
+          ?.querySelector<HTMLElement>(
+            `[${handleAttr}="${key}"] [role="radio"][tabindex="0"]`,
+          )
+          ?.focus();
+      });
+    },
+    [],
+  );
 
   /**
    * NEO-189 follow-up — put focus back on the title button a rename just
@@ -1314,6 +1967,51 @@ export default function CardPairingModal({
         ?.focus();
     });
   }, []);
+
+  /**
+   * Settle the open roster edit, if it belongs to this row.
+   *
+   * The reducer decides whether the typed list is actually a change (see
+   * `EDIT_PLAYERS`): blank, over-length and unchanged all return the same state
+   * object, so committing a field the operator only tabbed through is genuinely
+   * nothing rather than a rewrite to the same value. That is what makes
+   * commit-on-blur safe to wire up.
+   */
+  const commitPlayersDraft = (index: number, key: string) => {
+    if (!playersDraft || playersDraft.key !== key) return;
+    const { text } = playersDraft;
+    const players = splitPlayers(text);
+    // a11y (accessibility audit, NEO-251) — mirror `EDIT_PLAYERS`'s own two
+    // bounds BEFORE dispatching. The reducer already refuses these silently
+    // (by design — see its comment), but until now this caller cleared
+    // `playersDraft` unconditionally right above, so a refusal erased the
+    // operator's typed roster with no error shown, sighted or not (WCAG
+    // 3.3.1). On a refusal here the draft is left in place — the field keeps
+    // showing exactly what was typed — and a `role="alert"` message is
+    // rendered next to it (see the field's `aria-describedby` below).
+    if (players.length > 0) {
+      if (players.length > MAX_CARD_PLAYERS) {
+        setPlayersError({
+          key,
+          message: `A card can carry at most ${MAX_CARD_PLAYERS} players — remove some to save.`,
+        });
+        return;
+      }
+      const overLong = players.find(
+        (name) => name.length > MAX_PLAYER_NAME_LENGTH,
+      );
+      if (overLong) {
+        setPlayersError({
+          key,
+          message: `Player names are limited to ${MAX_PLAYER_NAME_LENGTH} characters — shorten it to save.`,
+        });
+        return;
+      }
+    }
+    setPlayersError(null);
+    setPlayersDraft(null);
+    dispatch({ type: "EDIT_PLAYERS", index, players });
+  };
 
   const visibleBsc = useMemo(
     () =>
@@ -1351,11 +2049,22 @@ export default function CardPairingModal({
         (x) => candidateKey(x) === bscKey,
       );
       const slSide = state.unmatchedSl.find((x) => candidateKey(x) === slKey);
-      const createsConflict = !!(
+      const nameConflict = !!(
         bscSide &&
         slSide &&
         nameConflictOf(bscSide, slSide)
       );
+      // NEO-251: a roster disagreement is as much a reason to open the section
+      // as a title one. Manual pairing always happens with Matched collapsed,
+      // so the auto-expand is what makes the warning a warning — a path that
+      // raised only one of the two would silently reintroduce the defect for
+      // the other.
+      const playersConflict = !!(
+        bscSide &&
+        slSide &&
+        playersConflictOf(bscSide, slSide)
+      );
+      const createsConflict = nameConflict || playersConflict;
       // Only ever opens — never closes a section the operator deliberately
       // expanded.
       if (createsConflict) {
@@ -1368,7 +2077,13 @@ export default function CardPairingModal({
       // Left alone that drops focus to <body> at the exact moment a brand-new
       // decision (which name to keep) appears for the operator to make.
       if (createsConflict && bscSide) {
-        refocusSelectedRadio(domKey(bscSide));
+        // The TITLE group when there is one: it is the first control in the
+        // row and the one whose value names the card. A roster-only conflict
+        // sends focus to its own group instead.
+        refocusSelectedRadio(
+          nameConflict ? "data-name-conflict" : "data-players-conflict",
+          domKey(bscSide),
+        );
       }
     },
     [state.unmatchedBsc, state.unmatchedSl, refocusSelectedRadio],
@@ -1431,12 +2146,54 @@ export default function CardPairingModal({
       // Everything still sitting in an unmatched column is discarded — that
       // is what keeps a shared SL set's sibling-owned cards from being
       // invented under this row.
+      // NEO-251: the disagreements, addressed by their card's index in the
+      // array below. `state.matched` is emitted first, so a matched pair's
+      // index IS its index in `cards` — kept singles follow and can never
+      // carry a conflict.
+      const conflictsByIndex: Record<number, PairingConflicts> = {};
+      state.matched.forEach((m, index) => {
+        if (!m.nameConflict && !m.playersConflict) return;
+        // NEO-251 — a row the operator DECIDED in this session contributes
+        // nothing.
+        //
+        // The entry exists to tell the diff "nobody has settled this, so a
+        // stored value equal to the losing side is last session's answer, not
+        // an upstream change". Once the operator has touched the row that
+        // sentence is false, and leaving the entry in place makes the diff
+        // suppress the very field they just decided — the review is skipped,
+        // the commit runs with no `applyFields`, and their choice is discarded
+        // without a word. Withheld rather than flagged, so the rule stays a
+        // property of what is on the wire rather than of a boolean two layers
+        // read differently.
+        if (m.touched) return;
+        conflictsByIndex[index] = {
+          // The two answers only — `chosen` / `custom` / `preferred` are this
+          // screen's state and mean nothing downstream.
+          ...(m.nameConflict
+            ? {
+                nameConflict: {
+                  bsc: m.nameConflict.bsc,
+                  sportlots: m.nameConflict.sportlots,
+                },
+              }
+            : {}),
+          ...(m.playersConflict
+            ? {
+                playersConflict: {
+                  bsc: m.playersConflict.bsc,
+                  sportlots: m.playersConflict.sportlots,
+                },
+              }
+            : {}),
+        };
+      });
       await onConfirm({
         cards: [
           ...state.matched.map((m) => m.card),
           ...state.keptBsc,
           ...state.keptSl,
         ],
+        conflictsByIndex,
       });
     } finally {
       setConfirming(false);
@@ -1644,10 +2401,21 @@ export default function CardPairingModal({
                 // aria-label overrides the button's own text for assistive
                 // tech, so a silent label would hide the very thing the
                 // visible badge exists to announce.
+                // NEO-251 adds a SECOND clause rather than replacing the
+                // first, and puts it BEFORE the name-conflict clause: the
+                // Maestro flow addresses this label with the full-match regex
+                // `Collapse matched cards, .* with a name conflict`, so the
+                // name-conflict wording must stay the LAST thing in the
+                // string (PR #236 run 1 failed on exactly that). A row with no
+                // roster conflict still produces the string it always did.
                 aria-label={
-                  nameConflictCount > 0
-                    ? `${matchedCollapsed ? "Expand" : "Collapse"} matched cards, ${nameConflictCount} with a name conflict`
-                    : `${matchedCollapsed ? "Expand" : "Collapse"} matched cards`
+                  `${matchedCollapsed ? "Expand" : "Collapse"} matched cards` +
+                  (playersConflictCount > 0
+                    ? `, ${playersConflictCount} with a player conflict`
+                    : "") +
+                  (nameConflictCount > 0
+                    ? `, ${nameConflictCount} with a name conflict`
+                    : "")
                 }
               >
                 {matchedCollapsed ? "▶" : "▼"} Matched ({state.matched.length})
@@ -1661,12 +2429,29 @@ export default function CardPairingModal({
                     {nameConflictCount === 1 ? "" : "s"}
                   </span>
                 )}
+                {/* NEO-251: its OWN line, not a second clause on the name
+                    badge. The two counts are two different kinds of work, and
+                    "⚠ 3 name conflicts ⚠ 2 player conflicts" run together on
+                    one line reads as one number the eye has to parse apart. */}
+                {playersConflictCount > 0 && (
+                  <span className="block text-[#FF2EB3]">
+                    <span aria-hidden="true">⚠</span> {playersConflictCount}{" "}
+                    player conflict
+                    {playersConflictCount === 1 ? "" : "s"}
+                  </span>
+                )}
               </button>
               </div>
               {!matchedCollapsed && (
                 <ul className="flex flex-col gap-1">
                   {state.matched.map((m, i) => {
                     const rowKey = candidateKey(m.card);
+                    // NEO-201/NEO-251: what to call this row out loud. Derived
+                    // once because BOTH conflict controls have to agree about
+                    // it — two regions on one row naming that row differently
+                    // is worse than the ambiguity the scope exists to remove.
+                    const scope =
+                      conflictScopes.get(rowKey) ?? `#${m.card.cardNumber}`;
                     const editing = editingKey === rowKey;
                     /**
                      * Close the editor, optionally committing what was typed.
@@ -1689,7 +2474,24 @@ export default function CardPairingModal({
                       // unmount, so without this an Escape would be followed
                       // by a commit of the very draft it cancelled.
                       if (editSessionDoneRef.current) return;
+                      // a11y (NEO-251 audit) — mirror the reducer's own
+                      // length bound BEFORE dispatching, so an over-length
+                      // name can be reported instead of vanishing into
+                      // `RENAME`'s silent no-op. Checked ahead of the
+                      // `editSessionDoneRef` flip and the `setEditingKey`
+                      // below: on a refusal neither runs, so the editor stays
+                      // open, the typed text is untouched, and the field's own
+                      // autofocus-on-render effect (below) pulls focus back in
+                      // if a blur already carried it away.
+                      if (commit && editDraft.trim().length > MAX_PLAYER_NAME_LENGTH) {
+                        setNameError({
+                          key: rowKey,
+                          message: `Card names are limited to ${MAX_PLAYER_NAME_LENGTH} characters — shorten it to save.`,
+                        });
+                        return;
+                      }
                       editSessionDoneRef.current = true;
+                      setNameError(null);
                       if (commit) {
                         dispatch({
                           type: "RENAME",
@@ -1758,6 +2560,14 @@ export default function CardPairingModal({
                                 // checklist-pairing-dialog-cancel.yaml) match
                                 // two elements.
                                 aria-label={`Edit name for #${m.card.cardNumber}`}
+                                aria-invalid={
+                                  nameError?.key === rowKey || undefined
+                                }
+                                aria-describedby={
+                                  nameError?.key === rowKey
+                                    ? `name-edit-error-${domKey(m.card)}`
+                                    : undefined
+                                }
                                 onKeyDown={(e) => {
                                   if (e.key === "Enter") {
                                     e.preventDefault();
@@ -1788,6 +2598,21 @@ export default function CardPairingModal({
                                   · {m.card.cardVariation}
                                 </span>
                               )}
+                              {nameError?.key === rowKey && (
+                                // role="alert" — an assertive live region that
+                                // announces itself the instant it mounts, which
+                                // is when a refusal happens (see `finishEdit`).
+                                // A `<p aria-describedby>` alone would only be
+                                // heard if the field were re-focused, and the
+                                // field never lost the DOM in this path.
+                                <span
+                                  id={`name-edit-error-${domKey(m.card)}`}
+                                  role="alert"
+                                  className="text-xs text-[#FF2EB3]"
+                                >
+                                  {nameError.message}
+                                </span>
+                              )}
                             </>
                           ) : (
                             <button
@@ -1806,6 +2631,7 @@ export default function CardPairingModal({
                                 // the name, and the commit would take it.
                                 setEditDraft(m.card.cardName);
                                 setEditingKey(rowKey);
+                                setNameError(null);
                                 // A fresh session is unsettled, whatever the
                                 // last one did.
                                 editSessionDoneRef.current = false;
@@ -1838,215 +2664,231 @@ export default function CardPairingModal({
                           let the operator switch — the ambiguity is reported,
                           never resolved by heuristic. */}
                       {m.nameConflict && (
-                        <div
-                          role="group"
-                          // Named by the row's SCOPE, not by `label(m.card)`:
-                          // see `conflictScopeLabels`. The name has to hold
-                          // still while the operator uses the control it names.
-                          aria-label={`Name conflict on ${
-                            conflictScopes.get(candidateKey(m.card)) ??
-                            `#${m.card.cardNumber}`
-                          }`}
-                          // COLUMN, not a wrapping row. As `flex flex-wrap`
-                          // the warning sentence and the pills sat side by
-                          // side when they happened to fit and dropped below
-                          // when they did not, so the same control was laid
-                          // out differently on adjacent rows purely as a
-                          // function of how long the two names were — the
-                          // operator has to re-find the pills on every row.
-                          // The sentence is the explanation and the pills are
-                          // the decision; they read top-to-bottom, always.
-                          // (The pills themselves still wrap — see the
-                          // radiogroup's own `flex flex-wrap` below, which is
-                          // what keeps two long names from overflowing.)
-                          className="flex flex-col items-start gap-1.5 border-l-2 border-[#FF2EB3] pl-2 py-1"
-                          // a11y — lets both the LINK handler (below) and the
-                          // radiogroup's own arrow-key handler find this row's
-                          // controls by marketplace ref after a dispatch,
-                          // without depending on `i`, which `ordered()` can
-                          // reshuffle — and without the card number, which a
-                          // variation shares with the card it varies.
-                          data-name-conflict={domKey(m.card)}
+                        <ConflictRadioGroup
+                          handleAttr="data-name-conflict"
+                          handleKey={domKey(m.card)}
+                          groupLabel={`Name conflict on ${scope}`}
+                          warningId={`name-conflict-warning-${domKey(m.card)}`}
+                          warning="These marketplaces name this card differently — pick the right one before it is listed."
+                          radioGroupLabel={`Name for ${scope}`}
+                          chosen={m.nameConflict.chosen}
+                          options={[
+                            {
+                              side: "bsc",
+                              label: `BSC: ${m.nameConflict.bsc}`,
+                              ariaLabel: `BSC: ${m.nameConflict.bsc} — use this name for #${m.card.cardNumber}`,
+                            },
+                            {
+                              side: "sportlots",
+                              label: `SportLots: ${m.nameConflict.sportlots}`,
+                              ariaLabel: `SportLots: ${m.nameConflict.sportlots} — use this name for #${m.card.cardNumber}`,
+                            },
+                            // The operator's own name, once they have typed one
+                            // that is neither marketplace's. Present on the SAME
+                            // `custom !== undefined` condition the reducer
+                            // guards `CHOOSE_NAME side:"custom"` and the
+                            // arrow-key cycle on, so "every option in the group
+                            // is reachable and exactly one is checked" holds by
+                            // construction rather than by three places agreeing.
+                            ...(m.nameConflict.custom !== undefined
+                              ? [
+                                  {
+                                    side: "custom" as const,
+                                    label: `Custom: ${m.nameConflict.custom}`,
+                                    ariaLabel: `Custom: ${m.nameConflict.custom} — use this name for #${m.card.cardNumber}`,
+                                  },
+                                ]
+                              : []),
+                          ]}
+                          onChoose={(side, viaKeyboard) => {
+                            dispatch({ type: "CHOOSE_NAME", index: i, side });
+                            if (viaKeyboard) {
+                              refocusSelectedRadio(
+                                "data-name-conflict",
+                                domKey(m.card),
+                              );
+                            }
+                          }}
+                        />
+                      )}
+                      {/* NEO-251: and the same for WHO IS ON the card. A
+                          separate control because it is a separate decision —
+                          the two marketplaces can agree about the title and
+                          disagree about the roster, and the roster is what
+                          becomes `playerIds` and therefore what a buyer is
+                          shown. */}
+                      {m.playersConflict && (
+                        <ConflictRadioGroup
+                          handleAttr="data-players-conflict"
+                          handleKey={domKey(m.card)}
+                          groupLabel={`Players conflict on ${scope}`}
+                          warningId={`players-conflict-warning-${domKey(m.card)}`}
+                          warning="These marketplaces list different players on this card — pick the right ones before it is listed."
+                          radioGroupLabel={`Players for ${scope}`}
+                          chosen={m.playersConflict.chosen}
+                          options={[
+                            {
+                              side: "bsc",
+                              label: `BSC: ${joinPlayers(m.playersConflict.bsc)}`,
+                              ariaLabel: `BSC: ${joinPlayers(m.playersConflict.bsc)} — use these players for #${m.card.cardNumber}`,
+                            },
+                            {
+                              side: "sportlots",
+                              label: `SportLots: ${joinPlayers(m.playersConflict.sportlots)}`,
+                              ariaLabel: `SportLots: ${joinPlayers(m.playersConflict.sportlots)} — use these players for #${m.card.cardNumber}`,
+                            },
+                            ...(m.playersConflict.custom !== undefined
+                              ? [
+                                  {
+                                    side: "custom" as const,
+                                    label: `Custom: ${joinPlayers(m.playersConflict.custom)}`,
+                                    ariaLabel: `Custom: ${joinPlayers(m.playersConflict.custom)} — use these players for #${m.card.cardNumber}`,
+                                  },
+                                ]
+                              : []),
+                          ]}
+                          onChoose={(side, viaKeyboard) => {
+                            dispatch({ type: "CHOOSE_PLAYERS", index: i, side });
+                            if (viaKeyboard) {
+                              refocusSelectedRadio(
+                                "data-players-conflict",
+                                domKey(m.card),
+                              );
+                            }
+                          }}
                         >
-                          <span
-                            id={`name-conflict-warning-${domKey(m.card)}`}
-                            className="text-xs text-[#FF2EB3]"
-                          >
-                            {/* Decorative — the sentence itself carries the
-                                meaning, so the glyph shouldn't make AT
-                                announce a redundant "warning sign" first. */}
-                            <span aria-hidden="true">⚠</span> These
-                            marketplaces name this card differently — pick the
-                            right one before it is listed.
-                          </span>
-                          {/*
-                            a11y (NEO-189 audit) — this is a mutually exclusive,
-                            always-exactly-one-chosen pair, i.e. exactly the
-                            case the WAI-ARIA APG radio-group pattern is for,
-                            not two independent aria-pressed toggles (which
-                            carry no guarantee, semantic or enforced, that
-                            they're mutually exclusive, and give a keyboard
-                            user no arrow-key way to move between them as a
-                            set). Kept visually as a pair of pill buttons per
-                            the design — only the semantics and keyboard
-                            handling changed.
-                          */}
-                          <div
-                            role="radiogroup"
-                            aria-label={`Name for ${
-                              conflictScopes.get(candidateKey(m.card)) ??
-                              `#${m.card.cardNumber}`
-                            }`}
-                            aria-describedby={`name-conflict-warning-${domKey(m.card)}`}
-                            className="flex flex-wrap items-center gap-2"
-                            onKeyDown={(e) => {
+                          {/* NEO-251 — what NeonBinder ALREADY stores for this
+                              card, when that is one of the two answers on
+                              offer.
+
+                              It is evidence, not a decision: the operator
+                              settled this same disagreement on an earlier sync
+                              and the NB row still carries their answer. Shown
+                              rather than applied, and in gray rather than pink,
+                              because pre-checking a radio from it would make an
+                              untouched row read as reviewed — and because NB
+                              owning the answer is exactly what stops a
+                              marketplace becoming the source of truth. */}
+                          {m.playersConflict.preferred && (
+                            <span className="text-xs text-gray-400">
+                              NeonBinder currently stores:{" "}
+                              {joinPlayers(
+                                m.playersConflict.preferred === "sportlots"
+                                  ? m.playersConflict.sportlots
+                                  : m.playersConflict.bsc,
+                              )}
+                            </span>
+                          )}
+                          {/* The operator's own roster. Rendered inline rather
+                              than behind a click-to-edit affordance like the
+                              title's: the card's players are not otherwise on
+                              this row, so there is nothing to click, and a
+                              roster the operator can see is half of what makes
+                              the choice above answerable. */}
+                          <Input
+                            bare
+                            // a11y/correctness (audit, NEO-251) — this field
+                            // holds a `|`-joined LIST of names, and
+                            // `MAX_PLAYER_NAME_LENGTH` bounds a single one. A
+                            // native `maxLength` here capped the whole joined
+                            // string at one name's limit, which silently
+                            // truncated (no message, nothing announced) any
+                            // roster of a few ordinarily-named players well
+                            // before it hit the per-name or per-count bound
+                            // the reducer actually enforces below — making
+                            // `EDIT_PLAYERS`'s own over-length message
+                            // unreachable by typing. The real bounds are
+                            // reported, with a message, by `commitPlayersDraft`
+                            // instead.
+                            className="w-full min-w-0 text-xs px-1.5 py-0.5"
+                            type="text"
+                            // a11y (audit, NEO-251) — WCAG 3.3.2: the field
+                            // carries no visible label at all, only the
+                            // `aria-label` below, so a sighted operator who
+                            // has not opened a screen reader has nothing
+                            // telling them what to type or how to separate
+                            // names. The placeholder repeats the
+                            // `aria-label`'s own instruction rather than
+                            // inventing new wording.
+                            placeholder="Name | Name | Name"
+                            ref={(el) => {
+                              // Refocus after a refusal: `commitPlayersDraft`
+                              // runs on blur too (tabbing away), by which
+                              // point the browser has already moved focus
+                              // elsewhere. Re-pulling it back — same trick the
+                              // name editor's ref uses above — means the error
+                              // message just rendered is announced from a
+                              // field the operator can immediately correct,
+                              // not one they have already left.
                               if (
-                                ![
-                                  "ArrowLeft",
-                                  "ArrowRight",
-                                  "ArrowUp",
-                                  "ArrowDown",
-                                ].includes(e.key)
+                                el &&
+                                playersError?.key === rowKey &&
+                                document.activeElement !== el
                               ) {
+                                el.focus();
+                              }
+                            }}
+                            value={
+                              playersDraft?.key === rowKey
+                                ? playersDraft.text
+                                : joinCustomPlayers(m.card.players ?? [])
+                            }
+                            onChange={(e) => {
+                              setPlayersDraft({
+                                key: rowKey,
+                                text: e.target.value,
+                              });
+                              if (playersError?.key === rowKey) {
+                                setPlayersError(null);
+                              }
+                            }}
+                            // Named by the row's SCOPE and distinguished from
+                            // the radiogroup above it, which is `Players for
+                            // <scope>`: two differently-roled controls sharing
+                            // one accessible name on one row is the ambiguity
+                            // `conflictScopeLabels` exists to remove. The
+                            // parenthetical is also where the separator is
+                            // stated, since nothing else on screen says it.
+                            aria-label={`Players for ${scope} (separate names with |)`}
+                            aria-invalid={
+                              playersError?.key === rowKey || undefined
+                            }
+                            aria-describedby={
+                              playersError?.key === rowKey
+                                ? `players-edit-error-${domKey(m.card)}`
+                                : undefined
+                            }
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                commitPlayersDraft(i, rowKey);
                                 return;
                               }
-                              // The APG pattern moves focus WITH selection on
-                              // a single-select radio group, and wraps at both
-                              // ends. This used to be a toggle, which was only
-                              // correct while there were exactly two options —
-                              // an operator-typed name makes a third, and a
-                              // toggle would have made it unreachable by
-                              // keyboard while leaving it clickable by mouse.
-                              // The order matches the rendered order, so
-                              // "next" means the pill to the right.
-                              e.preventDefault();
-                              const options: NameConflict["chosen"][] =
-                                m.nameConflict!.custom !== undefined
-                                  ? ["bsc", "sportlots", "custom"]
-                                  : ["bsc", "sportlots"];
-                              const step =
-                                e.key === "ArrowLeft" || e.key === "ArrowUp"
-                                  ? -1
-                                  : 1;
-                              const at = options.indexOf(m.nameConflict!.chosen);
-                              const next =
-                                options[
-                                  (at + step + options.length) % options.length
-                                ];
-                              dispatch({
-                                type: "CHOOSE_NAME",
-                                index: i,
-                                side: next,
-                              });
-                              refocusSelectedRadio(domKey(m.card));
+                              if (e.key === "Escape") {
+                                // MUST stop here — the dialog root's own
+                                // Escape handler would otherwise throw away
+                                // every pairing decision on the screen.
+                                e.stopPropagation();
+                                setPlayersDraft(null);
+                                setPlayersError(null);
+                              }
                             }}
-                          >
-                            <button
-                              type="button"
-                              role="radio"
-                              aria-checked={m.nameConflict.chosen === "bsc"}
-                              // Roving tabindex: only the checked radio is a
-                              // Tab stop, matching native radio-group
-                              // behaviour and the APG pattern.
-                              tabIndex={m.nameConflict.chosen === "bsc" ? 0 : -1}
-                              // The accessible name STARTS WITH the visible
-                              // label ("BSC: <name>") so it satisfies WCAG
-                              // 2.5.3 Label in Name — a speech-input user
-                              // saying "click BSC: <name>" has to match what
-                              // is actually announced.
-                              aria-label={`BSC: ${m.nameConflict.bsc} — use this name for #${m.card.cardNumber}`}
-                              onClick={() =>
-                                dispatch({
-                                  type: "CHOOSE_NAME",
-                                  index: i,
-                                  side: "bsc",
-                                })
-                              }
-                              className={`text-xs rounded px-2 py-1.5 ${
-                                m.nameConflict.chosen === "bsc"
-                                  ? "bg-cyan-900/60 text-cyan-100 ring-2 ring-[#00B7FF]"
-                                  : "bg-gray-700/60 text-gray-300"
-                              }`}
+                            onBlur={() => commitPlayersDraft(i, rowKey)}
+                          />
+                          {playersError?.key === rowKey && (
+                            // role="alert" for the same reason as the name
+                            // editor's: this mounts at the instant of refusal,
+                            // so it needs to announce itself rather than wait
+                            // to be discovered.
+                            <span
+                              id={`players-edit-error-${domKey(m.card)}`}
+                              role="alert"
+                              className="text-xs text-[#FF2EB3]"
                             >
-                              {/* 1.4.1 Use of Color — the cyan/gray fill pair
-                                  differs by hue only (~1:1 lightness
-                                  contrast), indistinguishable to a
-                                  colour-blind operator deciding which name
-                                  wins. The checkmark + ring give a non-colour
-                                  cue for the state colour alone was carrying. */}
-                              {m.nameConflict.chosen === "bsc" && (
-                                <span aria-hidden="true">✓ </span>
-                              )}
-                              BSC: {m.nameConflict.bsc}
-                            </button>
-                            <button
-                              type="button"
-                              role="radio"
-                              aria-checked={
-                                m.nameConflict.chosen === "sportlots"
-                              }
-                              tabIndex={
-                                m.nameConflict.chosen === "sportlots" ? 0 : -1
-                              }
-                              aria-label={`SportLots: ${m.nameConflict.sportlots} — use this name for #${m.card.cardNumber}`}
-                              onClick={() =>
-                                dispatch({
-                                  type: "CHOOSE_NAME",
-                                  index: i,
-                                  side: "sportlots",
-                                })
-                              }
-                              className={`text-xs rounded px-2 py-1.5 ${
-                                m.nameConflict.chosen === "sportlots"
-                                  ? "bg-cyan-900/60 text-cyan-100 ring-2 ring-[#00B7FF]"
-                                  : "bg-gray-700/60 text-gray-300"
-                              }`}
-                            >
-                              {m.nameConflict.chosen === "sportlots" && (
-                                <span aria-hidden="true">✓ </span>
-                              )}
-                              SportLots: {m.nameConflict.sportlots}
-                            </button>
-                            {/* The operator's own name, once they have typed
-                                one that is neither marketplace's. Rendered on
-                                the SAME `custom !== undefined` condition the
-                                reducer guards `CHOOSE_NAME side:"custom"` and
-                                the arrow-key cycle on, so "every option in the
-                                group is reachable and exactly one is checked"
-                                holds by construction rather than by three
-                                places agreeing. Identical semantics to the two
-                                above — role, roving tabindex, label-in-name
-                                aria-label, non-colour ✓ cue. */}
-                            {m.nameConflict.custom !== undefined && (
-                              <button
-                                type="button"
-                                role="radio"
-                                aria-checked={m.nameConflict.chosen === "custom"}
-                                tabIndex={
-                                  m.nameConflict.chosen === "custom" ? 0 : -1
-                                }
-                                aria-label={`Custom: ${m.nameConflict.custom} — use this name for #${m.card.cardNumber}`}
-                                onClick={() =>
-                                  dispatch({
-                                    type: "CHOOSE_NAME",
-                                    index: i,
-                                    side: "custom",
-                                  })
-                                }
-                                className={`text-xs rounded px-2 py-1.5 ${
-                                  m.nameConflict.chosen === "custom"
-                                    ? "bg-cyan-900/60 text-cyan-100 ring-2 ring-[#00B7FF]"
-                                    : "bg-gray-700/60 text-gray-300"
-                                }`}
-                              >
-                                {m.nameConflict.chosen === "custom" && (
-                                  <span aria-hidden="true">✓ </span>
-                                )}
-                                Custom: {m.nameConflict.custom}
-                              </button>
-                            )}
-                          </div>
-                        </div>
+                              {playersError.message}
+                            </span>
+                          )}
+                        </ConflictRadioGroup>
                       )}
                     </li>
                     );

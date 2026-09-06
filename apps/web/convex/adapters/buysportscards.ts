@@ -18,6 +18,7 @@ import {
   MAX_BSC_FAN_OUT,
   bscFacetValidator,
   legacyBscFacetForLevel,
+  missingBscChecklistScope,
   planBscFanOut,
 } from "../bscFacets";
 import {
@@ -184,16 +185,13 @@ export const getBscToken = internalAction({
 const BSC_SCOPED_LEVELS = ["sport", "year", "setName"] as const;
 
 /**
- * A checklist request scoped by anything less than this returns a SUPERSET,
- * with a 200 and no error. `variant` is on the list because without it BSC
- * answers with the base cards plus every insert and parallel in the set.
+ * The checklist's required facets used to be a private list HERE. NEO-252 moved
+ * it to `bscFacets.ts` (`BSC_CHECKLIST_REQUIRED_FACETS` /
+ * `missingBscChecklistScope`) so the chain-level gate in
+ * `marketplaceResolvability.ts` and this boundary lock cannot state the rule
+ * differently — the two DID disagree, and the gate's copy was the one that
+ * skipped fetches the adapter would have accepted.
  */
-const BSC_CHECKLIST_REQUIRED_FACETS = [
-  "sport",
-  "year",
-  "setName",
-  "variant",
-] as const;
 
 /**
  * FIXED text. `selectorSyncStatus.message` is reactive state served to the
@@ -991,13 +989,14 @@ export const fetchBscChecklist = action({
       // insert and every parallel in the set — NEO-22's ~5000-card superset,
       // returned as a 200 with no error for the caller to notice.
       //
-      // The chain-level gate (`resolvableSides`) should already have skipped
-      // BSC before we get here. This is the second lock on the same door,
-      // placed at the boundary that actually issues the request, so no future
-      // caller can reach the wire around it.
-      const missingFacets = BSC_CHECKLIST_REQUIRED_FACETS.filter(
-        (facet) => !filters[facet]?.length,
-      );
+      // The chain-level gate (`resolvableSides`, with `bscScope: "checklist"`)
+      // should already have skipped BSC before we get here, and since NEO-252
+      // it reaches that verdict by calling THIS function on THESE filters — so
+      // a skip upstream and a refusal here can no longer disagree. This stays
+      // as the second lock on the same door, placed at the boundary that
+      // actually issues the request, so no future caller can reach the wire
+      // around it.
+      const missingFacets = missingBscChecklistScope(filters);
       if (missingFacets.length > 0) {
         console.warn(
           `[fetchBscChecklist] refusing an under-scoped checklist request — ` +
