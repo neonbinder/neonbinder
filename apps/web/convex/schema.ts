@@ -624,6 +624,25 @@ export default defineSchema({
     // has no team (an insert/subset card) would be re-fetched forever on
     // every future sync. Not touched by `lastUpdated`-driven logic.
     teamCheckDoneAt: v.optional(v.number()),
+    // NEO-236: the team name BSC returned that we could not match to a row.
+    //
+    // The BSC per-card lookup used to CREATE a `teams` row from whatever
+    // string it got back. It links-or-leaves now (creation takes Location +
+    // Name from an operator, and a background queue has neither), and without
+    // this column the miss threw the marketplace's answer away — leaving the
+    // operator to work out from nothing which team a card was meant to carry.
+    // Kept so `MissingTeamFixer` can show them "Marketplace says: …" and let
+    // them split it into a real Location + Name.
+    //
+    // A HINT, and only a hint. It is NOT a team, and nothing may treat it as
+    // one: `features/cardAttention.ts` still badges the card "missing team",
+    // and this is deliberately not `pendingTeamNames` (which the attention
+    // rule reads as the card HAVING a team). Written only by
+    // `cardChecklist.applyBscTeamResolution`, capped at 120 characters to
+    // match `MAX_TEAM_NAME_LENGTH`, and never read by any matching or
+    // creation logic — a marketplace string is input for a human, never a
+    // source of truth.
+    bscTeamName: v.optional(v.string()),
     // NEO-102: an OPERATOR decided this card carries no team at all.
     //
     // DISTINCT FROM `teamCheckDoneAt` above, which means only that the BSC
@@ -1008,7 +1027,7 @@ export default defineSchema({
     .index("by_name_normalized_and_sport_id", ["nameNormalized", "sportId"])
     .index("by_sport_id", ["sportId"]),
 
-  // Teams — first-class entity. Modeled with city + yearsActive to support
+  // Teams — first-class entity. Modeled with location + yearsActive to support
   // defunct franchises (Expos → Nationals, SuperSonics, etc.) since vintage
   // sets reference teams that no longer exist.
   teams: defineTable({
@@ -1026,7 +1045,16 @@ export default defineSchema({
     // more, and reads prefer `leagueId`. Remove once prod shows zero rows
     // carrying it and no `leagueId`.
     league: v.optional(v.string()),
-    city: v.optional(v.string()),
+    // NEO-236: the place part of the franchise name — "San Diego" in "San
+    // Diego Padres". Location, not city: wherever the team is FROM, so a bay
+    // (Tampa Bay), a region (New England), a state (Wisconsin / Badgers) and a
+    // school (San Diego State / Aztecs) all belong here. Optional, and empty
+    // only when the name carries no place at all — "Athletics", "Liverpool",
+    // "Orix Buffaloes". `name` holds only the nickname once a row is split, and
+    // `nameNormalized` keeps the WHOLE name (see lib/teams/team-name.ts):
+    // because `normalizeTeamName` token-sorts, splitting a row cannot change
+    // its dedup key, which is what lets the split roll out a row at a time.
+    location: v.optional(v.string()),
     yearsActive: v.optional(v.object({
       from: v.number(),
       to: v.optional(v.number()),
@@ -1083,11 +1111,20 @@ export default defineSchema({
     // pickers (and the team editor's) were the same 500-row fetch + client-side
     // `.includes()` filter that NEO-147 removed from the player typeahead —
     // fine while a sport had a few dozen teams, wrong once the league/defunct
-    // franchise backfill grew the table. Indexed on `name` (the raw display
-    // name the operator types), filterable by `sportId` so a football set never
-    // matches a baseball team.
+    // franchise backfill grew the table. Filterable by `sportId` so a football
+    // set never matches a baseball team.
+    //
+    // NEO-236: indexed on `nameNormalized`, not `name`. Once a row is split,
+    // `name` is the nickname alone ("Padres") and an operator typing "San
+    // Diego Padres" would match nothing; `nameNormalized` still carries every
+    // token of the full name. The token SORT in `normalizeTeamName` is
+    // irrelevant to matching — a search index scores tokens, not order — but
+    // it does mean the QUERY must not be sorted before it is handed to
+    // `withSearchIndex`, because the backend prefix-matches only the final
+    // term. `teams.search` normalises the term in source order for exactly
+    // that reason.
     .searchIndex("search_name", {
-      searchField: "name",
+      searchField: "nameNormalized",
       filterFields: ["sportId"],
     }),
 
@@ -1126,10 +1163,53 @@ export default defineSchema({
     createdByUserId: v.string(),
     kind: v.union(v.literal("player"), v.literal("team")),
     name: v.string(),
+    // NEO-236 — `normalizeTeamName`/`normalizePlayerName` of `name`, stored so
+    // the batch can be asked "do you already hold this name?" through an INDEX
+    // rather than by collecting it.
+    //
+    // That distinction is the whole reason the field exists, and it is a
+    // correctness one rather than a performance one. Staging a player's career
+    // teams (`stageCareerTeamRows`) has to dedupe against the rest of the
+    // batch, and it runs from `applyLookupResult` — which the 5-wide Wikidata
+    // pool calls concurrently, once per row, WHILE the commit prelude may be
+    // reading the same batch. A `.collect()` there would put every row of the
+    // batch in each of those mutations' read sets, which is precisely the
+    // optimistic-concurrency storm NEO-189 diagnosed and removed. An indexed
+    // read puts one narrow range in instead.
+    //
+    // Optional because rows written before this field existed have none; a
+    // batch is a per-fetch throwaway, so the only cost of a legacy row is that
+    // one staging pass cannot see it by key (it still dedupes against `teams`).
+    nameNormalized: v.optional(v.string()),
     // NEO-96: reference, not a copied display label — see players.sportId.
     // getBatch resolves this to a `sportValue` string for the wizard's label so
     // the client never has to join.
     sportId: v.id("selectorOptions"),
+    /**
+     * NEO-236 — where a row came from, when it was not a name off the
+     * checklist.
+     *
+     * Jason, 2026-09-05, on the wizard asking for a career team's Location and
+     * Name inline: "How does this dialog know which League the new team is in?
+     * I think we need to show a new team dialog instead of that inline thing."
+     * So a career team the batch will have to CREATE is no longer three cramped
+     * inputs on the player's step — it is a review row of its own, walked
+     * before the player, with the same New Team step a checklist team gets.
+     *
+     * `playerRowId` is the row that needed it, which is what lets the step say
+     * "Needed by: Travis Bazzana" and what lets the player's step tell a chip
+     * that is answered from one that is still waiting. `wikidataId` is the P54
+     * statement's team QID when Wikidata gave one — linkage, so the staged
+     * row's own lookup reads the right record instead of guessing from a label.
+     *
+     * Absent on every other row, which is what "this name came off the
+     * checklist" means. Additive: nothing reads it as a required field.
+     */
+    source: v.optional(v.object({
+      kind: v.literal("careerTeamOf"),
+      playerRowId: v.id("entityReviewQueue"),
+      wikidataId: v.optional(v.string()),
+    })),
     status: v.union(
       v.literal("pending"),
       v.literal("ready"),
@@ -1137,15 +1217,29 @@ export default defineSchema({
     ),
     enrichment: v.optional(v.object({
       wikidataId: v.optional(v.string()),
-      // player-only. Team NAMES, not ids — resolving to real team rows via
-      // teams.findOrCreateInternal is deferred to commit time (only once
-      // "create" is the confirmed decision), so a lookup during mere
-      // preview can never orphan a team row for a player the user ends up
-      // linking to someone else or never creates.
+      // player-only. Team NAMES, not ids — resolving them to real team rows is
+      // deferred to commit time (only once "create" is the confirmed
+      // decision), so a lookup during mere preview can never orphan a team row
+      // for a player the user ends up linking to someone else or never
+      // creates.
+      //
+      // NEO-236: at commit, each name is MATCHED against `teams` by its
+      // composed full name and linked when it hits. It is never inserted from
+      // the name itself — a row is created only from the operator's Location +
+      // Name in `decision.createTeams`, and a name with neither a match nor an
+      // entry there is dropped from the player's timeline rather than minted.
       careerTeams: v.optional(v.array(v.object({
         name: v.string(),
         fromYear: v.number(),
         toYear: v.optional(v.number()),
+        // NEO-236: the team's own Wikidata QID, off the P54 statement's value.
+        // LINKAGE ONLY — it selects which upstream record the staged team row's
+        // enrichment reads, and nothing user-facing is keyed on it. Carried
+        // because a staged career team is a real review row now, and looking it
+        // up by the QID Wikidata already gave us for this membership beats
+        // searching EntitySearch for its English label (which misses club and
+        // college sides, and can land on a different entity of the same name).
+        wikidataId: v.optional(v.string()),
       }))),
       // NEO-235, player-only. Team NAMES that Wikidata links to the player
       // with NO usable start year (Tony Gwynn's "San Diego State Aztecs
@@ -1170,7 +1264,9 @@ export default defineSchema({
       enwikiTitle: v.optional(v.string()),
       // team-only
       league: v.optional(v.string()),
-      city: v.optional(v.string()),
+      // NEO-236: the place part of the team's name. Location, not city —
+      // see `teams.location`.
+      location: v.optional(v.string()),
       yearsActive: v.optional(v.object({
         from: v.number(),
         to: v.optional(v.number()),
@@ -1204,6 +1300,65 @@ export default defineSchema({
         // "the operator rejected these two" rather than a silently shorter
         // list. Names, matched against enrichment.careerTeams[].name.
         excludedCareerTeamNames: v.optional(v.array(v.string())),
+        // ── NEO-236: the operator's Location + Name, team-kind only ─────────
+        //
+        // Jason, 2026-09-05: "We simply shouldn't allow for full string
+        // creation. Location & Team Name should be the input." A `teams` row
+        // born out of this queue is built from THESE two fields and nothing
+        // else — never from `name` above, which is the raw checklist string
+        // ("SD Padres", "PADRES", "Padres  "). The prelude has no fallback: a
+        // create decision on a team row with no `create` payload links if the
+        // name already matches a row and otherwise leaves the card without
+        // that team, for the attention walker's missing-team lane to catch.
+        //
+        // Optional because every row written before NEO-236 predates the
+        // field, and because it is meaningless on a player-kind decision.
+        // `location` is separately optional: a handful of names carry no
+        // place at all ("Athletics", "Orix Buffaloes"), and for those a blank
+        // Location is a real answer rather than an unfinished form. A college
+        // side is not one of those — its school is its location.
+        create: v.optional(v.object({
+          location: v.optional(v.string()),
+          name: v.string(),
+          // ── NEO-236: the league the operator picked on the New Team step ──
+          //
+          // The bug this closes: a team created out of a PLAYER's career list
+          // used to be filed under the sport's default league, so Travis
+          // Bazzana's "Sydney Blue Sox" landed in Major League Baseball. The
+          // step now asks, and the prelude never falls back to the default
+          // when it has been answered.
+          //
+          // Three states, and the third is why `leagueId` is nullable rather
+          // than merely optional:
+          //   - an id      — an existing league in this sport;
+          //   - `null`     — "no league", said deliberately;
+          //   - absent     — not answered, so the prelude's own fallbacks
+          //                  (the enrichment's P118 label, then the sport
+          //                  default) still apply, exactly as before.
+          // `leagueName` is the "create the league too" answer: a suggestion
+          // we hold no row for yet, resolved through `findOrCreateLeague` so
+          // it dedupes by name-or-alias like every other league writer.
+          leagueId: v.optional(v.union(v.id("leagues"), v.null())),
+          leagueName: v.optional(v.string()),
+        })),
+        // NEO-236, player-only: the same Location + Name, once per career team
+        // the operator ACCEPTED that matched no existing row.
+        //
+        // Career-team names arrive as full strings — a Wikidata P54 label, or
+        // whatever the operator typed into the manual entry — and the commit
+        // prelude links them when the composed name already exists. When it
+        // does not, this is the only thing that lets it create one, keyed by
+        // `sourceName` (the label as shown in the wizard, matched normalized)
+        // so the decision stays auditable against the proposals it answers:
+        // "the operator said the P54 label 'Padres' means San Diego / Padres".
+        // A career team with no entry here and no existing match is dropped
+        // from the player's `teamYears` rather than minting a row nobody
+        // reviewed.
+        createTeams: v.optional(v.array(v.object({
+          sourceName: v.string(),
+          location: v.optional(v.string()),
+          name: v.string(),
+        }))),
       }),
       v.object({
         action: v.literal("link"),
@@ -1232,6 +1387,22 @@ export default defineSchema({
     .index("by_selector_option", ["selectorOptionId"])
     .index("by_selector_option_and_batch", ["selectorOptionId", "batchId"])
     .index("by_selector_option_and_user", ["selectorOptionId", "createdByUserId"])
+    // NEO-236: "does this batch already hold this name?", asked once per career
+    // team a player's lookup proposes. See `nameNormalized` above for why this
+    // must not be a collect.
+    // NEO-236 security review, finding 3: "how many career-team steps does this
+    // player already have?", asked once per staging pass so the 64 cap is a
+    // bound PER PLAYER rather than per invocation. An indexed read on the
+    // nested field, for the same reason the name index exists — staging runs
+    // from `applyLookupResult`, where a collect of the batch is the NEO-189
+    // optimistic-concurrency storm.
+    .index("by_source_player", ["source.playerRowId"])
+    .index("by_batch_and_kind_and_name", [
+      "selectorOptionId",
+      "batchId",
+      "kind",
+      "nameNormalized",
+    ])
     // NEO-99: lets the stale-pending sweep (crons.ts → sweepStalePendingRows)
     // read only rows in a given status, oldest-first (every Convex index is
     // ordered by its fields then `_creationTime` ascending). The sweep queries

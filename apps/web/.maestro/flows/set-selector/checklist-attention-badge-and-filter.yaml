@@ -53,7 +53,7 @@ tags:
 #   exact shape:
 #     • The real Sport ancestor keeps sport="baseball", which is the sport row
 #       TeamPicker scopes its list by and TAGS a team it creates with — and no
-#       sport row means no "+ Create" row at all (NEO-96). This flow creates
+#       sport row means no "+ New team" row at all (NEO-96). This flow creates
 #       both of the teams it uses (NEO-214 removed the global seeded fixture),
 #       named CNAA-/CNAB-<worker>-<attempt> so eight runners and a retry cannot
 #       collide, and so the create row is offered rather than an "Add" row.
@@ -68,7 +68,8 @@ tags:
 #   Local E2E drives this branch's Vite bundle against SHARED DEV, which tracks
 #   main, and main's `addCustomCard` has no `teamOnCardIds` argument yet. Card 3
 #   therefore gets as far as the picker — the form, "+ Add team", the popover,
-#   the "+ Create" option, the chip, the popover closing — and its
+#   the "+ New team" row, the dialog it opens, the chip, the popover closing —
+#   and its
 #   Submit is then refused by Convex's argument validator, so no card is created
 #   and nothing after it can run. Cards #701/#702 and the whole badge / count /
 #   filter half are verified locally against a backend WITHOUT card 3; the
@@ -229,7 +230,8 @@ tags:
 # The picker, driven by the same four handles as the drawer's (team-picker.yaml
 # owns the component's own behaviour; this is the quick-add form's use of it).
 # The name typed here belongs to no team yet, so the popover answers with its
-# "+ Create" row — one tap that both creates the team and chips it. The name is
+# "+ New team" row and the dialog it opens — which is what creates the team and
+# chips it. The name is
 # per-worker and per-attempt: the candidate pool is every Baseball team and other
 # flows create rows in it mid-run, so a name that could be shared would be a
 # race in two directions at once.
@@ -259,7 +261,42 @@ tags:
     id: "Search teams"
 - inputText: "CNAB-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
 # Offered only for a name no team in this sport already carries, and labelled
-# with the name it would create, so this cannot land on another team.
+# with the name it would create, so this cannot land on another team. NEO-236 —
+# the row OPENS the New Team dialog; the dialog is what writes.
+- tapOn:
+    id: "New team CNAB-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+
+# The New Team dialog — portalled to `document.body` at `z-[60]`, `fixed inset-0`
+# and centred, so nothing clips it. It is where the three questions a team row
+# needs (Location, Team name, League) are answered and where the write happens.
+#
+# TWO assertions, because they say two different things.
+#
+# The HEADING is the dialog's `aria-labelledby` target, so it is what a screen
+# reader announces on arrival — "New team: <what I typed>" is the dialog being
+# correctly LABELLED. (It briefly was not: opening by CLICK used to blank the
+# name, because the picker's focus-out handler read a stale "is the dialog open"
+# flag and cleared the query behind the portal. Fixed under NEO-236 with a
+# synchronous ref; this assertion is what keeps it fixed.)
+#
+# The NAME BOX and its VALUE is the dialog being correctly SEEDED — maestro-web
+# reports an input by its value, so this says the search text really reached the
+# field the operator is about to submit.
+- assertVisible: "New team: CNAB-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- assertVisible:
+    id: "New team name"
+    text: "CNAB-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+
+# THE WRITE. Nothing is typed in the dialog: Team name is pre-filled with what
+# was searched, Location stays blank and no League is picked, so the COMPOSED
+# name is exactly what was typed and every later matcher is unchanged.
+#
+# `Create team <composed full name>` is the same accessible name this flow always
+# used — it moved from the popover row onto the dialog's own button. Tapped by id
+# rather than driven with a second Enter: Create and Cancel are NeonButtons with
+# an identical class string, and maestro-web's pressKey re-finds the focused
+# element by an XPath that falls back to that class, so an Enter aimed at Create
+# could land on Cancel.
 - tapOn:
     id: "Create team CNAB-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
 # The chip is the proof the pick landed. Unlike the drawer's picker this one is
@@ -395,8 +432,44 @@ tags:
 - tapOn:
     id: "Search teams"
 - inputText: "CNAA-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+# NEO-236 — the popover's one create affordance, which opens the New Team
+# dialog rather than writing.
 - assertVisible:
-    id: "Create team CNAA-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    id: "New team CNAA-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- tapOn:
+    id: "New team CNAA-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+
+# The New Team dialog — portalled to `document.body` at `z-[60]`, `fixed inset-0`
+# and centred, so nothing clips it. It is where the three questions a team row
+# needs (Location, Team name, League) are answered and where the write happens.
+#
+# TWO assertions, because they say two different things.
+#
+# The HEADING is the dialog's `aria-labelledby` target, so it is what a screen
+# reader announces on arrival — "New team: <what I typed>" is the dialog being
+# correctly LABELLED. (It briefly was not: opening by CLICK used to blank the
+# name, because the picker's focus-out handler read a stale "is the dialog open"
+# flag and cleared the query behind the portal. Fixed under NEO-236 with a
+# synchronous ref; this assertion is what keeps it fixed.)
+#
+# The NAME BOX and its VALUE is the dialog being correctly SEEDED — maestro-web
+# reports an input by its value, so this says the search text really reached the
+# field the operator is about to submit.
+- assertVisible: "New team: CNAA-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- assertVisible:
+    id: "New team name"
+    text: "CNAA-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+
+# THE WRITE. Nothing is typed in the dialog: Team name is pre-filled with what
+# was searched, Location stays blank and no League is picked, so the COMPOSED
+# name is exactly what was typed and every later matcher is unchanged.
+#
+# `Create team <composed full name>` is the same accessible name this flow always
+# used — it moved from the popover row onto the dialog's own button. Tapped by id
+# rather than driven with a second Enter: Create and Cancel are NeonButtons with
+# an identical class string, and maestro-web's pressKey re-finds the focused
+# element by an XPath that falls back to that class, so an Enter aimed at Create
+# could land on Cancel.
 - tapOn:
     id: "Create team CNAA-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
 

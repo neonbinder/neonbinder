@@ -29,9 +29,10 @@ import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { requireAdmin } from "./auth";
 import { findOrCreateLeague } from "./leagues";
-import { normalizeTeamName } from "./teams";
+import { findTeamByFullName, teamRowFields } from "./lib/teamRow";
 import { SEED_LEAGUES, SEED_TEAMS } from "../lib/teams/seed-team-colors";
-import { currentFranchiseName } from "../lib/teams/seed-team-lookup";
+import { currentFranchiseParts } from "../lib/teams/seed-team-lookup";
+import { teamFullName } from "../lib/teams/team-name";
 
 /** Teams handled per mutation. Keeps each well inside the document budget. */
 const SEED_CHUNK_SIZE = 40;
@@ -79,17 +80,22 @@ export const seedChunkInternal = internalMutation({
 
       // Under the CURRENT name, so a stale dataset entry cannot mint a second
       // row for a franchise we already hold.
-      const name = currentFranchiseName(seed.name);
-      const nameNormalized = normalizeTeamName(name);
+      //
+      // NEO-236: this is the ONE remaining automatic path that inserts a team,
+      // and it is allowed to because it is not guessing — the dataset carries
+      // Location and Name split by hand (see `SeedTeam`), which is exactly the
+      // input every operator creation form collects. Fields come from
+      // `teamRowFields` so the dedup key is derived from the composition, and
+      // the lookup uses the same composition, so a seed run after the split
+      // migration finds the rows it created before it.
+      const parts = currentFranchiseParts(seed);
+      const fields = teamRowFields(parts);
 
-      const existing = (
-        await ctx.db
-          .query("teams")
-          .withIndex("by_name_normalized_and_sport_id", (q) =>
-            q.eq("nameNormalized", nameNormalized).eq("sportId", sportId),
-          )
-          .collect()
-      )[0];
+      const existing = await findTeamByFullName(
+        ctx,
+        sportId,
+        teamFullName(parts),
+      );
 
       const colors =
         seed.hex.length > 0
@@ -111,8 +117,7 @@ export const seedChunkInternal = internalMutation({
       }
 
       await ctx.db.insert("teams", {
-        name,
-        nameNormalized,
+        ...fields,
         sportId,
         leagueId,
         ...(colors ? { colors } : {}),

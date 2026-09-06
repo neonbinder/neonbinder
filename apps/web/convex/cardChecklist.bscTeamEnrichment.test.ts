@@ -295,9 +295,18 @@ describe("getForBscTeamCheck", () => {
 // ===========================================================================
 
 describe("applyBscTeamResolution", () => {
-  test("team-found case creates a teams row and sets teamOnCardIds + teamCheckDoneAt", async () => {
+  /**
+   * NEO-236 — the behaviour this test used to assert is now the bug.
+   *
+   * It was called "team-found case CREATES a teams row": a background queue,
+   * given a string BSC returned, minted a globally-shared `teams` row nobody
+   * had reviewed. Creation takes Location + Name from an operator now, and
+   * this path has neither, so an unmatched name links nothing and leaves the
+   * card for the attention walker.
+   */
+  test("a team BSC names that we do NOT hold creates nothing and links nothing", async () => {
     const t = harness();
-    const { variantTypeId, sportId } = await seedTree(t);
+    const { variantTypeId } = await seedTree(t);
     const cardId = await insertCard(t, variantTypeId, "1", { bsc: "bsc-1" });
 
     const result = await t.mutation(
@@ -314,27 +323,50 @@ describe("applyBscTeamResolution", () => {
     // network queue, and a later drain would pull that outbound call forward.
     await drainScheduled(t);
 
-    expect(result).toEqual({ applied: true, teamCreated: true });
+    expect(result).toEqual({ applied: false, unmatched: true });
 
     const card = await getCard(t, cardId);
-    expect(card!.teamOnCardIds).toHaveLength(1);
+    expect(card!.teamOnCardIds ?? []).toEqual([]);
+    // NEO-236 security review: BSC's answer is KEPT as a hint. Discarding it
+    // left the operator with a teamless card and no idea which team it was
+    // meant to carry — `MissingTeamFixer` renders this as "Marketplace says:".
+    expect(card!.bscTeamName).toBe("New York Yankees");
+    // A hint, NOT a team: `pendingTeamNames` is what
+    // `features/cardAttention.ts` reads as the card HAVING a team, so writing
+    // it there would take the card out of the missing-team lane this branch
+    // exists to leave it in.
+    expect(card!.pendingTeamNames ?? []).toEqual([]);
+    // Stamped anyway: the lookup HAS been and gone, and leaving it unset would
+    // re-enqueue a live BSC request for this card on every backfill pass.
     expect(card!.teamCheckDoneAt).toBeTypeOf("number");
-
-    const teamId: Id<"teams"> = card!.teamOnCardIds![0];
-    const teamRow = await t.run(async (ctx) => ctx.db.get(teamId));
-    expect(teamRow!.name).toBe("New York Yankees");
-    // NEO-96: the team references the sport ROW, so assert the id.
-    expect(teamRow!.sportId).toBe(sportId);
+    // Nothing was inserted.
+    const teams = await t.run(async (ctx) => ctx.db.query("teams").collect());
+    expect(teams).toHaveLength(0);
   });
 
-  test("creating a team attaches a league and enqueues that league's enrichment", async () => {
-    // NEO-239: the wire this file used to leave dangling, asserted instead of
-    // abandoned. Two hops hang off the team insert above — NEO-156 attaches a
-    // league, NEO-240 schedules the new league's Wikidata lookup — and neither
-    // was visible from any assertion here, which is how the enqueue came to
-    // fire after teardown in a full run.
+  /**
+   * NEO-239 asserted this wire; NEO-236 INVERTED it, and the assertion is
+   * worth keeping in its inverted form.
+   *
+   * #227 added this test as "creating a team attaches a league and enqueues
+   * that league's enrichment" — the two hops that used to hang off the team
+   * insert (NEO-156 attaches a league, NEO-240 schedules the new league's
+   * Wikidata lookup), asserted off the `_scheduled_functions` row instead of
+   * being left dangling, which is how the enqueue came to fire after teardown
+   * in a full run.
+   *
+   * NEO-236 removed the insert those hops hung off: this mutation LINKS an
+   * existing team or leaves the card alone, because creation takes a reviewed
+   * Location + Name and a background queue has neither. So the honest version
+   * of #227's assertion is that the whole chain is gone — no team, therefore
+   * no league, therefore nothing scheduled. Kept rather than deleted because
+   * it is now the structural proof that a marketplace string can no longer
+   * mint shared rows behind an operator's back, in exactly the "assert the
+   * scheduled row rather than run it" shape #227 established.
+   */
+  test("an unmatched team creates no team, no league, and schedules nothing", async () => {
     const t = harness();
-    const { variantTypeId, sportId } = await seedTree(t);
+    const { variantTypeId } = await seedTree(t);
     const cardId = await insertCard(t, variantTypeId, "1", { bsc: "bsc-1" });
 
     await t.mutation(internal.cardChecklist.applyBscTeamResolution, {
@@ -342,31 +374,25 @@ describe("applyBscTeamResolution", () => {
       teamName: "New York Yankees",
     });
 
-    // The league is written INLINE by the same mutation; only its enrichment
-    // is scheduled. `sportConfigDefaultsFor("Baseball")` supplies MLB for a
-    // sport row carrying no explicit `sportConfig`, which is what `seedTree`
-    // inserts.
-    const leagues = await t.run(async (ctx) => ctx.db.query("leagues").collect());
-    expect(leagues).toHaveLength(1);
-    expect(leagues[0].sportId).toBe(sportId);
-    expect(leagues[0].name).toBe("Major League Baseball");
-    // Nothing has looked anything up yet, so no enrichment field is set.
-    expect(leagues[0].yearsActive).toBeUndefined();
-    expect(leagues[0].externalIds?.wikidataId).toBeUndefined();
-
-    const jobs = await pendingScheduled(t);
-    expect(jobs.map((job) => job.name)).toEqual(["wikidataPool:enqueueEnrichment"]);
-    // Creation-only (NEO-203): the automatic caller enqueues the id it just
-    // inserted and never passes `force`.
-    expect(jobs[0].args).toEqual([{ leagueIds: [leagues[0]._id] }]);
+    expect(await t.run(async (ctx) => ctx.db.query("teams").collect())).toEqual([]);
+    // No team insert means `resolveDefaultLeagueId` never runs, so the league
+    // this used to create as a side effect is not created either.
+    expect(await t.run(async (ctx) => ctx.db.query("leagues").collect())).toEqual([]);
+    // And nothing reaches the scheduler — the enqueue that fired after
+    // teardown has no caller left on this path at all.
+    expect(await pendingScheduled(t)).toEqual([]);
   });
 
-  test("reuses an existing teams row via by_name_normalized_and_sport instead of creating a duplicate", async () => {
+  test("links an existing teams row via by_name_normalized_and_sport, including one that is SPLIT", async () => {
     const t = harness();
     const { variantTypeId, sportId } = await seedTree(t);
     const existingTeamId = await t.run(async (ctx) =>
       ctx.db.insert("teams", {
+        // NEO-236: a split row — location out front, nickname in `name`. The
+        // dedup key still keys the WHOLE name, which is what lets BSC's "New
+        // York Yankees" resolve onto it.
         name: "Yankees",
+        location: "New York",
         // normalizeTeamName("New York Yankees") token-sorts to this key.
         nameNormalized: "new yankees york",
         sportId,
@@ -389,9 +415,68 @@ describe("applyBscTeamResolution", () => {
     // network queue, and a later drain would pull that outbound call forward.
     await drainScheduled(t);
 
-    expect(result).toEqual({ applied: true, teamCreated: false });
+    expect(result).toEqual({ applied: true, unmatched: false });
     const card = await getCard(t, cardId);
     expect(card!.teamOnCardIds).toEqual([existingTeamId]);
+    expect(card!.teamCheckDoneAt).toBeTypeOf("number");
+    // NEO-236: a matched card carries no hint — the question is answered, and
+    // a leftover "Marketplace says: …" beside a real team reads as a
+    // disagreement rather than as history.
+    expect(card!.bscTeamName).toBeUndefined();
+  });
+
+  test("a later match CLEARS a hint left by an earlier miss", async () => {
+    const t = harness();
+    const { variantTypeId, sportId } = await seedTree(t);
+    const cardId = await insertCard(t, variantTypeId, "1", { bsc: "bsc-1" });
+
+    // First pass: no such team yet, so the string is parked as a hint.
+    await t.mutation(internal.cardChecklist.applyBscTeamResolution, {
+      cardChecklistId: cardId,
+      teamName: "New York Yankees",
+    });
+    expect((await getCard(t, cardId))!.bscTeamName).toBe("New York Yankees");
+
+    // The operator reads the hint and creates the team as Location + Name.
+    const teamId = await t.run(async (ctx) =>
+      ctx.db.insert("teams", {
+        name: "Yankees",
+        location: "New York",
+        nameNormalized: "new yankees york",
+        sportId,
+        lastUpdated: Date.now(),
+      }),
+    );
+
+    // A re-run now links it, and the hint goes with the question.
+    await t.run(async (ctx) =>
+      ctx.db.patch(cardId, { teamCheckDoneAt: undefined }),
+    );
+    await t.mutation(internal.cardChecklist.applyBscTeamResolution, {
+      cardChecklistId: cardId,
+      teamName: "New York Yankees",
+    });
+
+    const card = await getCard(t, cardId);
+    expect(card!.teamOnCardIds).toEqual([teamId]);
+    expect(card!.bscTeamName).toBeUndefined();
+  });
+
+  test("an absurdly long marketplace string is truncated, not stored whole", async () => {
+    // A third party's string reaching an admin screen. Truncated rather than
+    // refused: unlike a stored team name this is only a hint, and dropping the
+    // whole hint because it was long helps nobody.
+    const t = harness();
+    const { variantTypeId } = await seedTree(t);
+    const cardId = await insertCard(t, variantTypeId, "1", { bsc: "bsc-1" });
+
+    await t.mutation(internal.cardChecklist.applyBscTeamResolution, {
+      cardChecklistId: cardId,
+      teamName: "Y".repeat(500),
+    });
+
+    const card = await getCard(t, cardId);
+    expect(card!.bscTeamName).toHaveLength(120);
   });
 
   test("no-team-found case (empty string) only sets teamCheckDoneAt", async () => {
@@ -413,7 +498,7 @@ describe("applyBscTeamResolution", () => {
     // network queue, and a later drain would pull that outbound call forward.
     await drainScheduled(t);
 
-    expect(result).toEqual({ applied: false, teamCreated: false });
+    expect(result).toEqual({ applied: false, unmatched: false });
     const card = await getCard(t, cardId);
     expect(card!.teamOnCardIds).toBeUndefined();
     expect(card!.teamCheckDoneAt).toBeTypeOf("number");
@@ -438,7 +523,7 @@ describe("applyBscTeamResolution", () => {
     // network queue, and a later drain would pull that outbound call forward.
     await drainScheduled(t);
 
-    expect(result).toEqual({ applied: false, teamCreated: false });
+    expect(result).toEqual({ applied: false, unmatched: false });
     const card = await getCard(t, cardId);
     expect(card!.teamOnCardIds).toBeUndefined();
     expect(card!.teamCheckDoneAt).toBeTypeOf("number");
@@ -476,7 +561,7 @@ describe("applyBscTeamResolution", () => {
     // network queue, and a later drain would pull that outbound call forward.
     await drainScheduled(t);
 
-    expect(result).toEqual({ applied: false, teamCreated: false });
+    expect(result).toEqual({ applied: false, unmatched: false });
     const card = await getCard(t, cardId);
     // teamOnCardIds is never overwritten with the (bogus) resolution input.
     expect(card!.teamOnCardIds).toEqual([preexistingTeamId]);
@@ -515,7 +600,7 @@ describe("applyBscTeamResolution", () => {
     // network queue, and a later drain would pull that outbound call forward.
     await drainScheduled(t);
 
-    expect(result).toEqual({ applied: false, teamCreated: false });
+    expect(result).toEqual({ applied: false, unmatched: false });
     const card = await getCard(t, cardId);
     expect(card!.teamCheckDoneAt).toBe(originalTimestamp); // not clobbered with Date.now()
   });
@@ -548,7 +633,7 @@ describe("applyBscTeamResolution", () => {
     // network queue, and a later drain would pull that outbound call forward.
     await drainScheduled(t);
 
-    expect(result).toEqual({ applied: false, teamCreated: false });
+    expect(result).toEqual({ applied: false, unmatched: false });
     const card = await getCard(t, cardId);
     expect(card!.teamOnCardIds).toBeUndefined();
     expect(card!.teamCheckDoneAt).toBeUndefined(); // retryable later
@@ -574,7 +659,7 @@ describe("applyBscTeamResolution", () => {
     // network queue, and a later drain would pull that outbound call forward.
     await drainScheduled(t);
 
-    expect(result).toEqual({ applied: false, teamCreated: false });
+    expect(result).toEqual({ applied: false, unmatched: false });
   });
 });
 
@@ -778,7 +863,7 @@ describe("NEO-102: teamNoneConfirmedAt suppresses BSC team enrichment", () => {
     // never at end of test: `enqueueBscTeamBackfill` below schedules the BSC
     // network queue, and a later drain would pull that outbound call forward.
     await drainScheduled(t);
-    expect(result).toEqual({ applied: false, teamCreated: false });
+    expect(result).toEqual({ applied: false, unmatched: false });
 
     const card = await getCard(t, cardId);
     expect(card!.teamOnCardIds).toBeUndefined();

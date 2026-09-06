@@ -279,6 +279,35 @@ describe("NEO-212: the entity review + player management surface is admin-gated"
         return t.mutation(api.entityReviewQueue.clearDecision, { reviewRowId });
       },
     ],
+    // NEO-236. Staging a player's career teams INSERTS review rows and
+    // schedules pooled Wikidata lookups for them, so an ungated caller could
+    // both put steps in front of an operator who never asked for them and
+    // enqueue unbounded work on the deployment-wide pool. Same table, same
+    // batch, same gate as `recordDecision`. Needs a real row id; the gate runs
+    // before that id is read, so the refusal is the gate and not a
+    // missing-row error.
+    [
+      "entityReviewQueue.stageCareerTeamRows",
+      async (t, sportId) => {
+        const reviewRowId = await t.run(async (ctx) =>
+          ctx.db.insert("entityReviewQueue", {
+            selectorOptionId: sportId,
+            batchId: "batch-1",
+            createdByUserId: "somebody",
+            kind: "player" as const,
+            name: "Travis Bazzana",
+            sportId,
+            status: "ready" as const,
+            enrichment: {
+              careerTeams: [{ name: "Sydney Blue Sox", fromYear: 2019 }],
+            },
+          }),
+        );
+        return t.mutation(api.entityReviewQueue.stageCareerTeamRows, {
+          reviewRowId,
+        });
+      },
+    ],
   ];
 
   test.each(ADMIN_GATED)("%s rejects an anonymous caller", async (_name, call) => {

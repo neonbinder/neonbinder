@@ -29,6 +29,9 @@ import { internal } from "./_generated/api";
 import { requireAdmin } from "./auth";
 import { colorSourceMatchKey, fetchTeamColors, findTeamColorPages } from "./adapters/teamColorCodes";
 import { findSeedColors } from "../lib/teams/seed-team-lookup";
+// NEO-236: teamcolorcodes.com and the bundled dataset both name teams in full
+// ("San Diego Padres"), so every match here is on the composed name.
+import { teamFullName } from "../lib/teams/team-name";
 
 /**
  * Provenance marker for a colour that came from the bundled dataset rather
@@ -131,12 +134,18 @@ export const resolveTeamColors = internalAction({
     });
     if (!team) return "skipped";
     if (team.colorSource && !args.force) return "skipped";
-    if (!colorSourceMatchKey(team.name)) return "no-match";
+
+    // NEO-236: the FULL name is the match key for every step below. The source
+    // site's pages are titled "San Diego Padres"; a split row's `name` alone is
+    // "Padres", which matches nothing there and would collide the two Chicago
+    // and two Los Angeles franchises with each other in the bundled dataset.
+    const fullName = teamFullName(team);
+    if (!colorSourceMatchKey(fullName)) return "no-match";
 
     // NEO-156: the bundled dataset first — 135 teams across the six big
     // leagues, offline and instant. Most lookups end here and never touch the
     // network.
-    const seeded = findSeedColors(team.name);
+    const seeded = findSeedColors(fullName);
     if (seeded) {
       await ctx.runMutation(internal.teamColorSources.applyColorsInternal, {
         teamId: args.teamId,
@@ -161,13 +170,13 @@ export const resolveTeamColors = internalAction({
       .runAction(internal.posthog.captureEvent, {
         distinctId: `team:${args.teamId}`,
         event: "team_colors_seed_miss",
-        properties: { teamName: team.name, sportId: team.sportId },
+        properties: { teamName: fullName, sportId: team.sportId },
       })
       .catch((error: unknown) => {
         console.error("[teamColorSources] posthog capture failed:", error);
       });
 
-    const matches = await findTeamColorPages(team.name);
+    const matches = await findTeamColorPages(fullName);
 
     if (matches.length === 0) {
       // Clear a previous ambiguity: the operator asked again and the answer is

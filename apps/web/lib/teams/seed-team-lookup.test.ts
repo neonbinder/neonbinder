@@ -15,10 +15,12 @@ import {
 } from "./seed-team-colors";
 import {
   currentFranchiseName,
+  currentFranchiseParts,
   findSeedColors,
   findSeedTeam,
   seedMatchKey,
 } from "./seed-team-lookup";
+import { teamFullName } from "./team-name";
 
 describe("the dataset itself", () => {
   it("covers six leagues and 165 teams", () => {
@@ -165,6 +167,60 @@ describe("renamed franchises", () => {
     expect(currentFranchiseName("Chicago Cubs")).toBe("Chicago Cubs");
   });
 
+  /**
+   * NEO-236 — a rename lands as Location + Name, like every other creation.
+   *
+   * `currentFranchiseName` still speaks in full strings because its callers
+   * hold one (a scraped page title, a marketplace payload). The SEEDER needs
+   * the two parts, so `RENAMED_FRANCHISES` stores the split and nothing has to
+   * re-derive it from a string.
+   */
+  it("gives the seeder the CURRENT franchise split into location and name", () => {
+    const indians = SEED_TEAMS.find((t) => t.name === "Indians")!;
+    expect(currentFranchiseParts(indians)).toEqual({
+      location: "Cleveland",
+      name: "Guardians",
+    });
+
+    const cubs = SEED_TEAMS.find((t) => t.name === "Cubs")!;
+    expect(currentFranchiseParts(cubs)).toEqual({
+      location: "Chicago",
+      name: "Cubs",
+    });
+
+    // A club with no place part stays that way — "Real" is the club's name,
+    // not a location, and nothing here may invent one.
+    const rsl = SEED_TEAMS.find((t) => t.name === "Real Salt Lake")!;
+    expect(currentFranchiseParts(rsl)).toEqual({
+      location: undefined,
+      name: "Real Salt Lake",
+    });
+  });
+
+  /**
+   * NEO-236 — the dataset's split must ROUND-TRIP to the name it replaced.
+   *
+   * The rows were split by hand, which is the right way to do it and also the
+   * way a typo survives review. Every row's composed name has to still find
+   * its own colours through the same key `resolveTeamColors` uses; if a split
+   * dropped or duplicated a word, this is where it shows up.
+   */
+  it("every row's composed full name still resolves to its own entry", () => {
+    for (const team of SEED_TEAMS) {
+      const full = teamFullName(team);
+      expect(findSeedTeam(full), full).toBe(team);
+    }
+  });
+
+  it("no two rows compose to the same full name", () => {
+    const seen = new Set<string>();
+    for (const team of SEED_TEAMS) {
+      const key = seedMatchKey(teamFullName(team));
+      expect(seen.has(key), teamFullName(team)).toBe(false);
+      seen.add(key);
+    }
+  });
+
   it("only remaps renames, never relocations we track separately", () => {
     // Montreal Expos → Washington Nationals is a relocation, and both are real
     // distinct rows for us. Collapsing them would lose the Expos.
@@ -174,9 +230,9 @@ describe("renamed franchises", () => {
   it("points every rename at a name the dataset does not already hold", () => {
     // Otherwise the two keys would collide and one franchise would shadow the
     // other in the index.
-    const names = new Set(SEED_TEAMS.map((t) => t.name));
+    const names = new Set(SEED_TEAMS.map((t) => teamFullName(t)));
     for (const current of Object.values(RENAMED_FRANCHISES)) {
-      expect(names.has(current)).toBe(false);
+      expect(names.has(teamFullName(current))).toBe(false);
     }
   });
 });

@@ -35,9 +35,10 @@
  */
 
 import { convexTest } from "convex-test";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
+import { __resetEspnTeamListCache } from "./adapters/espn";
 import { Id } from "./_generated/dataModel";
 import { normalizeTeamName } from "./teams";
 import { normalizePlayerName } from "./players";
@@ -105,16 +106,24 @@ async function seedSport(t: ReturnType<typeof convexTest>) {
 }
 
 /**
- * A team shaped EXACTLY as the two enqueueing creation paths insert one —
- * `selectorOptions`' `resolveTeamIdByName` and `teams.findOrCreateInternal`.
- * Both write `{name, nameNormalized, sportId, leagueId, lastUpdated}` and
- * nothing else, so `leagueId` is present here on purpose: it is the field most
- * likely to be mistaken for an enrichment marker.
+ * A team shaped EXACTLY as the enqueueing creation paths insert one —
+ * `selectorOptions`' commit prelude `createTeamFromOperatorInput` and
+ * `teams.findOrCreate` behind TeamPicker / MissingTeamFixer / Team
+ * Management. All of them write `{name, location?, nameNormalized, sportId,
+ * leagueId, lastUpdated}` and nothing else, so `leagueId` is present here on
+ * purpose: it is the field most likely to be mistaken for an enrichment
+ * marker.
+ *
+ * NEO-236: `location` joined that list. It is the first half of the creation
+ * form ("Location & Team Name should be the input"), so a team created for any
+ * real franchise arrives carrying one — which is why it is passable here, and
+ * why it MUST NOT be an enrichment marker. See the location case below.
  */
 async function insertBareTeam(
   t: ReturnType<typeof convexTest>,
   sportId: Id<"selectorOptions">,
   name: string,
+  location?: string,
 ) {
   return t.run(async (ctx) => {
     const leagueId = await ctx.db.insert("leagues", {
@@ -125,7 +134,10 @@ async function insertBareTeam(
     });
     return ctx.db.insert("teams", {
       name,
-      nameNormalized: normalizeTeamName(name),
+      ...(location ? { location } : {}),
+      nameNormalized: normalizeTeamName(
+        location ? `${location} ${name}` : name,
+      ),
       sportId,
       leagueId,
       lastUpdated: 1_700_000_000_000,
@@ -138,15 +150,24 @@ const getTeam = (t: ReturnType<typeof convexTest>, id: Id<"teams">) =>
 const getPlayer = (t: ReturnType<typeof convexTest>, id: Id<"players">) =>
   t.run(async (ctx) => ctx.db.get(id));
 
+// NEO-236: `fetchEspnTeamList` memoises per league path for the life of the
+// module, and these cases stub different ESPN bodies for the same league.
+// Without this, one test's roster is served to the next.
+beforeEach(() => {
+  __resetEspnTeamListCache();
+});
+
 afterEach(() => {
   vi.unstubAllGlobals();
+  __resetEspnTeamListCache();
 });
 
 describe("enrichTeam — creation-only (NEO-203)", () => {
   // Each marker is checked on its own: they are OR'd in the guard, and a
   // team in the wild carries whichever one its source happened to answer.
   const markerCases: Array<[string, Record<string, unknown>]> = [
-    ["city", { city: "Washington" }],
+    // NOT `location` — NEO-236 made it a CREATION input, so it is asserted
+    // below to be a non-marker rather than listed here.
     ["yearsActive", { yearsActive: { from: 1969 } }],
     ["colors", { colors: { primary: "#ab0003" } }],
     [
@@ -196,6 +217,89 @@ describe("enrichTeam — creation-only (NEO-203)", () => {
     await t.action(internal.adapters.wikidata.enrichTeam, { teamId });
 
     expect(stub.calls()).toBeGreaterThan(0);
+  });
+
+  /**
+   * NEO-236 — `location` is a CREATION input, so it must not be a marker.
+   *
+   * The security review caught this as HIGH, and the failure it describes is
+   * the same one the header warns about, reached through the front door: an
+   * operator types "San Diego" + "Padres" into the create form, the row is
+   * born with a `location`, and the guard reads that as "already enriched".
+   * The team then never gets colours, years, `wikidataId` or `espnId` — with
+   * nothing on screen and nothing in the logs to say so. Every team created
+   * for a real franchise takes that path, so it would have been most of them.
+   *
+   * Sibling of the bare-team pin above, and it belongs beside it: `location`
+   * is now in the same category as `leagueId` and `lastUpdated`.
+   */
+  test("a team created WITH a location is still enriched — location is a creation input, not a marker", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const teamId = await insertBareTeam(t, sportId, "Padres", "San Diego");
+
+    const stub = countingFetch();
+    vi.stubGlobal("fetch", stub.fetch);
+
+    await t.action(internal.adapters.wikidata.enrichTeam, { teamId });
+
+    expect(stub.calls()).toBeGreaterThan(0);
+  });
+
+  /**
+   * The other half of the trade. Dropping the marker means the LOOKUP runs for
+   * a team that has a location; it must not mean the lookup is allowed to
+   * overwrite the operator's answer. That guarantee lives in
+   * `applyEnrichmentInternal`'s gap-fill (and is pinned directly in
+   * `teams.applyEnrichmentInternal.test.ts`) — asserted here too, because the
+   * two halves are what make dropping the marker safe rather than a trade.
+   */
+  test("...and the operator's location survives the enrichment that now runs", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const teamId = await insertBareTeam(t, sportId, "Angels", "Los Angeles");
+
+    // ESPN answers "Anaheim" for this franchise. The row already has a
+    // location, so the gap-fill declines it and the name is untouched.
+    vi.stubGlobal("fetch", (async (url: string | URL) => {
+      const u = String(url);
+      if (u.includes("site.api.espn.com")) {
+        return new Response(
+          JSON.stringify({
+            sports: [
+              {
+                leagues: [
+                  {
+                    teams: [
+                      {
+                        team: {
+                          id: "3",
+                          displayName: "Los Angeles Angels",
+                          location: "Anaheim",
+                          color: "ba0021",
+                        },
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ results: { bindings: [] } }), {
+        status: 200,
+      });
+    }) as unknown as typeof fetch);
+
+    await t.action(internal.adapters.wikidata.enrichTeam, { teamId });
+
+    const team = await getTeam(t, teamId);
+    expect(team!.location).toBe("Los Angeles");
+    expect(team!.name).toBe("Angels");
+    // But the enrichment that DID have something new to say still landed.
+    expect(team!.externalIds?.espnId).toBe("3");
   });
 
   test("force re-enriches an already-enriched team — the operator remedy", async () => {
@@ -621,19 +725,22 @@ describe("teams.findOrCreate enqueues enrichment on INSERT only (NEO-208)", () =
     expect(await scheduledEnrichmentCount(t, "teamIds")).toBe(1);
   });
 
-  test("findOrCreateInternal is unchanged — it enqueues nothing", async () => {
-    // Deliberately untouched by NEO-208. Its server-side callers already
-    // enqueue (or deliberately do not) at the site that knows whether the row
-    // is new; adding an enqueue here would double up on those.
+  test("findByFullNameInternal creates nothing, so there is nothing to enqueue", async () => {
+    // NEO-208 left `findOrCreateInternal` alone: its server-side callers
+    // enqueued (or deliberately did not) at the site that knew whether the row
+    // was new. NEO-236 removed the question entirely — the server-side path is
+    // a QUERY now and cannot insert, so "enqueues nothing" is structural
+    // rather than a convention.
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
 
-    await t.mutation(internal.teams.findOrCreateInternal, {
+    await t.query(internal.teams.findByFullNameInternal, {
       name: "Chiba Lotte Marines",
       sportId,
     });
 
     expect(await scheduledEnrichmentCount(t, "teamIds")).toBe(0);
+    expect(await t.run(async (ctx) => ctx.db.query("teams").collect())).toHaveLength(0);
   });
 
   test("a rejected call — over-long name — enqueues nothing and creates nothing", async () => {
