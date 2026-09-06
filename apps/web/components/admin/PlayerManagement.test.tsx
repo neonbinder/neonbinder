@@ -1596,6 +1596,46 @@ describe("NEO-254: birth year", () => {
     );
   });
 
+  it("'Create anyway' carries the birth year — the fork path", async () => {
+    /*
+     * The exact UI path that was broken. With an exact match on screen the
+     * primary flips to "Open {name}" and creation demotes to "Create anyway";
+     * that button has to send the year, because the year is the only thing
+     * that makes `createByAdmin` fork rather than hand the existing row back.
+     */
+    nearMatches = [
+      { _id: "p-existing", name: "Bob Allen", confidence: "exact" },
+    ];
+    mockCreateByAdmin.mockResolvedValue({ id: "p-new", created: true });
+    const { container } = render(<PlayerManagement />);
+    openAddForm(container);
+    fireEvent.change(screen.getByLabelText("New player name"), {
+      target: { value: "Bob Allen" },
+    });
+    fireEvent.change(screen.getByLabelText("Birth year (optional)"), {
+      target: { value: "1975" },
+    });
+
+    // The primary is the safe move; creation is the deliberate second control.
+    // `nearMatches` is debounced, so the demotion lands a tick later.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Open Bob Allen" })).toBeTruthy(),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Create player Bob Allen anyway" }),
+    );
+
+    await waitFor(() =>
+      expect(mockCreateByAdmin).toHaveBeenCalledWith({
+        name: "Bob Allen",
+        sportId: "sport-baseball",
+        birthYear: 1975,
+      }),
+    );
+    // "Added", not "already exists" — the operator really did get a new row.
+    await waitFor(() => expect(screen.getByText("Added Bob Allen.")).toBeTruthy());
+  });
+
   it("omits the key entirely when the field is left blank", async () => {
     // Most players are the only one of their name, and demanding a year for
     // them would be a tax on the common case.

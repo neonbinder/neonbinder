@@ -242,7 +242,8 @@ describe("NEO-254: the write paths refuse to guess between same-name players", (
     ).rejects.toThrow(/2 players are already filed under Bob Allen/);
   });
 
-  test("createByAdmin still reports `created: false` for the single existing row", async () => {
+  test("createByAdmin adopts the single existing row when NO birth year is offered", async () => {
+    // The unchanged half: with no tiebreaker, one row is the row.
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const sportId = await seedSport(t);
@@ -256,6 +257,218 @@ describe("NEO-254: the write paths refuse to guess between same-name players", (
       sportId,
     });
     expect(result).toEqual({ id: existing, created: false });
+  });
+
+  test("createByAdmin adopts the single existing row when the birth year MATCHES", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    const existing = await insertPlayer(t, sportId, {
+      name: "Bob Allen",
+      nameNormalized: "allen bob",
+      birthYear: 1960,
+    });
+
+    const result = await asAdmin.mutation(api.players.createByAdmin, {
+      name: "Bob Allen",
+      sportId,
+      birthYear: 1960,
+    });
+    expect(result).toEqual({ id: existing, created: false });
+    expect(
+      await t.run(async (ctx) => (await ctx.db.query("players").collect()).length),
+    ).toBe(1);
+  });
+});
+
+// ===========================================================================
+// createByAdmin FORKS — the admin form's "Create anyway", made able to
+// ===========================================================================
+
+describe("NEO-254: a differing birth year creates the second person", () => {
+  test("single row with 1960, create with 1975 → a NEW row, and both are listed", async () => {
+    // The bug this replaced: the single-candidate branch returned
+    // `created: false` before it ever read `birthYear`, so "Create anyway"
+    // silently handed back the first Bob Allen and told the operator the
+    // player already existed. Plan decision 3's identity rule was unreachable
+    // from the UI — the "Same name, different people" panel could only ever be
+    // produced by the preload.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    const older = await insertPlayer(t, sportId, {
+      name: "Bob Allen",
+      nameNormalized: "allen bob",
+      birthYear: 1960,
+    });
+
+    const result = await asAdmin.mutation(api.players.createByAdmin, {
+      name: "Bob Allen",
+      sportId,
+      birthYear: 1975,
+    });
+
+    expect(result.created).toBe(true);
+    expect(result.id).not.toBe(older);
+    const created = await t.run(async (ctx) => ctx.db.get(result.id));
+    expect(created!.birthYear).toBe(1975);
+
+    // Both stand, and the management list shows both — which is what makes the
+    // pair reviewable afterwards.
+    const listed = await asAdmin.query(api.players.listForManagement, { sportId });
+    expect(listed.players).toHaveLength(2);
+    expect(listed.players.map((p) => p.birthYear).sort()).toEqual([1960, 1975]);
+  });
+
+  test("single row with NO year, create with 1975 → a new row", async () => {
+    // An absent year counts as different: the operator can see the existing
+    // row and pressed the button that says "anyway". Reading the gap as
+    // "probably the same man, we just never recorded it" would discard an
+    // explicit human gesture in favour of a guess about a missing field.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    const undated = await insertPlayer(t, sportId, {
+      name: "Bob Allen",
+      nameNormalized: "allen bob",
+    });
+
+    const result = await asAdmin.mutation(api.players.createByAdmin, {
+      name: "Bob Allen",
+      sportId,
+      birthYear: 1975,
+    });
+
+    expect(result.created).toBe(true);
+    expect(result.id).not.toBe(undated);
+    // The undated row is left exactly as it was — a fork is not a repair.
+    expect((await t.run(async (ctx) => ctx.db.get(undated)))!.birthYear).toBeUndefined();
+  });
+
+  test("findOrCreate does NOT fork on the same input — pickers link, they do not create people", async () => {
+    // The contract that must not move with it. A picker forking a second row
+    // because a birth year disagreed would mint duplicates from a typo, in a
+    // control used hundreds of times a session.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    const existing = await insertPlayer(t, sportId, {
+      name: "Bob Allen",
+      nameNormalized: "allen bob",
+      birthYear: 1960,
+    });
+
+    const id = await asAdmin.mutation(api.players.findOrCreate, {
+      name: "Bob Allen",
+      sportId,
+      birthYear: 1975,
+    });
+    expect(id).toBe(existing);
+    expect(
+      await t.run(async (ctx) => (await ctx.db.query("players").collect()).length),
+    ).toBe(1);
+  });
+
+  test("TWO dated rivals and a year matching neither → a third row", async () => {
+    // Every rival is dated and none of them is this year, so none of them is
+    // this man.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    await insertPlayer(t, sportId, {
+      name: "Bob Allen",
+      nameNormalized: "allen bob",
+      birthYear: 1867,
+    });
+    await insertPlayer(t, sportId, {
+      name: "Bob Allen",
+      nameNormalized: "allen bob",
+      birthYear: 1937,
+    });
+
+    const result = await asAdmin.mutation(api.players.createByAdmin, {
+      name: "Bob Allen",
+      sportId,
+      birthYear: 1975,
+    });
+    expect(result.created).toBe(true);
+    expect(
+      await t.run(async (ctx) => (await ctx.db.query("players").collect()).length),
+    ).toBe(3);
+  });
+
+  test("TWO rivals, one UNDATED, and a year matching neither → still a refusal", async () => {
+    // The leniency stops at one candidate. With several rivals the form offers
+    // no way to rule on each, and the undated one could be this very man.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    await insertPlayer(t, sportId, {
+      name: "Bob Allen",
+      nameNormalized: "allen bob",
+      birthYear: 1867,
+    });
+    await insertPlayer(t, sportId, { name: "Bob Allen", nameNormalized: "allen bob" });
+
+    await expect(
+      asAdmin.mutation(api.players.createByAdmin, {
+        name: "Bob Allen",
+        sportId,
+        birthYear: 1975,
+      }),
+    ).rejects.toThrow(/2 players are already filed under Bob Allen/);
+    expect(
+      await t.run(async (ctx) => (await ctx.db.query("players").collect()).length),
+    ).toBe(2);
+  });
+
+  test("TWO rivals sharing the SAME year as the request → a refusal, not a third row", async () => {
+    // The tiebreaker does not tie-break, and forking would add a third
+    // indistinguishable row.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    await insertPlayer(t, sportId, {
+      name: "Bob Allen",
+      nameNormalized: "allen bob",
+      birthYear: 1937,
+    });
+    await insertPlayer(t, sportId, {
+      name: "Bob Allen",
+      nameNormalized: "allen bob",
+      birthYear: 1937,
+    });
+
+    await expect(
+      asAdmin.mutation(api.players.createByAdmin, {
+        name: "Bob Allen",
+        sportId,
+        birthYear: 1937,
+      }),
+    ).rejects.toThrow(/already filed under Bob Allen/);
+  });
+
+  test("TWO rivals and a year matching exactly one → adopts that one", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    await insertPlayer(t, sportId, {
+      name: "Bob Allen",
+      nameNormalized: "allen bob",
+      birthYear: 1867,
+    });
+    const younger = await insertPlayer(t, sportId, {
+      name: "Bob Allen",
+      nameNormalized: "allen bob",
+      birthYear: 1937,
+    });
+
+    const result = await asAdmin.mutation(api.players.createByAdmin, {
+      name: "Bob Allen",
+      sportId,
+      birthYear: 1937,
+    });
+    expect(result).toEqual({ id: younger, created: false });
   });
 });
 

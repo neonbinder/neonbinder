@@ -306,6 +306,83 @@ function candidateForBirthYear(
 }
 
 /**
+ * NEO-254 — adopt one of these rows, fork a new one, or refuse: the decision
+ * `createByAdmin` makes, and ONLY `createByAdmin`.
+ *
+ * Returns the row to adopt, `null` to insert a new one, or throws when the
+ * question cannot be answered from what is on file.
+ *
+ * ## Why this differs from `findOrCreate`
+ *
+ * `findOrCreate` backs the pickers, whose job is to LINK a card to a player.
+ * One match there is an answer and it adopts, full stop — a picker that forked
+ * a second row because a birth year disagreed would mint duplicates from a
+ * typo, in a control the operator uses hundreds of times a session.
+ *
+ * `createByAdmin` backs the Player Management add form, whose job is to CREATE.
+ * That form has already shown the operator the row they are about to duplicate
+ * — the near-match panel promotes "Open {name}" to the primary — and creation
+ * only happens if they then press "Create anyway". So a birth year arriving
+ * here is not a hint, it is the operator saying "I have seen that row, and this
+ * is a different man born in {year}". Adopting anyway made that button unable
+ * to do what it says, and left plan decision 3's identity rule (a distinct
+ * birth year means a distinct person) unreachable from the UI: the "Same name,
+ * different people" panel could only ever be produced by the preload.
+ *
+ * ## An ABSENT year on the candidate counts as different
+ *
+ * One candidate, no `birthYear` on it, and the operator explicitly asks to
+ * create anyway with 1975. It would be possible to read that as "the row you
+ * already have is probably this man, we just never recorded his year" — but
+ * that reading discards an explicit human gesture in favour of a guess about a
+ * missing field, on the one screen whose entire purpose is telling same-named
+ * people apart. The operator can see the existing row; they pressed the button
+ * that says "anyway". So it forks, and the undated row is left exactly as it
+ * was.
+ *
+ * That leniency does NOT extend past one candidate. With several rivals the
+ * form offers no way to rule on each, and an undated one could be the very man
+ * being added — so any candidate missing a year, with no exact match, is a
+ * refusal rather than a fork.
+ */
+function adoptOrForkOnCreate(
+  candidates: ReadonlyArray<Doc<"players">>,
+  birthYear: number | undefined,
+  name: string,
+): Doc<"players"> | null {
+  if (candidates.length === 0) return null;
+
+  // The name is what the CALLER typed, so echoing it leaks nothing they do not
+  // already hold — unlike the other rows' `createdByUserId`, which is why this
+  // counts them rather than listing them.
+  const refuse = (): never => {
+    throw new ConvexError(
+      `${candidates.length} players are already filed under ${name}. Pick the right one instead of adding another.`,
+    );
+  };
+
+  if (birthYear === undefined) {
+    // No tiebreaker offered. One row is the row; several is a question.
+    if (candidates.length === 1) return candidates[0];
+    return refuse();
+  }
+
+  const hits = candidates.filter((p) => p.birthYear === birthYear);
+  // Exactly one row IS this man — adopt it, however many rivals there were.
+  if (hits.length === 1) return hits[0];
+  // Two rows share the name AND the year. The tiebreaker does not tie-break,
+  // and forking would add a third indistinguishable row.
+  if (hits.length > 1) return refuse();
+
+  // Nothing on file has this year.
+  if (candidates.length === 1) return null; // fork — see the note above.
+  // Every rival is dated and none of them is this year, so none of them is
+  // this man. Anything undated could be, and is not ours to rule out.
+  if (candidates.every((p) => p.birthYear !== undefined)) return null;
+  return refuse();
+}
+
+/**
  * NEO-254 — how many undated Wikidata team names one player row may carry, and
  * how long each may be.
  *
@@ -1332,19 +1409,21 @@ export const createByAdmin = mutation({
     // NEO-254: bounded `.take()` rather than `.first()`, for the reason spelled
     // out on `sameNamePlayers` — the key is a dedup key, not a unique one.
     const candidates = await sameNamePlayers(ctx, nameNormalized, args.sportId);
+    /**
+     * NEO-254 — adopt, fork, or refuse. See `adoptOrForkOnCreate` for the full
+     * rule and for why this form's answer differs from `findOrCreate`'s.
+     *
+     * This used to `return { created: false }` on the single-candidate branch
+     * BEFORE it ever looked at `birthYear`, which made the form's own
+     * "Create anyway" button unable to create anything: an operator adding the
+     * second Bob Allen was silently handed the first one back, and told the
+     * player already existed. A refusal the operator can act on lands on the
+     * page's status line, which sits directly above a search that lists the
+     * rows in question.
+     */
+    const adopted = adoptOrForkOnCreate(candidates, args.birthYear, name);
     // NOT enqueued — see the creation-only note on the insert below.
-    if (candidates.length === 1) return { id: candidates[0]._id, created: false };
-    if (candidates.length > 1) {
-      // NEO-254 — same guard, same reasoning, as `findOrCreate` above. Here
-      // the operator is looking at the Player Management form rather than a
-      // typeahead, so the refusal lands somewhere they can act on it: the page
-      // has a search that lists both rows.
-      const byBirthYear = candidateForBirthYear(candidates, args.birthYear);
-      if (byBirthYear) return { id: byBirthYear._id, created: false };
-      throw new ConvexError(
-        `${candidates.length} players are already filed under ${name}. Pick the right one instead of adding another.`,
-      );
-    }
+    if (adopted) return { id: adopted._id, created: false };
 
     const id = await ctx.db.insert("players", {
       name,

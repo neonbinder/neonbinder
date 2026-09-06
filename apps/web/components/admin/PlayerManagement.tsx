@@ -338,12 +338,19 @@ function AddPlayerForm({
    * NEO-254 — the birth year, and the only way to add a SECOND person with a
    * name we already have.
    *
-   * Without it this form could not create one at all: `createByAdmin` refuses
-   * an ambiguous name outright, and with one existing row the form's own
-   * near-match hierarchy promotes "Open {name}" and pushes creation behind
-   * "Create anyway". So the field is not decoration on the add form — it is
-   * the mechanism. Optional, because most players are the only one of their
-   * name and demanding a year for them would be a tax on the common case.
+   * This form is where plan decision 3's identity rule — a distinct birth year
+   * means a distinct person — becomes reachable by a human. The near-match
+   * panel promotes "Open {name}" the moment an exact match appears, so
+   * creation is already behind a deliberate "Create anyway"; the year is what
+   * makes that button able to do what it says. `createByAdmin` reads it as the
+   * operator asserting a different man: one existing row whose year differs
+   * (or is absent) FORKS, one whose year matches adopts, and several rivals
+   * fall back to the tiebreaker (see `adoptOrForkOnCreate` for the whole
+   * rule). Without it the mutation adopted the single candidate before it ever
+   * looked, and the operator was told the player already existed.
+   *
+   * Optional, because most players are the only one of their name and
+   * demanding a year for them would be a tax on the common case.
    */
   const [birthYear, setBirthYear] = useState("");
 
