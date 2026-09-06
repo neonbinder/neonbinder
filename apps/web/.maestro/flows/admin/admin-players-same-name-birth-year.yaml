@@ -1,0 +1,285 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/admin/players&worker=${WORKER_INDEX || "0"}
+name: "Player Management — the birth year is bounded, is stored and shown on the row, and never lets a repeated name quietly become a second player"
+tags:
+  - regression
+  - admin
+---
+# R1 — ONE FEATURE (NEO-254): the **birth year** on `/admin/players`. It is the
+# field that tells two people with one name apart, so this flow proves the three
+# things the operator can observe about it: it refuses a year outside its
+# bounds, it is stored and printed on the master row as "b. 1960", and it does
+# NOT turn a repeated name into a second player.
+#
+# ── ⚠️ WHAT THIS FLOW WAS ASKED TO PROVE AND CANNOT ─────────────────────────
+# The brief was to mint TWO players under one name (A with birth year 1960, B
+# with 1975) and then drive the wizard's "Same name, different people" panel.
+# **That is not reachable, and the birth-year field does not make it reachable.**
+# `players.createByAdmin` reads the same-name rows and returns BEFORE the birth
+# year is ever considered:
+#
+#     const candidates = await sameNamePlayers(ctx, nameNormalized, args.sportId);
+#     if (candidates.length === 1) return { id: candidates[0]._id, created: false };
+#     if (candidates.length > 1) { ...birthYear tiebreaker... }
+#
+# so with exactly one row on file, a create carrying ANY birth year adopts that
+# row. The tiebreaker only ever picks between rows that already exist; it never
+# forks a new one. Verified twice: the branch's own unit test
+# ("createByAdmin still reports `created: false` for the single existing row",
+# convex/playersAmbiguity.test.ts) asserts it, and a throwaway convex-test
+# probe driving the exact A(1960) → B(none) → B(1975) sequence on 2026-09-06
+# ended with ONE row, `b. 1960`, and `created: false` on both B attempts.
+#
+# The form's "Create anyway" button is therefore a control that cannot do what
+# it says while exactly one same-name row exists — raised as a product finding,
+# not worked around here. Steps 5 and 6 below assert the behaviour that IS
+# real. **If the product later decides a distinct birth year should fork a
+# second person, STEP 6 is the assertion to change** — it is deliberately the
+# tripwire for that decision rather than silence about it.
+#
+# R2 — HARD ASSERTIONS, none of them satisfiable by an inert page:
+#     (a) an out-of-bounds year is REFUSED client-side: the field says what it
+#         wants and the create button is inert — the form is still open, still
+#         holding the typed name, and no "Added …" was ever said;
+#     (b) a valid year lets the same create through — "Added <name>." is said
+#         only for a row that was INSERTED (a found row says "already exists");
+#     (c) the year is stored: the master row prints "b. 1960" after a search
+#         that re-reads it from the database;
+#     (d) repeating the name DEMOTES creation — the primary button becomes
+#         "Open <name>" and creation moves behind "Create anyway", which is the
+#         near-match hierarchy firing on a row this flow just made;
+#     (e) taking "Create anyway" — with and then without a birth year — adopts
+#         the existing row rather than adding a second, and the list still holds
+#         exactly one player under that name.
+#
+# R3 — DEDUP: `player-management-add-and-career-history.yaml` owns hand-adding a
+#   player and its career history; it never types a birth year, never repeats a
+#   name, and never touches the near-match hierarchy. Nothing else in the suite
+#   goes near `/admin/players`.
+#
+# R4 — the entry URL is the whole setup. No in-body login, no credential step.
+#
+# R5 — every wait is Maestro's 7s default except the cold sign-in (45s). No
+#   marketplace is touched, so nothing here earns a long timeout.
+#
+# R7 / R7a — no set, checklist, card or variant is touched, so this flow owns no
+#   SET-REGISTRY.md entry. It DOES create one globally-shared `players` row and
+#   there is no delete-player mutation anywhere in the product, so that row is
+#   permanent — the same footprint the sibling admin flow already carries. It is
+#   made harmless by the name: "Samename<attempt token>" is unique per worker
+#   AND per attempt, so no two runners or retries can collide, and nothing else
+#   in the suite or the product will ever search for it.
+#
+#   ⚠️ THE NAME MUST BE A SINGLE TOKEN. `players.search` is a Convex SEARCH
+#   index and matches on TOKENS: a hyphenated "Samename-w3-a1-23945" tokenizes
+#   into four terms, so it would answer to any other flow's "Samename-…" row and
+#   the exact-match hierarchy in STEP 5 could resolve against somebody else's
+#   player. Stripping the hyphens out of ATTEMPT_ID makes it one term that
+#   nothing else can share. Same rule, same reason, as the wizard's career-team
+#   flow.
+#
+# R10 — no conditional branches at all, so there is no poll on a normally-absent
+#   element and no path to the end that skips the feature.
+
+- launchApp
+
+# Wait for the COUNTER, not the "Player Management" heading: the heading paints
+# while the list is still loading and the filter box exists during loading, so
+# the heading is actively misleading. The counter renders when the query
+# resolves.
+- extendedWaitUntil:
+    visible: ".*of .* players.*"
+    timeout: 45000
+
+# ⚠️ READ `ATTEMPT_ID`, NOT `output.ATTEMPT_ID` — the runner injects it with
+# `-e`, which Maestro exposes as the binding. The hyphen strip is explained in
+# the R7 note above; `Date.now()` is the standalone-run fallback. Single-quoted
+# because the expression contains double quotes.
+- evalScript: '${output.ATTEMPT_TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'
+
+# ============================================================
+# STEP 1 — EMPTY THE LIST, THEN PICK THE SPORT
+#
+# Not decoration. Every player row prints its sport beside the name, so with
+# rows on screen "Baseball" is on the page many times over and the sport picker
+# could not be identified by what it says. And the sport MUST be chosen with the
+# add form CLOSED: Maestro reaches a native picker's options by their position
+# within their own picker and resolves that position against the FIRST picker in
+# the page, so a choice made while the form's own picker is mounted lands in the
+# list's instead. With the form closed the list's picker is the only one there.
+# The add form then opens with this sport already selected.
+# ============================================================
+
+- tapOn: "Filter players"
+- inputText: "zzzznotaplayer"
+- assertVisible: "No players match that filter."
+- assertVisible: "0 matches"
+
+- tapOn: "All sports"
+- tapOn: "Baseball"
+- assertVisible: "Baseball"
+
+# ============================================================
+# STEP 2 — R2(a): A YEAR OUTSIDE THE BOUNDS IS REFUSED, AND SAYS SO
+#
+# 1700 is below `MIN_BIRTH_YEAR` (1850). The upper bound is `maxBirthYear()` —
+# THIS year, not next, because nobody is born in a year that has not started —
+# so it is matched as a pattern rather than written down: a literal would fail
+# on 1 January.
+#
+# The label is escaped: Maestro treats a matcher as a regex, and a bare
+# "(optional)" would be a capture group matching the word without its brackets.
+# ============================================================
+
+- tapOn: "Add player"
+- assertVisible: "Add a player"
+
+- tapOn: "New player name"
+- inputText: "Samename${output.ATTEMPT_TOKEN}"
+
+- tapOn: "Birth year \\(optional\\)"
+- inputText: "1700"
+- assertVisible:
+    text: "Use a whole year between 1850 and 2[0-9]{3}\\."
+
+# The create button is inert while the year is out of bounds, so this tap must
+# do nothing. Three independent readings of "nothing happened": the form is
+# still open, the name is still sitting in the field a successful create would
+# have left behind, and the page never said it added anything.
+- scrollUntilVisible:
+    element:
+      id: "Create player Samename${output.ATTEMPT_TOKEN}"
+    centerElement: true
+- tapOn:
+    id: "Create player Samename${output.ATTEMPT_TOKEN}"
+- assertVisible: "Add a player"
+- assertVisible:
+    id: "New player name"
+    text: ".*Samename${output.ATTEMPT_TOKEN}.*"
+- assertNotVisible:
+    text: ".*Added Samename${output.ATTEMPT_TOKEN}.*"
+
+# ============================================================
+# STEP 3 — R2(b): CORRECT THE YEAR AND THE SAME CREATE GOES THROUGH
+#
+# The field is re-tapped before erasing because focus is not where the previous
+# step left it — a disabled button never takes it. `eraseText: 6` clears the
+# four digits with headroom.
+#
+# The helper line flipping back to the explanatory copy is the other half of
+# STEP 2: it says the refusal was the FIELD's, and that it lifted.
+# ============================================================
+
+- tapOn: "Birth year \\(optional\\)"
+- eraseText: 6
+- inputText: "1960"
+- assertVisible: "Tells this player apart from anyone else with the same name."
+
+- scrollUntilVisible:
+    element:
+      id: "Create player Samename${output.ATTEMPT_TOKEN}"
+    centerElement: true
+- tapOn:
+    id: "Create player Samename${output.ATTEMPT_TOKEN}"
+
+# "Added <name>." is said ONLY for a row that was INSERTED — a create that found
+# an existing row says "That player already exists — opened it." instead, which
+# is exactly the string STEP 5 asserts. So this line is the create, not the
+# adopt.
+- extendedWaitUntil:
+    visible: ".*Added Samename${output.ATTEMPT_TOKEN}.*"
+
+# ============================================================
+# STEP 4 — R2(c): THE YEAR IS STORED, AND THE MASTER ROW PRINTS IT
+#
+# The filter box still holds "zzzznotaplayer" from STEP 1, so it is erased
+# rather than appended to. Past two characters this screen switches to a server
+# SEARCH, so the row below is read back out of the database rather than off the
+# draft that was on screen a moment ago.
+#
+# Anchored `below:` the counter for the reason the sibling admin flow documents:
+# Maestro reports an input's current value as its text, so the filter box itself
+# answers to this name. The counter renders between the box and the list, so
+# "below the counter" is a list row and only a list row.
+# ============================================================
+
+- tapOn: "Filter players"
+- eraseText: 20
+- inputText: "Samename${output.ATTEMPT_TOKEN}"
+- extendedWaitUntil:
+    visible: "1 matches"
+- assertVisible:
+    text: ".*b. 1960.*"
+    below:
+      text: "1 matches"
+
+# ============================================================
+# STEP 5 — R2(d)+(e): THE SAME NAME AGAIN, WITH NO BIRTH YEAR
+#
+# The form is reopened and the identical name typed. `players.nearMatches` now
+# finds the row this flow made, and the screen REACTS: the green button becomes
+# "Open <name>" and creation is demoted to a plain "Create anyway" link. Waiting
+# for that demoted control is the assertion — it exists only when an exact match
+# came back, so it proves the row persisted and that the hierarchy fired.
+#
+# Taking "Create anyway" then adopts the existing row: `createByAdmin` returns
+# `created: false` and the page says so. That is the guard this ticket is about
+# — a repeated name never quietly becomes a second person.
+# ============================================================
+
+- tapOn: "Add player"
+- tapOn: "New player name"
+- inputText: "Samename${output.ATTEMPT_TOKEN}"
+
+- extendedWaitUntil:
+    visible:
+      id: "Create player Samename${output.ATTEMPT_TOKEN} anyway"
+- scrollUntilVisible:
+    element:
+      id: "Create player Samename${output.ATTEMPT_TOKEN} anyway"
+    centerElement: true
+- tapOn:
+    id: "Create player Samename${output.ATTEMPT_TOKEN} anyway"
+- extendedWaitUntil:
+    visible: "That player already exists — opened it."
+
+# ============================================================
+# STEP 6 — R2(e): AND A DISTINCT BIRTH YEAR CHANGES NOTHING
+#
+# ⚠️ THIS IS THE TRIPWIRE. See the header: the birth year is a tiebreaker
+# BETWEEN existing rows, never a fork into a new one, because `createByAdmin`
+# returns on `candidates.length === 1` before it is read. A build that decides
+# 1975 should mint a second person will fail here — deliberately, so that
+# decision is made in review rather than discovered in production.
+# ============================================================
+
+- tapOn: "Add player"
+- tapOn: "New player name"
+- inputText: "Samename${output.ATTEMPT_TOKEN}"
+- tapOn: "Birth year \\(optional\\)"
+- inputText: "1975"
+
+- extendedWaitUntil:
+    visible:
+      id: "Create player Samename${output.ATTEMPT_TOKEN} anyway"
+- scrollUntilVisible:
+    element:
+      id: "Create player Samename${output.ATTEMPT_TOKEN} anyway"
+    centerElement: true
+- tapOn:
+    id: "Create player Samename${output.ATTEMPT_TOKEN} anyway"
+- extendedWaitUntil:
+    visible: "That player already exists — opened it."
+
+# THE LIST IS THE PROOF, not the message. One row, still carrying the year it
+# was created with — so neither B attempt inserted anything and neither
+# overwrote the year on the row it adopted.
+- tapOn: "Filter players"
+- eraseText: 40
+- inputText: "Samename${output.ATTEMPT_TOKEN}"
+- extendedWaitUntil:
+    visible: "1 matches"
+- assertVisible:
+    text: ".*b. 1960.*"
+    below:
+      text: "1 matches"

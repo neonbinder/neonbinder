@@ -1,0 +1,217 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Entity review — a Wikidata team with no years is offered as a lead, refuses a blank start year, and becomes a staged career stint once one is given"
+tags:
+  - set-selector
+  - regression
+---
+# R1 — ONE FEATURE (NEO-254): the "Also on Wikidata, no years yet" panel the
+# review wizard renders under a player's dated career list.
+#
+# Wikidata links a player to a team with a P54 statement and a great many of
+# those carry no start date at all. NEO-235 stopped the adapter inventing one
+# and returned them by name as `enrichment.undatedCareerTeams`; until NEO-254
+# nothing read that field, so every one of those memberships was dropped on the
+# floor in silence. This flow proves the operator can now see them and put
+# years on one.
+#
+# ── WHY THIS IS THE ONLY SURFACE THIS FEATURE CAN BE TESTED ON ──────────────
+# The Players page (`/admin/players`) renders the SAME list with "Add years" and
+# "Remove", and it would be a far cheaper fixture. It is unreachable:
+# `players.undatedCareerTeams` is written by exactly one function —
+# `commitCardChecklistPrelude` (selectorOptions.ts) — at COMMIT time.
+# `applyEnrichmentInternal`, the path a player created from the Players page or
+# a PlayerPicker goes through, takes `teamYears` / `isHallOfFame` / `wikidataId`
+# and NOT the undated names, so no amount of "Add a player" + "Re-enrich" ever
+# populates that section. Committing a checklist to reach it is forbidden here
+# (see R7 below), so the wizard — which reads the leads straight off the review
+# queue's enrichment and writes nothing — is the whole of the reachable surface.
+#
+# R2 — HARD ASSERTIONS:
+#     (a) a PLAYER row is on screen (the manual career-team form is asserted
+#         present; a team row renders neither it nor this panel), and the
+#         undated panel's heading is asserted BEFORE any feature action — the
+#         scan loop below cannot green this flow by finding nothing;
+#     (b) VALIDATION IS ENFORCED: "Save years" with a blank start year does not
+#         stage anything, it names the accepted range;
+#     (c) a start year ALONE is enough — the end year is genuinely optional —
+#         and the lead is promoted into the wizard's staged career teams as
+#         "<team> (1961–present)".
+#
+# R3 — DEDUP: the four sibling `checklist-wizard-*` flows own Back / Skip / Link
+#   / the hand-typed CareerTeamEntry mini-form. None of them touches the undated
+#   panel, which is a different control with a different data source (Wikidata's
+#   own undated memberships, not a name the operator typed).
+#
+# R7 — READ-ONLY, AND THAT IS LOAD-BEARING. This flow records only SKIP
+#   decisions (which create and link nothing) and exits through Cancel →
+#   Discard (`cancelBatch`), so no player, team, card or skip record survives
+#   it. `players` is GLOBAL: one "Add as New" carried through to a commit would
+#   make that marketplace name KNOWN, and a name that is no longer unknown never
+#   reaches the wizard again — draining the fixture for every sibling flow. See
+#   SET-REGISTRY.md → "Topps Big League".
+#
+# R9 — the drill and the fetch belong to
+#   `util-fetch-real-set-checklist-to-wizard.yaml`; nothing is hand-rolled here.
+#
+# ⚠️ COST: one live BSC + SportLots round-trip (~70s to the wizard) plus the
+# scan below. Stated here because SET-REGISTRY.md asks every new reader on this
+# fixture to state its measured cost.
+
+# ============================================================
+# LAUNCH + SIGN IN
+# ============================================================
+
+- launchApp
+- extendedWaitUntil:
+    visible: ".*Build set parameters using marketplace APIs.*"
+    timeout: 45000
+
+# ============================================================
+# SETUP — real set, real fetch, wizard open
+# ============================================================
+
+- runFlow:
+    file: util-fetch-real-set-checklist-to-wizard.yaml
+
+- assertVisible:
+    text: "0 of [0-9]+ reviewed.*"
+
+# ============================================================
+# STEP 1 — FIND A ROW THAT HAS AN UNDATED LEAD
+#
+# Which rows carry one is a property of Wikidata, not of this flow, so the
+# wizard is walked forward until one turns up. Skip is the only way forward
+# that writes nothing (create mints a player, link binds a card), and every
+# skip is discarded at the end anyway.
+#
+# ── WHY 14, AND WHY THIS IS NOT A GUESS ─────────────────────────────────────
+# Measured against the live Wikidata Query Service on 2026-09-06: of 500
+# baseball players holding a P54 membership dated 2021 or later — the closest
+# available proxy for a 2024 Topps Big League checklist — 133 carry at least
+# one P54 with no P580 at all. That is a 27% per-row hit rate, so 14 rows
+# leaves a ~1.3% chance of finding none. If this flow ever fails on the assert
+# below, re-run that measurement before raising the bound: a collapse in the
+# rate is a product/adapter finding (a broken `classifyMembership`), not a
+# reason to walk further.
+#
+# R10 — `while:` rather than `when:` inside the body. The heading is normally
+# ABSENT, so `notVisible` resolves immediately on every miss; and because the
+# condition gates the REPEAT, the loop stops the moment a lead appears instead
+# of paying a full poll on each of the remaining iterations.
+# ============================================================
+
+# A row renders no action controls at all until its background Wikidata lookup
+# settles, so the first pass has to wait for one before it can read anything.
+- extendedWaitUntil:
+    visible:
+      id: "Add as New (Player|Team)"
+    timeout: 30000
+
+- repeat:
+    times: 14
+    while:
+      notVisible: "Also on Wikidata, no years yet"
+    commands:
+      # The kind is deliberately not guarded: a team row has no undated panel
+      # and no career form, and skipping it is exactly what this loop is for.
+      - tapOn:
+          id: "Skip .* not a (person|team)"
+      # R5 exception, same one the sibling wizard flows take: the next row
+      # offers no action until ITS live Wikidata lookup settles, which is an
+      # external round-trip and not a UI render.
+      - extendedWaitUntil:
+          visible:
+            id: "Add as New (Player|Team)"
+          timeout: 30000
+
+# ── R2(a): the loop found one, and it is on a PLAYER row ────────────────────
+# Two separate claims. The heading is the feature's own precondition — without
+# this assert the loop could exhaust silently and every step below would fail
+# with a misleading message. The career-team input is the KIND guard: it renders
+# only for `current.kind === "player"`, and it is a stable accessible name
+# rather than the prose beside it.
+- assertVisible: "Also on Wikidata, no years yet"
+- assertVisible:
+    id: "Career team name"
+
+# ============================================================
+# STEP 2 — OPEN THE YEAR FORM ON THE FIRST LEAD
+#
+# The team name is whatever Wikidata returned, so every control here is matched
+# on the aria-label's stable prefix. The visible text is a bare "Add years" that
+# repeats down the list; the accessible name carries the team, which is what
+# makes each row addressable at all.
+#
+# R8 — centred before the tap. This sits mid-panel, under however many dated
+# career teams the row has, so on a row with a long career it is below the fold
+# of the dialog's scrolling body at 1024×629.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      id: "Add years for .*"
+    centerElement: true
+- tapOn:
+    id: "Add years for .*"
+
+# ============================================================
+# STEP 3 — R2(b): a blank start year is REFUSED, and says what it wants
+#
+# The bound comes from `MIN_CAREER_YEAR` (1869) and `maxCareerYear()`
+# (this year + 1), so the upper year is matched as a pattern rather than
+# written down — it changes on 1 January and a literal would fail that morning.
+# ============================================================
+
+- tapOn:
+    id: "Save years for .*"
+- assertVisible:
+    text: "Start year must be a whole year between 1869 and 2[0-9]{3}\\."
+- assertNotVisible:
+    id: "Staged career teams"
+
+# ============================================================
+# STEP 4 — R2(c): THE FEATURE — a start year alone promotes the lead
+#
+# 1961 with no end year, for two reasons. The end year is optional and this is
+# what proves it. And "(1961–present)" cannot collide with any of the DATED
+# career-team lines rendered above in the same panel, which use the identical
+# "<team> (<from>–<to|present>)" shape: no player on a 2024 set has an
+# open-ended Wikidata stint starting in 1961.
+#
+# The en dash (U+2013) is matched with "." so no literal non-ASCII character
+# ends up in the matcher; the parentheses are escaped.
+# ============================================================
+
+- tapOn:
+    id: "From year for .*"
+- inputText: "1961"
+- tapOn:
+    id: "Save years for .*"
+
+# Two readings of the same event. The chip is the promoted lead itself; the
+# list it sits in is the wizard's staged manual career-team mechanism, which is
+# where "Add as New Player" would carry it — so this says the lead became an
+# ordinary staged stint rather than merely being echoed on screen.
+- extendedWaitUntil:
+    visible:
+      text: ".*\\(1961.present\\).*"
+- assertVisible:
+    id: "Staged career teams"
+
+# ============================================================
+# STEP 5 — EXIT WITHOUT WRITING ANYTHING (R7)
+#
+# The count is a regex: the scan above put an unknown number of skips on the
+# books and this flow does not claim to know how many.
+# ============================================================
+
+- tapOn:
+    text: "Cancel (Esc)"
+    retryTapIfNoChange: true
+- assertVisible:
+    text: "Discard [0-9]+ decisions?.*"
+- tapOn:
+    text: "Discard"
+- extendedWaitUntil:
+    visible: "Fetch cancelled — no cards saved."
