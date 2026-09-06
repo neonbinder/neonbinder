@@ -25,6 +25,10 @@ import { api } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
 import { normalizeTeamName } from "./teams";
+// NEO-236: fixtures derive their identity fields the same way every writer
+// does, so a row inserted here is keyed on the COMPOSED full name — the thing
+// the guard under test actually compares.
+import { teamRowFields } from "./lib/teamRow";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -54,12 +58,15 @@ async function seedSport(t: T, value = "Baseball"): Promise<Id<"selectorOptions"
 
 async function insertTeam(
   t: T,
-  opts: { name: string; sportId: Id<"selectorOptions"> },
+  opts: {
+    name: string;
+    location?: string;
+    sportId: Id<"selectorOptions">;
+  },
 ): Promise<Id<"teams">> {
   return t.run(async (ctx) =>
     ctx.db.insert("teams", {
-      name: opts.name,
-      nameNormalized: normalizeTeamName(opts.name),
+      ...teamRowFields({ name: opts.name, location: opts.location }),
       sportId: opts.sportId,
       lastUpdated: Date.now(),
     }),
@@ -122,20 +129,55 @@ describe("saveTeamFields refuses a rename onto an existing key (NEO-253)", () =>
     expect(message).toBe(`NAME_TAKEN:${keep}`);
   });
 
-  test("re-saving a team under its own name is not a collision", async () => {
+  test("re-saving a team under its own name and location is not a collision", async () => {
+    // The check is unconditional — it does not skip when the key is unchanged
+    // — so the row finding ITSELF has to be allowed through, or Save would be
+    // permanently refused on every team in the product.
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
-    const teamId = await insertTeam(t, { name: "Chicago Cubs", sportId });
+    const teamId = await insertTeam(t, {
+      name: "Cubs",
+      location: "Chicago",
+      sportId,
+    });
 
     await expect(
       t.withIdentity(ADMIN_IDENTITY).mutation(api.teams.saveTeamFields, {
         id: teamId,
-        name: "Chicago Cubs",
-        city: "Chicago",
+        name: "Cubs",
+        location: "Chicago",
       }),
     ).resolves.toBeNull();
 
-    expect((await getTeam(t, teamId))?.city).toBe("Chicago");
+    const after = await getTeam(t, teamId);
+    expect(after?.location).toBe("Chicago");
+    expect(after?.nameNormalized).toBe(normalizeTeamName("Chicago Cubs"));
+  });
+
+  test("a rename onto a SPLIT row's composed name collides (NEO-236 + NEO-253)", async () => {
+    // The two halves of the merge meeting: the row being edited stores a whole
+    // name, the row it collides with stores Location + Name, and the accents
+    // sit in the location. Nothing about this pair matches on `name` alone —
+    // it is a collision only because the key is composed AND folded.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const keep = await insertTeam(t, {
+      name: "Expos",
+      location: "Montréal",
+      sportId,
+    });
+    const editing = await insertTeam(t, { name: "Ottawa Expos", sportId });
+
+    const message = await rejectionMessage(
+      t.withIdentity(ADMIN_IDENTITY).mutation(api.teams.saveTeamFields, {
+        id: editing,
+        name: "Montreal Expos",
+      }),
+    );
+    expect(message).toBe(`NAME_TAKEN:${keep}`);
+
+    const after = await getTeam(t, editing);
+    expect(after?.name).toBe("Ottawa Expos");
   });
 
   test("adding the accents to the ONLY row carrying that name is allowed", async () => {

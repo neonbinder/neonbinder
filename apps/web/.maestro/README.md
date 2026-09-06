@@ -200,12 +200,13 @@ two buckets.
    deleted the "Seed Test Teams" button and the mutation behind it). A flow that
    needs a team or a player creates its own, named per **worker and attempt**,
    through the product's own screens — `/admin/players` for a player and its
-   career stints, TeamPicker's "+ Create" row for a team, `/admin/teams` for
+   career stints, TeamPicker's "+ New team" row and the New Team dialog it
+   opens for a team, `/admin/teams` for
    that team's colours. Worked examples:
    `admin/player-management-add-and-career-history.yaml`,
    `spine-label/player-team-colors-default-to-longest-tenure.yaml`,
    `set-selector/team-picker.yaml`. Per-attempt is not belt-and-braces: the
-   picker offers "+ Create <name>" only while no team of that name exists, so a
+   picker offers "+ New team <name>" only while no team of that name exists, so a
    name a previous attempt left behind renders "Add <name>" instead and the
    create step reaches for a control that is not there.
 5. **Intentional platform divergence.** If you've ruled out 1–4, you're

@@ -1,4 +1,6 @@
 import { normalizeEntityName } from "../../convex/lib/entityNearMatch";
+// NEO-236: pure, no Convex — see lib/teams/team-name.ts.
+import { teamFullName } from "../../lib/teams/team-name";
 
 /**
  * NEO-212 — "which team names does this batch already account for?"
@@ -74,6 +76,11 @@ export interface StagingRow {
         action: "create";
         manualCareerTeams?: StagingCareerTeam[];
         excludedCareerTeamNames?: string[];
+        /**
+         * NEO-236, team rows: the operator's Location + Name. This — not
+         * `name` above — is what commit will actually create the row as.
+         */
+        create?: { location?: string; name: string };
       }
     | { action: "link"; linkedPlayerId?: string; linkedTeamId?: string }
     | { action: "skip" }
@@ -111,6 +118,20 @@ export interface DeriveStagedTeamNamesArgs {
  * them. Rows decided "link" contribute their TARGET's name (see
  * `linkedTeamNames`), never their own.
  */
+/**
+ * NEO-236 — the name a team row will actually exist under.
+ *
+ * One helper because two places need the same answer and they must not
+ * disagree: the staging list below, and the current-row exclusion that keeps
+ * the typeahead from suggesting the row you are looking at back at you. If the
+ * exclusion keyed off the raw name while the list staged the composed one, a
+ * split current row would suggest itself.
+ */
+function stagedTeamRowName(row: StagingRow): string {
+  const create = row.decision?.action === "create" ? row.decision.create : undefined;
+  return create ? teamFullName(create) : row.name;
+}
+
 export function deriveStagedTeamNames({
   rows,
   currentRowId,
@@ -125,7 +146,7 @@ export function deriveStagedTeamNames({
   // moment a player and a team share a string.
   const currentTeamKey =
     currentRow && currentRow.kind === "team"
-      ? normalizeEntityName(currentRow.name)
+      ? normalizeEntityName(stagedTeamRowName(currentRow))
       : null;
 
   const ordered: StagedTeamName[] = [];
@@ -137,7 +158,17 @@ export function deriveStagedTeamNames({
   for (const row of rows) {
     if (row.kind !== "team") continue;
     if (row.decision && row.decision.action !== "create") continue;
-    ordered.push({ name: row.name, source: "batch-team" });
+    // NEO-236: the name commit will CREATE, not the string the checklist used.
+    //
+    // Same failure this module exists to prevent, one level up. A row whose
+    // checklist name is "SD Padres" and whose decision says
+    // ("San Diego", "Padres") will exist as "San Diego Padres" — so
+    // suggesting "SD Padres" on a later row offers a name that will never be
+    // in `teams`, the operator retypes the real one, and the batch ends up
+    // asking for two franchises again. An undecided row has no split to read
+    // and falls back to its raw name, which is also what its own pre-fill
+    // would start from.
+    ordered.push({ name: stagedTeamRowName(row), source: "batch-team" });
   }
 
   // 2. Canonical names behind "link" decisions.

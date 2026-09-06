@@ -37,6 +37,8 @@
  */
 
 /** The three terminal decisions a review row can carry. */
+import { normalizeEntityName } from "../../convex/lib/entityNearMatch";
+
 export type NavDecision =
   | { action: "create" }
   | { action: "link"; linkedPlayerId?: string; linkedTeamId?: string }
@@ -52,7 +54,92 @@ export type NavRow = {
   _id: string;
   status: "pending" | "ready" | "error";
   decision?: NavDecision | null;
+  /**
+   * NEO-236 — both optional so a test can still hand this module three-field
+   * literals, and so every existing caller compiles unchanged. Absent means the
+   * blocking rule below simply does not apply to that row.
+   */
+  kind?: "player" | "team";
+  source?: { kind: "careerTeamOf"; playerRowId: string } | null;
+  /** A team row's own name, and a player row's career-team labels — the two
+   *  sides the blocker rule matches on. Optional so a test may omit them. */
+  name?: string;
+  enrichment?: { careerTeams?: readonly { name: string }[] } | null;
 };
+
+/**
+ * NEO-236 — is this player row still waiting on a team the batch has to create?
+ *
+ * Jason asked for the walk to read "New Team: Sydney Blue Sox, New Team: Oregon
+ * State Beavers, then New Player: Travis Bazzana which can now use the 2 new
+ * teams that were created." `getBatch` already emits the staged team rows ahead
+ * of their player, and that is enough ONLY while those rows are settled — a
+ * still-pending row is stepped over by the rule below, which would put the
+ * player first and hand the operator a step they cannot complete (its chips
+ * would read "needs a team decision" and Confirm would be blocked).
+ *
+ * So a player waits for its own staged teams. This cannot deadlock: a blocking
+ * row is undecided, so it is either settled — in which case `nextUndecided`
+ * reaches it FIRST, because it sorts ahead of the player — or still pending, in
+ * which case the lookup pool or `sweepStalePendingRows` will settle it. With
+ * every remaining row blocked, this returns null and the wizard says it is
+ * still looking names up, which is exactly what is happening.
+ *
+ * A blocker the operator has ANSWERED — including "skip" — stops blocking. Skip
+ * means "that is not a team", and the player's own step is where that is dealt
+ * with (untick the chip, or change the team's decision); refusing to present
+ * the player would leave nowhere to do either.
+ */
+function waitingOnStagedTeams(
+  row: NavRow,
+  rows: readonly NavRow[],
+): boolean {
+  if (row.kind !== "player") return false;
+
+  /*
+   * TWO ways a staged step can belong to this player, and the second is the
+   * one Jason's 522-row hockey batch found.
+   *
+   * Staging dedupes a career team across the WHOLE batch, so in a set full of
+   * NHL players the first one to name the Montreal Canadiens gets the step and
+   * every later player sharing that club gets none. Keyed only on
+   * `source.playerRowId`, this saw no blocker for Guy Lafleur and let him
+   * through — while his chips, which key on the NAME across the batch,
+   * correctly reported three teams as unanswered. He was handed a step that
+   * said "needs a team decision" three times with nowhere to go: "There does
+   * not appear to be anywhere that a decision is needed that I can see."
+   *
+   * So the answer is the TEAM, identified by its name. Whose lookup happened to
+   * raise the step is not part of the question — it only decides which step
+   * says "Needed by".
+   *
+   * `normalizeEntityName` is the same key the chips and the staging dedupe use,
+   * so the three cannot disagree about whether a label is answered.
+   */
+  const careerKeys = new Set(
+    (row.enrichment?.careerTeams ?? [])
+      .map((ct) => normalizeEntityName(ct.name))
+      .filter(Boolean),
+  );
+
+  return rows.some((other) => {
+    // ANY team row, not just a staged one: a checklist team row named for one
+    // of this player's clubs answers that chip exactly as a staged row does.
+    // Where the row came from decides what its step says, never whether it
+    // counts.
+    if (other.kind !== "team") return false;
+    if (other.decision) return false;
+    if (
+      other.source?.kind === "careerTeamOf" &&
+      other.source.playerRowId === row._id
+    ) {
+      return true;
+    }
+    return (
+      other.name !== undefined && careerKeys.has(normalizeEntityName(other.name))
+    );
+  });
+}
 
 /**
  * `rowId` — the row the wizard is presenting, or null for "nothing to present"
@@ -72,7 +159,58 @@ export type NavState = { rowId: string | null; explicit: boolean };
  * stepped over rather than blocking on a straggler.
  */
 export function nextUndecided<T extends NavRow>(rows: readonly T[]): T | null {
-  return rows.find((r) => r.status !== "pending" && !r.decision) ?? null;
+  const settled = (r: T) => r.status !== "pending" && !r.decision;
+
+  /*
+   * ── NEO-236: EVERY undecided team comes before ANY undecided player ──────
+   *
+   * Jason, 2026-09-06: "What if we just always pop new teams to the top of the
+   * queue? … subsequent cards would always have all of the teams before it.
+   * That would help with the look up info as there are a lot of these hockey
+   * players that don't have years in the wikidata and then the teams need to be
+   * mapped manually."
+   *
+   * The point is not tidiness, it is that answering teams first makes the
+   * PLAYERS easier. Every team the operator creates early is one more row the
+   * later players' career stints can resolve against by name — so a batch that
+   * front-loads its teams turns a long tail of hand-mapping into a list of
+   * links. It also means the operator does one KIND of work at a time instead
+   * of alternating between two shapes of form.
+   *
+   * Array order is preserved WITHIN each pass, so `walkOrder`'s "a staged team
+   * sits with the player who needed it" still decides the order teams are
+   * asked in — this only decides that they are all asked first.
+   *
+   * A row with no `kind` (an older caller, or a test literal) falls through to
+   * the second pass, which is the pre-NEO-236 behaviour unchanged.
+   */
+  const team = rows.find((r) => settled(r) && r.kind === "team");
+  if (team) return team;
+
+  return (
+    rows.find(
+      (r) =>
+        settled(r) &&
+        // A player whose staged career teams are still open is not ready to be
+        // reviewed — see `waitingOnStagedTeams`. Still needed even with teams
+        // sorted first, because a team whose own lookup has not landed is not
+        // `settled` and so is not offered by the pass above.
+        !waitingOnStagedTeams(r, rows),
+    ) ?? null
+  );
+}
+
+/**
+ * Is any TEAM row settled, undecided, and therefore ready to be answered?
+ *
+ * The teams-first rule's precondition. Deliberately not "is any team row
+ * undecided": a team whose own lookup has not landed cannot be answered yet, so
+ * yielding to it would park the operator on nothing.
+ */
+function hasSettledUndecidedTeam(rows: readonly NavRow[]): boolean {
+  return rows.some(
+    (r) => r.kind === "team" && r.status !== "pending" && !r.decision,
+  );
 }
 
 /** Rows carrying any decision — the wizard's progress numerator. */
@@ -92,6 +230,56 @@ export function countPendingUndecided(rows: readonly NavRow[]): number {
     (n, r) => (r.status === "pending" && !r.decision ? n + 1 : n),
     0,
   );
+}
+
+/**
+ * The same, narrowed to the rows the bulk create can act on.
+ *
+ * The two are NOT interchangeable, and conflating them is a mistake worth
+ * naming: the status line ("N still looking up — wait or skip") is about what
+ * the OPERATOR is waiting on, which includes the New Team steps; the ARMING
+ * decision is about what the bulk create will still have work to do for, which
+ * is players only. Counting teams in the second makes the loop spin; leaving
+ * them out of the first makes the wizard look idle while it is not.
+ */
+export function countPendingBulkCreatable(rows: readonly NavRow[]): number {
+  return rows.reduce(
+    (n, r) =>
+      r.status === "pending" && !r.decision && isBulkCreatable(r) ? n + 1 : n,
+    0,
+  );
+}
+
+/**
+ * NEO-236 — is this a row "Add remaining players as new" would actually decide?
+ *
+ * Jason: "add all remaining as new should still process teams, it should only
+ * apply to players." So a TEAM row — a checklist name or a career team this
+ * batch staged — is never decided by that button, and every count attached to
+ * it has to agree, or the wizard lies twice over:
+ *
+ *  - the label would promise to add rows it will not touch, and
+ *  - the armed "keep adding as lookups finish" loop would never converge,
+ *    because it waits on a count that can no longer reach zero.
+ *
+ * A row with no `kind` (an older caller, or a test literal) counts as bulk
+ * creatable, which preserves every pre-NEO-236 caller's arithmetic.
+ */
+function isBulkCreatable(row: NavRow): boolean {
+  return row.kind !== "team";
+}
+
+/** Undecided rows the bulk create will act on — the number its label shows. */
+export function countBulkCreatable(rows: readonly NavRow[]): number {
+  return rows.reduce(
+    (n, r) => (!r.decision && isBulkCreatable(r) ? n + 1 : n),
+    0,
+  );
+}
+
+/** Undecided rows of ANY kind — what "Skip remaining" acts on, unchanged. */
+export function countUndecided(rows: readonly NavRow[]): number {
+  return rows.reduce((n, r) => (r.decision ? n : n + 1), 0);
 }
 
 /** What the batch will actually do, for the final step's summary. */
@@ -132,6 +320,24 @@ export function summarizeDecisions(rows: readonly NavRow[]): {
 export function resolveNav<T extends NavRow>(
   rows: readonly T[],
   nav: NavState,
+  /**
+   * NEO-236 — has the operator started work on the row that is on screen?
+   *
+   * The teams-first rule lets the walk revise its OWN pick (an implicit pin),
+   * which is what stopped the wizard stranding an operator on a player while
+   * answerable teams piled up behind it. But "the walk may change its mind"
+   * has to stop being true the moment the operator has begun: half-typed text
+   * in the career-team entry, a staged stint, an unticked chip or an open link
+   * search is work, and most of it is per-row state that a jump discards.
+   *
+   * Only gates the teams-first clause. A decided row, a vanished row, and a
+   * player waiting on its own staged teams all still move the walk on — those
+   * are not "the walk changing its mind", they are the row being finished or
+   * unanswerable.
+   *
+   * Defaults to false, so every existing caller keeps today's behaviour.
+   */
+  opts: { pinnedRowHasEdits?: boolean } = {},
 ): NavState {
   const presented =
     nav.rowId === null ? null : (rows.find((r) => r._id === nav.rowId) ?? null);
@@ -139,7 +345,50 @@ export function resolveNav<T extends NavRow>(
   const stale =
     nav.rowId === null ||
     presented === null ||
-    (!nav.explicit && !!presented.decision);
+    (!nav.explicit &&
+      (!!presented.decision ||
+        /*
+         * NEO-236 — a player the WALK chose yields while any team waits.
+         *
+         * Jason's 118-row batch: 13 settled undecided teams, and the wizard
+         * sitting on a player. `nextUndecided` was already teams-first, so a
+         * FRESH resolve picked a team correctly — the hole was that
+         * `resolveNav` only consults it when the pin goes STALE, and an
+         * implicitly-pinned undecided player never is.
+         *
+         * That matters because of how a batch actually drains: everything
+         * starts `pending`, the pool resolves 5-wide over a real Wikidata round
+         * trip, and with 105 of 118 rows being players the first row to settle
+         * is almost always a player. The walk pins it, the 13 teams settle a
+         * moment later, and nothing ever re-asks. The operator gets exactly
+         * what Jason got — a player whose chips say "needs a team decision"
+         * while every team it needs is sitting there answered by nobody.
+         *
+         * Only an IMPLICIT pin yields. An explicit one is the operator's own
+         * navigation (Back, "Change decision", "Decide team") and outranks
+         * this — that is the NEO-221 promise about not losing your place, and
+         * it is what keeps this from undoing a deliberate move.
+         */
+        (presented.kind === "player" &&
+          !opts.pinnedRowHasEdits &&
+          hasSettledUndecidedTeam(rows)) ||
+        // NEO-236 — an implicit pin YIELDS to steps staged under it.
+        //
+        // This is the defect Jason hit on CI run 5: on the first player of a
+        // fresh batch he was shown the New Player step and never saw a New Team
+        // step at all. The player's own lookup is what stages its career teams,
+        // and the wizard is already presenting that player when the lookup
+        // lands — so the rows appear ahead of it, `nextUndecided` correctly
+        // refuses to offer the player, and none of that mattered, because a
+        // present + undecided + implicitly-presented row was not "stale" and
+        // the rule was never consulted.
+        //
+        // An implicit pin is the WIZARD'S OWN WALK, not something the operator
+        // chose, so it has no claim to stay put once the walk's own rule says
+        // this row is not ready. An EXPLICIT pin still wins (see below): the
+        // operator asked for that row, and its step is where an unanswerable
+        // career team gets unticked.
+        waitingOnStagedTeams(presented, rows)));
   if (!stale) return nav;
 
   const nextId = nextUndecided(rows)?._id ?? null;

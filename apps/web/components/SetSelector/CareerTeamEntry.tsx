@@ -6,6 +6,7 @@ import {
   normalizeEntityName,
   rankTeamCandidates,
 } from "../../convex/lib/entityNearMatch";
+import { teamFullName } from "../../lib/teams/team-name";
 import { Input } from "../primitives/Input";
 import {
   nameHasQueryPrefix,
@@ -21,10 +22,25 @@ import {
  *
  * The team field is a free-text combobox: it typeaheads against candidate
  * teams, but UNLIKE EntityLinkSearch it deliberately accepts a name that
- * matches nothing — that becomes a brand-new team, resolved via get-or-create
- * at commit time (commitCardChecklist's resolveTeamIdByName), exactly how
- * Wikidata-sourced career teams are already resolved. So there's no "+ Create"
- * escape hatch here; typing IS creating.
+ * matches nothing. So there's no "+ Create" escape hatch here; typing IS
+ * creating.
+ *
+ * ## NEO-236 — ONE box, and creating happens on its own step
+ *
+ * Jason, 2026-09-05: "we should also remove the Location box from New Players
+ * as we should only be selecting existing teams or entering it in the singular
+ * field which would trigger that new team dialog."
+ *
+ * An earlier pass put a Location field beside the name here. It asked the
+ * operator to split a team while they were dating a stint, in a form with no
+ * room for the League, and it asked it in a different place from every other
+ * team creation in the product. The field is gone: this is a single team box
+ * again, and a name that matches nothing STAGES a New Team step in the wizard
+ * — Location, Name and League, answered where every other new team is answered.
+ *
+ * That is why typing still creates and there is still no "+ Create" row here:
+ * what this component reports upward is a STINT, and the team it names is
+ * either one we already hold or one the batch is about to ask about.
  *
  * This component owns only its own mini-form state and emits each completed
  * entry via `onAdd`. The staged list of added entries (and its per-row reset)
@@ -60,15 +76,26 @@ const SEARCH_DEBOUNCE_MS = 200;
 /** How many suggestions the dropdown shows, staged and searched combined. */
 const MAX_SUGGESTIONS = 8;
 
-export type CareerTeamDraft = { name: string; fromYear: number; toYear?: number };
+/**
+ * NEO-236: `name` is the WHOLE team name as the operator typed or picked it —
+ * "San Diego Padres", not "Padres". Splitting it into a Location and a nickname
+ * is the New Team step's question, asked once, where the League is asked too.
+ */
+export type CareerTeamDraft = {
+  name: string;
+  fromYear: number;
+  toYear?: number;
+};
 
-/** One dropdown row. `staged` drives the "this batch" tag and the ordering. */
+/** One dropdown row. `staged` drives the ordering and the dedupe — never a
+ *  visible difference; see the option's `aria-label`. */
 type Suggestion = { key: string; name: string; staged: boolean };
 
 export default function CareerTeamEntry({
   sportId,
   stagedNames,
   onAdd,
+  onDirtyChange,
 }: {
   /** NEO-96: the sport-level selectorOptions row id, not its display name. */
   sportId: Id<"selectorOptions">;
@@ -79,6 +106,16 @@ export default function CareerTeamEntry({
    */
   stagedNames: string[];
   onAdd: (entry: CareerTeamDraft) => void;
+  /**
+   * NEO-236 — "the operator has started filling this in".
+   *
+   * The wizard's walk may revise its own choice of row while nobody has begun
+   * work on it (teams jump the queue as their lookups land). Half-typed text in
+   * THIS form is work, and it lives here rather than in the wizard, so the
+   * wizard cannot see it without being told. Fires on the transitions only, not
+   * per keystroke.
+   */
+  onDirtyChange?: (dirty: boolean) => void;
 }) {
   const [name, setName] = useState("");
   const [debouncedName, setDebouncedName] = useState("");
@@ -87,8 +124,40 @@ export default function CareerTeamEntry({
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
   const [highlightIdx, setHighlightIdx] = useState(0);
   const nameInputRef = useRef<HTMLInputElement>(null);
+  /** Where focus goes after a suggestion is taken — the next thing to fill in. */
+  const fromYearRef = useRef<HTMLInputElement>(null);
+  /** The input + its listbox. Blur out of THIS closes the list; blur between
+   *  its two halves does not. */
+  const comboRef = useRef<HTMLDivElement>(null);
 
   const maxYear = new Date().getFullYear() + 1;
+
+  /**
+   * Anything typed into any of the three fields counts. A name alone is enough:
+   * it is the half the operator cannot get back by re-picking a suggestion.
+   */
+  const dirty =
+    name.trim() !== "" || fromYear.trim() !== "" || toYear.trim() !== "";
+
+  /*
+   * Emitted on the TRANSITIONS only, and through a ref rather than a dep.
+   *
+   * The parent's handler is an inline arrow, so it is a new function every
+   * render; depending on it would fire this effect every render, and since the
+   * handler sets parent state that is a render loop. Holding it in a ref and
+   * gating on the value's own change makes the call count equal to the number
+   * of times the answer actually changed — twice per stint, typically.
+   */
+  const onDirtyChangeRef = useRef(onDirtyChange);
+  useEffect(() => {
+    onDirtyChangeRef.current = onDirtyChange;
+  }, [onDirtyChange]);
+  const lastDirtyRef = useRef<boolean | null>(null);
+  useEffect(() => {
+    if (lastDirtyRef.current === dirty) return;
+    lastDirtyRef.current = dirty;
+    onDirtyChangeRef.current?.(dirty);
+  }, [dirty]);
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedName(name), SEARCH_DEBOUNCE_MS);
@@ -102,6 +171,9 @@ export default function CareerTeamEntry({
 
   const trimmedName = name.trim();
   const debouncedTrimmed = debouncedName.trim();
+  /** What this entry will match against, and what a New Team step would be
+   *  staged for: the whole typed name. */
+  const composedName = trimmedName;
 
   const searched = useQuery(
     api.teams.search,
@@ -141,6 +213,9 @@ export default function CareerTeamEntry({
       .map((n) => ({ key: `staged:${n}`, name: n, staged: true }));
 
     const saved = (searched ?? [])
+      // NEO-236: the FULL name. A suggestion is something the operator can
+      // pick to LINK to, and "Padres" does not identify the row it belongs to.
+      .map((t) => ({ _id: t._id, name: teamFullName(t) }))
       // Dropping a saved team already offered as staged: the same name twice,
       // once tagged and once not, reads as two different teams.
       .filter((t) => !stagedKeys.has(normalizeEntityName(t.name)))
@@ -158,17 +233,24 @@ export default function CareerTeamEntry({
    * head of the ranking settles it.
    */
   const didYouMean = useMemo<string | null>(() => {
-    if (!trimmedName) return null;
-    const pool = [...stagedNames, ...(searched ?? []).map((t) => t.name)];
+    if (!composedName) return null;
+    const pool = [
+      ...stagedNames,
+      // NEO-236: `teams.search` returns whole rows, so the full name is
+      // composed here rather than read off `name` — a split row's `name` is
+      // just "Padres" and ranking "San Diego Padres" against it would report a
+      // near match where there is an exact one.
+      ...(searched ?? []).map((t) => teamFullName(t)),
+    ];
     if (pool.length === 0) return null;
     const ranked = rankTeamCandidates(
-      trimmedName,
+      composedName,
       pool.map((n) => ({ name: n })),
     );
     if (ranked.length === 0) return null;
     if (ranked[0].confidence === "exact") return null;
     return pool[ranked[0].index] ?? null;
-  }, [trimmedName, stagedNames, searched]);
+  }, [composedName, stagedNames, searched]);
 
   const fromNum = Number(fromYear);
   const toNum = toYear.trim() === "" ? undefined : Number(toYear);
@@ -185,25 +267,76 @@ export default function CareerTeamEntry({
 
   const commit = () => {
     if (!canAdd) return;
-    onAdd({ name: trimmedName, fromYear: fromNum, ...(toNum !== undefined ? { toYear: toNum } : {}) });
+    onAdd({
+      name: trimmedName,
+      fromYear: fromNum,
+      ...(toNum !== undefined ? { toYear: toNum } : {}),
+    });
     setName("");
     setDebouncedName("");
     setFromYear("");
     setToYear("");
     setSuggestionsOpen(false);
+    // Safe to refocus now: the list opens on TYPING, not on focus. See the
+    // note on `pickSuggestion`.
     nameInputRef.current?.focus();
   };
 
+  /**
+   * A suggestion is an existing (or already-staged) team's WHOLE name, and it
+   * goes into the box verbatim — byte-for-byte the name the prelude will look
+   * up, which is what makes it link rather than create.
+   *
+   * ## Why taking a suggestion used to leave the list open
+   *
+   * Jason, 2026-09-06, on "Buffalo Sabres": "I can't find any way to dismiss
+   * the green list." This closed the list and then called
+   * `nameInputRef.current.focus()` — and the input carried
+   * `onFocus={() => setSuggestionsOpen(true)}`, so the refocus immediately
+   * reopened what the line above had just closed. The list then covered the
+   * From/To year fields underneath, which are the very next thing to fill in,
+   * and nothing could dismiss it: blur was unhandled too.
+   *
+   * The `onFocus` auto-open is GONE rather than worked around with a
+   * suppression flag. Focusing a text box should not drop a list over the
+   * fields below it; the list belongs to typing (and to ArrowDown, for a
+   * keyboard operator who wants it back). That removes the whole class of bug
+   * rather than this one instance of it.
+   *
+   * Focus lands on FROM YEAR, not back on the name: the team is chosen, and
+   * the stint is not finished until it has a year.
+   */
   const pickSuggestion = (teamName: string) => {
     setName(teamName);
     setDebouncedName(teamName);
     setSuggestionsOpen(false);
-    nameInputRef.current?.focus();
+    fromYearRef.current?.focus();
+  };
+
+  /**
+   * Focus left the combobox entirely — close the list.
+   *
+   * Deferred, and checked against `document.activeElement` rather than the
+   * event's `relatedTarget`: `relatedTarget` on blur/focusout is unreliable
+   * across environments (notably jsdom, where it comes back null for an
+   * ordinary focus move), so the read has to happen after focus has actually
+   * settled. Same reasoning, same shape as `TeamPicker.handleRootBlur`.
+   *
+   * Scoped to the combobox, so moving between the input and one of its own
+   * options does not count as leaving.
+   */
+  const handleComboBlur = () => {
+    setTimeout(() => {
+      if (comboRef.current?.contains(document.activeElement)) return;
+      setSuggestionsOpen(false);
+    }, 0);
   };
 
   return (
     <div className="border border-gray-700 rounded-md bg-gray-900/60 p-2 space-y-1.5">
-      <div className="relative">
+      {/* NEO-236: one box. The team's Location is asked on its own New Team
+          step, which is also the only place its League can be asked. */}
+      <div className="relative" ref={comboRef} onBlur={handleComboBlur}>
         <Input
           bare
           ref={nameInputRef}
@@ -218,7 +351,6 @@ export default function CareerTeamEntry({
             setName(e.target.value);
             setSuggestionsOpen(true);
           }}
-          onFocus={() => setSuggestionsOpen(true)}
           onKeyDown={(e) => {
             if (e.key === "ArrowDown") {
               e.preventDefault();
@@ -280,14 +412,24 @@ export default function CareerTeamEntry({
                   type="button"
                   role="option"
                   aria-selected={idx === highlightIdx}
-                  // A staged name is NOT an existing team — it is a team this
-                  // batch has not created yet — so it gets its own accessible
-                  // name rather than borrowing the saved-team one and lying.
-                  aria-label={
-                    s.staged
-                      ? `Use ${s.name} from this batch`
-                      : `Use existing team ${s.name}`
-                  }
+                  /*
+                   * NEO-236 — ONE name for every suggestion, saved or staged.
+                   *
+                   * Jason, 2026-09-06, on the tag this used to carry: "'not
+                   * saved yet' is equally confusing. Do we need anything there
+                   * at all? Is there any value in telling the user anything
+                   * about that?" There is not. Whether a team already exists or
+                   * this review is about to create it changes nothing the
+                   * operator can act on here — picking it does the same thing
+                   * either way, and the difference is bookkeeping we were
+                   * narrating at them.
+                   *
+                   * `staged` still earns its keep: it orders these rows (a
+                   * pending name is the one you cannot find any other way) and
+                   * it dedupes them against the saved half. It just no longer
+                   * says anything.
+                   */
+                  aria-label={`Use ${s.name}`}
                   onMouseEnter={() => setHighlightIdx(idx)}
                   onClick={() => pickSuggestion(s.name)}
                   className={`flex w-full items-center gap-2 px-2 py-1 text-left text-sm ${
@@ -297,14 +439,6 @@ export default function CareerTeamEntry({
                   }`}
                 >
                   <span className="flex-1 truncate">{s.name}</span>
-                  {s.staged && (
-                    <span
-                      aria-hidden="true"
-                      className="shrink-0 rounded bg-gray-700 px-1.5 py-0.5 text-xs text-gray-300"
-                    >
-                      this batch
-                    </span>
-                  )}
                 </button>
               </li>
             ))}
@@ -331,6 +465,7 @@ export default function CareerTeamEntry({
       <div className="flex items-center gap-2">
         <Input
           bare
+          ref={fromYearRef}
           type="number"
           value={fromYear}
           placeholder="From year"

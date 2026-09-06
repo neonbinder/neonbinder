@@ -1,0 +1,625 @@
+import { useId, useMemo, useRef, useState, type ReactNode, type Ref } from "react";
+import { useQuery } from "convex/react";
+import { api } from "../../convex/_generated/api";
+import type { Id } from "../../convex/_generated/dataModel";
+import { splitTeamName, teamFullName } from "../../lib/teams/team-name";
+import { Input } from "../primitives/Input";
+
+/**
+ * NEO-236 — the one form a team is ever created from.
+ *
+ * Jason, 2026-09-05, on the review wizard showing three cramped Location/Name
+ * pairs under a player's career list: "How does this dialog know which League
+ * the new team is in? I think we need to show a new team dialog instead of that
+ * inline thing." And, on the pickers: "we should also remove the Location box
+ * from New Players as we should only be selecting existing teams or entering it
+ * in the singular field which would trigger that new team dialog."
+ *
+ * So there is exactly one place in the product that asks the three questions a
+ * `teams` row needs answering — Location, Name, League — and it renders in two
+ * hosts: the review wizard's **New Team step** (`EntityReviewWizard`) and the
+ * **New Team dialog** (`NewTeamDialog`) that every picker opens. Sharing the
+ * fields rather than the whole screen is deliberate: the two hosts differ in
+ * their chrome (a step inside a walker vs. a modal over a popover) and agree on
+ * everything that decides what gets written.
+ *
+ * ## Why League is a row of buttons and not a `<select>`
+ *
+ * Maestro's web driver gives every `<option>` synthetic tap bounds from its
+ * index inside its own parent, then resolves a tap by scanning
+ * `document.querySelectorAll('option')` and taking the first bounds match — so
+ * with more than one `<select>` on screen, only the first in document order is
+ * ever reachable, and a tap meant for the second silently mutates the first.
+ * Both hosts render over a page that already has selects. A dropdown here would
+ * be untappable by every flow that has to use it.
+ *
+ * It is also the better control for this question. A sport holds a handful of
+ * leagues, the choice is the point of the step, and a row of pills shows the
+ * whole set at once instead of hiding it behind a closed box.
+ *
+ * ## Location is where they are FROM
+ *
+ * City, state, region or school — "Wisconsin / Badgers", "San Diego State /
+ * Aztecs", "Tampa Bay / Buccaneers". Blank only when the name carries no place
+ * at all ("Athletics", "Liverpool", "Orix Buffaloes") or when splitting would
+ * reorder the words ("FC Dallas"). The help line says exactly that, because the
+ * split is only obvious once you have been told what counts as a location.
+ *
+ * Nothing here guesses. Location is pre-filled ONLY from a location the
+ * enrichment lookup actually returned, and only when `splitTeamName` finds it
+ * as a whole-word prefix of the proposed name. Everything else starts blank
+ * with the whole name in Name, and the operator splits it.
+ */
+
+/** The answer this form collects. Empty strings, not undefined — these are
+ *  controlled inputs, and a blank Location is a real answer. */
+export type NewTeamDraft = {
+  location: string;
+  name: string;
+  /**
+   * The league the operator picked, as one of three states that the server
+   * treats differently:
+   *   - a league id — this existing league;
+   *   - `null` — no league, said deliberately;
+   *   - `undefined` — not answered, so the server's own fallbacks apply.
+   * The form only ever produces the first two once it has rendered; `undefined`
+   * is the initial value a host may seed it with.
+   */
+  leagueId: Id<"leagues"> | null | undefined;
+  /**
+   * A league to CREATE, by name — the "we don't hold this one yet" answer. Set
+   * only by picking the suggestion pill; mutually exclusive with `leagueId`,
+   * which the pill handler enforces by clearing it.
+   */
+  leagueName: string | undefined;
+};
+
+/**
+ * What the form shows before the operator touches anything.
+ *
+ * `location` splits off the front of `name` only when the enrichment supplied
+ * one AND it is a whole-word prefix: "San Diego" off "San Diego Padres" splits,
+ * "Anaheim" off "Los Angeles Angels" does not, and neither does "Sa".
+ *
+ * The league is left for {@link resolveLeagueSuggestion} to settle against the
+ * sport's real rows, because "the lookup said Australian Baseball League" and
+ * "we hold a row called that" are different facts and only the second one can
+ * be pre-selected.
+ */
+export function newTeamPrefill(input: {
+  name: string;
+  location?: string;
+}): NewTeamDraft {
+  const split = input.location
+    ? splitTeamName(input.name, input.location)
+    : null;
+  return {
+    location: split ? split.location : "",
+    name: split ? split.name : input.name.trim(),
+    leagueId: undefined,
+    leagueName: undefined,
+  };
+}
+
+/** `teamFullName` over a draft — the composed row, for the preview and for
+ *  every comparison. Never compose these two by hand. */
+export function draftFullName(draft: { location: string; name: string }): string {
+  return teamFullName({ name: draft.name, location: draft.location });
+}
+
+/**
+ * The league the enrichment suggested, matched against what this sport already
+ * holds — WITHOUT creating anything.
+ *
+ * A read must not write. A suggestion the operator never accepts, in a batch
+ * they end up cancelling, would otherwise leave a league row behind for a team
+ * that was never created.
+ *
+ * Matching is by normalized name only, deliberately narrower than the server's
+ * `findLeagueByName` (which also consults each row's aliases). A false negative
+ * here costs one thing — the pill reads "Create <name>" instead of selecting an
+ * existing row — and the server still resolves it onto that row through
+ * `findOrCreateLeague`, so nothing duplicates. A false POSITIVE would silently
+ * file the team in the wrong league, so the cheap comparison is the safe one.
+ */
+function normalizeLeagueName(raw: string): string {
+  return raw
+    .toLowerCase()
+    .replace(/[.,'"`’]/g, "")
+    .replace(/[^a-z0-9\s-]/g, " ")
+    .split(/\s+/)
+    .filter(Boolean)
+    .join(" ");
+}
+
+export default function NewTeamForm({
+  sportId,
+  draft,
+  onChange,
+  /**
+   * The league the enrichment lookup proposed, by name. Rendered as an extra
+   * pill — selecting an existing row when we hold one, "Create <name>"
+   * otherwise. Absent when nothing was found, which is the common case for a
+   * team no source has heard of.
+   */
+  leagueSuggestion,
+  /** "Needed by: Travis Bazzana" — why this step exists, on the steps that
+   *  were not asked for directly. */
+  neededBy,
+  /** Points every field at the host's own blocked-reason element. */
+  describedBy,
+  /**
+   * STABLE ids for the two text fields — or nothing.
+   *
+   * This is not cosmetic. maestro-web derives `resource-id = node.id ||
+   * node.ariaLabel`, so an id it cannot predict REPLACES the label every
+   * `.maestro` selector targets — which is why the `Input` primitive refuses to
+   * mint one of its own. A `useId()` value here would be exactly that.
+   *
+   * So the wizard passes the three stable, hand-written ids its step is
+   * addressed by (`entity-review-team-*`), and the dialog passes NONE: its
+   * fields are found by their `aria-label`, and their visible labels associate
+   * by wrapping instead of by `htmlFor`.
+   */
+  locationFieldId,
+  nameFieldId,
+  leagueGroupId,
+  /** Focus target for a host that opens on this field — the dialog does. */
+  nameInputRef,
+  disabled,
+  /** Enter inside a field. The dialog submits; the wizard step does nothing,
+   *  because its primary action is a walker button rather than a submit. */
+  onSubmit,
+}: {
+  sportId: Id<"selectorOptions">;
+  draft: NewTeamDraft;
+  onChange: (patch: Partial<NewTeamDraft>) => void;
+  leagueSuggestion?: string;
+  neededBy?: string;
+  describedBy?: string;
+  locationFieldId?: string;
+  nameFieldId?: string;
+  leagueGroupId?: string;
+  nameInputRef?: Ref<HTMLInputElement>;
+  disabled?: boolean;
+  onSubmit?: () => void;
+}) {
+  const leagues = useQuery(api.leagues.list, { sportId });
+
+  /**
+   * The suggestion, resolved against the sport's rows. Three shapes, and the
+   * pill row renders each differently because they are three different
+   * commitments: select a row we have, create a row we do not, or nothing.
+   */
+  const suggestion = useMemo(() => {
+    const name = leagueSuggestion?.trim();
+    if (!name) return null;
+    const key = normalizeLeagueName(name);
+    const existing = (leagues ?? []).find(
+      (l) => normalizeLeagueName(l.name) === key,
+    );
+    return existing
+      ? ({ kind: "existing" as const, id: existing._id, name: existing.name })
+      : ({ kind: "create" as const, name });
+  }, [leagueSuggestion, leagues]);
+
+  /**
+   * The operator has not answered the League question yet.
+   *
+   * While that is true the SUGGESTION is what will actually happen — the server
+   * falls back to the enrichment's league name when no choice was recorded — so
+   * its pill is shown checked. That is not a pre-selection pretending to be an
+   * answer; it is the answer, until something else is pressed. Pressing it
+   * anyway records it explicitly, which costs nothing and reads the same.
+   */
+  const unanswered = draft.leagueId === undefined && draft.leagueName === undefined;
+
+  const preview = draftFullName(draft);
+
+  /**
+   * a11y (SC 3.3.2 Labels or Instructions) — the help line and the "Shows as"
+   * preview are the two things on this form that a sighted operator reads and
+   * a screen-reader operator was never given: both were plain text no control
+   * pointed at, so tabbing into Location announced "New team location
+   * (optional), edit text" and nothing about what a location IS.
+   *
+   * `useId` is safe HERE and nowhere else in this file: maestro-web derives
+   * `resource-id = node.id || node.ariaLabel`, so a generated id on an INPUT
+   * replaces the label a flow targets — but a `<p>` is not a tap target, and
+   * its text stays matchable either way. Two `NewTeamForm`s can be mounted at
+   * once (a picker's dialog over the wizard's own step), which is exactly the
+   * case `useId` exists for.
+   */
+  const helpId = useId();
+  const previewId = useId();
+
+  /** `aria-describedby` takes a space-separated id list; drop the absent ones
+   *  rather than emitting an empty or dangling reference. */
+  const describedByFor = (...ids: Array<string | undefined>) =>
+    ids.filter(Boolean).join(" ") || undefined;
+
+  const pick = (patch: Partial<NewTeamDraft>) => {
+    if (disabled) return;
+    // Choosing does not close the list — see `leagueListOpen`.
+    setLeagueListOpen(true);
+    // The two league answers are alternatives, so setting either clears the
+    // other. Without this a draft could carry an id AND a name, and which one
+    // the server honoured would depend on its resolution order rather than on
+    // what the operator pressed.
+    onChange({ leagueId: undefined, leagueName: undefined, ...patch });
+  };
+
+  const onFieldKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key !== "Enter" || !onSubmit) return;
+    e.preventDefault();
+    onSubmit();
+  };
+
+  /** True when this pill is the current answer — explicitly, or by being the
+   *  suggestion nothing has overridden yet. */
+  const isPicked = (id: Id<"leagues">) =>
+    draft.leagueId === id ||
+    (unanswered && suggestion?.kind === "existing" && suggestion.id === id);
+
+  /**
+   * The League options, IN RENDERED ORDER — one model the JSX, the roving
+   * tabindex and the arrow keys all read from.
+   *
+   * a11y (SC 2.1.1 / 4.1.2): `role="radiogroup"` of `role="radio"` is a promise
+   * about the keyboard, not just about the announcement. A native radio group
+   * is ONE Tab stop and moves between its options with the arrow keys; before
+   * this, every pill was an ordinary `<button>`, so a keyboard operator paid
+   * one Tab stop per league (a sport with a dozen leagues buried the Create
+   * button behind twelve of them) and the arrows did nothing at all. Same
+   * pattern, same reasoning and same shape as `CardPairingModal`'s name-conflict
+   * group — see the APG "radio group" pattern.
+   */
+  const leaguePills: Array<{
+    key: string;
+    label: string;
+    checked: boolean;
+    choose: () => void;
+  }> = [];
+  if (suggestion?.kind === "create") {
+    const checked = unanswered || draft.leagueName === suggestion.name;
+    leaguePills.push({
+      key: `create:${suggestion.name}`,
+      label: `Create ${suggestion.name}`,
+      checked,
+      choose: () => pick({ leagueName: suggestion.name }),
+    });
+  }
+  for (const league of leagues ?? []) {
+    leaguePills.push({
+      key: league._id,
+      label: league.name,
+      checked: isPicked(league._id),
+      choose: () => pick({ leagueId: league._id }),
+    });
+  }
+  leaguePills.push({
+    key: "no-league",
+    label: "No league",
+    checked: draft.leagueId === null,
+    choose: () => pick({ leagueId: null }),
+  });
+
+  const answeredIndex = leaguePills.findIndex((p) => p.checked);
+
+  /**
+   * ── Why the whole league list is not on screen by default ────────────────
+   *
+   * CI run 8: this picker measured 250px on the 1024x629 viewport, which is
+   * what pushed the review wizard's primary action off the bottom of its
+   * dialog. It renders one pill per league in the sport, `leagues` is global,
+   * and nothing resets it between CI runs — so it grows every run, and on a
+   * real deployment it grows as the league table fills with MiLB and defunct
+   * franchises. A picker whose height is a function of a table that only ever
+   * gets bigger is not a picker, it is a leak.
+   *
+   * When there is already a standing answer — the enrichment's suggestion, or a
+   * league the operator picked — the list collapses to THAT one pill plus a
+   * "Change league" disclosure: ~24px instead of 250px, and it says the thing
+   * the operator actually needs to read, which is which league this team is
+   * about to be filed under. With no standing answer there is nothing to
+   * summarise, so the list opens as itself.
+   *
+   * Expanded, it is bounded at `max-h-40` and scrolls. That bound is the part
+   * that must not be removed: the disclosure is a nicety, the height cap is
+   * what stops a growing table from reaching the footer again.
+   */
+  /**
+   * `null` = follow the default (open only while there is nothing to
+   * summarise); `true`/`false` = the operator said so.
+   *
+   * A plain boolean was wrong in a way a test caught immediately: with no
+   * standing answer the list is open, and the moment an arrow key or a click
+   * picked a league there WAS one — so the list collapsed out from under an
+   * operator who was still choosing. Picking therefore pins it open, and only
+   * the disclosure's own "Done" closes it.
+   */
+  const [leagueListOpen, setLeagueListOpen] = useState<boolean | null>(null);
+  const collapsible = answeredIndex !== -1;
+  const listOpen = leagueListOpen ?? !collapsible;
+  const visiblePills = listOpen ? leaguePills : [leaguePills[answeredIndex]];
+
+  const checkedPillIndex = visiblePills.findIndex((p) => p.checked);
+  /** Roving tabindex: the checked pill is the group's single Tab stop, and
+   *  when nothing is checked yet the first pill is — matching a native radio
+   *  group with no initial selection. */
+  const tabStopIndex = checkedPillIndex === -1 ? 0 : checkedPillIndex;
+
+  const leagueGroupRef = useRef<HTMLDivElement>(null);
+
+  /**
+   * Focus follows selection, which the APG radio pattern requires and which is
+   * the only way arrow keys are usable at all: the pill that becomes checked
+   * is the one that becomes the Tab stop, so it has to end up focused too.
+   * Re-queried after the render rather than held as a ref, for the same reason
+   * `CardPairingModal.refocusSelectedRadio` re-queries — the newly-checked pill
+   * only carries `tabindex="0"` once the host's state change has committed.
+   */
+  const refocusCheckedPill = () => {
+    requestAnimationFrame(() => {
+      leagueGroupRef.current
+        ?.querySelector<HTMLElement>('[role="radio"][tabindex="0"]')
+        ?.focus();
+    });
+  };
+
+  const onLeagueKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (disabled) return;
+    const step =
+      e.key === "ArrowLeft" || e.key === "ArrowUp"
+        ? -1
+        : e.key === "ArrowRight" || e.key === "ArrowDown"
+          ? 1
+          : 0;
+    if (step === 0) return;
+    // Also stops the arrow from scrolling the host dialog out from under the
+    // group the operator is working in.
+    e.preventDefault();
+    const from = checkedPillIndex === -1 ? 0 : checkedPillIndex;
+    // Over the VISIBLE pills: collapsed, there is one option and the arrows
+    // have nothing to move between, which is the honest behaviour rather than
+    // silently changing a league the operator cannot see.
+    visiblePills[
+      (from + step + visiblePills.length) % visiblePills.length
+    ].choose();
+    refocusCheckedPill();
+  };
+
+  return (
+    <div className="space-y-2">
+      {neededBy && (
+        /* The provenance line. This step was not asked for — a player's career
+           list produced it — so it says whose card needs the team before it
+           asks anything. gray-400: gray-500 on gray-900 is ~3.6:1, under the
+           4.5:1 floor. */
+        <p className="text-xs text-gray-400">Needed by: {neededBy}</p>
+      )}
+
+      <div className="flex flex-wrap items-end gap-2">
+        <FieldLabel htmlFor={locationFieldId} text="Location (optional)">
+          <Input
+            bare
+            {...(locationFieldId ? { id: locationFieldId } : {})}
+            type="text"
+            value={draft.location}
+            placeholder="San Diego"
+            // SC 2.5.3, label in name: the visible label is "Location
+            // (optional)", so the accessible name has to contain all of it.
+            aria-label="New team location (optional)"
+            // SC 3.3.2: the help line below explains what counts as a
+            // Location; without this it was visible-only.
+            aria-describedby={describedByFor(helpId, previewId, describedBy)}
+            disabled={disabled}
+            onChange={(e) => onChange({ location: e.target.value })}
+            onKeyDown={onFieldKeyDown}
+            className="w-40 p-1.5 text-sm"
+          />
+        </FieldLabel>
+        <FieldLabel htmlFor={nameFieldId} text="Team name" grow>
+          <Input
+            bare
+            {...(nameFieldId ? { id: nameFieldId } : {})}
+            ref={nameInputRef}
+            type="text"
+            value={draft.name}
+            placeholder="Padres"
+            aria-label="New team name"
+            aria-describedby={describedByFor(previewId, describedBy)}
+            disabled={disabled}
+            onChange={(e) => onChange({ name: e.target.value })}
+            onKeyDown={onFieldKeyDown}
+            className="w-full p-1.5 text-sm"
+          />
+        </FieldLabel>
+      </div>
+
+      {/* The rule, in one line, saying the part operators get wrong: a location
+          is not only a city. When to leave it blank is carried by the
+          "(optional)" in the label above. */}
+      <p id={helpId} className="text-xs text-gray-400">
+        Location is where they are from — a city, state, region or school:
+        Wisconsin / Badgers, San Diego State / Aztecs. Leave it blank only when
+        the name has no place in it.
+      </p>
+
+      <div className="flex flex-wrap items-center gap-1.5">
+      <div
+        ref={leagueGroupRef}
+        role="radiogroup"
+        {...(leagueGroupId ? { id: leagueGroupId } : {})}
+        aria-label="New team league"
+        // `max-h-40 overflow-y-auto` only while open — see `leagueListOpen`.
+        // Collapsed it holds one pill and a cap would be noise.
+        className={`flex flex-wrap items-center gap-1.5${
+          listOpen ? " max-h-40 overflow-y-auto" : ""
+        }`}
+        onKeyDown={onLeagueKeyDown}
+      >
+        <span className="text-xs text-gray-400 mr-1">League</span>
+        {visiblePills.map((pill, idx) => (
+          /* The "Create <name>" pill, when there is one, is a league nothing in
+             this sport answers to yet — worded as the commitment it is, because
+             pressing it creates a league as well as a team. */
+          <button
+            key={pill.key}
+            type="button"
+            role="radio"
+            aria-checked={pill.checked}
+            // Roving tabindex — see `tabStopIndex`. One Tab stop for the whole
+            // group; the arrow keys move within it.
+            tabIndex={idx === tabStopIndex ? 0 : -1}
+            /*
+              a11y (SC 4.1.2 Name, Role, Value) — the SET, not the slice of it
+              on screen.
+
+              Collapsed, this group renders exactly one `role="radio"`, and a
+              screen reader derives set position from the DOM: it would announce
+              "Australian Baseball League, radio button, checked, 1 of 1" and a
+              screen-reader operator would reasonably conclude the sport has one
+              league. `aria-posinset`/`aria-setsize` are counted against the FULL
+              `leaguePills` list in both states, so the announcement is "3 of 41"
+              either way and the "Change league" disclosure beside it reads as
+              the way to the other 40 rather than as a puzzle.
+            */
+            aria-posinset={(listOpen ? idx : answeredIndex) + 1}
+            aria-setsize={leaguePills.length}
+            disabled={disabled}
+            onClick={() => pill.choose()}
+            className={pillClass(pill.checked)}
+          >
+            {pill.label}
+          </button>
+        ))}
+        {leagues === undefined && (
+          /* SC 4.1.3: the group changes shape under the operator when the query
+             lands, so the wait is announced rather than only drawn. */
+          <span role="status" className="text-xs text-gray-400">
+            Loading leagues…
+          </span>
+        )}
+      </div>
+      {collapsible && (
+        /* Outside the radiogroup on purpose: it is not one of the options, and
+           a non-radio child of a radiogroup is a shape assistive tech cannot
+           read. `aria-expanded` names the state; the label names the action. */
+        <button
+          type="button"
+          aria-expanded={listOpen}
+          aria-controls={leagueGroupId}
+          disabled={disabled}
+          onClick={() => {
+            const next = !listOpen;
+            setLeagueListOpen(next);
+            // Opening a scrollable list on a league that may be well down it —
+            // bring the current answer into view rather than making them hunt.
+            if (next) {
+              requestAnimationFrame(() => {
+                leagueGroupRef.current
+                  ?.querySelector<HTMLElement>('[role="radio"][aria-checked="true"]')
+                  ?.scrollIntoView({ block: "nearest" });
+              });
+            }
+          }}
+          /* a11y (SC 2.5.8 Target Size): a `text-xs` underline button with no
+             vertical padding is 16px tall — the exact shape this project has
+             already fixed twice (SyncDoneNotice's Dismiss, the sync-review
+             pills). `py-2 -my-2` gives it a 32px hit area and hands the padding
+             back to the layout, so the collapsed picker is still one pill high
+             and the CI-run-8 height win is untouched. */
+          className="py-2 -my-2 text-xs text-gray-400 underline decoration-dotted hover:text-[#00D558] focus-visible:text-[#00D558] focus:outline-none disabled:opacity-50"
+        >
+          {listOpen ? "Done" : "Change league"}
+        </button>
+      )}
+      </div>
+
+      {/* The whole point of three fields: the operator reads the row they are
+          about to create, composed the way it will read everywhere else.
+          Pointed at by both fields' `aria-describedby` (SC 3.3.2) rather than
+          made a live region — a preview that re-announced on every keystroke
+          would talk over the typing it is describing. */}
+      <p id={previewId} className="text-sm text-gray-400">
+        Shows as:{" "}
+        <span className="font-medium text-gray-100">{preview || "—"}</span>
+      </p>
+    </div>
+  );
+}
+
+/**
+ * A visible label for one field, associated the way the host allows.
+ *
+ * With an id, `htmlFor` — which is what a stable, hand-written id is for. With
+ * none, the label WRAPS the input, which is the other standard association and
+ * needs no id at all. Both are accessible; only one of them is safe to hand
+ * Maestro. Same fork the `Input` primitive itself makes, for the same reason.
+ */
+function FieldLabel({
+  htmlFor,
+  text,
+  grow,
+  children,
+}: {
+  htmlFor?: string;
+  text: string;
+  grow?: boolean;
+  children: ReactNode;
+}) {
+  const className = grow
+    ? "flex flex-col gap-1 flex-1 min-w-[10rem]"
+    : "flex flex-col gap-1";
+  const caption = <span className="text-xs text-gray-400">{text}</span>;
+  if (htmlFor) {
+    return (
+      <div className={className}>
+        <label htmlFor={htmlFor} className="text-xs text-gray-400">
+          {text}
+        </label>
+        {children}
+      </div>
+    );
+  }
+  return (
+    <label className={className}>
+      {caption}
+      {children}
+    </label>
+  );
+}
+
+/**
+ * One pill. Green marks the answer; everything else stays quiet, so the row
+ * reads as a set with one thing chosen rather than as a wall of controls.
+ *
+ * `aria-checked` carries the state for assistive tech, and the colour carries
+ * it for everyone else — the two are set from the same boolean so they cannot
+ * disagree.
+ */
+function pillClass(picked: boolean): string {
+  return [
+    // py-1, not py-0.5 (SC 2.5.8 Target Size): a text-xs pill at py-0.5 is 22px
+    // tall, which only cleared 24x24 by leaning on the spacing exception. py-1
+    // makes it 26px and stops it depending on the gaps around it.
+    "rounded-full border px-2 py-1 text-xs",
+    // SC 2.4.7 Focus Visible. The indicator used to be a border-colour swap to
+    // #00D558 declared ONLY on the unpicked branch — so focusing the PICKED
+    // pill, whose border is already #00D558, changed nothing at all, and a
+    // keyboard operator arrowing through the group could not see where they
+    // were. A ring is on both states and does not collide with the colour that
+    // already means "checked".
+    "focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF]",
+    "focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900",
+    "disabled:opacity-50 disabled:cursor-not-allowed",
+    picked
+      ? "border-[#00D558] bg-[#00D558]/20 text-[#00D558]"
+      : // border-gray-500, not gray-700 (SC 1.4.11 Non-text Contrast): gray-700
+        // on the gray-900 panel both hosts render is 1.72:1, so the boundary of
+        // an unchecked option was effectively invisible. gray-500 is 3.67:1 and
+        // clears the 3:1 floor for a control boundary.
+        "border-gray-500 text-gray-300 hover:border-[#00D558]",
+  ].join(" ");
+}

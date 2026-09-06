@@ -449,10 +449,53 @@ tags:
 
       # ── 6b. BULK-DECIDE THE REST AND COMMIT ───────────────────────────
       # The one decision above is absorbed by the bulk (it is already decided,
-      # so "Add All Remaining as New" simply leaves it alone) — 6a writes no
+      # so "Add remaining players as new" simply leaves it alone) — 6a writes no
       # extra player and the 220-card total below is unchanged by it.
       - tapOn:
-          text: ".*Add All Remaining as New.*"
+          text: ".*Add remaining players as new.*"
+      # NEO-236 — the bulk tap decides PLAYERS only, so every New Team step it
+      # leaves behind has to be answered before the batch can commit. One tap
+      # per step accepts the Location, Name and League the step is already
+      # showing, which is what an operator who agrees with the pre-fill would
+      # do. Keyed on the terminal state rather than on a step being visible:
+      # players and their staged teams drain at the same time, so a loop keyed
+      # on "New Team:" would exit the first time it caught the batch between
+      # lookups. See setup.yaml for the long version.
+      #
+      # THIS TAP IS SAFE AGAIN, AND THE DETOUR IS WORTH RECORDING.
+      # In CI run 34007264279 this same tap died with "null cannot be cast to
+      # non-null type kotlin.Int": a team step had grown taller than the dialog
+      # could show, its primary action was the LAST thing in it, and the action
+      # therefore sat at y=620-652 — below the footer AND below the dialog on
+      # the 1024x629 CI viewport. Nothing a flow could do reached it, because
+      # maestro-web's scroll is `window.scrollTo` and cannot drive an inner
+      # `overflow-y-auto` box. The app answered it: the per-row decision
+      # controls now live in the dialog's FIXED footer (shrink-0) and the
+      # league picker is bounded and collapsible, so "Add as New Team" holds
+      # still at the bottom of the dialog whatever the row above it does.
+      #
+      # DO NOT "FIX" A FAILURE HERE BY SWITCHING TO THE FOOTER'S
+      # "Skip remaining names". That was tried in run 34010164587 and it moved
+      # the failure downstream instead of removing it: skipping 23 names paints
+      # a "Skipped names (23)" panel on the checklist page — 732px of rows with
+      # Unskip buttons, measured [72,244][767,976] — which pushes the card list
+      # down and out of its own virtuoso scroller. STEP 7a's
+      # `Edit card .* below "BSC source"` then resolved to a row clipped above
+      # the scroller (row at y=225-245, scroller starting at y=280), Maestro
+      # tapped its reported bounds at (687,235) — dead space between the filter
+      # row and the skipped panel — and the drawer never opened. Creating the
+      # teams leaves the page exactly as the rest of this flow expects it.
+      - repeat:
+          times: 250
+          while:
+            notVisible:
+              text: ".*Confirm & Save.*"
+          commands:
+            - runFlow:
+                when:
+                  visible: "New Team: .*"
+                commands:
+                  - tapOn: "Add as New Team"
       # NEO-221 — the bulk add now decides only rows whose Wikidata lookup has
       # SETTLED, staying armed for the rest, so this wait is gated on that live
       # external round-trip rather than on one mutation. Raised for that reason;

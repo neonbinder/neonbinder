@@ -9,18 +9,47 @@
  * a team at all).
  *
  * Structure mirrors `PlayerPicker.test.tsx` (same session, same component
- * shape) with team-specific additions: the `m.city` suffix on candidate
- * rows and the "No matches." empty-state string TeamPicker renders (that
- * PlayerPicker's popover doesn't).
+ * shape) with team-specific additions: the "No matches." empty-state string
+ * TeamPicker renders (that PlayerPicker's popover doesn't) and, since NEO-236,
+ * the New Team dialog the create row opens.
+ *
+ * NEO-236 — `teams.location` is no longer a fact printed BESIDE the name; it
+ * is the first half OF the name ("San Diego" + "Padres"). So every assertion
+ * about what this picker shows, announces or matches on is an assertion about
+ * the COMPOSED full name.
+ *
+ * NEO-236 (Jason, 2026-09-05) — and this picker has ONE box again. "We should
+ * only be selecting existing teams or entering it in the singular field which
+ * would trigger that new team dialog." An earlier pass put a Location + Name
+ * pair inline in this popover; it had no room for the League, so every team
+ * created here was silently filed under the sport's default. So the create
+ * affordance is now a single row that OPENS `NewTeamDialog`, and the tests
+ * below split accordingly:
+ *
+ *   - what belongs to the PICKER — when the row is offered, what it is called,
+ *     that pointer and keyboard both open the dialog with the typed name, and
+ *     that neither dismissal path closes the popover out from under the
+ *     portalled modal;
+ *   - what belongs to the DIALOG — the fields, the league, the refusals — is
+ *     `NewTeamDialog.test.tsx` / `NewTeamForm.test.tsx`. The few dialog
+ *     assertions kept here are about the WIRING: the picker's typed name
+ *     reaching it, and the created id coming back as a chip.
  *
  * --- Mocking strategy (identity-routed useQuery/useMutation) ---
  * `convex/react`'s `useQuery`/`useMutation` are module-mocked, routed by the
- * (string-mocked) query/mutation reference, so `teams.getManyByIds` and
- * `teams.list` resolve independently, and `teams.findOrCreate` resolves to
- * its own spy.
+ * (string-mocked) query/mutation reference, so `teams.getManyByIds`,
+ * `teams.list` and (for the dialog's League pills) `leagues.list` resolve
+ * independently, and `teams.findOrCreate` resolves to its own spy.
  */
 
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // Not mocked: the real class, because `userFacingMessage` narrows on
@@ -38,21 +67,28 @@ vi.mock("../../convex/_generated/api", () => ({
       list: "teams.list",
       findOrCreate: "teams.findOrCreate",
     },
+    // NEO-236: the New Team dialog this picker opens renders `NewTeamForm`,
+    // whose League pills read the sport's leagues.
+    leagues: { list: "leagues.list" },
   },
 }));
 
 let currentSelectedRows: unknown;
 let currentCandidates: unknown;
+let currentLeagues: unknown;
 const mockFindOrCreate = vi.fn();
 
 vi.mock("convex/react", () => ({
   useQuery: (ref: string) => {
     if (ref === "teams.getManyByIds") return currentSelectedRows;
     if (ref === "teams.list") return currentCandidates;
+    if (ref === "leagues.list") return currentLeagues;
     return undefined;
   },
   useMutation: (ref: string) =>
-    ref === "teams.findOrCreate" ? mockFindOrCreate : vi.fn(),
+    ref === "teams.findOrCreate"
+      ? mockFindOrCreate
+      : vi.fn(() => Promise.resolve(undefined)),
 }));
 
 // ---------------------------------------------------------------------------
@@ -75,8 +111,8 @@ function tid(n: string): Id<"teams"> {
   return n as unknown as Id<"teams">;
 }
 
-function makeTeam(id: string, name: string, city?: string) {
-  return { _id: tid(id), name, city };
+function makeTeam(id: string, name: string, location?: string) {
+  return { _id: tid(id), name, location };
 }
 
 function renderPicker(props: Partial<Parameters<typeof TeamPicker>[0]> = {}) {
@@ -91,6 +127,24 @@ function openPopover() {
   fireEvent.click(screen.getByLabelText("Add team"));
 }
 
+/** The popover's create affordance, or null when it is not being offered. */
+function createRow(): HTMLElement | null {
+  return screen.queryByRole("button", { name: /^New team / });
+}
+
+/** Type into the search box and open the New Team dialog on what was typed. */
+function openNewTeamDialog(query: string) {
+  fireEvent.change(screen.getByLabelText("Search teams"), {
+    target: { value: query },
+  });
+  fireEvent.click(screen.getByLabelText(`New team ${query}`));
+}
+
+const dialogNameField = () =>
+  screen.getByLabelText("New team name") as HTMLInputElement;
+const dialogLocationField = () =>
+  screen.getByLabelText("New team location (optional)") as HTMLInputElement;
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -100,6 +154,7 @@ describe("TeamPicker", () => {
     vi.clearAllMocks();
     currentSelectedRows = [];
     currentCandidates = [];
+    currentLeagues = [];
     mockFindOrCreate.mockResolvedValue(tid("new-team-1"));
   });
 
@@ -142,15 +197,46 @@ describe("TeamPicker", () => {
   // Candidate list (teams.list), filtered/ranked by typed query
   // -------------------------------------------------------------------------
 
-  it("lists candidates from teams.list when the popover opens, including the city suffix", () => {
-    currentCandidates = [makeTeam("t1", "New York Yankees", "Bronx")];
+  // NEO-236: this used to assert a "Bronx" SUFFIX printed after the name.
+  // A split row's location is the front of its name now, so the option reads
+  // as one composed string and the suffix slot carries the league alone —
+  // printing the location twice read as a stutter.
+  it("lists candidates from teams.list as their composed full name, with the league as the only suffix", () => {
+    currentCandidates = [
+      { ...makeTeam("t1", "Yankees", "New York"), league: "MLB" },
+    ];
     renderPicker();
 
     openPopover();
 
     const option = screen.getByLabelText("Add New York Yankees");
     expect(option).toBeTruthy();
-    expect(option.textContent).toContain("Bronx");
+    expect(option.textContent).toContain("New York Yankees");
+    expect(option.textContent).toContain("MLB");
+  });
+
+  it("renders a chip for a split row as its full name, not its nickname", () => {
+    currentSelectedRows = [makeTeam("t1", "Padres", "San Diego")];
+    renderPicker({ value: [tid("t1")] });
+
+    expect(screen.getByLabelText("Team: San Diego Padres")).toBeTruthy();
+    expect(screen.getByLabelText("Remove team San Diego Padres")).toBeTruthy();
+  });
+
+  // The duplicate-team risk the split creates, at its source: an operator who
+  // types the full name of an ALREADY-SPLIT row has to be shown that row. If
+  // the filter compared against `name` alone, "San Diego" would match nothing
+  // and the operator would be offered a create — a second Padres.
+  it("matches a split row on its location as well as its nickname", () => {
+    currentCandidates = [makeTeam("t1", "Padres", "San Diego")];
+    renderPicker();
+    openPopover();
+
+    fireEvent.change(screen.getByLabelText("Search teams"), {
+      target: { value: "San Diego" },
+    });
+
+    expect(screen.getByLabelText("Add San Diego Padres")).toBeTruthy();
   });
 
   it("shows 'No matches.' when a typed query matches no candidate and no create row would help clarify state", () => {
@@ -334,10 +420,14 @@ describe("TeamPicker", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Create-new flow (NEO-71-74 retrofit — teams.findOrCreate)
+  // The create affordance — one row, and it OPENS a dialog
+  //
+  // NEO-71-74 added a "+ Create" row that wrote straight through
+  // `teams.findOrCreate`; NEO-236 turned it into a door. The team still needs
+  // a League answered and there is nowhere in this popover to answer it.
   // -------------------------------------------------------------------------
 
-  it("shows a '+ Create' row when the typed query has no exact match among candidates", () => {
+  it("offers a '+ New team' row when the typed query matches no candidate exactly", () => {
     currentCandidates = [makeTeam("t1", "New York Yankees")];
     renderPicker();
     openPopover();
@@ -346,10 +436,33 @@ describe("TeamPicker", () => {
       target: { value: "Savannah Bananas" },
     });
 
-    expect(screen.getByLabelText("Create team Savannah Bananas")).toBeTruthy();
+    const row = screen.getByLabelText("New team Savannah Bananas");
+    // The visible text says what pressing it does; the accessible name is what
+    // a Maestro `tapOn` matches. `Create team {name}` deliberately does NOT
+    // live here any more — it moved to the dialog's own Create button, which
+    // is where a team is actually made.
+    expect(row.textContent).toBe("+ New team “Savannah Bananas”…");
+    expect(screen.queryByRole("button", { name: /^Create team/ })).toBeNull();
   });
 
-  it("does NOT show the '+ Create' row when an exact (case-insensitive) match exists", () => {
+  it("keeps the create row OUT of the listbox, since it is not an option", () => {
+    // `aria-current`, not `aria-selected`: the row sits outside the listbox and
+    // `aria-selected` would be invalid on it.
+    currentCandidates = [];
+    renderPicker();
+    openPopover();
+
+    fireEvent.change(screen.getByLabelText("Search teams"), {
+      target: { value: "Savannah Bananas" },
+    });
+
+    const row = screen.getByLabelText("New team Savannah Bananas");
+    expect(row.getAttribute("aria-current")).toBe("true");
+    expect(row.getAttribute("aria-selected")).toBeNull();
+    expect(within(screen.getByRole("listbox")).queryAllByRole("option")).toHaveLength(0);
+  });
+
+  it("does NOT offer the create row when an exact (case-insensitive) match exists", () => {
     currentCandidates = [makeTeam("t1", "New York Yankees")];
     renderPicker();
     openPopover();
@@ -358,27 +471,141 @@ describe("TeamPicker", () => {
       target: { value: "new york yankees" },
     });
 
-    expect(screen.queryByLabelText(/^Create team/)).toBeNull();
+    expect(createRow()).toBeNull();
   });
 
-  it("does not show the '+ Create' row when the query is empty", () => {
+  it("does not offer the create row when the query is empty", () => {
     currentCandidates = [makeTeam("t1", "New York Yankees")];
     renderPicker();
     openPopover();
 
-    expect(screen.queryByLabelText(/^Create team/)).toBeNull();
+    expect(createRow()).toBeNull();
   });
 
-  it("clicking '+ Create' calls teams.findOrCreate({ name, sport }) and adds the resulting id as a chip", async () => {
+  // The exact-match suppression has to see through the split, or the picker
+  // offers to create a team it is already listing one row above.
+  it("offers no create row when the typed query is the full name of a split row", () => {
+    currentCandidates = [makeTeam("t1", "Padres", "San Diego")];
+    renderPicker({ sportId: SPORT_ID });
+    openPopover();
+
+    fireEvent.change(screen.getByLabelText("Search teams"), {
+      target: { value: "san diego padres" },
+    });
+
+    expect(createRow()).toBeNull();
+    expect(screen.getByLabelText("Add San Diego Padres")).toBeTruthy();
+  });
+
+  // NEO-96: this test used to assert the OPPOSITE — that with no sport prop the
+  // picker called findOrCreate with `sport: ""`. That wrote a team no query
+  // could ever find again (every read is an exact sport match), which is one of
+  // the ways duplicate/orphaned entities got into the catalogue. Creating now
+  // requires a real sport row, so the affordance is hidden instead.
+  it("hides the create affordance entirely when no sportId is given", () => {
     currentCandidates = [];
-    mockFindOrCreate.mockResolvedValue(tid("new-team-1"));
-    const { onChange } = renderPicker({ sportId: SPORT_ID });
+    renderPicker({ sportId: undefined });
     openPopover();
 
     fireEvent.change(screen.getByLabelText("Search teams"), {
       target: { value: "Savannah Bananas" },
     });
-    fireEvent.click(screen.getByLabelText("Create team Savannah Bananas"));
+
+    expect(createRow()).toBeNull();
+    expect(mockFindOrCreate).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // Opening the dialog
+  // -------------------------------------------------------------------------
+
+  it("clicking the create row opens the New Team dialog on the typed name", () => {
+    currentCandidates = [];
+    renderPicker({ sportId: SPORT_ID });
+    openPopover();
+
+    expect(screen.queryByRole("dialog")).toBeNull();
+    openNewTeamDialog("Savannah Bananas");
+
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(screen.getByText("New team: Savannah Bananas")).toBeTruthy();
+    // Nothing is written by opening it — the dialog owns the write, and the
+    // refusals, because it owns the fields they are about.
+    expect(mockFindOrCreate).not.toHaveBeenCalled();
+  });
+
+  it("seeds the dialog's Name with the query verbatim, never a guessed split", () => {
+    // Splitting here would be the picker deciding that "San Diego" is a
+    // location, which is exactly the guess `splitTeamName` refuses to make on
+    // its own.
+    currentCandidates = [];
+    renderPicker({ sportId: SPORT_ID });
+    openPopover();
+
+    openNewTeamDialog("San Diego Padres");
+
+    expect(dialogNameField().value).toBe("San Diego Padres");
+    expect(dialogLocationField().value).toBe("");
+  });
+
+  it("pressing Enter with the create row highlighted opens the dialog rather than creating", () => {
+    // Two presses for a team that needs no editing, which is one more than
+    // before and buys the League question.
+    currentCandidates = [];
+    renderPicker({ sportId: SPORT_ID });
+    openPopover();
+
+    const input = screen.getByLabelText("Search teams");
+    fireEvent.change(input, { target: { value: "Savannah Bananas" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(mockFindOrCreate).not.toHaveBeenCalled();
+  });
+
+  it("Enter still selects a highlighted MATCH rather than opening the dialog", () => {
+    currentCandidates = [makeTeam("t1", "Savannah Bananas Reserve")];
+    const { onChange } = renderPicker({ sportId: SPORT_ID });
+    openPopover();
+
+    const input = screen.getByLabelText("Search teams");
+    fireEvent.change(input, { target: { value: "Savannah" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(onChange).toHaveBeenCalledWith([tid("t1")]);
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("ArrowDown past the last match reaches the create row, and Enter there opens the dialog", () => {
+    currentCandidates = [makeTeam("t1", "Savannah Bananas Reserve")];
+    renderPicker({ sportId: SPORT_ID });
+    openPopover();
+
+    const input = screen.getByLabelText("Search teams");
+    fireEvent.change(input, { target: { value: "Savannah" } });
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+    expect(
+      screen.getByLabelText("New team Savannah").getAttribute("aria-current"),
+    ).toBe("true");
+
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(screen.getByRole("dialog")).toBeTruthy();
+  });
+
+  // -------------------------------------------------------------------------
+  // The wiring: dialog → findOrCreate → chip
+  // -------------------------------------------------------------------------
+
+  it("the dialog's Create button calls teams.findOrCreate and the id lands as a chip", async () => {
+    currentCandidates = [];
+    mockFindOrCreate.mockResolvedValue(tid("new-team-1"));
+    const { onChange } = renderPicker({ sportId: SPORT_ID });
+    openPopover();
+
+    openNewTeamDialog("Savannah Bananas");
+    fireEvent.click(
+      screen.getByRole("button", { name: "Create team Savannah Bananas" }),
+    );
 
     await waitFor(() => {
       expect(mockFindOrCreate).toHaveBeenCalledWith({
@@ -391,239 +618,288 @@ describe("TeamPicker", () => {
     });
   });
 
-  it("pressing Enter with the create row highlighted (no matches) also creates and adds", async () => {
+  it("passes the operator's split through as separate location and name", async () => {
     currentCandidates = [];
-    mockFindOrCreate.mockResolvedValue(tid("new-team-2"));
+    mockFindOrCreate.mockResolvedValue(tid("new-team-3"));
     const { onChange } = renderPicker({ sportId: SPORT_ID });
     openPopover();
 
-    const input = screen.getByLabelText("Search teams");
-    fireEvent.change(input, { target: { value: "Savannah Bananas" } });
-    fireEvent.keyDown(input, { key: "Enter" });
+    openNewTeamDialog("San Diego Padres");
+    fireEvent.change(dialogNameField(), { target: { value: "Padres" } });
+    fireEvent.change(dialogLocationField(), { target: { value: "San Diego" } });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Create team San Diego Padres" }),
+    );
+
+    await waitFor(() => {
+      expect(mockFindOrCreate).toHaveBeenCalledWith({
+        name: "Padres",
+        location: "San Diego",
+        sportId: SPORT_ID,
+      });
+    });
+    await waitFor(() => {
+      expect(onChange).toHaveBeenCalledWith([tid("new-team-3")]);
+    });
+  });
+
+  it("answers the League the popover had no room for", async () => {
+    // The whole reason the inline form was replaced: two fields in a popover
+    // could not ask this, so every team created here was silently filed under
+    // the sport's default.
+    currentCandidates = [];
+    currentLeagues = [
+      { _id: "league-1" as unknown as Id<"leagues">, name: "Savannah Banana Ball" },
+    ];
+    mockFindOrCreate.mockResolvedValue(tid("new-team-8"));
+    renderPicker({ sportId: SPORT_ID });
+    openPopover();
+
+    openNewTeamDialog("Savannah Bananas");
+    fireEvent.click(screen.getByRole("radio", { name: "Savannah Banana Ball" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Create team Savannah Bananas" }),
+    );
 
     await waitFor(() => {
       expect(mockFindOrCreate).toHaveBeenCalledWith({
         name: "Savannah Bananas",
         sportId: SPORT_ID,
+        leagueId: "league-1",
       });
     });
-    await waitFor(() => {
-      expect(onChange).toHaveBeenCalledWith([tid("new-team-2")]);
-    });
   });
 
-  // NEO-96: this test used to assert the OPPOSITE — that with no sport prop the
-  // picker called findOrCreate with `sport: ""`. That wrote a team no query
-  // could ever find again (every read is an exact sport match), which is one of
-  // the ways duplicate/orphaned entities got into the catalogue. Creating now
-  // requires a real sport row, so the affordance is hidden instead.
-  it("hides the create option entirely when no sportId is given", () => {
+  it("closes the dialog and clears the query once the team is attached", async () => {
     currentCandidates = [];
-    renderPicker({ sportId: undefined });
-    openPopover();
-
-    fireEvent.change(screen.getByLabelText("Search teams"), {
-      target: { value: "Savannah Bananas" },
-    });
-
-    expect(screen.queryByLabelText("Create team Savannah Bananas")).toBeNull();
-    expect(mockFindOrCreate).not.toHaveBeenCalled();
-  });
-
-  // -------------------------------------------------------------------------
-  // NEO-208 — a refused create is visible, not a silent no-op
-  //
-  // `teams.findOrCreate` grew two refusals in NEO-208 (a name over the length
-  // cap; a `sportId` that is a real `selectorOptions` id but not a sport row).
-  // `createAndAdd` was a bare try/finally, so both landed as nothing happening
-  // plus an unhandled rejection — the "Creating…" label flipped back and the
-  // operator had no idea why no chip appeared.
-  // -------------------------------------------------------------------------
-
-  it("shows the server's reason inline and adds no chip when the name is over the cap", async () => {
-    const longName = "x".repeat(130);
-    currentCandidates = [];
-    mockFindOrCreate.mockRejectedValue(
-      // Verbatim shape of the real throw: a LENGTH, never the typed name —
-      // which is why it is safe to render.
-      new ConvexError("A team name is 130 characters; the limit is 120."),
-    );
-    const { onChange } = renderPicker({ sportId: SPORT_ID });
-    openPopover();
-
-    fireEvent.change(screen.getByLabelText("Search teams"), {
-      target: { value: longName },
-    });
-    fireEvent.click(screen.getByLabelText(`Create team ${longName}`));
-
-    const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toContain(
-      "A team name is 130 characters; the limit is 120.",
-    );
-    // NEO-208: the popover this alert lives in must still be THIS popover —
-    // still open, with the typed name still in the box — not a fresh one
-    // the operator had to reopen after it silently closed underneath them.
-    expect(screen.getByRole("listbox")).toBeTruthy();
-    expect(
-      (screen.getByLabelText("Search teams") as HTMLInputElement).value,
-    ).toBe(longName);
-    // The failed create must not look like it half-worked.
-    expect(onChange).not.toHaveBeenCalled();
-  });
-
-  it("shows the non-sport refusal inline too", async () => {
-    currentCandidates = [];
-    mockFindOrCreate.mockRejectedValue(
-      new ConvexError("A team must be created under a sport."),
-    );
-    const { onChange } = renderPicker({ sportId: OTHER_SPORT_ID });
-    openPopover();
-
-    fireEvent.change(screen.getByLabelText("Search teams"), {
-      target: { value: "Savannah Bananas" },
-    });
-    fireEvent.click(screen.getByLabelText("Create team Savannah Bananas"));
-
-    const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toContain(
-      "A team must be created under a sport.",
-    );
-    // NEO-208: still the same open popover — see the identical assertion on
-    // the length-cap refusal above for why this matters.
-    expect(screen.getByRole("listbox")).toBeTruthy();
-    expect(
-      (screen.getByLabelText("Search teams") as HTMLInputElement).value,
-    ).toBe("Savannah Bananas");
-    expect(onChange).not.toHaveBeenCalled();
-  });
-
-  it("falls back to a generic message for a non-ConvexError failure", async () => {
-    // A plain Error is redacted to "Server Error" in production and its
-    // `.message` arrives wrapped in "[CONVEX M(...)] [Request ID: ...]" noise,
-    // so nothing from it is shown.
-    currentCandidates = [];
-    mockFindOrCreate.mockRejectedValue(new Error("kaboom at teams.ts:141"));
-    const { onChange } = renderPicker({ sportId: SPORT_ID });
-    openPopover();
-
-    fireEvent.change(screen.getByLabelText("Search teams"), {
-      target: { value: "Savannah Bananas" },
-    });
-    fireEvent.click(screen.getByLabelText("Create team Savannah Bananas"));
-
-    const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toContain("Could not create team.");
-    expect(alert.textContent).not.toContain("kaboom");
-    // NEO-208: still the same open popover — see the identical assertion on
-    // the length-cap refusal above for why this matters.
-    expect(screen.getByRole("listbox")).toBeTruthy();
-    expect(onChange).not.toHaveBeenCalled();
-  });
-
-  it("clears the message on the next keystroke", async () => {
-    currentCandidates = [];
-    mockFindOrCreate.mockRejectedValue(
-      new ConvexError("A team name is 130 characters; the limit is 120."),
-    );
+    mockFindOrCreate.mockResolvedValue(tid("new-team-7"));
     renderPicker({ sportId: SPORT_ID });
     openPopover();
 
-    const input = screen.getByLabelText("Search teams");
-    fireEvent.change(input, { target: { value: "x".repeat(130) } });
-    fireEvent.click(screen.getByLabelText(`Create team ${"x".repeat(130)}`));
-    await screen.findByRole("alert");
+    openNewTeamDialog("Savannah Bananas");
+    fireEvent.click(
+      screen.getByRole("button", { name: "Create team Savannah Bananas" }),
+    );
 
-    // The message described the name that was in the box; editing it makes the
-    // message stale, so it goes away with the query it was about.
-    fireEvent.change(input, { target: { value: "Savannah Bananas" } });
-
-    await waitFor(() => {
-      expect(screen.queryByRole("alert")).toBeNull();
-    });
-    // NEO-208: still the same open popover throughout — the whole point of
-    // "clears on next keystroke" is that a keystroke, not a silent
-    // close/reopen, is what made the message go away.
-    expect(screen.getByRole("listbox")).toBeTruthy();
+    await waitFor(() => expect(mockFindOrCreate).toHaveBeenCalledTimes(1));
+    // Leaving the query populated would keep offering to create the same team.
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(
+      (screen.getByLabelText("Search teams") as HTMLInputElement).value,
+    ).toBe("");
+    expect(createRow()).toBeNull();
   });
 
-  // NEO-208 regression — the popover used to close itself out from under a
-  // refused create.
-  //
-  // Mechanism: the "+ Create" button has focus at the moment it's clicked
-  // (a real click focuses the element it lands on). The old `showCreateOption
-  // = ... && !creating && ...` unmounted that exact button the instant
-  // `creating` flipped true, so focus fell out of the picker's subtree onto
-  // <body>. `handleRootBlur` exists to close the popover on precisely that
-  // signal — "focus left the root", the Tab-out case it was built for — so
-  // it fired mid-request and closed the popover, clearing `createError`
-  // along with it, before the awaited `findOrCreate` had even rejected. The
-  // refusal then landed in state on an already-closed popover: invisible
-  // until the operator reopened it, which is what the manual tester saw.
-  //
-  // jsdom does not reproduce the browser half of this on its own: removing a
-  // focused node moves `document.activeElement` to <body> (confirmed via a
-  // throwaway repro against this file), but — unlike a real browser's
-  // synchronous "unfocusing steps" — it does not dispatch the blur/focusout
-  // event that `handleRootBlur` listens for. So this test fires that
-  // `focusOut` by hand as a stand-in for the real browser's dispatch, which
-  // is also what makes it a fair test of the fix: the guard added to
-  // `handleRootBlur` (`if (!popoverOpen || creating) return`) must swallow
-  // this even when the event arrives, not merely rely on the button no
-  // longer unmounting to prevent the event from ever firing.
-  it("regression: a rejected create keeps the popover open with the refusal visible, not silently closed by the Tab-out guard", async () => {
-    const longName = "x".repeat(130);
+  it("cancelling the dialog attaches nothing and leaves the query where it was", () => {
     currentCandidates = [];
-    let rejectPending: (err: unknown) => void = () => {};
-    mockFindOrCreate.mockImplementation(
-      () =>
-        new Promise((_resolve, reject) => {
-          rejectPending = reject;
-        }),
-    );
-    const { container, onChange } = renderPicker({ sportId: SPORT_ID });
+    renderPicker({ sportId: SPORT_ID });
     openPopover();
 
-    // Let the popover's own open-time autofocus-input effect land first —
-    // it's queued on its own `setTimeout(0)` from the same click that opens
-    // the popover, and without waiting for it here it can win a later timer
-    // race and re-steal focus into the search box, masking what's under
-    // test (same reasoning as the identical wait in CardChecklist.test.tsx's
-    // Tab-out regression test).
-    await waitFor(() =>
-      expect(document.activeElement).toBe(screen.getByLabelText("Search teams")),
+    openNewTeamDialog("Savannah Bananas");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(mockFindOrCreate).not.toHaveBeenCalled();
+    expect(
+      (screen.getByLabelText("Search teams") as HTMLInputElement).value,
+    ).toBe("Savannah Bananas");
+    expect(screen.getByLabelText("New team Savannah Bananas")).toBeTruthy();
+  });
+
+  it("keeps a refused create visible on the dialog, and adds no chip", async () => {
+    // The refusal wording is `NewTeamDialog`'s and is tested there; what this
+    // pins is that the picker does not half-apply a create that failed.
+    currentCandidates = [];
+    mockFindOrCreate.mockRejectedValue(
+      new ConvexError("A team name is 130 characters; the limit is 120."),
+    );
+    const { onChange } = renderPicker({ sportId: SPORT_ID });
+    openPopover();
+
+    openNewTeamDialog("Savannah Bananas");
+    fireEvent.click(
+      screen.getByRole("button", { name: "Create team Savannah Bananas" }),
     );
 
-    fireEvent.change(screen.getByLabelText("Search teams"), {
-      target: { value: longName },
-    });
-    const createButton = screen.getByLabelText(`Create team ${longName}`);
-    createButton.focus();
-    fireEvent.click(createButton);
-
-    // Stand-in for the browser's synchronous blur-on-removal — see the
-    // block comment above.
-    const root = container.querySelector(
-      '[aria-label="Team picker"]',
-    ) as HTMLElement;
-    fireEvent.focusOut(root);
-
-    await act(async () => {
-      rejectPending(
-        new ConvexError("A team name is 130 characters; the limit is 120."),
-      );
-      // Flush both the `handleRootBlur` and `createAndAdd`-catch
-      // `setTimeout(0)`s.
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
-
-    expect(screen.getByRole("listbox")).toBeTruthy();
-    const alert = screen.getByRole("alert");
+    const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain(
       "A team name is 130 characters; the limit is 120.",
     );
-    expect(
-      (screen.getByLabelText("Search teams") as HTMLInputElement).value,
-    ).toBe(longName);
+    expect(screen.getByRole("dialog")).toBeTruthy();
     expect(onChange).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // NEO-236 — the popover survives its own modal
+  //
+  // `NewTeamDialog` portals to `document.body`, so from this picker's point of
+  // view opening it looks exactly like focus and pointer LEAVING the picker —
+  // which is the signal both dismissal paths were built to close on. Without
+  // the `newTeamOpen` guard, opening the dialog immediately unmounted the
+  // popover behind it, taking the typed query (and therefore the name the
+  // dialog was opened with) with it.
+  // -------------------------------------------------------------------------
+
+  describe("the popover stays open behind the New Team dialog", () => {
+    it("survives focus moving into the portalled dialog", async () => {
+      currentCandidates = [];
+      const { container } = renderPicker({ sportId: SPORT_ID });
+      openPopover();
+
+      // Let the popover's own open-time autofocus land first, so it cannot win
+      // a later timer race and mask what is under test.
+      await waitFor(() =>
+        expect(document.activeElement).toBe(screen.getByLabelText("Search teams")),
+      );
+
+      openNewTeamDialog("Savannah Bananas");
+
+      // Stand-in for the browser dispatching focusout as focus leaves the
+      // picker's subtree for the portal.
+      const root = container.querySelector(
+        '[aria-label="Team picker"]',
+      ) as HTMLElement;
+      fireEvent.focusOut(root);
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      expect(screen.getByRole("dialog")).toBeTruthy();
+      expect(screen.getByRole("listbox")).toBeTruthy();
+      expect(
+        (screen.getByLabelText("Search teams") as HTMLInputElement).value,
+      ).toBe("Savannah Bananas");
+    });
+
+    it("survives the blur that the opening CLICK itself produces", async () => {
+      /*
+       * The ordering this pins is the whole defect, and it is why the test
+       * above passed while the bug was live.
+       *
+       * A real browser moves focus on POINTERDOWN — so the search box blurs
+       * BEFORE the click handler that opens the dialog ever runs. The test
+       * above fires `focusOut` after `click`, by which point React has already
+       * committed `newTeamOpen: true`, so the guard reads the new value and the
+       * bug is invisible. Fired in the real order, `handleRootBlur` runs from a
+       * closure that captured `newTeamOpen: false`, sails past its own guard,
+       * and its `setTimeout(0)` then clears the query — which is what
+       * `initialName` is read from, so the dialog's `<h2>` re-rendered from
+       * "New team: Savannah Bananas" to a bare "New team" and its
+       * `aria-labelledby` target lost the name.
+       *
+       * The fix is the synchronous `newTeamOpenRef`, re-read INSIDE the
+       * timeout rather than only at blur time. Found in a real browser by the
+       * E2E probe, not by this suite.
+       */
+      currentCandidates = [];
+      const { container } = renderPicker({ sportId: SPORT_ID });
+      openPopover();
+      const search = screen.getByLabelText("Search teams") as HTMLInputElement;
+      await waitFor(() => expect(document.activeElement).toBe(search));
+      fireEvent.change(search, { target: { value: "Savannah Bananas" } });
+
+      const root = container.querySelector(
+        '[aria-label="Team picker"]',
+      ) as HTMLElement;
+      // Blur FIRST — pointerdown moves focus before click fires.
+      fireEvent.focusOut(root);
+      fireEvent.click(screen.getByLabelText("New team Savannah Bananas"));
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      // The accessible name of the dialog, which is the thing that broke.
+      expect(
+        screen.getByRole("dialog").getAttribute("aria-label") ??
+          document.getElementById(
+            screen.getByRole("dialog").getAttribute("aria-labelledby") ?? "",
+          )?.textContent,
+      ).toBe("New team: Savannah Bananas");
+      expect(
+        (screen.getByLabelText("Search teams") as HTMLInputElement).value,
+      ).toBe("Savannah Bananas");
+    });
+
+    it("survives a pointerdown inside the portalled dialog", () => {
+      currentCandidates = [];
+      renderPicker({ sportId: SPORT_ID });
+      openPopover();
+      openNewTeamDialog("Savannah Bananas");
+
+      // The dialog is not inside `rootRef`, so this is an outside press as far
+      // as the listener can tell.
+      fireEvent.pointerDown(dialogNameField());
+
+      expect(screen.getByRole("dialog")).toBeTruthy();
+      expect(screen.getByRole("listbox")).toBeTruthy();
+      expect(
+        (screen.getByLabelText("Search teams") as HTMLInputElement).value,
+      ).toBe("Savannah Bananas");
+    });
+
+    it("still closes on an outside press once the dialog is gone", () => {
+      // The guard must be scoped to "a dialog is open", not permanent: this is
+      // the behaviour `MissingTeamFixer` depends on to uncover the buttons the
+      // popover covers.
+      currentCandidates = [];
+      renderPicker({ sportId: SPORT_ID });
+      openPopover();
+      openNewTeamDialog("Savannah Bananas");
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+      fireEvent.pointerDown(document.body);
+
+      expect(screen.queryByRole("listbox")).toBeNull();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // NEO-236 — nothing scrolls any more
+  //
+  // The inline create form pushed its submit past the clip edge of a short
+  // `overflow-y-auto` ancestor (`CardAttentionWalker`'s 320px body), and the
+  // picker worked around that by calling `scrollIntoView` on the submit. A
+  // portalled dialog is not clipped by anything, so the workaround is GONE
+  // rather than tuned — and it has to stay gone: scrolling a container out
+  // from under an operator who scrolled it themselves is what it cost.
+  // -------------------------------------------------------------------------
+
+  describe("no scroll workaround", () => {
+    let scrollSpy: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      scrollSpy = vi.fn();
+      // Assigned rather than spied: happy-dom does not implement
+      // scrollIntoView, so there is nothing for `vi.spyOn` to wrap.
+      Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+        value: scrollSpy,
+        writable: true,
+        configurable: true,
+      });
+    });
+
+    it("never scrolls when the create row appears", () => {
+      currentCandidates = [];
+      renderPicker({ sportId: SPORT_ID });
+      openPopover();
+
+      fireEvent.change(screen.getByLabelText("Search teams"), {
+        target: { value: "Padres" },
+      });
+
+      expect(createRow()).toBeTruthy();
+      expect(scrollSpy).not.toHaveBeenCalled();
+    });
+
+    it("never scrolls when the dialog opens over it", () => {
+      currentCandidates = [];
+      renderPicker({ sportId: SPORT_ID });
+      openPopover();
+
+      openNewTeamDialog("Padres");
+
+      expect(screen.getByRole("dialog")).toBeTruthy();
+      expect(scrollSpy).not.toHaveBeenCalled();
+    });
   });
 });

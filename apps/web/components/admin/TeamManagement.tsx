@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
@@ -7,6 +7,24 @@ import { Input } from "@/components/primitives";
 import NeonButton from "@/components/modules/NeonButton";
 import { AddLeagueDialog } from "./AddLeagueDialog";
 import { contrastRatio, normalizeHexColor } from "@/lib/print/contrast";
+import { userFacingMessage } from "@/lib/errors/user-facing-message";
+import { teamFullName, teamShortName } from "@/lib/teams/team-name";
+
+/**
+ * NEO-236 security review — the browser-side half of `teams.saveTeamFields`'s
+ * length cap.
+ *
+ * A courtesy bound, not the enforcement. The SERVER checks the COMPOSED name
+ * ("San Diego" + " " + "Padres") against this same number and refuses with a
+ * `ConvexError`, which is what actually protects the row; `maxLength` here
+ * just stops the operator typing a paragraph into a field that was always
+ * going to be rejected. Deliberately per-field rather than a live composed
+ * count: a maxLength that moves as you type the other box silently eats
+ * keystrokes, and a refusal an operator can read beats an input that fights
+ * them. Keep this in step with `MAX_TEAM_NAME_LENGTH` in convex/teams.ts.
+ */
+const MAX_TEAM_NAME_LENGTH = 120;
+
 
 /**
  * NEO-156 — Team Management.
@@ -186,7 +204,7 @@ function TeamDetail({
     { id: Id<"leagues">; name: string }[]
   >([]);
   const leagueSelectRef = useRef<HTMLSelectElement>(null);
-  const [city, setCity] = useState(team.city ?? "");
+  const [location, setLocation] = useState(team.location ?? "");
   const [fromYear, setFromYear] = useState(
     team.yearsActive?.from ? String(team.yearsActive.from) : "",
   );
@@ -197,6 +215,35 @@ function TeamDetail({
   const [secondary, setSecondary] = useState(team.colors?.secondary ?? "");
   const [nameTakenId, setNameTakenId] = useState<Id<"teams"> | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  /**
+   * NEO-236 — a refused save, shown WHERE THE OPERATOR CAN ACT ON IT.
+   *
+   * The name-collision refusal ("Another team in this sport is already called
+   * San Diego Padres.") is about the two fields directly above this message and
+   * is fixed by editing them, so it belongs next to them rather than in the
+   * screen-level status line at the top of the page — which, on a panel that is
+   * usually scrolled past the fold, is off-screen at the moment Save is pressed.
+   *
+   * Only a ConvexError's `data` crosses production intact; everything else gets
+   * the fallback (see `userFacingMessage`).
+   */
+  const [saveError, setSaveError] = useState<string | null>(null);
+  /**
+   * NEO-212 (a11y) — the preview and the refusal are ASSOCIATED with BOTH
+   * fields, not merely printed under them.
+   *
+   * "Shows as: San Diego Padres" is a fact about Location and Name together, so
+   * both inputs point at it and a screen-reader user hears the composed name on
+   * entering either one. The ids live on the paragraphs; the inputs carry only
+   * `aria-describedby`, because `Input` never emits an `id` of its own (an id
+   * would clobber the `aria-label` Maestro derives `resource-id` from).
+   */
+  const previewId = useId();
+  const errorId = useId();
+  // NEO-236: the Location/Name rule, described by BOTH fields rather than sat
+  // silently beside them — the split is only obvious once you have been told
+  // what counts as a location.
+  const helpId = useId();
 
   // Re-seed on selection change. Keyed on _id so editing a field does not
   // clobber itself; this is React's documented "adjust state when props
@@ -208,12 +255,28 @@ function TeamDetail({
     setLeagueId(team.leagueId ?? NO_LEAGUE);
     setAddingLeague(false);
     setAddedLeagues([]);
-    setCity(team.city ?? "");
+    setLocation(team.location ?? "");
     setFromYear(team.yearsActive?.from ? String(team.yearsActive.from) : "");
     setToYear(team.yearsActive?.to ? String(team.yearsActive.to) : "");
     setPrimary(team.colors?.primary ?? "");
     setSecondary(team.colors?.secondary ?? "");
+    setSaveError(null);
+    setNameTakenId(null);
   }
+
+  /**
+   * NEO-236 — the row's name is composed, never stored whole.
+   *
+   * `fullName` is what this team is called everywhere outside the two admin
+   * master rows; `draftFullName` is what it WOULD be called if the operator
+   * pressed Save now, which is what the preview line under the fields shows.
+   */
+  const fullName = teamFullName(team);
+  const draftFullName = teamFullName({ name, location });
+  const describedBy =
+    [helpId, name.trim() ? previewId : null, saveError ? errorId : null]
+      .filter(Boolean)
+      .join(" ") || undefined;
 
   const normalizedPrimary = primary ? normalizeHexColor(primary) : null;
   const normalizedSecondary = secondary ? normalizeHexColor(secondary) : null;
@@ -253,6 +316,8 @@ function TeamDetail({
     if (!canSave) return;
     setBusy("save");
     onStatus(null);
+    setSaveError(null);
+    setNameTakenId(null);
     try {
       // The league already exists by the time Save is pressed — the dialog
       // creates it and hands back an id. Nothing about a league is written
@@ -266,7 +331,7 @@ function TeamDetail({
         id: team._id,
         name: name.trim(),
         leagueId: resolvedLeagueId,
-        city: city.trim() || null,
+        location: location.trim() || null,
         yearsActive: fromYear && Number.isFinite(from)
           ? { from, ...(toYear && Number.isFinite(to) ? { to } : {}) }
           : null,
@@ -277,13 +342,20 @@ function TeamDetail({
             }
           : null,
       });
-      onStatus({ text: `Saved ${name.trim()}.`, isError: false });
+      onStatus({ text: `Saved ${draftFullName}.`, isError: false });
     } catch (e) {
-      // NEO-253 — NAME_TAKEN carries the OTHER row's id precisely so this
-      // screen can offer to go there. Read `.data` first (the only thing that
-      // survives production's redaction) and fall back to `.message` for the
-      // dev path. Verbatim from `PlayerManagement`, which has had this since
-      // the same guard was added on the players side.
+      // Inline, not the status line: every way this call can fail is a thing
+      // about the fields above it — the name is taken, the name is empty, the
+      // colour is not a hex — and the panel is where it gets fixed.
+      //
+      // NEO-253 — one refusal is more than a sentence. `NAME_TAKEN:<id>`
+      // carries the OTHER row's id precisely so this screen can offer to go
+      // there, so it is parsed out into its own state rather than printed: the
+      // "Open the existing team" button below is gated on that id being
+      // present, never on the shape of the message text. Read `.data` first
+      // (the only thing that survives production's redaction) and fall back to
+      // `.message` for the dev path — verbatim from `PlayerManagement`, which
+      // has had this since the same guard was added on the players side.
       const raw =
         e && typeof e === "object" && "data" in e && typeof e.data === "string"
           ? e.data
@@ -293,11 +365,14 @@ function TeamDetail({
       const taken = /NAME_TAKEN:([^\s"]+)/.exec(raw);
       if (taken) {
         setNameTakenId(taken[1] as Id<"teams">);
+        setSaveError(
+          `Another team in this sport is already called ${draftFullName}.`,
+        );
       } else {
-        onStatus({
-          text: e instanceof Error ? e.message : "Could not save",
-          isError: true,
-        });
+        setNameTakenId(null);
+        setSaveError(
+          userFacingMessage(e, "Could not save this team. Try again."),
+        );
       }
     } finally {
       setBusy(null);
@@ -324,20 +399,20 @@ function TeamDetail({
     try {
       const outcome = await enrichFromWikidata({ id: team._id, force: true });
       const message: Record<typeof outcome, { text: string; isError: boolean }> = {
-        resolved: { text: `Found colors for ${team.name}.`, isError: false },
+        resolved: { text: `Found colors for ${fullName}.`, isError: false },
         ambiguous: {
-          text: `Several source pages match “${team.name}”. Pick the right one above.`,
+          text: `Several source pages match “${fullName}”. Pick the right one above.`,
           isError: false,
         },
         "no-match": {
-          text: `No color source lists ${team.name}. Enter colors by hand below.`,
+          text: `No color source lists ${fullName}. Enter colors by hand below.`,
           isError: false,
         },
         unreadable: {
-          text: `Found a page for ${team.name} but could not read colors from it.`,
+          text: `Found a page for ${fullName} but could not read colors from it.`,
           isError: true,
         },
-        skipped: { text: `Nothing to look up for ${team.name}.`, isError: false },
+        skipped: { text: `Nothing to look up for ${fullName}.`, isError: false },
       };
       onStatus(message[outcome]);
     } catch (e) {
@@ -365,7 +440,7 @@ function TeamDetail({
               text: "That page did not yield colors. Try another, or enter them by hand.",
               isError: true,
             }
-          : { text: `Applied colors to ${team.name}.`, isError: false },
+          : { text: `Applied colors to ${fullName}.`, isError: false },
       );
     } catch (e) {
       onStatus({
@@ -382,7 +457,7 @@ function TeamDetail({
       <div className="flex items-center gap-2">
         <ColorSwatch hex={team.colors?.primary} label="Primary" />
         <ColorSwatch hex={team.colors?.secondary} label="Secondary" />
-        <h4 className="text-lg font-semibold">{team.name}</h4>
+        <h4 className="text-lg font-semibold">{fullName}</h4>
       </div>
 
       {(team.colorCandidates?.length ?? 0) > 0 && (
@@ -408,36 +483,108 @@ function TeamDetail({
         </div>
       )}
 
-      {/* NEO-253 — the rename this panel just refused, and the way out of it.
-          Rendered directly above the Name field it is about, not routed to the
-          page-level status line: on a 1024x629 viewport that line sits well
-          above the fold when Save is pressed, so an operator would see the save
-          do nothing and be told why somewhere they cannot see. `role="alert"`
-          so it is announced; the destination is a real button rather than a
-          link because the id belongs in a handler, not interpolated into an
-          href. Same markup and same copy shape as PlayerManagement's. */}
-      {nameTakenId && (
-        <div
-          role="alert"
-          className="flex flex-wrap items-center gap-3 rounded-md border border-neon-pink/40 bg-neon-pink/5 p-3 text-sm text-neon-pink"
-        >
-          <span>That name already exists</span>
-          <button
-            type="button"
-            onClick={() => onSelect(nameTakenId)}
-            className="min-h-6 rounded px-2 py-1 underline underline-offset-2 focus:outline-none focus:ring-2 focus:ring-neon-pink"
-          >
-            Open the existing team
-          </button>
-        </div>
-      )}
-
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {/*
+          NEO-236 — LOCATION FIRST, THEN NAME, and they are two fields rather
+          than one.
+
+          A franchise name is a place plus a nickname, and this screen is the
+          only place either half is ever typed: "We simply shouldn't allow for
+          full string creation. Location & Team Name should be the input."
+          Location leads because that is the order the name is said in, so the
+          two boxes read left-to-right as the thing they compose — and the
+          preview line under them shows that composition before it is saved,
+          which is the only way an operator can tell "Padres" with a blank
+          Location apart from a correctly split row.
+
+          "Location", not "City": the leading part of a franchise name is a
+          place and not reliably a city — Tampa Bay, New England, Golden State
+          — and labelling the field "City" was what made operators leave it
+          blank for those teams. Location is wherever the team is FROM, which
+          includes a school: "Wisconsin" / "Badgers", "San Diego State" /
+          "Aztecs". It is empty only when the name carries no place at all
+          ("Athletics", "Liverpool", "Orix Buffaloes"), which is why the rule
+          is printed under the two boxes rather than left to be guessed.
+        */}
+        <Input
+          label="Location"
+          value={location}
+          placeholder="San Diego"
+          maxLength={MAX_TEAM_NAME_LENGTH}
+          aria-describedby={describedBy}
+          aria-invalid={saveError ? true : undefined}
+          onChange={(e) => {
+            setLocation(e.target.value);
+            // The refusal is about these two fields; editing either one is the
+            // operator answering it, so the message — and the escape hatch it
+            // carried — goes as soon as they do.
+            setSaveError(null);
+            setNameTakenId(null);
+          }}
+        />
+
         <Input
           label="Name"
           value={name}
-          onChange={(e) => setName(e.target.value)}
+          placeholder="Padres"
+          maxLength={MAX_TEAM_NAME_LENGTH}
+          aria-describedby={describedBy}
+          aria-invalid={saveError ? true : undefined}
+          onChange={(e) => {
+            setName(e.target.value);
+            setSaveError(null);
+            setNameTakenId(null);
+          }}
         />
+
+        {/* Examples deliberately avoid a plain city pair: a city is the case
+            operators already get right. A state and a bay teach the two they
+            do not, and the last clause names the only reason to leave Location
+            empty. Kept clear of the literal "San Diego" — that string is how
+            the E2E flow finds this screen's empty Location box. */}
+        <p id={helpId} className="sm:col-span-2 -mt-1 text-xs text-slate-400">
+          Location is where they&rsquo;re from &mdash; city, state, region or
+          school. Wisconsin / Badgers, Tampa Bay / Buccaneers. Leave it blank
+          only if the name has no place in it, like Athletics.
+        </p>
+
+        {name.trim() && (
+          <p id={previewId} className="sm:col-span-2 -mt-1 text-xs text-slate-400">
+            Shows as:{" "}
+            <span className="font-medium text-slate-200">{draftFullName}</span>
+          </p>
+        )}
+
+        {/* NEO-253 — a refused rename, and the way out of it, in ONE place.
+            This sits with the two fields it is about rather than in the
+            page-level status line: on a 1024x629 viewport that line is well
+            above the fold when Save is pressed, so an operator would see the
+            save do nothing and be told why somewhere they cannot see.
+
+            The escape hatch is gated on `nameTakenId` — an explicit id parsed
+            off the refusal — and never on the message text, so a future
+            refusal that happens to read similarly cannot grow a button that
+            navigates nowhere. The destination is a real button rather than a
+            link because the id belongs in a handler, not interpolated into an
+            href. Same markup and same copy shape as PlayerManagement's. */}
+        {saveError && (
+          <div
+            id={errorId}
+            role="alert"
+            className="sm:col-span-2 flex flex-wrap items-center gap-3 text-sm text-neon-pink"
+          >
+            <span>{saveError}</span>
+            {nameTakenId && (
+              <button
+                type="button"
+                onClick={() => onSelect(nameTakenId)}
+                className="min-h-6 rounded px-2 py-1 underline underline-offset-2 focus:outline-none focus:ring-2 focus:ring-neon-pink"
+              >
+                Open the existing team
+              </button>
+            )}
+          </div>
+        )}
 
         <div>
           <label
@@ -491,12 +638,6 @@ function TeamDetail({
             Manage leagues
           </Link>
         </div>
-
-        <Input
-          label="City"
-          value={city}
-          onChange={(e) => setCity(e.target.value)}
-        />
 
         <div className="flex gap-2">
           <Input
@@ -746,14 +887,38 @@ export default function TeamManagement() {
     [leagueList],
   );
 
+  /**
+   * NEO-236 — ORDERED BY WHAT THE ROW PRINTS, which is the nickname.
+   *
+   * `listForManagement` sorts by the composed full name, because that is the
+   * order every other consumer of it wants. This list is the one place that
+   * shows the SHORT name on its first line, and a column of first lines that
+   * runs Yankees, Mets, Knicks — all filed under "New" where nothing says so —
+   * reads as no order at all. A list is sorted by the thing you can see.
+   *
+   * Location breaks the tie, so the two Giants and the two Cardinals land next
+   * to each other in a stable order rather than in whatever order the server
+   * happened to return them.
+   */
   const visible = useMemo(() => {
     const needle = filter.trim().toLowerCase();
-    return teams.filter((team) => {
-      if (needle && !team.name.toLowerCase().includes(needle)) return false;
+    const matched = teams.filter((team) => {
+      // NEO-236 — matched on the composed name, so typing "san diego" finds
+      // the Padres even though `name` alone now holds only "Padres". The row
+      // below prints the short name; the filter has to answer to what the
+      // operator has in their head, which is the whole thing.
+      if (needle && !teamFullName(team).toLowerCase().includes(needle)) {
+        return false;
+      }
       if (leagueFilter === ALL_LEAGUES) return true;
       if (leagueFilter === "none") return !team.leagueId;
       return team.leagueId === leagueFilter;
     });
+    return matched.sort(
+      (a, b) =>
+        teamShortName(a).localeCompare(teamShortName(b)) ||
+        (a.location ?? "").localeCompare(b.location ?? ""),
+    );
   }, [teams, filter, leagueFilter]);
 
   const selected = teams.find((t) => t._id === selectedId) ?? null;
@@ -855,6 +1020,43 @@ export default function TeamManagement() {
                         syncUrl(team._id, leagueFilter);
                       }}
                       aria-current={isSelected ? "true" : undefined}
+                      /*
+                        NEO-236 — the accessible name is the FULL name, exactly,
+                        while the row prints the short one.
+
+                        The list is sorted by nickname, so the nicknames have to
+                        start at the same x for the alphabet to be scannable —
+                        which rules out an inline "New York " prefix and puts
+                        the location on the metadata line below instead. That
+                        leaves the accessible name saying "Yankees", which is
+                        not what anyone would look for, so the full name is
+                        spelled out here.
+
+                        EXACTLY `teamFullName`, with nothing appended: Maestro
+                        builds `resource-id = node.id || node.ariaLabel`, so
+                        this string is the handle every `.maestro` flow taps
+                        this row by. Appending a state word to it would break
+                        every one of them silently.
+                      */
+                      aria-label={teamFullName(team)}
+                      /*
+                        a11y (SC 4.1.2) — an `aria-label` REPLACES the accessible
+                        name, so the league tag and the attention glyph below
+                        stop being announced the moment it is set. Both are real
+                        state on an admin list whose whole job is surfacing rows
+                        that need a human, so they are said again in the
+                        `sr-only` line at the end of this button and pointed at
+                        from here.
+
+                        `describedby`, not a longer label: the label has to stay
+                        exactly `teamFullName` (see above), and a description is
+                        the attribute for "and also, about this thing…".
+                        Keyed on `team._id` rather than `useId`, because this is
+                        inside a `.map` and `useId` cannot be called per row.
+                      */
+                      aria-describedby={
+                        attention || league ? `team-row-${team._id}` : undefined
+                      }
                       className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm border-l-2 transition-colors focus:outline-none focus:ring-2 focus:ring-inset focus:ring-green-500 ${
                         isSelected
                           ? "border-neon-purple bg-neon-purple/10 text-neon-purple"
@@ -862,14 +1064,47 @@ export default function TeamManagement() {
                       }`}
                     >
                       <ColorSwatch hex={team.colors?.primary} label="Primary" />
-                      <span className="flex-1 truncate">{team.name}</span>
-                      {league && (
-                        <span className="text-xs text-slate-400">
-                          {league.abbreviation ?? league.name}
+                      {/* Two lines, and the second one is where the location
+                          and the league both went. Line one is nothing but the
+                          nickname, left-aligned, so a 2000-row alphabetical
+                          list can be run down with the eye; line two carries
+                          the facts that tell two "Giants" apart. The rows that
+                          have neither — a college side with no conference —
+                          simply stay one line, and the structure says so.
+
+                          `truncate` is CSS, so the full strings stay in the DOM
+                          for assistive tech and for the E2E matcher. */}
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate">
+                          {teamShortName(team)}
                         </span>
-                      )}
+                        {(team.location || league) && (
+                          <span className="flex items-baseline gap-x-2 text-xs text-slate-400">
+                            {team.location && (
+                              <span className="min-w-0 truncate">
+                                {team.location}
+                              </span>
+                            )}
+                            {league && (
+                              // The hairline rule is a border rather than a
+                              // "·" so it stays out of the text content, and it
+                              // appears only when there are two facts to hold
+                              // apart.
+                              <span
+                                className={`shrink-0 ${team.location ? "border-l border-slate-700 pl-2" : ""}`}
+                              >
+                                {league.abbreviation ?? league.name}
+                              </span>
+                            )}
+                          </span>
+                        )}
+                      </span>
                       {attention && (
+                        // `aria-hidden`: "?" and "—" are glyphs, not words, and
+                        // the sentence they stand for is in the `sr-only` line
+                        // below. `title` stays for the pointer.
                         <span
+                          aria-hidden="true"
                           className="text-xs text-neon-orange"
                           title={
                             attention === "choice"
@@ -878,6 +1113,16 @@ export default function TeamManagement() {
                           }
                         >
                           {attention === "choice" ? "?" : "—"}
+                        </span>
+                      )}
+                      {(attention || league) && (
+                        <span id={`team-row-${team._id}`} className="sr-only">
+                          {league ? `${league.abbreviation ?? league.name}. ` : ""}
+                          {attention === "choice"
+                            ? "Several color sources match — needs a pick."
+                            : attention === "colors"
+                              ? "No colors yet."
+                              : ""}
                         </span>
                       )}
                     </button>
