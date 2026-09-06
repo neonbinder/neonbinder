@@ -9269,6 +9269,19 @@ export const commitCardChecklistPrelude = internalMutation({
       opts: {
         extra?: Partial<Doc<"teams">>;
         enqueueEnrichment?: boolean;
+        /**
+         * NEO-236 — the operator answered the League question, so the sport
+         * default must not be applied on top of their answer.
+         *
+         * This is a separate flag rather than being inferred from
+         * `extra.leagueId`, because the answer that needs protecting most is
+         * "no league": that produces NO `leagueId` at all, which is exactly
+         * what an unanswered decision produces too. Without the flag the two
+         * are indistinguishable and the default silently wins — which is the
+         * defect Jason found ("How does this dialog know which League the new
+         * team is in?"), just moved one layer down.
+         */
+        leagueChosen?: boolean;
       } = {},
     ): Promise<{ id: Id<"teams">; created: boolean }> => {
       const extra = opts.extra ?? {};
@@ -9284,7 +9297,10 @@ export const commitCardChecklistPrelude = internalMutation({
       // supplies one when the enrichment named it; otherwise the sport's
       // default.
       const leagueId =
-        extra.leagueId ?? (await resolveDefaultLeagueId(ctx, args.sportId));
+        extra.leagueId ??
+        (opts.leagueChosen
+          ? undefined
+          : await resolveDefaultLeagueId(ctx, args.sportId));
       const id = await ctx.db.insert("teams", {
         ...extra,
         ...fields,
@@ -9306,6 +9322,245 @@ export const commitCardChecklistPrelude = internalMutation({
     // an unanswered question.
     const unreviewedPlayerNames: string[] = [];
     const unreviewedTeamNames: string[] = [];
+
+    const teamIdByName = new Map<string, Id<"teams">>();
+    const teamNameById = new Map<Id<"teams">, string>();
+    // NEO-236: declared here rather than beside the team loop, because the
+    // staged-career-team pass below runs BEFORE that loop and pushes into it.
+    const createdTeamIds: Array<Id<"teams">> = [];
+
+    /**
+     * NEO-236 — the stored fields a REVIEWED team row is built from, beyond its
+     * Location and Name.
+     *
+     * Shared by the two places a create decision becomes a `teams` row — the
+     * staged career-team pass and the checklist team loop — so the two cannot
+     * drift on what a reviewed team carries or on which source wins.
+     *
+     * The League is the part this ticket changed, and the order is the fix:
+     *
+     *  1. **What the operator chose.** An id, or `null` for "no league", or a
+     *     name for a league we do not hold yet. Answered means answered — the
+     *     sport default is never allowed back over it, which is what stopped a
+     *     club side pulled off a player's career list from being filed under
+     *     the sport's top flight.
+     *  2. **The enrichment's league name**, when the step was never answered
+     *     (a pre-NEO-236 decision, or a row decided in bulk before this
+     *     shipped). Resolved through `findOrCreateLeague` so two spellings of
+     *     one league cannot become two rows.
+     *  3. Otherwise nothing here, and `createTeamFromOperatorInput` falls back
+     *     to the sport default exactly as it always did.
+     *
+     * `enrichment.location` is deliberately NOT written: the operator saw it
+     * (the step pre-fills Location from it) and either kept it, changed it or
+     * cleared it, and writing it behind that decision would overwrite the
+     * answer. A blank Location is a blank Location.
+     */
+    const reviewedTeamFields = async (
+      create: {
+        location?: string;
+        name: string;
+        leagueId?: Id<"leagues"> | null;
+        leagueName?: string;
+      },
+      enrichment: (typeof reviewRows)[number]["enrichment"],
+    ): Promise<Partial<Doc<"teams">>> => {
+      let leagueId: Id<"leagues"> | undefined;
+      if (create.leagueId !== undefined) {
+        // `null` is "no league", and it stays undefined here so nothing is
+        // written — `createTeamFromOperatorInput` reads `leagueChosen` to know
+        // the difference between that and "not answered".
+        leagueId = create.leagueId ?? undefined;
+      } else if (create.leagueName?.trim()) {
+        // The operator's OWN answer, and it outranks the suggestion for the
+        // same reason `create.leagueId` does: "Create league X" is a decision
+        // they made on the New Team step, and the step's pre-fill is only
+        // where that decision started. Ordered above `enrichment.league`
+        // deliberately — the other way round, an operator who replaced the
+        // suggested league with a name of their own would silently get the
+        // suggestion back, which is the very defect this ticket closes.
+        leagueId = await findOrCreateLeague(ctx, {
+          name: create.leagueName.trim(),
+          sportId: args.sportId,
+        });
+      } else if (enrichment?.league) {
+        leagueId = await findOrCreateLeague(ctx, {
+          name: enrichment.league,
+          sportId: args.sportId,
+        });
+      }
+      return {
+        ...(leagueId ? { leagueId } : {}),
+        ...(enrichment?.yearsActive ? { yearsActive: enrichment.yearsActive } : {}),
+        ...(enrichment?.colors ? { colors: enrichment.colors } : {}),
+        ...(enrichment?.wikidataId || enrichment?.espnId
+          ? {
+              externalIds: {
+                wikidataId: enrichment?.wikidataId,
+                espnId: enrichment?.espnId,
+              },
+            }
+          : {}),
+      };
+    };
+
+    /**
+     * ── NEO-236: staged career teams are created BEFORE anything needs them ──
+     *
+     * These rows are not in `allTeamNames` — no card carries their name. They
+     * were staged by `entityReviewQueue.stageCareerTeamRows` off a player's own
+     * career list, walked as their own New Team step, and answered with a
+     * Location, a Name and a League. This pass is where those answers become
+     * `teams` rows.
+     *
+     * It runs FIRST, ahead of both name loops, and the ordering is the whole
+     * mechanism: the player loop below resolves each stint by looking the
+     * career-team label up with `findTeamByFullName`, so a team created here is
+     * simply found there. Nothing has to hand an id across — the batch's own
+     * dedup key does it, which is also why an operator answering "Padres" with
+     * ("San Diego", "Padres") lands on the row we already had instead of a
+     * second one.
+     *
+     * A staged row the operator SKIPPED or never answered creates nothing and
+     * is not reported as unresolved here: it is not a name off the checklist,
+     * so there is no card sitting on it, and the player loop reports the stint
+     * label itself if it still cannot be resolved.
+     */
+    /**
+     * NEO-236 — the label a staged step ANSWERED, to the team it produced.
+     *
+     * Keyed by the label the step was raised for, and consulted before any
+     * name lookup, because the operator is allowed to answer "Sydney Blue Sox"
+     * with something that is not spelled that way. They might split it
+     * ("Sydney" / "Blue Sox", which still composes back and would match), and
+     * they might not ("Sydney Blue Sox Baseball Club", which would not) — and
+     * they might answer it by LINKING to a row we already hold under a
+     * different name, which no amount of matching on the label could find.
+     *
+     * Resolving the stint through this map instead of through the label is the
+     * id-keyed link the product invariant asks for: the label was only ever the
+     * question, and this is the answer.
+     */
+    const stagedTeamIdByLabel = new Map<string, Id<"teams">>();
+
+    for (const row of reviewRows) {
+      if (row.kind !== "team") continue;
+      if (row.source?.kind !== "careerTeamOf") continue;
+      // A step answered by pointing at a team we already hold. Nothing to
+      // create, but the stint still has its answer.
+      if (row.decision?.action === "link" && row.decision.linkedTeamId) {
+        stagedTeamIdByLabel.set(norm(row.name), row.decision.linkedTeamId);
+        continue;
+      }
+      if (row.decision?.action !== "create") continue;
+      const create = row.decision.create;
+      // No Location + Name means the step was never filled in — nothing to
+      // build a row from, and this path has no fallback to the raw label by
+      // design (Jason, 2026-09-05: "We simply shouldn't allow for full string
+      // creation").
+      if (!create || !create.name.trim()) continue;
+      const { id, created } = await createTeamFromOperatorInput(create, {
+        // Already enriched: the staged row's own Wikidata lookup ran while it
+        // sat in the wizard, and its result is on `row.enrichment`.
+        enqueueEnrichment: false,
+        extra: await reviewedTeamFields(create, row.enrichment),
+        leagueChosen: create.leagueId !== undefined,
+      });
+      stagedTeamIdByLabel.set(norm(row.name), id);
+      // The label is answered, so it is no longer an unresolved name — the
+      // player loop may have recorded it on a previous commit attempt.
+      unresolvedTeamNames.delete(row.name.trim());
+      if (created) createdTeamIds.push(id);
+    }
+
+    for (const name of allTeamNames) {
+      // The review-row key, NOT a team-identity lookup: `reviewByKey` is built
+      // with the same `norm` over the queue rows' own names, so the two sides
+      // of that map have to agree with each other rather than with `teams`.
+      const normalized = norm(name);
+      // NEO-236: team IDENTITY goes through the shared lookup in
+      // convex/lib/teamRow.ts. This used to be a hand-rolled
+      // `by_name_normalized_and_sport_id` query keyed on `norm` above — a
+      // third copy of `normalizeTeamName` sitting next to the two in
+      // teams.ts/entityNearMatch.ts. All three are byte-identical today, which
+      // is exactly why the drift would be silent: the day one of them gains a
+      // rule the others lack, this lookup starts missing rows it should find
+      // and commit quietly mints a duplicate franchise. One derivation, one
+      // place. `teams.dedupPin.test.ts` greps for the reintroduction.
+      const existing = await findTeamByFullName(ctx, args.sportId, name);
+      if (existing) {
+        teamIdByName.set(name, existing._id);
+        // NEO-236: the FULL name — location plus nickname — everywhere a
+        // stored team name leaves this mutation. This map feeds listing titles
+        // and the card's stored `teamNames`, and "Padres" in a listing title
+        // is a worse search term than "San Diego Padres" for exactly the
+        // collectors who type the city.
+        teamNameById.set(existing._id, teamFullName(existing));
+        continue;
+      }
+      const decision = reviewByKey.get(`team:${normalized}`)?.decision;
+      // Same as the player loop above — unreviewed or NEO-212 "not a team".
+      // The card keeps the raw name, nothing is created or linked. Only the
+      // unreviewed case counts as either "unresolved" (NEO-236) or
+      // "unreviewed" (NEO-221): a skip is an answer to both questions.
+      if (!decision || decision.action === "skip") {
+        if (!decision) {
+          unresolvedTeamNames.add(name);
+          // NEO-221 — same rule as the player loop above.
+          unreviewedTeamNames.push(name);
+        }
+        continue;
+      }
+      if (decision.action === "link") {
+        if (decision.linkedTeamId) {
+          teamIdByName.set(name, decision.linkedTeamId);
+          // The LINKED row's own spelling, not the reviewed name — same
+          // reasoning as `playerNameById` above, and read at most once.
+          if (!teamNameById.has(decision.linkedTeamId)) {
+            const linked = await ctx.db.get(decision.linkedTeamId);
+            if (linked) {
+              teamNameById.set(decision.linkedTeamId, teamFullName(linked));
+            }
+          }
+        }
+        continue;
+      }
+      // ── NEO-236: created ONLY from the operator's Location + Name ─────────
+      //
+      // `name` here is the raw checklist string, and it is deliberately NOT
+      // what gets stored. Jason, 2026-09-05: "We simply shouldn't allow for
+      // full string creation. Location & Team Name should be the input." The
+      // wizard pre-fills both halves and the operator confirms them; a create
+      // decision that carries neither cannot have come from that form, so
+      // nothing is inserted and the name is reported as unresolved for the
+      // attention walker's missing-team lane — the same place an unreviewed
+      // name lands.
+      const create = decision.create;
+      if (!create) {
+        unresolvedTeamNames.add(name);
+        continue;
+      }
+      const enrichment = reviewByKey.get(`team:${normalized}`)?.enrichment;
+      const { id, created } = await createTeamFromOperatorInput(create, {
+        // The row the operator reviewed arrives complete — the wizard's own
+        // Wikidata/ESPN lookup already ran — so it does not go back on the
+        // enrichment queue (NEO-147's creation-only contract).
+        enqueueEnrichment: false,
+        // NEO-236: league, era, colours and ids in one place, shared with the
+        // staged-career-team pass above. The operator's League choice wins over
+        // the enrichment's suggestion — see `reviewedTeamFields`.
+        extra: await reviewedTeamFields(create, enrichment),
+        leagueChosen: create.leagueId !== undefined,
+      });
+      teamIdByName.set(name, id);
+      teamNameById.set(id, teamFullName(create));
+      // `createTeamFromOperatorInput` LINKS instead of inserting when the
+      // composed name already exists — the operator answered "SD Padres" with
+      // the San Diego Padres row we already have. A row this commit did not
+      // insert is not one it created, and `createdTeamIds` drives the finalize
+      // phase's creation-only work, so the flag is what decides.
+      if (created) createdTeamIds.push(id);
+    }
 
     const playerIdByName = new Map<string, Id<"players">>();
     // id → canonical stored name, so the chunk phase never has to re-read a
@@ -9441,6 +9696,11 @@ export const commitCardChecklistPrelude = internalMutation({
       const resolveCareerTeamId = async (
         label: string,
       ): Promise<Id<"teams"> | null> => {
+        // NEO-236: the operator's own answer for THIS label, by id, first. See
+        // `stagedTeamIdByLabel` — a step answered with a different spelling, or
+        // by linking to a differently-named row, is unreachable by matching.
+        const answered = stagedTeamIdByLabel.get(norm(label));
+        if (answered) return answered;
         const matched = await resolveTeamIdByName(label);
         if (matched) return matched;
         const create = careerTeamCreateBySource.get(norm(label));
@@ -9494,120 +9754,6 @@ export const commitCardChecklistPrelude = internalMutation({
       createdPlayerIds.push(id);
     }
 
-    const teamIdByName = new Map<string, Id<"teams">>();
-    const teamNameById = new Map<Id<"teams">, string>();
-    const createdTeamIds: Array<Id<"teams">> = [];
-    for (const name of allTeamNames) {
-      // The review-row key, NOT a team-identity lookup: `reviewByKey` is built
-      // with the same `norm` over the queue rows' own names, so the two sides
-      // of that map have to agree with each other rather than with `teams`.
-      const normalized = norm(name);
-      // NEO-236: team IDENTITY goes through the shared lookup in
-      // convex/lib/teamRow.ts. This used to be a hand-rolled
-      // `by_name_normalized_and_sport_id` query keyed on `norm` above — a
-      // third copy of `normalizeTeamName` sitting next to the two in
-      // teams.ts/entityNearMatch.ts. All three are byte-identical today, which
-      // is exactly why the drift would be silent: the day one of them gains a
-      // rule the others lack, this lookup starts missing rows it should find
-      // and commit quietly mints a duplicate franchise. One derivation, one
-      // place. `teams.dedupPin.test.ts` greps for the reintroduction.
-      const existing = await findTeamByFullName(ctx, args.sportId, name);
-      if (existing) {
-        teamIdByName.set(name, existing._id);
-        // NEO-236: the FULL name — location plus nickname — everywhere a
-        // stored team name leaves this mutation. This map feeds listing titles
-        // and the card's stored `teamNames`, and "Padres" in a listing title
-        // is a worse search term than "San Diego Padres" for exactly the
-        // collectors who type the city.
-        teamNameById.set(existing._id, teamFullName(existing));
-        continue;
-      }
-      const decision = reviewByKey.get(`team:${normalized}`)?.decision;
-      // Same as the player loop above — unreviewed or NEO-212 "not a team".
-      // The card keeps the raw name, nothing is created or linked. Only the
-      // unreviewed case counts as either "unresolved" (NEO-236) or
-      // "unreviewed" (NEO-221): a skip is an answer to both questions.
-      if (!decision || decision.action === "skip") {
-        if (!decision) {
-          unresolvedTeamNames.add(name);
-          // NEO-221 — same rule as the player loop above.
-          unreviewedTeamNames.push(name);
-        }
-        continue;
-      }
-      if (decision.action === "link") {
-        if (decision.linkedTeamId) {
-          teamIdByName.set(name, decision.linkedTeamId);
-          // The LINKED row's own spelling, not the reviewed name — same
-          // reasoning as `playerNameById` above, and read at most once.
-          if (!teamNameById.has(decision.linkedTeamId)) {
-            const linked = await ctx.db.get(decision.linkedTeamId);
-            if (linked) {
-              teamNameById.set(decision.linkedTeamId, teamFullName(linked));
-            }
-          }
-        }
-        continue;
-      }
-      // ── NEO-236: created ONLY from the operator's Location + Name ─────────
-      //
-      // `name` here is the raw checklist string, and it is deliberately NOT
-      // what gets stored. Jason, 2026-09-05: "We simply shouldn't allow for
-      // full string creation. Location & Team Name should be the input." The
-      // wizard pre-fills both halves and the operator confirms them; a create
-      // decision that carries neither cannot have come from that form, so
-      // nothing is inserted and the name is reported as unresolved for the
-      // attention walker's missing-team lane — the same place an unreviewed
-      // name lands.
-      const create = decision.create;
-      if (!create) {
-        unresolvedTeamNames.add(name);
-        continue;
-      }
-      const enrichment = reviewByKey.get(`team:${normalized}`)?.enrichment;
-      // NEO-156: the wizard's enrichment carries a league NAME. Resolve it to
-      // a real row rather than storing the string, so two spellings of one
-      // league cannot become two leagues. Falls back to the sport's default
-      // when enrichment found none, so this path attaches a league either way.
-      const leagueId = enrichment?.league
-        ? await findOrCreateLeague(ctx, {
-            name: enrichment.league,
-            sportId: args.sportId,
-          })
-        : undefined;
-      const { id, created } = await createTeamFromOperatorInput(create, {
-        // The row the operator reviewed arrives complete — the wizard's own
-        // Wikidata/ESPN lookup already ran — so it does not go back on the
-        // enrichment queue (NEO-147's creation-only contract).
-        enqueueEnrichment: false,
-        extra: {
-          ...(leagueId ? { leagueId } : {}),
-          // NEO-236: `enrichment.location` is NOT written on its own. The
-          // operator saw it (the wizard pre-fills Location from it) and either
-          // kept it, changed it, or cleared it; writing it behind that
-          // decision would silently overwrite the answer. A blank Location is
-          // a blank Location.
-          ...(enrichment?.yearsActive ? { yearsActive: enrichment.yearsActive } : {}),
-          ...(enrichment?.colors ? { colors: enrichment.colors } : {}),
-          ...(enrichment?.wikidataId || enrichment?.espnId
-            ? {
-                externalIds: {
-                  wikidataId: enrichment?.wikidataId,
-                  espnId: enrichment?.espnId,
-                },
-              }
-            : {}),
-        },
-      });
-      teamIdByName.set(name, id);
-      teamNameById.set(id, teamFullName(create));
-      // `createTeamFromOperatorInput` LINKS instead of inserting when the
-      // composed name already exists — the operator answered "SD Padres" with
-      // the San Diego Padres row we already have. A row this commit did not
-      // insert is not one it created, and `createdTeamIds` drives the finalize
-      // phase's creation-only work, so the flag is what decides.
-      if (created) createdTeamIds.push(id);
-    }
 
     // NEO-71-74: every selectorOptions row is a complete, self-contained
     // `features` snapshot at all times (copy-down happens once, at each

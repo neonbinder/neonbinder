@@ -70,7 +70,8 @@ tags:
 # `teams` and `players` are EMPTY for the whole run until a flow puts something
 # in them. Every flow that needs a team or a player now creates its own,
 # per-worker and per-attempt, through the product's own screens — /admin/players
-# for a player and its career stints, TeamPicker's "+ Create" row for a team,
+# for a player and its career stints, TeamPicker's "+ New team" row (and the
+# New Team dialog it opens) for a team,
 # /admin/teams for that team's colours. That is strictly better isolation than
 # the shared fixture was (nothing global to contend on) and it is the only
 # fixture path left, so do NOT reintroduce a global seed step here.

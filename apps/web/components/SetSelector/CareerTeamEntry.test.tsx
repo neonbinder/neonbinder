@@ -345,79 +345,50 @@ describe("CareerTeamEntry — 'Did you mean' prompt", () => {
     expect(screen.queryByText(/Did you mean/)).toBeNull();
   });
 });
-
 // ---------------------------------------------------------------------------
-// NEO-236 — Location + Name, never a full string
+// NEO-236 — ONE box, and the split happens on the team's own step
+//
+// Jason, 2026-09-05: "we should also remove the Location box from New Players
+// as we should only be selecting existing teams or entering it in the singular
+// field which would trigger that new team dialog."
+//
+// An earlier pass put a Location field beside the name here. It asked the
+// operator to split a team while they were dating a stint, in a form with no
+// room for the League, and it asked it in a different place from every other
+// team creation in the product. What this component reports upward is a STINT;
+// the team it names is either one we already hold or one the batch is about to
+// ask about on a New Team step of its own.
 // ---------------------------------------------------------------------------
 
-describe("CareerTeamEntry — Location + Name", () => {
-  it("emits the two halves separately, trimmed", () => {
-    const { onAdd } = renderEntry();
-
-    fireEvent.change(screen.getByLabelText("Career team location (optional)"), {
-      target: { value: "  San Diego  " },
-    });
-    typeName("  Padres  ");
-    fireEvent.change(screen.getByLabelText("From year"), { target: { value: "2004" } });
-    fireEvent.click(screen.getByRole("button", { name: "Add career team" }));
-
-    expect(onAdd).toHaveBeenCalledWith({
-      name: "Padres",
-      location: "San Diego",
-      fromYear: 2004,
-    });
-  });
-
-  it("omits `location` entirely when it is left blank", () => {
-    const { onAdd } = renderEntry();
-
-    typeName("Orix Buffaloes");
-    fireEvent.change(screen.getByLabelText("From year"), { target: { value: "2004" } });
-    fireEvent.click(screen.getByRole("button", { name: "Add career team" }));
-
-    expect(onAdd).toHaveBeenCalledWith({ name: "Orix Buffaloes", fromYear: 2004 });
-  });
-
-  it("shows the composed name once a Location is typed, and not before", () => {
+describe("CareerTeamEntry — one box", () => {
+  it("has no Location field at all", () => {
     renderEntry();
 
-    typeName("Padres");
+    expect(
+      screen.queryByLabelText("Career team location (optional)"),
+    ).toBeNull();
+    // ...and no composed preview either: there is nothing here to compose, and
+    // the "Shows as" line belongs to the New Team step that does the splitting.
     expect(screen.queryByText(/Shows as:/)).toBeNull();
-
-    fireEvent.change(screen.getByLabelText("Career team location (optional)"), {
-      target: { value: "San Diego" },
-    });
-    expect(screen.getByText("Shows as: San Diego Padres")).toBeTruthy();
+    expect(screen.getByLabelText("Career team name")).toBeTruthy();
   });
 
-  it("clears Location and both fields after adding", () => {
-    renderEntry();
+  it("emits the WHOLE typed name, trimmed, and never a location key", () => {
+    const { onAdd } = renderEntry();
 
-    fireEvent.change(screen.getByLabelText("Career team location (optional)"), {
-      target: { value: "San Diego" },
-    });
-    typeName("Padres");
+    typeName("  San Diego Padres  ");
     fireEvent.change(screen.getByLabelText("From year"), { target: { value: "2004" } });
     fireEvent.click(screen.getByRole("button", { name: "Add career team" }));
 
-    expect(
-      (
-        screen.getByLabelText(
-          "Career team location (optional)",
-        ) as HTMLInputElement
-      ).value,
-    ).toBe("");
-    expect(
-      (screen.getByLabelText("Career team name") as HTMLInputElement).value,
-    ).toBe("");
+    // Exactly this shape: a `location` key here would be a second place the
+    // split could be decided, and two places recording the same answer is how
+    // they end up disagreeing.
+    expect(onAdd).toHaveBeenCalledWith({ name: "San Diego Padres", fromYear: 2004 });
   });
 
-  it("a blank Location alone cannot add — Name is still the required half", () => {
+  it("still refuses to add without a name, however valid the years are", () => {
     const { onAdd } = renderEntry();
 
-    fireEvent.change(screen.getByLabelText("Career team location (optional)"), {
-      target: { value: "San Diego" },
-    });
     fireEvent.change(screen.getByLabelText("From year"), { target: { value: "2004" } });
 
     const addButton = screen.getByRole("button", {
@@ -428,48 +399,48 @@ describe("CareerTeamEntry — Location + Name", () => {
     expect(onAdd).not.toHaveBeenCalled();
   });
 
-  it("suggests a split saved team by its FULL name, and picking it clears Location", () => {
+  it("clears the single box after adding", () => {
+    renderEntry();
+
+    typeName("San Diego Padres");
+    fireEvent.change(screen.getByLabelText("From year"), { target: { value: "2004" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add career team" }));
+
+    expect(
+      (screen.getByLabelText("Career team name") as HTMLInputElement).value,
+    ).toBe("");
+  });
+
+  it("suggests a split saved team by its FULL name, and picks the whole thing", () => {
+    // A suggestion is something the operator can pick to LINK to, and "Padres"
+    // does not identify the row it belongs to. What lands in the box is
+    // byte-for-byte the existing row's composed name, which is what makes the
+    // commit link rather than create.
     currentTeams = [{ _id: "t1", name: "Padres", location: "San Diego" }];
     renderEntry();
 
-    fireEvent.change(screen.getByLabelText("Career team location (optional)"), {
-      target: { value: "Typed" },
-    });
     typeName("Padres");
-
-    // "Padres" alone does not identify the row; the option names the whole team.
-    const option = screen.getByRole("option", {
-      name: "Use existing team San Diego Padres",
-    });
-    fireEvent.click(option);
+    fireEvent.click(
+      screen.getByRole("option", { name: "Use existing team San Diego Padres" }),
+    );
 
     expect(
       (screen.getByLabelText("Career team name") as HTMLInputElement).value,
     ).toBe("San Diego Padres");
-    // Composed, the picked name is byte-for-byte the existing row's — which is
-    // what makes commit link to it rather than create a second one.
-    expect(
-      (
-        screen.getByLabelText(
-          "Career team location (optional)",
-        ) as HTMLInputElement
-      ).value,
-    ).toBe("");
   });
 
-  it("the duplicate warning compares the COMPOSED name, not the nickname", () => {
+  it("compares the duplicate warning against the saved row's COMPOSED name", () => {
     currentTeams = [{ _id: "t1", name: "Padres", location: "San Diego" }];
     renderEntry();
 
-    // Nickname alone is a near match against "San Diego Padres"...
+    // The nickname alone is a near match against "San Diego Padres"...
     typeName("Padres");
     expect(screen.getByText("Did you mean San Diego Padres?")).toBeTruthy();
 
-    // ...but with the Location filled in it is an EXACT match, so there is
-    // nothing to mean instead.
-    fireEvent.change(screen.getByLabelText("Career team location (optional)"), {
-      target: { value: "San Diego" },
-    });
+    // ...and typing the whole name is an EXACT one, so there is nothing to
+    // mean instead. Ranking against the stored `name` ("Padres") would report a
+    // near match where there is an exact one.
+    typeName("San Diego Padres");
     expect(screen.queryByText(/Did you mean/)).toBeNull();
   });
 });

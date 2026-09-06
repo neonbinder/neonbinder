@@ -395,8 +395,9 @@ same registration rule as sets applies — **pick an unused prefix and add a row
 here in the same commit**, so two flows never collide on a name.
 
 Every one of these is created through the product, never seeded: TeamPicker's
-`+ Create` row (`id: "Create team <name>"` → `teams.findOrCreate`), on whichever
-screen the flow is already standing. `/admin/teams` has no "add a team" control
+`+ New team` row (`id: "New team <typed>"`) opens the **New Team dialog**, whose
+`id: "Create team <composed full name>"` button calls `teams.findOrCreate` — on
+whichever screen the flow is already standing. `/admin/teams` has no "add a team" control
 by design — it edits teams, it does not invent them — so a flow that needs a
 team's COLOURS creates the team in a picker first and then colours it there.
 
@@ -418,15 +419,31 @@ matches on.
 Two consequences worth knowing before writing a picker step:
 
 * The typeahead matches and de-duplicates on the COMPOSED name, so typing a
-  full name finds a split row and suppresses `+ Create`. Reach for
-  `id: "Add <full name>"`, not `id: "Create team <full name>"`, once a row with
+  full name finds a split row and suppresses the create row. Reach for
+  `id: "Add <full name>"`, not `id: "New team <full name>"`, once a row with
   that composed name exists.
-* The `+ Create` row is a two-field FORM now (Location, Team name, a preview,
-  then the button), which grew the popover from 112px to 261px. In a scroll box
-  shorter than that the button is clipped and a tap on it silently misses — see
-  the note on `checklist-attention-walker-missing-team.yaml` below. Where the
-  picker sits inside a small dialog, create with `pressKey: Enter` on the search
-  input (guarded by `assertVisible: "No matches."`) instead of tapping the row.
+* **Creating a team is TWO steps now (NEO-236).** The popover holds ONE create
+  affordance — a row reading `+ New team "<typed>"…`, accessible name
+  `New team <typed>` — and taking it OPENS a portalled dialog. The dialog is
+  headed `New team: <typed>` and asks the three questions a `teams` row needs:
+  `New team location (optional)`, `New team name` (pre-filled with the typed
+  text) and a `New team league` radiogroup of pills (the sport's leagues, an
+  optional `Create <league>`, and `No league`), with a `Shows as:` preview. Its
+  Create button keeps the accessible name every flow already used —
+  `Create team <composed full name>` — so the only change to an existing flow is
+  the extra step that opens the dialog.
+  * A flow that leaves Location blank and picks no League composes to exactly
+    the typed name, which is why every matcher below is unchanged.
+  * **Tap the dialog's Create button by `id`, never a second `pressKey: Enter`.**
+    Create and Cancel are `NeonButton`s with an identical class string, and
+    maestro-web re-finds the focused element by an XPath that falls back to that
+    class — an Enter aimed at Create can land on Cancel.
+  * The dialog is portalled to `document.body` at `z-[60]` and centred, so no
+    scrolling ancestor can clip it. The POPOVER ROW still can: where the picker
+    sits inside a short scroll box (the attention walker's `max-h-[70vh]` body,
+    the bottom of the Players page's career editor), open the dialog with
+    `pressKey: Enter` on the search input — guarded by
+    `assertVisible: "No matches."` — instead of tapping the row.
 
 | Prefix | Owning flow | Shape |
 |---|---|---|
@@ -439,7 +456,7 @@ Two consequences worth knowing before writing a picker step:
 | `TMT-` | `admin/team-management-edit-a-team.yaml` | `-${WORKER_INDEX}-${ATTEMPT_ID}`, and the ONLY team in the suite with a `location`: `Loc${WORKER_INDEX}`, so its composed name is `Loc<w> TMT-<w>-<attempt>` |
 | `TPT-` | `team-picker.yaml` | `-${ATTEMPT_ID}` |
 
-**Always per-ATTEMPT, not just per-worker.** `+ Create <name>` is offered only
+**Always per-ATTEMPT, not just per-worker.** `+ New team <name>` is offered only
 while no team of that name exists, so a name a previous attempt left behind
 renders `Add <name>` instead and the create step reaches for a control that is
 not there. (`ATTEMPT_ID` is `w<worker>-a<attempt>-<random>`, so it already

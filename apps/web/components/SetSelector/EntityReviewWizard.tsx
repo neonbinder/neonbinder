@@ -11,7 +11,7 @@ import { normalizeEntityName } from "../../convex/lib/entityNearMatch";
 // lib/players/wikidata-id.ts.
 import { wikidataUrl, wikipediaUrl } from "../../lib/players/wikidata-id";
 // NEO-236: the team name split. Pure, no Convex — see lib/teams/team-name.ts.
-import { splitTeamName, teamFullName } from "../../lib/teams/team-name";
+import { teamFullName } from "../../lib/teams/team-name";
 import { isEditableTarget } from "../../lib/dom/is-editable-target";
 import NeonButton from "../modules/NeonButton";
 import { ConfirmDialog } from "../modules/confirm-dialog";
@@ -24,6 +24,12 @@ import {
 } from "../entities/NearMatchPanel";
 import EntityLinkSearch from "./EntityLinkSearch";
 import CareerTeamEntry, { type CareerTeamDraft } from "./CareerTeamEntry";
+// NEO-236: the one form a team is created from, shared with NewTeamDialog.
+import NewTeamForm, {
+  draftFullName,
+  newTeamPrefill,
+  type NewTeamDraft,
+} from "./NewTeamForm";
 import { deriveStagedTeamNames } from "./entity-review-staging";
 import {
   countPendingUndecided,
@@ -120,13 +126,6 @@ import {
 const MAX_RESOLVE_NAMES = 64;
 
 /**
- * Mirrors MAX_CAREER_TEAM_CREATES in convex/entityReviewQueue.ts, which
- * REFUSES an over-length `createTeams` rather than truncating it. Same number
- * as MAX_RESOLVE_NAMES by coincidence, not by dependence.
- */
-const MAX_CAREER_TEAM_CREATES = 64;
-
-/**
  * Mirrors MAX_TEAM_FULL_NAME_LENGTH in convex/entityReviewQueue.ts (and
  * MAX_TEAM_NAME_LENGTH in convex/teams.ts). Applied to the COMPOSED name,
  * because that is what gets stored and what the server measures.
@@ -150,10 +149,8 @@ const MAX_TEAM_FULL_NAME_LENGTH = 120;
  */
 const TEAM_LOCATION_FIELD_ID = "entity-review-team-location";
 const TEAM_NAME_FIELD_ID = "entity-review-team-name";
-
-/** The two halves a team row is created from. Empty strings, not undefined —
- *  these are controlled inputs, and a blank Location is a real answer. */
-type TeamCreateDraft = { location: string; name: string };
+/** NEO-236 — the League pill group on the New Team step, same reasoning. */
+const TEAM_LEAGUE_FIELD_ID = "entity-review-team-league";
 
 /**
  * NEO-236 — what the Location + Name pair shows for a team row before the
@@ -180,17 +177,11 @@ type TeamCreateDraft = { location: string; name: string };
 export function teamCreatePrefill(row: {
   name: string;
   enrichment?: { location?: string } | null;
-}): TeamCreateDraft {
-  const location = row.enrichment?.location;
-  const split = location ? splitTeamName(row.name, location) : null;
-  return split
-    ? { location: split.location, name: split.name }
-    : { location: "", name: row.name.trim() };
-}
-
-/** `teamFullName` over a draft, for the "Shows as:" line and for matching. */
-function draftFullName(draft: TeamCreateDraft): string {
-  return teamFullName({ name: draft.name, location: draft.location });
+}): NewTeamDraft {
+  return newTeamPrefill({
+    name: row.name,
+    ...(row.enrichment?.location ? { location: row.enrichment.location } : {}),
+  });
 }
 /** Past this many decided rows the history list collapses behind a disclosure. */
 const DECIDED_LIST_INLINE_MAX = 5;
@@ -300,6 +291,8 @@ export default function EntityReviewWizard({
   const recordAllRemainingAsSkip = useMutation(
     api.entityReviewQueue.recordAllRemainingAsSkip,
   );
+  // NEO-236 — turn a player's career teams into their own New Team steps.
+  const stageCareerTeams = useMutation(api.entityReviewQueue.stageCareerTeamRows);
 
   const [linkingOpen, setLinkingOpen] = useState(false);
   // Manual career-team entries the admin has staged for the CURRENT player
@@ -331,18 +324,17 @@ export default function EntityReviewWizard({
    * a slow enrichment lookup lands, and stops the moment the operator types.
    */
   const [teamCreateByRow, setTeamCreateByRow] = useState<
-    Record<string, TeamCreateDraft>
+    Record<string, NewTeamDraft>
   >({});
-  /**
-   * NEO-236 — the same, per accepted career team that matches no existing row,
-   * keyed by review-row id and then by the label the wizard showed.
+  /*
+   * NEO-236 — there is no per-career-team draft state any more.
    *
-   * Only the labels the operator actually edited are in here; the rest read
-   * their default (`{ location: "", name: label }`) through `careerCreateFor`.
+   * A career team the batch has to create is a review row of its own now (see
+   * `entityReviewQueue.stageCareerTeamRows`), walked BEFORE the player and
+   * answered on the same New Team step a checklist team gets — Location, Name
+   * and, the part the inline pairs could never ask, League. The player's step
+   * reads those rows rather than collecting a second copy of the answer.
    */
-  const [careerTeamCreateByRow, setCareerTeamCreateByRow] = useState<
-    Record<string, Record<string, TeamCreateDraft>>
-  >({});
 
   /**
    * NEO-221 — WHICH ROW IS ON SCREEN. See `entity-review-nav.ts` for the rule
@@ -376,6 +368,9 @@ export default function EntityReviewWizard({
   const [decidingRowId, setDecidingRowId] = useState<Id<"entityReviewQueue"> | null>(
     null,
   );
+  /** NEO-236 — player rows this session has already asked the server to stage
+   *  career-team steps for. A ref, not state: see the effect. */
+  const stagedPlayersRef = useRef<Set<string>>(new Set());
   const decidingRef = useRef<Id<"entityReviewQueue"> | null>(null);
   /** A rejected per-row decide, shown inline under the row it belongs to. */
   const [rowError, setRowError] = useState<{
@@ -450,6 +445,17 @@ export default function EntityReviewWizard({
   /** Names the "you can't confirm yet" message so the primary action can point
    *  `aria-describedby` at it. */
   const createBlockedId = useId();
+  /**
+   * NEO-236 (a11y) — id prefix for the per-career-team status lines.
+   *
+   * Each chip's "-> <team>" / "needs a team decision" line sits inside the
+   * checkbox's own `<label>`, but the checkbox carries an explicit `aria-label`
+   * ("Include career team X") which WINS over the label's text — so the status
+   * was on screen and absent from everything a screen reader announces.
+   * `aria-describedby` says it without disturbing the accessible name every
+   * `.maestro` flow targets.
+   */
+  const careerTeamStatusIdBase = useId();
 
   const total = rows?.length ?? 0;
   const decided = useMemo(() => rows?.filter((r) => r.decision).length ?? 0, [rows]);
@@ -533,7 +539,9 @@ export default function EntityReviewWizard({
   /** id → display name, for `describeDecision`'s "Linked to {name}". */
   const linkedNameById = useMemo(() => {
     const map = new Map<string, string>();
-    for (const t of linkedTeams ?? []) map.set(t._id, t.name);
+    // NEO-236: the composed full name. A split row's `name` is the nickname
+    // alone ("Padres"), which does not identify the team it belongs to.
+    for (const t of linkedTeams ?? []) map.set(t._id, teamFullName(t));
     for (const p of linkedPlayers ?? []) map.set(p._id, p.name);
     return map;
   }, [linkedTeams, linkedPlayers]);
@@ -596,57 +604,121 @@ export default function EntityReviewWizard({
   );
 
   /**
-   * NEO-236 — the proposed career-team names that match NO existing row, so
-   * creating one is the only way they end up on the player.
+   * ── NEO-236: what will happen to each career team on this player ──────────
    *
-   * `undefined` from `resolveNames` means "not answered yet", which is NOT the
-   * same as "unmatched": while it is loading, and in the over-cap case where
-   * the query never runs at all, this set is empty and the create rows below
-   * do not appear. The primary action is blocked for the loading case (see
-   * `createBlocked`) rather than guessing.
+   * The wizard used to answer this with three inline inputs per unmatched
+   * label. It now answers it by READING the batch: a career team the commit
+   * would have to create is a review row of its own, staged ahead of the player
+   * (`entityReviewQueue.stageCareerTeamRows`) and answered on a New Team step.
+   * So the player's step reports rather than collects, and each chip says which
+   * of four things is true of it.
    */
-  const unmatchedProposedNames = useMemo(() => {
-    const set = new Set<string>();
-    for (const r of resolvedTeamNames ?? []) {
-      if (!r.existingTeamId) set.add(r.name);
+  const stagedTeamRowsForCurrent = useMemo(() => {
+    const byName = new Map<string, NonNullable<typeof rows>[number]>();
+    if (!current || current.kind !== "player" || !rows) return byName;
+    for (const row of rows) {
+      if (row.source?.kind !== "careerTeamOf") continue;
+      if (row.source.playerRowId !== current._id) continue;
+      byName.set(normalizeEntityName(row.name), row);
     }
-    return set;
-  }, [resolvedTeamNames]);
+    return byName;
+  }, [rows, current]);
 
-  /** The operator's per-career-team Location + Name edits on the current row. */
-  const careerCreates = useMemo(
-    () => (current ? (careerTeamCreateByRow[current._id] ?? {}) : {}),
-    [careerTeamCreateByRow, current],
-  );
-
-  /** Untouched labels read their default: the label itself, Location empty —
-   *  an unsplit pair for the operator to split, not a claim of no place. */
-  const careerCreateFor = (label: string): TeamCreateDraft =>
-    careerCreates[label] ?? { location: "", name: label };
+  /**
+   * `resolved` — we already hold this team, so the stint links to it.
+   * `creating` — a staged step in THIS batch is answered "add as new", and the
+   *   label is the composed name the operator gave it.
+   * `linked` — that step was answered by pointing at an existing row instead.
+   * `waiting` — nobody has answered it yet, or it was skipped as "not a team".
+   *   The stint cannot land, so Confirm is held until the operator answers the
+   *   step or unticks the chip.
+   */
+  const careerTeamStatus = (
+    label: string,
+  ):
+    | { kind: "resolved" | "creating" | "linked"; name: string }
+    | { kind: "checking" }
+    | { kind: "waiting" } => {
+    const key = normalizeEntityName(label);
+    const resolved = (resolvedTeamNames ?? []).find(
+      (r) => normalizeEntityName(r.name) === key,
+    );
+    if (resolved?.existingTeamId) {
+      return { kind: "resolved", name: resolved.existingName ?? label };
+    }
+    const staged = stagedTeamRowsForCurrent.get(key);
+    /*
+     * The match query has not answered yet, and this chip has no staged step
+     * of its own to answer from. `undefined` from `resolveNames` is "not
+     * answered", NOT "no match" — and the difference matters here in a way it
+     * did not before: every chip whose team ALREADY EXISTS has no staged step
+     * by construction (staging skips a team we hold), so reading an unanswered
+     * query as "unanswered by the operator" would paint a whole career pink
+     * and block Confirm for as long as the round trip takes.
+     *
+     * `checking` says nothing on screen and blocks nothing. When the answer
+     * lands it becomes `resolved` or, genuinely, `waiting`.
+     */
+    if (resolvedTeamNames === undefined && !staged?.decision) {
+      return { kind: "checking" };
+    }
+    const decision = staged?.decision;
+    if (decision?.action === "create" && decision.create) {
+      return {
+        kind: "creating",
+        name: teamFullName({
+          name: decision.create.name,
+          ...(decision.create.location
+            ? { location: decision.create.location }
+            : {}),
+        }),
+      };
+    }
+    if (decision?.action === "link" && decision.linkedTeamId) {
+      return {
+        kind: "linked",
+        name: linkedNameById.get(decision.linkedTeamId) ?? label,
+      };
+    }
+    return { kind: "waiting" };
+  };
 
   /** "Will create 2 new teams: X, Y · 1 already exist" — either half is
    *  omitted when its count is zero, so the line never says "0 new teams". */
   const teamSummary = useMemo(() => {
     if (!resolvedTeamNames || resolvedTeamNames.length === 0) return null;
-    const willCreate = resolvedTeamNames.filter((r) => !r.existingTeamId);
-    const alreadyExist = resolvedTeamNames.length - willCreate.length;
+    const willCreate: string[] = [];
+    let alreadyExist = 0;
+    for (const r of resolvedTeamNames) {
+      if (r.existingTeamId) {
+        alreadyExist += 1;
+        continue;
+      }
+      // The name as the operator SPLIT it on the team's own step, when they
+      // have got that far — otherwise the label that prompted it.
+      const staged = stagedTeamRowsForCurrent.get(normalizeEntityName(r.name));
+      const create =
+        staged?.decision?.action === "create" ? staged.decision.create : null;
+      willCreate.push(
+        create
+          ? teamFullName({
+              name: create.name,
+              ...(create.location ? { location: create.location } : {}),
+            })
+          : r.name,
+      );
+    }
     const parts: string[] = [];
     if (willCreate.length > 0) {
       parts.push(
         `Will create ${willCreate.length} new ${
           willCreate.length === 1 ? "team" : "teams"
-        }: ${willCreate
-          // NEO-236: the name as the operator has SPLIT it, not the label that
-          // prompted it. This one line is the preview for every per-chip pair
-          // below, which is why none of them carries its own.
-          .map((r) => draftFullName(careerCreates[r.name] ?? { location: "", name: r.name }))
-          .filter(Boolean)
-          .join(", ")}`,
+        }: ${willCreate.filter(Boolean).join(", ")}`,
       );
     }
     if (alreadyExist > 0) parts.push(`${alreadyExist} already exist`);
     return parts.length > 0 ? parts.join(" · ") : null;
-  }, [resolvedTeamNames, careerCreates]);
+  }, [resolvedTeamNames, stagedTeamRowsForCurrent]);
 
   // ------------------------------------------------------------------------
   // Effects
@@ -673,6 +745,54 @@ export default function EntityReviewWizard({
     // eslint-disable-next-line react-hooks/set-state-in-effect -- one-way latch: a batch that has had rows can never un-have them
     if (rows && rows.length > 0 && !hadRows) setHadRows(true);
   }, [rows, hadRows]);
+
+  /**
+   * NEO-236 — the belt-and-braces staging pass.
+   *
+   * `applyLookupResult` stages a player's career teams the moment its
+   * enrichment lands, which is what puts the New Team steps AHEAD of the player
+   * in the walk. This covers what that cannot reach: a batch whose lookups
+   * landed before this shipped, and a row whose enrichment arrived by some
+   * other route. On every ordinary row it is one idempotent call that inserts
+   * nothing.
+   *
+   * Guarded by a REF keyed on the row id, not by a piece of state: the effect
+   * re-runs whenever `rows` updates (which is often, reactively), and a state
+   * flag would be read from a stale render closure exactly when two updates
+   * land in one frame. One call per row per session is the bound.
+   *
+   * When it DID add steps, the wizard hands navigation back to its own rule —
+   * `nextUndecided` holds a player whose staged teams are unanswered, so the
+   * walk moves to the first of those instead of sitting on a player whose chips
+   * all read "needs a team decision".
+   */
+  useEffect(() => {
+    if (!current || current.kind !== "player") return;
+    if (current.decision) return;
+    if ((current.enrichment?.careerTeams?.length ?? 0) === 0) return;
+    if (stagedPlayersRef.current.has(current._id)) return;
+    stagedPlayersRef.current.add(current._id);
+    void stageCareerTeams({ reviewRowId: current._id })
+      .then((added) => {
+        if (added === 0) return;
+        // The same two lines `resumeWalking` runs — written out because that
+        // helper is declared below this effect, and reaching forward to it is
+        // the shape the lint rule (rightly) rejects.
+        const next: NavState = { rowId: null, explicit: false };
+        navRef.current = next;
+        setNav(next);
+      })
+      .catch(() => {
+        // The steps are missing, so the player's chips will say so and Confirm
+        // will hold. Retrying on a schedule would be a client-driven write
+        // loop; the operator's own "Change decision" is the way back.
+      });
+    // `stageCareerTeams` is stable for the life of the dialog and is
+    // deliberately not a dep — including a `useMutation` result,
+    // whose identity stability is the hook's business, would re-run this on
+    // every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [current]);
 
   // Closing the "Link to Existing" search whenever the presented row changes
   // so it doesn't stay open for the wrong row. Keyed on the row id, so it no
@@ -920,26 +1040,28 @@ export default function EntityReviewWizard({
    * NEO-236 — one create decision, built from whatever the current row's kind
    * actually needs.
    *
-   * A TEAM row carries `create`: the Location + Name the commit prelude will
-   * build the row from, and the ONLY thing it will build one from. A PLAYER
-   * row carries `createTeams`: the same pair per accepted career team that
-   * matched nothing, so a stint at a team we do not have yet can still be
-   * created — by the operator's split, not by the raw label.
+   * A TEAM row carries `create`: the Location, Name and League the commit
+   * prelude builds the row from, and the ONLY thing it will build one from.
    *
-   * `manualCareerTeams` keeps carrying FULL names, because that is what commit
-   * looks up and what `sourceName` is matched against.
+   * A PLAYER row carries only its stints and its exclusions. The `createTeams`
+   * list it used to carry is gone — every career team that needs creating has
+   * a review row of its own now, and recording the answer in two places is how
+   * the two end up disagreeing.
+   *
+   * `manualCareerTeams` carries FULL names, because that is what the prelude
+   * looks up against `teams`.
    */
   const handleCreate = async (
     reviewRowId: Id<"entityReviewQueue">,
     payload: {
       manualCareerTeams?: CareerTeamDraft[];
       excludedCareerTeamNames?: string[];
-      create?: { location?: string; name: string };
-      createTeams?: Array<{
-        sourceName: string;
+      create?: {
         location?: string;
         name: string;
-      }>;
+        leagueId?: Id<"leagues"> | null;
+        leagueName?: string;
+      };
     } = {},
   ) =>
     decide(reviewRowId, () =>
@@ -957,7 +1079,6 @@ export default function EntityReviewWizard({
           ? payload.excludedCareerTeamNames
           : undefined,
         create: payload.create,
-        createTeams: payload.createTeams?.length ? payload.createTeams : undefined,
       }),
     );
   const handleLink = async (
@@ -1121,36 +1242,16 @@ export default function EntityReviewWizard({
    * otherwise, so the pre-fill keeps tracking a late-arriving enrichment
    * lookup right up until the first keystroke.
    */
-  const teamCreate: TeamCreateDraft =
+  const teamCreate: NewTeamDraft =
     current && current.kind === "team"
       ? (teamCreateByRow[current._id] ?? teamCreatePrefill(current))
-      : { location: "", name: "" };
+      : { location: "", name: "", leagueId: undefined, leagueName: undefined };
 
-  const patchTeamCreate = (rowId: string, patch: Partial<TeamCreateDraft>) => {
+  const patchTeamCreate = (rowId: string, patch: Partial<NewTeamDraft>) => {
     setTeamCreateByRow((prev) => ({
       ...prev,
       [rowId]: { ...(prev[rowId] ?? teamCreate), ...patch },
     }));
-  };
-
-  const patchCareerCreate = (
-    rowId: string,
-    label: string,
-    patch: Partial<TeamCreateDraft>,
-  ) => {
-    setCareerTeamCreateByRow((prev) => {
-      const forRow = prev[rowId] ?? {};
-      return {
-        ...prev,
-        [rowId]: {
-          ...forRow,
-          [label]: {
-            ...(forRow[label] ?? { location: "", name: label }),
-            ...patch,
-          },
-        },
-      };
-    });
   };
 
   const toggleCareerTeam = (rowId: string, teamName: string) => {
@@ -1189,61 +1290,61 @@ export default function EntityReviewWizard({
         all.indexOf(label) === idx && !excludedForCurrent.includes(label),
     );
 
-  /** Accepted proposals that match nothing yet — the ones that get a visible
-   *  Location + Name pair, because creating them is the only way they land. */
-  const acceptedUnmatchedCareerTeams = acceptedCareerTeams.filter((label) =>
-    unmatchedProposedNames.has(label),
-  );
-
   /**
-   * The same list, ordered by how much the operator has invested in it:
-   * labels they edited, then the ones known to need creating, then the rest.
-   * Only matters when the list has to be truncated — see `buildCreatePayload`.
+   * Accepted proposals with no answer yet — no existing team, and no staged
+   * step that has been decided. These are what Confirm waits on.
    */
-  const orderedAcceptedCareerTeams = [...acceptedCareerTeams].sort((a, b) => {
-    const rank = (label: string) =>
-      careerCreates[label] ? 0 : unmatchedProposedNames.has(label) ? 1 : 2;
-    return rank(a) - rank(b);
-  });
+  const unansweredCareerTeams = acceptedCareerTeams.filter(
+    (label) => careerTeamStatus(label).kind === "waiting",
+  );
 
   /**
    * Why the create action cannot fire yet, or null.
    *
-   * Only ever a blank name — the one thing that composes to nothing, that
-   * `teamRowFields` would refuse at the server anyway, and that the operator
-   * can fix on the spot. Deliberately NOT blocked on `resolveNames` still
-   * being in flight: the wizard sends a create pair for every accepted career
-   * team regardless (see `buildCreatePayload`), so an unanswered match query
-   * costs nothing but the per-chip fields not appearing yet.
+   * A TEAM row: a blank name, or a composed one over the length cap. Both are
+   * things the operator can fix where they are standing, and the server refuses
+   * them independently — a stale bundle must not be able to get the write
+   * through.
+   *
+   * A PLAYER row: a career team nobody has answered. NEO-236 moved that answer
+   * out of this step and onto the team's own New Team step, so the fix is
+   * elsewhere — either answer that step, or untick the chip. The message says
+   * both, because "blocked" with no way forward is the worst state a walker can
+   * be in. It is normally unreachable: `nextUndecided` holds a player back
+   * until its staged teams are answered, so this fires only for a team decided
+   * "skip" (which creates nothing) or a step the operator reopened.
    */
   const createBlocked: string | null = (() => {
     if (!current) return null;
     if (current.kind === "team") {
       if (!teamCreate.name.trim()) return "Enter a team name before adding it.";
       // Mirrors MAX_TEAM_FULL_NAME_LENGTH in convex/entityReviewQueue.ts,
-      // which refuses the same composed name. Checked here so the operator is
-      // told while they are still typing, rather than by a rejected mutation
-      // after they press the button; the server still refuses independently,
-      // because a stale bundle must not be able to get the write through.
+      // which refuses the same composed name.
       const composed = draftFullName(teamCreate);
       if (composed.length > MAX_TEAM_FULL_NAME_LENGTH) {
         return `That name is ${composed.length} characters; the limit is ${MAX_TEAM_FULL_NAME_LENGTH}.`;
       }
       return null;
     }
-    const missing = acceptedUnmatchedCareerTeams.filter(
-      (label) => careerCreateFor(label).name.trim() === "",
-    );
-    if (missing.length > 0) {
-      return missing.length === 1
-        ? `Name the new team for ${missing[0]}, or uncheck it.`
-        : `Name the ${missing.length} new teams you're keeping, or uncheck them.`;
+    if (unansweredCareerTeams.length > 0) {
+      return unansweredCareerTeams.length === 1
+        ? `${unansweredCareerTeams[0]} still needs a team decision, or untick it.`
+        : `${unansweredCareerTeams.length} career teams still need a team decision, or untick them.`;
     }
     return null;
   })();
 
-  /** The create decision this row would record, built once for both the
-   *  primary button and the demoted "…anyway" link. */
+  /**
+   * The create decision this row would record, built once for both the primary
+   * button and the demoted "…anyway" link.
+   *
+   * NEO-236: a PLAYER decision no longer carries `createTeams`. Every career
+   * team that needs creating has a review row of its own, answered on its own
+   * step, and the prelude builds the `teams` row from THAT decision before it
+   * resolves this player's stints by name. Two places recording the same answer
+   * is how they end up disagreeing; the server validator still accepts the old
+   * shape so a batch mid-review across a deploy still commits.
+   */
   const buildCreatePayload = () => {
     if (!current) return {};
     if (current.kind === "team") {
@@ -1252,51 +1353,19 @@ export default function EntityReviewWizard({
         create: {
           name: teamCreate.name.trim(),
           ...(location ? { location } : {}),
+          // `leagueId` is sent VERBATIM including null — null is the operator
+          // saying "no league", and the server tells it apart from an omitted
+          // key, which still lets its own fallbacks apply.
+          ...(teamCreate.leagueId !== undefined
+            ? { leagueId: teamCreate.leagueId }
+            : {}),
+          ...(teamCreate.leagueName ? { leagueName: teamCreate.leagueName } : {}),
         },
       };
-    }
-    const createTeams: Array<{
-      sourceName: string;
-      location?: string;
-      name: string;
-    }> = [];
-    // A hand-typed chip already IS a Location + Name — the operator split it
-    // in the entry form — so it needs no second pass, and it goes first
-    // because it is the most explicit thing on the row. `sourceName` is its
-    // composed name, which is what `manualCareerTeams` carries and therefore
-    // what commit looks the entry up by.
-    for (const chip of stagedCareerTeams) {
-      createTeams.push({
-        sourceName: teamFullName(chip),
-        name: chip.name,
-        ...(chip.location ? { location: chip.location } : {}),
-      });
-    }
-    // EVERY accepted proposal gets a pair, not only the ones known to be
-    // unmatched. The prelude looks each label up before it creates anything,
-    // so a pair for a team that already exists is inert — whereas omitting one
-    // for a team that turns out to be new drops the stint silently. Sending
-    // them all is also what keeps this honest while `resolveNames` is still in
-    // flight: the fields have not appeared yet, but the untouched default is
-    // exactly what they would have shown.
-    for (const label of orderedAcceptedCareerTeams) {
-      const draft = careerCreateFor(label);
-      const location = draft.location.trim();
-      createTeams.push({
-        sourceName: label,
-        name: draft.name.trim(),
-        ...(location ? { location } : {}),
-      });
     }
     return {
       manualCareerTeams: stagedCareerTeams,
       excludedCareerTeamNames: excludedForCurrent,
-      // Mirrors MAX_CAREER_TEAM_CREATES in convex/entityReviewQueue.ts, which
-      // REFUSES an over-length list. `orderedAcceptedCareerTeams` puts the
-      // operator's own edits and the known-new teams first, so if a career
-      // long enough to hit this ever turns up, what falls off the end is the
-      // labels nobody touched and that most likely already exist.
-      createTeams: createTeams.slice(0, MAX_CAREER_TEAM_CREATES),
     };
   };
 
@@ -1507,7 +1576,15 @@ export default function EntityReviewWizard({
                       reader reads out when navigating by heading. */}
                   <div className="flex flex-wrap items-center gap-2">
                     <h3 className="text-sm font-semibold text-gray-200">
-                      {current.name}
+                      {/* NEO-236, Jason's own words for this step: "1. New
+                          Team: Sydney Blue Sox". The raw name, because that is
+                          the thing being answered — the composed result is on
+                          the "Shows as" line below, where it belongs. Only
+                          while the step is live: a decided row is being read
+                          back, not created. */}
+                      {current.kind === "team" && !reviewingDecided
+                        ? `New Team: ${current.name}`
+                        : current.name}
                     </h3>
                     {/* NEO-212 (audit G10): these names are copied out into
                         Wikidata, Google and the marketplaces constantly during
@@ -1618,20 +1695,35 @@ export default function EntityReviewWizard({
                                 the group rather than being relabelled. */}
                             <div role="group" aria-labelledby={careerTeamsLabelId}>
                             <ul className="space-y-1">
-                              {sortedCareerTeams.map((ct) => {
+                              {sortedCareerTeams.map((ct, ctIdx) => {
                                 const label = `${ct.name} (${ct.fromYear}–${
                                   ct.toYear ?? "present"
                                 })`;
-                                const draft = careerCreateFor(ct.name);
-                                const needsCreate =
-                                  acceptedUnmatchedCareerTeams.includes(ct.name);
+                                const status = careerTeamStatus(ct.name);
+                                const excluded = excludedForCurrent.includes(ct.name);
+                                // NEO-236 (a11y): exactly the condition the
+                                // status line renders under, so the checkbox
+                                // never points `aria-describedby` at an id that
+                                // is not in the document.
+                                const showStatus =
+                                  !excluded && status.kind !== "checking";
+                                const statusId = `${careerTeamStatusIdBase}-${ctIdx}`;
                                 return (
                                   <li key={`${ct.name}-${ct.fromYear}`}>
-                                    <label className="flex items-center gap-2">
+                                    <label className="flex flex-wrap items-center gap-2">
                                       <input
                                         type="checkbox"
-                                        checked={!excludedForCurrent.includes(ct.name)}
+                                        checked={!excluded}
                                         aria-label={`Include career team ${ct.name}`}
+                                        // NEO-236 (a11y): where this stint will
+                                        // land is beside the box for a sighted
+                                        // operator; this is how a screen-reader
+                                        // operator gets the same fact, since
+                                        // the explicit aria-label above
+                                        // suppresses the wrapping label's text.
+                                        aria-describedby={
+                                          showStatus ? statusId : undefined
+                                        }
                                         disabled={reviewingDecided}
                                         onChange={() =>
                                           toggleCareerTeam(current._id, ct.name)
@@ -1639,61 +1731,45 @@ export default function EntityReviewWizard({
                                         className="accent-[#00D558]"
                                       />
                                       <span>{label}</span>
+                                      {/*
+                                        NEO-236 — where this stint will LAND.
+                                        The inline Location/Name pair that used
+                                        to sit here is gone: the team it was
+                                        about has its own New Team step now,
+                                        walked before this player, so this line
+                                        reports the answer rather than asking
+                                        for it a second time.
+
+                                        Nothing is announced live — the header's
+                                        progress line already owns `role=status`
+                                        — and an unticked chip says nothing at
+                                        all, because excluding it is the answer.
+                                      */}
+                                      {showStatus &&
+                                        (status.kind === "waiting" ? (
+                                          /* Not colour alone (SC 1.4.1): this
+                                             says something different IN WORDS
+                                             from the resolved case beside it,
+                                             and #FF2EB3 on the gray-900 panel
+                                             is 5.32:1 (SC 1.4.3). */
+                                          <span
+                                            id={statusId}
+                                            className="text-xs text-[#FF2EB3]"
+                                          >
+                                            needs a team decision
+                                          </span>
+                                        ) : (
+                                          <span
+                                            id={statusId}
+                                            className="text-xs text-gray-400"
+                                          >
+                                            → {status.name}
+                                            {status.kind === "creating"
+                                              ? " (new team, this batch)"
+                                              : ""}
+                                          </span>
+                                        ))}
                                     </label>
-                                    {/*
-                                      NEO-236: this team does not exist yet, so
-                                      the operator says what to create it AS —
-                                      Location + Name, never the raw P54 label.
-                                      Indented under its own checkbox and shown
-                                      only for the ones that need it, so a
-                                      career of teams we already have stays a
-                                      plain checkbox list. No preview line per
-                                      row: the "Will create N new teams…"
-                                      summary below is the preview, once.
-                                    */}
-                                    {needsCreate && (
-                                      <div className="ml-6 mt-1 flex flex-wrap items-center gap-1.5">
-                                        <Input
-                                          bare
-                                          type="text"
-                                          value={draft.location}
-                                          placeholder="Location"
-                                          aria-label={`Location for new team ${ct.name}`}
-                                          onChange={(e) =>
-                                            patchCareerCreate(current._id, ct.name, {
-                                              location: e.target.value,
-                                            })
-                                          }
-                                          className="w-28 p-1 text-xs"
-                                        />
-                                        <Input
-                                          bare
-                                          type="text"
-                                          value={draft.name}
-                                          placeholder="Team name"
-                                          aria-label={`Name for new team ${ct.name}`}
-                                          // a11y: same reasoning as the
-                                          // team-row Name field above — the
-                                          // field itself carries the reason,
-                                          // not just the primary button.
-                                          aria-describedby={
-                                            createBlocked ? createBlockedId : undefined
-                                          }
-                                          onChange={(e) =>
-                                            patchCareerCreate(current._id, ct.name, {
-                                              name: e.target.value,
-                                            })
-                                          }
-                                          className="w-44 p-1 text-xs"
-                                        />
-                                        {/* gray-400, not gray-500: 500 on the
-                                            dialog's gray-900 is ~3.6:1, under
-                                            SC 1.4.3's 4.5:1 floor. */}
-                                        <span className="text-xs text-gray-400">
-                                          new team
-                                        </span>
-                                      </div>
-                                    )}
                                   </li>
                                 );
                               })}
@@ -1821,104 +1897,57 @@ export default function EntityReviewWizard({
                     ) : (
                       <div className="flex flex-col gap-2" aria-busy={busy}>
                         {/*
-                          ── NEO-236: creating a team takes Location + Name ───────
+                          ── NEO-236: the New Team step ────────────────────────
 
-                          Jason, 2026-09-05: "We simply shouldn't allow for full
-                          string creation. Location & Team Name should be the
-                          input." So the create action no longer means "store the
-                          checklist string" — it means "store what these two fields
-                          say", and the checklist string ("SD PADRES", "Padres  ")
-                          is only ever the starting point.
+                          Jason, 2026-09-05: "How does this dialog know which
+                          League the new team is in? I think we need to show a
+                          new team dialog instead of that inline thing." So the
+                          create action means "store what this form says" —
+                          Location, Name and League — and the checklist string
+                          ("SD PADRES", "Padres  ") is only ever the start.
 
-                          Rendered for BOTH near-match states. When an exact match
-                          exists the primary becomes "Link to …" and creation
-                          survives as the "…anyway" link below — which still needs
-                          somewhere to read its two halves from.
-
-                          Visible labels rather than placeholders: two adjacent
-                          text fields whose difference is not self-evident is the
-                          one case where a label earns its line, and it matches the
-                          Location-then-Name form in Team Management, so the pair
-                          is learned once.
+                          The same `NewTeamForm` the pickers open in a modal, so
+                          the two surfaces cannot disagree about what a team is
+                          made of. Rendered for BOTH near-match states: when an
+                          exact match exists the primary becomes "Link to …" and
+                          creating survives as the "…anyway" link, which still
+                          needs somewhere to read its fields from.
                         */}
                         {current.kind === "team" && (
-                          <div className="space-y-1.5">
-                            <div className="flex flex-wrap items-end gap-2">
-                              <div className="flex flex-col gap-1">
-                                <label
-                                  htmlFor={TEAM_LOCATION_FIELD_ID}
-                                  className="text-xs text-gray-400"
-                                >
-                                  Location
-                                </label>
-                                <Input
-                                  bare
-                                  id={TEAM_LOCATION_FIELD_ID}
-                                  type="text"
-                                  value={teamCreate.location}
-                                  placeholder="San Diego"
-                                  onChange={(e) =>
-                                    patchTeamCreate(current._id, {
-                                      location: e.target.value,
-                                    })
-                                  }
-                                  className="w-40 p-1.5 text-sm"
-                                />
-                              </div>
-                              <div className="flex flex-col gap-1 flex-1 min-w-[10rem]">
-                                <label
-                                  htmlFor={TEAM_NAME_FIELD_ID}
-                                  className="text-xs text-gray-400"
-                                >
-                                  Team name
-                                </label>
-                                <Input
-                                  bare
-                                  id={TEAM_NAME_FIELD_ID}
-                                  type="text"
-                                  value={teamCreate.name}
-                                  placeholder="Padres"
-                                  onChange={(e) =>
-                                    patchTeamCreate(current._id, { name: e.target.value })
-                                  }
-                                  // a11y: the field whose emptiness the block is
-                                  // actually about — not just the button that
-                                  // acts on it — points at the reason too, so a
-                                  // screen reader hears it on focusing the field
-                                  // itself, without needing to tab forward.
-                                  aria-describedby={
-                                    createBlocked ? createBlockedId : undefined
-                                  }
-                                  className="w-full p-1.5 text-sm"
-                                />
-                              </div>
-                            </div>
-                            {/* NEO-236 — the rule, in the one place a team is
-                                actually born from a marketplace string. The
-                                checklist label arrives whole ("San Diego State
-                                Aztecs"), so the operator's job here is to say
-                                which half is the place; "city" is the reading
-                                that makes them leave it blank for a school. */}
-                            <p className="text-xs text-gray-500">
-                              Location is where they&rsquo;re from &mdash; city,
-                              state, region or school. Wisconsin / Badgers, San
-                              Diego State / Aztecs. Leave it blank only if the
-                              name has no place in it.
-                            </p>
-                            {/* The composed name, so the operator never has to
-                                imagine what the two fields add up to. gray-400 for
-                                contrast — see the note on the per-chip tag. */}
-                            <p className="text-xs text-gray-400">
-                              Shows as: {draftFullName(teamCreate) || "—"}
-                            </p>
-                          </div>
+                          <NewTeamForm
+                            sportId={current.sportId}
+                            draft={teamCreate}
+                            onChange={(patch) =>
+                              patchTeamCreate(current._id, patch)
+                            }
+                            leagueSuggestion={current.enrichment?.league}
+                            /* Only on a row the batch staged for itself: a
+                               checklist team was asked for directly, and saying
+                               who needs it would be answering a question nobody
+                               asked. */
+                            neededBy={
+                              current.source?.kind === "careerTeamOf"
+                                ? (rows.find(
+                                    (r) => r._id === current.source?.playerRowId,
+                                  )?.name ?? undefined)
+                                : undefined
+                            }
+                            describedBy={
+                              createBlocked ? createBlockedId : undefined
+                            }
+                            locationFieldId={TEAM_LOCATION_FIELD_ID}
+                            nameFieldId={TEAM_NAME_FIELD_ID}
+                            leagueGroupId={TEAM_LEAGUE_FIELD_ID}
+                          />
                         )}
 
                         {current.kind === "player" && (
                           <div className="space-y-1.5">
                             <p className="text-sm text-gray-400">
                               Add career team history manually
-                              <span className="text-gray-500"> (optional)</span>:
+                              {/* gray-400, not gray-500: 3.67:1 on the gray-900
+                                  panel fails SC 1.4.3. */}
+                              <span className="text-gray-400"> (optional)</span>:
                             </p>
                             {stagedCareerTeams.length > 0 && (
                               <ul className="flex flex-wrap gap-1.5" aria-label="Staged career teams">
@@ -1938,7 +1967,11 @@ export default function EntityReviewWizard({
                                             prev.filter((_, i) => i !== idx),
                                           )
                                         }
-                                        className="text-gray-500 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none"
+                                        // gray-400, not gray-500 (SC 1.4.3: 3.04:1 on
+                                        // the gray-800 chip), and a real focus
+                                        // ring rather than a colour swap behind
+                                        // `focus:outline-none` (SC 2.4.7).
+                                        className="text-gray-400 hover:text-[#FF2EB3] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] focus-visible:ring-offset-1 focus-visible:ring-offset-gray-800 rounded"
                                       >
                                         ×
                                       </button>
@@ -1950,9 +1983,26 @@ export default function EntityReviewWizard({
                             <CareerTeamEntry
                               sportId={current.sportId}
                               stagedNames={stagedTeamNames}
-                              onAdd={(entry) =>
-                                setStagedCareerTeams((prev) => [...prev, entry])
-                              }
+                              onAdd={(entry) => {
+                                setStagedCareerTeams((prev) => [...prev, entry]);
+                                // NEO-236 — a hand-typed team that matches
+                                // nothing gets its own New Team step, exactly
+                                // as a Wikidata proposal does. Idempotent
+                                // server-side, and it inserts nothing at all
+                                // when the name already resolves to a team, so
+                                // typing an existing name is still a link.
+                                void stageCareerTeams({
+                                  reviewRowId: current._id,
+                                  careerTeamNames: [entry.name],
+                                }).catch(() => {
+                                  // The chip is already staged locally and the
+                                  // stint will still be recorded; what is lost
+                                  // is the step that would have created the
+                                  // team, which `careerTeamStatus` then reports
+                                  // as "needs a team decision". Nothing to say
+                                  // here that the chip does not already say.
+                                });
+                              }}
                             />
                             {/* What the create is actually about to write. Not a
                                 role="status" — the header progress line already
@@ -2206,7 +2256,10 @@ export default function EntityReviewWizard({
                 onToggle={(e) => setDecidedListOpen(e.currentTarget.open)}
                 className="border-t border-gray-800 pt-3"
               >
-                <summary className="cursor-pointer text-xs text-gray-500 hover:text-gray-300 focus:text-gray-300 focus:outline-none">
+                {/* gray-400, not gray-500 (SC 1.4.3): gray-500 on this
+                    dialog's gray-900 ground measures 3.67:1, under the 4.5:1
+                    floor. gray-400 is 6.99:1. */}
+                <summary className="cursor-pointer text-xs text-gray-400 hover:text-gray-300 focus:text-gray-300 focus:outline-none">
                   Decided ({decidedRows.length})
                 </summary>
                 <ul aria-label="Decided names" className="mt-2 space-y-1">
@@ -2216,7 +2269,10 @@ export default function EntityReviewWizard({
                       className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs"
                     >
                       <span className="text-gray-200">{row.name}</span>
-                      <span className="text-gray-500">
+                      {/* Same 1.4.3 correction: this line states what the
+                          batch will DO with the name beside it, so it is
+                          content rather than decoration. */}
+                      <span className="text-gray-400">
                         {describeDecision(row.decision, linkedNameFor(row.decision))}
                       </span>
                       <button

@@ -14,6 +14,12 @@ import { getCurrentUserId, requireAdmin } from "./auth";
 import { splitTeamName } from "../lib/teams/team-name";
 import { normalizePlayerName } from "./players";
 import { normalizeTeamName } from "./teams";
+// NEO-236: the ONE team lookup. Staging asks "do we already hold this career
+// team?" and must ask it exactly the way every writer keys the table.
+import { findTeamByFullName } from "./lib/teamRow";
+// NEO-236: the league a New Team step's suggestion resolves to, WITHOUT
+// creating one — the wizard offers "Create league X" as a separate answer.
+import { findLeagueByName } from "./leagues";
 
 /**
  * NEO-92: backs the step-through "new players & teams" review wizard that
@@ -42,6 +48,8 @@ const enrichmentValidator = v.object({
     name: v.string(),
     fromYear: v.number(),
     toYear: v.optional(v.number()),
+    // NEO-236: the team's own Wikidata QID — see schema.ts. Linkage only.
+    wikidataId: v.optional(v.string()),
   }))),
   // NEO-235, player-only: Wikidata teams with no usable start year. Names
   // only — they cannot become `teamYears` entries (which require `fromYear`)
@@ -87,6 +95,21 @@ const manualCareerTeamValidator = v.object({
 const teamCreateValidator = v.object({
   location: v.optional(v.string()),
   name: v.string(),
+  /**
+   * NEO-236 — the league the operator chose on the New Team step.
+   *
+   * `leagueId` is a UNION with null on purpose: an id is "this league", null is
+   * "no league, deliberately", and ABSENT is "not answered" — which is the only
+   * one of the three that lets the prelude fall back to the enrichment's P118
+   * label and then to the sport default. Without the null case an operator
+   * could not say that a team belongs to no league at all, and the sport
+   * default would silently reassert itself.
+   *
+   * `leagueName` names a league we hold no row for, which the prelude creates
+   * through `findOrCreateLeague`. See schema.ts for the long version.
+   */
+  leagueId: v.optional(v.union(v.id("leagues"), v.null())),
+  leagueName: v.optional(v.string()),
 });
 
 /**
@@ -223,17 +246,55 @@ const MAX_CAREER_TEAM_CREATES = 64;
  * key's job (`teamRowFields`), and the operator's own spelling is what should
  * be stored.
  */
-function toTeamCreate(input: {
-  location?: string;
-  name: string;
-}): { location?: string; name: string } | null {
+function toTeamCreate(input: TeamCreateInput): TeamCreate | null {
   const name = input.name.trim().replace(/\s+/g, " ");
   if (name.length === 0) return null;
   const location = input.location?.trim().replace(/\s+/g, " ") || undefined;
   const fullLength = location ? location.length + 1 + name.length : name.length;
   if (fullLength > MAX_TEAM_FULL_NAME_LENGTH) return null;
-  return { name, ...(location ? { location } : {}) };
+  return { name, ...(location ? { location } : {}), ...normalizeLeagueChoice(input) };
 }
+
+/**
+ * NEO-236 — the league half of a team create decision, normalized.
+ *
+ * `leagueId` passes through untouched INCLUDING null, because null is an
+ * answer ("no league") and dropping it would be read as "not answered", which
+ * is the one state that lets the sport default back in.
+ *
+ * `leagueName` is only meaningful when no id was given — the two are answers to
+ * the same question, and an id is the more specific one. It is trimmed, and an
+ * over-long one is DROPPED rather than thrown on, for the same fail-soft reason
+ * `toTeamCreate` drops an unusable name: the string is a Wikidata P118 label
+ * the operator merely accepted, not something they typed, and losing the league
+ * suggestion is a far smaller harm than losing the whole decision. The prelude
+ * re-validates through `requireValidLeagueName` regardless.
+ */
+function normalizeLeagueChoice(input: {
+  leagueId?: Id<"leagues"> | null;
+  leagueName?: string;
+}): { leagueId?: Id<"leagues"> | null; leagueName?: string } {
+  if (input.leagueId !== undefined) return { leagueId: input.leagueId };
+  const leagueName = input.leagueName?.trim().replace(/\s+/g, " ");
+  if (!leagueName || leagueName.length > MAX_LEAGUE_NAME_LENGTH) return {};
+  return { leagueName };
+}
+
+/** The Location + Name + League a team row is created from. */
+type TeamCreate = {
+  location?: string;
+  name: string;
+  leagueId?: Id<"leagues"> | null;
+  leagueName?: string;
+};
+type TeamCreateInput = TeamCreate;
+
+/**
+ * Mirrors `MAX_LEAGUE_NAME_LENGTH` in convex/leagues.ts (120). Copied rather
+ * than imported for the same reason `MAX_TEAM_FULL_NAME_LENGTH` is: that module
+ * does not export it, and this one has no other reason to depend on it.
+ */
+const MAX_LEAGUE_NAME_LENGTH = 120;
 
 /**
  * NEO-236: the same, where a refusal IS the right answer — the operator typed
@@ -251,10 +312,7 @@ function toTeamCreate(input: {
  * `teams.findOrCreate` follows, because this string reaches Sentry and the
  * browser console.
  */
-function requireTeamCreate(input: {
-  location?: string;
-  name: string;
-}): { location?: string; name: string } {
+function requireTeamCreate(input: TeamCreateInput): TeamCreate {
   const normalized = toTeamCreate(input);
   if (normalized) return normalized;
   const name = input.name.trim().replace(/\s+/g, " ");
@@ -315,6 +373,16 @@ function normalizeCareerTeamCreates(
   return out;
 }
 
+/**
+ * NEO-236 — a row the batch staged for itself rather than reading off the
+ * checklist. See the `source` field in schema.ts for why these exist.
+ */
+const rowSourceValidator = v.object({
+  kind: v.literal("careerTeamOf"),
+  playerRowId: v.id("entityReviewQueue"),
+  wikidataId: v.optional(v.string()),
+});
+
 // `createdByUserId` is audit/scoping-only — see toPublicRow below. Mirrors
 // the players.ts/teams.ts pattern: internalQuery reads the full row,
 // public query strips this field before it reaches the client.
@@ -326,8 +394,12 @@ const rowValidator = v.object({
   createdByUserId: v.string(),
   kind: v.union(v.literal("player"), v.literal("team")),
   name: v.string(),
+  // NEO-236 — the dedup key staging reads through an index. See schema.ts.
+  nameNormalized: v.optional(v.string()),
   // NEO-96: reference to the sport-level selectorOptions row.
   sportId: v.id("selectorOptions"),
+  // NEO-236 — set only on a row this batch staged for itself.
+  source: v.optional(rowSourceValidator),
   status: v.union(v.literal("pending"), v.literal("ready"), v.literal("error")),
   enrichment: v.optional(enrichmentValidator),
   decision: v.optional(decisionValidator),
@@ -342,7 +414,15 @@ const publicRowValidator = v.object({
   batchId: v.string(),
   kind: v.union(v.literal("player"), v.literal("team")),
   name: v.string(),
+  nameNormalized: v.optional(v.string()),
   sportId: v.id("selectorOptions"),
+  /**
+   * NEO-236 — projected, not stripped. It carries no identity (a review-row id
+   * the client already holds, and a Wikidata QID), and the wizard needs all of
+   * it: `playerRowId` is how the New Team step names who needs the team and how
+   * the player's step tells an answered chip from a waiting one.
+   */
+  source: v.optional(rowSourceValidator),
   // NEO-96: the sport row's display value, resolved server-side so the wizard
   // can render "(Player \u00b7 Baseball)" without a client-side join.
   sportValue: v.string(),
@@ -460,7 +540,8 @@ function toPublicRow<T extends { createdByUserId: string }>(
  *     a first-time insert) and a lookup scheduled for it — and ONLY for it, so
  *     resuming does not re-run the whole batch's Wikidata work;
  *   - a key only on the existing side is dropped ONLY IF the operator never
- *     ruled on it. An UNDECIDED row for a name no card carries any more is a
+ *     ruled on it AND the row came from the incoming set in the first place
+ *     (NEO-236: a staged career team never does — see the guard). An UNDECIDED row for a name no card carries any more is a
  *     question about nothing, and leaving it would block the wizard's
  *     "all reviewed" on it forever. A DECIDED row is kept, whatever the
  *     incoming set says.
@@ -544,7 +625,28 @@ export const startBatch = internalMutation({
         // Recorded BEFORE the drop test, so a decided row that is no longer
         // incoming still suppresses a re-insert of its own name.
         existingKeys.add(key);
-        if (!incoming.has(key) && row.decision === undefined) {
+        if (
+          !incoming.has(key) &&
+          row.decision === undefined &&
+          // NEO-236 — a row the BATCH staged for itself is never in the
+          // incoming set, and never can be.
+          //
+          // The incoming list is the checklist's own player and team names. A
+          // career team pulled off a player's Wikidata history is not one of
+          // them — no card carries "Sydney Blue Sox" — so the drop test above
+          // reads it as "a question about a name nothing needs" and deletes it.
+          // It is the opposite: it is a question the batch RAISED, about a team
+          // one of its own players needs, and deleting it on a resume would
+          // leave that player's chips reading "needs a team decision" with no
+          // step left anywhere to answer. (Nothing re-stages it either: the
+          // enrichment that staged it has already landed, and the wizard's
+          // belt-and-braces pass fires once per row per session.)
+          //
+          // The rule the drop test encodes still holds, it just does not apply
+          // here: reconciliation is about names DERIVED from the incoming set,
+          // and `source` marks the rows that are not.
+          row.source === undefined
+        ) {
           // Gone from the incoming set and never ruled on — a question about
           // a name no card carries. A DECIDED row is kept; see the doc above.
           await ctx.db.delete(row._id);
@@ -564,6 +666,11 @@ export const startBatch = internalMutation({
             createdByUserId: args.createdByUserId,
             kind,
             name,
+            // NEO-236: `key` IS that normalization — computed by `keyFor`
+            // above with the kind prefix, which is stored as a separate
+            // column. Slicing it keeps the two provably identical rather than
+            // normalizing twice and hoping.
+            nameNormalized: key.slice(kind.length + 1),
             sportId: args.sportId,
             status: "pending",
           }),
@@ -592,6 +699,8 @@ export const startBatch = internalMutation({
           createdByUserId: args.createdByUserId,
           kind: "player",
           name,
+          // NEO-236 — see the field's note in schema.ts.
+          nameNormalized: normalizePlayerName(name),
           sportId: args.sportId,
           status: "pending",
         }),
@@ -605,6 +714,7 @@ export const startBatch = internalMutation({
           createdByUserId: args.createdByUserId,
           kind: "team",
           name,
+          nameNormalized: normalizeTeamName(name),
           sportId: args.sportId,
           status: "pending",
         }),
@@ -627,6 +737,248 @@ export const startBatch = internalMutation({
     return batchId;
   },
 });
+
+/**
+ * ── NEO-236: a career team the batch will have to create becomes its OWN step ─
+ *
+ * Jason, 2026-09-05, looking at the wizard on Travis Bazzana with three inline
+ * Location/Name pairs under his career list: "How does this dialog know which
+ * League the new team is in? I think we need to show a new team dialog instead
+ * of that inline thing. So for this example I think we should show 3 modals in
+ * the walker: 1. New Team: Sydney Blue Sox 2. New Team: Oregon State Beavers
+ * 3. New Player Travis Bazzana which can now use the 2 new teams that were
+ * created."
+ *
+ * That is what this does. Every accepted career team on a player row that
+ * matches no existing `teams` row gets a `team` row of its own in the SAME
+ * batch, `source.kind === "careerTeamOf"`, walked before the player (see
+ * `getBatch`'s ordering) and answered with the same New Team step a checklist
+ * team gets — Location, Name, and the League that used to have no way of being
+ * asked about at all. The prelude then creates those rows first, and the
+ * player's stints resolve onto them by name.
+ *
+ * ## What is NOT staged, and why each exclusion is load-bearing
+ *
+ *  - **A career team we already hold.** `findTeamByFullName` is asked first, by
+ *    the composed full name and therefore by the same key every writer uses, so
+ *    a stint at the San Diego Padres is a link and not a question. Asking the
+ *    operator to re-create a team they already have is how the duplicate this
+ *    ticket exists to prevent gets made.
+ *  - **A name the batch already has a team row for.** Deduped through the
+ *    `by_batch_and_kind_and_name` INDEX rather than a collect, and that is a
+ *    correctness choice rather than a tuning one — see the field note on
+ *    `nameNormalized` in schema.ts, and NEO-189 for what a wide read set inside
+ *    a pool-driven mutation does to the commit that runs beside it. It covers
+ *    both directions at once: a checklist team of the same name, and a career
+ *    team another player already staged.
+ *  - **A team the operator UNCHECKED.** An exclusion is the operator saying
+ *    "he never played there", and staging a step for it would ask them again in
+ *    a form they cannot decline.
+ *
+ * ## Idempotent, and it has to be
+ *
+ * Three callers reach this: the lookup landing on a player row, the wizard
+ * staging a hand-typed career team, and the wizard's belt-and-braces call when
+ * a player row comes up. Every one of them can fire more than once for one
+ * player, so "already staged" is the ONLY thing keeping the batch from growing
+ * a duplicate step per re-entry. Returns the rows it actually inserted, which
+ * is what makes "and only those get a lookup scheduled" expressible.
+ */
+async function stageCareerTeamRowsImpl(
+  ctx: MutationCtx,
+  playerRow: Doc<"entityReviewQueue">,
+  /**
+   * Career teams the caller knows about that the row's own enrichment does not
+   * — the wizard's hand-typed entries. Merged with the enrichment's proposals
+   * rather than replacing them, because a player can have both.
+   */
+  extraCareerTeams: ReadonlyArray<{ name: string; wikidataId?: string }> = [],
+): Promise<Array<Id<"entityReviewQueue">>> {
+  // A team row has no career teams of its own, and a staged row must never
+  // stage further rows — that is the recursion this guard forecloses.
+  if (playerRow.kind !== "player") return [];
+
+  const proposals: Array<{ name: string; wikidataId?: string }> = [
+    ...(playerRow.enrichment?.careerTeams ?? []).map((ct) => ({
+      name: ct.name,
+      ...(ct.wikidataId ? { wikidataId: ct.wikidataId } : {}),
+    })),
+    ...extraCareerTeams,
+  ];
+  if (proposals.length === 0) return [];
+
+  // The operator's unchecks, read off whatever decision the row carries. A row
+  // being decided at all is not a reason to skip staging: the bulk create
+  // decides a player before its career teams have been asked about, and those
+  // teams still need their steps — the prelude resolves stints by NAME, so a
+  // team row created after the player's decision still lands on the timeline.
+  const excluded = new Set(
+    (playerRow.decision?.action === "create"
+      ? (playerRow.decision.excludedCareerTeamNames ?? [])
+      : []
+    ).map(normalizeTeamName),
+  );
+
+  const added: Array<Id<"entityReviewQueue">> = [];
+  const seen = new Set<string>();
+  for (const proposal of proposals) {
+    // The same bound the per-decision create list carried, for the same reason:
+    // a guard rail on an unbounded write, not a security boundary.
+    if (added.length >= MAX_CAREER_TEAM_CREATES) break;
+    const name = proposal.name.trim().replace(/\s+/g, " ");
+    if (!name) continue;
+    const nameNormalized = normalizeTeamName(name);
+    if (!nameNormalized || seen.has(nameNormalized)) continue;
+    seen.add(nameNormalized);
+    if (excluded.has(nameNormalized)) continue;
+
+    const alreadyInBatch = await ctx.db
+      .query("entityReviewQueue")
+      .withIndex("by_batch_and_kind_and_name", (q) =>
+        q
+          .eq("selectorOptionId", playerRow.selectorOptionId)
+          .eq("batchId", playerRow.batchId)
+          .eq("kind", "team")
+          .eq("nameNormalized", nameNormalized),
+      )
+      .first();
+    if (alreadyInBatch) continue;
+
+    // Held already — a link, not a question. Composed-name keyed, so a split
+    // row ("San Diego" + "Padres") answers to the Wikidata label "San Diego
+    // Padres" and nothing is staged.
+    if (await findTeamByFullName(ctx, playerRow.sportId, name)) continue;
+
+    added.push(
+      await ctx.db.insert("entityReviewQueue", {
+        selectorOptionId: playerRow.selectorOptionId,
+        batchId: playerRow.batchId,
+        // The batch's owner, not the caller: `assertOwnsRow` compares against
+        // this, and a row stamped with anyone else would be unanswerable by the
+        // very operator it was staged for.
+        createdByUserId: playerRow.createdByUserId,
+        kind: "team",
+        name,
+        nameNormalized,
+        sportId: playerRow.sportId,
+        source: {
+          kind: "careerTeamOf",
+          playerRowId: playerRow._id,
+          ...(proposal.wikidataId ? { wikidataId: proposal.wikidataId } : {}),
+        },
+        status: "pending",
+      }),
+    );
+  }
+
+  if (added.length > 0) {
+    // ONLY the rows just inserted, for the same reason `startBatch`'s resume
+    // path enqueues only its additions: a re-entry must never re-run a lookup
+    // that already ran. The staged row's lookup is what supplies the League
+    // suggestion and the ESPN location its New Team step pre-fills from.
+    await ctx.scheduler.runAfter(
+      0,
+      internal.wikidataPool.enqueueEntityReviewLookups,
+      { rowIds: added },
+    );
+  }
+  return added;
+}
+
+/**
+ * NEO-236 — stage this player row's career teams as their own review steps.
+ *
+ * Public because two of the three staging moments are the wizard's: a career
+ * team typed by hand into the entry form (which no longer collects a Location —
+ * that question belongs on the New Team step, where the League is asked too),
+ * and the belt-and-braces call as a player row comes up, which covers a batch
+ * whose lookups landed before this shipped.
+ *
+ * Idempotent by construction (see `stageCareerTeamRowsImpl`), so the client may
+ * call it as often as it likes; it returns how many rows THIS call added, which
+ * is what lets a caller tell "nothing to do" from "did nothing".
+ *
+ * Admin-gated and ownership-checked exactly as `recordDecision` is: same table,
+ * same batch, and staging into someone else's review session would put steps in
+ * front of them that they never asked for.
+ */
+export const stageCareerTeamRows = mutation({
+  args: {
+    reviewRowId: v.id("entityReviewQueue"),
+    /**
+     * Hand-typed career teams the row's enrichment does not know about. Names
+     * only — the split into Location + Name is what the staged step asks for,
+     * which is the whole point of the change.
+     */
+    careerTeamNames: v.optional(v.array(v.string())),
+  },
+  returns: v.number(),
+  handler: async (ctx, args): Promise<number> => {
+    const callerId = await requireAdmin(ctx);
+    const row = await ctx.db.get(args.reviewRowId);
+    if (!row) throw new Error("Review row not found");
+    assertOwnsRow(row, callerId);
+    const extra = (args.careerTeamNames ?? [])
+      .slice(0, MAX_CAREER_TEAM_CREATES)
+      .map((name) => ({ name }));
+    const added = await stageCareerTeamRowsImpl(ctx, row, extra);
+    return added.length;
+  },
+});
+
+/**
+ * NEO-236 — the batch in the order the wizard should WALK it.
+ *
+ * Insertion order is what `getBatch` used to return and what
+ * `entity-review-nav`'s "earliest inserted that is settled" rule reads, and a
+ * staged career team is inserted LATER than the player who needs it — its
+ * player's lookup is what created it. Walked in that order, the operator would
+ * meet Travis Bazzana before either of the two clubs his card needs, which is
+ * the opposite of what was asked for.
+ *
+ * So the order is composed here rather than stored. Each `careerTeamOf` row is
+ * emitted immediately BEFORE the player row it belongs to, in the order they
+ * were staged; everything else keeps its insertion position. A staged row whose
+ * player has since gone (a resume reconciled the name away) falls back to its
+ * own insertion position rather than disappearing — it is still a real question
+ * about a real team, and the prelude will still consume its answer.
+ *
+ * A stored `order` column was the alternative and is worse: it would have to be
+ * rewritten every time a row is staged, from inside the same pool-driven
+ * mutation NEO-189 taught us to keep narrow, and it would encode as data
+ * something that is purely a rule about presentation.
+ */
+function walkOrder<T extends { _id: Id<"entityReviewQueue">; source?: { kind: "careerTeamOf"; playerRowId: Id<"entityReviewQueue"> } | undefined }>(
+  rows: readonly T[],
+): T[] {
+  const stagedByPlayer = new Map<string, T[]>();
+  for (const row of rows) {
+    if (row.source?.kind !== "careerTeamOf") continue;
+    const key = row.source.playerRowId as string;
+    const list = stagedByPlayer.get(key);
+    if (list) list.push(row);
+    else stagedByPlayer.set(key, [row]);
+  }
+  if (stagedByPlayer.size === 0) return [...rows];
+
+  const present = new Set(rows.map((r) => r._id as string));
+  const ordered: T[] = [];
+  for (const row of rows) {
+    // Emitted with its player below — unless that player is gone, in which
+    // case this IS its position.
+    if (
+      row.source?.kind === "careerTeamOf" &&
+      present.has(row.source.playerRowId as string)
+    ) {
+      continue;
+    }
+    for (const staged of stagedByPlayer.get(row._id as string) ?? []) {
+      ordered.push(staged);
+    }
+    ordered.push(row);
+  }
+  return ordered;
+}
 
 /**
  * What the wizard subscribes to. Fully reactive — a row's `status` flips
@@ -656,7 +1008,10 @@ export const getBatch = query({
     // worth doing here rather than making the wizard join per row.
     const labelCache = new Map<Id<"selectorOptions">, string>();
     const resolved = [];
-    for (const row of rows) {
+    // NEO-236: staged career teams come out ahead of the player who needs
+    // them. See `walkOrder` — the wizard's "next undecided" rule reads array
+    // order, so this is where the step sequence is decided.
+    for (const row of walkOrder(rows)) {
       let sportValue = labelCache.get(row.sportId);
       if (sportValue === undefined) {
         sportValue = await sportLabel(ctx, row.sportId);
@@ -1016,7 +1371,24 @@ async function decideAllRemaining(
     // and stamping each row a millisecond apart would only make the sweep's
     // arithmetic harder to read.
     if (decision.action === "create") {
-      const prefill = row.kind === "team" ? prefilledTeamCreate(row) : null;
+      /*
+       * NEO-236 — a player confirmed in bulk still gets its career-team steps.
+       *
+       * Normally they are already there: `applyLookupResult` stages them as the
+       * enrichment lands, and NEO-221 keeps this path from deciding a row whose
+       * lookup has not. This call is the belt-and-braces for the cases that
+       * rule does not cover — a batch whose lookups landed before this shipped,
+       * and a row that reached "error" and was later given career teams by
+       * hand. Idempotent, so on the common path it reads a few index ranges and
+       * inserts nothing.
+       *
+       * The player is decided EITHER WAY. Its stints resolve by name in the
+       * prelude, against teams the staged rows create first — so deciding the
+       * player before its teams are answered loses nothing.
+       */
+      if (row.kind === "player") await stageCareerTeamRowsImpl(ctx, row);
+      const prefill =
+        row.kind === "team" ? await prefilledTeamCreate(ctx, row) : null;
       await ctx.db.patch(row._id, {
         decision: prefill
           ? { action: "create", create: prefill }
@@ -1040,16 +1412,48 @@ async function decideAllRemaining(
  * `teamCreatePrefill` in EntityReviewWizard.tsx, so "confirm one row" and
  * "confirm the whole batch" cannot disagree about what an untouched row means.
  */
-function prefilledTeamCreate(
+async function prefilledTeamCreate(
+  ctx: MutationCtx,
   row: Doc<"entityReviewQueue">,
-): { location?: string; name: string } | null {
+): Promise<TeamCreate | null> {
   const location = row.enrichment?.location;
   const split = location ? splitTeamName(row.name, location) : null;
   // Null when the row's own name is unusable — blank, or longer than a team
   // name may be. `row.name` is a raw marketplace string with no bound on it,
   // and this path has no operator to tell, so the row is simply left without a
   // create payload (see `toTeamCreate`).
-  return toTeamCreate(split ?? { name: row.name });
+  const base = toTeamCreate(split ?? { name: row.name });
+  if (!base) return null;
+
+  /*
+   * NEO-236 — the League half of the pre-fill.
+   *
+   * The lookup's `league` is a NAME (ESPN's league name, or Wikidata's P118
+   * label), and the two answers it can produce are genuinely different
+   * decisions, so they are recorded differently:
+   *
+   *  - it names a league we hold — recorded as that row's ID, which is exactly
+   *    what the operator picking it off the New Team step's list would record;
+   *  - it names one we do not — recorded as a NAME, which the prelude resolves
+   *    through `findOrCreateLeague`. That is the "Create league X" answer, and
+   *    the bulk path taking it is deliberate: the whole contract of "Add All
+   *    Remaining as New" is that it writes what an operator confirming each
+   *    row unedited would have written, and the New Team step pre-selects
+   *    exactly this.
+   *
+   * `findLeagueByName` and not `findOrCreateLeague`: reading must not write.
+   * A batch the operator ends up cancelling would otherwise leave a league row
+   * behind for a team that was never created.
+   */
+  const suggested = row.enrichment?.league?.trim();
+  if (!suggested) return base;
+  const existing = await findLeagueByName(ctx, {
+    name: suggested,
+    sportId: row.sportId,
+  });
+  return existing
+    ? { ...base, leagueId: existing._id }
+    : { ...base, leagueName: suggested };
 }
 
 /**
@@ -1274,6 +1678,28 @@ export const applyLookupResult = internalMutation({
       status: args.status,
       enrichment: args.enrichment,
     });
+    /*
+     * NEO-236 — THIS is where a player's career teams become their own steps.
+     *
+     * The moment the enrichment lands is the earliest one at which the career
+     * list exists, and it is before the row can be walked to: `nextUndecided`
+     * only ever presents a SETTLED row, and this mutation is what settles it.
+     * Staging here is therefore what makes Jason's sequence fall out of the
+     * ordinary walk — the two club steps are already in the batch, ahead of the
+     * player, by the time anything is presented at all.
+     *
+     * Deliberately reads through an INDEX rather than collecting the batch (see
+     * `stageCareerTeamRowsImpl`): this mutation runs once per row, five at a
+     * time under the pool, alongside a commit that may be reading the same
+     * batch. NEO-189 is the record of what a wide read set does here.
+     *
+     * `row` is the PRE-patch document, so the enrichment is passed explicitly
+     * rather than re-read — a second `ctx.db.get` would only widen the read set
+     * for a value already in hand.
+     */
+    if (row.kind === "player" && (args.enrichment?.careerTeams?.length ?? 0) > 0) {
+      await stageCareerTeamRowsImpl(ctx, { ...row, enrichment: args.enrichment });
+    }
     return null;
   },
 });

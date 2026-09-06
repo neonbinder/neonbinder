@@ -154,7 +154,7 @@ export const findOrCreate = mutation({
      * college or club side created off a player's career list used to be filed
      * under the sport's top flight because nothing else was on offer.
      */
-    leagueId: v.optional(v.id("leagues")),
+    leagueId: v.optional(v.union(v.id("leagues"), v.null())),
     leagueName: v.optional(v.string()),
   },
   returns: v.id("teams"),
@@ -220,11 +220,18 @@ export const findOrCreate = mutation({
      * ONLY when nothing was chosen, so a New Team dialog that says "Australian
      * Baseball League" can no longer be silently overruled by "MLB".
      */
-    const operatorLeagueId = await resolveOperatorLeagueId(ctx, {
+    const chosenLeagueId = await resolveOperatorLeagueId(ctx, {
       sportId: args.sportId,
       leagueId: args.leagueId,
       leagueName: args.leagueName,
     });
+    // `undefined` is "not asked"; `null` is the operator answering "no league".
+    // Only the first lets the sport default in — which is the whole point of
+    // the distinction, and why this is not a `??`.
+    const leagueId =
+      chosenLeagueId === undefined
+        ? await resolveDefaultLeagueId(ctx, args.sportId)
+        : (chosenLeagueId ?? undefined);
 
     const id = await ctx.db.insert("teams", {
       ...teamRowFields({ name, location: args.location }),
@@ -232,7 +239,7 @@ export const findOrCreate = mutation({
       // NEO-156: every creation path attaches a league. Undefined when the
       // sport has no configured one (a custom sport) AND the operator named
       // none — legitimate, and assignable later in Team Management.
-      leagueId: operatorLeagueId ?? (await resolveDefaultLeagueId(ctx, args.sportId)),
+      leagueId,
       lastUpdated: Date.now(),
     });
 

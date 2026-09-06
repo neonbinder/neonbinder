@@ -52,7 +52,50 @@ export type NavRow = {
   _id: string;
   status: "pending" | "ready" | "error";
   decision?: NavDecision | null;
+  /**
+   * NEO-236 — both optional so a test can still hand this module three-field
+   * literals, and so every existing caller compiles unchanged. Absent means the
+   * blocking rule below simply does not apply to that row.
+   */
+  kind?: "player" | "team";
+  source?: { kind: "careerTeamOf"; playerRowId: string } | null;
 };
+
+/**
+ * NEO-236 — is this player row still waiting on a team the batch has to create?
+ *
+ * Jason asked for the walk to read "New Team: Sydney Blue Sox, New Team: Oregon
+ * State Beavers, then New Player: Travis Bazzana which can now use the 2 new
+ * teams that were created." `getBatch` already emits the staged team rows ahead
+ * of their player, and that is enough ONLY while those rows are settled — a
+ * still-pending row is stepped over by the rule below, which would put the
+ * player first and hand the operator a step they cannot complete (its chips
+ * would read "needs a team decision" and Confirm would be blocked).
+ *
+ * So a player waits for its own staged teams. This cannot deadlock: a blocking
+ * row is undecided, so it is either settled — in which case `nextUndecided`
+ * reaches it FIRST, because it sorts ahead of the player — or still pending, in
+ * which case the lookup pool or `sweepStalePendingRows` will settle it. With
+ * every remaining row blocked, this returns null and the wizard says it is
+ * still looking names up, which is exactly what is happening.
+ *
+ * A blocker the operator has ANSWERED — including "skip" — stops blocking. Skip
+ * means "that is not a team", and the player's own step is where that is dealt
+ * with (untick the chip, or change the team's decision); refusing to present
+ * the player would leave nowhere to do either.
+ */
+function waitingOnStagedTeams(
+  row: NavRow,
+  rows: readonly NavRow[],
+): boolean {
+  if (row.kind !== "player") return false;
+  return rows.some(
+    (other) =>
+      other.source?.kind === "careerTeamOf" &&
+      other.source.playerRowId === row._id &&
+      !other.decision,
+  );
+}
 
 /**
  * `rowId` — the row the wizard is presenting, or null for "nothing to present"
@@ -72,7 +115,16 @@ export type NavState = { rowId: string | null; explicit: boolean };
  * stepped over rather than blocking on a straggler.
  */
 export function nextUndecided<T extends NavRow>(rows: readonly T[]): T | null {
-  return rows.find((r) => r.status !== "pending" && !r.decision) ?? null;
+  return (
+    rows.find(
+      (r) =>
+        r.status !== "pending" &&
+        !r.decision &&
+        // NEO-236: a player whose staged career teams are still open is not
+        // ready to be reviewed — see `waitingOnStagedTeams`.
+        !waitingOnStagedTeams(r, rows),
+    ) ?? null
+  );
 }
 
 /** Rows carrying any decision — the wizard's progress numerator. */

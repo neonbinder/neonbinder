@@ -661,7 +661,25 @@ export interface PlayerLookupResult {
    * Sorted earliest-stint-first (see `sortTeamYears`), and one entry PER
    * STINT — a player who left a franchise and came back has two.
    */
-  careerTeams: Array<{ name: string; fromYear: number; toYear?: number }>;
+  careerTeams: Array<{
+    name: string;
+    fromYear: number;
+    toYear?: number;
+    /**
+     * NEO-236 — the team's OWN Wikidata QID, from the P54 statement's value.
+     *
+     * Carried through because the review wizard now stages a real team row for
+     * a career team we do not hold, and that row needs its own enrichment. A
+     * name search for "Sydney Blue Sox" against EntitySearch is a guess that
+     * can land on the wrong entity or on nothing; the QID Wikidata just handed
+     * us for this membership is the same club, by construction. Optional
+     * because the value is only a QID when the IRI parses as one.
+     *
+     * This is a Wikidata id travelling as LINKAGE, not as truth: it selects
+     * which upstream record to read, and nothing user-facing is keyed on it.
+     */
+    wikidataId?: string;
+  }>;
   /**
    * NEO-235 — teams Wikidata links the player to with NO usable start year,
    * by name, sorted alphabetically. Absent (not `[]`) when there are none.
@@ -803,7 +821,12 @@ ${hallOfFameSparqlBlocks(qid, hofQid)}
   const result = await runSparql(detailQuery);
   if (!result) return null;
 
-  const careerTeams: Array<{ name: string; fromYear: number; toYear?: number }> = [];
+  const careerTeams: Array<{
+    name: string;
+    fromYear: number;
+    toYear?: number;
+    wikidataId?: string;
+  }> = [];
   // NEO-235: undated memberships, keyed by team QID so the same team repeated
   // across cross-product rows is named once. Values are the en labels.
   const undatedByTeamQid = new Map<string, string>();
@@ -879,6 +902,9 @@ ${hallOfFameSparqlBlocks(qid, hofQid)}
               name: row.teamLabel.value,
               fromYear: match.fromYear,
               toYear: match.toYear,
+              // NEO-236: `teamWdId` is already proven non-null by the guard
+              // above (it is the stint dedup key), so this is never a guess.
+              wikidataId: teamWdId,
             });
           } else if (match?.kind === "undated") {
             undatedByTeamQid.set(teamWdId, row.teamLabel.value);
@@ -1199,10 +1225,33 @@ export async function lookupTeamEnrichment(
   /** The COMPOSED full name — "San Diego Padres", not "Padres" (NEO-236). */
   name: string,
   sport: SportEnrichmentContext,
+  /**
+   * NEO-236 — a team QID the CALLER already holds, which skips the name search.
+   *
+   * Set only where the id is a fact rather than a guess: a career team staged
+   * off a player's P54 statements arrives with the QID Wikidata itself
+   * attached to that membership, so searching EntitySearch for its English
+   * label would be strictly worse — it can miss (the sport filter `wdt:P641`
+   * is absent on plenty of club and college sides), and it can land on a
+   * different entity that happens to share a name.
+   *
+   * ESPN is still consulted by NAME, because ESPN has no notion of a QID and
+   * its list is keyed on `displayName`. A club side ESPN has never heard of
+   * simply gets no location, which is the correct answer rather than a guess.
+   *
+   * Ignored unless it is a real `Q<digits>` id — the value crosses a
+   * marketplace-shaped trust boundary (it was read out of a SPARQL response
+   * and stored on a throwaway review row), and it is interpolated into a
+   * query below.
+   */
+  knownQid?: string,
 ): Promise<TeamLookupResult | null> {
   const espnInfo = await fetchEspnTeamInfo(sport.espn, name);
 
-  const qid = await findTeamQid(name, sport.wikidata?.sportQid);
+  const qid =
+    knownQid && isWikidataQid(knownQid)
+      ? knownQid
+      : await findTeamQid(name, sport.wikidata?.sportQid);
   if (!qid) {
     if (!espnInfo) {
       // NEO-208: structured for the same reason as the player no-match log
@@ -1404,7 +1453,12 @@ export const runEntityReviewLookup = internalAction({
         ? null
         : row.kind === "player"
           ? await lookupPlayerEnrichment(row.name, sportCtx)
-          : await lookupTeamEnrichment(row.name, sportCtx);
+          : // NEO-236: a row staged off a player's career list carries the QID
+            // Wikidata attached to that P54 membership. Reading THAT record is
+            // not a search — it is the same club by construction, which is what
+            // gets "Sydney Blue Sox" its league instead of a null match from an
+            // EntitySearch that has no `wdt:P641` to filter on.
+            await lookupTeamEnrichment(row.name, sportCtx, row.source?.wikidataId);
       await ctx.runMutation(internal.entityReviewQueue.applyLookupResult, {
         id: args.rowId,
         status: result ? "ready" : "error",

@@ -1,18 +1,10 @@
-import {
-  useEffect,
-  useId,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-  type KeyboardEvent as ReactKeyboardEvent,
-} from "react";
-import { useMutation, useQuery } from "convex/react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useQuery } from "convex/react";
 import { Input } from "../primitives/Input";
 import { api } from "../../convex/_generated/api";
-import { userFacingMessage } from "../../lib/errors/user-facing-message";
 import { teamFullName } from "../../lib/teams/team-name";
 import type { Id } from "../../convex/_generated/dataModel";
+import NewTeamDialog from "./NewTeamDialog";
 
 /**
  * NEO-26 — multi-select-capable team picker, defaults to single.
@@ -37,20 +29,25 @@ import type { Id } from "../../convex/_generated/dataModel";
  * PlayerPicker already has via the already-public `teams.findOrCreate` —
  * an operator is never blocked waiting on sync to populate a team.
  *
- * NEO-236 — that escape hatch is a two-field form, not a free-text row.
- * `teams.name` is the nickname ("Padres") and `teams.location` is the place
- * ("San Diego"); a team is only ever created from those two inputs, never
- * from a full string somebody typed, because there is no reliable way back
- * from "San Diego State Aztecs baseball" to its parts. The typed query
- * pre-fills the NAME (no guessed split), the location starts empty, and the
- * "Shows as:" line composes them so the operator sees the row they are about
- * to create. Everything the picker DISPLAYS — chips, options, aria-labels —
- * is the composed full name; only the two admin master rows go short.
+ * NEO-236 — this picker has ONE box, and creating happens somewhere else.
+ *
+ * Jason, 2026-09-05: "we should also remove the Location box from New Players
+ * as we should only be selecting existing teams or entering it in the singular
+ * field which would trigger that new team dialog." An earlier pass put a
+ * Location + Name pair inline in this popover; it had no room for the League,
+ * so every team created here was silently filed under the sport's default. The
+ * three questions a `teams` row needs now live in `NewTeamDialog`, and this
+ * popover's create affordance is one row that opens it.
+ *
+ * Everything the picker DISPLAYS — chips, options, aria-labels — is the
+ * composed full name; only the two admin master rows go short.
  *
  * Keyboard contract (per `feedback_keyboard_navigation`):
  *   Tab/Shift+Tab — cycle chips, × buttons, "+ Add" trigger, popover input
- *   Enter on input — select highlighted match (or create, if highlighted
- *     and no exact match exists)
+ *   Enter on input — select highlighted match, or OPEN the new-team dialog
+ *     when the create row is highlighted and no exact match exists. Enter
+ *     inside that dialog is what creates: two presses rather than one, and
+ *     the second one is where the League is answered.
  *   ↑/↓ on input — move highlight
  *   Esc on input — close popover without selecting
  *   Backspace on empty input — remove last chip
@@ -89,71 +86,41 @@ export default function TeamPicker({
     api.teams.list,
     sportId ? { sportId, limit: 500 } : { limit: 500 },
   );
-  const findOrCreate = useMutation(api.teams.findOrCreate);
 
   const [popoverOpen, setPopoverOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [highlightIdx, setHighlightIdx] = useState(0);
-  const [creating, setCreating] = useState(false);
   /**
-   * NEO-208 — the reason the last "+ Create" attempt was refused, shown
-   * inline beside the search input.
+   * NEO-236 — the New Team dialog is open over this picker.
    *
-   * `teams.findOrCreate` grew two refusals in NEO-208 (a name over the
-   * length cap, and a `sportId` that is a real `selectorOptions` id but not
-   * a SPORT row) on top of the empty-name one. This handler used to be a
-   * bare try/finally, so each of those landed as a silent no-op — the
-   * "Creating…" label flipped back and nothing appeared — plus an unhandled
-   * rejection in the console. The operator's next move differs per reason
-   * (shorten the name vs. re-open the panel under a sport), so the reason
-   * has to be on screen.
-   *
-   * Safe to render verbatim: every one of those messages carries a LENGTH or
-   * a category, never the typed content — see the comments on the throws in
-   * `convex/teams.ts`. Anything that is not a ConvexError gets the generic
-   * fallback instead, because production redacts a plain Error to "Server
-   * Error" (see `userFacingMessage`).
+   * Read by BOTH dismissal paths below, and that is the whole reason it is
+   * state rather than something local to the button: the dialog is portalled to
+   * `document.body`, so a pointerdown inside it is outside `rootRef` and focus
+   * moving into it leaves the picker's subtree. Without this flag, opening the
+   * dialog would immediately close the popover behind it — taking the typed
+   * query, and therefore the name the dialog was opened with, with it.
    */
-  const [createError, setCreateError] = useState<string | null>(null);
+  const [newTeamOpen, setNewTeamOpen] = useState(false);
   /**
-   * Bumped every time a refusal is recorded, and used as the alert's `key`.
+   * Synchronous mirror of `newTeamOpen`, and it is load-bearing rather than
+   * belt-and-braces.
    *
-   * a11y (audit fix, SC 3.3.1): pressing the submit twice with the same
-   * problem sets the SAME string, which React resolves to no re-render — so
-   * the `role="alert"` never fires again and the second press is silent for a
-   * screen-reader user, exactly the state this alert exists to prevent.
-   * Keying the element on a counter remounts it instead, which is what makes
-   * a live region announce. Deliberately not the clear-then-setTimeout dance:
-   * a deferred setState can land after the popover has closed.
-   */
-  const [errorNonce, setErrorNonce] = useState(0);
-  const refuse = (message: string) => {
-    setCreateError(message);
-    setErrorNonce((n) => n + 1);
-  };
-  /**
-   * NEO-236 — the create form's own two fields.
+   * `handleRootBlur` fires on the SAME click that opens the dialog: the click
+   * sets the state, focus moves into the portal, and the blur handler runs from
+   * the render closure that captured `newTeamOpen === false`. It therefore sailed
+   * past its own guard and, a tick later, ran `setQuery("")` — which is what
+   * `initialName` is read from, so the dialog's heading re-rendered from
+   * "New team: San Diego Padres" to a bare "New team", and its
+   * `aria-labelledby` target lost the name. (The draft itself survives: it seeds
+   * once on mount. The damage was to the heading, the accessible name, and the
+   * popover the operator would come back to.)
    *
-   * `createName === null` means "still mirroring the search box": the typed
-   * query IS the proposed name until the operator edits the name field, at
-   * which point their value sticks. That mirroring is why the field can be
-   * pre-filled without ever guessing where a location ends and a nickname
-   * begins — the whole typed string becomes the name, and pulling "San Diego"
-   * out of it is the operator's call, made by typing it in the box above.
+   * Enter never reproduced it, because pressing Enter does not blur anything.
    */
-  const [createLocation, setCreateLocation] = useState("");
-  const [createName, setCreateName] = useState<string | null>(null);
-  const previewId = useId();
-  // NEO-236: the "city, state, region or school" hint under the Location box.
-  // Described by the Location field only — the hint is about that field, and
-  // the Name field and the create button already point at the preview.
-  const locationHintId = useId();
+  const newTeamOpenRef = useRef(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
-  const createSubmitRef = useRef<HTMLButtonElement>(null);
-  /** False→true edge detector for the scroll-into-view effect below. */
-  const createFormShown = useRef(false);
 
   // Reset highlight whenever the typed query changes.
   useEffect(() => {
@@ -189,15 +156,16 @@ export default function TeamPicker({
     if (!popoverOpen) return;
     const onPointerDown = (e: Event) => {
       if (rootRef.current?.contains(e.target as Node)) return;
+      // NEO-236: same portal caveat as `handleRootBlur` — a press inside the
+      // New Team dialog is outside this root, and must not dismiss the popover
+      // that owns the query the dialog is editing.
+      if (newTeamOpenRef.current) return;
       setPopoverOpen(false);
       setQuery("");
-      setCreateError(null);
-      setCreateLocation("");
-      setCreateName(null);
     };
     document.addEventListener("pointerdown", onPointerDown);
     return () => document.removeEventListener("pointerdown", onPointerDown);
-  }, [popoverOpen]);
+  }, [popoverOpen, newTeamOpen]);
 
   const labelById = useMemo(() => {
     const map = new Map<string, string>();
@@ -249,133 +217,23 @@ export default function TeamPicker({
 
   // NEO-96: no sport row → no create. A team must reference a real sport; the
   // old `sport ?? ""` fallback produced orphaned rows.
-  //
-  // NEO-208 (focus-park-pattern fix): deliberately NOT gated on `!creating`
-  // anymore. This row used to unmount the instant `creating` flipped true,
-  // which yanked focus off the "+ Create" button (it had focus — a click
-  // just landed on it) onto <body>. `handleRootBlur` below exists to close
-  // the popover on exactly that signal ("focus left the root"), so it fired
-  // mid-request and closed the popover — clearing `createError` along with
-  // it — before the awaited `findOrCreate` had even rejected. The refusal
-  // then landed in state on an already-closed popover, invisible until the
-  // next open. Keeping this row mounted (see the button below, which swaps
-  // to a "Creating…" `aria-disabled` state instead of unmounting) means
-  // focus never leaves the root, so `handleRootBlur` never fires and the
-  // popover is still open — with `createError` still live — by the time the
-  // mutation settles either way.
-  //
-  // NEO-236 note on what this is gated on: the TYPED QUERY, not the create
-  // form's own fields. The form must not unmount while the operator is typing
-  // in it — an unmount parks focus on <body>, which `handleRootBlur` reads as
-  // "focus left the picker" and closes the whole popover. So emptying the name
-  // field leaves the form standing and only the submit goes inert.
   const showCreateOption =
     query.trim().length > 0 && !hasExactMatch && !!sportId;
 
   /**
-   * NEO-236 — bring the create form's submit into view the moment the form
-   * appears.
+   * NEO-236 — open the New Team dialog on the typed name.
    *
-   * The popover is `absolute` and grew from ~112px to ~261px when the create
-   * row became a two-field form, and an absolutely-positioned child is still
-   * CLIPPED by any `overflow-y-auto` ancestor. `CardAttentionWalker`'s body is
-   * `min-h-80 max-h-[70vh] overflow-y-auto` — a 320px box at 1024x629 — so
-   * with the trigger two thirds of the way down it, "+ Create team" landed
-   * ~25px below the clip and an operator had to scroll the dialog to reach
-   * the button they had just asked for.
-   *
-   * Scrolling the container beats flipping the popover above the trigger:
-   * flipping trades a clip at the bottom for a clip at the top in a box this
-   * short, and it needs live measurement against whichever ancestor happens
-   * to scroll. `block: "nearest"` needs none of that — it scrolls the nearest
-   * scrollable ancestor by the MINIMUM required, and does nothing at all when
-   * the form already fits, which is every other place this picker renders.
-   * One line, and it holds for any small container it is dropped into later.
-   *
-   * The submit, not the form: it is the last element and the one that was
-   * clipped, so pulling it into view brings the fields above it along. It
-   * carries `scroll-mb-2` so it does not land flush against the clip edge.
-   *
-   * `useLayoutEffect`, so the scroll lands before paint and the clipped state
-   * is never shown. Fires on the false→true edge only: without that guard
-   * every keystroke that keeps the form open would re-scroll and fight an
-   * operator who had scrolled the dialog themselves.
+   * The whole create path is two steps now: this opens the form, and the
+   * form's own Create button writes. Nothing is validated here beyond "there
+   * is a sport and something was typed" — the dialog owns the refusals,
+   * because it owns the fields they are about.
    */
-  useLayoutEffect(() => {
-    if (!showCreateOption) {
-      createFormShown.current = false;
-      return;
-    }
-    if (createFormShown.current) return;
-    createFormShown.current = true;
-    // Optional-called: not every environment this renders in implements
-    // scrollIntoView, and a missing scroll must never break creating a team.
-    createSubmitRef.current?.scrollIntoView?.({
-      block: "nearest",
-      inline: "nearest",
-    });
-  }, [showCreateOption]);
-
-  /**
-   * The name the form will actually submit: the operator's edit if they made
-   * one, else the typed query verbatim. Never a split of the query — see the
-   * component docstring.
-   */
-  const effectiveCreateName = (createName ?? query).trim();
-  /**
-   * What the created row will read as, everywhere outside the two admin master
-   * rows. This is the ONLY place the two fields are composed, and it is the
-   * same helper the server keys the row on, so the preview cannot drift from
-   * what gets written.
-   */
-  const previewFullName = effectiveCreateName
-    ? teamFullName({ name: effectiveCreateName, location: createLocation })
-    : "";
-
-  const createAndAdd = async () => {
-    const name = effectiveCreateName;
-    const location = createLocation.trim();
-    // `creating` guard: re-entry protection now that the button stays
-    // mounted (and clickable — see aria-disabled, not disabled, below) for
-    // the duration of the request instead of unmounting.
-    if (disabled || creating) return;
-    if (!name) {
-      // a11y (audit fix): the submit is `aria-disabled`, not `disabled`, so it
-      // stays clickable and focusable on purpose — which means activating it
-      // has to SAY something. A bare early return here was indistinguishable
-      // from a broken control for anyone who cannot see that the button is
-      // dimmed.
-      refuse("Enter a team name.");
-      return;
-    }
-    setCreating(true);
-    setCreateError(null);
-    try {
-      if (!sportId) return;
-      // `location` is omitted rather than sent empty: the server models "no
-      // location" as an absent optional — for the handful of names that carry
-      // no place at all ("Athletics", "Liverpool", "Orix Buffaloes") — and an
-      // empty string would be a third state meaning the same thing.
-      const id = await findOrCreate({
-        name,
-        sportId,
-        ...(location ? { location } : {}),
-      });
-      addChip(id);
-    } catch (err) {
-      // Read the ConvexError's `data`, never `.message`: production redacts a
-      // plain Error, and a surviving message arrives wrapped in
-      // "[CONVEX M(...)] [Request ID: ...]" noise. The query is left alone, so
-      // the "+ Create" row stays available for a retry after a fix.
-      refuse(userFacingMessage(err, "Could not create team."));
-      // Refocus the input (not the create row, which is what a retry needs
-      // to reread the reason next to): the button that had focus is a
-      // "+ Create" affordance the operator likely wants to edit past, not
-      // press again verbatim.
-      setTimeout(() => inputRef.current?.focus(), 0);
-    } finally {
-      setCreating(false);
-    }
+  const openNewTeam = () => {
+    if (disabled || !sportId || !query.trim()) return;
+    // The ref FIRST, so the blur this same click is about to produce sees the
+    // dialog as open. See `newTeamOpenRef`.
+    newTeamOpenRef.current = true;
+    setNewTeamOpen(true);
   };
 
   const removeChip = (idToRemove: Id<"teams">) => {
@@ -389,10 +247,6 @@ export default function TeamPicker({
     onChange([...value, id]);
     setQuery("");
     setHighlightIdx(0);
-    // The create form was proposing a team that now exists and is attached;
-    // leaving its fields populated would offer to create it a second time.
-    setCreateLocation("");
-    setCreateName(null);
     // Stay open so the user can pick a second team on a dual-team
     // card without re-clicking the trigger. Re-focus the input.
     setTimeout(() => inputRef.current?.focus(), 0);
@@ -401,9 +255,6 @@ export default function TeamPicker({
   const closePopover = () => {
     setPopoverOpen(false);
     setQuery("");
-    setCreateError(null);
-    setCreateLocation("");
-    setCreateName(null);
     // Return focus to the trigger so Tab order stays predictable.
     setTimeout(() => triggerRef.current?.focus(), 0);
   };
@@ -434,44 +285,20 @@ export default function TeamPicker({
    * pressed.
    */
   const handleRootBlur = () => {
-    // NEO-208: while a create request is in flight the "+ Create" row stays
-    // mounted (see `showCreateOption`), so this should not normally fire at
-    // all — but guard it explicitly anyway, since the belt-and-suspenders
-    // is cheap and a future change to the row's mount behavior shouldn't be
-    // able to reopen the same race silently.
-    if (!popoverOpen || creating) return;
+    // NEO-236: the New Team dialog is PORTALLED to `document.body`, so focus
+    // moving into it leaves this picker's subtree and looks exactly like a Tab
+    // out of it. Closing here would unmount the popover behind an open modal
+    // and throw away the typed query the modal was opened with.
+    if (!popoverOpen || newTeamOpenRef.current) return;
     setTimeout(() => {
+      // Re-read the REF, not the captured state: the dialog may have opened
+      // between the blur and this callback, which is exactly the case that
+      // used to wipe the query out from under it.
+      if (newTeamOpenRef.current) return;
       if (rootRef.current?.contains(document.activeElement)) return;
       setPopoverOpen(false);
       setQuery("");
-      setCreateError(null);
-      setCreateLocation("");
-      setCreateName(null);
     }, 0);
-  };
-
-  /**
-   * Enter and Escape inside the create form's own fields.
-   *
-   * Enter submits, which is what a two-field form owes a keyboard operator —
-   * without it the only way to create is to Tab past the fields to the button.
-   * Escape closes the popover, the same as Escape in the search box, so the
-   * way out is the same key wherever focus happens to be.
-   *
-   * `MissingTeamFixer` wraps this picker in a keydown handler that treats
-   * Enter as "Save & Next", and it already excludes INPUT for exactly this
-   * reason — these fields own their own Enter.
-   */
-  const handleCreateFieldKeyDown = (
-    e: ReactKeyboardEvent<HTMLInputElement>,
-  ) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      void createAndAdd();
-    } else if (e.key === "Escape") {
-      e.preventDefault();
-      closePopover();
-    }
   };
 
   return (
@@ -494,7 +321,10 @@ export default function TeamPicker({
             disabled={disabled}
             onClick={() => removeChip(id)}
             aria-label={`Remove team ${labelById.get(id as unknown as string) ?? id}`}
-            className="text-gray-500 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none"
+            // a11y (SC 1.4.3): gray-500 is ~3.0:1 on the chip's own gray-700
+            // ground, under the 4.5:1 floor. gray-300 clears it in both themes,
+            // and the pink hover/focus is unchanged.
+            className="text-gray-600 dark:text-gray-300 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none"
           >
             ×
           </button>
@@ -516,7 +346,11 @@ export default function TeamPicker({
           onClick={() => setPopoverOpen(true)}
           aria-label="Add team"
           aria-expanded={popoverOpen}
-          className="px-2 py-0.5 text-xs rounded border border-dashed border-gray-400 dark:border-gray-600 hover:border-[#00D558] focus:border-[#00D558] focus:outline-none text-gray-600 dark:text-gray-300"
+          // a11y (SC 1.4.11 Non-text Contrast): the dashed border IS this
+          // control's boundary, and `dark:border-gray-600` measures 2.35:1 on
+          // the dark surface — under the 3:1 floor. gray-500 is 3.67:1 there
+          // and the light-theme gray-400 already passes.
+          className="px-2 py-0.5 text-xs rounded border border-dashed border-gray-400 dark:border-gray-500 hover:border-[#00D558] focus:border-[#00D558] focus:outline-none text-gray-600 dark:text-gray-300"
         >
           + Add team
         </button>
@@ -537,13 +371,7 @@ export default function TeamPicker({
               value={query}
               placeholder="Search or add a team..."
               aria-label="Search teams"
-              onChange={(e) => {
-                // The refusal described the name that was in this box; the
-                // next keystroke makes it stale, so it goes away with the
-                // query it was about.
-                setCreateError(null);
-                setQuery(e.target.value);
-              }}
+              onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => {
                 const rowCount = matches.length + (showCreateOption ? 1 : 0);
                 if (e.key === "Escape") {
@@ -561,7 +389,10 @@ export default function TeamPicker({
                     const pick = matches[highlightIdx];
                     if (pick) addChip(pick._id);
                   } else if (showCreateOption) {
-                    void createAndAdd();
+                    // NEO-236: Enter on the create row OPENS the dialog rather
+                    // than writing. The team still needs a League answered, and
+                    // there is nowhere in this popover to answer it.
+                    openNewTeam();
                   }
                 } else if (
                   e.key === "Backspace" &&
@@ -576,23 +407,6 @@ export default function TeamPicker({
               }}
               className="w-full p-1.5 text-sm"
             />
-
-            {createError && (
-              // a11y: NOT the brand `#FF2EB3` used for destructive affordances
-              // elsewhere — measured against this popover's own
-              // `bg-white dark:bg-gray-800` that hex is 3.34:1 / 4.4:1, both
-              // under WCAG 1.4.3's 4.5:1 floor for normal text. This pair is
-              // the same-hue darkened/lightened variant CardDetailPanel's
-              // `parentError` already uses on the identical backgrounds:
-              // 5.55:1 on white, 5.87:1 on dark:bg-gray-800.
-              <p
-                key={errorNonce}
-                role="alert"
-                className="px-2 py-1 text-xs text-[#C2178A] dark:text-[#FF6FCB]"
-              >
-                {createError}
-              </p>
-            )}
 
             {/* a11y (1.4.3): gray-500 measures 2.8:1 on this popover's own
                 dark:bg-gray-800 — the recurring gray-500-on-dark bug. gray-400
@@ -653,136 +467,70 @@ export default function TeamPicker({
               })}
             </div>
             {showCreateOption && (
-              <div
-                // Not a `<form>`: this popover is routinely rendered inside
-                // the card drawer's own form, and a nested form is invalid
-                // HTML that browsers resolve by dropping the inner one.
-                role="group"
-                aria-label="Create a new team"
-                className="space-y-1.5 border-t border-gray-200 dark:border-gray-700 pt-2"
+              /*
+                NEO-236 — ONE row, and it opens a dialog rather than writing.
+                Two fields inline had no room for the League, which is the
+                question the New Team dialog exists to ask; this row is the
+                door to it. It also puts the popover back to its original
+                height, which is why the `scrollIntoView` above it is gone.
+
+                Highlighted by the same ArrowDown cursor as the options, so
+                Enter reaches it — but `aria-current`, not `aria-selected`: it
+                is not inside the listbox, and `aria-selected` would be invalid
+                on it.
+
+                The accessible name says what pressing it does. `Create team
+                <name>` moved to the dialog's own Create button, which is where
+                a team is actually made and where every `.maestro` selector of
+                that shape now lands.
+              */
+              <button
+                type="button"
+                aria-current={
+                  highlightIdx === matches.length ? "true" : undefined
+                }
+                aria-label={`New team ${query.trim()}`}
+                onClick={openNewTeam}
+                onMouseEnter={() => setHighlightIdx(matches.length)}
+                className={`w-full text-left px-2 py-1 text-sm rounded border-t border-gray-200 dark:border-gray-700 mt-1 pt-2 ${
+                  highlightIdx === matches.length
+                    ? "bg-[#00D558]/20 text-[#00D558]"
+                    : "hover:bg-gray-100 dark:hover:bg-gray-700"
+                }`}
               >
-                <label className="block space-y-0.5">
-                  <span className="block text-[11px] text-gray-600 dark:text-gray-400">
-                    Location (optional)
-                  </span>
-                  <Input
-                    bare
-                    type="text"
-                    value={createLocation}
-                    // a11y (audit fix, SC 2.5.3 Label in Name): the visible
-                    // label is "Location (optional)", so the accessible name
-                    // has to contain that whole string, "(optional)" included.
-                    aria-label="New team location (optional)"
-                    aria-describedby={`${locationHintId} ${previewId}`}
-                    placeholder="San Diego"
-                    onChange={(e) => {
-                      setCreateError(null);
-                      setCreateLocation(e.target.value);
-                    }}
-                    onKeyDown={handleCreateFieldKeyDown}
-                    className="w-full p-1.5 text-sm"
-                  />
-                </label>
-                {/* NEO-236 — the rule, kept to ONE line on purpose. This
-                    popover is `w-64` and already 261px tall at 1024x629; the
-                    flows that tap its "+ Create team" row measure that height
-                    (see checklist-attention-walker-missing-team.yaml), so the
-                    hint says the part operators get wrong — a location is not
-                    only a city — and leaves "when to leave it blank" to the
-                    "(optional)" in the label above it. */}
-                <p
-                  id={locationHintId}
-                  className="px-0.5 text-[11px] text-gray-600 dark:text-gray-400"
-                >
-                  City, state, region or school.
-                </p>
-                <label className="block space-y-0.5">
-                  <span className="block text-[11px] text-gray-600 dark:text-gray-400">
-                    Team name
-                  </span>
-                  <Input
-                    bare
-                    type="text"
-                    value={effectiveCreateName}
-                    aria-label="New team name"
-                    aria-describedby={previewId}
-                    required
-                    placeholder="Padres"
-                    onChange={(e) => {
-                      setCreateError(null);
-                      setCreateName(e.target.value);
-                    }}
-                    onKeyDown={handleCreateFieldKeyDown}
-                    className="w-full p-1.5 text-sm"
-                  />
-                </label>
-                {/* The whole point of two fields: the operator reads the row
-                    they are about to create before they create it. Described-by
-                    both fields, so it is announced on focus rather than being a
-                    live region that re-announces on every keystroke. */}
-                <p
-                  id={previewId}
-                  className="px-0.5 text-[11px] text-gray-600 dark:text-gray-400"
-                >
-                  Shows as:{" "}
-                  <span className="font-medium text-gray-900 dark:text-gray-100">
-                    {previewFullName || "add a team name"}
-                  </span>
-                </p>
-                <button
-                  ref={createSubmitRef}
-                  type="button"
-                  // NEO-208: `aria-disabled`, not `disabled` — the control
-                  // stays mounted and focusable for the duration of the
-                  // request. Native `disabled` here would reproduce the exact
-                  // bug that fixed: the browser force-blurs a disabled element
-                  // that has focus, straight to <body>, which `handleRootBlur`
-                  // reads as "focus left the picker" and closes the popover —
-                  // taking the refusal message with it. The `creating` guard
-                  // inside `createAndAdd` is what actually blocks a second
-                  // submit; this is only the announcement.
-                  aria-disabled={creating || !effectiveCreateName || undefined}
-                  // The preview says what this will create, and — when the
-                  // name is empty — why it currently will not.
-                  aria-describedby={previewId}
-                  // a11y (audit fix, SC 4.1.2): this button shares the search
-                  // box's ArrowDown cursor with the options above it, but it
-                  // is not in the listbox any more, so `aria-selected` would
-                  // be invalid here. `aria-current` is valid on any element
-                  // and means exactly this: the current item of a set.
-                  aria-current={
-                    highlightIdx === matches.length ? "true" : undefined
-                  }
-                  onClick={() => void createAndAdd()}
-                  onMouseEnter={() => setHighlightIdx(matches.length)}
-                  // Carries the COMPOSED name, so a screen reader announces
-                  // exactly the row that is about to be written — and so the
-                  // Maestro selector `Create team <full name>` keeps working
-                  // unchanged for a team with no location.
-                  // a11y (audit fix, SC 2.5.3): while the request is in
-                  // flight the visible text reads "Creating…", so the name
-                  // follows it. The RESTING string is untouched — that is the
-                  // one every `.maestro` `Create team <name>` selector targets.
-                  aria-label={
-                    creating
-                      ? `Creating team${previewFullName ? ` ${previewFullName}` : ""}`
-                      : previewFullName
-                        ? `Create team ${previewFullName}`
-                        : "Create team"
-                  }
-                  className={`w-full scroll-mb-2 text-left px-2 py-1 text-sm rounded ${
-                    highlightIdx === matches.length
-                      ? "bg-[#00D558]/20 text-[#00D558]"
-                      : "hover:bg-gray-100 dark:hover:bg-gray-700"
-                  } ${effectiveCreateName ? "" : "opacity-50"}`}
-                >
-                  {creating ? "Creating…" : "+ Create team"}
-                </button>
-              </div>
+                + New team “{query.trim()}”…
+              </button>
             )}
           </div>
         )}
       </div>
+
+      {/*
+        Portalled to `document.body` by the dialog itself, so its position in
+        this tree costs nothing — it is here because this is where the state
+        that opens it lives. Rendered only while open, so its league query and
+        its focus trap exist only when they are being used.
+      */}
+      {newTeamOpen && sportId && (
+        <NewTeamDialog
+          sportId={sportId}
+          initialName={query.trim()}
+          onCreated={(id) => {
+            addChip(id);
+            newTeamOpenRef.current = false;
+            setNewTeamOpen(false);
+          }}
+          onClose={() => {
+            newTeamOpenRef.current = false;
+            setNewTeamOpen(false);
+            // Back to the box the operator was typing in. The dialog returns
+            // focus to whatever opened it, and on a successful create that was
+            // the "+ New team" row — which `addChip` has just unmounted by
+            // clearing the query.
+            setTimeout(() => inputRef.current?.focus(), 0);
+          }}
+        />
+      )}
     </div>
   );
 }

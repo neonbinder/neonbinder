@@ -1163,10 +1163,53 @@ export default defineSchema({
     createdByUserId: v.string(),
     kind: v.union(v.literal("player"), v.literal("team")),
     name: v.string(),
+    // NEO-236 — `normalizeTeamName`/`normalizePlayerName` of `name`, stored so
+    // the batch can be asked "do you already hold this name?" through an INDEX
+    // rather than by collecting it.
+    //
+    // That distinction is the whole reason the field exists, and it is a
+    // correctness one rather than a performance one. Staging a player's career
+    // teams (`stageCareerTeamRows`) has to dedupe against the rest of the
+    // batch, and it runs from `applyLookupResult` — which the 5-wide Wikidata
+    // pool calls concurrently, once per row, WHILE the commit prelude may be
+    // reading the same batch. A `.collect()` there would put every row of the
+    // batch in each of those mutations' read sets, which is precisely the
+    // optimistic-concurrency storm NEO-189 diagnosed and removed. An indexed
+    // read puts one narrow range in instead.
+    //
+    // Optional because rows written before this field existed have none; a
+    // batch is a per-fetch throwaway, so the only cost of a legacy row is that
+    // one staging pass cannot see it by key (it still dedupes against `teams`).
+    nameNormalized: v.optional(v.string()),
     // NEO-96: reference, not a copied display label — see players.sportId.
     // getBatch resolves this to a `sportValue` string for the wizard's label so
     // the client never has to join.
     sportId: v.id("selectorOptions"),
+    /**
+     * NEO-236 — where a row came from, when it was not a name off the
+     * checklist.
+     *
+     * Jason, 2026-09-05, on the wizard asking for a career team's Location and
+     * Name inline: "How does this dialog know which League the new team is in?
+     * I think we need to show a new team dialog instead of that inline thing."
+     * So a career team the batch will have to CREATE is no longer three cramped
+     * inputs on the player's step — it is a review row of its own, walked
+     * before the player, with the same New Team step a checklist team gets.
+     *
+     * `playerRowId` is the row that needed it, which is what lets the step say
+     * "Needed by: Travis Bazzana" and what lets the player's step tell a chip
+     * that is answered from one that is still waiting. `wikidataId` is the P54
+     * statement's team QID when Wikidata gave one — linkage, so the staged
+     * row's own lookup reads the right record instead of guessing from a label.
+     *
+     * Absent on every other row, which is what "this name came off the
+     * checklist" means. Additive: nothing reads it as a required field.
+     */
+    source: v.optional(v.object({
+      kind: v.literal("careerTeamOf"),
+      playerRowId: v.id("entityReviewQueue"),
+      wikidataId: v.optional(v.string()),
+    })),
     status: v.union(
       v.literal("pending"),
       v.literal("ready"),
@@ -1189,6 +1232,14 @@ export default defineSchema({
         name: v.string(),
         fromYear: v.number(),
         toYear: v.optional(v.number()),
+        // NEO-236: the team's own Wikidata QID, off the P54 statement's value.
+        // LINKAGE ONLY — it selects which upstream record the staged team row's
+        // enrichment reads, and nothing user-facing is keyed on it. Carried
+        // because a staged career team is a real review row now, and looking it
+        // up by the QID Wikidata already gave us for this membership beats
+        // searching EntitySearch for its English label (which misses club and
+        // college sides, and can land on a different entity of the same name).
+        wikidataId: v.optional(v.string()),
       }))),
       // NEO-235, player-only. Team NAMES that Wikidata links to the player
       // with NO usable start year (Tony Gwynn's "San Diego State Aztecs
@@ -1269,6 +1320,26 @@ export default defineSchema({
         create: v.optional(v.object({
           location: v.optional(v.string()),
           name: v.string(),
+          // ── NEO-236: the league the operator picked on the New Team step ──
+          //
+          // The bug this closes: a team created out of a PLAYER's career list
+          // used to be filed under the sport's default league, so Travis
+          // Bazzana's "Sydney Blue Sox" landed in Major League Baseball. The
+          // step now asks, and the prelude never falls back to the default
+          // when it has been answered.
+          //
+          // Three states, and the third is why `leagueId` is nullable rather
+          // than merely optional:
+          //   - an id      — an existing league in this sport;
+          //   - `null`     — "no league", said deliberately;
+          //   - absent     — not answered, so the prelude's own fallbacks
+          //                  (the enrichment's P118 label, then the sport
+          //                  default) still apply, exactly as before.
+          // `leagueName` is the "create the league too" answer: a suggestion
+          // we hold no row for yet, resolved through `findOrCreateLeague` so
+          // it dedupes by name-or-alias like every other league writer.
+          leagueId: v.optional(v.union(v.id("leagues"), v.null())),
+          leagueName: v.optional(v.string()),
         })),
         // NEO-236, player-only: the same Location + Name, once per career team
         // the operator ACCEPTED that matched no existing row.
@@ -1316,6 +1387,15 @@ export default defineSchema({
     .index("by_selector_option", ["selectorOptionId"])
     .index("by_selector_option_and_batch", ["selectorOptionId", "batchId"])
     .index("by_selector_option_and_user", ["selectorOptionId", "createdByUserId"])
+    // NEO-236: "does this batch already hold this name?", asked once per career
+    // team a player's lookup proposes. See `nameNormalized` above for why this
+    // must not be a collect.
+    .index("by_batch_and_kind_and_name", [
+      "selectorOptionId",
+      "batchId",
+      "kind",
+      "nameNormalized",
+    ])
     // NEO-99: lets the stale-pending sweep (crons.ts → sweepStalePendingRows)
     // read only rows in a given status, oldest-first (every Convex index is
     // ordered by its fields then `_creationTime` ascending). The sweep queries

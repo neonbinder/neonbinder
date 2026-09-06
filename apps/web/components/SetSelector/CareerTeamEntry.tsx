@@ -21,23 +21,22 @@ import { Input } from "../primitives/Input";
  * matches nothing. So there's no "+ Create" escape hatch here; typing IS
  * creating.
  *
- * ## NEO-236 — creating takes Location + Name, never a full string
+ * ## NEO-236 — ONE box, and creating happens on its own step
  *
- * Jason, 2026-09-05: "We simply shouldn't allow for full string creation.
- * Location & Team Name should be the input." So the entry is now two fields —
- * an optional Location ("San Diego") ahead of the nickname ("Padres") — and it
- * reports both upward rather than one string. The wizard composes them for
- * matching (`teamFullName`) and carries the split through to the decision, so
- * a career team the commit has to CREATE lands as a properly split row instead
- * of one whose whole name sits in `name`.
+ * Jason, 2026-09-05: "we should also remove the Location box from New Players
+ * as we should only be selecting existing teams or entering it in the singular
+ * field which would trigger that new team dialog."
  *
- * Location stays optional and blank by default: nothing here guesses where a
- * place ends and a nickname begins. Blank is the FINAL answer only for a name
- * that carries no place at all ("Athletics", "Orix Buffaloes") — for everyone
- * else it is where the team is from, school included ("San Diego State" /
- * "Aztecs"), and the operator says so. Picking a suggestion fills Name with the
- * whole existing name and clears Location — the composed string then matches
- * that row exactly, so commit LINKS to it and creates nothing.
+ * An earlier pass put a Location field beside the name here. It asked the
+ * operator to split a team while they were dating a stint, in a form with no
+ * room for the League, and it asked it in a different place from every other
+ * team creation in the product. The field is gone: this is a single team box
+ * again, and a name that matches nothing STAGES a New Team step in the wizard
+ * — Location, Name and League, answered where every other new team is answered.
+ *
+ * That is why typing still creates and there is still no "+ Create" row here:
+ * what this component reports upward is a STINT, and the team it names is
+ * either one we already hold or one the batch is about to ask about.
  *
  * This component owns only its own mini-form state and emits each completed
  * entry via `onAdd`. The staged list of added entries (and its per-row reset)
@@ -74,13 +73,12 @@ const SEARCH_DEBOUNCE_MS = 200;
 const MAX_SUGGESTIONS = 8;
 
 /**
- * NEO-236: `name` is the NICKNAME the operator typed ("Padres"), `location`
- * the optional place ahead of it ("San Diego"). Compose with `teamFullName`
- * for anything that matches, displays, or dedupes — never by hand.
+ * NEO-236: `name` is the WHOLE team name as the operator typed or picked it —
+ * "San Diego Padres", not "Padres". Splitting it into a Location and a nickname
+ * is the New Team step's question, asked once, where the League is asked too.
  */
 export type CareerTeamDraft = {
   name: string;
-  location?: string;
   fromYear: number;
   toYear?: number;
 };
@@ -104,7 +102,6 @@ export default function CareerTeamEntry({
   onAdd: (entry: CareerTeamDraft) => void;
 }) {
   const [name, setName] = useState("");
-  const [location, setLocation] = useState("");
   const [debouncedName, setDebouncedName] = useState("");
   const [fromYear, setFromYear] = useState("");
   const [toYear, setToYear] = useState("");
@@ -125,19 +122,10 @@ export default function CareerTeamEntry({
   }, [name]);
 
   const trimmedName = name.trim();
-  const trimmedLocation = location.trim();
   const debouncedTrimmed = debouncedName.trim();
-  /**
-   * What this entry would actually create or match: "San Diego Padres".
-   *
-   * The typeahead still SEARCHES on the nickname alone — the index is
-   * token-wise, so "Padres" already returns "San Diego Padres" — but the
-   * duplicate warning below compares the composed string, because that is the
-   * name commit will look up.
-   */
-  const composedName = trimmedName
-    ? teamFullName({ name: trimmedName, location: trimmedLocation })
-    : "";
+  /** What this entry will match against, and what a New Team step would be
+   *  staged for: the whole typed name. */
+  const composedName = trimmedName;
 
   const searched = useQuery(
     api.teams.search,
@@ -228,12 +216,10 @@ export default function CareerTeamEntry({
     if (!canAdd) return;
     onAdd({
       name: trimmedName,
-      ...(trimmedLocation ? { location: trimmedLocation } : {}),
       fromYear: fromNum,
       ...(toNum !== undefined ? { toYear: toNum } : {}),
     });
     setName("");
-    setLocation("");
     setDebouncedName("");
     setFromYear("");
     setToYear("");
@@ -242,15 +228,12 @@ export default function CareerTeamEntry({
   };
 
   /**
-   * A suggestion is an existing (or already-staged) team's WHOLE name, so it
-   * goes into Name with Location cleared: composed, it is byte-for-byte the
-   * name commit will look up, which is what makes it link rather than create.
-   * Splitting it back into two fields would be a guess, and NEO-236 has no
-   * code path that guesses a location.
+   * A suggestion is an existing (or already-staged) team's WHOLE name, and it
+   * goes into the box verbatim — byte-for-byte the name the prelude will look
+   * up, which is what makes it link rather than create.
    */
   const pickSuggestion = (teamName: string) => {
     setName(teamName);
-    setLocation("");
     setDebouncedName(teamName);
     setSuggestionsOpen(false);
     nameInputRef.current?.focus();
@@ -258,20 +241,9 @@ export default function CareerTeamEntry({
 
   return (
     <div className="border border-gray-700 rounded-md bg-gray-900/60 p-2 space-y-1.5">
-      {/* NEO-236: Location then Name, in the order the stored name reads. The
-          nickname field keeps the whole flexible width — it is the one being
-          typed against a typeahead, and it is the only required half. */}
-      <div className="flex items-start gap-2">
-      <Input
-        bare
-        type="text"
-        value={location}
-        placeholder="Location"
-        aria-label="Career team location (optional)"
-        onChange={(e) => setLocation(e.target.value)}
-        className="w-28 shrink-0 p-1.5 text-sm"
-      />
-      <div className="relative flex-1 min-w-0">
+      {/* NEO-236: one box. The team's Location is asked on its own New Team
+          step, which is also the only place its League can be asked. */}
+      <div className="relative">
         <Input
           bare
           ref={nameInputRef}
@@ -379,15 +351,6 @@ export default function CareerTeamEntry({
           </ul>
         )}
       </div>
-      </div>
-
-      {/* Only once a Location is in play: with none, the composed name is the
-          Name field verbatim and echoing it back is noise. */}
-      {trimmedLocation && trimmedName && (
-        // gray-400, not gray-500: 500 on this panel's gray-900 ground is
-        // ~3.6:1, under SC 1.4.3's 4.5:1 floor for normal-size text.
-        <p className="text-xs text-gray-400">Shows as: {composedName}</p>
-      )}
 
       {didYouMean && (
         <p className="text-xs text-gray-400">

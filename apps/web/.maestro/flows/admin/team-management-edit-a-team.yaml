@@ -50,13 +50,13 @@ tags:
 # and then walks back to the product's team typeahead and types the FULL name
 # there. That last step is the whole risk of the split in one assertion: if the
 # picker matched on `name` alone, an operator typing "San Diego Padres" would
-# be offered "+ Create" and would quietly make a SECOND Padres.
+# be offered "+ New team" and would quietly make a SECOND Padres.
 #
 # R7 / R7a — writes to NO shared row. Both the player and the team are named
 # "<prefix>-<worker>-<attempt>", so eight concurrent runners and a retry can
 # never land on the same row, and nothing pre-existing is read or edited. The
 # per-attempt half is mechanical as well as safe: the typeahead offers
-# "+ Create <name>" only while no team of that name exists, so a name left
+# "+ New team <name>" only while no team of that name exists, so a name left
 # behind by a previous attempt would render "Add <name>" instead.
 #
 # "Discover" is NEVER tapped. It performs a live outbound fetch of
@@ -127,30 +127,68 @@ tags:
 - inputText: "TMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
 
 # NOTHING MATCHES THAT NAME — which is the precondition for creating it, and the
-# reason the popover is now showing its "+ Create" row. It is also a real
+# reason the popover is now showing its "+ New team" row. It is also a real
 # assertion about the name being this attempt's alone.
 - assertVisible: "No matches."
 
-# CREATE IT WITH ENTER, NOT BY TAPPING THE "+ Create" ROW.
+# OPEN THE NEW TEAM DIALOG WITH ENTER, NOT BY TAPPING THE "+ New team" ROW.
 #
-# The row exists and is correctly labelled — but on this screen it cannot be
+# NEO-236 — the popover no longer creates anything. Its one create affordance is
+# a row reading `+ New team "<typed>"…` (accessible name `New team <typed>`)
+# that OPENS a dialog, and the dialog is where Location, Team name and League
+# are answered and where the write happens.
+#
+# That row exists and is correctly labelled — but on this screen it cannot be
 # tapped, and that is geometry, not flakiness. The career editor is the LAST
 # thing on the player panel, so once the page is scrolled as far as it goes
 # "+ Add team" sits at y=510-532 of the 629px headless viewport (measured, CI
 # run 33875599981) and cannot be centred: there is no page left to scroll. Its
 # popover is `absolute top-full`, so it opens BELOW that — search input at
 # y=545-579, first row at y=583. One row fits. Two do not: with no match the
-# popover renders "No matches." AND the "+ Create" row under it, which puts the
-# create row at y>=609, off the bottom of the screen. maestro-web still reports
+# popover renders "No matches." AND the "+ New team" row under it, which puts
+# that row at y>=609, off the bottom of the screen. maestro-web still reports
 # its layout bounds, so `tapOn` "succeeds" while the click lands outside the
-# picker — which is a pointerdown-outside, so the popover closes and no team is
-# ever created. That is exactly how this step failed.
+# picker — which is a pointerdown-outside, so the popover closes and nothing
+# opens. That is exactly how this step failed.
 #
 # Enter on the search input runs the SAME handler the row does: TeamPicker's
-# keydown takes the highlighted match when there is one, and otherwise calls
-# createAndAdd(). "No matches." above is what proves there is none, so Enter
-# here can only mean create — and it needs no coordinates at all.
+# keydown takes the highlighted match when there is one, and otherwise opens the
+# New Team dialog. "No matches." above is what proves there is none, so Enter
+# here can only mean "open the dialog" — and it needs no coordinates at all.
 - pressKey: Enter
+
+# THE DIALOG IS OPEN. It is portalled to `document.body` at `z-[60]` and
+# `fixed inset-0 flex items-center justify-center`, so it is centred in the
+# viewport and clipped by nothing — none of the geometry above can reach it.
+#
+# TWO assertions, because they say two different things.
+#
+# The HEADING is the dialog's `aria-labelledby` target, so it is what a screen
+# reader announces on arrival — "New team: <what I typed>" is the dialog being
+# correctly LABELLED. (It briefly was not: opening by CLICK used to blank the
+# name, because the picker's focus-out handler read a stale "is the dialog open"
+# flag and cleared the query behind the portal. Fixed under NEO-236 with a
+# synchronous ref; this assertion is what keeps it fixed.)
+#
+# The NAME BOX and its VALUE is the dialog being correctly SEEDED — maestro-web
+# reports an input by its value, so this says the search text really reached the
+# field the operator is about to submit.
+- assertVisible: "New team: TMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- assertVisible:
+    id: "New team name"
+    text: "TMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+
+# THE WRITE. `Create team <composed full name>` is the SAME accessible name this
+# flow has always used — it moved from the popover row onto the dialog's own
+# button. Location is left blank and no League is picked, so the composed name
+# is exactly what was typed and every later matcher is unchanged.
+#
+# Tapped by id rather than driven with a second Enter: the dialog's Create and
+# Cancel are NeonButtons with an identical class string, and maestro-web's
+# pressKey re-finds the focused element by an XPath that falls back to that
+# class — so a synthetic Enter aimed at Create can land on Cancel.
+- tapOn:
+    id: "Create team TMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
 
 # The chip is the proof the row was really created; creation is a round-trip and
 # the chip is what the picker paints when it returns. Nothing else is done with
@@ -391,12 +429,15 @@ tags:
     id: 'Add Loc${WORKER_INDEX || "0"} TMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}'
 
 # And the create row is gone, which is the same fact said the other way: an
-# exact match suppresses it. Corroborating rather than load-bearing — the career
-# editor is near the bottom of the player panel, so a create form rendered here
-# would hang below the fold where Maestro cannot see it either way. The
-# assertion that carries the weight is the one above, and the one below.
+# exact match suppresses it. NEO-236 — that row is `New team <typed>` now (it
+# opens the dialog; `Create team <name>` is the dialog's own button and exists
+# only while the dialog is open), so this is the id that proves it is absent.
+# Corroborating rather than load-bearing — the career editor is near the bottom
+# of the player panel, so a create row rendered here would hang below the fold
+# where Maestro cannot see it either way. The assertion that carries the weight
+# is the one above, and the one below.
 - assertNotVisible:
-    id: 'Create team Loc${WORKER_INDEX || "0"} TMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}'
+    id: 'New team Loc${WORKER_INDEX || "0"} TMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}'
 
 # Take the match with Enter — the picker's keydown selects the highlighted match
 # when there is one — and the chip that comes back carries the FULL name. A chip

@@ -290,10 +290,13 @@ export async function resolveOperatorLeagueId(
   ctx: MutationCtx,
   args: {
     sportId: Id<"selectorOptions">;
-    leagueId?: Id<"leagues">;
+    /** `null` is an answer — "no league" — and is returned as null, distinct
+     *  from the `undefined` that means the question was never put. */
+    leagueId?: Id<"leagues"> | null;
     leagueName?: string;
   },
-): Promise<Id<"leagues"> | undefined> {
+): Promise<Id<"leagues"> | null | undefined> {
+  if (args.leagueId === null) return null;
   if (args.leagueId) {
     const row = await ctx.db.get(args.leagueId);
     // Refused rather than ignored: an operator who picked a league and got a

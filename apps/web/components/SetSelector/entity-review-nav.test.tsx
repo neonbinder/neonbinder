@@ -38,6 +38,36 @@ function row(
   return { _id: id, status, decision };
 }
 
+/** A player row — the only kind the NEO-236 blocking rule applies TO. */
+function player(
+  id: string,
+  status: NavRow["status"] = "ready",
+  decision?: NavRow["decision"],
+): NavRow {
+  return { _id: id, status, decision, kind: "player" };
+}
+
+/**
+ * A team row the batch staged for a player's career list — the only kind the
+ * blocking rule applies FROM. `getBatch` emits these AHEAD of their player,
+ * which is what makes Jason's "New Team, New Team, then the player" order fall
+ * out of `nextUndecided` once they are settled.
+ */
+function careerTeamOf(
+  id: string,
+  playerRowId: string,
+  status: NavRow["status"] = "ready",
+  decision?: NavRow["decision"],
+): NavRow {
+  return {
+    _id: id,
+    status,
+    decision,
+    kind: "team",
+    source: { kind: "careerTeamOf", playerRowId },
+  };
+}
+
 describe("nextUndecided", () => {
   it("returns the first settled, undecided row", () => {
     const rows = [row("a", "ready", { action: "create" }), row("b"), row("c")];
@@ -63,6 +93,164 @@ describe("nextUndecided", () => {
 
   it("returns null for an empty batch", () => {
     expect(nextUndecided([])).toBeNull();
+  });
+});
+
+/**
+ * NEO-236 — a player waits for the teams its own career list staged.
+ *
+ * Jason, 2026-09-05: "I think we should show 3 modals in the walker: 1. New
+ * Team: Sydney Blue Sox 2. New Team: Oregon State Beavers 3. New Player Travis
+ * Bazzana which can now use the 2 new teams that were created."
+ *
+ * `getBatch` already emits the staged team rows ahead of their player, which is
+ * enough only while those rows are SETTLED — the "step over a pending row" rule
+ * above would otherwise put the player first and hand the operator a step they
+ * cannot complete (every chip reading "needs a team decision", the primary
+ * blocked). So the player is held until each of its staged teams carries an
+ * answer, whatever that answer is.
+ */
+describe("nextUndecided — a player waits on its staged career teams", () => {
+  it("presents the staged team first even though the player was inserted first", () => {
+    const rows = [player("p1"), careerTeamOf("t1", "p1")];
+    expect(nextUndecided(rows)?._id).toBe("t1");
+  });
+
+  it("walks Jason's sequence: both teams, then the player", () => {
+    const sydney = careerTeamOf("t-sydney", "p1");
+    const oregon = careerTeamOf("t-oregon", "p1");
+    const bazzana = player("p1");
+
+    // `getBatch` order: the staged teams sit ahead of the player they came
+    // from, so a settled batch simply reads left to right.
+    let rows = [sydney, oregon, bazzana];
+    expect(nextUndecided(rows)?._id).toBe("t-sydney");
+
+    rows = [{ ...sydney, decision: { action: "create" } }, oregon, bazzana];
+    expect(nextUndecided(rows)?._id).toBe("t-oregon");
+
+    rows = [
+      { ...sydney, decision: { action: "create" } },
+      { ...oregon, decision: { action: "create" } },
+      bazzana,
+    ];
+    expect(nextUndecided(rows)?._id).toBe("p1");
+  });
+
+  it("stops blocking once the team is decided, whatever the decision is", () => {
+    for (const decision of [
+      { action: "create" } as const,
+      { action: "link", linkedTeamId: "team_1" } as const,
+      // "Skip" means "that is not a team". The player's own step is where that
+      // is dealt with — untick the chip, or change the team's decision — so
+      // refusing to present the player would leave nowhere to do either.
+      { action: "skip" } as const,
+    ]) {
+      const rows = [player("p1"), careerTeamOf("t1", "p1", "ready", decision)];
+      expect(nextUndecided(rows)?._id).toBe("p1");
+    }
+  });
+
+  it("keeps holding the player while its staged team is still being looked up", () => {
+    // The pending team is stepped over by the general rule AND still blocks the
+    // player, so there is nothing to present. The wizard says it is still
+    // looking names up, which is exactly what is happening.
+    const rows = [player("p1"), careerTeamOf("t1", "p1", "pending")];
+    expect(nextUndecided(rows)).toBeNull();
+  });
+
+  it("holds only on ITS OWN staged teams", () => {
+    // Two players in one batch. p2's outstanding team is not p1's problem, so
+    // p1 is offered normally while p2 waits.
+    const rows = [player("p1"), careerTeamOf("t2", "p2", "pending"), player("p2")];
+    expect(nextUndecided(rows)?._id).toBe("p1");
+
+    // With p1 answered there is genuinely nothing left to show: t2 is still
+    // being looked up and p2 is waiting on it.
+    const p1Done = [
+      player("p1", "ready", { action: "create" }),
+      careerTeamOf("t2", "p2", "pending"),
+      player("p2"),
+    ];
+    expect(nextUndecided(p1Done)).toBeNull();
+
+    // t2 lands, and it is what comes next — ahead of the player it belongs to.
+    const t2Ready = [
+      player("p1", "ready", { action: "create" }),
+      careerTeamOf("t2", "p2"),
+      player("p2"),
+    ];
+    expect(nextUndecided(t2Ready)?._id).toBe("t2");
+  });
+
+  it("never blocks a TEAM row, even one that is itself staged", () => {
+    // The rule is about a player waiting on its teams. A team row waiting on a
+    // team row would be a cycle with no operator step to break it.
+    const rows = [careerTeamOf("t1", "p1"), careerTeamOf("t2", "p1")];
+    expect(nextUndecided(rows)?._id).toBe("t1");
+  });
+
+  it("leaves rows that carry no kind/source untouched", () => {
+    // Every pre-NEO-236 caller passes three-field literals; the rule has to be
+    // inert for them rather than needing them all updated.
+    const rows = [row("a"), row("b")];
+    expect(nextUndecided(rows)?._id).toBe("a");
+  });
+
+  it("cannot deadlock: a blocker is either reachable or still being looked up", () => {
+    // A blocking row is by definition undecided, so it is either settled — and
+    // then reached FIRST, because it sorts ahead of the player — or pending,
+    // and the lookup pool (or `sweepStalePendingRows`) settles it. There is no
+    // third state in which the walk has nothing to offer and nothing arriving.
+    const blocked = [player("p1"), careerTeamOf("t1", "p1", "pending")];
+    expect(nextUndecided(blocked)).toBeNull();
+
+    const settled = [player("p1"), careerTeamOf("t1", "p1", "ready")];
+    expect(nextUndecided(settled)?._id).toBe("t1");
+
+    const answered = [
+      player("p1"),
+      careerTeamOf("t1", "p1", "ready", { action: "create" }),
+    ];
+    expect(nextUndecided(answered)?._id).toBe("p1");
+  });
+
+  it("counts a blocked player as undecided, not as done", () => {
+    // The progress line must not claim a row is finished because the walk is
+    // not showing it.
+    const rows = [player("p1"), careerTeamOf("t1", "p1", "pending")];
+    expect(countDecided(rows)).toBe(0);
+    expect(countPendingUndecided(rows)).toBe(1);
+  });
+});
+
+describe("resolveNav — the staged-team hold", () => {
+  it("presents nothing while every remaining row is blocked or pending", () => {
+    // The loop guard again: null in, null out, SAME object.
+    const nav = { rowId: null, explicit: false };
+    const rows = [player("p1"), careerTeamOf("t1", "p1", "pending")];
+    expect(resolveNav(rows, nav)).toBe(nav);
+  });
+
+  it("moves to the player the moment its last staged team is answered", () => {
+    const rows = [player("p1"), careerTeamOf("t1", "p1")];
+    const onTeam = resolveNav(rows, { rowId: null, explicit: false });
+    expect(onTeam).toEqual({ rowId: "t1", explicit: false });
+
+    const decided = [
+      player("p1"),
+      careerTeamOf("t1", "p1", "ready", { action: "create" }),
+    ];
+    expect(resolveNav(decided, onTeam)).toEqual({ rowId: "p1", explicit: false });
+  });
+
+  it("still lets the operator pin a blocked player explicitly", () => {
+    // Back / "Change decision" reaches a row the walk would not offer. It has
+    // to stay put: its own step is where an unanswerable career team gets
+    // unticked.
+    const rows = [player("p1"), careerTeamOf("t1", "p1")];
+    const nav = { rowId: "p1", explicit: true };
+    expect(resolveNav(rows, nav)).toBe(nav);
   });
 });
 
