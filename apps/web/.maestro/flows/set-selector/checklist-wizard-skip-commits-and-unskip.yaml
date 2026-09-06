@@ -1,0 +1,167 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Entity review — committing a review of skips leaves the set its own Skipped names list, and Unskip puts a name back"
+tags:
+  - set-selector
+  - regression
+---
+# R1 — ONE FEATURE (NEO-212): what a COMMITTED skip leaves behind. The sibling
+# read-only flow (checklist-wizard-skip-not-a-person) proves the skip CONTROL —
+# per-row, bulk, and the decision counter. It cannot prove any of this, because
+# skip records are written by `commitCardChecklist`, not by `recordDecision`:
+# the set's own "Skipped names" list, its count, and the Unskip that puts a name
+# back in front of the next sync. That is what this flow owns.
+#
+# R2 — HARD ASSERTIONS:
+#     (a) the review starts with nothing decided — "0 of N reviewed";
+#     (b) one per-row skip records exactly ONE decision ("Decided (1)");
+#     (c) "Skip Remaining" decides every row that is left, lookups included —
+#         "Confirm & Save" renders only once every row carries a decision, so
+#         its appearance IS that assertion;
+#     (d) the commit lands ("Saved N cards") having created NO player and NO
+#         team — every decision was a skip, and a skip is the decision that
+#         writes no entity;
+#     (e) the set now carries a "Skipped names (N)" disclosure — the durable
+#         record, which did not exist before the commit;
+#     (f) Unskip removes one and says so in the product's own words. That
+#         sentence is the whole user-facing contract of the list: the name comes
+#         back at the next sync rather than being gone for good.
+#
+# ── THE FIXTURE, AND WHY THIS FLOW MAY COMMIT ───────────────────────────────
+#   `Basketball → 2024 → Panini → Panini Basketball Hall of Fame → Base`.
+#   Measured on PR #235's preview, 2026-09-06: 13 BSC-only cards → **25 unknown
+#   names (13 players + 12 teams)**, wizard opens, first row a player.
+#
+#   THIS FLOW IS THE SOLE WRITER OF THIS SET. Nothing else reads or writes it,
+#   so committing cannot disturb anything: there is no reader to race, and no
+#   other flow's fixture to drain. That is the whole reason each committing flow
+#   gets its OWN real set instead of sharing one — CI has no way to serialize
+#   two flows (`run-e2e-queue.sh` filters only `util`/`wip`/`setup`; the
+#   `isolated` and `serial-marketplace` lanes exist only in the LOCAL
+#   `run-e2e-smoke.sh`), so "one set, one writer" is the only isolation that
+#   actually holds.
+#
+#   IT DOES DRAIN ITS OWN FIXTURE, and that is accepted: committing makes these
+#   13 players known, so a SECOND run against the same un-reseeded deployment
+#   would open the wizard on nothing. CI reseeds the preview every run, so the
+#   drain never outlives one run. A local re-run needs a fresh seed.
+#
+#   NO KIND GUARD NEEDED: the skip control exists on both kinds
+#   ("Skip {name} — not a {person|team}"), so this flow works on whichever row
+#   settles first and never gambles on it. That is just as well here — this
+#   fixture is 12/25 teams.
+#
+# R3 — DEDUP: the skip CONTROL is checklist-wizard-skip-not-a-person (read-only,
+#   on the shared Big League fixture). This flow adds only the commit side.
+
+# ============================================================
+# LAUNCH + SIGN IN
+# ============================================================
+
+- launchApp
+- extendedWaitUntil:
+    visible: ".*Build set parameters using marketplace APIs.*"
+    timeout: 45000
+
+# ============================================================
+# SETUP — this flow's OWN real set, real fetch, wizard open
+# BSC-only mapping, so the whole checklist arrives in the "BSC only" column and
+# must be kept or Confirm would save nothing.
+# ============================================================
+
+- runFlow:
+    file: util-fetch-real-set-checklist-to-wizard.yaml
+    env:
+      SPORT: "Basketball"
+      YEAR: "2024"
+      MANUFACTURER: "Panini"
+      SET: "Panini Basketball Hall of Fame"
+      KEEP_BSC_ONLY: "true"
+
+# ============================================================
+# STEP 1 — R2(a)
+# ============================================================
+
+- assertVisible:
+    text: "0 of [0-9]+ reviewed.*"
+
+# ============================================================
+# STEP 2 — R2(b): one per-row skip, one decision
+# 30s: the row offers no action until its live Wikidata lookup settles.
+# ============================================================
+
+- extendedWaitUntil:
+    visible:
+      id: "Skip .* not a (person|team)"
+    timeout: 30000
+- tapOn:
+    id: "Skip .* not a (person|team)"
+- extendedWaitUntil:
+    visible:
+      text: "1 of [0-9]+ reviewed.*"
+- assertVisible:
+    text: "Decided \\(1\\)"
+
+# ============================================================
+# STEP 3 — R2(c): skip the rest, lookups included
+# 120s covers a batch still draining its live Wikidata queue.
+# ============================================================
+
+- tapOn:
+    text: ".*Skip Remaining \\([0-9]+\\).*"
+- extendedWaitUntil:
+    visible:
+      text: ".*Confirm & Save.*"
+    timeout: 120000
+
+# ============================================================
+# STEP 4 — R2(d): COMMIT
+# Every decision is a skip, so this creates no player and no team. The positive
+# terminal signal proves the wizard closed AND the commit landed; waiting on the
+# modal vanishing would race the "Saving..." state (NEO-163).
+#
+# 60s, not the 7s default: `commitCardChecklist` writes every kept card and
+# re-resolves the batch on the way through. MEASURE IT on the first green run
+# and trim — 13 cards should be quick.
+# ============================================================
+
+- tapOn:
+    text: ".*Confirm & Save.*"
+- extendedWaitUntil:
+    visible:
+      text: ".*Saved [0-9]+ cards.*"
+    timeout: 60000
+
+# ============================================================
+# STEP 5 — R2(e): the set now remembers what was skipped
+#
+# `SkippedNamesPanel` returns null when a set has no skip records, so this
+# disclosure EXISTING is the assertion — it could not have rendered before the
+# commit. The count is a regex: how many names the marketplace surfaces is its
+# business, not this flow's claim.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      id: "Skipped names \\([0-9]+\\) . not players or teams"
+    centerElement: true
+    timeout: 15000
+- tapOn:
+    id: "Skipped names \\([0-9]+\\) . not players or teams"
+- assertVisible:
+    text: ".*Unskip a name to review it on the next sync.*"
+
+# ============================================================
+# STEP 6 — R2(f): the skip is reversible, and the product says so
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      id: "Unskip .*"
+    centerElement: true
+    timeout: 10000
+- tapOn:
+    id: "Unskip .*"
+- extendedWaitUntil:
+    visible:
+      text: "Unskipped .* it will be reviewed on the next sync."

@@ -20,6 +20,9 @@ These are provisioned once by `flows/setup.yaml` at the head of every run and ar
 | Baseball → 2024 → Topps → Topps Chrome | `Base` (full checklist), `Insert` → "Future Stars" (~20 cards), `Parallel` → "Gold Wave Refractors" (~300 cards) | `flows/setup.yaml` |
 | Baseball → 2024 → Topps → Topps Big League | `Base` — variant types synced and Base MAPPED, checklist deliberately EMPTY (NEO-248 wizard fixture) | `flows/setup.yaml` |
 | Baseball → 2024 → Topps → Topps 206 | none — variant types sync on first use; Base stays **UNMAPPED** (NOT pre-synced) | `flows/set-selector/base-mapping-cancel-recovers.yaml` — **sole writer**, and it writes nothing |
+| Basketball → 2024 → Panini → Panini Basketball Hall of Fame | `Base` — variant types synced, Base MAPPED **BSC-only**, checklist deliberately EMPTY | `flows/setup.yaml` (structure); **sole writer** `checklist-wizard-skip-commits-and-unskip.yaml` |
+| Basketball → 2024 → Panini → Panini Boston Celtics NBA Champions | `Base` — same shape | `flows/setup.yaml` (structure); **sole writer** `checklist-wizard-career-team-commits.yaml` |
+| Baseball → 2024 → Topps → Topps Brooklyn Collection | `Base` — same shape | `flows/setup.yaml` (structure); **sole writer** `checklist-wizard-link-commits-and-resolves.yaml` |
 | Baseball → 1996 → Score → Score | `Insert` (reconciled in-flow, NOT pre-synced) | `flows/set-selector/inserts-1996-score-one-nb-set-two-bsc-sources.yaml` — **sole writer** |
 | Hockey → 2024 → Topps → Topps NHL Sticker Collection | none — the flow never goes below `Variant Types` (NOT pre-synced) | `flows/set-selector/set-rename-survives-resync-and-suggests-bsc-name.yaml` — **sole writer** |
 
@@ -298,12 +301,94 @@ before touching any of these four.
 all sharing `util-fetch-real-set-checklist-to-wizard.yaml`, and all four
 READ-ONLY (Cancel → Discard).
 
+Three SIBLING flows cover the **commit** side — what a decision is worth once it
+is saved — and each gets its own real set so it can write without racing
+anything:
+
+| flow | fixture |
+|---|---|
+| `checklist-wizard-skip-commits-and-unskip` | Panini Basketball Hall of Fame |
+| `checklist-wizard-career-team-commits` | Panini Boston Celtics NBA Champions |
+| `checklist-wizard-link-commits-and-resolves` | Topps Brooklyn Collection |
+
+See "The three COMMITTING entity-review fixtures" below.
+
 **They no longer own a custom-set prefix.** `wbr-`, `skp-`, `lce-` and `cte-`
 are retired along with `fcd-` and `kod-`: these flows create nothing. The
 discard confirm and the Enter commit live in STEP 6 of
 `inserts-1996-score-one-nb-set-two-bsc-sources.yaml`.
 
-### Topps 206 — the unmapped-Base fixture for `base-mapping-cancel-recovers` (NEO-248) ⚠️ NEEDS OWNER APPROVAL
+### The three COMMITTING entity-review fixtures — one set per flow (NEO-248) ✅ APPROVED
+
+The four `checklist-wizard-*` flows on Topps Big League are read-only: they
+prove the wizard's decisions and always exit through Cancel → Discard. Three
+sibling flows prove what happens when a review is **committed**, and each one
+gets its **own real set**.
+
+| flow | fixture | shape | measured unknowns |
+|---|---|---|---|
+| `checklist-wizard-skip-commits-and-unskip` | Basketball → 2024 → Panini → **Panini Basketball Hall of Fame** | 13 cards, BSC-only | **25 — 13 players + 12 teams** |
+| `checklist-wizard-career-team-commits` | Basketball → 2024 → Panini → **Panini Boston Celtics NBA Champions** | 30 cards, BSC-only | **21 — 20 players + 1 team** |
+| `checklist-wizard-link-commits-and-resolves` | Baseball → 2024 → Topps → **Topps Brooklyn Collection** | 50 cards, matched on both sides | **12 — 11 players + 1 team** |
+
+All measured live on PR #235's preview, 2026-09-06: each syncs its variant types
+cleanly (no reconcile dialog), each opens the wizard, and each presented a
+player row first.
+
+#### Concurrency: one set, one writer — parallel-safe by construction
+
+**CI cannot serialize two flows.** `run-e2e-queue.sh` filters only
+`util` / `wip` / `setup`; the `isolated`, `serial-marketplace` and
+`requires:`/`provides:` dep-graph lanes exist ONLY in `run-e2e-smoke.sh`, the
+local runner. So there is no lane to put a writer on, and "sole writer" has to
+be structural rather than scheduled.
+
+It is: **each of these three sets is touched by exactly one flow, and no flow
+reads another's set.** Different sets share no `selectorOptionId`, no
+`cardChecklist` rows and no skip records, so the three commit concurrently with
+each other, with the four read-only Big League flows, and with everything else,
+without interfering. Nothing needs restoring afterwards.
+
+**They do drain their own fixtures, and that is accepted.** Committing makes
+that set's players known, and a known name never reaches the wizard again — so a
+second run against the same un-reseeded deployment would open on nothing. CI
+reseeds the preview every run, so the drain never outlives one run. A local
+re-run needs a fresh seed; `MAESTRO_NO_DEPS=1` will not do.
+
+#### Why these sets, specifically
+
+* **A non-baseball sport guarantees unknown players.** The only players
+  `setup.yaml` ever creates are the ~494 from 2024 Topps Chrome, all baseball,
+  so every basketball name is unknown by construction rather than by luck.
+* **The link flow must nevertheless be BASEBALL.** `EntityLinkSearch` queries
+  `players.search({ query, sportId })`, scoped to the row's sport — a basketball
+  fixture has an empty roster and nothing to link to. Topps Brooklyn Collection
+  is baseball, so `Link to Shohei Ohtani` resolves (verified live) while its own
+  11 players stay unknown.
+* **The career-team flow needs a player-dominant set.** It acts on controls only
+  a player row renders, and 20:1 makes the kind guard a rare branch. The Hall of
+  Fame set is 13:12 and would fire it half the time — which is why it went to
+  the skip flow instead, where the control exists on both kinds and no guard is
+  needed at all.
+* **Base is mapped BSC-only** for the two Panini sets. Their SportLots candidate
+  lists are ~3111 rows whose best matches are unrelated ("Caitlin Clark
+  Collection" variants were offered for the Celtics set), and SportLots returns
+  no player names anyway. Consequence for the flows: nothing auto-matches, every
+  card lands in "BSC only", and the util must be called with
+  `KEEP_BSC_ONLY: "true"` or Confirm saves 0 cards. Topps Brooklyn Collection is
+  matched on both sides and must NOT set that flag — its unmatched columns are
+  omitted entirely, so the control does not exist.
+* **All four names are collision-free** under their own manufacturer.
+
+#### `setup.yaml` provisions structure only
+
+Sets synced, variant types synced, Base mapped, **checklist EMPTY** — asserted.
+Basketball is a cold sport, so its Years/Manufacturers/Sets columns are synced
+there too, once, via `util-drill-to-cold-real-set.yaml`; the per-set mapping is
+`util-map-base-bsc-only.yaml`. **Never fetch these sets in the seed**: it would
+create their players and empty every wizard they exist to fill.
+
+### Topps 206 — the unmapped-Base fixture for `base-mapping-cancel-recovers` (NEO-248) ✅ APPROVED
 
 `base-mapping-cancel-recovers` needs a real set whose **Base is UNMAPPED**, so
 that selecting Base auto-opens `BaseSetPicker` and the Cancel → message → Retry
@@ -335,7 +420,7 @@ only `id:` selectors are regex FINDS. (`Topps 206 NPB` itself is unusable as a
 fixture — it has only an `Insert` variant type and opens a 2534-row
 `Reconcile Inserts` dialog on first drill.)
 
-### Topps Big League — the entity-review wizard fixture (NEO-248) ⚠️ NEEDS OWNER APPROVAL
+### Topps Big League — the entity-review wizard fixture (NEO-248) ✅ APPROVED
 
 `Baseball → 2024 → Topps → Topps Big League → Base` is the fixture for the four
 `checklist-wizard-*` flows. It is a REAL, marketplace-listed set: it appears in

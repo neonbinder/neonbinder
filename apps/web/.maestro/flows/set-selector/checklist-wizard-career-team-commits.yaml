@@ -1,0 +1,198 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Entity review — a hand-staged career team survives the commit and becomes a real team row"
+tags:
+  - set-selector
+  - regression
+---
+# R1 — ONE FEATURE: what a hand-staged career team is worth once the review is
+# COMMITTED. The sibling read-only flow (checklist-wizard-career-team-entry)
+# proves the mini-form — validation, the chip, the optional to-year, removal,
+# and that the staged entry reaches a decision. It stops there. This flow proves
+# the last mile: `commitCardChecklist` runs `resolveTeamIdByName`, which
+# get-or-creates the staged team and attaches it to the newly created player. A
+# staged entry that never reached the database would leave no team row behind.
+#
+# R2 — HARD ASSERTIONS:
+#     (a) the row under test is a PLAYER row — only a player renders the
+#         career-team mini-form — asserted by its stable control before use;
+#     (b) a complete entry stages a chip reading "<name> (2001–2005)";
+#     (c) "Add as New Player" records a CREATE carrying that entry — the
+#         history reads "Added as new";
+#     (d) the commit lands ("Saved N cards");
+#     (e) THE POINT: `/admin/teams` now holds a team by the staged name, and the
+#         list narrows to exactly "1 of N teams" for it. That row can only have
+#         come from commit-time `resolveTeamIdByName` — nothing else in this
+#         flow creates a team, and the name is unique to this worker and attempt.
+#
+# ── WHAT THIS STILL DOES NOT PROVE, AND WHY ─────────────────────────────────
+#   That the team is attached to THAT player's `teamYears`. The wizard picks
+#   which unknown to present (a race between live Wikidata lookups), so the flow
+#   never learns the player's name and cannot look it up afterwards — and no UI
+#   renders `teamYears` anyway. The team ROW existing is the strongest
+#   observable consequence of the staged entry reaching commit; the attachment
+#   itself stays with the entity-review unit files.
+#
+# ── THE FIXTURE ─────────────────────────────────────────────────────────────
+#   `Basketball → 2024 → Panini → Panini Boston Celtics NBA Champions → Base`.
+#   Measured on PR #235's preview, 2026-09-06: 30 BSC-only cards → **21 unknown
+#   names (20 players + 1 team)**, wizard opens, first row a player.
+#
+#   PLAYER-DOMINANT ON PURPOSE. This flow needs a PLAYER row, and 20:1 is the
+#   most lopsided of the three committing fixtures — the sibling Hall of Fame
+#   set is 13:12 and would make the kind guard fire half the time. Basketball is
+#   also safe here in a way it is not for the link flow: nothing needs an
+#   existing roster player, only an unknown one.
+#
+#   THIS FLOW IS THE SOLE WRITER OF THIS SET. Nothing else reads or writes it,
+#   so committing races nothing. CI cannot serialize two flows
+#   (`run-e2e-queue.sh` filters only `util`/`wip`/`setup`; the lanes live only
+#   in the LOCAL `run-e2e-smoke.sh`), so "one set, one writer" is the only
+#   isolation that holds. It drains its OWN fixture within a run — accepted,
+#   because CI reseeds the preview every run.
+#
+#   ⚠️ THIS FLOW CREATES ONE PLAYER AND ONE TEAM, deliberately, and they are
+#   global. The player is one of this set's own basketball unknowns, which no
+#   other flow touches; the team is named per worker and attempt so it can never
+#   collide. Every other unknown is skipped, so exactly one player is minted.
+
+# ============================================================
+# LAUNCH + SIGN IN
+# ============================================================
+
+- launchApp
+- extendedWaitUntil:
+    visible: ".*Build set parameters using marketplace APIs.*"
+    timeout: 45000
+
+# ── A TEAM NAME THAT MATCHES NOTHING, AND THE TOKEN THAT MAKES IT SO ────────
+# CareerTeamEntry's suggestion dropdown is `absolute z-10 left-0 right-0`, so
+# one suggestion row covers "From year" and "+ Add" beneath it, and it closes
+# only on a pick, a successful add, or Escape — which maestro-web cannot send.
+# A tap aimed at "+ Add" then lands on the suggestion and REPLACES the typed
+# name (CI run 33875599981).
+#
+# Suggestions come from `teams.search`, a Convex SEARCH index that matches on
+# TOKENS. ATTEMPT_ID is "w<worker>-a<attempt>-<random>", so every flow naming a
+# team after it shares the token "a1". Stripping the hyphens fixes it:
+# "w3-a1-23945" tokenizes as three terms, "w3a123945" as one that nothing else
+# carries.
+- evalScript: ${output.ATTEMPT_ID = output.ATTEMPT_ID || String(Date.now()).slice(-4)}
+# Single-quoted: the expression contains double quotes.
+- evalScript: '${output.ATTEMPT_TOKEN = String(output.ATTEMPT_ID).split("-").join("")}'
+
+# ============================================================
+# SETUP — this flow's OWN real set, real fetch, wizard open
+# BSC-only mapping, so the whole checklist arrives in the "BSC only" column.
+# ============================================================
+
+- runFlow:
+    file: util-fetch-real-set-checklist-to-wizard.yaml
+    env:
+      SPORT: "Basketball"
+      YEAR: "2024"
+      MANUFACTURER: "Panini"
+      SET: "Panini Boston Celtics NBA Champions"
+      KEEP_BSC_ONLY: "true"
+
+- assertVisible:
+    text: "0 of [0-9]+ reviewed.*"
+
+# ============================================================
+# STEP 1 — THE KIND GUARD (see the read-only sibling for the full reasoning)
+# Wait for the row to become ACTIONABLE first, then skip a team row if that is
+# what came up. On the 20-in-21 path this costs one poll and does nothing.
+# ============================================================
+
+- extendedWaitUntil:
+    visible:
+      id: "Add as New (Player|Team)"
+    timeout: 30000
+- runFlow:
+    when:
+      visible:
+        id: "Skip .* not a team"
+    commands:
+      - tapOn:
+          id: "Skip .* not a team"
+      - extendedWaitUntil:
+          visible:
+            id: "Add as New (Player|Team)"
+          timeout: 30000
+
+# ============================================================
+# STEP 2 — R2(a)+(b): stage a career team on the player row
+# The CONTROL, not the prose: the heading is a <p> split by a nested <span>, so
+# its node text is copy that can be reworded without changing behaviour.
+# The chip's en dash (U+2013) is matched with "." to keep a literal non-ASCII
+# character out of the matcher; parentheses escaped.
+# ============================================================
+
+- assertVisible:
+    id: "Career team name"
+- tapOn:
+    id: "Career team name"
+- inputText: "CareerTeam-${output.ATTEMPT_TOKEN}"
+- tapOn:
+    id: "From year"
+- inputText: "2001"
+- tapOn:
+    id: "To year \\(optional\\)"
+- inputText: "2005"
+- tapOn:
+    id: "Add career team"
+- assertVisible:
+    text: ".*CareerTeam-${output.ATTEMPT_TOKEN} \\(2001.2005\\).*"
+
+# ============================================================
+# STEP 3 — R2(c): the decision carries it
+# ============================================================
+
+- tapOn: "Add as New Player"
+- extendedWaitUntil:
+    visible:
+      text: "Added as new"
+
+# ============================================================
+# STEP 4 — R2(d): resolve the rest as skips, then COMMIT
+# Skips mint nothing, so exactly ONE player is created — the one carrying the
+# staged team. 120s for the bulk (live Wikidata queue), 60s for the commit.
+# ============================================================
+
+- tapOn:
+    text: ".*Skip Remaining \\([0-9]+\\).*"
+- extendedWaitUntil:
+    visible:
+      text: ".*Confirm & Save.*"
+    timeout: 120000
+- tapOn:
+    text: ".*Confirm & Save.*"
+- extendedWaitUntil:
+    visible:
+      text: ".*Saved [0-9]+ cards.*"
+    timeout: 60000
+
+# ============================================================
+# STEP 5 — R2(e): THE POINT — the staged team is a real row now
+#
+# `resolveTeamIdByName` get-or-creates it during the commit. Nothing else in
+# this flow creates a team, and the name carries this worker's attempt token, so
+# a row by this name can only have come from the staged entry.
+#
+# The filter takes focus on arrival (NEO-156), so no tapOn before typing; the
+# count assertion is what proves the keystrokes landed. Composed with the count
+# so it cannot pass against an unfiltered list that merely contains the name.
+# ============================================================
+
+- openLink: ${APP_URL || "http://localhost:3000"}/admin/teams
+- extendedWaitUntil:
+    visible: ".*of .* teams.*"
+    timeout: 30000
+- inputText: "CareerTeam-${output.ATTEMPT_TOKEN}"
+- extendedWaitUntil:
+    visible: "1 of .* teams.*"
+    timeout: 15000
+- assertVisible:
+    text: "CareerTeam-${output.ATTEMPT_TOKEN}"
+    below:
+      text: "1 of .* teams.*"

@@ -1,0 +1,198 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Entity review — a committed link resolves the name for good, so re-syncing the set raises no review at all"
+tags:
+  - set-selector
+  - regression
+---
+# R1 — ONE FEATURE (NEO-92): what a COMMITTED link is worth. The sibling
+# read-only flow (checklist-wizard-link-to-existing-player) proves the link
+# ACTION — that the panel finds a roster player and records "Linked to <name>"
+# rather than a create. It stops at the decision. This flow proves the decision
+# STICKS: after the commit, every name in this set is resolved, so **re-syncing
+# it raises no entity review at all**. That is the operator-visible payoff —
+# you resolve a name once and the marketplace stops asking.
+#
+# R2 — HARD ASSERTIONS:
+#     (a) the review starts with nothing decided — "0 of N reviewed";
+#     (b) the row under test is a PLAYER row (its link panel is labelled for
+#         players), asserted before the feature action;
+#     (c) the search finds the existing roster player BY NAME and taking it
+#         records a LINK — the history reads "Linked to Shohei Ohtani", the one
+#         string neither a create ("Added as new") nor a skip ("Skipped") can
+#         produce;
+#     (d) the commit lands ("Saved N cards");
+#     (e) THE POINT: a SECOND sync of the same set commits straight through —
+#         "Saved N cards" again with NO wizard. Every name is now either linked
+#         or skipped, so `resolveUnknownsAndStartBatch` finds nothing to review.
+#         The negative is paired with that positive terminal signal so it cannot
+#         pass on a dead page.
+#
+# ── THE FIXTURE, AND WHY IT IS BASEBALL ─────────────────────────────────────
+#   `Baseball → 2024 → Topps → Topps Brooklyn Collection → Base`.
+#   Measured on PR #235's preview, 2026-09-06: 50 matched cards → **12 unknown
+#   names (11 players + 1 team)**, wizard opens, first row a player.
+#
+#   IT HAS TO BE BASEBALL, and this is not a preference. `EntityLinkSearch`
+#   queries `players.search({ query, sportId })` — scoped to the row's SPORT —
+#   and the only players `setup.yaml` ever creates are the ~494 from 2024 Topps
+#   Chrome, all baseball. A basketball or football fixture has an EMPTY roster
+#   and nothing to link to, which is exactly why the other two committing flows
+#   (skip, career-team) can use Panini basketball sets and this one cannot.
+#   VERIFIED on this fixture, not assumed: typing "Ohtani" into the link panel
+#   returned `Link to Shohei Ohtani`.
+#
+#   THIS FLOW IS THE SOLE WRITER OF THIS SET. Nothing else reads or writes it,
+#   so committing races nothing and drains no other fixture. CI cannot serialize
+#   two flows (`run-e2e-queue.sh` filters only `util`/`wip`/`setup`; the lanes
+#   live only in the LOCAL `run-e2e-smoke.sh`), so "one set, one writer" is the
+#   only isolation that actually holds. It does drain its OWN fixture within a
+#   run — accepted, because CI reseeds the preview every run.
+#
+# ⚠️ DATA DEPENDENCY — THE LINK TARGET. Shohei Ohtani is card #1 of 2024 Topps
+#   Chrome and is therefore in the roster `setup.yaml` commits. If he is ever
+#   absent this fails at STEP 3 with a readable message; the fix is to change
+#   the two literals to another player setup provisions. He is deliberately not
+#   a player this flow creates — minting a fixture player would put a global row
+#   in `players` for every worker.
+#
+# R3 — DEDUP: the link ACTION is checklist-wizard-link-to-existing-player
+#   (read-only, on the shared Big League fixture). This flow adds only the
+#   commit side.
+
+# ============================================================
+# LAUNCH + SIGN IN
+# ============================================================
+
+- launchApp
+- extendedWaitUntil:
+    visible: ".*Build set parameters using marketplace APIs.*"
+    timeout: 45000
+
+# ============================================================
+# SETUP — this flow's OWN real set, real fetch, wizard open
+# Matched on BOTH marketplaces, so its unmatched columns are omitted entirely
+# and KEEP_BSC_ONLY must stay off (the control does not exist).
+# ============================================================
+
+- runFlow:
+    file: util-fetch-real-set-checklist-to-wizard.yaml
+    env:
+      SET: "Topps Brooklyn Collection"
+
+# ============================================================
+# STEP 1 — R2(a)
+# ============================================================
+
+- assertVisible:
+    text: "0 of [0-9]+ reviewed.*"
+
+# ============================================================
+# STEP 2 — THE KIND GUARD: make sure the current row is a PLAYER
+#
+# ORDER MATTERS. Wait for the row to become ACTIONABLE first: a row renders no
+# action controls at all until its background Wikidata lookup settles, so a kind
+# guard evaluated before that would poll an empty row, conclude "not a team",
+# and fall through — the failure would land on the link-panel assert with a
+# misleading message.
+#
+# The fixture is 11 players to 1 team, so a team row is the rare case. This is a
+# deliberate R10 exception: a `when: visible` on a normally-ABSENT element polls
+# the full default budget every run. Bounded to one poll, and the alternative is
+# a flake with no relationship to linking.
+# ============================================================
+
+- extendedWaitUntil:
+    visible:
+      id: "Add as New (Player|Team)"
+    timeout: 30000
+- runFlow:
+    when:
+      visible:
+        id: "Skip .* not a team"
+    commands:
+      - tapOn:
+          id: "Skip .* not a team"
+      - extendedWaitUntil:
+          visible:
+            id: "Add as New (Player|Team)"
+          timeout: 30000
+
+# ============================================================
+# STEP 3 — R2(b)+(c): link the unknown onto the roster player
+# The 7s default on the search: `players.search` is a Convex search index behind
+# a 200ms typeahead debounce; anything slower is a product finding.
+# ============================================================
+
+- tapOn:
+    id: "Link to existing instead"
+- assertVisible:
+    id: "Search existing players"
+- tapOn:
+    id: "Search existing players"
+- inputText: "Ohtani"
+- extendedWaitUntil:
+    visible:
+      id: "Link to Shohei Ohtani"
+- tapOn:
+    id: "Link to Shohei Ohtani"
+- extendedWaitUntil:
+    visible:
+      text: "Linked to Shohei Ohtani"
+
+# ============================================================
+# STEP 4 — R2(d): resolve the rest as skips, then COMMIT
+# Skips create nothing, so the only entity this commit could mint is one the
+# link deliberately avoided. 120s for the bulk (live Wikidata queue), 60s for
+# the commit itself — MEASURE both on the first green run and trim.
+# ============================================================
+
+- tapOn:
+    text: ".*Skip Remaining \\([0-9]+\\).*"
+- extendedWaitUntil:
+    visible:
+      text: ".*Confirm & Save.*"
+    timeout: 120000
+- tapOn:
+    text: ".*Confirm & Save.*"
+- extendedWaitUntil:
+    visible:
+      text: ".*Saved [0-9]+ cards.*"
+    timeout: 60000
+
+# ============================================================
+# STEP 5 — R2(e): THE POINT — re-syncing raises no review
+#
+# Every name is now resolved: one linked, the rest skipped. A second fetch
+# therefore finds nothing to review and commits straight through. This is the
+# end-to-end proof that the link and the skips PERSISTED — a decision that had
+# not been written would come back as an unknown here.
+#
+# The wizard heading is the right negative to pair with the positive: it was on
+# screen a moment ago, so its absence is meaningful rather than vacuous, and the
+# "Saved N cards" wait beside it means this cannot pass on a dead page.
+#
+# 120s for the live re-fetch, then the pairing dialog again.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      id: "Sync card checklist"
+    centerElement: true
+    timeout: 15000
+- tapOn:
+    id: "Sync card checklist"
+- extendedWaitUntil:
+    visible: ".*Match Cards.*"
+    timeout: 120000
+- extendedWaitUntil:
+    visible:
+      text: "^Confirm$"
+    timeout: 120000
+- tapOn:
+    id: "Confirm card matches"
+- extendedWaitUntil:
+    visible:
+      text: ".*Saved [0-9]+ cards.*"
+    timeout: 120000
+- assertNotVisible: "Confirm New Players & Teams"
