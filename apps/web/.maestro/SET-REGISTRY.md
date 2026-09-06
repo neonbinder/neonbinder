@@ -302,7 +302,7 @@ They deliberately REUSE the retired flows' prefixes (`wbr-`, `skp-`, `lce-`,
 are retired outright: the discard confirm and the Enter commit both live in
 STEP 6 of `inserts-1996-score-one-nb-set-two-bsc-sources.yaml` now.
 
-### SportLots source set for the entity-review wizard fixtures — NEO-248 ⚠️ AWAITING OWNER APPROVAL
+### SportLots source set for the entity-review wizard fixtures — NEO-248 approved by Jason 2026-09-05: Big League Mascots (SL 303014)
 
 The four `checklist-wizard-*` flows each build their own private set and attach
 **one** SportLots set to it. That SportLots set is not a NeonBinder row and no
@@ -311,9 +311,14 @@ still needs approval under rule 1: it is a live marketplace fetch with a real
 cost, paid four times per worker per run.
 
 **The constant lives in exactly one place**: the `evalScript` at the top of
-`flows/set-selector/util-attach-sl-set-and-open-wizard.yaml`. It currently holds
-the placeholder `TBD-AWAITING-OWNER-APPROVAL`, and **every one of the four flows
-fails at the attach step until it is replaced.** Do not enqueue them before then.
+`flows/set-selector/util-attach-sl-set-and-open-wizard.yaml`. It holds
+`Big League Mascots` (SportLots 303014), approved by the owner on 2026-09-05 from a
+read-only probe of the 2024 Topps pane (2532 candidates; this name matches exactly
+one). Mascots are never among the known players and their teams are real clubs, so
+the fixture's names stay unknown for the whole run as long as no flow ever chooses
+Add as New. If SportLots turns out to list these cards without a subject name, the
+util's "wizard opens" wait fails on the first run — switch to the probe's next
+candidate (`206 1910 T210 Mascots`, 319849) rather than loosening the assertion.
 
 **What the set has to be** — five conditions, all of which need a live probe
 against a deployment carrying NEO-239 (dev lags `main`, so dev cannot answer):

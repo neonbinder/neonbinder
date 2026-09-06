@@ -80,7 +80,7 @@ tags:
 # ONE PLACE, ONE CONSTANT. Every reference below is `${output.SL_SET}`; the
 # literal appears exactly once, here, so the approved set replaces it in a
 # one-line diff.
-- evalScript: ${output.SL_SET = SL_SOURCE_SET || "TBD-AWAITING-OWNER-APPROVAL"}
+- evalScript: ${output.SL_SET = SL_SOURCE_SET || "Big League Mascots"}
 
 # ── DRILL (R9) ──────────────────────────────────────────────────────────────
 # Real Baseball / 2024 / Topps ancestors, hand-typed Set → Insert → Base.
