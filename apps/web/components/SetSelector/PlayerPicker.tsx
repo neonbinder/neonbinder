@@ -4,6 +4,11 @@ import { api } from "../../convex/_generated/api";
 import { userFacingMessage } from "../../lib/errors/user-facing-message";
 import type { Id } from "../../convex/_generated/dataModel";
 import { Input } from "../primitives/Input";
+import {
+  nameHasQueryPrefix,
+  nameMatchesQuery,
+} from "../../lib/entities/name-search";
+import { normalizeEntityName } from "../../lib/entities/normalize-name";
 
 /**
  * NEO-220 — the four container-level accessible names, overridable per
@@ -178,26 +183,37 @@ export default function PlayerPicker({
   const matches = useMemo(() => {
     if (!candidates) return [];
     const selectedSet = new Set(value as unknown as string[]);
-    const q = query.trim().toLowerCase();
+    // NEO-253: folded on both sides, so typing "Jose Ramirez" finds NB's
+    // "José Ramírez". Deliberately `nameSearchKey` and not the token-sorted
+    // dedup key — sorted, "New York Yankees" does not contain "new york".
+    const q = query.trim();
     return candidates
       .filter((c) => !selectedSet.has(c._id as unknown as string))
-      .filter((c) => !q || c.name.toLowerCase().includes(q))
+      .filter((c) => nameMatchesQuery(c.name, q))
       .sort((a, b) => {
         if (!q) return a.name.localeCompare(b.name);
-        const aPrefix = a.name.toLowerCase().startsWith(q) ? 0 : 1;
-        const bPrefix = b.name.toLowerCase().startsWith(q) ? 0 : 1;
+        const aPrefix = nameHasQueryPrefix(a.name, q) ? 0 : 1;
+        const bPrefix = nameHasQueryPrefix(b.name, q) ? 0 : 1;
         if (aPrefix !== bPrefix) return aPrefix - bPrefix;
         return a.name.localeCompare(b.name);
       })
       .slice(0, 8);
   }, [candidates, query, value]);
 
-  // An exact (case-insensitive) match already exists — no need to offer
-  // "create", it'd just be a confusing duplicate-name affordance.
+  // An exact match already exists — no need to offer "create", it'd just be a
+  // confusing duplicate-name affordance.
+  //
+  // NEO-253: this one uses `normalizeEntityName`, the DEDUP key, sorting and
+  // all — unlike the filter above. It has to answer the question exactly as
+  // `players.findOrCreate` will: anything softer offers Create for a row the
+  // server would simply return (which is what "Jose Ramirez" against an
+  // existing "José Ramírez" did — Create silently linked the row the list had
+  // just hidden), and anything harder hides Create for a name the server would
+  // genuinely insert.
   const hasExactMatch = useMemo(() => {
-    const q = query.trim().toLowerCase();
+    const q = normalizeEntityName(query.trim());
     if (!q || !candidates) return true;
-    return candidates.some((c) => c.name.toLowerCase() === q);
+    return candidates.some((c) => normalizeEntityName(c.name) === q);
   }, [query, candidates]);
 
   // NEO-96: no sport row → no create. See TeamPicker for the rationale.

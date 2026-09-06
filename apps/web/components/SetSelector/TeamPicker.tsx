@@ -4,6 +4,11 @@ import { Input } from "../primitives/Input";
 import { api } from "../../convex/_generated/api";
 import { userFacingMessage } from "../../lib/errors/user-facing-message";
 import type { Id } from "../../convex/_generated/dataModel";
+import {
+  nameHasQueryPrefix,
+  nameMatchesQuery,
+} from "../../lib/entities/name-search";
+import { normalizeEntityName } from "../../lib/entities/normalize-name";
 
 /**
  * NEO-26 — multi-select-capable team picker, defaults to single.
@@ -153,17 +158,21 @@ export default function TeamPicker({
   const matches = useMemo(() => {
     if (!candidates) return [];
     const selectedSet = new Set(value as unknown as string[]);
-    const q = query.trim().toLowerCase();
+    // NEO-253: folded on both sides, so typing "Montreal Expos" finds NB's
+    // "Montréal Expos". Deliberately `nameSearchKey` and not the token-sorted
+    // dedup key — sorted, "New York Yankees" does not contain "new york",
+    // which is the commonest thing anybody types into this box.
+    const q = query.trim();
     const filtered = candidates
       .filter((c) => !selectedSet.has(c._id as unknown as string))
-      .filter((c) => !q || c.name.toLowerCase().includes(q))
+      .filter((c) => nameMatchesQuery(c.name, q))
       // Rank exact-prefix matches above substring matches so typing
       // "New" surfaces "New York Yankees" before "New Orleans Saints"
       // before "Newark Eagles" before random substring hits.
       .sort((a, b) => {
         if (!q) return a.name.localeCompare(b.name);
-        const aPrefix = a.name.toLowerCase().startsWith(q) ? 0 : 1;
-        const bPrefix = b.name.toLowerCase().startsWith(q) ? 0 : 1;
+        const aPrefix = nameHasQueryPrefix(a.name, q) ? 0 : 1;
+        const bPrefix = nameHasQueryPrefix(b.name, q) ? 0 : 1;
         if (aPrefix !== bPrefix) return aPrefix - bPrefix;
         return a.name.localeCompare(b.name);
       })
@@ -171,12 +180,16 @@ export default function TeamPicker({
     return filtered;
   }, [candidates, query, value]);
 
-  // An exact (case-insensitive) match already exists — no "create" offer,
-  // it'd just be a confusing duplicate-name affordance.
+  // An exact match already exists — no "create" offer, it'd just be a
+  // confusing duplicate-name affordance.
+  //
+  // NEO-253: the DEDUP key here, sorting and all, unlike the filter above —
+  // this must answer exactly as `teams.findOrCreate` will, or Create is offered
+  // for a row the server would simply return.
   const hasExactMatch = useMemo(() => {
-    const q = query.trim().toLowerCase();
+    const q = normalizeEntityName(query.trim());
     if (!q || !candidates) return true;
-    return candidates.some((c) => c.name.toLowerCase() === q);
+    return candidates.some((c) => normalizeEntityName(c.name) === q);
   }, [query, candidates]);
 
   // NEO-96: no sport row → no create. A team must reference a real sport; the

@@ -10153,14 +10153,23 @@ export const commitCardChecklistChunk = internalMutation({
         // Written only when it actually CHANGES, so an ordinary linkage-only
         // re-sync patches these fields exactly as often as it did before this
         // feature existed: never.
+        //
+        // NEO-253: keyed by `normalizeEntityName`, not by the trimmed literal.
+        // The settled list is built from the names the COMMIT resolved, and the
+        // pending list is what an operator typed into a custom card by hand —
+        // two different spellings of one name is the normal case between those
+        // two sources, and it is exactly what the fold now treats as one. Keyed
+        // literally, skipping "José Ramírez" in the wizard left a pending "Jose
+        // Ramirez" on the custom card forever: re-offered on every later fetch,
+        // which is the loop `entityReviewSkips` exists to break, half-working.
         const settledPlayerNames = new Set([
           ...(args.resolvedPlayerNames ?? []),
           ...(args.skippedPlayerNames ?? []),
-        ].map((n) => n.trim()));
+        ].map(normalizeEntityName));
         const settledTeamNames = new Set([
           ...(args.resolvedTeamNames ?? []),
           ...(args.skippedTeamNames ?? []),
-        ].map((n) => n.trim()));
+        ].map(normalizeEntityName));
         const mergePendingNames = (
           stored: string[] | undefined,
           incoming: string[] | undefined,
@@ -10170,8 +10179,13 @@ export const commitCardChecklistChunk = internalMutation({
           const seen = new Set<string>();
           for (const raw of [...(stored ?? []), ...(incoming ?? [])]) {
             const name = raw.trim();
-            if (!name || settled.has(name) || seen.has(name)) continue;
-            seen.add(name);
+            // NEO-253: membership and de-duplication both go through the folded
+            // key, while the DISPLAY value pushed onto the row stays the
+            // operator's own spelling. The fold decides what is the same name;
+            // it never rewrites the text NB stores.
+            const key = normalizeEntityName(name);
+            if (!name || settled.has(key) || seen.has(key)) continue;
+            seen.add(key);
             next.push(name);
           }
           const before = stored ?? [];
@@ -10630,14 +10644,20 @@ export const commitCardChecklistFinalize = internalMutation({
     // re-offered on every later fetch, which is exactly the loop
     // `entityReviewSkips` exists to break, and the skip would only half-work:
     // suppressed for marketplace names, still nagging for custom-card ones.
+    //
+    // NEO-253: folded keys on both sides. A custom card's pending name is
+    // hand-typed and the settled name came off a marketplace roster, so the two
+    // spellings routinely differ by an accent — and after the fold those are
+    // one name everywhere else in the commit. Compared literally, the sweep
+    // would leave the other spelling pending forever.
     const resolvedPlayerNames = new Set([
       ...args.resolvedPlayerNames,
       ...args.skippedPlayerNames,
-    ]);
+    ].map(normalizeEntityName));
     const resolvedTeamNames = new Set([
       ...args.resolvedTeamNames,
       ...args.skippedTeamNames,
-    ]);
+    ].map(normalizeEntityName));
     for (const existing of rows) {
       if (deletedRowIds.has(existing._id)) continue; // see the note above
       if (hasMarketplaceRef(existing)) continue;
@@ -10647,7 +10667,7 @@ export const commitCardChecklistFinalize = internalMutation({
       } = {};
       if (existing.pendingPlayerNames && existing.pendingPlayerNames.length > 0) {
         const stillPending = existing.pendingPlayerNames.filter(
-          (n) => !resolvedPlayerNames.has(n.trim()),
+          (n) => !resolvedPlayerNames.has(normalizeEntityName(n)),
         );
         if (stillPending.length !== existing.pendingPlayerNames.length) {
           patch.pendingPlayerNames =
@@ -10656,7 +10676,7 @@ export const commitCardChecklistFinalize = internalMutation({
       }
       if (existing.pendingTeamNames && existing.pendingTeamNames.length > 0) {
         const stillPending = existing.pendingTeamNames.filter(
-          (n) => !resolvedTeamNames.has(n.trim()),
+          (n) => !resolvedTeamNames.has(normalizeEntityName(n)),
         );
         if (stillPending.length !== existing.pendingTeamNames.length) {
           patch.pendingTeamNames =

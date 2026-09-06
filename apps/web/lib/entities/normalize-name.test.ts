@@ -42,7 +42,15 @@ describe("foldDiacritics", () => {
     // "ø", "ß", "Æ", "Ł" carry no combining mark, so NFD does not separate
     // anything to strip. Deliberate: transliterating them needs per-language
     // rules, and a wrong rule MERGES two different people.
+    //
+    // All four are asserted rather than one standing in for the rest: they fail
+    // for the same reason but in different scripts' worth of Unicode, and a
+    // future "let us just add a small transliteration table" would plausibly
+    // catch one and miss the others.
     expect(foldDiacritics("Bjørn Nielsen")).toBe("Bjørn Nielsen");
+    expect(foldDiacritics("Weiß")).toBe("Weiß");
+    expect(foldDiacritics("Ægir Hansen")).toBe("Ægir Hansen");
+    expect(foldDiacritics("Łukasz Nowak")).toBe("Łukasz Nowak");
   });
 });
 

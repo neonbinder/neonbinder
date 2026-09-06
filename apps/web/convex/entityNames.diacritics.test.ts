@@ -25,16 +25,56 @@
  */
 
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
 import { normalizePlayerName } from "./players";
 import { normalizeTeamName } from "./teams";
+import { drainScheduled } from "../lib/testing/drain-scheduled";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
 }).glob("./**/*.*s");
+
+/**
+ * NEO-253 (audit) — this file must not reach the network, and must not leave
+ * work running past the end of a test.
+ *
+ * Two of the paths under test schedule Wikidata work on their INSERT branch and
+ * only on that branch, which is precisely the branch these tests are about:
+ * `players.findOrCreate` schedules `wikidataPool:enqueueEnrichment`, and
+ * `entityReviewQueue.startBatch` schedules
+ * `wikidataPool:enqueueEntityReviewLookups`. `convex-test` starts scheduled
+ * work in the background without waiting for it, so a test that returns
+ * immediately leaves it racing the worker's teardown — a failure that reports
+ * green locally and fails the JOB in CI, which is the worst shape a failure can
+ * have. See `lib/testing/drain-scheduled.ts`.
+ *
+ * Both are `runAfter(0)`, so `drainScheduled` (not `cancelScheduled`) settles
+ * them: actually running the work is always preferable to discarding it, and
+ * the delay that forces a cancel elsewhere does not exist here.
+ *
+ * A THROWING stub rather than a canned 200, for the reason
+ * `cardChecklist.bscTeamEnrichment.test.ts` gives: the enrichment path already
+ * handles "network unavailable", and inventing a Wikidata response shape is how
+ * a stub starts asserting things nobody meant to assert. Nothing in this file
+ * is about enrichment — every test here is about a KEY.
+ */
+beforeEach(() => {
+  vi.stubGlobal(
+    "fetch",
+    (async (url: string | URL) => {
+      throw new Error(
+        `NEO-253: this test file must not reach the network: ${String(url)}`,
+      );
+    }) as unknown as typeof fetch,
+  );
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 const USER = {
   subject: "user_neo253",
@@ -122,6 +162,10 @@ describe("players.findByNameAndSport folds accents (NEO-253)", () => {
     // The row keeps the spelling it was CREATED with. The fold decides
     // identity; it never rewrites what NB stores and renders.
     expect(rows[0].name).toBe("José Ramírez");
+
+    // `findOrCreate`'s INSERT branch scheduled `wikidataPool:enqueueEnrichment`
+    // — settle it here rather than letting it race teardown. See the file note.
+    await drainScheduled(t);
   });
 });
 
@@ -224,6 +268,10 @@ describe("the review-queue resume key agrees across accents (NEO-253)", () => {
     expect(
       after.find((r) => r.kind === "player")?.decision,
     ).toEqual({ action: "create" });
+
+    // Both `startBatch` calls scheduled
+    // `wikidataPool:enqueueEntityReviewLookups`. See the file note.
+    await drainScheduled(t);
   });
 });
 

@@ -563,8 +563,40 @@ export const saveTeamFields = mutation({
     if (args.name !== undefined) {
       const trimmed = args.name.trim();
       if (!trimmed) throw new Error("Team name cannot be empty");
+      const nameNormalized = normalizeTeamName(trimmed);
+
+      // NEO-253 (audit) — the collision guard `savePlayerFields` and
+      // `saveLeagueFields` have always had, and this one did not.
+      //
+      // A rename onto an existing (normalized name, sport) key creates the
+      // exact duplicate the whole normalization scheme exists to prevent, and
+      // the two rows can then never be told apart by any lookup: every
+      // `by_name_normalized_and_sport_id` read returns whichever `.first()`
+      // happens to hit, so half the sync results land on one row and half on
+      // the other. Refuse, and hand the page the OTHER row's id so it can offer
+      // "go to that team" instead of leaving the operator to search for it.
+      //
+      // Missing here was survivable while only an exact re-typing could
+      // collide. It stopped being survivable when the key learned to fold:
+      // "Montreal Expos" renamed to "Montréal Expos" beside an existing
+      // "Montréal Expos" is now a collision, and it is a rename an operator
+      // makes on PURPOSE — correcting a franchise's spelling is the single most
+      // likely edit on this page.
+      //
+      // The message carries an id and nothing else — same convention as
+      // `savePlayerFields`, and specifically not the other row's audit fields.
+      const collision = await ctx.db
+        .query("teams")
+        .withIndex("by_name_normalized_and_sport_id", (q) =>
+          q.eq("nameNormalized", nameNormalized).eq("sportId", existing.sportId),
+        )
+        .first();
+      if (collision && collision._id !== args.id) {
+        throw new ConvexError(`NAME_TAKEN:${collision._id}`);
+      }
+
       patch.name = trimmed;
-      patch.nameNormalized = normalizeTeamName(trimmed);
+      patch.nameNormalized = nameNormalized;
     }
     if (args.leagueId !== undefined) {
       patch.leagueId = args.leagueId ?? undefined;
