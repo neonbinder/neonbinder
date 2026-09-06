@@ -1,6 +1,6 @@
 appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
-name: "Entity review — committing a review of skips leaves the set its own durable Skipped names list"
+name: "Entity review — committing a review of skips leaves the set its own Skipped names list, and Unskip puts a name back"
 tags:
   - set-selector
   - regression
@@ -26,9 +26,9 @@ tags:
 #         writes no entity;
 #     (e) the set now carries a "Skipped names (N)" disclosure — the durable
 #         record, which did not exist before the commit;
-#     (f) that list is real and operable — it opens, and it explains that a name
-#         can be put back. Driving the Unskip button itself is left to
-#         `SkippedNamesPanel.test.tsx`; see the note at the end for why.
+#     (f) Unskip removes one and says so in the product's own words. That
+#         sentence is the whole user-facing contract of the list: the name comes
+#         back at the next sync rather than being gone for good.
 #
 # ── THE FIXTURE, AND WHY THIS FLOW MAY COMMIT ───────────────────────────────
 #   `Baseball → 2024 → Topps → Topps Chicago Cubs → Base`.
@@ -180,23 +180,39 @@ tags:
 
 # ============================================================
 # STEP 6 — R2(f): the skip is reversible, and the product says so
+#
+# ⚠️ SCROLL TO THE CONFIRMATION — DO NOT ASSERT IT IN PLACE. This step failed
+# three times and the tap was never the problem. Diagnosed from the artifacts:
+# the run tapped `Unskip Adbert Alzolay`, and the hierarchy captured immediately
+# afterwards shows the first row is now `Unskip Daniel Palencia` — the row
+# changed, so the mutation landed. What failed was seeing the result.
+#
+# `SkippedNamesPanel` renders its status line INSIDE the disclosure, AFTER the
+# list. Measured: with the list at y=595-911 the confirmation sits past y=911,
+# roughly 290px below a 625px viewport. `assertVisible` cannot see it, and no
+# amount of retrying the tap ever could.
+#
+# So the scroll IS the assertion (R6): `scrollUntilVisible` fails loudly if the
+# line never appears, which is exactly the claim — Unskip says, in the product's
+# own words, that the name comes back at the next sync.
+#
+# Two things tried first and rejected, recorded so they are not tried again:
+# `swipe` never returns on maestro-web (it hung the flow to the outer timeout),
+# and scrolling to a card row to force the page down fails because the
+# checklist's virtuoso list renders no rows while it is off-screen, so
+# `id: "Edit card .*"` is not found.
 # ============================================================
 
-# ⚠️ THE UNSKIP TAP IS DELIBERATELY NOT DRIVEN HERE, and this is a determinism
-# decision rather than a shrug. The button lands wherever the page happens to
-# end after the commit: measured at y=296 in a passing run ("something changed"
-# in 1.26s) and at y=609 — twenty pixels off the bottom edge — in two failing
-# ones, where the click registered nothing and Maestro sat 6.3s waiting for
-# ambient reactivity. `centerElement` cannot rescue it, because the element is
-# already 100% visible so `scrollUntilVisible` stops without scrolling, and by
-# then the page is at max scroll with nothing left to lift it.
-#
-# Retrying only re-rolls the same dice. So the tap is gone, and with it a step
-# that failed for reasons that had nothing to do with skipping.
-#
-# NOTHING THIS FLOW UNIQUELY PROVES IS LOST. Unskip's behaviour — the mutation,
-# the status line, the row disappearing — is `SkippedNamesPanel.test.tsx`, which
-# can drive it directly. What NO unit test can produce is the durable list
-# itself: it exists only because a real review was really committed, which is
-# what everything above this line establishes. That is this flow's whole reason
-# to exist, and it is fully asserted.
+- scrollUntilVisible:
+    element:
+      id: "Unskip .*"
+    centerElement: true
+    timeout: 10000
+- tapOn:
+    id: "Unskip .*"
+    retryTapIfNoChange: true
+- scrollUntilVisible:
+    element:
+      text: "Unskipped .* it will be reviewed on the next sync."
+    centerElement: true
+    timeout: 15000
