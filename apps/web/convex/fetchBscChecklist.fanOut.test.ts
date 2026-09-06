@@ -29,6 +29,7 @@ import { convexTest } from "convex-test";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
+import { MAX_CARD_PLAYERS } from "./features/cardAttention";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -702,5 +703,126 @@ describe("fetchBscChecklist — setName fan-out (NEO-189)", () => {
     expect(recorded).toHaveLength(1);
     expect(recorded[0].setName).toEqual([SET2]);
     expect(recorded[0].filters.variantName).toBeUndefined();
+  });
+});
+
+/**
+ * NEO-246 — a row whose player field NB could not represent is COUNTED and
+ * reported, not silently dropped.
+ *
+ * `parsePlayersField` refuses a roster past `MAX_CARD_PLAYERS` outright rather
+ * than keeping the first N (a truncated roster is a wrong roster that looks
+ * right). The card survives with no players, which on its own is
+ * indistinguishable from a BSC row that genuinely has an empty player field —
+ * so the count rides out on `message`, the same way `collisions` does.
+ *
+ * A COUNT and nothing else. The text that was dropped is precisely the string
+ * NB could not make sense of, off a marketplace page, and this message reaches
+ * the operator's screen.
+ */
+describe("fetchBscChecklist reports what it could not represent (NEO-246)", () => {
+  const SET = "unrepresentable-set";
+
+  /** One row per entry: the raw `players` string BSC returned for it. */
+  function stubRows(playerFields: string[]): typeof fetch {
+    return (async () =>
+      new Response(
+        JSON.stringify(
+          playerFields.map((players, i) => ({
+            id: `${SET}-card-${i + 1}`,
+            cardNo: String(i + 1),
+            players,
+            setName: "topps",
+          })),
+        ),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      )) as unknown as typeof fetch;
+  }
+
+  const blob = Array.from(
+    { length: MAX_CARD_PLAYERS + 7 },
+    (_, i) => `Player ${String(i).padStart(2, "0")}`,
+  ).join(", ");
+
+  async function fetchWith(playerFields: string[]) {
+    vi.stubGlobal("fetch", stubRows(playerFields));
+    const t = convexTest(schema, modules);
+    return t
+      .withIdentity(ADMIN)
+      .action(api.adapters.buysportscards.fetchBscChecklist, {
+        parentFilters: { sport: "Baseball", year: "2024", setName: "Topps", variantType: "base" },
+        facetFilters: {
+          sport: ["baseball"],
+          year: ["2024"],
+          setName: [SET],
+          variant: ["base"],
+        },
+        sourceFacet: "setName",
+      });
+  }
+
+  test("the message carries the COUNT, and none of the text it could not read", async () => {
+    const result = await fetchWith(["Mike Trout", blob, "Zach Neto"]);
+
+    expect(result.success).toBe(true);
+    // Every card still comes back — only the one roster was refused.
+    expect(result.cards).toHaveLength(3);
+    expect(result.message).toMatch(/Found 3 cards/);
+    expect(result.message).toMatch(/1 had a player\/team field/i);
+
+    // Not one word of the marketplace string, and no name list.
+    expect(result.message).not.toMatch(/Player 0/);
+    expect(result.message).not.toMatch(/Mike Trout/);
+    expect(result.message).not.toContain(blob);
+  });
+
+  test("the refused row keeps its card and loses only its roster", async () => {
+    const result = await fetchWith([blob]);
+
+    const [card] = result.cards;
+    expect(card.players).toBeUndefined();
+    // Nameless, so it falls back to the card number rather than to a roster
+    // NB assembled out of a field it misread.
+    expect(card.cardName).toBe("Card #1");
+  });
+
+  test("a clean fetch says nothing about it", async () => {
+    const result = await fetchWith(["Mike Trout", "Zach Neto"]);
+
+    expect(result.message).toBe("Found 2 cards from BSC catalog");
+  });
+
+  test("the count is per CARD, and a row two source sets both return is counted once", async () => {
+    // The dedupe runs on BSC's own card id, and the count is taken after it —
+    // otherwise an overlap would inflate a number the operator reads as
+    // "how many cards do I need to look at".
+    vi.stubGlobal(
+      "fetch",
+      (async () =>
+        new Response(
+          JSON.stringify([
+            { id: `${SET}-dup`, cardNo: "1", players: blob, setName: "topps" },
+            { id: `${SET}-dup`, cardNo: "1", players: blob, setName: "topps" },
+          ]),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        )) as unknown as typeof fetch,
+    );
+    const t = convexTest(schema, modules);
+    const result = await t
+      .withIdentity(ADMIN)
+      .action(api.adapters.buysportscards.fetchBscChecklist, {
+        parentFilters: { sport: "Baseball", year: "2024", setName: "Topps", variantType: "base" },
+        facetFilters: {
+          sport: ["baseball"],
+          year: ["2024"],
+          setName: [SET],
+          variant: ["base"],
+        },
+        sourceFacet: "setName",
+      });
+
+    expect(result.cards).toHaveLength(1);
+    expect(result.message).toMatch(/Found 1 cards/);
+    expect(result.message).toMatch(/1 had a player\/team field/i);
   });
 });

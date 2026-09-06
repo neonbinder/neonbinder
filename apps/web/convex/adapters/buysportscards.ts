@@ -818,23 +818,55 @@ const TEAM_CARD_SUFFIXES = ["TC"];
  * page NB merely read. So the bound is closed HERE too, and the boundary
  * becomes the backstop it was meant to be rather than the only guard.
  *
- * Same posture as the SportLots parser (`SL_MAX_SUBJECTS`,
- * `SL_MAX_SUBJECT_LENGTH`): derived from the shared constants rather than
- * respelled, so the parser can never emit a list the DB side refuses. It
- * differs in severity on purpose — SportLots GUESSES names out of a
- * description residual and rejects the whole row on any doubt, whereas BSC
- * publishes a dedicated player field whose earlier entries are not made
- * suspect by a long tail. So this DROPS the excess and keeps what fits.
+ * Derived from the shared constants rather than respelled, the same way the
+ * SportLots parser does it (`SL_MAX_SUBJECTS = Math.min(4, MAX_CARD_PLAYERS)`,
+ * `SL_MAX_SUBJECT_LENGTH = MAX_PLAYER_NAME_LENGTH`), so this can never emit a
+ * list the DB side refuses.
  *
- * An over-length name is dropped, never truncated: a truncated name is a
- * person who does not exist, and it would reach `players.findOrCreate` looking
- * exactly like a real one. First-seen order is kept, so the truncation is
- * deterministic and the names a human would read first are the ones that
- * survive.
+ * ## Over-cap is a REFUSED roster, not a trimmed one
+ *
+ * The count cap returns `[]`. It does not keep the first N. A field holding
+ * more names than a card can carry is not a long roster — it is a field whose
+ * meaning NB has misread, almost always a checklist blob or a punctuation
+ * change upstream. Keeping the first 20 of 27 mints a plausible-looking roster
+ * out of one, and a wrong roster that looks right is worse than no roster at
+ * all: nothing downstream can tell it from a real one, and it would be
+ * committed, listed and read back as fact. This is the same rule
+ * `startCandidateBatch` states for the pairing conflict — "refused, never
+ * trimmed: a truncated roster is a wrong roster that looks right" — and the
+ * two must not disagree about the same field.
+ *
+ * The card itself still survives; only its roster is dropped, so it lands as
+ * `Card #<n>` with no players, exactly as a BSC row with an empty player field
+ * always has. The entity-review wizard already handles a card with no names.
+ *
+ * ## An over-length name is a DROP, and that argument is different
+ *
+ * A single name past `MAX_PLAYER_NAME_LENGTH` says nothing about its
+ * neighbours — "Mike Trout" is still Mike Trout — so the row keeps what is
+ * sound. It is dropped rather than truncated because a truncated name is a
+ * person who does not exist and would reach `players.findOrCreate` looking
+ * exactly like a real one.
+ *
+ * ## Nothing is silent
+ *
+ * Either outcome sets `unrepresentable`, which `fetchBscChecklist` counts and
+ * reports in its `message`. A COUNT only: the dropped names are the very text
+ * NB could not make sense of, and echoing marketplace text into an operator
+ * message is what the no-echo rule in `assertCardBatchWithinLimits` exists to
+ * prevent.
  */
-function boundParsedNames(names: string[], limit: number): string[] {
+function boundParsedNames(
+  names: string[],
+  limit: number,
+): { names: string[]; unrepresentable: boolean } {
   const kept = names.filter((n) => n.length <= MAX_PLAYER_NAME_LENGTH);
-  return kept.length > limit ? kept.slice(0, limit) : kept;
+  // Over the count cap: the whole list is refused, because the field's meaning
+  // is in doubt rather than merely its tail.
+  if (kept.length > limit) return { names: [], unrepresentable: true };
+  // Under it: what survived the length filter stands, and a name having been
+  // dropped is still reported.
+  return { names: kept, unrepresentable: kept.length !== names.length };
 }
 
 /**
@@ -857,6 +889,14 @@ export function parsePlayersField(raw: string): {
   players: string[];
   teams: string[];
   namePrefix?: string;
+  /**
+   * NEO-246 — present (and always `true`) when this row carried player or team
+   * text NB could not represent, so the caller can COUNT it rather than let it
+   * pass silently. Absent on an ordinary row, so the common case still
+   * compares equal to a plain `{ players, teams }`. Never carries the offending
+   * text: see `boundParsedNames`.
+   */
+  unrepresentable?: true;
 } {
   const trimmed = raw.trim();
   if (!trimmed) return { players: [], teams: [] };
@@ -872,10 +912,16 @@ export function parsePlayersField(raw: string): {
       const teamName = trimmed.replace(suffixPattern, "").trim();
       if (teamName) {
         // One name on both sides, so the count caps cannot bite here — the
-        // LENGTH one can, and an over-long team name drops off both.
+        // LENGTH one can, and an over-long team name drops off both, leaving
+        // the row to fall through to `Card #<n>`. That is exactly the case
+        // that must not be silent, so it reports like any other.
+        const players = boundParsedNames([teamName], MAX_CARD_PLAYERS);
+        const teams = boundParsedNames([teamName], MAX_CARD_TEAMS);
+        const unrepresentable = players.unrepresentable || teams.unrepresentable;
         return {
-          players: boundParsedNames([teamName], MAX_CARD_PLAYERS),
-          teams: boundParsedNames([teamName], MAX_CARD_TEAMS),
+          players: players.names,
+          teams: teams.names,
+          ...(unrepresentable ? { unrepresentable: true as const } : {}),
         };
       }
     }
@@ -898,13 +944,16 @@ export function parsePlayersField(raw: string): {
         .filter(Boolean),
       MAX_CARD_PLAYERS,
     );
+    // The surrounding description is NB card-name text, not a roster, so a
+    // refused player list does not take it with it.
     const namePrefix = `${before.trim()} ${after.trim()}`
       .trim()
       .replace(/\s+/g, " ");
     return {
-      players,
+      players: players.names,
       teams: [],
       ...(namePrefix ? { namePrefix } : {}),
+      ...(players.unrepresentable ? { unrepresentable: true as const } : {}),
     };
   }
 
@@ -916,7 +965,11 @@ export function parsePlayersField(raw: string): {
       .filter(Boolean),
     MAX_CARD_PLAYERS,
   );
-  return { players, teams: [] };
+  return {
+    players: players.names,
+    teams: [],
+    ...(players.unrepresentable ? { unrepresentable: true as const } : {}),
+  };
 }
 
 /**
@@ -1263,7 +1316,7 @@ export const fetchBscChecklist = action({
       // ONLY when `players` decodes to a Team Checklist card (parsePlayersField) —
       // the raw response itself never carries a separate team field.
       const seenRefs = new Set<string>();
-      const cards = tagged
+      const mapped = tagged
         .map(({ raw: r, queriedSlug }) => {
           const cardNumberRaw = r.cardNo ?? r.cardNumber ?? r.number;
           const cardNumber = typeof cardNumberRaw === "string" || typeof cardNumberRaw === "number"
@@ -1275,7 +1328,12 @@ export const fetchBscChecklist = action({
           // parse it for the team-checklist and multi-player-parenthetical
           // conventions (see parsePlayersField's own doc comment).
           const playersRaw = typeof r.players === "string" ? r.players : "";
-          const { players, teams, namePrefix } = parsePlayersField(playersRaw);
+          const {
+            players,
+            teams,
+            namePrefix,
+            unrepresentable,
+          } = parsePlayersField(playersRaw);
 
           const attributes = parsePlayerAttributeTokens(r.playerAttribute);
           // NEO-189: only a genuine printing variety reaches `cardVariation`.
@@ -1288,8 +1346,12 @@ export const fetchBscChecklist = action({
             ? parsedVariation.text
             : undefined;
 
+          // The parenthetical form only makes sense with names to put in it —
+          // a refused roster must not leave "League Leaders ()" behind.
           const cardName = namePrefix
-            ? `${namePrefix} (${players.join(" / ")})`
+            ? players.length
+              ? `${namePrefix} (${players.join(" / ")})`
+              : namePrefix
             : players.length
               ? players.join(" / ")
               : `Card #${cardNumber}`;
@@ -1331,6 +1393,9 @@ export const fetchBscChecklist = action({
             platformRef,
             sportlotsRef: undefined,
             sourceBscSetSlug,
+            // Not part of the checklist card shape — stripped below, once the
+            // dedupe has run, so an overlapping row is not counted twice.
+            __unrepresentable: unrepresentable === true,
           };
         })
         .filter((c): c is NonNullable<typeof c> => c !== null)
@@ -1342,6 +1407,26 @@ export const fetchBscChecklist = action({
           seenRefs.add(c.platformRef);
           return true;
         });
+
+      // NEO-246 — how many cards carried a player/team field NB could not
+      // represent (see `boundParsedNames`). Counted AFTER the dedupe, so a row
+      // two source sets both returned is one card, not two; and stripped here,
+      // because the marker is a parse outcome rather than part of the checklist
+      // card shape this action returns.
+      const unrepresentableCount = mapped.filter(
+        (c) => c.__unrepresentable,
+      ).length;
+      const cards = mapped.map(
+        ({ __unrepresentable: _unrepresentable, ...card }) => card,
+      );
+      if (unrepresentableCount > 0) {
+        // The COUNT, never the text. What was dropped is precisely the string
+        // NB could not make sense of, and it came off a marketplace page.
+        console.warn(
+          `[fetchBscChecklist] ${unrepresentableCount} of ${cards.length} row(s) ` +
+            `carried a player/team field NB could not represent — names not imported`,
+        );
+      }
 
       // NEO-189 — CARD NUMBER collisions ACROSS source sets. REPORT THEM; DO
       // NOT DROP.
@@ -1414,7 +1499,14 @@ export const fetchBscChecklist = action({
       return {
         success: true,
         cards,
-        message: `Found ${cards.length} cards from BSC catalog`,
+        // NEO-246: the unrepresentable count rides out on `message` the same
+        // way `collisions` does — an operator-relevant fact about the fetch
+        // they just ran, which they would otherwise only find by noticing that
+        // some cards came back with no names.
+        message:
+          unrepresentableCount > 0
+            ? `Found ${cards.length} cards from BSC catalog — ${unrepresentableCount} had a player/team field NeonBinder could not represent, so those names were not imported`
+            : `Found ${cards.length} cards from BSC catalog`,
         ...(collisions.length > 0 ? { collisions } : {}),
       };
     } catch (error) {

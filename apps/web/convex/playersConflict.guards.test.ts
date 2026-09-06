@@ -270,12 +270,17 @@ describe("startCandidateBatch bounds the roster conflict (NEO-251)", () => {
     await expect(call).rejects.not.toThrow(new RegExp(tooLong));
   });
 
-  test("an over-length team name on the candidate is refused", async () => {
+  test("an over-length team name on the candidate is refused without echoing it", async () => {
     const t = convexTest(schema, modules);
     const { leafId } = await seedTree(t);
-    await expect(batch(t, leafId, { teams: [tooLong] })).rejects.toThrow(
+    const call = batch(t, leafId, { teams: [tooLong] });
+    await expect(call).rejects.toThrow(
       /team name of 121 characters; the limit is 120/,
     );
+    // The same no-echo rule as its player sibling above: this message reaches
+    // Sentry and the browser console, and the offending text came off a
+    // marketplace page.
+    await expect(call).rejects.not.toThrow(new RegExp(tooLong));
   });
 
   test("a legitimate conflict writes, and comes back on the streamed view", async () => {

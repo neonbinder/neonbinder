@@ -1981,6 +1981,21 @@ describe("commitCardChecklist: pending-name bounds (NEO-246, NEO-251)", () => {
     // It LANDS.
     expect(result.success).toBe(true);
 
+    // `unreviewedNameCount` is THIS COMMIT'S stamped contribution, not the
+    // row's backlog: it is a set of names built in the action, before the
+    // chunk merges them with what the row already carried. So it reports the
+    // ten names this sync found, not the twenty now sitting on the card.
+    //
+    // KNOWN GAP, pinned here rather than left for someone to discover: five of
+    // those ten lost the truncation and were never stored, so the number is
+    // five higher than what the operator will actually find on the card. The
+    // count is computed one layer above the merge that drops them, and closing
+    // it means the chunk reporting back which stamped names survived — a
+    // change to its return shape, across every chunk, which is a decision of
+    // its own rather than a line in this test. Every other path counts
+    // exactly, because nothing is dropped there.
+    expect(result.unreviewedNameCount).toBe(stamped.length);
+
     const [merged] = await readCards(t, variantTypeId);
     expect(merged.pendingPlayerNames).toHaveLength(MAX_CARD_PLAYERS);
     // Stored first, so the operator's existing backlog outranks a name this
