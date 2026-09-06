@@ -26,11 +26,39 @@
  */
 
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
 import { NO_MARKETPLACE_IDS_MESSAGE } from "./marketplaceResolvability";
+
+/**
+ * Credentials are not under test — hand the BSC adapter a token so the NEO-252
+ * case below can reach the wire. The three original tests never call an
+ * adapter at all, so this changes nothing for them.
+ */
+vi.mock("./credentials", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./credentials")>();
+  const { internalAction } = await import("./_generated/server");
+  const { v } = await import("convex/values");
+  return {
+    ...actual,
+    getSiteToken: internalAction({
+      args: { site: v.string() },
+      returns: v.any(),
+      handler: async () => ({ token: "test-bsc-token" }),
+    }),
+    authenticateBsc: internalAction({
+      args: {},
+      returns: v.any(),
+      handler: async () => ({ success: true }),
+    }),
+  };
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 // convex-test v0.0.53 with Vitest uses import.meta.glob to discover modules.
 const modules = (import.meta as unknown as {
@@ -186,5 +214,168 @@ describe("fetchCardChecklist — a path with no marketplace ids", () => {
     expect(resultA.batchId).toBeTruthy();
     expect(resultB.batchId).toBeTruthy();
     expect(resultB.batchId).not.toBe(resultA.batchId);
+  });
+});
+
+
+// ===========================================================================
+// NEO-252 — the attach-shaped chain the gate used to refuse
+// ===========================================================================
+
+/**
+ * The reported bug, end to end.
+ *
+ * An operator builds a set in NeonBinder first — which is the supported order,
+ * and the one "build 2027 Topps now, link it when the marketplaces catch up"
+ * depends on. The setName row is therefore NB's own and carries no ids. Later
+ * the BSC set turns up, and the operator attaches it where the attach dialog
+ * lives: the variant row, tagged `setName` (NEO-189).
+ *
+ * The chain now carries everything a BSC checklist request needs, and
+ * `resolveBscFacetFilters` builds exactly that request. The GATE, walking NB
+ * levels, looked for an id on the setName ancestor, found none, and skipped
+ * BSC — so the operator attached a set and the checklist stayed empty, with no
+ * error anywhere to explain it.
+ *
+ * Asserted against the OUTGOING BODY rather than a call count on a stubbed
+ * action, because the second half of the claim is that nothing NB-typed rides
+ * along: the set and the variant here have deliberately unmistakable names.
+ */
+describe("fetchCardChecklist — a BSC set attached at the LEAF (NEO-252)", () => {
+  const HAND_TYPED_SET = "My Hand Typed Set";
+  const HAND_TYPED_VARIANT = "My Hand Typed Variant";
+  const BSC_SET_SLUG = "2024-topps";
+
+  /** Records every bulk-upload body; answers everything else emptily. */
+  function recordingBsc(recorded: Array<Record<string, string[]>>) {
+    return (async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).includes("/search/bulk-upload/results")) {
+        const body = JSON.parse(String(init?.body ?? "{}"));
+        recorded.push((body.filters ?? {}) as Record<string, string[]>);
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+  }
+
+  async function seedLeafAttachedTree(
+    t: ReturnType<typeof convexTest>,
+  ): Promise<Id<"selectorOptions">> {
+    return t.run(async (ctx) => {
+      const sportId = await ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Baseball",
+        sportConfig: { skuCode: "BB", league: "MLB" },
+        platformData: { bsc: { b0: "baseball" } },
+        platformSlotSeq: { bsc: 1 },
+        children: [],
+        lastUpdated: Date.now(),
+      });
+      const yearId = await ctx.db.insert("selectorOptions", {
+        level: "year",
+        value: "2024",
+        platformData: { bsc: { b0: "2024" } },
+        platformSlotSeq: { bsc: 1 },
+        parentId: sportId,
+        children: [],
+        lastUpdated: Date.now(),
+      });
+      // NB's own set: no marketplace ids anywhere on it. This is the row the
+      // level walk was looking at.
+      const setNameId = await ctx.db.insert("selectorOptions", {
+        level: "setName",
+        value: HAND_TYPED_SET,
+        platformData: {},
+        parentId: yearId,
+        children: [],
+        lastUpdated: Date.now(),
+      });
+      // …and the BSC set, attached where the operator could actually attach it.
+      return ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: HAND_TYPED_VARIANT,
+        platformData: { bsc: { b0: "base", b1: BSC_SET_SLUG } },
+        platformFacets: { bsc: { b0: "variant", b1: "setName" } },
+        primaryPlatformId: { bsc: "b0" },
+        platformSlotSeq: { bsc: 2 },
+        parentId: setNameId,
+        children: [],
+        lastUpdated: Date.now(),
+      });
+    });
+  }
+
+  test("BSC is asked ONCE, scoped by the leaf's own facets", async () => {
+    const recorded: Array<Record<string, string[]>> = [];
+    vi.stubGlobal("fetch", recordingBsc(recorded));
+    const t = convexTest(schema, modules);
+    const rowId = await seedLeafAttachedTree(t);
+
+    const result = await t
+      .withIdentity(ADMIN_A)
+      .action(api.selectorOptions.fetchCardChecklist, {
+        selectorOptionId: rowId,
+      });
+
+    expect(result.success).toBe(true);
+    // Not skipped, and not fanned out: one fully-scoped request.
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]).toEqual({
+      sport: ["baseball"],
+      year: ["2024"],
+      setName: [BSC_SET_SLUG],
+      variant: ["base"],
+    });
+  });
+
+  test("and nothing in that body is an NB display value", async () => {
+    // The other half of the invariant. Widening the gate must not widen what
+    // travels: every value on the wire is a slot id, and the two NB-typed
+    // names on this path appear nowhere in it — not raw, not lowercased.
+    const recorded: Array<Record<string, string[]>> = [];
+    vi.stubGlobal("fetch", recordingBsc(recorded));
+    const t = convexTest(schema, modules);
+    const rowId = await seedLeafAttachedTree(t);
+
+    await t
+      .withIdentity(ADMIN_A)
+      .action(api.selectorOptions.fetchCardChecklist, {
+        selectorOptionId: rowId,
+      });
+
+    expect(recorded).toHaveLength(1);
+    const sent = Object.values(recorded[0]).flat().join(" ");
+    for (const displayValue of [HAND_TYPED_SET, HAND_TYPED_VARIANT]) {
+      expect(sent).not.toContain(displayValue);
+      expect(sent).not.toContain(displayValue.toLowerCase());
+    }
+  });
+
+  test("strip the `variant` tag and BSC is skipped again — no request at all", async () => {
+    // `variant` stays mandatory (Jason, 2026-09-05): NEO-252 is a gate fix, not
+    // a relaxation. Without a variant axis BSC answers with the base cards plus
+    // every insert and parallel in the set, so the refusal is the correct
+    // outcome — it just has to be reached for the right reason now.
+    const recorded: Array<Record<string, string[]>> = [];
+    vi.stubGlobal("fetch", recordingBsc(recorded));
+    const t = convexTest(schema, modules);
+    const rowId = await seedLeafAttachedTree(t);
+    await t.run(async (ctx) =>
+      ctx.db.patch(rowId, {
+        platformData: { bsc: { b1: BSC_SET_SLUG } },
+        platformFacets: { bsc: { b1: "setName" } },
+      }),
+    );
+
+    const result = await t
+      .withIdentity(ADMIN_A)
+      .action(api.selectorOptions.fetchCardChecklist, {
+        selectorOptionId: rowId,
+      });
+
+    expect(result.success).toBe(true);
+    expect(recorded).toHaveLength(0);
   });
 });

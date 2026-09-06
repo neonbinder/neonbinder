@@ -7,6 +7,16 @@ import {
   platformServesLevel,
   unsupportedLevelMessage,
 } from "../platformLevels";
+// NEO-251: the parser below refuses against NB's OWN bounds rather than
+// re-declaring them. A number duplicated here would drift from the mutation
+// that actually enforces it, and the adapter would start minting names the
+// player table rejects.
+//
+// The name bound lives in `lib/` rather than in `convex/players.ts` because
+// the pairing modal enforces it too and a browser bundle cannot import
+// `./_generated/server`. See the note in that file.
+import { MAX_PLAYER_NAME_LENGTH } from "../../lib/players/name-limits";
+import { MAX_CARD_PLAYERS } from "../features/cardAttention";
 import { displayVariationLabel } from "../../lib/cards/variations";
 import { api, internal } from "../_generated/api";
 import { getCurrentUserId, requireAdmin } from "../auth";
@@ -965,9 +975,33 @@ export function parseSlVariationMarker(desc: string): {
  *
  * SL descriptions are free-form ("Mike Trout LAA RC", "Aaron Judge AU /99");
  * we conservatively detect only well-known tokens to avoid corrupting
- * cardName with false positives. Team extraction is intentionally NOT
- * attempted here — SL's 2-3 letter team abbreviations vary by sport and
- * BSC supplies the canonical team in the merged record anyway.
+ * cardName with false positives.
+ *
+ * ## Players ARE derived from the residual; teams still are NOT (NEO-251)
+ *
+ * `parseSlSubjects` below reads player names out of this residual. That is a
+ * change from the original note here, and the reason is concrete: an SL-only
+ * set used to commit with every row "needs attention" and the entity-review
+ * wizard never opened for it, because no SL row ever carried a `players`
+ * array. Names are the one thing SL's description reliably contains, so the
+ * adapter now derives them — as an *initial input* at creation, exactly as
+ * the product invariant allows, never as a source of truth afterwards.
+ *
+ * Teams remain deliberately underived, and the reason is now sharper than
+ * "BSC supplies it":
+ *
+ *   1. SportLots does not print a team. What it prints is a 2-3 letter
+ *      abbreviation glued onto the description ("Mike Trout LAA"), whose
+ *      meaning varies by sport and by era, and which is absent from most
+ *      rows entirely.
+ *   2. Turning `LAA` into an NB team would mean looking an NB row up *by a
+ *      marketplace display string* — the reverse dependency the invariant
+ *      forbids. NB's team rows carry marketplace ids in their platform
+ *      slots; there is no id here to read, only text, and guessing by name
+ *      is precisely the smell the invariant names.
+ *
+ * So the abbreviation is stripped off a candidate name (below) and dropped on
+ * the floor. `team`/`teams` stay `undefined` on every SportLots row.
  */
 function tokenizeSlDescription(desc: string): {
   attributes: string[];
@@ -1012,6 +1046,302 @@ function tokenizeSlDescription(desc: string): {
 
   residual = residual.replace(/\s+/g, " ").trim();
   return { attributes, printRun, residual };
+}
+
+/**
+ * The exact HTML entities SportLots emits inside a `listcards.tpl` cell.
+ *
+ * A CLOSED set, not a general decoder, and that is the security property:
+ * an unknown `&…;` sequence is left as literal text rather than resolved,
+ * so nothing can be smuggled through by inventing an entity name. Decoding
+ * runs in ONE pass — `String.replace` never re-scans what it substituted —
+ * so `&amp;lt;` decodes to the literal `&lt;` and stops there.
+ *
+ * Call this ONCE per row, at the head of the derivation path. `parseSlSubjects`
+ * deliberately does not call it — decoding twice would resolve
+ * `&amp;lt;` all the way to `<`, and would mean no single place owned the
+ * question of what the row says.
+ */
+const SL_ENTITY_REPLACEMENTS: Record<string, string> = {
+  "&amp;": "&",
+  "&lt;": "<",
+  "&gt;": ">",
+  "&quot;": '"',
+  "&apos;": "'",
+  "&#39;": "'",
+  "&#x27;": "'",
+  "&nbsp;": " ",
+};
+const SL_ENTITY_PATTERN = /&(?:amp|lt|gt|quot|apos|nbsp|#39|#x27);/gi;
+
+/**
+ * Decode the bounded entity set above, once, without re-scanning.
+ *
+ * Applied per row at the head of the DERIVATION path, so `cardName`, the
+ * attributes, the variation label and the player parse all see the same
+ * decoded text — an apostrophe in "Peter O&#39;Brien" is a real apostrophe in
+ * every derived field or in none. It is NOT applied to `platformRef`, which
+ * is an identity key and must stay byte-identical to what SL served.
+ */
+export function decodeSlEntities(text: string): string {
+  return text.replace(
+    SL_ENTITY_PATTERN,
+    (m) => SL_ENTITY_REPLACEMENTS[m.toLowerCase()] ?? m,
+  );
+}
+
+/** Lowercase particles that may appear inside a name ("Alfonso de la Cruz"). */
+const SL_NAME_PARTICLES = new Set([
+  "de",
+  "la",
+  "van",
+  "von",
+  "da",
+  "di",
+  "del",
+  "du",
+  "the",
+  "of",
+  "y",
+]);
+
+/**
+ * Generational suffixes. Compared case-insensitively.
+ *
+ * The bare, period-less `JR`/`SR` are in here for a reason that is easy to
+ * miss: without them "Ken Griffey JR" hits the trailing-team-code rule below,
+ * `JR` gets stripped as if it were an abbreviation like `LAA`, and the row
+ * emits "Ken Griffey" — a DIFFERENT PERSON, silently, on a card that names
+ * the son. Wrong player data is worse than none, and a father/son pair is
+ * exactly where SportLots prints the bare form.
+ */
+const SL_NAME_SUFFIXES = new Set([
+  "jr",
+  "sr",
+  "jr.",
+  "sr.",
+  "ii",
+  "iii",
+  "iv",
+  "v",
+]);
+
+/**
+ * Whole-word veto list. If any of these appears as a word anywhere in a
+ * candidate subject, the WHOLE row is rejected — "Team Checklist", "Yankee
+ * Stadium", "Header Card" and friends are not people, and a bad player name
+ * committed against a card is worse than no player name at all.
+ *
+ * ## Why the second group exists
+ *
+ * The shape rules alone cannot see the difference between "Coby Mayo" and
+ * "Future Stars": both are two capitalised tokens. Subset and insert names
+ * are the single largest class of non-person text SportLots prints in the
+ * subject position, and they pass every structural test. Left unvetoed they
+ * do real damage twice over — a bogus player minted into NB's own table, and
+ * a spurious BSC-vs-SL disagreement on a card where nothing is actually
+ * wrong.
+ *
+ * ## Plural and descriptor-specific, on purpose
+ *
+ * These are surnames as well as descriptors, so the entries are chosen to
+ * catch the descriptor WITHOUT vetoing the person:
+ *
+ *   * `kings` vetoes "Diamond Kings"; "Michael King" still parses.
+ *   * `stars` vetoes "Future Stars"; a "Star" surname is untouched.
+ *   * `legends`, `winners`, `prospects` follow the same plural rule.
+ *
+ * That is why none of the singular forms appear here. When adding an entry,
+ * check it against the surname first — a false veto costs a real name, which
+ * is the cost this list is supposed to be avoiding.
+ */
+const SL_SUBJECT_STOPWORDS = [
+  // Structural / non-card rows.
+  "checklist",
+  "team",
+  "card",
+  "cards",
+  "stadium",
+  "logo",
+  "puzzle",
+  "header",
+  "sponsor",
+  "coupon",
+  "advertisement",
+  "league",
+  "leaders",
+  "highlights",
+  "record",
+  "season",
+  "series",
+  "set",
+  "base",
+  "rookie",
+  "cup",
+  "all-star",
+  "mascot",
+  // Subset / insert descriptors. Plural where a singular is a real surname.
+  "stars",
+  "kings",
+  "prospects",
+  "legends",
+  "tribute",
+  "award",
+  "winners",
+  "draft",
+  "pick",
+  "future",
+  "clock",
+].map((word) => new RegExp(`\\b${word.replace(/-/g, "\\-")}\\b`));
+
+/**
+ * A single name token: an uppercase letter followed by letters, apostrophes,
+ * hyphens or periods. Unicode-aware on purpose — "José Ramírez" and
+ * "Jean-Luc Pelletier" are names SportLots really prints, and an ASCII-only
+ * class would mangle them into a rejection.
+ */
+const SL_NAME_TOKEN = /^\p{Lu}[\p{L}'\-.]*$/u;
+
+/** A trailing SportLots team abbreviation ("Mike Trout LAA"). Never emitted. */
+const SL_TEAM_ABBREVIATION = /^[A-Z]{2,3}$/;
+
+/** Control characters, including newline. Rejected outright post-decode. */
+// eslint-disable-next-line no-control-regex
+const SL_CONTROL_CHARS = /[\u0000-\u001F\u007F]/;
+
+/**
+ * The parse cap on subjects per card, and its ceiling.
+ *
+ * `MAX_CARD_PLAYERS` (20) is what the DB side of NB actually accepts on a
+ * card. This parser stops far short of it on purpose: past four subjects a
+ * SportLots row is a checklist line, not a card, and guessing names off one
+ * is how nonsense reaches NB's player table. Written as a `Math.min` against
+ * the shared constant rather than as a bare 4 so the relationship cannot
+ * invert: if the DB bound is ever lowered below four, this parser tightens
+ * with it instead of emitting rows the DB will refuse.
+ */
+const SL_MAX_SUBJECTS = Math.min(4, MAX_CARD_PLAYERS);
+/** A person's name, after the team abbreviation is stripped. */
+const SL_MAX_NAME_TOKENS = 4;
+const SL_MIN_NAME_TOKENS = 2;
+/**
+ * The same bound `convex/players.ts` refuses an over-length name against, so
+ * this adapter cannot mint a name the player mutations would reject.
+ */
+const SL_MAX_SUBJECT_LENGTH = MAX_PLAYER_NAME_LENGTH;
+
+/**
+ * NEO-251 — derive player names from a SportLots description residual.
+ *
+ * Pure, and deliberately pessimistic: ANY doubt about ANY subject rejects the
+ * entire row and returns `{}`. A false negative costs one card an
+ * auto-filled name, which the entity-review wizard already handles. A false
+ * positive writes a nonsense player into NB's own data, which is the thing
+ * the product invariant exists to prevent — NB owns players; SportLots is
+ * only ever the initial input.
+ *
+ * A refusal is SILENT and total: `{}`, with no message, no thrown error and
+ * no log line. There is deliberately nowhere for the rejected text to be
+ * echoed — the caller learns a count of names, never the string that failed.
+ *
+ * ## Input contract: ALREADY DECODED, exactly once
+ *
+ * The caller decodes (`decodeSlEntities`) at the head of the derivation path
+ * and hands the result here. This function must NOT decode again. It used to,
+ * which meant production ran the decoder twice over every row and "decode
+ * exactly once" was true of neither path — a string reaching this parser had
+ * been through one more pass than the `cardName` beside it, so the two could
+ * in principle disagree about what the row said. One decode, one owner.
+ *
+ * A consequence worth stating: a double-encoded payload is no longer stopped
+ * by the `<`/`>` guard, because after the caller's single pass
+ * `&amp;lt;script&amp;gt;` is still the literal text `&lt;script&gt;`. It is
+ * refused anyway, one layer down, by the per-token allowlist — `&`, `;` and
+ * `/` are not name characters. Two independent reasons it cannot get through.
+ *
+ * The rules, in order:
+ *
+ *  1. Reject if `<`, `>` or any control character (newline included) is
+ *     present. This is the caller's single decode already applied, so an
+ *     entity-encoded `<` that resolved during it is caught here.
+ *  3. Split into subjects on `|`, ` / ` and ` & ` (the last two require
+ *     surrounding spaces, so "A/B" and "R&B" are one subject, not two).
+ *  4. More than `SL_MAX_SUBJECTS` (4, under NB's own `MAX_CARD_PLAYERS`)
+ *     subjects → reject. A five-name row is a checklist line.
+ *  5. Per subject: collapse whitespace, trim; reject if empty, longer than
+ *     `MAX_PLAYER_NAME_LENGTH` (NB's own bound, 120), or containing any
+ *     digit.
+ *  6. Reject on a whole-word stoplist hit.
+ *  7. A trailing 2-3 letter ALL-CAPS token is SportLots' team abbreviation.
+ *     With at least 2 tokens in front of it, drop it — it is never emitted
+ *     (see the note on `tokenizeSlDescription`). With only ONE token in
+ *     front ("Ichiro SEA"), REJECT the subject: neither reading is safe.
+ *     A generational suffix, bare `JR`/`SR` included, is exempt — it is part
+ *     of the name, and stripping it would name the wrong person.
+ *  8. The remaining token count must be 2-4. A single token is rejected:
+ *     "Ichiro" is a real name, but so is "Checklist", and the adapter
+ *     cannot tell them apart.
+ *  9. Every remaining token must be a capitalised name token, a lowercase
+ *     particle, or a generational suffix.
+ * 10. Dedupe case-insensitively within the row; emit `players` only if at
+ *     least one name survives.
+ */
+export function parseSlSubjects(residual: string): { players?: string[] } {
+  // NOTE: this does NOT decode. It is handed text the caller has ALREADY
+  // decoded exactly once — see the docstring. The guard below therefore runs
+  // on the same bytes production derives every other field from.
+  if (/[<>]/.test(residual) || SL_CONTROL_CHARS.test(residual)) return {};
+
+  const parts = residual.split(/\||\s\/\s|\s&\s/);
+  if (parts.length > SL_MAX_SUBJECTS) return {};
+
+  const players: string[] = [];
+  const seen = new Set<string>();
+
+  for (const part of parts) {
+    const subject = part.replace(/\s+/g, " ").trim();
+    if (!subject) return {};
+    if (subject.length > SL_MAX_SUBJECT_LENGTH) return {};
+    if (/\d/.test(subject)) return {};
+
+    const lowered = subject.toLowerCase();
+    if (SL_SUBJECT_STOPWORDS.some((pattern) => pattern.test(lowered))) return {};
+
+    let tokens = subject.split(" ");
+    const last = tokens[tokens.length - 1];
+    // A trailing 2-3 letter ALL-CAPS token is SportLots' team abbreviation —
+    // unless it is a generational suffix, which is part of the name.
+    if (
+      SL_TEAM_ABBREVIATION.test(last) &&
+      !SL_NAME_SUFFIXES.has(last.toLowerCase())
+    ) {
+      // It can only be dropped if a whole name is left standing without it.
+      // With just one token in front ("Ichiro SEA") there are two readings —
+      // a one-word name plus a team code, or a genuine two-token name — and
+      // the parser cannot tell them apart. Emitting "Ichiro SEA" would put a
+      // marketplace team code inside an NB player name; stripping to "Ichiro"
+      // would emit the single-token name rule 8 exists to refuse. So refuse
+      // the subject instead of picking one.
+      if (tokens.length < 3) return {};
+      tokens = tokens.slice(0, -1);
+    }
+    if (tokens.length < SL_MIN_NAME_TOKENS || tokens.length > SL_MAX_NAME_TOKENS)
+      return {};
+
+    for (const token of tokens) {
+      if (SL_NAME_PARTICLES.has(token)) continue;
+      if (SL_NAME_SUFFIXES.has(token.toLowerCase())) continue;
+      if (!SL_NAME_TOKEN.test(token)) return {};
+    }
+
+    const name = tokens.join(" ");
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    players.push(name);
+  }
+
+  return players.length ? { players } : {};
 }
 
 /**
@@ -1230,13 +1560,24 @@ export const fetchSportLotsChecklist = action({
 
         while ((match = cardRegex.exec(html)) !== null) {
           const cardNumber = match[1].trim();
+          // The description EXACTLY as SportLots served it. Never normalised,
+          // never decoded — see the platformRef note below.
           const fullDescription = match[2].trim();
 
           if (!cardNumber || !fullDescription) continue;
 
+          // NEO-251: decode SL's HTML entities ONCE, at the head of the
+          // DERIVATION path only. Everything downstream of here — cardName,
+          // attributes, the variation label, the player parse — sees the same
+          // decoded text, so an apostrophe in "Peter O&#39;Brien" is a real
+          // apostrophe in every derived field or in none.
+          //
+          // `fullDescription` itself deliberately stays raw. See platformRef.
+          const decodedDescription = decodeSlEntities(fullDescription);
+
           // Strip a leading "#NNN" if the description echoes the card number,
           // then run the token tokenizer to lift attributes / print run.
-          let working = fullDescription;
+          let working = decodedDescription;
           const echo = working.indexOf(`#${cardNumber}`);
           if (echo !== -1) {
             working = working.substring(echo + cardNumber.length + 1).trim();
@@ -1254,11 +1595,18 @@ export const fetchSportLotsChecklist = action({
 
           const { attributes, printRun, residual } =
             tokenizeSlDescription(withoutVariation);
-          const cardName = residual || withoutVariation || fullDescription;
+          const cardName = residual || withoutVariation || decodedDescription;
+
+          // NEO-251: player names off the same residual `cardName` is built
+          // from. `cardName` itself is untouched — this only ADDS a field.
+          // Returns `{}` (so `players` stays undefined) on any doubt; see
+          // parseSlSubjects. `team`/`teams` are never set here, deliberately.
+          const { players } = parseSlSubjects(residual);
 
           pageCards.push({
             cardNumber,
             cardName,
+            players,
             attributes: attributes.length ? attributes : undefined,
             printRun,
             autographType: attributes.includes("AU") ? "Unknown" : undefined,
@@ -1273,6 +1621,18 @@ export const fetchSportLotsChecklist = action({
             // so only the full text disambiguates which SL row this card
             // actually matched. sportlotsRef stays the bare number — that's
             // still the correct key for BSC↔SL reconciliation matching below.
+            //
+            // NEO-251, THE REASON THIS IS `fullDescription` AND NOT THE
+            // DECODED STRING: this ref is an IDENTITY KEY, not display text.
+            // `buildCommitPrelude` matches stored rows on it byte-for-byte
+            // (`existingIdBySlRef` in selectorOptions.ts), and
+            // `fetchCardChecklist` warns about `orphanedSlRefs` for every
+            // stored ref the fetch no longer returns. Decoding it would
+            // change the key of every already-stored row whose description
+            // contains an entity — each one would go orphaned AND be
+            // re-inserted as a new card. A key is compared, never read, so it
+            // gains nothing from decoding and loses the one property it
+            // needs: stability. Decode for display; never for identity.
             platformRef: fullDescription,
             sportlotsRef: cardNumber,
           });

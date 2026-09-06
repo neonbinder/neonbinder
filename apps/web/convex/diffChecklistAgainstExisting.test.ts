@@ -18,6 +18,10 @@ import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
+// NEO-251: the dedup key the commit resolves a name through. Imported rather
+// than hand-spelled so a fixture cannot key a seeded player differently from
+// the way the prelude will look it up.
+import { normalizePlayerName } from "./players";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -97,6 +101,15 @@ function card(opts: {
   teams?: string[];
   attributes?: string[];
   unmatched?: "bsc" | "sl";
+  // NEO-251: what the two marketplaces each said, when they disagreed. Carried
+  // on the wire so the diff can tell "the operator settled this" apart from
+  // "upstream changed it".
+  playersConflict?: {
+    bsc: string[];
+    sportlots: string[];
+    preferred?: "bsc" | "sportlots";
+  };
+  nameConflict?: { bsc: string; sportlots: string };
 }) {
   const platformData: {
     bsc?: { ref: string; setId?: string };
@@ -127,6 +140,10 @@ function card(opts: {
     cardVariation: opts.cardVariation,
     platformData,
     unmatched: opts.unmatched,
+    // Spread, not always-present-and-undefined: `previewCardValidator` is
+    // strict and an explicit `undefined` is not an absent optional.
+    ...(opts.playersConflict ? { playersConflict: opts.playersConflict } : {}),
+    ...(opts.nameConflict ? { nameConflict: opts.nameConflict } : {}),
   };
 }
 
@@ -959,5 +976,346 @@ describe("diffChecklistAgainstExisting — access", () => {
         cards: [],
       }),
     ).rejects.toThrow(/Not authenticated/);
+  });
+});
+
+/**
+ * NEO-251 — the re-sync nag, and the two things that must NOT be suppressed
+ * along with it.
+ *
+ * The merge defaults `players` to BSC on every sync, unconditionally. So a card
+ * an operator settled as SportLots arrives here carrying BSC's roster against
+ * an NB row carrying SportLots' — a tier-1 "who is on this card" diff, on every
+ * re-sync, forever, with the operator's own decision on the wrong side of it.
+ * Re-asking an answered question is how a review screen teaches people to skip
+ * it.
+ */
+describe("diffChecklistAgainstExisting — settled conflicts (NEO-251)", () => {
+  /**
+   * Commit a card, then hand the diff a re-sync of the same card with whatever
+   * the marketplaces now say.
+   */
+  async function committedThenResynced(
+    t: ReturnType<typeof convexTest>,
+    committed: Parameters<typeof card>[0],
+    resynced: Parameters<typeof card>[0],
+  ) {
+    const { sportId, leafId } = await seedTree(t);
+    // The commit LINKS a player name only when a `players` row already answers
+    // to it — an unknown name goes to the entity wizard, which does not run
+    // here. Seeding them is what makes `row.playerIds` non-empty, which is what
+    // this suite is about: the diff reads stored IDS back as names.
+    await t.run(async (ctx) => {
+      for (const name of committed.players ?? []) {
+        await ctx.db.insert("players", {
+          name,
+          nameNormalized: normalizePlayerName(name),
+          sportId,
+          lastUpdated: Date.now(),
+        });
+      }
+    });
+    await t
+      .withIdentity(ADMIN_IDENTITY)
+      .action(api.selectorOptions.commitCardChecklist, {
+        selectorOptionId: leafId,
+        sportId,
+        cards: [card(committed)],
+      });
+    const result = await diff(t, leafId, [card(resynced)]);
+    return result.cards[0];
+  }
+
+  test("a roster the marketplace merely REORDERED is not a change", async () => {
+    const t = convexTest(schema, modules);
+    const row = await committedThenResynced(
+      t,
+      {
+        cardNumber: "1",
+        cardName: "Card One",
+        bscRef: "bsc-1",
+        players: ["Alec Bohm", "Spencer Howard"],
+      },
+      {
+        cardNumber: "1",
+        cardName: "Card One",
+        bscRef: "bsc-1",
+        players: ["Spencer Howard", "Alec Bohm"],
+      },
+    );
+
+    expect(row.bucket).toBe("identical");
+    expect(row.fields).toHaveLength(0);
+  });
+
+  /**
+   * The settled case: the NB row carries SportLots' roster because that is what
+   * the operator chose last time; the incoming card carries the merge's BSC
+   * default. The disagreement still stands and is still offered, so this is not
+   * a change upstream made.
+   */
+  test("a stored roster equal to the LOSING side reports no change", async () => {
+    const t = convexTest(schema, modules);
+    const row = await committedThenResynced(
+      t,
+      {
+        cardNumber: "1",
+        cardName: "Card One",
+        bscRef: "bsc-1",
+        players: ["Mike Yastrzemski", "Carl Yastrzemski"],
+      },
+      {
+        cardNumber: "1",
+        cardName: "Card One",
+        bscRef: "bsc-1",
+        players: ["Mike Yastrzemski"],
+        playersConflict: {
+          bsc: ["Mike Yastrzemski"],
+          sportlots: ["Mike Yastrzemski", "Carl Yastrzemski"],
+        },
+      },
+    );
+
+    expect(row.fields.map((f) => f.name)).not.toContain("playerIds");
+    expect(row.bucket).toBe("identical");
+  });
+
+  /**
+   * THE FLIP. The operator opens the re-sync and moves this row to SportLots.
+   *
+   * The card that reaches the diff therefore carries SportLots' roster, not the
+   * merge default — and the stored row still carries BSC from the previous
+   * sync. Reported, or the review is skipped, the commit runs with no
+   * `applyFields`, and the operator watches themselves choose SportLots while
+   * NeonBinder keeps BSC.
+   *
+   * This is what the first version of the rule got wrong: it derived "the
+   * losing side" from the incoming card, so a flipped card made BSC the loser,
+   * BSC was what was stored, and the field was dropped.
+   */
+  test("a card FLIPPED to SportLots still reports the change", async () => {
+    const t = convexTest(schema, modules);
+    const row = await committedThenResynced(
+      t,
+      {
+        cardNumber: "1",
+        cardName: "Card One",
+        bscRef: "bsc-1",
+        players: ["Mike Yastrzemski"],
+      },
+      {
+        cardNumber: "1",
+        cardName: "Card One",
+        bscRef: "bsc-1",
+        // The operator's choice, not the merge's default.
+        players: ["Mike Yastrzemski", "Carl Yastrzemski"],
+        playersConflict: {
+          bsc: ["Mike Yastrzemski"],
+          sportlots: ["Mike Yastrzemski", "Carl Yastrzemski"],
+        },
+      },
+    );
+
+    expect(row.fields.map((f) => f.name)).toContain("playerIds");
+    expect(row.bucket).toBe("contentChanges");
+  });
+
+  /** The same flip on the older field, which had the identical defect. */
+  test("a cardName FLIPPED to SportLots still reports the change", async () => {
+    const t = convexTest(schema, modules);
+    const row = await committedThenResynced(
+      t,
+      {
+        cardNumber: "1",
+        cardName: "Mike Yastrzemski",
+        bscRef: "bsc-1",
+      },
+      {
+        cardNumber: "1",
+        cardName: "Carl Yastrzemski",
+        bscRef: "bsc-1",
+        nameConflict: {
+          bsc: "Mike Yastrzemski",
+          sportlots: "Carl Yastrzemski",
+        },
+      },
+    );
+
+    expect(row.fields.map((f) => f.name)).toContain("cardName");
+  });
+
+  /**
+   * A stored roster matching NEITHER marketplace is the OPERATOR'S OWN — a
+   * roster they typed. An upstream value against it is a real disagreement with
+   * a human decision, and it must still be shown.
+   */
+  test("a stored roster matching neither side still reports a change", async () => {
+    const t = convexTest(schema, modules);
+    const row = await committedThenResynced(
+      t,
+      {
+        cardNumber: "1",
+        cardName: "Card One",
+        bscRef: "bsc-1",
+        players: ["Willie Mays"],
+      },
+      {
+        cardNumber: "1",
+        cardName: "Card One",
+        bscRef: "bsc-1",
+        players: ["Mike Yastrzemski"],
+        playersConflict: {
+          bsc: ["Mike Yastrzemski"],
+          sportlots: ["Carl Yastrzemski"],
+        },
+      },
+    );
+
+    expect(row.fields.map((f) => f.name)).toContain("playerIds");
+    expect(row.bucket).toBe("contentChanges");
+  });
+
+  /**
+   * The suppression is per FIELD. A settled roster must not become a licence to
+   * stop reporting everything else about the card — the card is not
+   * short-circuited to `identical`.
+   */
+  test("a cardName change on a roster-conflicted card still surfaces", async () => {
+    const t = convexTest(schema, modules);
+    const row = await committedThenResynced(
+      t,
+      {
+        cardNumber: "1",
+        cardName: "Card One",
+        bscRef: "bsc-1",
+        players: ["Mike Yastrzemski", "Carl Yastrzemski"],
+      },
+      {
+        cardNumber: "1",
+        cardName: "Card One Corrected",
+        bscRef: "bsc-1",
+        players: ["Mike Yastrzemski"],
+        playersConflict: {
+          bsc: ["Mike Yastrzemski"],
+          sportlots: ["Mike Yastrzemski", "Carl Yastrzemski"],
+        },
+      },
+    );
+
+    expect(row.fields.map((f) => f.name)).toEqual(["cardName"]);
+    expect(row.bucket).toBe("contentChanges");
+  });
+
+  /** The same rule on the older field, which had the same defect. */
+  test("a stored cardName equal to the losing side reports no change", async () => {
+    const t = convexTest(schema, modules);
+    const row = await committedThenResynced(
+      t,
+      {
+        cardNumber: "1",
+        cardName: "Carl Yastrzemski",
+        bscRef: "bsc-1",
+      },
+      {
+        cardNumber: "1",
+        cardName: "Mike Yastrzemski",
+        bscRef: "bsc-1",
+        nameConflict: {
+          bsc: "Mike Yastrzemski",
+          sportlots: "Carl Yastrzemski",
+        },
+      },
+    );
+
+    expect(row.fields.map((f) => f.name)).not.toContain("cardName");
+    expect(row.bucket).toBe("identical");
+  });
+
+  /**
+   * Without a conflict on the incoming card there is nothing to suppress: an
+   * ordinary roster change is an ordinary tier-1 diff.
+   */
+  test("with no conflict on the wire, a roster change is reported normally", async () => {
+    const t = convexTest(schema, modules);
+    const row = await committedThenResynced(
+      t,
+      {
+        cardNumber: "1",
+        cardName: "Card One",
+        bscRef: "bsc-1",
+        players: ["Mike Yastrzemski", "Carl Yastrzemski"],
+      },
+      {
+        cardNumber: "1",
+        cardName: "Card One",
+        bscRef: "bsc-1",
+        players: ["Mike Yastrzemski"],
+      },
+    );
+
+    expect(row.fields.map((f) => f.name)).toContain("playerIds");
+  });
+});
+
+/**
+ * NEO-251 (security review) — the caps at this entry point.
+ *
+ * `players` leaves an adapter, crosses an operator's browser and comes back in
+ * here as a bare `v.array(v.string())`. The card COUNT was bounded; what a card
+ * CARRIES was not. Each of the three entry points is separately reachable by a
+ * client, so each asserts rather than assuming another ran first — the sibling
+ * assertions live with the commit and with entity resolution.
+ */
+describe("diffChecklistAgainstExisting — name bounds (NEO-251)", () => {
+  test("a card carrying more than MAX_CARD_PLAYERS players is refused", async () => {
+    const t = convexTest(schema, modules);
+    const { leafId } = await seedTree(t);
+    await expect(
+      diff(t, leafId, [
+        card({
+          cardNumber: "1",
+          cardName: "Card One",
+          bscRef: "bsc-1",
+          players: Array.from({ length: 21 }, (_, i) => `Player ${i}`),
+        }),
+      ]),
+    ).rejects.toThrow(/20-player limit/);
+  });
+
+  test("an over-length player name is refused, and the name is not echoed", async () => {
+    const t = convexTest(schema, modules);
+    const { leafId } = await seedTree(t);
+    const secret = "Z".repeat(121);
+    const call = diff(t, leafId, [
+      card({
+        cardNumber: "1",
+        cardName: "Card One",
+        bscRef: "bsc-1",
+        players: [secret],
+      }),
+    ]);
+    await expect(call).rejects.toThrow(/121 characters; the limit is 120/);
+    // The message reaches Sentry and the browser console — it reports the
+    // LENGTH, never the text. Same convention as `players.ts`.
+    await expect(call).rejects.not.toThrow(new RegExp(secret));
+  });
+
+  test("the roster-conflict arrays are bounded too", async () => {
+    const t = convexTest(schema, modules);
+    const { leafId } = await seedTree(t);
+    await expect(
+      diff(t, leafId, [
+        card({
+          cardNumber: "1",
+          cardName: "Card One",
+          bscRef: "bsc-1",
+          players: ["Alec Bohm"],
+          playersConflict: {
+            bsc: ["Alec Bohm"],
+            sportlots: Array.from({ length: 21 }, (_, i) => `Player ${i}`),
+          },
+        }),
+      ]),
+    ).rejects.toThrow(/roster conflict/);
   });
 });

@@ -11,7 +11,11 @@ import CardDetailPanel from "./CardDetailPanel";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import NeonButton from "../modules/NeonButton";
 import EntityReviewWizard from "./EntityReviewWizard";
-import CardPairingModal, { type PairingCard } from "./CardPairingModal";
+import CardPairingModal, {
+  type PairingCard,
+  type PairingConflicts,
+  type PairingResult,
+} from "./CardPairingModal";
 import SyncReviewModal, {
   needsSyncReview,
   type SyncDiff,
@@ -111,6 +115,32 @@ type PendingReview = {
  * NEO-203 — "the operator reviewed nothing", which is also what an unreviewed
  * commit sends. Applies no content, deletes nothing, holds nothing back.
  */
+/**
+ * NEO-251 — the cards as the SYNC-REVIEW DIFF needs to see them: each one
+ * carrying whatever the two marketplaces disagreed about on it.
+ *
+ * `CardPairingModal` deliberately hands back committable cards and a SEPARATE,
+ * index-keyed record of the disagreements (see `PairingResult`), because a card
+ * on its way to `commitCardChecklist` has one answer rather than an open
+ * question — the commit throws on one that still carries `playersConflict`.
+ * This is the one place the two are put back together, and the result is
+ * handed to the diff query alone; nothing downstream of it sees the field.
+ *
+ * A card with no conflict is returned BY REFERENCE. On a 908-card set that is
+ * every row but a handful, and this runs on the way into a query argument that
+ * is about to be serialised.
+ */
+function withConflicts(
+  cards: PairingCard[],
+  conflictsByIndex: Record<number, PairingConflicts>,
+): PairingCard[] {
+  return cards.map((card, index) => {
+    const conflicts = conflictsByIndex[index];
+    if (!conflicts) return card;
+    return { ...card, ...conflicts };
+  });
+}
+
 const NO_SYNC_DECISIONS: SyncReviewResult = {
   applyFieldsByIndex: {},
   baseVersionByIndex: {},
@@ -570,7 +600,7 @@ export default function CardChecklist({
         // write, and mistaking a not-yet-delivered batch for an empty one
         // would commit an empty checklist over a real set.
         setPairingPhase("closed");
-        await handlePairingConfirm({ cards: [] });
+        await handlePairingConfirm({ cards: [], conflictsByIndex: {} });
         return;
       }
       setSyncMessage(result.message);
@@ -609,7 +639,7 @@ export default function CardChecklist({
    * precedent as the `candidateCount === 0` short-circuit above: a dialog an
    * operator can only click through is a step, not a safeguard.
    */
-  const handlePairingConfirm = async (result: { cards: PairingCard[] }) => {
+  const handlePairingConfirm = async (result: PairingResult) => {
     // Guarded again rather than trusted from `handleSync`: this is also the
     // modal's own onConfirm, which can fire minutes later — long enough for
     // the ancestor-chain subscription to have changed under it. Says so out
@@ -641,7 +671,27 @@ export default function CardChecklist({
       if (result.cards.length > 0) {
         const diff = await convex.query(
           api.selectorOptions.diffChecklistAgainstExisting,
-          { selectorOptionId: variantId, cards: result.cards },
+          {
+            selectorOptionId: variantId,
+            // NEO-251: the DIFF — and only the diff — is told what the two
+            // marketplaces disagreed about on each card.
+            //
+            // It needs that to tell an operator's settled answer apart from an
+            // upstream change. The merge defaults `players` (and `cardName`) to
+            // BSC on every sync, so a card the operator settled as SportLots
+            // arrives carrying BSC's answer against an NB row carrying
+            // SportLots' — a tier-1 "who is on this card" diff, on every
+            // re-sync, forever, with their own decision on the wrong side of
+            // it. Re-asking an answered question is how a review screen teaches
+            // people to skip it.
+            //
+            // It goes NO FURTHER. `resolveAndCommit` below is handed
+            // `result.cards`, which never carried the field —
+            // `commitCardChecklist` throws on a card that still does, because
+            // a card being WRITTEN has one roster rather than an open
+            // question.
+            cards: withConflicts(result.cards, result.conflictsByIndex),
+          },
         );
         if (needsSyncReview(diff)) {
           setPendingReview({ sportId, cards: result.cards, diff });
@@ -1275,6 +1325,12 @@ export default function CardChecklist({
       // the two marketplaces agree about, which is nearly all of them; where it
       // is present the modal raises the same choice a hand-linked conflict gets.
       nameConflict: c.nameConflict,
+      // NEO-251: and the losing ROSTER, on exactly the same terms. Omitting it
+      // here is not a cosmetic gap — this mapping is the ONLY path a streamed
+      // candidate takes into the modal, so a conflict left behind here is one
+      // the operator never sees and the sync-review diff is never told about,
+      // however faithfully the server computed it.
+      playersConflict: c.playersConflict,
       unmatched:
         c.bucket === "bscOnly" ? "sl" : c.bucket === "slOnly" ? "bsc" : undefined,
     });

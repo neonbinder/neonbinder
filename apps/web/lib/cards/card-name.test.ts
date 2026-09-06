@@ -14,7 +14,12 @@
  */
 
 import { describe, expect, test } from "vitest";
-import { conflictingNames, nameKey } from "./card-name";
+import {
+  conflictingNames,
+  conflictingPlayers,
+  nameKey,
+  playersKey,
+} from "./card-name";
 
 describe("nameKey — fold spelling, keep meaning", () => {
   test("diacritics fold, because BSC strips the accents SportLots keeps", () => {
@@ -81,5 +86,103 @@ describe("conflictingNames", () => {
     expect(conflictingNames("Wander Franco", "   ")).toBeUndefined();
     expect(conflictingNames(undefined, "Wander Franco")).toBeUndefined();
     expect(conflictingNames("Wander Franco", undefined)).toBeUndefined();
+  });
+});
+
+/**
+ * NEO-251 — the same contract one field over, for the player LIST.
+ *
+ * `playersKey` deliberately diverges from `nameKey` on word order (see its own
+ * doc comment): the list arrives already split, so a reordering carries no
+ * information and would flag most multi-subject cards in a set. These tests
+ * pin that divergence, because it is the one place a reader would reasonably
+ * expect the two functions to agree and they must not.
+ */
+describe("playersKey — order-insensitive at both levels", () => {
+  test("list order does not matter", () => {
+    expect(playersKey(["Alec Bohm", "Spencer Howard"])).toBe(
+      playersKey(["Spencer Howard", "Alec Bohm"]),
+    );
+  });
+
+  test("token order within one name does not matter", () => {
+    // BSC files some multi-subject rows surname-first.
+    expect(playersKey(["Bohm, Alec"])).toBe(playersKey(["Alec Bohm"]));
+  });
+
+  test("diacritics, casing and punctuation fold, as they do for nameKey", () => {
+    expect(playersKey(["José Ramírez"])).toBe(playersKey(["jose ramirez"]));
+    expect(playersKey(["KEN GRIFFEY JR."])).toBe(playersKey(["Ken Griffey Jr"]));
+  });
+
+  test("empty and whitespace-only entries drop out rather than keying", () => {
+    expect(playersKey(["Alec Bohm", "  ", ""])).toBe(playersKey(["Alec Bohm"]));
+  });
+
+  test("a longer list is a different key — a subset is not a match", () => {
+    expect(playersKey(["Mike Yastrzemski"])).not.toBe(
+      playersKey(["Mike Yastrzemski", "Carl Yastrzemski"]),
+    );
+  });
+
+  test("an empty list keys to the empty string", () => {
+    expect(playersKey([])).toBe("");
+  });
+});
+
+describe("conflictingPlayers", () => {
+  /** The motivating row, one field over from `conflictingNames`'. */
+  test("a subset is a disagreement, with both lists verbatim", () => {
+    expect(
+      conflictingPlayers(
+        ["Mike Yastrzemski"],
+        ["Mike Yastrzemski", "Carl Yastrzemski"],
+      ),
+    ).toEqual({
+      bsc: ["Mike Yastrzemski"],
+      sportlots: ["Mike Yastrzemski", "Carl Yastrzemski"],
+    });
+  });
+
+  test("the same roster in a different order is not a disagreement", () => {
+    expect(
+      conflictingPlayers(
+        ["Alec Bohm", "Spencer Howard"],
+        ["Spencer Howard", "Alec Bohm"],
+      ),
+    ).toBeUndefined();
+  });
+
+  test("a spelling difference is not a disagreement", () => {
+    expect(
+      conflictingPlayers(["Jose Ramirez"], ["José Ramírez"]),
+    ).toBeUndefined();
+  });
+
+  test("does not hand back the folded form", () => {
+    const conflict = conflictingPlayers(["Jose Ramirez"], ["José Ramírez", "Bo Bichette"]);
+    expect(conflict?.sportlots).toEqual(["José Ramírez", "Bo Bichette"]);
+  });
+
+  test("outer whitespace is trimmed and is not itself a disagreement", () => {
+    expect(
+      conflictingPlayers(["  Alec Bohm  "], ["Alec Bohm"]),
+    ).toBeUndefined();
+    expect(conflictingPlayers(["  Alec Bohm  "], ["Carl Yastrzemski"])?.bsc).toEqual([
+      "Alec Bohm",
+    ]);
+  });
+
+  /**
+   * SportLots-only and BSC-only cards are the common case on a set one
+   * marketplace carries and the other does not; neither is a disagreement.
+   */
+  test("an empty, whitespace-only or missing side is not a disagreement", () => {
+    expect(conflictingPlayers([], ["Alec Bohm"])).toBeUndefined();
+    expect(conflictingPlayers(["Alec Bohm"], [])).toBeUndefined();
+    expect(conflictingPlayers(["Alec Bohm"], ["   "])).toBeUndefined();
+    expect(conflictingPlayers(undefined, ["Alec Bohm"])).toBeUndefined();
+    expect(conflictingPlayers(["Alec Bohm"], undefined)).toBeUndefined();
+    expect(conflictingPlayers(undefined, undefined)).toBeUndefined();
   });
 });
