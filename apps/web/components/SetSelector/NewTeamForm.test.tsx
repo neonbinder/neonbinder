@@ -827,3 +827,42 @@ describe("NewTeamForm — the league suggestion", () => {
     ).toBe("true");
   });
 });
+
+// ---------------------------------------------------------------------------
+// NEO-254 — a league this batch has already answered
+// ---------------------------------------------------------------------------
+
+describe("NewTeamForm — a league the batch has already staged", () => {
+  it("states the fact instead of re-offering 'Create'", () => {
+    // The reported bug: every hockey team row showed `Create National Hockey
+    // League`, because nothing is written until commit so `leagues.list` never
+    // saw it. Once the New League step has answered, the pill says so.
+    renderForm({
+      leagueSuggestion: "National Hockey League",
+      stagedLeagueNames: ["National Hockey League"],
+    });
+    expect(
+      screen.getByRole("radio", { name: "National Hockey League (new)" }),
+    ).toBeTruthy();
+    expect(
+      screen.queryByRole("radio", { name: "Create National Hockey League" }),
+    ).toBeNull();
+  });
+
+  it("still offers Create when nothing has answered for it yet", () => {
+    renderForm({ leagueSuggestion: "National Hockey League" });
+    expect(
+      screen.getByRole("radio", { name: "Create National Hockey League" }),
+    ).toBeTruthy();
+  });
+
+  it("matches on the league key, not the raw string", () => {
+    renderForm({
+      leagueSuggestion: "National Hockey League",
+      stagedLeagueNames: ["  national hockey league  "],
+    });
+    expect(
+      screen.getByRole("radio", { name: "National Hockey League (new)" }),
+    ).toBeTruthy();
+  });
+});

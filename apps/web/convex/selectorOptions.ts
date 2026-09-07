@@ -132,7 +132,11 @@ import { normalizeTeamName } from "./teams";
 // are the ONE place a team row's identity fields are derived and looked up.
 import { teamFullName } from "../lib/teams/team-name";
 import { findTeamByFullName, teamRowFields } from "./lib/teamRow";
-import { findOrCreateLeague, resolveDefaultLeagueId } from "./leagues";
+import {
+  findOrCreateLeague,
+  normalizeLeagueName,
+  resolveDefaultLeagueId,
+} from "./leagues";
 import {
   cardPlatformDataValidator,
   cardPlatformWireDataValidator,
@@ -9689,13 +9693,27 @@ export const commitCardChecklistPrelude = internalMutation({
     const skippedTeamNames: string[] = [];
     for (const row of reviewRows) {
       if (row.decision?.action !== "skip") continue;
+      /*
+       * NEO-254 — a skipped LEAGUE is not a suppressed name.
+       *
+       * `entityReviewSkips` is permanent, per-set, and means "this string is
+       * not an entity — never ask me again". That is the right record for a
+       * sponsor logo masquerading as a player. It is the WRONG record for a
+       * league step: "Skip — no league" says this team belongs to no league,
+       * which is a fact about the team, not about the string. Storing it would
+       * also suppress the league name on every later fetch of the set, so an
+       * operator who later wanted the league could never be asked again.
+       */
+      if (row.kind === "league") continue;
+      // Captured so the narrowing above survives into the index closure below.
+      const skipKind: "player" | "team" = row.kind;
       const nameNormalized = norm(row.name);
       const existingSkip = await ctx.db
         .query("entityReviewSkips")
         .withIndex("by_selector_option_and_kind_and_name", (q) =>
           q
             .eq("selectorOptionId", args.selectorOptionId)
-            .eq("kind", row.kind)
+            .eq("kind", skipKind)
             .eq("nameNormalized", nameNormalized),
         )
         .first();
@@ -9713,7 +9731,7 @@ export const commitCardChecklistPrelude = internalMutation({
       } else {
         await ctx.db.insert("entityReviewSkips", {
           selectorOptionId: args.selectorOptionId,
-          kind: row.kind,
+          kind: skipKind,
           nameNormalized,
           name: row.name,
           skippedAt: Date.now(),
@@ -9904,13 +9922,31 @@ export const commitCardChecklistPrelude = internalMutation({
      * answer; a dangling or cross-sport id is not, and treating it as one would
      * leave the team with no league at all rather than the sport's default.
      */
-    const leagueAnswered = async (create: {
-      leagueId?: Id<"leagues"> | null;
-    }): Promise<boolean> => {
+    const leagueAnswered = async (
+      create: { leagueId?: Id<"leagues"> | null; leagueName?: string },
+      suggestion?: string,
+    ): Promise<boolean> => {
+      // NEO-254 — a skipped league STEP is an answer, even though the team row
+      // itself carries no `leagueId`. See `leagueStepSkipped`.
+      if (leagueStepSkipped(create, suggestion)) return true;
       if (create.leagueId === undefined) return false;
       if (create.leagueId === null) return true;
       const league = await ctx.db.get(create.leagueId);
       return !!league && league.sportId === args.sportId;
+    };
+
+    /**
+     * NEO-254 — did a league STEP answer "no league" for this team?
+     *
+     * Read by `leagueAnswered` as well as by the field builder: a skipped
+     * league step means the team was answered, so the sport default must not
+     * reassert itself. Matched on either name the team could be carrying — the
+     * one the operator typed, or the suggestion they never overrode.
+     */
+    const leagueStepSkipped = (create: { leagueName?: string }, suggestion?: string) => {
+      const typed = create.leagueName?.trim();
+      if (typed && skippedLeagueNames.has(normalizeLeagueName(typed))) return true;
+      return !!suggestion && skippedLeagueNames.has(normalizeLeagueName(suggestion));
     };
 
     const reviewedTeamFields = async (
@@ -9950,11 +9986,27 @@ export const commitCardChecklistPrelude = internalMutation({
             return league.sportId === args.sportId;
           })()
         : true;
-      if (create.leagueId !== undefined && storedLeagueUsable) {
+      if (leagueStepSkipped(create, enrichment?.league)) {
+        // The operator answered the league step with "no league". Nothing is
+        // written, and `leagueAnswered` reports the same so the sport default
+        // stays out of it.
+        leagueId = undefined;
+      } else if (create.leagueId !== undefined && storedLeagueUsable) {
         // `null` is "no league", and it stays undefined here so nothing is
         // written — `createTeamFromOperatorInput` reads `leagueChosen` to know
         // the difference between that and "not answered".
         leagueId = create.leagueId ?? undefined;
+      } else if (
+        create.leagueName?.trim() &&
+        stagedLeagueIdByName.has(normalizeLeagueName(create.leagueName))
+      ) {
+        // NEO-254 — the league this batch just created (or linked) for exactly
+        // this name. Consulted BEFORE `findOrCreateLeague` below so the whole
+        // record the operator entered on the New League step is what the team
+        // lands on, rather than a second lookup by name that would find the
+        // same row anyway but would also be the path that used to mint a
+        // name-only league when it did not.
+        leagueId = stagedLeagueIdByName.get(normalizeLeagueName(create.leagueName))!;
       } else if (create.leagueName?.trim()) {
         // The operator's OWN answer, and it outranks the suggestion for the
         // same reason `create.leagueId` does: "Create league X" is a decision
@@ -9967,6 +10019,13 @@ export const commitCardChecklistPrelude = internalMutation({
           name: create.leagueName.trim(),
           sportId: args.sportId,
         });
+      } else if (
+        enrichment?.league &&
+        stagedLeagueIdByName.has(normalizeLeagueName(enrichment.league))
+      ) {
+        // Same rule for the suggestion the team never overrode: if this batch
+        // staged a step for that league, its answer is the one to use.
+        leagueId = stagedLeagueIdByName.get(normalizeLeagueName(enrichment.league))!;
       } else if (enrichment?.league) {
         leagueId = await findOrCreateLeague(ctx, {
           name: enrichment.league,
@@ -10025,6 +10084,91 @@ export const commitCardChecklistPrelude = internalMutation({
      * id-keyed link the product invariant asks for: the label was only ever the
      * question, and this is the answer.
      */
+    /**
+     * ── NEO-254: staged LEAGUES are created before the teams that need them ──
+     *
+     * The same mechanism one level up, and it runs before the team pass for
+     * exactly the reason that pass runs before the player loop: a team's
+     * league has to exist by the time the team row is written, or the team is
+     * filed under the sport default and the operator's answer is lost.
+     *
+     * Jason, preview test 2026-09-06: on a fresh deployment every hockey team
+     * offered `Create National Hockey League`, and whichever one was finally
+     * pressed produced a league with a name and nothing else. This map is the
+     * fix for both halves — the league is created ONCE for the batch, and it
+     * is created with the whole record the New League step collected.
+     *
+     * Keyed by the NORMALISED LEAGUE NAME (`normalizeLeagueName`, which does
+     * not token-sort — "National League" is not "League National"), because
+     * that is the key a team row's `create.leagueName` will be looked up by.
+     * A step the operator LINKED contributes its target's id; a step they
+     * skipped or never answered contributes nothing, and the team then falls
+     * through to its own league precedence exactly as before.
+     */
+    const stagedLeagueIdByName = new Map<string, Id<"leagues">>();
+    /**
+     * NEO-254 — league names the operator answered with "Skip — no league".
+     *
+     * A skip on a league step is an ANSWER about the teams that named it: they
+     * belong to no league. Without this set the answer did nothing — the team
+     * rows still carry `create.leagueName`, so the precedence below fell
+     * through to `findOrCreateLeague` and minted the very league the operator
+     * had just declined, and the sport default would have reasserted itself if
+     * it had not. Tracked by the same key `stagedLeagueIdByName` uses so the
+     * two cannot disagree about which step a name belongs to.
+     */
+    const skippedLeagueNames = new Set<string>();
+
+    for (const row of reviewRows) {
+      if (row.kind !== "league") continue;
+      const leagueKey = normalizeLeagueName(row.name);
+      if (!leagueKey) continue;
+      if (row.decision?.action === "skip") {
+        skippedLeagueNames.add(leagueKey);
+        continue;
+      }
+      if (row.decision?.action === "link" && row.decision.linkedLeagueId) {
+        // Re-checked before it is used, for the reason `reviewedTeamFields`
+        // re-checks a stored `leagueId`: a decision is a durable record read
+        // some time after it was made, and the row can have been deleted or
+        // (via a stale client) belong to another sport. Dropped rather than
+        // thrown on — there is no operator here, and losing one league must
+        // not abort a whole checklist commit.
+        const linked = await ctx.db.get(row.decision.linkedLeagueId);
+        if (linked && linked.sportId === args.sportId) {
+          stagedLeagueIdByName.set(leagueKey, linked._id);
+        }
+        continue;
+      }
+      if (row.decision?.action !== "create") continue;
+      const createLeague = row.decision.createLeague;
+      // No payload means the step was never filled in. Nothing to build a row
+      // from, and no fallback to the bare label by design: a league created
+      // from a name alone is precisely the defect this step exists to remove.
+      if (!createLeague || !createLeague.name.trim()) continue;
+      /*
+       * `findOrCreateLeague` gap-fills, so a league another operator already
+       * created keeps ITS abbreviation, level, years and Wikidata id, and this
+       * batch only fills what was blank. Aliases are passed on the insert path
+       * only (that helper deliberately never widens an existing row's aliases
+       * — see its note) which is the right rule here too: this operator's
+       * spelling should not silently change what an existing league answers to.
+       */
+      const leagueId = await findOrCreateLeague(ctx, {
+        name: createLeague.name,
+        sportId: args.sportId,
+        ...(createLeague.abbreviation ? { abbreviation: createLeague.abbreviation } : {}),
+        ...(createLeague.level ? { level: createLeague.level } : {}),
+        ...(createLeague.yearsActive ? { yearsActive: createLeague.yearsActive } : {}),
+        ...(createLeague.aliases?.length ? { aliases: createLeague.aliases } : {}),
+        ...(createLeague.wikidataId ? { wikidataId: createLeague.wikidataId } : {}),
+      });
+      stagedLeagueIdByName.set(leagueKey, leagueId);
+      // And under the label the STEP was raised for, when the operator renamed
+      // it — the team row's `leagueName` still carries the original label.
+      stagedLeagueIdByName.set(normalizeLeagueName(row.name), leagueId);
+    }
+
     const stagedTeamIdByLabel = new Map<string, Id<"teams">>();
 
     for (const row of reviewRows) {
@@ -10053,7 +10197,7 @@ export const commitCardChecklistPrelude = internalMutation({
         // `reviewedTeamFields` has already fallen through to `leagueName` or
         // the enrichment, and if both were empty the row is better off with the
         // sport's default than with nothing.
-        leagueChosen: await leagueAnswered(create),
+        leagueChosen: await leagueAnswered(create, row.enrichment?.league),
       });
       stagedTeamIdByLabel.set(norm(row.name), id);
       if (created) createdTeamIds.push(id);
@@ -10136,7 +10280,7 @@ export const commitCardChecklistPrelude = internalMutation({
         // staged-career-team pass above. The operator's League choice wins over
         // the enrichment's suggestion — see `reviewedTeamFields`.
         extra: await reviewedTeamFields(create, enrichment),
-        leagueChosen: await leagueAnswered(create),
+        leagueChosen: await leagueAnswered(create, enrichment?.league),
       });
       teamIdByName.set(name, id);
       teamNameById.set(id, teamFullName(create));

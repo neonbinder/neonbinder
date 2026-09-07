@@ -20,6 +20,23 @@ import {
 // fields. The three used to be separate literals and two of them disagreed.
 import { MIN_CAREER_YEAR } from "../lib/players/career-years";
 import { normalizeTeamName } from "./teams";
+// NEO-254 — the New League step collects everything League Management edits, so
+// it validates against the SAME bounds. Imported rather than restated: two
+// validators guarding one table must not be able to disagree about what it
+// accepts (the lesson `lib/players/career-years.ts` records).
+import { isWikidataQid } from "../lib/players/wikidata-id";
+import type { LeagueLevel } from "./leagues";
+import {
+  findLeagueByName,
+  findOrCreateLeague,
+  leagueLevelValidator,
+  MAX_LEAGUE_NAME_LENGTH,
+  normalizeAliasList,
+  normalizeLeagueName,
+  requireValidLeagueAbbreviation,
+  requireValidLeagueName,
+  validateLeagueYears,
+} from "./leagues";
 // NEO-236: the ONE team lookup. Staging asks "do we already hold this career
 // team?" and must ask it exactly the way every writer keys the table.
 import { findTeamByFullName } from "./lib/teamRow";
@@ -67,6 +84,10 @@ const enrichmentValidator = v.object({
   description: v.optional(v.string()),
   birthYear: v.optional(v.number()),
   enwikiTitle: v.optional(v.string()),
+  // NEO-254: league-only pre-fill from `adapters/wikidata.lookupLeague`. Kept
+  // in step with schema.ts — see the note on `activeInSetYear` below for what
+  // a field in one and not the other costs at runtime.
+  abbreviation: v.optional(v.string()),
   // NEO-254, player-only: the NB rows already filed under this name, present
   // only when there is MORE THAN ONE of them. See schema.ts, and
   // `players.buildExistingPlayerCandidates` for who fills it in.
@@ -116,6 +137,38 @@ const manualCareerTeamValidator = v.object({
  * prefix) and the operator confirms or corrects. `teamRowFields` composes them
  * back into the stored name and its dedup key at commit.
  */
+/**
+ * NEO-254 — the three kinds a review row can be, in walk order.
+ *
+ * One constant rather than the union written out at each of the two row
+ * validators: they describe the same column, and a kind added to one and not
+ * the other is a runtime refusal on whichever function returns the row.
+ */
+const kindValidator = v.union(
+  v.literal("player"),
+  v.literal("team"),
+  v.literal("league"),
+);
+
+/**
+ * NEO-254 — the whole league record a New League step collects.
+ *
+ * Mirrors `convex/schema.ts`. Every field but `name` is optional and means
+ * "not answered" when absent — `findOrCreateLeague` gap-fills, so an absent
+ * field never clears an existing row's value.
+ */
+const leagueCreateValidator = v.object({
+  name: v.string(),
+  abbreviation: v.optional(v.string()),
+  level: v.optional(leagueLevelValidator),
+  yearsActive: v.optional(v.object({
+    from: v.number(),
+    to: v.optional(v.number()),
+  })),
+  aliases: v.optional(v.array(v.string())),
+  wikidataId: v.optional(v.string()),
+});
+
 const teamCreateValidator = v.object({
   location: v.optional(v.string()),
   name: v.string(),
@@ -159,11 +212,15 @@ const decisionValidator = v.union(
     // NEO-236: player-kind only — Location + Name for each accepted career
     // team that matched no existing row. See schema.ts.
     createTeams: v.optional(v.array(careerTeamCreateValidator)),
+    // NEO-254: league-kind only — the whole record. See schema.ts.
+    createLeague: v.optional(leagueCreateValidator),
   }),
   v.object({
     action: v.literal("link"),
     linkedPlayerId: v.optional(v.id("players")),
     linkedTeamId: v.optional(v.id("teams")),
+    // NEO-254: league-kind only. Every team naming this league then uses it.
+    linkedLeagueId: v.optional(v.id("leagues")),
   }),
   // NEO-212: "not a person / not a team" — the card keeps the raw name, and
   // nothing is created or linked. See schema.ts.
@@ -232,6 +289,18 @@ const MAX_TEAM_FULL_NAME_LENGTH = 120;
  * this list can never be longer than the accepted career teams it answers.
  */
 const MAX_CAREER_TEAM_CREATES = 64;
+
+/**
+ * NEO-254 — how many League steps one team row may raise.
+ *
+ * A team belongs to ONE league, so the real number is one; the headroom is
+ * for a team whose enrichment names a league and whose operator then types a
+ * different one before the first is answered. A guard rail on an unbounded
+ * write, not a security boundary — the same job, and the same reasoning, as
+ * `MAX_CAREER_TEAM_CREATES` above.
+ */
+const MAX_STAGED_LEAGUES_PER_TEAM = 4;
+
 
 /**
  * NEO-236: normalize one Location + Name, or answer "this is not usable".
@@ -308,12 +377,7 @@ type TeamCreate = {
 };
 type TeamCreateInput = TeamCreate;
 
-/**
- * Mirrors `MAX_LEAGUE_NAME_LENGTH` in convex/leagues.ts (120). Copied rather
- * than imported for the same reason `MAX_TEAM_FULL_NAME_LENGTH` is: that module
- * does not export it, and this one has no other reason to depend on it.
- */
-const MAX_LEAGUE_NAME_LENGTH = 120;
+
 
 /**
  * NEO-236: the same, where a refusal IS the right answer — the operator typed
@@ -396,11 +460,19 @@ function normalizeCareerTeamCreates(
  * NEO-236 — a row the batch staged for itself rather than reading off the
  * checklist. See the `source` field in schema.ts for why these exist.
  */
-const rowSourceValidator = v.object({
-  kind: v.literal("careerTeamOf"),
-  playerRowId: v.id("entityReviewQueue"),
-  wikidataId: v.optional(v.string()),
-});
+const rowSourceValidator = v.union(
+  v.object({
+    kind: v.literal("careerTeamOf"),
+    playerRowId: v.id("entityReviewQueue"),
+    wikidataId: v.optional(v.string()),
+  }),
+  // NEO-254 — the same relationship one level up. See schema.ts.
+  v.object({
+    kind: v.literal("leagueOf"),
+    teamRowId: v.id("entityReviewQueue"),
+    wikidataId: v.optional(v.string()),
+  }),
+);
 
 // `createdByUserId` is audit/scoping-only — see toPublicRow below. Mirrors
 // the players.ts/teams.ts pattern: internalQuery reads the full row,
@@ -411,7 +483,7 @@ const rowValidator = v.object({
   selectorOptionId: v.id("selectorOptions"),
   batchId: v.string(),
   createdByUserId: v.string(),
-  kind: v.union(v.literal("player"), v.literal("team")),
+  kind: kindValidator,
   name: v.string(),
   // NEO-236 — the dedup key staging reads through an index. See schema.ts.
   nameNormalized: v.optional(v.string()),
@@ -431,7 +503,7 @@ const publicRowValidator = v.object({
   _creationTime: v.number(),
   selectorOptionId: v.id("selectorOptions"),
   batchId: v.string(),
-  kind: v.union(v.literal("player"), v.literal("team")),
+  kind: kindValidator,
   name: v.string(),
   nameNormalized: v.optional(v.string()),
   sportId: v.id("selectorOptions"),
@@ -645,10 +717,23 @@ export const startBatch = internalMutation({
     // Keyed the same way on both sides of the reconciliation below, and by
     // the same normalizers `players`/`teams` dedupe on, so "J.T. Realmuto"
     // and "JT Realmuto" are one name here exactly as they are one row there.
-    const keyFor = (kind: "player" | "team", name: string) =>
+    /*
+     * NEO-254 — a league key uses `normalizeLeagueName`, which does NOT
+     * token-sort.
+     *
+     * `normalizeTeamName` sorts tokens so "San Diego Padres" and
+     * ("San Diego", "Padres") land on one key. That is exactly wrong for a
+     * league: "National League" and "League National" are not the same
+     * competition, and `convex/leagues.ts` says so in its own normaliser. The
+     * kind prefix keeps the two key spaces apart, so a league and a team of
+     * the same name never collide here either.
+     */
+    const keyFor = (kind: "player" | "team" | "league", name: string) =>
       kind === "player"
         ? `player:${normalizePlayerName(name)}`
-        : `team:${normalizeTeamName(name)}`;
+        : kind === "league"
+          ? `league:${normalizeLeagueName(name)}`
+          : `team:${normalizeTeamName(name)}`;
 
     const existing = await ctx.db
       .query("entityReviewQueue")
@@ -853,6 +938,141 @@ export const startBatch = internalMutation({
     return batchId;
   },
 });
+
+/**
+ * NEO-254 — stage a New League step ahead of the TEAM row that needs it.
+ *
+ * ## The bug this closes
+ *
+ * Jason, preview test 2026-09-06: on a fresh deployment every hockey team row
+ * offered `Create National Hockey League`. Nothing is written until commit, so
+ * the 3rd team asked the same question as the 1st, and the 30th asked it
+ * again — and whichever pill was finally pressed created a league carrying a
+ * name and nothing else: no abbreviation, no level, no years, no aliases.
+ * "The proper fix is pulling league up before team as we'll need to fill in
+ * the rest of the year information too."
+ *
+ * So the league becomes a row of its own, walked BEFORE the team, asked ONCE
+ * per batch, and answered with the whole record. This is `stageCareerTeamRows
+ * Impl` one level up, and it is deliberately the same shape down to the
+ * guard rails — a batch-wide index dedupe, a bound on the name, a cap counted
+ * through `by_source_team` so re-entry cannot grow past it, and a hard refusal
+ * to stage from a staged row (which is what keeps the chain two deep).
+ *
+ * ## What is NOT staged
+ *
+ *  - a league this sport already answers to, by name OR alias
+ *    (`findLeagueByName`) — it exists, so there is nothing to ask;
+ *  - a league already staged in this batch — the whole point;
+ *  - a blank or unusable name.
+ *
+ * Returns the ids it inserted, so the caller can enqueue exactly those lookups
+ * and nothing else.
+ */
+async function stageLeagueRowsImpl(
+  ctx: MutationCtx,
+  teamRow: Doc<"entityReviewQueue">,
+  /**
+   * League names the caller knows about that the row's own enrichment does
+   * not — a name the operator typed into the team step's league field.
+   */
+  extraLeagueNames: ReadonlyArray<{ name: string; wikidataId?: string }> = [],
+): Promise<Array<Id<"entityReviewQueue">>> {
+  // Only a TEAM has a league, and a staged row never stages further rows —
+  // that is the recursion this guard forecloses, exactly as the team staging
+  // refuses to run from a team row.
+  if (teamRow.kind !== "team") return [];
+
+  const proposals: Array<{ name: string; wikidataId?: string }> = [
+    ...(teamRow.enrichment?.league
+      ? [{ name: teamRow.enrichment.league }]
+      : []),
+    ...extraLeagueNames,
+  ];
+  if (proposals.length === 0) return [];
+
+  /*
+   * The cap is PER TEAM, not per call — the same finding NEO-236's security
+   * review raised about career teams. Three callers can stage for one team
+   * (the lookup landing, the wizard's belt-and-braces pass, and a hand-typed
+   * league), so counting one invocation would let N calls mint N caps' worth.
+   */
+  const alreadyStagedForTeam = (
+    await ctx.db
+      .query("entityReviewQueue")
+      .withIndex("by_source_team", (q) => q.eq("source.teamRowId", teamRow._id))
+      .collect()
+  ).length;
+
+  const added: Array<Id<"entityReviewQueue">> = [];
+  const seen = new Set<string>();
+  for (const proposal of proposals) {
+    if (alreadyStagedForTeam + added.length >= MAX_STAGED_LEAGUES_PER_TEAM) break;
+    const name = proposal.name.trim().replace(/\s+/g, " ");
+    if (!name) continue;
+    // `normalizeLeagueName`, NOT the team normaliser: it does not token-sort,
+    // because "National League" and "League National" are different
+    // competitions. See `convex/leagues.ts`.
+    const nameNormalized = normalizeLeagueName(name);
+    if (!nameNormalized || seen.has(nameNormalized)) continue;
+    seen.add(nameNormalized);
+    // Same reasoning as the team staging: a Wikidata label is text nobody on
+    // our side vetted, and it reaches both `name` and the INDEX. Skipped
+    // rather than thrown on — one absurd label must not cost the team its
+    // step, and the team still resolves if we already hold the league.
+    if (name.length > MAX_LEAGUE_NAME_LENGTH) continue;
+
+    const alreadyInBatch = await ctx.db
+      .query("entityReviewQueue")
+      .withIndex("by_batch_and_kind_and_name", (q) =>
+        q
+          .eq("selectorOptionId", teamRow.selectorOptionId)
+          .eq("batchId", teamRow.batchId)
+          .eq("kind", "league")
+          .eq("nameNormalized", nameNormalized),
+      )
+      .first();
+    if (alreadyInBatch) continue;
+
+    // Held already — including under an ALIAS, which is the case that makes
+    // this worth a helper call rather than an index read: a sport that already
+    // has "National Hockey League" with the alias "NHL" must not be asked to
+    // create "NHL".
+    if (await findLeagueByName(ctx, { name, sportId: teamRow.sportId })) continue;
+
+    added.push(
+      await ctx.db.insert("entityReviewQueue", {
+        selectorOptionId: teamRow.selectorOptionId,
+        batchId: teamRow.batchId,
+        // The batch's owner, not the caller — `assertOwnsRow` compares against
+        // this, and a row stamped with anyone else would be unanswerable by
+        // the operator it was staged for.
+        createdByUserId: teamRow.createdByUserId,
+        kind: "league",
+        name,
+        nameNormalized,
+        sportId: teamRow.sportId,
+        source: {
+          kind: "leagueOf",
+          teamRowId: teamRow._id,
+          ...(proposal.wikidataId ? { wikidataId: proposal.wikidataId } : {}),
+        },
+        status: "pending",
+      }),
+    );
+  }
+
+  if (added.length > 0) {
+    // ONLY the rows just inserted — a re-entrant call must never re-enqueue a
+    // lookup that already ran, which is NEO-99's creation-only contract.
+    await ctx.scheduler.runAfter(
+      0,
+      internal.wikidataPool.enqueueEntityReviewLookups,
+      { rowIds: added },
+    );
+  }
+  return added;
+}
 
 /**
  * ── NEO-236: a career team the batch will have to create becomes its OWN step ─
@@ -1096,35 +1316,77 @@ export const stageCareerTeamRows = mutation({
  * mutation NEO-189 taught us to keep narrow, and it would encode as data
  * something that is purely a rule about presentation.
  */
-function walkOrder<T extends { _id: Id<"entityReviewQueue">; source?: { kind: "careerTeamOf"; playerRowId: Id<"entityReviewQueue"> } | undefined }>(
-  rows: readonly T[],
-): T[] {
-  const stagedByPlayer = new Map<string, T[]>();
+/**
+ * NEO-236/NEO-254 — the order the wizard walks a batch: LEAGUE, then TEAM,
+ * then the PLAYER that needs them.
+ *
+ * Jason asked for "New Team: Sydney Blue Sox, New Team: Oregon State Beavers,
+ * then New Player: Travis Bazzana which can now use the 2 new teams" — and
+ * then, one level up, for the league to come before the team, because a team
+ * step cannot answer "which league" until the league exists and because a
+ * league minted from a team step arrives with nothing but a name.
+ *
+ * So this is one rule applied twice, not two rules: a row is emitted after
+ * every row staged FOR it, recursively. A staged row is skipped where it sits
+ * and emitted at its parent's position instead, and only while that parent is
+ * still in the batch — otherwise its own position is where it belongs, which
+ * is what keeps an orphan reachable rather than silently unwalkable.
+ *
+ * Depth is two by construction (a league is staged for a team, a team for a
+ * player, and `stage*RowsImpl` refuses to stage from a staged row), but the
+ * walk is written as a recursion over `stagedByParent` rather than as two
+ * hard-coded passes so a third level would not need this function rewritten.
+ * `emitted` guards against a cycle a corrupt row could otherwise create.
+ */
+function walkOrder<
+  T extends {
+    _id: Id<"entityReviewQueue">;
+    source?:
+      | { kind: "careerTeamOf"; playerRowId: Id<"entityReviewQueue"> }
+      | { kind: "leagueOf"; teamRowId: Id<"entityReviewQueue"> }
+      | undefined;
+  },
+>(rows: readonly T[]): T[] {
+  /** The row a staged row was staged FOR, or null when it stands alone. */
+  const parentOf = (row: T): string | null => {
+    if (row.source?.kind === "careerTeamOf") return row.source.playerRowId as string;
+    if (row.source?.kind === "leagueOf") return row.source.teamRowId as string;
+    return null;
+  };
+
+  const stagedByParent = new Map<string, T[]>();
   for (const row of rows) {
-    if (row.source?.kind !== "careerTeamOf") continue;
-    const key = row.source.playerRowId as string;
-    const list = stagedByPlayer.get(key);
+    const parent = parentOf(row);
+    if (parent === null) continue;
+    const list = stagedByParent.get(parent);
     if (list) list.push(row);
-    else stagedByPlayer.set(key, [row]);
+    else stagedByParent.set(parent, [row]);
   }
-  if (stagedByPlayer.size === 0) return [...rows];
+  if (stagedByParent.size === 0) return [...rows];
 
   const present = new Set(rows.map((r) => r._id as string));
+  const emitted = new Set<string>();
   const ordered: T[] = [];
-  for (const row of rows) {
-    // Emitted with its player below — unless that player is gone, in which
-    // case this IS its position.
-    if (
-      row.source?.kind === "careerTeamOf" &&
-      present.has(row.source.playerRowId as string)
-    ) {
-      continue;
-    }
-    for (const staged of stagedByPlayer.get(row._id as string) ?? []) {
-      ordered.push(staged);
-    }
+
+  const emit = (row: T): void => {
+    const id = row._id as string;
+    if (emitted.has(id)) return;
+    emitted.add(id);
+    // Everything staged for this row comes first — and each of those may have
+    // rows staged for IT, which is the league-before-team-before-player chain.
+    for (const child of stagedByParent.get(id) ?? []) emit(child);
     ordered.push(row);
+  };
+
+  for (const row of rows) {
+    // Emitted with its parent below — unless that parent is gone, in which
+    // case this IS its position.
+    const parent = parentOf(row);
+    if (parent !== null && present.has(parent)) continue;
+    emit(row);
   }
+  // Anything a cycle kept out of the walk still has to be reachable.
+  for (const row of rows) emit(row);
   return ordered;
 }
 
@@ -1170,6 +1432,61 @@ export const getBatch = query({
     return resolved;
   },
 });
+
+/**
+ * NEO-254 — validate and normalise the league record a New League step sends.
+ *
+ * Every bound comes from `convex/leagues.ts` rather than being restated here.
+ * That module is the one place that decides what the `leagues` table accepts,
+ * and this is a second door into the same table: `saveLeagueFields` and this
+ * step must not be able to disagree about a 121-character name or a 33rd
+ * alias. `findOrCreateLeague` itself validates NOTHING, so if this helper is
+ * ever bypassed the bounds are simply gone.
+ *
+ * Throws, and each message is the one League Management already shows for the
+ * same mistake — an operator who hits a limit in two places should not have to
+ * learn two vocabularies for it. Values are never echoed back, only lengths
+ * and counts, matching that module's own rule.
+ */
+function requireLeagueCreate(input: {
+  name: string;
+  abbreviation?: string;
+  level?: LeagueLevel;
+  yearsActive?: { from: number; to?: number };
+  aliases?: string[];
+  wikidataId?: string;
+}): {
+  name: string;
+  abbreviation?: string;
+  level?: LeagueLevel;
+  yearsActive?: { from: number; to?: number };
+  aliases?: string[];
+  wikidataId?: string;
+} {
+  const name = requireValidLeagueName(input.name);
+  const abbreviation = requireValidLeagueAbbreviation(input.abbreviation);
+  if (input.yearsActive) validateLeagueYears(input.yearsActive);
+  // `normalizeAliasList` drops an alias equal to the row's own name, dedupes
+  // on the normalised form and caps the list — the same treatment the edit
+  // form's aliases get, so the two produce identical rows.
+  const aliases = input.aliases ? normalizeAliasList(input.aliases, name) : [];
+  // A malformed QID is DROPPED, not thrown on — the same call `players.
+  // applyEnrichmentInternal` makes, and for the same reason: the value comes
+  // from a Wikidata pre-fill on a path with no operator intent behind it, and
+  // a stored bad id would be interpolated into an outbound link.
+  const wikidataId =
+    input.wikidataId && isWikidataQid(input.wikidataId.trim())
+      ? input.wikidataId.trim()
+      : undefined;
+  return {
+    name,
+    ...(abbreviation ? { abbreviation } : {}),
+    ...(input.level ? { level: input.level } : {}),
+    ...(input.yearsActive ? { yearsActive: input.yearsActive } : {}),
+    ...(aliases.length ? { aliases } : {}),
+    ...(wikidataId ? { wikidataId } : {}),
+  };
+}
 
 /**
  * Record the user's decision for one reviewed row. Patched immediately
@@ -1229,6 +1546,12 @@ export const recordDecision = mutation({
     // NEO-236, "create"-only and player-kind-only: Location + Name per
     // accepted career team that matched nothing.
     createTeams: v.optional(v.array(careerTeamCreateValidator)),
+    // NEO-254, "create"-only and league-kind-only: the whole league record the
+    // New League step collects. Validated below against the SAME bounds
+    // `convex/leagues.ts` enforces — see `requireLeagueCreate`.
+    createLeague: v.optional(leagueCreateValidator),
+    // NEO-254, "link"-only and league-kind-only.
+    linkedLeagueId: v.optional(v.id("leagues")),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -1346,6 +1669,25 @@ export const recordDecision = mutation({
         row.kind === "player" && args.createTeams
           ? normalizeCareerTeamCreates(args.createTeams)
           : [];
+      /*
+       * NEO-254 — the league record, validated HERE and nowhere else upstream.
+       *
+       * `findOrCreateLeague` enforces nothing at all: it trims the name and
+       * writes. Every bound lives in `convex/leagues.ts`'s own entry points,
+       * so a caller that skips them writes unbounded strings straight into a
+       * globally shared row. This is that caller, and it is fed by an operator
+       * form, so it applies the same four helpers League Management does —
+       * imported rather than restated, because two validators guarding one
+       * table must not be able to disagree about what it accepts.
+       *
+       * Throws rather than dropping: the operator is standing in front of the
+       * step and can fix a 130-character name. Commit is where dropping is
+       * right, because there is nobody there to tell.
+       */
+      const createLeague =
+        row.kind === "league" && args.createLeague
+          ? requireLeagueCreate(args.createLeague)
+          : undefined;
       await ctx.db.patch(args.reviewRowId, {
         decision: {
           action: "create",
@@ -1355,6 +1697,7 @@ export const recordDecision = mutation({
           ...(excludedCareerTeamNames.length ? { excludedCareerTeamNames } : {}),
           ...(create ? { create } : {}),
           ...(createTeams.length ? { createTeams } : {}),
+          ...(createLeague ? { createLeague } : {}),
         },
         lastTouchedAt: Date.now(),
       });
@@ -1377,6 +1720,25 @@ export const recordDecision = mutation({
       }
       await ctx.db.patch(args.reviewRowId, {
         decision: { action: "link", linkedPlayerId: args.linkedPlayerId },
+        lastTouchedAt: Date.now(),
+      });
+    } else if (row.kind === "league") {
+      // NEO-254 — link a staged league step to a league we already hold. Same
+      // two checks the team arm makes, and for the same reasons: a row deleted
+      // under the operator, and a stale client offering another sport's league.
+      if (!args.linkedLeagueId) {
+        throw new Error("linkedLeagueId is required to link a league");
+      }
+      const linked = await ctx.db.get(args.linkedLeagueId);
+      if (!linked) throw new Error("Linked league not found");
+      if (linked.sportId !== row.sportId) {
+        throw new Error(
+          `Linked league's sport (${await sportLabel(ctx, linked.sportId)}) ` +
+            `doesn't match ${await sportLabel(ctx, row.sportId)}`,
+        );
+      }
+      await ctx.db.patch(args.reviewRowId, {
+        decision: { action: "link", linkedLeagueId: args.linkedLeagueId },
         lastTouchedAt: Date.now(),
       });
     } else {
@@ -1917,6 +2279,19 @@ export const applyLookupResult = internalMutation({
      */
     if (row.kind === "player" && (args.enrichment?.careerTeams?.length ?? 0) > 0) {
       await stageCareerTeamRowsImpl(ctx, { ...row, enrichment: args.enrichment });
+    }
+    /*
+     * NEO-254 — and the same, one level up.
+     *
+     * A team row's lookup is what produces `enrichment.league` (Wikidata P118,
+     * or ESPN's league name), so this is the first moment the batch knows a
+     * league might have to be created. Staging here puts the New League step
+     * in the batch BEFORE the team can be walked to, for exactly the reason
+     * the career-team staging runs here: `nextUndecided` only ever presents a
+     * settled row, and this mutation is what settles it.
+     */
+    if (row.kind === "team" && args.enrichment?.league) {
+      await stageLeagueRowsImpl(ctx, { ...row, enrichment: args.enrichment });
     }
     return null;
   },

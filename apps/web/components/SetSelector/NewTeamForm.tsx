@@ -143,6 +143,8 @@ export default function NewTeamForm({
    * team no source has heard of.
    */
   leagueSuggestion,
+  /** NEO-254 — leagues this batch has answered but not yet written. */
+  stagedLeagueNames,
   /** "Needed by: Travis Bazzana" — why this step exists, on the steps that
    *  were not asked for directly. */
   neededBy,
@@ -175,6 +177,20 @@ export default function NewTeamForm({
   draft: NewTeamDraft;
   onChange: (patch: Partial<NewTeamDraft>) => void;
   leagueSuggestion?: string;
+  /**
+   * NEO-254 — leagues this BATCH has answered but not yet written.
+   *
+   * Nothing is stored until commit, so `api.leagues.list` cannot see a league
+   * the New League step just created — and without this the team step went on
+   * offering `Create National Hockey League` for a league the operator had
+   * already answered, which is exactly the bug that step exists to remove
+   * (Jason, preview test 2026-09-06: every hockey team row showed it).
+   *
+   * Names only, keyed the way `convex/leagues.ts` keys them. The team's
+   * decision still travels as `create.leagueName`, and the commit prelude maps
+   * that name to the row the league step produced.
+   */
+  stagedLeagueNames?: readonly string[];
   neededBy?: string;
   describedBy?: string;
   locationFieldId?: string;
@@ -280,11 +296,24 @@ export default function NewTeamForm({
     checked: boolean;
     choose: () => void;
   }> = [];
+  /*
+   * NEO-254 — a league this batch has ALREADY answered is not a "Create" pill.
+   *
+   * `Create <name>` is a commitment the operator has not made yet. Once the
+   * New League step has been answered, that commitment exists — so the pill
+   * states the fact ("National Hockey League (new)") rather than re-offering
+   * the decision, and every later team naming the same league sees the same
+   * pill instead of being asked again.
+   */
+  const stagedKeys = new Set(
+    (stagedLeagueNames ?? []).map(normalizeLeagueName).filter(Boolean),
+  );
   if (suggestion?.kind === "create") {
     const checked = unanswered || draft.leagueName === suggestion.name;
+    const staged = stagedKeys.has(normalizeLeagueName(suggestion.name));
     leaguePills.push({
       key: `create:${suggestion.name}`,
-      label: `Create ${suggestion.name}`,
+      label: staged ? `${suggestion.name} (new)` : `Create ${suggestion.name}`,
       checked,
       choose: () => pick({ leagueName: suggestion.name }),
     });

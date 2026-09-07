@@ -53,7 +53,7 @@ export const LEAGUE_LEVELS = [
 
 export type LeagueLevel = (typeof LEAGUE_LEVELS)[number];
 
-const leagueLevelValidator = v.union(
+export const leagueLevelValidator = v.union(
   v.literal("major"),
   v.literal("minor"),
   v.literal("college"),
@@ -230,6 +230,17 @@ export async function findOrCreateLeague(
      */
     skipEnrichment?: boolean;
     aliases?: string[];
+    /**
+     * NEO-254 — the rest of the record, from a New League review step.
+     *
+     * Gap-filled exactly like `abbreviation` and `level`: a value already on
+     * the row outranks whatever this caller brought. That is what lets the
+     * commit prelude write an operator's whole answer without a second write
+     * path, and what stops a second batch naming the same league from
+     * overwriting the first operator's years.
+     */
+    yearsActive?: { from: number; to?: number };
+    wikidataId?: string;
   },
 ): Promise<Id<"leagues">> {
   const name = args.name.trim();
@@ -247,9 +258,13 @@ export async function findOrCreateLeague(
     // `teams.applyEnrichmentInternal` (NEO-203). Aliases are deliberately NOT
     // merged here — silently widening what an existing row answers to is an
     // operator decision, and `saveLeagueFields` is where it is made.
-    const patch: { abbreviation?: string; level?: LeagueLevel; lastUpdated: number } = {
-      lastUpdated: Date.now(),
-    };
+    const patch: {
+      abbreviation?: string;
+      level?: LeagueLevel;
+      yearsActive?: { from: number; to?: number };
+      externalIds?: { wikidataId?: string };
+      lastUpdated: number;
+    } = { lastUpdated: Date.now() };
     let changed = false;
     if (args.abbreviation && !existing.abbreviation) {
       patch.abbreviation = args.abbreviation;
@@ -257,6 +272,16 @@ export async function findOrCreateLeague(
     }
     if (args.level && !existing.level) {
       patch.level = args.level;
+      changed = true;
+    }
+    // NEO-254: same gap-fill rule, same reason. A league the operator answered
+    // in full must not be re-flattened by the next batch that merely names it.
+    if (args.yearsActive && !existing.yearsActive) {
+      patch.yearsActive = args.yearsActive;
+      changed = true;
+    }
+    if (args.wikidataId && !existing.externalIds?.wikidataId) {
+      patch.externalIds = { ...(existing.externalIds ?? {}), wikidataId: args.wikidataId };
       changed = true;
     }
     if (changed) await ctx.db.patch(existing._id, patch);
@@ -270,6 +295,8 @@ export async function findOrCreateLeague(
     sportId: args.sportId,
     ...(args.level ? { level: args.level } : {}),
     ...(args.aliases && args.aliases.length > 0 ? { aliases: args.aliases } : {}),
+    ...(args.yearsActive ? { yearsActive: args.yearsActive } : {}),
+    ...(args.wikidataId ? { externalIds: { wikidataId: args.wikidataId } } : {}),
     lastUpdated: Date.now(),
   });
 
@@ -498,7 +525,7 @@ export const create = mutation({
  * than what was typed is how a mangled name becomes canonical everywhere
  * downstream.
  */
-const MAX_LEAGUE_NAME_LENGTH = 120;
+export const MAX_LEAGUE_NAME_LENGTH = 120;
 
 /**
  * Bound on an abbreviation. Short on purpose: the field exists for dense UI
@@ -562,7 +589,7 @@ function leagueLevelRank(level: LeagueLevel | undefined): number {
  * aliases only after deduping them to 3 would accept a payload this exists to
  * refuse, and the operator's own count is the number worth reporting back.
  */
-function normalizeAliasList(raw: string[], ownName: string): string[] {
+export function normalizeAliasList(raw: string[], ownName: string): string[] {
   if (raw.length > MAX_LEAGUE_ALIASES) {
     // The COUNT, never the values: this string reaches Sentry and the browser
     // console through Convex's error path, and the values are operator input.
@@ -600,7 +627,7 @@ function normalizeAliasList(raw: string[], ownName: string): string[] {
 }
 
 /** Whole years, in range, and ending no earlier than they start. */
-function validateLeagueYears(years: { from: number; to?: number }): void {
+export function validateLeagueYears(years: { from: number; to?: number }): void {
   // The upper bound is NEXT year, not this one: a league announced for the
   // coming season is a real row, and refusing it would make the editor wrong
   // every winter. Same rule as `players.savePlayerFields`.
@@ -641,7 +668,7 @@ function validateLeagueYears(years: { from: number; to?: number }): void {
  * Management's inline add uses — carrying no bound at all while its two
  * siblings did, which is the failure mode a copied check has.
  */
-function requireValidLeagueAbbreviation(
+export function requireValidLeagueAbbreviation(
   raw: string | undefined | null,
 ): string | undefined {
   const trimmed = raw?.trim() ?? "";
@@ -656,7 +683,7 @@ function requireValidLeagueAbbreviation(
 }
 
 /** Refuse an empty or over-long operator-typed league name. */
-function requireValidLeagueName(raw: string): string {
+export function requireValidLeagueName(raw: string): string {
   const name = raw.trim();
   if (name.length === 0) {
     throw new ConvexError("A league name is required.");

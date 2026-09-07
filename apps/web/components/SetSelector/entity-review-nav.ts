@@ -59,8 +59,12 @@ export type NavRow = {
    * literals, and so every existing caller compiles unchanged. Absent means the
    * blocking rule below simply does not apply to that row.
    */
-  kind?: "player" | "team";
-  source?: { kind: "careerTeamOf"; playerRowId: string } | null;
+  kind?: "player" | "team" | "league";
+  source?:
+    | { kind: "careerTeamOf"; playerRowId: string }
+    // NEO-254 — a league staged for the team that needs it.
+    | { kind: "leagueOf"; teamRowId: string }
+    | null;
   /** A team row's own name, and a player row's career-team labels — the two
    *  sides the blocker rule matches on. Optional so a test may omit them. */
   name?: string;
@@ -90,6 +94,47 @@ export type NavRow = {
  * with (untick the chip, or change the team's decision); refusing to present
  * the player would leave nowhere to do either.
  */
+/**
+ * NEO-254 — is this TEAM row still waiting on a league the batch has to create?
+ *
+ * The league twin of `waitingOnStagedTeams`, and the same argument: a team step
+ * whose league does not exist yet cannot be answered — its league pill row
+ * would offer `Create <name>`, which is the very thing the New League step
+ * replaced. So the team waits for its own staged league, exactly as a player
+ * waits for its staged teams.
+ *
+ * Cannot deadlock, for the same reason: a blocking row is undecided, so it is
+ * either settled (and sorts ahead of the team in `walkOrder`, so
+ * `nextUndecided` reaches it first) or still pending (and the pool or the
+ * stale-row sweep will settle it).
+ *
+ * A blocker the operator ANSWERED — including "skip — no league" — stops
+ * blocking. Skip means "this team has no league", which is an answer, and the
+ * team's own step is where it takes effect.
+ *
+ * Matched on `source.teamRowId` alone, NOT on the league name as well. That is
+ * the one place this differs from the team rule, and deliberately: staging
+ * dedupes a league across the whole batch, so thirty NHL teams share ONE step,
+ * and keying on the name would make that single step block all thirty until it
+ * is answered — which is correct, but it is already achieved by the id link on
+ * the one team that raised it plus the fact that the others read the answer
+ * from `stagedLeagueIdByName` at commit. Blocking thirty steps on one answer
+ * would stall the walk for no gain.
+ */
+function waitingOnStagedLeagues(
+  row: NavRow,
+  rows: readonly NavRow[],
+): boolean {
+  if (row.kind !== "team") return false;
+  return rows.some(
+    (other) =>
+      other.kind === "league" &&
+      !other.decision &&
+      other.source?.kind === "leagueOf" &&
+      other.source.teamRowId === row._id,
+  );
+}
+
 function waitingOnStagedTeams(
   row: NavRow,
   rows: readonly NavRow[],
@@ -195,7 +240,10 @@ export function nextUndecided<T extends NavRow>(rows: readonly T[]): T | null {
         // reviewed — see `waitingOnStagedTeams`. Still needed even with teams
         // sorted first, because a team whose own lookup has not landed is not
         // `settled` and so is not offered by the pass above.
-        !waitingOnStagedTeams(r, rows),
+        !waitingOnStagedTeams(r, rows) &&
+        // NEO-254 — and a TEAM whose staged league is still open. Same rule,
+        // one level up; see `waitingOnStagedLeagues`.
+        !waitingOnStagedLeagues(r, rows),
     ) ?? null
   );
 }
@@ -266,7 +314,23 @@ export function countPendingBulkCreatable(rows: readonly NavRow[]): number {
  * creatable, which preserves every pre-NEO-236 caller's arithmetic.
  */
 function isBulkCreatable(row: NavRow): boolean {
-  return row.kind !== "team";
+  /*
+   * NEO-254 — a LEAGUE row is excluded for the same reason a team row is, and
+   * it matters more.
+   *
+   * Jason, 2026-09-05: "add all remaining as new should still process teams,
+   * it should only apply to players." The reason a team is exempt is that its
+   * step is the only place its League gets a human answer; a league's step is
+   * the only place its abbreviation, level, years and aliases get one — and a
+   * league created without them is exactly the defect this feature exists to
+   * remove. Bulk-creating leagues would reintroduce it through the one door
+   * still open.
+   *
+   * Written as two exclusions rather than `=== "player"` so a row with NO
+   * `kind` (an older caller, or a test literal) still counts as bulk
+   * creatable, preserving every pre-NEO-236 caller's arithmetic.
+   */
+  return row.kind !== "team" && row.kind !== "league";
 }
 
 /** Undecided rows the bulk create will act on — the number its label shows. */
@@ -388,7 +452,8 @@ export function resolveNav<T extends NavRow>(
         // this row is not ready. An EXPLICIT pin still wins (see below): the
         // operator asked for that row, and its step is where an unanswerable
         // career team gets unticked.
-        waitingOnStagedTeams(presented, rows)));
+        (waitingOnStagedTeams(presented, rows) ||
+          waitingOnStagedLeagues(presented, rows))));
   if (!stale) return nav;
 
   const nextId = nextUndecided(rows)?._id ?? null;

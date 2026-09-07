@@ -1218,7 +1218,23 @@ export default defineSchema({
     selectorOptionId: v.id("selectorOptions"),
     batchId: v.string(),
     createdByUserId: v.string(),
-    kind: v.union(v.literal("player"), v.literal("team")),
+    /**
+     * NEO-254 — `"league"` joins the two original kinds, one level up.
+     *
+     * Jason, preview test 2026-09-06: on a fresh deployment every hockey team
+     * row offered `Create National Hockey League`, because nothing is written
+     * until commit and so each team re-asked the same question; and a league
+     * born that way arrived carrying only a name — no abbreviation, level,
+     * years or aliases. "The proper fix is pulling league up before team as
+     * we'll need to fill in the rest of the year information too … I'm ok
+     * putting extra steps in the user's face."
+     *
+     * So a league the batch will have to create becomes a row of its own,
+     * walked BEFORE the team that needs it, exactly as NEO-236 made a career
+     * team a row walked before the player that needs it. One question, asked
+     * once, answered with the whole record.
+     */
+    kind: v.union(v.literal("player"), v.literal("team"), v.literal("league")),
     name: v.string(),
     // NEO-236 — `normalizeTeamName`/`normalizePlayerName` of `name`, stored so
     // the batch can be asked "do you already hold this name?" through an INDEX
@@ -1262,11 +1278,29 @@ export default defineSchema({
      * Absent on every other row, which is what "this name came off the
      * checklist" means. Additive: nothing reads it as a required field.
      */
-    source: v.optional(v.object({
-      kind: v.literal("careerTeamOf"),
-      playerRowId: v.id("entityReviewQueue"),
-      wikidataId: v.optional(v.string()),
-    })),
+    source: v.optional(v.union(
+      v.object({
+        kind: v.literal("careerTeamOf"),
+        playerRowId: v.id("entityReviewQueue"),
+        wikidataId: v.optional(v.string()),
+      }),
+      /**
+       * NEO-254 — the same relationship one level up: a league row staged for
+       * the TEAM row that needs it.
+       *
+       * `teamRowId` is what lets the step say "Needed by: Vancouver Canucks"
+       * and what lets the team's own step tell a league that is answered from
+       * one still waiting. `wikidataId` is the P118 statement's league QID
+       * when Wikidata gave one — linkage, so the staged row's lookup reads the
+       * right record rather than guessing from a label, exactly as
+       * `careerTeamOf` does.
+       */
+      v.object({
+        kind: v.literal("leagueOf"),
+        teamRowId: v.id("entityReviewQueue"),
+        wikidataId: v.optional(v.string()),
+      }),
+    )),
     status: v.union(
       v.literal("pending"),
       v.literal("ready"),
@@ -1372,6 +1406,13 @@ export default defineSchema({
         secondary: v.optional(v.string()),
       })),
       espnId: v.optional(v.string()),
+      // ── NEO-254: league-only, from `adapters/wikidata.lookupLeague` ───────
+      //
+      // Pre-fill for the New League step, never a value written anywhere on
+      // its own. `yearsActive` and `wikidataId` above are shared with the team
+      // shape — a league's years are the same shape as a team's — so only the
+      // two fields with no team counterpart are new here.
+      abbreviation: v.optional(v.string()),
     })),
     decision: v.optional(v.union(
       v.object({
@@ -1455,11 +1496,55 @@ export default defineSchema({
           location: v.optional(v.string()),
           name: v.string(),
         }))),
+        /**
+         * ── NEO-254: the whole league record, league-kind only ──────────────
+         *
+         * Jason, preview test 2026-09-06: a league created from the New Team
+         * step's `Create <name>` pill "lands with only a name — no
+         * abbreviation, level, years, aliases". This is the payload that fixes
+         * that: the New League step asks for everything League Management
+         * edits, once, and the prelude writes it through `findOrCreateLeague`.
+         *
+         * `name` is the only required field — the rest are an invitation to
+         * complete the record while the operator is already here, pre-filled
+         * from `adapters/wikidata.lookupLeague`. An absent field is "not
+         * answered", and `findOrCreateLeague`'s gap-fill leaves an existing
+         * row's value alone rather than clearing it.
+         *
+         * Bounds mirror `convex/leagues.ts` exactly (name ≤120, abbreviation
+         * ≤16, ≤32 aliases of ≤64, years ≥1850 and `to >= from`) and are
+         * enforced in `recordDecision`, because `findOrCreateLeague` itself
+         * validates nothing — see the note there.
+         */
+        createLeague: v.optional(v.object({
+          name: v.string(),
+          abbreviation: v.optional(v.string()),
+          level: v.optional(v.union(
+            v.literal("major"), v.literal("minor"), v.literal("college"),
+            v.literal("international"), v.literal("independent"), v.literal("other"),
+          )),
+          yearsActive: v.optional(v.object({
+            from: v.number(),
+            to: v.optional(v.number()),
+          })),
+          aliases: v.optional(v.array(v.string())),
+          wikidataId: v.optional(v.string()),
+        })),
       }),
       v.object({
         action: v.literal("link"),
         linkedPlayerId: v.optional(v.id("players")),
         linkedTeamId: v.optional(v.id("teams")),
+        /**
+         * NEO-254, league-kind only — the existing league the operator picked
+         * on a New League step.
+         *
+         * Every team row that named the same league then uses THIS id rather
+         * than creating anything, which is the whole point of pulling the
+         * league up: the question is asked once for the batch, not once per
+         * team.
+         */
+        linkedLeagueId: v.optional(v.id("leagues")),
       }),
       // NEO-212: "this name is not a person / not a team". Carries no payload —
       // nothing is created, nothing is linked, and the card keeps the raw name
@@ -1493,6 +1578,11 @@ export default defineSchema({
     // from `applyLookupResult`, where a collect of the batch is the NEO-189
     // optimistic-concurrency storm.
     .index("by_source_player", ["source.playerRowId"])
+    // NEO-254 — the league twin, for the per-team staging cap. Same reason the
+    // player one exists: the cap has to be counted through an index rather than
+    // by collecting the batch, because staging runs inside `applyLookupResult`
+    // five-wide under the pool while a commit may be reading the same rows.
+    .index("by_source_team", ["source.teamRowId"])
     .index("by_batch_and_kind_and_name", [
       "selectorOptionId",
       "batchId",

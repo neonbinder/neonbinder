@@ -33,6 +33,13 @@ import NewTeamForm, {
   newTeamPrefill,
   type NewTeamDraft,
 } from "./NewTeamForm";
+import type { LeagueLevel } from "../admin/AddLeagueForm";
+import NewLeagueForm, {
+  leagueDraftError,
+  newLeaguePrefill,
+  parseAliases,
+  type NewLeagueDraft,
+} from "./NewLeagueForm";
 import SameNamePlayerPanel from "./SameNamePlayerPanel";
 import UndatedCareerTeams from "./UndatedCareerTeams";
 import { deriveStagedTeamNames } from "./entity-review-staging";
@@ -159,6 +166,12 @@ const TEAM_LOCATION_FIELD_ID = "entity-review-team-location";
 const TEAM_NAME_FIELD_ID = "entity-review-team-name";
 /** NEO-236 — the League pill group on the New Team step, same reasoning. */
 const TEAM_LEAGUE_FIELD_ID = "entity-review-team-league";
+// NEO-254 — the New League step's two addressable controls. Same reason the
+// three above carry ids: maestro-web derives `resource-id` from `node.id ||
+// node.ariaLabel`, and a stable id is what a flow can target without depending
+// on the label copy.
+const LEAGUE_NAME_FIELD_ID = "entity-review-league-name";
+const LEAGUE_LEVEL_FIELD_ID = "entity-review-league-level";
 
 /**
  * NEO-236 — what the Location + Name pair shows for a team row before the
@@ -341,6 +354,14 @@ export default function EntityReviewWizard({
    */
   const [teamCreateByRow, setTeamCreateByRow] = useState<
     Record<string, NewTeamDraft>
+  >({});
+  /**
+   * NEO-254 — the same, per LEAGUE row, and never reset per row for the same
+   * reason: a typed correction must survive NEO-221 back-navigation. Absent
+   * means "untouched", which renders the live prefill.
+   */
+  const [leagueCreateByRow, setLeagueCreateByRow] = useState<
+    Record<string, NewLeagueDraft>
   >({});
   /*
    * NEO-236 — there is no per-career-team draft state any more.
@@ -1233,6 +1254,15 @@ export default function EntityReviewWizard({
         leagueId?: Id<"leagues"> | null;
         leagueName?: string;
       };
+      // NEO-254 — league-kind only. See `NewLeagueForm`.
+      createLeague?: {
+        name: string;
+        abbreviation?: string;
+        level?: LeagueLevel;
+        yearsActive?: { from: number; to?: number };
+        aliases?: string[];
+        wikidataId?: string;
+      };
     } = {},
   ) =>
     decide(reviewRowId, () =>
@@ -1250,12 +1280,13 @@ export default function EntityReviewWizard({
           ? payload.excludedCareerTeamNames
           : undefined,
         create: payload.create,
+        createLeague: payload.createLeague,
       }),
     );
   const handleLink = async (
     reviewRowId: Id<"entityReviewQueue">,
-    kind: "player" | "team",
-    linkedId: Id<"players"> | Id<"teams">,
+    kind: "player" | "team" | "league",
+    linkedId: Id<"players"> | Id<"teams"> | Id<"leagues">,
   ) =>
     decide(reviewRowId, () =>
       recordDecision({
@@ -1263,6 +1294,9 @@ export default function EntityReviewWizard({
         action: "link",
         linkedPlayerId: kind === "player" ? (linkedId as Id<"players">) : undefined,
         linkedTeamId: kind === "team" ? (linkedId as Id<"teams">) : undefined,
+        // NEO-254 — every team in the batch that named this league then uses
+        // the linked row rather than creating anything.
+        linkedLeagueId: kind === "league" ? (linkedId as Id<"leagues">) : undefined,
       }),
     );
   const handleSkip = async (reviewRowId: Id<"entityReviewQueue">) =>
@@ -1445,9 +1479,23 @@ export default function EntityReviewWizard({
 
   if (!isOpen || rows === undefined) return null;
 
-  const kindLabel = (kind: "player" | "team") => (kind === "player" ? "Player" : "Team");
+  const kindLabel = (kind: "player" | "team" | "league") =>
+    kind === "player" ? "Player" : kind === "league" ? "League" : "Team";
   /** "not a person" / "not a team" — the skip control says what it is denying. */
-  const notAWhat = (kind: "player" | "team") => (kind === "player" ? "person" : "team");
+  /*
+   * NEO-254 — a league's third way out is NOT "not a league".
+   *
+   * On a player or team step, Skip means "this string is not an entity" and is
+   * remembered per set in `entityReviewSkips` so the name never comes back. A
+   * league step is a different question: the string IS a league, and skipping
+   * says this TEAM has no league. That is an answer about the team, not a
+   * judgement about the name, so it is worded as one and the commit does not
+   * record it as a suppressed name (see the prelude's skip loop).
+   */
+  const notAWhat = (kind: "player" | "team" | "league") =>
+    kind === "player" ? "person" : kind === "league" ? "league" : "team";
+  const skipLabel = (kind: "player" | "team" | "league") =>
+    kind === "league" ? "Skip — no league" : `Skip — not a ${notAWhat(kind)}`;
 
   /**
    * NEO-236 — the Location + Name pair for the current TEAM row.
@@ -1465,6 +1513,68 @@ export default function EntityReviewWizard({
     setTeamCreateByRow((prev) => ({
       ...prev,
       [rowId]: { ...(prev[rowId] ?? teamCreate), ...patch },
+    }));
+  };
+
+  // NEO-254 — the league step's draft, read and written the same way.
+  const leagueCreate: NewLeagueDraft =
+    current && current.kind === "league"
+      ? (leagueCreateByRow[current._id] ?? newLeaguePrefill(current))
+      : {
+          name: "",
+          abbreviation: "",
+          level: null,
+          fromYear: "",
+          toYear: "",
+          aliases: "",
+          wikidataId: "",
+        };
+
+  /**
+   * NEO-254 — the row this staged step was raised FOR, by name.
+   *
+   * One derivation for both staged kinds: a team staged for a player reads
+   * `source.playerRowId`, a league staged for a team reads `source.teamRowId`.
+   * Undefined on a row that came off the checklist — that name was asked for
+   * directly, and saying who needs it would answer a question nobody asked.
+   */
+  const neededByName: string | undefined = (() => {
+    const source = current?.source;
+    if (!source) return undefined;
+    const parentId =
+      source.kind === "careerTeamOf" ? source.playerRowId : source.teamRowId;
+    return rows.find((r) => r._id === parentId)?.name ?? undefined;
+  })();
+
+  /**
+   * NEO-254 — the leagues this batch has ANSWERED, by the name a team row
+   * would refer to them by.
+   *
+   * Nothing is written until commit, so `api.leagues.list` cannot see a league
+   * the New League step just created. Without this the team step went on
+   * offering `Create National Hockey League` for a league already answered —
+   * the exact defect the step exists to remove.
+   *
+   * Both names are contributed: the label the STEP was raised for (which is
+   * what the team's `enrichment.league` and `create.leagueName` carry) and the
+   * name the operator actually typed, which they are free to change.
+   */
+  const stagedLeagueNames: string[] = rows.flatMap((r) => {
+    if (r.kind !== "league" || !r.decision) return [];
+    if (r.decision.action === "create") {
+      const typed = r.decision.createLeague?.name?.trim();
+      return typed && typed !== r.name ? [r.name, typed] : [r.name];
+    }
+    if (r.decision.action === "link") return [r.name];
+    // A skipped league is NOT staged: nothing will be created for it, and the
+    // team step should keep offering its own answer.
+    return [];
+  });
+
+  const patchLeagueCreate = (rowId: string, patch: Partial<NewLeagueDraft>) => {
+    setLeagueCreateByRow((prev) => ({
+      ...prev,
+      [rowId]: { ...(prev[rowId] ?? leagueCreate), ...patch },
     }));
   };
 
@@ -1530,6 +1640,12 @@ export default function EntityReviewWizard({
    */
   const createBlocked: string | null = (() => {
     if (!current) return null;
+    if (current.kind === "league") {
+      // NEO-254 — the same bounds `convex/leagues.ts` refuses, checked while
+      // the field is still in front of the operator. The server re-validates;
+      // this is the fast half of defence in depth.
+      return leagueDraftError(leagueCreate, new Date().getFullYear() + 1);
+    }
     if (current.kind === "team") {
       if (!teamCreate.name.trim()) return "Enter a team name before adding it.";
       // Mirrors MAX_TEAM_FULL_NAME_LENGTH in convex/entityReviewQueue.ts,
@@ -1570,6 +1686,35 @@ export default function EntityReviewWizard({
    */
   const buildCreatePayload = () => {
     if (!current) return {};
+    if (current.kind === "league") {
+      // NEO-254 — the whole record, trimmed and shaped exactly as
+      // `entityReviewQueue.leagueCreateValidator` expects. An empty field is
+      // OMITTED rather than sent as "": absent means "not answered", which is
+      // what lets `findOrCreateLeague`'s gap-fill leave an existing league's
+      // value alone instead of clearing it.
+      const from = leagueCreate.fromYear.trim();
+      const to = leagueCreate.toYear.trim();
+      const aliases = parseAliases(leagueCreate.aliases);
+      const abbreviation = leagueCreate.abbreviation.trim();
+      const wikidataId = leagueCreate.wikidataId.trim();
+      return {
+        createLeague: {
+          name: leagueCreate.name.trim(),
+          ...(abbreviation ? { abbreviation } : {}),
+          ...(leagueCreate.level ? { level: leagueCreate.level } : {}),
+          ...(from
+            ? {
+                yearsActive: {
+                  from: Number(from),
+                  ...(to ? { to: Number(to) } : {}),
+                },
+              }
+            : {}),
+          ...(aliases.length ? { aliases } : {}),
+          ...(wikidataId ? { wikidataId } : {}),
+        },
+      };
+    }
     if (current.kind === "team") {
       const location = teamCreate.location.trim();
       return {
@@ -1891,7 +2036,7 @@ export default function EntityReviewWizard({
               void handleLink(
                 current._id,
                 current.kind,
-                exactMatch._id as Id<"players"> | Id<"teams">,
+                exactMatch._id as Id<"players"> | Id<"teams"> | Id<"leagues">,
               );
               return;
             }
@@ -1957,10 +2102,14 @@ export default function EntityReviewWizard({
             if (busy) return;
             void handleSkip(current._id);
           }}
-          aria-label={`Skip ${current.name} — not a ${notAWhat(current.kind)}`}
+          aria-label={
+            current.kind === "league"
+              ? `Skip ${current.name} — this team has no league`
+              : `Skip ${current.name} — not a ${notAWhat(current.kind)}`
+          }
           className="py-2 -my-2 text-xs text-gray-400 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none underline decoration-dotted aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
         >
-          Skip — not a {notAWhat(current.kind)}
+          {skipLabel(current.kind)}
         </button>
 
         {backTargetId && (
@@ -2116,9 +2265,12 @@ export default function EntityReviewWizard({
                           the "Shows as" line below, where it belongs. Only
                           while the step is live: a decided row is being read
                           back, not created. */}
-                      {current.kind === "team" && !reviewingDecided
+                      {/* NEO-254: and the same for a league, one level up. */}
+                      {!reviewingDecided && current.kind === "team"
                         ? `New Team: ${current.name}`
-                        : current.name}
+                        : !reviewingDecided && current.kind === "league"
+                          ? `New League: ${current.name}`
+                          : current.name}
                     </h3>
                     {/* NEO-212 (audit G10): these names are copied out into
                         Wikidata, Google and the marketplaces constantly during
@@ -2526,7 +2678,7 @@ export default function EntityReviewWizard({
                           void handleLink(
                             current._id,
                             current.kind,
-                            id as Id<"players"> | Id<"teams">,
+                            id as Id<"players"> | Id<"teams"> | Id<"leagues">,
                           );
                         }}
                       />
@@ -2568,23 +2720,40 @@ export default function EntityReviewWizard({
                               patchTeamCreate(current._id, patch)
                             }
                             leagueSuggestion={current.enrichment?.league}
+                            stagedLeagueNames={stagedLeagueNames}
                             /* Only on a row the batch staged for itself: a
                                checklist team was asked for directly, and saying
                                who needs it would be answering a question nobody
                                asked. */
-                            neededBy={
-                              current.source?.kind === "careerTeamOf"
-                                ? (rows.find(
-                                    (r) => r._id === current.source?.playerRowId,
-                                  )?.name ?? undefined)
-                                : undefined
-                            }
+                            neededBy={neededByName}
                             describedBy={
                               createBlocked ? createBlockedId : undefined
                             }
                             locationFieldId={TEAM_LOCATION_FIELD_ID}
                             nameFieldId={TEAM_NAME_FIELD_ID}
                             leagueGroupId={TEAM_LEAGUE_FIELD_ID}
+                          />
+                        )}
+
+                        {current.kind === "league" && (
+                          /* NEO-254 — the New League step, in exactly the place
+                             the New Team step occupies, so the two read as one
+                             family. Its own module explains the two-tier layout
+                             (the dialog body cannot hold seven stacked fields on
+                             CI's 1024x629 viewport) and why Level is toggle
+                             buttons rather than a radiogroup. */
+                          <NewLeagueForm
+                            draft={leagueCreate}
+                            onChange={(patch) =>
+                              patchLeagueCreate(current._id, patch)
+                            }
+                            neededBy={neededByName}
+                            describedBy={
+                              createBlocked ? createBlockedId : undefined
+                            }
+                            nameFieldId={LEAGUE_NAME_FIELD_ID}
+                            levelGroupId={LEAGUE_LEVEL_FIELD_ID}
+                            disabled={busy}
                           />
                         )}
 

@@ -45,11 +45,15 @@ vi.mock("../../convex/_generated/api", () => ({
   api: {
     players: { search: "players.search", list: "players.list" },
     teams: { search: "teams.search", list: "teams.list" },
+    // NEO-254: leagues have no `search` — a sport's leagues fit on a screen, so
+    // the component reads the whole list and filters client-side.
+    leagues: { list: "leagues.list" },
   },
 }));
 
 let currentPlayers: unknown;
 let currentTeams: unknown;
+let currentLeagues: unknown;
 /** Every (ref, args) pair useQuery was called with, in render order. */
 let queryCalls: Array<{ ref: string; args: unknown }>;
 
@@ -59,6 +63,7 @@ vi.mock("convex/react", () => ({
     if (args === "skip") return undefined;
     if (ref === "players.search") return currentPlayers;
     if (ref === "teams.search") return currentTeams;
+    if (ref === "leagues.list") return currentLeagues;
     return undefined;
   },
 }));
@@ -112,6 +117,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   currentPlayers = undefined;
   currentTeams = undefined;
+  currentLeagues = undefined;
   queryCalls = [];
 });
 
@@ -441,5 +447,65 @@ describe("EntityLinkSearch — split team names", () => {
       "Link to Sandlot Club",
       "Link to Seattle Mariners",
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-254 — leagues
+// ---------------------------------------------------------------------------
+
+describe("EntityLinkSearch — leagues", () => {
+  it("reads the sport's whole league list, not a search query", () => {
+    // `players`/`teams` have search indexes because they hold tens of
+    // thousands of rows. A sport's leagues are a couple of dozen, so the whole
+    // list is one indexed read — a second server-side search would be another
+    // thing to keep in step for nothing.
+    currentLeagues = [{ _id: "l1", name: "National Hockey League" }];
+    renderSearch({ kind: "league" });
+    fireEvent.change(
+      screen.getByRole("textbox", { name: "Search existing leagues" }),
+      { target: { value: "hockey" } },
+    );
+    act(() => {
+      vi.advanceTimersByTime(500);
+    });
+
+    const refs = queryCalls.map((c) => c.ref);
+    expect(refs).toContain("leagues.list");
+    // The LAST call: the first render skips (nothing typed yet), and the
+    // debounce is what turns it into a real subscription.
+    const leagueCalls = queryCalls.filter((c) => c.ref === "leagues.list");
+    expect(leagueCalls[leagueCalls.length - 1]?.args).toEqual({
+      sportId: SPORT_ID,
+    });
+  });
+
+  it("matches a substring, so a league's distinguishing word need not lead", () => {
+    currentLeagues = [
+      { _id: "l1", name: "National Hockey League" },
+      { _id: "l2", name: "American Hockey League" },
+      { _id: "l3", name: "Major League Baseball" },
+    ];
+    renderSearch({ kind: "league" });
+    fireEvent.change(
+      screen.getByRole("textbox", { name: "Search existing leagues" }),
+      { target: { value: "hockey" } },
+    );
+    act(() => {
+      vi.advanceTimersByTime(500);
+    });
+
+    expect(screen.getByRole("option", { name: "Link to National Hockey League" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Link to American Hockey League" })).toBeTruthy();
+    expect(screen.queryByRole("option", { name: "Link to Major League Baseball" })).toBeNull();
+  });
+
+  it("names itself a league search", () => {
+    currentLeagues = [];
+    renderSearch({ kind: "league" });
+    // Both the input and the listbox carry the name, so ask by role.
+    expect(
+      screen.getByRole("textbox", { name: "Search existing leagues" }),
+    ).toBeTruthy();
   });
 });
