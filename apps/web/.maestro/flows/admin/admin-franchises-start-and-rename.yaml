@@ -11,45 +11,19 @@ tags:
 # franchise row IS before any team is on it: `franchises.findOrCreate` and
 # `franchises.save`, plus the screen that says what it holds.
 #
-# ⚠️ THIS FLOW WAS ASKED FOR AS `admin-franchises-link-teams.yaml` AND IS NOT
-#    THAT FLOW. The membership half — putting a team ON a franchise — is NOT
-#    REACHABLE BY MAESTRO AT ALL TODAY, and no amount of flow authoring fixes
-#    it. This is a product finding, written down here so the next author does
-#    not spend the afternoon rediscovering it:
+# MEMBERSHIP IS NOT THIS FLOW'S SUBJECT — `admin-franchises-link-teams.yaml`
+# owns it: starting a thread from a team, putting a second team on the same one,
+# and taking one back off. Keep the split. The EMPTY thread asserted below is a
+# real state (a franchise a moment after it is started) and asserting it here is
+# what lets the linking flow's "2 teams on this thread" mean something.
 #
-#      * The ONLY control in the product that sets `teams.franchiseId` is the
-#        Franchise dropdown on the Team Management detail panel
-#        (`components/admin/TeamManagement.tsx`, `<select id="team-franchise">`).
-#        `/admin/franchises` can only ever REMOVE a team from a thread; its own
-#        empty state says so ("Open a team on Team Management and pick this
-#        franchise to put it on here"). `NewTeamForm` — the New Team dialog and
-#        the review wizard's New Team step — has no franchise field at all.
-#      * maestro-web gives an <option> synthetic tap bounds derived ONLY from
-#        its index inside its own parent (`getSyntheticNodeBounds`, verified by
-#        reading maestro-web.js out of ~/.maestro/lib/maestro-client.jar), then
-#        resolves the tap by scanning `document.querySelectorAll('option')` in
-#        DOCUMENT ORDER and acting on the FIRST bounds match
-#        (`maestro.tapOnSyntheticElement`). So on a page with several <select>s,
-#        only the first one in the document is ever really reachable.
-#      * `/admin/teams` renders THREE selects, in this order: `league-filter`
-#        (the list header, always mounted), `team-league`, then
-#        `team-franchise`. A tap meant for the franchise dropdown lands in the
-#        league FILTER instead, silently. Reaching `team-franchise` would need
-#        it to have MORE options than every select above it — i.e. more
-#        franchises in one sport than there are leagues in the whole
-#        deployment — which is not something a flow can arrange, and which
-#        other workers change underneath it anyway.
-#      * `NewTeamForm.tsx` already documents this exact trap in its own header
-#        and is built out of radio pills for precisely this reason ("A dropdown
-#        here would be untappable by every flow that has to use it"). The new
-#        Franchise dropdown — and the League dropdown beside it, which is why
-#        `team-management-edit-a-team.yaml` has never touched it either — did
-#        not get that treatment. Giving `team-franchise` the same pill/
-#        radiogroup shape `NewTeamForm` uses is the fix, and it is app work: it
-#        is NOT something to paper over here. Until then, franchise MEMBERSHIP,
-#        the dated thread rail, and the "Remove <team>" control have no E2E
-#        coverage and are carried by `FranchiseManagement.test.tsx` and
-#        `convex/franchises.test.ts` alone.
+# (Historical note, since this file used to say the opposite at length: the
+# membership half really was unreachable when this flow was written, because the
+# Franchise control was a native `<select>` sitting third on a page with three
+# of them, and maestro-web can only ever tap options in the FIRST select in the
+# document. Commit 4666a57 rebuilt it as a pill radiogroup and the linking flow
+# followed immediately. The League `<select>` beside it still has the defect and
+# is still untouched by every flow — that one is deferred, not fixed.)
 #
 # R2 — HARD ASSERTIONS, none satisfiable by an inert page:
 #     (a) the franchise is INSERTED, not adopted: "Started <name>." is said only
