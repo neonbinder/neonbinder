@@ -294,6 +294,29 @@ function TeamDetail({
    */
   const [saveError, setSaveError] = useState<string | null>(null);
   /**
+   * NEO-254 — the SUCCESS line, in the panel, beside the button that produced
+   * it.
+   *
+   * It used to be hoisted to the screen-level status line at the top of the
+   * page through `onStatus`, and the note on `saveError` directly above already
+   * said why that was wrong for a refusal: this panel is usually scrolled past
+   * the fold, so the top of the page is off-screen at the moment Save is
+   * pressed. The success line had the same defect and nothing had tripped over
+   * it yet.
+   *
+   * NEO-254's Franchise field made the panel tall enough to trip it. Two E2E
+   * flows scroll the Save button into view, tap it, and assert "Saved <name>."
+   * is VISIBLE; with the page pinned at its new maximum scroll, the line
+   * rendered correctly at the top of the document and was simply not on screen.
+   * Both had been green for months, which is the tell — nothing about saving
+   * changed, only the height above it.
+   *
+   * So it renders where its cause is. `role="status"` rather than a plain
+   * paragraph: it appears after an async round trip that a screen-reader user
+   * has no other way to know finished.
+   */
+  const [saveStatus, setSaveStatus] = useState<string | null>(null);
+  /**
    * NEO-212 (a11y) — the preview and the refusal are ASSOCIATED with BOTH
    * fields, not merely printed under them.
    *
@@ -331,6 +354,7 @@ function TeamDetail({
     setPrimary(team.colors?.primary ?? "");
     setSecondary(team.colors?.secondary ?? "");
     setSaveError(null);
+    setSaveStatus(null);
   }
 
   /**
@@ -552,6 +576,7 @@ function TeamDetail({
     setBusy("save");
     onStatus(null);
     setSaveError(null);
+    setSaveStatus(null);
     try {
       // The league already exists by the time Save is pressed — the dialog
       // creates it and hands back an id. Nothing about a league is written
@@ -585,7 +610,8 @@ function TeamDetail({
             }
           : null,
       });
-      onStatus({ text: `Saved ${draftFullName}.`, isError: false });
+      // In the panel, not hoisted — see `saveStatus`.
+      setSaveStatus(`Saved ${draftFullName}.`);
     } catch (e) {
       // Inline, not the status line: every way this call can fail is a thing
       // about the fields above it — the name is taken, the name is empty, the
@@ -1063,6 +1089,18 @@ function TeamDetail({
         >
           {busy === "discover" ? "Searching…" : "Discover"}
         </NeonButton>
+        {saveStatus && (
+          /* IN the button row, not under it. The row already exists and is on
+             screen whenever Save is, so the confirmation costs no extra height
+             — which matters because the two E2E flows scroll Save to the bottom
+             of a page that is already at its maximum scroll, and anything
+             appended BELOW the button would land under the fold for the same
+             reason the screen-level line did. It wraps to its own line only
+             when the panel is too narrow to hold it beside the buttons. */
+          <p role="status" className="self-center text-sm text-slate-300">
+            {saveStatus}
+          </p>
+        )}
       </div>
 
       {/* Last in the tree, and last for a reason: everything above it is the

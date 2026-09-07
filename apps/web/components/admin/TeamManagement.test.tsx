@@ -276,6 +276,87 @@ beforeEach(() => {
 });
 
 /**
+ * NEO-254 — the save confirmation, WHERE the operator can see it.
+ *
+ * This block exists because CI caught what the unit tests did not. Two flows
+ * that had been green for months —
+ * `admin/team-management-edit-a-team.yaml` and
+ * `spine-label/player-team-colors-default-to-longest-tenure.yaml` — began
+ * failing on `".*Saved <name>.*" is visible` the moment the Franchise field
+ * landed. Nothing about saving had changed. What changed was the HEIGHT of the
+ * panel above the Save button: both flows scroll Save into view, tap it, and
+ * assert the confirmation, and the confirmation used to render at the very top
+ * of the screen. With the page pinned at its new maximum scroll, the line was
+ * rendered correctly and simply off-screen.
+ *
+ * `saveError` had already been moved into the panel for exactly this reason
+ * (its comment says the top of the page "is off-screen at the moment Save is
+ * pressed"); the success line had the same defect and nothing had tripped over
+ * it yet. So these tests assert not just that the text appears, but WHERE —
+ * inside the detail panel, after the Save button — because "it renders" was
+ * always true and is not the property that broke.
+ */
+describe("TeamManagement — saving a team confirms in the panel", () => {
+  const panel = () =>
+    screen.getByRole("button", { name: "Save" }).closest("div.rounded-lg")!;
+
+  it("mirrors the E2E flow: edit the name, Save, read the confirmation", async () => {
+    renderAt("/admin/teams?team=t-mariners");
+    fireEvent.change(screen.getByLabelText("Name"), {
+      target: { value: "Pilots" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    // The composed full name, which is what the flow's regex matches on.
+    expect(await screen.findByText("Saved Seattle Pilots.")).toBeTruthy();
+  });
+
+  it("renders the confirmation in the Save button's own row, not at the top of the page", () => {
+    // The regression itself, and the SAME ROW is the load-bearing half of it.
+    // The two flows scroll Save to the bottom of a page already at maximum
+    // scroll, so a line appended below the button would be under the fold for
+    // exactly the reason the screen-level one was. Sharing the row the button
+    // is in costs no height at all.
+    renderAt("/admin/teams?team=t-mariners");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    return waitFor(() => {
+      const line = screen.getByText("Saved Seattle Mariners.");
+      expect(panel().contains(line)).toBe(true);
+      expect(
+        screen.getByRole("button", { name: "Save" }).parentElement,
+      ).toBe(line.parentElement);
+      // Announced, because it lands after a round trip a screen-reader user
+      // has no other way to know finished.
+      expect(line.getAttribute("role")).toBe("status");
+    });
+  });
+
+  it("clears the confirmation when a different team is selected", async () => {
+    renderAt("/admin/teams?team=t-mariners");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText("Saved Seattle Mariners.");
+
+    fireEvent.click(row("New York Yankees"));
+    expect(screen.queryByText("Saved Seattle Mariners.")).toBeNull();
+  });
+
+  it("shows a refusal in the panel instead, and no confirmation", async () => {
+    mockSaveTeamFields.mockRejectedValue(
+      new ConvexError("Another team in this sport is already called X."),
+    );
+    renderAt("/admin/teams?team=t-mariners");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    const error = await screen.findByText(
+      "Another team in this sport is already called X.",
+    );
+    expect(panel().contains(error)).toBe(true);
+    expect(screen.queryByText(/^Saved /)).toBeNull();
+  });
+});
+
+/**
  * NEO-254 — the Franchise field, a `role="radiogroup"` of pills.
  *
  * ## Why it is not a `<select>`, and why that is asserted here
