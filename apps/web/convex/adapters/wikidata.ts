@@ -201,6 +201,60 @@ function qidFromIri(iri: string): string | undefined {
 }
 
 /**
+ * NEO-254 — the label service's language list, in ONE place.
+ *
+ * ## Why `en,mul` and not `en`
+ *
+ * Wikidata has been migrating names that are the same in every language into
+ * the `mul` (multilingual) label since 2024, and REMOVING the per-language
+ * copies as it goes. `wikibase:label` does not fall back across languages
+ * unless the list says so, so a query asking only for `en` gets nothing for
+ * such an entity — and the service's documented behaviour when it finds no
+ * label is to hand back the bare QID as the label.
+ *
+ * That is not hypothetical. Q1215892 is the National Hockey League; its name
+ * lives in `mul` and it has no `en` label at all, so `?leagueLabel` came back
+ * as the string "Q1215892" and the review wizard offered to create a league
+ * literally named that (Jason, preview test on California Golden Seals
+ * Q849315). Asking for `en,mul` fixes it at the source for every entity in
+ * that migration — which is a growing share of them.
+ *
+ * Order matters and `en` stays first: where both exist, the English label is
+ * the one that has been curated for an English audience.
+ *
+ * A constant rather than three copies of the string, for the reason
+ * `lib/players/wikidata-id.ts` gives about `Q<digits>`: three copies of a rule
+ * are three chances for the next query added here to be written against the
+ * old one. `wikidata.labelService.test.ts` asserts nothing in this file builds
+ * a label-service block any other way.
+ */
+const LABEL_SERVICE_LANGUAGES = "en,mul";
+
+/**
+ * The `SERVICE wikibase:label` block every query here shares.
+ */
+const LABEL_SERVICE = `SERVICE wikibase:label { bd:serviceParam wikibase:language "${LABEL_SERVICE_LANGUAGES}". }`;
+
+/**
+ * NEO-254 — a label-service value, or undefined when it handed back a QID.
+ *
+ * The second line of defence behind `LABEL_SERVICE`. `en,mul` finds a name for
+ * everything that HAS one somewhere, but an entity with no label in either
+ * still yields the bare QID, and "Q127635" must never reach an operator as a
+ * name — it is not a name, and offering to create a row called that is how a
+ * junk row gets made with the app's own encouragement.
+ *
+ * Undefined rather than the QID, so every caller's existing "no value" branch
+ * handles it: the wizard shows its existing-league pills and "No league"
+ * instead of a `Create Q1215892` pill.
+ */
+function labelValue(binding?: SparqlBinding): string | undefined {
+  const value = binding?.value;
+  if (value === undefined) return undefined;
+  return isWikidataQid(value) ? undefined : value;
+}
+
+/**
  * Parse a Wikidata date binding (xsd:dateTime, e.g. "2011-01-01T00:00:00Z")
  * to a 4-digit year. Wikidata sometimes uses "+0000-01-01" for unknown
  * precision — those return undefined.
@@ -815,7 +869,7 @@ ${hallOfFameSparqlBlocks(qid, hofQid)}
                  schema:isPartOf <https://en.wikipedia.org/> ;
                  schema:name ?title .
       }
-      SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
+      ${LABEL_SERVICE}
     }
   `;
   const result = await runSparql(detailQuery);
@@ -880,7 +934,7 @@ ${hallOfFameSparqlBlocks(qid, hofQid)}
         // NEO-235: hoisted ABOVE the dated/undated split — an unlabelled team
         // is unusable in `undatedCareerTeams` for exactly the same reason it is
         // unusable as a stint (the operator would be shown "Q127635").
-        const labelLooksLikeQid = /^Q\d+$/.test(row.teamLabel.value);
+        const labelLooksLikeQid = isWikidataQid(row.teamLabel.value);
         if (labelLooksLikeQid) {
           // NEO-208: structured for the same reason as the no-match log
           // above — `name` is operator input.
@@ -1310,7 +1364,7 @@ export async function lookupTeamEnrichment(
       OPTIONAL { wd:${qid} wdt:P118 ?league . }
       OPTIONAL { wd:${qid} wdt:P571 ?inception . }
       OPTIONAL { wd:${qid} wdt:P576 ?dissolved . }
-      SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
+      ${LABEL_SERVICE}
     }
     LIMIT 1
   `;
@@ -1323,7 +1377,7 @@ export async function lookupTeamEnrichment(
 
   return {
     wikidataId: qid,
-    league: espnInfo?.league ?? row?.leagueLabel?.value,
+    league: espnInfo?.league ?? labelValue(row?.leagueLabel),
     // ESPN or nothing — see the note on the SPARQL above.
     location: espnInfo?.location,
     yearsActive,
@@ -1565,7 +1619,7 @@ export async function lookupLeagueEnrichment(
       OPTIONAL { wd:${qid} wdt:P571 ?inception . }
       OPTIONAL { wd:${qid} wdt:P576 ?dissolved . }
       OPTIONAL { wd:${qid} wdt:P17 ?country . }
-      SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
+      ${LABEL_SERVICE}
     }
     ORDER BY ?inception ?countryLabel
     LIMIT 1
@@ -1583,7 +1637,7 @@ export async function lookupLeagueEnrichment(
     wikidataId: qid,
     abbreviation: row?.shortName?.value,
     yearsActive: fromYear !== undefined ? { from: fromYear, to: toYear } : undefined,
-    country: row?.countryLabel?.value,
+    country: labelValue(row?.countryLabel),
   };
 }
 

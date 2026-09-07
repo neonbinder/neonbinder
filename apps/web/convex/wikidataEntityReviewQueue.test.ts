@@ -1483,4 +1483,90 @@ describe("lookupTeamEnrichment: knownQid (NEO-236)", () => {
     expect(row!.enrichment?.wikidataId).toBe("Q1421");
     expect(kinds).toEqual(["search", "detail"]);
   });
+  // ── NEO-254 — a league label that is really a QID ─────────────────────────
+  //
+  // Jason, preview test on California Golden Seals (Q849315): the New Team step
+  // showed `League: Q1215892` and offered a pill `Create Q1215892`.
+  //
+  // Q1215892 IS the National Hockey League. It has no `en` label at all — its
+  // name lives in the `mul` (multilingual) label, where Wikidata has been
+  // migrating language-independent names since 2024 — and `wikibase:label` does
+  // not fall back across languages unless the list says so, so it handed back
+  // the bare QID as the label. Two fixes, and both are asserted: the query now
+  // asks for `en,mul`, and any label that still comes back QID-shaped is
+  // treated as no label at all.
+
+  test("the detail query asks the label service for en,mul, not just en", async () => {
+    // The root fix. Without it the NHL — and every other entity mid-migration —
+    // has no label to return.
+    const queries: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      makeTeamFetchStub({
+        searchQid: null,
+        detailLeague: "National Hockey League",
+        onSparql: (_kind, decoded) => queries.push(decoded),
+      }),
+    );
+
+    await lookupTeamEnrichment("California Golden Seals", BASEBALL, "Q849315");
+
+    expect(queries).toHaveLength(1);
+    expect(queries[0]).toContain('bd:serviceParam wikibase:language "en,mul".');
+  });
+
+  test("a leagueLabel that is a bare QID yields NO league", async () => {
+    // The second line of defence, for an entity with no label in en OR mul.
+    // `undefined`, not the QID: every consumer's "no value" branch then does
+    // the right thing, and the wizard shows its existing-league pills and
+    // "No league" rather than offering to create a league named "Q1215892".
+    vi.stubGlobal(
+      "fetch",
+      makeTeamFetchStub({ searchQid: null, detailLeague: "Q1215892" }),
+    );
+
+    const result = await lookupTeamEnrichment(
+      "California Golden Seals",
+      BASEBALL,
+      "Q849315",
+    );
+
+    expect(result).not.toBeNull();
+    expect(result!.wikidataId).toBe("Q849315");
+    expect(result!.league).toBeUndefined();
+    // Everything else on the row still lands — one unusable label must not
+    // cost the operator the whole lookup.
+    expect(result!.yearsActive).toEqual({ from: 2009, to: undefined });
+  });
+
+  test("a real league label still passes through untouched", async () => {
+    vi.stubGlobal(
+      "fetch",
+      makeTeamFetchStub({
+        searchQid: null,
+        detailLeague: "National Hockey League",
+      }),
+    );
+
+    const result = await lookupTeamEnrichment(
+      "California Golden Seals",
+      BASEBALL,
+      "Q849315",
+    );
+
+    expect(result!.league).toBe("National Hockey League");
+  });
+
+  test("a label that merely STARTS with a Q is not a QID", async () => {
+    // The guard is anchored at both ends (`lib/players/wikidata-id.ts`), so a
+    // real name is never mistaken for an id.
+    vi.stubGlobal(
+      "fetch",
+      makeTeamFetchStub({ searchQid: null, detailLeague: "Quebec Major Junior" }),
+    );
+
+    const result = await lookupTeamEnrichment("Quebec Remparts", BASEBALL, "Q849315");
+
+    expect(result!.league).toBe("Quebec Major Junior");
+  });
 });
