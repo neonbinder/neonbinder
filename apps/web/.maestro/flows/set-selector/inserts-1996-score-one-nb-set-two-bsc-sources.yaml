@@ -429,6 +429,32 @@ tags:
 # would fail whenever a team happens to settle first. Both are the same
 # "create" decision and either leaves exactly ONE decision on the books,
 # which is all 6a asserts.
+#
+# ⚠️ WAIT FOR THE BATCH TO STOP MOVING BEFORE DECIDING (NEO-236 / NEO-248).
+# `resolveNav` yields a PLAYER row the wizard walked to the moment any team row
+# is settled and undecided — teams are answered before players so that the
+# players can link against them. Lookups resolve five-wide over live Wikidata
+# and complete OUT OF ORDER, so a player presented now can be replaced by a
+# "New Team" step a round-trip later, with no decision made and nothing on
+# screen to warn a flow it happened.
+#
+# That is what failed main's copy of this flow in run 34068758296 (PR #234): 6a
+# took its decision, and by the assert the walk had moved. The same flow passed
+# an hour earlier and on #237 — it is a race, not a regression.
+#
+# "N still looking up — wait or skip" is the wizard's own footer status and is
+# absent exactly when no undecided row is pending. Once it is gone the set of
+# settled undecided rows is FIXED, so whichever row is presented next cannot be
+# taken away: a team row never yields at all, and a player row can only yield to
+# a team that settles, and none can still settle. Either kind then holds still
+# for the decision, and 6a keeps its exact "one decision" claim.
+#
+# R5 marketplace-class exception, and it is the dominant cost in this step:
+# hundreds of unknown names, each behind a live Wikidata lookup at ~3s/item
+# five-wide. It returns the moment the queue drains.
+- extendedWaitUntil:
+    notVisible: ".*still looking up.*"
+    timeout: 180000
 - extendedWaitUntil:
     visible:
       id: "Add as New (Player|Team)"
