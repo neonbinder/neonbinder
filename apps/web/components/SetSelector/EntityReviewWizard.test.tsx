@@ -5626,3 +5626,87 @@ describe("NEO-254: the wizard defends itself when the stored marker is missing",
     ).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// NEO-254 — where a count lives decides whether a flow can read it
+//
+// CI run 34071657961 failed `inserts-1996-score-…` on
+// `assertVisible: "Decided (1)"` while the count itself was correct: the
+// wizard was parked on a tall New Team step, and the decided disclosure sits
+// in the dialog's inner `overflow-y-auto` body below the 1024x629 fold.
+// maestro-web's scroll is `window.scrollTo` and cannot drive an inner
+// scrollbox, so nothing a flow does can reach it — the same limitation that
+// made NEO-236 move the per-row decision controls into the fixed footer.
+//
+// These pin the structure that argument rests on, so the next person to read
+// that failure does not go looking for a broken counter.
+// ---------------------------------------------------------------------------
+
+describe("EntityReviewWizard — the decided count and the scroll box", () => {
+  /** A decided player plus the tall staged New Team step CI was parked on. */
+  function seedStagedTeamStepAfterOneDecision() {
+    const player = makeRow({
+      _id: "row-player" as unknown as Id<"entityReviewQueue">,
+      kind: "player",
+      name: "Steve Finley",
+      status: "ready",
+      decision: { action: "create" },
+    });
+    currentRows = [
+      makeCareerTeamRow(player._id, "Southern Illinois Salukis baseball", {
+        enrichment: { wikidataId: "Q7570020" },
+      }),
+      player,
+    ];
+    // The five "Possible matches" that made the step overflow in CI.
+    currentNearMatches = [
+      { _id: "t1", name: "Arizona Wildcats baseball", confidence: "close" },
+      { _id: "t2", name: "Baylor Bears baseball", confidence: "close" },
+      { _id: "t3", name: "Centenary Gentlemen baseball", confidence: "close" },
+      { _id: "t4", name: "Florida Gators baseball", confidence: "close" },
+      { _id: "t5", name: "Indiana Hoosiers baseball", confidence: "close" },
+    ];
+  }
+
+  it("counts the decision on a staged New Team step — the count is not the bug", () => {
+    seedStagedTeamStepAfterOneDecision();
+    renderWizard();
+
+    expect(
+      screen.getByRole("heading", { name: /New Team: Southern Illinois/ }),
+    ).toBeTruthy();
+    expect(screen.getByText("1 of 2 reviewed")).toBeTruthy();
+    expect(screen.getByText("Decided (1)")).toBeTruthy();
+  });
+
+  it("puts the count in the PINNED header and the disclosure in the scroll box", () => {
+    // The structural fact behind the CI failure, and the reason the flow should
+    // assert the header line instead: `shrink-0` never moves, and a flow cannot
+    // scroll an `overflow-y-auto` body at all.
+    seedStagedTeamStepAfterOneDecision();
+    renderWizard();
+
+    // The dialog is portalled, so it is not under the render container.
+    const scrollBox = document.querySelector(".overflow-y-auto");
+    expect(scrollBox).toBeTruthy();
+
+    const header = screen.getByText("1 of 2 reviewed");
+    expect(scrollBox!.contains(header)).toBe(false);
+
+    const disclosure = screen.getByText("Decided (1)");
+    expect(scrollBox!.contains(disclosure)).toBe(true);
+  });
+
+  it("shows no same-name panel on a team step, whatever its near matches", () => {
+    // NEO-254 changed `showExactHierarchy` from "any exact match" to "exactly
+    // one". `teams` dedupes on (nameNormalized, sportId) and near matches are
+    // sport-scoped, so a team row can never have two exacts and the change is
+    // a no-op for team steps — which is why nothing NEO-254 added is on the
+    // screen that failed in CI.
+    seedStagedTeamStepAfterOneDecision();
+    renderWizard();
+
+    expect(screen.queryByText("Same name, different people")).toBeNull();
+    expect(screen.getByRole("button", { name: "Add as New Team" })).toBeTruthy();
+  });
+});
