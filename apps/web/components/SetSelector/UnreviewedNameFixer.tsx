@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "../../convex/_generated/api";
+import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import type { Id } from "../../convex/_generated/dataModel";
 import NeonButton from "../modules/NeonButton";
 import PlayerPicker from "./PlayerPicker";
@@ -198,9 +199,15 @@ export default function UnreviewedNameFixer({ row, onSaved }: AttentionFixerProp
       });
       onSaved();
     } catch (e) {
-      setError(
-        e instanceof Error ? e.message : "Couldn't save those links. Try again.",
-      );
+      // NEO-246: `updateCard` now REFUSES a bad `playerIds` write (an id that
+      // resolves to nothing, one from another sport, more than the cap), and
+      // those refusals are `ConvexError`s carrying a sentence written for the
+      // operator. `userFacingMessage` is what gets that sentence out intact:
+      // a raw `.message` arrives wrapped in "[CONVEX M(selectorOptions:
+      // updateCard)] [Request ID: …]" noise, and a plain Error is redacted to
+      // "Server Error" on production regardless. Same helper the sibling
+      // `TitleFixer` and `CardDetailPanel` already use, for the same reason.
+      setError(userFacingMessage(e, "Couldn't save those links. Try again."));
     } finally {
       setBusy(false);
     }

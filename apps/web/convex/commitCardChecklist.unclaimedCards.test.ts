@@ -17,10 +17,11 @@
  */
 
 import { convexTest } from "convex-test";
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
+import { drainScheduled } from "../lib/testing/drain-scheduled";
 
 const modules = (
   import.meta as unknown as {
@@ -38,6 +39,25 @@ const ADMIN = {
 beforeEach(() => {
   vi.spyOn(console, "log").mockImplementation(() => {});
   vi.spyOn(console, "warn").mockImplementation(() => {});
+  // NEO-188/NEO-247: commitCardChecklist can schedule a BSC per-card team
+  // lookup (processBscTeamEnrichmentQueue) as a side effect for any card
+  // carrying a bsc ref with no resolvable team. This file has nothing to
+  // say about team resolution. A THROWING stub rather than a canned 200 —
+  // same convention as convex/cardChecklist.bscTeamEnrichment.test.ts's
+  // NEO-220 fix: the adapter already swallows a request failure ("network
+  // unavailable" is a state it handles), and it cannot write anything
+  // derived from a payload this file invented.
+  vi.stubGlobal(
+    "fetch",
+    (async (url: string | URL) => {
+      throw new Error(
+        `NEO-247: this test file must not reach the network: ${String(url)}`,
+      );
+    }) as unknown as typeof fetch,
+  );
+});
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 async function seedTree(t: ReturnType<typeof convexTest>) {
@@ -122,6 +142,7 @@ describe("a card no marketplace claims survives a re-sync", () => {
     expect(after.map((r) => r.cardNumber)).toEqual(["1", "9001"]);
     // Not in the "upstream no longer lists this" report: it has no upstream.
     expect(res.unmatchedExistingCount).toBe(0);
+    await drainScheduled(t);
   });
 
   test("`addCustomCard` writes no `isCustom` — the empty platformData IS the fact", async () => {
@@ -137,6 +158,7 @@ describe("a card no marketplace claims survives a re-sync", () => {
     const [row] = await rows(t, leafId);
     expect(row.isCustom).toBeUndefined();
     expect(row.platformData).toEqual({});
+    await drainScheduled(t);
   });
 });
 
@@ -176,6 +198,7 @@ describe("a card that GAINS a marketplace ref joins the marketplace population",
       "1",
       "9001",
     ]);
+    await drainScheduled(t);
   });
 });
 
@@ -220,6 +243,7 @@ describe("pending names on an unclaimed card are still resolved", () => {
       (r) => r.cardNumber === "9001",
     )!;
     expect(handAdded.pendingPlayerNames).toBeUndefined();
+    await drainScheduled(t);
   });
 });
 
@@ -265,6 +289,7 @@ describe("the `deletedRowIds` guard — an operator-deleted ref-less card is not
     const after = await rows(t, leafId);
     expect(after.map((r) => r.cardNumber)).toEqual(["1"]);
     expect(after.some((r) => r._id === handAddedId)).toBe(false);
+    await drainScheduled(t);
   });
 
   test("a ref-less card that is BOTH operator-deleted and due a pending-name resolve does not crash the commit", async () => {
@@ -303,5 +328,6 @@ describe("the `deletedRowIds` guard — an operator-deleted ref-less card is not
     const after = await rows(t, leafId);
     expect(after.map((r) => r.cardNumber)).toEqual(["1"]);
     expect(after.some((r) => r._id === handAddedId)).toBe(false);
+    await drainScheduled(t);
   });
 });

@@ -368,6 +368,43 @@ describe("CardDetailPanel", () => {
     });
   });
 
+  it("shows the server's playerIds refusal inline, beside the picker (NEO-246)", async () => {
+    // `updateCard.playerIds` is validated as of NEO-246 — an id that resolves
+    // to no player, one from another sport, or more than the cap is refused
+    // rather than written. This picker is one of the two clients that can be
+    // told no, and the refusal has to land next to the control that caused it:
+    // the panel autosaves per field, so there is no Save button to attach it
+    // to and no draft the operator can inspect afterwards.
+    mockUpdateCard.mockRejectedValue(
+      new ConvexError('"LeBron James" is not a player in this card\'s sport.'),
+    );
+    renderPanel({ card: makeCard({ playerIds: ["player-1"] as unknown as Array<Id<"players">> }) });
+
+    await act(async () => {
+      fireEvent.click(screen.getByText("Stub add player"));
+    });
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe(
+      '"LeBron James" is not a player in this card\'s sport.',
+    );
+    // The chips snap back to server truth: nothing was written, and leaving the
+    // rejected pick on screen would read as if it had been.
+    expect(screen.getByText("Players: player-1")).toBeTruthy();
+  });
+
+  it("falls back to a plain sentence when a player write fails with no user-facing text", async () => {
+    mockUpdateCard.mockRejectedValue(new Error("Server Error"));
+    renderPanel({ card: makeCard({ playerIds: ["player-1"] as unknown as Array<Id<"players">> }) });
+
+    await act(async () => {
+      fireEvent.click(screen.getByText("Stub add player"));
+    });
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("Could not save that change");
+  });
+
   it("touching nothing writes nothing, and closing exits straight away", () => {
     const { onClose } = renderPanel();
 

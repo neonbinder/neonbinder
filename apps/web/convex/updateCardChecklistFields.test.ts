@@ -15,6 +15,8 @@ import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
+import { MAX_CARD_PLAYERS } from "./features/cardAttention";
+import type { Id } from "./_generated/dataModel";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -89,7 +91,7 @@ async function seed() {
       lastUpdated: Date.now(),
     });
 
-    return { variantTypeId, teamA, playerA, cardId };
+    return { sportId, variantTypeId, teamA, playerA, cardId };
   });
 
   return { asAdmin, ...ids };
@@ -870,5 +872,432 @@ describe("updateCard pending-name arguments (NEO-221)", () => {
     const stored = await asAdmin.run(async (ctx) => ctx.db.get(cardId));
     expect(stored!.pendingTeamNames).toBeUndefined();
     expect(stored!.teamOnCardIds).toEqual([teamA]);
+  });
+});
+
+// ===========================================================================
+// NEO-246 — `updateCard.playerIds` is validated, not written straight through
+//
+// It shipped to production in #229 as the ONE full-replacement entity array on
+// this mutation with no dedupe, no cap, and no existence or sport check, while
+// its own twin `teamOnCardIds` and its own sibling `addCustomCard.playerIds`
+// both went through a shared resolver. A card could therefore be born
+// validated and edited into an unvalidated state on the very next save, from
+// `CardDetailPanel`'s PlayerPicker or the attention walker's
+// `UnreviewedNameFixer` — both admin clients whose 20-player cap is UI only,
+// and neither of which binds a direct API caller at all.
+//
+// These mirror `addCustomCard.playerIds.test.ts` case for case on purpose: the
+// two paths share `resolvePlayerIdsForWrite`, and a difference in what they
+// accept is exactly the regression this file has to catch. Players are
+// inserted straight into the table rather than through `players.findOrCreate`,
+// so nothing here schedules enrichment work that could race teardown (see
+// lib/testing/drain-scheduled.ts for when that matters).
+// ===========================================================================
+
+describe("updateCard playerIds validation (NEO-246)", () => {
+  /** A second player in the card's OWN sport. */
+  const addPlayer = (
+    asAdmin: Awaited<ReturnType<typeof seed>>["asAdmin"],
+    sportId: Id<"selectorOptions">,
+    name: string,
+  ): Promise<Id<"players">> =>
+    asAdmin.run(async (ctx) =>
+      ctx.db.insert("players", {
+        name,
+        nameNormalized: name.toLowerCase(),
+        sportId,
+        lastUpdated: Date.now(),
+      }),
+    );
+
+  test("stores a valid list verbatim, in the order it was sent", async () => {
+    // The array is DISPLAY order — the operator's chip order — not a set.
+    const { asAdmin, sportId, playerA, cardId } = await seed();
+    const lindor = await addPlayer(asAdmin, sportId, "Francisco Lindor");
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      playerIds: [lindor, playerA],
+    });
+
+    const stored = await asAdmin.run(async (ctx) => ctx.db.get(cardId));
+    expect(stored!.playerIds).toEqual([lindor, playerA]);
+  });
+
+  test("stores a repeated id once, keeping first-seen order", async () => {
+    // A double-submitted chip is a client bug, not an operator decision:
+    // storing it twice prints the player twice in a generated listing title
+    // and pays for the read twice in `previewListingTitle`.
+    const { asAdmin, sportId, playerA, cardId } = await seed();
+    const lindor = await addPlayer(asAdmin, sportId, "Francisco Lindor");
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      playerIds: [lindor, playerA, lindor],
+    });
+
+    const stored = await asAdmin.run(async (ctx) => ctx.db.get(cardId));
+    expect(stored!.playerIds).toEqual([lindor, playerA]);
+  });
+
+  test(`rejects more than MAX_CARD_PLAYERS ids, and writes nothing`, async () => {
+    const { asAdmin, sportId, cardId } = await seed();
+    const ids = await Promise.all(
+      Array.from({ length: MAX_CARD_PLAYERS + 1 }, (_, i) =>
+        addPlayer(asAdmin, sportId, `Player ${i}`),
+      ),
+    );
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.updateCard, {
+        id: cardId,
+        playerIds: ids,
+      }),
+    ).rejects.toThrow(new RegExp(`at most ${MAX_CARD_PLAYERS} players`));
+
+    const stored = await asAdmin.run(async (ctx) => ctx.db.get(cardId));
+    expect(stored!.playerIds).toBeUndefined();
+  });
+
+  test("counts the cap AFTER the dedupe", async () => {
+    // Same rule the team side has always had: a client that repeats one chip
+    // past the cap is not punished for it — it resolves to one player.
+    const { asAdmin, playerA, cardId } = await seed();
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      playerIds: Array.from({ length: MAX_CARD_PLAYERS + 1 }, () => playerA),
+    });
+
+    const stored = await asAdmin.run(async (ctx) => ctx.db.get(cardId));
+    expect(stored!.playerIds).toEqual([playerA]);
+  });
+
+  test("rejects an id that resolves to no player, and writes nothing", async () => {
+    const { asAdmin, sportId, cardId } = await seed();
+    const dangling = await addPlayer(asAdmin, sportId, "Deleted Player");
+    await asAdmin.run(async (ctx) => ctx.db.delete(dangling));
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.updateCard, {
+        id: cardId,
+        playerIds: [dangling],
+      }),
+    ).rejects.toThrow(/no longer exists/);
+
+    const stored = await asAdmin.run(async (ctx) => ctx.db.get(cardId));
+    expect(stored!.playerIds).toBeUndefined();
+  });
+
+  test("rejects a player from another sport, and writes nothing", async () => {
+    // A basketball player on a baseball card is invisible until a listing is
+    // generated from it, which is months later and across a whole set at once.
+    const { asAdmin, cardId } = await seed();
+    const basketballSportId = await asAdmin.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Basketball",
+        platformData: {},
+        children: [],
+        lastUpdated: Date.now(),
+      }),
+    );
+    const lebron = await addPlayer(asAdmin, basketballSportId, "LeBron James");
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.updateCard, {
+        id: cardId,
+        playerIds: [lebron],
+      }),
+    ).rejects.toThrow(/not a player in this card's sport/);
+
+    const stored = await asAdmin.run(async (ctx) => ctx.db.get(cardId));
+    expect(stored!.playerIds).toBeUndefined();
+  });
+
+  test("a refused playerIds write does not let a co-sent field through", async () => {
+    // The drawer autosaves one field per call, but the walker's fixer sends
+    // players, teams and both pending-name lists together — a refusal there
+    // must leave the whole row as it was, not half-apply the call.
+    const { asAdmin, cardId } = await seed();
+    const dangling = await asAdmin.run(async (ctx) => {
+      const id = await ctx.db.insert("players", {
+        name: "Gone",
+        nameNormalized: "gone",
+        sportId: (await ctx.db.get(cardId))!.selectorOptionId,
+        lastUpdated: Date.now(),
+      });
+      await ctx.db.delete(id);
+      return id;
+    });
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.updateCard, {
+        id: cardId,
+        playerIds: [dangling],
+        cardName: "Should Not Land",
+      }),
+    ).rejects.toThrow(/no longer exists/);
+
+    const stored = await asAdmin.run(async (ctx) => ctx.db.get(cardId));
+    expect(stored!.cardName).toBe("Original Name");
+  });
+
+  test("omitting playerIds leaves the stored list untouched", async () => {
+    // The absent-means-untouched contract the whole per-field autosave design
+    // rests on. Validation must not turn "not mentioned" into "cleared".
+    const { asAdmin, playerA, cardId } = await seed();
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      playerIds: [playerA],
+    });
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      listingTitle: "A new title",
+    });
+
+    const stored = await asAdmin.run(async (ctx) => ctx.db.get(cardId));
+    expect(stored!.playerIds).toEqual([playerA]);
+  });
+
+  test("an empty array still clears the link", async () => {
+    // `[]` is a real value for a full-replacement array — the operator
+    // unlinking every player — and the resolver returns before it reads
+    // anything, so an empty write costs no extra reads either.
+    const { asAdmin, playerA, cardId } = await seed();
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      playerIds: [playerA],
+    });
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      playerIds: [],
+    });
+
+    const stored = await asAdmin.run(async (ctx) => ctx.db.get(cardId));
+    expect(stored!.playerIds).toEqual([]);
+  });
+});
+
+// ===========================================================================
+// NEO-246 — `updateCard`'s TYPED name args are bounded too
+//
+// #229 added `pendingPlayerNames` / `pendingTeamNames` for the walker's fixer
+// and left them as bare `v.array(v.string())`, while `addCustomCard`'s
+// free-text `players` / `teams` had gone through `normalizePendingNames` since
+// NEO-208 — the same asymmetry `playerIds` had, on the other spelling of the
+// same two fields. These names land on a row that the listing-title generator,
+// the entity-review wizard and the row sub-line all render, so the bound is not
+// cosmetic.
+//
+// Same helper as `addCustomCard`, therefore the same refusal wording; the
+// mirror-image cases live in `cardChecklist.noTeam.test.ts`'s
+// "addCustomCard — pending name bounds".
+// ===========================================================================
+
+describe("updateCard pending-name bounds (NEO-246)", () => {
+  test("refuses more typed player names than the cap, and writes nothing", async () => {
+    const { asAdmin, cardId } = await seed();
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.updateCard, {
+        id: cardId,
+        pendingPlayerNames: Array.from(
+          { length: MAX_CARD_PLAYERS + 1 },
+          (_, i) => `Player ${i}`,
+        ),
+      }),
+    ).rejects.toThrow(/at most 20 player names/);
+
+    const stored = await asAdmin.run(async (ctx) => ctx.db.get(cardId));
+    expect(stored!.pendingPlayerNames).toBeUndefined();
+  });
+
+  test("refuses more typed team names than the cap, and writes nothing", async () => {
+    // The team cap is the NARROWER of the two (8 vs 20) — a card is never
+    // printed for more than a handful of teams.
+    const { asAdmin, cardId } = await seed();
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.updateCard, {
+        id: cardId,
+        pendingTeamNames: Array.from({ length: 9 }, (_, i) => `Team ${i}`),
+      }),
+    ).rejects.toThrow(/at most 8 team names/);
+
+    const stored = await asAdmin.run(async (ctx) => ctx.db.get(cardId));
+    expect(stored!.pendingTeamNames).toBeUndefined();
+  });
+
+  test("refuses an over-long name without quoting it back", async () => {
+    // The message carries the LENGTH and the limit, never the text: it travels
+    // through Convex's error path into Sentry and the browser console, and row
+    // content has no business there.
+    const { asAdmin, cardId } = await seed();
+    const essay = "z".repeat(121);
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.updateCard, {
+        id: cardId,
+        pendingPlayerNames: [essay],
+      }),
+    ).rejects.toThrow(/A player name is 121 characters; the limit is 120\./);
+
+    // Read the thrown value directly rather than through a negated `rejects`
+    // matcher, which passes vacuously if nothing is thrown at all — the same
+    // non-vacuous shape `cardChecklist.noTeam.test.ts` uses for the
+    // `addCustomCard` half of this rule.
+    let thrown: unknown;
+    try {
+      await asAdmin.mutation(api.selectorOptions.updateCard, {
+        id: cardId,
+        pendingPlayerNames: [essay],
+      });
+    } catch (err) {
+      thrown = err;
+    }
+    const serialized = `${(thrown as Error)?.message ?? ""} ${JSON.stringify(thrown)}`;
+    // Non-vacuous: the limit IS in there, so the absence of the content is a
+    // real observation about the same string.
+    expect(serialized).toContain("the limit is 120");
+    expect(serialized).not.toContain("zzzz");
+
+    const stored = await asAdmin.run(async (ctx) => ctx.db.get(cardId));
+    expect(stored!.pendingPlayerNames).toBeUndefined();
+  });
+
+  test("accepts a name of exactly the limit", async () => {
+    const { asAdmin, cardId } = await seed();
+    const atLimit = "z".repeat(120);
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      pendingPlayerNames: [atLimit],
+    });
+
+    const stored = await asAdmin.run(async (ctx) => ctx.db.get(cardId));
+    expect(stored!.pendingPlayerNames).toEqual([atLimit]);
+  });
+
+  test("trims whitespace, drops empties, and stores a repeat once", async () => {
+    // Order is the operator's, so first-seen wins — the same rule the LINKED
+    // spelling (`playerIds`) follows, and the reason the cap is measured after
+    // this rather than before it.
+    const { asAdmin, cardId } = await seed();
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      pendingPlayerNames: [
+        "  Yordan Alvrez  ",
+        "",
+        "   ",
+        "Bobby Witt Jr.",
+        "Yordan Alvrez",
+      ],
+    });
+
+    const stored = await asAdmin.run(async (ctx) => ctx.db.get(cardId));
+    expect(stored!.pendingPlayerNames).toEqual([
+      "Yordan Alvrez",
+      "Bobby Witt Jr.",
+    ]);
+  });
+
+  test("counts the cap AFTER the dedupe", async () => {
+    const { asAdmin, cardId } = await seed();
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      pendingTeamNames: Array.from({ length: 12 }, () => "Reno Aces"),
+    });
+
+    const stored = await asAdmin.run(async (ctx) => ctx.db.get(cardId));
+    expect(stored!.pendingTeamNames).toEqual(["Reno Aces"]);
+  });
+
+  test("an all-whitespace list clears the field, exactly like []", async () => {
+    // It normalises to `[]`, and `[]` is stored as the ABSENCE of the field —
+    // the one spelling of "none" every other writer of these two uses.
+    const { asAdmin, cardId } = await seed();
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      pendingPlayerNames: ["Never Reviewed"],
+    });
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      pendingPlayerNames: ["   ", ""],
+    });
+
+    const stored = await asAdmin.run(async (ctx) => ctx.db.get(cardId));
+    expect(stored!.pendingPlayerNames).toBeUndefined();
+  });
+
+  test("validates a name list even when the same call retires it", async () => {
+    // A non-empty `teamOnCardIds` write clears `pendingTeamNames` on its own,
+    // so this argument was about to be thrown away — but a refusal must not
+    // depend on which OTHER field happened to ride along in the same call.
+    const { asAdmin, teamA, cardId } = await seed();
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.updateCard, {
+        id: cardId,
+        teamOnCardIds: [teamA],
+        pendingTeamNames: Array.from({ length: 9 }, (_, i) => `Team ${i}`),
+      }),
+    ).rejects.toThrow(/at most 8 team names/);
+
+    const stored = await asAdmin.run(async (ctx) => ctx.db.get(cardId));
+    expect(stored!.teamOnCardIds).toEqual([teamA]);
+  });
+
+  test("the walker fixer's write-back of untouched names still passes", async () => {
+    // `UnreviewedNameFixer` sends the OTHER side's stored names back unchanged
+    // when only one side gained a link. Those names are already trimmed,
+    // deduped and under the cap, so the normaliser is a no-op on them — this
+    // pins that the new validation did not turn the fixer's own payload into a
+    // refusal.
+    const { asAdmin, playerA, cardId } = await seed();
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      pendingPlayerNames: ["Yordan Alvrez"],
+      pendingTeamNames: ["Reno Aces"],
+    });
+
+    // The fixer's exact payload: player side linked and cleared, team side
+    // written back as-is.
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      playerIds: [playerA],
+      teamOnCardIds: [],
+      pendingPlayerNames: [],
+      pendingTeamNames: ["Reno Aces"],
+    });
+
+    const stored = await asAdmin.run(async (ctx) => ctx.db.get(cardId));
+    expect(stored!.playerIds).toEqual([playerA]);
+    expect(stored!.pendingPlayerNames).toBeUndefined();
+    expect(stored!.pendingTeamNames).toEqual(["Reno Aces"]);
+  });
+
+  test("omitting the arguments leaves stored names untouched", async () => {
+    const { asAdmin, cardId } = await seed();
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      pendingPlayerNames: ["Never Reviewed"],
+      pendingTeamNames: ["Reno Aces"],
+    });
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      listingTitle: "A new title",
+    });
+
+    const stored = await asAdmin.run(async (ctx) => ctx.db.get(cardId));
+    expect(stored!.pendingPlayerNames).toEqual(["Never Reviewed"]);
+    expect(stored!.pendingTeamNames).toEqual(["Reno Aces"]);
   });
 });

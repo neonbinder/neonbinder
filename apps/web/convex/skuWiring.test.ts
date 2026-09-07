@@ -20,13 +20,37 @@
  */
 
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
+import { drainScheduled, cancelScheduled } from "../lib/testing/drain-scheduled";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
 }).glob("./**/*.*s");
+
+// NEO-188/NEO-247: commitCardChecklist can schedule a BSC per-card team
+// lookup (processBscTeamEnrichmentQueue) as a side effect for any card
+// carrying a bsc ref with no resolvable team — every card fixture in this
+// file is exactly that shape. This file has nothing to say about team
+// resolution. A THROWING stub rather than a canned 200 — same convention as
+// convex/cardChecklist.bscTeamEnrichment.test.ts's NEO-220 fix: the adapter
+// already swallows a request failure ("network unavailable" is a state it
+// handles), and it cannot write anything derived from a payload this file
+// invented.
+beforeEach(() => {
+  vi.stubGlobal(
+    "fetch",
+    (async (url: string | URL) => {
+      throw new Error(
+        `NEO-247: this test file must not reach the network: ${String(url)}`,
+      );
+    }) as unknown as typeof fetch,
+  );
+});
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 const ADMIN_IDENTITY = {
   subject: "admin_user_sku_001",
@@ -102,6 +126,10 @@ describe("commitCardChecklist generates a cross-marketplace sku on insert (NEO-9
         },
       ],
     });
+    // NEO-247: this card's team isn't resolvable from the bulk fields, so
+    // commitCardChecklist schedules a per-card BSC team lookup — drain it
+    // right here or it fires unguarded after the test ends.
+    await drainScheduled(t);
 
     const cards = await t.run(async (ctx) =>
       ctx.db
@@ -158,6 +186,13 @@ describe("commitCardChecklist generates a cross-marketplace sku on insert (NEO-9
         },
       ],
     });
+    // NEO-247: both cards need the per-card BSC team lookup. With more than
+    // one card queued, processBscTeamEnrichmentQueue reschedules its own
+    // tail with a real 300ms delay (BSC_TEAM_ENRICH_DELAY_MS) rather than
+    // runAfter(0) — drainScheduled can only settle the FIRST hop, so cancel
+    // whatever's left pending rather than let it fire after this test ends.
+    await drainScheduled(t);
+    await cancelScheduled(t);
 
     const committedCards = await t.run(async (ctx) =>
       ctx.db
@@ -211,10 +246,12 @@ describe("commitCardChecklist generates a cross-marketplace sku on insert (NEO-9
     };
 
     await commitCard();
+    await drainScheduled(t); // NEO-247: drain the per-card BSC team lookup
     const firstSku = (await findCard50())?.sku;
     expect(firstSku).toBeTruthy();
 
     await commitCard();
+    await drainScheduled(t); // NEO-247: same again on the re-commit
     const secondSku = (await findCard50())?.sku;
     expect(secondSku).toBe(firstSku);
   });
