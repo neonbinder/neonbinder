@@ -239,6 +239,31 @@ tags:
                   notVisible:
                     text: ".*Confirm & Save.*"
                 commands:
+                  # NEO-254 — ANSWER THE LEAGUE STEP FIRST, and it must come before the team
+                  # branch below because it comes before it on screen: the wizard stages a New
+                  # League step immediately AHEAD of the first team that needs that league, and
+                  # later teams then pick the staged one. A loop that only knows how to answer
+                  # `New Team:` parks on the league step and spins its full `times` budget
+                  # without touching the wizard — which is how the seed job died, taking the
+                  # whole suite with it.
+                  #
+                  # One tap, the same shape as the team branch: `Add as New League` is the
+                  # step's primary action and its accessible name is the same string as its
+                  # visible text. It is deliberately NOT matched as `Add as New League.*` — when
+                  # an exact existing league is found the primary becomes `Link to <name>` and
+                  # creation is DEMOTED to `Add as New League anyway`, and tapping that would
+                  # mint a duplicate of a league NB already has. A staged step means the league
+                  # was new, so that branch should not arise; if it ever does, this loop runs
+                  # out and the `extendedWaitUntil` on "Confirm & Save" fails loudly, which is
+                  # the outcome to want over a silent duplicate.
+                  #
+                  # Cost: one more hierarchy read per iteration when there is no league step —
+                  # a `runFlow when` that finds nothing does not poll (see the note above).
+                  - runFlow:
+                      when:
+                        visible: "New League: .*"
+                      commands:
+                        - tapOn: "Add as New League"
                   - runFlow:
                       when:
                         visible: "New Team: .*"

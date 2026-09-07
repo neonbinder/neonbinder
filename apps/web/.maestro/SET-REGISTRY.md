@@ -438,11 +438,18 @@ now answers those steps with the same loop:
 
 ```yaml
 - repeat:
-    maxRuns: 250
+    times: 250
     while:
       notVisible:
         text: ".*Confirm & Save.*"
     commands:
+      # NEO-254 — the league branch FIRST: the wizard stages a New League step
+      # immediately ahead of the first team that needs that league.
+      - runFlow:
+          when:
+            visible: "New League: .*"
+          commands:
+            - tapOn: "Add as New League"
       - runFlow:
           when:
             visible: "New Team: .*"
@@ -450,13 +457,53 @@ now answers those steps with the same loop:
             - tapOn: "Add as New Team"
 ```
 
+> ⚠️ **`times`, never `maxRuns`.** This snippet used to be written with
+> `maxRuns:`, which is not in `YamlRepeatCommand` at all — an unknown property
+> is a HARD parse error that kills the whole flow before command one, and that
+> is precisely how the seed job once died with
+> `Unknown Property: maxRuns at …/setup.yaml`. The schema is `times` (the
+> runaway guard) and `while` (the intent), and they combine.
+
 One tap per step, accepting the Location, Name and League the step already
 shows — what an operator who agrees with the pre-fill would do. Keyed on the
 TERMINAL state (`Confirm & Save` not yet visible) rather than on a step being
 visible, because players and their staged teams drain at the same time and a
 loop keyed on `New Team:` exits the first time it catches the batch between
-lookups. `maxRuns` is a runaway guard; the `extendedWaitUntil` on
+lookups. `times` is a runaway guard; the `extendedWaitUntil` on
 `Confirm & Save` after the loop is still the real gate.
+
+### NEO-254 — a New LEAGUE step, and why no flow covers it on its own
+
+The bulk mints no league either (`decideAllRemaining` returns early on any
+`row.kind !== "player"`), so a team whose enrichment names a league NB does not
+have gets a **`New League: <name>`** step staged AHEAD of it, and later teams
+pick the staged one. Its footer is `Add as New League`, `Skip — no league` (not
+"not a league" — the string IS a league; skipping says this TEAM has none) and
+`Link to Existing…`; its form is `New league name` (pre-filled), plus
+abbreviation, level, years, aliases and a Wikidata id.
+
+**There is no dedicated flow asserting that step, deliberately.** It is not
+reachable cheaply:
+
+* The wizard only opens off a REAL fetch, and a league step needs a team whose
+  live enrichment names a league NB is missing. Nothing about that is
+  deterministic — whether it appears depends on what Wikidata returns for
+  whichever names settle first, and on which leagues earlier flows have already
+  created in the same shared deployment.
+* It is also self-erasing: the seed's Base sync now answers league steps, so by
+  the time any later flow runs, the obvious leagues (MLB and friends) exist and
+  no step is staged for them. A flow asserting "a league step renders" would
+  pass on a cold preview and quietly stop exercising anything on a warm one —
+  the worst kind of green.
+* Reaching one on demand would mean a NEW real marketplace-backed set chosen
+  for the leagues it surfaces, which is a 30–90s sync and needs owner sign-off
+  every time (see **Adding a set**).
+
+So the step is covered where it is deterministic: `NewLeagueForm.test.tsx`,
+`entityReviewQueue.leagueStaging.test.ts` and `EntityReviewWizard.test.tsx`
+pin the form, the staging order and the decision. What the three E2E flows owe
+it is only that they ANSWER it — which is the loop above, and which is enough,
+because a league step they cannot answer stops the batch dead and fails them.
 
 **Do not answer these with a seed.** `e2e-baseline.sh` says it outright —
 NEO-214 removed the seed-teams fixture — and the standing rule is that E2E

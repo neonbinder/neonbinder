@@ -637,6 +637,31 @@ tags:
             notVisible:
               text: ".*Confirm & Save.*"
           commands:
+            # NEO-254 — ANSWER THE LEAGUE STEP FIRST, and it must come before the team
+            # branch below because it comes before it on screen: the wizard stages a New
+            # League step immediately AHEAD of the first team that needs that league, and
+            # later teams then pick the staged one. A loop that only knows how to answer
+            # `New Team:` parks on the league step and spins its full `times` budget
+            # without touching the wizard — which is how the seed job died, taking the
+            # whole suite with it.
+            #
+            # One tap, the same shape as the team branch: `Add as New League` is the
+            # step's primary action and its accessible name is the same string as its
+            # visible text. It is deliberately NOT matched as `Add as New League.*` — when
+            # an exact existing league is found the primary becomes `Link to <name>` and
+            # creation is DEMOTED to `Add as New League anyway`, and tapping that would
+            # mint a duplicate of a league NB already has. A staged step means the league
+            # was new, so that branch should not arise; if it ever does, this loop runs
+            # out and the `extendedWaitUntil` on "Confirm & Save" fails loudly, which is
+            # the outcome to want over a silent duplicate.
+            #
+            # Cost: one more hierarchy read per iteration when there is no league step —
+            # a `runFlow when` that finds nothing does not poll (see the note above).
+            - runFlow:
+                when:
+                  visible: "New League: .*"
+                commands:
+                  - tapOn: "Add as New League"
             - runFlow:
                 when:
                   visible: "New Team: .*"
@@ -892,8 +917,41 @@ tags:
       # below). The button is visible as soon as the wizard opens (any undecided
       # items). Since NEO-221 its label can carry a "— N still looking up, wait
       # or skip" suffix, which is why the matcher is a prefix regex.
+      # ⚠️ THE LABEL IS "Add remaining players as new (N)". "Add All Remaining
+      # as New" is the pre-NEO-236 wording and survives only in the wizard's
+      # prose comments — `EntityReviewWizard.tsx` renders
+      # `Add remaining players as new ({remainingPlayers})`. This matcher was
+      # stale and would have failed the tap outright; it never showed because
+      # this whole `runFlow when` is normally SKIPPED — by the time these two
+      # smaller sets are fetched, the Base sync above has already created
+      # every player and team in this roster, so no wizard opens. Corrected
+      # rather than left, because "normally skipped" is not "never runs".
       - tapOn:
-          text: ".*Add All Remaining as New.*"
+          text: ".*Add remaining players as new.*"
+      # NEO-254 — and the same drain loop the Base section runs, for the same
+      # reason: the bulk decides PLAYERS ONLY (`decideAllRemaining` returns
+      # early on `row.kind !== "player"`), so any team or league row it leaves
+      # behind has to be answered before "Confirm & Save" can appear. Free when
+      # there is nothing to answer — the loop exits the moment Confirm & Save
+      # shows, so it spends exactly the time the wait below would have spent,
+      # and zero if the branch is skipped. See the Base section for the long
+      # version of every choice in it.
+      - repeat:
+          times: 250
+          while:
+            notVisible:
+              text: ".*Confirm & Save.*"
+          commands:
+            - runFlow:
+                when:
+                  visible: "New League: .*"
+                commands:
+                  - tapOn: "Add as New League"
+            - runFlow:
+                when:
+                  visible: "New Team: .*"
+                commands:
+                  - tapOn: "Add as New Team"
       # NEO-221 — the bulk button no longer decides rows whose Wikidata lookup
       # is still in flight (deciding a name nobody has looked up yet was the
       # defect). It decides the SETTLED rows now and stays armed, adding the
@@ -1098,8 +1156,41 @@ tags:
       # below). The button is visible as soon as the wizard opens (any undecided
       # items). Since NEO-221 its label can carry a "— N still looking up, wait
       # or skip" suffix, which is why the matcher is a prefix regex.
+      # ⚠️ THE LABEL IS "Add remaining players as new (N)". "Add All Remaining
+      # as New" is the pre-NEO-236 wording and survives only in the wizard's
+      # prose comments — `EntityReviewWizard.tsx` renders
+      # `Add remaining players as new ({remainingPlayers})`. This matcher was
+      # stale and would have failed the tap outright; it never showed because
+      # this whole `runFlow when` is normally SKIPPED — by the time these two
+      # smaller sets are fetched, the Base sync above has already created
+      # every player and team in this roster, so no wizard opens. Corrected
+      # rather than left, because "normally skipped" is not "never runs".
       - tapOn:
-          text: ".*Add All Remaining as New.*"
+          text: ".*Add remaining players as new.*"
+      # NEO-254 — and the same drain loop the Base section runs, for the same
+      # reason: the bulk decides PLAYERS ONLY (`decideAllRemaining` returns
+      # early on `row.kind !== "player"`), so any team or league row it leaves
+      # behind has to be answered before "Confirm & Save" can appear. Free when
+      # there is nothing to answer — the loop exits the moment Confirm & Save
+      # shows, so it spends exactly the time the wait below would have spent,
+      # and zero if the branch is skipped. See the Base section for the long
+      # version of every choice in it.
+      - repeat:
+          times: 250
+          while:
+            notVisible:
+              text: ".*Confirm & Save.*"
+          commands:
+            - runFlow:
+                when:
+                  visible: "New League: .*"
+                commands:
+                  - tapOn: "Add as New League"
+            - runFlow:
+                when:
+                  visible: "New Team: .*"
+                commands:
+                  - tapOn: "Add as New Team"
       # NEO-221 — the bulk button no longer decides rows whose Wikidata lookup
       # is still in flight (deciding a name nobody has looked up yet was the
       # defect). It decides the SETTLED rows now and stays armed, adding the
