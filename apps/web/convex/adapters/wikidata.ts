@@ -778,6 +778,21 @@ export interface PlayerLookupResult {
 export interface TeamLookupResult {
   wikidataId?: string;
   league?: string;
+  /**
+   * NEO-254 — the LEAGUE's own Wikidata QID, off the same P118 statement the
+   * label came from.
+   *
+   * Carried for the reason `careerTeams[].wikidataId` is (NEO-236): the review
+   * wizard now stages a real league row for a league we do not hold, and that
+   * row needs its own lookup. Searching EntitySearch for "National Hockey
+   * League" is a guess that can land on a video game or a defunct namesake;
+   * the QID Wikidata just handed us for this team's league is the same
+   * competition by construction.
+   *
+   * LINKAGE, not truth: it selects which upstream record to read, and nothing
+   * user-facing is keyed on it.
+   */
+  leagueWikidataId?: string;
   /** NEO-236: the place part of the team name. Location, not city. */
   location?: string;
   yearsActive?: { from: number; to?: number };
@@ -1378,6 +1393,11 @@ export async function lookupTeamEnrichment(
   return {
     wikidataId: qid,
     league: espnInfo?.league ?? labelValue(row?.leagueLabel),
+    // NEO-254 — the P118 value's own id, when the binding parses as one. Taken
+    // from Wikidata even when ESPN supplied the league NAME: the two agree
+    // about which competition this is, and only Wikidata can say which record
+    // it is.
+    ...(row?.league ? { leagueWikidataId: qidFromIri(row.league.value) } : {}),
     // ESPN or nothing — see the note on the SPARQL above.
     location: espnInfo?.location,
     yearsActive,
@@ -1475,6 +1495,32 @@ export const enrichTeam = internalAction({
 });
 
 /**
+ * NEO-254 — the subset of a lookup result an `entityReviewQueue` row can hold.
+ *
+ * `enrichmentValidator` is a closed object, so a field the lookup returns and
+ * the row has no column for is not ignored — it is a runtime refusal on every
+ * function that returns the row, which reads to an operator as the wizard
+ * failing to open. (That exact failure shipped once already this ticket, when
+ * `activeInSetYear` was added to the schema and not to the validator.)
+ *
+ * Only the LEAGUE shape needs narrowing today: `lookupLeagueEnrichment`
+ * returns `country` for context, and `leagues` has no column for it. The other
+ * two kinds pass through whole, as they always have.
+ */
+function reviewEnrichmentFor(
+  kind: "player" | "team" | "league",
+  result: PlayerLookupResult | TeamLookupResult | LeagueLookupResult,
+): Record<string, unknown> {
+  if (kind !== "league") return result as unknown as Record<string, unknown>;
+  const league = result as LeagueLookupResult;
+  return {
+    wikidataId: league.wikidataId,
+    ...(league.abbreviation ? { abbreviation: league.abbreviation } : {}),
+    ...(league.yearsActive ? { yearsActive: league.yearsActive } : {}),
+  };
+}
+
+/**
  * NEO-99: one review row's Wikidata preview lookup — the `wikidataPool` work
  * item that replaced the old chained `processEntityReviewQueue`.
  *
@@ -1521,16 +1567,38 @@ export const runEntityReviewLookup = internalAction({
         ? null
         : row.kind === "player"
           ? await lookupPlayerEnrichment(row.name, sportCtx)
-          : // NEO-236: a row staged off a player's career list carries the QID
-            // Wikidata attached to that P54 membership. Reading THAT record is
-            // not a search — it is the same club by construction, which is what
-            // gets "Sydney Blue Sox" its league instead of a null match from an
-            // EntitySearch that has no `wdt:P641` to filter on.
-            await lookupTeamEnrichment(row.name, sportCtx, row.source?.wikidataId);
+          : row.kind === "league"
+            ? /*
+               * NEO-254 — a staged New League step, pre-filled.
+               *
+               * Without this the step arrived carrying a name and nothing
+               * else, which is the very shape the feature exists to stop an
+               * operator having to produce by hand. `source.wikidataId` is the
+               * league QID off the team's own P118 statement, so this reads
+               * the right record rather than searching for a label.
+               *
+               * `country` is DROPPED on the way out: `lookupLeagueEnrichment`
+               * returns it for context, `leagues` has no column for it, and
+               * the New League step does not render it. Spreading the whole
+               * result would put a field on the row that nothing can store —
+               * and `enrichmentValidator` would refuse it at runtime, which is
+               * the wizard failing to open.
+               */
+              await lookupLeagueEnrichment(
+                row.name,
+                sportCtx.wikidata?.sportQid,
+                row.source?.wikidataId,
+              )
+            : // NEO-236: a row staged off a player's career list carries the QID
+              // Wikidata attached to that P54 membership. Reading THAT record is
+              // not a search — it is the same club by construction, which is what
+              // gets "Sydney Blue Sox" its league instead of a null match from an
+              // EntitySearch that has no `wdt:P641` to filter on.
+              await lookupTeamEnrichment(row.name, sportCtx, row.source?.wikidataId);
       await ctx.runMutation(internal.entityReviewQueue.applyLookupResult, {
         id: args.rowId,
         status: result ? "ready" : "error",
-        enrichment: result ?? undefined,
+        enrichment: result ? reviewEnrichmentFor(row.kind, result) : undefined,
       });
     } catch (error) {
       console.error(`[entity-review-lookup] lookup for ${args.rowId} failed:`, error);
@@ -1585,8 +1653,26 @@ export interface LeagueLookupResult {
 export async function lookupLeagueEnrichment(
   name: string,
   sportQid?: string,
+  /**
+   * NEO-254 — the league's QID when the caller already holds it.
+   *
+   * A staged New League step is raised off a team's P118 statement, so the
+   * league's own id is already in hand. Reading THAT record is not a search:
+   * it is the same competition by construction, where an EntitySearch for
+   * "National Hockey League" can land on a video game or a defunct namesake.
+   * Same argument, and the same shape, as `lookupTeamEnrichment`'s knownQid.
+   *
+   * Validated rather than trusted: the value crossed a trust boundary (it was
+   * read out of a SPARQL response and stored on a throwaway review row) and it
+   * is interpolated into a query. Anything that is not `Q<digits>` is not an
+   * id, and the name search runs instead.
+   */
+  knownQid?: string,
 ): Promise<LeagueLookupResult | null> {
-  const qid = await findLeagueQid(name, sportQid);
+  const qid =
+    knownQid && isWikidataQid(knownQid)
+      ? knownQid
+      : await findLeagueQid(name, sportQid);
   if (!qid) {
     // Structured for the same reason as the player/team no-match lines
     // (NEO-208): a league name is operator input and must not be able to shape

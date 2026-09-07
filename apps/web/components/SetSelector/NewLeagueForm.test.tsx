@@ -219,3 +219,49 @@ describe("NewLeagueForm — the two tiers", () => {
     expect(onChange).toHaveBeenCalledWith({ name: "NHL " });
   });
 });
+
+// ---------------------------------------------------------------------------
+// NEO-254 — the shape the pool's league lookup actually writes
+// ---------------------------------------------------------------------------
+
+describe("NewLeagueForm — driven by a real lookup result", () => {
+  /** Exactly what `reviewEnrichmentFor("league", …)` puts on the row. */
+  const LOOKUP_ENRICHMENT = {
+    wikidataId: "Q1215892",
+    abbreviation: "NHL",
+    yearsActive: { from: 1917 },
+  };
+
+  it("collapses the disclosure and names the values the lookup found", () => {
+    // The point of wiring the lookup: the common case costs zero taps, and
+    // nothing is hidden — the summary states what the commit will write.
+    const draft = newLeaguePrefill({
+      name: "National Hockey League",
+      enrichment: LOOKUP_ENRICHMENT,
+    });
+    render(<NewLeagueForm draft={draft} onChange={vi.fn()} />);
+
+    expect(
+      screen
+        .getByRole("button", { name: "Add abbreviation, years and aliases" })
+        .getAttribute("aria-expanded"),
+    ).toBe("false");
+    expect(screen.getByText("NHL · 1917–present · Q1215892")).toBeTruthy();
+  });
+
+  it("leaves the details OPEN with the name only when the lookup failed", () => {
+    // A row settled to `error` carries no enrichment. There IS work to do, so
+    // the fields are on screen rather than behind a disclosure nobody would
+    // think to open.
+    const draft = newLeaguePrefill({ name: "World Hockey Association" });
+    render(<NewLeagueForm draft={draft} onChange={vi.fn()} />);
+
+    expect(screen.getByLabelText("New league name")).toHaveProperty(
+      "value",
+      "World Hockey Association",
+    );
+    expect(screen.getByLabelText("New league abbreviation")).toHaveProperty("value", "");
+    expect(screen.getByLabelText("New league active from")).toHaveProperty("value", "");
+    expect(screen.queryByRole("button", { name: "Hide details" })).toBeTruthy();
+  });
+});

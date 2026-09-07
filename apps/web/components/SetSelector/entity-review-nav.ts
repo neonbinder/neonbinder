@@ -229,7 +229,32 @@ export function nextUndecided<T extends NavRow>(rows: readonly T[]): T | null {
    * A row with no `kind` (an older caller, or a test literal) falls through to
    * the second pass, which is the pre-NEO-236 behaviour unchanged.
    */
-  const team = rows.find((r) => settled(r) && r.kind === "team");
+  /*
+   * ── NEO-254: and EVERY undecided league comes before ANY undecided team ──
+   *
+   * The same argument, one level up, and it is not optional here: a team step
+   * whose league does not exist yet cannot be answered — its league pill row
+   * would offer `Create <name>`, which is the very thing the New League step
+   * replaced. Answering leagues first also makes the TEAMS easier, exactly as
+   * answering teams first makes the players easier.
+   */
+  const league = rows.find((r) => settled(r) && r.kind === "league");
+  if (league) return league;
+
+  /*
+   * NEO-254 — the blocker check belongs HERE, not only in the pass below.
+   *
+   * This pass returns before the general one ever runs, so a team waiting on
+   * its own staged league was presented anyway and `waitingOnStagedLeagues`
+   * was dead code on the hot path. That is the defect NEO-236 hit with
+   * players (a pin that never re-checked for newly staged blockers),
+   * reappearing one level up — and it is why the league pass above is not on
+   * its own sufficient: a league whose lookup has not landed is not `settled`,
+   * so it is stepped over, and its team must still wait for it.
+   */
+  const team = rows.find(
+    (r) => settled(r) && r.kind === "team" && !waitingOnStagedLeagues(r, rows),
+  );
   if (team) return team;
 
   return (
@@ -257,7 +282,12 @@ export function nextUndecided<T extends NavRow>(rows: readonly T[]): T | null {
  */
 function hasSettledUndecidedTeam(rows: readonly NavRow[]): boolean {
   return rows.some(
-    (r) => r.kind === "team" && r.status !== "pending" && !r.decision,
+    (r) =>
+      // NEO-254: a league counts too — it is the prerequisite of a team
+      // exactly as a team is of a player, and both sort ahead of one.
+      (r.kind === "team" || r.kind === "league") &&
+      r.status !== "pending" &&
+      !r.decision,
   );
 }
 

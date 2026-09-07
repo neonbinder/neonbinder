@@ -27,7 +27,11 @@
  */
 
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
@@ -704,5 +708,137 @@ describe("NEO-254: the commit prelude creates a staged league once", () => {
     expect(leagues[0].yearsActive).toEqual({ from: 1917, to: 2026 });
     // …and the blank one is filled.
     expect(leagues[0].level).toBe("major");
+  });
+});
+
+// ===========================================================================
+// The pool's league lookup — the step arrives pre-filled
+// ===========================================================================
+
+describe("NEO-254: a staged league step is looked up like any other row", () => {
+  const uriBinding = (qid: string) => ({
+    type: "uri",
+    value: `http://www.wikidata.org/entity/${qid}`,
+  });
+  const literalBinding = (value: string) => ({ type: "literal", value });
+  const jsonResponse = (body: unknown) =>
+    new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+
+  /**
+   * Answers the ONE query a known-QID league lookup makes.
+   *
+   * `throwOnFetch` is the failure path: a lookup that dies must settle the row
+   * to `error` rather than leave it `pending` forever (NEO-99's invariant), and
+   * it must never block the wizard.
+   */
+  function stubLeagueDetail(opts: {
+    abbreviation?: string;
+    inception?: string;
+    country?: string;
+    throwOnFetch?: boolean;
+  }): typeof fetch {
+    return (async (url: string | URL) => {
+      if (opts.throwOnFetch) throw new Error("wikidata unreachable");
+      const u = String(url);
+      if (!u.includes("query.wikidata.org")) {
+        throw new Error(`unexpected fetch url: ${u}`);
+      }
+      const row: Record<string, unknown> = {};
+      if (opts.abbreviation) row.shortName = literalBinding(opts.abbreviation);
+      if (opts.inception) row.inception = literalBinding(opts.inception);
+      if (opts.country) row.countryLabel = literalBinding(opts.country);
+      return jsonResponse({ results: { bindings: [row] } });
+    }) as unknown as typeof fetch;
+  }
+
+  test("the team's lookup carries the league QID onto the staged row", async () => {
+    // Linkage, not a guess: the staged step's own lookup then READS that
+    // record rather than searching EntitySearch for "National Hockey League",
+    // which can land on a video game or a defunct namesake.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const teamRow = await insertRow(t, { sportId, kind: "team", name: "Vancouver Canucks" });
+
+    await t.mutation(internal.entityReviewQueue.applyLookupResult, {
+      id: teamRow,
+      status: "ready",
+      enrichment: {
+        league: "National Hockey League",
+        leagueWikidataId: "Q1215892",
+      },
+    });
+
+    const staged = await leagueRows(t);
+    expect(staged[0].source).toEqual({
+      kind: "leagueOf",
+      teamRowId: teamRow,
+      wikidataId: "Q1215892",
+    });
+  });
+
+  test("the lookup's result lands on the row, and country is DROPPED", async () => {
+    /*
+     * `enrichmentValidator` is a closed object: a field the lookup returns and
+     * the row has no column for is a runtime refusal on every query that
+     * returns the row — the wizard failing to open. `country` is exactly that
+     * field (returned for context; `leagues` has no column for it), and this
+     * pins that it never reaches the row.
+     */
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const league = await insertRow(t, {
+      sportId,
+      kind: "league",
+      name: "National Hockey League",
+      source: { kind: "leagueOf", teamRowId: await insertRow(t, {
+        sportId, kind: "team", name: "Vancouver Canucks",
+      }), wikidataId: "Q1215892" },
+    });
+
+    vi.stubGlobal(
+      "fetch",
+      stubLeagueDetail({
+        abbreviation: "NHL",
+        inception: "1917-11-26T00:00:00Z",
+        country: "Canada",
+      }),
+    );
+    await t.action(internal.adapters.wikidata.runEntityReviewLookup, {
+      rowId: league,
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(league));
+    expect(row!.status).toBe("ready");
+    expect(row!.enrichment).toEqual({
+      wikidataId: "Q1215892",
+      abbreviation: "NHL",
+      yearsActive: { from: 1917, to: undefined },
+    });
+    expect("country" in (row!.enrichment ?? {})).toBe(false);
+  });
+
+  test("a failed lookup settles the row to error, never leaves it pending", async () => {
+    // NEO-99's invariant: a review row can never be stranded on `pending`. The
+    // step still opens — with the name only, and its details section open,
+    // which is the New League form's "there is work to do" state.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const league = await insertRow(t, {
+      sportId,
+      kind: "league",
+      name: "World Hockey Association",
+    });
+
+    vi.stubGlobal("fetch", stubLeagueDetail({ throwOnFetch: true }));
+    await t.action(internal.adapters.wikidata.runEntityReviewLookup, {
+      rowId: league,
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(league));
+    expect(row!.status).toBe("error");
+    expect(row!.enrichment).toBeUndefined();
   });
 });

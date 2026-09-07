@@ -1394,6 +1394,10 @@ export default defineSchema({
       }))),
       // team-only
       league: v.optional(v.string()),
+      // NEO-254, team-only — the league's OWN QID, off the same P118 statement
+      // as `league` above. Linkage: it is what the staged New League step's
+      // lookup reads instead of searching EntitySearch for a label.
+      leagueWikidataId: v.optional(v.string()),
       // NEO-236: the place part of the team's name. Location, not city —
       // see `teams.location`.
       location: v.optional(v.string()),

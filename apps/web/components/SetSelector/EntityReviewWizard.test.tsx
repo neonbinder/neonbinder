@@ -5710,3 +5710,99 @@ describe("EntityReviewWizard — the decided count and the scroll box", () => {
     expect(screen.getByRole("button", { name: "Add as New Team" })).toBeTruthy();
   });
 });
+
+// ---------------------------------------------------------------------------
+// NEO-254 — the New League step must not push the footer into the scroll box
+//
+// This step has SEVEN fields where the New Team step has three, and this
+// ticket has already lost two CI runs to a wizard step outgrowing the dialog
+// body: a team step's primary action landing at y=620 on the 1024x629
+// viewport, and the decided-list disclosure falling below the fold. Neither is
+// reachable — maestro-web's scroll is `window.scrollTo` and cannot drive an
+// inner `overflow-y-auto` box.
+//
+// The structural guarantee is the one NEO-236 established: anything a flow
+// must reach lives in the FIXED footer. These assert it holds for the league
+// step, pre-filled and expanded alike, so the two-tier layout cannot regress
+// into the body.
+// ---------------------------------------------------------------------------
+
+describe("EntityReviewWizard — the New League step keeps its footer pinned", () => {
+  function seedLeagueStep(enrichment?: Record<string, unknown>) {
+    const team = makeRow({
+      _id: "row-team" as unknown as Id<"entityReviewQueue">,
+      kind: "team",
+      name: "Vancouver Canucks",
+      status: "ready",
+    });
+    currentRows = [
+      makeRow({
+        _id: "row-league" as unknown as Id<"entityReviewQueue">,
+        kind: "league",
+        name: "National Hockey League",
+        status: "ready",
+        source: {
+          kind: "leagueOf",
+          teamRowId: team._id as unknown as string,
+        },
+        ...(enrichment ? { enrichment } : {}),
+      }),
+      team,
+    ];
+    currentNearMatches = [];
+  }
+
+  it("renders the step and names who needs it", () => {
+    seedLeagueStep();
+    renderWizard();
+    expect(
+      screen.getByRole("heading", { name: "New League: National Hockey League" }),
+    ).toBeTruthy();
+    expect(screen.getByText("Needed by: Vancouver Canucks")).toBeTruthy();
+  });
+
+  it("keeps the decision buttons OUTSIDE the scroll box, pre-filled", () => {
+    seedLeagueStep({
+      wikidataId: "Q1215892",
+      abbreviation: "NHL",
+      yearsActive: { from: 1917 },
+    });
+    renderWizard();
+
+    // The dialog is portalled, so it is not under the render container.
+    const scrollBox = document.querySelector(".overflow-y-auto");
+    expect(scrollBox).toBeTruthy();
+
+    const primary = screen.getByRole("button", { name: "Add as New League" });
+    expect(scrollBox!.contains(primary)).toBe(false);
+    const skip = screen.getByRole("button", {
+      name: "Skip National Hockey League — this team has no league",
+    });
+    expect(scrollBox!.contains(skip)).toBe(false);
+
+    // …and the form itself IS in the body, which is what makes the check mean
+    // something: the two are on opposite sides of the fold by construction.
+    expect(scrollBox!.contains(screen.getByLabelText("New league name"))).toBe(true);
+  });
+
+  it("keeps them outside it with every field expanded, too", () => {
+    // The worst case for height: no prefill, so the disclosure opens itself and
+    // all seven fields are on screen at once.
+    seedLeagueStep();
+    renderWizard();
+    expect(screen.getByLabelText("New league aliases")).toBeTruthy();
+
+    const scrollBox = document.querySelector(".overflow-y-auto");
+    const primary = screen.getByRole("button", { name: "Add as New League" });
+    expect(scrollBox!.contains(primary)).toBe(false);
+  });
+
+  it("offers 'Skip — no league', not 'not a league'", () => {
+    // A skip here is an answer about the TEAM (it belongs to no league), not a
+    // judgement about the string — and the commit does not record it in
+    // `entityReviewSkips` as a suppressed name.
+    seedLeagueStep();
+    renderWizard();
+    expect(screen.getByText("Skip — no league")).toBeTruthy();
+  });
+});

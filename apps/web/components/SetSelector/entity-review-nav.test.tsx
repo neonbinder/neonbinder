@@ -21,6 +21,7 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  countBulkCreatable,
   countDecided,
   countPendingUndecided,
   describeDecision,
@@ -901,5 +902,78 @@ describe("resolveNav — a CHECKLIST team row answers a career chip too", () => 
       player("p1", ["Montreal Canadiens"]),
     ];
     expect(nextUndecided(rows)?._id).toBe("p1");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-254 — leagues walk before teams, and a team waits on its own league
+// ---------------------------------------------------------------------------
+
+describe("nextUndecided — the league tier", () => {
+  it("offers a settled league before a settled team", () => {
+    // Answering leagues first makes the TEAMS easier, exactly as answering
+    // teams first makes the players easier.
+    const team = { _id: "t1", status: "ready" as const, kind: "team" as const };
+    const league = { _id: "l1", status: "ready" as const, kind: "league" as const };
+    expect(nextUndecided([team, league])?._id).toBe("l1");
+  });
+
+  it("holds a team back while its OWN staged league is undecided", () => {
+    /*
+     * The bug this pins: the teams-first pass returns before the general pass
+     * runs, so a blocker checked only in the general pass is dead code. A team
+     * presented with an unanswered league would show `Create <league>` — the
+     * very thing the New League step replaced.
+     *
+     * The league here is still `pending`, so the league pass above steps over
+     * it; only the team's own blocker check keeps the walk honest.
+     */
+    const team = { _id: "t1", status: "ready" as const, kind: "team" as const };
+    const league = {
+      _id: "l1",
+      status: "pending" as const,
+      kind: "league" as const,
+      source: { kind: "leagueOf" as const, teamRowId: "t1" },
+    };
+    expect(nextUndecided([team, league])).toBeNull();
+  });
+
+  it("releases the team once its league is answered — including a skip", () => {
+    const team = { _id: "t1", status: "ready" as const, kind: "team" as const };
+    const skipped = {
+      _id: "l1",
+      status: "ready" as const,
+      kind: "league" as const,
+      source: { kind: "leagueOf" as const, teamRowId: "t1" },
+      decision: { action: "skip" as const },
+    };
+    expect(nextUndecided([team, skipped])?._id).toBe("t1");
+  });
+
+  it("does not hold a team back for ANOTHER team's league", () => {
+    // Staging dedupes a league across the batch, so one step serves thirty
+    // teams. Blocking all thirty on it would stall the walk for no gain — the
+    // others read the answer from the batch at commit.
+    const mine = { _id: "t1", status: "ready" as const, kind: "team" as const };
+    const theirs = {
+      _id: "l1",
+      status: "ready" as const,
+      kind: "league" as const,
+      source: { kind: "leagueOf" as const, teamRowId: "t2" },
+      decision: { action: "create" as const },
+    };
+    expect(nextUndecided([mine, theirs])?._id).toBe("t1");
+  });
+});
+
+describe("countBulkCreatable — leagues are never bulk-created", () => {
+  it("counts players only, not teams and not leagues", () => {
+    expect(
+      countBulkCreatable([
+        { _id: "p1", status: "ready", kind: "player" },
+        { _id: "t1", status: "ready", kind: "team" },
+        { _id: "l1", status: "ready", kind: "league" },
+      ]),
+    ).toBe(1);
   });
 });

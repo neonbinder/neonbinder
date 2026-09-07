@@ -88,6 +88,8 @@ const enrichmentValidator = v.object({
   // in step with schema.ts — see the note on `activeInSetYear` below for what
   // a field in one and not the other costs at runtime.
   abbreviation: v.optional(v.string()),
+  // NEO-254, team-only — see schema.ts. Kept in step with it deliberately.
+  leagueWikidataId: v.optional(v.string()),
   // NEO-254, player-only: the NB rows already filed under this name, present
   // only when there is MORE THAN ONE of them. See schema.ts, and
   // `players.buildExistingPlayerCandidates` for who fills it in.
@@ -985,7 +987,18 @@ async function stageLeagueRowsImpl(
 
   const proposals: Array<{ name: string; wikidataId?: string }> = [
     ...(teamRow.enrichment?.league
-      ? [{ name: teamRow.enrichment.league }]
+      ? [
+          {
+            name: teamRow.enrichment.league,
+            // NEO-254 — the P118 value's id, when the team's lookup got one.
+            // The staged row's own lookup then READS that record rather than
+            // searching for the label, which is the same argument NEO-236 made
+            // for a career team's QID.
+            ...(teamRow.enrichment.leagueWikidataId
+              ? { wikidataId: teamRow.enrichment.leagueWikidataId }
+              : {}),
+          },
+        ]
       : []),
     ...extraLeagueNames,
   ];
