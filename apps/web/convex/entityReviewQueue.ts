@@ -1153,7 +1153,40 @@ async function stageLeagueRowsImpl(
           teamRowId: teamRow._id,
           ...(proposal.wikidataId ? { wikidataId: proposal.wikidataId } : {}),
         },
-        status: "pending",
+        /*
+         * ── NEO-254: a league step is ANSWERABLE the moment it is staged ────
+         *
+         * `"ready"`, not `"pending"` — and this is a correctness point before
+         * it is a speed one. `pending` means "we cannot present this row yet
+         * because we do not know enough to ask the question". For a player or
+         * a team that is true: the whole step is built out of the lookup. For
+         * a league it is not. Everything the question needs is already
+         * decided by the time this insert runs — the NAME came off the team's
+         * P118 statement, and the two things that could make the step
+         * unnecessary (the sport already holds this league, by name or by
+         * alias; the batch already staged it) were both checked synchronously
+         * above.
+         *
+         * The Wikidata lookup only fills in abbreviation, years and the QID.
+         * It is a PREFILL, and it streams into the open form when it lands the
+         * same way a team row's enrichment does — `applyLookupResult` has no
+         * status guard, so it patches this row whether or not it was pending.
+         *
+         * Marking it pending made the whole chain wait on a network round trip
+         * for nothing: `nextUndecided` only presents a settled row, so the
+         * league was unpresentable, and `waitingOnStagedLeagues` held its team
+         * behind it — one Wikidata call blocking two steps that were both
+         * ready to be answered. On CI's 1024x629 drain that is an unbounded
+         * stall per league; in the wizard it is an operator watching a form
+         * they could already have filled in.
+         *
+         * Pool semantics are untouched: the enqueue below still happens, the
+         * result still lands through `applyLookupResult`, and a lookup that
+         * dies is simply a step with no prefill. `backstopEntityReviewRowImpl`
+         * returns early on a non-pending row, which is exactly right here —
+         * there is nothing to rescue a row from when it was never waiting.
+         */
+        status: "ready",
       }),
     );
   }

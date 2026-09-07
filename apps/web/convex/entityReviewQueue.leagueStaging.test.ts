@@ -1250,3 +1250,106 @@ describe("NEO-254: 'Skip remaining names' and an already-decided team", () => {
     expect(leagueRow!.decision).toEqual({ action: "skip" });
   });
 });
+
+// ===========================================================================
+// A league step is answerable immediately; the prefill arrives later
+// ===========================================================================
+
+describe("NEO-254: a staged league step never waits on its lookup", () => {
+  test("it is staged READY, so the walk can present it at once", async () => {
+    /*
+     * CI run 34123557194 hit the 600s per-flow cap on the wizard drain. Marked
+     * `pending`, a league was unpresentable until Wikidata answered, and
+     * `waitingOnStagedLeagues` held its TEAM behind it — one network round trip
+     * blocking two steps that were both ready to be answered.
+     *
+     * Nothing about the question needs the lookup: the name came off the P118
+     * statement, and both reasons to skip the step (the sport already holds the
+     * league by name or alias, the batch already staged it) are checked
+     * synchronously in `stageLeagueRowsImpl`.
+     */
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const teamRow = await insertRow(t, { sportId, kind: "team", name: "Vancouver Canucks" });
+
+    await t.mutation(internal.entityReviewQueue.applyLookupResult, {
+      id: teamRow,
+      status: "ready",
+      enrichment: { league: "National Hockey League" },
+    });
+
+    const staged = await leagueRows(t);
+    expect(staged[0].status).toBe("ready");
+    // The lookup is still enqueued — the prefill is not abandoned, only
+    // un-blocked.
+    const scheduled = await t.run(async (ctx) =>
+      ctx.db.system.query("_scheduled_functions").collect(),
+    );
+    expect(scheduled.length).toBeGreaterThan(0);
+  });
+
+  test("the prefill lands on the row afterwards, without a decision", async () => {
+    // `applyLookupResult` has no status guard, so the result patches a ready
+    // row exactly as it patched a pending one — which is what lets the values
+    // stream into a form the operator already has open.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const teamRow = await insertRow(t, { sportId, kind: "team", name: "Vancouver Canucks" });
+    await t.mutation(internal.entityReviewQueue.applyLookupResult, {
+      id: teamRow,
+      status: "ready",
+      enrichment: { league: "National Hockey League" },
+    });
+    const staged = (await leagueRows(t))[0];
+
+    await t.mutation(internal.entityReviewQueue.applyLookupResult, {
+      id: staged._id,
+      status: "ready",
+      enrichment: {
+        wikidataId: "Q1215892",
+        abbreviation: "NHL",
+        yearsActive: { from: 1917 },
+      },
+    });
+
+    const after = await t.run(async (ctx) => ctx.db.get(staged._id));
+    expect(after!.enrichment).toMatchObject({
+      wikidataId: "Q1215892",
+      abbreviation: "NHL",
+    });
+    expect(after!.decision).toBeUndefined();
+  });
+
+  test("a DECIDED league is not re-patched by a late lookup", async () => {
+    // NEO-189: writing to a row the commit prelude may be reading is what made
+    // a seed job lose an OCC race on every retry. A step answered before its
+    // prefill arrived keeps the operator's answer.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const teamRow = await insertRow(t, { sportId, kind: "team", name: "Vancouver Canucks" });
+    await t.mutation(internal.entityReviewQueue.applyLookupResult, {
+      id: teamRow,
+      status: "ready",
+      enrichment: { league: "National Hockey League" },
+    });
+    const staged = (await leagueRows(t))[0];
+
+    await t.withIdentity(ADMIN_IDENTITY).mutation(
+      api.entityReviewQueue.recordDecision,
+      {
+        reviewRowId: staged._id,
+        action: "create",
+        createLeague: { name: "National Hockey League", abbreviation: "N.H.L." },
+      },
+    );
+    await t.mutation(internal.entityReviewQueue.applyLookupResult, {
+      id: staged._id,
+      status: "ready",
+      enrichment: { wikidataId: "Q1215892", abbreviation: "NHL" },
+    });
+
+    const after = await t.run(async (ctx) => ctx.db.get(staged._id));
+    expect(after!.enrichment).toBeUndefined();
+    expect(after!.decision).toMatchObject({ action: "create" });
+  });
+});

@@ -977,3 +977,33 @@ describe("countBulkCreatable — leagues are never bulk-created", () => {
     ).toBe(1);
   });
 });
+
+describe("nextUndecided — a team waits on the league DECISION, never the lookup", () => {
+  it("presents a league staged as ready before its team", () => {
+    // Staging marks a league `ready` (its name is known and the existence and
+    // alias checks already ran), so the walk reaches it immediately instead of
+    // waiting out a Wikidata round trip that only supplies a prefill.
+    const team = { _id: "t1", status: "ready" as const, kind: "team" as const };
+    const league = {
+      _id: "l1",
+      status: "ready" as const,
+      kind: "league" as const,
+      source: { kind: "leagueOf" as const, teamRowId: "t1" },
+    };
+    expect(nextUndecided([team, league])?._id).toBe("l1");
+  });
+
+  it("releases the team the moment the league is DECIDED, prefill or not", () => {
+    // The hold is on the decision, never on the lookup: a league answered
+    // before its enrichment landed frees its team at once.
+    const team = { _id: "t1", status: "ready" as const, kind: "team" as const };
+    const league = {
+      _id: "l1",
+      status: "ready" as const,
+      kind: "league" as const,
+      source: { kind: "leagueOf" as const, teamRowId: "t1" },
+      decision: { action: "create" as const },
+    };
+    expect(nextUndecided([team, league])?._id).toBe("t1");
+  });
+});

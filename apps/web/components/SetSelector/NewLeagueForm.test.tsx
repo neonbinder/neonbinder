@@ -297,3 +297,68 @@ describe("NewLeagueForm — a QID-only prefill leaves the work on screen", () =>
     expect(screen.getByRole("button", { name: "Hide details" })).toBeTruthy();
   });
 });
+
+describe("NewLeagueForm — a prefill that lands while the form is open", () => {
+  it("streams the values in and collapses the details behind them", () => {
+    // The league step is presented before its Wikidata lookup returns, so the
+    // form is on screen with the name only. When the prefill lands the wizard
+    // re-derives the draft from the row (the operator has typed nothing, so
+    // nothing of theirs is overwritten) and the fields fill in.
+    const { rerender } = render(
+      <NewLeagueForm
+        draft={newLeaguePrefill({ name: "National Hockey League" })}
+        onChange={vi.fn()}
+      />,
+    );
+    // Nothing known yet: the work is on screen.
+    expect(screen.getByLabelText("New league abbreviation")).toHaveProperty("value", "");
+
+    rerender(
+      <NewLeagueForm
+        draft={newLeaguePrefill({
+          name: "National Hockey League",
+          enrichment: {
+            wikidataId: "Q1215892",
+            abbreviation: "NHL",
+            yearsActive: { from: 1917 },
+          },
+        })}
+        onChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("NHL · 1917–present · Q1215892")).toBeTruthy();
+    expect(
+      screen
+        .getByRole("button", { name: "Add abbreviation, years and aliases" })
+        .getAttribute("aria-expanded"),
+    ).toBe("false");
+  });
+
+  it("does NOT collapse under an operator who opened the details themselves", () => {
+    // Their gesture outranks the prefill: a form someone deliberately opened
+    // must not shut while they are looking at it.
+    const { rerender } = render(
+      <NewLeagueForm
+        draft={newLeaguePrefill({ name: "National Hockey League" })}
+        onChange={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Hide details" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Add abbreviation, years and aliases" }),
+    );
+
+    rerender(
+      <NewLeagueForm
+        draft={newLeaguePrefill({
+          name: "National Hockey League",
+          enrichment: { abbreviation: "NHL" },
+        })}
+        onChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByLabelText("New league abbreviation")).toHaveProperty("value", "NHL");
+    expect(screen.getByRole("button", { name: "Hide details" })).toBeTruthy();
+  });
+});
