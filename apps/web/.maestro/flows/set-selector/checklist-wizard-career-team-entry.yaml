@@ -128,6 +128,12 @@ tags:
 - runFlow:
     file: util-fetch-real-set-checklist-to-wizard.yaml
 
+# A sibling read-only flow that went red left its batch on this shared set, and
+# the fetch above RESUMED it. Clear it and refetch so the assertion below is
+# about this flow's own review. No-op on the normal path; see the util.
+- runFlow:
+    file: util-discard-resumed-review-batch.yaml
+
 - assertVisible:
     text: "0 of [0-9]+ reviewed.*"
 

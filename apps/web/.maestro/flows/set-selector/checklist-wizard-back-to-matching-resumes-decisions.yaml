@@ -24,15 +24,19 @@ tags:
 # R2 — HARD ASSERTIONS, no branch that can green this flow without exercising
 #   the feature:
 #     (a) the wizard opens with NOTHING decided — "0 of N reviewed";
-#     (b) one decision is taken and the header moves to "1 of N reviewed" with
-#         a "Decided (1)" history — the state Back must preserve;
+#     (b) one CREATE is taken and shows up in the history as "Added as new" —
+#         the state Back must preserve. Read as a name, not as a count: getting
+#         to a player row means answering every team step first (see
+#         util-wizard-walk-to-player-row), and those are answered as SKIPS, so
+#         "Added as new" can only be this flow's decision while "Decided (N)"
+#         is the whole batch's;
 #     (c) "Back to matching" closes the wizard AND the parked pairing dialog is
 #         what replaced it, asserted POSITIVELY by its Confirm control (a bare
 #         notVisible would also pass on a dead error-boundary page);
-#     (d) re-confirming reopens the wizard on the SAME batch: still
-#         "1 of N reviewed", still "Decided (1)". A Back that cancelled the
-#         batch would reopen at "0 of N"; a Back that lost the parked session
-#         would fail at (c).
+#     (d) re-confirming reopens the wizard on the SAME batch, with that same
+#         "Added as new" still in the history. A Back that cancelled the batch
+#         would reopen at "0 of N" with no Decided list at all; a Back that lost
+#         the parked session would fail at (c).
 #
 #   The counts are regexes, not literals. How many unknown names the fixture
 #   surfaces is the marketplace's business (88 when measured); what this flow
@@ -78,6 +82,12 @@ tags:
 # Asserting it HERE is what makes STEP 4's read meaningful: without it,
 # "1 of N" after the round trip could just be where we started.
 # ============================================================
+
+# A sibling read-only flow that went red left its batch on this shared set, and
+# the fetch above RESUMED it. Clear it and refetch so the assertion below is
+# about this flow's own review. No-op on the normal path; see the util.
+- runFlow:
+    file: util-discard-resumed-review-batch.yaml
 
 - assertVisible:
     text: "0 of [0-9]+ reviewed.*"
@@ -144,10 +154,24 @@ tags:
 # ============================================================
 # STEP 5 — EXIT WITHOUT WRITING ANYTHING (R7)
 #
-# Cancel raises the discard confirm — which names the one decision, a third
-# reading that it survived the round trip — and Discard runs `cancelBatch`.
+# Cancel raises the discard confirm and Discard runs `cancelBatch`.
 #
-# "Discard" and the confirm's heading "Discard 1 decision?" are separate nodes
+# ⚠️ THE COUNT HERE IS THE BATCH'S, NOT THIS FLOW'S. It used to read
+# "Discard 1 decision" and that was true while the wizard opened straight onto
+# a player row. It no longer is: reaching a player row means answering every
+# team step first (the teams-first walk — see util-wizard-walk-to-player-row),
+# and each of those answers is a decision the confirm counts too. Run
+# 34072730449 measured it: header "28 of 116 reviewed", confirm
+# "Discard 28 decisions?" — 27 drained skips plus this flow's one create.
+#
+# So the count is a regex and the plural is optional. Nothing is lost by that:
+# THIS flow's decision is already proved three times over above — "Added as
+# new" in the history, "Decided (N)" rendering at all, and the re-confirmed
+# batch coming back with it still on. This step's job is R7 housekeeping, and
+# the claim it needs to make is that a discard confirm appeared naming a
+# non-zero number of decisions.
+#
+# "Discard" and the confirm's heading "Discard N decisions?" are separate nodes
 # and Maestro's text matchers are full-node-anchored, so the button text cannot
 # match the heading.
 # ============================================================
@@ -156,7 +180,7 @@ tags:
     text: "Cancel (Esc)"
     retryTapIfNoChange: true
 - assertVisible:
-    text: "Discard 1 decision.*"
+    text: "Discard [0-9]+ decisions?.*"
 - tapOn:
     text: "Discard"
 - extendedWaitUntil:

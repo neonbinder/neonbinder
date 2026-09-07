@@ -480,9 +480,24 @@ tags:
       text: ".*The same names come back the next time you sync this set.*"
 # Nothing was lost: the wizard is still open …
 - assertVisible: "Confirm New Players & Teams"
-# … and the decision is still on the books, listed under the current name.
+# … and the decision is still on the books — read off the wizard's own
+# progress numerator, which is the ONE place the count is always rendered.
+#
+# ⚠️ DO NOT go back to `Decided (1)` here. That list is the LAST thing in the
+# dialog body, and on a tall step it falls out of the reported hierarchy
+# entirely. Run 34072730449 caught it exactly: the header read "1 of 209
+# reviewed" and the Cancel prompt had just said "Discard 1 decision?", so the
+# decision had unquestionably landed — but the presented step was
+# "New Team: Southern Illinois Salukis baseball", a college side with FIVE
+# possible matches (a 156px block) above an expanded league grid and no league
+# prefill to collapse it. The whole tree was 169 nodes with no `Decided` node
+# in it at all. On a short step the same list IS reported, which is why this
+# passed for months and then did not.
+#
+# "1 of N reviewed" is the same claim, exactly as strict — one decision, no
+# more — against a node that sits at the top of the dialog and is always there.
 - assertVisible:
-    text: "Decided \\(1\\)"
+    text: "1 of [0-9]+ reviewed.*"
 
 # ── 6b. BULK-DECIDE THE REST AND COMMIT ───────────────────────────
 # The one decision above is absorbed by the bulk (it is already decided,
