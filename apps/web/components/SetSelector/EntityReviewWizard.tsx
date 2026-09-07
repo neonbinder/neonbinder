@@ -296,6 +296,10 @@ export default function EntityReviewWizard({
   );
   // NEO-236 — turn a player's career teams into their own New Team steps.
   const stageCareerTeams = useMutation(api.entityReviewQueue.stageCareerTeamRows);
+  // NEO-248 — removing a chip has to be as durable as adding one was.
+  const clearCareerTeamStint = useMutation(
+    api.entityReviewQueue.clearCareerTeamStint,
+  );
 
   const [linkingOpen, setLinkingOpen] = useState(false);
   /**
@@ -947,6 +951,18 @@ export default function EntityReviewWizard({
     (current ? (excludedCareerTeamsByRow[current._id]?.length ?? 0) > 0 : false) ||
     (current ? teamCreateByRow[current._id] !== undefined : false);
 
+  /**
+   * NEO-248 — `pinnedRowHasEdits`, readable from inside the auto-add timer.
+   *
+   * That timer fires 1.5s after a lookup lands, out of a render closure that is
+   * already stale, and what it calls decides EVERY settled row in the batch.
+   * The same ref trick `autoAddRef` uses, for the same reason.
+   */
+  const pinnedEditsRef = useRef(pinnedRowHasEdits);
+  useEffect(() => {
+    pinnedEditsRef.current = pinnedRowHasEdits;
+  }, [pinnedRowHasEdits]);
+
   useEffect(() => {
     if (!rows) return;
     const next = resolveNav(rows, nav, { pinnedRowHasEdits });
@@ -1158,6 +1174,24 @@ export default function EntityReviewWizard({
 
     function fire() {
       if (!autoAddRef.current) return;
+      /*
+       * NEO-248 — never decide a row the operator is in the middle of.
+       *
+       * This is a TIMER, not a button. The operator can be halfway through a
+       * career-team entry — a name typed with no year yet, a chip staged, a
+       * link search open — when it fires, and the mutation it calls writes a
+       * create decision on the row in front of them. Deferred rather than
+       * dropped, exactly as an in-flight call is: the next tick re-checks, and
+       * the wait ends when they finish the row.
+       *
+       * `pinnedRowHasEdits` is the same predicate the walk uses to decide it
+       * may not move them off a row, which is the point — one answer to "is
+       * there work on this row to lose", not two that can disagree.
+       */
+      if (pinnedEditsRef.current) {
+        schedule();
+        return;
+      }
       // A call is already running. Come back after the debounce instead of
       // dropping this round on the floor — that is the stall.
       if (bulkRef.current) {
@@ -2528,11 +2562,53 @@ export default function EntityReviewWizard({
                                       <button
                                         type="button"
                                         aria-label={`Remove ${teamFullName(ct)}`}
-                                        onClick={() =>
+                                        onClick={() => {
                                           setStagedCareerTeams((prev) =>
                                             prev.filter((_, i) => i !== idx),
-                                          )
-                                        }
+                                          );
+                                          /*
+                                           * NEO-248 — and forget the years on
+                                           * the server too.
+                                           *
+                                           * The keyed list dies with the
+                                           * component (the wizard is rendered
+                                           * conditionally), and the rebuild
+                                           * reads the stint straight back off
+                                           * the staged step — so a removal
+                                           * that lived only here came undone
+                                           * on the next open and carried the
+                                           * stint into the player's timeline.
+                                           *
+                                           * Only the STINT is cleared; the New
+                                           * Team step stays. Another player in
+                                           * the batch may need that club, and
+                                           * its lookup has already run.
+                                           */
+                                          const key = normalizeEntityName(
+                                            teamFullName(ct),
+                                          );
+                                          const step = (rows ?? []).find(
+                                            (r) =>
+                                              r.source?.kind === "careerTeamOf" &&
+                                              r.source.playerRowId === current._id &&
+                                              r.source.manualStint !== undefined &&
+                                              normalizeEntityName(r.name) === key,
+                                          );
+                                          if (!step) return;
+                                          void clearCareerTeamStint({
+                                            reviewRowId: current._id,
+                                            teamRowId: step._id,
+                                          }).catch(() => {
+                                            // The chip is gone from this
+                                            // session either way. A failure
+                                            // means it can come back on the
+                                            // next open — which is exactly the
+                                            // state before this call existed,
+                                            // and removing it again is the way
+                                            // out. Nothing to say here that
+                                            // the chip does not already say.
+                                          });
+                                        }}
                                         // gray-400, not gray-500 (SC 1.4.3: 3.04:1 on
                                         // the gray-800 chip), and a real focus
                                         // ring rather than a colour swap behind

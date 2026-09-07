@@ -85,6 +85,8 @@ vi.mock("../../convex/_generated/api", () => ({
       recordAllRemainingAsSkip: "entityReviewQueue.recordAllRemainingAsSkip",
       // NEO-236: a player's career teams become their own New Team steps.
       stageCareerTeamRows: "entityReviewQueue.stageCareerTeamRows",
+      // NEO-248: removing a chip clears the years off the step that holds them.
+      clearCareerTeamStint: "entityReviewQueue.clearCareerTeamStint",
     },
     players: {
       nearMatches: "players.nearMatches",
@@ -129,6 +131,8 @@ const mockRecordAllRemainingAsSkip = vi.fn();
 /** NEO-236 — resolves to "how many steps this call added". Every mutation the
  *  component awaits must return a promise, so the default is 0. */
 const mockStageCareerTeamRows = vi.fn(() => Promise.resolve(0));
+/** NEO-248 — the durable half of removing a hand-typed chip. */
+const mockClearCareerTeamStint = vi.fn(() => Promise.resolve(null));
 /** Rows served to leagues.list (the New Team step's League pills). */
 let currentLeagues: unknown;
 
@@ -155,6 +159,8 @@ vi.mock("convex/react", () => ({
       return mockRecordAllRemainingAsSkip;
     if (ref === "entityReviewQueue.stageCareerTeamRows")
       return mockStageCareerTeamRows;
+    if (ref === "entityReviewQueue.clearCareerTeamStint")
+      return mockClearCareerTeamStint;
     // Every other mutation still has to look like one: the component `await`s
     // what `useMutation` hands back.
     return vi.fn(() => Promise.resolve(undefined));
@@ -384,6 +390,7 @@ beforeEach(() => {
   mockRecordAllRemainingAsCreate.mockResolvedValue(0);
   mockRecordAllRemainingAsSkip.mockResolvedValue(0);
   mockStageCareerTeamRows.mockResolvedValue(0);
+  mockClearCareerTeamStint.mockResolvedValue(null);
   currentRows = [];
   currentLeagues = [];
   currentNearMatches = [];
@@ -2814,6 +2821,137 @@ describe("EntityReviewWizard — a staged career team keeps its years (NEO-248)"
     expect(screen.getByLabelText("Career team name")).toBeTruthy();
     // ...and the Wikidata stint is not duplicated into it as a chip.
     expect(screen.queryByLabelText("Staged career teams")).toBeNull();
+  });
+
+  it("removing a chip clears the stint on the staged step, and the removal survives a remount", () => {
+    /*
+     * The keyed chip list dies with the component — `CardChecklist` renders
+     * this wizard conditionally, so closing and reopening it drops the map. The
+     * rebuild then reads the years straight back off the staged step, and a
+     * chip the operator deleted comes back with its stint, riding into
+     * `players.teamYears` at commit. So removal has to reach the server too.
+     */
+    currentRows = [player()];
+    const { rerender, unmount } = renderWizard();
+
+    typeStint();
+
+    const staged = (over: Partial<Row> = {}) =>
+      makeCareerTeamRow(
+        "row-player" as unknown as Id<"entityReviewQueue">,
+        "Sydney Blue Sox",
+        {
+          _id: "row-team" as unknown as Id<"entityReviewQueue">,
+          source: {
+            kind: "careerTeamOf",
+            playerRowId: "row-player",
+            manualStint: { fromYear: 2001, toYear: 2005 },
+          },
+          decision: {
+            action: "create",
+            create: { name: "Blue Sox", location: "Sydney" },
+          },
+          ...over,
+        },
+      );
+    currentRows = [staged(), player()];
+    rerenderWizard(rerender);
+    expect(screen.getByText(/Sydney Blue Sox \(2001–2005\)/)).toBeTruthy();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Remove Sydney Blue Sox" }),
+    );
+    expect(mockClearCareerTeamStint).toHaveBeenCalledWith({
+      reviewRowId: "row-player",
+      teamRowId: "row-team",
+    });
+
+    // The server drops the stint and LEAVES the step — another player in the
+    // batch may still need that club.
+    currentRows = [
+      staged({ source: { kind: "careerTeamOf", playerRowId: "row-player" } }),
+      player(),
+    ];
+    unmount();
+    renderWizard();
+
+    expect(screen.getByLabelText("Career team name")).toBeTruthy();
+    expect(screen.queryByLabelText("Staged career teams")).toBeNull();
+  });
+
+  it("the auto-add TIMER does not decide a row with a half-typed career entry", async () => {
+    /*
+     * The bulk create is re-armed on a timer as lookups land, and it decides
+     * every settled row — including the one in front of the operator. A name
+     * typed with no year yet is work this component holds and nothing else
+     * does, so firing through it writes a create decision as though the typing
+     * had never happened.
+     *
+     * Deferred rather than dropped: the next tick re-checks, and the wait ends
+     * when the operator finishes the row.
+     */
+    vi.useFakeTimers();
+    try {
+      currentRows = [
+        player(),
+        makeRow({
+          _id: "row-pending" as unknown as Id<"entityReviewQueue">,
+          kind: "player",
+          name: "Dylan Crews",
+          status: "pending",
+        }),
+      ];
+      const { rerender } = renderWizard();
+
+      fireEvent.click(
+        screen.getByRole("button", { name: /Add remaining players as new/ }),
+      );
+      await act(async () => {});
+      expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1);
+
+      // The operator starts typing on the row in front of them...
+      fireEvent.change(screen.getByLabelText("Career team name"), {
+        target: { value: "Sydney Blue" },
+      });
+
+      // ...and the second row's lookup lands, which is what arms the follow-up.
+      currentRows = [
+        player(),
+        makeRow({
+          _id: "row-pending" as unknown as Id<"entityReviewQueue">,
+          kind: "player",
+          name: "Dylan Crews",
+          status: "ready",
+        }),
+      ];
+      rerender(
+        <EntityReviewWizard
+          isOpen
+          selectorOptionId={"selopt-1" as unknown as Id<"selectorOptions">}
+          batchId="batch-1"
+          summary={SUMMARY}
+          onConfirm={vi.fn()}
+          onCancel={vi.fn()}
+        />,
+      );
+
+      act(() => {
+        vi.advanceTimersByTime(10_000);
+      });
+      // Still one — the follow-up deferred rather than deciding under them.
+      expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1);
+
+      // They clear the field, and the deferred round goes through.
+      fireEvent.change(screen.getByLabelText("Career team name"), {
+        target: { value: "" },
+      });
+      act(() => {
+        vi.advanceTimersByTime(1500);
+      });
+      expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("a removed chip stays removed after the walk leaves the row and comes back", () => {

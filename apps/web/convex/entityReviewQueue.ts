@@ -161,6 +161,33 @@ const MAX_MANUAL_CAREER_TEAMS = 64;
 const MAX_EXCLUDED_CAREER_TEAM_NAMES = 64;
 
 /**
+ * NEO-248 — a career-team name the OPERATOR typed is refused, not dropped.
+ *
+ * The staging loop skips an over-long name silently, and that is right for the
+ * text it was written for: a Wikidata P54 label nobody on our side chose, where
+ * one absurd label must not cost the player every other career-team step. It is
+ * wrong for a name the operator typed into the entry form — there, a silent
+ * drop is the same failure NEO-248 exists to remove, arriving through a
+ * different door: the chip appears, the step never does, and nothing says why.
+ *
+ * So the two hand-typed boundaries (`stageCareerTeamRows.careerTeams` and
+ * `recordDecision.manualCareerTeams`) check the bound themselves and throw
+ * before the loop can swallow it.
+ *
+ * `ConvexError`, because only that survives Convex's error boundary with its
+ * message intact — a plain `Error` reaches the browser as "Server Error". And
+ * the message carries the LENGTH, never the name: it reaches Sentry and the
+ * browser console, the same rule `requireTeamCreate` follows.
+ */
+function assertCareerTeamNameLength(name: string): void {
+  const trimmed = name.trim().replace(/\s+/g, " ");
+  if (trimmed.length <= MAX_TEAM_FULL_NAME_LENGTH) return;
+  throw new ConvexError(
+    `A team name is ${trimmed.length} characters; the limit is ${MAX_TEAM_FULL_NAME_LENGTH}.`,
+  );
+}
+
+/**
  * The loose bounds a career stint's years have to sit inside, in the one place
  * both writers can reach.
  *
@@ -957,9 +984,6 @@ async function stageCareerTeamRowsImpl(
   const added: Array<Id<"entityReviewQueue">> = [];
   const seen = new Set<string>();
   for (const proposal of mergedProposals) {
-    // A guard rail on an unbounded write, not a security boundary — and it
-    // counts the steps this player ALREADY has, so re-entry cannot grow past it.
-    if (alreadyStagedForPlayer + added.length >= MAX_CAREER_TEAM_CREATES) break;
     const name = proposal.name.trim().replace(/\s+/g, " ");
     if (!name) continue;
     const nameNormalized = normalizeTeamName(name);
@@ -1022,6 +1046,40 @@ async function stageCareerTeamRowsImpl(
     // row ("San Diego" + "Padres") answers to the Wikidata label "San Diego
     // Padres" and nothing is staged.
     if (await findTeamByFullName(ctx, playerRow.sportId, name)) continue;
+
+    /*
+     * A guard rail on an unbounded write, not a security boundary — and it
+     * counts the steps this player ALREADY has, so re-entry cannot grow past
+     * it.
+     *
+     * ## NEO-248 — checked HERE, at the insert, and loud for a typed stint
+     *
+     * It used to sit at the top of the loop, which made it two wrong things at
+     * once. It consumed the cap for proposals that need no row (a name the
+     * batch already has a step for, a team we already hold) — and, because the
+     * caller's extras are appended last, it broke out of the loop BEFORE ever
+     * reaching a hand-typed stint whenever the enrichment's own proposals had
+     * filled the quota. The mutation then returned 0, the wizard's `.catch` had
+     * nothing to catch, and the operator's years were gone with no message.
+     *
+     * So: the cap bounds ROWS, and it is tested where a row would actually be
+     * inserted. A proposal carrying a `manualStint` is the operator typing, and
+     * a refusal they can read beats a silent drop — it throws, which rolls the
+     * whole mutation back rather than half-staging. Every other caller
+     * (`applyLookupResult`, the belt-and-braces pass, the bulk create) passes
+     * no stint and still breaks quietly, exactly as before.
+     *
+     * The message carries the COUNT and never a name — this string reaches the
+     * browser and Sentry.
+     */
+    if (alreadyStagedForPlayer + added.length >= MAX_CAREER_TEAM_CREATES) {
+      if (proposal.manualStint) {
+        throw new ConvexError(
+          `This player already has ${MAX_CAREER_TEAM_CREATES} career-team steps, which is the maximum. Remove one before adding another.`,
+        );
+      }
+      break;
+    }
 
     added.push(
       await ctx.db.insert("entityReviewQueue", {
@@ -1124,6 +1182,7 @@ export const stageCareerTeamRows = mutation({
       ...(args.careerTeams ?? [])
         .slice(0, MAX_CAREER_TEAM_CREATES)
         .map((ct) => {
+          assertCareerTeamNameLength(ct.name);
           assertCareerStintYears(ct.fromYear, ct.toYear, maxYear);
           return {
             name: ct.name,
@@ -1136,6 +1195,68 @@ export const stageCareerTeamRows = mutation({
     ];
     const added = await stageCareerTeamRowsImpl(ctx, row, extra);
     return added.length;
+  },
+});
+
+/**
+ * NEO-248 — the operator removed a hand-typed chip; forget its years.
+ *
+ * ## Why removal needs a mutation at all
+ *
+ * The wizard's chip list is keyed by review row, which survives navigation but
+ * not UNMOUNT — `CardChecklist` renders the wizard conditionally, so closing
+ * and reopening it drops the map. The rebuild path then reads the years back
+ * off the staged step and the chip the operator deleted comes back, taking its
+ * stint into `players.teamYears` at commit. A removal has to be as durable as
+ * the thing it removes.
+ *
+ * ## What it does NOT do
+ *
+ * It clears `source.manualStint` and leaves the New Team step standing. The
+ * step is a question about a TEAM — often one another player in the batch also
+ * needs, and one whose own lookup has already run — and deleting it because a
+ * stint was withdrawn would take an answer away from rows that never asked.
+ * "I did not mean to date that club" is not "that club is not in this set".
+ *
+ * Guarded exactly as the staging patch it undoes: admin, both rows owned by the
+ * caller, and the step must actually have been staged for THIS player. Without
+ * that last check an operator could strip the years off another player's step
+ * by naming it, which is the same cross-attribution the patch path refuses.
+ */
+export const clearCareerTeamStint = mutation({
+  args: {
+    /** The PLAYER row whose chip was removed. */
+    reviewRowId: v.id("entityReviewQueue"),
+    /** The `careerTeamOf` step that chip's years are stored on. */
+    teamRowId: v.id("entityReviewQueue"),
+  },
+  returns: v.null(),
+  handler: async (ctx, args): Promise<null> => {
+    const callerId = await requireAdmin(ctx);
+    const playerRow = await ctx.db.get(args.reviewRowId);
+    if (!playerRow) throw new Error("Review row not found");
+    assertOwnsRow(playerRow, callerId);
+    const teamRow = await ctx.db.get(args.teamRowId);
+    if (!teamRow) throw new Error("Review row not found");
+    assertOwnsRow(teamRow, callerId);
+
+    const source = teamRow.source;
+    if (
+      source?.kind !== "careerTeamOf" ||
+      source.playerRowId !== playerRow._id
+    ) {
+      throw new Error("That step was not staged for this row");
+    }
+    // Already clear — idempotent, so a double click or a retry is a no-op
+    // rather than a second write.
+    if (source.manualStint === undefined) return null;
+
+    // Rebuilt without the key rather than set to undefined: `source` is a
+    // whole-object patch, and nothing downstream should have to tell "no
+    // stint" from "a stint that is undefined".
+    const { manualStint: _cleared, ...rest } = source;
+    await ctx.db.patch(args.teamRowId, { source: rest });
+    return null;
   },
 });
 
@@ -1336,6 +1457,9 @@ export const recordDecision = mutation({
         if (ct.name.trim().length === 0) {
           throw new Error("Career-team name cannot be empty");
         }
+        // NEO-248: hand-typed, so an over-long name is refused rather than
+        // carried to a commit that would drop the stint on the floor.
+        assertCareerTeamNameLength(ct.name);
         // NEO-248: the same bounds the staging path applies, from one place.
         assertCareerStintYears(ct.fromYear, ct.toYear, maxYear, ct.name);
       }
@@ -1606,8 +1730,50 @@ async function decideAllRemaining(
        */
       if (row.kind !== "player") continue;
       await stageCareerTeamRowsImpl(ctx, row);
+      /*
+       * ── NEO-248: the bulk carries this player's hand-typed stints ─────────
+       *
+       * The decision used to be a bare `{action:"create"}`, which is a claim
+       * that a player row holds nothing worth recording. Since NEO-248 it can:
+       * a stint the operator typed lives on the step it staged
+       * (`source.manualStint`), and only `decision.manualCareerTeams` gets it
+       * into `players.teamYears` at commit.
+       *
+       * That matters here more than it looks, because this path is not only
+       * the "Add All Remaining as New" button. The wizard re-arms it on a
+       * TIMER as lookups land, so a player row the operator has typed years on
+       * can be decided by a mutation nobody pressed — and before this, decided
+       * as though those years had never been typed.
+       *
+       * Read through `by_source_player` rather than off the batch: the same
+       * narrow index the staging pass uses, for the same NEO-189 reason, and
+       * it is already warm from the call above.
+       */
+      const stagedSteps = await ctx.db
+        .query("entityReviewQueue")
+        .withIndex("by_source_player", (q) => q.eq("source.playerRowId", row._id))
+        .collect();
+      const manualCareerTeams: Array<{
+        name: string;
+        fromYear: number;
+        toYear?: number;
+      }> = [];
+      for (const step of stagedSteps) {
+        const stint = step.source?.manualStint;
+        if (!stint) continue;
+        manualCareerTeams.push({
+          name: step.name,
+          fromYear: stint.fromYear,
+          ...(stint.toYear !== undefined ? { toYear: stint.toYear } : {}),
+        });
+      }
       await ctx.db.patch(row._id, {
-        decision: { action: "create" },
+        decision: {
+          action: "create",
+          // Absent when there are none, so an ordinary bulk decision is stored
+          // byte-identical to how it was before this existed.
+          ...(manualCareerTeams.length > 0 ? { manualCareerTeams } : {}),
+        },
         lastTouchedAt: now,
       });
     } else {

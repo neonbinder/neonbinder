@@ -389,6 +389,71 @@ describe("commit prelude: staged career-team rows become teams BEFORE the player
     });
   });
 
+  test("NEO-248: the BULK create carries a typed stint through to players.teamYears", async () => {
+    /*
+     * `recordAllRemainingAsCreate` wrote a bare `{action:"create"}`, and only
+     * `decision.manualCareerTeams` reaches `teamYears` at commit — so the bulk
+     * silently dropped years the operator had typed.
+     *
+     * This is not only the "Add All Remaining as New" button: the wizard
+     * re-arms this mutation on a timer as lookups land, so the row could be
+     * decided by a call nobody pressed.
+     */
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedTree(t);
+
+    const playerRowId = await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      kind: "player",
+      name: "Travis Bazzana",
+      createdByUserId: ADMIN_IDENTITY.subject,
+    });
+
+    await asAdmin.mutation(api.entityReviewQueue.stageCareerTeamRows, {
+      reviewRowId: playerRowId,
+      careerTeams: [{ name: "Sydney Blue Sox", fromYear: 2001, toYear: 2005 }],
+    });
+    await cancelScheduled(t);
+
+    // The bulk decides the PLAYER and leaves the club's step alone — that step
+    // asks which league, and this path can only guess.
+    await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
+      selectorOptionId: variantTypeId,
+      batchId: BATCH,
+    });
+
+    const stagedRow = await t.run(async (ctx) => {
+      const rows = await ctx.db.query("entityReviewQueue").collect();
+      return rows.find((r) => r.source?.kind === "careerTeamOf")!;
+    });
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: stagedRow._id,
+      action: "create",
+      create: { location: "Sydney", name: "Blue Sox", leagueId: null },
+    });
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [
+        makeCard({ cardName: "Travis Bazzana", players: ["Travis Bazzana"] }),
+      ],
+      batchId: BATCH,
+    });
+
+    const teams = await allTeams(t);
+    expect(teams).toHaveLength(1);
+    const player = await playerNamed(t, "Travis Bazzana");
+    expect(player!.teamYears).toHaveLength(1);
+    expect(player!.teamYears![0]).toMatchObject({
+      teamId: teams[0]._id,
+      fromYear: 2001,
+      toYear: 2005,
+    });
+  });
+
   test("leagueId: null produces a team with NO league even though the sport has a default", async () => {
     // The state the nullable union exists for. "No league", said deliberately,
     // writes no `leagueId` — which is byte-identical to "not answered" unless
