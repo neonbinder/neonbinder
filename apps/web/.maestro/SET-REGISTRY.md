@@ -443,19 +443,32 @@ now answers those steps with the same loop:
       notVisible:
         text: ".*Confirm & Save.*"
     commands:
-      # NEO-254 — the league branch FIRST: the wizard stages a New League step
-      # immediately ahead of the first team that needs that league.
       - runFlow:
           when:
-            visible: "New League: .*"
+            visible:
+              id: "Add as New (Team|League)"
           commands:
-            - tapOn: "Add as New League"
-      - runFlow:
-          when:
-            visible: "New Team: .*"
-          commands:
-            - tapOn: "Add as New Team"
+            - tapOn:
+                id: "Add as New (Team|League)"
 ```
+
+> ⚠️ **ONE probe, keyed on the step's BUTTON — never one per step heading.**
+> A `when: visible` that resolves FALSE pays a full settle; one that resolves
+> TRUE costs a fraction of a second. Measured on the same loop, same flow, two
+> CI runs: with a single `New Team: .*` probe that was true every iteration the
+> loop cost **80.8s** (22 iterations, 7.6s of probing); adding a second
+> `New League: .*` probe that was false in 23 of 29 iterations took it to
+> **294.9s** — **+214s, of which +192s was probe overhead** and only 11.5s was
+> the six league taps it existed to do. That regression alone pushed
+> `inserts-1996-score…` from 386s past the runner's 600s `FLOW_TIMEOUT_SEC`.
+> Key on something PRESENT whenever there is work, and the loop stays cheap.
+>
+> **`(Team|League)`, never `(Player|Team|League)`.** The id is a regex over the
+> button's accessible name. A player row the bulk left undecided is an
+> ambiguous same-name row — two NB players already carry that name and the
+> wizard is asking which is on the card. `Add as New Player` there mints a
+> third one silently, the exact failure NEO-254 exists to remove. Left out of
+> the matcher, the loop runs out and the wait after it fails loudly instead.
 
 > ⚠️ **`times`, never `maxRuns`.** This snippet used to be written with
 > `maxRuns:`, which is not in `YamlRepeatCommand` at all — an unknown property
