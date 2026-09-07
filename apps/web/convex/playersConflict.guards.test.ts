@@ -19,12 +19,35 @@
  */
 
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
 import { normalizePlayerName } from "./players";
 import { nameKey } from "../lib/cards/card-name";
+import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
+
+beforeEach(() => {
+  // NEO-188/NEO-247: a commit that LANDS schedules a BSC per-card team lookup
+  // (processBscTeamEnrichmentQueue) as a side effect of the `bsc-1` ref every
+  // fixture card carries. This file has nothing to say about team resolution.
+  // A THROWING stub rather than a canned 200 — same convention as
+  // convex/cardChecklist.bscTeamEnrichment.test.ts's NEO-220 fix: the adapter
+  // already swallows a request failure ("network unavailable" is a state it
+  // handles), and it cannot write anything derived from a payload this file
+  // invented.
+  vi.stubGlobal(
+    "fetch",
+    (async (url: string | URL) => {
+      throw new Error(
+        `NEO-247: this test file must not reach the network: ${String(url)}`,
+      );
+    }) as unknown as typeof fetch,
+  );
+});
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -248,12 +271,17 @@ describe("startCandidateBatch bounds the roster conflict (NEO-251)", () => {
     await expect(call).rejects.not.toThrow(new RegExp(tooLong));
   });
 
-  test("an over-length team name on the candidate is refused", async () => {
+  test("an over-length team name on the candidate is refused without echoing it", async () => {
     const t = convexTest(schema, modules);
     const { leafId } = await seedTree(t);
-    await expect(batch(t, leafId, { teams: [tooLong] })).rejects.toThrow(
+    const call = batch(t, leafId, { teams: [tooLong] });
+    await expect(call).rejects.toThrow(
       /team name of 121 characters; the limit is 120/,
     );
+    // The same no-echo rule as its player sibling above: this message reaches
+    // Sentry and the browser console, and the offending text came off a
+    // marketplace page.
+    await expect(call).rejects.not.toThrow(new RegExp(tooLong));
   });
 
   test("a legitimate conflict writes, and comes back on the streamed view", async () => {
@@ -327,6 +355,10 @@ describe("the commit refuses an unsettled roster conflict (NEO-251)", () => {
     );
     expect(rows).toHaveLength(1);
     expect(rows[0].cardNumber).toBe("1");
+    // NEO-247: settle (and discard) the enrichment this commit scheduled before
+    // the test returns, so nothing is still running into worker teardown.
+    await drainScheduled(t);
+    await cancelScheduled(t);
   });
 });
 
@@ -426,6 +458,10 @@ describe("the player dedup key folds diacritics (NEO-253)", () => {
       ctx.db.query("players").collect(),
     );
     expect(players).toHaveLength(1);
+    // NEO-247: settle (and discard) the enrichment this commit scheduled before
+    // the test returns, so nothing is still running into worker teardown.
+    await drainScheduled(t);
+    await cancelScheduled(t);
   });
 
   test("the reverse direction too: an ASCII roster finds the accented row", async () => {
@@ -464,5 +500,9 @@ describe("the player dedup key folds diacritics (NEO-253)", () => {
     // The row keeps ITS OWN spelling. The fold decides identity; it never
     // rewrites the name NB stores and renders.
     expect(players[0].name).toBe("José Ramírez");
+    // NEO-247: settle (and discard) the enrichment this commit scheduled before
+    // the test returns, so nothing is still running into worker teardown.
+    await drainScheduled(t);
+    await cancelScheduled(t);
   });
 });

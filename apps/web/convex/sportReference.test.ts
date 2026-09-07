@@ -24,6 +24,7 @@ import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
+import { drainScheduled } from "../lib/testing/drain-scheduled";
 // NEO-236: `teams.list` returns raw rows, so a split team's `name` is the
 // nickname alone. Every assertion about a team NAME composes it.
 import { teamFullName } from "../lib/teams/team-name";
@@ -206,6 +207,7 @@ describe("NEO-96 round trip: commit-created entities are visible to the pickers"
       name: "Los Angeles Angels",
       sportId,
     });
+    await drainScheduled(t);
 
     // Now the commit path resolves the SAME name. No review row is needed —
     // the name already resolves to an existing entity, which is the behaviour

@@ -42,6 +42,7 @@ import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import schema from "./schema";
 import { api } from "./_generated/api";
+import { drainScheduled } from "../lib/testing/drain-scheduled";
 
 const policyCalls: Array<{ bucket: string; file: string; config: Record<string, unknown> }> = [];
 
@@ -145,11 +146,21 @@ beforeEach(() => {
     JSON.stringify({ client_email: "fake@example.com", private_key: "fake" }),
   ).toString("base64");
   process.env.GCS_PLACEHOLDER_BUCKET = "neonbinder-placeholder-uploads-test";
+  // NEO-188/NEO-247: opening a stream (openStream, below) fires the preprocess
+  // `/warmup` ping fire-and-forget (convex/placeholderStream.ts). Unstubbed,
+  // that's a real request every run; this file has nothing to say about
+  // warm-up itself, so stub it the same way convex/placeholderStream.test.ts
+  // does.
+  vi.stubGlobal(
+    "fetch",
+    (async () => new Response("{}", { status: 200 })) as unknown as typeof fetch,
+  );
 });
 
 afterEach(() => {
   delete process.env.GOOGLE_APPLICATION_CREDENTIALS_B64;
   delete process.env.GCS_PLACEHOLDER_BUCKET;
+  vi.unstubAllGlobals();
 });
 
 describe("createPlaceholderUploadUrl", () => {
@@ -283,6 +294,7 @@ async function openStream(t: ReturnType<typeof convexTest>): Promise<string> {
   const result = await t
     .withIdentity(USER_IDENTITY)
     .mutation(api.placeholderStream.startPlaceholderStream, {});
+  await drainScheduled(t); // NEO-247: settle the fire-and-forget warmup ping
   expect(result.started).toBe(true);
   return result.jobId!;
 }

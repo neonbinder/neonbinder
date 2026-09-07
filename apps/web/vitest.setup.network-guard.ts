@@ -20,6 +20,26 @@
  *     vi.stubGlobal("fetch", (async (url) => new Response("{}")) as typeof fetch);
  *
  * `vi.unstubAllGlobals()` then restores this guard, not the real `fetch`.
+ *
+ * ## NEO-247 — the afterAll settle, and why it exists
+ *
+ * A leak that comes from an undrained `runAfter(0)` scheduled function does
+ * not fire in the SAME tick the triggering test returns in — convex-test's
+ * scheduler runs it on a later tick of the real event loop. An immediate,
+ * no-delay check (which is what `afterEach` still is, below) can genuinely
+ * run BEFORE that tick and see an empty `violations` array — not because
+ * nothing leaked, but because the check looked too early. That is exactly
+ * how NEO-247 found ~63 blocked-request lines that never failed a single
+ * test: every one of them was checked-for too soon and silently dropped.
+ *
+ * `afterAll`'s settle closes that gap the cheap way: it runs once per FILE
+ * (not once per test), so a short real-clock wait here is affordable in a
+ * way it would not be in `afterEach`. It cannot promise to catch a function
+ * scheduled with a real multi-second delay — that class of leak is what
+ * `cancelScheduled` (`lib/testing/drain-scheduled.ts`) exists for, at the
+ * test that creates it — but it reliably closes the `runAfter(0)` gap that
+ * caused NEO-247, without slowing the common (nothing leaked) case by more
+ * than this file's own single wait.
  */
 import { afterAll, afterEach, beforeEach } from "vitest";
 
@@ -71,7 +91,23 @@ function flushViolations(phase: string) {
   );
 }
 
-afterEach(() => flushViolations("this test"));
+/**
+ * Give an undrained `runAfter(0)` scheduled function one real-clock window to
+ * actually fire before the file-level check below runs — see the class
+ * comment above. 30ms was the smallest value that caught every known
+ * NEO-247 leak reliably across repeated runs; it is spent once per FILE, not
+ * once per test, which is what keeps it affordable.
+ */
+async function settleBeforeFileCheck() {
+  await new Promise((resolve) => setTimeout(resolve, 30));
+}
+
+afterEach(() => {
+  flushViolations("this test");
+});
 // Catches anything that escaped teardown — the original NEO-188 shape, where
 // the request lands after the test that started it has already finished.
-afterAll(() => flushViolations("this file, after its tests finished"));
+afterAll(async () => {
+  await settleBeforeFileCheck();
+  flushViolations("this file, after its tests finished");
+});

@@ -32,12 +32,13 @@
  */
 
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import { CARDS_PER_COMMIT_CHUNK } from "./selectorOptions";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
 import { compareCardNumbers } from "../lib/cards/card-number";
+import { drainScheduled, cancelScheduled } from "../lib/testing/drain-scheduled";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -58,6 +59,28 @@ const NON_ADMIN_IDENTITY = {
   name: "Ordinary User",
   role: "user",
 };
+
+beforeEach(() => {
+  // NEO-188/NEO-247: commitCardChecklist can schedule a BSC per-card team
+  // lookup (processBscTeamEnrichmentQueue) as a side effect. This file has
+  // nothing to say about team resolution. A THROWING stub rather than a
+  // canned 200 — same convention as
+  // convex/cardChecklist.bscTeamEnrichment.test.ts's NEO-220 fix: the
+  // adapter already swallows a request failure ("network unavailable" is a
+  // state it handles), and it cannot write anything derived from a payload
+  // this file invented.
+  vi.stubGlobal(
+    "fetch",
+    (async (url: string | URL) => {
+      throw new Error(
+        `NEO-247: this test file must not reach the network: ${String(url)}`,
+      );
+    }) as unknown as typeof fetch,
+  );
+});
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 /** 2.5 chunks — enough that a boundary falls in the middle of the batch. */
 const TOTAL_CARDS = Math.ceil(CARDS_PER_COMMIT_CHUNK * 2.5);
@@ -191,6 +214,8 @@ describe("commitCardChecklist — chunked commit", () => {
     expect(rows.every((r) => typeof r.sku === "string" && r.sku.length > 0)).toBe(
       true,
     );
+    await drainScheduled(t);
+    await cancelScheduled(t);
   });
 
   test("sortOrder is numbered across the WHOLE commit, not per chunk", async () => {
@@ -222,6 +247,8 @@ describe("commitCardChecklist — chunked commit", () => {
       .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
       .map((r) => r.cardNumber);
     expect(actualOrder).toEqual(expectedOrder);
+    await drainScheduled(t);
+    await cancelScheduled(t);
   });
 
   test("a variation whose parent is in an EARLIER chunk still gets linked", async () => {
@@ -250,6 +277,8 @@ describe("commitCardChecklist — chunked commit", () => {
     expect(child.variationOfCardId).toBe(parent._id);
     expect(child.cardVariation).toBe("Action");
     expect(parent.variationOfCardId).toBeUndefined();
+    await drainScheduled(t);
+    await cancelScheduled(t);
   });
 
   /**
@@ -307,6 +336,8 @@ describe("commitCardChecklist — chunked commit", () => {
     // so an operator can act on them instead of discovering them missing.
     expect(result.unmatchedExistingCount).toBe(cards.length - smaller.length);
     expect(result.operatorDeleted).toBe(0);
+    await drainScheduled(t);
+    await cancelScheduled(t);
   });
 
   test("re-committing the SAME multi-chunk set upserts rather than duplicating", async () => {
@@ -352,6 +383,8 @@ describe("commitCardChecklist — chunked commit", () => {
     expect(second.byNumber.get("5b")!.variationOfCardId).toBe(
       second.byNumber.get("5")!._id,
     );
+    await drainScheduled(t);
+    await cancelScheduled(t);
   });
 
   test("a non-admin is rejected and nothing is written", async () => {
@@ -372,6 +405,8 @@ describe("commitCardChecklist — chunked commit", () => {
     expect((await readChecklist(t, variantTypeId)).rows.length).toBe(0);
     const players = await t.run(async (ctx) => ctx.db.query("players").collect());
     expect(players.length).toBe(0);
+    await drainScheduled(t);
+    await cancelScheduled(t);
   });
 });
 
@@ -510,5 +545,7 @@ describe("commitCardChecklist — chunked re-sync with duplicate-numbered cards 
     expect(afterByRef.get(`${S1}-card-${targetNumberLate}`)!.cardName).toBe(
       `${S1} player ${targetNumberLate}`,
     );
+    await drainScheduled(t);
+    await cancelScheduled(t);
   });
 });

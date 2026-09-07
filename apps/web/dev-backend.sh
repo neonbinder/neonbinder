@@ -1,5 +1,15 @@
 #!/bin/bash
 
+# NEO-249: this wraps `npx convex dev`, which targets a Convex *dev*
+# deployment. A dev deployment is a DEVELOPER'S PERSONAL deployment, not a
+# shared dev server, and nobody deploys to dev from CI — no workflow pushes
+# it. Run this against your own dev deployment when you want to test locally,
+# or at the same time you push to a PR. When you need to exercise the PR's own
+# backend code, point local Vite at that PR's Convex preview instead (see the
+# root CLAUDE.md, "Debugging a red flow against the PR's own services"). Now
+# that every PR gets its own preview, the dev deployment is mostly unused.
+# This comment does not change the script's behavior below.
+
 # Check if a URL was provided as the first argument
 if [ -n "$1" ]; then
   echo "Setting NEONBINDER_BROWSER_URL to: $1"
