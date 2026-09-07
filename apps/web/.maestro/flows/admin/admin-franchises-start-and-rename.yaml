@@ -1,0 +1,306 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/admin/franchises&worker=${WORKER_INDEX || "0"}
+name: "Franchise Management — start a franchise under a sport and rename the thread"
+tags:
+  - regression
+  - admin
+---
+# R1 — ONE FEATURE (NEO-254): a **franchise row** on `/admin/franchises`. It is
+# started under a sport, it opens as an empty thread, and its name can be
+# rewritten without anything else on it changing. That is the whole of what a
+# franchise row IS before any team is on it: `franchises.findOrCreate` and
+# `franchises.save`, plus the screen that says what it holds.
+#
+# ⚠️ THIS FLOW WAS ASKED FOR AS `admin-franchises-link-teams.yaml` AND IS NOT
+#    THAT FLOW. The membership half — putting a team ON a franchise — is NOT
+#    REACHABLE BY MAESTRO AT ALL TODAY, and no amount of flow authoring fixes
+#    it. This is a product finding, written down here so the next author does
+#    not spend the afternoon rediscovering it:
+#
+#      * The ONLY control in the product that sets `teams.franchiseId` is the
+#        Franchise dropdown on the Team Management detail panel
+#        (`components/admin/TeamManagement.tsx`, `<select id="team-franchise">`).
+#        `/admin/franchises` can only ever REMOVE a team from a thread; its own
+#        empty state says so ("Open a team on Team Management and pick this
+#        franchise to put it on here"). `NewTeamForm` — the New Team dialog and
+#        the review wizard's New Team step — has no franchise field at all.
+#      * maestro-web gives an <option> synthetic tap bounds derived ONLY from
+#        its index inside its own parent (`getSyntheticNodeBounds`, verified by
+#        reading maestro-web.js out of ~/.maestro/lib/maestro-client.jar), then
+#        resolves the tap by scanning `document.querySelectorAll('option')` in
+#        DOCUMENT ORDER and acting on the FIRST bounds match
+#        (`maestro.tapOnSyntheticElement`). So on a page with several <select>s,
+#        only the first one in the document is ever really reachable.
+#      * `/admin/teams` renders THREE selects, in this order: `league-filter`
+#        (the list header, always mounted), `team-league`, then
+#        `team-franchise`. A tap meant for the franchise dropdown lands in the
+#        league FILTER instead, silently. Reaching `team-franchise` would need
+#        it to have MORE options than every select above it — i.e. more
+#        franchises in one sport than there are leagues in the whole
+#        deployment — which is not something a flow can arrange, and which
+#        other workers change underneath it anyway.
+#      * `NewTeamForm.tsx` already documents this exact trap in its own header
+#        and is built out of radio pills for precisely this reason ("A dropdown
+#        here would be untappable by every flow that has to use it"). The new
+#        Franchise dropdown — and the League dropdown beside it, which is why
+#        `team-management-edit-a-team.yaml` has never touched it either — did
+#        not get that treatment. Giving `team-franchise` the same pill/
+#        radiogroup shape `NewTeamForm` uses is the fix, and it is app work: it
+#        is NOT something to paper over here. Until then, franchise MEMBERSHIP,
+#        the dated thread rail, and the "Remove <team>" control have no E2E
+#        coverage and are carried by `FranchiseManagement.test.tsx` and
+#        `convex/franchises.test.ts` alone.
+#
+# R2 — HARD ASSERTIONS, none satisfiable by an inert page:
+#     (a) the franchise is INSERTED, not adopted: "Started <name>." is said only
+#         for `created: true`; an existing row says "<name> was already here —
+#         opened it for you." instead;
+#     (b) it landed under the sport that was picked: the panel's read-only box
+#         says "Sport: Baseball", which it can only do by the add form having
+#         inherited the list's sport filter and the server having stored it;
+#     (c) a brand-new thread is EMPTY and says so — "0 teams on this thread"
+#         and the empty-state line — which is the state the membership half
+#         starts from;
+#     (d) the rename REACHES THE DATABASE: after a full page reload the old
+#         name matches no row at all ("No franchises match that filter.") and
+#         the new one matches exactly one ("1 of N franchises");
+#     (e) the rename touched NOTHING ELSE: the reopened row still reads "0
+#         teams on this thread", which is `franchises.save`'s contract —
+#         "Renaming NEVER touches the teams on the thread."
+#     There are no `when:` branches and no conditional runFlow, so there is no
+#     path through this file that reaches the end without exercising all of it.
+#
+# R3 — DEDUP: nothing else in the suite opens `/admin/franchises`.
+#   `admin-section-navigation.yaml` walks the admin tab strip and never comes
+#   here; the three sibling entity editors own their own screens.
+#
+# R4 — the entry URL is the whole setup. No in-body login, no credential step.
+#
+# R5 — every wait is Maestro's 7s default except the cold sign-in (45s) and the
+#   mid-flow reload (30s, the same value the two sibling admin flows use for an
+#   identical openLink). No marketplace is touched.
+#
+# R7 / R7a — no set, checklist, card, variant, team or player is touched, so
+#   this flow owns no SET-REGISTRY.md entry and writes to no shared row. It
+#   creates ONE globally-shared `franchises` row and there is no delete-
+#   franchise mutation in the product (franchises.ts exports list / get /
+#   findOrCreate / save and nothing else), so that row is permanent — the same
+#   footprint the sibling admin flows already carry for players, teams and
+#   leagues. It is made harmless by the name: "Fran<attempt token>", renamed to
+#   "Ren<attempt token>", is unique per worker AND per attempt, so no two
+#   runners or retries can collide and nothing else will ever look for it.
+#
+#   ⚠️ SINGLE-TOKEN NAMES. Franchise lookup is a normalized-name key rather than
+#   a search index, so tokenization does not bite here the way it does on
+#   players — but the suite's rule is one token everywhere, and keeping it means
+#   a name can be moved between these admin flows without re-deriving whether it
+#   is safe. The hyphens come out of ATTEMPT_ID for that reason.
+#
+# R8 — every scroll that precedes a tap centers its target. The detail panel is
+#   taller than what is left of the 1024x629 headless viewport under the Admin
+#   heading, the tab strip, the page heading and the filter row, so the name
+#   box, the Save button and the panel's own status line are all below the fold.
+#
+# R10 — no conditional branches, no `notVisible:` guard on a normally-present
+#   element, no settle waits. Every scroll below is its own assertion (R6), so
+#   none of them is followed by an assertVisible of the same text.
+
+- launchApp
+
+# Wait for the COUNTER, not the "Franchise Management" heading: the heading
+# paints while the list query is still in flight, and the filter box exists
+# during loading too (the master column shows "Loading franchises…"). The
+# counter renders only once `franchises.list` resolves, which is also when the
+# filter takes focus.
+- extendedWaitUntil:
+    visible: ".*of .* franchises.*"
+    timeout: 45000
+
+# Both runners inject ATTEMPT_ID with `-e` on every attempt, so the binding is
+# always there. Single-quoted because the expression contains double quotes.
+- evalScript: '${output.TOKEN = String(ATTEMPT_ID).split("-").join("")}'
+
+# ============================================================
+# STEP 1 — EMPTY THE LIST, THEN PICK THE SPORT
+#
+# The same precondition the two sibling admin flows document. Every franchise
+# row prints its sport on the second line, so with rows on screen "Baseball" is
+# on the page many times over and the sport picker could not be identified by
+# what it says. A name nothing can match clears the list, and then "Baseball"
+# belongs to the picker alone.
+#
+# And the sport MUST be picked with the add form CLOSED. maestro-web resolves an
+# <option> tap by index against the FIRST <select> in the document (see the long
+# note in the header), and opening "Start a franchise" mounts a SECOND select,
+# `new-franchise-sport`, whose option order is offset from the filter's by the
+# leading "All sports" entry — so a pick made there would land one sport off in
+# the filter instead. With the form closed, `franchise-sport-filter` is the only
+# select on the page and the pick is unambiguous.
+#
+# The empty-list line is matched as a pattern because this screen has two of
+# them and which one shows is not this flow's business: a deployment that
+# already holds franchises says "No franchises match that filter.", a freshly
+# reset one says "No franchises yet. Start one to string a team's old names
+# together." Both are the same fact — the list is empty — and the alternation
+# keeps this a hard assertion rather than a wildcard.
+# ============================================================
+
+- tapOn: "Filter franchises"
+- inputText: "zzzznotafranchise"
+- assertVisible: "No franchises (match that filter|yet).*"
+
+- tapOn: "All sports"
+- tapOn: "Baseball"
+# maestro reads a <select> as its SELECTED option's text, so this is a direct
+# read of what the picker now holds. The list is empty, so nothing else on the
+# page can be answering here.
+- assertVisible: "Baseball"
+
+# The filter has done its job; clear it so the row this flow is about to create
+# is not hidden from the list by a needle that predates it.
+- tapOn: "Filter franchises"
+- eraseText: 20
+
+# ============================================================
+# STEP 2 — START THE FRANCHISE
+#
+# "Start a franchise" is the BUTTON here and, once the form is open, also its
+# heading — so the form is identified by its subtitle instead, which is on the
+# screen exactly once. The apostrophe in "a team's whole run" is matched with a
+# "." rather than written out: a matcher is a regex and "." costs nothing,
+# where a literal apostrophe invites a smart-quote regression to fail this
+# flow for a reason that has nothing to do with franchises.
+#
+# The add form's own Sport picker is NEVER touched (see STEP 1). It does not
+# need to be: `addSportId` falls back to the list's sport filter, so the form
+# opens already set to Baseball, and STEP 3 asserts that it really did.
+# ============================================================
+
+- tapOn: "Start a franchise"
+- assertVisible: "One name for a team.s whole run.*"
+
+- tapOn: "Franchise name"
+- inputText: "Fran${output.TOKEN}"
+- tapOn: "Start franchise"
+
+# "Started <name>." is said ONLY for an INSERTED row — `franchises.findOrCreate`
+# reports `created: false` for a row it merely found, and the screen then says
+# "<name> was already here — opened it for you." instead. So this line is the
+# create, and it is also this flow's proof that the per-attempt name was free.
+- extendedWaitUntil:
+    visible: ".*Started Fran${output.TOKEN}.*"
+
+# ============================================================
+# STEP 3 — THE NEW ROW IS A REAL, EMPTY, CORRECTLY-FILED THREAD
+#
+# Creating selects the row, so the detail panel is now this franchise's. Three
+# separate facts, each below the fold on the 1024x629 headless viewport, so each
+# is reached by a scroll and the scroll IS the assertion (R6).
+#
+# "Sport: Baseball" is the load-bearing one. Nothing was typed into the form's
+# Sport picker, so this string can only be here because the form inherited the
+# list's filter AND the server stored what it was handed — which is the half of
+# `franchises.findOrCreate` a name alone would not prove.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      text: ".*0 teams on this thread.*"
+    centerElement: true
+- scrollUntilVisible:
+    element:
+      text: "Sport: Baseball"
+    centerElement: true
+# The empty state names the ONLY way a team gets onto a thread, which is the
+# screen being honest about the boundary described in the header note above.
+- scrollUntilVisible:
+    element:
+      text: "No teams yet.*"
+    centerElement: true
+
+# ============================================================
+# STEP 4 — RENAME THE THREAD
+#
+# One editable field, by design: a franchise is a name over a set of team rows,
+# and Jason's example for it is a thread an operator calls "Titans / Oilers"
+# today and "Tennessee Titans" tomorrow. `Save name` is inert until the draft
+# actually differs from the stored name, so a tap that changed nothing could not
+# produce the confirmation this waits for.
+#
+# `eraseText: 40` clears "Fran" plus the attempt token with headroom; surplus
+# backspaces on an empty field are inert.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      text: "Franchise name"
+    centerElement: true
+- tapOn: "Franchise name"
+- eraseText: 40
+- inputText: "Ren${output.TOKEN}"
+
+- scrollUntilVisible:
+    element:
+      text: "Save name"
+    centerElement: true
+- tapOn: "Save name"
+
+# The panel's own status line, which lives BELOW the thread rather than at the
+# top of the page (the page-level line up there belongs to the add form). The
+# scroll is the assertion.
+- scrollUntilVisible:
+    element:
+      text: ".*Renamed to Ren${output.TOKEN}.*"
+    centerElement: true
+
+# ============================================================
+# STEP 5 — IT PERSISTED, AND IT PERSISTED AS A RENAME
+#
+# A reload is what separates "the panel still holds what I typed" from "the
+# database holds it". 30s matches the identical openLink in the two sibling
+# admin flows — a full SPA reload and re-auth, not a UI wait.
+#
+# The reload also clears the selection (the URL carries no `franchise` param),
+# so the panel is gone and the master list is the only thing that can answer.
+#
+# TWO searches, because a rename is two claims. The old name must now match
+# NOTHING — a `save` that copied instead of patching would leave it standing —
+# and the "match that filter" wording is deterministic here rather than an
+# alternation, because this flow has itself put at least one row in the table,
+# so the "No franchises yet" branch cannot fire. Then the new name must match
+# EXACTLY ONE row, which the counter states outright.
+# ============================================================
+
+- openLink: ${APP_URL || "http://localhost:3000"}/admin/franchises
+- extendedWaitUntil:
+    visible: ".*of .* franchises.*"
+    timeout: 30000
+
+- tapOn: "Filter franchises"
+- inputText: "Fran${output.TOKEN}"
+- extendedWaitUntil:
+    visible: "No franchises match that filter."
+
+- tapOn: "Filter franchises"
+- eraseText: 40
+- inputText: "Ren${output.TOKEN}"
+- extendedWaitUntil:
+    visible: "1 of .* franchises.*"
+
+# Open the row. Anchored below the counter because maestro reports an input's
+# current value as its text, so the filter box — which now holds this exact
+# name — answers to the same string; the counter renders between the box and
+# the list, so "below the counter" is a list row and only a list row.
+- tapOn:
+    text: "Ren${output.TOKEN}"
+    below:
+      text: ".*of .* franchises.*"
+
+# THE LAST ASSERTION, and the one that says the rename was only a rename: the
+# row read back out of the database is still an empty thread. `franchises.save`
+# patches the name and `nameNormalized` and nothing else, and this is that
+# contract stated from the outside.
+- scrollUntilVisible:
+    element:
+      text: ".*0 teams on this thread.*"
+    centerElement: true

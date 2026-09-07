@@ -23,3 +23,5 @@
 - [Capture the browser console with CDP](patterns_capture_browser_console_with_cdp.md) — Maestro logs no console; 30 lines of raw CDP turns a blank error-boundary screenshot into a named root cause
 - [NEO-219 confirm surfaces](reference_neo219_confirm_surfaces.md) — custom entry needs TWO Enters; Base picker needs an explicit pick; chips confirm detach; empty rows have a delete control
 - [CI's seed resets the preview under your local run](reference_ci_seed_resets_the_preview_under_your_local_run.md) — columns emptying + "no <ancestor> ancestor" mid-flow is a concurrent global reset, not a product bug; check `gh run view` seed startedAt first
+- [/admin/teams selects are unreachable](reference_admin_teams_selects_are_unreachable.md) — 3 selects on the page; the League + Franchise dropdowns can never be tapped, so NEO-254 franchise MEMBERSHIP has no E2E path (fix = pills, app work)
+- [Input primitive has no resource-id](patterns_input_primitive_has_no_resource_id.md) — `id: "<label>"` never resolves on `primitives/Input`; tap the label text, assert the VALUE
