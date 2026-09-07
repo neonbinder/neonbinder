@@ -89,7 +89,7 @@ const jsonResponse = (body: unknown) =>
 
 /**
  * Routes a stubbed global `fetch` by URL substring:
- *  - `site.api.espn.com` → the ESPN current-teams-list response
+ *  - `site.web.api.espn.com` → the ESPN current-teams-list response
  *  - `query.wikidata.org` with `wdt:P118`/`wdt:P571` in the decoded query
  *    string → the Wikidata *detail* query (only enrichTeam's detail query
  *    asks for these predicates)
@@ -103,7 +103,7 @@ function makeFetchStub(opts: {
 }): typeof fetch {
   return (async (url: string | URL) => {
     const u = String(url);
-    if (u.includes("site.api.espn.com")) {
+    if (u.includes("site.web.api.espn.com")) {
       return jsonResponse(makeEspnListBody(opts.espnTeams));
     }
     if (u.includes("query.wikidata.org")) {
@@ -342,7 +342,7 @@ describe("enrichTeam", () => {
     const sparqlQueries: string[] = [];
     vi.stubGlobal("fetch", (async (url: string | URL) => {
       const u = String(url);
-      if (u.includes("site.api.espn.com")) {
+      if (u.includes("site.web.api.espn.com")) {
         return jsonResponse(makeEspnListBody([]));
       }
       if (u.includes("query.wikidata.org")) {
