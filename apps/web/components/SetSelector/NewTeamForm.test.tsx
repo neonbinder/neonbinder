@@ -753,6 +753,26 @@ describe("NewTeamForm — the league suggestion", () => {
     ).toBe("true");
   });
 
+  it("matches across accents, so a source's spelling is not a new league (NEO-253)", () => {
+    // The comparison here is between a name a SOURCE supplied and a name NB
+    // stores, which is exactly where the two spellings disagree. Before the
+    // fold this key dropped every accented character rather than folding it,
+    // so "Ligue Panaméricaine" and "Ligue Panamericaine" shared no key at all
+    // and the pill offered to CREATE a league the sport already held — the
+    // duplicate-league failure this comparison exists to prevent, arrived at
+    // from the other direction.
+    currentLeagues = [{ _id: lid("l1"), name: "Ligue Panaméricaine" }];
+    renderForm({ leagueSuggestion: "Ligue Panamericaine" });
+    openLeagueList();
+
+    expect(screen.queryByRole("radio", { name: /^Create / })).toBeNull();
+    expect(
+      screen
+        .getByRole("radio", { name: "Ligue Panaméricaine" })
+        .getAttribute("aria-checked"),
+    ).toBe("true");
+  });
+
   it("offers 'Create {name}' only when this sport holds no matching league", () => {
     currentLeagues = [{ _id: lid("l1"), name: "MLB" }];
     renderForm({ leagueSuggestion: "Australian Baseball League" });

@@ -497,6 +497,45 @@ describe("TeamPicker", () => {
     expect(screen.getByLabelText("Add San Diego Padres")).toBeTruthy();
   });
 
+  it("finds an accented split row from an ASCII query, and offers no create for it (NEO-253)", () => {
+    // The two halves of this box have to agree, and before the fold they did
+    // not. The list filtered on a bare `toLowerCase().includes`, so typing
+    // "Montreal Expos" HID the accented row; the create offer was decided the
+    // same way, so it appeared — and pressing it reached a server whose key
+    // DOES fold, which resolved it straight back onto the row the list had
+    // just hidden. The operator was shown a create affordance for a team NB
+    // already held.
+    //
+    // With the location carrying the accent, this is also the NEO-236 half:
+    // nothing here matches on `name` ("Expos") at all.
+    currentCandidates = [makeTeam("t1", "Expos", "Montréal")];
+    renderPicker({ sportId: SPORT_ID });
+    openPopover();
+
+    fireEvent.change(screen.getByLabelText("Search teams"), {
+      target: { value: "Montreal Expos" },
+    });
+
+    expect(screen.getByLabelText("Add Montréal Expos")).toBeTruthy();
+    expect(createRow()).toBeNull();
+  });
+
+  it("finds an ASCII split row from an accented query (NEO-253)", () => {
+    // The reverse crossing: NB holds the plain spelling and the operator
+    // types the real one. Symmetry matters because which side carries the
+    // accent depends only on which source happened to create the row first.
+    currentCandidates = [makeTeam("t1", "Expos", "Montreal")];
+    renderPicker({ sportId: SPORT_ID });
+    openPopover();
+
+    fireEvent.change(screen.getByLabelText("Search teams"), {
+      target: { value: "Montréal Expos" },
+    });
+
+    expect(screen.getByLabelText("Add Montreal Expos")).toBeTruthy();
+    expect(createRow()).toBeNull();
+  });
+
   // NEO-96: this test used to assert the OPPOSITE — that with no sport prop the
   // picker called findOrCreate with `sport: ""`. That wrote a team no query
   // could ever find again (every read is an exact sport match), which is one of

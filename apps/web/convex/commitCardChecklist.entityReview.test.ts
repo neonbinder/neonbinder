@@ -1086,6 +1086,61 @@ describe("commitCardChecklist: a custom card's skipped pendingPlayerNames entry 
     // And still nothing created for the skipped name.
     expect(await t.run(async (ctx) => ctx.db.query("players").collect())).toEqual([]);
   });
+
+  /**
+   * NEO-253 — the two spellings are ONE name to the retirement pass too.
+   *
+   * A custom card's pending name is hand-typed by an operator; the name the
+   * wizard settles came off a marketplace roster. Two spellings of one person
+   * between those two sources is the normal case, not an edge one, and it is
+   * precisely what the fold now treats as identical everywhere else in the
+   * commit. Compared as trimmed literals, the retirement pass was the one place
+   * that still disagreed: the operator skips "José Ramírez", and the custom
+   * card's "Jose Ramirez" stays pending forever — re-offered on every later
+   * fetch of the set, which is the exact loop `entityReviewSkips` exists to
+   * break, half-working.
+   */
+  test("a pending name is retired by the OTHER spelling being settled (NEO-253)", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+
+    const customCardId = await t.run(async (ctx) =>
+      ctx.db.insert("cardChecklist", {
+        selectorOptionId: variantTypeId,
+        cardNumber: "C1",
+        cardName: "Hand-added Card",
+        isCustom: true,
+        // The operator typed it without accents.
+        pendingPlayerNames: ["Jose Ramirez", "Still Unreviewed"],
+        platformData: {},
+        sortOrder: 0,
+        lastUpdated: Date.now(),
+      }),
+    );
+
+    // The wizard settles the ACCENTED spelling, which is how SportLots spells
+    // it.
+    await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      batchId: "batch-1",
+      kind: "player",
+      name: "José Ramírez",
+      decision: { action: "skip" },
+    });
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardNumber: "1", cardName: "Unrelated" })],
+      batchId: "batch-1",
+    });
+
+    const card = await t.run(async (ctx) => ctx.db.get(customCardId));
+    // Retired, and the unrelated pending name is untouched.
+    expect(card!.pendingPlayerNames).toEqual(["Still Unreviewed"]);
+  });
 });
 
 // ===========================================================================

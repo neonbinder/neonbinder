@@ -216,11 +216,19 @@ function TeamDetail({
   leagues,
   franchises,
   onStatus,
+  onSelect,
 }: {
   team: Team;
   leagues: League[];
   franchises: Franchise[];
   onStatus: (status: Status) => void;
+  /**
+   * NEO-253 — open another team from this panel. Today's only caller is the
+   * `NAME_TAKEN` alert below, which has the OTHER row's id and would otherwise
+   * leave the operator to go and search for a team they have just been told
+   * exists. Same shape and same reason as `PlayerManagement`'s.
+   */
+  onSelect: (id: Id<"teams">) => void;
 }) {
   const saveTeamFields = useMutation(api.teams.saveTeamFields);
   const findOrCreateFranchise = useMutation(api.franchises.findOrCreate);
@@ -279,6 +287,7 @@ function TeamDetail({
   );
   const [primary, setPrimary] = useState(team.colors?.primary ?? "");
   const [secondary, setSecondary] = useState(team.colors?.secondary ?? "");
+  const [nameTakenId, setNameTakenId] = useState<Id<"teams"> | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   /**
    * NEO-236 — a refused save, shown WHERE THE OPERATOR CAN ACT ON IT.
@@ -355,6 +364,7 @@ function TeamDetail({
     setSecondary(team.colors?.secondary ?? "");
     setSaveError(null);
     setSaveStatus(null);
+    setNameTakenId(null);
   }
 
   /**
@@ -577,6 +587,7 @@ function TeamDetail({
     onStatus(null);
     setSaveError(null);
     setSaveStatus(null);
+    setNameTakenId(null);
     try {
       // The league already exists by the time Save is pressed — the dialog
       // creates it and hands back an id. Nothing about a league is written
@@ -616,9 +627,33 @@ function TeamDetail({
       // Inline, not the status line: every way this call can fail is a thing
       // about the fields above it — the name is taken, the name is empty, the
       // colour is not a hex — and the panel is where it gets fixed.
-      setSaveError(
-        userFacingMessage(e, "Could not save this team. Try again."),
-      );
+      //
+      // NEO-253 — one refusal is more than a sentence. `NAME_TAKEN:<id>`
+      // carries the OTHER row's id precisely so this screen can offer to go
+      // there, so it is parsed out into its own state rather than printed: the
+      // "Open the existing team" button below is gated on that id being
+      // present, never on the shape of the message text. Read `.data` first
+      // (the only thing that survives production's redaction) and fall back to
+      // `.message` for the dev path — verbatim from `PlayerManagement`, which
+      // has had this since the same guard was added on the players side.
+      const raw =
+        e && typeof e === "object" && "data" in e && typeof e.data === "string"
+          ? e.data
+          : e instanceof Error
+            ? e.message
+            : "";
+      const taken = /NAME_TAKEN:([^\s"]+)/.exec(raw);
+      if (taken) {
+        setNameTakenId(taken[1] as Id<"teams">);
+        setSaveError(
+          `Another team in this sport is already called ${draftFullName}.`,
+        );
+      } else {
+        setNameTakenId(null);
+        setSaveError(
+          userFacingMessage(e, "Could not save this team. Try again."),
+        );
+      }
     } finally {
       setBusy(null);
     }
@@ -767,8 +802,10 @@ function TeamDetail({
           onChange={(e) => {
             setLocation(e.target.value);
             // The refusal is about these two fields; editing either one is the
-            // operator answering it, so the message goes as soon as they do.
+            // operator answering it, so the message — and the escape hatch it
+            // carried — goes as soon as they do.
             setSaveError(null);
+            setNameTakenId(null);
           }}
         />
 
@@ -782,6 +819,7 @@ function TeamDetail({
           onChange={(e) => {
             setName(e.target.value);
             setSaveError(null);
+            setNameTakenId(null);
           }}
         />
 
@@ -806,14 +844,35 @@ function TeamDetail({
           </p>
         )}
 
+        {/* NEO-253 — a refused rename, and the way out of it, in ONE place.
+            This sits with the two fields it is about rather than in the
+            page-level status line: on a 1024x629 viewport that line is well
+            above the fold when Save is pressed, so an operator would see the
+            save do nothing and be told why somewhere they cannot see.
+
+            The escape hatch is gated on `nameTakenId` — an explicit id parsed
+            off the refusal — and never on the message text, so a future
+            refusal that happens to read similarly cannot grow a button that
+            navigates nowhere. The destination is a real button rather than a
+            link because the id belongs in a handler, not interpolated into an
+            href. Same markup and same copy shape as PlayerManagement's. */}
         {saveError && (
-          <p
+          <div
             id={errorId}
             role="alert"
-            className="sm:col-span-2 text-sm text-neon-pink"
+            className="sm:col-span-2 flex flex-wrap items-center gap-3 text-sm text-neon-pink"
           >
-            {saveError}
-          </p>
+            <span>{saveError}</span>
+            {nameTakenId && (
+              <button
+                type="button"
+                onClick={() => onSelect(nameTakenId)}
+                className="min-h-6 rounded px-2 py-1 underline underline-offset-2 focus:outline-none focus:ring-2 focus:ring-neon-pink"
+              >
+                Open the existing team
+              </button>
+            )}
+          </div>
         )}
 
         <div>
@@ -1256,6 +1315,27 @@ export default function TeamManagement() {
     setSearchParams(next, { replace: true });
   };
 
+  /**
+   * NEO-253 — open a team this screen was handed the id of.
+   *
+   * Clears both client-side filters for the same reason the `?team=` link
+   * follower above does: `listForManagement` returns every team, but the name
+   * filter and the league dropdown can each hide the destination row from the
+   * master list, and a row that is selected but not REACHABLE reads as the
+   * button having done nothing. The URL is written too, so the team on screen
+   * is the team a reload reopens.
+   */
+  const selectTeam = (id: Id<"teams">) => {
+    setSelectedId(id);
+    setFilter("");
+    setLeagueFilter(ALL_LEAGUES);
+    // Marking the param followed is part of writing it, exactly as in the row
+    // click handler below: a param this screen wrote itself must not read back
+    // as a fresh deep link on a later render.
+    followedTeam.follow(id);
+    syncUrl(id, ALL_LEAGUES);
+  };
+
   // Bring the row into view once it has rendered. The list is a 32rem scroller
   // over every team, so the selected row can easily sit outside it and the
   // link would look like it had done nothing. `block: "nearest"` leaves a row
@@ -1538,6 +1618,7 @@ export default function TeamManagement() {
                 (f) => f.sportId === selected.sportId,
               )}
               onStatus={setStatus}
+              onSelect={selectTeam}
             />
           ) : (
             <p className="text-sm text-slate-400">

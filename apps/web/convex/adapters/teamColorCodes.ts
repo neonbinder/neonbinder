@@ -58,6 +58,11 @@ const FETCH_TIMEOUT_MS = 15_000;
  */
 const ALLOWED_HOSTS = new Set(["teamcolorcodes.com", "www.teamcolorcodes.com"]);
 
+// NEO-253: the diacritics fold, shared with the NB identity keys. Only the
+// FOLD is shared — `colorSourceMatchKey` below keeps its own tail (drops
+// hyphens, preserves word order) for the reasons in its own docstring.
+import { foldDiacritics } from "../../lib/entities/normalize-name";
+
 /**
  * Hard ceiling on a single response.
  *
@@ -141,9 +146,21 @@ const SPORT_SUFFIXES = [
  * identical. Here both sides of the comparison are real team names, so
  * order-preserving normalization keeps the match honest and the failure mode
  * (no match → human review) safe.
+ *
+ * NEO-253: the DIACRITICS FOLD is shared with the identity keys even though the
+ * rest of this key is not. Jason's rule — "José and Jose must match" — is about
+ * what the operator sees, and an accented NB team silently missing its colour
+ * source is that miss on the user-facing side: a spine label prints in the
+ * default grey and nothing anywhere says why. teamcolorcodes.com spells its
+ * slugs in ASCII, NB stores the franchise's real name, and before the fold
+ * "Montréal Expos" keyed as "montr al expos" — no match, forever.
+ *
+ * `seedMatchKey` (lib/teams/seed-team-lookup.ts) is the same key for the
+ * bundled dataset and must move in step; `teamColorCodes.test.ts` asserts the
+ * two agree on a shared fixture set.
  */
 export function colorSourceMatchKey(raw: string): string {
-  let s = raw
+  let s = foldDiacritics(raw)
     .toLowerCase()
     .replace(/[’'`]/g, "")
     .replace(/[^a-z0-9]+/g, " ")

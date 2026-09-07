@@ -3,6 +3,7 @@ import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import { splitTeamName, teamFullName } from "../../lib/teams/team-name";
+import { normalizeOrderedEntityName } from "../../lib/entities/normalize-name";
 import { Input } from "../primitives/Input";
 
 /**
@@ -121,15 +122,18 @@ export function draftFullName(draft: { location: string; name: string }): string
  * existing row — and the server still resolves it onto that row through
  * `findOrCreateLeague`, so nothing duplicates. A false POSITIVE would silently
  * file the team in the wrong league, so the cheap comparison is the safe one.
+ *
+ * NEO-253: the shared order-preserving key, not a transcription of it. The
+ * comparison this feeds is between a name a SOURCE supplied and a name NB
+ * stores, which is precisely where the spellings disagree about accents — a
+ * hand copy that stopped at `[^a-z0-9\s-]` shredded "Ligue Panaméricaine"
+ * into a key resembling nothing, so the pill offered to create a league the
+ * sport already held. Unordered on purpose: `leagues.nameNormalized` does not
+ * token-sort, and sorting here would match "National League" against "League
+ * National".
  */
 function normalizeLeagueName(raw: string): string {
-  return raw
-    .toLowerCase()
-    .replace(/[.,'"`’]/g, "")
-    .replace(/[^a-z0-9\s-]/g, " ")
-    .split(/\s+/)
-    .filter(Boolean)
-    .join(" ");
+  return normalizeOrderedEntityName(raw);
 }
 
 export default function NewTeamForm({

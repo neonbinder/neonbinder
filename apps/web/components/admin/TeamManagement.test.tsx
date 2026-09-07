@@ -1188,14 +1188,27 @@ describe("TeamManagement — the detail panel's composed name", () => {
   });
 });
 
+/**
+ * NEO-253 — the refusal is an ID, and the screen turns it into a way out.
+ *
+ * `saveTeamFields` rejects a colliding rename with `NAME_TAKEN:<id>` and
+ * nothing else: the string reaches Sentry and the browser console, so it
+ * carries no name and no audit fields. The sentence an operator reads is
+ * written HERE, from the draft they typed, and the id becomes a button that
+ * opens the row they collided with — which is the actual next thing they want,
+ * and otherwise a search they have to run by hand.
+ */
 describe("TeamManagement — a name that is already taken", () => {
+  // What the server really sends. The id is `t-yankees`, the row the fixtures
+  // already hold, so the escape hatch has somewhere real to land.
+  const TAKEN = "NAME_TAKEN:t-yankees";
   const REFUSAL = "Another team in this sport is already called New York Yankees.";
 
   it("shows the refusal next to the fields instead of crashing", async () => {
     // A ConvexError, not a plain Error: production redacts a plain Error's
-    // message to "Server Error", so the sentence the backend wrote for a person
-    // only crosses on `data` (see `userFacingMessage`).
-    mockSaveTeamFields.mockRejectedValue(new ConvexError(REFUSAL));
+    // message to "Server Error", so what the backend sent only crosses on
+    // `data` (see `userFacingMessage`).
+    mockSaveTeamFields.mockRejectedValue(new ConvexError(TAKEN));
     renderAt("/admin/teams?team=t-mariners");
 
     fireEvent.change(screen.getByLabelText("Location"), {
@@ -1207,7 +1220,11 @@ describe("TeamManagement — a name that is already taken", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toBe(REFUSAL);
+    // The sentence names the COMPOSED draft, which is the thing that collided
+    // — not the nickname on its own, which would read as a refusal of a name
+    // the operator never typed. And never the raw `NAME_TAKEN:` string.
+    expect(alert.textContent).toContain(REFUSAL);
+    expect(alert.textContent).not.toContain("NAME_TAKEN");
     // The draft survives: the operator's typing is what they are about to fix,
     // and re-typing it would be the screen punishing them for the refusal.
     expect(screen.getByLabelText("Name")).toHaveProperty("value", "Yankees");
@@ -1215,8 +1232,41 @@ describe("TeamManagement — a name that is already taken", () => {
     expect(screen.getByRole("button", { name: "Save" })).toBeTruthy();
   });
 
+  it("offers the team it collided with, and opens it", async () => {
+    mockSaveTeamFields.mockRejectedValue(new ConvexError(TAKEN));
+    renderAt("/admin/teams?team=t-mariners");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    const open = await screen.findByRole("button", {
+      name: "Open the existing team",
+    });
+    fireEvent.click(open);
+
+    // Selected for real — the row, the panel and the shareable URL all move,
+    // exactly as if the operator had found it in the list themselves.
+    expect(row("New York Yankees").getAttribute("aria-current")).toBe("true");
+    expect(screen.getByLabelText("Name")).toHaveProperty("value", "Yankees");
+    expect(screen.getByTestId("search").textContent).toBe("?team=t-yankees");
+  });
+
+  it("offers no escape hatch for a refusal that is not a collision", async () => {
+    // The button is gated on the parsed id, never on how the message reads.
+    // A backend sentence that happens to mention another team must not grow a
+    // button that navigates nowhere.
+    mockSaveTeamFields.mockRejectedValue(
+      new ConvexError("A team name is 130 characters; the limit is 120."),
+    );
+    renderAt("/admin/teams?team=t-mariners");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await screen.findByRole("alert");
+    expect(
+      screen.queryByRole("button", { name: "Open the existing team" }),
+    ).toBeNull();
+  });
+
   it("marks both fields invalid and points them at the message", async () => {
-    mockSaveTeamFields.mockRejectedValue(new ConvexError(REFUSAL));
+    mockSaveTeamFields.mockRejectedValue(new ConvexError(TAKEN));
     renderAt("/admin/teams?team=t-mariners");
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
@@ -1229,7 +1279,7 @@ describe("TeamManagement — a name that is already taken", () => {
   });
 
   it("takes the message away as soon as either field is edited", async () => {
-    mockSaveTeamFields.mockRejectedValue(new ConvexError(REFUSAL));
+    mockSaveTeamFields.mockRejectedValue(new ConvexError(TAKEN));
     renderAt("/admin/teams?team=t-mariners");
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await screen.findByRole("alert");
@@ -1239,6 +1289,11 @@ describe("TeamManagement — a name that is already taken", () => {
     });
 
     expect(screen.queryByRole("alert")).toBeNull();
+    // The way out goes with it. Leaving it behind would offer to navigate away
+    // on the strength of a refusal the operator has already answered.
+    expect(
+      screen.queryByRole("button", { name: "Open the existing team" }),
+    ).toBeNull();
     expect(screen.getByLabelText("Name").getAttribute("aria-invalid")).toBeNull();
   });
 

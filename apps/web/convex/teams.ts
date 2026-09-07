@@ -16,6 +16,8 @@ import { longestToken, nameTokens, rankTeamCandidates } from "./lib/entityNearMa
 // lib/players/wikidata-id.ts. Named for players only because that is where the
 // id first appeared; the shape is the same for every Wikidata entity.
 import { isWikidataQid } from "../lib/players/wikidata-id";
+// NEO-253: shared with players, leagues and the browser-side review wizard.
+import { normalizeEntityName } from "../lib/entities/normalize-name";
 // NEO-236: the split. `teamRowFields` is the ONE derivation of a row's
 // identity fields and `findTeamByFullName` the ONE lookup — see
 // convex/lib/teamRow.ts for why every writer in this file goes through them.
@@ -23,19 +25,17 @@ import { findTeamByFullName, teamRowFields } from "./lib/teamRow";
 import { splitTeamName, teamFullName } from "../lib/teams/team-name";
 
 /**
- * Lowercase + strip punctuation + token-sort. Same shape as the player
- * normalizer — keeps "Yankees, New York" and "New York Yankees" deduped
- * to one row. Used as the dedup key on `teams.nameNormalized`.
+ * The dedup key on `teams.nameNormalized`.
+ *
+ * NEO-253: an alias for the shared implementation in
+ * `lib/entities/normalize-name.ts`, which is now the ONLY copy of the chain —
+ * previously this function and `normalizePlayerName` were two hand-maintained
+ * transcriptions of the same regexes. Same key as the player side, deliberately
+ * so: "Montréal Expos" and "Montreal Expos" are one franchise for exactly the
+ * reason "José Ramírez" and "Jose Ramirez" are one person.
  */
 export function normalizeTeamName(raw: string): string {
-  return raw
-    .toLowerCase()
-    .replace(/[.,'"`’]/g, "")
-    .replace(/[^a-z0-9\s-]/g, " ")
-    .split(/\s+/)
-    .filter(Boolean)
-    .sort()
-    .join(" ");
+  return normalizeEntityName(raw);
 }
 
 /**
@@ -745,20 +745,45 @@ export const saveTeamFields = mutation({
 
       const fields = teamRowFields({ name: nextName, location: nextLocation });
 
-      if (fields.nameNormalized !== existing.nameNormalized) {
-        const clash = await ctx.db
+      // NEO-253: the refusal carries the OTHER row's id — `NAME_TAKEN:<id>` —
+      // rather than a sentence, so Team Management can offer "Open the
+      // existing team" instead of leaving the operator to go and search for a
+      // row the server has already found. Same convention as
+      // `savePlayerFields` and `saveLeagueFields`, and specifically an id and
+      // nothing else: this string reaches Sentry and the browser console
+      // through Convex's error path, so it carries no audit fields and not the
+      // clashing name.
+      //
+      // The guard mattered more once the key learned to fold. "Montreal Expos"
+      // renamed to "Montréal Expos" beside an existing "Montréal Expos" is now
+      // a collision, and it is a rename an operator makes on PURPOSE —
+      // correcting a franchise's spelling is the single most likely edit on
+      // this page.
+      //
+      // That last case is also why the check is NOT gated on the key changing.
+      // Folding makes the accent-only rename a no-op for the key, so a gate on
+      // `fields.nameNormalized !== existing.nameNormalized` skips exactly the
+      // edit most likely to be sitting on top of a duplicate — a pair of rows
+      // that already share a key, which is the state the operator is trying to
+      // resolve by retyping one of them. Checked every time, and it costs one
+      // indexed read of a bucket that holds one row in the healthy case.
+      //
+      // `.take(2)` rather than `.first()` for the same reason: when a duplicate
+      // pair exists, `.first()` may well return the row being edited, and a
+      // self-match reads as "no collision". Among two or more rows sharing a
+      // key at most one is `args.id`, so any two of them contain a stranger.
+      const clash = (
+        await ctx.db
           .query("teams")
           .withIndex("by_name_normalized_and_sport_id", (q) =>
             q
               .eq("nameNormalized", fields.nameNormalized)
               .eq("sportId", existing.sportId),
           )
-          .first();
-        if (clash && clash._id !== args.id) {
-          throw new ConvexError(
-            `Another team in this sport is already called ${teamFullName(fields)}.`,
-          );
-        }
+          .take(2)
+      ).find((row) => row._id !== args.id);
+      if (clash) {
+        throw new ConvexError(`NAME_TAKEN:${clash._id}`);
       }
 
       patch.name = fields.name;

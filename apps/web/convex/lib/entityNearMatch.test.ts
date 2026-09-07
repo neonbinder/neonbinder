@@ -4,15 +4,16 @@
  *
  * Two things are locked here, and they fail differently:
  *
- *   * **Normaliser parity.** `normalizeEntityName` is a hand copy of
+ *   * **Normaliser parity.** `normalizeEntityName` USED to be a hand copy of
  *     `normalizeTeamName` (convex/teams.ts) and `normalizePlayerName`
- *     (convex/players.ts), copied because this module must stay free of
- *     `_generated/server` so the browser can import it. A drift between the
- *     copy and the originals is silent at every layer: the wizard would dedupe
- *     a pasted list one way and the commit would write `nameNormalized` the
- *     other, so "will create 3" becomes 2 rows with no error anywhere. The
- *     parity cases below import the real server normalisers and assert
- *     character equality, which is the only place that drift can surface.
+ *     (convex/players.ts), transcribed because this module must stay free of
+ *     `_generated/server` so the browser can import it. NEO-253 made all three
+ *     one function in `lib/entities/normalize-name.ts`, which has no Convex
+ *     imports and so needs no copy. The parity cases below are KEPT anyway:
+ *     they are what will say so if somebody reintroduces a local copy, and the
+ *     drift they guard against is silent at every layer — the wizard would
+ *     dedupe a pasted list one way and the commit would write `nameNormalized`
+ *     the other, so "will create 3" becomes 2 rows with no error anywhere.
  *
  *   * **The match ladders.** These are the cases the ticket exists for —
  *     "Yankees" / "New York Yankees" / "NY Yankees" were three rows, and the
@@ -73,6 +74,15 @@ describe("normalizeEntityName", () => {
     );
   });
 
+  // NEO-253. The wizard's "did you mean?" is the LAST prompt before a second
+  // row for the same person is created, so the fold has to reach this module
+  // and not only the server's write path.
+  test("folds diacritics, so the accented spelling ranks as an exact hit", () => {
+    expect(normalizeEntityName("José Ramírez")).toBe(
+      normalizeEntityName("Jose Ramirez"),
+    );
+  });
+
   test("a punctuation-only name normalises to the empty key", () => {
     expect(normalizeEntityName("...")).toBe("");
     expect(normalizeEntityName("   ")).toBe("");
@@ -89,6 +99,12 @@ describe("normalizeEntityName", () => {
     "Wilkes-Barre Barons",
     "D'Angelo Russell",
     "...",
+    // NEO-253: the fixtures the parity check did not have, which is how the
+    // three copies could agree with each other and all three be wrong.
+    "José Ramírez",
+    "Jose Ramirez",
+    "Montréal Expos",
+    "Bjørn Nielsen",
   ])("parity with the server normalisers: %s", (fixture) => {
     expect(normalizeEntityName(fixture)).toBe(normalizeTeamName(fixture));
     expect(normalizeEntityName(fixture)).toBe(normalizePlayerName(fixture));

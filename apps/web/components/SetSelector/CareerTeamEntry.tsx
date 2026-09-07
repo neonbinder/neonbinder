@@ -9,6 +9,10 @@ import {
 import { teamFullName } from "../../lib/teams/team-name";
 import { Input } from "../primitives/Input";
 import { MIN_CAREER_YEAR, maxCareerYear } from "../../lib/players/career-years";
+import {
+  nameHasQueryPrefix,
+  nameMatchesQuery,
+} from "../../lib/entities/name-search";
 
 /**
  * NEO-92 follow-up: manual career-team entry for a player row in the
@@ -190,19 +194,24 @@ export default function CareerTeamEntry({
    * prefix-ranked, so the list stays a typeahead rather than a batch dump.
    */
   const suggestions = useMemo<Suggestion[]>(() => {
-    const q = trimmedName.toLowerCase();
+    // NEO-253: folded, so an accented staged chip is reachable by typing the
+    // ASCII spelling and vice versa. `nameSearchKey` rather than the
+    // token-sorted dedup key, which would stop "new york" matching "New York
+    // Yankees"; the dedup key is still what `stagedKeys` below uses, because
+    // THAT question is identity.
+    const q = trimmedName;
     if (!q) return [];
 
     const rank = (a: string, b: string) => {
-      const aPrefix = a.toLowerCase().startsWith(q) ? 0 : 1;
-      const bPrefix = b.toLowerCase().startsWith(q) ? 0 : 1;
+      const aPrefix = nameHasQueryPrefix(a, q) ? 0 : 1;
+      const bPrefix = nameHasQueryPrefix(b, q) ? 0 : 1;
       if (aPrefix !== bPrefix) return aPrefix - bPrefix;
       return a.localeCompare(b);
     };
 
     const stagedKeys = new Set(stagedNames.map(normalizeEntityName));
     const staged = stagedNames
-      .filter((n) => n.toLowerCase().includes(q))
+      .filter((n) => nameMatchesQuery(n, q))
       .sort(rank)
       .map((n) => ({ key: `staged:${n}`, name: n, staged: true }));
 
