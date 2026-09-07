@@ -9,6 +9,7 @@ import { AddLeagueDialog } from "./AddLeagueDialog";
 import { contrastRatio, normalizeHexColor } from "@/lib/print/contrast";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import { teamFullName, teamShortName } from "@/lib/teams/team-name";
+import { useFollowedParam } from "@/src/hooks/use-followed-param";
 
 /**
  * NEO-236 security review — the browser-side half of `teams.saveTeamFields`'s
@@ -57,6 +58,15 @@ type Team = Doc<"teams">;
  */
 type League = Doc<"leagues"> & { level?: string };
 
+/**
+ * NEO-254 — a franchise row, as this screen needs it.
+ *
+ * Structural rather than `Doc<"franchises">` for the reason `League` above is:
+ * the screen only reads a name, a sport and a count, and typing it that way
+ * keeps it compiling independently of the table's other columns.
+ */
+type Franchise = { _id: Id<"franchises">; name: string; sportId: Id<"selectorOptions"> };
+
 /** Sentinel for the "no league" option — a select's value must be a string. */
 const NO_LEAGUE = "";
 /**
@@ -70,6 +80,15 @@ const NO_LEAGUE = "";
 const ADD_LEAGUE = "__add__";
 /** The league filter's "every team" value — not an id, so it is never a param. */
 const ALL_LEAGUES = "all";
+
+/** NEO-254 — the franchise field's "not on a thread" value. */
+const NO_FRANCHISE = "";
+/**
+ * The "start a new franchise" option's value — a COMMAND, exactly like
+ * `ADD_LEAGUE`. Choosing it reveals a name box; `franchiseId` is never set to
+ * it, so `save()` has no sentinel to unpick.
+ */
+const ADD_FRANCHISE = "__new_franchise__";
 
 /**
  * Competitive tier, most prominent first.
@@ -103,38 +122,11 @@ function byLevelThenName(a: League, b: League): number {
 type Status = { text: string; isError: boolean } | null;
 
 /**
- * A URL param this screen follows ONCE per distinct value.
- *
- * The screen re-renders on every reactive update to the tables it reads, so a
- * param applied on each of them would keep yanking the operator back to the
- * state they arrived in. This remembers what has already been applied.
- *
- * TWO values are remembered, not one, and that is not belt-and-braces. React
- * Router applies every location update inside `startTransition` — the app's
- * `BrowserRouter` and the tests' `MemoryRouter` share that code path — so the
- * render that commits a change is a render in which `searchParams` STILL
- * CARRIES THE PREVIOUS VALUE; the URL catches up one render later. A one-slot
- * marker cannot tell that stale value apart from a fresh link back to it, so it
- * follows it — undoing the operator's own action under their hands. Remembering
- * the superseded value closes exactly that window.
- *
- * The cost of the second slot is that a link back to the value just left is
- * ignored for as long as the screen stays mounted. Every write here is a
- * `replace`, so there is no history entry to go back to, and every inbound link
- * arrives as a fresh mount.
+ * NEO-254 moved `useFollowedParam` to `src/hooks/use-followed-param.ts`, so
+ * Franchise Management shares it rather than growing a second copy. Its
+ * docstring carries the `startTransition` reasoning the two-slot marker exists
+ * for; read that before changing either caller.
  */
-function useFollowedParam() {
-  const [slots, setSlots] = useState<readonly [string | null, string | null]>([
-    null,
-    null,
-  ]);
-  return {
-    /** The value most recently followed — an effect dependency, not state. */
-    latest: slots[0],
-    hasFollowed: (value: string) => slots.includes(value),
-    follow: (value: string) => setSlots(([current]) => [value, current]),
-  };
-}
 
 function ColorSwatch({ hex, label }: { hex?: string; label: string }) {
   return (
@@ -166,13 +158,16 @@ function attentionFor(team: Team): "choice" | "colors" | null {
 function TeamDetail({
   team,
   leagues,
+  franchises,
   onStatus,
 }: {
   team: Team;
   leagues: League[];
+  franchises: Franchise[];
   onStatus: (status: Status) => void;
 }) {
   const saveTeamFields = useMutation(api.teams.saveTeamFields);
+  const findOrCreateFranchise = useMutation(api.franchises.findOrCreate);
   const enrichFromWikidata = useAction(api.teams.enrichFromWikidata);
   const chooseColorSource = useAction(api.teamColorSources.chooseColorSource);
 
@@ -196,6 +191,25 @@ function TeamDetail({
     { id: Id<"leagues">; name: string }[]
   >([]);
   const leagueSelectRef = useRef<HTMLSelectElement>(null);
+  /**
+   * NEO-254 — the franchise thread, and the inline "start a new one" box.
+   *
+   * A box rather than a dialog, unlike leagues: a franchise has exactly one
+   * field, so a modal would be three clicks and a focus trap around a single
+   * text input. `newFranchises` is the same optimistic tail `addedLeagues` is,
+   * and exists for the same reason — a controlled select whose value names an
+   * option it does not have renders BLANK, so the thread the operator just
+   * created would vanish for the moment before the query catches up.
+   */
+  const [franchiseId, setFranchiseId] = useState<string>(
+    team.franchiseId ?? NO_FRANCHISE,
+  );
+  const [newFranchiseName, setNewFranchiseName] = useState("");
+  const [namingFranchise, setNamingFranchise] = useState(false);
+  const [newFranchises, setNewFranchises] = useState<
+    { id: Id<"franchises">; name: string }[]
+  >([]);
+  const franchiseSelectRef = useRef<HTMLSelectElement>(null);
   const [location, setLocation] = useState(team.location ?? "");
   const [fromYear, setFromYear] = useState(
     team.yearsActive?.from ? String(team.yearsActive.from) : "",
@@ -246,6 +260,10 @@ function TeamDetail({
     setLeagueId(team.leagueId ?? NO_LEAGUE);
     setAddingLeague(false);
     setAddedLeagues([]);
+    setFranchiseId(team.franchiseId ?? NO_FRANCHISE);
+    setNamingFranchise(false);
+    setNewFranchiseName("");
+    setNewFranchises([]);
     setLocation(team.location ?? "");
     setFromYear(team.yearsActive?.from ? String(team.yearsActive.from) : "");
     setToYear(team.yearsActive?.to ? String(team.yearsActive.to) : "");
@@ -302,6 +320,60 @@ function TeamDetail({
     ];
   }, [leagues, addedLeagues]);
 
+  /** Every thread this dropdown can offer, plus anything just created here. */
+  const franchiseOptions = useMemo(() => {
+    const known = new Set(franchises.map((f) => f._id as string));
+    return [
+      ...franchises
+        .map((f) => ({ id: f._id as string, label: f.name }))
+        .sort((a, b) => a.label.localeCompare(b.label)),
+      ...newFranchises
+        .filter((f) => !known.has(f.id as string))
+        .map((f) => ({ id: f.id as string, label: f.name })),
+    ];
+  }, [franchises, newFranchises]);
+
+  /**
+   * Create the thread the operator just named and put this team's draft on it.
+   *
+   * Find-or-create, so pressing it twice — or naming a thread that already
+   * exists under a different word order — selects the existing row rather than
+   * failing on a duplicate the operator cannot see. The TEAM is not saved here:
+   * starting a franchise and deciding this team belongs to it are two
+   * decisions, and Save still commits the second.
+   */
+  const createFranchise = async () => {
+    const name = newFranchiseName.trim();
+    if (!name) return;
+    setBusy("franchise");
+    setSaveError(null);
+    try {
+      const { id, created } = await findOrCreateFranchise({
+        name,
+        sportId: team.sportId,
+      });
+      setNewFranchises((rows) =>
+        rows.some((row) => row.id === id) ? rows : [...rows, { id, name }],
+      );
+      setFranchiseId(id);
+      setNamingFranchise(false);
+      setNewFranchiseName("");
+      onStatus({
+        text: created
+          ? `Started the ${name} franchise. Save the team to put it on there.`
+          : `${name} was already a franchise. Save the team to put it on there.`,
+        isError: false,
+      });
+      franchiseSelectRef.current?.focus();
+    } catch (e) {
+      setSaveError(
+        userFacingMessage(e, "Could not start that franchise. Try again."),
+      );
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const save = async () => {
     if (!canSave) return;
     setBusy("save");
@@ -313,6 +385,11 @@ function TeamDetail({
       // from here any more.
       const resolvedLeagueId: Id<"leagues"> | null =
         leagueId !== NO_LEAGUE ? (leagueId as Id<"leagues">) : null;
+      // NEO-254: the franchise exists by the time Save is pressed — the inline
+      // box creates it and hands back an id. `null` is a real answer here, and
+      // it is the one the franchise view's "Remove from franchise" sends too.
+      const resolvedFranchiseId: Id<"franchises"> | null =
+        franchiseId !== NO_FRANCHISE ? (franchiseId as Id<"franchises">) : null;
 
       const from = Number(fromYear);
       const to = Number(toYear);
@@ -320,6 +397,7 @@ function TeamDetail({
         id: team._id,
         name: name.trim(),
         leagueId: resolvedLeagueId,
+        franchiseId: resolvedFranchiseId,
         location: location.trim() || null,
         yearsActive: fromYear && Number.isFinite(from)
           ? { from, ...(toYear && Number.isFinite(to) ? { to } : {}) }
@@ -580,6 +658,97 @@ function TeamDetail({
           </Link>
         </div>
 
+        {/* NEO-254 — the franchise thread.
+            Beside League rather than below it: both answer "what larger thing
+            does this team belong to", and a franchise is the only one of the
+            two an operator invents themselves. Jason, 2026-09-06: "building a
+            collection of all Tennessee Titans and letting the user determine
+            if that should also include Houston Oilers and Tennessee Oilers
+            players." */}
+        <div>
+          <label
+            htmlFor="team-franchise"
+            className="block text-sm font-medium mb-1 text-slate-300"
+          >
+            Franchise
+          </label>
+          <select
+            id="team-franchise"
+            ref={franchiseSelectRef}
+            value={franchiseId}
+            onChange={(e) => {
+              const value = e.target.value;
+              if (value === ADD_FRANCHISE) {
+                // The draft's franchise does not move — React re-applies
+                // `value` on this render — so backing out of the name box
+                // costs nothing to undo. Same contract as ADD_LEAGUE.
+                setNamingFranchise(true);
+                return;
+              }
+              setNamingFranchise(false);
+              setFranchiseId(value);
+            }}
+            className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-base text-slate-100 focus:outline-none focus:ring-2 focus:ring-[#00C2FF]"
+          >
+            <option value={NO_FRANCHISE}>— none —</option>
+            {franchiseOptions.map((franchise) => (
+              <option key={franchise.id} value={franchise.id}>
+                {franchise.label}
+              </option>
+            ))}
+            <option value={ADD_FRANCHISE}>+ Start a new franchise…</option>
+          </select>
+
+          {namingFranchise && (
+            <div className="mt-2 flex items-end gap-2">
+              <Input
+                label="New franchise name"
+                value={newFranchiseName}
+                maxLength={MAX_TEAM_NAME_LENGTH}
+                placeholder="Titans / Oilers"
+                autoFocus
+                onKeyDown={(e) => {
+                  // Keyboard-first: Enter commits, Escape backs out. The whole
+                  // control is one text box, so a form round trip would be
+                  // ceremony around a single keystroke.
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    void createFranchise();
+                  }
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    setNamingFranchise(false);
+                    setNewFranchiseName("");
+                    franchiseSelectRef.current?.focus();
+                  }
+                }}
+                onChange={(e) => setNewFranchiseName(e.target.value)}
+              />
+              <NeonButton
+                type="button"
+                onClick={() => void createFranchise()}
+                disabled={busy !== null || !newFranchiseName.trim()}
+              >
+                {busy === "franchise" ? "Starting…" : "Start"}
+              </NeonButton>
+            </div>
+          )}
+
+          {/* Deep-linked to the thread in hand, because "see the franchise"
+              from here nearly always means this one. Same 24px pointer-target
+              padding as the leagues link beside it (WCAG 2.2 SC 2.5.8). */}
+          <Link
+            to={
+              franchiseId
+                ? `/admin/franchises?franchise=${franchiseId}`
+                : "/admin/franchises"
+            }
+            className="mt-1 inline-block rounded-sm py-1 text-xs text-neon-purple underline underline-offset-2 transition-colors hover:text-neon-purple/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-purple"
+          >
+            See the franchise
+          </Link>
+        </div>
+
         <div className="flex gap-2">
           <Input
             label="Active from"
@@ -670,6 +839,11 @@ function TeamDetail({
 export default function TeamManagement() {
   const management = useQuery(api.teams.listForManagement, {});
   const leagues = useQuery(api.leagues.list, {});
+  // NEO-254: the franchise threads, for the panel's Franchise dropdown. Whole
+  // list, filtered to the selected team's sport at the call site below — same
+  // shape as `leagues`, because a franchise is per-sport for the same reason a
+  // league is.
+  const franchises = useQuery(api.franchises.list, {});
 
   const [filter, setFilter] = useState("");
   const [leagueFilter, setLeagueFilter] = useState<string>(ALL_LEAGUES);
@@ -1060,6 +1234,9 @@ export default function TeamManagement() {
               key={selected._id}
               team={selected}
               leagues={leagueList.filter((l) => l.sportId === selected.sportId)}
+              franchises={(franchises?.franchises ?? []).filter(
+                (f) => f.sportId === selected.sportId,
+              )}
               onStatus={setStatus}
             />
           ) : (

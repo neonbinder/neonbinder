@@ -2368,3 +2368,416 @@ describe("resolveChecklistEntities: an open batch is reconciled even when nothin
     ).toHaveLength(0);
   });
 });
+
+// ===========================================================================
+// NEO-254 — the prelude never guesses between two players with one name
+// ===========================================================================
+
+/** A bare `players` row on the exact dedup key, with no review row behind it. */
+async function insertBarePlayer(
+  t: ReturnType<typeof convexTest>,
+  sportId: Id<"selectorOptions">,
+  name: string,
+  nameNormalized: string,
+  extra: { birthYear?: number } = {},
+): Promise<Id<"players">> {
+  return t.run(async (ctx) =>
+    ctx.db.insert("players", {
+      name,
+      nameNormalized,
+      sportId,
+      lastUpdated: Date.now(),
+      ...extra,
+    }),
+  );
+}
+
+describe("NEO-254: an ambiguous player name is resolved by the operator, never by the index", () => {
+  test("exactly ONE existing row is still adopted silently", async () => {
+    // The unchanged half, pinned so the guard cannot be tightened into
+    // demanding a decision for every name that already resolves.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    const only = await insertBarePlayer(t, sportId, "Tony Gwynn", "gwynn tony");
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardNumber: "1", players: ["Tony Gwynn"] })],
+    });
+
+    const cards = await readCards(t, variantTypeId);
+    expect(cards[0].playerIds).toEqual([only]);
+    // No second row minted, and no decision was needed.
+    expect(
+      await t.run(async (ctx) => ctx.db.query("players").collect()),
+    ).toHaveLength(1);
+  });
+
+  test("TWO existing rows and no decision links NOTHING and reports the name", async () => {
+    // The failure this ticket exists for. `.first()` bound the card to
+    // whichever Bob Allen the index returned, silently. Now the name is
+    // treated exactly like an unreviewed one: the card keeps it as text, the
+    // commit still lands, and the operator is told.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    await insertBarePlayer(t, sportId, "Bob Allen", "allen bob", { birthYear: 1867 });
+    await insertBarePlayer(t, sportId, "Bob Allen", "allen bob", { birthYear: 1937 });
+
+    const result = await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardNumber: "1", players: ["Bob Allen"] })],
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.unreviewedNameCount).toBe(1);
+
+    const cards = await readCards(t, variantTypeId);
+    expect(cards[0].playerIds ?? []).toEqual([]);
+    expect(cards[0].pendingPlayerNames).toEqual(["Bob Allen"]);
+    // And no third Bob Allen was minted to paper over the ambiguity.
+    expect(
+      await t.run(async (ctx) => ctx.db.query("players").collect()),
+    ).toHaveLength(2);
+  });
+
+  test("a LINK decision names which of the two, and that one is used", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    await insertBarePlayer(t, sportId, "Bob Allen", "allen bob", { birthYear: 1867 });
+    const younger = await insertBarePlayer(t, sportId, "Bob Allen", "allen bob", {
+      birthYear: 1937,
+    });
+
+    await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      batchId: "batch-1",
+      kind: "player",
+      name: "Bob Allen",
+      decision: { action: "link", linkedPlayerId: younger },
+    });
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardNumber: "1", players: ["Bob Allen"] })],
+      batchId: "batch-1",
+    });
+
+    const cards = await readCards(t, variantTypeId);
+    expect(cards[0].playerIds).toEqual([younger]);
+    expect(
+      await t.run(async (ctx) => ctx.db.query("players").collect()),
+    ).toHaveLength(2);
+  });
+
+  test("a CREATE decision on an ambiguous name mints a third row on purpose", async () => {
+    // Two Bob Allens on file and the operator says this is a THIRD man. That
+    // is a real answer — the wizard showed them both — and the commit must
+    // take it rather than quietly reusing one of the rows they rejected.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    await insertBarePlayer(t, sportId, "Bob Allen", "allen bob", { birthYear: 1867 });
+    await insertBarePlayer(t, sportId, "Bob Allen", "allen bob", { birthYear: 1937 });
+
+    await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      batchId: "batch-1",
+      kind: "player",
+      name: "Bob Allen",
+      decision: { action: "create" },
+      enrichment: { wikidataId: "Q999" },
+    });
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardNumber: "1", players: ["Bob Allen"] })],
+      batchId: "batch-1",
+    });
+
+    const players = await t.run(async (ctx) => ctx.db.query("players").collect());
+    expect(players).toHaveLength(3);
+    const created = players.find((p) => p.externalIds?.wikidataId === "Q999")!;
+    const cards = await readCards(t, variantTypeId);
+    expect(cards[0].playerIds).toEqual([created._id]);
+  });
+});
+
+// ===========================================================================
+// NEO-254 — an undated Wikidata team the operator DATED in the wizard
+// ===========================================================================
+
+describe("NEO-254: dating a lead in the wizard is what makes it career data", () => {
+  test("a dated lead becomes a stint; one left undated persists nothing", async () => {
+    // NEO-235's rule: a membership with no start year cannot become a stint,
+    // because inventing the year fabricates history the SKU and listing paths
+    // then read as fact. The wizard surfaces those names anyway and offers
+    // "Add years", which turns one into an ordinary manual career team — and
+    // THAT is the only thing that persists.
+    //
+    // Jason, 2026-09-06: a lead nobody dated is not stored on the player. It
+    // is a suggestion for this review, and the lookup returns it again next
+    // time the name is reviewed, so nothing is lost by leaving it out of NB's
+    // own data.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+
+    // NEO-236: the commit prelude resolves a manual career team by NAME and
+    // never inserts a team of its own — a team that does not exist yet gets
+    // its own New Team step in the wizard. So the team is on file here, which
+    // is the state the wizard leaves behind by the time Confirm is pressed.
+    const aztecs = await t.run(async (ctx) =>
+      ctx.db.insert("teams", {
+        name: "San Diego State Aztecs baseball",
+        nameNormalized: "aztecs baseball diego san state",
+        sportId,
+        lastUpdated: Date.now(),
+      }),
+    );
+
+    await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      batchId: "batch-1",
+      kind: "player",
+      name: "Tony Gwynn",
+      decision: {
+        action: "create",
+        manualCareerTeams: [
+          { name: "San Diego State Aztecs baseball", fromYear: 1979, toYear: 1981 },
+        ],
+      },
+      enrichment: {
+        undatedCareerTeams: [
+          "San Diego State Aztecs baseball",
+          "United States national team",
+        ],
+      },
+    });
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardNumber: "1", players: ["Tony Gwynn"] })],
+      batchId: "batch-1",
+    });
+
+    const player = await t.run(async (ctx) =>
+      ctx.db
+        .query("players")
+        .withIndex("by_name_normalized_and_sport_id", (q) =>
+          q.eq("nameNormalized", "gwynn tony").eq("sportId", sportId),
+        )
+        .first(),
+    );
+    // The dated one, and only the dated one.
+    expect(player!.teamYears).toEqual([
+      { teamId: aztecs, fromYear: 1979, toYear: 1981 },
+    ]);
+    // The undated one created no team row and left no trace on the player.
+    const teams = await t.run(async (ctx) => ctx.db.query("teams").collect());
+    expect(teams.map((row) => row.name)).toEqual(["San Diego State Aztecs baseball"]);
+  });
+});
+
+// ===========================================================================
+// NEO-254 — the public entry point, and a link whose target went away
+// ===========================================================================
+
+describe("NEO-254: resolveChecklistEntities enqueues an ambiguous name for review", () => {
+  test("TWO same-name rows enqueue a review row, carrying the candidates", async () => {
+    // The end-to-end shape of the gate: `.first()` used to answer "known" here
+    // and the wizard never opened at all, so nothing downstream could have
+    // helped. The candidates ride on the row from the moment it is inserted —
+    // NOT from when its Wikidata lookup lands — because the backstop and the
+    // stale-row sweep both settle a row without ever going near `players`.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    await insertBarePlayer(t, sportId, "Bob Allen", "allen bob", { birthYear: 1867 });
+    await insertBarePlayer(t, sportId, "Bob Allen", "allen bob", { birthYear: 1937 });
+
+    const resolved = await asAdmin.action(
+      api.selectorOptions.resolveChecklistEntities,
+      {
+        selectorOptionId: variantTypeId,
+        sportId,
+        cards: [makeCard({ cardNumber: "1", players: ["Bob Allen"] })],
+      },
+    );
+
+    expect(resolved.unknownPlayers).toEqual(["Bob Allen"]);
+    expect(resolved.batchId).toBeDefined();
+
+    const rows = await t.run(async (ctx) =>
+      ctx.db.query("entityReviewQueue").collect(),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].name).toBe("Bob Allen");
+    // Still `pending` — no lookup has run — and already knows it is a choice.
+    expect(rows[0].status).toBe("pending");
+    expect(rows[0].enrichment?.existingCandidates).toHaveLength(2);
+    expect(
+      rows[0].enrichment?.existingCandidates?.map((c) => c.birthYear).sort(),
+    ).toEqual([1867, 1937]);
+  });
+
+  test("exactly ONE existing row enqueues nothing — the name is resolved", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    await insertBarePlayer(t, sportId, "Tony Gwynn", "gwynn tony");
+
+    const resolved = await asAdmin.action(
+      api.selectorOptions.resolveChecklistEntities,
+      {
+        selectorOptionId: variantTypeId,
+        sportId,
+        cards: [makeCard({ cardNumber: "1", players: ["Tony Gwynn"] })],
+      },
+    );
+
+    expect(resolved.unknownPlayers).toEqual([]);
+    expect(resolved.batchId).toBeUndefined();
+    expect(
+      await t.run(async (ctx) => ctx.db.query("entityReviewQueue").collect()),
+    ).toHaveLength(0);
+  });
+
+  test("an unambiguous NEW name still enqueues a row with no candidates on it", async () => {
+    // The ordinary path, pinned so the enqueue-time candidate build cannot
+    // start decorating rows that are not a choice.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+
+    await asAdmin.action(api.selectorOptions.resolveChecklistEntities, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardNumber: "1", players: ["Daulton Varsho"] })],
+    });
+
+    const rows = await t.run(async (ctx) =>
+      ctx.db.query("entityReviewQueue").collect(),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].enrichment).toBeUndefined();
+  });
+});
+
+describe("NEO-254: a link decision is re-validated at commit", () => {
+  test("a linked player deleted since the decision leaves the card unlinked and reports the name", async () => {
+    // A review session is human-paced. Between recording the decision and
+    // pressing Confirm, another operator can merge or delete the row that was
+    // picked — and this used to write the dead id straight onto the card,
+    // where it was invisible to every query that joins through it.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    const doomed = await insertBarePlayer(t, sportId, "Bob Allen", "allen bob");
+
+    await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      batchId: "batch-1",
+      kind: "player",
+      name: "Bob Allen",
+      decision: { action: "link", linkedPlayerId: doomed },
+    });
+    // …and it is gone by the time Confirm lands.
+    await t.run(async (ctx) => ctx.db.delete(doomed));
+
+    const result = await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardNumber: "1", players: ["Bob Allen"] })],
+      batchId: "batch-1",
+    });
+
+    // The commit still lands — one dead link must not cost the whole sync.
+    expect(result.success).toBe(true);
+    expect(result.unreviewedNameCount).toBe(1);
+
+    const cards = await readCards(t, variantTypeId);
+    expect(cards[0].playerIds ?? []).toEqual([]);
+    expect(cards[0].pendingPlayerNames).toEqual(["Bob Allen"]);
+  });
+
+  test("a linked player from ANOTHER sport is refused the same way", async () => {
+    // A cross-sport row is unreachable by every query that matters — they all
+    // key on the sport id — so linking to one is a dangling reference wearing
+    // a valid id. Same rule `savePlayerFields` applies to a stint.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    const otherSportId = await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Football",
+        platformData: {},
+        children: [],
+        lastUpdated: Date.now(),
+      }),
+    );
+    const wrongSport = await insertBarePlayer(
+      t,
+      otherSportId,
+      "Bob Allen",
+      "allen bob",
+    );
+
+    await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      batchId: "batch-1",
+      kind: "player",
+      name: "Bob Allen",
+      decision: { action: "link", linkedPlayerId: wrongSport },
+    });
+
+    const result = await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardNumber: "1", players: ["Bob Allen"] })],
+      batchId: "batch-1",
+    });
+
+    expect(result.unreviewedNameCount).toBe(1);
+    expect((await readCards(t, variantTypeId))[0].playerIds ?? []).toEqual([]);
+  });
+
+  test("a live linked player is still used, and contributes its own spelling", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    const live = await insertBarePlayer(t, sportId, "Bob Allen", "allen bob");
+
+    await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      batchId: "batch-1",
+      kind: "player",
+      name: "bob allen",
+      decision: { action: "link", linkedPlayerId: live },
+    });
+
+    const result = await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardNumber: "1", players: ["bob allen"] })],
+      batchId: "batch-1",
+    });
+
+    expect(result.unreviewedNameCount).toBe(0);
+    expect((await readCards(t, variantTypeId))[0].playerIds).toEqual([live]);
+  });
+});

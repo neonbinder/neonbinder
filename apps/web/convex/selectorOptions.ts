@@ -116,8 +116,15 @@ import {
   platformsServingLevel,
 } from "./platformLevels";
 import { findSportForSelectorOption } from "./cardChecklist";
+// NEO-254: the set's year — the evidence that turns "two same-name players"
+// back into one. See convex/lib/selectorAncestry.ts.
+import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "./features/cardAttention";
-import { normalizePlayerName } from "./players";
+import {
+  narrowSameNamePlayersByCardYear,
+  normalizePlayerName,
+  PLAYER_AMBIGUITY_SCAN_LIMIT,
+} from "./players";
 import { normalizeTeamName } from "./teams";
 // NEO-236: the team name split. `teamFullName` composes location + nickname
 // for every name that leaves this file; `teamRowFields`/`findTeamByFullName`
@@ -1007,6 +1014,76 @@ export const findSkippedEntityNames = internalQuery({
 });
 
 /**
+ * NEO-254 — the team names printed on one incoming card.
+ *
+ * `teams[]` is the current shape; `team` is the legacy single-value column
+ * (NEO-26), read only when `teams[]` is empty so a row carrying both is not
+ * counted twice. Trimmed and deduped, because these become lookup keys.
+ */
+function cardTeamNames(card: {
+  team?: string;
+  teams?: string[];
+}): string[] {
+  const named = (card.teams ?? []).map((t) => t.trim()).filter(Boolean);
+  if (named.length === 0 && card.team?.trim()) named.push(card.team.trim());
+  return Array.from(new Set(named));
+}
+
+/**
+ * NEO-254 — record "this player appeared on a card carrying these teams".
+ *
+ * A name can appear on many cards in one set (a base card, a subset, a league
+ * leaders card), and a traded player's cards can legitimately name different
+ * teams. Every one of them is kept: the tie-break asks "does exactly ONE
+ * candidate have a stint on ANY of these teams in this year", so a wider set of
+ * teams makes the tie-break LESS likely to fire, never more likely to fire
+ * wrongly.
+ *
+ * Bounded, because this is a per-name accumulator over an operator-sized card
+ * batch and an unbounded one would grow with the set. The bound is far above
+ * what a real player's cards produce; hitting it simply stops adding, and the
+ * tie-break works with what it has.
+ */
+const MAX_CARD_TEAM_NAMES_PER_PLAYER = 8;
+
+function addCardTeamNames(
+  target: Map<string, string[]>,
+  playerName: string,
+  teamsOnCard: ReadonlyArray<string>,
+): void {
+  const name = playerName.trim();
+  if (!name || teamsOnCard.length === 0) return;
+  const existing = target.get(name);
+  if (!existing) {
+    target.set(name, teamsOnCard.slice(0, MAX_CARD_TEAM_NAMES_PER_PLAYER));
+    return;
+  }
+  for (const team of teamsOnCard) {
+    if (existing.length >= MAX_CARD_TEAM_NAMES_PER_PLAYER) return;
+    if (!existing.includes(team)) existing.push(team);
+  }
+}
+
+/**
+ * NEO-254 — the set's year, for an ACTION that needs it.
+ *
+ * `resolveUnknownsAndStartBatch` runs in an action, so it cannot walk the
+ * parent chain itself. A thin wrapper around the shared walk
+ * (`convex/lib/selectorAncestry.ts`) rather than a second copy of it, for the
+ * reason that module exists: the review gate, the commit prelude and the
+ * card-attention roster suggestions must not be able to disagree about what
+ * counts as this set's year.
+ */
+export const findSetYearForSelectorOptionQuery = internalQuery({
+  args: { selectorOptionId: v.id("selectorOptions") },
+  returns: v.union(v.number(), v.null()),
+  handler: async (ctx, args) => {
+    const year = await findSetYearForSelectorOption(ctx, args.selectorOptionId);
+    return year ?? null;
+  },
+});
+
+/**
  * Detect unresolved player/team names for a selectorOption and kick off the
  * NEO-92 review-wizard batch for whatever's unresolved. Shared by both the
  * marketplace path (folds in names observed on freshly-reconciled cards via
@@ -1032,6 +1109,16 @@ async function resolveUnknownsAndStartBatch(
     sportLabel: string;
     additionalPlayerNames?: string[];
     additionalTeamNames?: string[];
+    /**
+     * NEO-254 — the team names printed on the SAME card as each player name.
+     *
+     * Keyed by the raw player name as it came off the card; the map is built
+     * where the cards are, because this function only ever sees flat name
+     * lists. Used solely as a tie-break when the card's year leaves two
+     * same-name candidates standing, so an absent entry costs nothing but the
+     * tie-break.
+     */
+    cardTeamNamesByPlayer?: Map<string, string[]>;
   },
 ): Promise<{
   unknownPlayers: string[];
@@ -1106,13 +1193,65 @@ async function resolveUnknownsAndStartBatch(
     }),
   );
 
+  /**
+   * NEO-254 — the year of the set these names were read off, resolved ONCE.
+   *
+   * One ancestor walk for the whole gate rather than one per name. Undefined
+   * for an orphaned subtree or a fixture with no year row, and every caller
+   * below treats that as "cannot narrow" — the name goes to a human, never to
+   * whichever row the index returned first.
+   */
+  const setYear =
+    (await ctx.runQuery(
+      internal.selectorOptions.findSetYearForSelectorOptionQuery,
+      { selectorOptionId: args.selectorOptionId },
+    )) ?? undefined;
+  /**
+   * The team names that appeared on a card alongside this player name, deduped
+   * and matched on the RAW name — the same string `addPlayer` recorded, so the
+   * two sides cannot disagree about spelling.
+   */
+  const cardTeamNamesFor = (rawName: string): string[] =>
+    args.cardTeamNamesByPlayer?.get(rawName) ?? [];
+
   for (const [normalized, name] of playerByNorm) {
     if (skippedKeys.has(`player:${normalized}`)) continue;
-    const existing = await ctx.runQuery(api.players.findByNameAndSport, {
+    const cardTeamNames = cardTeamNamesFor(name);
+    /**
+     * NEO-254 — THE "needs review" GATE for players, and the reason it is no
+     * longer `findByNameAndSport`.
+     *
+     * That query answers "a player, or null", which cannot express the case
+     * this ticket exists for. `(nameNormalized, sportId)` is a DEDUP key, not
+     * a unique one, and after the bulk preload a great many real names match
+     * more than one row — same name, same sport, different people. Handing
+     * back one of them read here as "known, nothing to review", so the name
+     * never reached an operator and the commit prelude then bound every card
+     * carrying it to whichever row the index happened to return first.
+     *
+     * The rule is the card-number invariant's rule (#7), applied to a name:
+     *   0 matches  → unknown, review it (unchanged);
+     *   1 match    → resolved, no review (unchanged);
+     *   2 or more  → UNRESOLVED. Only a human can say which one, so it goes
+     *                to the wizard, where `enrichment.existingCandidates`
+     *                puts the matching rows in front of them for a one-click
+     *                link.
+     */
+    const resolved = await ctx.runQuery(internal.players.resolveNameForReview, {
       name,
       sportId: args.sportId,
+      // NEO-254 — the card's OWN year and team, which is what turns "2 or
+      // more" back into "1" for most collisions. See
+      // `players.narrowSameNamePlayersByCardYear`: a 1990 card is not about a
+      // man who retired in 1937, and when two contemporaries share a name the
+      // team printed on the card separates them. Undefined year → no
+      // narrowing at all, which is the pre-NEO-254 behaviour.
+      ...(setYear !== undefined ? { cardYear: setYear } : {}),
+      ...(cardTeamNames.length > 0 ? { cardTeamNames } : {}),
     });
-    if (!existing) unknownPlayers.push(name);
+    // `playerId`, not `matchCount`: several rows can still resolve to one
+    // person once the year is taken into account.
+    if (!resolved.playerId) unknownPlayers.push(name);
   }
   for (const [normalized, name] of teamByNorm) {
     if (skippedKeys.has(`team:${normalized}`)) continue;
@@ -8932,10 +9071,17 @@ export const resolveChecklistEntities = action({
     // not produce two unknowns and two Wikidata lookups.
     const additionalPlayerNames: string[] = [];
     const additionalTeamNames: string[] = [];
+    // NEO-254 — which teams appeared on the same card as which player. The
+    // gate resolves names in one flat pass, so the per-card association has to
+    // be captured HERE, where the cards still exist, or it is gone.
+    const cardTeamNamesByPlayer = new Map<string, string[]>();
     for (const c of args.cards) {
-      for (const p of c.players ?? []) additionalPlayerNames.push(p);
-      for (const t of c.teams ?? []) additionalTeamNames.push(t);
-      if (c.team && !c.teams?.length) additionalTeamNames.push(c.team);
+      const teamsOnCard = cardTeamNames(c);
+      for (const p of c.players ?? []) {
+        additionalPlayerNames.push(p);
+        addCardTeamNames(cardTeamNamesByPlayer, p, teamsOnCard);
+      }
+      for (const t of teamsOnCard) additionalTeamNames.push(t);
     }
 
     const sportRow = await ctx.runQuery(
@@ -8949,6 +9095,7 @@ export const resolveChecklistEntities = action({
       sportLabel: sportRow?.value ?? "",
       additionalPlayerNames,
       additionalTeamNames,
+      cardTeamNamesByPlayer,
     });
   },
 });
@@ -9209,6 +9356,18 @@ export const commitCardChecklistPrelude = internalMutation({
     // only reads names off them is pure wire cost.
     playerNames: v.array(v.string()),
     teamNames: v.array(v.string()),
+    /**
+     * NEO-254 — the teams printed on the same card as each player name.
+     *
+     * The prelude is handed names, not cards (see `playerNames` above), so the
+     * per-card association has to travel with them or it is lost. Used ONLY as
+     * a tie-break when the set's year leaves two same-name candidates standing;
+     * an absent entry costs the tie-break and nothing else. Optional so a
+     * commit in flight across a deploy still resolves.
+     */
+    playerTeamNames: v.optional(
+      v.array(v.object({ player: v.string(), teams: v.array(v.string()) })),
+    ),
     batchId: v.optional(v.string()),
   },
   returns: v.object({
@@ -9943,20 +10102,93 @@ export const commitCardChecklistPrelude = internalMutation({
     // player row it did not write.
     const playerNameById = new Map<Id<"players">, string>();
     const createdPlayerIds: Array<Id<"players">> = [];
+    /**
+     * NEO-254 — the set's year, walked ONCE for the whole commit.
+     *
+     * The narrowing below runs per ambiguous name; the year is a property of
+     * the set, so resolving it per name would be the same handful of reads
+     * repeated hundreds of times inside a mutation with a read budget.
+     * Undefined (an orphaned subtree, a fixture with no year row) means no
+     * narrowing happens at all — the names go to the operator, which is the
+     * behaviour before this existed.
+     */
+    const setYear = await findSetYearForSelectorOption(ctx, args.selectorOptionId);
+    /** Raw player name → the teams printed on the cards it appeared on. */
+    const cardTeamNamesByPlayer = new Map<string, string[]>(
+      (args.playerTeamNames ?? []).map(({ player, teams }) => [player, teams]),
+    );
     for (const name of allPlayerNames) {
       const normalized = norm(name);
-      // Compound index returns 0 or 1 row per lookup — independent of how
-      // many cross-sport duplicates of this normalized name exist.
-      const existing = await ctx.db
+      /**
+       * NEO-254 — the compound index returns as many rows as share this key,
+       * and that number is the decision.
+       *
+       * This was `.first()`, whose comment claimed the index "returns 0 or 1
+       * row per lookup". It returns 0 or 1 per (name, SPORT) pair — which is
+       * not the same as 0 or 1 full stop, because nothing makes that pair
+       * unique. Two people named Bob Allen played in the majors; the bulk
+       * preload (plan decision 3) puts both on file, and `.first()` then
+       * silently attached every "Bob Allen" card in the set to one of them.
+       *
+       * Bounded rather than collected: the branch only needs "none / one /
+       * more than one", and a name that normalizes to something a thousand
+       * rows share must not turn a per-name lookup inside a commit into an
+       * unbounded read.
+       *
+       *   exactly 1 → adopt it, exactly as before;
+       *   0 or >1   → fall through to the operator's decision below. For 0
+       *               that is the behaviour this loop always had. For >1 it
+       *               is the fix: a `link` decision names WHICH row (the
+       *               wizard listed them), a `create` decision means the
+       *               operator looked at those rows and said this is somebody
+       *               else, and NO decision leaves the card unlinked and the
+       *               name reported as unreviewed — never bound by a guess.
+       */
+      const existingMatches = await ctx.db
         .query("players")
         .withIndex("by_name_normalized_and_sport_id", (q) =>
           q.eq("nameNormalized", normalized).eq("sportId", args.sportId),
         )
-        .first();
-      if (existing) {
+        .take(PLAYER_AMBIGUITY_SCAN_LIMIT);
+      if (existingMatches.length === 1) {
+        const existing = existingMatches[0];
         playerIdByName.set(name, existing._id);
         playerNameById.set(existing._id, existing.name);
         continue;
+      }
+      /**
+       * NEO-254 — the card's own year narrows "more than one" back to one.
+       *
+       * The guard above is correct and, on its own, expensive: a 1990 set with
+       * eight hundred commons would hand the operator a decision for every
+       * name two people have ever shared, almost all of which have exactly one
+       * plausible answer because the other man retired in 1937.
+       *
+       * The card is evidence about which one it is, and this uses it — the
+       * year first, then the team printed on the card when two contemporaries
+       * share a name. `narrowSameNamePlayersByCardYear` returns a row only when
+       * exactly one survives; every other outcome falls through to the
+       * operator's decision below, exactly as before. With no set year it
+       * narrows nothing at all: the rule is never to guess, only to rule out.
+       *
+       * Placed AFTER the exactly-one fast path so the ordinary name pays
+       * nothing for it.
+       */
+      if (existingMatches.length > 1) {
+        const narrowed = await narrowSameNamePlayersByCardYear(
+          ctx,
+          existingMatches,
+          {
+            ...(setYear !== undefined ? { cardYear: setYear } : {}),
+            cardTeamNames: cardTeamNamesByPlayer.get(name) ?? [],
+          },
+        );
+        if (narrowed.playerId) {
+          const picked = existingMatches.find((p) => p._id === narrowed.playerId)!;
+          playerIdByName.set(name, picked._id);
+          playerNameById.set(picked._id, picked.name);
+          continue;
+        }
       }
       const decision = reviewByKey.get(`player:${normalized}`)?.decision;
       // Not reviewed (shouldn't happen), or reviewed as "not a person"
@@ -9974,14 +10206,44 @@ export const commitCardChecklistPrelude = internalMutation({
       }
       if (decision.action === "link") {
         if (decision.linkedPlayerId) {
+          /**
+           * NEO-254 — the linked row is RE-VALIDATED, not trusted.
+           *
+           * A decision is recorded when the operator makes it and consumed
+           * when they hit Confirm, and a review session is a human-paced thing
+           * that can span a long while. Between the two, the row they picked
+           * can be deleted or merged away by another operator or by an admin
+           * tool — and this branch used to write the id into `playerIdByName`
+           * on the strength of the decision alone. The card then carried a
+           * `playerIds` entry pointing at nothing: invisible to every query
+           * that joins through it, unfixable by any later pass, and with
+           * nothing anywhere saying it had happened.
+           *
+           * The `db.get` was ALREADY here — it read the linked row's canonical
+           * spelling — and its result was simply discarded when the row was
+           * gone. Reading it once and acting on the answer costs nothing extra.
+           *
+           * The sport is checked too, for the reason `savePlayerFields` checks
+           * it on a stint: a cross-sport player is unreachable by every query
+           * that matters (all of them key on the sport row id), so linking to
+           * one is the same dangling reference wearing a valid id.
+           *
+           * Treated as UNREVIEWED rather than failed: the operator's answer
+           * has become unanswerable, which is exactly the state
+           * `unreviewedPlayerNames` reports and stamps on the card. The commit
+           * still lands — refusing it would cost them the whole sync over one
+           * name — and they are told which name to look at again.
+           */
+          const linked = await ctx.db.get(decision.linkedPlayerId);
+          if (!linked || linked.sportId !== args.sportId) {
+            unreviewedPlayerNames.push(name);
+            continue;
+          }
           playerIdByName.set(name, decision.linkedPlayerId);
           // The LINKED row's own spelling is what the old write loop's
-          // `db.get(...).name` produced, so read it here (once) rather than
-          // assuming the reviewed name matches it.
-          if (!playerNameById.has(decision.linkedPlayerId)) {
-            const linked = await ctx.db.get(decision.linkedPlayerId);
-            if (linked) playerNameById.set(decision.linkedPlayerId, linked.name);
-          }
+          // `db.get(...).name` produced, so use it here rather than assuming
+          // the reviewed name matches it.
+          playerNameById.set(decision.linkedPlayerId, linked.name);
         }
         continue;
       }
@@ -10121,6 +10383,14 @@ export const commitCardChecklistPrelude = internalMutation({
         ...(enrichment?.isHallOfFame !== undefined
           ? { isHallOfFame: enrichment.isHallOfFame }
           : {}),
+        // NEO-254: `birthYear` from the lookup is deliberately NOT written
+        // here. It is the field that tells two same-name players apart, and a
+        // Wikidata birth year for a name the operator has just told us is a
+        // NEW person would be the previous person's — the wizard's whole
+        // candidate list exists because the lookup and the operator can
+        // disagree about who this is. It is written only where the source
+        // identifies the PLAYER rather than merely their name — a human typing
+        // it into the admin player form, or a dataset keyed on the player.
         ...(enrichment?.wikidataId
           ? { externalIds: { wikidataId: enrichment.wikidataId } }
           : {}),
@@ -12711,10 +12981,18 @@ export const commitCardChecklist = action({
 
     const playerNames: string[] = [];
     const teamNames: string[] = [];
+    // NEO-254 — which teams shared a card with which player. The prelude is
+    // handed names rather than cards, so this association has to be built here
+    // or it is gone; see `commitCardChecklistPrelude.playerTeamNames`.
+    const playerTeamNamesByPlayer = new Map<string, string[]>();
     for (const c of args.cards) {
-      for (const p of c.players ?? []) if (p.trim()) playerNames.push(p.trim());
-      for (const t of c.teams ?? []) if (t.trim()) teamNames.push(t.trim());
-      if (c.team && c.team.trim() && !c.teams?.length) teamNames.push(c.team.trim());
+      const teamsOnCard = cardTeamNames(c);
+      for (const p of c.players ?? []) {
+        if (!p.trim()) continue;
+        playerNames.push(p.trim());
+        addCardTeamNames(playerTeamNamesByPlayer, p, teamsOnCard);
+      }
+      for (const t of teamsOnCard) teamNames.push(t);
     }
 
     const prelude: CommitPrelude = await phase("prelude", () =>
@@ -12723,6 +13001,10 @@ export const commitCardChecklist = action({
         sportId: args.sportId,
         playerNames: Array.from(new Set(playerNames)),
         teamNames: Array.from(new Set(teamNames)),
+        playerTeamNames: Array.from(
+          playerTeamNamesByPlayer,
+          ([player, teams]) => ({ player, teams }),
+        ),
         batchId: args.batchId,
       }),
     );

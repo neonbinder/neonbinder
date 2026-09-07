@@ -35,6 +35,7 @@ import { requireAdmin } from "./auth";
 // NEO-236: these two paths LOOK UP a team and link it; neither may create one.
 // See `convex/lib/teamRow.ts` and the notes on each handler below.
 import { findTeamByFullName } from "./lib/teamRow";
+import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
 import { teamFullName } from "../lib/teams/team-name";
 
 /**
@@ -486,47 +487,6 @@ export const enqueueBscTeamBackfill = internalMutation({
 // ===========================================================================
 // NEO-102 — reconciling a card that has no team
 // ===========================================================================
-
-/**
- * NEO-102 — the YEAR whose rosters a card's team suggestions come from.
- *
- * `features.season` on the card's own selectorOption is the cheap answer and
- * the one every other consumer already trusts (SKU generation and listing-title
- * generation both read it), so it wins and costs a single read. The `year`-level
- * ancestor is the fallback for a row whose feature snapshot predates the
- * `season` key.
- *
- * Returns undefined when neither exists. The caller then offers a player's
- * WHOLE career rather than nothing: a suggestion the operator can reject beats
- * an empty panel, and the operator is the one deciding either way.
- *
- * 16-step cutoff, matching `findSportForSelectorOption` above, so a cycle in
- * the parent chain cannot wedge a reactive query.
- */
-async function findSetYearForSelectorOption(
-  ctx: { db: { get: (id: Id<"selectorOptions">) => Promise<any> } },
-  selectorOptionId: Id<"selectorOptions">,
-): Promise<number | undefined> {
-  const parseYear = (raw: string | undefined): number | undefined => {
-    if (!raw) return undefined;
-    const parsed = Number.parseInt(raw, 10);
-    return Number.isInteger(parsed) ? parsed : undefined;
-  };
-  const leaf = await ctx.db.get(selectorOptionId);
-  if (!leaf) return undefined;
-  const fromFeatures = parseYear(leaf.features?.season);
-  if (fromFeatures !== undefined) return fromFeatures;
-  let cursor: Id<"selectorOptions"> | undefined = leaf.parentId;
-  let depth = 0;
-  while (cursor && depth < 16) {
-    const node = await ctx.db.get(cursor);
-    if (!node) return undefined;
-    if (node.level === "year") return parseYear(node.value);
-    cursor = node.parentId;
-    depth += 1;
-  }
-  return undefined;
-}
 
 /**
  * NEO-102 — record that an operator has decided this card carries no team.

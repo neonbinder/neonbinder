@@ -64,6 +64,12 @@ vi.mock("../../convex/_generated/api", () => ({
       createByAdmin: "leagues.createByAdmin",
       nearMatches: "leagues.nearMatches",
     },
+    // NEO-254 — the Franchise field on the panel reads the list and creates
+    // through find-or-create, the same two calls the Franchise screen makes.
+    franchises: {
+      list: "franchises.list",
+      findOrCreate: "franchises.findOrCreate",
+    },
     selectorOptions: { getSelectorOptions: "selectorOptions.getSelectorOptions" },
     teamColorSources: { chooseColorSource: "teamColorSources.chooseColorSource" },
   },
@@ -71,6 +77,22 @@ vi.mock("../../convex/_generated/api", () => ({
 
 const SPORTS = [
   { _id: "sport-baseball", _creationTime: 0, level: "sport", value: "Baseball" },
+];
+
+/**
+ * NEO-254 — one franchise thread, so the panel's dropdown has something real to
+ * offer and the "already on a thread" branch has a value to render.
+ */
+const FRANCHISES = [
+  {
+    _id: "f-giants",
+    _creationTime: 0,
+    name: "Giants",
+    nameNormalized: "giants",
+    sportId: "sport-baseball",
+    lastUpdated: 0,
+    teamCount: 2,
+  },
 ];
 
 /**
@@ -182,6 +204,7 @@ const LEAGUES = [
 
 const mockCreateByAdmin = vi.fn();
 const mockSaveTeamFields = vi.fn();
+const mockFindOrCreateFranchise = vi.fn();
 
 /** Near matches the dialog's form should offer. Set per test. */
 let nearMatches: unknown;
@@ -193,6 +216,9 @@ vi.mock("convex/react", () => ({
       return { teams: TEAMS, truncated: false };
     }
     if (ref === "leagues.list") return LEAGUES;
+    if (ref === "franchises.list") {
+      return { franchises: FRANCHISES, truncated: false };
+    }
     if (ref === "selectorOptions.getSelectorOptions") return SPORTS;
     if (ref === "leagues.nearMatches") return nearMatches;
     return undefined;
@@ -200,6 +226,7 @@ vi.mock("convex/react", () => ({
   useMutation: (ref: string) => {
     if (ref === "leagues.createByAdmin") return mockCreateByAdmin;
     if (ref === "teams.saveTeamFields") return mockSaveTeamFields;
+    if (ref === "franchises.findOrCreate") return mockFindOrCreateFranchise;
     return vi.fn();
   },
   useAction: () => vi.fn(),
@@ -236,6 +263,85 @@ beforeEach(() => {
     .mockReset()
     .mockResolvedValue({ id: "l-new", created: true });
   mockSaveTeamFields.mockReset().mockResolvedValue(null);
+  mockFindOrCreateFranchise
+    .mockReset()
+    .mockResolvedValue({ id: "f-new", created: true });
+});
+
+/**
+ * NEO-254 — the Franchise field.
+ *
+ * The failure this guards is the one every re-seeded panel field has: forget to
+ * reset it on selection change and the operator saves the PREVIOUS team's
+ * franchise onto this one, silently, with the right-looking value on screen.
+ */
+describe("TeamManagement — the Franchise field", () => {
+  it("offers every franchise in the sport, plus a way to start one", () => {
+    renderAt("/admin/teams?team=t-sf-giants");
+    expect(optionLabels("team-franchise")).toEqual([
+      "— none —",
+      "Giants",
+      "+ Start a new franchise…",
+    ]);
+  });
+
+  it("sends the picked franchise on save", async () => {
+    renderAt("/admin/teams?team=t-sf-giants");
+    fireEvent.change(select("team-franchise")!, { target: { value: "f-giants" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(mockSaveTeamFields).toHaveBeenCalled());
+    expect(mockSaveTeamFields.mock.calls[0][0]).toMatchObject({
+      id: "t-sf-giants",
+      franchiseId: "f-giants",
+    });
+  });
+
+  it("sends null when the team is taken off its thread", async () => {
+    // `null` is the clear, and it is the same value the franchise view's
+    // "Remove" sends. Omitting the field would leave the link in place.
+    renderAt("/admin/teams?team=t-sf-giants");
+    fireEvent.change(select("team-franchise")!, { target: { value: "f-giants" } });
+    fireEvent.change(select("team-franchise")!, { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(mockSaveTeamFields).toHaveBeenCalled());
+    expect(mockSaveTeamFields.mock.calls[0][0]).toMatchObject({
+      franchiseId: null,
+    });
+  });
+
+  it("starts a franchise from the panel and selects it without saving the team", async () => {
+    renderAt("/admin/teams?team=t-sf-giants");
+    fireEvent.change(select("team-franchise")!, {
+      target: { value: "__new_franchise__" },
+    });
+    fireEvent.change(screen.getByLabelText("New franchise name"), {
+      target: { value: "Giants" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+
+    await waitFor(() =>
+      expect(mockFindOrCreateFranchise).toHaveBeenCalledWith({
+        name: "Giants",
+        sportId: "sport-baseball",
+      }),
+    );
+    // Creating a thread and putting this team on it are two decisions.
+    expect(mockSaveTeamFields).not.toHaveBeenCalled();
+    // The new row is offered immediately, rather than blanking the select
+    // until `franchises.list` catches up.
+    await waitFor(() => expect(select("team-franchise")?.value).toBe("f-new"));
+  });
+
+  it("re-seeds the field when a different team is selected", () => {
+    renderAt("/admin/teams?team=t-sf-giants");
+    fireEvent.change(select("team-franchise")!, { target: { value: "f-giants" } });
+    expect(select("team-franchise")?.value).toBe("f-giants");
+
+    fireEvent.click(row("Seattle Mariners"));
+    expect(select("team-franchise")?.value).toBe("");
+  });
 });
 
 describe("TeamManagement — the ?team deep link", () => {

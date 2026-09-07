@@ -32,6 +32,15 @@ export interface NearMatch {
   _id: string;
   name: string;
   confidence: "exact" | "close";
+  /**
+   * NEO-254, player rows only — the fact that separates two of them.
+   *
+   * The panel itself never renders this; it exists so a CALLER can build a
+   * unique label for rows that share a name (see `pickLabel`). Optional and
+   * unused by the team and league screens, which keeps this interface
+   * structural rather than becoming `Doc<"players">` by the back door.
+   */
+  birthYear?: number;
 }
 
 export interface NearMatchPanelProps {
@@ -48,8 +57,17 @@ export interface NearMatchPanelProps {
    */
   matches: NearMatch[] | undefined;
   onPick: (id: string, name: string) => void;
-  /** Accessible name for each row's button. Defaults to the wizard's wording. */
-  pickLabel?: (name: string) => string;
+  /**
+   * Accessible name for each row's button. Defaults to the wizard's wording.
+   *
+   * NEO-254 gave it the whole MATCH as a second argument, not just the name.
+   * Once the exact key stopped being read with `.first()`, this panel can
+   * legitimately receive two rows with identical names — and a label built
+   * from the name alone then produces two controls sharing one accessible
+   * name, on the very screen meant to tell those two people apart. Only the
+   * caller knows what distinguishes them, so only the caller can say.
+   */
+  pickLabel?: (name: string, match: NearMatch) => string;
   className?: string;
 }
 
@@ -113,7 +131,7 @@ export function NearMatchPanel({
                   // visible to sighted operators and invisible to everyone
                   // else (WCAG 2.2 SC 1.3.1). The badge itself is aria-hidden
                   // so it is not announced twice.
-                  aria-label={`${pickLabel(match.name)}${
+                  aria-label={`${pickLabel(match.name, match)}${
                     match.confidence === "exact" ? " — same name" : ""
                   }`}
                   // min-h-6 keeps the row on the WCAG 2.2 SC 2.5.8 24px floor

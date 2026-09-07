@@ -72,3 +72,40 @@ export async function findTeamByFullName(
     )
     .first();
 }
+
+/**
+ * NEO-254 — the same identity lookup, but every row under the key rather than
+ * the first.
+ *
+ * The dedup key is meant to be unique within a sport and usually is, so
+ * `findTeamByFullName` above returning `.first()` is the right shape for the
+ * paths that resolve a name onto a row. It is the WRONG shape for the bulk
+ * loader, whose whole contract is that it never picks between rows on its own:
+ * two teams sharing a key is a defect (`teams.saveTeamFields` refuses to make
+ * one), and `.first()` would hand the loader an arbitrary side of it with
+ * nothing saying so.
+ *
+ * Here rather than in `convex/bulkLoad.ts` because this module owns the
+ * derivation — `convex/teams.dedupPin.test.ts` greps for exactly this, and it
+ * is right to: a caller that reached for the index itself would be one
+ * `normalizeTeamName(name)` away from keying on the nickname alone and
+ * silently splitting every split row in two.
+ *
+ * `limit` bounds the read; the caller only branches on none / one /
+ * more-than-one, so "several" is as much as it ever needs.
+ */
+export async function findTeamsByFullName(
+  ctx: QueryCtx | MutationCtx,
+  sportId: Id<"selectorOptions">,
+  fullName: string,
+  limit: number,
+): Promise<Doc<"teams">[]> {
+  const nameNormalized = normalizeEntityName(fullName);
+  if (nameNormalized.length === 0) return [];
+  return await ctx.db
+    .query("teams")
+    .withIndex("by_name_normalized_and_sport_id", (q) =>
+      q.eq("nameNormalized", nameNormalized).eq("sportId", sportId),
+    )
+    .take(limit);
+}

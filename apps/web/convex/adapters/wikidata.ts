@@ -963,8 +963,22 @@ ${hallOfFameSparqlBlocks(qid, hofQid)}
     careerTeams: sortTeamYears(careerTeams),
     // NEO-235: alphabetical, and omitted entirely when empty so a player with
     // nothing undated does not carry an empty array through the review row.
+    //
+    // NEO-254: deduped by LABEL on the way out, having been collected by QID.
+    // The QID key is what collapses one membership repeated across the
+    // cross-product rows, and it has to stay that key — two genuinely
+    // different clubs can share a label. But the consumers downstream are all
+    // name-shaped: `players.undatedCareerTeams` stores names, the wizard keys
+    // its list items by name, and two identical strings there mean duplicate
+    // React keys and two forms opening on one click. A label collision is
+    // rare, and when it happens one entry the operator can date is a better
+    // outcome than two they cannot tell apart.
     ...(undatedByTeamQid.size > 0
-      ? { undatedCareerTeams: Array.from(undatedByTeamQid.values()).sort() }
+      ? {
+          undatedCareerTeams: Array.from(
+            new Set(undatedByTeamQid.values()),
+          ).sort(),
+        }
       : {}),
     isHallOfFame,
     ...(description !== undefined ? { description } : {}),

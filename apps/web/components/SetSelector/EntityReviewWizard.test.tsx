@@ -5285,3 +5285,344 @@ describe("EntityReviewWizard — Decide team stages a step when there is none", 
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// NEO-254 — same-name candidates and undated Wikidata teams
+//
+// The panels have their own files (SameNamePlayerPanel.test.tsx,
+// UndatedCareerTeams.test.tsx). What is asserted HERE is the wiring only the
+// wizard owns: which panel gets the same-name rows, what happens to the action
+// hierarchy when there is no single "the" exact match, and that dating a lead
+// reaches `recordDecision` as an ordinary manual career team.
+// ---------------------------------------------------------------------------
+
+describe("NEO-254: an ambiguous name is a choice, not a promoted primary", () => {
+  const CANDIDATES = [
+    {
+      playerId: "player-old",
+      name: "Bob Allen",
+      birthYear: 1867,
+      careerSummary: "Phillies 1890–1894",
+    },
+    {
+      playerId: "player-young",
+      name: "Bob Allen",
+      birthYear: 1937,
+      careerSummary: "Padres 1961–present",
+    },
+  ];
+
+  it("shows the candidates and does NOT promote one of them to the primary", () => {
+    // `players.nearMatches` returns every row on the exact key now, so without
+    // the guard `showExactHierarchy` would turn the main button into "Link to
+    // Bob Allen" for whichever came first — a one-tap path to the wrong man.
+    currentRows = [
+      makeRow({ name: "Bob Allen", enrichment: { existingCandidates: CANDIDATES } }),
+    ];
+    currentNearMatches = [
+      { _id: "player-old", name: "Bob Allen", confidence: "exact" },
+      { _id: "player-young", name: "Bob Allen", confidence: "exact" },
+    ];
+    renderWizard();
+
+    expect(screen.getByText("Same name, different people")).toBeTruthy();
+    // The primary is still creation, not a link to one of two identical names.
+    expect(screen.getByRole("button", { name: "Add as New Player" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Link to Bob Allen" })).toBeNull();
+  });
+
+  it("keeps the same-name rows out of the Possible matches panel", () => {
+    // Both panels render a link control per row. Left alone, the two Bob
+    // Allens would appear in each — four buttons, two accessible names, and no
+    // way to tell which pair is which.
+    currentRows = [
+      makeRow({ name: "Bob Allen", enrichment: { existingCandidates: CANDIDATES } }),
+    ];
+    currentNearMatches = [
+      { _id: "player-old", name: "Bob Allen", confidence: "exact" },
+      { _id: "player-young", name: "Bob Allen", confidence: "exact" },
+      { _id: "player-other", name: "Bobby Allen", confidence: "close" },
+    ];
+    renderWizard();
+
+    // Only the genuinely-different name is left for the fuzzy panel.
+    expect(screen.getByRole("button", { name: "Link to Bobby Allen" })).toBeTruthy();
+    const labels = screen
+      .getAllByRole("button")
+      .map((b) => b.getAttribute("aria-label") ?? b.textContent ?? "");
+    expect(new Set(labels).size).toBe(labels.length);
+  });
+
+  it("picking a candidate records a link decision naming that player", async () => {
+    currentRows = [
+      makeRow({ name: "Bob Allen", enrichment: { existingCandidates: CANDIDATES } }),
+    ];
+    currentNearMatches = [];
+    renderWizard();
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Link to Bob Allen, b. 1937 · Padres 1961–present",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(mockRecordDecision).toHaveBeenCalledWith({
+        reviewRowId: "row-" + nextRowId,
+        action: "link",
+        linkedPlayerId: "player-young",
+        linkedTeamId: undefined,
+      }),
+    );
+  });
+
+  it("shows no candidate panel for an ordinary name", () => {
+    currentRows = [makeRow({ enrichment: { wikidataId: "Q1" } })];
+    currentNearMatches = [];
+    renderWizard();
+    expect(screen.queryByText("Same name, different people")).toBeNull();
+  });
+});
+
+describe("NEO-254: undated Wikidata teams in the player step", () => {
+  it("lists the undated teams under the dated ones", () => {
+    currentRows = [
+      makeRow({
+        name: "Tony Gwynn",
+        enrichment: {
+          careerTeams: [{ name: "San Diego Padres", fromYear: 1982, toYear: 2001 }],
+          undatedCareerTeams: ["San Diego State Aztecs"],
+        },
+      }),
+    ];
+    currentNearMatches = [];
+    renderWizard();
+
+    expect(screen.getByText("Also on Wikidata, no years yet")).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Add years for San Diego State Aztecs" }),
+    ).toBeTruthy();
+  });
+
+  it("dating a lead stages it as a career team and drops it from the list", () => {
+    currentRows = [
+      makeRow({
+        name: "Tony Gwynn",
+        enrichment: { undatedCareerTeams: ["San Diego State Aztecs"] },
+      }),
+    ];
+    currentNearMatches = [];
+    renderWizard();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Add years for San Diego State Aztecs" }),
+    );
+    fireEvent.change(
+      screen.getByLabelText("From year for San Diego State Aztecs"),
+      { target: { value: "1979" } },
+    );
+    fireEvent.change(
+      screen.getByLabelText("To year for San Diego State Aztecs (optional)"),
+      { target: { value: "1981" } },
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Save years for San Diego State Aztecs" }),
+    );
+
+    // It is now a staged chip…
+    const staged = screen.getByRole("list", { name: "Staged career teams" });
+    expect(within(staged).getByText(/San Diego State Aztecs/)).toBeTruthy();
+    // …and no longer a lead, so it is not offered in both places at once.
+    expect(
+      screen.queryByRole("button", { name: "Add years for San Diego State Aztecs" }),
+    ).toBeNull();
+  });
+
+  it("carries a dated lead into the create decision as a manual career team", async () => {
+    currentRows = [
+      makeRow({
+        name: "Tony Gwynn",
+        enrichment: { undatedCareerTeams: ["San Diego State Aztecs"] },
+      }),
+    ];
+    currentNearMatches = [];
+    renderWizard();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Add years for San Diego State Aztecs" }),
+    );
+    fireEvent.change(
+      screen.getByLabelText("From year for San Diego State Aztecs"),
+      { target: { value: "1979" } },
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Save years for San Diego State Aztecs" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Player" }));
+
+    await waitFor(() =>
+      expect(mockRecordDecision).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "create",
+          manualCareerTeams: [
+            { name: "San Diego State Aztecs", fromYear: 1979 },
+          ],
+        }),
+      ),
+    );
+  });
+
+  it("renders no undated section when the lookup returned none", () => {
+    currentRows = [
+      makeRow({
+        enrichment: { careerTeams: [{ name: "Angels", fromYear: 2011 }] },
+      }),
+    ];
+    currentNearMatches = [];
+    renderWizard();
+    expect(screen.queryByText("Also on Wikidata, no years yet")).toBeNull();
+  });
+});
+
+describe("NEO-254: the wizard defends itself when the stored marker is missing", () => {
+  it("does NOT promote a primary when nearMatches holds two exact rows and enrichment is absent", () => {
+    // The row the completion backstop or the stale-row sweep settled: status
+    // "error", no enrichment ever written, so `existingCandidates` is missing
+    // even though two people really do share this name. The independent check
+    // is the count of exact rows in `nearMatches`, which is read live.
+    currentRows = [makeRow({ name: "Bob Allen", status: "error" })];
+    currentNearMatches = [
+      { _id: "player-old", name: "Bob Allen", confidence: "exact" },
+      { _id: "player-young", name: "Bob Allen", confidence: "exact" },
+    ];
+    renderWizard();
+
+    expect(screen.getByRole("button", { name: "Add as New Player" })).toBeTruthy();
+    // Two identically-named rows must never collapse into one promoted button.
+    expect(screen.queryByRole("button", { name: /^Add as New Player anyway$/ })).toBeNull();
+
+    // They are routed to the same-name panel, NOT to NearMatchPanel — which
+    // would have labelled both `Link to Bob Allen — same name`, two controls
+    // with one accessible name on the screen where telling them apart is the
+    // whole task.
+    expect(screen.getByText("Same name, different people")).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Link to Bob Allen, option 1 of 2" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Link to Bob Allen, option 2 of 2" }),
+    ).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: "Link to Bob Allen — same name" }),
+    ).toBeNull();
+  });
+
+  it("still promotes when there is exactly one exact match", () => {
+    // The unchanged behaviour, pinned: one exact row is a real answer and the
+    // hierarchy that NEO-212 built for it must survive this guard.
+    currentRows = [makeRow({ name: "Mike Trout" })];
+    currentNearMatches = [
+      { _id: "player-1", name: "Mike Trout", confidence: "exact" },
+    ];
+    renderWizard();
+
+    expect(screen.getByRole("button", { name: "Link to Mike Trout" })).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Add as New Player anyway" }),
+    ).toBeTruthy();
+  });
+
+  it("says so when the server stopped counting at its scan cap", () => {
+    // A silently truncated list invites the operator to conclude none of the
+    // eight is right and create a ninth — the duplicate the panel exists to
+    // prevent, with the panel's own blessing.
+    currentRows = [
+      makeRow({
+        name: "John Smith",
+        enrichment: {
+          existingCandidates: Array.from({ length: 8 }, (_, i) => ({
+            playerId: `p${i}`,
+            name: "John Smith",
+            birthYear: 1900 + i,
+            careerSummary: `Team ${i} 1920–1925`,
+          })),
+        },
+      }),
+    ];
+    currentNearMatches = [];
+    renderWizard();
+
+    expect(
+      screen.getByText(/More than 8 players are already filed under this name/),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(/use Link to Existing to search them all/),
+    ).toBeTruthy();
+  });
+
+  it("gives an exact count when the scan did not hit the cap", () => {
+    currentRows = [
+      makeRow({
+        name: "Bob Allen",
+        enrichment: {
+          existingCandidates: [
+            { playerId: "p1", name: "Bob Allen", careerSummary: "Phillies 1890–1894" },
+            { playerId: "p2", name: "Bob Allen", careerSummary: "Padres 1961–present" },
+          ],
+        },
+      }),
+    ];
+    currentNearMatches = [];
+    renderWizard();
+
+    expect(
+      screen.getByText(/^2 players are already filed under this name\./),
+    ).toBeTruthy();
+    expect(screen.queryByText(/More than/)).toBeNull();
+  });
+
+  it("drops a half-typed year form when the operator steps to another row", () => {
+    // The form is state about ONE player. Carried across a row change it would
+    // offer to date the previous player's team on this one's record.
+    const rowA = makeRow({
+      name: "Tony Gwynn",
+      enrichment: { undatedCareerTeams: ["San Diego State Aztecs"] },
+    });
+    const rowB = makeRow({
+      name: "Ozzie Smith",
+      enrichment: { undatedCareerTeams: ["San Diego State Aztecs"] },
+    });
+    currentRows = [rowA, rowB];
+    currentNearMatches = [];
+    const { rerender } = renderWizard();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Add years for San Diego State Aztecs" }),
+    );
+    fireEvent.change(
+      screen.getByLabelText("From year for San Diego State Aztecs"),
+      { target: { value: "1979" } },
+    );
+
+    // Decide row A, so the wizard walks on to row B.
+    currentRows = [{ ...rowA, decision: { action: "skip" } }, rowB];
+    rerender(
+      <EntityReviewWizard
+        isOpen
+        selectorOptionId={"selopt-1" as unknown as Id<"selectorOptions">}
+        batchId="batch-1"
+        summary={SUMMARY}
+        onConfirm={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+
+    // Row B's lead is offered fresh, not mid-edit with row A's year in it.
+    expect(
+      screen.getByRole("button", { name: "Add years for San Diego State Aztecs" }),
+    ).toBeTruthy();
+    expect(
+      screen.queryByLabelText("From year for San Diego State Aztecs"),
+    ).toBeNull();
+  });
+});

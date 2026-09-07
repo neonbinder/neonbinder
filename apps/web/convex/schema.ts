@@ -900,6 +900,11 @@ export default defineSchema({
       toYear: v.optional(v.number()),
     }))),
     isHallOfFame: v.optional(v.boolean()),
+    // NEO-254: the one fact that tells two players with the same name apart
+    // (Lahman alone has 750 first-plus-last collisions, and both Tony Gwynns
+    // are real). Written by the bulk preload from the source dataset; optional
+    // because every hand-created and Wikidata-enriched row predates it.
+    birthYear: v.optional(v.number()),
     externalIds: v.optional(v.object({
       wikidataId: v.optional(v.string()), // e.g. "Q123456"
     })),
@@ -1027,6 +1032,50 @@ export default defineSchema({
     .index("by_name_normalized_and_sport_id", ["nameNormalized", "sportId"])
     .index("by_sport_id", ["sportId"]),
 
+  /**
+   * NEO-254 — the continuous thread through a franchise's renames and moves.
+   *
+   * `teams` deliberately holds ONE ROW PER HISTORICAL NAME: "Houston Oilers",
+   * "Tennessee Oilers" and "Tennessee Titans" are three rows, because that is
+   * what a card says and what a stint should read as ("Oilers 1993-96", never
+   * "Titans 1993-96"). That is right for cards and useless for the question a
+   * collector actually asks — Jason, 2026-09-06: "building a collection of all
+   * Tennessee Titans and letting the user determine if that should also include
+   * Houston Oilers and Tennessee Oilers players."
+   *
+   * A franchise is the operator's answer to that question and nothing more: a
+   * NAME, a sport, and the set of team rows an operator has pointed at it
+   * (`teams.franchiseId`). It carries no years, no colours and no marketplace
+   * anything — every fact about a season still lives on the team row that
+   * played it.
+   *
+   * ## Entirely NB's own, in both directions
+   *
+   * No marketplace sends a franchise concept and none is derived from one. The
+   * linkage is an operator decision made on `/admin/franchises`, never inferred
+   * from a name (there is no rule that reads "Oilers" and guesses "Titans" —
+   * the Oilers/Titans thread and the Browns/Ravens split look identical from
+   * the outside, and only a human knows which is which).
+   *
+   * Optional on `teams` and always will be: a team with no franchise is a
+   * normal team, exactly as a team with no league is. Nothing user-facing may
+   * require one.
+   */
+  franchises: defineTable({
+    // The operator's own label for the thread — "Titans / Oilers", "Athletics",
+    // whatever reads right to them. Not required to equal any team's name.
+    name: v.string(),
+    // `normalizeTeamName`'s key (token-sorted, punctuation-stripped), so
+    // "Titans / Oilers" and "Oilers Titans" cannot become two rows.
+    nameNormalized: v.string(),
+    // Per-sport, for the same reason leagues are: "Cardinals" is a franchise in
+    // two sports and they are not the same thread.
+    sportId: v.id("selectorOptions"),
+    lastUpdated: v.number(),
+  })
+    .index("by_name_normalized_and_sport_id", ["nameNormalized", "sportId"])
+    .index("by_sport_id", ["sportId"]),
+
   // Teams — first-class entity. Modeled with location + yearsActive to support
   // defunct franchises (Expos → Nationals, SuperSonics, etc.) since vintage
   // sets reference teams that no longer exist.
@@ -1045,6 +1094,10 @@ export default defineSchema({
     // more, and reads prefer `leagueId`. Remove once prod shows zero rows
     // carrying it and no `leagueId`.
     league: v.optional(v.string()),
+    // NEO-254: which franchise thread this team row belongs to, if an operator
+    // has said. Optional and staying that way — see the `franchises` table for
+    // why nothing may require one, and why it is never inferred from a name.
+    franchiseId: v.optional(v.id("franchises")),
     // NEO-236: the place part of the franchise name — "San Diego" in "San
     // Diego Padres". Location, not city: wherever the team is FROM, so a bay
     // (Tampa Bay), a region (New England), a state (Wisconsin / Badgers) and a
@@ -1107,6 +1160,10 @@ export default defineSchema({
     // `by_sport_id` index above exists to avoid, and it gets worse as the
     // MiLB/defunct-franchise rows arrive.
     .index("by_league_id", ["leagueId"])
+    // NEO-254: the reverse of `teams.franchiseId`, for the franchise view's
+    // "every team on this thread" list — the same shape, and the same reason,
+    // as `by_league_id` above.
+    .index("by_franchise_id", ["franchiseId"])
     // NEO-212: mirrors players.search_name. The entity-review wizard's team
     // pickers (and the team editor's) were the same 500-row fetch + client-side
     // `.includes()` filter that NEO-147 removed from the player typeahead —
@@ -1262,6 +1319,45 @@ export default defineSchema({
       // Title of the English Wikipedia article (enwiki sitelink), so the wizard
       // can link out to the full article for a human to confirm against.
       enwikiTitle: v.optional(v.string()),
+      /**
+       * NEO-254, player-only — the NB player rows that already carry this
+       * row's normalized name in this sport.
+       *
+       * Present only when there is more than one. ONE match is not a choice:
+       * the commit prelude adopts it silently, exactly as it always has, and
+       * the name never reaches the wizard at all. Two or more IS a choice, and
+       * it is a choice only a human can make — the bulk preload (decision 3)
+       * makes same-name players ordinary rather than exotic, and `.first()` on
+       * the dedupe index would have quietly attached every 1990 "Bob Allen"
+       * card to whichever row Convex returned first.
+       *
+       * Written by `applyLookupResult` from the `players` table, not by a
+       * marketplace or by Wikidata: this is NB's own data, offered back to the
+       * operator as the FIRST thing they see. `careerSummary` is rendered
+       * server-side ("Padres 1982-2001") so the wizard does not have to join
+       * `teamYears` to `teams` per candidate to draw a one-line identity.
+       */
+      existingCandidates: v.optional(v.array(v.object({
+        playerId: v.id("players"),
+        name: v.string(),
+        birthYear: v.optional(v.number()),
+        careerSummary: v.string(),
+        /**
+         * NEO-254 — this candidate was on a roster in the SET'S year.
+         *
+         * The card-year narrowing (`players.narrowSameNamePlayersByCardYear`)
+         * resolves most same-name collisions on its own; a row that still
+         * reaches the wizard is one it could not, so the operator is choosing
+         * between people who were genuinely contemporaries — or between one
+         * whose stints we hold and one whose we do not.
+         *
+         * Absent means "we cannot say", NEVER "no": a candidate with no stints
+         * on file, and every candidate on a row whose set has no year, is
+         * unflagged. It is a hint on the evidence, not a verdict, which is why
+         * it never removes a candidate from the list.
+         */
+        activeInSetYear: v.optional(v.boolean()),
+      }))),
       // team-only
       league: v.optional(v.string()),
       // NEO-236: the place part of the team's name. Location, not city —

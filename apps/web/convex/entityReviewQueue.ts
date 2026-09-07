@@ -10,11 +10,22 @@ import { ConvexError, v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { RunResult } from "@convex-dev/workpool";
 import { getCurrentUserId, requireAdmin } from "./auth";
-import { normalizePlayerName } from "./players";
+import {
+  buildExistingPlayerCandidates,
+  isAmbiguousPlayerName,
+  normalizePlayerName,
+} from "./players";
+// NEO-254: ONE floor, shared with `players.savePlayerFields` (the other route
+// into the same `players.teamYears` column) and with the wizard's own year
+// fields. The three used to be separate literals and two of them disagreed.
+import { MIN_CAREER_YEAR } from "../lib/players/career-years";
 import { normalizeTeamName } from "./teams";
 // NEO-236: the ONE team lookup. Staging asks "do we already hold this career
 // team?" and must ask it exactly the way every writer keys the table.
 import { findTeamByFullName } from "./lib/teamRow";
+// NEO-254: the set's year, for labelling which same-name candidates were
+// active in it. One ancestor walk per batch; see convex/lib/selectorAncestry.ts.
+import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
 
 /**
  * NEO-92: backs the step-through "new players & teams" review wizard that
@@ -56,6 +67,15 @@ const enrichmentValidator = v.object({
   description: v.optional(v.string()),
   birthYear: v.optional(v.number()),
   enwikiTitle: v.optional(v.string()),
+  // NEO-254, player-only: the NB rows already filed under this name, present
+  // only when there is MORE THAN ONE of them. See schema.ts, and
+  // `players.buildExistingPlayerCandidates` for who fills it in.
+  existingCandidates: v.optional(v.array(v.object({
+    playerId: v.id("players"),
+    name: v.string(),
+    birthYear: v.optional(v.number()),
+    careerSummary: v.string(),
+  }))),
   league: v.optional(v.string()),
   // NEO-236: the place part of the team name. Location, not city.
   location: v.optional(v.string()),
@@ -141,11 +161,6 @@ const decisionValidator = v.union(
   v.object({ action: v.literal("skip") }),
 );
 
-// Earliest plausible year for a career-team entry — 1869 (first openly
-// professional baseball club). A deliberately loose lower bound: the point is
-// to reject nonsense (year 0, negative, a mistyped 5-digit year), not to
-// encode sport-specific history.
-const MIN_CAREER_YEAR = 1869;
 
 // Upper bound on how many career-team entries an admin can attach to a single
 // player row in the wizard. Not a security boundary (this path is admin-gated)
@@ -560,6 +575,50 @@ function toPublicRow<T extends { createdByUserId: string }>(
  * The `batchId` is preserved throughout, because the client is already holding
  * it and a new one would strand the open wizard.
  */
+/**
+ * NEO-254 — the enrichment a review row is BORN with.
+ *
+ * ## Why ambiguity is attached here and not only when the lookup lands
+ *
+ * `applyLookupResult` computes `existingCandidates` too, and for a while that
+ * was the only place it happened. That left the marker missing on every row
+ * whose lookup never produced one:
+ *
+ *   - `backstopEntityReviewRowImpl` settles a stranded row to "error" without
+ *     going near `players`;
+ *   - `sweepStalePendingRows` does the same for a row the pool lost entirely;
+ *   - and any row already sitting in the queue at deploy time never re-runs
+ *     its lookup at all.
+ *
+ * A row in any of those states is indistinguishable, to every consumer, from
+ * a name nobody has ever heard of — so the wizard would promote one of two
+ * same-name players to its one-tap primary, and the bulk create would mint a
+ * third. The ambiguity is knowable the moment the row is inserted, from
+ * `players` alone, with no network anywhere in it. So it is written then, and
+ * the lookup merely REFRESHES it.
+ *
+ * Returns `undefined` rather than an empty object for an unambiguous name, so
+ * an ordinary row is stored byte-identical to how it was before this existed.
+ */
+async function initialEnrichmentFor(
+  ctx: MutationCtx,
+  kind: "player" | "team",
+  name: string,
+  sportId: Id<"selectorOptions">,
+  /**
+   * NEO-254 — the set's own year, so each candidate can be marked as active in
+   * it. Resolved once by the caller and passed down: it is one ancestor walk
+   * per BATCH, not one per name.
+   */
+  cardYear: number | undefined,
+): Promise<{ existingCandidates: Awaited<ReturnType<typeof buildExistingPlayerCandidates>> } | undefined> {
+  if (kind !== "player") return undefined;
+  const existingCandidates = await buildExistingPlayerCandidates(ctx, name, sportId, {
+    cardYear,
+  });
+  return existingCandidates.length > 0 ? { existingCandidates } : undefined;
+}
+
 export const startBatch = internalMutation({
   args: {
     selectorOptionId: v.id("selectorOptions"),
@@ -570,6 +629,10 @@ export const startBatch = internalMutation({
   },
   returns: v.string(),
   handler: async (ctx, args): Promise<string> => {
+    // NEO-254 — the set's own year, walked ONCE per batch rather than once per
+    // name. It only labels which same-name candidates were active that year;
+    // an undefined year simply leaves every candidate unlabelled.
+    const setYear = await findSetYearForSelectorOption(ctx, args.selectorOptionId);
     // Keyed the same way on both sides of the reconciliation below, and by
     // the same normalizers `players`/`teams` dedupe on, so "J.T. Realmuto"
     // and "JT Realmuto" are one name here exactly as they are one row there.
@@ -683,6 +746,15 @@ export const startBatch = internalMutation({
       const addedIds: Array<Id<"entityReviewQueue">> = [];
       for (const [key, { kind, name }] of incoming) {
         if (existingKeys.has(key)) continue;
+        // NEO-254 — see `initialEnrichmentFor`. A row added by a resume is as
+        // liable to be an ambiguous name as one from a fresh batch.
+        const enrichment = await initialEnrichmentFor(
+          ctx,
+          kind,
+          name,
+          args.sportId,
+          setYear,
+        );
         addedIds.push(
           await ctx.db.insert("entityReviewQueue", {
             selectorOptionId: args.selectorOptionId,
@@ -697,6 +769,7 @@ export const startBatch = internalMutation({
             nameNormalized: key.slice(kind.length + 1),
             sportId: args.sportId,
             status: "pending",
+            ...(enrichment ? { enrichment } : {}),
           }),
         );
       }
@@ -716,6 +789,15 @@ export const startBatch = internalMutation({
     const batchId = crypto.randomUUID();
     const ids: Array<Id<"entityReviewQueue">> = [];
     for (const name of args.playerNames) {
+      // NEO-254 — the row knows it is a choice before any lookup runs. See
+      // `initialEnrichmentFor` for why that cannot wait for the lookup.
+      const enrichment = await initialEnrichmentFor(
+        ctx,
+        "player",
+        name,
+        args.sportId,
+        setYear,
+      );
       ids.push(
         await ctx.db.insert("entityReviewQueue", {
           selectorOptionId: args.selectorOptionId,
@@ -727,6 +809,7 @@ export const startBatch = internalMutation({
           nameNormalized: normalizePlayerName(name),
           sportId: args.sportId,
           status: "pending",
+          ...(enrichment ? { enrichment } : {}),
         }),
       );
     }
@@ -1402,6 +1485,32 @@ export const clearDecision = mutation({
  *     enrichment is ever read — so waiting on the lookup buys the operator
  *     precisely nothing, and making them wait to say "none of this is an
  *     entity" would be a worse wizard, not a safer one. Skip passes `true`.
+ *
+ * ## NEO-254 — and create also skips a row that is a CHOICE
+ *
+ * The same argument, one step further. A row carrying
+ * `enrichment.existingCandidates` is one where two or more NB players are
+ * already filed under this name, and the wizard is about to put them in front
+ * of the operator to pick from. "Everything else is new" is a statement about
+ * names nobody has heard of; it is not an answer to "which of these two Bob
+ * Allens is on the card", and treating it as one mints a third Bob Allen
+ * silently — the exact failure NEO-254 exists to remove, arriving through a
+ * different door.
+ *
+ * So create leaves those rows undecided and the operator rules on each one
+ * individually. They are `ready`, not `pending`, so they do not re-arm the
+ * client's auto-add loop; they simply stay in the walk until answered.
+ * Skip is unaffected for the same reason as above: it creates nothing, so
+ * there is no wrong row to create.
+ *
+ * The test is `players.isAmbiguousPlayerName` — the LIVE index — and NOT the
+ * stored `enrichment.existingCandidates` marker, even though the marker is now
+ * written at enqueue time. The marker records what was true when the row was
+ * written; a preload run, a colleague's commit or a merge between then and
+ * this click can turn an ordinary name into an ambiguous one, and this is the
+ * one caller that turns "not ambiguous" straight into an INSERT. It reads at
+ * most one index lookup per undecided player row in the batch, which is the
+ * same order as the loop it sits in.
  */
 async function decideAllRemaining(
   ctx: MutationCtx,
@@ -1429,6 +1538,23 @@ async function decideAllRemaining(
     // NEO-221: a row whose lookup has not landed is skipped on the CREATE
     // path (see the note above) and included on SKIP.
     if (!includePending && row.status === "pending") continue;
+    // NEO-254 — a player name TWO OR MORE NB rows already carry is never
+    // decided in bulk: a human picks which "Bob Allen" the card means, and
+    // "create all remaining" would mint a third one behind their back. Asked
+    // of the LIVE index rather than the row's stored marker — see the doc
+    // above for why that distinction is the point.
+    //
+    // `includePending` is reused as the create-versus-skip discriminator
+    // deliberately: both exclusions exist for the same reason (create consumes
+    // something the operator has not looked at yet) and splitting them into two
+    // flags would let a future caller turn one off without the other.
+    if (
+      !includePending &&
+      row.kind === "player" &&
+      (await isAmbiguousPlayerName(ctx, row.name, row.sportId))
+    ) {
+      continue;
+    }
     // Each row is patched with its OWN fresh object literal, never a shared
     // reference to `decision`.
     //
@@ -1714,9 +1840,52 @@ export const applyLookupResult = internalMutation({
     // Decided: the operator has ruled and commit is imminent or done. Writing
     // here would only contend with the commit's read of this same row.
     if (row.decision) return null;
+
+    /**
+     * NEO-254 — attach NB's OWN answer to the same question the lookup asked.
+     *
+     * A row reaches the wizard for one of two reasons now: nothing in
+     * `players` matches the name, or SEVERAL things do (see
+     * `players.resolveNameForReview`). In the second case the operator's first
+     * question is not "what does Wikidata say", it is "which of the people we
+     * already have is this?", and until now the wizard had no way to answer
+     * it: `nearMatches` gave bare names with no birth year and no career, and
+     * only one of them at that.
+     *
+     * Computed HERE rather than in the action that calls this, for two
+     * reasons. It is a `players` read, and this mutation already holds the
+     * transaction; and it must happen on BOTH branches — a name Wikidata has
+     * never heard of is exactly as ambiguous as one it knows, and the error
+     * branch sends no enrichment at all, so a client-side merge would have
+     * shown candidates only for the lucky half.
+     *
+     * `buildExistingPlayerCandidates` returns [] unless there are two or more,
+     * so an ordinary new name stores nothing extra and the wizard renders
+     * exactly what it did before.
+     */
+    const existingCandidates =
+      row.kind === "player"
+        ? await buildExistingPlayerCandidates(ctx, row.name, row.sportId, {
+            // NEO-254: re-derived live rather than read off the row, for the
+            // same reason the candidates themselves are — the set's year is
+            // cheap to walk to and a row can outlive the shape it was written
+            // with.
+            cardYear: await findSetYearForSelectorOption(ctx, row.selectorOptionId),
+          })
+        : [];
+
+    // The enrichment object is only MINTED for candidates when the lookup
+    // itself found nothing; a `status: "error"` row with candidates on it is
+    // still an error row, and the wizard keys its "No Wikidata match found."
+    // on `status`, not on the presence of this object.
+    const enrichment =
+      existingCandidates.length > 0
+        ? { ...(args.enrichment ?? {}), existingCandidates }
+        : args.enrichment;
+
     await ctx.db.patch(args.id, {
       status: args.status,
-      enrichment: args.enrichment,
+      enrichment,
     });
     /*
      * NEO-236 — THIS is where a player's career teams become their own steps.

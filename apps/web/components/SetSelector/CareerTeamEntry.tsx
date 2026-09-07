@@ -8,6 +8,7 @@ import {
 } from "../../convex/lib/entityNearMatch";
 import { teamFullName } from "../../lib/teams/team-name";
 import { Input } from "../primitives/Input";
+import { MIN_CAREER_YEAR, maxCareerYear } from "../../lib/players/career-years";
 
 /**
  * NEO-92 follow-up: manual career-team entry for a player row in the
@@ -62,9 +63,11 @@ import { Input } from "../primitives/Input";
  * round-trip; the server re-validates regardless (defense in depth).
  */
 
-// Mirrors MIN_CAREER_YEAR in convex/entityReviewQueue.ts (1869 = first
-// openly professional baseball club — a loose lower bound to reject nonsense).
-export const MIN_CAREER_YEAR = 1869;
+// NEO-254: re-exported from the one place the number now lives, rather than
+// mirrored by hand. The comment this replaced pointed at the file it was
+// copying — which is exactly how the Players page's copy drifted to 1850
+// without anybody noticing the two validators had stopped agreeing.
+export { MIN_CAREER_YEAR } from "../../lib/players/career-years";
 
 /** See `PlayerAutocomplete`'s SEARCH_DEBOUNCE_MS — same value, same reasoning. */
 const SEARCH_DEBOUNCE_MS = 200;
@@ -126,7 +129,7 @@ export default function CareerTeamEntry({
    *  its two halves does not. */
   const comboRef = useRef<HTMLDivElement>(null);
 
-  const maxYear = new Date().getFullYear() + 1;
+  const maxYear = maxCareerYear();
 
   /**
    * Anything typed into any of the three fields counts. A name alone is enough:

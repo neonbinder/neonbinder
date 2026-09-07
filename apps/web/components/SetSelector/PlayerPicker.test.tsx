@@ -20,6 +20,9 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+// NEO-254: the ambiguity refusal is a ConvexError, and only a ConvexError's
+// message survives production redaction — see `userFacingMessage`.
+import { ConvexError } from "convex/values";
 
 // ---------------------------------------------------------------------------
 // Module mocks — declared before the component import
@@ -456,6 +459,42 @@ describe("PlayerPicker", () => {
     expect(
       (screen.getByLabelText("Search players") as HTMLInputElement).value,
     ).toBe("Bobby Witt Jr");
+  });
+
+  it("shows NEO-254's ambiguity refusal verbatim", async () => {
+    /*
+     * `findOrCreate` now refuses rather than returning the first of several
+     * same-name rows, and after the bulk preload that refusal is a thing a
+     * picker really hits — two Bob Allens pitched in the majors. The message
+     * IS the instruction ("pick the right one"), so it has to survive: this
+     * path is the only place the operator finds out, and the generic fallback
+     * would tell them nothing they can act on.
+     *
+     * Safe to render verbatim by the rule this component already documents:
+     * the message names a COUNT and the name the operator just typed, never
+     * anything about the other rows.
+     */
+    mockFindOrCreate.mockRejectedValue(
+      new ConvexError(
+        "2 players are already filed under Bob Allen. Pick the right one instead of adding another.",
+      ),
+    );
+    currentCandidates = [];
+    const { onChange } = renderPicker();
+    openPopover();
+    fireEvent.change(screen.getByLabelText("Search players"), {
+      target: { value: "Bob Allen" },
+    });
+
+    fireEvent.click(screen.getByLabelText("Create player Bob Allen"));
+    await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
+
+    expect(screen.getByRole("alert").textContent).toBe(
+      "2 players are already filed under Bob Allen. Pick the right one instead of adding another.",
+    );
+    // No chip was added — the refusal is a refusal, not a silent no-op that
+    // leaves the operator thinking it worked.
+    expect(onChange).not.toHaveBeenCalled();
   });
 
   it("clears the refusal on the next keystroke", async () => {

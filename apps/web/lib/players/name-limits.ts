@@ -21,3 +21,21 @@
  * `teams.MAX_TEAM_NAME_LENGTH`.
  */
 export const MAX_PLAYER_NAME_LENGTH = 120;
+
+/**
+ * NEO-254 — how many same-name rows any lookup reads before it stops counting.
+ *
+ * Not a page size: the server only ever branches on "none / exactly one / more
+ * than one", and the third answer is settled by the second row. Reading a
+ * bounded window rather than collecting keeps a pathological name — a
+ * checklist header that normalizes to something a thousand rows share — from
+ * turning a per-name lookup inside a commit into an unbounded read. Eight
+ * leaves room for the candidate list the review wizard renders while staying
+ * trivially cheap.
+ *
+ * In `lib/` for the same reason `MAX_PLAYER_NAME_LENGTH` is, and it is the
+ * same kind of fact: the wizard's candidate panel has to know the number too,
+ * because a list exactly this long means "at least eight" and it has to say
+ * so rather than imply the operator has seen everyone.
+ */
+export const PLAYER_AMBIGUITY_SCAN_LIMIT = 8;

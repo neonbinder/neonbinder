@@ -57,6 +57,11 @@ const teamDocValidator = v.object({
   // free-text predecessor, kept only until the backfill drains — see the schema.
   leagueId: v.optional(v.id("leagues")),
   league: v.optional(v.string()),
+  // NEO-254: the franchise thread, when an operator has put this row on one.
+  // Listed here because this validator is STRICT — Convex checks it against
+  // the real document, so a schema field missing from it makes `teams.list`
+  // throw for every screen, not just for a test.
+  franchiseId: v.optional(v.id("franchises")),
   // NEO-236: the place part of the franchise name — "San Diego" in "San Diego
   // Padres". Location, not city: it is wherever the team is FROM, so a bay
   // (Tampa Bay), a region (New England), a state (Wisconsin / Badgers) and a
@@ -654,6 +659,17 @@ export const saveTeamFields = mutation({
     // The free-text `league` predecessor is not settable here — assigning a
     // league by typing is exactly what created the drift this replaced.
     leagueId: v.optional(v.union(v.id("leagues"), v.null())),
+    /**
+     * NEO-254 — the franchise thread this team row sits on. `null` clears it,
+     * which is the "remove from franchise" control on the franchise view.
+     *
+     * Modelled on `leagueId` above and for the same reason: it names a row that
+     * exists, picked off a list. A NEW franchise is created by
+     * `franchises.findOrCreate` first and its id passed here, rather than by
+     * typing a name into this mutation — assigning a shared row by typing is
+     * exactly what `leagueId` replaced.
+     */
+    franchiseId: v.optional(v.union(v.id("franchises"), v.null())),
     location: v.optional(v.union(v.string(), v.null())),
     yearsActive: v.optional(
       v.union(
@@ -757,6 +773,22 @@ export const saveTeamFields = mutation({
       // Assigning a league supersedes the legacy string, so a row never
       // carries two answers to the same question.
       patch.league = undefined;
+    }
+    if (args.franchiseId !== undefined) {
+      if (args.franchiseId !== null) {
+        // Validated against the SPORT before it is trusted, exactly as
+        // `resolveOperatorLeagueId` validates a league: the validator proves
+        // the id is in `franchises`, not that it belongs to this team's sport,
+        // and a cross-sport franchise on a team is a row the franchise view
+        // would render under the wrong sport with nothing saying so.
+        const franchise = await ctx.db.get(args.franchiseId);
+        if (!franchise) throw new ConvexError("That franchise no longer exists.");
+        if (franchise.sportId !== existing.sportId) {
+          // Safe to name: reference data the operator just picked off a list.
+          throw new ConvexError(`${franchise.name} is a franchise in another sport.`);
+        }
+      }
+      patch.franchiseId = args.franchiseId ?? undefined;
     }
     if (args.yearsActive !== undefined) {
       patch.yearsActive = args.yearsActive ?? undefined;
