@@ -564,14 +564,20 @@ export const findOrCreate = mutation({
 });
 
 /**
- * NEO-254 — how many team documents the team-on-card tie-break may read.
+ * NEO-254 — how many DISTINCT team documents the team-on-card tie-break may
+ * read, across everything sharing one cache.
  *
- * The tie-break only ever resolves stints that COVER the card's year, which is
- * one or two per candidate for a real player, so the budget is never
- * approached in practice. It exists for the row that is not real: a corrupt or
- * hand-edited `teamYears` with dozens of overlapping open stints, multiplied
- * by up to `PLAYER_AMBIGUITY_SCAN_LIMIT` candidates, inside a mutation that is
- * otherwise a handful of reads.
+ * Distinct, because a cache hit costs nothing: the commit prelude passes one
+ * cache through every ambiguous name in the batch, and a set's whole team
+ * vocabulary is a couple of dozen rows that repeat on hundreds of cards. So
+ * the budget bounds the extra reads a COMMIT can spend, which is the number
+ * that matters inside a mutation, rather than re-arming per name — which was
+ * no bound on a commit at all.
+ *
+ * 64 is far beyond any real set: the tie-break only resolves stints that COVER
+ * the card's year, so it sees roughly one team per candidate per year. It
+ * exists for the row that is not real — a corrupt or hand-edited `teamYears`
+ * with dozens of overlapping open stints.
  *
  * Blowing it ABANDONS the tie-break rather than the whole narrowing, and never
  * picks a winner from a partial read: the year filter still applies, and if
@@ -579,6 +585,25 @@ export const findOrCreate = mutation({
  * half the evidence would be worse than no budget at all.
  */
 const CARD_YEAR_TEAM_READ_BUDGET = 64;
+
+/**
+ * NEO-254 — team lookups shared across one commit's worth of narrowing.
+ *
+ * `keysById` maps a team id to the normalized name keys a card might name it
+ * by (the composed full name and the bare nickname). `spent` counts the
+ * documents actually read, against `CARD_YEAR_TEAM_READ_BUDGET`.
+ *
+ * Deliberately mutable and passed by reference: the point is that the second
+ * "Bob Allen" in a set pays nothing for a team the first one already resolved.
+ */
+export type CardYearTeamCache = {
+  keysById: Map<string, string[]>;
+  spent: number;
+};
+
+export function createCardYearTeamCache(): CardYearTeamCache {
+  return { keysById: new Map(), spent: 0 };
+}
 
 /** What the card-year narrowing concluded about a set of same-name rows. */
 export type CardYearNarrowing = {
@@ -635,6 +660,12 @@ export async function narrowSameNamePlayersByCardYear(
   opts: {
     cardYear?: number;
     cardTeamNames?: ReadonlyArray<string>;
+    /**
+     * Team lookups and read budget shared across a whole commit. Omit for a
+     * one-shot caller (the review gate, the wizard's candidate list) and a
+     * fresh cache is used for that call alone.
+     */
+    teamCache?: CardYearTeamCache;
     /** Injectable for tests; the clock otherwise. */
     currentYear?: number;
   },
@@ -670,8 +701,7 @@ export async function narrowSameNamePlayersByCardYear(
   );
 
   if (teamKeys.size > 0 && survivors.length > 1) {
-    const teamNameKeysById = new Map<string, string[]>();
-    let reads = 0;
+    const cache = opts.teamCache ?? createCardYearTeamCache();
     let budgetBlown = false;
     const onThatTeam: Array<Doc<"players">> = [];
     for (const player of survivors) {
@@ -679,14 +709,14 @@ export async function narrowSameNamePlayersByCardYear(
       for (const stint of player.teamYears ?? []) {
         if (!stintCoversYear(stint, cardYear, currentYear)) continue;
         const key = stint.teamId as string;
-        if (!teamNameKeysById.has(key)) {
-          if (reads >= CARD_YEAR_TEAM_READ_BUDGET) {
+        if (!cache.keysById.has(key)) {
+          if (cache.spent >= CARD_YEAR_TEAM_READ_BUDGET) {
             budgetBlown = true;
             break;
           }
-          reads += 1;
+          cache.spent += 1;
           const team = await ctx.db.get(stint.teamId);
-          teamNameKeysById.set(
+          cache.keysById.set(
             key,
             team
               ? [
@@ -696,7 +726,7 @@ export async function narrowSameNamePlayersByCardYear(
               : [],
           );
         }
-        if (teamNameKeysById.get(key)!.some((k) => k && teamKeys.has(k))) {
+        if (cache.keysById.get(key)!.some((k) => k && teamKeys.has(k))) {
           hit = true;
           break;
         }

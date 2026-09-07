@@ -52,15 +52,38 @@
  * quietly sends 500 fails halfway through with a limit error and leaves the
  * operator guessing which rows landed.
  *
- * ## No enrichment is scheduled
+ * ## Nothing here schedules enrichment — including through its helpers
  *
  * `teams.findOrCreate` and `players.findOrCreate` each enqueue a Wikidata
  * lookup on insert. This file deliberately does not: the whole point of the
  * preload is that these rows arrive already carrying the career data Wikidata
  * would have been asked for, and thirty thousand queued lookups is not a
  * bounded amount of work. `seedTeamColors` makes the same call for the same
- * reason. Rows that need it are still reachable through the admin
- * "Re-enrich from Wikidata" button.
+ * reason.
+ *
+ * That claim has to cover the HELPERS too, and originally it did not:
+ * `findOrCreateLeague`'s insert branch schedules a league lookup, and
+ * `resolveDefaultLeagueId` reaches it on the fallback path every bulk-created
+ * team takes. So both now accept `skipEnrichment`, and every call in this file
+ * passes it. Asserted in `bulkLoad.test.ts` off `_scheduled_functions`, because
+ * a comment is exactly the wrong place for this to live.
+ *
+ * Anything a preloaded row is missing is still reachable through the admin
+ * "Re-enrich from Wikidata" button — the deliberate, human version.
+ *
+ * ## `decision: { create: true }` is NOT idempotent, and cannot be made so
+ *
+ * Every other outcome here converges on a re-run: an adopted row is found
+ * again, an unmatched name creates once and is adopted thereafter. `create`
+ * is the exception BY DEFINITION — it means "none of the rows sharing this
+ * key is the one I mean", and the row it inserts then shares that key too, so
+ * replaying it inserts a second one. The server cannot tell a replay from a
+ * genuine second person of the same name; only the caller knows.
+ *
+ * **The caller must therefore record the `id` a `create` decision returned and
+ * replay that row as `{ adopt: id }`, never as `{ create: true }`.** That is
+ * what the Phase B loader's answers file is for. A script that replays
+ * `create` will duplicate a row on every run, silently.
  *
  * Runbook and the loader script: NEO-254 Phase B.
  */
@@ -69,7 +92,12 @@ import { internalMutation } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
-import { findLeagueByName, findOrCreateLeague, resolveDefaultLeagueId } from "./leagues";
+import {
+  findLeagueByName,
+  findOrCreateLeague,
+  normalizeLeagueName,
+  resolveDefaultLeagueId,
+} from "./leagues";
 import type { LeagueLevel } from "./leagues";
 import { findOrCreateFranchise } from "./franchises";
 import { normalizePlayerName } from "./players";
@@ -124,6 +152,13 @@ const MAX_KEY_LENGTH = 120;
 
 /** The earliest year any of these datasets can legitimately carry. */
 const MIN_YEAR = 1800;
+
+/**
+ * The per-chunk league cache's slot for "no league named, use the sport
+ * default". Prefixed so it cannot collide with `name:<normalised>`, which is
+ * how every real league name is keyed.
+ */
+const DEFAULT_LEAGUE_CACHE_KEY = "default:";
 
 // ---------------------------------------------------------------------------
 // The gate
@@ -363,6 +398,8 @@ export const upsertLeagues = internalMutation({
         name,
         ...(abbreviation ? { abbreviation } : {}),
         sportId,
+        // See the header: no call in this file queues a Wikidata lookup.
+        skipEnrichment: true,
         ...(row.level ? { level: row.level as LeagueLevel } : {}),
         ...(row.aliases && row.aliases.length > 0
           ? { aliases: row.aliases.map((a) => a.trim()).filter(Boolean) }
@@ -552,6 +589,9 @@ export const upsertTeams = internalMutation({
     // One franchise lookup per distinct key across the whole chunk, not per
     // team. A 50-team chunk for one sport is typically two or three franchises.
     const franchiseByKey = new Map<string, Id<"franchises"> | null>();
+    // The same, for leagues — see `resolveLeagueId` below for why the scan it
+    // saves is the expensive one.
+    const leagueByName = new Map<string, Id<"leagues"> | null>();
     const resolveFranchise = async (
       row: { franchiseId?: Id<"franchises">; franchiseKey?: string },
     ): Promise<{ id: Id<"franchises"> | null; missing: boolean }> => {
@@ -592,24 +632,49 @@ export const upsertTeams = internalMutation({
       const fields = teamRowFields({ name, location });
       const franchise = await resolveFranchise(row);
 
-      // The league is resolved once per row, whichever branch is taken: an
-      // adopted row may need it to gap-fill, and a created one always does.
+      // The league is resolved once per CHUNK, not once per row. A dataset
+      // slice is fifty teams in two or three leagues, and `findLeagueByName`'s
+      // alias leg is a `by_sport_id` collect — an array member cannot be
+      // indexed — so resolving per row would pay that scan fifty times to
+      // reach the same handful of ids. Keyed on the normalised name, and on a
+      // reserved key for the sport-default fallback, so the two paths share
+      // one cache without being able to collide with a real league name.
       const leagueName = row.league?.trim();
       const resolveLeagueId = async (): Promise<Id<"leagues"> | undefined> => {
-        if (leagueName) {
-          return await findOrCreateLeague(ctx, {
-            name: boundedName(leagueName, "A league name", key),
-            sportId,
-          });
+        const cacheKey = leagueName
+          ? `name:${normalizeLeagueName(leagueName)}`
+          : DEFAULT_LEAGUE_CACHE_KEY;
+        if (!leagueByName.has(cacheKey)) {
+          const resolved = leagueName
+            ? await findOrCreateLeague(ctx, {
+                name: boundedName(leagueName, "A league name", key),
+                sportId,
+                // See the header: the helper's insert branch schedules a
+                // Wikidata lookup, and a bulk write must not queue pooled
+                // network work as a side effect.
+                skipEnrichment: true,
+              })
+            : await resolveDefaultLeagueId(ctx, sportId, {
+                skipEnrichment: true,
+              });
+          leagueByName.set(cacheKey, resolved ?? null);
         }
-        return await resolveDefaultLeagueId(ctx, sportId);
+        return leagueByName.get(cacheKey) ?? undefined;
       };
 
       const adopt = async (existing: Doc<"teams">): Promise<TeamResult> => {
         const patch: Record<string, unknown> = {};
         if (!existing.leagueId) {
           const leagueId = await resolveLeagueId();
-          if (leagueId) patch.leagueId = leagueId;
+          if (leagueId) {
+            patch.leagueId = leagueId;
+            // The deprecated free-text `league` is cleared as its replacement
+            // lands, exactly as `teams.saveTeamFields` and
+            // `teams.convertLegacyLeagueInternal` do it. A row carrying both
+            // is a row with two answers to one question, and the reads that
+            // prefer `leagueId` would leave the string to rot unnoticed.
+            patch.league = undefined;
+          }
         }
         if (!existing.franchiseId && franchise.id) patch.franchiseId = franchise.id;
         if (existing.yearsActive === undefined && row.yearsActive) {
@@ -644,9 +709,19 @@ export const upsertTeams = internalMutation({
         };
       };
 
-      // An answered question wins over the match. `adopt` is still validated:
-      // the validator proves the id is a team, not that it is a team in THIS
-      // sport, and a cross-sport adoption is a row nothing can explain.
+      /**
+       * An answered question wins over the match — but only over the CHOICE,
+       * never over the key.
+       *
+       * `adopt` exists to pick between rows that all share this row's natural
+       * key, so the chosen row is checked against three things: it exists, it
+       * is in this sport, and its key equals this row's. Without the third, a
+       * mis-keyed answers file — a copy-paste slip, a stale id from a previous
+       * run, an off-by-one join in the loader — silently writes this dataset
+       * row's league, franchise and years onto an unrelated team, and nothing
+       * anywhere reports it. Refused instead, naming the row so the operator
+       * can go and fix the answer.
+       */
       if (row.decision && "adopt" in row.decision) {
         const chosen = await ctx.db.get(row.decision.adopt);
         if (!chosen || chosen.sportId !== sportId) {
@@ -654,9 +729,18 @@ export const upsertTeams = internalMutation({
             `The team chosen for "${key}" is not a team in this sport.`,
           );
         }
+        if (chosen.nameNormalized !== fields.nameNormalized) {
+          throw new ConvexError(
+            `The team chosen for "${key}" is a different team. A decision can ` +
+              `only pick between teams that share the name being loaded.`,
+          );
+        }
         results.push(await adopt(chosen));
         continue;
       }
+      // `create` is deliberately unconditional — it is the operator saying
+      // "none of these is the one I mean". It is also the one decision that
+      // does NOT converge on a replay; see the header.
       if (row.decision && "create" in row.decision) {
         results.push(await create());
         continue;
@@ -912,6 +996,10 @@ export const upsertPlayers = internalMutation({
         return { key, id, status: "created" };
       };
 
+      // Three checks, for the reason spelled out on the team twin above: a
+      // decision picks between rows that SHARE the natural key, so a chosen row
+      // whose name differs is a mis-keyed answers file writing this player's
+      // career onto somebody else.
       if (row.decision && "adopt" in row.decision) {
         const chosen = await ctx.db.get(row.decision.adopt);
         if (!chosen || chosen.sportId !== sportId) {
@@ -919,9 +1007,17 @@ export const upsertPlayers = internalMutation({
             `The player chosen for "${key}" is not a player in this sport.`,
           );
         }
+        if (chosen.nameNormalized !== nameNormalized) {
+          throw new ConvexError(
+            `The player chosen for "${key}" is a different person. A decision ` +
+              `can only pick between players that share the name being loaded.`,
+          );
+        }
         results.push(await adopt(chosen));
         continue;
       }
+      // Not idempotent on replay — record the returned id and send it back as
+      // `{ adopt: id }` next run. See the header.
       if (row.decision && "create" in row.decision) {
         results.push(await create());
         continue;

@@ -26,9 +26,11 @@
  * run creates nothing.
  */
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { convexTest } from "convex-test";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { internal } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { normalizePlayerName } from "./players";
@@ -61,6 +63,35 @@ async function seedSport(t: T, value = "Baseball"): Promise<Id<"selectorOptions"
       lastUpdated: 1_700_000_000_000,
     }),
   );
+}
+
+/**
+ * Wikidata enrichment jobs queued so far, read off `_scheduled_functions`.
+ *
+ * The same shape `enrichmentCreationOnly.test.ts` uses. Asserted rather than
+ * commented because the file header's "nothing here schedules enrichment"
+ * claim was WRONG when it was first written — `findOrCreateLeague`'s insert
+ * branch queued a league lookup, and `resolveDefaultLeagueId` reached it on
+ * the fallback path every bulk-created team takes. A prose claim about a
+ * helper three modules away is exactly the thing that needs a test under it.
+ */
+async function enrichmentJobs(t: T): Promise<number> {
+  const rows = await t.run(async (ctx) =>
+    (
+      ctx as unknown as {
+        db: {
+          system: {
+            query: (n: string) => {
+              collect: () => Promise<Array<{ name: string }>>;
+            };
+          };
+        };
+      }
+    ).db.system
+      .query("_scheduled_functions")
+      .collect(),
+  );
+  return rows.filter((r) => r.name.includes("enqueueEnrichment")).length;
 }
 
 const counts = (t: T) =>
@@ -906,6 +937,533 @@ describe("upsertPlayers", () => {
         ],
       }),
     ).rejects.toThrow(/two stints/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Nothing queues background work
+// ---------------------------------------------------------------------------
+
+describe("no path in this file schedules Wikidata enrichment", () => {
+  test("neither a league it creates nor a team's default-league fallback queues one", async () => {
+    arm();
+    const t = convexTest(schema, modules);
+    // A sport whose config names a league, so the team below takes the
+    // `resolveDefaultLeagueId` fallback — the path that was queueing work.
+    await seedSport(t, "Baseball");
+
+    await t.mutation(internal.bulkLoad.upsertLeagues, {
+      confirm: CONFIRM,
+      sport: "Baseball",
+      leagues: [{ name: "Federal League" }],
+    });
+    await t.mutation(internal.bulkLoad.upsertTeams, {
+      confirm: CONFIRM,
+      sport: "Baseball",
+      teams: [
+        // One naming its league, one falling back to the sport default.
+        { key: "sdp", location: "San Diego", name: "Padres", league: "Federal League" },
+        { key: "nyy", location: "New York", name: "Yankees" },
+      ],
+    });
+
+    // Not vacuous on either half. The fallback really did mint a league (the
+    // sport's configured one, beside the Federal League above), and the
+    // detector really does see a job when one is queued — proved by the
+    // positive control below.
+    expect((await counts(t)).leagues).toBeGreaterThan(1);
+    expect(await enrichmentJobs(t)).toBe(0);
+  });
+
+  test("positive control: the interactive path DOES queue one", async () => {
+    // Without this the assertion above would pass just as happily if
+    // `enrichmentJobs` had stopped matching anything at all.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t, "Baseball");
+
+    await t
+      .withIdentity({ subject: "admin", role: "admin" })
+      .mutation(api.teams.findOrCreate, { name: "Padres", location: "San Diego", sportId });
+
+    expect(await enrichmentJobs(t)).toBeGreaterThan(0);
+  });
+
+  test("the whole chunk resolves one league name once", async () => {
+    // `findLeagueByName`'s alias leg is a `by_sport_id` collect — an array
+    // member cannot be indexed — so resolving per row would pay that scan once
+    // per team. The observable half of the cache is that fifty teams in one
+    // league still produce exactly one league row.
+    arm();
+    const t = convexTest(schema, modules);
+    await seedSport(t, "Football");
+
+    await t.mutation(internal.bulkLoad.upsertTeams, {
+      confirm: CONFIRM,
+      sport: "Football",
+      teams: Array.from({ length: 5 }, (_, i) => ({
+        key: `t${i}`,
+        name: `Team ${i}`,
+        league: "National Football League",
+      })),
+    });
+
+    expect((await counts(t)).leagues).toBe(1);
+  });
+
+  test("the league cache is keyed per chunk, not rebuilt per row", () => {
+    // A source pin: the behaviour above passes either way, and the thing worth
+    // protecting is the read count, which a convex-test assertion cannot see.
+    const src = readFileSync(join(__dirname, "bulkLoad.ts"), "utf8");
+    expect(src).toContain("const leagueByName = new Map<string, Id<\"leagues\"> | null>();");
+    expect(src).toContain("DEFAULT_LEAGUE_CACHE_KEY");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A decision may pick between rows — never re-point at a different one
+// ---------------------------------------------------------------------------
+
+describe("decision.adopt is checked against the natural key", () => {
+  test("a team in this sport under a DIFFERENT name is refused", async () => {
+    // The failure this closes is silent: a stale id in the answers file writes
+    // this dataset row's league, franchise and years onto an unrelated team.
+    arm();
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const yankees = await seedTeam(t, sportId, {
+      location: "New York",
+      name: "Yankees",
+    });
+
+    await expect(
+      t.mutation(internal.bulkLoad.upsertTeams, {
+        confirm: CONFIRM,
+        sport: "Baseball",
+        teams: [
+          {
+            key: "SDN",
+            location: "San Diego",
+            name: "Padres",
+            decision: { adopt: yankees },
+          },
+        ],
+      }),
+    ).rejects.toThrow(/share the name being loaded/);
+
+    // Refused, not half-applied.
+    const row = await t.run(async (ctx) => ctx.db.get(yankees));
+    expect(row?.leagueId).toBeUndefined();
+    expect((await counts(t)).teams).toBe(1);
+  });
+
+  test("a player in this sport under a DIFFERENT name is refused", async () => {
+    arm();
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const other = await t.run(async (ctx) =>
+      ctx.db.insert("players", {
+        name: "Babe Ruth",
+        nameNormalized: normalizePlayerName("Babe Ruth"),
+        sportId,
+        lastUpdated: 1,
+      }),
+    );
+
+    await expect(
+      t.mutation(internal.bulkLoad.upsertPlayers, {
+        confirm: CONFIRM,
+        sport: "Baseball",
+        players: [
+          {
+            key: "g1",
+            name: "Tony Gwynn",
+            birthYear: 1960,
+            stints: [],
+            decision: { adopt: other },
+          },
+        ],
+      }),
+    ).rejects.toThrow(/share the name being loaded/);
+
+    const row = await t.run(async (ctx) => ctx.db.get(other));
+    expect(row?.birthYear).toBeUndefined();
+    expect((await counts(t)).players).toBe(1);
+  });
+
+  test("a player from another sport is refused", async () => {
+    arm();
+    const t = convexTest(schema, modules);
+    await seedSport(t, "Baseball");
+    const footballId = await seedSport(t, "Football");
+    const foreign = await t.run(async (ctx) =>
+      ctx.db.insert("players", {
+        name: "Tony Gwynn",
+        nameNormalized: normalizePlayerName("Tony Gwynn"),
+        sportId: footballId,
+        lastUpdated: 1,
+      }),
+    );
+
+    await expect(
+      t.mutation(internal.bulkLoad.upsertPlayers, {
+        confirm: CONFIRM,
+        sport: "Baseball",
+        players: [
+          { key: "g1", name: "Tony Gwynn", stints: [], decision: { adopt: foreign } },
+        ],
+      }),
+    ).rejects.toThrow(/not a player in this sport/);
+  });
+
+  test("`create` is documented as the one decision a replay must NOT repeat", () => {
+    // There is no server-side fix — the row `create` inserts shares the key it
+    // was told to ignore, so a replay inserts a second one. The contract is
+    // that the caller records the id and replays `{ adopt: id }`, and the only
+    // place that can live is the docs the loader is written against.
+    const src = readFileSync(join(__dirname, "bulkLoad.ts"), "utf8");
+    expect(src).toContain("is NOT idempotent, and cannot be made so");
+    expect(src).toContain("replay that row as `{ adopt: id }`");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Input the loader can get wrong
+// ---------------------------------------------------------------------------
+
+describe("refusals a malformed dataset row earns", () => {
+  test("a stint on a team id that no longer exists", async () => {
+    arm();
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const teamId = await seedTeam(t, sportId, { name: "Padres" });
+    await t.run(async (ctx) => ctx.db.delete(teamId));
+
+    await expect(
+      t.mutation(internal.bulkLoad.upsertPlayers, {
+        confirm: CONFIRM,
+        sport: "Baseball",
+        players: [
+          { key: "g1", name: "Tony Gwynn", stints: [{ teamId, fromYear: 1982 }] },
+        ],
+      }),
+    ).rejects.toThrow(/does not exist/);
+    expect((await counts(t)).players).toBe(0);
+  });
+
+  test("a stint that ends before it starts", async () => {
+    arm();
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const padres = await seedTeam(t, sportId, { name: "Padres" });
+
+    await expect(
+      t.mutation(internal.bulkLoad.upsertPlayers, {
+        confirm: CONFIRM,
+        sport: "Baseball",
+        players: [
+          {
+            key: "g1",
+            name: "Tony Gwynn",
+            stints: [{ teamId: padres, fromYear: 2001, toYear: 1982 }],
+          },
+        ],
+      }),
+    ).rejects.toThrow(/ends before it starts/);
+  });
+
+  test.each([
+    ["too early", 1799],
+    ["in the future", new Date().getFullYear() + 2],
+    ["not a whole year", 1960.5],
+  ])("a birth year %s", async (_label, birthYear) => {
+    arm();
+    const t = convexTest(schema, modules);
+    await seedSport(t);
+
+    await expect(
+      t.mutation(internal.bulkLoad.upsertPlayers, {
+        confirm: CONFIRM,
+        sport: "Baseball",
+        players: [{ key: "g1", name: "Tony Gwynn", birthYear, stints: [] }],
+      }),
+    ).rejects.toThrow(/expected a whole year/);
+    expect((await counts(t)).players).toBe(0);
+  });
+
+  test("a player chunk over the cap, before anything is written", async () => {
+    arm();
+    const t = convexTest(schema, modules);
+    await seedSport(t);
+
+    await expect(
+      t.mutation(internal.bulkLoad.upsertPlayers, {
+        confirm: CONFIRM,
+        sport: "Baseball",
+        players: Array.from({ length: 101 }, (_, i) => ({
+          key: `p${i}`,
+          name: `Player ${i}`,
+          stints: [],
+        })),
+      }),
+    ).rejects.toThrow(/limit is 100/);
+    expect((await counts(t)).players).toBe(0);
+  });
+
+  test.each([
+    ["empty", ""],
+    ["whitespace only", "   "],
+  ])("a %s row key", async (_label, key) => {
+    arm();
+    const t = convexTest(schema, modules);
+    await seedSport(t);
+
+    await expect(
+      t.mutation(internal.bulkLoad.upsertTeams, {
+        confirm: CONFIRM,
+        sport: "Baseball",
+        teams: [{ key, name: "Padres" }],
+      }),
+    ).rejects.toThrow(/key cannot be empty/);
+  });
+
+  test("an over-long row key", async () => {
+    // Bounded because it is echoed back into every refusal message this file
+    // can throw.
+    arm();
+    const t = convexTest(schema, modules);
+    await seedSport(t);
+
+    await expect(
+      t.mutation(internal.bulkLoad.upsertTeams, {
+        confirm: CONFIRM,
+        sport: "Baseball",
+        teams: [{ key: "k".repeat(121), name: "Padres" }],
+      }),
+    ).rejects.toThrow(/the limit is 120/);
+  });
+
+  test("a franchiseId from another sport is reported, not attached", async () => {
+    // The `franchiseKey` twin of this is covered above; the direct-id path has
+    // its own check, because the validator proves the id is a franchise and not
+    // that it is a franchise in THIS sport.
+    arm();
+    const t = convexTest(schema, modules);
+    await seedSport(t, "Baseball");
+    const footballId = await seedSport(t, "Football");
+    const foreign = await t.run(async (ctx) =>
+      ctx.db.insert("franchises", {
+        name: "Titans Oilers",
+        nameNormalized: normalizeTeamName("Titans Oilers"),
+        sportId: footballId,
+        lastUpdated: 1,
+      }),
+    );
+
+    const result = await t.mutation(internal.bulkLoad.upsertTeams, {
+      confirm: CONFIRM,
+      sport: "Baseball",
+      teams: [{ key: "sdp", name: "Padres", franchiseId: foreign }],
+    });
+
+    expect(result.results[0]).toMatchObject({
+      status: "created",
+      franchiseMissing: true,
+    });
+    const team = await t.run(async (ctx) => ctx.db.get(result.results[0].id!));
+    expect(team?.franchiseId).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Never overwrites — the cases the first pass missed
+// ---------------------------------------------------------------------------
+
+describe("upsertLeagues fills gaps and only gaps", () => {
+  test("an abbreviation and level absent on the row are filled in", async () => {
+    arm();
+    const t = convexTest(schema, modules);
+    await seedSport(t);
+
+    const first = await t.mutation(internal.bulkLoad.upsertLeagues, {
+      confirm: CONFIRM,
+      sport: "Baseball",
+      leagues: [{ name: "Federal League" }],
+    });
+    await t.mutation(internal.bulkLoad.upsertLeagues, {
+      confirm: CONFIRM,
+      sport: "Baseball",
+      leagues: [{ name: "Federal League", abbreviation: "FL", level: "major" }],
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(first.results[0].id));
+    expect(row?.abbreviation).toBe("FL");
+    expect(row?.level).toBe("major");
+  });
+
+  test("an abbreviation and level ALREADY on the row are never replaced", async () => {
+    arm();
+    const t = convexTest(schema, modules);
+    await seedSport(t);
+
+    const first = await t.mutation(internal.bulkLoad.upsertLeagues, {
+      confirm: CONFIRM,
+      sport: "Baseball",
+      leagues: [{ name: "Federal League", abbreviation: "FL", level: "major" }],
+    });
+    await t.mutation(internal.bulkLoad.upsertLeagues, {
+      confirm: CONFIRM,
+      sport: "Baseball",
+      leagues: [{ name: "Federal League", abbreviation: "XX", level: "other" }],
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(first.results[0].id));
+    expect(row?.abbreviation).toBe("FL");
+    expect(row?.level).toBe("major");
+  });
+
+  test("aliases are written at creation and never merged afterwards", async () => {
+    // Deliberate, and inherited from `findOrCreateLeague`: widening what an
+    // existing league answers to is an operator decision made on League
+    // Management, not something a dataset gets to do on its own.
+    arm();
+    const t = convexTest(schema, modules);
+    await seedSport(t);
+
+    const first = await t.mutation(internal.bulkLoad.upsertLeagues, {
+      confirm: CONFIRM,
+      sport: "Baseball",
+      leagues: [{ name: "Federal League", aliases: ["FL"] }],
+    });
+    await t.mutation(internal.bulkLoad.upsertLeagues, {
+      confirm: CONFIRM,
+      sport: "Baseball",
+      leagues: [{ name: "Federal League", aliases: ["Feds", "Federals"] }],
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(first.results[0].id));
+    expect(row?.aliases).toEqual(["FL"]);
+  });
+});
+
+describe("upsertTeams adoption leaves the operator's row alone", () => {
+  test("a stored SPLIT row is not rewritten by an unsplit dataset name", async () => {
+    arm();
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const teamId = await seedTeam(t, sportId, {
+      location: "San Diego",
+      name: "Padres",
+    });
+
+    await t.mutation(internal.bulkLoad.upsertTeams, {
+      confirm: CONFIRM,
+      sport: "Baseball",
+      teams: [{ key: "SDN", name: "San Diego Padres" }],
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(teamId));
+    expect(row?.name).toBe("Padres");
+    expect(row?.location).toBe("San Diego");
+  });
+
+  test("a stored UNSPLIT row is not rewritten by a split dataset name", async () => {
+    // The other direction, and the one that matters more: the dataset knows
+    // the split and the row does not, and it is still not the dataset's call.
+    // Splitting a row is `teams.saveTeamFields` with a human in front of it.
+    arm();
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const teamId = await seedTeam(t, sportId, { name: "San Diego Padres" });
+
+    await t.mutation(internal.bulkLoad.upsertTeams, {
+      confirm: CONFIRM,
+      sport: "Baseball",
+      teams: [{ key: "SDN", location: "San Diego", name: "Padres" }],
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(teamId));
+    expect(row?.name).toBe("San Diego Padres");
+    expect(row?.location).toBeUndefined();
+    expect((await counts(t)).teams).toBe(1);
+  });
+
+  test("a row carrying only the legacy free-text league gets a real one, and the string goes", async () => {
+    // `teams.league` is the deprecated predecessor of `leagueId`. Adoption
+    // fills the gap, and clears the string as its replacement lands — the same
+    // move `saveTeamFields` and `convertLegacyLeagueInternal` make, so the row
+    // never carries two answers to one question.
+    arm();
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const teamId = await t.run(async (ctx) =>
+      ctx.db.insert("teams", {
+        name: "Padres",
+        location: "San Diego",
+        nameNormalized: normalizeTeamName("San Diego Padres"),
+        sportId,
+        league: "Major League Baseball",
+        lastUpdated: 1,
+      }),
+    );
+
+    await t.mutation(internal.bulkLoad.upsertTeams, {
+      confirm: CONFIRM,
+      sport: "Baseball",
+      teams: [
+        {
+          key: "SDN",
+          location: "San Diego",
+          name: "Padres",
+          league: "Major League Baseball",
+        },
+      ],
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(teamId));
+    expect(row?.leagueId).toBeDefined();
+    expect(row?.league).toBeUndefined();
+    const league = await t.run(async (ctx) => ctx.db.get(row!.leagueId!));
+    expect(league?.name).toBe("Major League Baseball");
+  });
+
+  test("a leagueId ALREADY on the row is never replaced", async () => {
+    arm();
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const leagueId = await t.run(async (ctx) =>
+      ctx.db.insert("leagues", {
+        name: "Pacific Coast League",
+        nameNormalized: "pacific coast league",
+        sportId,
+        lastUpdated: 1,
+      }),
+    );
+    const teamId = await t.run(async (ctx) =>
+      ctx.db.insert("teams", {
+        name: "Padres",
+        location: "San Diego",
+        nameNormalized: normalizeTeamName("San Diego Padres"),
+        sportId,
+        leagueId,
+        lastUpdated: 1,
+      }),
+    );
+
+    await t.mutation(internal.bulkLoad.upsertTeams, {
+      confirm: CONFIRM,
+      sport: "Baseball",
+      teams: [
+        {
+          key: "SDN",
+          location: "San Diego",
+          name: "Padres",
+          league: "Major League Baseball",
+        },
+      ],
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(teamId));
+    expect(row?.leagueId).toBe(leagueId);
   });
 });
 

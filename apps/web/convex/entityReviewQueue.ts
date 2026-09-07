@@ -75,6 +75,15 @@ const enrichmentValidator = v.object({
     name: v.string(),
     birthYear: v.optional(v.number()),
     careerSummary: v.string(),
+    // NEO-254: this candidate has a stint covering the SET'S year.
+    //
+    // This object is a hand-kept copy of the schema's, and a field added to
+    // one and not the other is not a type error — it is a RUNTIME refusal on
+    // every function that returns a row (`getBatch`, `entityReviewRowValidator`
+    // below), which is the wizard failing to open at all. Anything added to
+    // `entityReviewQueue.enrichment.existingCandidates` in schema.ts belongs
+    // here in the same edit.
+    activeInSetYear: v.optional(v.boolean()),
   }))),
   league: v.optional(v.string()),
   // NEO-236: the place part of the team name. Location, not city.

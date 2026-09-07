@@ -121,6 +121,7 @@ import { findSportForSelectorOption } from "./cardChecklist";
 import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "./features/cardAttention";
 import {
+  createCardYearTeamCache,
   narrowSameNamePlayersByCardYear,
   normalizePlayerName,
   PLAYER_AMBIGUITY_SCAN_LIMIT,
@@ -1032,6 +1033,16 @@ function cardTeamNames(card: {
 /**
  * NEO-254 — record "this player appeared on a card carrying these teams".
  *
+ * ## Keyed by the NORMALIZED name
+ *
+ * The same person is routinely spelled two ways across one checklist — "J.T.
+ * Realmuto" on the base card, "JT Realmuto" on the subset — and `players`
+ * dedupes them into ONE row. Keying this map by the raw string would file the
+ * two spellings apart, so a lookup for whichever spelling the consumer happens
+ * to hold would see only half the teams. Both consumers already have the
+ * normalized form to hand (it is what they looked the player up by), so the
+ * map speaks the same language as the table it is used against.
+ *
  * A name can appear on many cards in one set (a base card, a subset, a league
  * leaders card), and a traded player's cards can legitimately name different
  * teams. Every one of them is kept: the tie-break asks "does exactly ONE
@@ -1051,11 +1062,12 @@ function addCardTeamNames(
   playerName: string,
   teamsOnCard: ReadonlyArray<string>,
 ): void {
-  const name = playerName.trim();
-  if (!name || teamsOnCard.length === 0) return;
-  const existing = target.get(name);
+  if (teamsOnCard.length === 0) return;
+  const key = normalizePlayerName(playerName);
+  if (!key) return;
+  const existing = target.get(key);
   if (!existing) {
-    target.set(name, teamsOnCard.slice(0, MAX_CARD_TEAM_NAMES_PER_PLAYER));
+    target.set(key, teamsOnCard.slice(0, MAX_CARD_TEAM_NAMES_PER_PLAYER));
     return;
   }
   for (const team of teamsOnCard) {
@@ -1112,9 +1124,9 @@ async function resolveUnknownsAndStartBatch(
     /**
      * NEO-254 — the team names printed on the SAME card as each player name.
      *
-     * Keyed by the raw player name as it came off the card; the map is built
-     * where the cards are, because this function only ever sees flat name
-     * lists. Used solely as a tie-break when the card's year leaves two
+     * Keyed by the NORMALIZED player name (see `addCardTeamNames`); the map is
+     * built where the cards are, because this function only ever sees flat
+     * name lists. Used solely as a tie-break when the card's year leaves two
      * same-name candidates standing, so an absent entry costs nothing but the
      * tie-break.
      */
@@ -1207,16 +1219,17 @@ async function resolveUnknownsAndStartBatch(
       { selectorOptionId: args.selectorOptionId },
     )) ?? undefined;
   /**
-   * The team names that appeared on a card alongside this player name, deduped
-   * and matched on the RAW name — the same string `addPlayer` recorded, so the
-   * two sides cannot disagree about spelling.
+   * The team names that appeared on a card alongside this player, deduped and
+   * keyed by the NORMALIZED name — the same key `playerByNorm` and the
+   * `players` table itself use, so two spellings of one person pool their
+   * teams instead of filing apart. See `addCardTeamNames`.
    */
-  const cardTeamNamesFor = (rawName: string): string[] =>
-    args.cardTeamNamesByPlayer?.get(rawName) ?? [];
+  const cardTeamNamesFor = (nameNormalized: string): string[] =>
+    args.cardTeamNamesByPlayer?.get(nameNormalized) ?? [];
 
   for (const [normalized, name] of playerByNorm) {
     if (skippedKeys.has(`player:${normalized}`)) continue;
-    const cardTeamNames = cardTeamNamesFor(name);
+    const cardTeamNames = cardTeamNamesFor(normalized);
     /**
      * NEO-254 — THE "needs review" GATE for players, and the reason it is no
      * longer `findByNameAndSport`.
@@ -1251,7 +1264,37 @@ async function resolveUnknownsAndStartBatch(
     });
     // `playerId`, not `matchCount`: several rows can still resolve to one
     // person once the year is taken into account.
-    if (!resolved.playerId) unknownPlayers.push(name);
+    if (!resolved.playerId) {
+      unknownPlayers.push(name);
+    } else if (resolved.narrowedByCardYear) {
+      /*
+       * NEO-254 — an auto-link the OPERATOR never saw.
+       *
+       * Every other link in this product is either unambiguous (one row of that
+       * name) or a human's answer. This one is neither: two or more people are
+       * on file under the name and the card's year picked between them. It is
+       * the right call far more often than it is not, but it is still an
+       * inference, and the day it goes wrong the only question that matters is
+       * "which cards did this happen to". So it leaves a trace naming the row
+       * chosen, the set it happened in, and the name — enough to find every
+       * affected card and to re-run the decision by hand.
+       *
+       * The NAME is safe to log: it is a checklist string off a marketplace
+       * payload, not anything a user typed about themselves.
+       */
+      console.log(
+        JSON.stringify({
+          msg: "player_narrowed_by_card_year",
+          selectorOptionId: args.selectorOptionId,
+          sportId: args.sportId,
+          setYear,
+          name,
+          playerId: resolved.playerId,
+          matchCount: resolved.matchCount,
+          usedCardTeamNames: cardTeamNames.length > 0,
+        }),
+      );
+    }
   }
   for (const [normalized, name] of teamByNorm) {
     if (skippedKeys.has(`team:${normalized}`)) continue;
@@ -9366,7 +9409,15 @@ export const commitCardChecklistPrelude = internalMutation({
      * commit in flight across a deploy still resolves.
      */
     playerTeamNames: v.optional(
-      v.array(v.object({ player: v.string(), teams: v.array(v.string()) })),
+      v.array(
+        v.object({
+          // The NORMALIZED name (`players.normalizePlayerName`), which is what
+          // this loop looks players up by — see `addCardTeamNames` for why the
+          // raw spelling would file one person under two keys.
+          playerNameNormalized: v.string(),
+          teams: v.array(v.string()),
+        }),
+      ),
     ),
     batchId: v.optional(v.string()),
   },
@@ -10113,10 +10164,24 @@ export const commitCardChecklistPrelude = internalMutation({
      * behaviour before this existed.
      */
     const setYear = await findSetYearForSelectorOption(ctx, args.selectorOptionId);
-    /** Raw player name → the teams printed on the cards it appeared on. */
+    /** Normalized player name → the teams printed on the cards it appeared on. */
     const cardTeamNamesByPlayer = new Map<string, string[]>(
-      (args.playerTeamNames ?? []).map(({ player, teams }) => [player, teams]),
+      (args.playerTeamNames ?? []).map(({ playerNameNormalized, teams }) => [
+        playerNameNormalized,
+        teams,
+      ]),
     );
+    /**
+     * NEO-254 — team lookups and the tie-break read budget, shared across every
+     * ambiguous name in this commit.
+     *
+     * A set's whole team vocabulary is a couple of dozen rows repeating over
+     * hundreds of cards, so after the first few names the tie-break reads
+     * nothing at all. Per-name caches would have re-read the same teams for
+     * every collision AND re-armed the budget each time, which is no bound on
+     * a commit's reads.
+     */
+    const cardYearTeamCache = createCardYearTeamCache();
     for (const name of allPlayerNames) {
       const normalized = norm(name);
       /**
@@ -10156,6 +10221,7 @@ export const commitCardChecklistPrelude = internalMutation({
         playerNameById.set(existing._id, existing.name);
         continue;
       }
+      const decision = reviewByKey.get(`player:${normalized}`)?.decision;
       /**
        * NEO-254 — the card's own year narrows "more than one" back to one.
        *
@@ -10171,16 +10237,32 @@ export const commitCardChecklistPrelude = internalMutation({
        * operator's decision below, exactly as before. With no set year it
        * narrows nothing at all: the rule is never to guess, only to rule out.
        *
+       * ## Only when there is NO decision, and that ordering is load-bearing
+       *
+       * A review session is human-paced and a commit happens at the end of it.
+       * Between the operator ruling on this name and pressing Confirm, a
+       * colleague's commit or a bulk load can add a stint that makes the year
+       * evidence point somewhere — including somewhere ELSE. Narrowing first
+       * would let that late data silently overrule a person who had already
+       * looked at these very rows and said which one it was, or said "this is
+       * somebody new", or said "not a person at all". Inference never
+       * overrules an answer; it only fills a silence.
+       *
+       * `!decision` and not `decision?.action !== "link"`: a skip is an answer
+       * too, and a `create` means the operator saw the candidates and rejected
+       * all of them.
+       *
        * Placed AFTER the exactly-one fast path so the ordinary name pays
        * nothing for it.
        */
-      if (existingMatches.length > 1) {
+      if (!decision && existingMatches.length > 1) {
         const narrowed = await narrowSameNamePlayersByCardYear(
           ctx,
           existingMatches,
           {
             ...(setYear !== undefined ? { cardYear: setYear } : {}),
-            cardTeamNames: cardTeamNamesByPlayer.get(name) ?? [],
+            cardTeamNames: cardTeamNamesByPlayer.get(normalized) ?? [],
+            teamCache: cardYearTeamCache,
           },
         );
         if (narrowed.playerId) {
@@ -10190,7 +10272,6 @@ export const commitCardChecklistPrelude = internalMutation({
           continue;
         }
       }
-      const decision = reviewByKey.get(`player:${normalized}`)?.decision;
       // Not reviewed (shouldn't happen), or reviewed as "not a person"
       // (NEO-212). Both leave the name out of `playerIdByName`, so the card
       // keeps it as raw text and links to nothing — a skip is deliberately
@@ -13003,7 +13084,7 @@ export const commitCardChecklist = action({
         teamNames: Array.from(new Set(teamNames)),
         playerTeamNames: Array.from(
           playerTeamNamesByPlayer,
-          ([player, teams]) => ({ player, teams }),
+          ([playerNameNormalized, teams]) => ({ playerNameNormalized, teams }),
         ),
         batchId: args.batchId,
       }),

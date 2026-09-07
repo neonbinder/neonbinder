@@ -361,6 +361,7 @@ async function commit(
   t: ReturnType<typeof convexTest>,
   ids: { sportId: Id<"selectorOptions">; variantTypeId: Id<"selectorOptions"> },
   cards: ReturnType<typeof makeCard>[],
+  batchId?: string,
 ) {
   await t
     .withIdentity(ADMIN_IDENTITY)
@@ -368,6 +369,7 @@ async function commit(
       selectorOptionId: ids.variantTypeId,
       sportId: ids.sportId,
       cards,
+      ...(batchId ? { batchId } : {}),
     });
   return t.run(async (ctx) =>
     ctx.db
@@ -432,6 +434,134 @@ describe("NEO-254: the commit prelude narrows on the card's year too", () => {
     expect(cards[0].playerIds).toEqual([cub]);
   });
 
+  test("an operator's recorded decision beats the narrowing", async () => {
+    /*
+     * The ordering this pins.
+     *
+     * A review session is human-paced and the commit happens at the end of it.
+     * Between the operator picking the 1930s man (they had a reason — a
+     * missing stint, a source they checked) and pressing Confirm, a bulk load
+     * can add stints that make the year evidence point at the other row. If
+     * the narrowing ran first it would silently overrule a person who had
+     * already looked at these very rows. Inference fills a silence; it never
+     * overrules an answer.
+     */
+    const t = convexTest(schema, modules);
+    const ids = await seedSetOfYear(t, "1990");
+    const padres = await insertTeam(t, ids.sportId, "San Diego", "Padres", "diego padres san");
+    // The one the year evidence would pick on its own.
+    await insertBobAllen(t, ids.sportId, [
+      { teamId: padres, fromYear: 1986, toYear: 1994 },
+    ]);
+    const operatorsPick = await insertBobAllen(t, ids.sportId, [
+      { teamId: padres, fromYear: 1930, toYear: 1937 },
+    ]);
+
+    await t.run(async (ctx) =>
+      ctx.db.insert("entityReviewQueue", {
+        selectorOptionId: ids.variantTypeId,
+        batchId: "batch-1",
+        createdByUserId: ADMIN_IDENTITY.subject,
+        kind: "player" as const,
+        name: "Bob Allen",
+        sportId: ids.sportId,
+        status: "ready" as const,
+        decision: { action: "link" as const, linkedPlayerId: operatorsPick },
+      }),
+    );
+
+    const cards = await commit(
+      t,
+      ids,
+      [makeCard({ players: ["Bob Allen"] })],
+      "batch-1",
+    );
+    expect(cards[0].playerIds).toEqual([operatorsPick]);
+  });
+
+  test("a SKIP is an answer too, and the narrowing does not undo it", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seedSetOfYear(t, "1990");
+    const padres = await insertTeam(t, ids.sportId, "San Diego", "Padres", "diego padres san");
+    await insertBobAllen(t, ids.sportId, [
+      { teamId: padres, fromYear: 1986, toYear: 1994 },
+    ]);
+    await insertBobAllen(t, ids.sportId, [
+      { teamId: padres, fromYear: 1930, toYear: 1937 },
+    ]);
+
+    await t.run(async (ctx) =>
+      ctx.db.insert("entityReviewQueue", {
+        selectorOptionId: ids.variantTypeId,
+        batchId: "batch-1",
+        createdByUserId: ADMIN_IDENTITY.subject,
+        kind: "player" as const,
+        name: "Bob Allen",
+        sportId: ids.sportId,
+        status: "ready" as const,
+        decision: { action: "skip" as const },
+      }),
+    );
+
+    const cards = await commit(
+      t,
+      ids,
+      [makeCard({ players: ["Bob Allen"] })],
+      "batch-1",
+    );
+    expect(cards[0].playerIds ?? []).toEqual([]);
+  });
+
+  test("two spellings of one name pool the teams their cards carry", async () => {
+    /*
+     * NEO-254 — `cardTeamNamesByPlayer` is keyed by the NORMALIZED name.
+     *
+     * "J.T. Realmuto" and "JT Realmuto" are one row in `players`, and a
+     * checklist routinely spells a player both ways across a base card and a
+     * subset. Keyed by the raw string, the tie-break would see only the teams
+     * from whichever spelling it happened to look up — here, the Cubs card
+     * would be invisible to the "JT Realmuto" lookup and the tie would stand
+     * unbroken.
+     */
+    const t = convexTest(schema, modules);
+    const ids = await seedSetOfYear(t, "1990");
+    const padres = await insertTeam(t, ids.sportId, "San Diego", "Padres", "diego padres san");
+    const cubs = await insertTeam(t, ids.sportId, "Chicago", "Cubs", "chicago cubs");
+    const cub = await t.run(async (ctx) =>
+      ctx.db.insert("players", {
+        name: "J.T. Realmuto",
+        nameNormalized: "jt realmuto",
+        sportId: ids.sportId,
+        teamYears: [{ teamId: cubs, fromYear: 1988, toYear: 1991 }],
+        lastUpdated: Date.now(),
+      }),
+    );
+    await t.run(async (ctx) =>
+      ctx.db.insert("players", {
+        name: "JT Realmuto",
+        nameNormalized: "jt realmuto",
+        sportId: ids.sportId,
+        teamYears: [{ teamId: padres, fromYear: 1986, toYear: 1994 }],
+        lastUpdated: Date.now(),
+      }),
+    );
+
+    const cards = await commit(t, ids, [
+      // The team rides on the DOTTED spelling…
+      makeCard({
+        cardNumber: "1",
+        players: ["J.T. Realmuto"],
+        teams: ["Chicago Cubs"],
+      }),
+      // …and this card, spelled the other way, carries no team at all.
+      makeCard({ cardNumber: "2", players: ["JT Realmuto"] }),
+    ]);
+    const byNumber = new Map(cards.map((c) => [c.cardNumber, c]));
+    // Both spellings resolve to the same man, on the pooled evidence.
+    expect(byNumber.get("1")!.playerIds).toEqual([cub]);
+    expect(byNumber.get("2")!.playerIds).toEqual([cub]);
+  });
+
   test("a set with no year leaves both candidates standing", async () => {
     const t = convexTest(schema, modules);
     const ids = await seedSetOfYear(t, null);
@@ -487,6 +617,53 @@ describe("NEO-254: candidates carry whether they were active in the set's year",
     // Absent, never `false`: the flag states what we can stand behind.
     expect(byId.get(older)!.activeInSetYear).toBeUndefined();
     expect(byId.get(bare)!.activeInSetYear).toBeUndefined();
+  });
+
+  test("getBatch returns the flag — the wizard actually opens", async () => {
+    /*
+     * The regression this exists for.
+     *
+     * `enrichmentValidator` in convex/entityReviewQueue.ts is a hand-kept copy
+     * of the schema's enrichment shape, and Convex validates a function's
+     * RETURN against it. A field written to the row but missing from that copy
+     * is not a type error — it is a runtime "Unexpected field" thrown by every
+     * query that returns a row, so the whole wizard fails to open for any batch
+     * containing a same-name player whose stint covers the set year.
+     *
+     * The sibling tests above read rows through `t.run`, which goes straight to
+     * the database and past every validator, so none of them could catch it.
+     * This one goes through the public query the wizard actually calls.
+     */
+    const t = convexTest(schema, modules);
+    const { sportId, variantTypeId } = await seedSetOfYear(t, "1990");
+    const padres = await insertTeam(t, sportId, "San Diego", "Padres", "diego padres san");
+    const modern = await insertBobAllen(t, sportId, [
+      { teamId: padres, fromYear: 1986, toYear: 1994 },
+    ]);
+    await insertBobAllen(t, sportId, [
+      { teamId: padres, fromYear: 1930, toYear: 1937 },
+    ]);
+
+    const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId: variantTypeId,
+      createdByUserId: ADMIN_IDENTITY.subject,
+      sportId,
+      playerNames: ["Bob Allen"],
+      teamNames: [],
+    });
+
+    const rows = await t
+      .withIdentity(ADMIN_IDENTITY)
+      .query(api.entityReviewQueue.getBatch, {
+        selectorOptionId: variantTypeId,
+        batchId,
+      });
+    expect(rows).toHaveLength(1);
+    const candidates = rows[0].enrichment!.existingCandidates ?? [];
+    expect(candidates).toHaveLength(2);
+    expect(
+      candidates.find((c) => c.playerId === modern)!.activeInSetYear,
+    ).toBe(true);
   });
 
   test("with no set year, nothing is flagged and nothing is dropped", async () => {
