@@ -305,8 +305,11 @@ export const MAX_CARD_TEAMS = 8;
  * typed-name shape of the same field, so the two spellings of "the players on
  * this card" cannot accept different amounts.
  *
- * Enforced server-side in `selectorOptions.addCustomCard` (via
- * `resolvePlayerIdsForWrite`). Note `updateCard.playerIds` is deliberately NOT
- * bounded by this yet — see the note there.
+ * Enforced server-side by BOTH writers of the field —
+ * `selectorOptions.addCustomCard` and `selectorOptions.updateCard` — through
+ * the one shared `resolvePlayerIdsForWrite`, so a card born with a player list
+ * and a card given one later cannot be held to different limits (NEO-246;
+ * `updateCard` was the unvalidated half until then). Same arrangement
+ * `MAX_CARD_TEAMS` has with `resolveTeamOnCardIdsForWrite`.
  */
 export const MAX_CARD_PLAYERS = 20;

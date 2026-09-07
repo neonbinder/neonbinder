@@ -34,6 +34,7 @@ import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
+import { drainScheduled } from "../lib/testing/drain-scheduled";
 import type { Id } from "./_generated/dataModel";
 
 const modules = (import.meta as unknown as {
@@ -160,6 +161,7 @@ describe("NEO-154: taxonomy reads and writes require a signed-in caller", () => 
     const id = await t
       .withIdentity(ADMIN)
       .mutation(api.teams.findOrCreate, { name: "Real FC", sportId });
+    await drainScheduled(t);
     expect(id).toBeDefined();
   });
 

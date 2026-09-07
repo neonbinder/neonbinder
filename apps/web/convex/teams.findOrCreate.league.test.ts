@@ -35,6 +35,12 @@ import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
+// NEO-247: `teams.findOrCreate` schedules a `wikidataPool.enqueueEnrichment`
+// on its INSERT branch only, so every test below that actually creates a team
+// has to settle it before the test returns — see `drain-scheduled.ts` for the
+// teardown race this prevents. The find-only and refusal tests take no drain,
+// because the early `return existing._id` never reaches the scheduler.
+import { drainScheduled } from "../lib/testing/drain-scheduled";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -133,6 +139,7 @@ describe("teams.findOrCreate: the operator's League beats the sport default", ()
       sportId,
       leagueId: ablId,
     });
+    await drainScheduled(t);
 
     expect((await leagueOf(t, teamId)).id).toBe(ablId);
     // `resolveDefaultLeagueId` was never consulted, so it never minted MLB.
@@ -155,6 +162,7 @@ describe("teams.findOrCreate: the operator's League beats the sport default", ()
       sportId,
       leagueId: null,
     });
+    await drainScheduled(t);
 
     expect(await leagueOf(t, teamId)).toEqual({ id: undefined, name: undefined });
     expect(await allLeagues(t)).toEqual([]);
@@ -177,6 +185,7 @@ describe("teams.findOrCreate: the operator's League beats the sport default", ()
       sportId,
       leagueName: "NCAA Division I baseball",
     });
+    await drainScheduled(t);
 
     const first = await leagueOf(t, beavers);
     const second = await leagueOf(t, ducks);
@@ -202,6 +211,7 @@ describe("teams.findOrCreate: the operator's League beats the sport default", ()
       sportId,
       leagueName: "ABL",
     });
+    await drainScheduled(t);
 
     expect((await leagueOf(t, teamId)).id).toBe(ablId);
     expect(await allLeagues(t)).toHaveLength(1);
@@ -220,6 +230,7 @@ describe("teams.findOrCreate: the operator's League beats the sport default", ()
       leagueId: ablId,
       leagueName: "Some Other League",
     });
+    await drainScheduled(t);
 
     expect((await leagueOf(t, teamId)).id).toBe(ablId);
     // The losing name was never resolved, so it never became a row.
@@ -279,6 +290,7 @@ describe("teams.findOrCreate: the pre-NEO-236 behaviour with no League answer is
       name: "Padres",
       sportId,
     });
+    await drainScheduled(t);
 
     expect((await leagueOf(t, teamId)).name).toBe("Major League Baseball");
   });
@@ -301,6 +313,7 @@ describe("teams.findOrCreate: the pre-NEO-236 behaviour with no League answer is
       name: "Austin Pickles",
       sportId,
     });
+    await drainScheduled(t);
 
     expect(await leagueOf(t, teamId)).toEqual({ id: undefined, name: undefined });
   });

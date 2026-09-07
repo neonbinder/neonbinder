@@ -11,12 +11,35 @@
  */
 
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import { MAX_OPERATOR_DELETE_IDS } from "./selectorOptions";
 import { normalizeTeamName } from "./teams";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
+import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
+
+beforeEach(() => {
+  // NEO-188/NEO-247: commitCardChecklist can schedule a BSC per-card team
+  // lookup (processBscTeamEnrichmentQueue) as a side effect. This file has
+  // nothing to say about team resolution. A THROWING stub rather than a
+  // canned 200 — same convention as
+  // convex/cardChecklist.bscTeamEnrichment.test.ts's NEO-220 fix: the
+  // adapter already swallows a request failure ("network unavailable" is a
+  // state it handles), and it cannot write anything derived from a payload
+  // this file invented.
+  vi.stubGlobal(
+    "fetch",
+    (async (url: string | URL) => {
+      throw new Error(
+        `NEO-247: this test file must not reach the network: ${String(url)}`,
+      );
+    }) as unknown as typeof fetch,
+  );
+});
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -163,6 +186,7 @@ describe("commitCardChecklist — applyFields server-side re-diff", () => {
     // If the server had trusted `applyFields` without re-diffing, this would
     // now be `[]` instead of staying undefined.
     expect(after.attributes).toBeUndefined();
+    await drainScheduled(t);
   });
 });
 
@@ -205,6 +229,7 @@ describe("commitCardChecklist — stale baseVersion", () => {
     expect(result.staleDecisions).toBe(1);
     const after = (await storedRows(t, leafId))[0];
     expect(after.cardName).toBe("Original");
+    await drainScheduled(t);
   });
 });
 
@@ -234,6 +259,7 @@ describe("commitCardChecklist — operatorDeleteIds guards", () => {
 
     expect(result.operatorDeleted).toBe(0);
     expect(await storedRows(t, treeB.leafId)).toHaveLength(1);
+    await drainScheduled(t);
   });
 
   test("9b: an id that came back in THIS sync is refused, not deleted", async () => {
@@ -258,6 +284,7 @@ describe("commitCardChecklist — operatorDeleteIds guards", () => {
     const rows = await storedRows(t, leafId);
     expect(rows).toHaveLength(1);
     expect(rows[0]._id).toBe(rowId);
+    await drainScheduled(t);
   });
 
   test("9c: a row no marketplace claims IS deletable when the operator asks", async () => {
@@ -293,6 +320,7 @@ describe("commitCardChecklist — operatorDeleteIds guards", () => {
     expect(result.operatorDeleted).toBe(1);
     const rows = await storedRows(t, leafId);
     expect(rows.some((r) => r._id === handAddedId)).toBe(false);
+    await drainScheduled(t);
   });
 
   test("9d: a legitimate delete cascades cross-listings and orphans variation children", async () => {
@@ -350,6 +378,12 @@ describe("commitCardChecklist — operatorDeleteIds guards", () => {
         .collect(),
     );
     expect(crossListings).toHaveLength(0);
+    // NEO-247: the first commit enqueues 2 bsc-linked cards (P1, C1) —
+    // processBscTeamEnrichmentQueue reschedules its tail with a real
+    // BSC_TEAM_ENRICH_DELAY_MS (300ms) delay rather than runAfter(0), which
+    // drainScheduled cannot force through, so cancel what's left pending.
+    await drainScheduled(t);
+    await cancelScheduled(t);
   });
 
   test("9e: more than MAX_OPERATOR_DELETE_IDS ids is rejected before anything writes", async () => {
@@ -374,6 +408,7 @@ describe("commitCardChecklist — operatorDeleteIds guards", () => {
 
     const rows = await storedRows(t, leafId);
     expect(rows).toHaveLength(1); // unchanged — nothing from the rejected call landed
+    await drainScheduled(t);
   });
 });
 
@@ -424,6 +459,7 @@ describe("commitCardChecklist — cross-side ref conflicts", () => {
     expect(rowAAfter.lastUpdated).toBe(rowA.lastUpdated);
     expect(rowBAfter.cardName).toBe("Row B (sl only)");
     expect(rowBAfter.lastUpdated).toBe(rowB.lastUpdated);
+    await drainScheduled(t);
   });
 });
 
@@ -461,6 +497,11 @@ describe("commitCardChecklist — ref collisions", () => {
     expect(inserted.cardName).toBe("Second");
     expect(inserted.platformData?.bsc?.ref).toBe("ref-A");
     expect(inserted.attributes).toContain("ref-collision");
+    // NEO-247: the second commit enqueues 2 bsc-linked cards (the matched
+    // row plus the ref-collision insert) — see the 9d test above for why
+    // both drain and cancel are needed.
+    await drainScheduled(t);
+    await cancelScheduled(t);
   });
 });
 
@@ -560,6 +601,7 @@ describe("commitCardChecklist — NEO-102 no-team confirmation", () => {
     // The flag must never contradict the teams on the row.
     expect(after.teamNoneConfirmedAt).toBeUndefined();
     expect(after.teamNoneConfirmedByUserId).toBeUndefined();
+    await drainScheduled(t);
   });
 
   test("a linkage-only re-sync carrying no teams leaves the confirmation standing", async () => {
@@ -589,6 +631,7 @@ describe("commitCardChecklist — NEO-102 no-team confirmation", () => {
     const after = (await storedRows(t, leafId))[0];
     expect(after.teamNoneConfirmedAt).toBe(stamp);
     expect(after.teamNoneConfirmedByUserId).toBe(ADMIN_IDENTITY.subject);
+    await drainScheduled(t);
   });
 
   test("a STALE decision naming teamOnCardIds writes neither the team nor the clear, and is reported", async () => {
@@ -649,6 +692,7 @@ describe("commitCardChecklist — NEO-102 no-team confirmation", () => {
     // confirmation — silently re-opening a question the operator answered.
     expect(after.teamOnCardIds).toBeUndefined();
     expect(after.teamNoneConfirmedAt).toBe(stamp);
+    await drainScheduled(t);
   });
 
   test("the existing-row BSC enqueue skips a none-confirmed card", async () => {
@@ -679,6 +723,7 @@ describe("commitCardChecklist — NEO-102 no-team confirmation", () => {
     // Still 1. The re-sync did not queue a second live BSC request to
     // re-derive a team a human already ruled on.
     expect(await scheduledBscEnqueueCount(t)).toBe(1);
+    await drainScheduled(t);
   });
 
   test("without the confirmation, the same re-sync DOES enqueue again", async () => {
@@ -697,5 +742,6 @@ describe("commitCardChecklist — NEO-102 no-team confirmation", () => {
     // The control for the test above: two commits, two enqueues. So it is the
     // confirmation doing the suppressing there, not some other guard.
     expect(await scheduledBscEnqueueCount(t)).toBe(2);
+    await drainScheduled(t);
   });
 });

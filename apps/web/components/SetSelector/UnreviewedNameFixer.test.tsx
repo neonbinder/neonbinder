@@ -20,6 +20,8 @@
 
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+// The real class, not a mock: `userFacingMessage` narrows on `instanceof`.
+import { ConvexError } from "convex/values";
 import type { Id } from "../../convex/_generated/dataModel";
 
 vi.mock("../../convex/_generated/api", () => ({
@@ -348,7 +350,9 @@ describe("UnreviewedNameFixer — linking", () => {
 
 describe("UnreviewedNameFixer — when the write fails", () => {
   it("announces the failure and does NOT count the card as answered", async () => {
-    mockUpdateCard.mockRejectedValue(new Error("Card is no longer on this checklist"));
+    mockUpdateCard.mockRejectedValue(
+      new ConvexError("Card is no longer on this checklist"),
+    );
     renderFixer();
 
     pickPlayer("Yordan Alvarez");
@@ -362,5 +366,42 @@ describe("UnreviewedNameFixer — when the write fails", () => {
     expect(onSaved).not.toHaveBeenCalled();
     // And the operator's picks are still there to retry with.
     expect(screen.getByLabelText("Player: Yordan Alvarez")).toBeTruthy();
+  });
+
+  it("shows the server's playerIds refusal verbatim (NEO-246)", async () => {
+    // `updateCard.playerIds` is validated as of NEO-246, so this fixer is now
+    // one of the two clients that can actually be told no about a player list
+    // — before, the array it sent was written straight through. The refusal
+    // has to reach the operator as the sentence the backend wrote, because it
+    // is the only thing that says WHICH pick was the problem.
+    mockUpdateCard.mockRejectedValue(
+      new ConvexError('"LeBron James" is not a player in this card\'s sport.'),
+    );
+    renderFixer();
+
+    pickPlayer("Yordan Alvarez");
+    await save();
+
+    expect(screen.getByRole("alert").textContent).toBe(
+      '"LeBron James" is not a player in this card\'s sport.',
+    );
+    expect(onSaved).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Player: Yordan Alvarez")).toBeTruthy();
+  });
+
+  it("falls back to a plain sentence when the failure carries no user-facing text", async () => {
+    // Production redacts a plain Error to "Server Error", and `.message`
+    // arrives wrapped in "[CONVEX M(...)] [Request ID: ...]" noise either way,
+    // so neither is ever shown. Same contract as CardDetailPanel.
+    mockUpdateCard.mockRejectedValue(new Error("Server Error"));
+    renderFixer();
+
+    pickPlayer("Yordan Alvarez");
+    await save();
+
+    expect(screen.getByRole("alert").textContent).toBe(
+      "Couldn't save those links. Try again.",
+    );
+    expect(onSaved).not.toHaveBeenCalled();
   });
 });
