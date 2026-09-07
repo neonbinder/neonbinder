@@ -78,9 +78,22 @@ tags:
 #   player. Stripping the hyphens out of ATTEMPT_ID makes it one term nothing
 #   else can share.
 #
-# R8 — every scroll that precedes a tap centers its target; the add form's
-#   buttons sit below the fold on the 1024x629 headless viewport once the
-#   near-match panel and the helper lines have pushed them down.
+# R8 — EVERYTHING on this form is below the fold on the 1024x629 headless
+#   viewport, and that is the whole geometry story of this flow (CI run
+#   34071657961 failed on it): the birth-year box ends at y=625, so its helper
+#   line — which is where the bounds refusal is SAID — and the button row under
+#   it are both off-screen, and maestro's hierarchy is viewport-clipped, so an
+#   `assertVisible` cannot see them however long it waits. Every one of those
+#   targets is therefore reached by a `scrollUntilVisible`, and the scroll is
+#   left to be its own assertion (R6).
+#
+#   None of those scrolls centers, and that is R8's own stated exception rather
+#   than a shortcut: the add form is the LAST thing on the page, so its button
+#   row is locked to the bottom and centring can never settle — the same run
+#   logged six futile swipes against an already-100%-visible button, ~10s of
+#   scrolling that moved nothing (R10). Where a target sits ABOVE the current
+#   position the scroll says `direction: UP`, because the default is DOWN and a
+#   downward scroll can never find it.
 #
 # R10 — no conditional branches at all, so there is no poll on a normally-absent
 #   element and no path to the end that skips the feature.
@@ -148,20 +161,43 @@ tags:
 
 - tapOn: "Birth year \\(optional\\)"
 - inputText: "1700"
-- assertVisible:
-    text: "Use a whole year between 1850 and 2[0-9]{3}\\."
+# ⚠️ SCROLLED TO, NOT MERELY ASSERTED. The refusal renders in the field's own
+# helper line, directly under the box — and on the 1024x629 headless viewport
+# that line sits at y≈635, off the bottom. `assertVisible` never scrolls, and
+# maestro's hierarchy is viewport-CLIPPED, so the line was simply absent from
+# it: CI run 34071657961 failed here with "Assertion is false", and its
+# hierarchy dump ends at the birth-year input at [345,583][798,625]. The refusal
+# was rendering correctly the whole time. The scroll IS the assertion (R6).
+- scrollUntilVisible:
+    element:
+      text: "Use a whole year between 1850 and 2[0-9]{3}\\."
 
 # The create button is inert while the year is out of bounds, so this tap must
-# do nothing. Three independent readings of "nothing happened": the form is
-# still open, the name is still sitting in the field a successful create would
-# have cleared away with it, and the page never said it added anything.
+# do nothing. Three independent readings of "nothing happened" follow it: the
+# form is still open (the scroll back up to its heading), the name is still
+# sitting in the field a successful create would have taken away with it, and
+# the page never said it added anything.
+#
+# NO `centerElement`, here or on any of the button scrolls below — R8's own
+# exception, measured rather than assumed. The add form is the last thing on
+# this page, so its button row is LOCKED to the page bottom and centring can
+# never settle: CI run 34071657961 logged six consecutive swipes with an
+# identical button already at 100% visibility and bounds unchanged, ~10s of
+# scrolling that moved nothing. Stopping at "fully visible" is both the correct
+# target and the cheap one, and `tapOn` re-reads the settled hierarchy for its
+# coordinates anyway.
 - scrollUntilVisible:
     element:
       id: "Create player Samename${output.TOKEN}"
-    centerElement: true
 - tapOn:
     id: "Create player Samename${output.TOKEN}"
-- assertVisible: "Add a player"
+# Back UP to the top of the form to read the two "nothing happened" facts. The
+# tap above left the page at the bottom, and the heading and the name box are
+# both above the fold from there. The scroll is the first of the two assertions.
+- scrollUntilVisible:
+    element:
+      text: "Add a player"
+    direction: UP
 # Matched as bare text, NOT as `id: "New player name"`. `primitives/Input`
 # deliberately emits no `id` and no `aria-label` (its header says why: an
 # auto-generated id would clobber the `resource-id` every `tapOn id:` selector
@@ -190,12 +226,16 @@ tags:
 - tapOn: "Birth year \\(optional\\)"
 - eraseText: 6
 - inputText: "1960"
-- assertVisible: "Tells this player apart from anyone else with the same name."
+# Same helper line, same place below the fold — so the same scroll-as-assertion.
+# The line flipping back to the explanatory copy is what says the refusal was
+# the FIELD's, and that it lifted.
+- scrollUntilVisible:
+    element:
+      text: "Tells this player apart from anyone else with the same name."
 
 - scrollUntilVisible:
     element:
       id: "Create player Samename${output.TOKEN}"
-    centerElement: true
 - tapOn:
     id: "Create player Samename${output.TOKEN}"
 
@@ -252,13 +292,16 @@ tags:
 - tapOn: "New player name"
 - inputText: "Samename${output.TOKEN}"
 
-- extendedWaitUntil:
-    visible:
-      id: "Create player Samename${output.TOKEN} anyway"
+# ONE command, not a wait and then a scroll. A bare `extendedWaitUntil` here
+# would be asserting a control that lives in the same bottom-locked button row
+# as the one above — it can be present and still off the fold, which is exactly
+# how the refusal line failed this flow in CI run 34071657961.
+# `scrollUntilVisible` polls for it AND brings it on screen, and it still fails
+# loudly if the demoted control never appears — which is the assertion this step
+# is for: it exists only when an exact match came back.
 - scrollUntilVisible:
     element:
       id: "Create player Samename${output.TOKEN} anyway"
-    centerElement: true
 - tapOn:
     id: "Create player Samename${output.TOKEN} anyway"
 - extendedWaitUntil:
@@ -290,13 +333,16 @@ tags:
 - tapOn: "Birth year \\(optional\\)"
 - inputText: "1975"
 
-- extendedWaitUntil:
-    visible:
-      id: "Create player Samename${output.TOKEN} anyway"
+# ONE command, not a wait and then a scroll. A bare `extendedWaitUntil` here
+# would be asserting a control that lives in the same bottom-locked button row
+# as the one above — it can be present and still off the fold, which is exactly
+# how the refusal line failed this flow in CI run 34071657961.
+# `scrollUntilVisible` polls for it AND brings it on screen, and it still fails
+# loudly if the demoted control never appears — which is the assertion this step
+# is for: it exists only when an exact match came back.
 - scrollUntilVisible:
     element:
       id: "Create player Samename${output.TOKEN} anyway"
-    centerElement: true
 - tapOn:
     id: "Create player Samename${output.TOKEN} anyway"
 

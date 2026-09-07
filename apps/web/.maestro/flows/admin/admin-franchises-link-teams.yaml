@@ -99,10 +99,22 @@ tags:
 #   — but each half is itself a single token.
 #
 # R8 — every scroll that precedes a tap centers its target, and the ones that
-#   have to travel back UP the page say so. On the 1024x629 headless viewport
-#   the team detail panel is taller than the page: the Franchise group, Save,
-#   and "See the franchise" are each below the fold, and the master list is
-#   above it once Save has been reached.
+#   have to travel back UP the page say so (the default is DOWN, and a downward
+#   scroll can never find a target above the current position). On the 1024x629
+#   headless viewport the team detail panel is taller than the page: the
+#   Franchise group, Save, and "See the franchise" are each below the fold, and
+#   the master list is above it once Save has been reached.
+#
+#   TWO deliberate exceptions on the player page, both measured in CI run
+#   34071657961 rather than assumed. The add form and the career editor are the
+#   LAST things on that page, so anything in them is locked to the page bottom
+#   and centring can never settle — the run logged six futile swipes against an
+#   already-100%-visible Create button and five more against "+ Add team", ~17s
+#   of scrolling that moved nothing (R10). So the Create button scroll drops
+#   `centerElement`, and "+ Add team" is asserted rather than scrolled to at
+#   all. Which makes the "No stints recorded yet." scroll load-bearing: its
+#   centring is what drives the page to maximum scroll, and every measurement
+#   quoted below is taken from that position. Do not remove it.
 #
 # R10 — no conditional branches, no `notVisible:` guard on a normally-present
 #   element, no settle waits. Every scroll is its own assertion (R6), so none is
@@ -152,10 +164,16 @@ tags:
 - tapOn: "Add player"
 - tapOn: "New player name"
 - inputText: "Frp${output.TOKEN}"
+# NO `centerElement` — R8's own exception, and it is measured rather than
+# assumed. The add form is the last thing on this page, so its button row is
+# LOCKED to the page bottom and centring can never settle: CI run 34071657961
+# logged six consecutive swipes with this button already at 100% visibility and
+# bounds unchanged at y=552, ~10s of scrolling that moved nothing. Stopping at
+# "fully visible" is both the correct target and the cheap one, and the tap
+# below re-reads the settled hierarchy for its coordinates anyway.
 - scrollUntilVisible:
     element:
       id: "Create player Frp${output.TOKEN}"
-    centerElement: true
 - tapOn:
     id: "Create player Frp${output.TOKEN}"
 # "Added <name>." is said only for an INSERTED row — an adopted one says "That
@@ -168,16 +186,25 @@ tags:
 # 1024x629 the panel runs out of viewport around the Wikidata box. The scroll IS
 # the check (R6) that we are on a player with no history, so the picker below is
 # starting from nothing.
+#
+# `centerElement` is LOAD-BEARING here rather than habit (see the R8 note): this
+# line cannot be centred either, so the swipes run until the page stops moving,
+# and that maximum-scroll position is what puts "+ Add team" at y=484 and the
+# picker's popover clear of the fold for every step that follows.
 - scrollUntilVisible:
     element:
       text: "No stints recorded yet."
     centerElement: true
 
 # ── TEAM A ──────────────────────────────────────────────────────────────────
-- scrollUntilVisible:
-    element:
-      id: "Add team"
-    centerElement: true
+# NO SCROLL — the step above already did it. Centring "No stints recorded yet."
+# drives the page to its maximum scroll, and CI run 34071657961 measured the
+# trigger at y=484 with 100% visibility from the first check, after which five
+# more swipes moved nothing (the page had no room left). An `assertVisible` says
+# the same thing in 0.3s instead of 7, and it is still a hard assertion that the
+# career editor rendered.
+- assertVisible:
+    id: "Add team"
 - tapOn:
     id: "Add team"
 - tapOn:
@@ -242,10 +269,26 @@ tags:
 - tapOn:
     id: "Remove team Loc${output.TOKEN} Fr${output.TOKEN}A"
 
+# ── REOPEN THE PICKER ───────────────────────────────────────────────────────
+# Removing a chip CLOSES the popover, and that is correct app behaviour rather
+# than a bug: the × button that was just tapped is the focused element, removing
+# the chip unmounts it, `document.activeElement` falls back to `<body>`, and
+# TeamPicker's `handleRootBlur` — which defers a read of activeElement precisely
+# because `relatedTarget` is unreliable — sees focus outside its root and runs
+# `setPopoverOpen(false); setQuery("")`. CI run 34071657961 failed here:
+# "Element not found: Id matching regex: Search teams", 17s of polling at a
+# picker whose popover had closed a second earlier.
+#
+# The trigger ALWAYS opens (`setPopoverOpen(true)`, never a toggle — TeamPicker
+# documents why), so this is one tap and the picker is back to the exact shape
+# team A was created from: no chip, trigger at y=484, search box at y=519,
+# "No matches." clear of the fold.
+- assertVisible:
+    id: "Add team"
+- tapOn:
+    id: "Add team"
+
 # ── TEAM B ──────────────────────────────────────────────────────────────────
-# `addChip` cleared the query and left the popover OPEN with focus in the box,
-# and the chip is gone again, so the picker is back to the exact shape team A
-# was created from.
 - tapOn:
     id: "Search teams"
 - inputText: "Fr${output.TOKEN}B"
