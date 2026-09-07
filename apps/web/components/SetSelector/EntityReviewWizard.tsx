@@ -314,6 +314,11 @@ export default function EntityReviewWizard({
   );
   // NEO-236 — turn a player's career teams into their own New Team steps.
   const stageCareerTeams = useMutation(api.entityReviewQueue.stageCareerTeamRows);
+  // NEO-254 — a league the operator TYPES on a team step gets a step of its
+  // own, so it is asked the same questions a suggested league is. Without it
+  // the commit fell back to a bare `findOrCreateLeague(name)`, which is the
+  // name-only league this feature exists to stop.
+  const stageLeagueRows = useMutation(api.entityReviewQueue.stageLeagueRows);
 
   const [linkingOpen, setLinkingOpen] = useState(false);
   /**
@@ -2716,9 +2721,24 @@ export default function EntityReviewWizard({
                           <NewTeamForm
                             sportId={current.sportId}
                             draft={teamCreate}
-                            onChange={(patch) =>
-                              patchTeamCreate(current._id, patch)
-                            }
+                            onChange={(patch) => {
+                              patchTeamCreate(current._id, patch);
+                              /*
+                               * A typed league is a commitment, so it raises
+                               * its step the moment it is made rather than at
+                               * Confirm. Fire-and-forget: staging is
+                               * idempotent and never blocks the form, and a
+                               * failure leaves the team's own answer intact —
+                               * the commit still resolves the name, it just
+                               * does not get the fuller record.
+                               */
+                              if (patch.leagueName?.trim()) {
+                                void stageLeagueRows({
+                                  reviewRowId: current._id,
+                                  leagueName: patch.leagueName,
+                                }).catch(() => {});
+                              }
+                            }}
                             leagueSuggestion={current.enrichment?.league}
                             stagedLeagueNames={stagedLeagueNames}
                             /* Only on a row the batch staged for itself: a
@@ -2743,6 +2763,11 @@ export default function EntityReviewWizard({
                              CI's 1024x629 viewport) and why Level is toggle
                              buttons rather than a radiogroup. */
                           <NewLeagueForm
+                            /* Keyed by row: `detailsOpen` is local state, and
+                               without this the disclosure an operator opened on
+                               one league would stay open on the next — whose
+                               prefill may be complete and want it shut. */
+                            key={current._id}
                             draft={leagueCreate}
                             onChange={(patch) =>
                               patchLeagueCreate(current._id, patch)

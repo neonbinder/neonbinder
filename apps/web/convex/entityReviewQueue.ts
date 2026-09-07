@@ -791,6 +791,44 @@ export const startBatch = internalMutation({
           .filter((row) => incoming.has(keyFor(row.kind, row.name)) || row.decision !== undefined)
           .map((row) => row._id as string),
       );
+      /**
+       * NEO-254 — does this row's whole chain still stand?
+       *
+       * A staged row is NEVER in `incoming` (no card carries its name), so it
+       * cannot be judged against `survivingRowIds` directly — that set only
+       * means something for a row that came off the checklist. A staged row is
+       * judged by its PARENT, recursively: a league by its team, and that team
+       * by the player it was staged for. Judging a league against
+       * `survivingRowIds` would delete every league under a live staged team,
+       * because that team is not in the set either.
+       *
+       * A DECIDED row survives on its own account at every level — the
+       * operator ruled on it, and the prelude will still honour that ruling.
+       *
+       * Depth is two by construction; the `seen` guard makes a cycle terminate
+       * rather than wedge the mutation.
+       */
+      const rowsById = new Map(existingRows.map((r) => [r._id as string, r]));
+      const rowSurvives = (
+        row: Doc<"entityReviewQueue">,
+        seen: Set<string> = new Set(),
+      ): boolean => {
+        if (row.decision !== undefined) return true;
+        const id = row._id as string;
+        if (seen.has(id)) return false;
+        seen.add(id);
+        const parentId =
+          row.source?.kind === "careerTeamOf"
+            ? (row.source.playerRowId as string)
+            : row.source?.kind === "leagueOf"
+              ? (row.source.teamRowId as string)
+              : null;
+        // Came off the checklist: still incoming, or it goes.
+        if (parentId === null) return survivingRowIds.has(id);
+        const parent = rowsById.get(parentId);
+        return parent ? rowSurvives(parent, seen) : false;
+      };
+
       for (const row of existingRows) {
         const key = keyFor(row.kind, row.name);
         // Recorded BEFORE the drop test, so a decided row that is no longer
@@ -823,15 +861,22 @@ export const startBatch = internalMutation({
           await ctx.db.delete(row._id);
           continue;
         }
-        // NEO-236 security review, finding 4: a staged step is exempt from the
-        // test above, but not from being orphaned. Its player is judged by the
-        // SAME rule (still incoming, or decided), so a step and the player that
-        // needs it are dropped together or kept together.
-        if (
-          row.source?.kind === "careerTeamOf" &&
-          row.decision === undefined &&
-          !survivingRowIds.has(row.source.playerRowId as string)
-        ) {
+        /*
+         * NEO-236 security review, finding 4 / NEO-254 — a staged step is
+         * exempt from the test above, but not from being orphaned.
+         *
+         * Its parent is judged by the SAME rule (still incoming, or decided),
+         * so a step and the row that needs it are dropped together or kept
+         * together. A league staged for a team that was reconciled away is the
+         * league tier of the same defect: left behind, it is undecided, unowned
+         * and blocks "all reviewed" forever.
+         *
+         * `survivingStagedRowIds` is TRANSITIVE, and that is load-bearing: a
+         * staged row is never in `incoming` (no card carries its name), so a
+         * naive `survivingRowIds` check would judge every league by a set its
+         * live parent team is not in and delete the lot.
+         */
+        if (row.source !== undefined && !rowSurvives(row)) {
           await ctx.db.delete(row._id);
           continue;
         }
@@ -980,9 +1025,15 @@ async function stageLeagueRowsImpl(
    */
   extraLeagueNames: ReadonlyArray<{ name: string; wikidataId?: string }> = [],
 ): Promise<Array<Id<"entityReviewQueue">>> {
-  // Only a TEAM has a league, and a staged row never stages further rows —
-  // that is the recursion this guard forecloses, exactly as the team staging
-  // refuses to run from a team row.
+  /*
+   * Only a TEAM has a league.
+   *
+   * A team STAGED off a player's career list is included deliberately — a club
+   * side pulled from a P54 statement needs its league asked about exactly as a
+   * checklist team does, and that is the case Jason's hockey batch is made of.
+   * The chain stops there: a league row stages nothing, so the depth is two by
+   * construction rather than by this guard.
+   */
   if (teamRow.kind !== "team") return [];
 
   const proposals: Array<{ name: string; wikidataId?: string }> = [
@@ -1046,6 +1097,38 @@ async function stageLeagueRowsImpl(
       )
       .first();
     if (alreadyInBatch) continue;
+    /*
+     * NEO-254 — and by QID, because one league has more than one name.
+     *
+     * ESPN calls it "NHL" and Wikidata calls it "National Hockey League", so
+     * two teams in one batch routinely propose the same competition under
+     * names that do not normalise to each other. Keyed only on the name, that
+     * produced two steps and — worse — two `leagues` rows for one league,
+     * which is precisely the duplication this feature exists to prevent.
+     *
+     * The QID is the identity Wikidata itself asserts, so a match on EITHER
+     * key means the batch already holds this league. Read off the staged rows
+     * for this batch rather than through an index (there is none on
+     * `source.wikidataId`, and a batch's league rows are a handful).
+     */
+    if (proposal.wikidataId) {
+      const sameQid = (
+        await ctx.db
+          .query("entityReviewQueue")
+          .withIndex("by_selector_option_and_batch", (q) =>
+            q
+              .eq("selectorOptionId", teamRow.selectorOptionId)
+              .eq("batchId", teamRow.batchId),
+          )
+          .collect()
+      ).some(
+        (r) =>
+          r.kind === "league" &&
+          r.source?.kind === "leagueOf" &&
+          r.source.wikidataId === proposal.wikidataId,
+      );
+      if (sameQid) continue;
+    }
 
     // Held already — including under an ALIAS, which is the case that makes
     // this worth a helper call rather than an index read: a sport that already
@@ -1303,6 +1386,54 @@ export const stageCareerTeamRows = mutation({
       .slice(0, MAX_CAREER_TEAM_CREATES)
       .map((name) => ({ name }));
     const added = await stageCareerTeamRowsImpl(ctx, row, extra);
+    return added.length;
+  },
+});
+
+/**
+ * NEO-254 — stage a New League step for a league the operator TYPED on a team
+ * step.
+ *
+ * ## Why the typed name needs a step of its own
+ *
+ * `NewTeamForm`'s league row offers `Create <name>` for a league the sport
+ * does not answer to, and that pill records `create.leagueName`. Without this
+ * mutation the commit resolved that name through a bare
+ * `findOrCreateLeague(name)` — which is the name-only league this whole
+ * feature exists to stop: no abbreviation, no level, no years, no aliases.
+ * Staging a step instead means a typed league gets asked the same questions a
+ * suggested one does.
+ *
+ * The step lands BEFORE THE NEXT team rather than before this one: this team's
+ * step is already open and being answered, and `walkOrder` places a staged row
+ * at its parent's position — which the operator has just passed. That is the
+ * same behaviour a hand-typed career team gets (`stageCareerTeamRows`), and it
+ * is why the team's pill can read `<name> (new)` immediately: the answer is
+ * recorded on the team, and the step that fills in the rest of the record is
+ * waiting a moment later in the same batch.
+ *
+ * Idempotent by construction (see `stageLeagueRowsImpl`), so the client may
+ * call it as often as it likes; it returns how many rows THIS call added.
+ *
+ * Admin-gated and ownership-checked exactly as `recordDecision` is: same
+ * table, same batch, and staging into someone else's review session would put
+ * steps in front of them they never asked for.
+ */
+export const stageLeagueRows = mutation({
+  args: {
+    reviewRowId: v.id("entityReviewQueue"),
+    /** The league name the operator typed on the team step. */
+    leagueName: v.string(),
+  },
+  returns: v.number(),
+  handler: async (ctx, args): Promise<number> => {
+    const callerId = await requireAdmin(ctx);
+    const row = await ctx.db.get(args.reviewRowId);
+    if (!row) throw new Error("Review row not found");
+    assertOwnsRow(row, callerId);
+    const name = args.leagueName.trim();
+    if (!name) return 0;
+    const added = await stageLeagueRowsImpl(ctx, row, [{ name }]);
     return added.length;
   },
 });

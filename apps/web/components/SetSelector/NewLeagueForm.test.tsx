@@ -134,7 +134,7 @@ describe("leagueDraftError — the same bounds convex/leagues.ts refuses", () =>
   it("refuses a Wikidata id that is not Q<digits>, and allows a real one", () => {
     expect(
       leagueDraftError({ ...NHL, wikidataId: "javascript:alert(1)" }, maxYear),
-    ).toMatch(/Not a Wikidata entity id/);
+    ).toBe("A Wikidata id looks like Q1215892 — the letter Q and digits.");
     expect(leagueDraftError(NHL, maxYear)).toBeNull();
   });
 });
@@ -263,5 +263,37 @@ describe("NewLeagueForm — driven by a real lookup result", () => {
     expect(screen.getByLabelText("New league abbreviation")).toHaveProperty("value", "");
     expect(screen.getByLabelText("New league active from")).toHaveProperty("value", "");
     expect(screen.queryByRole("button", { name: "Hide details" })).toBeTruthy();
+  });
+});
+
+describe("leagueDetailSummary — a QID alone is not an answer", () => {
+  it("does not collapse the details on a lookup that found only a QID", () => {
+    // `lookupLeagueEnrichment` always returns a QID when it matches at all,
+    // and often nothing else — many leagues have no P1813 short name and no
+    // P571 inception. Collapsing on that would hide every field an operator
+    // cares about behind a disclosure nobody would think to open.
+    expect(leagueDetailSummary({ ...EMPTY, wikidataId: "Q1215892" })).toBeNull();
+  });
+
+  it("carries the QID once there IS something to summarise", () => {
+    expect(
+      leagueDetailSummary({ ...EMPTY, abbreviation: "NHL", wikidataId: "Q1215892" }),
+    ).toBe("NHL · Q1215892");
+  });
+});
+
+describe("NewLeagueForm — a QID-only prefill leaves the work on screen", () => {
+  it("keeps the details open", () => {
+    render(
+      <NewLeagueForm
+        draft={newLeaguePrefill({
+          name: "World Hockey Association",
+          enrichment: { wikidataId: "Q1215892" },
+        })}
+        onChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByLabelText("New league abbreviation")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Hide details" })).toBeTruthy();
   });
 });

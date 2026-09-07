@@ -9925,28 +9925,47 @@ export const commitCardChecklistPrelude = internalMutation({
     const leagueAnswered = async (
       create: { leagueId?: Id<"leagues"> | null; leagueName?: string },
       suggestion?: string,
+      teamRowId?: string,
     ): Promise<boolean> => {
-      // NEO-254 — a skipped league STEP is an answer, even though the team row
-      // itself carries no `leagueId`. See `leagueStepSkipped`.
-      if (leagueStepSkipped(create, suggestion)) return true;
-      if (create.leagueId === undefined) return false;
       if (create.leagueId === null) return true;
-      const league = await ctx.db.get(create.leagueId);
-      return !!league && league.sportId === args.sportId;
+      if (create.leagueId !== undefined) {
+        const league = await ctx.db.get(create.leagueId);
+        return !!league && league.sportId === args.sportId;
+      }
+      // NEO-254 — a skipped league STEP is an answer too, even though the team
+      // row itself carries no `leagueId`. Asked only once the explicit fields
+      // have had their turn; see `leagueStepSkipped`.
+      return leagueStepSkipped(create, teamRowId);
     };
 
     /**
-     * NEO-254 — did a league STEP answer "no league" for this team?
+     * NEO-254 — did THIS team's own league step answer "no league"?
      *
-     * Read by `leagueAnswered` as well as by the field builder: a skipped
-     * league step means the team was answered, so the sport default must not
-     * reassert itself. Matched on either name the team could be carrying — the
-     * one the operator typed, or the suggestion they never overrode.
+     * ## The skip never overrules an explicit answer
+     *
+     * A skip suppresses the SUGGESTION, which is the only thing it was ever
+     * about: the operator looked at "National Hockey League", said this team
+     * has no league, and the pre-fill must stop asserting itself. It says
+     * nothing about an answer the operator then gave on the team's own step —
+     * picking an existing "AHL" pill (`leagueId`) or typing "WHA"
+     * (`leagueName`) is a later, more specific instruction, and discarding it
+     * would be the skip overruling the very operator who made it.
+     *
+     * So this returns false the moment either explicit field is present, and
+     * the caller consults it only after both have had their turn.
+     *
+     * Scoped to the team the step was raised for — see
+     * `skippedLeagueByTeamRow`.
      */
-    const leagueStepSkipped = (create: { leagueName?: string }, suggestion?: string) => {
-      const typed = create.leagueName?.trim();
-      if (typed && skippedLeagueNames.has(normalizeLeagueName(typed))) return true;
-      return !!suggestion && skippedLeagueNames.has(normalizeLeagueName(suggestion));
+    const leagueStepSkipped = (
+      create: { leagueId?: Id<"leagues"> | null; leagueName?: string },
+      teamRowId: string | undefined,
+    ) => {
+      if (!teamRowId) return false;
+      // An explicit answer on the team's own step outranks the skip.
+      if (create.leagueId !== undefined) return false;
+      if (create.leagueName?.trim()) return false;
+      return teamsWithSkippedLeague.has(teamRowId);
     };
 
     const reviewedTeamFields = async (
@@ -9957,6 +9976,8 @@ export const commitCardChecklistPrelude = internalMutation({
         leagueName?: string;
       },
       enrichment: (typeof reviewRows)[number]["enrichment"],
+      /** The team's own review-row id — what a skipped league step is keyed to. */
+      teamRowId?: string,
     ): Promise<Partial<Doc<"teams">>> => {
       let leagueId: Id<"leagues"> | undefined;
       /*
@@ -9986,12 +10007,7 @@ export const commitCardChecklistPrelude = internalMutation({
             return league.sportId === args.sportId;
           })()
         : true;
-      if (leagueStepSkipped(create, enrichment?.league)) {
-        // The operator answered the league step with "no league". Nothing is
-        // written, and `leagueAnswered` reports the same so the sport default
-        // stays out of it.
-        leagueId = undefined;
-      } else if (create.leagueId !== undefined && storedLeagueUsable) {
+      if (create.leagueId !== undefined && storedLeagueUsable) {
         // `null` is "no league", and it stays undefined here so nothing is
         // written — `createTeamFromOperatorInput` reads `leagueChosen` to know
         // the difference between that and "not answered".
@@ -10026,6 +10042,20 @@ export const commitCardChecklistPrelude = internalMutation({
         // Same rule for the suggestion the team never overrode: if this batch
         // staged a step for that league, its answer is the one to use.
         leagueId = stagedLeagueIdByName.get(normalizeLeagueName(enrichment.league))!;
+      } else if (leagueStepSkipped(create, teamRowId)) {
+        /*
+         * NEO-254 — this team's own league step answered "no league".
+         *
+         * Ordered deliberately. It sits BELOW both explicit branches because
+         * the skip suppresses the SUGGESTION, and an answer the operator then
+         * gave on the team's own step is later and more specific. It sits
+         * below the staged-suggestion branch so a team that skipped one step
+         * and created another still lands on the one it created. And it sits
+         * ABOVE the plain enrichment branch and the sport default, which are
+         * exactly what it exists to silence — `leagueAnswered` reports the
+         * same, so the default stays out of it too.
+         */
+        leagueId = undefined;
       } else if (enrichment?.league) {
         leagueId = await findOrCreateLeague(ctx, {
           name: enrichment.league,
@@ -10107,24 +10137,35 @@ export const commitCardChecklistPrelude = internalMutation({
      */
     const stagedLeagueIdByName = new Map<string, Id<"leagues">>();
     /**
-     * NEO-254 — league names the operator answered with "Skip — no league".
+     * NEO-254 — "Skip — no league", SCOPED TO THE TEAM THAT RAISED THE STEP.
      *
-     * A skip on a league step is an ANSWER about the teams that named it: they
-     * belong to no league. Without this set the answer did nothing — the team
-     * rows still carry `create.leagueName`, so the precedence below fell
-     * through to `findOrCreateLeague` and minted the very league the operator
-     * had just declined, and the sport default would have reasserted itself if
-     * it had not. Tracked by the same key `stagedLeagueIdByName` uses so the
-     * two cannot disagree about which step a name belongs to.
+     * A skip on a league step is an answer about one team: this team belongs
+     * to no league. Batch-wide it would be a much larger claim than the button
+     * makes — a step raised by the Canucks would silently strip the league
+     * from every other team that happened to name it, none of which the
+     * operator was looking at. So the answer travels with `source.teamRowId`,
+     * and a second team naming the same league gets its own step and its own
+     * answer.
+     *
+     * Without it the skip did nothing at all: the team rows still carry
+     * `create.leagueName`, so the precedence below fell through to
+     * `findOrCreateLeague` and minted the very league the operator had just
+     * declined — and the sport default would have reasserted itself if it had
+     * not.
      */
-    const skippedLeagueNames = new Set<string>();
+    const teamsWithSkippedLeague = new Set<string>();
 
     for (const row of reviewRows) {
       if (row.kind !== "league") continue;
       const leagueKey = normalizeLeagueName(row.name);
       if (!leagueKey) continue;
       if (row.decision?.action === "skip") {
-        skippedLeagueNames.add(leagueKey);
+        // Only a STAGED league can be skipped for a team — a league row with no
+        // `source` was not raised on anyone's behalf, so there is nobody for
+        // the answer to apply to.
+        if (row.source?.kind === "leagueOf") {
+          teamsWithSkippedLeague.add(row.source.teamRowId as string);
+        }
         continue;
       }
       if (row.decision?.action === "link" && row.decision.linkedLeagueId) {
@@ -10163,10 +10204,15 @@ export const commitCardChecklistPrelude = internalMutation({
         ...(createLeague.aliases?.length ? { aliases: createLeague.aliases } : {}),
         ...(createLeague.wikidataId ? { wikidataId: createLeague.wikidataId } : {}),
       });
+      // `leagueKey` IS the label the step was raised for, and that is what a
+      // team row's `leagueName`/`enrichment.league` carries. When the operator
+      // RENAMED the league on the step, register the typed name too, so a team
+      // that somehow refers to it by the new spelling still resolves.
       stagedLeagueIdByName.set(leagueKey, leagueId);
-      // And under the label the STEP was raised for, when the operator renamed
-      // it — the team row's `leagueName` still carries the original label.
-      stagedLeagueIdByName.set(normalizeLeagueName(row.name), leagueId);
+      const typedKey = normalizeLeagueName(createLeague.name);
+      if (typedKey && typedKey !== leagueKey) {
+        stagedLeagueIdByName.set(typedKey, leagueId);
+      }
     }
 
     const stagedTeamIdByLabel = new Map<string, Id<"teams">>();
@@ -10191,13 +10237,17 @@ export const commitCardChecklistPrelude = internalMutation({
         // Already enriched: the staged row's own Wikidata lookup ran while it
         // sat in the wizard, and its result is on `row.enrichment`.
         enqueueEnrichment: false,
-        extra: await reviewedTeamFields(create, row.enrichment),
+        extra: await reviewedTeamFields(create, row.enrichment, row._id as string),
         // NEO-236 security review, finding 1: a league that failed the re-check
         // above is NOT an answer, so it must not suppress the sport default —
         // `reviewedTeamFields` has already fallen through to `leagueName` or
         // the enrichment, and if both were empty the row is better off with the
         // sport's default than with nothing.
-        leagueChosen: await leagueAnswered(create, row.enrichment?.league),
+        leagueChosen: await leagueAnswered(
+          create,
+          row.enrichment?.league,
+          row._id as string,
+        ),
       });
       stagedTeamIdByLabel.set(norm(row.name), id);
       if (created) createdTeamIds.push(id);
@@ -10270,7 +10320,8 @@ export const commitCardChecklistPrelude = internalMutation({
         unresolvedTeamNames.add(name);
         continue;
       }
-      const enrichment = reviewByKey.get(`team:${normalized}`)?.enrichment;
+      const teamReviewRow = reviewByKey.get(`team:${normalized}`);
+      const enrichment = teamReviewRow?.enrichment;
       const { id, created } = await createTeamFromOperatorInput(create, {
         // The row the operator reviewed arrives complete — the wizard's own
         // Wikidata/ESPN lookup already ran — so it does not go back on the
@@ -10279,8 +10330,16 @@ export const commitCardChecklistPrelude = internalMutation({
         // NEO-236: league, era, colours and ids in one place, shared with the
         // staged-career-team pass above. The operator's League choice wins over
         // the enrichment's suggestion — see `reviewedTeamFields`.
-        extra: await reviewedTeamFields(create, enrichment),
-        leagueChosen: await leagueAnswered(create, enrichment?.league),
+        extra: await reviewedTeamFields(
+          create,
+          enrichment,
+          teamReviewRow?._id as string | undefined,
+        ),
+        leagueChosen: await leagueAnswered(
+          create,
+          enrichment?.league,
+          teamReviewRow?._id as string | undefined,
+        ),
       });
       teamIdByName.set(name, id);
       teamNameById.set(id, teamFullName(create));

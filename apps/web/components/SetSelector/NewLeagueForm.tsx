@@ -184,12 +184,25 @@ export function leagueDraftError(
   }
   const qid = draft.wikidataId.trim();
   if (qid && !/^Q\d+$/.test(qid)) {
-    return `Not a Wikidata entity id; the value is ${qid.length} characters.`;
+    // Says what a valid one looks like rather than counting the characters an
+    // operator can already see. The value is never echoed — it is free text on
+    // a path that renders into an outbound link.
+    return "A Wikidata id looks like Q1215892 — the letter Q and digits.";
   }
   return null;
 }
 
-/** The one-line summary the collapsed disclosure shows. */
+/**
+ * The one-line summary the collapsed disclosure shows, or null when there is
+ * nothing worth collapsing behind.
+ *
+ * A QID ON ITS OWN DOES NOT COUNT. `lookupLeagueEnrichment` always returns one
+ * when it matches at all, and often nothing else — many leagues have no P1813
+ * short name and no P571 inception. Treating that as "answered" would collapse
+ * the details on a step where every field an operator cares about is still
+ * blank, hiding the work behind a disclosure nobody would think to open. So
+ * the QID rides in the summary when there is a summary, and never creates one.
+ */
 export function leagueDetailSummary(draft: NewLeagueDraft): string | null {
   const parts: string[] = [];
   if (draft.abbreviation.trim()) parts.push(draft.abbreviation.trim());
@@ -199,8 +212,9 @@ export function leagueDetailSummary(draft: NewLeagueDraft): string | null {
   if (aliases.length > 0) {
     parts.push(aliases.length === 1 ? "1 alias" : `${aliases.length} aliases`);
   }
+  if (parts.length === 0) return null;
   if (draft.wikidataId.trim()) parts.push(draft.wikidataId.trim());
-  return parts.length > 0 ? parts.join(" · ") : null;
+  return parts.join(" · ");
 }
 
 export default function NewLeagueForm({

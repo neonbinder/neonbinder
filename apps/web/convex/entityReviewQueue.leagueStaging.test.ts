@@ -546,11 +546,19 @@ describe("NEO-254: the commit prelude creates a staged league once", () => {
     sportId: Id<"selectorOptions">,
     variantTypeId: Id<"selectorOptions">,
     leagueDecision: Record<string, unknown>,
+    /**
+     * Whether the team that RAISED the step also tapped a league pill on its
+     * own step. False is the realistic shape behind a skip: the operator said
+     * "no league" and never touched the team's pills, so nothing explicit
+     * overrides the suggestion.
+     */
+    raiserAnsweredLeague = true,
   ) {
     const mk = async (
       kind: "team" | "league",
       name: string,
       decision: Record<string, unknown>,
+      extra: Record<string, unknown> = {},
     ) =>
       t.run(async (ctx) =>
         ctx.db.insert("entityReviewQueue", {
@@ -564,19 +572,30 @@ describe("NEO-254: the commit prelude creates a staged league once", () => {
           sportId,
           status: "ready" as const,
           decision: decision as never,
+          ...extra,
         }),
       );
-    await mk("league", "National Hockey League", leagueDecision);
     // Both teams name the league by the SAME string the step was raised for,
     // which is what `create.leagueName` carries out of the New Team step.
-    await mk("team", "Vancouver Canucks", {
+    const canucks = await mk("team", "Vancouver Canucks", {
       action: "create",
-      create: { location: "Vancouver", name: "Canucks", leagueName: "National Hockey League" },
+      create: {
+        location: "Vancouver",
+        name: "Canucks",
+        ...(raiserAnsweredLeague
+          ? { leagueName: "National Hockey League" }
+          : {}),
+      },
     });
-    await mk("team", "Calgary Flames", {
+    const flames = await mk("team", "Calgary Flames", {
       action: "create",
       create: { location: "Calgary", name: "Flames", leagueName: "National Hockey League" },
     });
+    // Staged for the Canucks — which is what scopes a skip to them.
+    await mk("league", "National Hockey League", leagueDecision, {
+      source: { kind: "leagueOf", teamRowId: canucks },
+    });
+    return { canucks, flames };
   }
 
   async function commitBoth(
@@ -650,27 +669,116 @@ describe("NEO-254: the commit prelude creates a staged league once", () => {
     for (const team of teams) expect(team.leagueId).toBe(existing);
   });
 
-  test("a SKIPPED league leaves the teams with no league at all", async () => {
+  test("a SKIP is scoped to the team that raised the step", async () => {
     /*
-     * "Skip — no league" is an answer about the team, not a judgement about
-     * the name: these teams belong to no league, and the sport default must
-     * not reassert itself. It is also NOT recorded in `entityReviewSkips` —
-     * that table means "never ask me about this string again", which would
-     * suppress the league on every later fetch of the set.
+     * "Skip — this team has no league" is an answer about ONE team. Batch-wide
+     * it would be a much larger claim than the button makes: a step raised by
+     * the Canucks would silently strip the league from every other team that
+     * happened to name it, none of which the operator was looking at.
+     *
+     * Here the Canucks raised the step and skipped it, so they get no league.
+     * The Flames named the same league explicitly on their OWN step, and that
+     * answer stands.
      */
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
     const variantTypeId = await seedSetUnder(t, sportId);
-    await seedTwoTeamsOneLeague(t, sportId, variantTypeId, { action: "skip" });
+    await seedTwoTeamsOneLeague(
+      t,
+      sportId,
+      variantTypeId,
+      { action: "skip" },
+      // The Canucks raised the step and skipped it; they never touched their
+      // own league pills, which is what leaves the suggestion to be silenced.
+      false,
+    );
 
     const { leagues, teams } = await commitBoth(t, sportId, variantTypeId);
 
-    expect(leagues).toHaveLength(0);
-    for (const team of teams) expect(team.leagueId).toBeUndefined();
+    const canucks = teams.find((x) => x.name === "Canucks")!;
+    const flames = teams.find((x) => x.name === "Flames")!;
+    expect(canucks.leagueId).toBeUndefined();
+    expect(leagues).toHaveLength(1);
+    expect(flames.leagueId).toBe(leagues[0]._id);
+
+    // And NOT recorded as a suppressed name: `entityReviewSkips` means "never
+    // ask me about this string again", which would hide the league on every
+    // later fetch of the set.
     const skips = await t.run(async (ctx) =>
       ctx.db.query("entityReviewSkips").collect(),
     );
-    expect(skips.map((s) => s.name)).not.toContain("National Hockey League");
+    expect(skips.map((x) => x.name)).not.toContain("National Hockey League");
+  });
+
+  test("a skipped step never overrules the team's own explicit answer", async () => {
+    /*
+     * The skip suppresses the SUGGESTION — that is all it was ever about. An
+     * answer the operator then gave on the team's own step is later and more
+     * specific, and discarding it would be the skip overruling the very
+     * operator who made it.
+     *
+     * Both explicit shapes are covered: an existing league picked by id, and a
+     * different league typed by name.
+     */
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const variantTypeId = await seedSetUnder(t, sportId);
+    const ahl = await insertLeague(t, sportId, "American Hockey League");
+
+    const mk = async (
+      kind: "team" | "league",
+      name: string,
+      decision: Record<string, unknown>,
+      extra: Record<string, unknown> = {},
+    ) =>
+      t.run(async (ctx) =>
+        ctx.db.insert("entityReviewQueue", {
+          selectorOptionId: variantTypeId,
+          batchId: BATCH,
+          createdByUserId: ADMIN_IDENTITY.subject,
+          kind,
+          name,
+          nameNormalized:
+            kind === "league" ? normalizeLeagueName(name) : normalizeTeamName(name),
+          sportId,
+          status: "ready" as const,
+          decision: decision as never,
+          enrichment: { league: "National Hockey League" } as never,
+          ...extra,
+        }),
+      );
+
+    // Picked an EXISTING league by id, after skipping the suggestion.
+    const byId = await mk("team", "Vancouver Canucks", {
+      action: "create",
+      create: { location: "Vancouver", name: "Canucks", leagueId: ahl },
+    });
+    // Typed a DIFFERENT league by name, after skipping the suggestion.
+    const byName = await mk("team", "Calgary Flames", {
+      action: "create",
+      create: {
+        location: "Calgary",
+        name: "Flames",
+        leagueName: "World Hockey Association",
+      },
+    });
+    await mk("league", "National Hockey League", { action: "skip" }, {
+      source: { kind: "leagueOf", teamRowId: byId },
+    });
+    await mk("league", "National Hockey League", { action: "skip" }, {
+      source: { kind: "leagueOf", teamRowId: byName },
+    });
+
+    const { leagues, teams } = await commitBoth(t, sportId, variantTypeId);
+
+    const canucks = teams.find((x) => x.name === "Canucks")!;
+    const flames = teams.find((x) => x.name === "Flames")!;
+    expect(canucks.leagueId).toBe(ahl);
+    const wha = leagues.find((l) => l.name === "World Hockey Association");
+    expect(wha).toBeTruthy();
+    expect(flames.leagueId).toBe(wha!._id);
+    // The skipped suggestion itself was never created.
+    expect(leagues.map((l) => l.name)).not.toContain("National Hockey League");
   });
 
   test("an existing league keeps ITS values — the step only fills gaps", async () => {
@@ -840,5 +948,305 @@ describe("NEO-254: a staged league step is looked up like any other row", () => 
     const row = await t.run(async (ctx) => ctx.db.get(league));
     expect(row!.status).toBe("error");
     expect(row!.enrichment).toBeUndefined();
+  });
+});
+
+// ===========================================================================
+// One league, two names
+// ===========================================================================
+
+describe("NEO-254: the batch dedupes a league by QID as well as by name", () => {
+  test("ESPN's 'NHL' and Wikidata's full name stage ONE step", async () => {
+    /*
+     * `normalizeLeagueName` does not token-sort and cannot know these are the
+     * same competition, so keyed on the name alone this produced two steps —
+     * and two `leagues` rows for one league, which is the duplication the
+     * whole feature exists to prevent. The QID is the identity Wikidata itself
+     * asserts, so a match on either key means the batch already holds it.
+     */
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const first = await insertRow(t, { sportId, kind: "team", name: "Vancouver Canucks" });
+    const second = await insertRow(t, { sportId, kind: "team", name: "Calgary Flames" });
+
+    await t.mutation(internal.entityReviewQueue.applyLookupResult, {
+      id: first,
+      status: "ready",
+      enrichment: { league: "NHL", leagueWikidataId: "Q1215892" },
+    });
+    await t.mutation(internal.entityReviewQueue.applyLookupResult, {
+      id: second,
+      status: "ready",
+      enrichment: {
+        league: "National Hockey League",
+        leagueWikidataId: "Q1215892",
+      },
+    });
+
+    const staged = await leagueRows(t);
+    expect(staged).toHaveLength(1);
+    expect(staged[0].name).toBe("NHL");
+  });
+
+  test("two DIFFERENT leagues still get a step each", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const first = await insertRow(t, { sportId, kind: "team", name: "Vancouver Canucks" });
+    const second = await insertRow(t, { sportId, kind: "team", name: "Abbotsford Canucks" });
+
+    await t.mutation(internal.entityReviewQueue.applyLookupResult, {
+      id: first,
+      status: "ready",
+      enrichment: { league: "National Hockey League", leagueWikidataId: "Q1215892" },
+    });
+    await t.mutation(internal.entityReviewQueue.applyLookupResult, {
+      id: second,
+      status: "ready",
+      enrichment: { league: "American Hockey League", leagueWikidataId: "Q564289" },
+    });
+
+    expect(await leagueRows(t)).toHaveLength(2);
+  });
+});
+
+// ===========================================================================
+// Resume reconciliation, and a league typed on a team step
+// ===========================================================================
+
+describe("NEO-254: a resume drops an orphaned league step", () => {
+  /** `startBatch` with an incoming set, which is what a resume looks like. */
+  async function resume(
+    t: ReturnType<typeof convexTest>,
+    sportId: Id<"selectorOptions">,
+    incoming: { playerNames?: string[]; teamNames?: string[] },
+  ) {
+    return t.mutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId: sportId,
+      createdByUserId: ADMIN_IDENTITY.subject,
+      sportId,
+      playerNames: incoming.playerNames ?? [],
+      teamNames: incoming.teamNames ?? [],
+    });
+  }
+
+  test("a league staged for a team that was reconciled away is dropped", async () => {
+    /*
+     * A staged row is never in `incoming` — no card carries its name — so it is
+     * exempt from the ordinary drop test and has to be judged by its parent.
+     * Left behind it is undecided, unowned, and blocks "all reviewed" forever.
+     */
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const team = await insertRow(t, {
+      sportId,
+      kind: "team",
+      name: "Vancouver Canucks",
+      status: "ready",
+    });
+    await insertRow(t, {
+      sportId,
+      kind: "league",
+      name: "National Hockey League",
+      status: "ready",
+      source: { kind: "leagueOf", teamRowId: team },
+    });
+
+    // The Canucks are no longer on the checklist.
+    await resume(t, sportId, { teamNames: ["Calgary Flames"] });
+
+    expect(await leagueRows(t)).toHaveLength(0);
+  });
+
+  test("a league under a LIVE staged team survives — survivors are transitive", async () => {
+    /*
+     * The trap a naive `survivingRowIds` check falls into: the team here is
+     * itself staged (off a player's career list), so it is not in `incoming`
+     * either. Judged against that set directly, every league under a live
+     * staged team would be deleted.
+     */
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const player = await insertRow(t, {
+      sportId,
+      kind: "player",
+      name: "Wayne Gretzky",
+      status: "ready",
+    });
+    const team = await insertRow(t, {
+      sportId,
+      kind: "team",
+      name: "Edmonton Oilers",
+      status: "ready",
+      source: { kind: "careerTeamOf", playerRowId: player },
+    });
+    await insertRow(t, {
+      sportId,
+      kind: "league",
+      name: "National Hockey League",
+      status: "ready",
+      source: { kind: "leagueOf", teamRowId: team },
+    });
+
+    // Gretzky is still on the checklist, so his whole chain stands.
+    await resume(t, sportId, { playerNames: ["Wayne Gretzky"] });
+
+    expect(await leagueRows(t)).toHaveLength(1);
+  });
+
+  test("a DECIDED league survives even when its team is gone", async () => {
+    // Every decided row is kept — the operator ruled on it, and the prelude
+    // will still honour that ruling.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const team = await insertRow(t, {
+      sportId,
+      kind: "team",
+      name: "Vancouver Canucks",
+      status: "ready",
+    });
+    await insertRow(t, {
+      sportId,
+      kind: "league",
+      name: "National Hockey League",
+      status: "ready",
+      source: { kind: "leagueOf", teamRowId: team },
+      decision: { action: "create", createLeague: { name: "National Hockey League" } },
+    });
+
+    await resume(t, sportId, { teamNames: ["Calgary Flames"] });
+
+    expect(await leagueRows(t)).toHaveLength(1);
+  });
+});
+
+describe("NEO-254: a league typed on a team step gets a step of its own", () => {
+  test("stageLeagueRows raises it, and a second call adds nothing", async () => {
+    /*
+     * Without this the commit resolved a typed league through a bare
+     * `findOrCreateLeague(name)` — the name-only league this whole feature
+     * exists to stop. Idempotent, because the wizard fires it on every patch.
+     */
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const team = await insertRow(t, {
+      sportId,
+      kind: "team",
+      name: "Vancouver Canucks",
+      status: "ready",
+    });
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+
+    expect(
+      await asAdmin.mutation(api.entityReviewQueue.stageLeagueRows, {
+        reviewRowId: team,
+        leagueName: "World Hockey Association",
+      }),
+    ).toBe(1);
+    expect(
+      await asAdmin.mutation(api.entityReviewQueue.stageLeagueRows, {
+        reviewRowId: team,
+        leagueName: "World Hockey Association",
+      }),
+    ).toBe(0);
+
+    const staged = await leagueRows(t);
+    expect(staged).toHaveLength(1);
+    expect(staged[0].name).toBe("World Hockey Association");
+    expect(staged[0].source).toEqual({ kind: "leagueOf", teamRowId: team });
+  });
+
+  test("a league the sport already holds raises nothing", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await insertLeague(t, sportId, "National Hockey League");
+    const team = await insertRow(t, {
+      sportId,
+      kind: "team",
+      name: "Vancouver Canucks",
+      status: "ready",
+    });
+
+    expect(
+      await t.withIdentity(ADMIN_IDENTITY).mutation(
+        api.entityReviewQueue.stageLeagueRows,
+        { reviewRowId: team, leagueName: "National Hockey League" },
+      ),
+    ).toBe(0);
+  });
+
+  test("a blank name raises nothing", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const team = await insertRow(t, {
+      sportId,
+      kind: "team",
+      name: "Vancouver Canucks",
+      status: "ready",
+    });
+    expect(
+      await t.withIdentity(ADMIN_IDENTITY).mutation(
+        api.entityReviewQueue.stageLeagueRows,
+        { reviewRowId: team, leagueName: "   " },
+      ),
+    ).toBe(0);
+  });
+});
+
+describe("NEO-254: 'Skip remaining names' and an already-decided team", () => {
+  test("a team that already answered 'Create NHL' keeps its league", async () => {
+    /*
+     * `skipRemaining` skips every UNDECIDED row, which includes an unanswered
+     * league step — and through the team-scoped skip that would otherwise read
+     * as "this team has no league". It must not reach a team that already gave
+     * an explicit answer: the operator decided that row, and a bulk action on
+     * the rows they had not reached is not a licence to revisit it.
+     *
+     * Two guards make it hold, and this pins both: `decideAllRemaining` steps
+     * over a decided row, and an explicit `create.leagueName` outranks the
+     * skip in the commit's own precedence.
+     */
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const team = await t.run(async (ctx) =>
+      ctx.db.insert("entityReviewQueue", {
+        selectorOptionId: sportId,
+        batchId: BATCH,
+        createdByUserId: ADMIN_IDENTITY.subject,
+        kind: "team" as const,
+        name: "Vancouver Canucks",
+        nameNormalized: normalizeTeamName("Vancouver Canucks"),
+        sportId,
+        status: "ready" as const,
+        decision: {
+          action: "create" as const,
+          create: {
+            location: "Vancouver",
+            name: "Canucks",
+            leagueName: "National Hockey League",
+          },
+        },
+      }),
+    );
+    const league = await insertRow(t, {
+      sportId,
+      kind: "league",
+      name: "National Hockey League",
+      status: "ready",
+      source: { kind: "leagueOf", teamRowId: team },
+    });
+
+    await t
+      .withIdentity(ADMIN_IDENTITY)
+      .mutation(api.entityReviewQueue.recordAllRemainingAsSkip, {
+        selectorOptionId: sportId,
+        batchId: BATCH,
+      });
+
+    // The team's own decision is untouched…
+    const teamRow = await t.run(async (ctx) => ctx.db.get(team));
+    expect(teamRow!.decision).toMatchObject({ action: "create" });
+    // …and the league step it raised was the undecided one, so it took the skip.
+    const leagueRow = await t.run(async (ctx) => ctx.db.get(league));
+    expect(leagueRow!.decision).toEqual({ action: "skip" });
   });
 });

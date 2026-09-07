@@ -168,7 +168,7 @@ vi.mock("./EntityLinkSearch", () => ({
     sportId,
     onSelect,
   }: {
-    kind: "player" | "team";
+    kind: "player" | "team" | "league";
     sportId: string;
     onSelect: (id: string) => void;
   }) => {
@@ -196,7 +196,7 @@ type Row = {
   _creationTime: number;
   selectorOptionId: Id<"selectorOptions">;
   batchId: string;
-  kind: "player" | "team";
+  kind: "player" | "team" | "league";
   name: string;
   sportId: Id<"selectorOptions">;
   sportValue: string;
@@ -208,7 +208,11 @@ type Row = {
    * until its teams are answered, and the player's chips read it to report what
    * each stint will land on.
    */
-  source?: { kind: "careerTeamOf"; playerRowId: string } | null;
+  source?:
+    | { kind: "careerTeamOf"; playerRowId: string }
+    // NEO-254 — set on a league row staged for the team that needs it.
+    | { kind: "leagueOf"; teamRowId: string }
+    | null;
   decision?:
     | {
         action: "create";
