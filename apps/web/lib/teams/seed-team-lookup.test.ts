@@ -117,6 +117,30 @@ describe("seedMatchKey", () => {
       seedMatchKey("Marines Lotte Chiba"),
     );
   });
+
+  /**
+   * NEO-253. The bundled dataset is ASCII; `teams.name` holds the franchise's
+   * real spelling. Unfolded, an accented team matched nothing in a 165-row
+   * table and got no colours at all — the same "José / Jose must match" rule as
+   * the identity keys, landing on what the operator actually sees.
+   */
+  it("folds diacritics onto the ASCII dataset", () => {
+    expect(seedMatchKey("Montréal Expos")).toBe("montreal expos");
+    expect(seedMatchKey("Montréal Expos")).toBe(seedMatchKey("Montreal Expos"));
+    // "ñ" is a letter rather than an accent in Spanish; folding it is still
+    // right here, because the other side is a fixed ASCII dataset.
+    expect(seedMatchKey("Águilas Cibaeñas")).toBe("aguilas cibaenas");
+    // The sport-suffix list is ENGLISH on purpose: it strips the word the NB
+    // Set Builder appends to a college row, not a Spanish team's own name.
+    // "Estrellas Orientales béisbol" keeps its "beisbol"; the ASCII row NB
+    // actually stores is the one that trims.
+    expect(seedMatchKey("Estrellas Orientales baseball")).toBe(
+      "estrellas orientales",
+    );
+    expect(seedMatchKey("Estrellas Orientales béisbol")).toBe(
+      "estrellas orientales beisbol",
+    );
+  });
 });
 
 describe("findSeedColors", () => {

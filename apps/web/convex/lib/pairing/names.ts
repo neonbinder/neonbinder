@@ -111,6 +111,14 @@ export function lastName(normalized: string): string {
  *    this is not a match, surname agreement notwithstanding.
  */
 export function playerNamesMatch(a: string, b: string): NameMatch {
+  // NEO-253: this ladder deliberately does NOT fold diacritics, unlike
+  // `lib/entities/normalize-name.ts` (the NB identity key) — it is a verbatim
+  // port of `services/preprocess/app/pairing/names.py` whose thresholds are
+  // tuned against this exact behaviour, and folding one side of a cross-service
+  // port is a silent divergence. The identity key is checked FIRST by
+  // `entityNearMatch.rank*Candidates`, so "José Ramírez" still ranks as an
+  // exact hit against "Jose Ramirez"; only the fuzzy rungs below ("J. Ramírez")
+  // still miss across accents.
   const na = normalizePlayerName(a);
   const nb = normalizePlayerName(b);
 

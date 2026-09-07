@@ -32,6 +32,8 @@ import { rankTeamCandidates } from "./lib/entityNearMatch";
 // Leagues store a QID for the same reason players and teams do, so they
 // validate it in the same one place rather than growing a fourth regex.
 import { isWikidataQid } from "../lib/players/wikidata-id";
+// NEO-253: the shared normalisation core, in its order-preserving form.
+import { normalizeOrderedEntityName } from "../lib/entities/normalize-name";
 // NEO-236: the team split — `teamsIn` orders by the composed full name.
 import { teamFullName } from "../lib/teams/team-name";
 
@@ -91,21 +93,20 @@ export const leagueDocValidator = v.object({
 });
 
 /**
- * Lowercase + strip punctuation, WITHOUT the token sort that
+ * Lowercase + fold diacritics + strip punctuation, WITHOUT the token sort that
  * `teams.normalizeTeamName` applies.
  *
  * Sorting is a dedup trick for names that arrive in either order ("Yankees,
  * New York"). League names never do, and sorting would collapse "National
  * League" and "League National" into one row.
+ *
+ * NEO-253: an alias for `normalizeOrderedEntityName`, so leagues fold accents
+ * on the same terms players and teams do — "Liga Mexicana de Béisbol" is one
+ * league however a source spells it — while keeping the order that is the whole
+ * reason leagues have their own entry point.
  */
 export function normalizeLeagueName(raw: string): string {
-  return raw
-    .toLowerCase()
-    .replace(/[.,'"`’]/g, "")
-    .replace(/[^a-z0-9\s-]/g, " ")
-    .split(/\s+/)
-    .filter(Boolean)
-    .join(" ");
+  return normalizeOrderedEntityName(raw);
 }
 
 /**

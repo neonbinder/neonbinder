@@ -15,10 +15,11 @@
  */
 
 import { convexTest } from "convex-test";
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
+import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -31,6 +32,28 @@ const ADMIN_IDENTITY = {
   name: "Admin User",
   role: "admin",
 };
+
+beforeEach(() => {
+  // NEO-188/NEO-247: commitCardChecklist can schedule a BSC per-card team
+  // lookup (processBscTeamEnrichmentQueue) as a side effect. This file has
+  // nothing to say about team resolution. A THROWING stub rather than a
+  // canned 200 — same convention as
+  // convex/cardChecklist.bscTeamEnrichment.test.ts's NEO-220 fix: the
+  // adapter already swallows a request failure ("network unavailable" is a
+  // state it handles), and it cannot write anything derived from a payload
+  // this file invented.
+  vi.stubGlobal(
+    "fetch",
+    (async (url: string | URL) => {
+      throw new Error(
+        `NEO-247: this test file must not reach the network: ${String(url)}`,
+      );
+    }) as unknown as typeof fetch,
+  );
+});
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 async function seedTree(
   t: ReturnType<typeof convexTest>,
@@ -197,6 +220,12 @@ describe("commitCardChecklist — re-sync applies each row's OWN correction", ()
     // The bug this ticket fixes: neither row received the OTHER's correction.
     expect(aliceAfter.cardName).not.toBe("Bob Corrected");
     expect(bobAfter.cardName).not.toBe("Alice Corrected");
+    // NEO-247: 2 bsc-linked cards in one commit means
+    // processBscTeamEnrichmentQueue reschedules its tail with a real
+    // BSC_TEAM_ENRICH_DELAY_MS (300ms) delay rather than runAfter(0) —
+    // drainScheduled can only settle the first hop, so cancel the rest.
+    await drainScheduled(t);
+    await cancelScheduled(t);
   });
 });
 
@@ -250,6 +279,7 @@ describe("commitCardChecklist — tier 2 (slot + number) survives an upstream re
     expect(after[0]._id).toBe(originalId);
     expect(after[0].platformData?.sportlots?.ref).toBe("#5 New Corrected Description");
     expect(after[0].platformData?.sportlots?.src).toBe("s0");
+    await drainScheduled(t);
   });
 });
 
@@ -311,6 +341,7 @@ describe("commitCardChecklist — ambiguity is surfaced, never guessed", () => {
     ).toBe(true);
 
     spy.mockRestore();
+    await drainScheduled(t);
   });
 
   test("4b: two existing rows sharing (slot, cardNumber) with distinct refs — no tier-2 match", async () => {
@@ -354,6 +385,7 @@ describe("commitCardChecklist — ambiguity is surfaced, never guessed", () => {
     expect(rows).toHaveLength(3);
     expect(rows.find((r) => r._id === rowXId)!.cardName).toBe("Row X");
     expect(rows.find((r) => r._id === rowYId)!.cardName).toBe("Row Y");
+    await drainScheduled(t);
   });
 
   test("4c: an incoming setId shaped like a slot key ('b0') is never compared against a stored src", async () => {
@@ -386,6 +418,7 @@ describe("commitCardChecklist — ambiguity is surfaced, never guessed", () => {
     const existing = rows.find((r) => r._id === existingId)!;
     expect(existing.cardName).toBe("Existing Card");
     expect(existing.platformData?.bsc?.ref).toBe("old-ref");
+    await drainScheduled(t);
   });
 });
 
@@ -470,6 +503,7 @@ describe("commitCardChecklist — re-sync with no applyFields", () => {
     // But linkage WAS refreshed — the slot moved from b0 to b1.
     expect(after.platformData?.bsc?.ref).toBe("stable-ref");
     expect(after.platformData?.bsc?.src).toBe("b1");
+    await drainScheduled(t);
   });
 });
 
@@ -505,6 +539,7 @@ describe("commitCardChecklist — upstream removal", () => {
     const after = await storedRows(t, leafId);
     expect(after).toHaveLength(2);
     expect(after.some((r) => r._id === droppedId)).toBe(true);
+    await drainScheduled(t);
   });
 });
 
@@ -540,6 +575,7 @@ describe("commitCardChecklist — tier 3 (bare number, no-ref rows)", () => {
     expect(rows).toHaveLength(1); // matched, never duplicated
     expect(rows[0]._id).toBe(legacyId);
     expect(rows[0].isCustom).toBe(true); // untouched by the match itself
+    await drainScheduled(t);
   });
 });
 
@@ -591,5 +627,9 @@ describe("commitCardChecklist — variations resolved per source set", () => {
     // versa, even though both partitions share the "29" stem.
     expect(childA.variationOfCardId).not.toBe(parentB._id);
     expect(childB.variationOfCardId).not.toBe(parentA._id);
+    // NEO-247: 4 bsc-linked cards in one commit — see the comment on the
+    // Alice/Bob test above for why both drain and cancel are needed here.
+    await drainScheduled(t);
+    await cancelScheduled(t);
   });
 });

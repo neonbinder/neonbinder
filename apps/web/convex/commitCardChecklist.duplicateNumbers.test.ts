@@ -47,10 +47,33 @@
  */
 
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
+import { drainScheduled } from "../lib/testing/drain-scheduled";
+
+beforeEach(() => {
+  // NEO-188/NEO-247: commitCardChecklist can schedule a BSC per-card team
+  // lookup (processBscTeamEnrichmentQueue) as a side effect. This file has
+  // nothing to say about team resolution. A THROWING stub rather than a
+  // canned 200 — same convention as
+  // convex/cardChecklist.bscTeamEnrichment.test.ts's NEO-220 fix: the
+  // adapter already swallows a request failure ("network unavailable" is a
+  // state it handles), and it cannot write anything derived from a payload
+  // this file invented.
+  vi.stubGlobal(
+    "fetch",
+    (async (url: string | URL) => {
+      throw new Error(
+        `NEO-247: this test file must not reach the network: ${String(url)}`,
+      );
+    }) as unknown as typeof fetch,
+  );
+});
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -172,6 +195,7 @@ describe("commitCardChecklist — two source sets sharing card numbers", () => {
     // SKUs are per-row, so two same-numbered cards are still individually
     // addressable downstream.
     expect(new Set(rows.map((r) => r.sku)).size).toBe(2);
+    await drainScheduled(t);
   });
 
   test("a fully duplicate-numbered set commits every row (the 1996 Score shape)", async () => {
@@ -206,5 +230,6 @@ describe("commitCardChecklist — two source sets sharing card numbers", () => {
     expect(rows).toHaveLength(220);
     expect(new Set(rows.map((r) => r.cardNumber)).size).toBe(110);
     expect(new Set(rows.map((r) => r.platformData?.bsc?.ref)).size).toBe(220);
+    await drainScheduled(t);
   });
 });

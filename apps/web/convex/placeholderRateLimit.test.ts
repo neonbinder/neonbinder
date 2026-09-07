@@ -11,9 +11,10 @@
  */
 
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
+import { drainScheduled } from "../lib/testing/drain-scheduled";
 import {
   DEFAULT_MAX_JOB_STARTS_PER_WINDOW,
   JOB_START_WINDOW_MS,
@@ -81,6 +82,20 @@ describe("jobStartRateLimitReason", () => {
 });
 
 describe("startPlaceholderStream enforces the rate limit", () => {
+  // NEO-188/NEO-247: a SUCCESSFUL start fires the preprocess `/warmup` ping
+  // fire-and-forget (convex/placeholderStream.ts). Unstubbed, that's a real
+  // request every run; stub it the same way convex/placeholderStream.test.ts
+  // does — this file has nothing to say about warm-up itself.
+  beforeEach(() => {
+    vi.stubGlobal(
+      "fetch",
+      (async () => new Response("{}", { status: 200 })) as unknown as typeof fetch,
+    );
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   // The end-to-end half: the pure function above is wired to the real entry
   // point, and refuses with `started: false` rather than throwing — the same
   // shape the concurrency cap uses, which is what the UI already renders.
@@ -130,6 +145,7 @@ describe("startPlaceholderStream enforces the rate limit", () => {
     const result = await t
       .withIdentity(USER)
       .mutation(api.placeholderStream.startPlaceholderStream, {});
+    await drainScheduled(t); // NEO-247: settle the fire-and-forget warmup ping
 
     expect(result.started).toBe(true);
   });
@@ -153,6 +169,7 @@ describe("startPlaceholderStream enforces the rate limit", () => {
     const result = await t
       .withIdentity(USER)
       .mutation(api.placeholderStream.startPlaceholderStream, {});
+    await drainScheduled(t); // NEO-247: settle the fire-and-forget warmup ping
 
     expect(result.started).toBe(true);
   });

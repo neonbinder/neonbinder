@@ -261,12 +261,20 @@ describe("NEO-236: saveTeamFields owns the key, and defends it", () => {
       }),
     );
 
+    // NEO-253: the refusal carries the OTHER row's id and nothing else, so
+    // Team Management can offer "Open the existing team" rather than print a
+    // sentence about a row the operator then has to go and find. The message
+    // reaches Sentry and the browser console, which is why it does not carry
+    // the clashing name.
+    const clashId = (await allTeams(t)).find(
+      (row) => row.name === "Los Angeles Padres",
+    )!._id;
     await expect(
       t.withIdentity(ADMIN).mutation(api.teams.saveTeamFields, {
         id: teamId,
         location: "Los Angeles",
       }),
-    ).rejects.toThrow(/already called Los Angeles Padres/);
+    ).rejects.toThrow(`NAME_TAKEN:${clashId}`);
 
     // Nothing moved.
     const padres = await t.run(async (ctx) => ctx.db.get(teamId));
