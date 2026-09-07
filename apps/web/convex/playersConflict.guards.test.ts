@@ -12,9 +12,10 @@
  *     `diffChecklistAgainstExisting.test.ts`.
  *  2. The commit refuses a card still carrying `playersConflict`. The modal
  *     strips it; this is the proof rather than the trust.
- *  3. `normalizePlayerName` does NOT fold diacritics, so SportLots' "José
- *     Ramírez" does not resolve to BSC's existing "Jose Ramirez". Documented
- *     rather than fixed — see the test's own note for why.
+ *  3. `normalizePlayerName` DOES fold diacritics (NEO-253), so SportLots' "José
+ *     Ramírez" resolves to BSC's existing "Jose Ramirez" row instead of minting
+ *     a second person. This started life as a tripwire on the opposite
+ *     behaviour; it is now the regression test for the fix.
  */
 
 import { convexTest } from "convex-test";
@@ -362,53 +363,73 @@ describe("the commit refuses an unsettled roster conflict (NEO-251)", () => {
 });
 
 /**
- * NEO-251 (security review, item 7) — DOCUMENTS A KNOWN GAP.
+ * NEO-253 — the player dedup key folds diacritics.
  *
- * `nameKey` (lib/cards/card-name.ts) folds NFD before stripping, so it treats
- * "José Ramírez" and "Jose Ramirez" as one name — that is what stops the
- * pairing modal flagging every accent difference between the two marketplaces.
- * `normalizePlayerName`, the `players.nameNormalized` DEDUP KEY, does not: it
- * lowercases and then drops every character outside `[a-z0-9\s-]`, so the
- * accented spelling shreds into different tokens entirely.
+ * This block was written for NEO-251 as a TRIPWIRE on the opposite behaviour:
+ * `nameKey` (lib/cards/card-name.ts) folded NFD, `normalizePlayerName` did not,
+ * and the note here said the test "fails the day someone fixes it, which is the
+ * point". This is that day, so the assertions are inverted rather than deleted —
+ * the pair of them is still the only place the two normalisers are compared to
+ * each other, and that comparison is what went unchecked for long enough to
+ * produce the defect.
  *
- * The consequence, now that SportLots supplies player names: a card whose
- * roster comes back accented does not resolve to the existing unaccented
- * player row, and the name goes to the entity wizard as unknown — where an
- * operator can create a SECOND row for the same person.
+ * The consequence, now that SportLots supplies player names: a card whose roster
+ * comes back accented resolves to the existing unaccented player row. Jason,
+ * 2026-09-04: "if a card says Jose but the player in the database is José we
+ * should just link that player, not consider them new."
  *
- * WHY THIS IS NOT FIXED IN THIS BRANCH. The function is the stored dedup key,
- * indexed as `by_name_normalized_and_sport_id`. Changing it without rewriting
- * every stored `nameNormalized` makes existing accented rows unreachable by the
- * new key — which mints the very duplicate the change is meant to prevent. A
- * correct fix is therefore a migration, and it spans `players`, `teams`
- * (`normalizeTeamName`), the prelude's own inline `norm`, `entityReviewSkips`
- * and `entityReviewQueue`, all of which key on the same shape. It can merge or
- * split PLAYER IDENTITY rows, which is exactly the class of change the product
- * invariant says must be operator-reviewed rather than ridden along on a UI
- * ticket. It wants its own ticket, its own backfill and its own review.
- *
- * This test fails the day someone fixes it, which is the point: it is a
- * tripwire on a documented behaviour, not an endorsement of it.
+ * NO BACKFILL ships with the change. The rows that carry a pre-NEO-253
+ * `nameNormalized` are dev and preview rows that are reseeded from the UI on
+ * every run, and production has no players yet — see the note on
+ * `lib/entities/normalize-name.ts` for what that costs and when it stops being
+ * true.
  */
-describe("diacritics do not fold in the player dedup key (NEO-251, deferred)", () => {
-  test("nameKey folds the accents that normalizePlayerName does not", () => {
+describe("the player dedup key folds diacritics (NEO-253)", () => {
+  test("normalizePlayerName folds the accents nameKey has always folded", () => {
     expect(nameKey("José Ramírez")).toBe(nameKey("Jose Ramirez"));
-    expect(normalizePlayerName("José Ramírez")).not.toBe(
+    expect(normalizePlayerName("José Ramírez")).toBe(
       normalizePlayerName("Jose Ramirez"),
+    );
+    // Not merely "equal to each other" — equal to the plain ASCII key, which is
+    // what makes the accented spelling reach the SAME index entry rather than a
+    // third one both spellings agree on.
+    expect(normalizePlayerName("José Ramírez")).toBe("jose ramirez");
+  });
+
+  /**
+   * The old chain did not simply drop the accents, it SHREDDED the name:
+   * `[^a-z0-9\s-]` turned "é" into a space, so the key was "e jos" rather than
+   * anything resembling "jose". Pinned because it is the reason a near-match
+   * prompt never fired either — the wizard had no token in common to offer.
+   */
+  test("an accented name no longer shreds into fragments", () => {
+    expect(normalizePlayerName("José Ramírez")).not.toContain(" jos ");
+    expect(normalizePlayerName("José Ramírez").split(" ")).toEqual([
+      "jose",
+      "ramirez",
+    ]);
+  });
+
+  test("a name with no canonical decomposition is left alone, as before", () => {
+    // "ø" has no combining-mark decomposition, so it still falls out of the key
+    // exactly as it did before NEO-253. Folding it needs a transliteration
+    // table, and a wrong entry in one MERGES two people. See the module note.
+    expect(normalizePlayerName("Bjørn Nielsen")).toBe(
+      normalizePlayerName("Bj rn Nielsen"),
     );
   });
 
-  test("so an accented roster does not link to the existing player row", async () => {
+  test("so an accented roster LINKS to the existing player row", async () => {
     const t = convexTest(schema, modules);
     const { sportId, leafId } = await seedTree(t);
-    await t.run(async (ctx) => {
-      await ctx.db.insert("players", {
+    const playerId = await t.run(async (ctx) =>
+      ctx.db.insert("players", {
         name: "Jose Ramirez",
         nameNormalized: normalizePlayerName("Jose Ramirez"),
         sportId,
         lastUpdated: Date.now(),
-      });
-    });
+      }),
+    );
 
     await t
       .withIdentity(ADMIN)
@@ -426,10 +447,59 @@ describe("diacritics do not fold in the player dedup key (NEO-251, deferred)", (
         )
         .collect(),
     );
-    // Unlinked, and carried as a pending NAME instead — the card is not wrong,
-    // but the person on it is not the person NB already knows about.
-    expect(rows[0].playerIds ?? []).toEqual([]);
-    expect(rows[0].pendingPlayerNames).toEqual(["José Ramírez"]);
+    // Linked to the row NB already had, and NOT carried as a pending name — the
+    // observable consequence the NEO-251 note predicted, now in the other
+    // direction.
+    expect(rows[0].playerIds ?? []).toEqual([playerId]);
+    expect(rows[0].pendingPlayerNames ?? []).toEqual([]);
+
+    // And no second person was created for the accented spelling.
+    const players = await t.run(async (ctx) =>
+      ctx.db.query("players").collect(),
+    );
+    expect(players).toHaveLength(1);
+    // NEO-247: settle (and discard) the enrichment this commit scheduled before
+    // the test returns, so nothing is still running into worker teardown.
+    await drainScheduled(t);
+    await cancelScheduled(t);
+  });
+
+  test("the reverse direction too: an ASCII roster finds the accented row", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    const playerId = await t.run(async (ctx) =>
+      ctx.db.insert("players", {
+        name: "José Ramírez",
+        nameNormalized: normalizePlayerName("José Ramírez"),
+        sportId,
+        lastUpdated: Date.now(),
+      }),
+    );
+
+    await t
+      .withIdentity(ADMIN)
+      .action(api.selectorOptions.commitCardChecklist, {
+        selectorOptionId: leafId,
+        sportId,
+        cards: [card({ players: ["Jose Ramirez"] })],
+      });
+
+    const rows = await t.run(async (ctx) =>
+      ctx.db
+        .query("cardChecklist")
+        .withIndex("by_selector_option", (q) =>
+          q.eq("selectorOptionId", leafId),
+        )
+        .collect(),
+    );
+    expect(rows[0].playerIds ?? []).toEqual([playerId]);
+    const players = await t.run(async (ctx) =>
+      ctx.db.query("players").collect(),
+    );
+    expect(players).toHaveLength(1);
+    // The row keeps ITS OWN spelling. The fold decides identity; it never
+    // rewrites the name NB stores and renders.
+    expect(players[0].name).toBe("José Ramírez");
     // NEO-247: settle (and discard) the enrichment this commit scheduled before
     // the test returns, so nothing is still running into worker teardown.
     await drainScheduled(t);

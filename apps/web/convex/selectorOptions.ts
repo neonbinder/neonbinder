@@ -119,6 +119,9 @@ import { findSportForSelectorOption } from "./cardChecklist";
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "./features/cardAttention";
 import { normalizePlayerName } from "./players";
 import { normalizeTeamName } from "./teams";
+// NEO-253: the shared normalisation core, imported rather than transcribed —
+// this file used to carry two separate hand copies of it.
+import { normalizeEntityName } from "../lib/entities/normalize-name";
 // NEO-236: the team name split. `teamFullName` composes location + nickname
 // for every name that leaves this file; `teamRowFields`/`findTeamByFullName`
 // are the ONE place a team row's identity fields are derived and looked up.
@@ -7645,22 +7648,20 @@ export const syncSetsAcrossManufacturers = action({
 });
 
 /**
- * Lowercase + strip punctuation + token-sort. Same shape as
- * normalizePlayerName/normalizeTeamName in convex/players.ts and
- * convex/teams.ts — kept inline here to avoid pulling those modules into
- * the action runtime (Convex bundles per-file). Used both for fuzzy
+ * Fold + lowercase + strip punctuation + token-sort. Used both for fuzzy
  * matching during reconciliation and for matching against the existing
  * players/teams tables.
+ *
+ * NEO-253: was an inline transcription of `normalizePlayerName` /
+ * `normalizeTeamName`, kept local to avoid pulling those modules into the
+ * action runtime (Convex bundles per-file). It now aliases the shared core in
+ * `lib/entities/normalize-name.ts`, which has no Convex imports at all, so the
+ * bundling argument for the copy no longer applies — while the divergence the
+ * copy invited (this one silently kept the old, unfolded behaviour for a name
+ * the tables would have folded) does.
  */
 function normalizeName(raw: string): string {
-  return raw
-    .toLowerCase()
-    .replace(/[.,'"`’]/g, "")
-    .replace(/[^a-z0-9\s-]/g, " ")
-    .split(/\s+/)
-    .filter(Boolean)
-    .sort()
-    .join(" ");
+  return normalizeEntityName(raw);
 }
 
 /**
@@ -9509,23 +9510,26 @@ export const commitCardChecklistPrelude = internalMutation({
       }
     }
 
-    // Helper — same normalization as players.ts.
+    // NEO-253: the SAME function `players` dedupes on, not a copy of it.
     //
     // NEO-236: NOT a team-identity normaliser any more. Team lookups go
     // through `findTeamByFullName` (convex/lib/teamRow.ts), which owns the one
-    // derivation of a team's dedup key; this is now used for the PLAYERS index
+    // derivation of a team's dedup key; this is used for the PLAYERS index
     // lookup and for keying `reviewByKey`/`excludedCareerTeamNames`/
     // `careerTeamCreateBySource`, which are name-keyed maps built and read
     // entirely inside this file and so only have to agree with themselves.
     // Do not reach for it to find a `teams` row.
-    const norm = (s: string) =>
-      s.toLowerCase()
-        .replace(/[.,'"`’]/g, "")
-        .replace(/[^a-z0-9\s-]/g, " ")
-        .split(/\s+/)
-        .filter(Boolean)
-        .sort()
-        .join(" ");
+    //
+    // It is still the SHARED function rather than a transcription, and that is
+    // load-bearing on both counts. The players lookup hits
+    // `by_name_normalized_and_sport_id`, so a copy that drifted by one
+    // character would miss rows the table can see; and the local maps are read
+    // against keys minted elsewhere in the same transaction, so a copy that
+    // stopped folding would key "José Ramírez" and "Jose Ramirez" apart while
+    // the row they both resolve to is one. This was a hand copy until NEO-253,
+    // and it was the copy that still shredded accented names after `nameKey`
+    // had learned to fold them.
+    const norm = normalizeEntityName;
 
     // Resolve every player/team name appearing on any card to an Id where
     // possible. Build name → Id maps so the per-card resolution in the chunks
@@ -10714,14 +10718,23 @@ export const commitCardChecklistChunk = internalMutation({
         // Written only when it actually CHANGES, so an ordinary linkage-only
         // re-sync patches these fields exactly as often as it did before this
         // feature existed: never.
+        //
+        // NEO-253: keyed by `normalizeEntityName`, not by the trimmed literal.
+        // The settled list is built from the names the COMMIT resolved, and the
+        // pending list is what an operator typed into a custom card by hand —
+        // two different spellings of one name is the normal case between those
+        // two sources, and it is exactly what the fold now treats as one. Keyed
+        // literally, skipping "José Ramírez" in the wizard left a pending "Jose
+        // Ramirez" on the custom card forever: re-offered on every later fetch,
+        // which is the loop `entityReviewSkips` exists to break, half-working.
         const settledPlayerNames = new Set([
           ...(args.resolvedPlayerNames ?? []),
           ...(args.skippedPlayerNames ?? []),
-        ].map((n) => n.trim()));
+        ].map(normalizeEntityName));
         const settledTeamNames = new Set([
           ...(args.resolvedTeamNames ?? []),
           ...(args.skippedTeamNames ?? []),
-        ].map((n) => n.trim()));
+        ].map(normalizeEntityName));
         const mergePendingNames = (
           stored: string[] | undefined,
           incoming: string[] | undefined,
@@ -10736,8 +10749,13 @@ export const commitCardChecklistChunk = internalMutation({
           const seen = new Set<string>();
           for (const raw of [...(stored ?? []), ...(incoming ?? [])]) {
             const name = raw.trim();
-            if (!name || settled.has(name) || seen.has(name)) continue;
-            seen.add(name);
+            // NEO-253: membership and de-duplication both go through the folded
+            // key, while the DISPLAY value pushed onto the row stays the
+            // operator's own spelling. The fold decides what is the same name;
+            // it never rewrites the text NB stores.
+            const key = normalizeEntityName(name);
+            if (!name || settled.has(key) || seen.has(key)) continue;
+            seen.add(key);
             merged.push(name);
           }
           // NEO-246 — the union of two individually-fine lists can still be
@@ -11252,14 +11270,20 @@ export const commitCardChecklistFinalize = internalMutation({
     // re-offered on every later fetch, which is exactly the loop
     // `entityReviewSkips` exists to break, and the skip would only half-work:
     // suppressed for marketplace names, still nagging for custom-card ones.
+    //
+    // NEO-253: folded keys on both sides. A custom card's pending name is
+    // hand-typed and the settled name came off a marketplace roster, so the two
+    // spellings routinely differ by an accent — and after the fold those are
+    // one name everywhere else in the commit. Compared literally, the sweep
+    // would leave the other spelling pending forever.
     const resolvedPlayerNames = new Set([
       ...args.resolvedPlayerNames,
       ...args.skippedPlayerNames,
-    ]);
+    ].map(normalizeEntityName));
     const resolvedTeamNames = new Set([
       ...args.resolvedTeamNames,
       ...args.skippedTeamNames,
-    ]);
+    ].map(normalizeEntityName));
     for (const existing of rows) {
       if (deletedRowIds.has(existing._id)) continue; // see the note above
       if (hasMarketplaceRef(existing)) continue;
@@ -11269,7 +11293,7 @@ export const commitCardChecklistFinalize = internalMutation({
       } = {};
       if (existing.pendingPlayerNames && existing.pendingPlayerNames.length > 0) {
         const stillPending = existing.pendingPlayerNames.filter(
-          (n) => !resolvedPlayerNames.has(n.trim()),
+          (n) => !resolvedPlayerNames.has(normalizeEntityName(n)),
         );
         if (stillPending.length !== existing.pendingPlayerNames.length) {
           patch.pendingPlayerNames =
@@ -11278,7 +11302,7 @@ export const commitCardChecklistFinalize = internalMutation({
       }
       if (existing.pendingTeamNames && existing.pendingTeamNames.length > 0) {
         const stillPending = existing.pendingTeamNames.filter(
-          (n) => !resolvedTeamNames.has(n.trim()),
+          (n) => !resolvedTeamNames.has(normalizeEntityName(n)),
         );
         if (stillPending.length !== existing.pendingTeamNames.length) {
           patch.pendingTeamNames =

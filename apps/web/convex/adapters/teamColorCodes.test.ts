@@ -14,6 +14,7 @@
  */
 
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { seedMatchKey } from "../../lib/teams/seed-team-lookup";
 import {
   colorSourceMatchKey,
   findTeamColorPages,
@@ -66,6 +67,69 @@ describe("colorSourceMatchKey", () => {
     expect(colorSourceMatchKey("Chiba Lotte Marines")).not.toBe(
       colorSourceMatchKey("Marines Lotte Chiba"),
     );
+  });
+
+  /**
+   * NEO-253. teamcolorcodes.com spells its slugs in ASCII; `teams.name` holds
+   * the franchise's real spelling. Before the fold "Montréal Expos" keyed as
+   * "montr al expos" and matched nothing — the team silently got no colours and
+   * the spine label printed grey, with nothing anywhere saying why. Jason's
+   * rule is "José and Jose must match", and this is that miss on the
+   * user-facing side.
+   */
+  test("folds diacritics, so an accented NB name reaches its ASCII source", () => {
+    expect(colorSourceMatchKey("Montréal Expos")).toBe("montreal expos");
+    expect(colorSourceMatchKey("Montréal Expos")).toBe(
+      colorSourceMatchKey("Montreal Expos"),
+    );
+    // The Dominican winter league is the tail this whole adapter exists for —
+    // ESPN carries none of it. "ñ" is a LETTER in Spanish rather than an
+    // accent, and folding it is still right here: the other side of the
+    // comparison is a fixed ASCII slug, and the failure mode of a miss is a
+    // team with no colours.
+    expect(colorSourceMatchKey("Águilas Cibaeñas")).toBe("aguilas cibaenas");
+    // The sport-suffix list is ENGLISH on purpose: it strips the word the NB
+    // Set Builder appends to a college row, not a Spanish team's own name.
+    // "Estrellas Orientales béisbol" keeps its "beisbol"; the ASCII row NB
+    // actually stores is the one that trims.
+    expect(colorSourceMatchKey("Estrellas Orientales baseball")).toBe(
+      "estrellas orientales",
+    );
+    expect(colorSourceMatchKey("Estrellas Orientales béisbol")).toBe(
+      "estrellas orientales beisbol",
+    );
+  });
+});
+
+/**
+ * NEO-253 — `seedMatchKey` and `colorSourceMatchKey` are ONE key in two files.
+ *
+ * Both docstrings have always claimed "the tests assert they agree" and no test
+ * actually did: they carried mirrored fixtures, which proves the cases somebody
+ * thought to copy and nothing about the ones they did not. This is the real
+ * assertion, and it is what will fail if a future change folds one and not the
+ * other — the exact drift NEO-253 was opened for, one layer down.
+ *
+ * Ampersands are excluded on purpose: `seedMatchKey` expands "&" to " and "
+ * because the bundled dataset spells it out, and `colorSourceMatchKey` does
+ * not. That is a documented, deliberate divergence rather than drift.
+ */
+describe("colorSourceMatchKey / seedMatchKey parity (NEO-253)", () => {
+  test.each([
+    "Milwaukee Brewers",
+    "  St. Louis  Cardinals ",
+    "UConn Huskies baseball",
+    "Vassar College Brewers Softball",
+    "Baseball Ground Rovers",
+    "Chiba Lotte Marines’",
+    "Montréal Expos",
+    "Montreal Expos",
+    "Águilas Cibaeñas",
+    "Estrellas Orientales béisbol",
+    "Estrellas Orientales baseball",
+    "Bjørn Rovers",
+  ])("agree on %s", (fixture) => {
+    expect(colorSourceMatchKey(fixture)).toBe(seedMatchKey(fixture));
   });
 });
 

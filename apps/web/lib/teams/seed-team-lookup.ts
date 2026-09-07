@@ -11,18 +11,34 @@ import {
   type SeedLeagueCode,
   type SeedTeam,
 } from "./seed-team-colors";
+// NEO-253: the diacritics fold, shared with the NB identity keys and with
+// `colorSourceMatchKey`. Only the FOLD is shared — the tail below is this key's
+// own (drops hyphens, expands "&", preserves word order).
+import { foldDiacritics } from "../entities/normalize-name";
 import { teamFullName, type TeamNameParts } from "./team-name";
 
 /**
  * Match key for a team name.
  *
- * Mirrors `convex/adapters/teamColorCodes.ts#colorSourceMatchKey` — same
- * lowercase, same punctuation stripping, same trailing sport-word removal for
- * the `" baseball"` suffix our college rows carry — and deliberately does NOT
- * token-sort, so "Chiba Lotte Marines" and "Marines Lotte Chiba" stay
+ * Mirrors `convex/adapters/teamColorCodes.ts#colorSourceMatchKey` — same fold,
+ * same lowercase, same punctuation stripping, same trailing sport-word removal
+ * for the `" baseball"` suffix our college rows carry — and deliberately does
+ * NOT token-sort, so "Chiba Lotte Marines" and "Marines Lotte Chiba" stay
  * distinct. The two are separate functions because one lives in a Convex
- * adapter and one in shared lib code; they must stay in step, and the tests
- * assert they agree.
+ * adapter and one in shared lib code; they must stay in step, and
+ * `teamColorCodes.test.ts` asserts they agree on a shared fixture set.
+ *
+ * The one deliberate difference: this key expands "&" to " and ", because the
+ * bundled dataset spells "Brighton and Hove Albion" out. Parity is asserted on
+ * fixtures without an ampersand for exactly that reason.
+ *
+ * NEO-253 added the fold. The bundled dataset is ASCII while `teams.name` holds
+ * the franchise's real spelling, so "Montréal Expos" and "Águilas Cibaeñas"
+ * matched nothing at all — an accented team quietly got no colours, and a spine
+ * label printed grey with nothing anywhere saying why. Note this folds "ñ",
+ * which is a LETTER in Spanish rather than an accent; that is correct HERE,
+ * where the other side of the comparison is a fixed ASCII dataset, and it is
+ * why the fold is shared but the rest of the key is not.
  */
 const SPORT_SUFFIXES = [
   "baseball",
@@ -35,7 +51,7 @@ const SPORT_SUFFIXES = [
 ];
 
 export function seedMatchKey(raw: string): string {
-  let s = raw
+  let s = foldDiacritics(raw)
     .toLowerCase()
     .replace(/[’'`]/g, "")
     .replace(/&/g, " and ")

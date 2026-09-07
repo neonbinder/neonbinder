@@ -22,6 +22,12 @@
  */
 
 import { playerNamesMatch, teamNamesMatch } from "./pairing/names";
+// NEO-253: the shared normalisation core. Re-exported below under the names
+// this module has always published, and used directly by the ranking helpers.
+import {
+  entityNameTokens,
+  normalizeEntityName,
+} from "../../lib/entities/normalize-name";
 
 /**
  * How sure we are that a candidate is the same entity as the query.
@@ -79,30 +85,26 @@ const MIN_SIGNIFICANT_TOKEN_LENGTH = 4;
 const MIN_CONTAINMENT_CHARS = 3;
 
 /**
- * Lowercase, strip punctuation, collapse whitespace, sort the tokens.
+ * Fold diacritics, lowercase, strip punctuation, collapse whitespace, sort the
+ * tokens.
  *
- * **A verbatim copy of `normalizeTeamName` (convex/teams.ts) — which is itself
- * the same algorithm as `normalizePlayerName` (convex/players.ts).** Copied
- * rather than imported because both of those live in modules that import
- * `./_generated/server`, and this module must stay client-importable. The copy
- * is load-bearing, not incidental: the wizard dedupes a pasted list with this
- * function and the server then writes `nameNormalized` with those, so any
- * divergence shows up as the wizard promising "3 new teams" and the commit
- * creating 2. `entityNearMatch.test.ts` asserts the parity against fixtures;
- * if you change one of the three, change all three and extend those fixtures.
+ * NEO-253: this WAS a verbatim hand copy of `normalizeTeamName`
+ * (convex/teams.ts) and `normalizePlayerName` (convex/players.ts), transcribed
+ * rather than imported because both of those pull in `./_generated/server` and
+ * this module must stay client-importable. The copy was load-bearing and it was
+ * a liability: the wizard dedupes a pasted list with this function and the
+ * server then writes `nameNormalized` with the others, so a divergence surfaced
+ * only as the wizard promising "3 new teams" and the commit creating 2.
+ *
+ * Both are now the same function, re-exported from
+ * `lib/entities/normalize-name.ts` — which sits in `lib/` precisely so a
+ * browser bundle can reach it. The parity cases in `entityNearMatch.test.ts`
+ * are kept: they are cheap, and they now assert that nobody has reintroduced a
+ * local copy.
  *
  * Note the hyphen survives `[^a-z0-9\s-]`, so "Wilkes-Barre" stays one token.
  */
-export function normalizeEntityName(raw: string): string {
-  return raw
-    .toLowerCase()
-    .replace(/[.,'"`’]/g, "")
-    .replace(/[^a-z0-9\s-]/g, " ")
-    .split(/\s+/)
-    .filter(Boolean)
-    .sort()
-    .join(" ");
-}
+export { normalizeEntityName } from "../../lib/entities/normalize-name";
 
 /**
  * The normalised tokens of a name, **in source order**.
@@ -112,15 +114,14 @@ export function normalizeEntityName(raw: string): string {
  * name is the surname, and that is what `players.nearMatches` searches on when
  * the full-name query misses. Callers that want the dedup key want
  * `normalizeEntityName`, which sorts these.
+ *
+ * NEO-253 note on the fold: the accented spelling used to shred here rather
+ * than merely lose its accents — "José Ramírez" tokenised to
+ * `["jos", "ram", "rez"]`, so `longestToken` handed `players.nearMatches` the
+ * search term "ram". It is now `["jose", "ramirez"]` and the fallback term is
+ * the surname, which is what that fallback was written to be.
  */
-export function nameTokens(raw: string): string[] {
-  return raw
-    .toLowerCase()
-    .replace(/[.,'"`’]/g, "")
-    .replace(/[^a-z0-9\s-]/g, " ")
-    .split(/\s+/)
-    .filter(Boolean);
-}
+export { entityNameTokens as nameTokens } from "../../lib/entities/normalize-name";
 
 /**
  * The longest normalised token, or null when the name has none.
@@ -132,7 +133,7 @@ export function nameTokens(raw: string): string[] {
  */
 export function longestToken(raw: string): string | null {
   let best: string | null = null;
-  for (const token of nameTokens(raw)) {
+  for (const token of entityNameTokens(raw)) {
     if (best === null || token.length > best.length) best = token;
   }
   return best;
@@ -145,10 +146,10 @@ export function longestToken(raw: string): string | null {
  * only "york".
  */
 function sharedSignificantTokens(a: string, b: string): string[] {
-  const bTokens = new Set(nameTokens(b));
+  const bTokens = new Set(entityNameTokens(b));
   const seen = new Set<string>();
   const shared: string[] = [];
-  for (const token of nameTokens(a)) {
+  for (const token of entityNameTokens(a)) {
     if (seen.has(token)) continue;
     if (token.length < MIN_SIGNIFICANT_TOKEN_LENGTH) continue;
     if (GENERIC_TOKENS.has(token)) continue;

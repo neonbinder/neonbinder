@@ -25,6 +25,8 @@
  * settles it.
  */
 
+import { foldDiacritics } from "../entities/normalize-name";
+
 /** A disagreement, with each marketplace's name exactly as it spelled it. */
 export type NameDisagreement = {
   /** BSC's name for the card, verbatim. */
@@ -50,9 +52,15 @@ export type NameDisagreement = {
  * this control costs a glance, not a click.
  */
 export function nameKey(name: string): string {
-  return name
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
+  // NEO-253: the fold itself comes from `lib/entities/normalize-name.ts`, which
+  // is now the entity dedup key's home too. This function was the ONLY place in
+  // the codebase that folded before that ticket, which is exactly how the
+  // divergence stayed invisible: the pairing modal stopped flagging accents
+  // while `players.nameNormalized` was still shredding them. The two keys are
+  // still deliberately different past the fold (this one drops hyphens and
+  // keeps word order; the dedup key keeps hyphens and sorts), but they must not
+  // be able to disagree about what an accent IS.
+  return foldDiacritics(name)
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, " ")
     .trim();

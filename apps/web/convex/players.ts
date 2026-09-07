@@ -16,22 +16,23 @@ import { isWikidataQid } from "../lib/players/wikidata-id";
 // NEO-251: one home for the bound — shared with the SportLots parser and the
 // pairing modal's roster field. See the note on the re-export below.
 import { MAX_PLAYER_NAME_LENGTH } from "../lib/players/name-limits";
+// NEO-253: the one normalisation of an entity name, shared with teams,
+// leagues, the commit prelude and the browser-side review wizard.
+import { normalizeEntityName } from "../lib/entities/normalize-name";
 
 /**
- * Lowercase + collapse whitespace + strip punctuation + token-sort. Used
- * as the dedup key on `players.nameNormalized`. Token-sorting "Smith,
- * John" and "John Smith" to the same key prevents marketplace formatting
- * differences from creating duplicate player rows.
+ * The dedup key on `players.nameNormalized`.
+ *
+ * NEO-253: this is now a thin alias for the ONE shared implementation in
+ * `lib/entities/normalize-name.ts` — fold diacritics, lowercase, strip
+ * punctuation, collapse whitespace, token-sort. It stays exported under this
+ * name because ~20 modules and tests import it as the player-side key, and
+ * because the name is what makes a call site readable; see that module for the
+ * fold, for why there is no backfill, and for what a pre-NEO-253
+ * `nameNormalized` is worth.
  */
 export function normalizePlayerName(raw: string): string {
-  return raw
-    .toLowerCase()
-    .replace(/[.,'"`’]/g, "")
-    .replace(/[^a-z0-9\s-]/g, " ")
-    .split(/\s+/)
-    .filter(Boolean)
-    .sort()
-    .join(" ");
+  return normalizeEntityName(raw);
 }
 
 /**
