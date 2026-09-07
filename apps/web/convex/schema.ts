@@ -1204,11 +1204,31 @@ export default defineSchema({
      *
      * Absent on every other row, which is what "this name came off the
      * checklist" means. Additive: nothing reads it as a required field.
+     *
+     * ── NEO-248: `manualStint` — the years the operator typed ───────────────
+     *
+     * NEO-236 regression. A hand-typed career team is TWO facts: a team the
+     * batch may have to create, and a stint with years on it. Staging the team
+     * moved the walk onto that team's own New Team step, and the years — which
+     * lived only in the wizard's per-row React state — were dropped when the
+     * presented row changed. The operator came back to a chip that had lost
+     * "(2001–2005)", and nothing anywhere held them.
+     *
+     * So the stint travels with the step it caused. Present ONLY when the
+     * operator hand-typed it on the player's step; a Wikidata proposal never
+     * writes it, because its years are already on the player row's
+     * `enrichment.careerTeams` and a second copy is a second thing to disagree.
+     * That asymmetry is what lets the wizard rebuild exactly the hand-typed
+     * chips and no others.
      */
     source: v.optional(v.object({
       kind: v.literal("careerTeamOf"),
       playerRowId: v.id("entityReviewQueue"),
       wikidataId: v.optional(v.string()),
+      manualStint: v.optional(v.object({
+        fromYear: v.number(),
+        toYear: v.optional(v.number()),
+      })),
     })),
     status: v.union(
       v.literal("pending"),

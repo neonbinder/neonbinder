@@ -208,7 +208,18 @@ type Row = {
    * until its teams are answered, and the player's chips read it to report what
    * each stint will land on.
    */
-  source?: { kind: "careerTeamOf"; playerRowId: string } | null;
+  source?:
+    | {
+        kind: "careerTeamOf";
+        playerRowId: string;
+        /**
+         * NEO-248 — the years the operator typed beside the name when this
+         * step was staged. Present ONLY for a hand-typed entry, which is what
+         * lets the player's step rebuild exactly those chips.
+         */
+        manualStint?: { fromYear: number; toYear?: number };
+      }
+    | null;
   decision?:
     | {
         action: "create";
@@ -694,7 +705,11 @@ describe("EntityReviewWizard — manual career-team entry", () => {
     await waitFor(() => {
       expect(mockStageCareerTeamRows).toHaveBeenCalledWith({
         reviewRowId: row._id,
-        careerTeamNames: ["Arizona Diamondbacks"],
+        // NEO-248: the YEARS go with it, so the chip can be rebuilt once the
+        // step it stages has taken the walk off this row.
+        careerTeams: [
+          { name: "Arizona Diamondbacks", fromYear: 2020, toYear: 2022 },
+        ],
       });
     });
 
@@ -2588,6 +2603,254 @@ describe("EntityReviewWizard — presented row stability", () => {
     rerender(wizardEl());
 
     expect(screen.getByRole("heading", { level: 3, name: "Bravo" })).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-248 — a staged career team keeps its years across the New Team step
+// ---------------------------------------------------------------------------
+
+/**
+ * The NEO-236 regression, at the level it is visible to the operator.
+ *
+ * Typing "Sydney Blue Sox", 2001, 2005 and pressing Add does three things at
+ * once: it stages a chip, it stages a New Team step for the club, and — because
+ * a player waits on its own staged teams (`waitingOnStagedTeams`) — it sends
+ * the walk to that step. The chip list was a bare array wiped by the
+ * presented-row effect, so answering the step and coming back showed a player
+ * row with no chip and no years anywhere. The operator's typing was gone, and
+ * there was no way to tell.
+ *
+ * Two mechanisms now keep it: the chip list is keyed by player row (so it
+ * survives the round trip), and the years ride on the staged step itself
+ * (`source.manualStint`, from `stageCareerTeamRows`), so a wizard that never
+ * saw the typing — a reopened dialog, a reload — can rebuild the chip too.
+ */
+describe("EntityReviewWizard — a staged career team keeps its years (NEO-248)", () => {
+  /** The player whose step the career-team form is rendered on. */
+  const player = (over: Partial<Row> = {}) =>
+    makeRow({
+      _id: "row-player" as unknown as Id<"entityReviewQueue">,
+      kind: "player",
+      name: "Travis Bazzana",
+      status: "ready",
+      enrichment: { careerTeams: [] },
+      ...over,
+    });
+
+  const typeStint = () => {
+    fireEvent.change(screen.getByLabelText("Career team name"), {
+      target: { value: "Sydney Blue Sox" },
+    });
+    fireEvent.change(screen.getByLabelText("From year"), {
+      target: { value: "2001" },
+    });
+    fireEvent.change(screen.getByLabelText("To year (optional)"), {
+      target: { value: "2005" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add career team" }));
+  };
+
+  it("sends the YEARS to stageCareerTeamRows, not the name alone", async () => {
+    // The years have to leave this component before the walk moves off the
+    // row, because moving off the row is what staging causes.
+    currentRows = [player()];
+    renderWizard();
+
+    typeStint();
+
+    await waitFor(() => expect(mockStageCareerTeamRows).toHaveBeenCalled());
+    expect(mockStageCareerTeamRows).toHaveBeenCalledWith({
+      reviewRowId: "row-player",
+      careerTeams: [
+        { name: "Sydney Blue Sox", fromYear: 2001, toYear: 2005 },
+      ],
+    });
+  });
+
+  it("still shows the chip with its years after the club's New Team step is answered", () => {
+    currentRows = [player()];
+    const { rerender } = renderWizard();
+
+    typeStint();
+    expect(screen.getByText(/Sydney Blue Sox \(2001–2005\)/)).toBeTruthy();
+
+    // The server's insert lands: the club now has a step of its own, walked
+    // ahead of the player, and the wizard moves onto it.
+    const staged = makeCareerTeamRow(
+      "row-player" as unknown as Id<"entityReviewQueue">,
+      "Sydney Blue Sox",
+      {
+        _id: "row-team" as unknown as Id<"entityReviewQueue">,
+        source: {
+          kind: "careerTeamOf",
+          playerRowId: "row-player",
+          manualStint: { fromYear: 2001, toYear: 2005 },
+        },
+      },
+    );
+    currentRows = [staged, player()];
+    rerenderWizard(rerender);
+    expect(
+      screen.getByRole("heading", { level: 3, name: /Sydney Blue Sox/ }),
+    ).toBeTruthy();
+
+    // The operator answers it, and the walk returns to the player.
+    currentRows = [
+      {
+        ...staged,
+        decision: {
+          action: "create" as const,
+          create: { name: "Blue Sox", location: "Sydney" },
+        },
+      },
+      player(),
+    ];
+    rerenderWizard(rerender);
+    expect(
+      screen.getByRole("heading", { level: 3, name: "Travis Bazzana" }),
+    ).toBeTruthy();
+
+    // THE REGRESSION: this used to be gone, and the years with it.
+    expect(screen.getByText(/Sydney Blue Sox \(2001–2005\)/)).toBeTruthy();
+  });
+
+  it("carries the years into the create decision after the round trip", async () => {
+    currentRows = [player()];
+    const { rerender } = renderWizard();
+
+    typeStint();
+
+    const staged = makeCareerTeamRow(
+      "row-player" as unknown as Id<"entityReviewQueue">,
+      "Sydney Blue Sox",
+      {
+        _id: "row-team" as unknown as Id<"entityReviewQueue">,
+        source: {
+          kind: "careerTeamOf",
+          playerRowId: "row-player",
+          manualStint: { fromYear: 2001, toYear: 2005 },
+        },
+        decision: {
+          action: "create",
+          create: { name: "Blue Sox", location: "Sydney" },
+        },
+      },
+    );
+    currentRows = [staged, player()];
+    rerenderWizard(rerender);
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Player" }));
+
+    await waitFor(() => expect(mockRecordDecision).toHaveBeenCalled());
+    expect(mockRecordDecision).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reviewRowId: "row-player",
+        action: "create",
+        manualCareerTeams: [
+          { name: "Sydney Blue Sox", fromYear: 2001, toYear: 2005 },
+        ],
+      }),
+    );
+  });
+
+  it("rebuilds the chip from the staged step for a wizard that never saw the typing", () => {
+    // A reopened dialog or a reload: nothing in this component's state, and the
+    // years read back off the row the earlier session staged.
+    currentRows = [
+      makeCareerTeamRow(
+        "row-player" as unknown as Id<"entityReviewQueue">,
+        "Sydney Blue Sox",
+        {
+          _id: "row-team" as unknown as Id<"entityReviewQueue">,
+          source: {
+            kind: "careerTeamOf",
+            playerRowId: "row-player",
+            manualStint: { fromYear: 2001, toYear: 2005 },
+          },
+          decision: {
+            action: "create",
+            create: { name: "Blue Sox", location: "Sydney" },
+          },
+        },
+      ),
+      player(),
+    ];
+    renderWizard();
+
+    expect(screen.getByText(/Sydney Blue Sox \(2001–2005\)/)).toBeTruthy();
+  });
+
+  it("does not rebuild a chip for a Wikidata proposal's step", () => {
+    // A P54 label's step carries no `manualStint`, because its years are on the
+    // player row already and are rendered from there. Rebuilding it here would
+    // show the same team twice — once as a career-list entry, once as a
+    // hand-typed chip.
+    currentRows = [
+      makeCareerTeamRow(
+        "row-player" as unknown as Id<"entityReviewQueue">,
+        "Sydney Blue Sox",
+        {
+          _id: "row-team" as unknown as Id<"entityReviewQueue">,
+          // Answered, so the walk moves past it to the player — whose live
+          // panel is where a rebuilt chip would appear.
+          decision: {
+            action: "create",
+            create: { name: "Blue Sox", location: "Sydney" },
+          },
+        },
+      ),
+      player({
+        enrichment: {
+          careerTeams: [
+            { name: "Sydney Blue Sox", fromYear: 2019, toYear: 2021 },
+          ],
+        },
+      }),
+    ];
+    renderWizard();
+
+    // The player's own step IS on screen, with its manual-entry form...
+    expect(screen.getByLabelText("Career team name")).toBeTruthy();
+    // ...and the Wikidata stint is not duplicated into it as a chip.
+    expect(screen.queryByLabelText("Staged career teams")).toBeNull();
+  });
+
+  it("a removed chip stays removed after the walk leaves the row and comes back", () => {
+    // The keyed list is authoritative once the operator has touched the row:
+    // the staged step is still standing, so a rebuild-always rule would put the
+    // chip back after they deleted it.
+    currentRows = [player()];
+    const { rerender } = renderWizard();
+
+    typeStint();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Remove Sydney Blue Sox" }),
+    );
+    expect(screen.queryByLabelText("Staged career teams")).toBeNull();
+
+    const staged = makeCareerTeamRow(
+      "row-player" as unknown as Id<"entityReviewQueue">,
+      "Sydney Blue Sox",
+      {
+        _id: "row-team" as unknown as Id<"entityReviewQueue">,
+        source: {
+          kind: "careerTeamOf",
+          playerRowId: "row-player",
+          manualStint: { fromYear: 2001, toYear: 2005 },
+        },
+        decision: {
+          action: "create",
+          create: { name: "Blue Sox", location: "Sydney" },
+        },
+      },
+    );
+    currentRows = [staged, player()];
+    rerenderWizard(rerender);
+
+    // Back on the player, with the form on screen — and the chip still gone.
+    expect(screen.getByLabelText("Career team name")).toBeTruthy();
+    expect(screen.queryByLabelText("Staged career teams")).toBeNull();
   });
 });
 
