@@ -208,6 +208,12 @@ const mockFindOrCreateFranchise = vi.fn();
 
 /** Near matches the dialog's form should offer. Set per test. */
 let nearMatches: unknown;
+/**
+ * The franchise list the mocked query returns. Mutable so the cap/filter case
+ * can hand back more than `FRANCHISE_PILL_CAP` rows without every other test
+ * paying for a 30-pill render. Reset in `beforeEach`.
+ */
+let franchiseRows: Array<Record<string, unknown>> = FRANCHISES;
 
 vi.mock("convex/react", () => ({
   useQuery: (ref: string, args: unknown) => {
@@ -217,7 +223,7 @@ vi.mock("convex/react", () => ({
     }
     if (ref === "leagues.list") return LEAGUES;
     if (ref === "franchises.list") {
-      return { franchises: FRANCHISES, truncated: false };
+      return { franchises: franchiseRows, truncated: false };
     }
     if (ref === "selectorOptions.getSelectorOptions") return SPORTS;
     if (ref === "leagues.nearMatches") return nearMatches;
@@ -266,28 +272,72 @@ beforeEach(() => {
   mockFindOrCreateFranchise
     .mockReset()
     .mockResolvedValue({ id: "f-new", created: true });
+  franchiseRows = FRANCHISES;
 });
 
 /**
- * NEO-254 — the Franchise field.
+ * NEO-254 — the Franchise field, a `role="radiogroup"` of pills.
  *
- * The failure this guards is the one every re-seeded panel field has: forget to
- * reset it on selection change and the operator saves the PREVIOUS team's
- * franchise onto this one, silently, with the right-looking value on screen.
+ * ## Why it is not a `<select>`, and why that is asserted here
+ *
+ * It was one, and that made it undrivable in E2E. Maestro's web driver gives
+ * every `<option>` synthetic tap bounds from its index inside its own parent,
+ * then resolves a tap by scanning `document.querySelectorAll('option')` and
+ * taking the first bounds match — so only the FIRST select on a page is ever
+ * reachable and a tap meant for a later one silently mutates the earlier. This
+ * panel already had two selects above Franchise. `SetSelector/NewTeamForm.tsx`
+ * documents the identical trap and uses the identical remedy.
+ *
+ * The first test below is the regression pin for that: it asserts the control
+ * is not a select at all, because "it works" and "a flow can drive it" are
+ * different facts and only the second one is at stake.
+ *
+ * ## The behavioural failure this whole block guards
+ *
+ * The one every re-seeded panel field has: forget to reset it on selection
+ * change and the operator saves the PREVIOUS team's franchise onto this one,
+ * silently, with the right-looking value on screen.
  */
 describe("TeamManagement — the Franchise field", () => {
-  it("offers every franchise in the sport, plus a way to start one", () => {
+  const group = () => document.getElementById("team-franchise")!;
+  const pills = () =>
+    Array.from(group().querySelectorAll<HTMLButtonElement>('[role="radio"]'));
+  const pillLabels = () => pills().map((b) => b.textContent);
+  const pill = (label: string) =>
+    pills().find((b) => b.textContent === label)!;
+  const checkedPill = () =>
+    pills().find((b) => b.getAttribute("aria-checked") === "true");
+  const startFranchise = () =>
+    screen.getByRole("button", { name: "+ Start a new franchise…" });
+
+  it("is a radio group, not a select — a select here is undrivable in E2E", () => {
     renderAt("/admin/teams?team=t-sf-giants");
-    expect(optionLabels("team-franchise")).toEqual([
-      "— none —",
-      "Giants",
-      "+ Start a new franchise…",
-    ]);
+    expect(group().getAttribute("role")).toBe("radiogroup");
+    expect(group().tagName).not.toBe("SELECT");
+    expect(group().querySelector("select")).toBeNull();
+    // Named by the visible "Franchise" label rather than an aria-label, so the
+    // two cannot drift apart.
+    expect(
+      document.getElementById(group().getAttribute("aria-labelledby")!)
+        ?.textContent,
+    ).toBe("Franchise");
+  });
+
+  it("offers every franchise in the sport, plus none", () => {
+    renderAt("/admin/teams?team=t-sf-giants");
+    // "Start a new franchise" is NOT one of these — it is a command, and a
+    // command inside a radiogroup made two radios report checked at once.
+    expect(pillLabels()).toEqual(["No franchise", "Giants"]);
+    // Nothing picked yet, so "No franchise" is the answer AND the Tab stop.
+    expect(checkedPill()?.textContent).toBe("No franchise");
+    expect(pill("No franchise").tabIndex).toBe(0);
+    expect(pill("Giants").tabIndex).toBe(-1);
   });
 
   it("sends the picked franchise on save", async () => {
     renderAt("/admin/teams?team=t-sf-giants");
-    fireEvent.change(select("team-franchise")!, { target: { value: "f-giants" } });
+    fireEvent.click(pill("Giants"));
+    expect(checkedPill()?.textContent).toBe("Giants");
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => expect(mockSaveTeamFields).toHaveBeenCalled());
@@ -301,8 +351,8 @@ describe("TeamManagement — the Franchise field", () => {
     // `null` is the clear, and it is the same value the franchise view's
     // "Remove" sends. Omitting the field would leave the link in place.
     renderAt("/admin/teams?team=t-sf-giants");
-    fireEvent.change(select("team-franchise")!, { target: { value: "f-giants" } });
-    fireEvent.change(select("team-franchise")!, { target: { value: "" } });
+    fireEvent.click(pill("Giants"));
+    fireEvent.click(pill("No franchise"));
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => expect(mockSaveTeamFields).toHaveBeenCalled());
@@ -311,11 +361,53 @@ describe("TeamManagement — the Franchise field", () => {
     });
   });
 
+  it("moves between pills with the arrow keys, as one Tab stop", () => {
+    // The promise `role="radiogroup"` makes. Before the pills were radios,
+    // every option was its own Tab stop and the arrows did nothing.
+    renderAt("/admin/teams?team=t-sf-giants");
+    fireEvent.keyDown(group(), { key: "ArrowRight" });
+    expect(checkedPill()?.textContent).toBe("Giants");
+    expect(pill("Giants").tabIndex).toBe(0);
+    expect(pill("No franchise").tabIndex).toBe(-1);
+
+    // Wraps, like a native radio group.
+    fireEvent.keyDown(group(), { key: "ArrowLeft" });
+    expect(checkedPill()?.textContent).toBe("No franchise");
+  });
+
+  it("never reports two checked radios at once", () => {
+    // The defect that put the command pill outside the group: with it inside,
+    // picking a franchise and then opening the name box left BOTH checked, and
+    // a radiogroup that reports two selections is a broken contract for anyone
+    // reading it through assistive tech — and invisible to everyone else.
+    renderAt("/admin/teams?team=t-sf-giants");
+    const checkedCount = () =>
+      pills().filter((b) => b.getAttribute("aria-checked") === "true").length;
+
+    expect(checkedCount()).toBe(1);
+    fireEvent.click(pill("Giants"));
+    expect(checkedCount()).toBe(1);
+    fireEvent.click(startFranchise());
+    expect(checkedCount()).toBe(1);
+    expect(checkedPill()?.textContent).toBe("Giants");
+  });
+
+  it("the start-a-franchise control is a disclosure beside the group, not a radio", () => {
+    renderAt("/admin/teams?team=t-sf-giants");
+    const trigger = startFranchise();
+    expect(trigger.getAttribute("role")).toBeNull();
+    expect(group().contains(trigger)).toBe(false);
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+
+    fireEvent.click(trigger);
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+    // …and it names the region it opened.
+    expect(document.getElementById(trigger.getAttribute("aria-controls")!)).toBeTruthy();
+  });
+
   it("starts a franchise from the panel and selects it without saving the team", async () => {
     renderAt("/admin/teams?team=t-sf-giants");
-    fireEvent.change(select("team-franchise")!, {
-      target: { value: "__new_franchise__" },
-    });
+    fireEvent.click(startFranchise());
     fireEvent.change(screen.getByLabelText("New franchise name"), {
       target: { value: "Giants" },
     });
@@ -329,18 +421,108 @@ describe("TeamManagement — the Franchise field", () => {
     );
     // Creating a thread and putting this team on it are two decisions.
     expect(mockSaveTeamFields).not.toHaveBeenCalled();
-    // The new row is offered immediately, rather than blanking the select
-    // until `franchises.list` catches up.
-    await waitFor(() => expect(select("team-franchise")?.value).toBe("f-new"));
+    // The new row is offered immediately, rather than the group losing its
+    // answer until `franchises.list` catches up.
+    await waitFor(() => expect(checkedPill()?.textContent).toBe("Giants"));
+  });
+
+  it("backs out of the name box on Escape without changing the answer", () => {
+    renderAt("/admin/teams?team=t-sf-giants");
+    fireEvent.click(pill("Giants"));
+    fireEvent.click(startFranchise());
+    fireEvent.keyDown(screen.getByLabelText("New franchise name"), {
+      key: "Escape",
+    });
+
+    expect(screen.queryByLabelText("New franchise name")).toBeNull();
+    // The draft's franchise never moved — the control is a command, not a value.
+    expect(checkedPill()?.textContent).toBe("Giants");
+    // Focus goes back to the trigger, not to `<body>`: closing unmounts the
+    // input that had it.
+    expect(document.activeElement).toBe(startFranchise());
   });
 
   it("re-seeds the field when a different team is selected", () => {
     renderAt("/admin/teams?team=t-sf-giants");
-    fireEvent.change(select("team-franchise")!, { target: { value: "f-giants" } });
-    expect(select("team-franchise")?.value).toBe("f-giants");
+    fireEvent.click(pill("Giants"));
+    expect(checkedPill()?.textContent).toBe("Giants");
 
     fireEvent.click(row("Seattle Mariners"));
-    expect(select("team-franchise")?.value).toBe("");
+    expect(checkedPill()?.textContent).toBe("No franchise");
+  });
+
+  it("shows no filter box while the list is short", () => {
+    renderAt("/admin/teams?team=t-sf-giants");
+    expect(screen.queryByLabelText("Filter franchises")).toBeNull();
+  });
+});
+
+/**
+ * NEO-254 — the bound on the pill group.
+ *
+ * The League group next door bounds itself with a scroll box, which works
+ * because a sport holds tens of leagues. The preload is about to mint one
+ * franchise per thread across five sports, and a hundred-pill scroll box with
+ * no way to aim at one is not a control. Past the cap the group grows a filter
+ * and says how many it is hiding.
+ */
+describe("TeamManagement — the Franchise group past its cap", () => {
+  const group = () => document.getElementById("team-franchise")!;
+  const pillLabels = () =>
+    Array.from(group().querySelectorAll('[role="radio"]')).map(
+      (b) => b.textContent,
+    );
+
+  const many = Array.from({ length: 30 }, (_, i) => ({
+    _id: `f-${i}`,
+    _creationTime: 0,
+    name: `Franchise ${String(i).padStart(2, "0")}`,
+    nameNormalized: `franchise ${i}`,
+    sportId: "sport-baseball",
+    lastUpdated: 0,
+    teamCount: 0,
+  }));
+
+  it("caps the pills, offers a filter, and says how many are hidden", () => {
+    franchiseRows = many;
+    renderAt("/admin/teams?team=t-sf-giants");
+
+    // 24 franchises + "No franchise". The disclosure is not a radio.
+    expect(pillLabels()).toHaveLength(25);
+    expect(screen.getByLabelText("Filter franchises")).toBeTruthy();
+    expect(screen.getByText("6 more — keep typing to narrow it down.")).toBeTruthy();
+  });
+
+  it("narrows to what was typed", () => {
+    franchiseRows = many;
+    renderAt("/admin/teams?team=t-sf-giants");
+
+    fireEvent.change(screen.getByLabelText("Filter franchises"), {
+      target: { value: "Franchise 07" },
+    });
+    expect(pillLabels()).toEqual(["No franchise", "Franchise 07"]);
+  });
+
+  it("keeps the picked franchise visible even when the filter excludes it", () => {
+    // A radio group whose checked option is not in the DOM announces "nothing
+    // selected" and leaves the roving Tab stop with nowhere to sit.
+    franchiseRows = many;
+    renderAt("/admin/teams?team=t-sf-giants");
+
+    const target = Array.from(
+      group().querySelectorAll<HTMLButtonElement>('[role="radio"]'),
+    ).find((b) => b.textContent === "Franchise 03")!;
+    fireEvent.click(target);
+
+    fireEvent.change(screen.getByLabelText("Filter franchises"), {
+      target: { value: "Franchise 21" },
+    });
+    expect(pillLabels()).toContain("Franchise 03");
+    expect(
+      Array.from(group().querySelectorAll('[role="radio"]')).find(
+        (b) => b.getAttribute("aria-checked") === "true",
+      )?.textContent,
+    ).toBe("Franchise 03");
   });
 });
 
