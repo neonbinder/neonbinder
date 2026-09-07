@@ -443,9 +443,33 @@ tags:
             text: ".*The same names come back the next time you sync this set.*"
       # Nothing was lost: the wizard is still open …
       - assertVisible: "Confirm New Players & Teams"
-      # … and the decision is still on the books, listed under the current name.
+      # … and the decision is still on the books.
+      #
+      # READ OFF THE HEADER, NOT THE BODY — and that is a rule, not a
+      # preference for this one line. The dialog is a fixed-height flex column:
+      # a `shrink-0` header, a `flex-1 min-h-0 overflow-y-auto` BODY, and a
+      # pinned footer. maestro-web scrolls with `window.scrollTo`, which cannot
+      # drive an inner overflow box, so anything parked below the fold INSIDE
+      # the body is unreachable — there is no scroll a flow can perform to
+      # bring it into view. This assertion used to read the "Decided (N)"
+      # disclosure, which lives at the bottom of that body: in CI run
+      # 34071657961 the wizard was sitting on a tall New Team step (a Possible
+      # matches panel plus the whole form — "Southern Illinois Salukis
+      # baseball", needed by Steve Finley), the disclosure was pushed past
+      # y=629, and the flow failed on a count that was correct.
+      #
+      # The header states the same number and cannot move: `decided` and
+      # `decidedRows` are the identical `rows.filter(r => r.decision)`
+      # predicate, so "1 of N reviewed" IS "Decided (1)". This is the same
+      # limitation that put the wizard's decision CONTROLS in the fixed footer
+      # (see the "null cannot be cast to non-null type kotlin.Int" note below,
+      # CI run 34007264279) — the body is for the operator to read, never for a
+      # flow to assert on.
+      #
+      # Trailing `.*` because the line appends " · N still being looked up"
+      # while lookups are in flight, and a matcher is a FULL match.
       - assertVisible:
-          text: "Decided \\(1\\)"
+          text: "1 of [0-9]+ reviewed.*"
 
       # ── 6b. BULK-DECIDE THE REST AND COMMIT ───────────────────────────
       # The one decision above is absorbed by the bulk (it is already decided,

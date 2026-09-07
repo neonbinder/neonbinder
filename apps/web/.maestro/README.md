@@ -279,6 +279,34 @@ something beyond plain navigation; for a plain `<a href>` you lose nothing by
 navigating directly. **Watch #2944**: once it's fixed and we bump maestro, real
 click-navigation becomes reliable and this convention can relax.
 
+## Asserting inside a dialog: header and footer only, never the body
+
+**`maestro-web` scrolls with `window.scrollTo`, which cannot drive an inner
+`overflow-y-auto` box — so anything below the fold inside one is unreachable by
+any scroll a flow can perform.** The entity-review wizard is the shape that
+bites: a fixed-height flex column of a `shrink-0` header, a
+`flex-1 min-h-0 overflow-y-auto` body, and a pinned footer. The header and the
+footer are always on screen; the body is whatever height the current step wants,
+and on a tall step (a Possible-matches panel plus a whole New Team form) its
+lower half is simply gone.
+
+So: **assert only on the pinned header and footer.** They carry everything a
+flow needs — `Confirm New Players & Teams`, the `N of M reviewed` counter, and
+every decision control. Body content is for the operator to read.
+
+Two runs paid for this rule. CI 34007264279 killed a `tapOn` outright
+(`null cannot be cast to non-null type kotlin.Int`) when a step's primary action
+grew past the dialog's own bottom edge — which is why the decision controls now
+live in the footer. CI 34071657961 then failed
+`inserts-1996-score-one-nb-set-two-bsc-sources` on `Decided (1)`, a disclosure at
+the bottom of the body, with a count that was entirely correct; the header's
+`1 of N reviewed` is the same number (`decided` and `decidedRows` are the same
+`rows.filter(r => r.decision)`) and cannot move.
+
+The same rule applies to any inner scroller — a `max-h-*` picker group, the
+admin master lists — with the softer conclusion that you must get the target
+into the box's own visible slice (filter or narrow it) rather than scroll to it.
+
 ## Launching a flow: always gate on the destination heading
 
 Almost every flow's `url:` is **not** the page under test — it's
