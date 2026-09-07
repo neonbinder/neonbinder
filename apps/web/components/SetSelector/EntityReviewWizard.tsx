@@ -2741,6 +2741,37 @@ export default function EntityReviewWizard({
                             }}
                             leagueSuggestion={current.enrichment?.league}
                             stagedLeagueNames={stagedLeagueNames}
+                            /* NEO-254 — a league the operator names here gets a
+                               step of its own, walked next (leagues come before
+                               teams), and this team comes back with the pill
+                               reading "<name> (new)" and selected. */
+                            onStageLeague={async (name) => {
+                              const staged = await stageLeagueRows({
+                                reviewRowId: current._id,
+                                leagueName: name,
+                              });
+                              if (staged.outcome === "existing") {
+                                return {
+                                  kind: "existing" as const,
+                                  leagueId: staged.leagueId!,
+                                  name: staged.name,
+                                };
+                              }
+                              if (staged.outcome === "over-cap") {
+                                return { kind: "over-cap" as const };
+                              }
+                              return { kind: "staged" as const, name: staged.name };
+                            }}
+                            /* Reuses the per-row line NEO-221 already renders
+                               under the step, so a league message lands where
+                               every other per-row message does. */
+                            onLeagueStatus={(status) =>
+                              setRowError(
+                                status.isError
+                                  ? { rowId: current._id, message: status.text }
+                                  : null,
+                              )
+                            }
                             /* Only on a row the batch staged for itself: a
                                checklist team was asked for directly, and saying
                                who needs it would be answering a question nobody

@@ -891,6 +891,24 @@ export const createByAdmin = mutation({
     abbreviation: v.optional(v.string()),
     level: v.optional(leagueLevelValidator),
     sportId: v.id("selectorOptions"),
+    /**
+     * NEO-254 — the rest of the record, when the caller collected it.
+     *
+     * The New Team dialog's "+ New league…" opens the full `NewLeagueForm`,
+     * because in the picker context there is no later step to fill these in.
+     * Collecting them and then dropping them on the floor would be the form
+     * lying about what it does, so they travel and `findOrCreateLeague`
+     * gap-fills them exactly as it does `abbreviation` and `level`.
+     *
+     * Validated here, on the same helpers `saveLeagueFields` uses — one set of
+     * bounds for one table.
+     */
+    yearsActive: v.optional(v.object({
+      from: v.number(),
+      to: v.optional(v.number()),
+    })),
+    aliases: v.optional(v.array(v.string())),
+    wikidataId: v.optional(v.string()),
   },
   returns: v.object({
     id: v.id("leagues"),
@@ -918,11 +936,24 @@ export const createByAdmin = mutation({
     // caller's benefit.
     const existing = await findLeagueByName(ctx, { name, sportId: args.sportId });
 
+    if (args.yearsActive) validateLeagueYears(args.yearsActive);
+    const aliases = args.aliases ? normalizeAliasList(args.aliases, name) : [];
+    // A malformed QID is DROPPED, not thrown on — the same call
+    // `applyEnrichmentInternal` makes, and for the same reason: a stored bad id
+    // is later interpolated into an outbound link.
+    const wikidataId =
+      args.wikidataId && isWikidataQid(args.wikidataId.trim())
+        ? args.wikidataId.trim()
+        : undefined;
+
     const id = await findOrCreateLeague(ctx, {
       name,
       abbreviation,
       level: args.level,
       sportId: args.sportId,
+      ...(args.yearsActive ? { yearsActive: args.yearsActive } : {}),
+      ...(aliases.length ? { aliases } : {}),
+      ...(wikidataId ? { wikidataId } : {}),
     });
 
     // An audit trail for a shared-row creation an operator triggers from a

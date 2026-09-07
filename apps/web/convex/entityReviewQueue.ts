@@ -1458,16 +1458,67 @@ export const stageLeagueRows = mutation({
     /** The league name the operator typed on the team step. */
     leagueName: v.string(),
   },
-  returns: v.number(),
-  handler: async (ctx, args): Promise<number> => {
+  /**
+   * NEO-254 — the OUTCOME, not a count.
+   *
+   * The three answers read differently to the operator standing in front of
+   * the team step, and only the server can tell them apart: a step was raised,
+   * the sport already answers to that name (by name OR by an alias, which is
+   * why the client cannot decide this), or this team has raised as many league
+   * steps as it may. A bare number left the wizard unable to say which.
+   */
+  returns: v.object({
+    outcome: v.union(
+      v.literal("staged"),
+      v.literal("existing"),
+      v.literal("over-cap"),
+    ),
+    /** Set only on `existing` — the league to pick instead of staging one. */
+    leagueId: v.optional(v.id("leagues")),
+    /** The name as it will be used: the operator's, or the existing row's. */
+    name: v.string(),
+  }),
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{
+    outcome: "staged" | "existing" | "over-cap";
+    leagueId?: Id<"leagues">;
+    name: string;
+  }> => {
     const callerId = await requireAdmin(ctx);
     const row = await ctx.db.get(args.reviewRowId);
     if (!row) throw new Error("Review row not found");
     assertOwnsRow(row, callerId);
-    const name = args.leagueName.trim();
-    if (!name) return 0;
+    const name = requireValidLeagueName(args.leagueName);
+
+    // Held already — including under an ALIAS, which is the case the client
+    // cannot decide for itself. No second row for one league.
+    const existing = await findLeagueByName(ctx, { name, sportId: row.sportId });
+    if (existing) {
+      return { outcome: "existing", leagueId: existing._id, name: existing.name };
+    }
+
     const added = await stageLeagueRowsImpl(ctx, row, [{ name }]);
-    return added.length;
+    // Nothing added and nothing held means the per-team cap refused it — the
+    // batch already carries this name is the only other reason, and that is
+    // itself a "staged" answer as far as the team is concerned.
+    if (added.length === 0) {
+      const alreadyStaged = await ctx.db
+        .query("entityReviewQueue")
+        .withIndex("by_batch_and_kind_and_name", (q) =>
+          q
+            .eq("selectorOptionId", row.selectorOptionId)
+            .eq("batchId", row.batchId)
+            .eq("kind", "league")
+            .eq("nameNormalized", normalizeLeagueName(name)),
+        )
+        .first();
+      return alreadyStaged
+        ? { outcome: "staged", name: alreadyStaged.name }
+        : { outcome: "over-cap", name };
+    }
+    return { outcome: "staged", name };
   },
 });
 

@@ -6,6 +6,7 @@ import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import { userFacingMessage } from "../../lib/errors/user-facing-message";
 import NeonButton from "../modules/NeonButton";
+import { parseAliases } from "./NewLeagueForm";
 import NewTeamForm, {
   draftFullName,
   newTeamPrefill,
@@ -81,6 +82,13 @@ export default function NewTeamDialog({
   onClose: () => void;
 }) {
   const findOrCreate = useMutation(api.teams.findOrCreate);
+  /*
+   * NEO-254 — the picker has no batch to stage into and no later step, so a
+   * league named here is CREATED, with the whole record `NewLeagueForm`
+   * collects. `createByAdmin` is the same path the Leagues page uses, so the
+   * two produce identical rows and share one set of bounds.
+   */
+  const createLeague = useMutation(api.leagues.createByAdmin);
   const [draft, setDraft] = useState<NewTeamDraft>(() =>
     newTeamPrefill({ name: initialName, location: espnLocation }),
   );
@@ -262,6 +270,36 @@ export default function NewTeamDialog({
               setDraft((prev) => ({ ...prev, ...patch }));
             }}
             leagueSuggestion={leagueSuggestion}
+            onCreateLeague={async (leagueDraft) => {
+              const { id } = await createLeague({
+                name: leagueDraft.name.trim(),
+                sportId,
+                ...(leagueDraft.abbreviation.trim()
+                  ? { abbreviation: leagueDraft.abbreviation.trim() }
+                  : {}),
+                ...(leagueDraft.level ? { level: leagueDraft.level } : {}),
+                ...(leagueDraft.fromYear.trim()
+                  ? {
+                      yearsActive: {
+                        from: Number(leagueDraft.fromYear.trim()),
+                        ...(leagueDraft.toYear.trim()
+                          ? { to: Number(leagueDraft.toYear.trim()) }
+                          : {}),
+                      },
+                    }
+                  : {}),
+                ...(parseAliases(leagueDraft.aliases).length
+                  ? { aliases: parseAliases(leagueDraft.aliases) }
+                  : {}),
+                ...(leagueDraft.wikidataId.trim()
+                  ? { wikidataId: leagueDraft.wikidataId.trim() }
+                  : {}),
+              });
+              return { id, name: leagueDraft.name.trim() };
+            }}
+            onLeagueStatus={(status) =>
+              setError(status.isError ? status.text : null)
+            }
             describedBy={error ? errorId : undefined}
             // No field ids: see `titleId`. The fields are addressed by their
             // aria-labels, which is what the flows target.

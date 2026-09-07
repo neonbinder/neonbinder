@@ -1141,13 +1141,13 @@ describe("NEO-254: a league typed on a team step gets a step of its own", () => 
         reviewRowId: team,
         leagueName: "World Hockey Association",
       }),
-    ).toBe(1);
+    ).toEqual({ outcome: "staged", name: "World Hockey Association" });
     expect(
       await asAdmin.mutation(api.entityReviewQueue.stageLeagueRows, {
         reviewRowId: team,
         leagueName: "World Hockey Association",
       }),
-    ).toBe(0);
+    ).toEqual({ outcome: "staged", name: "World Hockey Association" });
 
     const staged = await leagueRows(t);
     expect(staged).toHaveLength(1);
@@ -1158,7 +1158,7 @@ describe("NEO-254: a league typed on a team step gets a step of its own", () => 
   test("a league the sport already holds raises nothing", async () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
-    await insertLeague(t, sportId, "National Hockey League");
+    const nhl = await insertLeague(t, sportId, "National Hockey League");
     const team = await insertRow(t, {
       sportId,
       kind: "team",
@@ -1171,10 +1171,17 @@ describe("NEO-254: a league typed on a team step gets a step of its own", () => 
         api.entityReviewQueue.stageLeagueRows,
         { reviewRowId: team, leagueName: "National Hockey League" },
       ),
-    ).toBe(0);
+    ).toEqual({
+      outcome: "existing",
+      leagueId: nhl,
+      name: "National Hockey League",
+    });
+    expect(await leagueRows(t)).toHaveLength(0);
   });
 
-  test("a blank name raises nothing", async () => {
+  test("a blank name is refused, not silently ignored", async () => {
+    // The operator is standing in front of the field; `requireValidLeagueName`
+    // gives them the same message League Management would.
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
     const team = await insertRow(t, {
@@ -1183,12 +1190,12 @@ describe("NEO-254: a league typed on a team step gets a step of its own", () => 
       name: "Vancouver Canucks",
       status: "ready",
     });
-    expect(
-      await t.withIdentity(ADMIN_IDENTITY).mutation(
+    await expect(
+      t.withIdentity(ADMIN_IDENTITY).mutation(
         api.entityReviewQueue.stageLeagueRows,
         { reviewRowId: team, leagueName: "   " },
       ),
-    ).toBe(0);
+    ).rejects.toThrow(/league name is required/i);
   });
 });
 
@@ -1351,5 +1358,105 @@ describe("NEO-254: a staged league step never waits on its lookup", () => {
     const after = await t.run(async (ctx) => ctx.db.get(staged._id));
     expect(after!.enrichment).toBeUndefined();
     expect(after!.decision).toMatchObject({ action: "create" });
+  });
+});
+
+describe("NEO-254: stageLeagueRows reports which of the three things happened", () => {
+  test("a name the sport already answers to comes back as `existing`", async () => {
+    // Including under an ALIAS — the case the client cannot decide for itself,
+    // which is why the server returns the outcome rather than a count.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const nhl = await insertLeague(t, sportId, "National Hockey League", ["NHL"]);
+    const team = await insertRow(t, {
+      sportId,
+      kind: "team",
+      name: "Vancouver Canucks",
+      status: "ready",
+    });
+
+    expect(
+      await t.withIdentity(ADMIN_IDENTITY).mutation(
+        api.entityReviewQueue.stageLeagueRows,
+        { reviewRowId: team, leagueName: "NHL" },
+      ),
+    ).toEqual({
+      outcome: "existing",
+      leagueId: nhl,
+      // The EXISTING row's name, not the alias the operator typed — that is
+      // what the pill will read.
+      name: "National Hockey League",
+    });
+    expect(await leagueRows(t)).toHaveLength(0);
+  });
+
+  test("a fresh name comes back as `staged`, and a repeat is still `staged`", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const team = await insertRow(t, {
+      sportId,
+      kind: "team",
+      name: "Lincoln Stars",
+      status: "ready",
+    });
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+
+    expect(
+      await asAdmin.mutation(api.entityReviewQueue.stageLeagueRows, {
+        reviewRowId: team,
+        leagueName: "United States Hockey League",
+      }),
+    ).toEqual({ outcome: "staged", name: "United States Hockey League" });
+    // Idempotent, and still an affirmative answer — the step exists, which is
+    // what the team's pill is about to assert.
+    expect(
+      await asAdmin.mutation(api.entityReviewQueue.stageLeagueRows, {
+        reviewRowId: team,
+        leagueName: "United States Hockey League",
+      }),
+    ).toEqual({ outcome: "staged", name: "United States Hockey League" });
+    expect(await leagueRows(t)).toHaveLength(1);
+  });
+
+  test("past the per-team cap it says so rather than silently doing nothing", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const team = await insertRow(t, {
+      sportId,
+      kind: "team",
+      name: "Lincoln Stars",
+      status: "ready",
+    });
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    // MAX_STAGED_LEAGUES_PER_TEAM is 4.
+    for (const name of ["League A", "League B", "League C", "League D"]) {
+      await asAdmin.mutation(api.entityReviewQueue.stageLeagueRows, {
+        reviewRowId: team,
+        leagueName: name,
+      });
+    }
+    expect(
+      await asAdmin.mutation(api.entityReviewQueue.stageLeagueRows, {
+        reviewRowId: team,
+        leagueName: "League E",
+      }),
+    ).toEqual({ outcome: "over-cap", name: "League E" });
+  });
+
+  test("an over-long name is refused with the bound, not silently dropped", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const team = await insertRow(t, {
+      sportId,
+      kind: "team",
+      name: "Lincoln Stars",
+      status: "ready",
+    });
+    await expect(
+      t.withIdentity(ADMIN_IDENTITY).mutation(
+        api.entityReviewQueue.stageLeagueRows,
+        { reviewRowId: team, leagueName: "x".repeat(121) },
+      ),
+    ).rejects.toThrow(/121 characters/);
   });
 });
