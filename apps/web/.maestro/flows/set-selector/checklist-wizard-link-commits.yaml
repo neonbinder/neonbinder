@@ -1,0 +1,179 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Entity review — a Link to Existing decision is carried through Confirm & Save into the committed checklist"
+tags:
+  - set-selector
+  - regression
+---
+# R1 — ONE FEATURE (NEO-92): a link decision survives the COMMIT. The sibling
+# read-only flow (checklist-wizard-link-to-existing-player) proves the link
+# ACTION — that the panel finds a roster player and records "Linked to <name>"
+# rather than a create — and then discards the batch. This flow carries that
+# same decision through `Confirm & Save`, so the link is exercised against
+# `commitCardChecklist`'s own re-resolution of the linked id rather than only
+# against the wizard's render.
+#
+# R2 — HARD ASSERTIONS:
+#     (a) the review starts with nothing decided — "0 of N reviewed";
+#     (b) the row under test is a PLAYER row (its link panel is labelled for
+#         players), asserted before the feature action;
+#     (c) the search finds the existing roster player BY NAME and taking it
+#         records a LINK — the history reads "Linked to Shohei Ohtani", the one
+#         string neither a create ("Added as new") nor a skip ("Skipped") can
+#         produce;
+#     (d) the commit lands cleanly ("Saved N cards") with the link on the batch.
+#         `commitCardChecklist` re-resolves each decision as it writes, so a
+#         link that had not survived `recordDecision` fails here rather than
+#         passing quietly.
+#
+# ── WHY THERE IS NO RE-SYNC STEP ────────────────────────────────────────────
+#   An earlier version ended by re-syncing and asserting the wizard did not
+#   reopen — "resolve a name once and the marketplace stops asking". That
+#   assertion is unsound: MEASURED TWICE locally, a re-sync of an
+#   already-committed checklist raises no entity review AT ALL, regardless of
+#   how the names were decided. It would therefore have passed whether or not
+#   the link persisted, which is exactly the shape of assertion R2 forbids. It
+#   also doubled the flow's runtime for that non-claim.
+#
+# ── THE FIXTURE, AND WHY IT IS BASEBALL ─────────────────────────────────────
+#   `Baseball → 2024 → Topps → Topps Brooklyn Collection → Base`.
+#   Measured on PR #235's preview, 2026-09-06: 50 matched cards → **12 unknown
+#   names (11 players + 1 team)**, wizard opens, first row a player.
+#
+#   IT HAS TO BE BASEBALL, and this is not a preference. `EntityLinkSearch`
+#   queries `players.search({ query, sportId })` — scoped to the row's SPORT —
+#   and the only players `setup.yaml` ever creates are the ~494 from 2024 Topps
+#   Chrome, all baseball. A basketball or football fixture has an EMPTY roster
+#   and nothing to link to. All three committing fixtures are baseball for other
+#   reasons too (one sport keeps the seed cheap), but for THIS flow it is a hard
+#   requirement rather than a convenience.
+#   VERIFIED on this fixture, not assumed: typing "Ohtani" into the link panel
+#   returned `Link to Shohei Ohtani`.
+#
+#   THIS FLOW IS THE SOLE WRITER OF THIS SET. Nothing else reads or writes it,
+#   so committing races nothing and drains no other fixture. CI cannot serialize
+#   two flows (`run-e2e-queue.sh` filters only `util`/`wip`/`setup`; the lanes
+#   live only in the LOCAL `run-e2e-smoke.sh`), so "one set, one writer" is the
+#   only isolation that actually holds. It does drain its OWN fixture within a
+#   run — accepted, because CI reseeds the preview every run.
+#
+# ⚠️ DATA DEPENDENCY — THE LINK TARGET. Shohei Ohtani is card #1 of 2024 Topps
+#   Chrome and is therefore in the roster `setup.yaml` commits. If he is ever
+#   absent this fails at STEP 3 with a readable message; the fix is to change
+#   the two literals to another player setup provisions. He is deliberately not
+#   a player this flow creates — minting a fixture player would put a global row
+#   in `players` for every worker.
+#
+# R3 — DEDUP: the link ACTION is checklist-wizard-link-to-existing-player
+#   (read-only, on the shared Big League fixture). This flow adds only the
+#   commit side.
+
+# ============================================================
+# LAUNCH + SIGN IN
+# ============================================================
+
+- launchApp
+- extendedWaitUntil:
+    visible: ".*Build set parameters using marketplace APIs.*"
+    timeout: 45000
+
+# ============================================================
+# SETUP — this flow's OWN real set, real fetch, wizard open
+# Mapped on both marketplaces, so every card auto-matches and the unmatched
+# columns are omitted entirely — nothing to keep before confirming.
+# ============================================================
+
+- runFlow:
+    file: util-fetch-real-set-checklist-to-wizard.yaml
+    env:
+      SET: "Topps Brooklyn Collection"
+
+# ============================================================
+# STEP 1 — R2(a)
+# ============================================================
+
+- assertVisible:
+    text: "0 of [0-9]+ reviewed.*"
+
+# ============================================================
+# STEP 2 — THE KIND GUARD: make sure the current row is a PLAYER
+#
+# ORDER MATTERS. Wait for the row to become ACTIONABLE first: a row renders no
+# action controls at all until its background Wikidata lookup settles, so a kind
+# guard evaluated before that would poll an empty row, conclude "not a team",
+# and fall through — the failure would land on the link-panel assert with a
+# misleading message.
+#
+# The fixture is 11 players to 1 team, so a team row is the rare case. This is a
+# deliberate R10 exception: a `when: visible` on a normally-ABSENT element polls
+# the full default budget every run. Bounded to one poll, and the alternative is
+# a flake with no relationship to linking.
+# ============================================================
+
+# NEO-236 — the wizard does not open on a player row, and the first player it
+# shows can move out from under you while its career teams are staged. The util
+# walks to a settled player row the operator's way (see its header for the two
+# behaviours and the evidence). Every row it answers is a SKIP, so this flow's
+# own decision is the only non-skip in the Decided list.
+- runFlow: util-wizard-walk-to-player-row.yaml
+
+# ============================================================
+# STEP 3 — R2(b)+(c): link the unknown onto the roster player
+# The 7s default on the search: `players.search` is a Convex search index behind
+# a 200ms typeahead debounce; anything slower is a product finding.
+# ============================================================
+
+# ⚠️ RETRY THE OPEN, because the row can grow UNDER the tap. When the wizard
+# finds a NEAR MATCH for the presented name it renders a `NearMatchPanel` of
+# `Link to {name}` buttons ABOVE this action row, and that panel arrives on its
+# own query — after the row first paints. Maestro reads bounds, then clicks
+# ~330ms later, so a panel landing in that window pushes "Link to Existing…"
+# down and the click lands on nothing: no error, no decision recorded, and the
+# assert below fails with the row still showing "Link to Existing…".
+# Measured locally on Topps Brooklyn Collection, where "Victor Scott II" draws a
+# near match for "Victor Scott".
+#
+# The retry re-taps and re-checks, so a genuinely broken link panel still fails.
+- retry:
+    maxRetries: 2
+    commands:
+      - tapOn:
+          id: "Link to existing instead"
+          retryTapIfNoChange: true
+      # Doubles as the R2 precondition: this panel is labelled for PLAYERS, so a
+      # team row would fail here rather than silently linking the wrong kind.
+      - extendedWaitUntil:
+          visible:
+            id: "Search existing players"
+          timeout: 10000
+- tapOn:
+    id: "Search existing players"
+- inputText: "Ohtani"
+- extendedWaitUntil:
+    visible:
+      id: "Link to Shohei Ohtani"
+- tapOn:
+    id: "Link to Shohei Ohtani"
+- extendedWaitUntil:
+    visible:
+      text: "Linked to Shohei Ohtani"
+
+# ============================================================
+# STEP 4 — R2(d): resolve the rest as skips, then COMMIT
+# Skips create nothing, so the only entity this commit could mint is one the
+# link deliberately avoided. 120s for the bulk (live Wikidata queue), 60s for
+# the commit itself — MEASURE both on the first green run and trim.
+# ============================================================
+
+- tapOn:
+    text: ".*Skip remaining names \\([0-9]+\\).*"
+- extendedWaitUntil:
+    visible:
+      text: ".*Confirm & Save.*"
+    timeout: 120000
+- tapOn:
+    text: ".*Confirm & Save.*"
+- extendedWaitUntil:
+    visible:
+      text: ".*Saved [0-9]+ cards.*"
+    timeout: 60000

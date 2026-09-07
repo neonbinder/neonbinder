@@ -308,6 +308,48 @@ describe("NEO-212: the entity review + player management surface is admin-gated"
         });
       },
     ],
+    // NEO-248. The undo of the staging patch above: it strips the operator's
+    // typed years off a staged step. Ungated, a caller could silently empty
+    // another operator's career-team entries — the same table and the same
+    // blast radius as the mutation that wrote them, so the same gate. Both ids
+    // are read after the gate runs, so the refusal is the gate rather than a
+    // missing-row error.
+    [
+      "entityReviewQueue.clearCareerTeamStint",
+      async (t, sportId) => {
+        const reviewRowId = await t.run(async (ctx) =>
+          ctx.db.insert("entityReviewQueue", {
+            selectorOptionId: sportId,
+            batchId: "batch-1",
+            createdByUserId: "somebody",
+            kind: "player" as const,
+            name: "Travis Bazzana",
+            sportId,
+            status: "ready" as const,
+          }),
+        );
+        const teamRowId = await t.run(async (ctx) =>
+          ctx.db.insert("entityReviewQueue", {
+            selectorOptionId: sportId,
+            batchId: "batch-1",
+            createdByUserId: "somebody",
+            kind: "team" as const,
+            name: "Sydney Blue Sox",
+            sportId,
+            status: "ready" as const,
+            source: {
+              kind: "careerTeamOf" as const,
+              playerRowId: reviewRowId,
+              manualStint: { fromYear: 2001, toYear: 2005 },
+            },
+          }),
+        );
+        return t.mutation(api.entityReviewQueue.clearCareerTeamStint, {
+          reviewRowId,
+          teamRowId,
+        });
+      },
+    ],
   ];
 
   test.each(ADMIN_GATED)("%s rejects an anonymous caller", async (_name, call) => {

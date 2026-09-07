@@ -1,0 +1,187 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Entity review — Back to matching leaves the wizard without discarding, and re-confirming comes back to the same review with the decision still on it"
+tags:
+  - set-selector
+  - regression
+---
+# R1 — ONE FEATURE (NEO-221, D9): "Back to matching". Before it, the only way
+# out of the entity-review wizard was Cancel, which threw the whole review
+# away. Back PARKS the review instead: the operator returns to the card-pairing
+# dialog, and confirming it again lands on the SAME batch with every decision
+# already made.
+#
+# WHY THIS ONE HAD TO COME BACK FIRST. The resume is the only wizard behaviour
+# with no component-level equivalent: it spans two dialogs and a server-side
+# batch that `startBatch` RESUMES rather than recreates, and the proof that the
+# decisions survived is that the re-entered wizard renders them.
+# `EntityReviewWizard.test.tsx` mounts one dialog against a mocked batch and
+# can never exercise the hand-off. `onBack` is offered ONLY when there is a
+# parked pairing session (`streamedPairing` non-null) — i.e. only after a real
+# marketplace fetch — which is why this cannot be written against anything but
+# a real set.
+#
+# R2 — HARD ASSERTIONS, no branch that can green this flow without exercising
+#   the feature:
+#     (a) the wizard opens with NOTHING decided — "0 of N reviewed";
+#     (b) one CREATE is taken and shows up in the history as "Added as new" —
+#         the state Back must preserve. Read as a name, not as a count: getting
+#         to a player row means answering every team step first (see
+#         util-wizard-walk-to-player-row), and those are answered as SKIPS, so
+#         "Added as new" can only be this flow's decision while "Decided (N)"
+#         is the whole batch's;
+#     (c) "Back to matching" closes the wizard AND the parked pairing dialog is
+#         what replaced it, asserted POSITIVELY by its Confirm control (a bare
+#         notVisible would also pass on a dead error-boundary page);
+#     (d) re-confirming reopens the wizard on the SAME batch, with that same
+#         "Added as new" still in the history. A Back that cancelled the batch
+#         would reopen at "0 of N" with no Decided list at all; a Back that lost
+#         the parked session would fail at (c).
+#
+#   The counts are regexes, not literals. How many unknown names the fixture
+#   surfaces is the marketplace's business (88 when measured); what this flow
+#   asserts is that exactly ONE of them moved, and that it stayed moved.
+#
+# PLAYER **OR** TEAM. The decision control's accessible name is
+#   "Add as New {Player|Team}" and the fixture queues both kinds (measured: 87
+#   players + 1 team). Both are the same `create` decision and either leaves
+#   exactly one decision on the books, which is all this flow needs — so it
+#   does not gamble on which kind settles first.
+#
+# R7 — READ-ONLY, AND THAT IS LOAD-BEARING. The flow exits through
+#   Cancel → Discard (`cancelBatch`): no card, no player, no team, no skip is
+#   written. `players` is GLOBAL, so a single "Add as New" that reached commit
+#   would make that name KNOWN and shrink every later wizard on this set —
+#   and CI has no way to serialize a writer against the readers (see
+#   util-fetch-real-set-checklist-to-wizard.yaml). Read-only is what makes four
+#   flows on one shared set legal.
+#
+# R3 — DEDUP: the discard CONFIRM itself is covered by STEP 6a of
+#   inserts-1996-score-one-nb-set-two-bsc-sources.yaml; here it is only the
+#   exit. Skip / Link / career-team are the three sibling checklist-wizard-*
+#   flows. No other flow exercises Back.
+
+# ============================================================
+# LAUNCH + SIGN IN
+# ============================================================
+
+- launchApp
+- extendedWaitUntil:
+    visible: ".*Build set parameters using marketplace APIs.*"
+    timeout: 45000
+
+# ============================================================
+# SETUP — real set, real fetch, wizard open
+# ============================================================
+
+- runFlow:
+    file: util-fetch-real-set-checklist-to-wizard.yaml
+
+# ============================================================
+# STEP 1 — R2(a): the review starts with nothing decided
+# Asserting it HERE is what makes STEP 4's read meaningful: without it,
+# "1 of N" after the round trip could just be where we started.
+# ============================================================
+
+# A sibling read-only flow that went red left its batch on this shared set, and
+# the fetch above RESUMED it. Clear it and refetch so the assertion below is
+# about this flow's own review. No-op on the normal path; see the util.
+- runFlow:
+    file: util-discard-resumed-review-batch.yaml
+
+- assertVisible:
+    text: "0 of [0-9]+ reviewed.*"
+
+# ============================================================
+# STEP 2 — R2(b): take exactly ONE decision
+# 30s, not the 7s default: the row offers no action until its background
+# Wikidata lookup — a live external round-trip — has come back or errored.
+# ============================================================
+
+# NEO-236 — the wizard does not open on a player row, and the first player it
+# shows can move out from under you while its career teams are staged. The util
+# walks to a settled player row the operator's way (see its header for the two
+# behaviours and the evidence). Every row it answers is a SKIP, so this flow's
+# own decision is the only non-skip in the Decided list.
+- runFlow: util-wizard-walk-to-player-row.yaml
+- tapOn:
+    id: "Add as New Player"
+# The drain above answered every team step as a SKIP, so the create just made
+# is the ONLY "Added as new" in the history — a sharper claim than a count,
+# which the drain has moved off 1. `Decided (N)` proves the list is up at all.
+- extendedWaitUntil:
+    visible:
+      text: "Added as new"
+- assertVisible:
+    text: "Decided \\([0-9]+\\)"
+
+# ============================================================
+# STEP 3 — R2(c): THE FEATURE — leave review WITHOUT discarding it
+# "Back to matching" drops the preview and re-opens the parked pairing
+# session. It deliberately does NOT cancel the batch.
+# ============================================================
+
+- tapOn: "Back to matching"
+- extendedWaitUntil:
+    notVisible: "Confirm New Players & Teams"
+- assertVisible:
+    id: "Confirm card matches"
+
+# ============================================================
+# STEP 4 — R2(d): re-confirm, and the SAME review comes back
+#
+# `startBatch` resumes the existing batch rather than starting a new one, so
+# STEP 2's decision is still on it. 60s: confirming re-runs entity resolution,
+# which is live external work — a resumed batch re-reads rather than
+# re-looks-up, so a healthy run resolves this well inside the ceiling.
+#
+# THESE TWO ASSERTIONS ARE THE POINT OF THE FLOW. A Back that had cancelled the
+# batch would reopen at "0 of N reviewed" with no Decided list at all.
+# ============================================================
+
+- tapOn:
+    id: "Confirm card matches"
+- extendedWaitUntil:
+    visible: "Confirm New Players & Teams"
+    timeout: 60000
+# THE POINT OF THE FLOW: the create survived the round trip. Still the only
+# "Added as new" among the drained skips, so this cannot pass by accident.
+- assertVisible:
+    text: "Added as new"
+- assertVisible:
+    text: "Decided \\([0-9]+\\)"
+
+# ============================================================
+# STEP 5 — EXIT WITHOUT WRITING ANYTHING (R7)
+#
+# Cancel raises the discard confirm and Discard runs `cancelBatch`.
+#
+# ⚠️ THE COUNT HERE IS THE BATCH'S, NOT THIS FLOW'S. It used to read
+# "Discard 1 decision" and that was true while the wizard opened straight onto
+# a player row. It no longer is: reaching a player row means answering every
+# team step first (the teams-first walk — see util-wizard-walk-to-player-row),
+# and each of those answers is a decision the confirm counts too. Run
+# 34072730449 measured it: header "28 of 116 reviewed", confirm
+# "Discard 28 decisions?" — 27 drained skips plus this flow's one create.
+#
+# So the count is a regex and the plural is optional. Nothing is lost by that:
+# THIS flow's decision is already proved three times over above — "Added as
+# new" in the history, "Decided (N)" rendering at all, and the re-confirmed
+# batch coming back with it still on. This step's job is R7 housekeeping, and
+# the claim it needs to make is that a discard confirm appeared naming a
+# non-zero number of decisions.
+#
+# "Discard" and the confirm's heading "Discard N decisions?" are separate nodes
+# and Maestro's text matchers are full-node-anchored, so the button text cannot
+# match the heading.
+# ============================================================
+
+- tapOn:
+    text: "Cancel (Esc)"
+    retryTapIfNoChange: true
+- assertVisible:
+    text: "Discard [0-9]+ decisions?.*"
+- tapOn:
+    text: "Discard"
+- extendedWaitUntil:
+    visible: "Fetch cancelled — no cards saved."

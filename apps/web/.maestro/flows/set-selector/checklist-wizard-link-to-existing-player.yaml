@@ -1,0 +1,182 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Entity review — Link to Existing resolves an unknown name onto a player we already have instead of minting a duplicate"
+tags:
+  - set-selector
+  - regression
+---
+# R1 — ONE FEATURE (NEO-92, extended by NEO-212): "Link to Existing…". A
+# marketplace spells a player we already hold differently, and the fetch
+# surfaces that spelling as an unknown. The operator links it to the row
+# NeonBinder already has; NO new player is minted. Link, don't duplicate — the
+# reason the wizard has three outcomes rather than two.
+#
+# R2 — HARD ASSERTIONS:
+#     (a) the review starts with nothing decided — "0 of N reviewed";
+#     (b) the row under test is a PLAYER row — its link panel is labelled for
+#         players — asserted BEFORE the feature action, as the precondition it
+#         is;
+#     (c) the search finds the existing roster row and offers it BY NAME;
+#     (d) taking it records a LINK, not a create: the history reads "Linked to
+#         <name>". "Added as new" and "Skipped" are the other two strings that
+#         can appear there, so this assertion distinguishes all three.
+#
+#   (d) asserts the decision's CONTENT, not a count, on purpose — see the kind
+#   guard below, which can legitimately put one extra decision on the books.
+#
+# ⚠️ DATA DEPENDENCY — THE LINK TARGET.
+#   `players` is empty at the head of every run and `setup.yaml` fills it by
+#   committing the whole 2024 Topps Chrome checklist, so the Baseball roster
+#   this search reaches IS that set's players (~494 measured). **Shohei Ohtani**
+#   is card #1 of 2024 Topps Chrome and is the target here.
+#
+#   He is deliberately NOT a name this flow creates: minting a fixture player
+#   would put a global row in `players` for every worker. If he is ever absent,
+#   this fails at STEP 3 with a readable message and the fix is to change the
+#   two literals below to another player setup provisions.
+#
+#   He is also, by construction, NOT one of this set's unknowns — he is already
+#   known, which is exactly what makes him a link target.
+#
+# R7 — READ-ONLY. Exits through Cancel → Discard (`cancelBatch`): no card, no
+#   player, no team, no skip. `players` is GLOBAL and CI cannot serialize a
+#   writer against readers (`run-e2e-queue.sh` filters only `util`/`wip`/
+#   `setup`; the lanes live only in the local runner), so read-only is what
+#   makes four flows on one shared set legal.
+#
+# R3 — DEDUP: Back / Skip / career-team are the three sibling
+#   checklist-wizard-* flows. Only this flow links.
+
+# ============================================================
+# LAUNCH + SIGN IN
+# ============================================================
+
+- launchApp
+- extendedWaitUntil:
+    visible: ".*Build set parameters using marketplace APIs.*"
+    timeout: 45000
+
+# ============================================================
+# SETUP — real set, real fetch, wizard open
+# ============================================================
+
+- runFlow:
+    file: util-fetch-real-set-checklist-to-wizard.yaml
+
+# ============================================================
+# STEP 1 — R2(a)
+# ============================================================
+
+# A sibling read-only flow that went red left its batch on this shared set, and
+# the fetch above RESUMED it. Clear it and refetch so the assertion below is
+# about this flow's own review. No-op on the normal path; see the util.
+- runFlow:
+    file: util-discard-resumed-review-batch.yaml
+
+- assertVisible:
+    text: "0 of [0-9]+ reviewed.*"
+
+# ============================================================
+# STEP 2 — THE KIND GUARD: make sure the current row is a PLAYER
+#
+# The wizard presents ONE row at a time and which one settles first is a race
+# between live Wikidata lookups. The fixture queues overwhelmingly players
+# (measured: 87 players + 1 team), but "overwhelmingly" is a flake, so this
+# skips a TEAM row if that is what came up. The control only exists on a team
+# row, so on the common path this `when:` costs one poll and does nothing.
+#
+# A DELIBERATE R10 EXCEPTION, and the only one here: a `when: visible` on a
+# normally-ABSENT element polls the full default budget every run. That is the
+# price of determinism, it is bounded to a single poll, and the alternative is
+# a flow that fails roughly once in every eighty-eight runs for a reason that
+# has nothing to do with linking. The skip writes nothing — this flow discards.
+# ============================================================
+
+# ORDER MATTERS. Wait for the row to become ACTIONABLE first: a row renders no
+# action controls at all until its background Wikidata lookup settles, so a kind
+# guard evaluated before that would poll an empty row, conclude "not a team",
+# and fall through — the failure would then land on the link-panel assert with a
+# completely misleading message.
+# NEO-236 — the wizard does not open on a player row, and the first player it
+# shows can move out from under you while its career teams are staged. The util
+# walks to a settled player row the operator's way (see its header for the two
+# behaviours and the evidence). Every row it answers is a SKIP, so this flow's
+# own decision is the only non-skip in the Decided list.
+- runFlow: util-wizard-walk-to-player-row.yaml
+
+# ============================================================
+# STEP 3 — R2(b)+(c): a PLAYER row, and the roster row it will take
+#
+# 30s: the row offers no action until its live Wikidata lookup settles.
+# The panel's accessible name is "Search existing players" for a player row and
+# "Search existing teams" for a team row, so that assert doubles as the
+# precondition guard that the guard above actually worked.
+# `players.search` is a Convex search index scoped to the sport row, so "Ohtani"
+# reaches the whole roster rather than a truncated page of it.
+# ============================================================
+
+- extendedWaitUntil:
+    visible:
+      id: "Link to existing instead"
+    timeout: 30000
+# ⚠️ RETRY THE OPEN, because the row can grow UNDER the tap. When the wizard
+# finds a NEAR MATCH for the presented name it renders a `NearMatchPanel` of
+# `Link to {name}` buttons ABOVE this action row, and that panel arrives on its
+# own query — after the row first paints. Maestro reads bounds, then clicks
+# ~330ms later, so a panel landing in that window pushes "Link to Existing…"
+# down and the click lands on nothing: no error, no decision recorded, and the
+# assert below fails with the row still showing "Link to Existing…".
+# Measured locally on Topps Brooklyn Collection, where "Victor Scott II" draws a
+# near match for "Victor Scott".
+#
+# The retry re-taps and re-checks, so a genuinely broken link panel still fails.
+- retry:
+    maxRetries: 2
+    commands:
+      - tapOn:
+          id: "Link to existing instead"
+          retryTapIfNoChange: true
+      # Doubles as the R2 precondition: this panel is labelled for PLAYERS, so a
+      # team row would fail here rather than silently linking the wrong kind.
+      - extendedWaitUntil:
+          visible:
+            id: "Search existing players"
+          timeout: 10000
+- tapOn:
+    id: "Search existing players"
+- inputText: "Ohtani"
+# The 7s default. `players.search` is a search index behind a 200ms typeahead
+# debounce; anything slower is a product finding, not a timeout to inflate.
+- extendedWaitUntil:
+    visible:
+      id: "Link to Shohei Ohtani"
+
+# ============================================================
+# STEP 4 — R2(d): THE FEATURE — take the existing row
+#
+# The history line is where the decision is READ BACK, and it names the row
+# that was linked. "Linked to Shohei Ohtani" is the one string only the link
+# path can produce: a create reads "Added as new", a skip reads "Skipped".
+# ============================================================
+
+- tapOn:
+    id: "Link to Shohei Ohtani"
+- extendedWaitUntil:
+    visible:
+      text: "Linked to Shohei Ohtani"
+
+# ============================================================
+# STEP 5 — EXIT WITHOUT WRITING ANYTHING (R7)
+# The confirm's count is a regex: the kind guard above may have put a second
+# decision on the books, and this flow does not claim to know which.
+# ============================================================
+
+- tapOn:
+    text: "Cancel (Esc)"
+    retryTapIfNoChange: true
+- assertVisible:
+    text: "Discard [0-9]+ decisions?.*"
+- tapOn:
+    text: "Discard"
+- extendedWaitUntil:
+    visible: "Fetch cancelled — no cards saved."

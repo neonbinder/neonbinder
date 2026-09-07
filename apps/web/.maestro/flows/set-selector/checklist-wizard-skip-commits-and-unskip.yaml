@@ -1,0 +1,218 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Entity review — committing a review of skips leaves the set its own Skipped names list, and Unskip puts a name back"
+tags:
+  - set-selector
+  - regression
+---
+# R1 — ONE FEATURE (NEO-212): what a COMMITTED skip leaves behind. The sibling
+# read-only flow (checklist-wizard-skip-not-a-person) proves the skip CONTROL —
+# per-row, bulk, and the decision counter. It cannot prove any of this, because
+# skip records are written by `commitCardChecklist`, not by `recordDecision`:
+# the set's own "Skipped names" list, its count, and the Unskip that puts a name
+# back in front of the next sync. That is what this flow owns.
+#
+# R2 — HARD ASSERTIONS:
+#     (a) the review starts with nothing decided — "0 of N reviewed";
+#     (b) "Skip remaining names" decides EVERY row in one go, lookups included — the
+#         wizard's own "All reviewed — save N cards?" and the appearance of
+#         "Confirm & Save" (which renders only once `allDecided`) both say so;
+#     (c) every one of those decisions is a SKIP, not a create — the history
+#         reads "Skipped" and never "Added as new". This is the assertion that
+#         catches a mis-landed tap, which is how CI runs 34050688656 and
+#         34054011591 were failing;
+#     (d) the commit lands ("Saved N cards") having created NO player and NO
+#         team — every decision was a skip, and a skip is the decision that
+#         writes no entity;
+#     (e) the set now carries a "Skipped names (N)" disclosure — the durable
+#         record, which did not exist before the commit;
+#     (f) Unskip removes one and says so in the product's own words. That
+#         sentence is the whole user-facing contract of the list: the name comes
+#         back at the next sync rather than being gone for good.
+#
+# ── THE FIXTURE, AND WHY THIS FLOW MAY COMMIT ───────────────────────────────
+#   `Baseball → 2024 → Topps → Topps Chicago Cubs → Base`.
+#   Measured on PR #235's preview, 2026-09-06: 17 cards matched on both
+#   marketplaces → **11 unknown names, all players, 0 teams**; wizard opens.
+#
+#   THIS FLOW IS THE SOLE WRITER OF THIS SET. Nothing else reads or writes it,
+#   so committing cannot disturb anything: there is no reader to race, and no
+#   other flow's fixture to drain. That is the whole reason each committing flow
+#   gets its OWN real set instead of sharing one — CI has no way to serialize
+#   two flows (`run-e2e-queue.sh` filters only `util`/`wip`/`setup`; the
+#   `isolated` and `serial-marketplace` lanes exist only in the LOCAL
+#   `run-e2e-smoke.sh`), so "one set, one writer" is the only isolation that
+#   actually holds.
+#
+#   IT DOES DRAIN ITS OWN FIXTURE, and that is accepted: committing makes these
+#   13 players known, so a SECOND run against the same un-reseeded deployment
+#   would open the wizard on nothing. CI reseeds the preview every run, so the
+#   drain never outlives one run. A local re-run needs a fresh seed.
+#
+#   NO KIND GUARD NEEDED, twice over: the skip control exists on both kinds
+#   ("Skip {name} — not a {person|team}"), and this fixture surfaces no unknown
+#   teams at all.
+#
+# R3 — DEDUP: the skip CONTROL is checklist-wizard-skip-not-a-person (read-only,
+#   on the shared Big League fixture). This flow adds only the commit side.
+
+# ============================================================
+# LAUNCH + SIGN IN
+# ============================================================
+
+- launchApp
+- extendedWaitUntil:
+    visible: ".*Build set parameters using marketplace APIs.*"
+    timeout: 45000
+
+# ============================================================
+# SETUP — this flow's OWN real set, real fetch, wizard open
+# Mapped on both marketplaces, so every card auto-matches and the unmatched
+# columns are omitted entirely — nothing to keep before confirming.
+# ============================================================
+
+- runFlow:
+    file: util-fetch-real-set-checklist-to-wizard.yaml
+    env:
+      SET: "Topps Chicago Cubs"
+
+# ============================================================
+# STEP 1 — R2(a)
+# ============================================================
+
+- assertVisible:
+    text: "0 of [0-9]+ reviewed.*"
+
+# ============================================================
+# STEP 2 — R2(b)+(c): decide the whole review from the footer
+# ============================================================
+
+# ⚠️ EVERY CONTROL THIS FLOW TAPS IS IN THE FOOTER, ON PURPOSE.
+#
+# It used to tap the PER-ROW `Skip — not a person` link first, and that tap is
+# not winnable. The link is a 16px `text-xs` control at the BOTTOM of the
+# wizard's elastic body, directly above the footer: measured identically in CI
+# runs 34050688656 and 34054011591 at bounds [313,536][434,552], with the body's
+# `Decided names` list ending at y=553. Maestro reads bounds and clicks later —
+# 870ms later in run 6 — and in that window the body REFLOWS as other rows'
+# Wikidata lookups land. The click at (373,544) fell through onto
+# "Add All Remaining as New", which decided every row: "11 of 11 reviewed", all
+# eleven "Added as new", twice.
+#
+# Waiting for the current row to settle does NOT fix it, and run 6 proved that —
+# the settle wait ran and the geometry was unchanged. The reflow is driven by
+# OTHER rows' lookups, not this one's, so there is no moment when the row is
+# "done" while the batch is still draining. Locally the body is shorter (fast,
+# warm) and the same link sits at y=440 with clearance, which is exactly why
+# this passed locally and failed under eight parallel runners.
+#
+# So the flow stops tapping it. The FOOTER is height-invariant by construction —
+# the dialog has a definite height and the body is `flex-1 min-h-0`, so
+# "the footer's viewport y is invariant for the life of the dialog"
+# (EntityReviewWizard.tsx, NEO-110) — and `Skip Remaining (N)` decides every row
+# in one tap, which is all this flow needs.
+#
+# NOTHING IS LOST. The per-row control is the READ-ONLY sibling's subject
+# (checklist-wizard-skip-not-a-person asserts both its accessible name and its
+# visible wording, and taps it). This flow exists for the COMMIT and what it
+# leaves behind, and it still proves the decisions were SKIPS rather than
+# creates — see the "Skipped" assertion below, which is precisely what would
+# have caught the bulk-add misfire on sight.
+#
+# 120s: the bulk skip covers rows whose live Wikidata lookup has not landed yet.
+- tapOn:
+    text: ".*Skip remaining names \\([0-9]+\\).*"
+- extendedWaitUntil:
+    visible:
+      text: ".*Confirm & Save.*"
+    timeout: 120000
+
+# EVERY row is decided — the wizard says so in its own words. "Confirm & Save"
+# renders only once `allDecided`, and this line only with it, so the two agree.
+- assertVisible:
+    text: "All reviewed . save [0-9]+ cards\\?"
+
+# ...and every decision is a SKIP. `describeDecision` writes exactly one of
+# "Skipped", "Added as new" or "Linked to …", so this distinguishes all three —
+# and it is the assertion that fails loudly if a tap ever lands on
+# "Add All Remaining as New" again.
+- assertVisible:
+    text: "Skipped"
+- assertNotVisible:
+    text: "Added as new"
+
+# ============================================================
+# STEP 4 — R2(d): COMMIT
+# Every decision is a skip, so this creates no player and no team. The positive
+# terminal signal proves the wizard closed AND the commit landed; waiting on the
+# modal vanishing would race the "Saving..." state (NEO-163).
+#
+# 60s, not the 7s default: `commitCardChecklist` writes every kept card and
+# re-resolves the batch on the way through. MEASURE IT on the first green run
+# and trim — 17 cards should be quick.
+# ============================================================
+
+- tapOn:
+    text: ".*Confirm & Save.*"
+- extendedWaitUntil:
+    visible:
+      text: ".*Saved [0-9]+ cards.*"
+    timeout: 60000
+
+# ============================================================
+# STEP 5 — R2(e): the set now remembers what was skipped
+#
+# `SkippedNamesPanel` returns null when a set has no skip records, so this
+# disclosure EXISTING is the assertion — it could not have rendered before the
+# commit. The count is a regex: how many names the marketplace surfaces is its
+# business, not this flow's claim.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      id: "Skipped names \\([0-9]+\\) . not players or teams"
+    centerElement: true
+    timeout: 15000
+- tapOn:
+    id: "Skipped names \\([0-9]+\\) . not players or teams"
+- assertVisible:
+    text: ".*Unskip a name to review it on the next sync.*"
+
+# ============================================================
+# STEP 6 — R2(f): the skip is reversible, and the product says so
+#
+# ⚠️ SCROLL TO THE CONFIRMATION — DO NOT ASSERT IT IN PLACE. This step failed
+# three times and the tap was never the problem. Diagnosed from the artifacts:
+# the run tapped `Unskip Adbert Alzolay`, and the hierarchy captured immediately
+# afterwards shows the first row is now `Unskip Daniel Palencia` — the row
+# changed, so the mutation landed. What failed was seeing the result.
+#
+# `SkippedNamesPanel` renders its status line INSIDE the disclosure, AFTER the
+# list. Measured: with the list at y=595-911 the confirmation sits past y=911,
+# roughly 290px below a 625px viewport. `assertVisible` cannot see it, and no
+# amount of retrying the tap ever could.
+#
+# So the scroll IS the assertion (R6): `scrollUntilVisible` fails loudly if the
+# line never appears, which is exactly the claim — Unskip says, in the product's
+# own words, that the name comes back at the next sync.
+#
+# Two things tried first and rejected, recorded so they are not tried again:
+# `swipe` never returns on maestro-web (it hung the flow to the outer timeout),
+# and scrolling to a card row to force the page down fails because the
+# checklist's virtuoso list renders no rows while it is off-screen, so
+# `id: "Edit card .*"` is not found.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      id: "Unskip .*"
+    centerElement: true
+    timeout: 10000
+- tapOn:
+    id: "Unskip .*"
+    retryTapIfNoChange: true
+- scrollUntilVisible:
+    element:
+      text: "Unskipped .* it will be reviewed on the next sync."
+    centerElement: true
+    timeout: 15000

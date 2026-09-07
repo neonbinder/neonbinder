@@ -47,8 +47,20 @@ tags:
 # credentials come from setup.yaml / worker-bootstrap — NOT from the drill util.
 # ============================================================
 
+# NEO-248 — explicit env passthrough so this util is not pinned to Topps
+# Chrome. The defaults reproduce the previous behaviour exactly, so every
+# existing caller is unchanged; a caller that wants another real set (the
+# wizard fixture, `Topps Big League`) passes SET and gets the same
+# drill → Base → BaseSetPicker sequence. Passing the vars explicitly rather
+# than relying on env inheritance through a nested runFlow makes it
+# deterministic either way.
 - runFlow:
     file: util-drill-to-2024-topps-chrome.yaml
+    env:
+      SPORT: ${SPORT || "Baseball"}
+      YEAR: ${YEAR || "2024"}
+      MANUFACTURER: ${MANUFACTURER || "Topps"}
+      SET: ${SET || "Topps Chrome"}
 
 # ============================================================
 # LEVEL 5 — Select "Base" variant type

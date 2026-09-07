@@ -1,6 +1,6 @@
 ---
 name: maestro-web-presskey-and-popovers
-description: On Maestro web `pressKey` supports Enter ONLY — ESCAPE and TAB are not web keycodes; dismiss a picker popover by tapping a neutral element outside its root
+description: On Maestro web `pressKey` supports Enter ONLY (no ESCAPE/TAB), re-finds the target by an XPath that falls back to tag[@class] so identically-classed siblings need a unique DOM id, sends a synthetic event with no default action, and `id:` selectors are regex finds; dismiss a picker popover by tapping a neutral element outside its root
 metadata:
   type: reference
 ---
@@ -18,6 +18,37 @@ KEYBOARD CONSTRAINTS" block, which says the Escape-cancels path is exercised by
 hand, not by the suite). When auditing, match `^[[:space:]]*-[[:space:]]*pressKey:`
 rather than the bare word, or you will read prose as precedent — that mistake
 cost two CI cycles.
+
+## `pressKey` does NOT send to `document.activeElement` — it re-finds by XPath
+
+maestro-web runs `createXPathFromElement(document.activeElement)`, then re-finds
+the element by that XPath and dispatches there. The generator uses `id("…")` when
+the element has a DOM id and otherwise falls back to `tag[@class="…"]` per
+ancestor — so **two identically-classed siblings collapse into one XPath**,
+Selenium returns the FIRST, and the key lands on the wrong control while the
+app's own focus is perfectly correct.
+
+NEO-220 hit exactly this: the wizard's `Confirm & Save` and its `Cancel (Esc)`
+sibling are both `NeonButton`s with the IDENTICAL class string (the neon colour
+is a `data-accent-color` attribute and an inline style, not a class), so Enter
+aimed at Confirm pressed Cancel — the failure screenshot showed
+"Discard 1 decision?". The fix was a unique DOM id on the button
+(`entity-review-confirm-save`).
+
+**Rule: any element a flow drives with `pressKey` needs a unique DOM id**, added
+in the component with a comment saying it is load-bearing for E2E.
+
+Corollary — **a synthetic KeyboardEvent has no default action.** `dispatchEvent`
+runs the listeners and stops, so a focused `<button>` is NOT activated the way a
+real keypress activates it; the button must handle Enter in its own `onKeyDown`.
+Every other Enter in this suite aims at an `<input>` whose own handler does the
+work, which is why this only bites on buttons.
+
+Corollary — **`id:` selectors are regex FINDS, not exact matches.** `id: "Remove
+Topps"` also matches `Remove Topps Chrome`. Where a screen can hold two instances
+of a control, give them labels sharing no substring, or anchor the matcher.
+
+Written up in `.maestro/README.md` too (NEO-248).
 
 ## Closing a TeamPicker / PlayerPicker popover
 

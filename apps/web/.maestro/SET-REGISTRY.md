@@ -18,6 +18,11 @@ These are provisioned once by `flows/setup.yaml` at the head of every run and ar
 | Set | Variant types provisioned | Provisioned by |
 |---|---|---|
 | Baseball → 2024 → Topps → Topps Chrome | `Base` (full checklist), `Insert` → "Future Stars" (~20 cards), `Parallel` → "Gold Wave Refractors" (~300 cards) | `flows/setup.yaml` |
+| Baseball → 2024 → Topps → Topps Big League | `Base` — variant types synced and Base MAPPED, checklist deliberately EMPTY (NEO-248 wizard fixture) | `flows/setup.yaml` |
+| Baseball → 2024 → Topps → Topps 206 | none — variant types sync on first use; Base stays **UNMAPPED** (NOT pre-synced) | `flows/set-selector/base-mapping-cancel-recovers.yaml` — **sole writer**, and it writes nothing |
+| Baseball → 2024 → Topps → Topps Chicago Cubs | `Base` — variant types synced, Base MAPPED on BOTH sides, checklist deliberately EMPTY | `flows/setup.yaml` (structure); **sole writer** `checklist-wizard-skip-commits-and-unskip.yaml` |
+| Baseball → 2024 → Topps → Topps Baltimore Orioles | `Base` — same shape | `flows/setup.yaml` (structure); **sole writer** `checklist-wizard-career-team-commits.yaml` |
+| Baseball → 2024 → Topps → Topps Brooklyn Collection | `Base` — same shape | `flows/setup.yaml` (structure); **sole writer** `checklist-wizard-link-commits.yaml` |
 | Baseball → 1996 → Score → Score | `Insert` (reconciled in-flow, NOT pre-synced) | `flows/set-selector/inserts-1996-score-one-nb-set-two-bsc-sources.yaml` — **sole writer** |
 | Hockey → 2024 → Topps → Topps NHL Sticker Collection | none — the flow never goes below `Variant Types` (NOT pre-synced) | `flows/set-selector/set-rename-survives-resync-and-suggests-bsc-name.yaml` — **sole writer** |
 
@@ -276,9 +281,274 @@ end-to-end path — STEP 6 of `inserts-1996-score-one-nb-set-two-bsc-sources.yam
 which opens the wizard on a genuine cold two-source fetch and now also covers
 decide → Cancel (Esc) → "Discard 1 decision?" → keep, and the Enter commit.
 
-Do not re-create them against a custom subtree: it cannot produce an unknown
-name any more. See `todos/neo-220-221-e2e-fixture-plan.md` for the post-NEO-239
-conditions under which the back-and-resume reload path could return.
+Do not re-create them **the way they were written**: a marketplace-free subtree
+cannot produce an unknown name any more.
+
+**NEO-248 brought the coverage back on a REAL set.** The wizard opens only on
+names a marketplace fetch returned that NeonBinder does not already hold, and
+only **BSC** returns names at all — so the fixture has to be a real,
+BSC-listed set, synced through the real hierarchy. It is
+`Baseball → 2024 → Topps → Topps Big League → Base`; read its section below
+before touching any of these four.
+
+| flow | what it owns |
+|---|---|
+| `checklist-wizard-back-to-matching-resumes-decisions` | "Back to matching" parks the review; re-confirming resumes the SAME batch with its decisions |
+| `checklist-wizard-skip-not-a-person` | the per-row skip, and "Skip Remaining" deciding every row that is left, lookups included |
+| `checklist-wizard-link-to-existing-player` | "Link to Existing" resolves onto a roster player instead of minting a duplicate |
+| `checklist-wizard-career-team-entry` | the inline career-team mini-form on a player row, and the decision it feeds |
+
+all sharing `util-fetch-real-set-checklist-to-wizard.yaml`, and all four
+READ-ONLY (Cancel → Discard).
+
+Three SIBLING flows cover the **commit** side — what a decision is worth once it
+is saved — and each gets its own real set so it can write without racing
+anything:
+
+| flow | fixture |
+|---|---|
+| `checklist-wizard-skip-commits-and-unskip` | Topps Chicago Cubs |
+| `checklist-wizard-career-team-commits` | Topps Baltimore Orioles |
+| `checklist-wizard-link-commits` | Topps Brooklyn Collection |
+
+See "The three COMMITTING entity-review fixtures" below.
+
+**They no longer own a custom-set prefix.** `wbr-`, `skp-`, `lce-` and `cte-`
+are retired along with `fcd-` and `kod-`: these flows create nothing. The
+discard confirm and the Enter commit live in STEP 6 of
+`inserts-1996-score-one-nb-set-two-bsc-sources.yaml`.
+
+### The three COMMITTING entity-review fixtures — one set per flow (NEO-248) ✅ APPROVED
+
+The four `checklist-wizard-*` flows on Topps Big League are read-only: they
+prove the wizard's decisions and always exit through Cancel → Discard. Three
+sibling flows prove what happens when a review is **committed**, and each one
+gets its **own real set**.
+
+| flow | fixture | shape | measured unknowns |
+|---|---|---|---|
+| `checklist-wizard-skip-commits-and-unskip` | Baseball → 2024 → Topps → **Topps Chicago Cubs** | 17 cards, matched both sides | **11 — all players, 0 teams** |
+| `checklist-wizard-career-team-commits` | Baseball → 2024 → Topps → **Topps Baltimore Orioles** | 17 cards, matched both sides | **8 — all players, 0 teams** |
+| `checklist-wizard-link-commits` | Baseball → 2024 → Topps → **Topps Brooklyn Collection** | 50 cards, matched both sides | **12 — 11 players + 1 team** |
+
+All measured live on PR #235's preview, 2026-09-06: each syncs its variant types
+cleanly (a single `Base`, no reconcile dialog), each maps cleanly on BOTH sides,
+and each opens the wizard on a player row.
+
+#### ⚠️ BOTH SIDES MUST BE MAPPED — the rule that broke CI run 34045516761
+
+An earlier version of these fixtures mapped Base on **BSC only**, to avoid
+attaching a wrong SportLots set. That cannot work, and the reason is a
+deliberate product rule rather than a bug: `baseHasMapping` in
+`components/modules/SetSelector.tsx` is `slotIds(row, "sportlots").length > 0`.
+Only the SportLots slot is exclusively written by `BaseSetPicker` — the BSC slug
+is auto-populated by "Sync Variant Types", so testing it would suppress the
+auto-prompt on every freshly synced Base.
+
+A BSC-only mapping therefore never counts as mapped:
+
+* `Re-map Base` never renders (the seed's own assertion failed on this), and
+* `BaseMappingForm` keeps auto-opening its picker on every fresh mount, which
+  would block the checklist for whichever flow arrived next.
+
+**So a fixture set must be one whose SportLots side has a real counterpart**,
+and specifically one where the picker's FIRST candidate is correct — that is
+what `util-drill-to-base-variant` picks. Measured: `Baltimore Orioles`,
+`Chicago Cubs` and the Brooklyn Collection match all rank first. Two Panini
+basketball sets were dropped for exactly this: their SportLots lists are ~3111
+rows whose top matches were unrelated ("Caitlin Clark Collection" variants), so
+they could only ever have been mapped BSC-only.
+
+#### Concurrency: one set, one writer — parallel-safe by construction
+
+**CI cannot serialize two flows.** `run-e2e-queue.sh` filters only
+`util` / `wip` / `setup`; the `isolated`, `serial-marketplace` and
+`requires:`/`provides:` dep-graph lanes exist ONLY in `run-e2e-smoke.sh`, the
+local runner. So there is no lane to put a writer on, and "sole writer" has to
+be structural rather than scheduled.
+
+It is: **each of these three sets is touched by exactly one flow, and no flow
+reads another's set.** Different sets share no `selectorOptionId`, no
+`cardChecklist` rows and no skip records, so the three commit concurrently with
+each other, with the four read-only Big League flows, and with everything else,
+without interfering. Nothing needs restoring afterwards.
+
+**They do drain their own fixtures, and that is accepted.** Committing makes
+that set's players known, and a known name never reaches the wizard again — so a
+second run against the same un-reseeded deployment would open on nothing. CI
+reseeds the preview every run, so the drain never outlives one run. A local
+re-run needs a fresh seed; `MAESTRO_NO_DEPS=1` will not do.
+
+#### Why these sets, specifically
+
+* **Team sets have unknown players.** `setup.yaml` only ever creates the ~494
+  players from 2024 Topps Chrome — its 200-card base plus two inserts — so a
+  team set's commons sit outside that roster. Measured 8–12 unknowns each.
+* **The link flow needs BASEBALL specifically.** `EntityLinkSearch` queries
+  `players.search({ query, sportId })`, scoped to the row's sport, so the link
+  TARGET must share the fixture's sport. `Link to Shohei Ohtani` resolves on
+  Topps Brooklyn Collection (verified live) while its own 11 players stay
+  unknown. All three fixtures are baseball anyway, which also keeps the seed
+  cheap — no second sport to cold-sync.
+* **Two of the three surface NO unknown teams at all**, so the flows that act on
+  player-only controls (career-team) need no kind guard and pay no poll for one.
+  Only the link flow's fixture has a team (1 of 12), and it keeps its guard.
+* **Name-collision note.** `Topps Chicago Cubs` is a strict prefix of
+  `Topps Chicago Cubs Season Ticket Holder`. That is safe: the drill selects by
+  `text:`, which Maestro anchors to the whole node, so it cannot match the
+  longer row. Only `id:` selectors are regex finds.
+
+#### Each flow provisions its OWN set — the seed does not
+
+`setup.yaml` deliberately provisions NOTHING for these three. Doing so cost
+~2 minutes of SERIAL seed time and pushed the seed past its 600s wall
+(run 34048184342); the seed runs once, before every runner starts, so anything
+added there taxes every PR.
+
+Instead each flow provisions its own set on its own runner, in parallel.
+`util-fetch-real-set-checklist-to-wizard.yaml` already handles the cold
+first-time path with no extra step: the warm drill's closing
+`visible: "Base"` (60s) covers the cold variant-type sync, and
+`util-drill-to-base-variant.yaml`'s `when: visible "Select Base Set"` branch
+maps BOTH sides (45s) and is simply skipped once the set is mapped — so it is
+idempotent. Measured cold, end to end: 98s / 104s / ~110s against a 600s
+per-flow timeout (`MAESTRO_FLOW_TIMEOUT_SEC` in `run-e2e-queue.sh`).
+
+**Never fetch these sets in the seed**: it would create their players and empty
+every wizard they exist to fill.
+
+#### A re-sync raises no entity review — do not assert on one
+
+Measured twice: once a set's checklist is committed, re-syncing it produces no
+entity review at all, whatever decisions were taken. Any assertion of the form
+"resolve a name once and it stops being asked about" therefore passes
+regardless of what it claims to prove, and an earlier version of the link flow
+carried exactly that. It also means these flows need a set that has never been
+committed on the deployment — which CI guarantees by reseeding every run, and
+which a LOCAL re-run does not: re-running one of these against an
+already-committed preview fails at the wizard wait, correctly.
+
+### Topps 206 — the unmapped-Base fixture for `base-mapping-cancel-recovers` (NEO-248) ✅ APPROVED
+
+`base-mapping-cancel-recovers` needs a real set whose **Base is UNMAPPED**, so
+that selecting Base auto-opens `BaseSetPicker` and the Cancel → message → Retry
+recovery can be exercised. It used to use `Topps Big League`; it cannot any
+more, because Big League is now the wizard fixture and `setup.yaml` maps its
+Base in the seed job. A mapped Base renders `Re-map Base` instead of opening the
+picker, and the flow fails on its first assertion — CI run 34006917636.
+
+**The two needs are irreconcilable on one set** (one requires Base unmapped, the
+other requires it mapped), so they get different sets.
+
+Verified live on PR #235's preview, 2026-09-05:
+
+| | |
+| -- | -- |
+| variant types | `Base` (BSC pill), `Insert`, `Parallel` — clean sync, no reconcile dialog |
+| Base state | UNMAPPED — "BSC — No sets attached" |
+| picker | auto-opens with `Topps 206 — set listing (BSC)` pre-filled; SportLots candidates `206` and `Base Set`, both "likely match" |
+| cancel | "Base mapping cancelled — nothing was linked. Click Retry to pick a set, or Close to leave it unmapped" + a working `Retry` |
+
+**It writes nothing.** The flow cancels twice and never confirms, so Base is
+still unmapped when it finishes — idempotent, no restore step needed. **No other
+flow may map this set's Base**, or this one loses its precondition the same way
+it just did.
+
+**Name-collision note.** `Topps 206` is a strict prefix of `Topps 206 NPB`. That
+is safe for the drill because Maestro `text:` matchers are full-node-anchored;
+only `id:` selectors are regex FINDS. (`Topps 206 NPB` itself is unusable as a
+fixture — it has only an `Insert` variant type and opens a 2534-row
+`Reconcile Inserts` dialog on first drill.)
+
+### Topps Big League — the entity-review wizard fixture (NEO-248) ✅ APPROVED
+
+`Baseball → 2024 → Topps → Topps Big League → Base` is the fixture for the four
+`checklist-wizard-*` flows. It is a REAL, marketplace-listed set: it appears in
+the Sets column via `Sync Sets`, its variant types sync normally (`Base` with a
+BSC pill, `Insert`, `Parallel` — no reconcile dialog), and its Base maps
+cleanly. Nothing about it is hand-made.
+
+**Measured live on PR #235's preview, 2026-09-05:**
+
+| | |
+| -- | -- |
+| Base pairing | **310 matched**, 0 BSC-only, 1 SportLots-only (`#228 John Doe`), 1 name conflict |
+| unknown names | **88 — 87 players + 1 team** ("0 of 88 reviewed") |
+| first row presented | a PLAYER (`Taylor Ward`, Wikidata Q56169880), *"No career-team history found."* |
+| controls present | `Add as New Player`, `Link to Existing…`, `Skip — not a person`, the career-team mini-form, `Back to matching`, `Add All Remaining as New (88)`, `Skip Remaining (88)` |
+| cost | one live BSC + SportLots round-trip per flow (~40s fetch, ~30s to the wizard) |
+
+**Why this set and not a hand-made one.** Three designs are dead and must not be
+re-attempted:
+
+1. A hand-added card's `pendingPlayerNames` — quick-add's Players field is a
+   PlayerPicker now, so a hand-added card is born LINKED (NEO-220/221).
+2. A hand-typed set with a **SportLots** set id attached.
+   `fetchSportLotsChecklist` declares `players`/`teams` in its return validator
+   but never sets them (see the doc comment on `tokenizeSlDescription`), so a
+   SportLots-only fetch yields **zero** unknown names for any set — measured:
+   `Big League Gameday Drip` committed 10 of 10 cards with no wizard, and the
+   mascot sets did the same at 26 of 26. **Unknown names come from BSC.**
+3. Creating a row with `+ Custom` and attaching marketplace data to it —
+   rejected on product grounds: hand-creating a set exists only to AVOID
+   syncing, so a test that syncs must sync through the real hierarchy, and
+   `Base` is not something an insert set has.
+
+**Why its players are unknown.** `setup.yaml` commits 2024 Topps Chrome's Base,
+Future Stars and Gold Wave players (~494 rows). Big League's base is a different
+player pool — current players, prospects and veterans outside Chrome's 200 — so
+87 of its 88 names are new. That is the fixture, and it is fragile in exactly
+one way:
+
+> ⚠️ **NOTHING MAY EVER COMMIT THIS SET'S CHECKLIST.** A commit creates those 87
+> players, and a name that is known is not an unknown — the next fetch opens the
+> wizard on nothing and all four flows fail. `setup.yaml` therefore provisions
+> the **structure only** (variant types + Base mapping) and asserts the
+> checklist is still empty. Do not "warm" this set the way Topps Chrome is
+> warmed: Topps Chrome is warmed so its players ARE known, and this set exists
+> to be its opposite.
+
+#### Concurrency: four readers, ZERO writers
+
+All four flows exit through **Cancel → Discard** (`cancelBatch`). None commits,
+none chooses "Add as New" through to a save, none writes a card, player, team or
+skip record. That is what makes four flows on one shared set legal, and it is
+not a style preference — it is the only safe design available, because:
+
+* **CI cannot serialize two flows.** `run-e2e-queue.sh` filters only
+  `util` / `wip` / `setup`. The `isolated`, `serial-marketplace` and
+  `requires:`/`provides:` dep-graph lanes exist ONLY in `run-e2e-smoke.sh`, the
+  LOCAL runner. "Sole writer" (1996 Score) is a convention enforced by review,
+  not a runtime mechanism — there is no lane to put a writer on.
+* **Concurrent reads are genuinely safe.** `startCandidateBatch` clears and
+  reads `checklistCandidates` scoped to the operator who fetched, and
+  entity-review batches are keyed by selectorOption + user. Each runner signs in
+  as its own account.
+
+The price is one live BSC+SL round-trip per flow. State the measured cost in any
+PR that adds a fifth reader.
+
+**What is NOT covered end-to-end, as a consequence**, and where it lives instead:
+
+| behaviour | why not here | covered by |
+|---|---|---|
+| the `Skipped names` panel + Unskip | skip records are written by `commitCardChecklist`, not `recordDecision` | `entityReviewSkips`, `SkippedNamesPanel.test.tsx` |
+| commit-time `resolveTeamIdByName` for a staged career team | same — needs a commit | entity-review unit files |
+| the link surviving commit re-resolution | same | entity-review unit files |
+
+Restoring any of those end-to-end needs a SECOND real set with a single
+sanctioned writer — the 1996 Score shape. That is an owner decision; do not
+reach for it by letting one of these four flows write to a set the other three
+read.
+
+**The kind guard.** Two flows (`link-to-existing`, `career-team`) act on
+controls only a PLAYER row renders, and which row settles first is a race
+between live Wikidata lookups. Each opens with a `when: visible: id: "Skip .* not
+a team"` guard that skips a team row if that is what came up. On the 87-in-88
+path the guard costs one poll and does nothing — a deliberate, documented R10
+exception, taken because the alternative is a flake with no relationship to the
+feature under test.
+
 
 ### Per-attempt custom SPORT rows — `custom-entry-survives-resync`, self-cleaning
 
@@ -503,6 +773,41 @@ Two consequences worth knowing before writing a picker step:
 | `TLF-` | `checklist-title-length-limits-and-fixer.yaml` | `-${ATTEMPT_ID}` — kept SHORT on purpose; the name lands in a generated listing title measured against an 80-character cap |
 | `TMT-` | `admin/team-management-edit-a-team.yaml` | `-${WORKER_INDEX}-${ATTEMPT_ID}`, and the ONLY team in the suite with a `location`: `Loc${WORKER_INDEX}`, so its composed name is `Loc<w> TMT-<w>-<attempt>` |
 | `TPT-` | `team-picker.yaml` | `-${ATTEMPT_ID}` |
+| `MintedTeam` | `checklist-wizard-career-team-commits.yaml` | `MintedTeam${ATTEMPT_TOKEN}` — **no separator** |
+| `ProbeTeam` / `TempTeam` | `checklist-wizard-career-team-entry.yaml` | `…${ATTEMPT_TOKEN}` — **no separator**, never persisted |
+
+### ⚠️ A name typed into a team picker must be a SINGLE search token
+
+`teams.search` is a Convex SEARCH index: it matches on TOKENS split at
+non-alphanumerics, not on substrings. So `CareerTeam-<attempt>` tokenizes to
+["CareerTeam", "<attempt>"] and matches **any** persisted team sharing the
+leading word — the per-attempt suffix buys nothing.
+
+That is how CI run 34050688656 broke two flows at once. The committing
+career-team flow persisted `CareerTeam-4180`; the read-only sibling then typed
+`CareerTeam-9351`, the suggestion list offered 4180, its dropdown covered
+"+ Add", and the tap landed on the suggestion — which REPLACED the typed name.
+Renaming only the writer is NOT enough: reproduced locally, typing
+`CareerTeam-w7a26340` with `CareerTeam-4180` still in the table failed
+identically.
+
+**The rule: any name typed into a TeamPicker or the career-team form is
+separator-free** (`MintedTeam<token>`, `ProbeTeam<token>`), so it is one token
+nothing else can share. The `TMT-`/`PMT-`/`SLA-`/`CNAA-`/`TPT-`/`NBTeam-`/`TLF-`
+names above keep their hyphens only because each is created and consumed inside
+one flow that also removes it; the moment a flow PERSISTS a team another flow
+might see, it needs a separator-free name.
+
+**And derive the token from `${ATTEMPT_ID}`, not `output.ATTEMPT_ID`.** The
+runner injects it with `-e ATTEMPT_ID=…`, which Maestro exposes as the binding
+`${ATTEMPT_ID}`; it never populates `output.ATTEMPT_ID`. The older idiom
+`output.ATTEMPT_ID || String(Date.now()).slice(-4)` therefore ALWAYS fell
+through to a 4-digit value that recycles every ten seconds, so two runners
+collided constantly. Correct form:
+
+```yaml
+- evalScript: '${output.ATTEMPT_TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'
+```
 
 **Always per-ATTEMPT, not just per-worker.** `+ New team <name>` is offered only
 while no team of that name exists, so a name a previous attempt left behind

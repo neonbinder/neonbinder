@@ -34,6 +34,7 @@ import { api } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
 import { normalizeTeamName } from "./teams";
+import { cancelScheduled } from "../lib/testing/drain-scheduled";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -132,13 +133,20 @@ async function insertReviewRow(
     decision?: Record<string, unknown>;
     enrichment?: Record<string, unknown>;
     source?: { kind: "careerTeamOf"; playerRowId: Id<"entityReviewQueue"> };
+    /**
+     * NEO-248 — whose review session this row belongs to. Defaulted, because
+     * every test here inserts its decisions directly; a test that drives the
+     * PUBLIC mutations instead has to stamp the identity it calls them with,
+     * which is what `assertOwnsRow` compares against.
+     */
+    createdByUserId?: string;
   },
 ): Promise<Id<"entityReviewQueue">> {
   return t.run(async (ctx) =>
     ctx.db.insert("entityReviewQueue", {
       selectorOptionId: opts.selectorOptionId,
       batchId: BATCH,
-      createdByUserId: "user_review_001",
+      createdByUserId: opts.createdByUserId ?? "user_review_001",
       kind: opts.kind,
       name: opts.name,
       nameNormalized: normalizeTeamName(opts.name),
@@ -280,6 +288,170 @@ describe("commit prelude: staged career-team rows become teams BEFORE the player
     );
     expect(player!.teamYears![0]).toMatchObject({ fromYear: 2019, toYear: 2021 });
     expect(player!.teamYears![1]).toMatchObject({ fromYear: 2022 });
+  });
+
+  test("NEO-248: a hand-typed stint's years reach players.teamYears through the New Team step", async () => {
+    /*
+     * The whole chain the NEO-236 regression broke, driven through the public
+     * surface rather than from hand-written decisions: stage → the team's own
+     * step is answered → the player is created → commit.
+     *
+     * The operator types "Sydney Blue Sox", 2001, 2005 on the player's step.
+     * Staging that name is what sends the wizard to the club's New Team step,
+     * and the years used to live only in the component state that step change
+     * wiped. They now ride on the staged row (`source.manualStint`), which is
+     * what the wizard rebuilds the chip from — so this test reads them back off
+     * that row exactly as the wizard does, and hands them to `recordDecision`.
+     */
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedTree(t);
+
+    const playerRowId = await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      kind: "player",
+      name: "Travis Bazzana",
+      // Nothing from Wikidata at all — this stint exists because the operator
+      // typed it, which is the case the manual entry form is for.
+      createdByUserId: ADMIN_IDENTITY.subject,
+    });
+
+    const added = await asAdmin.mutation(
+      api.entityReviewQueue.stageCareerTeamRows,
+      {
+        reviewRowId: playerRowId,
+        careerTeams: [
+          { name: "Sydney Blue Sox", fromYear: 2001, toYear: 2005 },
+        ],
+      },
+    );
+    expect(added).toBe(1);
+    // The staged row's own Wikidata lookup is not what this test is about, and
+    // the pool it enqueues onto is a component convex-test does not mount.
+    await cancelScheduled(t);
+
+    // What the wizard reads back to rebuild the chip after the team step.
+    const stagedRow = await t.run(async (ctx) => {
+      const rows = await ctx.db.query("entityReviewQueue").collect();
+      return rows.find((r) => r.source?.kind === "careerTeamOf")!;
+    });
+    expect(stagedRow.source?.manualStint).toEqual({
+      fromYear: 2001,
+      toYear: 2005,
+    });
+
+    // The New Team step the staging produced, answered where the League can
+    // actually be asked about.
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: stagedRow._id,
+      action: "create",
+      create: { location: "Sydney", name: "Blue Sox", leagueId: null },
+    });
+
+    // Back on the player, with the chip rebuilt from the row above — years and
+    // all. This is the payload the wizard sends on "Add as New Player".
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: playerRowId,
+      action: "create",
+      manualCareerTeams: [
+        {
+          name: "Sydney Blue Sox",
+          fromYear: stagedRow.source!.manualStint!.fromYear,
+          toYear: stagedRow.source!.manualStint!.toYear,
+        },
+      ],
+    });
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [
+        makeCard({ cardName: "Travis Bazzana", players: ["Travis Bazzana"] }),
+      ],
+      batchId: BATCH,
+    });
+
+    const teams = await allTeams(t);
+    expect(teams).toHaveLength(1);
+    expect(teams[0]).toMatchObject({ location: "Sydney", name: "Blue Sox" });
+
+    const player = await playerNamed(t, "Travis Bazzana");
+    expect(player).not.toBeNull();
+    expect(player!.teamYears).toHaveLength(1);
+    // THE ASSERTION THIS FILE EXISTS FOR, post-NEO-248: the years the operator
+    // typed on the player's step are the years on the player's timeline, having
+    // survived a full trip through a different row's step.
+    expect(player!.teamYears![0]).toMatchObject({
+      teamId: teams[0]._id,
+      fromYear: 2001,
+      toYear: 2005,
+    });
+  });
+
+  test("NEO-248: the BULK create carries a typed stint through to players.teamYears", async () => {
+    /*
+     * `recordAllRemainingAsCreate` wrote a bare `{action:"create"}`, and only
+     * `decision.manualCareerTeams` reaches `teamYears` at commit — so the bulk
+     * silently dropped years the operator had typed.
+     *
+     * This is not only the "Add All Remaining as New" button: the wizard
+     * re-arms this mutation on a timer as lookups land, so the row could be
+     * decided by a call nobody pressed.
+     */
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedTree(t);
+
+    const playerRowId = await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      kind: "player",
+      name: "Travis Bazzana",
+      createdByUserId: ADMIN_IDENTITY.subject,
+    });
+
+    await asAdmin.mutation(api.entityReviewQueue.stageCareerTeamRows, {
+      reviewRowId: playerRowId,
+      careerTeams: [{ name: "Sydney Blue Sox", fromYear: 2001, toYear: 2005 }],
+    });
+    await cancelScheduled(t);
+
+    // The bulk decides the PLAYER and leaves the club's step alone — that step
+    // asks which league, and this path can only guess.
+    await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
+      selectorOptionId: variantTypeId,
+      batchId: BATCH,
+    });
+
+    const stagedRow = await t.run(async (ctx) => {
+      const rows = await ctx.db.query("entityReviewQueue").collect();
+      return rows.find((r) => r.source?.kind === "careerTeamOf")!;
+    });
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: stagedRow._id,
+      action: "create",
+      create: { location: "Sydney", name: "Blue Sox", leagueId: null },
+    });
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [
+        makeCard({ cardName: "Travis Bazzana", players: ["Travis Bazzana"] }),
+      ],
+      batchId: BATCH,
+    });
+
+    const teams = await allTeams(t);
+    expect(teams).toHaveLength(1);
+    const player = await playerNamed(t, "Travis Bazzana");
+    expect(player!.teamYears).toHaveLength(1);
+    expect(player!.teamYears![0]).toMatchObject({
+      teamId: teams[0]._id,
+      fromYear: 2001,
+      toYear: 2005,
+    });
   });
 
   test("leagueId: null produces a team with NO league even though the sport has a default", async () => {

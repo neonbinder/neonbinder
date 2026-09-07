@@ -1,0 +1,171 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Entity review — Skip marks a name as not a person, and the footer skip decides every row that is left, lookups included"
+tags:
+  - set-selector
+  - regression
+---
+# R1 — ONE FEATURE (NEO-212): the THIRD way out of an unknown name. "Checklist",
+# "Team Card" and subset headers land in the player column of a real marketplace
+# checklist constantly, and before this the operator's only options were to mint
+# a junk player row or cancel the whole batch. Skip records the name as "not a
+# person" and creates NOTHING.
+#
+# R2 — HARD ASSERTIONS, no silent fall-through:
+#     (a) the review starts with nothing decided — "0 of N reviewed";
+#     (b) the per-row control is bound to a REAL queued row (its accessible name
+#         composes the row's own name) AND says what it does ("Skip — not a
+#         person"). Two different claims; neither is a duplicate of the other;
+#     (c) one tap records exactly ONE decision — "1 of N reviewed" with a
+#         "Decided (1)" history. A control that rendered but wrote nothing
+#         leaves the header at "0 of N";
+#     (d) "Skip remaining names" decides every row that is left, INCLUDING ones whose
+#         Wikidata lookup has not come back. "Confirm & Save" renders only once
+#         EVERY row carries a decision (`allDecided`), so its appearance IS that
+#         assertion — and the bulk links unmount at the same moment, which is
+#         the same fact read the other way round.
+#
+# ── WHAT THIS FLOW NO LONGER COVERS, AND WHY ────────────────────────────────
+#   The "Skipped names" panel and its Unskip live behind a COMMIT: skip records
+#   are written by `commitCardChecklist`, not by `recordDecision`. This flow
+#   cannot commit — see R7 — so that half moved to the unit files
+#   (`entityReviewSkips`, `SkippedNamesPanel.test.tsx`), which already own it.
+#   Restoring it end-to-end needs a second real set with a single sanctioned
+#   writer, the 1996 Score shape; that is an owner decision, not something to
+#   sneak in by letting this flow write to a set three other flows read.
+#
+# R7 — READ-ONLY, AND THAT IS LOAD-BEARING. Exits through Cancel → Discard
+#   (`cancelBatch`). Two independent reasons, either sufficient:
+#     * `players` is GLOBAL. Committing would not create players here (every
+#       row is skipped) but it WOULD write this set's 310 cards and its skip
+#       records, and the next fetch would be a re-sync rather than a first
+#       fetch — a different code path, and no unknowns for the sibling flows.
+#     * CI cannot serialize a writer against readers: `run-e2e-queue.sh` filters
+#       only `util`/`wip`/`setup`; the `isolated` and `serial-marketplace` lanes
+#       exist ONLY in the local `run-e2e-smoke.sh`.
+#
+# R3 — DEDUP: Back is checklist-wizard-back-to-matching-resumes-decisions, Link
+#   is checklist-wizard-link-to-existing-player, the career-team mini-form is
+#   checklist-wizard-career-team-entry. Only this flow skips.
+#
+# NO KIND GUARD NEEDED. The skip control exists on both kinds
+#   ("Skip {name} — not a {person|team}"), so this flow works on whichever row
+#   settles first and never gambles on it.
+
+# ============================================================
+# LAUNCH + SIGN IN
+# ============================================================
+
+- launchApp
+- extendedWaitUntil:
+    visible: ".*Build set parameters using marketplace APIs.*"
+    timeout: 45000
+
+# ============================================================
+# SETUP — real set, real fetch, wizard open
+# ============================================================
+
+- runFlow:
+    file: util-fetch-real-set-checklist-to-wizard.yaml
+
+# ============================================================
+# STEP 1 — R2(a)
+# ============================================================
+
+# A sibling read-only flow that went red left its batch on this shared set, and
+# the fetch above RESUMED it. Clear it and refetch so the assertion below is
+# about this flow's own review. No-op on the normal path; see the util.
+- runFlow:
+    file: util-discard-resumed-review-batch.yaml
+
+- assertVisible:
+    text: "0 of [0-9]+ reviewed.*"
+
+# ============================================================
+# STEP 2 — R2(b): the skip control, said both ways
+#
+# The accessible name composes the CURRENT ROW's own name, so matching it
+# proves the control belongs to a real queued row rather than being static
+# chrome. The visible text is a separate claim: that what the operator READS
+# says what the control does. The em dash is matched with "." to keep a literal
+# non-ASCII character out of the matcher.
+#
+# 30s: the row offers no action until its live Wikidata lookup settles.
+# ============================================================
+
+# ⚠️ SETTLE THE ROW BEFORE TAPPING THE SKIP LINK. `Skip — not a person` is a
+# 16px `text-xs` link that sits DIRECTLY above the footer: measured in CI run
+# 34050688656 its bounds were [313,536][434,552] while the footer's own controls
+# started at y=551. Maestro reads bounds and clicks ~330ms later, so any content
+# landing in the row inside that window (a Wikidata lookup, a near-match panel)
+# pushes the link down and the click lands on the footer instead — on
+# "Add All Remaining as New", which decides EVERY row. That is what happened:
+# one tap produced "11 of 11 reviewed" with all eleven marked "Added as new".
+#
+# Waiting for the row's stable PRIMARY control first is the fix: it renders only
+# once the lookup has come back, so the row has its final height before the tap.
+# 30s, because that wait is a live external round-trip.
+# NEO-236 — the wizard does not open on a player row, and the first player it
+# shows can move out from under you while its career teams are staged. The util
+# walks to a settled player row the operator's way (see its header for the two
+# behaviours and the evidence). Every row it answers is a CREATE, so the single
+# "Skipped" this flow then makes can only be its own.
+- runFlow: util-wizard-walk-to-player-row-creating-teams.yaml
+- extendedWaitUntil:
+    visible:
+      id: "Skip .* not a (person|team)"
+    timeout: 30000
+- assertVisible:
+    text: "Skip . not a (person|team)"
+
+# ============================================================
+# STEP 3 — R2(c): one tap, exactly one decision
+# ============================================================
+
+- tapOn:
+    id: "Skip .* not a (person|team)"
+# The drain above answered every team step as a CREATE, so the skip just made
+# is the ONLY "Skipped" in the history — a sharper claim than a count, which
+# the drain has moved off 1. `Decided (N)` proves the list is up at all.
+- extendedWaitUntil:
+    visible:
+      text: "Skipped"
+- assertVisible:
+    text: "Decided \\([0-9]+\\)"
+
+# ============================================================
+# STEP 4 — R2(d): "Skip remaining names" clears the rest, lookups included
+#
+# The bulk skip cancels any armed auto-add and decides every remaining row
+# whether or not its lookup has settled. 120s: the ceiling covers a batch still
+# draining its live Wikidata queue and resolves the moment the wizard is done.
+# ============================================================
+
+- tapOn:
+    text: ".*Skip remaining names \\([0-9]+\\).*"
+- extendedWaitUntil:
+    visible:
+      text: ".*Confirm & Save.*"
+    timeout: 120000
+# The same fact read the other way round: the bulk links render only while a
+# row is still undecided, so their absence is `allDecided` confirming itself.
+- assertNotVisible:
+    text: ".*Skip remaining names \\([0-9]+\\).*"
+
+# ============================================================
+# STEP 5 — EXIT WITHOUT WRITING ANYTHING (R7)
+#
+# Every row is decided now, so the confirm names them all. The count is a
+# regex and plural: it is the fixture's unknown total (88 when measured), which
+# is the marketplace's business, not this flow's claim.
+# ============================================================
+
+- tapOn:
+    text: "Cancel (Esc)"
+    retryTapIfNoChange: true
+- assertVisible:
+    text: "Discard [0-9]+ decisions.*"
+- tapOn:
+    text: "Discard"
+- extendedWaitUntil:
+    visible: "Fetch cancelled — no cards saved."

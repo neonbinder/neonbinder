@@ -12,9 +12,9 @@ tags:
 # Two more ride along, and only because they are free here — each would cost
 # another several-minute live fetch to reach on its own:
 #   - STEP 6 (NEO-220/221): the entity-review wizard's "Cancel asks before it
-#     discards" confirm and its Enter commit. Since the quick-add Players field
-#     became a PlayerPicker this is the ONLY place in the suite a wizard opens
-#     at all — see the note above STEP 6.
+#     discards" confirm and its Enter commit, on a review of HUNDREDS of names
+#     drained in bulk — the one shape only this flow's fetch pays for. See the
+#     note above STEP 6.
 #   - STEP 7 (NEO-203): the re-sync content-diff review. See the note above
 #     STEP 7 for why it rides on this flow rather than owning one.
 #
@@ -373,154 +373,206 @@ tags:
 # button is the sanctioned path (setup.yaml documents why per-item draining is
 # not viable — each item is gated by the 3s/item Wikidata queue).
 #
-# THIS IS NOW THE ONLY QUEUE FLOW THAT OPENS THE ENTITY-REVIEW WIZARD
-# (NEO-220/221). Six flows used to reach it by typing an invented name into the
-# quick-add form's free-text Players field and letting the resulting pending
-# name open the wizard on the next sync. That field is a PlayerPicker now: a
-# hand-added card is born LINKED and never carries a pending name, so a custom
-# subtree can no longer produce an unknown at all, and those six flows were
-# retired (the reasoning is written up in .maestro/SET-REGISTRY.md). Only a
-# genuine cold marketplace fetch still produces unknown names — setup.yaml
-# drains one in the seed job, but it only bulk-confirms; nothing else in the
-# queue sees the wizard at all.
+# ONLY A GENUINE MARKETPLACE FETCH PRODUCES AN UNKNOWN NAME. Six flows used to
+# reach the wizard by typing an invented name into the quick-add form's
+# free-text Players field and letting the resulting pending name open it on the
+# next sync. That field is a PlayerPicker now: a hand-added card is born LINKED
+# and never carries a pending name, so those six were retired (NEO-220/221; the
+# reasoning is in .maestro/SET-REGISTRY.md).
 #
-# This flow already pays for such a fetch, so the two wizard behaviours worth an
-# end-to-end proof ride here, for ~35s: the confirm that Cancel now raises
-# before discarding decisions, and the Enter commit. Everything else about the
-# wizard is component-covered in EntityReviewWizard.test.tsx.
+# NEO-248 brought the wizard coverage back on a REAL set —
+# Baseball / 2024 / Topps / Topps Big League / Base, via
+# util-fetch-real-set-checklist-to-wizard.yaml and its four consumers
+# (checklist-wizard-*). Those own Back, Skip, Link and the career-team
+# mini-form, and all four are read-only (Cancel → Discard).
+#
+# What stays HERE is what only this flow's fetch can pay for: a review of
+# HUNDREDS of names, drained in bulk. This flow already pays for that fetch, so
+# the two behaviours that need it ride here, for ~35s: the confirm that Cancel
+# raises before discarding decisions, and the Enter commit. Everything else
+# about the wizard is component-covered in EntityReviewWizard.test.tsx.
 # ============================================================
 
+# THE WIZARD IS NOT OPTIONAL HERE, AND THIS WAIT NO LONGER PRETENDS IT MIGHT BE.
+# This used to be an either/or gate (".*Confirm New Players.*|.*Saved N cards.*")
+# feeding a `when: visible: "Confirm New Players & Teams"` block — so a run in
+# which the wizard never appeared skipped every assertion below it and went
+# GREEN having tested nothing (R2). It cannot legitimately not appear: setup.yaml
+# resets the set-builder tables at the head of every run, so these 220 cards are
+# always fresh and their 1996 player names are always absent from `players`. A
+# fetch that went straight to "Saved 220 cards" would mean unknown names had been
+# created without review — the exact defect the wizard exists to prevent — and
+# that must fail here, loudly, rather than be branched around.
+#
+# 120s: hundreds of unknown names, each queued behind a live Wikidata lookup.
+- extendedWaitUntil:
+    visible: "Confirm New Players & Teams"
+    timeout: 120000
+
+# ── 6a. CANCEL WITH WORK ON THE BOOKS ASKS FIRST, AND "KEEP WORKING"
+#        REALLY KEEPS IT (NEO-220) ──────────────────────────────────
+# Cancel used to throw a review session away on one click. It now asks
+# first, and only once there IS something to lose — so this needs exactly
+# one decision taken before the cancel.
+#
+# WHICH name is presented is not asserted: the wizard presents the first
+# row whose background lookup has SETTLED, and hundreds of lookups race.
+# The decision is taken on whichever is on screen, which is all this
+# needs. 30s, not the 7s default, because the row only offers an action
+# once its live Wikidata lookup has come back — an external round-trip.
+#
+# PLAYER **OR** TEAM. Unlike the retired custom-subtree flows, whose only
+# unknowns were two invented player names, a real 1996 fetch queues
+# unknown TEAMS as well (1996's Expos / Marlins / Anaheim Angels are not
+# in the roster the 2024 Topps Chrome seed created). The button's
+# accessible name is "Add as New {Player|Team}", so pinning it to Player
+# would fail whenever a team happens to settle first. Both are the same
+# "create" decision and either leaves exactly ONE decision on the books,
+# which is all 6a asserts.
+#
+# ⚠️ WAIT FOR THE BATCH TO STOP MOVING BEFORE DECIDING (NEO-236 / NEO-248).
+# `resolveNav` yields a PLAYER row the wizard walked to the moment any team row
+# is settled and undecided — teams are answered before players so that the
+# players can link against them. Lookups resolve five-wide over live Wikidata
+# and complete OUT OF ORDER, so a player presented now can be replaced by a
+# "New Team" step a round-trip later, with no decision made and nothing on
+# screen to warn a flow it happened.
+#
+# That is what failed main's copy of this flow in run 34068758296 (PR #234): 6a
+# took its decision, and by the assert the walk had moved. The same flow passed
+# an hour earlier and on #237 — it is a race, not a regression.
+#
+# "N still looking up — wait or skip" is the wizard's own footer status and is
+# absent exactly when no undecided row is pending. Once it is gone the set of
+# settled undecided rows is FIXED, so whichever row is presented next cannot be
+# taken away: a team row never yields at all, and a player row can only yield to
+# a team that settles, and none can still settle. Either kind then holds still
+# for the decision, and 6a keeps its exact "one decision" claim.
+#
+# R5 marketplace-class exception, and it is the dominant cost in this step:
+# hundreds of unknown names, each behind a live Wikidata lookup at ~3s/item
+# five-wide. It returns the moment the queue drains.
+- extendedWaitUntil:
+    notVisible: ".*still looking up.*"
+    timeout: 180000
 - extendedWaitUntil:
     visible:
-      text: ".*Confirm New Players.*|.*Saved [0-9]+ cards.*"
-    timeout: 120000
-- runFlow:
-    when:
-      visible: "Confirm New Players & Teams"
-    commands:
-      # ── 6a. CANCEL WITH WORK ON THE BOOKS ASKS FIRST, AND "KEEP WORKING"
-      #        REALLY KEEPS IT (NEO-220) ──────────────────────────────────
-      # Cancel used to throw a review session away on one click. It now asks
-      # first, and only once there IS something to lose — so this needs exactly
-      # one decision taken before the cancel.
-      #
-      # WHICH name is presented is not asserted: the wizard presents the first
-      # row whose background lookup has SETTLED, and hundreds of lookups race.
-      # The decision is taken on whichever is on screen, which is all this
-      # needs. 30s, not the 7s default, because the row only offers an action
-      # once its live Wikidata lookup has come back — an external round-trip.
-      #
-      # PLAYER **OR** TEAM. Unlike the retired custom-subtree flows, whose only
-      # unknowns were two invented player names, a real 1996 fetch queues
-      # unknown TEAMS as well (1996's Expos / Marlins / Anaheim Angels are not
-      # in the roster the 2024 Topps Chrome seed created). The button's
-      # accessible name is "Add as New {Player|Team}", so pinning it to Player
-      # would fail whenever a team happens to settle first. Both are the same
-      # "create" decision and either leaves exactly ONE decision on the books,
-      # which is all 6a asserts.
-      - extendedWaitUntil:
-          visible:
-            id: "Add as New (Player|Team)"
-          timeout: 30000
-      - tapOn:
-          id: "Add as New (Player|Team)"
-      - tapOn:
-          text: "Cancel (Esc)"
-          retryTapIfNoChange: true
-      # The confirm names exactly what is at stake. One decision → "Discard 1
-      # decision?" (singular), which is also the proof that the decision above
-      # landed.
-      - assertVisible:
-          text: "Discard 1 decision.*"
-      # "Cancel" here is the confirm's own keep-working button, NOT the
-      # wizard's "Cancel (Esc)" behind it — and the confirm's HEADING starts
-      # with "Discard" too, so neither can be matched by text alone. Anchored
-      # below the confirm's own explanation so it can only be the one inside
-      # the dialog.
-      - tapOn:
-          text: "Cancel"
-          below:
-            text: ".*The same names come back the next time you sync this set.*"
-      # Nothing was lost: the wizard is still open …
-      - assertVisible: "Confirm New Players & Teams"
-      # … and the decision is still on the books, listed under the current name.
-      - assertVisible:
-          text: "Decided \\(1\\)"
+      id: "Add as New (Player|Team)"
+    timeout: 30000
+- tapOn:
+    id: "Add as New (Player|Team)"
+- tapOn:
+    text: "Cancel (Esc)"
+    retryTapIfNoChange: true
+# The confirm names exactly what is at stake. One decision → "Discard 1
+# decision?" (singular), which is also the proof that the decision above
+# landed.
+- assertVisible:
+    text: "Discard 1 decision.*"
+# "Cancel" here is the confirm's own keep-working button, NOT the
+# wizard's "Cancel (Esc)" behind it — and the confirm's HEADING starts
+# with "Discard" too, so neither can be matched by text alone. Anchored
+# below the confirm's own explanation so it can only be the one inside
+# the dialog.
+- tapOn:
+    text: "Cancel"
+    below:
+      text: ".*The same names come back the next time you sync this set.*"
+# Nothing was lost: the wizard is still open …
+- assertVisible: "Confirm New Players & Teams"
+# … and the decision is still on the books — read off the wizard's own
+# progress numerator, which is the ONE place the count is always rendered.
+#
+# ⚠️ DO NOT go back to `Decided (1)` here. That list is the LAST thing in the
+# dialog body, and on a tall step it falls out of the reported hierarchy
+# entirely. Run 34072730449 caught it exactly: the header read "1 of 209
+# reviewed" and the Cancel prompt had just said "Discard 1 decision?", so the
+# decision had unquestionably landed — but the presented step was
+# "New Team: Southern Illinois Salukis baseball", a college side with FIVE
+# possible matches (a 156px block) above an expanded league grid and no league
+# prefill to collapse it. The whole tree was 169 nodes with no `Decided` node
+# in it at all. On a short step the same list IS reported, which is why this
+# passed for months and then did not.
+#
+# "1 of N reviewed" is the same claim, exactly as strict — one decision, no
+# more — against a node that sits at the top of the dialog and is always there.
+- assertVisible:
+    text: "1 of [0-9]+ reviewed.*"
 
-      # ── 6b. BULK-DECIDE THE REST AND COMMIT ───────────────────────────
-      # The one decision above is absorbed by the bulk (it is already decided,
-      # so "Add remaining players as new" simply leaves it alone) — 6a writes no
-      # extra player and the 220-card total below is unchanged by it.
-      - tapOn:
-          text: ".*Add remaining players as new.*"
-      # NEO-236 — the bulk tap decides PLAYERS only, so every New Team step it
-      # leaves behind has to be answered before the batch can commit. One tap
-      # per step accepts the Location, Name and League the step is already
-      # showing, which is what an operator who agrees with the pre-fill would
-      # do. Keyed on the terminal state rather than on a step being visible:
-      # players and their staged teams drain at the same time, so a loop keyed
-      # on "New Team:" would exit the first time it caught the batch between
-      # lookups. See setup.yaml for the long version.
-      #
-      # THIS TAP IS SAFE AGAIN, AND THE DETOUR IS WORTH RECORDING.
-      # In CI run 34007264279 this same tap died with "null cannot be cast to
-      # non-null type kotlin.Int": a team step had grown taller than the dialog
-      # could show, its primary action was the LAST thing in it, and the action
-      # therefore sat at y=620-652 — below the footer AND below the dialog on
-      # the 1024x629 CI viewport. Nothing a flow could do reached it, because
-      # maestro-web's scroll is `window.scrollTo` and cannot drive an inner
-      # `overflow-y-auto` box. The app answered it: the per-row decision
-      # controls now live in the dialog's FIXED footer (shrink-0) and the
-      # league picker is bounded and collapsible, so "Add as New Team" holds
-      # still at the bottom of the dialog whatever the row above it does.
-      #
-      # DO NOT "FIX" A FAILURE HERE BY SWITCHING TO THE FOOTER'S
-      # "Skip remaining names". That was tried in run 34010164587 and it moved
-      # the failure downstream instead of removing it: skipping 23 names paints
-      # a "Skipped names (23)" panel on the checklist page — 732px of rows with
-      # Unskip buttons, measured [72,244][767,976] — which pushes the card list
-      # down and out of its own virtuoso scroller. STEP 7a's
-      # `Edit card .* below "BSC source"` then resolved to a row clipped above
-      # the scroller (row at y=225-245, scroller starting at y=280), Maestro
-      # tapped its reported bounds at (687,235) — dead space between the filter
-      # row and the skipped panel — and the drawer never opened. Creating the
-      # teams leaves the page exactly as the rest of this flow expects it.
-      - repeat:
-          times: 250
-          while:
-            notVisible:
-              text: ".*Confirm & Save.*"
+# ── 6b. BULK-DECIDE THE REST AND COMMIT ───────────────────────────
+# The one decision above is absorbed by the bulk (it is already decided,
+# so "Add remaining players as new" simply leaves it alone) — 6a writes no
+# extra player and the 220-card total below is unchanged by it.
+- tapOn:
+    text: ".*Add remaining players as new.*"
+# NEO-236 — the bulk tap decides PLAYERS only, so every New Team step it
+# leaves behind has to be answered before the batch can commit. One tap
+# per step accepts the Location, Name and League the step is already
+# showing, which is what an operator who agrees with the pre-fill would
+# do. Keyed on the terminal state rather than on a step being visible:
+# players and their staged teams drain at the same time, so a loop keyed
+# on "New Team:" would exit the first time it caught the batch between
+# lookups. See setup.yaml for the long version.
+#
+# THIS TAP IS SAFE AGAIN, AND THE DETOUR IS WORTH RECORDING.
+# In CI run 34007264279 this same tap died with "null cannot be cast to
+# non-null type kotlin.Int": a team step had grown taller than the dialog
+# could show, its primary action was the LAST thing in it, and the action
+# therefore sat at y=620-652 — below the footer AND below the dialog on
+# the 1024x629 CI viewport. Nothing a flow could do reached it, because
+# maestro-web's scroll is `window.scrollTo` and cannot drive an inner
+# `overflow-y-auto` box. The app answered it: the per-row decision
+# controls now live in the dialog's FIXED footer (shrink-0) and the
+# league picker is bounded and collapsible, so "Add as New Team" holds
+# still at the bottom of the dialog whatever the row above it does.
+#
+# DO NOT "FIX" A FAILURE HERE BY SWITCHING TO THE FOOTER'S
+# "Skip remaining names". That was tried in run 34010164587 and it moved
+# the failure downstream instead of removing it: skipping 23 names paints
+# a "Skipped names (23)" panel on the checklist page — 732px of rows with
+# Unskip buttons, measured [72,244][767,976] — which pushes the card list
+# down and out of its own virtuoso scroller. STEP 7a's
+# `Edit card .* below "BSC source"` then resolved to a row clipped above
+# the scroller (row at y=225-245, scroller starting at y=280), Maestro
+# tapped its reported bounds at (687,235) — dead space between the filter
+# row and the skipped panel — and the drawer never opened. Creating the
+# teams leaves the page exactly as the rest of this flow expects it.
+- repeat:
+    times: 250
+    while:
+      notVisible:
+        text: ".*Confirm & Save.*"
+    commands:
+      - runFlow:
+          when:
+            visible: "New Team: .*"
           commands:
-            - runFlow:
-                when:
-                  visible: "New Team: .*"
-                commands:
-                  - tapOn: "Add as New Team"
-      # NEO-221 — the bulk add now decides only rows whose Wikidata lookup has
-      # SETTLED, staying armed for the rest, so this wait is gated on that live
-      # external round-trip rather than on one mutation. Raised for that reason;
-      # it resolves the moment the wizard is done, so a healthy run pays nothing
-      # for the bigger ceiling.
-      - extendedWaitUntil:
-          visible:
-            text: ".*Confirm & Save.*"
-          timeout: 240000
-      # KEYBOARD COMMIT, not a tap (NEO-220). Confirm & Save is autofocused the
-      # moment every row is decided, and its label says "(Enter)" — so Enter
-      # committing IS the feature, and a tap would leave that promise untested.
-      # This works only because the button carries the id
-      # `entity-review-confirm-save`: maestro-web's `pressKey` re-finds the
-      # active element by an XPath that falls back to the class string, and the
-      # footer's Cancel is a NeonButton with the IDENTICAL classes — without the
-      # id the XPath matched both, Selenium returned the first, and Enter aimed
-      # at Confirm landed on Cancel (the failure screenshot showed
-      # "Discard 1 decision?" while the app's own focus was correct). The button
-      # also handles Enter in its own onKeyDown, because a synthetic
-      # KeyboardEvent has no default action and cannot activate a <button>.
-      - pressKey: Enter
-      # NEO-163: no gate on the wizard closing. The "Saved N cards" wait below is
-      # a positive terminal signal proving the same thing and more, so this
-      # negative gate against a repainting node only added a failure mode.
+            - tapOn: "Add as New Team"
+# NEO-221 — the bulk add now decides only rows whose Wikidata lookup has
+# SETTLED, staying armed for the rest, so this wait is gated on that live
+# external round-trip rather than on one mutation. Raised for that reason;
+# it resolves the moment the wizard is done, so a healthy run pays nothing
+# for the bigger ceiling.
+- extendedWaitUntil:
+    visible:
+      text: ".*Confirm & Save.*"
+    timeout: 240000
+# KEYBOARD COMMIT, not a tap (NEO-220). Confirm & Save is autofocused the
+# moment every row is decided, and its label says "(Enter)" — so Enter
+# committing IS the feature, and a tap would leave that promise untested.
+# This works only because the button carries the id
+# `entity-review-confirm-save`: maestro-web's `pressKey` re-finds the
+# active element by an XPath that falls back to the class string, and the
+# footer's Cancel is a NeonButton with the IDENTICAL classes — without the
+# id the XPath matched both, Selenium returned the first, and Enter aimed
+# at Confirm landed on Cancel (the failure screenshot showed
+# "Discard 1 decision?" while the app's own focus was correct). The button
+# also handles Enter in its own onKeyDown, because a synthetic
+# KeyboardEvent has no default action and cannot activate a <button>.
+- pressKey: Enter
+# NEO-163: no gate on the wizard closing. The "Saved N cards" wait below is
+# a positive terminal signal proving the same thing and more, so this
+# negative gate against a repainting node only added a failure mode.
 
 - extendedWaitUntil:
     visible:

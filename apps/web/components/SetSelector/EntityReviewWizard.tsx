@@ -296,6 +296,10 @@ export default function EntityReviewWizard({
   );
   // NEO-236 — turn a player's career teams into their own New Team steps.
   const stageCareerTeams = useMutation(api.entityReviewQueue.stageCareerTeamRows);
+  // NEO-248 — removing a chip has to be as durable as adding one was.
+  const clearCareerTeamStint = useMutation(
+    api.entityReviewQueue.clearCareerTeamStint,
+  );
 
   const [linkingOpen, setLinkingOpen] = useState(false);
   /**
@@ -306,11 +310,32 @@ export default function EntityReviewWizard({
    * rest of the per-row state when the presented row changes.
    */
   const [careerEntryDirty, setCareerEntryDirty] = useState(false);
-  // Manual career-team entries the admin has staged for the CURRENT player
-  // row (only ever populated for a player). Held here (not in CareerTeamEntry)
-  // so it resets per-row alongside linkingOpen and is passed through to
-  // recordDecision on "Add as New Player".
-  const [stagedCareerTeams, setStagedCareerTeams] = useState<CareerTeamDraft[]>([]);
+  /**
+   * Manual career-team entries the admin has staged, keyed by PLAYER review-row
+   * id. Held here (not in CareerTeamEntry) so it can be passed through to
+   * recordDecision on "Add as New Player".
+   *
+   * ## NEO-248 — why this is keyed rather than a bare array
+   *
+   * It used to be one array, wiped by the presented-row effect below. NEO-236
+   * then made a hand-typed career team stage a New Team step of its own, and
+   * staging that step MOVES the walk onto it (`waitingOnStagedTeams`). So the
+   * ordinary path through this feature — type "Sydney Blue Sox", 2001, 2005,
+   * press Add — navigated away and wiped the array on the way, and the operator
+   * came back to a player row with no chip and no years anywhere. Typed input,
+   * silently lost.
+   *
+   * Keyed by row it survives the round trip, for exactly the reason
+   * `excludedCareerTeamsByRow` and `teamCreateByRow` beside it are keyed: a
+   * thing the operator has already said must outlive NEO-221's navigation. The
+   * years are ALSO persisted server-side on the staged step
+   * (`source.manualStint`), which is what `persistedStagedCareerTeams` rebuilds
+   * from when this map has never held an entry for the row — a reopened dialog,
+   * a reload.
+   */
+  const [stagedCareerTeamsByRow, setStagedCareerTeamsByRow] = useState<
+    Record<string, CareerTeamDraft[]>
+  >({});
   /**
    * NEO-212 — Wikidata career-team proposals the operator has UNCHECKED, keyed
    * by review-row id.
@@ -581,6 +606,66 @@ export default function EntityReviewWizard({
   const excludedForCurrent = current
     ? (excludedCareerTeamsByRow[current._id] ?? [])
     : [];
+
+  /**
+   * NEO-248 — the hand-typed stints this player's own staged steps still carry.
+   *
+   * `stageCareerTeamRows` writes the operator's years onto the step it stages
+   * (`source.manualStint`), and ONLY for a hand-typed entry — a Wikidata
+   * proposal stages a step with no stint on it, because its years are already
+   * on this row's `enrichment.careerTeams` and are rendered from there. So this
+   * rebuilds exactly the chips the manual form produced and nothing else.
+   *
+   * Used only when the operator has not touched this row in this session (see
+   * `stagedCareerTeams` below): within a session the keyed map is authoritative,
+   * because a chip the operator REMOVED must stay removed even though its
+   * staged step is still standing.
+   */
+  const persistedStagedCareerTeams = useMemo<CareerTeamDraft[]>(() => {
+    if (!current || current.kind !== "player" || !rows) return [];
+    const out: CareerTeamDraft[] = [];
+    for (const row of rows) {
+      const source = row.source;
+      if (source?.kind !== "careerTeamOf") continue;
+      if (source.playerRowId !== current._id) continue;
+      const stint = source.manualStint;
+      if (!stint) continue;
+      out.push({
+        name: row.name,
+        fromYear: stint.fromYear,
+        ...(stint.toYear !== undefined ? { toYear: stint.toYear } : {}),
+      });
+    }
+    return out;
+  }, [rows, current]);
+
+  /** The chips for the row on screen: this session's edits if there are any,
+   *  otherwise whatever the batch itself still remembers. Memoised because it
+   *  is a dependency of two memos below, and a fresh `[]` every render would
+   *  re-run both of them forever. */
+  const stagedCareerTeams = useMemo<CareerTeamDraft[]>(
+    () =>
+      current
+        ? (stagedCareerTeamsByRow[current._id] ?? persistedStagedCareerTeams)
+        : [],
+    [current, stagedCareerTeamsByRow, persistedStagedCareerTeams],
+  );
+
+  /**
+   * Write the chip list for the row on screen.
+   *
+   * Takes an updater over the EFFECTIVE list rather than over the map's entry,
+   * so removing a rehydrated chip works the same as removing one added a moment
+   * ago. Both callers are user gestures, so the closed-over value is current.
+   */
+  const setStagedCareerTeams = (
+    updater: (prev: CareerTeamDraft[]) => CareerTeamDraft[],
+  ) => {
+    const rowId = current?._id;
+    if (!rowId) return;
+    const next = updater(stagedCareerTeams);
+    setStagedCareerTeamsByRow((prev) => ({ ...prev, [rowId]: next }));
+  };
 
   /** Every team name this batch already accounts for — fed to the career-team
    *  typeahead so it can suggest teams that exist only as pending decisions. */
@@ -858,9 +943,25 @@ export default function EntityReviewWizard({
   const pinnedRowHasEdits =
     linkingOpen ||
     careerEntryDirty ||
-    stagedCareerTeams.length > 0 ||
+    // NEO-248: presence of a KEY, not a non-empty list — the same test as
+    // `teamCreateByRow` below. The list can now be rehydrated from the batch on
+    // a row the operator has not touched this session, and a rehydrated chip is
+    // not "work in progress on the row on screen"; only an edit made here is.
+    (current ? stagedCareerTeamsByRow[current._id] !== undefined : false) ||
     (current ? (excludedCareerTeamsByRow[current._id]?.length ?? 0) > 0 : false) ||
     (current ? teamCreateByRow[current._id] !== undefined : false);
+
+  /**
+   * NEO-248 — `pinnedRowHasEdits`, readable from inside the auto-add timer.
+   *
+   * That timer fires 1.5s after a lookup lands, out of a render closure that is
+   * already stale, and what it calls decides EVERY settled row in the batch.
+   * The same ref trick `autoAddRef` uses, for the same reason.
+   */
+  const pinnedEditsRef = useRef(pinnedRowHasEdits);
+  useEffect(() => {
+    pinnedEditsRef.current = pinnedRowHasEdits;
+  }, [pinnedRowHasEdits]);
 
   useEffect(() => {
     if (!rows) return;
@@ -950,12 +1051,15 @@ export default function EntityReviewWizard({
 
   // Closing the "Link to Existing" search whenever the presented row changes
   // so it doesn't stay open for the wrong row. Keyed on the row id, so it no
-  // longer fires when a sibling row's lookup lands — staged career teams
-  // survive everything except an actual row change (NEO-221).
+  // longer fires when a sibling row's lookup lands (NEO-221).
+  //
+  // NEO-248: the staged career teams are NOT cleared here any more. They are
+  // keyed by row now, so there is nothing to reset — and clearing them was the
+  // bug: the New Team step a hand-typed team stages is itself a row change, so
+  // the wipe fired on the way to the very step the operator had just asked for.
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- closes the link-search when the wizard advances so it cannot stay open on the wrong row
     setLinkingOpen(false);
-    setStagedCareerTeams([]);
     setCareerEntryDirty(false);
     // NEO-236's `decideError` is gone: NEO-221's `rowError` supersedes it and
     // is already per-row — cleared at the top of `decide` and rendered only
@@ -1070,6 +1174,24 @@ export default function EntityReviewWizard({
 
     function fire() {
       if (!autoAddRef.current) return;
+      /*
+       * NEO-248 — never decide a row the operator is in the middle of.
+       *
+       * This is a TIMER, not a button. The operator can be halfway through a
+       * career-team entry — a name typed with no year yet, a chip staged, a
+       * link search open — when it fires, and the mutation it calls writes a
+       * create decision on the row in front of them. Deferred rather than
+       * dropped, exactly as an in-flight call is: the next tick re-checks, and
+       * the wait ends when they finish the row.
+       *
+       * `pinnedRowHasEdits` is the same predicate the walk uses to decide it
+       * may not move them off a row, which is the point — one answer to "is
+       * there work on this row to lose", not two that can disagree.
+       */
+      if (pinnedEditsRef.current) {
+        schedule();
+        return;
+      }
       // A call is already running. Come back after the debounce instead of
       // dropping this round on the floor — that is the stall.
       if (bulkRef.current) {
@@ -2440,11 +2562,53 @@ export default function EntityReviewWizard({
                                       <button
                                         type="button"
                                         aria-label={`Remove ${teamFullName(ct)}`}
-                                        onClick={() =>
+                                        onClick={() => {
                                           setStagedCareerTeams((prev) =>
                                             prev.filter((_, i) => i !== idx),
-                                          )
-                                        }
+                                          );
+                                          /*
+                                           * NEO-248 — and forget the years on
+                                           * the server too.
+                                           *
+                                           * The keyed list dies with the
+                                           * component (the wizard is rendered
+                                           * conditionally), and the rebuild
+                                           * reads the stint straight back off
+                                           * the staged step — so a removal
+                                           * that lived only here came undone
+                                           * on the next open and carried the
+                                           * stint into the player's timeline.
+                                           *
+                                           * Only the STINT is cleared; the New
+                                           * Team step stays. Another player in
+                                           * the batch may need that club, and
+                                           * its lookup has already run.
+                                           */
+                                          const key = normalizeEntityName(
+                                            teamFullName(ct),
+                                          );
+                                          const step = (rows ?? []).find(
+                                            (r) =>
+                                              r.source?.kind === "careerTeamOf" &&
+                                              r.source.playerRowId === current._id &&
+                                              r.source.manualStint !== undefined &&
+                                              normalizeEntityName(r.name) === key,
+                                          );
+                                          if (!step) return;
+                                          void clearCareerTeamStint({
+                                            reviewRowId: current._id,
+                                            teamRowId: step._id,
+                                          }).catch(() => {
+                                            // The chip is gone from this
+                                            // session either way. A failure
+                                            // means it can come back on the
+                                            // next open — which is exactly the
+                                            // state before this call existed,
+                                            // and removing it again is the way
+                                            // out. Nothing to say here that
+                                            // the chip does not already say.
+                                          });
+                                        }}
                                         // gray-400, not gray-500 (SC 1.4.3: 3.04:1 on
                                         // the gray-800 chip), and a real focus
                                         // ring rather than a colour swap behind
@@ -2470,9 +2634,24 @@ export default function EntityReviewWizard({
                                 // server-side, and it inserts nothing at all
                                 // when the name already resolves to a team, so
                                 // typing an existing name is still a link.
+                                //
+                                // NEO-248 — the YEARS go with it. Staging this
+                                // step is what moves the walk off this row, so
+                                // the years have to be somewhere other than
+                                // this component before that happens; the step
+                                // carries them on `source.manualStint` and the
+                                // chip is rebuilt from there.
                                 void stageCareerTeams({
                                   reviewRowId: current._id,
-                                  careerTeamNames: [entry.name],
+                                  careerTeams: [
+                                    {
+                                      name: entry.name,
+                                      fromYear: entry.fromYear,
+                                      ...(entry.toYear !== undefined
+                                        ? { toYear: entry.toYear }
+                                        : {}),
+                                    },
+                                  ],
                                 }).catch(() => {
                                   // The chip is already staged locally and the
                                   // stint will still be recorded; what is lost

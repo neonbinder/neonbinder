@@ -105,6 +105,8 @@ async function insertRow(
       kind: "careerTeamOf";
       playerRowId: Id<"entityReviewQueue">;
       wikidataId?: string;
+      // NEO-248 — the years the operator typed beside the name.
+      manualStint?: { fromYear: number; toYear?: number };
     };
   },
 ): Promise<Id<"entityReviewQueue">> {
@@ -543,6 +545,531 @@ describe("stageCareerTeamRows: a career team we do not hold becomes its own step
     ).rejects.toThrow(/different review session/);
 
     expect(await stagedRows(t)).toHaveLength(0);
+  });
+});
+
+// ===========================================================================
+// NEO-248 — the operator's YEARS travel with the step their name staged
+// ===========================================================================
+
+/**
+ * The NEO-236 regression this covers.
+ *
+ * A hand-typed career team is two facts at once: a team the batch may have to
+ * create, and a stint with years on it. NEO-236 gave the team half a New Team
+ * step of its own — and staging that step is what MOVES the wizard's walk off
+ * the player row (`waitingOnStagedTeams`). The years lived only in the wizard's
+ * per-row React state, which the presented-row effect wiped on the way. So the
+ * ordinary path through the feature — type a name, 2001, 2005, press Add — lost
+ * the years before the operator had finished the sentence, and nothing anywhere
+ * held them.
+ *
+ * `source.manualStint` is where they live now: on the step the name staged,
+ * written only for a HAND-TYPED entry. A Wikidata proposal deliberately writes
+ * none — its years are already on the player row's `enrichment.careerTeams`,
+ * and that asymmetry is exactly what lets the wizard rebuild the manual chips
+ * and only those.
+ */
+describe("stageCareerTeamRows: a hand-typed stint's years survive the New Team step", () => {
+  test("writes the typed years onto the staged step as source.manualStint", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const playerRowId = await insertRow(t, {
+      sportId,
+      kind: "player",
+      name: "Travis Bazzana",
+      status: "ready",
+    });
+
+    const added = await t
+      .withIdentity(ADMIN_IDENTITY)
+      .mutation(api.entityReviewQueue.stageCareerTeamRows, {
+        reviewRowId: playerRowId,
+        careerTeams: [
+          { name: "Sydney Blue Sox", fromYear: 2001, toYear: 2005 },
+        ],
+      });
+    expect(added).toBe(1);
+
+    const staged = await stagedRows(t);
+    expect(staged).toHaveLength(1);
+    expect(staged[0].name).toBe("Sydney Blue Sox");
+    expect((staged[0].source as { playerRowId: string }).playerRowId).toBe(
+      playerRowId,
+    );
+    // THE POINT: the years the operator typed are on the row, so the chip can
+    // be rebuilt as "Sydney Blue Sox (2001–2005)" after its own step is
+    // answered and the walk comes back.
+    expect(
+      (staged[0].source as { manualStint?: unknown }).manualStint,
+    ).toEqual({ fromYear: 2001, toYear: 2005 });
+  });
+
+  test("an open-ended stint stores fromYear alone, with no toYear key", async () => {
+    // "–present" is the absence of a toYear, not a sentinel. Nothing
+    // downstream should have to tell "still there" from "a toYear that is
+    // undefined".
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const playerRowId = await insertRow(t, {
+      sportId,
+      kind: "player",
+      name: "Travis Bazzana",
+      status: "ready",
+    });
+
+    await t
+      .withIdentity(ADMIN_IDENTITY)
+      .mutation(api.entityReviewQueue.stageCareerTeamRows, {
+        reviewRowId: playerRowId,
+        careerTeams: [{ name: "Sydney Blue Sox", fromYear: 2023 }],
+      });
+
+    const stint = (
+      (await stagedRows(t))[0].source as {
+        manualStint: Record<string, unknown>;
+      }
+    ).manualStint;
+    expect(stint).toEqual({ fromYear: 2023 });
+    expect(Object.prototype.hasOwnProperty.call(stint, "toYear")).toBe(false);
+  });
+
+  test("a Wikidata proposal stages a step with NO manualStint on it", async () => {
+    // The discriminator the wizard's rehydration reads. A P54 label's years are
+    // already on the player row, and a second copy here is a second thing to
+    // disagree — the chip for it is rendered from `enrichment.careerTeams`.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const playerRowId = await insertRow(t, {
+      sportId,
+      kind: "player",
+      name: "Travis Bazzana",
+    });
+
+    await landLookup(t, playerRowId, [
+      { name: "Sydney Blue Sox", fromYear: 2019, toYear: 2021 },
+    ]);
+
+    const staged = await stagedRows(t);
+    expect(staged).toHaveLength(1);
+    expect(
+      Object.prototype.hasOwnProperty.call(
+        staged[0].source as object,
+        "manualStint",
+      ),
+    ).toBe(false);
+  });
+
+  test("the name-only call site still stages, and still stores no stint", async () => {
+    // `Decide team` on a Wikidata chip stages a NAME and nothing else. That
+    // caller is unchanged, and this is the assertion that keeps it that way.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const playerRowId = await insertRow(t, {
+      sportId,
+      kind: "player",
+      name: "Travis Bazzana",
+      status: "ready",
+    });
+
+    const added = await t
+      .withIdentity(ADMIN_IDENTITY)
+      .mutation(api.entityReviewQueue.stageCareerTeamRows, {
+        reviewRowId: playerRowId,
+        careerTeamNames: ["Sydney Blue Sox"],
+      });
+
+    expect(added).toBe(1);
+    const staged = await stagedRows(t);
+    expect(
+      Object.prototype.hasOwnProperty.call(
+        staged[0].source as object,
+        "manualStint",
+      ),
+    ).toBe(false);
+  });
+
+  test("hand-typing years for a club this player's OWN lookup already staged fills them in, without a second step", async () => {
+    // Wikidata knew the club but not the dates (the NEO-235 undated case), so
+    // the step exists before the operator types. Staging dedupes by name and
+    // would otherwise drop the years on the floor — there would be no row to
+    // put them on and the chip could not be rebuilt.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const playerRowId = await insertRow(t, {
+      sportId,
+      kind: "player",
+      name: "Travis Bazzana",
+    });
+    await landLookup(t, playerRowId, [{ name: "Sydney Blue Sox", fromYear: 2019 }]);
+
+    const added = await t
+      .withIdentity(ADMIN_IDENTITY)
+      .mutation(api.entityReviewQueue.stageCareerTeamRows, {
+        reviewRowId: playerRowId,
+        careerTeams: [
+          { name: "Sydney Blue Sox", fromYear: 2001, toYear: 2005 },
+        ],
+      });
+
+    // Nothing INSERTED — the step was already there — but the stint landed.
+    expect(added).toBe(0);
+    const staged = await stagedRows(t);
+    expect(staged).toHaveLength(1);
+    expect(
+      (staged[0].source as { manualStint?: unknown }).manualStint,
+    ).toEqual({ fromYear: 2001, toYear: 2005 });
+  });
+
+  test("never overwrites a stint already on the step, and never touches another player's", async () => {
+    // Two guards in one: the patch is for filling a blank, not for revising an
+    // answer, and one player's dates must never be attributed to a step staged
+    // for somebody else.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    const first = await insertRow(t, {
+      sportId,
+      kind: "player",
+      name: "Player One",
+      status: "ready",
+    });
+    const second = await insertRow(t, {
+      sportId,
+      kind: "player",
+      name: "Player Two",
+      status: "ready",
+    });
+
+    await asAdmin.mutation(api.entityReviewQueue.stageCareerTeamRows, {
+      reviewRowId: first,
+      careerTeams: [{ name: "Sydney Blue Sox", fromYear: 2001, toYear: 2005 }],
+    });
+    // The second player shares the club, so the dedup gives them no step of
+    // their own — and their dates must not rewrite the first player's.
+    await asAdmin.mutation(api.entityReviewQueue.stageCareerTeamRows, {
+      reviewRowId: second,
+      careerTeams: [{ name: "Sydney Blue Sox", fromYear: 2018, toYear: 2020 }],
+    });
+
+    const staged = await stagedRows(t);
+    expect(staged).toHaveLength(1);
+    expect((staged[0].source as { playerRowId: string }).playerRowId).toBe(first);
+    expect(
+      (staged[0].source as { manualStint?: unknown }).manualStint,
+    ).toEqual({ fromYear: 2001, toYear: 2005 });
+  });
+
+  test("refuses years that could never reach players.teamYears", async () => {
+    // Defense in depth, the same bounds `recordDecision` applies — these years
+    // become a `teamYears` entry by way of the chip the wizard rebuilds from
+    // them, so they are checked on the way in rather than on the way out.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    const playerRowId = await insertRow(t, {
+      sportId,
+      kind: "player",
+      name: "Travis Bazzana",
+      status: "ready",
+    });
+
+    await expect(
+      asAdmin.mutation(api.entityReviewQueue.stageCareerTeamRows, {
+        reviewRowId: playerRowId,
+        careerTeams: [{ name: "Sydney Blue Sox", fromYear: 1200 }],
+      }),
+    ).rejects.toThrow(/fromYear/);
+
+    await expect(
+      asAdmin.mutation(api.entityReviewQueue.stageCareerTeamRows, {
+        reviewRowId: playerRowId,
+        careerTeams: [
+          { name: "Sydney Blue Sox", fromYear: 2005, toYear: 2001 },
+        ],
+      }),
+    ).rejects.toThrow(/toYear/);
+
+    // A refusal leaves nothing behind — no half-staged step for a stint the
+    // batch rejected.
+    expect(await stagedRows(t)).toHaveLength(0);
+  });
+
+  test("refuses a typed name longer than the team-name limit, with a LENGTH-only message", async () => {
+    // The staging loop drops an over-long name silently, and that is right for
+    // a Wikidata label nobody on our side chose. It is wrong for one the
+    // operator typed: the chip would appear, the step never would, and nothing
+    // would say why — the same silent loss NEO-248 exists to remove.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const playerRowId = await insertRow(t, {
+      sportId,
+      kind: "player",
+      name: "Travis Bazzana",
+      status: "ready",
+    });
+
+    const overLong = "Z".repeat(121);
+    await expect(
+      t.withIdentity(ADMIN_IDENTITY).mutation(
+        api.entityReviewQueue.stageCareerTeamRows,
+        {
+          reviewRowId: playerRowId,
+          careerTeams: [{ name: overLong, fromYear: 2001 }],
+        },
+      ),
+    ).rejects.toThrow(/121 characters; the limit is 120/);
+
+    // The message says how long it was and never what it said — this string
+    // reaches Sentry and the browser console.
+    await expect(
+      t.withIdentity(ADMIN_IDENTITY).mutation(
+        api.entityReviewQueue.stageCareerTeamRows,
+        {
+          reviewRowId: playerRowId,
+          careerTeams: [{ name: overLong, fromYear: 2001 }],
+        },
+      ),
+    ).rejects.not.toThrow(/Z{20}/);
+
+    expect(await stagedRows(t)).toHaveLength(0);
+  });
+
+  test("refuses a typed stint once the player is already at the 64-step cap", async () => {
+    /*
+     * The cap used to sit at the top of the staging loop, so a hand-typed
+     * stint appended behind 64 enrichment proposals was never reached: the
+     * loop broke first, the mutation returned 0, and the wizard's `.catch` had
+     * nothing to catch. The years were gone with no message — NEO-248's own
+     * failure, one door along.
+     */
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    const playerRowId = await insertRow(t, {
+      sportId,
+      kind: "player",
+      name: "Journeyman",
+      status: "ready",
+    });
+
+    await asAdmin.mutation(api.entityReviewQueue.stageCareerTeamRows, {
+      reviewRowId: playerRowId,
+      careerTeamNames: Array.from({ length: 64 }, (_, i) => `Club ${i}`),
+    });
+    expect(await stagedRows(t)).toHaveLength(64);
+
+    await expect(
+      asAdmin.mutation(api.entityReviewQueue.stageCareerTeamRows, {
+        reviewRowId: playerRowId,
+        careerTeams: [{ name: "Sydney Blue Sox", fromYear: 2001 }],
+      }),
+    ).rejects.toThrow(/64 career-team steps/);
+
+    // Refused whole: the throw rolls the mutation back rather than leaving a
+    // 65th step behind.
+    expect(await stagedRows(t)).toHaveLength(64);
+  });
+
+  test("a name-only caller at the cap still stops QUIETLY", async () => {
+    // Only a typed stint is loud. `applyLookupResult`, the belt-and-braces
+    // pass and the bulk create all pass no stint, and a Wikidata label hitting
+    // the cap is not something to fail an operator's action over.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    const playerRowId = await insertRow(t, {
+      sportId,
+      kind: "player",
+      name: "Journeyman",
+      status: "ready",
+    });
+
+    await asAdmin.mutation(api.entityReviewQueue.stageCareerTeamRows, {
+      reviewRowId: playerRowId,
+      careerTeamNames: Array.from({ length: 64 }, (_, i) => `Club ${i}`),
+    });
+
+    const added = await asAdmin.mutation(
+      api.entityReviewQueue.stageCareerTeamRows,
+      { reviewRowId: playerRowId, careerTeamNames: ["Sydney Blue Sox"] },
+    );
+    expect(added).toBe(0);
+  });
+});
+
+// ===========================================================================
+// NEO-248 — the bulk create carries a player's hand-typed stints
+// ===========================================================================
+
+describe("recordAllRemainingAsCreate: a typed stint is not lost to the bulk", () => {
+  test("writes the staged stint onto the player's create decision", async () => {
+    /*
+     * The bulk wrote a bare `{action:"create"}`, and only
+     * `decision.manualCareerTeams` reaches `players.teamYears` at commit. This
+     * path is also the wizard's auto-add TIMER, so before this a player row the
+     * operator had typed years on could be decided by a mutation nobody
+     * pressed, as though the years had never been typed.
+     */
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    const playerRowId = await insertRow(t, {
+      sportId,
+      kind: "player",
+      name: "Travis Bazzana",
+      status: "ready",
+    });
+
+    await asAdmin.mutation(api.entityReviewQueue.stageCareerTeamRows, {
+      reviewRowId: playerRowId,
+      careerTeams: [
+        { name: "Sydney Blue Sox", fromYear: 2001, toYear: 2005 },
+      ],
+    });
+
+    await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
+      selectorOptionId: sportId,
+      batchId: BATCH,
+    });
+
+    const player = await t.run(async (ctx) => ctx.db.get(playerRowId));
+    expect(player!.decision).toEqual({
+      action: "create",
+      manualCareerTeams: [
+        { name: "Sydney Blue Sox", fromYear: 2001, toYear: 2005 },
+      ],
+    });
+  });
+
+  test("a player with no typed stint is still decided byte-identically", async () => {
+    // Absent, not an empty array — an ordinary bulk decision is stored exactly
+    // as it was before this existed.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    const playerRowId = await insertRow(t, {
+      sportId,
+      kind: "player",
+      name: "Travis Bazzana",
+      status: "ready",
+      enrichment: { careerTeams: [{ name: "Sydney Blue Sox", fromYear: 2019 }] },
+    });
+
+    await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
+      selectorOptionId: sportId,
+      batchId: BATCH,
+    });
+
+    const player = await t.run(async (ctx) => ctx.db.get(playerRowId));
+    expect(player!.decision).toEqual({ action: "create" });
+  });
+});
+
+// ===========================================================================
+// NEO-248 — removing a chip is durable
+// ===========================================================================
+
+describe("clearCareerTeamStint: a removed chip does not come back", () => {
+  /** The staged step for a hand-typed stint, plus the player it belongs to. */
+  async function seedStagedStint(t: ReturnType<typeof convexTest>) {
+    const sportId = await seedSport(t);
+    const playerRowId = await insertRow(t, {
+      sportId,
+      kind: "player",
+      name: "Travis Bazzana",
+      status: "ready",
+    });
+    await t
+      .withIdentity(ADMIN_IDENTITY)
+      .mutation(api.entityReviewQueue.stageCareerTeamRows, {
+        reviewRowId: playerRowId,
+        careerTeams: [
+          { name: "Sydney Blue Sox", fromYear: 2001, toYear: 2005 },
+        ],
+      });
+    const stepId = (await stagedRows(t))[0]._id as Id<"entityReviewQueue">;
+    return { sportId, playerRowId, stepId };
+  }
+
+  test("clears the stint and LEAVES the New Team step standing", async () => {
+    // The step is a question about a TEAM — often one another player in the
+    // batch also needs, and one whose own lookup has already run. "I did not
+    // mean to date that club" is not "that club is not in this set".
+    const t = convexTest(schema, modules);
+    const { playerRowId, stepId } = await seedStagedStint(t);
+
+    await t
+      .withIdentity(ADMIN_IDENTITY)
+      .mutation(api.entityReviewQueue.clearCareerTeamStint, {
+        reviewRowId: playerRowId,
+        teamRowId: stepId,
+      });
+
+    const step = await t.run(async (ctx) => ctx.db.get(stepId));
+    expect(step).not.toBeNull();
+    expect(step!.name).toBe("Sydney Blue Sox");
+    expect(step!.source?.playerRowId).toBe(playerRowId);
+    // Absent, not undefined-valued: nothing downstream should have to tell "no
+    // stint" from "a stint that is undefined".
+    expect(
+      Object.prototype.hasOwnProperty.call(step!.source as object, "manualStint"),
+    ).toBe(false);
+  });
+
+  test("is idempotent — a double click or a retry writes nothing the second time", async () => {
+    const t = convexTest(schema, modules);
+    const { playerRowId, stepId } = await seedStagedStint(t);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+
+    await asAdmin.mutation(api.entityReviewQueue.clearCareerTeamStint, {
+      reviewRowId: playerRowId,
+      teamRowId: stepId,
+    });
+    await expect(
+      asAdmin.mutation(api.entityReviewQueue.clearCareerTeamStint, {
+        reviewRowId: playerRowId,
+        teamRowId: stepId,
+      }),
+    ).resolves.toBeNull();
+  });
+
+  test("refuses a step staged for a DIFFERENT player", async () => {
+    // The same cross-attribution guard the staging patch applies. Without it an
+    // operator could strip the years off another player's step by naming it.
+    const t = convexTest(schema, modules);
+    const { sportId, stepId } = await seedStagedStint(t);
+    const otherPlayer = await insertRow(t, {
+      sportId,
+      kind: "player",
+      name: "Dylan Crews",
+      status: "ready",
+    });
+
+    await expect(
+      t.withIdentity(ADMIN_IDENTITY).mutation(
+        api.entityReviewQueue.clearCareerTeamStint,
+        { reviewRowId: otherPlayer, teamRowId: stepId },
+      ),
+    ).rejects.toThrow(/not staged for this row/);
+
+    const step = await t.run(async (ctx) => ctx.db.get(stepId));
+    expect(step!.source?.manualStint).toEqual({ fromYear: 2001, toYear: 2005 });
+  });
+
+  test("refuses another operator's review session", async () => {
+    const t = convexTest(schema, modules);
+    const { playerRowId, stepId } = await seedStagedStint(t);
+
+    await expect(
+      t.withIdentity(OTHER_ADMIN).mutation(
+        api.entityReviewQueue.clearCareerTeamStint,
+        { reviewRowId: playerRowId, teamRowId: stepId },
+      ),
+    ).rejects.toThrow(/different review session/);
+
+    const step = await t.run(async (ctx) => ctx.db.get(stepId));
+    expect(step!.source?.manualStint).toEqual({ fromYear: 2001, toYear: 2005 });
   });
 });
 

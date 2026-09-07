@@ -279,6 +279,43 @@ something beyond plain navigation; for a plain `<a href>` you lose nothing by
 navigating directly. **Watch #2944**: once it's fixed and we bump maestro, real
 click-navigation becomes reliable and this convention can relax.
 
+## Anything a flow drives with `pressKey` needs a unique DOM id
+
+**maestro-web does not send the key to `document.activeElement`.** It runs
+`createXPathFromElement(document.activeElement)`, then RE-FINDS the element by
+that XPath and dispatches to whatever the XPath matches. The generator uses
+`id("…")` when the element has a DOM id and otherwise falls back to
+`tag[@class="…"]` for each ancestor.
+
+So two identically-classed siblings collapse into one XPath, Selenium returns
+the **first**, and the key lands on the wrong control — with the app's own focus
+perfectly correct, which is what makes it so confusing to read from a
+screenshot. NEO-220 hit exactly this: the wizard's `Confirm & Save` and its
+`Cancel (Esc)` sibling are both `NeonButton`s with the IDENTICAL class string
+(the neon colour is a `data-accent-color` attribute and an inline style, not a
+class), so `pressKey: Enter` aimed at Confirm pressed Cancel, and the failure
+screenshot showed "Discard 1 decision?" while focus was on Confirm.
+
+**The rule:** if a flow presses a key at an element, that element must carry a
+unique DOM `id` in the component. Add it in the component, with a comment saying
+it is load-bearing for E2E, and do not reuse it
+(`components/SetSelector/EntityReviewWizard.tsx`'s `entity-review-confirm-save`
+is the worked example).
+
+Two corollaries worth knowing before you write the selector:
+
+* **A synthetic KeyboardEvent has no default action.** `dispatchEvent` runs the
+  listeners and stops, so a focused `<button>` is NOT activated by
+  `pressKey: Enter` the way a real keypress activates it. The button has to
+  handle Enter in its own `onKeyDown`. Every other Enter in this suite is aimed
+  at an `<input>` whose own handler does the work, which is why this only ever
+  bites on buttons.
+* **`id:` selectors are regex FINDS, not exact matches.** Maestro exposes an
+  element's `aria-label` as its `id` and matches it as an unanchored regular
+  expression — so `id: "Remove Topps"` also matches `Remove Topps Chrome`. When a
+  screen can hold two instances of the same control, give them labels that share
+  no substring, or anchor the matcher.
+
 ## Launching a flow: always gate on the destination heading
 
 Almost every flow's `url:` is **not** the page under test — it's
