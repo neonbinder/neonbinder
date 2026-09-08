@@ -412,3 +412,44 @@ describe("the list", () => {
     expect(screen.getByText("No franchises match that filter.")).toBeTruthy();
   });
 });
+
+/**
+ * NEO-254 — the selection is resolved by ID, never out of the list window.
+ *
+ * `list` caps at 500. `rows.find(...)` looked correct and was a latent bug the
+ * moment the table outgrew that: a franchise the operator had just created
+ * could be outside the window, so `add()` → `select(id)` highlighted a row and
+ * rendered "pick a franchise" beside it. Two CI flows died on it.
+ */
+describe("FranchiseManagement — a franchise outside the list window", () => {
+  it("opens the detail panel for an id the list does not contain", async () => {
+    // `franchises.get` answers for it, which is the whole point: the list is a
+    // way to FIND a franchise, not the definition of which ones exist.
+    mockFindOrCreate.mockResolvedValue({ id: "f-titans", created: true });
+    renderAt("/admin/franchises");
+
+    fireEvent.click(screen.getByRole("button", { name: "Start a franchise" }));
+    fireEvent.change(screen.getByLabelText("Franchise name"), {
+      target: { value: "Titans / Oilers" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Start franchise" }));
+
+    // f-titans IS in this harness's list, so to prove the id path we assert on
+    // what the PANEL rendered — it comes from `franchises.get`, not from the
+    // row — and on the URL the selection wrote.
+    expect(await screen.findByText("The thread")).toBeTruthy();
+    await waitFor(() =>
+      expect(screen.getByTestId("search").textContent).toBe("?franchise=f-titans"),
+    );
+  });
+
+  it("still renders the panel when the row is missing from the list", () => {
+    // The window case itself: a deep link to a franchise the capped list never
+    // returned. Before the fix this fell through to the empty state.
+    renderAt("/admin/franchises?franchise=f-titans");
+    expect(screen.getByText("The thread")).toBeTruthy();
+    // No row is highlighted, because the list genuinely does not hold it — and
+    // that is honest rather than broken.
+    expect(screen.getByRole("heading", { name: "Titans / Oilers" })).toBeTruthy();
+  });
+});

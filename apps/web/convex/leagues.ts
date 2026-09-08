@@ -560,6 +560,16 @@ const MIN_LEAGUE_YEAR = 1850;
 const LEAGUE_NEAR_MATCH_LIMIT = 5;
 
 /**
+ * NEO-254 — the ceiling on `teamsIn`'s per-league read.
+ *
+ * Was an unbounded `.collect()`, on the reasoning that "a league holds tens of
+ * teams". True of the leagues we had; the preload puts 8,305 teams into soccer
+ * across 43 leagues, so the size of that scan is now set by the data rather
+ * than by us. 500 sits well above the largest real league.
+ */
+const LEAGUE_TEAMS_CAP = 500;
+
+/**
  * Sort order for `listForManagement`: the professional pyramid, top down, with
  * UNSET LAST.
  *
@@ -1200,10 +1210,27 @@ export const teamsIn = query({
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
 
+    /**
+     * NEO-254 — capped, where it used to `.collect()`.
+     *
+     * "A league holds tens of teams" was true of the leagues we had. The
+     * preload puts 8,305 teams into soccer across 43 leagues — call it two
+     * hundred each on average, and nothing stops one holding far more — so an
+     * unbounded collect here is a per-league scan whose size is set by the
+     * data rather than by us, on a panel that renders inside an admin screen.
+     *
+     * Sized ABOVE the loaded volume rather than surfaced as a `truncated` flag,
+     * which is the honest trade to state: soccer's biggest league is a few
+     * hundred teams and the cap is 500, so it is a guard-rail against a runaway
+     * scan rather than a paging boundary an operator will meet. If a league
+     * ever does exceed it this list would end silently — at which point it
+     * wants the `{ teams, truncated }` shape its siblings use, and the panel
+     * wants the "showing the first N" line to go with it.
+     */
     const rows = await ctx.db
       .query("teams")
       .withIndex("by_league_id", (q) => q.eq("leagueId", args.leagueId))
-      .collect();
+      .take(LEAGUE_TEAMS_CAP);
 
     // NEO-236: sorted by the FULL name, matching `teams.listForManagement` —
     // this panel is read as an alphabetised list of the teams a league holds,

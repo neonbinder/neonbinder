@@ -1197,11 +1197,6 @@ function TeamDetail({
 export default function TeamManagement() {
   const management = useQuery(api.teams.listForManagement, {});
   const leagues = useQuery(api.leagues.list, {});
-  // NEO-254: the franchise threads, for the panel's Franchise dropdown. Whole
-  // list, filtered to the selected team's sport at the call site below — same
-  // shape as `leagues`, because a franchise is per-sport for the same reason a
-  // league is.
-  const franchises = useQuery(api.franchises.list, {});
 
   const [filter, setFilter] = useState("");
   const [leagueFilter, setLeagueFilter] = useState<string>(ALL_LEAGUES);
@@ -1402,6 +1397,25 @@ export default function TeamManagement() {
   }, [teams, filter, leagueFilter]);
 
   const selected = teams.find((t) => t._id === selectedId) ?? null;
+  /**
+   * NEO-254 — the franchise threads for the panel's Franchise pills, scoped to
+   * the SELECTED team's sport.
+   *
+   * It used to ask for every franchise in every sport and filter client-side,
+   * which broke twice over once the load landed. `list` without a `sportId`
+   * walks the table and caps at 500, so with 202 franchises per sport across
+   * several sports a thread was simply outside the window and never offered —
+   * and the ones that were offered cost a full-table read on a screen that
+   * re-renders on every keystroke.
+   *
+   * Scoped, it is an indexed read of ~202 rows, well inside the cap, so the
+   * window cannot bite. `"skip"` until a team is selected: with no panel open
+   * there is no sport to ask about and nothing to render them into.
+   */
+  const franchises = useQuery(
+    api.franchises.list,
+    selected ? { sportId: selected.sportId } : "skip",
+  );
   const needingAttention = teams.filter((t) => attentionFor(t) !== null).length;
 
   if (management === undefined) {
@@ -1672,9 +1686,7 @@ export default function TeamManagement() {
               key={selected._id}
               team={selected}
               leagues={leagueList.filter((l) => l.sportId === selected.sportId)}
-              franchises={(franchises?.franchises ?? []).filter(
-                (f) => f.sportId === selected.sportId,
-              )}
+              franchises={franchises?.franchises ?? []}
               onStatus={setStatus}
               onSelect={selectTeam}
             />

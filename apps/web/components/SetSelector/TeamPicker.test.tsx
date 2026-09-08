@@ -65,6 +65,12 @@ vi.mock("../../convex/_generated/api", () => ({
     teams: {
       getManyByIds: "teams.getManyByIds",
       list: "teams.list",
+      // NEO-254: once anything is typed the picker asks the SERVER to find the
+      // rows, because a client-side filter over a 500-row window cannot reach
+      // soccer's 8,305 teams in one sport. The fixture answers both refs with
+      // the same rows: finding is the server's job, ranking is the client's,
+      // and these tests are about the ranking.
+      search: "teams.search",
       findOrCreate: "teams.findOrCreate",
     },
     // NEO-236: the New Team dialog this picker opens renders `NewTeamForm`,
@@ -73,15 +79,20 @@ vi.mock("../../convex/_generated/api", () => ({
   },
 }));
 
+let queryCalls: Array<{ ref: string; args: unknown }> = [];
 let currentSelectedRows: unknown;
 let currentCandidates: unknown;
 let currentLeagues: unknown;
 const mockFindOrCreate = vi.fn();
 
 vi.mock("convex/react", () => ({
-  useQuery: (ref: string) => {
+  useQuery: (ref: string, args: unknown) => {
+    // NEO-254: recorded so a test can assert WHICH query the picker asked and
+    // with what — the difference between finding a team server-side and
+    // filtering a stale window is invisible in the rendered output.
+    queryCalls.push({ ref, args });
     if (ref === "teams.getManyByIds") return currentSelectedRows;
-    if (ref === "teams.list") return currentCandidates;
+    if (ref === "teams.list" || ref === "teams.search") return currentCandidates;
     if (ref === "leagues.list") return currentLeagues;
     return undefined;
   },
@@ -162,6 +173,7 @@ describe("TeamPicker", () => {
     currentSelectedRows = [];
     currentCandidates = [];
     currentLeagues = [];
+    queryCalls = [];
     mockFindOrCreate.mockResolvedValue(tid("new-team-1"));
   });
 
@@ -981,5 +993,53 @@ describe("TeamPicker", () => {
       expect(screen.getByRole("dialog")).toBeTruthy();
       expect(scrollSpy).not.toHaveBeenCalled();
     });
+  });
+});
+
+/**
+ * NEO-254 — the server finds the team; the client only ranks what it is given.
+ *
+ * This box used to filter a 500-row `teams.list` window client-side. That is
+ * fine at a few dozen teams per sport and wrong at the volumes the preload
+ * produces: soccer loads 8,305 teams into ONE sport, so 7,805 were unreachable
+ * from here — and an unreachable team made `sameNameTeams` empty, so the create
+ * row offered to make a team NB already held. A picker that cannot find a row
+ * is a picker that mints duplicates.
+ */
+describe("TeamPicker — finding past the list window", () => {
+  // Its own reset: this block sits outside the main suite's `beforeEach`, and
+  // `queryCalls` is what these two assert on — inheriting another test's calls
+  // is how the second one first passed for the wrong reason.
+  beforeEach(() => {
+    vi.clearAllMocks();
+    currentSelectedRows = [];
+    currentCandidates = [];
+    currentLeagues = [];
+    queryCalls = [];
+  });
+
+  it("asks the server once anything is typed, scoped to the sport", () => {
+    renderPicker();
+    openPopover();
+    fireEvent.change(screen.getByLabelText("Search teams"), {
+      target: { value: "yank" },
+    });
+
+    const search = queryCalls.filter((c) => c.ref === "teams.search");
+    expect(search.length).toBeGreaterThan(0);
+    expect(search[search.length - 1].args).toMatchObject({
+      query: "yank",
+      sportId: SPORT_ID,
+    });
+  });
+
+  it("does NOT search before anything is typed", () => {
+    // A typeahead that queries before you type is noise, and the browse pool
+    // already covers the empty state.
+    renderPicker();
+    openPopover();
+    expect(
+      queryCalls.filter((c) => c.ref === "teams.search" && c.args !== "skip"),
+    ).toHaveLength(0);
   });
 });

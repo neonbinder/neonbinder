@@ -267,13 +267,38 @@ export const list = query({
       return { franchises: [], truncated: false };
     }
 
+    /**
+     * NEO-254 — NEWEST first when the window can actually bite, and that is a
+     * correctness fix rather than a preference.
+     *
+     * `.take(501)` walks the table in insertion order, so past 500 rows the
+     * window holds the OLDEST 500 and a franchise created a second ago is
+     * outside it. `FranchiseManagement` then selected an id its own list did
+     * not contain and rendered nothing; `TeamManagement`'s pill list simply
+     * never offered it. Two CI flows died on exactly that, and the load makes
+     * it the normal case — 202 franchises per sport, and the global listing is
+     * every sport at once.
+     *
+     * Sport-scoped reads keep insertion order: `by_sport_id` bounds them to
+     * ~202 rows, comfortably inside the cap, so the window never bites and the
+     * cheaper index walk is honest. The GLOBAL read is the one that overflows,
+     * and there the newest rows are the ones an operator is looking for — they
+     * just made them. `.order("desc")` is on `_creationTime`, which is the only
+     * ordering the table offers without an index nobody else needs.
+     *
+     * The list is still sorted by NAME for display below; this decides which
+     * rows survive the cap, not how they read.
+     */
     const sportId = args.sportId;
     const rows = sportId
       ? await ctx.db
           .query("franchises")
           .withIndex("by_sport_id", (q) => q.eq("sportId", sportId))
           .take(FRANCHISE_LIST_CAP + 1)
-      : await ctx.db.query("franchises").take(FRANCHISE_LIST_CAP + 1);
+      : await ctx.db
+          .query("franchises")
+          .order("desc")
+          .take(FRANCHISE_LIST_CAP + 1);
 
     const truncatedList = rows.length > FRANCHISE_LIST_CAP;
     const franchiseRows = rows.slice(0, FRANCHISE_LIST_CAP);

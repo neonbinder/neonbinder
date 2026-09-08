@@ -137,9 +137,19 @@ function RemoveTeamButton({
 function FranchiseDetail({
   franchiseId,
   sportLabel,
+  sportNameById,
 }: {
   franchiseId: string;
+  /** The sport's name when the LIST happened to carry the row; "" otherwise. */
   sportLabel: string;
+  /**
+   * NEO-254 — the fallback, for a franchise the list window does not hold.
+   *
+   * The panel is now mounted from an id alone (see the note on `selectedRow`),
+   * so it can be showing a row the list has never seen. Its own `franchises.get`
+   * knows the sport; this turns that id into the name.
+   */
+  sportNameById: Map<string, string>;
 }) {
   const view = useQuery(api.franchises.get, { id: franchiseId });
   const save = useMutation(api.franchises.save);
@@ -250,7 +260,8 @@ function FranchiseDetail({
         <p
           className={`w-full rounded-md border border-slate-800 bg-slate-950 px-3 py-2 text-base text-slate-300 ${FIELD_BOX_HEIGHT}`}
         >
-          Sport: {sportLabel}
+          Sport:{" "}
+          {sportLabel || sportNameById.get(franchise.sportId) || "Unknown"}
         </p>
       </div>
       <p className="-mt-2 text-sm text-slate-400">
@@ -503,9 +514,27 @@ export default function FranchiseManagement() {
     return () => clearTimeout(timer);
   }, [counter]);
 
-  const selected = rows.find((row) => row._id === selectedId) ?? null;
-  const selectedSportLabel = selected
-    ? (sportNameById.get(selected.sportId) ?? "Unknown")
+  /**
+   * NEO-254 — the selection is resolved BY ID, never out of the list window.
+   *
+   * `rows.find(...)` looked correct and was a latent bug the moment the table
+   * outgrew the cap: `list` returns at most 500 rows, so a franchise the
+   * operator had just created — or reached by a `?franchise=` link — could be
+   * outside the window, and the panel then rendered "pick a franchise" while
+   * its row sat highlighted in the list. `add()` calling `select(id)` hit this
+   * every time on a loaded deployment, which is what killed two CI flows.
+   *
+   * `FranchiseDetail` already fetches the row by id through `franchises.get`,
+   * so the panel is correct as soon as it is MOUNTED. All this has to do is
+   * mount it, and an id is enough for that — the list is a way to find a
+   * franchise, not the definition of which ones exist.
+   *
+   * The sport label still comes from the row when the list happens to hold it;
+   * `FranchiseDetail` falls back to the row's own sport when it does not.
+   */
+  const selectedRow = rows.find((row) => row._id === selectedId) ?? null;
+  const selectedSportLabel = selectedRow
+    ? (sportNameById.get(selectedRow.sportId) ?? "")
     : "";
 
   const addSportId =
@@ -712,11 +741,12 @@ export default function FranchiseManagement() {
                 </NeonButton>
               </div>
             </div>
-          ) : selected ? (
+          ) : selectedId ? (
             <FranchiseDetail
-              key={selected._id}
-              franchiseId={selected._id}
+              key={selectedId}
+              franchiseId={selectedId}
               sportLabel={selectedSportLabel}
+              sportNameById={sportNameById}
             />
           ) : (
             <p className="text-sm text-slate-400">

@@ -375,3 +375,82 @@ describe("teams.saveTeamFields — the franchise slot", () => {
     expect(await franchiseOf(t, teamId)).toBeNull();
   });
 });
+
+/**
+ * NEO-254 — the list window, and the bug it hid.
+ *
+ * `list` caps at 500. It used to `.take(501)` in TABLE order, so past the cap
+ * the window held the OLDEST rows and a franchise created a second ago was
+ * outside it — invisible to the screen that had just created it. Two CI flows
+ * died on it once the load put 202 franchises per sport into the table.
+ */
+describe("franchises.list — which rows survive the cap", () => {
+  const manyFranchises = async (t: T, sportId: Id<"selectorOptions">, n: number) => {
+    const ids: Id<"franchises">[] = [];
+    await t.run(async (ctx) => {
+      for (let i = 0; i < n; i += 1) {
+        ids.push(
+          await ctx.db.insert("franchises", {
+            name: `Franchise ${String(i).padStart(4, "0")}`,
+            nameNormalized: `franchise ${i}`,
+            sportId,
+            lastUpdated: 1,
+          }),
+        );
+      }
+    });
+    return ids;
+  };
+
+  test("the GLOBAL listing keeps the newest rows, not the oldest", async () => {
+    // The fix. An operator asks for this list right after creating a row, and
+    // the row they just made is the one they are looking for.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const ids = await manyFranchises(t, sportId, 505);
+    const newest = ids[ids.length - 1];
+
+    const listed = await t.withIdentity(ADMIN).query(api.franchises.list, {});
+    expect(listed.truncated).toBe(true);
+    expect(listed.franchises.map((f) => f._id)).toContain(newest);
+    // …and the oldest are the ones that fall off, which is the inverse of the
+    // behaviour that broke.
+    expect(listed.franchises.map((f) => f._id)).not.toContain(ids[0]);
+  });
+
+  test("a SPORT-scoped listing fits inside the cap, so nothing falls off", async () => {
+    // 202 franchises per sport is what the load produces; the cap is 500. The
+    // scoped read is an indexed walk of that sport alone, so the window cannot
+    // bite and insertion order is honest.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const other = await seedSport(t, "Baseball");
+    await manyFranchises(t, other, 300);
+    const ids = await manyFranchises(t, sportId, 202);
+
+    const listed = await t
+      .withIdentity(ADMIN)
+      .query(api.franchises.list, { sportId });
+    expect(listed.truncated).toBe(false);
+    expect(listed.franchises).toHaveLength(202);
+    expect(listed.franchises.map((f) => f._id)).toContain(ids[0]);
+    expect(listed.franchises.map((f) => f._id)).toContain(ids[ids.length - 1]);
+  });
+
+  test("`get` reaches a row the list window does not hold", async () => {
+    // The other half of the fix: the detail panel resolves by ID, so it opens
+    // whatever `select(id)` names — including a row outside the list.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const ids = await manyFranchises(t, sportId, 505);
+
+    const listed = await t.withIdentity(ADMIN).query(api.franchises.list, {});
+    const missing = ids.find((id) => !listed.franchises.some((f) => f._id === id))!;
+    expect(missing).toBeDefined();
+
+    const view = await t
+      .withIdentity(ADMIN)
+      .query(api.franchises.get, { id: missing });
+    expect(view?.franchise._id).toBe(missing);
+  });
+});
