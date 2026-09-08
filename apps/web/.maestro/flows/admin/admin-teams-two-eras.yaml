@@ -231,15 +231,30 @@ tags:
 - inputText: "2011"
 
 # R2(b) — THE REFUSAL. `teams.findOrCreate` will not add a second row under a
-# name it already holds until it is told to, and it names the era already on
-# file so the operator can see what they are about to sit beside. This string is
-# composed on the SERVER (`teams.ts`), so no amount of client rendering produces
-# it — and the era it quotes is the one PART 2 wrote, so this line is also the
-# read-back proving era one persisted with its years.
+# name it already holds until it is told to, and the dialog names the era
+# already on file so the operator can see what they are about to sit beside.
+# The ERA IN THIS STRING is the load-bearing part: "1972–1996" is what PART 2
+# wrote, and it comes back from the server as structured data, so this line is
+# also the read-back proving era one persisted with its years.
+#
+# ⚠️ TWO different sentences now say "already exists for 1972–1996", and this
+# matches the one that ends "Create again to add this as a second era."
+# deliberately. The refusal is no longer a server prose string: `teams.ts`
+# throws a structured `TEAM_ERA_EXISTS` ConvexError carrying the eras as DATA,
+# and `NewTeamDialog` composes the copy — so matching the old wording is what
+# failed CI run 34268188947. The OTHER sentence is `NewTeamForm`'s inline hint
+# ("… Give this one its own years if it is a different era of the club."),
+# which lives INSIDE the dialog's `overflow-y-auto` body; this one is the
+# `role="alert"` that Agent B moved OUT of the scroll region, so it is pinned
+# above the buttons and always on screen. Header-and-footer only, as ever.
+#
+# The name is left off the matcher: the alert composes it from the DRAFT
+# (`fullName || draft.name.trim()`), so pinning the assertion to the era keeps
+# it about the fact under test rather than about how the copy is assembled.
 - tapOn:
     id: "Create team Loc${output.TOKEN} Era${output.TOKEN}"
 - extendedWaitUntil:
-    visible: ".*Loc${output.TOKEN} Era${output.TOKEN} already exists for 1972–1996. Creating this one adds a second era.*"
+    visible: ".*already exists for 1972–1996. Create again to add this as a second era.*"
 
 # R2(c) — THE CONFIRMATION. The refusal ARMED it, so pressing the same button
 # again is a different call (`newEra: true`) rather than a retry of the one that

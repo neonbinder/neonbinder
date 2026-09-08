@@ -88,3 +88,24 @@ the trigger) are safe; everything from the master/detail grid down is reached
 with `scrollUntilVisible`, and a page-level status line — which renders ABOVE
 the filter row — needs `direction: UP` once anything below has been scrolled to.
 
+
+## 5. A capped list query can hide a row the screen just created
+
+Not geometry at all, but it presents as "the element is not there" and costs the
+same afternoon. `convex/franchises.ts` `list` does
+`ctx.db.query("franchises").take(CAP + 1)` with `CAP = 500` — a **table-order**
+window, so it is the OLDEST 500 rows. Once the table passes the cap, anything
+created after it is invisible to every consumer, including the screen that just
+created it.
+
+CI run 34268188947 failed two flows on this at once, and the counter said so out
+loud: **"0 of 500 franchises · list truncated"**. `admin-franchises-start-and-rename`
+created a franchise, the status line said "Started <name>.", and the detail panel
+still read "Pick a franchise…" because `rows.find(r => r._id === selectedId)`
+missed. `admin-franchises-link-teams` created one from a team, saw its pill on
+that team (the optimistic local tail), saved, then opened a second team where the
+pill list is drawn from the same truncated query — and it was gone.
+
+**Tell: a truncation notice in the counter.** Read it before blaming the
+selector. No flow-side workaround exists — the row is not in the client's data
+at all, so filtering cannot reach it.

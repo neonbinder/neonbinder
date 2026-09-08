@@ -425,19 +425,32 @@ tags:
 # `Add <the team's composed name>`, so this can only be satisfied by a stored row
 # whose location and nickname compose to exactly what was typed. A picker still
 # matching on the nickname column would show "No matches." here.
+#
+# `( · <era>)?` because a TeamPicker option's accessible name is
+# `Add {teamOptionLabel}` since NEO-254, which appends " · 1972–1996" once the
+# row is dated. This flow's team is created with the era boxes blank, so today
+# the label is the bare name — but a matcher is a FULL match, so dating the
+# fixture would silently stop this matching.
 - assertVisible:
-    id: 'Add Loc${WORKER_INDEX || "0"} TMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}'
+    id: 'Add Loc${WORKER_INDEX || "0"} TMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}( · .*)?'
 
-# And the create row is gone, which is the same fact said the other way: an
-# exact match suppresses it. NEO-236 — that row is `New team <typed>` now (it
-# opens the dialog; `Create team <name>` is the dialog's own button and exists
-# only while the dialog is open), so this is the id that proves it is absent.
-# Corroborating rather than load-bearing — the career editor is near the bottom
-# of the player panel, so a create row rendered here would hang below the fold
-# where Maestro cannot see it either way. The assertion that carries the weight
-# is the one above, and the one below.
-- assertNotVisible:
-    id: 'New team Loc${WORKER_INDEX || "0"} TMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}'
+# ⚠️ THE CREATE ROW IS NO LONGER SUPPRESSED, and this block used to assert that
+# it was. NEO-254 made team identity (name, sport, ERA), so a name that already
+# exists is no longer a reason to withhold Create: the 1972–1996 Winnipeg Jets
+# and the 2011– Winnipeg Jets are two rows, and hiding Create whenever the NAME
+# matched made the second one unreachable from this picker — the operator would
+# see one Jets row, not recognise it as the wrong franchise, and attach a card
+# to it. `showCreateOption` is now `query.trim().length > 0 && !!sportId`; the
+# picker offers and `teams.findOrCreate` insists, refusing a second era until
+# the operator confirms it (see admin/admin-teams-two-eras).
+#
+# So the old `assertNotVisible: id: "New team <typed>"` asserted a rule the
+# product deliberately dropped, and CI run 34268188947 failed on it. Deleted
+# rather than inverted: the flow's own note already said it was corroborating
+# and not load-bearing, and the career editor sits low enough on the player
+# panel that a create row rendered here hangs below the fold, where Maestro
+# could not see it to assert its PRESENCE either. The weight is carried by the
+# exact-match assertion above and the chip below.
 
 # Take the match with Enter — the picker's keydown selects the highlighted match
 # when there is one — and the chip that comes back carries the FULL name. A chip
