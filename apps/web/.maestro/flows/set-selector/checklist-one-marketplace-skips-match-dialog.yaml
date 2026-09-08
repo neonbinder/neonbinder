@@ -3,13 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Checklist — a set with exactly ONE marketplace attached skips the Match Cards dialog and keeps every fetched card"
 tags:
   - set-selector
-  # ⛔ wip — NOT because the feature is unproven. Everything up to the sync is
-  # green on this build. maestro-web cannot reach the Sync button while headless
-  # Chrome's renderer is frame-stalled: no scroll primitive moves the page and
-  # its element lookup is viewport-bounded, so the checklist cannot be scrolled
-  # to, tapped or asserted. See STEP 4. Remove this tag in the commit that keeps
-  # a CDP client attached for the run.
-  - wip
 ---
 # ════════════════════════════════════════════════════════════════════════════
 # R1 — ONE FEATURE (NEO-255): when exactly ONE marketplace is attached to a
@@ -343,8 +336,11 @@ tags:
 # The only scroll left in this flow is in STEP 2, before the set is picked,
 # where frames are still alive.
 #
-# ⛔ AND THAT IS WHY THIS FLOW IS STILL `wip`: the checklist is below the fold
-# and, with the renderer stalled, there is no way to reach it from YAML.
+# ⛔ WHEN THE RENDERER STALLS THIS FLOW CANNOT PASS: the checklist is below the
+# fold and there is no way to reach it from YAML. The stall was reproduced on
+# a local Mac only; every other scrolling flow passes in CI, so this flow is
+# queued untagged and CI is its validation. If it reds the gate on the stall,
+# re-tag it `wip` and land the harness fix below.
 # Measured at 1024x625 on the PR #242 preview, with the panel dismissed:
 #
 #   viewport parked by the app at scrollY 42     document height  1338
@@ -377,7 +373,6 @@ tags:
 #
 # The unblock is in the harness, not in this file: the same run scrolls and
 # finishes green with a second CDP client attached, which prevents the stall.
-# Remove the `wip` tag in the commit that lands that.
 # ============================================================
 
 # The checklist is empty here, so the button reads "Fetch from Marketplaces";
