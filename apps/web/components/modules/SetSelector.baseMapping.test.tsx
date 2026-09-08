@@ -121,7 +121,9 @@ vi.mock("../../convex/bscFacets", () => ({
 // Columns render their selector unconditionally so a test can reach the
 // variant-type column without drilling the four levels above it.
 vi.mock("../SetSelector/ResilientEntityColumn", () => ({
-  default: ({ selector }: { selector: React.ReactNode }) => <div>{selector}</div>,
+  default: ({ selector }: { selector: React.ReactNode }) => (
+    <div>{selector}</div>
+  ),
 }));
 
 vi.mock("../SetSelector/SetVariantSelector", () => ({
@@ -141,10 +143,17 @@ vi.mock("../SetSelector/SetVariantSelector", () => ({
 }));
 
 vi.mock("../SetSelector/BaseMappingForm", () => ({
-  default: ({ mode, onClose }: { mode: string; onClose: () => void }) => (
+  default: ({
+    mode,
+    onClose,
+  }: {
+    mode: string;
+    onClose: (reason: "mapped" | "dismissed") => void;
+  }) => (
     <div>
       <span>{`base-mapping-panel mode=${mode}`}</span>
-      <button onClick={onClose}>panel-close</button>
+      <button onClick={() => onClose("dismissed")}>panel-close</button>
+      <button onClick={() => onClose("mapped")}>panel-mapped</button>
     </div>
   ),
 }));
@@ -165,8 +174,12 @@ vi.mock("../SetSelector/SetVariantForm", () => ({ default: () => null }));
 vi.mock("../SetSelector/VariantForm", () => ({ default: () => null }));
 vi.mock("../SetSelector/ParallelForm", () => ({ default: () => null }));
 vi.mock("../SetSelector/CardChecklist", () => ({ default: () => null }));
-vi.mock("../SetSelector/VariantMetadataEditor", () => ({ default: () => null }));
-vi.mock("../SetSelector/ParallelGroupingModal", () => ({ default: () => null }));
+vi.mock("../SetSelector/VariantMetadataEditor", () => ({
+  default: () => null,
+}));
+vi.mock("../SetSelector/ParallelGroupingModal", () => ({
+  default: () => null,
+}));
 vi.mock("../SetSelector/MultiSourcePanel", () => ({ default: () => null }));
 vi.mock("../SetSelector/SetAttributesPanel", () => ({ default: () => null }));
 vi.mock("../SetSelector/SportForm", () => ({ SportForm: () => null }));
@@ -207,6 +220,20 @@ describe("SetSelector — Base mapping panel gating (NEO-255)", () => {
     expect(screen.getByText("Map Base Set")).toBeTruthy();
     // "Re-map Base" would be a lie about a row that holds no mapping.
     expect(screen.queryByText("Re-map Base")).toBeNull();
+  });
+
+  it("a confirmed mapping does not count as a dismissal", () => {
+    // The picker's confirm closes the form with reason "mapped" while the
+    // row's slot may not have landed on the subscription yet. Marking the row
+    // dismissed here raced that flip: the seed's "Re-map Base" anchor read
+    // "Map Base Set" for a beat (PR #242 run 4). The form stays until the
+    // slot itself ends the prompt.
+    render(<SetSelector />);
+    selectVariantType("vt-base");
+    fireEvent.click(screen.getByText("panel-mapped"));
+
+    expect(panelMode()).toBe("base-mapping-panel mode=initial");
+    expect(screen.queryByText("Map Base Set")).toBeNull();
   });
 
   it("parks focus on the button that replaced the panel", () => {

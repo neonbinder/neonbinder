@@ -135,7 +135,8 @@ export default function SetSelector() {
   const [setExpanded, setSetExpanded] = useState(false);
   const [variantTypeExpanded, setVariantTypeExpanded] = useState(false);
   const [variantExpanded, setVariantExpanded] = useState(false);
-  const [variantOfVariantExpanded, setVariantOfVariantExpanded] = useState(false);
+  const [variantOfVariantExpanded, setVariantOfVariantExpanded] =
+    useState(false);
 
   /**
    * Base variantTypes whose mapping panel the operator has CLOSED (NEO-255).
@@ -264,9 +265,15 @@ export default function SetSelector() {
    */
   const baseMappingFormOpen =
     (!baseHasMapping && !baseMappingDismissed) || baseMappingOpen;
-  const handleBaseMappingClose = () => {
+  // Only a DISMISSAL (Close on the recovery panel) stops the auto-prompt. A
+  // confirmed mapping closes the form too, but the row's own slot is what
+  // ends the prompt there — `baseHasMapping` flips as the write lands — and
+  // marking it dismissed as well would race that flip: the seed's "Re-map
+  // Base" anchor read "Map Base Set" for a beat and scrolled past it (PR #242
+  // run 4).
+  const handleBaseMappingClose = (reason: "mapped" | "dismissed") => {
     setBaseMappingOpen(false);
-    if (selectedVariantTypeId && !baseHasMapping) {
+    if (reason === "dismissed" && selectedVariantTypeId && !baseHasMapping) {
       setDismissedVariantTypeIds((prev) => {
         if (prev.has(selectedVariantTypeId)) return prev;
         const next = new Set(prev);
@@ -463,9 +470,10 @@ export default function SetSelector() {
       // plain slot walk.
       const entries =
         side === "bsc"
-          ? bscSourceView(cardChecklistRow, cardChecklistChain ?? [
+          ? bscSourceView(
               cardChecklistRow,
-            ]).sources.map((s) => ({ slot: s.slot, id: s.id }))
+              cardChecklistChain ?? [cardChecklistRow],
+            ).sources.map((s) => ({ slot: s.slot, id: s.id }))
           : slotEntries(cardChecklistRow, side);
       if (entries.length <= 1) continue;
       const primarySlotKey =
@@ -494,17 +502,12 @@ export default function SetSelector() {
     return { bsc: build("bsc"), sportlots: build("sportlots") };
   }, [cardChecklistRow]);
 
-  // pb-[50vh] is SCROLL HEADROOM, not spacing (NEO-255). A page can only
-  // centre its LAST control if half a viewport of slack sits under it;
-  // without that, the deepest controls here bottom out against the end of the
-  // document and `scrollIntoView({ block: "center" })` — the same primitive
-  // Maestro's `centerElement: true` uses — leaves them in the bottom sliver of
-  // a 1024x629 viewport, where a coordinate tap is unreliable. The panels
-  // above this page's fold shift by nothing: padding only ever grows the
-  // document downward. `html` carries the matching `scroll-padding-top` for
-  // the sticky header (app/globals.css).
+  // No scroll headroom below the last panel, deliberately (NEO-255 tried
+  // pb-[50vh]): dozens of Maestro flows scroll DOWN for an anchor and rely on
+  // the document bottoming out to keep it in view; extra slack let them
+  // scroll past it.
   return (
-    <div className="max-w-full mx-auto p-6 pb-[50vh] flex flex-col gap-6">
+    <div className="max-w-full mx-auto p-6 flex flex-col gap-6">
       {/* pb-4 prevents the horizontal scrollbar from overlapping each
           EntityColumn's action-button row (Sync X / + Custom). Without it,
           Maestro web taps at the action-button y-coordinate hit the
@@ -606,10 +609,7 @@ export default function SetSelector() {
             />
           }
           renderForm={(onDone) => (
-            <SetForm
-              manufacturerId={selectedManufacturerId!}
-              onDone={onDone}
-            />
+            <SetForm manufacturerId={selectedManufacturerId!} onDone={onDone} />
           )}
           addButtonText="Sync Sets"
           isVisible={!!selectedManufacturerId}
@@ -678,10 +678,7 @@ export default function SetSelector() {
             onDrillToExisting={handleDrillToExisting}
             extraActions={
               selectedVariantTypeId ? (
-                <NeonButton
-                  secondary
-                  onClick={() => setGroupingOpen(true)}
-                >
+                <NeonButton secondary onClick={() => setGroupingOpen(true)}>
                   Group Parallels
                 </NeonButton>
               ) : undefined
@@ -702,7 +699,9 @@ export default function SetSelector() {
                   setExpanded={setVariantOfVariantExpanded}
                 />
                 {selectedVariantOfVariantId && (
-                  <VariantMetadataEditor optionId={selectedVariantOfVariantId} />
+                  <VariantMetadataEditor
+                    optionId={selectedVariantOfVariantId}
+                  />
                 )}
               </>
             }
@@ -717,7 +716,6 @@ export default function SetSelector() {
             onDrillToExisting={handleDrillToExisting}
           />
         )}
-
       </div>
 
       {/* Base mapping: auto-prompts BaseSetPicker the first time a Base
@@ -759,7 +757,9 @@ export default function SetSelector() {
       {/* NEO-6: multi-source attach panel for the active variant row.
           Renders for variantType (when Base/terminal), insert, and
           parallel rows once they have a reconciliation primary mapped. */}
-      {cardChecklistId && <MultiSourcePanel selectorOptionId={cardChecklistId} />}
+      {cardChecklistId && (
+        <MultiSourcePanel selectorOptionId={cardChecklistId} />
+      )}
 
       {/* NEO-38/NEO-71-74: set ATTRIBUTES editor. Mounts at the DEEPEST
           selected node at ANY level (sport → parallel) so it follows the

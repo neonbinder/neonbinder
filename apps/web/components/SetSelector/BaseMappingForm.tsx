@@ -105,7 +105,13 @@ type BaseMappingFormProps = {
    * the two never share an instance.
    */
   mode: "initial" | "remap";
-  onClose: () => void;
+  /**
+   * NEO-255: the parent needs to know WHY the form is done. "mapped" — the
+   * picker was confirmed and the row now holds a mapping; "dismissed" — the
+   * operator pressed Close on the recovery panel and the row is still
+   * unmapped, so the parent should stop auto-prompting for this selection.
+   */
+  onClose: (reason: "mapped" | "dismissed") => void;
 };
 
 // Captures the Base variantType's SL/BSC platform mapping by reusing the
@@ -203,26 +209,28 @@ export default function BaseMappingForm({
   // Built in both modes for the same reason the queries above are: whether
   // cards are at stake is a property of the ROW, not of which button opened
   // this dialog. The picker decides what to say from the counts.
-  const remapNotice: BaseRemapNotice | undefined =
-    slotCounts
-      ? {
-          totalCards: typeof slotCounts.total === "number" ? slotCounts.total : 0,
-          slCards: primarySlotCards(
-            slotCounts.sportlots,
-            variantTypeRow
-              ? primarySlot(variantTypeRow as unknown as SlotBearingRow, "sportlots")
-              : undefined,
-          ),
-          bscCards: primarySlotCards(
-            slotCounts.bsc,
-            variantTypeRow
-              ? primarySlot(variantTypeRow as unknown as SlotBearingRow, "bsc")
-              : undefined,
-          ),
-          currentSlLabel: currentLabel("sportlots"),
-          currentBscLabel: currentLabel("bsc"),
-        }
-      : undefined;
+  const remapNotice: BaseRemapNotice | undefined = slotCounts
+    ? {
+        totalCards: typeof slotCounts.total === "number" ? slotCounts.total : 0,
+        slCards: primarySlotCards(
+          slotCounts.sportlots,
+          variantTypeRow
+            ? primarySlot(
+                variantTypeRow as unknown as SlotBearingRow,
+                "sportlots",
+              )
+            : undefined,
+        ),
+        bscCards: primarySlotCards(
+          slotCounts.bsc,
+          variantTypeRow
+            ? primarySlot(variantTypeRow as unknown as SlotBearingRow, "bsc")
+            : undefined,
+        ),
+        currentSlLabel: currentLabel("sportlots"),
+        currentBscLabel: currentLabel("bsc"),
+      }
+    : undefined;
 
   const writePlatformData = async (
     platformData: {
@@ -377,7 +385,7 @@ export default function BaseMappingForm({
     }
     setStaleNotice(null);
     setPickerOpen(false);
-    onClose();
+    onClose("mapped");
   };
 
   useEffect(() => {
@@ -387,7 +395,7 @@ export default function BaseMappingForm({
     triggered.current = true;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- fires the auto-sync action; latched by triggered.current so it runs once
     void doSync();
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- doSync is deliberately omitted: it is not referentially stable, and including it would refire the auto-sync it is latched (triggered.current) to run once
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- doSync is deliberately omitted: it is not referentially stable, and including it would refire the auto-sync it is latched (triggered.current) to run once
   }, [autoOpen, sportValue, yearValue, setNameValue]);
 
   if (!autoOpen && !pickerOpen && !loading && !message) {
@@ -419,7 +427,7 @@ export default function BaseMappingForm({
             {messageKind !== "nothing" && (
               <NeonButton onClick={doSync}>Retry</NeonButton>
             )}
-            <NeonButton cancel onClick={onClose}>
+            <NeonButton cancel onClick={() => onClose("dismissed")}>
               Close
             </NeonButton>
           </div>
