@@ -1,0 +1,332 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/admin/players&worker=${WORKER_INDEX || "0"}
+name: "Teams — one location and nickname can be two teams when their eras differ, and the second is only created once the operator confirms it"
+tags:
+  - regression
+  - admin
+---
+# R1 — ONE FEATURE (NEO-254): a team's identity is now (name, sport, ERA), so
+# one location + nickname can name two rows. This flow drives the whole of that
+# from the outside: the New Team dialog takes an era, `teams.findOrCreate`
+# REFUSES a second row under the same name until the operator says they mean it,
+# and Team Management then lists both, told apart by nothing but their years.
+#
+# The refusal is the point. "Winnipeg Jets" is two franchises, and before this a
+# second era was either impossible or a silent duplicate; now it is a question
+# the operator answers once, having been shown which era is already on file.
+#
+# R2 — HARD ASSERTIONS, none satisfiable by an inert page:
+#     (a) era ONE is created with its years — the chip proves the write;
+#     (b) the SAME location + name is REFUSED: the dialog says the name already
+#         exists "for 1972–1996" and names the era it would sit beside. That
+#         message is the server's (`teams.ts`), so it cannot be produced by a
+#         screen that merely rendered;
+#     (c) pressing the same button again CREATES it — the confirmation is armed
+#         by the refusal, so this second press is a different call (`newEra`)
+#         and its chip is the proof;
+#     (d) Team Management lists TWO rows for one name ("2 of N teams") carrying
+#         BOTH era segments, oldest first;
+#     (e) each row opens its OWN team: the panel reads back 1972/1996 for one
+#         and 2011/blank for the other, which is the only thing that separates
+#         them anywhere in the product.
+#
+# ── HOW EACH ROW IS TAPPED, AND WHY IT IS NOT BY `id:` ──────────────────────
+# ⚠️ TWO ROWS SHARE ONE `resource-id` HERE, and that is a live gap in the app.
+# The Team Management row's `aria-label` is pinned to the bare `teamFullName`
+# (its comment says why: every existing flow taps rows by that handle), and
+# maestro derives `resource-id` from `node.id || node.ariaLabel` ONLY — it never
+# reads `aria-describedby`, which is where this commit put the era for assistive
+# tech. So on this screen the two rows are literally indistinguishable by id: a
+# `tapOn: id:` would match both and take whichever comes first.
+#
+# They ARE distinguishable by what they PRINT: the row renders its era in its
+# own span, and a tap on a `<button>`'s descendant activates the button. So each
+# row is opened by its era text, anchored below the counter so it can only be a
+# list row. That works today and needs nothing from the app.
+#
+# The clean fix, if it is wanted, is one line in `TeamManagement.tsx`:
+#     aria-label={teamOptionLabel(teamFullName(team), team.yearsActive)}
+# — the SAME helper `TeamPicker` adopted in this very commit, which appends
+# " · 1972–1996" only when the row is dated and leaves every undated row (the
+# 99% case, and every existing fixture) byte-identical. Audited before writing
+# this: the only flows that tap a Team Management row by full name are
+# `admin-franchises-link-teams` (three taps, undated per-attempt teams), so that
+# change would break nothing in the suite today. Raised, not assumed.
+#
+# ── WHY ERA TWO IS TYPED INTO THE DIALOG RATHER THAN THE PICKER ─────────────
+# Because this commit made the picker ALWAYS offer its create row, even when the
+# name already exists (`showCreateOption` no longer excludes an exact match —
+# the picker offers, the server insists). Typing the real name for era two
+# therefore renders a MATCH row and the create row under it, and two things
+# follow, both bad here: `pressKey: Enter` takes the highlighted MATCH instead
+# of opening the dialog, and the create row is pushed to y>=609 on the 1024x629
+# viewport — below the fold, where maestro reports its bounds but the click
+# lands outside the picker and dismisses it (the sibling career-history flow
+# documents that geometry in full).
+#
+# So era two is opened with a name that matches NOTHING — the popover shows
+# "No matches." and Enter can only mean "open the dialog", exactly as for era
+# one — and the real name is typed into the dialog, which is portalled, centred
+# and clipped by nothing. The dialog's Name box is the field the create actually
+# reads, so this tests the same write. What it does NOT cover is the picker
+# offering Create beside an existing name; that is picker behaviour and belongs
+# to a picker flow (R1), and is noted rather than smuggled in here.
+#
+# R3 — DEDUP: nothing else creates two rows under one name.
+#   `team-management-edit-a-team` owns the Location/Name split and the colours
+#   on a single row; `admin-franchises-link-teams` owns franchise membership and
+#   leaves its teams undated; `player-management-add-and-career-history` owns
+#   stints. None of them types an era.
+#
+# ── WHY A PLAYER IS MINTED ──────────────────────────────────────────────────
+# Same reason as the franchise flow: the New Team dialog is only reachable
+# through a TeamPicker, and every other mount of one is inside
+# `/admin/set-builder` behind a full drill. `/admin/teams` has no "add team"
+# control. So one throwaway player, no stint added, never saved — the teams
+# exist the moment the dialog's Create returns, which the chip proves.
+#
+# R4 — the entry URL is the whole setup. No in-body login, no credential step.
+#
+# R5 — every wait is Maestro's 7s default except the cold sign-in (45s) and the
+#   one reload (30s, the value both sibling admin flows use). No marketplace.
+#
+# R7 / R7a — no set, checklist, card or variant, so no SET-REGISTRY entry. It
+#   creates THREE permanent globally-shared rows (one player, two teams) and the
+#   product has no delete for either, so they stay. Inert by name: every one is
+#   suffixed with this run's own attempt token, unique per worker AND per
+#   attempt. Single tokens, because the team typeahead and `players.search` are
+#   Convex SEARCH indexes and match on TOKENS.
+#
+# R8 — nothing in the admin detail panel is assumed above the fold. The header
+#   row is `flex flex-wrap` and its counter widens with the row count, so it
+#   wraps and shoves the panel down (CI run 34179568903 killed a sibling flow
+#   exactly that way). Every reach into the panel is a `scrollUntilVisible`, and
+#   the scroll is its own assertion (R6). No `centerElement` on the career
+#   editor's controls: they are locked to the page bottom, where centring can
+#   never settle (R8's own exception; six futile swipes measured).
+#
+# R10 — no conditional branches, no `notVisible:` guard on a normally-present
+#   element, no settle waits.
+
+- launchApp
+- extendedWaitUntil:
+    visible: ".*of .* players.*"
+    timeout: 45000
+
+- evalScript: '${output.TOKEN = String(ATTEMPT_ID).split("-").join("")}'
+
+# ============================================================
+# PART 1 — THE FIXTURE: A PLAYER, TO REACH THE NEW TEAM DIALOG
+# ============================================================
+# Emptying the list first is a precondition, not a claim: every player row
+# prints its sport, so with rows on screen "Baseball" is on the page many times
+# and the sport picker could not be identified by what it says. The sport is
+# picked with the add form CLOSED because maestro resolves an <option> tap by
+# index against the FIRST <select> in the document.
+- tapOn: "Filter players"
+- inputText: "zzzznotaplayer"
+- assertVisible: "No players match that filter."
+- assertVisible: "0 matches"
+
+- tapOn: "All sports"
+- tapOn: "Baseball"
+- assertVisible: "Baseball"
+
+- tapOn: "Add player"
+- tapOn: "New player name"
+- inputText: "Erp${output.TOKEN}"
+- scrollUntilVisible:
+    element:
+      id: "Create player Erp${output.TOKEN}"
+- tapOn:
+    id: "Create player Erp${output.TOKEN}"
+- extendedWaitUntil:
+    visible: ".*Added Erp${output.TOKEN}.*"
+
+# Centring here is LOAD-BEARING: this line cannot be centred either, so the
+# swipes run until the page stops moving, and that maximum-scroll position is
+# what puts the picker's popover clear of the fold for everything below.
+- scrollUntilVisible:
+    element:
+      text: "No stints recorded yet."
+    centerElement: true
+
+# ============================================================
+# PART 2 — ERA ONE: 1972–1996
+# ============================================================
+- assertVisible:
+    id: "Add team"
+- tapOn:
+    id: "Add team"
+- tapOn:
+    id: "Search teams"
+- inputText: "Era${output.TOKEN}"
+
+# Nothing answers to this name yet — which is both the precondition for creating
+# it and a real assertion that this attempt's token is its own.
+- assertVisible: "No matches."
+- pressKey: Enter
+
+- assertVisible: "New team: Era${output.TOKEN}"
+- tapOn:
+    id: "New team location \\(optional\\)"
+- inputText: "Loc${output.TOKEN}"
+
+# THE ERA, which is the whole subject of this flow. Both boxes are optional and
+# addressed by their own aria-labels; "to" is left as a real value rather than
+# blank here so era one is a CLOSED span and era two can be an open one.
+- tapOn:
+    id: "New team active from \\(optional\\)"
+- inputText: "1972"
+- tapOn:
+    id: "New team active to"
+- inputText: "1996"
+
+- tapOn:
+    id: "Create team Loc${output.TOKEN} Era${output.TOKEN}"
+- extendedWaitUntil:
+    visible:
+      id: "Remove team Loc${output.TOKEN} Era${output.TOKEN}"
+
+# Drop the chip before building era two. Geometry, not tidiness: the popover is
+# positioned under the WHOLE picker, chips included, so a chip left in place
+# pushes "No matches." past the bottom of the viewport. The team row is
+# untouched — this only unstages it from a career draft that is never saved.
+- tapOn:
+    id: "Remove team Loc${output.TOKEN} Era${output.TOKEN}"
+
+# Removing a chip CLOSES the popover: the × that was just tapped is the focused
+# element, removing it sends focus to <body>, and TeamPicker's root focusout
+# handler runs `setPopoverOpen(false)`. The trigger always re-opens.
+- assertVisible:
+    id: "Add team"
+- tapOn:
+    id: "Add team"
+
+# ============================================================
+# PART 3 — ERA TWO: 2011–present, REFUSED THEN CONFIRMED
+# ============================================================
+# Opened with a probe name nothing matches (see the header): the popover must
+# show "No matches." for Enter to mean "open the dialog" rather than "take the
+# highlighted match", and the create row must not be pushed below the fold.
+- tapOn:
+    id: "Search teams"
+- inputText: "Zzz${output.TOKEN}"
+- assertVisible: "No matches."
+- pressKey: Enter
+- assertVisible: "New team: Zzz${output.TOKEN}"
+
+# Correct the seeded name to the one already on file. The dialog's Name box is
+# what the create reads; the heading keeps the string the dialog was opened
+# with, which is why it is not re-asserted here.
+- tapOn:
+    id: "New team name"
+- eraseText: 40
+- inputText: "Era${output.TOKEN}"
+- tapOn:
+    id: "New team location \\(optional\\)"
+- inputText: "Loc${output.TOKEN}"
+- tapOn:
+    id: "New team active from \\(optional\\)"
+- inputText: "2011"
+
+# R2(b) — THE REFUSAL. `teams.findOrCreate` will not add a second row under a
+# name it already holds until it is told to, and it names the era already on
+# file so the operator can see what they are about to sit beside. This string is
+# composed on the SERVER (`teams.ts`), so no amount of client rendering produces
+# it — and the era it quotes is the one PART 2 wrote, so this line is also the
+# read-back proving era one persisted with its years.
+- tapOn:
+    id: "Create team Loc${output.TOKEN} Era${output.TOKEN}"
+- extendedWaitUntil:
+    visible: ".*Loc${output.TOKEN} Era${output.TOKEN} already exists for 1972–1996. Creating this one adds a second era.*"
+
+# R2(c) — THE CONFIRMATION. The refusal ARMED it, so pressing the same button
+# again is a different call (`newEra: true`) rather than a retry of the one that
+# was just refused. Nothing between the two presses edits the location or the
+# name, which would disarm it (`confirmedFor`).
+- tapOn:
+    id: "Create team Loc${output.TOKEN} Era${output.TOKEN}"
+- extendedWaitUntil:
+    visible:
+      id: "Remove team Loc${output.TOKEN} Era${output.TOKEN}"
+
+# ============================================================
+# PART 4 — TEAM MANAGEMENT SHOWS TWO ROWS FOR ONE NAME
+# ============================================================
+# A reload separates "the picker is holding what I made" from "the database
+# holds it", and lands on the screen this feature is FOR.
+- openLink: ${APP_URL || "http://localhost:3000"}/admin/teams
+- extendedWaitUntil:
+    visible: ".*of .* teams.*"
+    timeout: 30000
+
+- tapOn: "Filter teams"
+- inputText: "Era${output.TOKEN}"
+
+# R2(d) — TWO rows under ONE name. The filter matches on the composed full name
+# and both rows carry the identical one, so the counter saying two is the whole
+# feature stated in one line: this screen could not have shown two before.
+- extendedWaitUntil:
+    visible: "2 of .* teams.*"
+
+# Both eras are printed, and they are the only thing telling the rows apart. An
+# EN DASH (U+2013), which is what `eraLabel` emits — a hyphen matches nothing.
+- assertVisible:
+    text: "1972–1996"
+    below:
+      text: ".*of .* teams.*"
+- assertVisible:
+    text: "2011–present"
+    below:
+      text: ".*of .* teams.*"
+
+# R2(e) — EACH ROW OPENS ITS OWN TEAM. Tapped by the era text rather than by
+# `id:` because both rows carry the same resource-id (see the header); a tap on
+# a button's descendant activates the button. Anchored below the counter so it
+# can only be a list row.
+- tapOn:
+    text: "1972–1996"
+    below:
+      text: ".*of .* teams.*"
+
+# The panel reads back the years this row was created with. Both boxes are
+# `primitives/Input`, which emits no id and no aria-label, so they are matched
+# by VALUE (maestro reads an <input> as `node.value`) and anchored to the label
+# above them. "1972" cannot be answered by the master row's era span, which is
+# the composed "1972–1996" and a matcher is a FULL match.
+- scrollUntilVisible:
+    element:
+      text: "Active from"
+- assertVisible:
+    text: "1972"
+    below:
+      text: "Active from"
+- assertVisible:
+    text: "1996"
+    below:
+      text: "Active from"
+
+# Now the other era. `direction: UP` because reaching the panel's year boxes
+# scrolled past the master list, and the default scroll direction is DOWN.
+- scrollUntilVisible:
+    element:
+      text: "2011–present"
+    direction: UP
+- tapOn:
+    text: "2011–present"
+    below:
+      text: ".*of .* teams.*"
+
+# The open-ended era: a start year and no end. 2011 is read back, and 1996 —
+# the other row's end year, which was on screen a moment ago — is gone, so this
+# is a different row and not the same panel repainted.
+- scrollUntilVisible:
+    element:
+      text: "Active from"
+- assertVisible:
+    text: "2011"
+    below:
+      text: "Active from"
+- assertNotVisible:
+    text: "1996"
