@@ -1,0 +1,56 @@
+appId: com.neonbinder.web
+name: "Utility — discard a review batch left behind by an earlier flow, and refetch"
+tags:
+  - util
+---
+# ⚠️ A RED FLOW LEAVES ITS REVIEW BATCH BEHIND, AND THE NEXT FLOW RESUMES IT.
+#
+# `commitCardChecklist`'s review batch is per (selectorOption, user) and it
+# OUTLIVES the flow that opened it. A flow that ends any way other than
+# Cancel → Discard — a failed assertion, a timeout, a killed run — leaves its
+# decisions on the set. The next fetch of that set does not start a fresh
+# review: it RESUMES that one, decisions and all, so the wizard opens at
+# "N of M reviewed" instead of "0 of M".
+#
+# That is a cascade, not an isolated failure. The four read-only wizard flows
+# all share Baseball / 2024 / Topps / Topps Big League / Base, so ONE of them
+# going red can take its three siblings with it — each fails on its own
+# "0 of N reviewed" precondition, and the report shows four broken flows where
+# one feature broke. Reproduced locally on the #235 preview: two runs killed
+# mid-flight left the set reading "887 checklist reviews are in progress here".
+#
+# So the read-only flows clear the ground before they start. This is NOT a
+# licence to ignore a dirty batch (R2): the caller still asserts
+# "0 of N reviewed" HARD immediately after this runs, so a resume this fails to
+# clear still fails the flow loudly.
+#
+# R7: discarding is the sanctioned exit these flows already use — `cancelBatch`
+# writes nothing, saves no cards, and mints no players or teams. The names come
+# back on the next fetch, which is exactly what this then does.
+#
+# COST, AND WHY IT IS ACCEPTED. On the normal path the header DOES read
+# "0 of N reviewed", so this guard polls the full default window and skips —
+# the R10 anti-pattern, entered deliberately. Seven seconds once per read-only
+# flow buys immunity from a four-flow cascade. Do not "optimise" it away.
+
+- runFlow:
+    when:
+      notVisible: "0 of [0-9]+ reviewed.*"
+    commands:
+      # Leave the resumed batch the same way a flow's own exit does.
+      - tapOn:
+          text: "Cancel (Esc)"
+          retryTapIfNoChange: true
+      - extendedWaitUntil:
+          visible: "Discard [0-9]+ decisions?.*"
+          timeout: 15000
+      - tapOn:
+          text: "Discard"
+      - extendedWaitUntil:
+          visible: "Fetch cancelled — no cards saved."
+          timeout: 30000
+      # …and start the review this flow actually came for. Safe to call the
+      # fetch util from here: it does not call this one back, so there is no
+      # recursion.
+      - runFlow:
+          file: util-fetch-real-set-checklist-to-wizard.yaml

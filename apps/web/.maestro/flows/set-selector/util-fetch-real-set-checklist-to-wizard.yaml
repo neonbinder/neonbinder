@@ -1,0 +1,125 @@
+appId: com.neonbinder.web
+name: "Util — fetch a real set's Base checklist and land in the entity-review wizard"
+tags:
+  - util
+---
+# ============================================================================
+# WHAT THIS UTIL IS FOR (NEO-248)
+#
+# It puts the caller in front of the entity-review wizard, on a REAL,
+# marketplace-listed set, having synced through the real hierarchy.
+#
+# ── WHY IT HAS TO BE A REAL SET ─────────────────────────────────────────────
+# Three earlier designs are dead and must not be re-attempted:
+#
+#   1. A hand-added card's `pendingPlayerNames` (the six flows retired by
+#      NEO-220/221). Quick-add's Players field is a PlayerPicker now, so a
+#      hand-added card is born LINKED and carries no pending name.
+#   2. A hand-typed set with a SportLots set id attached to it. MEASURED DEAD
+#      on 2026-09-05: `fetchSportLotsChecklist` declares `players`/`teams` in
+#      its return validator but never sets them — see the doc comment on
+#      `tokenizeSlDescription` ("Team extraction is intentionally NOT attempted
+#      here … BSC supplies the canonical team in the merged record anyway").
+#      A SportLots-only fetch therefore yields ZERO unknown names for ANY set:
+#      `Big League Gameday Drip` committed 10 of 10 cards straight through with
+#      no wizard. **Unknown names come from BSC.**
+#   3. Creating a row with "+ Custom" and then attaching marketplace data to
+#      it. Rejected on product grounds: hand-creating a set exists only to
+#      AVOID syncing, so a test that syncs must sync properly through the real
+#      marketplace hierarchy, and "Base" is not something an insert set has.
+#
+# So the fixture is a real set that appears via `Sync Sets`, whose variant
+# types sync normally, and whose Base is mapped by `setup.yaml`.
+#
+# ── EVERY CALLER IS READ-ONLY. THIS IS LOAD-BEARING. ────────────────────────
+# Each caller must leave through Cancel → Discard. Nothing may commit, and
+# nothing may choose "Add as New". Two independent reasons, either sufficient:
+#
+#   * `players` is GLOBAL. Committing this set's 87 unknown players makes them
+#     KNOWN, and a known name is not an unknown — the very next run would open
+#     the wizard on nothing. One commit destroys the fixture for the rest of
+#     the run and for every flow after it.
+#   * CI CANNOT SERIALIZE TWO FLOWS. `run-e2e-queue.sh` filters only
+#     `util` / `wip` / `setup`; the `isolated`, `serial-marketplace` and
+#     dep-graph lanes exist ONLY in `run-e2e-smoke.sh` (the local runner). So a
+#     "sole writer" is a convention nothing enforces at runtime, and a writer
+#     would race every reader on the same `selectorOptionId`.
+#
+# Concurrent READS are safe and that is what makes four flows on one set legal:
+# `startCandidateBatch` clears and reads `checklistCandidates` scoped to the
+# operator who fetched, and entity-review batches are keyed by
+# selectorOption + user. Each of the 8 runners signs in as its own account.
+# The cost is one live BSC+SL round-trip per flow.
+#
+# ── INPUTS ──────────────────────────────────────────────────────────────────
+#   SET             the real set to drill. Defaults to the read-only fixture.
+#   SPORT / YEAR / MANUFACTURER
+#                   the set's ancestors. Default to Baseball / 2024 / Topps.
+#
+# ── RETURN CONTRACT ─────────────────────────────────────────────────────────
+#   The entity-review wizard is OPEN, every row undecided ("0 of N reviewed"),
+#   and the card-pairing session is PARKED behind it — so "Back to matching"
+#   is offered. The caller owns the exit.
+# ============================================================================
+
+# ── DRILL + BASE (R9) ───────────────────────────────────────────────────────
+# The Base mapping is provisioned by setup.yaml, so on a seeded deployment the
+# util's `Select Base Set` branch is skipped and this is a pure read.
+- runFlow:
+    file: util-drill-to-base-variant.yaml
+    env:
+      SPORT: ${SPORT || "Baseball"}
+      YEAR: ${YEAR || "2024"}
+      MANUFACTURER: ${MANUFACTURER || "Topps"}
+      SET: ${SET || "Topps Big League"}
+
+# ── FETCH ───────────────────────────────────────────────────────────────────
+# One live BSC + SportLots round-trip. BSC is the side that returns players.
+- scrollUntilVisible:
+    element:
+      id: "Sync card checklist"
+    centerElement: true
+    timeout: 15000
+- tapOn:
+    id: "Sync card checklist"
+- extendedWaitUntil:
+    visible: ".*Match Cards.*"
+    timeout: 120000
+
+# ── CONFIRM THE PAIRING ─────────────────────────────────────────────────────
+# NOTHING IS KEPT, deliberately. The matched rows are saved regardless of the
+# keep shelf, and they are where the unknown names come from — measured, the
+# unmatched columns held 0 BSC-only and 1 SportLots-only card and confirming
+# with nothing kept still produced 88 unknown names. Skipping the two
+# "Keep all" guards also skips two `when:` polls on normally-absent elements.
+#
+# No `scrollUntilVisible` in this dialog: its body is its own `overflow-y-auto`
+# scroller that Maestro cannot drive (see checklist-pairing-dialog-cancel). The
+# footer is a flex sibling OUTSIDE that scroller, so Confirm is always on screen.
+#
+# ⚠️ WAIT FOR THE FETCH, NOT THE DIALOG (NEO-195; enforced by
+# scripts/maestro-pairing-sync.test.mjs). Since the fetch STREAMS,
+# `Match Cards` becoming visible means the FIRST candidates arrived (~6s), not
+# that the fetch resolved (~40s on this set). Two things break if a flow taps
+# Confirm at that point: Confirm is gated on `isStreaming` and `handleConfirm`
+# returns early, so the tap silently does nothing and the failure surfaces on a
+# later step that blames the wrong thing; and the row counts are still moving.
+#
+# Confirm's own TEXT is the sync point, because it is what a person would look
+# at: "Loading…" while streaming, "Confirm" once the action resolves. The
+# accessible name is "Confirm card matches" in both states, so only the text can
+# express the difference — which is why this is a separate wait from the tap
+# below rather than one combined selector.
+- extendedWaitUntil:
+    visible:
+      text: "^Confirm$"
+    timeout: 120000
+- tapOn:
+    id: "Confirm card matches"
+
+# ── THE WIZARD ──────────────────────────────────────────────────────────────
+# Every name the fetch brought back that `players`/`teams` does not hold is
+# queued, each behind a live Wikidata lookup. 120s covers that external work.
+- extendedWaitUntil:
+    visible: "Confirm New Players & Teams"
+    timeout: 120000

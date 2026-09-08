@@ -59,6 +59,16 @@ tags:
 #   - Base   → card checklist fetched + saved                                    [this flow]
 #   - Insert → matched variants saved; "Future Stars" checklist (~20 cards)      [this flow]
 #   - Parallel → matched variants saved; "Gold Wave Refractors" checklist (~300) [this flow]
+#   - Baseball → 2024 → Topps → Topps Big League: variant types synced and Base
+#     MAPPED, checklist deliberately EMPTY — the NEO-248 entity-review fixture.
+#     Its ~87 players must stay UNKNOWN, so nothing here fetches it.           [this flow]
+#
+# NOT provisioned here, deliberately: the three COMMITTING entity-review
+# fixtures (Topps Chicago Cubs / Baltimore Orioles / Brooklyn Collection).
+# Provisioning them cost ~2 minutes of SERIAL seed time and pushed this flow
+# past the 600s wall (run 34048184342). Each is owned by exactly one flow, and
+# util-fetch-real-set-checklist-to-wizard already handles the cold first-time
+# path — so each flow provisions its own set, in parallel, on its own runner.
 #
 # NOT pre-synced (sync lazily if you need them): any other year / manufacturer /
 # set (e.g. Topps Update, Topps Pro Debut, Topps Wonderland), any other sport,
@@ -1315,3 +1325,52 @@ tags:
     centerElement: true
     timeout: 15000
 - assertVisible: "SL"
+
+# ============================================================================
+# STEP N — PROVISION THE ENTITY-REVIEW FIXTURE: Topps Big League → Base (NEO-248)
+#
+# STRUCTURE ONLY. This block syncs the set's variant types and confirms its
+# Base mapping. It deliberately DOES **NOT** fetch or commit the checklist, and
+# that is the whole point of the fixture — see the warning below.
+#
+# WHY IT IS HERE RATHER THAN IN THE FLOWS. Four `checklist-wizard-*` flows read
+# this set concurrently. Selecting an unmapped Base auto-opens the BaseSetPicker,
+# and four runners confirming that mapping at once is a shared write on a
+# version-guarded document. Doing it ONCE in the seed job removes the race
+# entirely; by the time the queue drains, every flow finds `Re-map Base` and
+# takes the util's no-op branch.
+#
+# ⚠️ NEVER FETCH OR COMMIT THIS SET'S CHECKLIST HERE. The fixture's entire value
+# is that its players are NOT in `players`. Committing its ~310 cards would
+# create ~87 player rows, and a name that is already known is not an unknown —
+# the wizard would then open on nothing and all four flows would fail. If you
+# are tempted to "warm" this set the way Topps Chrome is warmed, don't: Topps
+# Chrome is warmed precisely so its players ARE known, and this set exists to be
+# its opposite.
+#
+# The four flows are all READ-ONLY (Cancel → Discard), so nothing else ever
+# writes here. See .maestro/SET-REGISTRY.md.
+# ============================================================================
+
+- runFlow:
+    file: set-selector/util-drill-to-base-variant.yaml
+    env:
+      SET: "Topps Big League"
+
+# The mapping landed: `Re-map Base` replaces `Select Base Set` once
+# `baseHasMapping` is true. The util already confirmed the picker on the
+# first-run path; this is the seed's own assertion that the fixture is ready
+# for the queue.
+- scrollUntilVisible:
+    element:
+      text: ".*Re-map Base.*"
+    centerElement: true
+    timeout: 60000
+
+# The checklist is EMPTY and must stay that way — the assertion is the contract.
+- scrollUntilVisible:
+    element:
+      text: "No cards in this checklist yet."
+    centerElement: true
+    timeout: 15000
+

@@ -437,6 +437,55 @@ describe("NEO-212 — a refused write to shared reference data persists nothing"
     });
   });
 
+  test("entityReviewQueue.clearCareerTeamStint refuses a non-admin without clearing the stint", async () => {
+    // NEO-248. It undoes a staging patch: the years the operator typed on a
+    // career-team step. Ungated, a signed-in non-admin could empty a
+    // colleague's entries one step at a time, and the loss is silent — the
+    // wizard rebuilds its chips from exactly this field, so the chips would
+    // simply stop appearing.
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSport(t);
+    const playerRowId = await t.run(async (ctx) =>
+      ctx.db.insert("entityReviewQueue", {
+        selectorOptionId,
+        batchId: "batch-1",
+        createdByUserId: ADMIN.subject,
+        kind: "player" as const,
+        name: "Travis Bazzana",
+        sportId: selectorOptionId,
+        status: "ready" as const,
+      }),
+    );
+    const teamRowId = await t.run(async (ctx) =>
+      ctx.db.insert("entityReviewQueue", {
+        selectorOptionId,
+        batchId: "batch-1",
+        createdByUserId: ADMIN.subject,
+        kind: "team" as const,
+        name: "Sydney Blue Sox",
+        sportId: selectorOptionId,
+        status: "ready" as const,
+        source: {
+          kind: "careerTeamOf" as const,
+          playerRowId,
+          manualStint: { fromYear: 2001, toYear: 2005 },
+        },
+      }),
+    );
+
+    await expect(
+      t.withIdentity(MEMBER).mutation(api.entityReviewQueue.clearCareerTeamStint, {
+        reviewRowId: playerRowId,
+        teamRowId,
+      }),
+    ).rejects.toThrow(/admin access required/i);
+
+    // The years are STILL there — the refusal happened before any write.
+    expect(
+      (await t.run(async (ctx) => ctx.db.get(teamRowId)))?.source?.manualStint,
+    ).toEqual({ fromYear: 2001, toYear: 2005 });
+  });
+
   test("entityReviewSkips.clearSkip refuses a non-admin without deleting the row", async () => {
     // The only destructive one of the ten. Deleting a skip re-opens a decision
     // the operator already made — the name re-enters the wizard on the next

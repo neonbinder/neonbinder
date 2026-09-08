@@ -1,0 +1,132 @@
+appId: com.neonbinder.web
+name: "Utility — walk the entity review wizard to a settled player row (skipping team steps)"
+tags:
+  - util
+---
+# ⚠️ NEO-236 — THE WIZARD DOES NOT OPEN ON A PLAYER ROW, AND IT WILL TAKE ONE
+# BACK OFF YOU WITH NO DECISION MADE. Both are deliberate; both broke flows.
+#
+# The rule, from `entity-review-nav.ts` (`resolveNav` + `nextUndecided`):
+#
+#   EVERY settled undecided TEAM row is presented before ANY player row, and a
+#   player the WIZARD walked to yields the moment any team row settles — unless
+#   the operator has started work on it (`pinnedRowHasEdits`: an open link
+#   search, a staged stint, an unticked chip, text in the career-team entry).
+#
+# Jason asked for this so the operator answers one kind of work at a time and
+# every team a later player needs already exists. The consequence for a flow is
+# that a player row is only STABLE once nothing is left that could out-rank it:
+#
+#   1. No row is still looking up. Lookups resolve five-wide over live Wikidata
+#      and complete out of order, so a batch that is presenting a player right
+#      now may have a dozen team rows one round-trip away from settling. This is
+#      exactly how the career-team flow failed locally: the walk landed on a
+#      player, both drain passes agreed, and by the next command the wizard had
+#      moved to "New Team: Brooklyn Dodgers" — 0 of 112 reviewed, nothing
+#      decided, the remaining teams had simply finished looking themselves up.
+#   2. No settled team row is still undecided.
+#
+# So this util waits the batch out, then answers every team step, and only then
+# calls a player row stable. It is what an operator does; it is also the only
+# order in which the product will hold still.
+#
+# ANSWERED AS SKIPS, deliberately: a skip creates nothing (R7), and it leaves
+# every drained decision reading "Skipped", so a caller's own create is the only
+# "Added as new" in the Decided list — which is what those assertions key on.
+#
+# Keyed on "Skip … — not a person", NOT on "Add as New Player": the primary
+# button relabels itself to "Link to <name>" whenever the row has an exact
+# hierarchy match, so it is not a reliable "this is a player row" signal. The
+# skip control's wording never changes for a given kind.
+#
+# `times:` is a runaway guard, not a budget — each loop exits on its condition.
+
+# --- 1. wait out the batch's lookups.
+# "N still looking up — wait or skip" is the wizard's own status line and is
+# absent exactly when no undecided row is pending. R5 marketplace-class
+# exception: this is a live Wikidata round-trip for every unknown name in the
+# set, not a UI render. It returns the moment the queue drains.
+- extendedWaitUntil:
+    notVisible: ".*still looking up.*"
+    timeout: 180000
+
+# --- 2. answer every team step until a player row is presented
+- repeat:
+    times: 200
+    while:
+      notVisible:
+        id: "Skip .* not a person"
+    commands:
+      # NEO-254 — the matcher covers a LEAGUE step as well as a team step.
+      # The wizard stages a `New League:` step ahead of the first team that
+      # needs that league, and its skip control is worded differently on
+      # purpose: a league row's accessible name is
+      # `Skip <name> — this team has no league` (the string IS a league;
+      # skipping says this TEAM has none), not `— not a league`. A matcher
+      # pinned to `not a team` therefore misses it, taps nothing, and this loop
+      # spins its whole `times` budget before the wait below fails. Neither
+      # alternative matches a PLAYER row's `— not a person`, which is what this
+      # loop exits on.
+      - runFlow:
+          when:
+            visible:
+              id: "Skip .*(not a team|has no league)"
+          commands:
+            - tapOn:
+                id: "Skip .*(not a team|has no league)"
+- extendedWaitUntil:
+    visible:
+      id: "Skip .* not a person"
+    timeout: 30000
+
+# --- 3. give the career-team staging its round-trip
+# The first time a player with career-team enrichment is presented, the wizard
+# stages those teams as their own steps and hands navigation to them, so they
+# are answered before the player that needs them. That write lands a few
+# seconds after the row appears — long enough for a flow to assert the player
+# row and then tap into a team step.
+#
+# This guard is FALSE by construction: the wizard's title is on screen for as
+# long as the wizard is open, so "not visible" can never come true and the body
+# never runs. That is the entire point — a deliberate, bounded dwell that lets
+# the hand-off happen (or not) BEFORE the next pass looks. Every other way of
+# expressing this either fails when no hand-off comes or returns the instant the
+# screen stops moving, which is too early.
+# This is the one sanctioned R10 exception in the suite; do not "optimise" it.
+- runFlow:
+    when:
+      notVisible: "Confirm New Players & Teams"
+    commands:
+      - assertVisible: "Confirm New Players & Teams"
+
+# --- 4. drain whatever the staging inserted, and settle on the player
+- extendedWaitUntil:
+    notVisible: ".*still looking up.*"
+    timeout: 180000
+- repeat:
+    times: 200
+    while:
+      notVisible:
+        id: "Skip .* not a person"
+    commands:
+      # NEO-254 — the matcher covers a LEAGUE step as well as a team step.
+      # The wizard stages a `New League:` step ahead of the first team that
+      # needs that league, and its skip control is worded differently on
+      # purpose: a league row's accessible name is
+      # `Skip <name> — this team has no league` (the string IS a league;
+      # skipping says this TEAM has none), not `— not a league`. A matcher
+      # pinned to `not a team` therefore misses it, taps nothing, and this loop
+      # spins its whole `times` budget before the wait below fails. Neither
+      # alternative matches a PLAYER row's `— not a person`, which is what this
+      # loop exits on.
+      - runFlow:
+          when:
+            visible:
+              id: "Skip .*(not a team|has no league)"
+          commands:
+            - tapOn:
+                id: "Skip .*(not a team|has no league)"
+- extendedWaitUntil:
+    visible:
+      id: "Skip .* not a person"
+    timeout: 30000

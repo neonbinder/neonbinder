@@ -1,0 +1,269 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Entity review — a hand-staged career team survives the commit and becomes a real team row"
+tags:
+  - set-selector
+  - regression
+---
+# R1 — ONE FEATURE: what a hand-staged career team is worth once the review is
+# COMMITTED. The sibling read-only flow (checklist-wizard-career-team-entry)
+# proves the mini-form — validation, the chip, the optional to-year, removal,
+# and that the staged entry reaches a decision. It stops there. This flow proves
+# the last mile: `commitCardChecklist` runs `resolveTeamIdByName`, which
+# get-or-creates the staged team and attaches it to the newly created player. A
+# staged entry that never reached the database would leave no team row behind.
+#
+# R2 — HARD ASSERTIONS:
+#     (a) the row under test is a PLAYER row — only a player renders the
+#         career-team mini-form — asserted by its stable control before use;
+#     (b) a complete entry keeps its years across the New Team step it triggers
+#         — back on the player row the chip still reads "<name> (2001–2005)";
+#     (c) "Add as New Player" records a CREATE carrying that entry — the
+#         history reads "Added as new";
+#     (d) the commit lands ("Saved N cards");
+#     (e) THE POINT: `/admin/teams` now holds a team by the staged name, and the
+#         list narrows to exactly "1 of N teams" for it. Since NEO-236 that row
+#         is written from the team's OWN New Team step rather than from the
+#         player's decision, so this also proves that step's answer survived the
+#         commit. Nothing else in this flow creates a team, and the name is
+#         unique to this worker and attempt.
+#
+# ── WHY THE YEARS SURVIVE (71f23a4) ─────────────────────────────────────────
+#   "Add career team" stages a New Team step for the club and sends the walk to
+#   it, so the operator always leaves the player row and comes back. That round
+#   trip used to destroy their typing twice over: the chip list was a bare array
+#   the presented-row effect wiped, and `stageCareerTeamRows` was only ever sent
+#   the NAME. 71f23a4 stores the years on the staged step as
+#   `source.manualStint` and keys the chip list by player review-row id, so both
+#   survive — and carries them through to `players.teamYears` at commit.
+#   Navigation is unchanged: the hop is expected, and STEP 3 walks it
+#   deliberately rather than around it.
+#
+#
+# ── DO NOT REACH FOR THE AUTO-ADD SWEEP HERE (c657a57) ──────────────────────
+#   "Add remaining players as new" now DEFERS its debounced sweep while the
+#   presented row has edits — text left in the career-team field, a staged chip,
+#   an open link search, an unticked chip, a touched New Team form. A flow that
+#   types into that field and then waits for the sweep waits forever. This flow
+#   is safe because it DECIDES the row explicitly ("Add as New Player") before
+#   it touches anything in the footer; keep it that way.
+#
+# ── WHAT THIS STILL DOES NOT PROVE, AND WHY ─────────────────────────────────
+#   That the team is attached to THAT player's `teamYears`. The wizard picks
+#   which unknown to present (a race between live Wikidata lookups), so the flow
+#   never learns the player's name and cannot look it up afterwards — and no UI
+#   renders `teamYears` anyway. The team ROW existing is the strongest
+#   observable consequence of the staged entry reaching commit; the attachment
+#   itself stays with the entity-review unit files.
+#
+# ── THE FIXTURE ─────────────────────────────────────────────────────────────
+#   `Baseball → 2024 → Topps → Topps Baltimore Orioles → Base`.
+#   Measured on PR #235's preview, 2026-09-06: 17 cards matched on both
+#   marketplaces → **8 unknown names, ALL PLAYERS, 0 teams**; wizard opens.
+#
+#   ALL-PLAYER ON PURPOSE, and that is why this flow needs NO KIND GUARD. It
+#   acts on controls only a player row renders, and this fixture cannot present
+#   a team row because it surfaces no unknown teams at all. The earlier design
+#   used a basketball set and carried a guard to survive a 20:1 player/team mix;
+#   an all-player fixture removes the branch instead of hedging it.
+#
+#   THIS FLOW IS THE SOLE WRITER OF THIS SET. Nothing else reads or writes it,
+#   so committing races nothing. CI cannot serialize two flows
+#   (`run-e2e-queue.sh` filters only `util`/`wip`/`setup`; the lanes live only
+#   in the LOCAL `run-e2e-smoke.sh`), so "one set, one writer" is the only
+#   isolation that holds. It drains its OWN fixture within a run — accepted,
+#   because CI reseeds the preview every run.
+#
+#   ⚠️ THIS FLOW CREATES ONE PLAYER AND ONE TEAM, deliberately, and they are
+#   global. The player is one of this set's own unknowns, which no other flow
+#   touches; the team is named per worker and attempt so it can never collide.
+#   Every other unknown is skipped, so exactly one player is minted.
+
+# ============================================================
+# LAUNCH + SIGN IN
+# ============================================================
+
+- launchApp
+- extendedWaitUntil:
+    visible: ".*Build set parameters using marketplace APIs.*"
+    timeout: 45000
+
+# ── A TEAM NAME THAT MATCHES NOTHING, AND THE TOKEN THAT MAKES IT SO ────────
+# CareerTeamEntry's suggestion dropdown is `absolute z-10 left-0 right-0`, so
+# one suggestion row covers "From year" and "+ Add" beneath it, and it closes
+# only on a pick, a successful add, or Escape — which maestro-web cannot send.
+# A tap aimed at "+ Add" then lands on the suggestion and REPLACES the typed
+# name (CI runs 33875599981 and 34050688656).
+#
+# ⚠️ THIS FLOW IS THE ONE THAT PERSISTS A TEAM, so its name must share NO
+# `teams.search` token with any name another flow types. That index matches on
+# TOKENS, split on non-alphanumerics: `CareerTeam-<token>` — what the READ-ONLY
+# sibling (checklist-wizard-career-team-entry) types — tokenizes to
+# ["CareerTeam", "<token>"], so a row this flow left behind called
+# `CareerTeam-…` surfaces as a suggestion in that flow and steals its "+ Add"
+# tap. That is exactly how run 34050688656 broke it.
+#
+# `MintedTeam<token>` has NO separator at all, so it is a SINGLE token that
+# nothing else can match — not the sibling's "CareerTeam", not its per-attempt
+# token, and not any of the `TMT-`/`PMT-`/`SLA-`/`CNAA-`/`TPT-`/`NBTeam-`/`TLF-`
+# names the other team-creating flows use. The read-only sibling keeps
+# `CareerTeam-…` and never persists it, because it discards its batch.
+#
+# The token itself comes from the injected ATTEMPT_ID, hyphens stripped:
+# "w3-a1-23945" tokenizes as three terms, "w3a123945" as one.
+# ⚠️ READ `ATTEMPT_ID`, NOT `output.ATTEMPT_ID`. The runner injects the attempt
+# id with `-e ATTEMPT_ID=…`, which Maestro exposes as the binding `${ATTEMPT_ID}`
+# — it never populates `output.ATTEMPT_ID`. The old form therefore ALWAYS fell
+# through to `String(Date.now()).slice(-4)`: a 4-digit token that recycles every
+# ten seconds, so two flows on two runners collide constantly. CI run
+# 34050688656 caught it — this flow typed `CareerTeam-9351` and the field came
+# back holding `CareerTeam-4180`, another runner's team.
+#
+# Single-quoted: the expression contains double quotes, and quoting the scalar
+# keeps YAML out of it. `Date.now()` (full precision) is the standalone-run
+# fallback; the hyphen strip is explained where the name is typed.
+- evalScript: '${output.ATTEMPT_TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'
+
+# ============================================================
+# SETUP — this flow's OWN real set, real fetch, wizard open
+# Mapped on both marketplaces, so every card auto-matches and the unmatched
+# columns are omitted entirely — nothing to keep before confirming.
+# ============================================================
+
+- runFlow:
+    file: util-fetch-real-set-checklist-to-wizard.yaml
+    env:
+      SET: "Topps Baltimore Orioles"
+
+- assertVisible:
+    text: "0 of [0-9]+ reviewed.*"
+
+# ============================================================
+# STEP 1 — WAIT FOR THE ROW TO SETTLE
+# A row renders no action controls at all until its background Wikidata lookup
+# comes back, so everything below reads an empty row without this. 30s: that is
+# a live external round-trip.
+#
+# NO KIND GUARD — this fixture surfaces 0 unknown teams (measured), so the
+# presented row is always a player and there is no branch to hedge. That also
+# removes the ~7s poll the guarded version spent doing nothing.
+# ============================================================
+
+# NEO-236 — the wizard does not open on a player row, and the first player it
+# shows can move out from under you while its career teams are staged. The util
+# walks to a settled player row the operator's way (see its header for the two
+# behaviours and the evidence). Every row it answers is a SKIP, so this flow's
+# own decision is the only non-skip in the Decided list.
+- runFlow: util-wizard-walk-to-player-row.yaml
+
+# ============================================================
+# STEP 2 — R2(a)+(b): stage a career team on the player row
+# The CONTROL, not the prose: the heading is a <p> split by a nested <span>, so
+# its node text is copy that can be reworded without changing behaviour.
+# The chip's en dash (U+2013) is matched with "." to keep a literal non-ASCII
+# character out of the matcher; parentheses escaped.
+# ============================================================
+
+- assertVisible:
+    id: "Career team name"
+- tapOn:
+    id: "Career team name"
+- inputText: "MintedTeam${output.ATTEMPT_TOKEN}"
+- tapOn:
+    id: "From year"
+- inputText: "2001"
+- tapOn:
+    id: "To year \\(optional\\)"
+- inputText: "2005"
+- tapOn:
+    id: "Add career team"
+
+# ============================================================
+# STEP 3 — R2(c): THE YEARS SURVIVE THE NEW TEAM STEP, and the decision
+#                 carries them
+# ============================================================
+
+# ⚠️ ONE GESTURE, THREE EFFECTS. "Add career team" stages the chip, mints a
+# review row for the club ("New Team: <name>") so the step can ask for its
+# Location, Name and League, AND — because a player waits on its own staged
+# teams (`waitingOnStagedTeams`) — sends the walk straight to that step. So the
+# chip is NOT assertable here: by the time a Maestro command reads the screen,
+# the New Team step is up. Answering it is the operator's next move anyway,
+# since `createBlocked` holds the player's create until the club is decided.
+#
+# 30s: the step appears only once `stageCareerTeams` has round-tripped.
+- extendedWaitUntil:
+    visible: "New Team: MintedTeam${output.ATTEMPT_TOKEN}"
+    timeout: 30000
+# One tap accepts the pre-filled Location, Name and League — what setup.yaml
+# and the 1996 Score flow do. Safe to match by text: the button only relabels
+# itself to "Link to <name>" on an exact hierarchy match, and this name is
+# per-worker unique, so it can have none.
+- tapOn: "Add as New Team"
+- extendedWaitUntil:
+    visible:
+      id: "Career team name"
+    timeout: 30000
+
+# THE REGRESSION FIXED IN 71f23a4, asserted where the operator would see it.
+# Before that commit this chip was gone and the typed years with it: the chip
+# list was a bare array the presented-row effect wiped on the way to the team
+# step, and `stageCareerTeamRows` was never sent the years at all. Now the years
+# ride on the staged step as `source.manualStint` and the chip list is keyed by
+# player review-row id, so both survive the hop. The en dash (U+2013) is matched
+# with "." to keep a literal non-ASCII character out of the matcher.
+- assertVisible:
+    text: ".*MintedTeam${output.ATTEMPT_TOKEN} \\(2001.2005\\).*"
+
+- tapOn: "Add as New Player"
+- extendedWaitUntil:
+    visible:
+      text: "Added as new"
+
+# ============================================================
+# STEP 4 — R2(d): resolve the rest as skips, then COMMIT
+# Skips mint nothing, so exactly ONE player is created — the one carrying the
+# staged team. 120s for the bulk (live Wikidata queue), 60s for the commit.
+# ============================================================
+
+- tapOn:
+    text: ".*Skip remaining names \\([0-9]+\\).*"
+- extendedWaitUntil:
+    visible:
+      text: ".*Confirm & Save.*"
+    timeout: 120000
+- tapOn:
+    text: ".*Confirm & Save.*"
+- extendedWaitUntil:
+    visible:
+      text: ".*Saved [0-9]+ cards.*"
+    timeout: 60000
+
+# ============================================================
+# STEP 5 — R2(e): THE POINT — the staged team is a real row now
+#
+# `resolveTeamIdByName` get-or-creates it during the commit. Nothing else in
+# this flow creates a team, and the name carries this worker's attempt token, so
+# a row by this name can only have come from the staged entry.
+#
+# The filter takes focus on arrival (NEO-156), so no tapOn before typing; the
+# count assertion is what proves the keystrokes landed. Composed with the count
+# so it cannot pass against an unfiltered list that merely contains the name.
+#
+# The staged team is a BASEBALL team now (the fixture's sport), which changes
+# nothing here: `resolveTeamIdByName` get-or-creates by name and this one is
+# unique to the worker and attempt.
+# ============================================================
+
+- openLink: ${APP_URL || "http://localhost:3000"}/admin/teams
+- extendedWaitUntil:
+    visible: ".*of .* teams.*"
+    timeout: 30000
+- inputText: "MintedTeam${output.ATTEMPT_TOKEN}"
+- extendedWaitUntil:
+    visible: "1 of .* teams.*"
+    timeout: 15000
+- assertVisible:
+    text: "MintedTeam${output.ATTEMPT_TOKEN}"
+    below:
+      text: "1 of .* teams.*"

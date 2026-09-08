@@ -940,7 +940,7 @@ describe("NewTeamForm — the + New league… control", () => {
     const onChange = vi.fn();
     const onLeagueStatus = vi.fn();
     currentLeagues = [];
-    render(<Harness onStageLeague={onStageLeague} onLeagueStatus={onLeagueStatus} onChange={onChange} />);
+    render(<Harness onStageLeague={onStageLeague} onLeagueStatus={onLeagueStatus} onChangeSpy={onChange} />);
 
     fireEvent.click(screen.getByRole("button", { name: "+ New league…" }));
     fireEvent.change(screen.getByLabelText("New league name"), {
@@ -976,7 +976,7 @@ describe("NewTeamForm — the + New league… control", () => {
     const onChange = vi.fn();
     const onLeagueStatus = vi.fn();
     currentLeagues = [];
-    render(<Harness onStageLeague={onStageLeague} onLeagueStatus={onLeagueStatus} onChange={onChange} />);
+    render(<Harness onStageLeague={onStageLeague} onLeagueStatus={onLeagueStatus} onChangeSpy={onChange} />);
 
     fireEvent.click(screen.getByRole("button", { name: "+ New league…" }));
     fireEvent.change(screen.getByLabelText("New league name"), {
@@ -1001,7 +1001,7 @@ describe("NewTeamForm — the + New league… control", () => {
     const onChange = vi.fn();
     const onLeagueStatus = vi.fn();
     currentLeagues = [];
-    render(<Harness onStageLeague={onStageLeague} onLeagueStatus={onLeagueStatus} onChange={onChange} />);
+    render(<Harness onStageLeague={onStageLeague} onLeagueStatus={onLeagueStatus} onChangeSpy={onChange} />);
 
     fireEvent.click(screen.getByRole("button", { name: "+ New league…" }));
     fireEvent.change(screen.getByLabelText("New league name"), {
@@ -1026,7 +1026,7 @@ describe("NewTeamForm — the + New league… control", () => {
       .mockResolvedValue({ id: "lg-9", name: "United States Hockey League" });
     const onChange = vi.fn();
     currentLeagues = [];
-    render(<Harness onCreateLeague={onCreateLeague} onChange={onChange} />);
+    render(<Harness onCreateLeague={onCreateLeague} onChangeSpy={onChange} />);
 
     fireEvent.click(screen.getByRole("button", { name: "+ New league…" }));
     fireEvent.change(screen.getByLabelText("New league name"), {
@@ -1091,7 +1091,7 @@ describe("NewTeamForm — a league staged earlier in the batch is selectable", (
     render(
       <Harness
         stagedLeagueNames={["United States Hockey League"]}
-        onChange={onChange}
+        onChangeSpy={onChange}
       />,
     );
     fireEvent.click(

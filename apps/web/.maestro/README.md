@@ -307,6 +307,56 @@ The same rule applies to any inner scroller — a `max-h-*` picker group, the
 admin master lists — with the softer conclusion that you must get the target
 into the box's own visible slice (filter or narrow it) rather than scroll to it.
 
+## Anything a flow drives with `pressKey` needs a unique DOM id
+
+**maestro-web does not send the key to `document.activeElement`.** It runs
+`createXPathFromElement(document.activeElement)`, then RE-FINDS the element by
+that XPath and dispatches to whatever the XPath matches. The generator uses
+`id("…")` when the element has a DOM id and otherwise falls back to
+`tag[@class="…"]` for each ancestor.
+
+So two identically-classed siblings collapse into one XPath, Selenium returns
+the **first**, and the key lands on the wrong control — with the app's own focus
+perfectly correct, which is what makes it so confusing to read from a
+screenshot. NEO-220 hit exactly this: the wizard's `Confirm & Save` and its
+`Cancel (Esc)` sibling are both `NeonButton`s with the IDENTICAL class string
+(the neon colour is a `data-accent-color` attribute and an inline style, not a
+class), so `pressKey: Enter` aimed at Confirm pressed Cancel, and the failure
+screenshot showed "Discard 1 decision?" while focus was on Confirm.
+
+**The rule:** if a flow presses a key at an element, that element must carry a
+unique DOM `id` in the component. Add it in the component, with a comment saying
+it is load-bearing for E2E, and do not reuse it
+(`components/SetSelector/EntityReviewWizard.tsx`'s `entity-review-confirm-save`
+is the worked example).
+
+Two corollaries worth knowing before you write the selector:
+
+* **A synthetic KeyboardEvent has no default action.** `dispatchEvent` runs the
+  listeners and stops, so a focused `<button>` is NOT activated by
+  `pressKey: Enter` the way a real keypress activates it. The button has to
+  handle Enter in its own `onKeyDown`. Every other Enter in this suite is aimed
+  at an `<input>` whose own handler does the work, which is why this only ever
+  bites on buttons.
+* **Two controls whose labels share a prefix are a hazard — but anchor the
+  matcher, do not assume the match is loose.** This bullet used to say `id:`
+  selectors are unanchored FINDS, so that `id: "Remove Topps"` also matched
+  `Remove Topps Chrome`. That is not what the pinned CLI does: decompiling
+  `maestro.Filters` out of `~/.maestro/lib/maestro-client.jar` (2.8.0, the
+  version CI runs) shows `idMatches` and `textMatches` both calling Kotlin's
+  `Regex.matches(CharSequence)` — a FULL match of the whole attribute — and
+  `Orchestra` hands the pattern to `StringUtils.toRegexSafe` with no `.*`
+  wrapping. `id:` is checked twice, against the raw `resource-id` and against
+  its `substringAfterLast('/')`, and both are full matches. So `Remove Topps`
+  does NOT match `Remove Topps Chrome` on this version.
+
+  Something evidently bit whoever wrote the original — a different CLI version,
+  or another filter in the same selector — so treat the HAZARD as real and the
+  MECHANISM as the decompiled one: when a screen can hold two instances of the
+  same control, give them labels that share no substring, or write the matcher
+  anchored (`^…$`), which is a no-op under full-match semantics and correct
+  under either. Do not reach for `.*…*` defensively; that genuinely is loose.
+
 ## Launching a flow: always gate on the destination heading
 
 Almost every flow's `url:` is **not** the page under test — it's

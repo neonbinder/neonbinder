@@ -244,6 +244,72 @@ const MAX_MANUAL_CAREER_TEAMS = 64;
 const MAX_EXCLUDED_CAREER_TEAM_NAMES = 64;
 
 /**
+ * NEO-248 — a career-team name the OPERATOR typed is refused, not dropped.
+ *
+ * The staging loop skips an over-long name silently, and that is right for the
+ * text it was written for: a Wikidata P54 label nobody on our side chose, where
+ * one absurd label must not cost the player every other career-team step. It is
+ * wrong for a name the operator typed into the entry form — there, a silent
+ * drop is the same failure NEO-248 exists to remove, arriving through a
+ * different door: the chip appears, the step never does, and nothing says why.
+ *
+ * So the two hand-typed boundaries (`stageCareerTeamRows.careerTeams` and
+ * `recordDecision.manualCareerTeams`) check the bound themselves and throw
+ * before the loop can swallow it.
+ *
+ * `ConvexError`, because only that survives Convex's error boundary with its
+ * message intact — a plain `Error` reaches the browser as "Server Error". And
+ * the message carries the LENGTH, never the name: it reaches Sentry and the
+ * browser console, the same rule `requireTeamCreate` follows.
+ */
+function assertCareerTeamNameLength(name: string): void {
+  const trimmed = name.trim().replace(/\s+/g, " ");
+  if (trimmed.length <= MAX_TEAM_FULL_NAME_LENGTH) return;
+  throw new ConvexError(
+    `A team name is ${trimmed.length} characters; the limit is ${MAX_TEAM_FULL_NAME_LENGTH}.`,
+  );
+}
+
+/**
+ * The loose bounds a career stint's years have to sit inside, in the one place
+ * both writers can reach.
+ *
+ * NEO-248 put a SECOND route into the same numbers — `stageCareerTeamRows` now
+ * carries the operator's years so the wizard can rebuild the chip after the
+ * team's own step, and years that reach `entityReviewQueue.source` must be
+ * exactly as well-formed as the ones that reach `decision.manualCareerTeams`,
+ * because the same pair ends up in `players.teamYears` either way. Two copies
+ * of the rule is how one of them drifts.
+ *
+ * `forName` reproduces `recordDecision`'s existing message verbatim — those
+ * strings are asserted — and is omitted by the staging path, where the caller
+ * is answering for one entry at a time and the name adds nothing.
+ */
+function assertCareerStintYears(
+  fromYear: number,
+  toYear: number | undefined,
+  maxYear: number,
+  forName?: string,
+): void {
+  const suffix = forName === undefined ? "" : ` for "${forName}"`;
+  if (
+    !Number.isInteger(fromYear) ||
+    fromYear < MIN_CAREER_YEAR ||
+    fromYear > maxYear
+  ) {
+    throw new Error(
+      `Invalid career-team fromYear ${fromYear}${suffix} (expected an integer in ${MIN_CAREER_YEAR}–${maxYear})`,
+    );
+  }
+  if (toYear === undefined) return;
+  if (!Number.isInteger(toYear) || toYear > maxYear || toYear < fromYear) {
+    throw new Error(
+      `Invalid career-team toYear ${toYear}${suffix} (expected an integer between fromYear ${fromYear} and ${maxYear})`,
+    );
+  }
+}
+
+/**
  * NEO-212: validate and normalize the Wikidata career-team labels an admin
  * unchecked for a "create" decision.
  *
@@ -467,8 +533,17 @@ const rowSourceValidator = v.union(
     kind: v.literal("careerTeamOf"),
     playerRowId: v.id("entityReviewQueue"),
     wikidataId: v.optional(v.string()),
+    // NEO-248 — the years the operator typed alongside the name, on the step
+    // that staged this one. Hand-typed entries only; see schema.ts.
+    manualStint: v.optional(v.object({
+      fromYear: v.number(),
+      toYear: v.optional(v.number()),
+    })),
   }),
-  // NEO-254 — the same relationship one level up. See schema.ts.
+  // NEO-254 — the same relationship one level up. A league has no
+  // `manualStint`: NEO-248's field records the years typed for a career TEAM,
+  // and a league's dates live on the record its own step collects. See
+  // schema.ts.
   v.object({
     kind: v.literal("leagueOf"),
     teamRowId: v.id("entityReviewQueue"),
@@ -1257,13 +1332,31 @@ async function stageCareerTeamRowsImpl(
    * — the wizard's hand-typed entries. Merged with the enrichment's proposals
    * rather than replacing them, because a player can have both.
    */
-  extraCareerTeams: ReadonlyArray<{ name: string; wikidataId?: string }> = [],
+  extraCareerTeams: ReadonlyArray<{
+    name: string;
+    wikidataId?: string;
+    /**
+     * NEO-248 — the years typed beside the name, when this proposal came from
+     * the wizard's manual entry form. Stored on the staged row so the chip can
+     * be rebuilt after the team's own step; see schema.ts.
+     */
+    manualStint?: { fromYear: number; toYear?: number };
+  }> = [],
 ): Promise<Array<Id<"entityReviewQueue">>> {
   // A team row has no career teams of its own, and a staged row must never
   // stage further rows — that is the recursion this guard forecloses.
   if (playerRow.kind !== "player") return [];
 
-  const proposals: Array<{ name: string; wikidataId?: string }> = [
+  type Proposal = {
+    name: string;
+    wikidataId?: string;
+    manualStint?: { fromYear: number; toYear?: number };
+  };
+  const proposals: Proposal[] = [
+    // A Wikidata proposal deliberately carries NO `manualStint` even though it
+    // has years: they already live on this player's `enrichment.careerTeams`,
+    // and `manualStint` is how the wizard tells a chip it has to rebuild from
+    // one it can read off the player row.
     ...(playerRow.enrichment?.careerTeams ?? []).map((ct) => ({
       name: ct.name,
       ...(ct.wikidataId ? { wikidataId: ct.wikidataId } : {}),
@@ -1271,6 +1364,35 @@ async function stageCareerTeamRowsImpl(
     ...extraCareerTeams,
   ];
   if (proposals.length === 0) return [];
+
+  /*
+   * NEO-248 — collapse duplicate names BEFORE the loop, not inside it.
+   *
+   * The enrichment's proposals and the caller's extras can name the same club:
+   * Wikidata knew the club but not the dates, and the operator typed them. The
+   * loop's own per-call dedupe (`seen`) would drop whichever came second — and
+   * that is always the hand-typed one, because the extras are appended last —
+   * so the years would be discarded before anything looked at them.
+   *
+   * First occurrence keeps its position and its QID; a `manualStint` from ANY
+   * occurrence is adopted, since only the operator's own entry carries one.
+   */
+  const mergedProposals: Proposal[] = [];
+  const proposalByKey = new Map<string, Proposal>();
+  for (const proposal of proposals) {
+    const key = normalizeTeamName(proposal.name.trim().replace(/\s+/g, " "));
+    if (!key) continue;
+    const held = proposalByKey.get(key);
+    if (!held) {
+      const copy: Proposal = { ...proposal };
+      proposalByKey.set(key, copy);
+      mergedProposals.push(copy);
+      continue;
+    }
+    if (proposal.manualStint && held.manualStint === undefined) {
+      held.manualStint = proposal.manualStint;
+    }
+  }
 
   // The operator's unchecks, read off whatever decision the row carries. A row
   // being decided at all is not a reason to skip staging: the bulk create
@@ -1305,10 +1427,7 @@ async function stageCareerTeamRowsImpl(
 
   const added: Array<Id<"entityReviewQueue">> = [];
   const seen = new Set<string>();
-  for (const proposal of proposals) {
-    // A guard rail on an unbounded write, not a security boundary — and it
-    // counts the steps this player ALREADY has, so re-entry cannot grow past it.
-    if (alreadyStagedForPlayer + added.length >= MAX_CAREER_TEAM_CREATES) break;
+  for (const proposal of mergedProposals) {
     const name = proposal.name.trim().replace(/\s+/g, " ");
     if (!name) continue;
     const nameNormalized = normalizeTeamName(name);
@@ -1339,12 +1458,72 @@ async function stageCareerTeamRowsImpl(
           .eq("nameNormalized", nameNormalized),
       )
       .first();
-    if (alreadyInBatch) continue;
+    if (alreadyInBatch) {
+      /*
+       * NEO-248 — the step exists, but it may not yet carry the years.
+       *
+       * Staging dedupes a career team across the whole batch, so the operator
+       * can hand-type a stint for a club this player's OWN lookup already
+       * staged (Wikidata knew the club, not the dates). Without this the years
+       * would have nowhere to live and the chip could not be rebuilt.
+       *
+       * Narrow on purpose: only a step staged for THIS player, only when it
+       * carries no stint yet, and only from a caller that actually supplied
+       * one. So it never overwrites an earlier answer and never attributes one
+       * player's dates to another's step — and the enrichment-driven callers,
+       * which pass no `manualStint`, write nothing here at all.
+       */
+      if (
+        proposal.manualStint &&
+        alreadyInBatch.source?.kind === "careerTeamOf" &&
+        alreadyInBatch.source.playerRowId === playerRow._id &&
+        alreadyInBatch.source.manualStint === undefined
+      ) {
+        await ctx.db.patch(alreadyInBatch._id, {
+          source: { ...alreadyInBatch.source, manualStint: proposal.manualStint },
+        });
+      }
+      continue;
+    }
 
     // Held already — a link, not a question. Composed-name keyed, so a split
     // row ("San Diego" + "Padres") answers to the Wikidata label "San Diego
     // Padres" and nothing is staged.
     if (await findTeamByFullName(ctx, playerRow.sportId, name)) continue;
+
+    /*
+     * A guard rail on an unbounded write, not a security boundary — and it
+     * counts the steps this player ALREADY has, so re-entry cannot grow past
+     * it.
+     *
+     * ## NEO-248 — checked HERE, at the insert, and loud for a typed stint
+     *
+     * It used to sit at the top of the loop, which made it two wrong things at
+     * once. It consumed the cap for proposals that need no row (a name the
+     * batch already has a step for, a team we already hold) — and, because the
+     * caller's extras are appended last, it broke out of the loop BEFORE ever
+     * reaching a hand-typed stint whenever the enrichment's own proposals had
+     * filled the quota. The mutation then returned 0, the wizard's `.catch` had
+     * nothing to catch, and the operator's years were gone with no message.
+     *
+     * So: the cap bounds ROWS, and it is tested where a row would actually be
+     * inserted. A proposal carrying a `manualStint` is the operator typing, and
+     * a refusal they can read beats a silent drop — it throws, which rolls the
+     * whole mutation back rather than half-staging. Every other caller
+     * (`applyLookupResult`, the belt-and-braces pass, the bulk create) passes
+     * no stint and still breaks quietly, exactly as before.
+     *
+     * The message carries the COUNT and never a name — this string reaches the
+     * browser and Sentry.
+     */
+    if (alreadyStagedForPlayer + added.length >= MAX_CAREER_TEAM_CREATES) {
+      if (proposal.manualStint) {
+        throw new ConvexError(
+          `This player already has ${MAX_CAREER_TEAM_CREATES} career-team steps, which is the maximum. Remove one before adding another.`,
+        );
+      }
+      break;
+    }
 
     added.push(
       await ctx.db.insert("entityReviewQueue", {
@@ -1362,6 +1541,8 @@ async function stageCareerTeamRowsImpl(
           kind: "careerTeamOf",
           playerRowId: playerRow._id,
           ...(proposal.wikidataId ? { wikidataId: proposal.wikidataId } : {}),
+          // NEO-248 — absent unless the operator typed the years themselves.
+          ...(proposal.manualStint ? { manualStint: proposal.manualStint } : {}),
         },
         status: "pending",
       }),
@@ -1408,6 +1589,25 @@ export const stageCareerTeamRows = mutation({
      * which is the whole point of the change.
      */
     careerTeamNames: v.optional(v.array(v.string())),
+    /**
+     * NEO-248 — the same thing, with the years the operator typed beside the
+     * name.
+     *
+     * A separate arg rather than a widened `careerTeamNames`: "Decide team" on
+     * a Wikidata chip stages a NAME and nothing else (its years are already on
+     * the player row), while the manual entry form stages a whole stint. Two
+     * shapes, two arguments, and the name-only callers are untouched.
+     *
+     * The years are stored on the staged row's `source.manualStint` so the
+     * wizard can rebuild the chip after walking the team's own New Team step —
+     * before this they lived only in per-row React state and were dropped on
+     * the way there.
+     */
+    careerTeams: v.optional(v.array(v.object({
+      name: v.string(),
+      fromYear: v.number(),
+      toYear: v.optional(v.number()),
+    }))),
   },
   returns: v.number(),
   handler: async (ctx, args): Promise<number> => {
@@ -1415,9 +1615,28 @@ export const stageCareerTeamRows = mutation({
     const row = await ctx.db.get(args.reviewRowId);
     if (!row) throw new Error("Review row not found");
     assertOwnsRow(row, callerId);
-    const extra = (args.careerTeamNames ?? [])
-      .slice(0, MAX_CAREER_TEAM_CREATES)
-      .map((name) => ({ name }));
+    // Defense in depth, exactly as `recordDecision` does it: these years reach
+    // `players.teamYears` by way of the chip the wizard rebuilds from them, so
+    // nonsense is refused at the boundary rather than stored.
+    const maxYear = new Date().getFullYear() + 1;
+    const extra = [
+      ...(args.careerTeamNames ?? [])
+        .slice(0, MAX_CAREER_TEAM_CREATES)
+        .map((name) => ({ name })),
+      ...(args.careerTeams ?? [])
+        .slice(0, MAX_CAREER_TEAM_CREATES)
+        .map((ct) => {
+          assertCareerTeamNameLength(ct.name);
+          assertCareerStintYears(ct.fromYear, ct.toYear, maxYear);
+          return {
+            name: ct.name,
+            manualStint: {
+              fromYear: ct.fromYear,
+              ...(ct.toYear !== undefined ? { toYear: ct.toYear } : {}),
+            },
+          };
+        }),
+    ];
     const added = await stageCareerTeamRowsImpl(ctx, row, extra);
     return added.length;
   },
@@ -1519,6 +1738,68 @@ export const stageLeagueRows = mutation({
         : { outcome: "over-cap", name };
     }
     return { outcome: "staged", name };
+  },
+});
+
+/**
+ * NEO-248 — the operator removed a hand-typed chip; forget its years.
+ *
+ * ## Why removal needs a mutation at all
+ *
+ * The wizard's chip list is keyed by review row, which survives navigation but
+ * not UNMOUNT — `CardChecklist` renders the wizard conditionally, so closing
+ * and reopening it drops the map. The rebuild path then reads the years back
+ * off the staged step and the chip the operator deleted comes back, taking its
+ * stint into `players.teamYears` at commit. A removal has to be as durable as
+ * the thing it removes.
+ *
+ * ## What it does NOT do
+ *
+ * It clears `source.manualStint` and leaves the New Team step standing. The
+ * step is a question about a TEAM — often one another player in the batch also
+ * needs, and one whose own lookup has already run — and deleting it because a
+ * stint was withdrawn would take an answer away from rows that never asked.
+ * "I did not mean to date that club" is not "that club is not in this set".
+ *
+ * Guarded exactly as the staging patch it undoes: admin, both rows owned by the
+ * caller, and the step must actually have been staged for THIS player. Without
+ * that last check an operator could strip the years off another player's step
+ * by naming it, which is the same cross-attribution the patch path refuses.
+ */
+export const clearCareerTeamStint = mutation({
+  args: {
+    /** The PLAYER row whose chip was removed. */
+    reviewRowId: v.id("entityReviewQueue"),
+    /** The `careerTeamOf` step that chip's years are stored on. */
+    teamRowId: v.id("entityReviewQueue"),
+  },
+  returns: v.null(),
+  handler: async (ctx, args): Promise<null> => {
+    const callerId = await requireAdmin(ctx);
+    const playerRow = await ctx.db.get(args.reviewRowId);
+    if (!playerRow) throw new Error("Review row not found");
+    assertOwnsRow(playerRow, callerId);
+    const teamRow = await ctx.db.get(args.teamRowId);
+    if (!teamRow) throw new Error("Review row not found");
+    assertOwnsRow(teamRow, callerId);
+
+    const source = teamRow.source;
+    if (
+      source?.kind !== "careerTeamOf" ||
+      source.playerRowId !== playerRow._id
+    ) {
+      throw new Error("That step was not staged for this row");
+    }
+    // Already clear — idempotent, so a double click or a retry is a no-op
+    // rather than a second write.
+    if (source.manualStint === undefined) return null;
+
+    // Rebuilt without the key rather than set to undefined: `source` is a
+    // whole-object patch, and nothing downstream should have to tell "no
+    // stint" from "a stint that is undefined".
+    const { manualStint: _cleared, ...rest } = source;
+    await ctx.db.patch(args.teamRowId, { source: rest });
+    return null;
   },
 });
 
@@ -1822,26 +2103,11 @@ export const recordDecision = mutation({
         if (ct.name.trim().length === 0) {
           throw new Error("Career-team name cannot be empty");
         }
-        if (
-          !Number.isInteger(ct.fromYear) ||
-          ct.fromYear < MIN_CAREER_YEAR ||
-          ct.fromYear > maxYear
-        ) {
-          throw new Error(
-            `Invalid career-team fromYear ${ct.fromYear} for "${ct.name}" (expected an integer in ${MIN_CAREER_YEAR}–${maxYear})`,
-          );
-        }
-        if (ct.toYear !== undefined) {
-          if (
-            !Number.isInteger(ct.toYear) ||
-            ct.toYear > maxYear ||
-            ct.toYear < ct.fromYear
-          ) {
-            throw new Error(
-              `Invalid career-team toYear ${ct.toYear} for "${ct.name}" (expected an integer between fromYear ${ct.fromYear} and ${maxYear})`,
-            );
-          }
-        }
+        // NEO-248: hand-typed, so an over-long name is refused rather than
+        // carried to a commit that would drop the stint on the floor.
+        assertCareerTeamNameLength(ct.name);
+        // NEO-248: the same bounds the staging path applies, from one place.
+        assertCareerStintYears(ct.fromYear, ct.toYear, maxYear, ct.name);
       }
       // NEO-212: the Wikidata career teams the admin unchecked. Validated on
       // the same boundary and for the same reason as the manual entries above
@@ -2192,8 +2458,55 @@ async function decideAllRemaining(
        */
       if (row.kind !== "player") continue;
       await stageCareerTeamRowsImpl(ctx, row);
+      /*
+       * ── NEO-248: the bulk carries this player's hand-typed stints ─────────
+       *
+       * The decision used to be a bare `{action:"create"}`, which is a claim
+       * that a player row holds nothing worth recording. Since NEO-248 it can:
+       * a stint the operator typed lives on the step it staged
+       * (`source.manualStint`), and only `decision.manualCareerTeams` gets it
+       * into `players.teamYears` at commit.
+       *
+       * That matters here more than it looks, because this path is not only
+       * the "Add All Remaining as New" button. The wizard re-arms it on a
+       * TIMER as lookups land, so a player row the operator has typed years on
+       * can be decided by a mutation nobody pressed — and before this, decided
+       * as though those years had never been typed.
+       *
+       * Read through `by_source_player` rather than off the batch: the same
+       * narrow index the staging pass uses, for the same NEO-189 reason, and
+       * it is already warm from the call above.
+       */
+      const stagedSteps = await ctx.db
+        .query("entityReviewQueue")
+        .withIndex("by_source_player", (q) => q.eq("source.playerRowId", row._id))
+        .collect();
+      const manualCareerTeams: Array<{
+        name: string;
+        fromYear: number;
+        toYear?: number;
+      }> = [];
+      for (const step of stagedSteps) {
+        // NEO-254: `source` is a union now, and only the career-team arm
+        // carries a stint — a league step has no years of its own. Narrowed
+        // rather than optional-chained so a third arm cannot silently fall
+        // through this loop.
+        if (step.source?.kind !== "careerTeamOf") continue;
+        const stint = step.source.manualStint;
+        if (!stint) continue;
+        manualCareerTeams.push({
+          name: step.name,
+          fromYear: stint.fromYear,
+          ...(stint.toYear !== undefined ? { toYear: stint.toYear } : {}),
+        });
+      }
       await ctx.db.patch(row._id, {
-        decision: { action: "create" },
+        decision: {
+          action: "create",
+          // Absent when there are none, so an ordinary bulk decision is stored
+          // byte-identical to how it was before this existed.
+          ...(manualCareerTeams.length > 0 ? { manualCareerTeams } : {}),
+        },
         lastTouchedAt: now,
       });
     } else {
