@@ -100,7 +100,16 @@ import {
 } from "./leagues";
 import type { LeagueLevel } from "./leagues";
 import { findOrCreateFranchise } from "./franchises";
-import { normalizePlayerName } from "./players";
+// NEO-254 — the loader is a second door into `players.aliases`, so it uses the
+// SAME normaliser, the same collision read and the same index writer the admin
+// editor does. A second derivation here is a second chance to write an alias
+// the editor would have refused.
+import {
+  findAliasCollision,
+  normalizePlayerAliasList,
+  normalizePlayerName,
+  syncPlayerAliases,
+} from "./players";
 import { findTeamsByFullName, teamRowFields } from "./lib/teamRow";
 import { normalizeEntityName } from "./lib/entityNearMatch";
 import { teamFullName } from "../lib/teams/team-name";
@@ -840,6 +849,16 @@ export const upsertPlayers = internalMutation({
         name: v.string(),
         birthYear: v.optional(v.number()),
         isHallOfFame: v.optional(v.boolean()),
+        /**
+         * NEO-254 — other names this player's cards carry.
+         *
+         * A dataset that knows Ron Artest became Metta World Peace sends both,
+         * so the 2010 and 2011 cards land on one row. Written on CREATE;
+         * UNIONED on adopt (never removing an alias an operator added); and an
+         * alias that collides with another row in the sport makes this row
+         * `ambiguous` with that row as a candidate, never a silent skip.
+         */
+        aliases: v.optional(v.array(v.string())),
         stints: v.array(
           v.object({
             teamId: v.id("teams"),
@@ -962,6 +981,31 @@ export const upsertPlayers = internalMutation({
         })),
       );
 
+      // ---- aliases ------------------------------------------------------
+      //
+      // Bounded and de-duplicated on the way in, exactly as the admin editor
+      // does it — the loader is a second door into the same column and must
+      // not be able to write what the editor refuses.
+      const aliases = row.aliases
+        ? normalizePlayerAliasList(row.aliases, name)
+        : [];
+      /**
+       * Which OTHER player in this sport already answers to one of these
+       * aliases, if any.
+       *
+       * A collision is never silently dropped: the two rows are either the
+       * same person (a merge, which is an operator decision with inventory
+       * consequences) or a mis-keyed dataset row, and both need a human. It is
+       * reported as `ambiguous` with the colliding row as the candidate, which
+       * is the same shape a same-name collision already produces — so the
+       * loader's interactive prompt handles it with no new branch.
+       */
+      const aliasBlocker = await findAliasCollision(ctx, {
+        sportId,
+        aliases,
+        nameNormalized,
+      });
+
       // ---- write --------------------------------------------------------
       const adopt = async (existing: Doc<"players">): Promise<PlayerResult> => {
         const patch: Record<string, unknown> = {};
@@ -981,8 +1025,34 @@ export const upsertPlayers = internalMutation({
         ) {
           patch.teamYears = teamYears;
         }
+        /*
+         * NEO-254 — aliases are UNIONED, never replaced.
+         *
+         * Every other field here is gap-filled: absent on the row, taken from
+         * the dataset. An alias list is different, because the row's existing
+         * entries may have been typed by an operator who knew something the
+         * dataset does not — and a load that silently dropped them would undo
+         * that work on every re-run. The union is de-duplicated on the same key
+         * the index uses, so two spellings of one alias stay one alias.
+         */
+        if (aliases.length > 0) {
+          const merged = normalizePlayerAliasList(
+            [...(existing.aliases ?? []), ...aliases],
+            existing.name,
+          );
+          if (merged.length !== (existing.aliases ?? []).length) {
+            patch.aliases = merged;
+          }
+        }
         if (Object.keys(patch).length > 0) {
           await ctx.db.patch(existing._id, { ...patch, lastUpdated: Date.now() });
+        }
+        if (patch.aliases) {
+          await syncPlayerAliases(ctx, {
+            playerId: existing._id,
+            sportId,
+            aliases: patch.aliases as string[],
+          });
         }
         return { key, id: existing._id, status: "adopted" };
       };
@@ -995,10 +1065,42 @@ export const upsertPlayers = internalMutation({
           ...(row.birthYear !== undefined ? { birthYear: row.birthYear } : {}),
           ...(row.isHallOfFame !== undefined ? { isHallOfFame: row.isHallOfFame } : {}),
           ...(teamYears.length > 0 ? { teamYears } : {}),
+          ...(aliases.length > 0 ? { aliases } : {}),
           lastUpdated: Date.now(),
         });
+        if (aliases.length > 0) {
+          await syncPlayerAliases(ctx, { playerId: id, sportId, aliases });
+        }
         return { key, id, status: "created" };
       };
+
+      /*
+       * NEO-254 — an alias collision outranks every decision below.
+       *
+       * Checked BEFORE the decision branches on purpose: an answers file that
+       * says "adopt this row" was written against a previous run's report, and
+       * if an alias has since been claimed by somebody else, replaying that
+       * answer would write this player's aliases onto a row that already
+       * answers to them. The operator has to see it again.
+       */
+      if (aliasBlocker) {
+        results.push({
+          key,
+          id: null,
+          status: "ambiguous",
+          candidates: [
+            {
+              id: aliasBlocker._id,
+              name: aliasBlocker.name,
+              ...(aliasBlocker.birthYear !== undefined
+                ? { birthYear: aliasBlocker.birthYear }
+                : {}),
+              careerSummary: await summariseCareer(aliasBlocker, readTeam),
+            },
+          ],
+        });
+        continue;
+      }
 
       // Three checks, for the reason spelled out on the team twin above: a
       // decision picks between rows that SHARE the natural key, so a chosen row

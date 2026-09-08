@@ -124,7 +124,7 @@ import {
   createCardYearTeamCache,
   narrowSameNamePlayersByCardYear,
   normalizePlayerName,
-  PLAYER_AMBIGUITY_SCAN_LIMIT,
+  sameNamePlayers,
 } from "./players";
 import { normalizeTeamName } from "./teams";
 // NEO-253: the shared normalisation core, imported rather than transcribed —
@@ -10550,12 +10550,11 @@ export const commitCardChecklistPrelude = internalMutation({
        *               else, and NO decision leaves the card unlinked and the
        *               name reported as unreviewed — never bound by a guess.
        */
-      const existingMatches = await ctx.db
-        .query("players")
-        .withIndex("by_name_normalized_and_sport_id", (q) =>
-          q.eq("nameNormalized", normalized).eq("sportId", args.sportId),
-        )
-        .take(PLAYER_AMBIGUITY_SCAN_LIMIT);
+      // NEO-254 — the shared derivation, not a fourth copy of the index read.
+      // It is what carries the ALIAS leg: a 2010 "Ron Artest" card and a 2011
+      // "Metta World Peace" card have to land on one row, and a hand-rolled
+      // read here would have found only the primary name.
+      const existingMatches = await sameNamePlayers(ctx, normalized, args.sportId);
       if (existingMatches.length === 1) {
         const existing = existingMatches[0];
         playerIdByName.set(name, existing._id);

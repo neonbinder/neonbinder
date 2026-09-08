@@ -111,6 +111,10 @@ const playerDocPublicValidator = v.object({
     toYear: v.optional(v.number()),
   }))),
   isHallOfFame: v.optional(v.boolean()),
+  // NEO-254 — the other names this player's cards carry. Public because the
+  // admin editor and the wizard's candidate list both render them; see
+  // schema.ts for the storage contract.
+  aliases: v.optional(v.array(v.string())),
   // NEO-254. `birthYear` is the field that tells two same-name players apart,
   // so it is public: the review wizard's candidate list and the Players page
   // both put it in front of an operator choosing between them. See schema.ts.
@@ -134,6 +138,7 @@ const playerDocValidator = v.object({
     toYear: v.optional(v.number()),
   }))),
   isHallOfFame: v.optional(v.boolean()),
+  aliases: v.optional(v.array(v.string())),
   birthYear: v.optional(v.number()),
   externalIds: v.optional(v.object({
     wikidataId: v.optional(v.string()),
@@ -220,18 +225,309 @@ export { PLAYER_AMBIGUITY_SCAN_LIMIT } from "../lib/players/name-limits";
  * never key logic on a value that is not unique without an exactly-one guard.
  * Zero rows and one row keep behaving exactly as they always did; two or more
  * is a question for a human, and every caller here raises it as one.
+ *
+ * NEO-254: "same name" now means "ANSWERS TO this name" — an alias counts, on
+ * exactly the same footing as the primary name (see the alias leg below).
+ * EXPORTED for the commit prelude, which had its own copy of the index read:
+ * a fourth derivation of "which players answer to this string" is a fourth
+ * chance for one of them to miss the alias leg, which is the drift
+ * `teams.dedupPin.test.ts` exists to prevent one table over.
  */
-async function sameNamePlayers(
+export async function sameNamePlayers(
   ctx: QueryCtx | MutationCtx,
   nameNormalized: string,
   sportId: Id<"selectorOptions">,
 ): Promise<Array<Doc<"players">>> {
-  return await ctx.db
+  const byName = await ctx.db
     .query("players")
     .withIndex("by_name_normalized_and_sport_id", (q) =>
       q.eq("nameNormalized", nameNormalized).eq("sportId", sportId),
     )
     .take(PLAYER_AMBIGUITY_SCAN_LIMIT);
+
+  /*
+   * ── NEO-254: a name a player USED TO have answers here too ───────────────
+   *
+   * Jason, 2026-09-08: "cards from different years read differently for one
+   * person." The 2010 card says Ron Artest and the 2011 card says Metta World
+   * Peace; both are the same man, and without this leg they resolve to two
+   * rows and his inventory is split down the middle.
+   *
+   * An alias hit joins the candidate set on exactly the same footing as a
+   * primary-name hit — it does not outrank one and it is not a fallback. That
+   * matters because everything downstream is built on the SIZE of this set:
+   * one candidate links silently, two or more is a question for a human, and
+   * the card-year narrowing then runs over whatever is here. An alias that
+   * quietly won would skip all of it.
+   *
+   * One indexed read, not a scan: see the `playerAliases` note in schema.ts
+   * for why the aliases are stored flat as well as on the row.
+   */
+  const aliasRows = await ctx.db
+    .query("playerAliases")
+    .withIndex("by_alias_normalized_and_sport_id", (q) =>
+      q.eq("aliasNormalized", nameNormalized).eq("sportId", sportId),
+    )
+    .take(PLAYER_AMBIGUITY_SCAN_LIMIT);
+  if (aliasRows.length === 0) return byName;
+
+  // Deduped by id: a row whose alias and primary name both normalise to the
+  // query is one candidate, not two. (The writer drops an own-name alias, so
+  // this is belt and braces against a legacy row rather than the normal path.)
+  const seen = new Set<string>(byName.map((p) => p._id as string));
+  const merged = [...byName];
+  for (const row of aliasRows) {
+    if (merged.length >= PLAYER_AMBIGUITY_SCAN_LIMIT) break;
+    const key = row.playerId as string;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const player = await ctx.db.get(row.playerId);
+    // A side row whose player is gone is stale index residue, not a candidate.
+    // It cannot be cleaned up from a query context, and leaving it out is the
+    // whole of the correction the reader needs.
+    if (player && player.sportId === sportId) merged.push(player);
+  }
+  return merged;
+}
+
+/**
+ * NEO-254 — how many alternate names one player row may carry, and how long
+ * each may be.
+ *
+ * The same numbers `leagues` uses, and deliberately: an alias list is an alias
+ * list, and two limits for one idea is one more thing to look up. A real
+ * player has one or two former names; 32 is headroom for a row a bulk load
+ * feeds from a dataset with spelling variants in it.
+ */
+/**
+ * NEO-254 — the alias that answered a query, or undefined when the primary
+ * name did.
+ *
+ * The wizard says "also known as Ron Artest" beside a candidate matched that
+ * way, because otherwise the operator is shown a row whose name is nothing
+ * like the one on the card and has to guess why it is on the list.
+ */
+export function matchedAliasFor(
+  player: Doc<"players">,
+  nameNormalized: string,
+): string | undefined {
+  if (!nameNormalized) return undefined;
+  if (player.nameNormalized === nameNormalized) return undefined;
+  return (player.aliases ?? []).find(
+    (alias) => normalizePlayerName(alias) === nameNormalized,
+  );
+}
+
+export const MAX_PLAYER_ALIASES = 32;
+export const MAX_PLAYER_ALIAS_LENGTH = 64;
+
+/**
+ * NEO-254 — clean an alias list for storage. Mirrors `leagues.normalizeAliasList`.
+ *
+ * Refuses on a bound (the operator can shorten a name), drops silently on a
+ * redundancy. The own-name case is a redundancy: the row already answers to
+ * its primary name, so typing it into the alias box is a thing that needs no
+ * correction. That is the league precedent, and copying it keeps one mental
+ * model for both editors.
+ *
+ * Counts and lengths are named in the messages, never the values — an alias is
+ * operator input and these strings reach Sentry and the browser console.
+ */
+export function normalizePlayerAliasList(
+  raw: ReadonlyArray<string>,
+  ownName: string,
+): string[] {
+  if (raw.length > MAX_PLAYER_ALIASES) {
+    throw new ConvexError(
+      `A player has ${raw.length} aliases; the limit is ${MAX_PLAYER_ALIASES}.`,
+    );
+  }
+  const ownNormalized = normalizePlayerName(ownName);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const entry of raw) {
+    const trimmed = entry.trim();
+    if (!trimmed) continue;
+    if (trimmed.length > MAX_PLAYER_ALIAS_LENGTH) {
+      throw new ConvexError(
+        `An alias is ${trimmed.length} characters; the limit is ${MAX_PLAYER_ALIAS_LENGTH}.`,
+      );
+    }
+    const normalized = normalizePlayerName(trimmed);
+    // Nothing left after normalising ("---") can never match anything.
+    if (!normalized) continue;
+    if (normalized === ownNormalized) continue;
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(trimmed);
+  }
+  return out;
+}
+
+/**
+ * ── NEO-254: the ONE writer of the `playerAliases` index ─────────────────────
+ *
+ * `players.aliases` is what an operator edits; `playerAliases` is how a card
+ * name finds the row. Two copies of one fact can disagree, and the whole
+ * containment strategy is that exactly one function writes the second — the
+ * same shape `teamRowFields` gives the team dedup key, guarded the same way by
+ * `players.aliasIndexPin.test.ts`.
+ *
+ * Diffs rather than delete-all-and-reinsert: a player whose alias list is
+ * saved unchanged (the common case — the alias box is on a form that also
+ * edits a name and a birth year) should cost no writes at all, and rewriting
+ * every row would churn the index on every save.
+ *
+ * `aliases` arrives ALREADY normalised by `normalizePlayerAliasList`, so this
+ * only derives the key. Passing raw input here would put an unbounded string
+ * in an index.
+ */
+export async function syncPlayerAliases(
+  ctx: MutationCtx,
+  args: {
+    playerId: Id<"players">;
+    sportId: Id<"selectorOptions">;
+    aliases: ReadonlyArray<string>;
+  },
+): Promise<void> {
+  const wanted = new Set(
+    args.aliases.map((a) => normalizePlayerName(a)).filter(Boolean),
+  );
+  const existing = await ctx.db
+    .query("playerAliases")
+    .withIndex("by_player_id", (q) => q.eq("playerId", args.playerId))
+    .collect();
+
+  const held = new Set<string>();
+  for (const row of existing) {
+    // A row whose sport no longer matches is stale as well as wrong — the
+    // player moved sport, which nothing supports, or the row predates a fix.
+    // Either way it must not keep answering lookups in the old sport.
+    if (wanted.has(row.aliasNormalized) && row.sportId === args.sportId) {
+      held.add(row.aliasNormalized);
+      continue;
+    }
+    await ctx.db.delete(row._id);
+  }
+  for (const aliasNormalized of wanted) {
+    if (held.has(aliasNormalized)) continue;
+    await ctx.db.insert("playerAliases", {
+      playerId: args.playerId,
+      sportId: args.sportId,
+      aliasNormalized,
+    });
+  }
+}
+
+/**
+ * NEO-254 — the OTHER player in this sport that already answers to one of
+ * these aliases, or null.
+ *
+ * The read half of `assertAliasesFree`, split out because the two callers want
+ * different things done about it. An operator standing in front of a form gets
+ * a refusal they can act on; the bulk loader, which has no operator, reports
+ * the row as `ambiguous` with this player as the candidate — the same shape a
+ * same-name collision already produces, so its interactive prompt needs no new
+ * branch.
+ */
+export async function findAliasCollision(
+  ctx: QueryCtx | MutationCtx,
+  args: {
+    sportId: Id<"selectorOptions">;
+    aliases: ReadonlyArray<string>;
+    /** The name being loaded — a row that shares it is a same-name case, not
+     *  an alias collision, and is reported by the caller's own candidate scan. */
+    nameNormalized?: string;
+    selfId?: Id<"players">;
+  },
+): Promise<Doc<"players"> | null> {
+  for (const alias of args.aliases) {
+    const key = normalizePlayerName(alias);
+    if (!key || key === args.nameNormalized) continue;
+
+    const byName = await ctx.db
+      .query("players")
+      .withIndex("by_name_normalized_and_sport_id", (q) =>
+        q.eq("nameNormalized", key).eq("sportId", args.sportId),
+      )
+      .first();
+    if (byName && byName._id !== args.selfId) return byName;
+
+    const byAlias = await ctx.db
+      .query("playerAliases")
+      .withIndex("by_alias_normalized_and_sport_id", (q) =>
+        q.eq("aliasNormalized", key).eq("sportId", args.sportId),
+      )
+      .collect();
+    for (const row of byAlias) {
+      if (row.playerId === args.selfId) continue;
+      const other = await ctx.db.get(row.playerId);
+      if (other) return other;
+    }
+  }
+  return null;
+}
+
+/**
+ * NEO-254 — refuse an alias another player in this sport already answers to.
+ *
+ * ## Why this is a refusal and not a merge
+ *
+ * An alias that collides is one of two things, and neither is safe to guess
+ * at: the two rows are the same person (so they should be MERGED, which is an
+ * operator decision with inventory consequences), or the operator has typed
+ * the wrong name onto the wrong row. Silently accepting it would make one card
+ * name resolve to two candidates forever, which is the ambiguity this feature
+ * exists to remove — arriving through the feature itself.
+ *
+ * Checks BOTH sides of the identity: another row's primary name, and another
+ * row's alias. The name leg matters most — "Metta World Peace" typed as an
+ * alias of a row that is not Ron Artest is exactly the mistake to catch.
+ *
+ * The colliding player's NAME is safe to name in the message: it is reference
+ * data the operator is choosing between, not typed content, and without it the
+ * refusal tells them nothing they can act on.
+ */
+async function assertAliasesFree(
+  ctx: QueryCtx | MutationCtx,
+  args: {
+    sportId: Id<"selectorOptions">;
+    aliases: ReadonlyArray<string>;
+    /** The row being edited, which is allowed to own its own aliases. */
+    selfId?: Id<"players">;
+  },
+): Promise<void> {
+  for (const alias of args.aliases) {
+    const key = normalizePlayerName(alias);
+    if (!key) continue;
+
+    const byName = await ctx.db
+      .query("players")
+      .withIndex("by_name_normalized_and_sport_id", (q) =>
+        q.eq("nameNormalized", key).eq("sportId", args.sportId),
+      )
+      .first();
+    if (byName && byName._id !== args.selfId) {
+      throw new ConvexError(
+        `${byName.name} already goes by that name. Add the alias to that player, or merge the two.`,
+      );
+    }
+
+    const byAlias = await ctx.db
+      .query("playerAliases")
+      .withIndex("by_alias_normalized_and_sport_id", (q) =>
+        q.eq("aliasNormalized", key).eq("sportId", args.sportId),
+      )
+      .collect();
+    for (const row of byAlias) {
+      if (row.playerId === args.selfId) continue;
+      const other = await ctx.db.get(row.playerId);
+      if (!other) continue;
+      throw new ConvexError(
+        `${other.name} already has that alias. Add it to one player only, or merge the two.`,
+      );
+    }
+  }
 }
 
 /**
@@ -872,6 +1168,7 @@ export async function buildExistingPlayerCandidates(
     birthYear?: number;
     careerSummary: string;
     activeInSetYear?: boolean;
+    matchedAlias?: string;
   }>
 > {
   const normalized = normalizePlayerName(name);
@@ -900,6 +1197,7 @@ export async function buildExistingPlayerCandidates(
     birthYear?: number;
     careerSummary: string;
     activeInSetYear?: boolean;
+    matchedAlias?: string;
   }> = [];
 
   for (const player of candidates) {
@@ -937,6 +1235,11 @@ export async function buildExistingPlayerCandidates(
       // Omitted rather than false when it is not known, so the wizard can tell
       // "not that year" from "no year to compare against".
       ...(activeInSetYear.has(player._id as string) ? { activeInSetYear: true } : {}),
+      // NEO-254 — say WHY a row whose name looks nothing like the card's is on
+      // this list. Absent when the primary name matched, which is the norm.
+      ...(matchedAliasFor(player, normalized)
+        ? { matchedAlias: matchedAliasFor(player, normalized)! }
+        : {}),
     });
   }
   return results;
@@ -1097,6 +1400,8 @@ export const nearMatches = query({
       // control per row would give both the same accessible name. Optional
       // because a row created before the column, or by a picker, has none.
       birthYear: v.optional(v.number()),
+      // NEO-254 — the alias that answered, when it was not the primary name.
+      matchedAlias: v.optional(v.string()),
     }),
   ),
   handler: async (ctx, args) => {
@@ -1126,7 +1431,7 @@ export const nearMatches = query({
     // Keyed by id so the exact hit and a search hit for the same row collapse.
     const candidates = new Map<
       Id<"players">,
-      { _id: Id<"players">; name: string; birthYear?: number }
+      { _id: Id<"players">; name: string; birthYear?: number; matchedAlias?: string }
     >();
 
     const normalized = normalizePlayerName(name);
@@ -1148,6 +1453,9 @@ export const nearMatches = query({
           _id: row._id,
           name: row.name,
           birthYear: row.birthYear,
+          ...(matchedAliasFor(row, normalized)
+            ? { matchedAlias: matchedAliasFor(row, normalized)! }
+            : {}),
         });
       }
     }
@@ -1175,7 +1483,24 @@ export const nearMatches = query({
     }
 
     const rows = [...candidates.values()];
-    return rankPlayerCandidates(name, rows)
+    /*
+     * NEO-254 — an alias-matched row is ranked on the name that MATCHED.
+     *
+     * `rankPlayerCandidates` scores each row's name against the query, and
+     * "Metta World Peace" shares no token with "Ron Artest" — so a row the
+     * exact leg had just found was then discarded by the ranker and never
+     * reached the panel at all. Scoring the alias is what makes the two legs
+     * agree about whether this row answers.
+     *
+     * The DISPLAY name is untouched: the operator picks between people, and a
+     * row that rendered as its old name would be a second way to read one man
+     * two ways, which is the whole defect being fixed.
+     */
+    const ranked = rows.map((row) => ({
+      ...row,
+      name: row.matchedAlias ?? row.name,
+    }));
+    return rankPlayerCandidates(name, ranked)
       .slice(0, limit)
       .map(({ index, confidence }) => ({
         _id: rows[index]._id,
@@ -1185,6 +1510,9 @@ export const nearMatches = query({
         // optional field this file returns.
         ...(rows[index].birthYear !== undefined
           ? { birthYear: rows[index].birthYear }
+          : {}),
+        ...(rows[index].matchedAlias
+          ? { matchedAlias: rows[index].matchedAlias }
           : {}),
       }));
   },
@@ -1539,6 +1867,12 @@ export const createByAdmin = mutation({
     sportId: v.id("selectorOptions"),
     /** NEO-254 — see the identical arg on `findOrCreate` above. */
     birthYear: v.optional(v.number()),
+    /**
+     * NEO-254 — other names this player's cards carry, comma-separated in the
+     * form and an array here. Refused when one collides with another player in
+     * the sport; see `assertAliasesFree`.
+     */
+    aliases: v.optional(v.array(v.string())),
   },
   returns: v.object({
     id: v.id("players"),
@@ -1596,14 +1930,29 @@ export const createByAdmin = mutation({
     // NOT enqueued — see the creation-only note on the insert below.
     if (adopted) return { id: adopted._id, created: false };
 
+    // NEO-254 — bounded and de-duplicated, then checked against the sport
+    // BEFORE the insert, so a refusal creates nothing.
+    const aliases = args.aliases
+      ? normalizePlayerAliasList(args.aliases, name)
+      : [];
+    await assertAliasesFree(ctx, { sportId: args.sportId, aliases });
+
     const id = await ctx.db.insert("players", {
       name,
       nameNormalized,
       sportId: args.sportId,
+      ...(aliases.length ? { aliases } : {}),
       ...(args.birthYear !== undefined ? { birthYear: args.birthYear } : {}),
       createdByUserId: userId,
       lastUpdated: Date.now(),
     });
+    if (aliases.length) {
+      await syncPlayerAliases(ctx, {
+        playerId: id,
+        sportId: args.sportId,
+        aliases,
+      });
+    }
 
     // An audit trail for a shared-row creation an operator triggers from a
     // form. Structured JSON, not concatenation — the name is operator input and
@@ -1702,6 +2051,12 @@ export const savePlayerFields = mutation({
      * and a year nobody is sure of is better absent than wrong.
      */
     birthYear: v.optional(v.union(v.number(), v.null())),
+    /**
+     * NEO-254 — the other names this player's cards carry, replaced wholesale.
+     * An empty array clears them, which is how an operator says "these were
+     * wrong". Omitted leaves them alone.
+     */
+    aliases: v.optional(v.array(v.string())),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -1717,6 +2072,7 @@ export const savePlayerFields = mutation({
       externalIds?: { wikidataId?: string };
       teamYears?: PlayerTeamYear[];
       birthYear?: number;
+      aliases?: string[];
       lastUpdated: number;
     } = { lastUpdated: Date.now() };
 
@@ -1850,6 +2206,36 @@ export const savePlayerFields = mutation({
       }
 
       patch.teamYears = sortTeamYears(args.teamYears);
+    }
+
+    /*
+     * NEO-254 — aliases last, because they are checked against the NAME this
+     * save is leaving on the row.
+     *
+     * A rename and an alias edit in one save have to agree: renaming a player
+     * to a string that is also in their own alias box should drop the alias,
+     * not store both. `patch.name` is the new name when one was sent and
+     * `existing.name` otherwise, which is exactly the row the aliases will sit
+     * beside once this patch lands.
+     */
+    if (args.aliases !== undefined) {
+      const aliases = normalizePlayerAliasList(
+        args.aliases,
+        patch.name ?? existing.name,
+      );
+      await assertAliasesFree(ctx, {
+        sportId: existing.sportId,
+        aliases,
+        selfId: args.id,
+      });
+      // Dropped entirely once empty, so a cleared row is indistinguishable
+      // from one that never had an alias — the rule `externalIds` follows.
+      patch.aliases = aliases.length > 0 ? aliases : undefined;
+      await syncPlayerAliases(ctx, {
+        playerId: args.id,
+        sportId: existing.sportId,
+        aliases,
+      });
     }
 
     await ctx.db.patch(args.id, patch);

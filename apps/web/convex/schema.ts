@@ -906,6 +906,37 @@ export default defineSchema({
       toYear: v.optional(v.number()),
     }))),
     isHallOfFame: v.optional(v.boolean()),
+    /**
+     * ── NEO-254: the other names this player's cards carry ──────────────────
+     *
+     * Jason, 2026-09-08: "cards from different years read differently for one
+     * person." Ron Artest and Metta World Peace are one man; so are B.J. Upton
+     * and Melvin Upton Jr., Mike and Giancarlo Stanton, Fausto Carmona and
+     * Roberto Hernández, Chad Johnson and Chad Ochocinco, Lloyd Free and World
+     * B. Free, Lew Alcindor and Kareem Abdul-Jabbar. A checklist prints
+     * whichever name was current, so without this the 2010 card and the 2011
+     * card resolve to two rows and one player's inventory is split in half.
+     *
+     * Stored RAW, matched NORMALIZED — the same contract `leagues.aliases`
+     * (NEO-240) has, and deliberately the same shape so the two do not become
+     * two ideas. The operator's spelling is what an editor shows back; the
+     * key everything matches on is `normalizePlayerName`, so NEO-253's
+     * diacritic folding applies to an alias exactly as it does to a name
+     * ("Roberto Hernández" answers to "Roberto Hernandez").
+     *
+     * A row's own primary name is never also an alias: it is dropped on the
+     * way in, because an operator typing it has expressed a redundancy rather
+     * than an error and the row already answers to it.
+     *
+     * Bounded like every other array written from an upstream payload — see
+     * MAX_PLAYER_ALIASES in convex/players.ts.
+     *
+     * NOT the index. An alias lives inside an array, and Convex indexes fields
+     * rather than array members, so the lookup goes through the `playerAliases`
+     * side table below. This column is what an operator edits and what an
+     * editor renders; that table is how a card name finds this row.
+     */
+    aliases: v.optional(v.array(v.string())),
     // NEO-254: the one fact that tells two players with the same name apart
     // (Lahman alone has 750 first-plus-last collisions, and both Tony Gwynns
     // are real). Written by the bulk preload from the source dataset; optional
@@ -1220,6 +1251,43 @@ export default defineSchema({
   // field existed — a dropped Cancel tap (one worker's commit collapsed
   // another's wizard footer mid-click) and a wrong-item-shown wizard (one
   // worker's unknown name preempted another's in shared queue order).
+  /**
+   * ── NEO-254: the alias index `players.aliases` cannot be ────────────────
+   *
+   * An alias lives inside an array on the player row, and Convex indexes
+   * FIELDS, not array members. `leagues` gets away with a scan because a sport
+   * holds a couple of dozen leagues; `players` holds hundreds of thousands,
+   * and the alias leg sits on the hot path — the commit prelude resolves one
+   * name per card, and the review gate one per unknown. A scan there would
+   * turn a per-name index read into a per-name table read, which is precisely
+   * the shape NEO-189 diagnosed and removed.
+   *
+   * So the aliases are ALSO stored flat, one row per (player, alias), and the
+   * lookup is one indexed read exactly like the primary-name lookup beside it.
+   *
+   * ## The cost, and how it is contained
+   *
+   * Two copies of one fact can disagree. Every write goes through
+   * `syncPlayerAliases` in convex/players.ts — the single writer — and
+   * `players.aliasIndexPin.test.ts` greps for anything else inserting into
+   * this table, the same guard `teams.dedupPin.test.ts` puts on the team
+   * dedup key. `aliasNormalized` is `normalizePlayerName(alias)`, so NEO-253's
+   * diacritic folding reaches an alias the same way it reaches a name.
+   *
+   * `sportId` is denormalised onto the row so the lookup is one compound index
+   * read rather than a read plus a `db.get` per hit to check the sport.
+   */
+  playerAliases: defineTable({
+    playerId: v.id("players"),
+    sportId: v.id("selectorOptions"),
+    /** `normalizePlayerName(alias)` — never the raw spelling. */
+    aliasNormalized: v.string(),
+  })
+    .index("by_alias_normalized_and_sport_id", ["aliasNormalized", "sportId"])
+    // Every row for one player, for the rewrite `syncPlayerAliases` performs
+    // and for the cleanup a deleted player would need.
+    .index("by_player_id", ["playerId"]),
+
   entityReviewQueue: defineTable({
     selectorOptionId: v.id("selectorOptions"),
     batchId: v.string(),
@@ -1424,6 +1492,15 @@ export default defineSchema({
          * it never removes a candidate from the list.
          */
         activeInSetYear: v.optional(v.boolean()),
+        /**
+         * NEO-254 — the alias that answered, when the card's name is not this
+         * player's primary one.
+         *
+         * Without it the panel lists "Metta World Peace" under a card that
+         * says "Ron Artest" and the operator has to guess why. Absent when the
+         * primary name matched, which is the norm.
+         */
+        matchedAlias: v.optional(v.string()),
       }))),
       // team-only
       league: v.optional(v.string()),

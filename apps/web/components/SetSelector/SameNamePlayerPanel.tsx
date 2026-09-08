@@ -46,6 +46,15 @@ export interface SameNameCandidate {
    * the schema note on `entityReviewQueue.enrichment.existingCandidates`.
    */
   activeInSetYear?: boolean;
+  /**
+   * NEO-254 — the alias that answered, when the card's name is not this
+   * player's primary one.
+   *
+   * Ron Artest became Metta World Peace, so a 2010 card and a 2011 card name
+   * one man two ways. Without this the panel lists a row whose name is nothing
+   * like the card's and the operator has to guess why it is here.
+   */
+  matchedAlias?: string;
 }
 
 /**
@@ -71,6 +80,9 @@ export const ACTIVE_IN_SET_YEAR_LABEL = "On a roster that year";
  */
 export function candidateDetail(candidate: SameNameCandidate): string | null {
   const parts = [
+    // Leads: it is the answer to "why is this row on my list at all", and a
+    // birth year means nothing until that is settled.
+    candidate.matchedAlias ? `also known as ${candidate.matchedAlias}` : null,
     candidate.birthYear !== undefined ? `b. ${candidate.birthYear}` : null,
     candidate.careerSummary || null,
   ].filter(Boolean);

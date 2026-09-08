@@ -202,3 +202,27 @@ describe("the on-a-roster-that-year marker", () => {
     );
   });
 });
+
+describe("a candidate matched by a former name says so", () => {
+  it("leads the detail line with 'also known as'", () => {
+    // Ron Artest became Metta World Peace. A 2010 card names a row whose own
+    // name is nothing like it, and without this the operator has to guess why
+    // that row is on the list at all — so it leads, ahead of the birth year.
+    expect(
+      candidateDetail({ ...younger, matchedAlias: "Ron Artest" }),
+    ).toBe("also known as Ron Artest · b. 1937 · Padres 1961–present");
+  });
+
+  it("says nothing when the primary name matched", () => {
+    expect(candidateDetail(younger)).toBe("b. 1937 · Padres 1961–present");
+  });
+
+  it("carries into the accessible name, so it is announced too", () => {
+    const label = candidateLinkLabel(
+      { ...bare, matchedAlias: "Ron Artest" },
+      0,
+      2,
+    );
+    expect(label).toBe("Link to Bob Allen, also known as Ron Artest");
+  });
+});

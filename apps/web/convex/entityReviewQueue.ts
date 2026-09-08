@@ -98,6 +98,10 @@ const enrichmentValidator = v.object({
     name: v.string(),
     birthYear: v.optional(v.number()),
     careerSummary: v.string(),
+    // NEO-254: the alias that answered, when it was not the primary name.
+    // Kept in step with schema.ts — see the note below on what a field in one
+    // and not the other costs at runtime.
+    matchedAlias: v.optional(v.string()),
     // NEO-254: this candidate has a stint covering the SET'S year.
     //
     // This object is a hand-kept copy of the schema's, and a field added to

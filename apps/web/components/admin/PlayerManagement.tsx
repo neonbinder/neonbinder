@@ -220,6 +220,8 @@ function fieldSignature(fields: {
   name: string;
   isHallOfFame: boolean;
   wikidataId: string;
+  /** NEO-254: the raw comma-separated box, compared as typed. */
+  aliases: string;
   // NEO-254: the draft holds it as a STRING (it is an input), so the signature
   // compares the trimmed string. "" and "1960" are the two states that matter
   // and both survive the round-trip through `rowSignature` below.
@@ -230,6 +232,7 @@ function fieldSignature(fields: {
     fields.name.trim(),
     fields.isHallOfFame,
     fields.wikidataId.trim(),
+    fields.aliases.trim(),
     fields.birthYear.trim(),
     sortStints(fields.stints).map((s) => [
       s.teamId,
@@ -245,6 +248,7 @@ function rowSignature(row: Player): string {
     name: row.name,
     isHallOfFame: row.isHallOfFame ?? false,
     wikidataId: row.externalIds?.wikidataId ?? "",
+    aliases: (row.aliases ?? []).join(", "),
     birthYear: row.birthYear === undefined ? "" : String(row.birthYear),
     stints: row.teamYears ?? [],
   });
@@ -396,6 +400,8 @@ function AddPlayerForm({
    * demanding a year for them would be a tax on the common case.
    */
   const [birthYear, setBirthYear] = useState("");
+  /** NEO-254 — other names this player's cards carry. See the detail panel. */
+  const [newAliases, setNewAliases] = useState("");
 
   useEffect(() => {
     const timer = setTimeout(
@@ -464,10 +470,15 @@ function AddPlayerForm({
     setBusy(true);
     onStatus(null);
     try {
+      const parsedNewAliases = newAliases
+        .split(",")
+        .map((a) => a.trim())
+        .filter(Boolean);
       const result = await createByAdmin({
         name: trimmed,
         sportId: sportId as Id<"selectorOptions">,
         ...(birthYearNum !== undefined ? { birthYear: birthYearNum } : {}),
+        ...(parsedNewAliases.length ? { aliases: parsedNewAliases } : {}),
       });
       onStatus(
         result.created
@@ -548,6 +559,18 @@ function AddPlayerForm({
             ? "Tells this player apart from anyone else with the same name."
             : `Use a whole year between ${MIN_BIRTH_YEAR} and ${MAX_BIRTH_YEAR}.`
         }
+      />
+
+      {/* NEO-254 — offered at creation as well as on the detail panel: a
+          player added from a 2011 card is very often the same man as one
+          already on file under a 2010 name, and the alias is what stops the
+          second row being created at all. */}
+      <Input
+        label="Other names (optional)"
+        value={newAliases}
+        placeholder="Ron Artest"
+        onChange={(e) => setNewAliases(e.target.value)}
+        helperText="Separate with commas. Names this player's cards also use."
       />
 
       <NearMatchPanel
@@ -652,6 +675,16 @@ function PlayerDetail({
   const [birthYear, setBirthYear] = useState(
     player.birthYear === undefined ? "" : String(player.birthYear),
   );
+  /**
+   * NEO-254 — the other names this player's cards carry, comma-separated
+   * exactly as League Management's alias box.
+   *
+   * Ron Artest / Metta World Peace, B.J. Upton / Melvin Upton Jr., Lew
+   * Alcindor / Kareem Abdul-Jabbar: one man, two names, and a checklist prints
+   * whichever was current. Held as the raw string the operator typed; the
+   * server splits, bounds and de-duplicates it.
+   */
+  const [aliases, setAliases] = useState((player.aliases ?? []).join(", "));
   const [stints, setStints] = useState<Stint[]>(
     sortStints(player.teamYears ?? []),
   );
@@ -713,6 +746,7 @@ function PlayerDetail({
     setIsHallOfFame(row.isHallOfFame ?? false);
     setWikidataId(row.externalIds?.wikidataId ?? "");
     setBirthYear(row.birthYear === undefined ? "" : String(row.birthYear));
+    setAliases((row.aliases ?? []).join(", "));
     setStints(sortStints(row.teamYears ?? []));
     setSeeded({ id: row._id, signature: rowSignature(row) });
     setRowMovedUnderDraft(false);
@@ -724,6 +758,7 @@ function PlayerDetail({
     isHallOfFame,
     wikidataId,
     birthYear,
+    aliases,
     stints,
   });
 
@@ -809,8 +844,24 @@ function PlayerDetail({
     trimmedBirthYear !==
     (player.birthYear === undefined ? "" : String(player.birthYear));
 
+  /**
+   * NEO-254 — parsed the same way League Management parses its alias box, so
+   * the two editors cannot disagree about what a comma means.
+   */
+  const parsedAliases = aliases
+    .split(",")
+    .map((a) => a.trim())
+    .filter(Boolean);
+  const aliasesChanged =
+    parsedAliases.join("|") !== (player.aliases ?? []).join("|");
+
   const dirty =
-    nameChanged || hofChanged || qidChanged || birthYearChanged || stintsChanged;
+    nameChanged ||
+    hofChanged ||
+    qidChanged ||
+    birthYearChanged ||
+    aliasesChanged ||
+    stintsChanged;
   const canSave =
     dirty && trimmedName.length > 0 && qidValid && birthYearValid && busy === null;
 
@@ -877,6 +928,9 @@ function PlayerDetail({
         ...(birthYearChanged
           ? { birthYear: birthYearNum === undefined ? null : birthYearNum }
           : {}),
+        // NEO-254: sent whole, including empty — an empty box is the operator
+        // saying "these were wrong", which is a real answer.
+        ...(aliasesChanged ? { aliases: parsedAliases } : {}),
         ...(stintsChanged ? { teamYears: sortStints(stints) } : {}),
       });
       setStatus({ text: `Saved ${trimmedName}.`, isError: false });
@@ -1028,6 +1082,24 @@ function PlayerDetail({
               birthYearValid
                 ? "Tells this player apart from anyone with the same name. Clear it to unset."
                 : `Use a whole year between ${MIN_BIRTH_YEAR} and ${MAX_BIRTH_YEAR}.`
+            }
+          />
+        </div>
+
+        {/* NEO-254 — under the birth year, because both answer the same
+            question: which person is this card about. A card prints whichever
+            name was current, so a rename is the other way one man reads two
+            ways. */}
+        <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
+          <Input
+            label="Aliases"
+            value={aliases}
+            placeholder="Ron Artest, Metta Sandiford-Artest"
+            onChange={(e) => setAliases(e.target.value)}
+            helperText={
+              parsedAliases.length > 0
+                ? `Separate with commas. ${parsedAliases.length === 1 ? "1 other name" : `${parsedAliases.length} other names`} this player's cards use.`
+                : "Separate with commas. Other names this player's cards use."
             }
           />
         </div>
