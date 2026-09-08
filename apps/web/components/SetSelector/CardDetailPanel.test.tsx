@@ -58,6 +58,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../convex/_generated/api", () => ({
   api: {
+    // NEO-254: the panel resolves canonical names for its "As printed" note.
+    players: { getManyByIds: "players.getManyByIds" },
     selectorOptions: {
       updateCard: "updateCard",
       setCardFeature: "setCardFeature",
@@ -86,8 +88,16 @@ vi.mock("convex/react", () => ({
     return vi.fn();
   },
   useQuery: (ref: string) =>
-    ref === "getCardChecklist" ? mockSiblingCards : undefined,
+    ref === "getCardChecklist"
+      ? mockSiblingCards
+      : // NEO-254: canonical names for the "As printed" note.
+        ref === "players.getManyByIds"
+        ? currentPlayerRows
+        : undefined,
 }));
+
+/** NEO-254 — rows served to `players.getManyByIds`. */
+let currentPlayerRows: Array<{ _id: string; name: string }> | undefined;
 
 vi.mock("./TeamPicker", () => ({
   default: ({
@@ -1071,5 +1081,73 @@ describe("CardDetailPanel — NEO-208 pending team names", () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-254 — the name this card was PRINTED with
+// ---------------------------------------------------------------------------
+
+describe("CardDetailPanel — As printed", () => {
+  it("shows the printed name when it differs from the player's own", () => {
+    // A 1986 card says "Doc Gooden" and links to Dwight Gooden. The player's
+    // name is NB data that can be corrected; the printed string is the card's
+    // own fact, so the panel reports it rather than letting the canonical name
+    // speak for the card.
+    currentPlayerRows = [{ _id: "p1", name: "Dwight Gooden" }];
+    renderPanel({
+      card: makeCard({
+        playerIds: ["p1"] as unknown as Array<Id<"players">>,
+        playerLinks: [
+          { playerId: "p1" as unknown as Id<"players">, nameOnCard: "Doc Gooden" },
+        ],
+      }),
+    });
+
+    expect(screen.getByText("As printed: Doc Gooden")).toBeTruthy();
+  });
+
+  it("says nothing when the card printed the canonical name", () => {
+    // The overwhelming majority of cards. Repeating the name under itself
+    // would be noise on every row.
+    currentPlayerRows = [{ _id: "p1", name: "Dwight Gooden" }];
+    renderPanel({
+      card: makeCard({
+        playerIds: ["p1"] as unknown as Array<Id<"players">>,
+        playerLinks: [
+          { playerId: "p1" as unknown as Id<"players">, nameOnCard: "Dwight Gooden" },
+        ],
+      }),
+    });
+
+    expect(screen.queryByText(/As printed:/)).toBeNull();
+  });
+
+  it("ignores case and surrounding space — those are not a different name", () => {
+    currentPlayerRows = [{ _id: "p1", name: "Dwight Gooden" }];
+    renderPanel({
+      card: makeCard({
+        playerIds: ["p1"] as unknown as Array<Id<"players">>,
+        playerLinks: [
+          {
+            playerId: "p1" as unknown as Id<"players">,
+            nameOnCard: "  dwight gooden ",
+          },
+        ],
+      }),
+    });
+
+    expect(screen.queryByText(/As printed:/)).toBeNull();
+  });
+
+  it("says nothing on a row that predates the field", () => {
+    // A backfilled row carries the canonical name, and a row not yet
+    // backfilled carries none. Neither should caption anything.
+    currentPlayerRows = [{ _id: "p1", name: "Dwight Gooden" }];
+    renderPanel({
+      card: makeCard({ playerIds: ["p1"] as unknown as Array<Id<"players">> }),
+    });
+
+    expect(screen.queryByText(/As printed:/)).toBeNull();
   });
 });

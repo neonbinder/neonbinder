@@ -1429,6 +1429,13 @@ export const getCardChecklist = query({
       // confirmed clean on prod + dev.
       team: v.optional(v.string()),
       playerIds: v.optional(v.array(v.id("players"))),
+      // NEO-254 — the name each card PRINTED for its players. The card detail
+      // panel renders "As printed: Doc Gooden" beside a chip whose player is
+      // filed under a different name. See schema.ts.
+      playerLinks: v.optional(v.array(v.object({
+        playerId: v.id("players"),
+        nameOnCard: v.string(),
+      }))),
       teamOnCardIds: v.optional(v.array(v.id("teams"))),
       // NEO-90: set once the BSC per-card team-enrichment queue has
       // checked this card, regardless of outcome (see schema.ts).
@@ -3935,11 +3942,44 @@ async function resolveTeamOnCardIdsForWrite(
  * The returned `names` are the rows this already read, so the listing-title
  * generator does not read them a second time. Order matches `ids`.
  */
+/**
+ * NEO-254 — the optional per-player printed names, as a lookup.
+ *
+ * One helper because both writers take the same argument and must read it the
+ * same way; a blank entry is dropped rather than stored, so an empty box falls
+ * back to the player's own name instead of blanking the card's record of what
+ * it says.
+ */
+function nameOnCardMap(
+  entries?: ReadonlyArray<{ playerId: Id<"players">; nameOnCard: string }>,
+): Map<string, string> | undefined {
+  if (!entries || entries.length === 0) return undefined;
+  const out = new Map<string, string>();
+  for (const entry of entries) {
+    const name = entry.nameOnCard.trim();
+    if (name) out.set(entry.playerId as string, name);
+  }
+  return out.size > 0 ? out : undefined;
+}
+
 async function resolvePlayerIdsForWrite(
   ctx: QueryCtx,
   selectorOptionId: Id<"selectorOptions">,
   requested: ReadonlyArray<Id<"players">>,
-): Promise<{ ids: Array<Id<"players">>; names: string[] }> {
+  /**
+   * NEO-254 — the name each card actually PRINTS for a player, by id.
+   *
+   * A picker hands over an id and nothing else, so for these paths the honest
+   * default is the player's own name: that IS what the operator saw when they
+   * picked it. A caller who knows better — a form that captured the printed
+   * spelling — passes it here and it wins.
+   */
+  nameOnCardById?: ReadonlyMap<string, string>,
+): Promise<{
+  ids: Array<Id<"players">>;
+  names: string[];
+  links: Array<{ playerId: Id<"players">; nameOnCard: string }>;
+}> {
   const ids: Array<Id<"players">> = [];
   const seen = new Set<string>();
   for (const playerId of requested) {
@@ -3952,7 +3992,7 @@ async function resolvePlayerIdsForWrite(
       `A card can carry at most ${MAX_CARD_PLAYERS} players.`,
     );
   }
-  if (ids.length === 0) return { ids, names: [] };
+  if (ids.length === 0) return { ids, names: [], links: [] };
 
   const sportId = await findSportForSelectorOption(ctx, selectorOptionId);
   const playerRows = await Promise.all(ids.map((id) => ctx.db.get(id)));
@@ -3973,7 +4013,16 @@ async function resolvePlayerIdsForWrite(
     }
     names.push(player.name);
   }
-  return { ids, names };
+  /*
+   * NEO-254 — built HERE, from the same loop that validated the ids, so the
+   * two lists cannot diverge: `links` is `ids` with a name attached, in the
+   * same order, by construction rather than by discipline.
+   */
+  const links = ids.map((playerId, i) => ({
+    playerId,
+    nameOnCard: nameOnCardById?.get(playerId as string)?.trim() || names[i],
+  }));
+  return { ids, names, links };
 }
 
 export const addCustomCard = mutation({
@@ -3981,6 +4030,20 @@ export const addCustomCard = mutation({
     selectorOptionId: v.id("selectorOptions"),
     cardNumber: v.string(),
     cardName: v.string(),
+    /**
+     * NEO-254 — the name this card PRINTS for a player, when it differs from
+     * the player's own.
+     *
+     * Optional and rarely sent: a picker hands over an id, and the honest
+     * default is the player's name, because that is what the operator saw when
+     * they picked it. A caller that captured the printed spelling ("Doc
+     * Gooden" on a card linked to Dwight Gooden) sends it here. See
+     * `cardChecklist.playerLinks` in schema.ts.
+     */
+    playerNamesOnCard: v.optional(
+      v.array(v.object({ playerId: v.id("players"), nameOnCard: v.string() })),
+    ),
+
     // NEO-26: legacy `team: v.string()` removed. Callers that have a
     // team display string should put it in `teams: [string]` so the
     // commitCardChecklist resolution path can turn it into a teams
@@ -4054,11 +4117,12 @@ export const addCustomCard = mutation({
     // so a bad id (unknown, wrong sport, over the cap) leaves no half-created
     // card behind. The returned names are the rows this already read; the
     // listing title uses them rather than reading the same players again.
-    const { ids: playerIds, names: linkedPlayerNames } =
+    const { ids: playerIds, names: linkedPlayerNames, links: playerLinks } =
       await resolvePlayerIdsForWrite(
         ctx,
         args.selectorOptionId,
         args.playerIds ?? [],
+        nameOnCardMap(args.playerNamesOnCard),
       );
     const hasLinkedPlayers = playerIds.length > 0;
 
@@ -4121,6 +4185,17 @@ export const addCustomCard = mutation({
       await findAncestorLabels(ctx, parentNode);
     const listingInputs: ListingCardInputs = {
       cardNumber: args.cardNumber,
+      /*
+       * NEO-254 — the CANONICAL name, deliberately, not `playerLinks`'s
+       * printed one.
+       *
+       * A listing title is what a buyer searches for today, and they search
+       * the name the player is known by — "Dwight Gooden", not the "Doc
+       * Gooden" a 1986 card happens to print. Changing that is a separate
+       * decision with marketplace consequences (titles are write-once, and a
+       * re-titled listing is a different listing to eBay), so the printed name
+       * is recorded on the card and read by the detail panel only.
+       */
       playerNames: hasLinkedPlayers ? linkedPlayerNames : pendingPlayerNames,
       year: mergedFeatures.season,
       manufacturer: mergedFeatures.manufacturer,
@@ -4183,7 +4258,9 @@ export const addCustomCard = mutation({
         : {}),
       // NEO-220: real `players` ids from the quick-add PlayerPicker. Mutually
       // exclusive with `pendingPlayerNames` above by construction.
-      ...(hasLinkedPlayers ? { playerIds } : {}),
+      // NEO-254: `playerLinks` is written in the same breath and is the same
+      // list — see the note in schema.ts. Never one without the other.
+      ...(hasLinkedPlayers ? { playerIds, playerLinks } : {}),
       ...(hasLinkedTeams ? { teamOnCardIds } : {}),
       ...(featuresOrUndefined ? { features: featuresOrUndefined } : {}),
       listingTitle: listingTitle.title,
@@ -4225,6 +4302,20 @@ export const updateCard = mutation({
     id: v.id("cardChecklist"),
     cardNumber: v.optional(v.string()),
     cardName: v.optional(v.string()),
+    /**
+     * NEO-254 — the name this card PRINTS for a player, when it differs from
+     * the player's own.
+     *
+     * Optional and rarely sent: a picker hands over an id, and the honest
+     * default is the player's name, because that is what the operator saw when
+     * they picked it. A caller that captured the printed spelling ("Doc
+     * Gooden" on a card linked to Dwight Gooden) sends it here. See
+     * `cardChecklist.playerLinks` in schema.ts.
+     */
+    playerNamesOnCard: v.optional(
+      v.array(v.object({ playerId: v.id("players"), nameOnCard: v.string() })),
+    ),
+
     // NEO-26: full-replacement teams patch. Callers pass the entire
     // desired array of team entity ids (or omit to leave untouched).
     // Empty array clears the link; the legacy free-text `team` field
@@ -4277,7 +4368,15 @@ export const updateCard = mutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
-    const { id, ...updates } = args;
+    /*
+     * NEO-254 — `playerNamesOnCard` is an INPUT, not a column.
+     *
+     * It tells the write what name to record for each player; the column it
+     * feeds is `playerLinks`, written below from the shared helper. Left in
+     * `updates` it would be spread straight into `ctx.db.patch` and refused by
+     * the schema as an unexpected field — which is exactly what happened.
+     */
+    const { id, playerNamesOnCard: _printedNames, ...updates } = args;
     const filtered: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(updates)) {
       if (value !== undefined) {
@@ -4412,12 +4511,16 @@ export const updateCard = mutation({
     // on what they accept, and the operator sees the same refusal wording
     // whichever one they are standing in.
     if (Array.isArray(filtered.playerIds)) {
-      const { ids } = await resolvePlayerIdsForWrite(
+      const { ids, links } = await resolvePlayerIdsForWrite(
         ctx,
         (await loadStoredCard()).selectorOptionId,
         filtered.playerIds as Array<Id<"players">>,
+        nameOnCardMap(args.playerNamesOnCard),
       );
       filtered.playerIds = ids;
+      // NEO-254 — written in the same breath as the ids. The two lists are one
+      // fact; see the `playerLinks` note in schema.ts.
+      filtered.playerLinks = links;
     }
 
     // NEO-246: the TYPED spelling of those same two fields gets the same
@@ -6120,6 +6223,99 @@ export const resetPlayersBatch = internalMutation({
  * read plus N deletes per row to that loop would put the reset's biggest
  * mutation over the read budget on exactly the deployments that most need it.
  */
+/**
+ * ── NEO-254: fill `playerLinks` on rows written before the field existed ────
+ *
+ * Every such row has `playerIds` and no record of the name it printed, and
+ * there is nowhere to recover that string from — the checklist payload that
+ * produced it is long gone. So the backfill writes the player's CANONICAL
+ * name, which is the honest answer: "this card links to Dwight Gooden, and
+ * nobody kept what it actually said."
+ *
+ * That is exactly what the panel then shows — no "As printed" line, because
+ * the name matches — so a backfilled row is indistinguishable from a card that
+ * really did print the canonical name. Which is correct: we do not know that
+ * it did not.
+ *
+ * Chunked and resumable, armed like the other scripted admin tasks (NEO-214):
+ * `confirm` literal plus `ALLOW_BACKFILL_PLAYER_LINKS`, asserted inside the
+ * mutation rather than only at an entry point. Idempotent — a row that already
+ * has `playerLinks` is skipped, so a re-run after a partial pass costs one
+ * read per row and writes nothing.
+ *
+ * Runbook: docs/operations/neo254-backfill-player-links.md
+ */
+export const backfillPlayerLinks = internalMutation({
+  args: {
+    confirm: v.literal("BACKFILL_PLAYER_LINKS"),
+    /** Rows to visit this call. Defaults to 200 — each is one read plus, for a
+     *  row with players, one read per player and one patch. */
+    batchSize: v.optional(v.number()),
+    /** Resume point: the `_id` the previous call returned as `nextCursor`. */
+    cursor: v.optional(v.string()),
+  },
+  returns: v.object({
+    scanned: v.number(),
+    filled: v.number(),
+    /** Absent when the table is exhausted. */
+    nextCursor: v.optional(v.string()),
+  }),
+  handler: async (ctx, args) => {
+    if (process.env.ALLOW_BACKFILL_PLAYER_LINKS !== "true") {
+      throw new ConvexError(
+        "playerLinks backfill is not armed on this deployment. Set " +
+          "ALLOW_BACKFILL_PLAYER_LINKS=true on it first " +
+          "(`npx convex env set ALLOW_BACKFILL_PLAYER_LINKS true`), and unset " +
+          "it again afterwards on production.",
+      );
+    }
+    const batchSize = Math.min(Math.max(args.batchSize ?? 200, 1), 500);
+    const page = await ctx.db
+      .query("cardChecklist")
+      .paginate({ numItems: batchSize, cursor: args.cursor ?? null });
+
+    // One read per distinct player across the page. A page of one set's cards
+    // shares a small roster, so without this the player reads alone would be
+    // the budget.
+    const nameCache = new Map<string, string | null>();
+    const playerName = async (id: Id<"players">): Promise<string | null> => {
+      const key = id as string;
+      if (!nameCache.has(key)) {
+        const row = await ctx.db.get(id);
+        nameCache.set(key, row?.name ?? null);
+      }
+      return nameCache.get(key) ?? null;
+    };
+
+    let filled = 0;
+    for (const row of page.page) {
+      // Idempotent: already answered, or nothing to answer.
+      if (row.playerLinks !== undefined) continue;
+      const ids = row.playerIds ?? [];
+      if (ids.length === 0) continue;
+      const links: Array<{ playerId: Id<"players">; nameOnCard: string }> = [];
+      for (const id of ids) {
+        const name = await playerName(id);
+        // A dangling id is left OUT of `playerLinks` and left IN `playerIds`,
+        // deliberately: this migration's job is to add a field, not to prune
+        // a card's links behind an operator's back. The pin test's invariant
+        // is checked on writers, and the attention walker is what surfaces a
+        // card pointing at a player that no longer exists.
+        if (name !== null) links.push({ playerId: id, nameOnCard: name });
+      }
+      if (links.length === 0) continue;
+      await ctx.db.patch(row._id, { playerLinks: links });
+      filled += 1;
+    }
+
+    return {
+      scanned: page.page.length,
+      filled,
+      ...(page.isDone ? {} : { nextCursor: page.continueCursor }),
+    };
+  },
+});
+
 export const resetPlayerAliasesBatch = internalMutation({
   args: {},
   returns: v.object({
@@ -11196,6 +11392,12 @@ const commitChunkCardValidator = v.object({
   cardNumber: v.string(),
   cardName: v.string(),
   playerIds: v.optional(v.array(v.id("players"))),
+  // NEO-254 — the same ids with the name each card PRINTED attached, built by
+  // the prelude's own loop so the two cannot get out of step. See schema.ts.
+  playerLinks: v.optional(v.array(v.object({
+    playerId: v.id("players"),
+    nameOnCard: v.string(),
+  }))),
   teamOnCardIds: v.optional(v.array(v.id("teams"))),
   attributes: v.optional(v.array(v.string())),
   isRookie: v.optional(v.boolean()),
@@ -11463,6 +11665,19 @@ export const commitCardChecklistChunk = internalMutation({
           if (!accepted.has(field)) continue;
           if (sameContentValue(existing[field], incoming[field])) continue;
           contentPatch[field] = incoming[field];
+        }
+        /*
+         * NEO-254 — `playerLinks` RIDES WITH `playerIds`; it is never diffed
+         * on its own.
+         *
+         * It is not an independent fact: it is the same list with the printed
+         * name attached, so putting it in `NB_CONTENT_FIELDS` would ask the
+         * operator to rule on it separately and let the two be accepted apart
+         * — the exact divergence the invariant forbids. Written only when the
+         * ids were actually written, and always in the same patch.
+         */
+        if (contentPatch.playerIds !== undefined) {
+          contentPatch.playerLinks = card.playerLinks;
         }
         if (Object.keys(contentPatch).length > 0) contentAppliedCount++;
 
@@ -11743,6 +11958,9 @@ export const commitCardChecklistChunk = internalMutation({
           cardName: card.cardName,
           // NEO-26: legacy `team` removed; only teamOnCardIds[] is written.
           playerIds: card.playerIds,
+          // NEO-254 — the same list with the printed name attached; see
+          // schema.ts. Never written without the ids beside it.
+          playerLinks: card.playerLinks,
           teamOnCardIds: card.teamOnCardIds,
           attributes: card.attributes,
           isRookie: card.isRookie,
@@ -13843,9 +14061,28 @@ export const commitCardChecklist = action({
     // all unresolved end up with empty arrays (left undefined).
     const chunkCards = committed.map(({ card: c, index }) => {
       const playerIds: Array<Id<"players">> = [];
+      /*
+       * NEO-254 — the RAW string this card printed, kept beside the id.
+       *
+       * `p` is the checklist's own per-player name off BSC/SportLots, before
+       * any normalising: "Doc Gooden" on a 1986 card that resolves to Dwight
+       * Gooden through an alias, or through a link the operator made in the
+       * wizard. That string is the card's fact and the player's name is not —
+       * renaming or re-aliasing a player must never rewrite what a 1986 card
+       * says it says.
+       *
+       * Built in this loop rather than after it, so the two arrays are one
+       * list by construction: same ids, same order, no second pass to get out
+       * of step. See `cardChecklist.playerLinks` in schema.ts.
+       */
+      const playerLinks: Array<{ playerId: Id<"players">; nameOnCard: string }> = [];
       for (const p of c.players ?? []) {
-        const id = playerIdByName.get(p.trim());
-        if (id) playerIds.push(id);
+        const nameOnCard = p.trim();
+        const id = playerIdByName.get(nameOnCard);
+        if (id) {
+          playerIds.push(id);
+          playerLinks.push({ playerId: id, nameOnCard });
+        }
       }
       const teamOnCardIds: Array<Id<"teams">> = [];
       const teamSources = c.teams?.length ? c.teams : c.team ? [c.team] : [];
@@ -13907,6 +14144,7 @@ export const commitCardChecklist = action({
           // from the adapter is consumed above to resolve teamOnCardIds[];
           // it isn't written to cardChecklist anywhere.
           playerIds: playerIds.length ? playerIds : undefined,
+          playerLinks: playerLinks.length ? playerLinks : undefined,
           teamOnCardIds: teamOnCardIds.length ? teamOnCardIds : undefined,
           attributes: markers.length
             ? Array.from(new Set([...(c.attributes ?? []), ...markers]))

@@ -143,6 +143,15 @@ type CardDetailCard = {
   cardNumber: string;
   cardName: string;
   playerIds?: Array<Id<"players">>;
+  /**
+   * NEO-254 — the name this card PRINTED for each player, when it was kept.
+   *
+   * A 1986 card says "Doc Gooden" and links to Dwight Gooden. The player's
+   * name is NB data that can be corrected or re-aliased; the printed string is
+   * the card's own fact, so the panel reports it rather than letting the
+   * canonical name speak for the card.
+   */
+  playerLinks?: Array<{ playerId: Id<"players">; nameOnCard: string }>;
   teamOnCardIds?: Array<Id<"teams">>;
   /**
    * NEO-208 — team names an operator typed that no `teams` row exists for yet.
@@ -624,6 +633,38 @@ export default function CardDetailPanel({
 
   const teamIds = teamsPending ?? card.teamOnCardIds ?? [];
   const playerIds = playersPending ?? card.playerIds ?? [];
+  /**
+   * NEO-254 — the links whose printed name differs from what we hold.
+   *
+   * Compared against the picker's own labels rather than re-reading `players`:
+   * the picker has already resolved every id on screen, so this costs nothing
+   * and cannot disagree with the name shown beside it. A link whose player the
+   * picker has not resolved yet is skipped rather than guessed at.
+   *
+   * Suppressed entirely while a save is in flight (`playersPending`): the
+   * stored links still describe the OLD list, and captioning the new chips
+   * with the old card's printed names would be actively wrong for the length
+   * of the round trip.
+   */
+  const linkedPlayerRows = useQuery(
+    api.players.getManyByIds,
+    (card.playerLinks ?? []).length > 0
+      ? { ids: (card.playerLinks ?? []).map((l) => l.playerId) }
+      : "skip",
+  );
+  const printedNameNotes = useMemo(() => {
+    if (playersPending !== null) return [];
+    const canonicalById = new Map(
+      (linkedPlayerRows ?? []).map((p) => [p._id as string, p.name]),
+    );
+    return (card.playerLinks ?? []).filter((link) => {
+      const canonical = canonicalById.get(link.playerId as string);
+      return (
+        canonical !== undefined &&
+        canonical.trim().toLowerCase() !== link.nameOnCard.trim().toLowerCase()
+      );
+    });
+  }, [card.playerLinks, linkedPlayerRows, playersPending]);
 
   const saveTeams = async (next: Array<Id<"teams">>) => {
     setTeamsPending(next);
@@ -1402,6 +1443,25 @@ export default function CardDetailPanel({
               onChange={(next) => void savePlayers(next)}
               sportId={ancestorSportId}
             />
+            {/*
+              NEO-254 — what the card actually says, when that is not what the
+              player is filed under.
+
+              Shown only on a difference: on the overwhelming majority of cards
+              the two match, and repeating the name under itself would be noise
+              on every row. Read-only — the printed name is a fact about the
+              card, not a field to edit here; correcting a mis-linked player is
+              what the picker above is for.
+            */}
+            {printedNameNotes.length > 0 && (
+              <ul className="mt-1 space-y-0.5">
+                {printedNameNotes.map((note) => (
+                  <li key={note.playerId} className="text-[11px] text-gray-400">
+                    As printed: {note.nameOnCard}
+                  </li>
+                ))}
+              </ul>
+            )}
             <FieldFeedback
               busy={playersPending !== null}
               error={playersError}

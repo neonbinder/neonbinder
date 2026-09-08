@@ -616,6 +616,40 @@ export default defineSchema({
     // team(s) printed on the card — independent of players[].teamYears,
     // which can drift in the offseason before sets are released.
     playerIds: v.optional(v.array(v.id("players"))),
+    /**
+     * ── NEO-254: which NAME this card printed for each player ────────────────
+     *
+     * Jason, 2026-09-08: a card has to record the name it actually carries. A
+     * 1986 card says "Doc Gooden" and a 1990 card says "Dwight Gooden"; both
+     * link to one player row, and until now the card kept no trace of which
+     * string it was printed with. That string is the card's own fact — the
+     * player's name is NB data that can be corrected, renamed or aliased at any
+     * time, and correcting it must not silently rewrite what a 1986 card says.
+     *
+     * `nameOnCard` is the raw string that was RESOLVED: the checklist's
+     * per-player name off BSC/SportLots, or the name the operator reviewed in
+     * the wizard. It is stored whether that string matched the player's primary
+     * name, one of their aliases, or nothing at all until a human linked it.
+     *
+     * ## The invariant
+     *
+     *     playerIds === playerLinks.map(l => l.playerId)   — same ids, SAME ORDER
+     *
+     * `playerIds` stays as the fast index: it is what `by_player` reads, what
+     * the sync diff compares, and what listing titles iterate. `playerLinks` is
+     * the same list with the printed name attached. Two copies of one list can
+     * disagree, so every writer builds both together and
+     * `cardChecklist.playerLinksPin.test.ts` greps for one written without the
+     * other.
+     *
+     * Optional because every row written before this field predates it; the
+     * backfill (`backfillPlayerLinks`) fills them in with the canonical name,
+     * which is the honest answer for a row whose printed name was never kept.
+     */
+    playerLinks: v.optional(v.array(v.object({
+      playerId: v.id("players"),
+      nameOnCard: v.string(),
+    }))),
     teamOnCardIds: v.optional(v.array(v.id("teams"))),
     // NEO-90: set once the BSC per-card team-enrichment queue has checked
     // this card's `platformData.bsc` detail endpoint for a team, regardless
