@@ -707,6 +707,173 @@ describe("upsertPlayers", () => {
     expect((await counts(t)).players).toBe(2);
   });
 
+  test("two dated candidates, neither matching: a third person, created not asked about", async () => {
+    // The first real baseball load hit this 138 times in 24,011 rows. Every
+    // rival is dated and none of them is this year, so under the identity rule
+    // none of them is this man — that is an answer, not a question, and making
+    // an operator retype it 138 times is the defect.
+    arm();
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const normalized = normalizePlayerName("Bob Allen");
+    for (const birthYear of [1867, 1937]) {
+      await t.run(async (ctx) =>
+        ctx.db.insert("players", {
+          name: "Bob Allen",
+          nameNormalized: normalized,
+          sportId,
+          birthYear,
+          lastUpdated: 1,
+        }),
+      );
+    }
+
+    const result = await t.mutation(internal.bulkLoad.upsertPlayers, {
+      confirm: CONFIRM,
+      sport: "Baseball",
+      players: [{ key: "allenbo03", name: "Bob Allen", birthYear: 1990, stints: [] }],
+    });
+
+    expect(result.results[0].status).toBe("created");
+    expect(result.results[0].candidates).toBeUndefined();
+    expect((await counts(t)).players).toBe(3);
+  });
+
+  test("…and a re-run adopts the row that fork created", async () => {
+    // The fork converges because the row it inserts carries the birth year, so
+    // the next run finds it as the exactly-one match. Without that, the loader
+    // would mint a fourth Bob Allen every time it ran.
+    arm();
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const normalized = normalizePlayerName("Bob Allen");
+    for (const birthYear of [1867, 1937]) {
+      await t.run(async (ctx) =>
+        ctx.db.insert("players", {
+          name: "Bob Allen",
+          nameNormalized: normalized,
+          sportId,
+          birthYear,
+          lastUpdated: 1,
+        }),
+      );
+    }
+
+    const row = { key: "allenbo03", name: "Bob Allen", birthYear: 1990, stints: [] };
+    const first = await t.mutation(internal.bulkLoad.upsertPlayers, {
+      confirm: CONFIRM,
+      sport: "Baseball",
+      players: [row],
+    });
+    const second = await t.mutation(internal.bulkLoad.upsertPlayers, {
+      confirm: CONFIRM,
+      sport: "Baseball",
+      players: [row],
+    });
+
+    expect(second.results[0]).toMatchObject({
+      id: first.results[0].id,
+      status: "adopted",
+    });
+    expect((await counts(t)).players).toBe(3);
+  });
+
+  test("one UNDATED rival keeps it a question, however many others are dated", async () => {
+    // The undated row could be the very man being loaded, and ruling him out
+    // on a field nobody ever filled in is a guess. `adoptOrForkOnCreate`
+    // refuses on the same condition, in the same words.
+    arm();
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const normalized = normalizePlayerName("Bob Allen");
+    await t.run(async (ctx) =>
+      ctx.db.insert("players", {
+        name: "Bob Allen",
+        nameNormalized: normalized,
+        sportId,
+        birthYear: 1867,
+        lastUpdated: 1,
+      }),
+    );
+    await t.run(async (ctx) =>
+      ctx.db.insert("players", {
+        name: "Bob Allen",
+        nameNormalized: normalized,
+        sportId,
+        lastUpdated: 1,
+      }),
+    );
+
+    const result = await t.mutation(internal.bulkLoad.upsertPlayers, {
+      confirm: CONFIRM,
+      sport: "Baseball",
+      players: [{ key: "allenbo03", name: "Bob Allen", birthYear: 1990, stints: [] }],
+    });
+
+    expect(result.results[0].status).toBe("ambiguous");
+    expect(result.results[0].id).toBeNull();
+    expect((await counts(t)).players).toBe(2);
+  });
+
+  test("no INCOMING birth year keeps it a question even when every rival is dated", async () => {
+    // Nothing to reason from. Forking here would mint a second Bob Allen out
+    // of a gap in the dataset rather than out of evidence.
+    arm();
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const normalized = normalizePlayerName("Bob Allen");
+    for (const birthYear of [1867, 1937]) {
+      await t.run(async (ctx) =>
+        ctx.db.insert("players", {
+          name: "Bob Allen",
+          nameNormalized: normalized,
+          sportId,
+          birthYear,
+          lastUpdated: 1,
+        }),
+      );
+    }
+
+    const result = await t.mutation(internal.bulkLoad.upsertPlayers, {
+      confirm: CONFIRM,
+      sport: "Baseball",
+      players: [{ key: "allenbo03", name: "Bob Allen", stints: [] }],
+    });
+
+    expect(result.results[0].status).toBe("ambiguous");
+    expect((await counts(t)).players).toBe(2);
+  });
+
+  test("several rivals sharing the incoming birth year stay a question", async () => {
+    // `candidateForBirthYear` adopts only an EXACTLY-one match; two rows with
+    // the same name and the same year mean the tiebreaker did not tie-break,
+    // and forking would add a third indistinguishable row.
+    arm();
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const normalized = normalizePlayerName("Bob Allen");
+    for (let i = 0; i < 2; i += 1) {
+      await t.run(async (ctx) =>
+        ctx.db.insert("players", {
+          name: "Bob Allen",
+          nameNormalized: normalized,
+          sportId,
+          birthYear: 1867,
+          lastUpdated: 1,
+        }),
+      );
+    }
+
+    const result = await t.mutation(internal.bulkLoad.upsertPlayers, {
+      confirm: CONFIRM,
+      sport: "Baseball",
+      players: [{ key: "allenbo03", name: "Bob Allen", birthYear: 1867, stints: [] }],
+    });
+
+    expect(result.results[0].status).toBe("ambiguous");
+    expect((await counts(t)).players).toBe(2);
+  });
+
   test("two candidates and no decisive birth year: ambiguous, with candidates and no write", async () => {
     arm();
     const t = convexTest(schema, modules);

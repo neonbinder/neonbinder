@@ -807,7 +807,11 @@ function candidateForBirthYear(
  *   (both Tony Gwynns are real), so that creates a second row rather than
  *   merging a father into a son.
  * - **Two or more**: adopt the one whose birth year matches, when exactly one
- *   does. Otherwise `ambiguous` with the candidates, and nothing written.
+ *   does. Failing that, create — but ONLY when the incoming row has a birth
+ *   year, every candidate has one, and none of them is it, which is positive
+ *   evidence that none of the rivals is this man. Anything less certain is
+ *   `ambiguous` with the candidates, and nothing written. Same fork rule as
+ *   `players.adoptOrForkOnCreate`; see the long note at the branch.
  *
  * A `decision` from the operator overrides all of it, which is what makes a
  * re-run with an answers file converge.
@@ -1048,6 +1052,46 @@ export const upsertPlayers = internalMutation({
       const decided = candidateForBirthYear(candidates, row.birthYear);
       if (decided) {
         results.push(await adopt(decided));
+        continue;
+      }
+
+      /**
+       * Two or more rivals, none of them identified by the birth year — the
+       * FORK, aligned with `players.adoptOrForkOnCreate`.
+       *
+       * The first real baseball load returned `ambiguous` for 138 of 24,011
+       * rows that were not ambiguous at all: the incoming row had a birth
+       * year, every candidate had one, and none of them matched. Under this
+       * codebase's own identity rule — plan decision 3, a distinct birth year
+       * means a distinct person — that is positive evidence that NONE of the
+       * rivals is this man, so it is a new person and not a question. Making
+       * an operator answer it by hand 138 times is asking them to retype a
+       * conclusion the data already reached.
+       *
+       * The three conditions are all load-bearing, and each one that fails
+       * leaves the row `ambiguous` exactly as before:
+       *
+       *  - The INCOMING row has a year. Without one there is no evidence of
+       *    anything, and a second Bob Allen would be minted from a gap.
+       *  - EVERY candidate has one. An undated rival could be the very man
+       *    being loaded, and ruling him out on a field nobody ever filled in
+       *    is a guess — `adoptOrForkOnCreate` refuses for the same reason, in
+       *    the same words.
+       *  - None of them equals it. `candidateForBirthYear` above already
+       *    adopted the case where exactly one does; the case where SEVERAL do
+       *    falls through to here and must stay ambiguous, because the
+       *    tiebreaker did not tie-break and forking would add a third
+       *    indistinguishable row.
+       *
+       * Note this converges: the row created here carries the birth year, so a
+       * re-run finds it as the exactly-one match and adopts it.
+       */
+      if (
+        row.birthYear !== undefined &&
+        candidates.every((p) => p.birthYear !== undefined) &&
+        !candidates.some((p) => p.birthYear === row.birthYear)
+      ) {
+        results.push(await create());
         continue;
       }
 
