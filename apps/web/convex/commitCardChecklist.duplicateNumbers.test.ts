@@ -51,7 +51,10 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
-import { drainScheduled } from "../lib/testing/drain-scheduled";
+import {
+  drainScheduled,
+  cancelScheduled,
+} from "../lib/testing/drain-scheduled";
 
 beforeEach(() => {
   // NEO-188/NEO-247: commitCardChecklist can schedule a BSC per-card team
@@ -62,22 +65,21 @@ beforeEach(() => {
   // adapter already swallows a request failure ("network unavailable" is a
   // state it handles), and it cannot write anything derived from a payload
   // this file invented.
-  vi.stubGlobal(
-    "fetch",
-    (async (url: string | URL) => {
-      throw new Error(
-        `NEO-247: this test file must not reach the network: ${String(url)}`,
-      );
-    }) as unknown as typeof fetch,
-  );
+  vi.stubGlobal("fetch", (async (url: string | URL) => {
+    throw new Error(
+      `NEO-247: this test file must not reach the network: ${String(url)}`,
+    );
+  }) as unknown as typeof fetch);
 });
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-const modules = (import.meta as unknown as {
-  glob: (pattern: string) => Record<string, () => Promise<unknown>>;
-}).glob("./**/*.*s");
+const modules = (
+  import.meta as unknown as {
+    glob: (pattern: string) => Record<string, () => Promise<unknown>>;
+  }
+).glob("./**/*.*s");
 
 const ADMIN_IDENTITY = {
   subject: "admin_dupnum_001",
@@ -123,7 +125,12 @@ async function seedTree(t: ReturnType<typeof convexTest>) {
 }
 
 /** One reconciled card as the commit wire carries it. */
-function card(cardNumber: string, cardName: string, bscRef: string, setId: string) {
+function card(
+  cardNumber: string,
+  cardName: string,
+  bscRef: string,
+  setId: string,
+) {
   return {
     cardNumber,
     cardName,
@@ -196,6 +203,7 @@ describe("commitCardChecklist — two source sets sharing card numbers", () => {
     // addressable downstream.
     expect(new Set(rows.map((r) => r.sku)).size).toBe(2);
     await drainScheduled(t);
+    await cancelScheduled(t);
   });
 
   test("a fully duplicate-numbered set commits every row (the 1996 Score shape)", async () => {
@@ -212,7 +220,9 @@ describe("commitCardChecklist — two source sets sharing card numbers", () => {
       [S2, "S2"],
     ] as const) {
       for (let n = 1; n <= 110; n++) {
-        cards.push(card(String(n), `Player ${label}-${n}`, `${slug}-card-${n}`, slug));
+        cards.push(
+          card(String(n), `Player ${label}-${n}`, `${slug}-card-${n}`, slug),
+        );
       }
     }
 
@@ -231,5 +241,6 @@ describe("commitCardChecklist — two source sets sharing card numbers", () => {
     expect(new Set(rows.map((r) => r.cardNumber)).size).toBe(110);
     expect(new Set(rows.map((r) => r.platformData?.bsc?.ref)).size).toBe(220);
     await drainScheduled(t);
+    await cancelScheduled(t);
   });
 });
