@@ -40,7 +40,6 @@ import {
   candidatesToPairingCards,
 } from "./pairing-cards";
 
-
 type CardChecklistProps = {
   variantId: GenericId<"selectorOptions">;
   // NEO-6: source-set chip data + per-card label maps derived in the
@@ -268,10 +267,9 @@ export default function CardChecklist({
   const fetchChecklist = useAction(api.selectorOptions.fetchCardChecklist);
   // NEO-195: the fetch publishes candidates as they become reviewable, so the
   // modal fills in live instead of waiting ~80s for the whole thing.
-  const liveCandidates = useQuery(
-    api.checklistCandidates.getReadyCandidates,
-    { selectorOptionId: variantId },
-  );
+  const liveCandidates = useQuery(api.checklistCandidates.getReadyCandidates, {
+    selectorOptionId: variantId,
+  });
   /**
    * NEO-255 — the same subscription, readable from inside an async closure.
    *
@@ -282,6 +280,8 @@ export default function CardChecklist({
    * change however long it waited. A ref updated from an effect is the value
    * that does.
    */
+  /** The one-sided run's "Kept all N cards …" sentence, for the wizard notice. */
+  const soloKeptRef = useRef<string | null>(null);
   const liveCandidatesRef = useRef(liveCandidates);
   useEffect(() => {
     liveCandidatesRef.current = liveCandidates;
@@ -425,7 +425,9 @@ export default function CardChecklist({
   // Unique per-field marker class so Maestro's inputText targets the tapped
   // add-card field, not the first input (see useFieldTestClass).
   const fieldClass = useFieldTestClass();
-  const [pendingPreview, setPendingPreview] = useState<FetchPreview | null>(null);
+  const [pendingPreview, setPendingPreview] = useState<FetchPreview | null>(
+    null,
+  );
   /**
    * NEO-221 (D10) — the commit's failure message, for the wizard's final step.
    *
@@ -445,7 +447,9 @@ export default function CardChecklist({
    */
   const [commitError, setCommitError] = useState<string | null>(null);
   // NEO-203 — confirmed cards parked in front of the content-diff review.
-  const [pendingReview, setPendingReview] = useState<PendingReview | null>(null);
+  const [pendingReview, setPendingReview] = useState<PendingReview | null>(
+    null,
+  );
   /**
    * NEO-137/NEO-195 — where the pairing review is, in three states.
    *
@@ -477,9 +481,9 @@ export default function CardChecklist({
    * reducer away, so "Back to matching" could only ever have meant "start the
    * pairing over".
    */
-  const [pairingPhase, setPairingPhase] = useState<"closed" | "review" | "parked">(
-    "closed",
-  );
+  const [pairingPhase, setPairingPhase] = useState<
+    "closed" | "review" | "parked"
+  >("closed");
   /**
    * NEO-221 — which FETCH the mounted pairing modal belongs to. Bumped once
    * per `handleSync`, and used for nothing but the modal's React `key`.
@@ -815,6 +819,7 @@ export default function CardChecklist({
    * data for cards that never exist.
    */
   const handleSync = async () => {
+    soloKeptRef.current = null;
     // NEO-96: the sport row every downstream step keys on. It used to ride
     // back on the fetch action's return; the client walks the same ancestor
     // chain for its own pickers, so reading it here removes a third copy of
@@ -969,8 +974,7 @@ export default function CardChecklist({
          * back.
          */
         const needsOperator = live.cards.some(
-          (c) =>
-            c.bucket === "matched" || c.nameConflict || c.playersConflict,
+          (c) => c.bucket === "matched" || c.nameConflict || c.playersConflict,
         );
         if (needsOperator) {
           setSoloFetch(null);
@@ -980,7 +984,12 @@ export default function CardChecklist({
         }
         const cards = candidatesToPairingCards(live.cards);
         setSoloFetch(null);
-        setSyncMessage(soloKeptMessage(serverSides[0], cards.length));
+        // Remembered so the wizard's "N new players … need confirmation"
+        // notice can keep this sentence in front of it: with no dialog, this
+        // line is the only place the operator (and the E2E flow) learns how
+        // many cards the fetch kept, and the wizard opens within a second.
+        soloKeptRef.current = soloKeptMessage(serverSides[0], cards.length);
+        setSyncMessage(soloKeptRef.current);
         // Exactly what Confirm hands back for a screen where every row is a
         // kept single: the cards, and no conflicts — a single has no second
         // marketplace to disagree with.
@@ -1158,7 +1167,12 @@ export default function CardChecklist({
       // Stash preview; the review wizard handles the rest.
       setPendingPreview(preview);
       setSyncMessage(
-        `${unknownPlayers.length} new players + ${unknownTeams.length} new teams need confirmation`,
+        [
+          soloKeptRef.current,
+          `${unknownPlayers.length} new players + ${unknownTeams.length} new teams need confirmation`,
+        ]
+          .filter(Boolean)
+          .join(" "),
       );
     }
   };
@@ -1635,7 +1649,10 @@ export default function CardChecklist({
     }> = [];
     for (const card of sortedCards) {
       // Rendered under its parent below, unless that parent is filtered out.
-      if (card.variationOfCardId && presentIds.has(card.variationOfCardId as string)) {
+      if (
+        card.variationOfCardId &&
+        presentIds.has(card.variationOfCardId as string)
+      ) {
         continue;
       }
       const children = variationsByParent.get(card._id as string) ?? [];
@@ -1661,7 +1678,13 @@ export default function CardChecklist({
       }
     }
     return rows;
-  }, [sortedCards, variationsByParent, expandedParents, selectedCardId, cardNumberById]);
+  }, [
+    sortedCards,
+    variationsByParent,
+    expandedParents,
+    selectedCardId,
+    cardNumberById,
+  ]);
 
   // Only worth showing the toggle when this checklist actually has visiting
   // cards (mirrors ChecklistSourceFilter's `anyMulti` guard). Derived from
@@ -1702,7 +1725,11 @@ export default function CardChecklist({
    * rather than being re-derived here.
    */
   const streamedPairing = useMemo(() => {
-    if (pairingPhase === "closed" || !liveCandidates || liveCandidates.total === 0) {
+    if (
+      pairingPhase === "closed" ||
+      !liveCandidates ||
+      liveCandidates.total === 0
+    ) {
       return null;
     }
     // NEO-255: the mapping itself lives in `pairing-cards.ts` now, because the
@@ -1751,7 +1778,8 @@ export default function CardChecklist({
   const selectedIndex = selectedCardId
     ? displayRows.findIndex((r) => r.card._id === selectedCardId)
     : -1;
-  const selectedCard = selectedIndex >= 0 ? displayRows[selectedIndex].card : null;
+  const selectedCard =
+    selectedIndex >= 0 ? displayRows[selectedIndex].card : null;
 
   // Move selection to a list position and keep it in view. "center" matches
   // the add-card scroll and dodges the sticky binder-header at y≈84.
@@ -1788,10 +1816,7 @@ export default function CardChecklist({
           </h2>
           {!showAddForm && (
             <div className="flex gap-2">
-              <NeonButton
-                onClick={openAddForm}
-                aria-label="Open add card form"
-              >
+              <NeonButton onClick={openAddForm} aria-label="Open add card form">
                 Add Card
               </NeonButton>
               <NeonButton
@@ -2207,8 +2232,9 @@ export default function CardChecklist({
               switches to role="alert".
             */}
             <p className="sr-only" role="status">
-              {attentionCount} {attentionCount === 1 ? "card needs" : "cards need"}{" "}
-              attention on this checklist
+              {attentionCount}{" "}
+              {attentionCount === 1 ? "card needs" : "cards need"} attention on
+              this checklist
             </p>
           </div>
         )}
