@@ -1,6 +1,6 @@
 ---
 name: maestro-web-cannot-scroll-after-base-picker
-description: One set-builder page will not scroll for maestro-web in ANY mode while a structurally identical one moves 313px per swipe — six runs of evidence and everything ruled out
+description: A headless-Chrome frame stall kills every maestro-web scroll on the drilled set-builder page — and the hierarchy is viewport-bounded, so tapOn/assertVisible cannot substitute
 metadata:
   type: reference
 ---
@@ -84,3 +84,36 @@ once and then contradicted itself on the next session. Use Maestro's own logs
 
 Consequence unchanged: a flow needing a page scroll on the one-marketplace
 Base page cannot be written today, and the fix is outside `.maestro`.
+
+## Update 2026-09-08 (second) — ROOT CAUSE, and why "just don't scroll" fails too
+
+The cause is a **headless-Chrome frame stall**, diagnosed by the web-dev agent:
+`.claude/agent-memory/neonbinder-web-dev/reference_maestro_web_frame_stall_kills_scrolling.md`.
+maestro-web's only scroll primitive is `window.scroll({behavior:'smooth'})`;
+frames stop at the set-selection render (rAF 0 in 2s while `setInterval` fires
+~125), so every scroll moves 0px and still reports COMPLETED. It is not the app
+and not set-specific — Topps Big League stalls at the same step, and flows that
+pass are runs that happened not to stall.
+
+**Rewriting a flow to avoid scrolling does NOT rescue it**, because
+maestro-web's element lookup is viewport-bounded:
+
+* `maestro-web.js`'s `traverse` emits the WHOLE DOM with
+  `getBoundingClientRect()` bounds, and the DRIVER then drops anything
+  off-screen — which is exactly what the `ignoreBoundsFiltering` attribute
+  exists to opt synthetic `<option>` nodes out of. Measured: a dumped hierarchy
+  for a 1338px-tall page holds 89 nodes, none starting below y=625 except two
+  zero-height Clerk portals.
+* So a below-the-fold `tapOn`/`assertVisible` fails:
+  `CommandFailed: Assertion is false: "No cards in this checklist yet." is visible`.
+
+Three more escapes, all measured and all dead — do not retry them:
+
+| escape | result |
+|---|---|
+| keyboard (Tab to a low element so the browser scrolls it into view) | maestro-web supports **ENTER and BACK_SPACE only** — "Keycode <X> is not supported on web" |
+| scroll BEFORE the stall (the drill still has frames) | the app re-scrolls on every column reveal: max 719 before picking the set → 219 after; filter-then-scroll 369 → 92; Base/Cancel/Close settles at 42 |
+| scrollbar-track click (browser-handled, not JS) | `tapOn: point: "99%, 85%"` landed at (1013, 531) twice, hierarchy stayed `root=[0,0]` |
+
+**The unblock is in the harness**: keeping a second CDP client attached for the
+run prevents the stall, and that run scrolls and finishes green.

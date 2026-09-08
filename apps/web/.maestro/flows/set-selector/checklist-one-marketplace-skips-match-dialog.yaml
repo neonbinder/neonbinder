@@ -3,10 +3,12 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Checklist — a set with exactly ONE marketplace attached skips the Match Cards dialog and keeps every fetched card"
 tags:
   - set-selector
-  # ⛔ wip — NOT because the feature is unproven. See STEP 4: maestro-web still
-  # cannot scroll this page to the Sync button once the base picker has been
-  # opened, which a one-sided set cannot avoid. Everything before that step is
-  # green on this build. Remove this tag in the commit that fixes the scroll.
+  # ⛔ wip — NOT because the feature is unproven. Everything up to the sync is
+  # green on this build. maestro-web cannot reach the Sync button while headless
+  # Chrome's renderer is frame-stalled: no scroll primitive moves the page and
+  # its element lookup is viewport-bounded, so the checklist cannot be scrolled
+  # to, tapped or asserted. See STEP 4. Remove this tag in the commit that keeps
+  # a CDP client attached for the run.
   - wip
 ---
 # ════════════════════════════════════════════════════════════════════════════
@@ -273,11 +275,9 @@ tags:
 # one, and this flow attaches none.)
 # ============================================================
 
-- scrollUntilVisible:
-    element:
-      text: "Base"
-    centerElement: true
-    timeout: 10000
+# No scroll: the Variant Types column is level with the ones already on screen
+# (measured y=382), and the set has just been selected, which is exactly where
+# maestro-web's frame stall begins — see STEP 4.
 # Result-keyed retry, same maestro-web tap-drop class the drill utils handle:
 # the still-settling Variant Types column reflows under the captured bounds.
 # 7s keys on the picker OPENING, which is synchronous — not the round-trip.
@@ -331,52 +331,54 @@ tags:
 # ============================================================
 # STEP 4 — SYNC. THIS MUST NOT OPEN THE DIALOG.
 #
-# ⛔ THE FLOW STOPS HERE TODAY — READ BEFORE EDITING ────────────────────────
-# `Sync card checklist` sits ~300px below the fold of the 1024x629 headless
-# viewport (measured y=921–953 once the panel is dismissed, document 1340, so
-# 715px of scroll room), and **maestro-web will not scroll this page at all.**
+# ── NO SCROLL COMMAND APPEARS BELOW THIS POINT, ON PURPOSE ─────────────────
+# maestro-web's only scroll primitive is `window.scroll({behavior:'smooth'})`,
+# which is frame-driven, and headless Chrome's renderer stops producing frames
+# at the set-selection render — so every scroll silently moves 0px and still
+# reports COMPLETED. `- swipe:` is a Selenium PointerInput sequence and hangs to
+# its own 180s timeout for the same reason. Root cause, and how to tell a stall
+# apart in ten seconds:
+#   .claude/agent-memory/neonbinder-web-dev/
+#     reference_maestro_web_frame_stall_kills_scrolling.md
+# The only scroll left in this flow is in STEP 2, before the set is picked,
+# where frames are still alive.
 #
-# Six runs on the current build, five placements, three commands, every one
-# ending with the dumped hierarchy at `root=[0,0]`:
-#   • `scrollUntilVisible` + centerElement, after Close        7 swipes (00:32)
-#   • `scrollUntilVisible` + centerElement, panel still up     7 swipes (00:58)
-#   • `scrollUntilVisible` for "Multi-source sets", 43px away  7 swipes (01:07)
-#   • `scrollUntilVisible`, centering off, fired 2.4s after the Base tap with
-#     the picker's live BSC+SportLots fetch still running      9 swipes (01:18)
-#   • `scrollUntilVisible` for "Multi-source sets" when it is ALREADY VISIBLE
-#     at y=534 — the pure centring path — 5 swipes, bounds never leave 534
-#                                                                     (01:35)
-#   • `- scroll` x3, and `- swipe:` which HANGS the driver for 180s
-# The last one matters most: even centring an element that is already on screen
-# moves nothing here, and that is precisely the path that works elsewhere.
+# ⛔ AND THAT IS WHY THIS FLOW IS STILL `wip`: the checklist is below the fold
+# and, with the renderer stalled, there is no way to reach it from YAML.
+# Measured at 1024x625 on the PR #242 preview, with the panel dismissed:
 #
-# Because it does work elsewhere, on this same route and build, in the same
-# post-Cancel state: `base-mapping-cancel-recovers` moves the identical element
-# 505 → 192 in ONE swipe (01:30:14), and `checklist-wizard-skip-not-a-person`
-# moves 432→119, 461→148 and 529→216 (00:45). Every successful swipe travels
-# exactly 313px = `innerHeight / 2`.
+#   viewport parked by the app at scrollY 42     document height  1338
+#   Map Base Set          abs 461–493   →  on screen at 419–451   ✅
+#   Multi-source sets     abs 534–554   →  492–512                ✅
+#   Cards / Add Card      abs 809–841   →  767–799                ❌
+#   "No cards in this…"   abs 881–905   →  839–863                ❌
+#   Sync card checklist   abs 921–953   →  879–911                ❌  (254px under)
 #
-# Ruled out, each with evidence: page height and bottom headroom; centring
-# convergence; the recovery panel (fails with it up AND dismissed); the focus
-# park on the replacement button (fails without ever pressing Close); a scroll
-# lock or leftover overlay (body and html both `overflow: visible`, no fixed
-# element covering the page, and an instant `window.scrollTo(0, 300)` moves it);
-# busy-vs-idle timing; and the element under the swipe origin (the document is
-# the scroller there, with no scrollable ancestor between).
+# Four things were checked so nobody re-checks them:
 #
-# A one-sided set cannot dodge the base picker that seems to be implicated:
-# `baseHasMapping` reads the SportLots slot alone, so a Base with no SportLots
-# side always auto-opens it, and attaching one destroys the precondition this
-# flow exists to test. Everything before this step is green on this build,
-# including Close dismissing the panel and offering "Map Base Set". The `wip`
-# tag stays until the scroll works.
+# 1. **maestro-web's element lookup IS viewport-bounded.** `maestro-web.js`'s
+#    `traverse` emits the WHOLE DOM with `getBoundingClientRect()` bounds, but
+#    the driver then drops anything off-screen — which is what the
+#    `ignoreBoundsFiltering` attribute exists to opt synthetic nodes out of. A
+#    dumped hierarchy for this 1338px page holds 89 nodes and not one begins
+#    below y=625 except two zero-height Clerk portals. So `tapOn`/`assertVisible`
+#    on an id or text cannot reach the checklist either; measured, verbatim:
+#      `CommandFailed: Assertion is false: "No cards in this checklist yet." is visible`
+# 2. **There is no keyboard route.** maestro-web supports ENTER and BACK_SPACE
+#    only ("Keycode <X> is not supported on web"), so focus cannot be walked
+#    down the page with Tab to make the browser scroll natively.
+# 3. **A pre-selection scroll does not survive.** The app scrolls the page
+#    itself when a column is revealed: scrolled to its maximum (719) before
+#    picking the set leaves scrollY 219; filtered first, scrolled to 369, then
+#    picked leaves 92; and the Base → Cancel → Close sequence settles at 42.
+# 4. **A scrollbar-track click does not scroll either.** `tapOn: point:
+#    "99%, 85%"` (the gutter, below the `fixed right-0 top-1/2` BinderTabs rail)
+#    landed at (1013, 531) twice and the hierarchy stayed at `root=[0,0]`.
+#
+# The unblock is in the harness, not in this file: the same run scrolls and
+# finishes green with a second CDP client attached, which prevents the stall.
+# Remove the `wip` tag in the commit that lands that.
 # ============================================================
-
-- scrollUntilVisible:
-    element:
-      id: "Sync card checklist"
-    centerElement: true
-    timeout: 15000
 
 # The checklist is empty here, so the button reads "Fetch from Marketplaces";
 # its accessible name is stable in both states. Asserting the empty state first
@@ -513,13 +515,9 @@ tags:
 # whole difference between "the dialog was skipped" and "the dialog was skipped
 # AND the cards were kept correctly linked".
 #
-# The commit replaces the empty state with the Virtuoso list, so the badge is
-# further down the page again. The scroll IS the assertion (R6) — no redundant
-# assertVisible of the same element after it.
-- scrollUntilVisible:
-    element:
-      text: "BSC only"
-    centerElement: true
-    timeout: 15000
+# Virtuoso opens the list at its END, so a card row is on screen without any
+# scroll; the badge is inside the row, which is why this is a plain assert (and
+# why it must be: no scroll command may appear after the set was selected).
+- assertVisible: "BSC only"
 # And nothing was invented on the side that was never attached.
 - assertNotVisible: "SL only"

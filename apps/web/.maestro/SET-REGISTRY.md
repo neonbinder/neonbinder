@@ -598,29 +598,43 @@ nothing: `base-mapping-cancel-recovers` (53s) and
 `checklist-wizard-skip-not-a-person` (6m14s), both of which gate on
 `.*Select Base Set.*|.*Re-map Base.*` — `Map Base Set` matches neither.
 
-#### ⛔ STILL NOT GREEN: maestro-web will not scroll this page
+#### ⛔ STILL NOT GREEN: a headless-Chrome frame stall, not the app
 
-The flow reaches its Sync button's scroll and stops. `Sync card checklist` sits
-~300px below the fold (y=921–953, document 1340, 715px of scroll room) and no
-maestro-web scroll primitive moves this page — six runs, five placements, three
-commands, every one leaving the dumped hierarchy at `root=[0,0]`. The sharpest
-of them: `scrollUntilVisible` on `Multi-source sets` when it is **already
-visible** at y=534 — the pure centring path — swiped five times without the
-bounds ever leaving 534.
+Root cause found on 2026-09-08 and written up in
+`.claude/agent-memory/neonbinder-web-dev/reference_maestro_web_frame_stall_kills_scrolling.md`:
+maestro-web's only scroll primitive is `window.scroll({behavior:'smooth'})`,
+which is frame-driven, and headless Chrome's renderer stops producing frames at
+the set-selection render (rAF 0 ticks in 2s while `setInterval` fires ~125).
+Every scroll then moves 0px and still reports COMPLETED. It is not the app and
+not this fixture — Topps Big League stalls at the same step.
 
-That same path works on the same route and build minutes apart:
-`base-mapping-cancel-recovers` moves the identical element 505 → 192 in one
-swipe, in the same post-Cancel state, and `checklist-wizard-skip-not-a-person`
-moves 432→119, 461→148, 529→216. Every successful swipe travels exactly 313px.
-Ruled out with evidence: page height and headroom, centring convergence, the
-recovery panel (fails with it up and dismissed), the focus park (fails without
-pressing Close), a scroll lock or leftover overlay (`overflow: visible` on both
-body and html, no covering fixed element, instant `window.scrollTo` works),
-busy-vs-idle timing, and the element under the swipe origin.
+The flow was rewritten to use **no scroll primitive after the set is selected**;
+the one that remains is in STEP 2, before the set is picked, where frames are
+still alive. That is not enough, because the checklist is below the fold and
+maestro-web's element lookup is **viewport-bounded**, so it cannot be tapped or
+asserted either. Measured at 1024x625, panel dismissed, app parked at scrollY 42:
 
-The flow keeps its `wip` tag until this is fixed, so an unpassable flow never
-reaches the CI gate. Nothing about the FIXTURE is in question — every number in
-this section was measured on it.
+| | document | on screen | |
+|---|---|---|---|
+| `Map Base Set` | 461–493 | 419–451 | ✅ |
+| `Multi-source sets` | 534–554 | 492–512 | ✅ |
+| `Cards` / `Add Card` | 809–841 | 767–799 | ❌ |
+| `No cards in this checklist yet.` | 881–905 | 839–863 | ❌ |
+| `Sync card checklist` | 921–953 | 879–911 | ❌ 254px under |
+
+Four routes were tried and recorded in the flow's STEP 4 so they are not
+retried: a direct `assertVisible` on the below-the-fold text (fails —
+`Assertion is false: "No cards in this checklist yet." is visible`); the
+keyboard (maestro-web supports ENTER and BACK_SPACE only, so focus cannot be
+walked down with Tab); a pre-selection scroll (the app re-scrolls on every
+column reveal — max 719 before the set becomes 219 after, and the sequence
+settles at 42); and a scrollbar-track click (`tapOn: point: "99%, 85%"` landed
+at (1013, 531) twice, hierarchy still `root=[0,0]`).
+
+**The unblock is in the harness.** The same run scrolls and finishes green with
+a second CDP client attached for its duration, which prevents the stall. The
+flow keeps its `wip` tag until that lands; nothing about the fixture is in
+question — every number in this section was measured on it.
 
 #### Why the fixture has to be REAL
 
