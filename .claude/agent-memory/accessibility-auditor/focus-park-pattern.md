@@ -139,3 +139,34 @@ flag — is a focus-park candidate. Check what UNMOUNTS (not just what
 disables) on the exact click that flips the state, and don't assume "it's not
 `disabled={...}` so it's fine" — a conditional-render gate strands focus
 exactly the same way a native `disabled` attribute does.
+
+## 4th instance: a parent orchestrating two mutually-exclusive children swaps the whole subtree on the child's own click — `SetSelector.tsx`'s Base-mapping Close (NEO-255, 2026-09-08)
+
+`apps/web/components/modules/SetSelector.tsx` (~line 708) renders
+`{baseMappingFormOpen && <BaseMappingForm .../>} {!baseMappingFormOpen && <div><NeonButton>...</NeonButton></div>}`
+— classic mutually-exclusive sibling swap. `BaseMappingForm`'s own
+"Base mapping cancelled…" recovery panel has a `Close` button
+(`onClick={onClose}`) wired straight to the parent's `handleBaseMappingClose`,
+which synchronously flips `dismissedVariantTypeIds` (adds the id) with no
+`await` in between — so React unmounts `BaseMappingForm` (Close button and
+all) and mounts the sibling `NeonButton` ("Map Base Set") in the same
+render pass. No effect anywhere in `SetSelector.tsx` parks focus on this
+transition (the file's only existing park target, `columnRowRef`, is scoped
+to a different, unrelated row-delete case ~line 325-334) — so the click
+drops keyboard/AT focus to `<body>` every time. Same bug class as
+`VariantForm`/`ParallelForm`/`SyncDoneNotice` above, just the first instance
+where the click and the unmount are split across a child component
+(`BaseMappingForm`) and the parent that decides what replaces it
+(`SetSelector`) — check the PARENT's render branch, not just the child that
+owns the button, when a child's `onClose`/`onDone` callback is what actually
+flips the parent's visibility state.
+
+**Fix shape, matching the convention**: give the "Map Base Set"/"Re-map Base"
+button (or its wrapping `<div>`) a ref + `tabIndex={-1}` (or just
+autofocus the button itself, since it's the ONLY control that replaces the
+panel — no ambiguity about where to land), and an effect keyed on
+`baseMappingFormOpen` transitioning true→false, guarded on
+`document.activeElement === document.body` per [[raf-focus-park-race]].
+Reported at Major (not Critical) per this file's usual severity for a
+focus-to-body drop that doesn't block functionality, just degrades keyboard
+orientation.

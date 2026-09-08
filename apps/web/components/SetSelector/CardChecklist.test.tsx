@@ -58,6 +58,11 @@ vi.mock("../../convex/_generated/api", () => ({
       getSelectorOptionById: "getSelectorOptionById",
       getAncestorChain: "getAncestorChain",
       fetchCardChecklist: "fetchCardChecklist",
+      // NEO-255: the content-diff query, reached through `useConvex().query`
+      // rather than a hook. Every test before this ticket drove the
+      // zero-candidate route and short-circuited in front of it, so the
+      // reference never had to resolve; the auto-keep path goes through it.
+      diffChecklistAgainstExisting: "diffChecklistAgainstExisting",
       resolveChecklistEntities: "resolveChecklistEntities",
       commitCardChecklist: "commitCardChecklist",
       addCustomCard: "addCustomCard",
@@ -311,6 +316,64 @@ const NOTHING_TO_FETCH_MESSAGE = NO_MARKETPLACE_IDS_MESSAGE;
 
 const VARIANT_ID = "variant-1" as unknown as Id<"selectorOptions">;
 const SPORT_ID = "sport-1" as unknown as Id<"selectorOptions">;
+const SET_ID = "set-1" as unknown as Id<"selectorOptions">;
+/** NEO-255 — a second variant, for the "operator switched sets mid-run" test. */
+const OTHER_VARIANT_ID = "variant-2" as unknown as Id<"selectorOptions">;
+
+/**
+ * NEO-255 — an ancestor chain for a set with BOTH marketplaces attached.
+ *
+ * Every test in this file that reaches the pairing dialog now needs one, and
+ * that is the point of the ticket rather than test bookkeeping: the client
+ * decides whether to open the dialog at all from `attachedSidesOf` over this
+ * chain, BEFORE the fetch. A chain carrying no marketplace ids is a set with
+ * nothing to match, and skipping the dialog for it is now correct behaviour —
+ * so a fixture that wants the dialog has to describe a set that has two
+ * marketplaces to line up.
+ *
+ * The shape is the ordinary synced one: BSC files the set at `setName`,
+ * SportLots hangs its single flat set id off the variant row.
+ */
+const twoSidedChain = () => [
+  {
+    _id: SPORT_ID,
+    level: "sport",
+    value: "Baseball",
+    platformData: { bsc: { b0: "baseball" }, sportlots: { s0: "1" } },
+  },
+  {
+    _id: SET_ID,
+    level: "setName",
+    value: "Test Set",
+    platformData: { bsc: { b0: "2024-topps" } },
+  },
+  {
+    _id: VARIANT_ID,
+    level: "variantType",
+    value: "Base",
+    platformData: { sportlots: { s0: "884412" } },
+  },
+];
+
+/**
+ * NEO-255 — the same chain with only SportLots attached: the set's BSC link is
+ * gone, so there is one marketplace and nothing to match.
+ */
+const soloSlChain = () => [
+  {
+    _id: SPORT_ID,
+    level: "sport",
+    value: "Baseball",
+    platformData: { bsc: { b0: "baseball" }, sportlots: { s0: "1" } },
+  },
+  { _id: SET_ID, level: "setName", value: "Test Set", platformData: {} },
+  {
+    _id: VARIANT_ID,
+    level: "variantType",
+    value: "Base",
+    platformData: { sportlots: { s0: "884412" } },
+  },
+];
 
 function renderChecklist() {
   return render(
@@ -320,6 +383,31 @@ function renderChecklist() {
       sourceLabelMaps={{ bsc: {}, sportlots: {} }}
     />,
   );
+}
+
+/**
+ * NEO-255 — deliver a new `getReadyCandidates` value to the mounted component.
+ *
+ * The mocked `useQuery` reads `state` lazily rather than subscribing, so a new
+ * batch only reaches the component (and, through its effect, the ref the
+ * auto-keep path polls) on the next render. That is exactly what these tests
+ * need to control: the whole point of the wait is that a batch arrives some
+ * time after the fetch action resolves.
+ */
+async function streamCandidates(
+  rerender: (ui: React.ReactElement) => void,
+  value: unknown,
+) {
+  state.liveCandidates = value;
+  await act(async () => {
+    rerender(
+      <CardChecklist
+        variantId={VARIANT_ID}
+        sourceChips={{}}
+        sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+      />,
+    );
+  });
 }
 
 /** A single streamed candidate, shaped like checklistCandidates.getReadyCandidates. */
@@ -345,7 +433,7 @@ describe("CardChecklist — cancel during an in-flight fetch (NEO-189)", () => {
     // `fetchCardChecklist`'s return; the client reads it off the ancestor
     // chain it already subscribes to, so without one here Sync refuses to run
     // at all.
-    state.ancestorChain = [{ _id: SPORT_ID, level: "sport", value: "Baseball" }];
+    state.ancestorChain = twoSidedChain();
     // Ready candidates from the very first render, so once `fetchInFlight`
     // flips true the modal has something to stream in immediately — this is
     // what makes the dialog open "seconds in" rather than only once the
@@ -390,7 +478,7 @@ describe("CardChecklist — cancel during an in-flight fetch (NEO-189)", () => {
     // The abandoned fetch NOW resolves with a result that, if it were still
     // live, would reopen the dialog and put its own message on screen.
     await act(async () => {
-      resolveFetch({ success: true, message: "Fetched 1 card", candidateCount: 1 });
+      resolveFetch({ success: true, message: "Fetched 1 card", candidateCount: 1, attachedSides: ["bsc", "sportlots"] });
     });
 
     // The dialog must NOT reopen, and the operator's own cancelled message
@@ -422,7 +510,7 @@ describe("CardChecklist — the pairing session outlives the fetch", () => {
     vi.clearAllMocks();
     state.cards = [];
     state.variantRow = { value: "Test Set" };
-    state.ancestorChain = [{ _id: SPORT_ID, level: "sport", value: "Baseball" }];
+    state.ancestorChain = twoSidedChain();
     state.liveCandidates = { ready: 1, total: 1, cards: [streamedCandidate] };
     mockDiscardCandidates.mockResolvedValue(undefined);
     mockResolveEntities.mockResolvedValue({
@@ -451,6 +539,7 @@ describe("CardChecklist — the pairing session outlives the fetch", () => {
         success: true,
         message: "1 matched, 0 BSC-only, 0 SL-only",
         candidateCount: 1,
+        attachedSides: ["bsc", "sportlots"],
       });
     });
 
@@ -484,6 +573,7 @@ describe("CardChecklist — the pairing session outlives the fetch", () => {
         success: true,
         message: NOTHING_TO_FETCH_MESSAGE,
         candidateCount: 0,
+        attachedSides: ["bsc", "sportlots"],
       });
     });
 
@@ -507,6 +597,7 @@ describe("CardChecklist — the pairing session outlives the fetch", () => {
         success: false,
         message: "Failed to fetch checklist: BSC timed out",
         candidateCount: 0,
+        attachedSides: ["bsc", "sportlots"],
       });
     });
 
@@ -537,6 +628,536 @@ describe("CardChecklist — the pairing session outlives the fetch", () => {
 });
 
 /**
+ * NEO-255 — the Match Cards dialog only when TWO OR MORE marketplaces are
+ * ATTACHED to the set.
+ *
+ * The dialog lines the same card up across two marketplaces. With exactly one
+ * attached there is no second column and nothing to line up, so the operator
+ * was being made to press *Keep all* and then Confirm on a screen whose only
+ * possible answer was "yes, all of them". That path now runs itself: every
+ * fetched card is kept as a single linked to the one attached marketplace, and
+ * the run carries straight on to the content-diff review and the entity wizard
+ * exactly as a Confirm would have.
+ *
+ * The four properties these tests exist to hold:
+ *
+ *   1. ATTACHED, not fetched. The decision comes from the set's slots, before
+ *      the call, so an outage or an empty side can never turn a two-marketplace
+ *      set into a silent auto-commit.
+ *   2. The dialog NEVER MOUNTS on the one-sided path — not even during the
+ *      fetch, which is when it normally appears.
+ *   3. Nothing is committed until the whole streamed batch has arrived. This
+ *      path commits cards the operator never sees, so a partial batch would be
+ *      a partial checklist written over a real set with nobody to notice.
+ *   4. A DISAGREEMENT between the client's guess and the server's answer opens
+ *      the dialog. It never auto-commits on a value the two ends do not share.
+ */
+describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)", () => {
+  let resolveFetch: (value: unknown) => void;
+
+  /** Two SportLots-only candidates — what a one-sided fetch publishes. */
+  const slCandidates = [
+    {
+      cardNumber: "1",
+      cardName: "Solo One",
+      bucket: "slOnly" as const,
+      platformData: { sportlots: { ref: "sl-1" } },
+    },
+    {
+      cardNumber: "2",
+      cardName: "Solo Two",
+      bucket: "slOnly" as const,
+      platformData: { sportlots: { ref: "sl-2" } },
+    },
+  ];
+
+  /** The batch this run published, as the subscription reports it. */
+  const arrivedBatch = {
+    batchId: "batch-255",
+    ready: 2,
+    total: 2,
+    cards: slCandidates,
+  };
+
+  /** A diff with nothing to settle, so the review is skipped as it is today. */
+  const emptyDiff = {
+    cards: [],
+    removedUpstream: { fullyOrphaned: [], partialOrphanCount: 0 },
+    conflicts: [],
+    collisionInsertCount: 0,
+    ambiguityBlockedCount: 0,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.cards = [];
+    state.variantRow = { value: "Test Set" };
+    state.ancestorChain = soloSlChain();
+    // Nothing streamed at the moment Sync is pressed. The batch this run
+    // publishes has to be seen ARRIVING — which is also what gives the "the
+    // batch id must move" guard something to move from.
+    state.liveCandidates = null;
+    mockDiscardCandidates.mockResolvedValue(undefined);
+    mockDiffChecklist.mockResolvedValue(emptyDiff);
+    mockResolveEntities.mockResolvedValue({
+      unknownPlayers: [],
+      unknownTeams: [],
+      batchId: undefined,
+    });
+    mockCommitChecklist.mockResolvedValue({ count: 2 });
+    mockFetchChecklist.mockImplementation(
+      () => new Promise((resolve) => (resolveFetch = resolve)),
+    );
+  });
+
+  it("keeps every fetched card as a single and commits it, with no dialog at any point", async () => {
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+
+    // (2) No dialog while the fetch runs — which is exactly when it appears on
+    // a two-sided set — and the inline progress line standing in for it.
+    expect(screen.queryByText(/Match Cards/)).toBeNull();
+    expect(screen.getByText(/Fetching from SportLots/)).toBeTruthy();
+
+    await streamCandidates(rerender, arrivedBatch);
+    await act(async () => {
+      resolveFetch({
+        success: true,
+        message: "0 matched, 0 BSC-only, 2 SL-only",
+        candidateCount: 2,
+        attachedSides: ["sportlots"],
+      });
+    });
+
+    await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalled());
+    expect(screen.queryByText(/Match Cards/)).toBeNull();
+
+    // Every candidate, kept as a single marked by what it is MISSING: an
+    // `slOnly` row has no BSC half, so `unmatched: "bsc"`. That value becomes
+    // the committed card's `unmatched-bsc` attribute and its badge.
+    const keptSingles = [
+      expect.objectContaining({ cardNumber: "1", unmatched: "bsc" }),
+      expect.objectContaining({ cardNumber: "2", unmatched: "bsc" }),
+    ];
+    expect(mockResolveEntities).toHaveBeenCalledWith({
+      selectorOptionId: VARIANT_ID,
+      sportId: SPORT_ID,
+      cards: keptSingles,
+    });
+    // The content-diff review is asked the same question a Confirm would ask
+    // it, with no conflicts to zip on — a single has no second marketplace to
+    // disagree with.
+    expect(mockDiffChecklist).toHaveBeenCalledWith(
+      "diffChecklistAgainstExisting",
+      { selectorOptionId: VARIANT_ID, cards: keptSingles },
+    );
+    const committed = mockCommitChecklist.mock.calls[0][0];
+    expect(committed.cards).toHaveLength(2);
+    for (const card of committed.cards) {
+      expect(card.unmatched).toBe("bsc");
+      // `commitCardChecklist` throws on a card still carrying an open
+      // question, so the auto-keep path must hand over committable cards.
+      expect(card.nameConflict).toBeUndefined();
+      expect(card.playersConflict).toBeUndefined();
+    }
+
+    await waitFor(() => expect(screen.getByText(/Saved 2 cards\./)).toBeTruthy());
+    // a11y: pressing Sync disables the Sync button, and disabling the focused
+    // element drops focus to <body>. On the two-sided path the dialog takes
+    // focus and hands it back; here nothing does, so the run has to.
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByLabelText("Sync card checklist"),
+      ),
+    );
+  });
+
+  it("says what it kept and why, in place of the matching step", async () => {
+    // The operator knows this dialog exists. A step that silently does not
+    // happen reads as a step that failed, so the banner has to account for it.
+    // It stands for the whole commit, which is where this test catches it.
+    let finishCommit: (value: unknown) => void = () => {};
+    mockCommitChecklist.mockImplementation(
+      () => new Promise((resolve) => (finishCommit = resolve)),
+    );
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    await streamCandidates(rerender, arrivedBatch);
+    await act(async () => {
+      resolveFetch({
+        success: true,
+        message: "0 matched, 0 BSC-only, 2 SL-only",
+        candidateCount: 2,
+        attachedSides: ["sportlots"],
+      });
+    });
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(
+          "Kept all 2 cards from SportLots. Nothing to match, no other marketplace attached.",
+        ),
+      ).toBeTruthy(),
+    );
+    // The fetch's own three-bucket count is not what an operator on this path
+    // needs to read — two of the three buckets cannot occur here.
+    expect(screen.queryByText(/0 matched, 0 BSC-only/)).toBeNull();
+
+    await act(async () => {
+      finishCommit({ count: 2 });
+    });
+  });
+
+  it("does not commit until the whole streamed batch has arrived", async () => {
+    // (3) The action's `candidateCount` is the contract, and the subscription
+    // has to agree with it before a single card is promoted.
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+
+    // Half the batch on the wire so far.
+    await streamCandidates(rerender, {
+      batchId: "batch-255",
+      ready: 1,
+      total: 1,
+      cards: [slCandidates[0]],
+    });
+    await act(async () => {
+      resolveFetch({
+        success: true,
+        message: "0 matched, 0 BSC-only, 2 SL-only",
+        candidateCount: 2,
+        attachedSides: ["sportlots"],
+      });
+    });
+
+    // Nothing written, and no dialog either — the run is still waiting.
+    expect(mockResolveEntities).not.toHaveBeenCalled();
+    expect(mockCommitChecklist).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Match Cards/)).toBeNull();
+
+    // The rest arrives.
+    await streamCandidates(rerender, arrivedBatch);
+    await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalled());
+    expect(mockCommitChecklist.mock.calls[0][0].cards).toHaveLength(2);
+  });
+
+  it("cancelling a one-sided fetch discards the batch and commits nothing", async () => {
+    // The dialog's Cancel is not on screen, so the inline line carries it —
+    // and it has to be the same abort: supersede the run, bin the candidates,
+    // and survive the fetch resolving afterwards.
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    expect(screen.getByText(/Fetching from SportLots/)).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Cancel checklist fetch"));
+    });
+
+    await waitFor(() =>
+      expect(screen.getByText("Sync cancelled — no cards saved.")).toBeTruthy(),
+    );
+    expect(mockDiscardCandidates).toHaveBeenCalledWith({
+      selectorOptionId: VARIANT_ID,
+    });
+    // The progress line goes with the run it was reporting.
+    expect(screen.queryByText(/Fetching from SportLots/)).toBeNull();
+    // a11y: the Cancel the operator pressed has just unmounted under their own
+    // focus, and no dialog opened to take it. Without the restore, focus lands
+    // on <body> and a keyboard operator restarts from the top of the document.
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByLabelText("Sync card checklist"),
+      ),
+    );
+
+    // The abandoned fetch now comes back with a full, committable batch.
+    await streamCandidates(rerender, arrivedBatch);
+    await act(async () => {
+      resolveFetch({
+        success: true,
+        message: "0 matched, 0 BSC-only, 2 SL-only",
+        candidateCount: 2,
+        attachedSides: ["sportlots"],
+      });
+    });
+
+    expect(mockResolveEntities).not.toHaveBeenCalled();
+    expect(mockCommitChecklist).not.toHaveBeenCalled();
+    expect(screen.getByText("Sync cancelled — no cards saved.")).toBeTruthy();
+    expect(screen.queryByText(/Match Cards/)).toBeNull();
+  });
+
+  it("two attached marketplaces still open the dialog and commit nothing on their own", async () => {
+    // (1) The unchanged path, asserted from this block so a regression in
+    // either direction fails here.
+    state.ancestorChain = twoSidedChain();
+    state.liveCandidates = {
+      batchId: "batch-255",
+      ready: 1,
+      total: 1,
+      cards: [streamedCandidate],
+    };
+    renderChecklist();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+
+    expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+    expect(screen.queryByText(/Fetching from SportLots/)).toBeNull();
+
+    await act(async () => {
+      resolveFetch({
+        success: true,
+        message: "1 matched, 0 BSC-only, 0 SL-only",
+        candidateCount: 1,
+        attachedSides: ["bsc", "sportlots"],
+      });
+    });
+
+    expect(screen.getByText(/Match Cards/)).toBeTruthy();
+    expect(mockResolveEntities).not.toHaveBeenCalled();
+    expect(mockCommitChecklist).not.toHaveBeenCalled();
+  });
+
+  it("opens the dialog instead of auto-keeping when the server reports two sides", async () => {
+    // (4) The disagreement. The client read one attached side off a
+    // subscription that was a moment behind; the server, reading the same
+    // slots at fetch time, saw two. The honest answer to "I am not sure how
+    // many marketplaces this set has" is the dialog, never a silent commit.
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    expect(screen.queryByText(/Match Cards/)).toBeNull();
+
+    await streamCandidates(rerender, arrivedBatch);
+    await act(async () => {
+      resolveFetch({
+        success: true,
+        message: "0 matched, 1 BSC-only, 1 SL-only",
+        candidateCount: 2,
+        attachedSides: ["bsc", "sportlots"],
+      });
+    });
+
+    expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+    expect(mockResolveEntities).not.toHaveBeenCalled();
+    expect(mockCommitChecklist).not.toHaveBeenCalled();
+    // The progress line is gone — the dialog is the surface now.
+    expect(screen.queryByText(/Fetching from SportLots/)).toBeNull();
+  });
+
+  /**
+   * NEO-255 security review — the batch, not the mapping, has the last word on
+   * whether an operator is needed.
+   *
+   * `attachedSides === ["bsc"]` ought to guarantee every returned row is a BSC
+   * single, and does not quite: `fetchSportLotsChecklist` still falls back to a
+   * name-keyed DB lookup for the SportLots set id when no SL slot is attached
+   * (NEO-256, filed separately), so SportLots rows can come back, pair, and
+   * carry a real disagreement. Auto-keeping those would drop the operator's
+   * only chance to answer "which of these two names is this card" — and the
+   * losing answer would then read as settled NB data on every later re-sync.
+   */
+  it("hands over to the dialog when the one-sided batch contains a matched pair", async () => {
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    expect(screen.queryByText(/Match Cards/)).toBeNull();
+
+    await streamCandidates(rerender, {
+      batchId: "batch-255",
+      ready: 2,
+      total: 2,
+      cards: [
+        slCandidates[0],
+        // A pair, on a set that reports one attached marketplace.
+        {
+          cardNumber: "2",
+          cardName: "Paired Anyway",
+          bucket: "matched" as const,
+          confidence: 1,
+          platformData: { bsc: { ref: "bsc-2" }, sportlots: { ref: "sl-2" } },
+        },
+      ],
+    });
+    await act(async () => {
+      resolveFetch({
+        success: true,
+        message: "1 matched, 0 BSC-only, 1 SL-only",
+        candidateCount: 2,
+        attachedSides: ["sportlots"],
+      });
+    });
+
+    expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+    expect(mockResolveEntities).not.toHaveBeenCalled();
+    expect(mockCommitChecklist).not.toHaveBeenCalled();
+    // The fetch's own counts stand, as they do on the two-sided path — the
+    // "Kept all …" sentence would be a claim about something that did not
+    // happen.
+    expect(screen.getByText("1 matched, 0 BSC-only, 1 SL-only")).toBeTruthy();
+    expect(screen.queryByText(/Kept all/)).toBeNull();
+    expect(screen.queryByText(/Fetching from SportLots/)).toBeNull();
+  });
+
+  it("hands over to the dialog when an unpaired row carries a name conflict", async () => {
+    // The same guard read off the conflict rather than the bucket. Both are
+    // checked because either one on its own is a disagreement the operator
+    // has to settle, and `candidatesToPairingCards` drops both.
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+
+    await streamCandidates(rerender, {
+      batchId: "batch-255",
+      ready: 2,
+      total: 2,
+      cards: [
+        slCandidates[0],
+        {
+          ...slCandidates[1],
+          nameConflict: { bsc: "Ken Griffey Jr.", sportlots: "Ken Griffey" },
+        },
+      ],
+    });
+    await act(async () => {
+      resolveFetch({
+        success: true,
+        message: "0 matched, 0 BSC-only, 2 SL-only",
+        candidateCount: 2,
+        attachedSides: ["sportlots"],
+      });
+    });
+
+    expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+    expect(mockCommitChecklist).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Kept all/)).toBeNull();
+  });
+
+  it("abandons the run when the operator switches variant mid-await", async () => {
+    // `awaitStreamedBatch` polls a subscription keyed on the CURRENT variant
+    // while `handlePairingConfirm` writes to the variant the run captured.
+    // Without the variant check in `abandoned()`, a switch mid-await commits
+    // one set's cards onto another — and this path has no operator in front of
+    // it to notice.
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+
+    await act(async () => {
+      resolveFetch({
+        success: true,
+        message: "0 matched, 0 BSC-only, 2 SL-only",
+        candidateCount: 2,
+        attachedSides: ["sportlots"],
+      });
+    });
+    // Still waiting: the batch has not arrived.
+    expect(mockCommitChecklist).not.toHaveBeenCalled();
+
+    // The operator moves to another variant, and THAT variant's subscription
+    // happens to be showing a complete batch of the same size.
+    state.liveCandidates = arrivedBatch;
+    await act(async () => {
+      rerender(
+        <CardChecklist
+          variantId={OTHER_VARIANT_ID}
+          sourceChips={{}}
+          sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+        />,
+      );
+    });
+
+    // Give the poll several turns to do the wrong thing if it is going to.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    });
+    expect(mockResolveEntities).not.toHaveBeenCalled();
+    expect(mockCommitChecklist).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Kept all/)).toBeNull();
+  });
+
+  it("parks focus on the progress line when the run starts", async () => {
+    // a11y (WCAG 2.4.3): pressing Sync disables the Sync button, which blurs
+    // focus to <body>, and this path mounts no dialog to catch it. Without the
+    // park a keyboard operator spends the whole fetch at the top of the
+    // document with nothing announcing that anything began.
+    renderChecklist();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+
+    await waitFor(() => {
+      const parked = document.activeElement as HTMLElement | null;
+      expect(parked).not.toBe(document.body);
+      // The container itself, named by its own status line.
+      expect(parked?.getAttribute("aria-labelledby")).toBe("solo-fetch-status");
+      expect(parked?.getAttribute("tabindex")).toBe("-1");
+    });
+    // …and Cancel is inside it, so a single Tab reaches the way out.
+    expect(
+      (document.activeElement as HTMLElement).contains(
+        screen.getByLabelText("Cancel checklist fetch"),
+      ),
+    ).toBe(true);
+  });
+
+  it("does not steal focus the operator is already holding", async () => {
+    // The other half of the park: it fires only when focus is on <body>. An
+    // operator who has tabbed somewhere keeps it.
+    renderChecklist();
+    const addCard = screen.getByLabelText("Open add card form");
+    addCard.focus();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+
+    await waitFor(() =>
+      expect(screen.getByText(/Fetching from SportLots/)).toBeTruthy(),
+    );
+    expect(document.activeElement).toBe(addCard);
+  });
+
+  it("a one-sided run that publishes nothing still skips straight to entity resolution", async () => {
+    // The pre-existing `candidateCount === 0` short-circuit is untouched by
+    // this ticket, and has to stay reachable from the one-sided path too.
+    renderChecklist();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+
+    await act(async () => {
+      resolveFetch({
+        success: true,
+        message: NOTHING_TO_FETCH_MESSAGE,
+        candidateCount: 0,
+        attachedSides: ["sportlots"],
+      });
+    });
+
+    expect(screen.queryByText(/Match Cards/)).toBeNull();
+    expect(screen.queryByText(/Fetching from SportLots/)).toBeNull();
+    expect(mockResolveEntities).toHaveBeenCalledWith({
+      selectorOptionId: VARIANT_ID,
+      sportId: SPORT_ID,
+      cards: [],
+    });
+  });
+
+  it("a failed one-sided fetch closes the run and discards, as a two-sided one does", async () => {
+    renderChecklist();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    expect(screen.getByText(/Fetching from SportLots/)).toBeTruthy();
+
+    await act(async () => {
+      resolveFetch({
+        success: false,
+        message: "Failed to fetch checklist: SportLots timed out",
+        candidateCount: 0,
+        attachedSides: ["sportlots"],
+      });
+    });
+
+    expect(
+      screen.getByText("Failed to fetch checklist: SportLots timed out"),
+    ).toBeTruthy();
+    expect(screen.queryByText(/Fetching from SportLots…/)).toBeNull();
+    expect(mockDiscardCandidates).toHaveBeenCalledWith({
+      selectorOptionId: VARIANT_ID,
+    });
+    expect(mockCommitChecklist).not.toHaveBeenCalled();
+  });
+});
+
+/**
  * NEO-189 — the "Saved N cards" message must not paint before the client's
  * queries have caught up with the commit.
  *
@@ -561,7 +1182,7 @@ describe("CardChecklist — commit paints 'Saved' only after the queries catch u
     vi.clearAllMocks();
     state.cards = [];
     state.variantRow = { value: "Test Set" };
-    state.ancestorChain = [{ _id: SPORT_ID, level: "sport", value: "Baseball" }];
+    state.ancestorChain = twoSidedChain();
     // The no-candidates path: the fetch short-circuits, the client skips the
     // pairing dialog and runs straight through resolveEntities → runCommit.
     // Shortest route to the commit under test.
@@ -586,6 +1207,7 @@ describe("CardChecklist — commit paints 'Saved' only after the queries catch u
         success: true,
         message: NOTHING_TO_FETCH_MESSAGE,
         candidateCount: 0,
+        attachedSides: ["bsc", "sportlots"],
       });
     });
   }
@@ -713,6 +1335,7 @@ async function commitZeroCandidatePath() {
       success: true,
       message: NOTHING_TO_FETCH_MESSAGE,
       candidateCount: 0,
+      attachedSides: ["bsc", "sportlots"],
     });
   });
   await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
@@ -746,6 +1369,7 @@ async function cancelEntityReviewPath() {
       success: true,
       message: NOTHING_TO_FETCH_MESSAGE,
       candidateCount: 0,
+      attachedSides: ["bsc", "sportlots"],
     });
   });
   await waitFor(() => expect(mockResolveEntities).toHaveBeenCalledTimes(1));
@@ -757,7 +1381,7 @@ describe("CardChecklist — NEO-102 attention count, filter and walker", () => {
     vi.clearAllMocks();
     state.cards = [attentionCard(), settledCard()];
     state.variantRow = { value: "Test Set" };
-    state.ancestorChain = [{ _id: SPORT_ID, level: "sport", value: "Baseball" }];
+    state.ancestorChain = twoSidedChain();
     state.liveCandidates = null;
   });
 
@@ -1021,7 +1645,7 @@ describe("CardChecklist — NEO-208 quick-add Team picker", () => {
     vi.clearAllMocks();
     state.cards = [];
     state.variantRow = { value: "Test Set" };
-    state.ancestorChain = [{ _id: SPORT_ID, level: "sport", value: "Baseball" }];
+    state.ancestorChain = twoSidedChain();
     state.liveCandidates = null;
     state.teams = [YANKEES, METS];
     mockAddCustomCard.mockResolvedValue("new-card-1");
@@ -1551,7 +2175,7 @@ describe("CardChecklist — NEO-220 quick-add Player picker", () => {
     vi.clearAllMocks();
     state.cards = [];
     state.variantRow = { value: "Test Set" };
-    state.ancestorChain = [{ _id: SPORT_ID, level: "sport", value: "Baseball" }];
+    state.ancestorChain = twoSidedChain();
     state.liveCandidates = null;
     state.teams = [YANKEES, METS];
     state.players = [JUDGE, LINDOR];
@@ -1978,7 +2602,7 @@ describe("CardChecklist — NEO-212 skipped-names disclosure", () => {
     vi.clearAllMocks();
     state.cards = [];
     state.variantRow = { value: "Test Set" };
-    state.ancestorChain = [{ _id: SPORT_ID, level: "sport", value: "Baseball" }];
+    state.ancestorChain = twoSidedChain();
     state.liveCandidates = null;
     state.teams = [];
     state.skippedNames = [];
@@ -2053,6 +2677,7 @@ async function pairedEntityReviewPath() {
     success: true,
     message: "Fetched 2 cards",
     candidateCount: 2,
+    attachedSides: ["bsc", "sportlots"],
   });
   mockDiffChecklist.mockResolvedValue(NOTHING_TO_REVIEW);
   mockResolveEntities.mockResolvedValue({
@@ -2083,7 +2708,7 @@ describe("CardChecklist — NEO-221 D6: what the wizard is told it will save", (
     vi.clearAllMocks();
     state.cards = [];
     state.variantRow = { value: "Test Set" };
-    state.ancestorChain = [{ _id: SPORT_ID, level: "sport", value: "Baseball" }];
+    state.ancestorChain = twoSidedChain();
     state.liveCandidates = null;
     state.teams = [];
     state.players = [];
@@ -2112,7 +2737,7 @@ describe("CardChecklist — NEO-221 D9: Back to matching", () => {
     vi.clearAllMocks();
     state.cards = [];
     state.variantRow = { value: "Test Set" };
-    state.ancestorChain = [{ _id: SPORT_ID, level: "sport", value: "Baseball" }];
+    state.ancestorChain = twoSidedChain();
     state.liveCandidates = null;
     state.teams = [];
     state.players = [];
@@ -2191,7 +2816,7 @@ describe("CardChecklist — NEO-221 D9/D10: aborting the review", () => {
     vi.clearAllMocks();
     state.cards = [];
     state.variantRow = { value: "Test Set" };
-    state.ancestorChain = [{ _id: SPORT_ID, level: "sport", value: "Baseball" }];
+    state.ancestorChain = twoSidedChain();
     state.liveCandidates = null;
     state.teams = [];
     state.players = [];
@@ -2227,7 +2852,7 @@ describe("CardChecklist — NEO-221 D10: a commit that fails", () => {
     vi.clearAllMocks();
     state.cards = [];
     state.variantRow = { value: "Test Set" };
-    state.ancestorChain = [{ _id: SPORT_ID, level: "sport", value: "Baseball" }];
+    state.ancestorChain = twoSidedChain();
     state.liveCandidates = null;
     state.teams = [];
     state.players = [];
@@ -2297,7 +2922,7 @@ describe("CardChecklist — NEO-221 D12: names nobody reviewed", () => {
     vi.clearAllMocks();
     state.cards = [];
     state.variantRow = { value: "Test Set" };
-    state.ancestorChain = [{ _id: SPORT_ID, level: "sport", value: "Baseball" }];
+    state.ancestorChain = twoSidedChain();
     state.liveCandidates = null;
     state.teams = [];
     state.players = [];
@@ -2326,6 +2951,7 @@ describe("CardChecklist — NEO-221 D12: names nobody reviewed", () => {
       success: true,
       message: "Custom selector subtree — no marketplace data available.",
       candidateCount: 0,
+      attachedSides: ["bsc", "sportlots"],
     });
 
     renderChecklist();
@@ -2453,7 +3079,7 @@ describe("CardChecklist — NEO-221: a parked session that nothing can reach", (
     vi.clearAllMocks();
     state.cards = [];
     state.variantRow = { value: "Test Set" };
-    state.ancestorChain = [{ _id: SPORT_ID, level: "sport", value: "Baseball" }];
+    state.ancestorChain = twoSidedChain();
     state.liveCandidates = null;
     state.teams = [];
     state.players = [];
@@ -2576,7 +3202,7 @@ describe("CardChecklist — NEO-251: conflicts reach the diff, not the commit", 
     vi.clearAllMocks();
     state.cards = [];
     state.variantRow = { value: "Test Set" };
-    state.ancestorChain = [{ _id: SPORT_ID, level: "sport", value: "Baseball" }];
+    state.ancestorChain = twoSidedChain();
     state.liveCandidates = null;
     state.teams = [];
     state.players = [];
@@ -2594,6 +3220,7 @@ describe("CardChecklist — NEO-251: conflicts reach the diff, not the commit", 
       success: true,
       message: "Fetched 1 card",
       candidateCount: 1,
+      attachedSides: ["bsc", "sportlots"],
     });
     // Nothing to settle — which is the POINT on the re-sync this models: the
     // stored row already carries SportLots' roster because the operator chose
@@ -2666,6 +3293,7 @@ describe("CardChecklist — NEO-251: conflicts reach the diff, not the commit", 
       success: true,
       message: "Fetched 1 card",
       candidateCount: 1,
+      attachedSides: ["bsc", "sportlots"],
     });
     mockDiffChecklist.mockResolvedValue(NOTHING_TO_REVIEW);
     mockResolveEntities.mockResolvedValue({
@@ -2716,6 +3344,7 @@ describe("CardChecklist — NEO-251: conflicts reach the diff, not the commit", 
       success: true,
       message: "Fetched 1 card",
       candidateCount: 1,
+      attachedSides: ["bsc", "sportlots"],
     });
     mockDiffChecklist.mockResolvedValue(NOTHING_TO_REVIEW);
     mockResolveEntities.mockResolvedValue({
@@ -2753,6 +3382,7 @@ describe("CardChecklist — NEO-251: conflicts reach the diff, not the commit", 
       success: true,
       message: "Fetched 1 card",
       candidateCount: 1,
+      attachedSides: ["bsc", "sportlots"],
     });
     mockDiffChecklist.mockResolvedValue(NOTHING_TO_REVIEW);
     mockResolveEntities.mockResolvedValue({

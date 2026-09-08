@@ -33,7 +33,12 @@ import { needsAttention } from "./card-attention";
 import { Input } from "../primitives/Input";
 import TeamPicker from "./TeamPicker";
 import PlayerPicker, { type PlayerPickerLabels } from "./PlayerPicker";
-
+import { attachedSidesOf } from "../../convex/marketplaceResolvability";
+import { SIDE_LABEL, type SyncSide } from "./selector-sync-feedback";
+import {
+  candidateToPairingCard,
+  candidatesToPairingCards,
+} from "./pairing-cards";
 
 type CardChecklistProps = {
   variantId: GenericId<"selectorOptions">;
@@ -110,6 +115,62 @@ type PendingReview = {
   cards: PairingCard[];
   diff: SyncDiff;
 };
+
+/**
+ * NEO-255 — what a sync says when exactly one marketplace is attached.
+ *
+ * The Match Cards dialog exists to line the same card up across two
+ * marketplaces. With one attached there is no second column and nothing to
+ * line up, so every fetched card is kept as a single and the run carries
+ * straight on. The operator still has to be told that a step they know about
+ * did not happen, and WHY — otherwise a skipped dialog reads as a dialog that
+ * failed to open.
+ *
+ * One function, so rewording it is one edit. The count is what was handed to
+ * the commit; the marketplace is named with the same `SIDE_LABEL` vocabulary
+ * the rest of this UI uses ("BSC", "SportLots").
+ */
+export const soloKeptMessage = (side: SyncSide, count: number): string =>
+  `Kept all ${count} ${count === 1 ? "card" : "cards"} from ${SIDE_LABEL[side]}. ` +
+  `Nothing to match, no other marketplace attached.`;
+
+/**
+ * NEO-255 — the fetch is streaming and no dialog is going to open, so this
+ * line is the only thing on screen that says the sync is alive.
+ *
+ * `total` is written in one transaction and `ready` climbs as team enrichment
+ * lands, which is the same pair the pairing dialog's own streaming line
+ * reports. Before the batch is published there is no denominator to give, so
+ * the line says what it is doing and nothing it cannot back up.
+ */
+export const soloProgressMessage = (
+  side: SyncSide | null,
+  progress: { ready: number; total: number } | undefined,
+): string => {
+  const from = side ? ` from ${SIDE_LABEL[side]}` : "";
+  const counts =
+    progress && progress.total > 0
+      ? ` ${progress.ready} of ${progress.total} cards ready.`
+      : "";
+  return `Fetching${from}…${counts}`;
+};
+
+/**
+ * NEO-255 — the streamed batch never turned up in full.
+ *
+ * The auto-keep path commits WITHOUT the operator seeing the cards, so it may
+ * only ever commit a batch it has all of. If the subscription has not caught
+ * up with the count the action reported, nothing is saved and the operator is
+ * told to try again — the one thing that must not happen is committing a
+ * partial checklist over a real set.
+ */
+export const SOLO_STREAM_TIMEOUT_MESSAGE =
+  "The fetched cards did not arrive — nothing was saved. Run the sync again.";
+
+/** How often the auto-keep path re-reads the candidate subscription. */
+const SOLO_STREAM_POLL_MS = 50;
+/** How long it waits for the batch before giving up and saving nothing. */
+const SOLO_STREAM_TIMEOUT_MS = 30_000;
 
 /**
  * NEO-203 — "the operator reviewed nothing", which is also what an unreviewed
@@ -206,10 +267,25 @@ export default function CardChecklist({
   const fetchChecklist = useAction(api.selectorOptions.fetchCardChecklist);
   // NEO-195: the fetch publishes candidates as they become reviewable, so the
   // modal fills in live instead of waiting ~80s for the whole thing.
-  const liveCandidates = useQuery(
-    api.checklistCandidates.getReadyCandidates,
-    { selectorOptionId: variantId },
-  );
+  const liveCandidates = useQuery(api.checklistCandidates.getReadyCandidates, {
+    selectorOptionId: variantId,
+  });
+  /**
+   * NEO-255 — the same subscription, readable from inside an async closure.
+   *
+   * The auto-keep path (one marketplace attached, no dialog) has to WAIT for
+   * the streamed batch to reach the client before it can commit it, and that
+   * wait happens inside `handleSync`'s `await` chain — where the `liveCandidates`
+   * binding is frozen at the render that started the sync and would never
+   * change however long it waited. A ref updated from an effect is the value
+   * that does.
+   */
+  /** The one-sided run's "Kept all N cards …" sentence, for the wizard notice. */
+  const soloKeptRef = useRef<string | null>(null);
+  const liveCandidatesRef = useRef(liveCandidates);
+  useEffect(() => {
+    liveCandidatesRef.current = liveCandidates;
+  }, [liveCandidates]);
   const discardCandidates = useMutation(
     api.checklistCandidates.discardCandidates,
   );
@@ -349,7 +425,9 @@ export default function CardChecklist({
   // Unique per-field marker class so Maestro's inputText targets the tapped
   // add-card field, not the first input (see useFieldTestClass).
   const fieldClass = useFieldTestClass();
-  const [pendingPreview, setPendingPreview] = useState<FetchPreview | null>(null);
+  const [pendingPreview, setPendingPreview] = useState<FetchPreview | null>(
+    null,
+  );
   /**
    * NEO-221 (D10) — the commit's failure message, for the wizard's final step.
    *
@@ -369,7 +447,9 @@ export default function CardChecklist({
    */
   const [commitError, setCommitError] = useState<string | null>(null);
   // NEO-203 — confirmed cards parked in front of the content-diff review.
-  const [pendingReview, setPendingReview] = useState<PendingReview | null>(null);
+  const [pendingReview, setPendingReview] = useState<PendingReview | null>(
+    null,
+  );
   /**
    * NEO-137/NEO-195 — where the pairing review is, in three states.
    *
@@ -401,9 +481,9 @@ export default function CardChecklist({
    * reducer away, so "Back to matching" could only ever have meant "start the
    * pairing over".
    */
-  const [pairingPhase, setPairingPhase] = useState<"closed" | "review" | "parked">(
-    "closed",
-  );
+  const [pairingPhase, setPairingPhase] = useState<
+    "closed" | "review" | "parked"
+  >("closed");
   /**
    * NEO-221 — which FETCH the mounted pairing modal belongs to. Bumped once
    * per `handleSync`, and used for nothing but the modal's React `key`.
@@ -427,6 +507,58 @@ export default function CardChecklist({
    * what the async staleness checks use.
    */
   const [pairingInstance, setPairingInstance] = useState(0);
+  /**
+   * NEO-255 — a sync running with NO pairing dialog behind it.
+   *
+   * Set the moment `handleSync` decides, from the attached sides, that this
+   * run has nothing to line up. It is what renders the inline progress line
+   * and its Cancel: with the dialog skipped, that line is the only evidence on
+   * screen that a fetch is in flight and the only way to call it off. Cleared
+   * the moment the run stops streaming — committed, cancelled or failed.
+   *
+   * `side` is null only in the degenerate no-marketplace case, where there is
+   * no name to put in the sentence and the fetch is about to come back with
+   * nothing anyway.
+   */
+  const [soloFetch, setSoloFetch] = useState<{ side: SyncSide | null } | null>(
+    null,
+  );
+  /**
+   * a11y (NEO-255) — a one-sided run has ended and nothing took the screen, so
+   * put focus back on the Sync button.
+   *
+   * It has to be put back because it was LOST, and the way it was lost is easy
+   * to miss: pressing Sync disables that same button (`disabled={busy}`), and
+   * disabling the focused element drops focus to `<body>`. On the ordinary
+   * two-sided path that does not matter — the pairing dialog mounts a moment
+   * later and takes focus, and hands it back through `restoreFocusRef` — but
+   * the whole point of this path is that no dialog mounts. Without this a
+   * keyboard operator who pressed Sync would be returned to the top of the
+   * document and have to walk back down to read the result.
+   *
+   * An armed flag rather than a direct `.focus()` call: at the moment the run
+   * ends the button is still `disabled`, and focusing a disabled element does
+   * nothing. A REF rather than state, because the effect that acts on it would
+   * otherwise have to disarm itself with a `setState` inside an effect body —
+   * the cascading-render pattern the lint rule exists to stop. The effect
+   * re-runs on the state that actually gates the restore (`syncing`,
+   * `committing`, and the three surfaces), which is exactly what changes at the
+   * end of a run.
+   */
+  const restoreSyncFocusRef = useRef(false);
+  /**
+   * a11y (NEO-255) — the focus park for the START of a dialog-less run.
+   *
+   * `restoreSyncFocusRef` above covers the END of one. This covers the other
+   * half of the same WCAG 2.4.3 gap, which happens first: pressing Sync
+   * disables the Sync button, disabling the focused element blurs it to
+   * `<body>`, and on every other path `CardPairingModal` mounts a moment later
+   * and takes focus. This path mounts nothing, so a keyboard operator is left
+   * at the top of the document for the whole fetch with no announcement that
+   * anything started — the established fix is to park on a stable
+   * `tabIndex={-1}` container, and here the progress line IS that container.
+   */
+  const soloFetchRef = useRef<HTMLDivElement>(null);
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>({
     bsc: null,
     sportlots: null,
@@ -472,6 +604,8 @@ export default function CardChecklist({
     setSelectedCardId(null);
     setHideCrossListed(false);
     setPairingPhase("closed");
+    // NEO-255: a fetch started on one variant says nothing about another.
+    setSoloFetch(null);
     // NEO-203: a diff computed against one variant's rows is meaningless
     // against another's.
     setPendingReview(null);
@@ -503,6 +637,30 @@ export default function CardChecklist({
   // A ref, not state: the check runs inside an async closure that captured its
   // own render's values, which is exactly where a state read would be stale.
   const syncGenerationRef = useRef(0);
+  /**
+   * NEO-255 — the variant the operator is looking at NOW, for the same
+   * staleness check one field up.
+   *
+   * A run is abandoned when the operator moves to another variant, and the
+   * generation counter cannot say so on its own: `variantId` is a PROP, so
+   * nothing in an event handler bumps the counter when it changes, and the
+   * reset effect that clears the rest of the per-variant state is not allowed
+   * to (`react-hooks/immutability` — a ref mutated inside an effect may not be
+   * mutated anywhere else, and this one is, from `handleSync` and the pairing
+   * dialog's Cancel).
+   *
+   * It matters most on the one-marketplace path, which is the one that commits
+   * without an operator: `awaitStreamedBatch` polls a subscription keyed on the
+   * CURRENT variant while `handlePairingConfirm` writes to the `variantId` the
+   * run captured. Switch variants mid-await and those are two different sets —
+   * one variant's cards committed onto another. Read through a ref because the
+   * check runs inside an async closure holding its own render's values, which
+   * is exactly where a prop read would be stale.
+   */
+  const currentVariantIdRef = useRef(variantId);
+  useEffect(() => {
+    currentVariantIdRef.current = variantId;
+  }, [variantId]);
 
   /**
    * NEO-221 — end the pairing session for good and bin what it was reviewing.
@@ -529,6 +687,120 @@ export default function CardChecklist({
   }, [discardCandidates, variantId]);
 
   /**
+   * a11y (NEO-255) — hand focus back to the Sync button once a dialog-less run
+   * has finished and the button is focusable again.
+   *
+   * Every guard here is a reason NOT to grab focus:
+   *   `syncing`/`committing`  the button is still `disabled`, so `.focus()`
+   *                           would be a no-op and the flag must survive to
+   *                           the render that re-enables it;
+   *   the three surfaces      a review, a wizard or a pairing session opened
+   *                           after all, and each restores focus itself —
+   *                           taking it from under them would be worse than
+   *                           the gap this closes.
+   */
+  useEffect(() => {
+    if (!restoreSyncFocusRef.current) return;
+    if (syncing || committing) return;
+    if (pendingReview || pendingPreview || pairingPhase !== "closed") return;
+    restoreSyncFocusRef.current = false;
+    syncButtonRef.current?.focus();
+  }, [syncing, committing, pendingReview, pendingPreview, pairingPhase]);
+
+  /**
+   * a11y (NEO-255) — catch the blur the moment a dialog-less run starts.
+   *
+   * Keyed on `soloFetch` becoming non-null, which is the same render that
+   * disables the Sync button, so this runs immediately after the browser has
+   * dropped focus to `<body>`.
+   *
+   * Guarded on focus actually being ON `<body>`: if it is anywhere else the
+   * operator put it there — they tabbed on while the fetch runs, or started
+   * the sync from somewhere else entirely — and taking it would be the
+   * interruption this park exists to prevent, not a fix for it. Same guard as
+   * the `VariantForm` / `SyncDoneNotice` parks.
+   */
+  useEffect(() => {
+    if (!soloFetch) return;
+    if (document.activeElement !== document.body) return;
+    soloFetchRef.current?.focus();
+  }, [soloFetch]);
+
+  /**
+   * NEO-255 — call off a fetch that has no dialog to close.
+   *
+   * The same abort the pairing dialog's own Cancel performs, reached from the
+   * inline progress line instead: supersede the run so its late result cannot
+   * act, stop the spinners, say what happened, and bin the candidates. The
+   * message is deliberately the dialog's word for word — the operator did the
+   * same thing and got the same outcome, and two sentences for one event is
+   * how an interface stops being learnable.
+   */
+  const cancelSoloFetch = useCallback(() => {
+    syncGenerationRef.current++;
+    setSoloFetch(null);
+    setFetchInFlight(false);
+    setSyncing(false);
+    setSyncMessage("Sync cancelled — no cards saved.");
+    // a11y: this button is about to unmount under the operator's own focus.
+    restoreSyncFocusRef.current = true;
+    abandonPairingSession();
+  }, [abandonPairingSession, setSyncMessage]);
+
+  /**
+   * NEO-255 — block until the streamed batch this run published has reached
+   * the client in full, or give up.
+   *
+   * The auto-keep path commits cards the operator never sees, so it may only
+   * commit a COMPLETE batch: `candidateCount` is the action's own count of
+   * what it wrote, and the subscription has to agree with it before a single
+   * card is promoted. `startCandidateBatch` clears and rewrites in ONE
+   * transaction, so the subscription never shows a half-written batch — the
+   * only thing being waited on is the round trip.
+   *
+   * The batch id must MOVE. Without that check a previous run's abandoned rows
+   * — same set, same operator, coincidentally the same count — would satisfy
+   * the equality and be committed as if they were this fetch's.
+   *
+   * `ready` is deliberately NOT part of the gate, and that is not an oversight.
+   * It counts rows whose TEAM has resolved, and `startCandidateBatch` writes
+   * every row `pending` whenever ANY row needs a BSC team lookup while the
+   * enrichment loop only flips the rows it actually looked up — so on a set
+   * where some cards arrived with teams already parsed, `ready` never reaches
+   * `total` at all. Gating on it would hang this path forever on exactly the
+   * BSC-only sets it exists for. Teams do not gate Confirm in the dialog
+   * either (`CardPairingModal` gates on the fetch, not on enrichment), so this
+   * waits on the same thing the dialog does.
+   */
+  const awaitStreamedBatch = useCallback(
+    async (
+      expectedCount: number,
+      previousBatchId: string | undefined,
+      abandoned: () => boolean,
+    ): Promise<typeof liveCandidates> => {
+      const deadline = Date.now() + SOLO_STREAM_TIMEOUT_MS;
+      while (!abandoned()) {
+        const live = liveCandidatesRef.current;
+        if (
+          live &&
+          live.batchId !== undefined &&
+          live.batchId !== previousBatchId &&
+          live.total === expectedCount &&
+          live.cards.length === expectedCount
+        ) {
+          return live;
+        }
+        if (Date.now() > deadline) return undefined;
+        await new Promise((resolve) =>
+          setTimeout(resolve, SOLO_STREAM_POLL_MS),
+        );
+      }
+      return undefined;
+    },
+    [],
+  );
+
+  /**
    * Three-phase pipeline (NEO-137 moved pairing to the front):
    *   1. fetchChecklist → publishes three buckets of CANDIDATES to
    *      `checklistCandidates` as it reconciles them, and answers with a
@@ -547,6 +819,7 @@ export default function CardChecklist({
    * data for cards that never exist.
    */
   const handleSync = async () => {
+    soloKeptRef.current = null;
     // NEO-96: the sport row every downstream step keys on. It used to ride
     // back on the fetch action's return; the client walks the same ancestor
     // chain for its own pickers, so reading it here removes a third copy of
@@ -560,14 +833,48 @@ export default function CardChecklist({
       );
       return;
     }
+    /**
+     * NEO-255 — the marketplaces attached to this set, decided BEFORE the call.
+     *
+     * The dialog opens on the first streamed candidate, seconds into a fetch
+     * that takes a minute or more, so "should there be a dialog at all" has to
+     * be answerable now — waiting for the action's own `attachedSides` would
+     * mean flashing the dialog up and taking it away again, which is worse
+     * than either outcome.
+     *
+     * Read off the `getAncestorChain` subscription this component already
+     * holds, through the same pure helper the server uses, so the two answers
+     * come from one rule rather than two implementations of it. The guard above
+     * has already established the chain has loaded (`ancestorSportId` comes
+     * off it), so `?? []` is unreachable rather than a default.
+     */
+    const expectedSides = attachedSidesOf(ancestorChain ?? []);
+    const expectSolo = expectedSides.length <= 1;
+    // Which batch, if any, the subscription is showing right now — the
+    // auto-keep path needs to see it MOVE before it trusts a count. Captured
+    // before the call, because `startCandidateBatch` replaces it.
+    const previousBatchId = liveCandidatesRef.current?.batchId;
     const generation = ++syncGenerationRef.current;
-    const abandoned = () => syncGenerationRef.current !== generation;
+    // Superseded by a newer run or a cancel (the generation), or left behind
+    // because the operator moved to another variant (see the ref).
+    const abandoned = () =>
+      syncGenerationRef.current !== generation ||
+      currentVariantIdRef.current !== variantId;
     setSyncing(true);
     // NEO-195: opens the modal on the first streamed candidates, and gates
     // Confirm until the action resolves — reviewing early is the point,
     // committing a partial checklist is not.
     setFetchInFlight(true);
-    setPairingPhase("review");
+    // NEO-255: with one marketplace attached there is nothing to line up, so
+    // no session is opened and `streamedPairing` stays null — the dialog never
+    // mounts, not even during the fetch. The inline progress line below the
+    // Sync button takes its place.
+    if (expectSolo) {
+      setSoloFetch({ side: expectedSides[0] ?? null });
+    } else {
+      setSoloFetch(null);
+      setPairingPhase("review");
+    }
     // A new fetch is a new pairing session: remount the modal rather than
     // reconciling the old one (see `pairingInstance`), and drop any commit
     // failure the previous run left behind, which the wizard would otherwise
@@ -582,6 +889,7 @@ export default function CardChecklist({
       if (abandoned()) return;
       if (!result.success) {
         setPairingPhase("closed");
+        setSoloFetch(null);
         setSyncMessage(result.message, "error");
         await discardCandidates({ selectorOptionId: variantId });
         return;
@@ -600,8 +908,100 @@ export default function CardChecklist({
         // write, and mistaking a not-yet-delivered batch for an empty one
         // would commit an empty checklist over a real set.
         setPairingPhase("closed");
+        setSoloFetch(null);
         await handlePairingConfirm({ cards: [], conflictsByIndex: {} });
         return;
+      }
+      /**
+       * NEO-255 — exactly one marketplace attached: keep everything, no dialog.
+       *
+       * The client's own answer and the server's must AGREE. They are computed
+       * from the same helper over the same slots, so they normally do; when
+       * they do not, the subscription this client guessed from was stale, and
+       * the honest response to "I am not sure how many marketplaces this set
+       * has" is to show the operator the dialog — never to commit a checklist
+       * silently on the strength of a disagreement. So a mismatch falls
+       * through to the ordinary review below, in either direction.
+       *
+       * `length === 1` and not `<= 1`: with NOTHING attached there is nothing
+       * to keep either, and a run that somehow published candidates anyway is
+       * not a run to auto-commit — it goes to the dialog too. (The ordinary
+       * no-marketplace set never reaches here; it returns `candidateCount: 0`
+       * above.)
+       */
+      const serverSides = result.attachedSides;
+      const agreed =
+        expectedSides.length === serverSides.length &&
+        expectedSides.every((side, i) => side === serverSides[i]);
+      if (expectSolo && agreed && serverSides.length === 1) {
+        const live = await awaitStreamedBatch(
+          result.candidateCount,
+          previousBatchId,
+          abandoned,
+        );
+        // Cancelled while waiting on the stream — the operator's own message
+        // stands and nothing is committed. Same rule as the fetch itself.
+        if (abandoned()) return;
+        if (!live) {
+          setSoloFetch(null);
+          setSyncMessage(SOLO_STREAM_TIMEOUT_MESSAGE, "error");
+          abandonPairingSession();
+          return;
+        }
+        /**
+         * NEO-255 (security review) — the batch says otherwise. Hand it over.
+         *
+         * The auto-keep path is only safe while every row is a SINGLE: it
+         * commits with `conflictsByIndex: {}` and `candidatesToPairingCards`
+         * drops the two disagreement fields, which is the same lift the dialog
+         * performs — and is only a lift, rather than a LOSS, when there is no
+         * pair for a disagreement to sit on.
+         *
+         * One attached side ought to guarantee that, and does not quite.
+         * `fetchSportLotsChecklist` still falls back to a name-keyed DB lookup
+         * for the SportLots set id when no SL slot is attached (NEO-256, filed
+         * separately and deliberately not touched here), so a chain that
+         * reports `["bsc"]` can still come back with SportLots rows, pair them,
+         * and carry a real cross-marketplace disagreement. Committing that
+         * silently would throw away the operator's only chance to answer "which
+         * of these two names is this card", and the answer would then look like
+         * settled NB data on every later re-sync.
+         *
+         * So the batch itself gets the last word: anything paired, or carrying
+         * either conflict, goes to the dialog exactly as a two-sided run does.
+         * Checked on the LIVE rows rather than on `attachedSides`, because this
+         * is the case where attachment turned out not to describe what came
+         * back.
+         */
+        const needsOperator = live.cards.some(
+          (c) => c.bucket === "matched" || c.nameConflict || c.playersConflict,
+        );
+        if (needsOperator) {
+          setSoloFetch(null);
+          setPairingPhase("review");
+          setSyncMessage(result.message);
+          return;
+        }
+        const cards = candidatesToPairingCards(live.cards);
+        setSoloFetch(null);
+        // Remembered so the wizard's "N new players … need confirmation"
+        // notice can keep this sentence in front of it: with no dialog, this
+        // line is the only place the operator (and the E2E flow) learns how
+        // many cards the fetch kept, and the wizard opens within a second.
+        soloKeptRef.current = soloKeptMessage(serverSides[0], cards.length);
+        setSyncMessage(soloKeptRef.current);
+        // Exactly what Confirm hands back for a screen where every row is a
+        // kept single: the cards, and no conflicts — a single has no second
+        // marketplace to disagree with.
+        await handlePairingConfirm({ cards, conflictsByIndex: {} });
+        return;
+      }
+      if (expectSolo) {
+        // The disagreement case. No session was opened, so open one now: the
+        // operator gets the dialog they would have had if the client had
+        // guessed right.
+        setSoloFetch(null);
+        setPairingPhase("review");
       }
       setSyncMessage(result.message);
     } catch (error) {
@@ -613,6 +1013,7 @@ export default function CardChecklist({
       // be offered — close the review rather than leaving it confirmable.
       if (abandoned()) return;
       setPairingPhase("closed");
+      setSoloFetch(null);
       setSyncMessage(
         `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
         "error",
@@ -623,6 +1024,13 @@ export default function CardChecklist({
       if (!abandoned()) {
         setSyncing(false);
         setFetchInFlight(false);
+        // NEO-255: belt and braces. Every branch above already clears it; a
+        // progress line left behind would claim a fetch that has ended.
+        setSoloFetch(null);
+        // a11y: a run with no dialog took focus off the Sync button when it
+        // disabled it, and has nothing to hand focus back with. The effect
+        // that acts on this stands down if any surface DID open.
+        if (expectSolo) restoreSyncFocusRef.current = true;
       }
     }
   };
@@ -759,7 +1167,12 @@ export default function CardChecklist({
       // Stash preview; the review wizard handles the rest.
       setPendingPreview(preview);
       setSyncMessage(
-        `${unknownPlayers.length} new players + ${unknownTeams.length} new teams need confirmation`,
+        [
+          soloKeptRef.current,
+          `${unknownPlayers.length} new players + ${unknownTeams.length} new teams need confirmation`,
+        ]
+          .filter(Boolean)
+          .join(" "),
       );
     }
   };
@@ -1236,7 +1649,10 @@ export default function CardChecklist({
     }> = [];
     for (const card of sortedCards) {
       // Rendered under its parent below, unless that parent is filtered out.
-      if (card.variationOfCardId && presentIds.has(card.variationOfCardId as string)) {
+      if (
+        card.variationOfCardId &&
+        presentIds.has(card.variationOfCardId as string)
+      ) {
         continue;
       }
       const children = variationsByParent.get(card._id as string) ?? [];
@@ -1262,7 +1678,13 @@ export default function CardChecklist({
       }
     }
     return rows;
-  }, [sortedCards, variationsByParent, expandedParents, selectedCardId, cardNumberById]);
+  }, [
+    sortedCards,
+    variationsByParent,
+    expandedParents,
+    selectedCardId,
+    cardNumberById,
+  ]);
 
   // Only worth showing the toggle when this checklist actually has visiting
   // cards (mirrors ChecklistSourceFilter's `anyMulti` guard). Derived from
@@ -1303,37 +1725,18 @@ export default function CardChecklist({
    * rather than being re-derived here.
    */
   const streamedPairing = useMemo(() => {
-    if (pairingPhase === "closed" || !liveCandidates || liveCandidates.total === 0) {
+    if (
+      pairingPhase === "closed" ||
+      !liveCandidates ||
+      liveCandidates.total === 0
+    ) {
       return null;
     }
-    const toCard = (c: (typeof liveCandidates.cards)[number]): PairingCard => ({
-      cardNumber: c.cardNumber,
-      cardName: c.cardName,
-      teams: c.teams,
-      players: c.players,
-      attributes: c.attributes,
-      isRookie: c.isRookie,
-      isRelic: c.isRelic,
-      printRun: c.printRun,
-      autographType: c.autographType,
-      cardVariation: c.cardVariation,
-      // NEO-189: without this the modal commits every variation as a
-      // standalone card — the flag has to survive the whole path.
-      isVariation: c.isVariation,
-      platformData: c.platformData,
-      // NEO-199: the losing name from a server-side merge. Absent on every row
-      // the two marketplaces agree about, which is nearly all of them; where it
-      // is present the modal raises the same choice a hand-linked conflict gets.
-      nameConflict: c.nameConflict,
-      // NEO-251: and the losing ROSTER, on exactly the same terms. Omitting it
-      // here is not a cosmetic gap — this mapping is the ONLY path a streamed
-      // candidate takes into the modal, so a conflict left behind here is one
-      // the operator never sees and the sync-review diff is never told about,
-      // however faithfully the server computed it.
-      playersConflict: c.playersConflict,
-      unmatched:
-        c.bucket === "bscOnly" ? "sl" : c.bucket === "slOnly" ? "bsc" : undefined,
-    });
+    // NEO-255: the mapping itself lives in `pairing-cards.ts` now, because the
+    // auto-keep path (one marketplace attached, no dialog) builds cards from
+    // the same rows and must build them identically — see that module's header
+    // for why two copies of this was the thing to avoid.
+    const toCard = candidateToPairingCard;
     return {
       autoMatched: liveCandidates.cards
         .filter((c) => c.bucket === "matched")
@@ -1375,7 +1778,8 @@ export default function CardChecklist({
   const selectedIndex = selectedCardId
     ? displayRows.findIndex((r) => r.card._id === selectedCardId)
     : -1;
-  const selectedCard = selectedIndex >= 0 ? displayRows[selectedIndex].card : null;
+  const selectedCard =
+    selectedIndex >= 0 ? displayRows[selectedIndex].card : null;
 
   // Move selection to a list position and keep it in view. "center" matches
   // the add-card scroll and dodges the sticky binder-header at y≈84.
@@ -1412,10 +1816,7 @@ export default function CardChecklist({
           </h2>
           {!showAddForm && (
             <div className="flex gap-2">
-              <NeonButton
-                onClick={openAddForm}
-                aria-label="Open add card form"
-              >
+              <NeonButton onClick={openAddForm} aria-label="Open add card form">
                 Add Card
               </NeonButton>
               <NeonButton
@@ -1603,6 +2004,69 @@ export default function CardChecklist({
           </div>
         )}
 
+        {/* NEO-255 — the sync is running and no dialog is going to open.
+
+            With one marketplace attached there is nothing to match, so
+            `CardPairingModal` — which is normally what tells the operator a
+            fetch is alive and offers the way out of it — never mounts. This
+            line does both jobs instead, and it sits in the same slot as every
+            other thing a sync says ("Saved N cards.", "Sync cancelled — no
+            cards saved.") so there is one place to look rather than two.
+
+            Deliberately the notice banner's own shell rather than a new
+            treatment: same box, same blue, and the Cancel is the same
+            underlined in-banner button the post-commit call-to-action uses,
+            whose contrast and focus behaviour are already settled (see the
+            long note on that button below). One event, one vocabulary.
+
+            a11y: `role="status"` on the sentence alone — the implied polite
+            live region is the whole point, and scoping it to the text means
+            the Cancel button is not re-announced with every count update.
+            Following the project's live-region pattern, the role carries the
+            politeness and no explicit `aria-live` is set. */}
+        {soloFetch && (
+          // a11y (WCAG 2.4.3): the focus park for the START of a dialog-less
+          // run — `tabIndex={-1}` so it can receive focus programmatically
+          // without entering the tab order, named by its own status line so
+          // landing here announces what is happening rather than an unnamed
+          // box, and carrying its own focus ring because a programmatic target
+          // still needs a visible indicator (2.4.7). A Tab from here reaches
+          // Cancel, which is the only control this run has.
+          <div
+            ref={soloFetchRef}
+            tabIndex={-1}
+            aria-labelledby="solo-fetch-status"
+            className="p-2 mb-3 bg-blue-100 dark:bg-blue-900/30 border border-blue-300 dark:border-blue-700 rounded-md text-blue-800 dark:text-blue-200 text-sm flex items-center justify-between gap-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 dark:focus-visible:ring-blue-300"
+          >
+            <span id="solo-fetch-status" role="status">
+              {soloProgressMessage(
+                soloFetch.side,
+                liveCandidates
+                  ? { ready: liveCandidates.ready, total: liveCandidates.total }
+                  : undefined,
+              )}
+            </span>
+            {/* Reworded rather than suffixed, so Maestro's regex `id:` find
+                cannot match "Cancel card matching" or "Cancel entity review"
+                — and neither of theirs can match this one.
+
+                a11y (WCAG 2.5.8): `py-1.5 -my-1.5` takes the hit area from the
+                bare 20px `text-sm` line-height to 32px while the negative
+                margin leaves the row's geometry exactly as it was — the
+                `SyncDoneNotice` Dismiss precedent. An underline-styled button
+                with no vertical padding at all is the shape most likely to
+                fail this, because it reads as text rather than a control. */}
+            <button
+              type="button"
+              onClick={cancelSoloFetch}
+              aria-label="Cancel checklist fetch"
+              className="shrink-0 rounded-sm font-semibold underline decoration-dotted hover:decoration-solid py-1.5 -my-1.5"
+            >
+              Cancel
+            </button>
+          </div>
+        )}
+
         {syncNotice && (
           // a11y (WCAG 4.1.3): this is the post-sync/post-commit result
           // banner — "Saved N cards.", the NEO-203 notes (deletions, stale
@@ -1768,8 +2232,9 @@ export default function CardChecklist({
               switches to role="alert".
             */}
             <p className="sr-only" role="status">
-              {attentionCount} {attentionCount === 1 ? "card needs" : "cards need"}{" "}
-              attention on this checklist
+              {attentionCount}{" "}
+              {attentionCount === 1 ? "card needs" : "cards need"} attention on
+              this checklist
             </p>
           </div>
         )}
