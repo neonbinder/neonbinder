@@ -42,7 +42,7 @@
  * straight to /set-selector only ever lands on the credential gate.
  */
 import type { GenericId } from "convex/values";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import { slotEntries, slotIds, slotLabel } from "../../convex/platformSlots";
@@ -96,6 +96,16 @@ const LEVEL_DEPTH: Record<SelectorLevel, number> = {
   parallel: 7,
 };
 
+/**
+ * The empty dismissal set (see `dismissedVariantTypeIds`).
+ *
+ * Shared rather than freshly allocated so clearing an already-empty set is
+ * identity-equal to the current state and React bails out of the re-render —
+ * every level change calls `clearFrom`, and most of them have nothing to clear.
+ */
+const NO_BASE_MAPPING_DISMISSALS: ReadonlySet<GenericId<"selectorOptions">> =
+  new Set();
+
 export default function SetSelector() {
   // Level 1: Sport
   const [selectedSportId, setSelectedSportId] =
@@ -125,7 +135,23 @@ export default function SetSelector() {
   const [setExpanded, setSetExpanded] = useState(false);
   const [variantTypeExpanded, setVariantTypeExpanded] = useState(false);
   const [variantExpanded, setVariantExpanded] = useState(false);
-  const [variantOfVariantExpanded, setVariantOfVariantExpanded] = useState(false);
+  const [variantOfVariantExpanded, setVariantOfVariantExpanded] =
+    useState(false);
+
+  /**
+   * Base variantTypes whose mapping panel the operator has CLOSED (NEO-255).
+   *
+   * `baseHasMapping` counts the SportLots slot only, so on a Base that carries
+   * a BSC id and no SportLots one it is false forever. Close used to clear
+   * `baseMappingOpen` alone, which that row was never gated on — the panel
+   * re-rendered instantly and the button read as broken. The dismissal is what
+   * makes Close honest. It is per-row and deliberately NOT persisted: it says
+   * "not right now", not "never", and it is cleared whenever the variant-type
+   * selection changes so re-selecting Base prompts again.
+   */
+  const [dismissedVariantTypeIds, setDismissedVariantTypeIds] = useState<
+    ReadonlySet<GenericId<"selectorOptions">>
+  >(NO_BASE_MAPPING_DISMISSALS);
 
   // useCallback([]) is safe: the body only calls state setters, whose
   // identities React guarantees stable. A stable clearFrom lets the level-select
@@ -136,7 +162,10 @@ export default function SetSelector() {
     if (level <= 2) setSelectedYearId(null);
     if (level <= 3) setSelectedManufacturerId(null);
     if (level <= 4) setSelectedSetId(null);
-    if (level <= 5) setSelectedVariantTypeId(null);
+    if (level <= 5) {
+      setSelectedVariantTypeId(null);
+      setDismissedVariantTypeIds(NO_BASE_MAPPING_DISMISSALS);
+    }
     if (level <= 6) setSelectedVariantId(null);
     if (level <= 7) setSelectedVariantOfVariantId(null);
   }, []);
@@ -213,9 +242,67 @@ export default function SetSelector() {
       ? variantTypeLabel
       : `${variantTypeLabel}s`
     : "Variants";
-  // Manual re-map trigger; the form also auto-opens on first selection
-  // when no platformData exists yet.
+  // Manual trigger; the form also auto-opens on first selection when no
+  // platformData exists yet.
   const [baseMappingOpen, setBaseMappingOpen] = useState(false);
+  const baseMappingDismissed = selectedVariantTypeId
+    ? dismissedVariantTypeIds.has(selectedVariantTypeId)
+    : false;
+  /**
+   * `remap` is a claim that a mapping EXISTS and is about to be re-pointed, so
+   * it follows the row, not the button that opened the dialog. A Base the
+   * operator dismissed and then re-opened is still a first-time mapping —
+   * keying this off `baseMappingOpen` (as it did before NEO-255) would show it
+   * the "N cards are linked" impact copy for a mapping it does not have.
+   */
+  const baseMappingMode: "initial" | "remap" = baseHasMapping
+    ? "remap"
+    : "initial";
+  /**
+   * The panel and the button below are mutually exclusive, and exactly one of
+   * them is always on screen for a selected Base: an unmapped row auto-prompts
+   * until it is dismissed, and every other state offers the way back in.
+   */
+  const baseMappingFormOpen =
+    (!baseHasMapping && !baseMappingDismissed) || baseMappingOpen;
+  // Only a DISMISSAL (Close on the recovery panel) stops the auto-prompt. A
+  // confirmed mapping closes the form too, but the row's own slot is what
+  // ends the prompt there — `baseHasMapping` flips as the write lands — and
+  // marking it dismissed as well would race that flip: the seed's "Re-map
+  // Base" anchor read "Map Base Set" for a beat and scrolled past it (PR #242
+  // run 4).
+  const handleBaseMappingClose = (reason: "mapped" | "dismissed") => {
+    setBaseMappingOpen(false);
+    if (reason === "dismissed" && selectedVariantTypeId && !baseHasMapping) {
+      setDismissedVariantTypeIds((prev) => {
+        if (prev.has(selectedVariantTypeId)) return prev;
+        const next = new Set(prev);
+        next.add(selectedVariantTypeId);
+        return next;
+      });
+    }
+  };
+  // WCAG 2.4.3 focus park. Close lives INSIDE BaseMappingForm, and pressing it
+  // runs `handleBaseMappingClose` synchronously — so React unmounts the form
+  // (the clicked button with it) and mounts the sibling button in its place in
+  // the same render pass, dropping keyboard/AT focus to <body> with nothing
+  // said about where the operator now is. The button that replaced the panel is
+  // the only control in that slot, so it is the unambiguous landing spot.
+  //
+  // The same shape as VariantForm/ParallelForm/SyncDoneNotice: a ref tracks the
+  // PREVIOUS value so this fires on the true→false transition only, and the
+  // `activeElement === body` guard means a park never yanks focus away from an
+  // operator who is already holding it somewhere else (a confirm that resolves
+  // while they have moved on, or a dialog that restored focus itself).
+  const baseMappingButtonRef = useRef<HTMLButtonElement | null>(null);
+  const wasBaseMappingFormOpen = useRef(baseMappingFormOpen);
+  useEffect(() => {
+    const wasOpen = wasBaseMappingFormOpen.current;
+    wasBaseMappingFormOpen.current = baseMappingFormOpen;
+    if (!wasOpen || baseMappingFormOpen) return;
+    if (document.activeElement !== document.body) return;
+    baseMappingButtonRef.current?.focus();
+  }, [baseMappingFormOpen]);
   // Parallel-grouping modal trigger for the Variants column.
   const [groupingOpen, setGroupingOpen] = useState(false);
 
@@ -241,6 +328,12 @@ export default function SetSelector() {
   const handleVariantTypeSelect = useCallback(
     (id: GenericId<"selectorOptions">) => {
       setSelectedVariantTypeId(id);
+      // Selecting a variant type re-arms the auto-open prompt (NEO-255).
+      // `clearFrom(6)` starts BELOW this level, so the dismissal is cleared
+      // here rather than there: closing the panel is a decision about the row
+      // the operator was looking at, and tapping a row — including tapping
+      // Base again — asks the question afresh.
+      setDismissedVariantTypeIds(NO_BASE_MAPPING_DISMISSALS);
       clearFrom(6);
     },
     [clearFrom],
@@ -377,9 +470,10 @@ export default function SetSelector() {
       // plain slot walk.
       const entries =
         side === "bsc"
-          ? bscSourceView(cardChecklistRow, cardChecklistChain ?? [
+          ? bscSourceView(
               cardChecklistRow,
-            ]).sources.map((s) => ({ slot: s.slot, id: s.id }))
+              cardChecklistChain ?? [cardChecklistRow],
+            ).sources.map((s) => ({ slot: s.slot, id: s.id }))
           : slotEntries(cardChecklistRow, side);
       if (entries.length <= 1) continue;
       const primarySlotKey =
@@ -408,6 +502,10 @@ export default function SetSelector() {
     return { bsc: build("bsc"), sportlots: build("sportlots") };
   }, [cardChecklistRow]);
 
+  // No scroll headroom below the last panel, deliberately (NEO-255 tried
+  // pb-[50vh]): dozens of Maestro flows scroll DOWN for an anchor and rely on
+  // the document bottoming out to keep it in view; extra slack let them
+  // scroll past it.
   return (
     <div className="max-w-full mx-auto p-6 flex flex-col gap-6">
       {/* pb-4 prevents the horizontal scrollbar from overlapping each
@@ -511,10 +609,7 @@ export default function SetSelector() {
             />
           }
           renderForm={(onDone) => (
-            <SetForm
-              manufacturerId={selectedManufacturerId!}
-              onDone={onDone}
-            />
+            <SetForm manufacturerId={selectedManufacturerId!} onDone={onDone} />
           )}
           addButtonText="Sync Sets"
           isVisible={!!selectedManufacturerId}
@@ -583,10 +678,7 @@ export default function SetSelector() {
             onDrillToExisting={handleDrillToExisting}
             extraActions={
               selectedVariantTypeId ? (
-                <NeonButton
-                  secondary
-                  onClick={() => setGroupingOpen(true)}
-                >
+                <NeonButton secondary onClick={() => setGroupingOpen(true)}>
                   Group Parallels
                 </NeonButton>
               ) : undefined
@@ -607,7 +699,9 @@ export default function SetSelector() {
                   setExpanded={setVariantOfVariantExpanded}
                 />
                 {selectedVariantOfVariantId && (
-                  <VariantMetadataEditor optionId={selectedVariantOfVariantId} />
+                  <VariantMetadataEditor
+                    optionId={selectedVariantOfVariantId}
+                  />
                 )}
               </>
             }
@@ -622,31 +716,38 @@ export default function SetSelector() {
             onDrillToExisting={handleDrillToExisting}
           />
         )}
-
       </div>
 
       {/* Base mapping: auto-prompts BaseSetPicker the first time a Base
-          variantType without platformData is selected; user can also re-map
-          via the Re-map Base button below. */}
+          variantType without platformData is selected, and hands back a
+          button — "Map Base Set" while it is still unmapped, "Re-map Base"
+          once it is — whenever the panel is not showing. */}
       {selectedVariantTypeId && isBaseVariantTypeSelected && (
         <>
-          {(!baseHasMapping || baseMappingOpen) && (
+          {baseMappingFormOpen && (
             <BaseMappingForm
-              key={`${selectedVariantTypeId}-${baseMappingOpen ? "remap" : "auto"}`}
+              key={`${selectedVariantTypeId}-${baseMappingMode}`}
               variantTypeId={selectedVariantTypeId}
               autoOpen={true}
-              // NEO-219: the manual trigger is a RE-MAP — an existing mapping
-              // that already holds cards is about to be re-pointed — so the
-              // dialog states the impact and the write is version-guarded. The
-              // `key` above already gives the two modes separate instances.
-              mode={baseMappingOpen ? "remap" : "initial"}
-              onClose={() => setBaseMappingOpen(false)}
+              // NEO-219: a RE-MAP is an existing mapping that already holds
+              // cards being re-pointed — so the dialog states the impact and
+              // the write is version-guarded. The `key` above gives the two
+              // modes separate instances.
+              mode={baseMappingMode}
+              onClose={handleBaseMappingClose}
             />
           )}
-          {baseHasMapping && !baseMappingOpen && (
+          {!baseMappingFormOpen && (
             <div>
-              <NeonButton secondary onClick={() => setBaseMappingOpen(true)}>
-                Re-map Base
+              {/* Unmapped is the state that still needs an answer, so its
+                  button is the primary one; a re-map is optional and stays
+                  the quieter secondary. */}
+              <NeonButton
+                ref={baseMappingButtonRef}
+                secondary={baseHasMapping}
+                onClick={() => setBaseMappingOpen(true)}
+              >
+                {baseHasMapping ? "Re-map Base" : "Map Base Set"}
               </NeonButton>
             </div>
           )}
@@ -656,7 +757,9 @@ export default function SetSelector() {
       {/* NEO-6: multi-source attach panel for the active variant row.
           Renders for variantType (when Base/terminal), insert, and
           parallel rows once they have a reconciliation primary mapped. */}
-      {cardChecklistId && <MultiSourcePanel selectorOptionId={cardChecklistId} />}
+      {cardChecklistId && (
+        <MultiSourcePanel selectorOptionId={cardChecklistId} />
+      )}
 
       {/* NEO-38/NEO-71-74: set ATTRIBUTES editor. Mounts at the DEEPEST
           selected node at ANY level (sport → parallel) so it follows the

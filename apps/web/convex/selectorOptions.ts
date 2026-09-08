@@ -163,6 +163,7 @@ import {
 // the seven old gates cannot drift into seven different answers.
 import {
   NO_MARKETPLACE_IDS_MESSAGE,
+  attachedSidesOf,
   notifiableSkippedSides,
   missingSummary,
   resolvableSides,
@@ -8325,11 +8326,31 @@ export const fetchCardChecklist = action({
     message: v.string(),
     /** Rows published to `checklistCandidates` by this run. 0 = nothing to pair. */
     candidateCount: v.number(),
+    /**
+     * NEO-255 — the marketplaces ATTACHED to this set, from `attachedSidesOf`.
+     *
+     * The client skips the Match Cards dialog when exactly one is attached:
+     * there is nothing to line up, so every fetched card is kept as a single
+     * linked to that marketplace and the run continues as if Confirm had been
+     * pressed. Two or more, and the dialog opens exactly as it always has.
+     *
+     * It rides on the RESULT rather than being left to the client alone
+     * because the client's own copy is a guess made before the call, off a
+     * subscription that can be a moment stale — and this is the value a
+     * silent auto-commit turns on. The client computes it too and the two must
+     * AGREE; a disagreement opens the dialog rather than committing.
+     *
+     * Derived from slot data. Not from `resolution`, not from how many cards
+     * came back — an outage or an unscopable side must never make a
+     * two-marketplace set look one-sided (see `attachedSidesOf`).
+     */
+    attachedSides: v.array(platformSideValidator),
   }),
   handler: async (ctx, args): Promise<{
     success: boolean;
     message: string;
     candidateCount: number;
+    attachedSides: Array<"bsc" | "sportlots">;
   }> => {
     // NEO-202: this was the one function in this file with no identity check.
     // It is not merely a read: it performs authenticated fetches against BSC
@@ -8348,12 +8369,19 @@ export const fetchCardChecklist = action({
     // `{ success: false, message }`, which would render an authorization
     // failure as a marketplace outage.
     const adminUserId = await requireAdmin(ctx);
+    // NEO-255 — hoisted out of the `try` so the failure return can carry it
+    // too. A caller has to be able to tell "two marketplaces are attached and
+    // this run fell over" from "one is attached", and a throw is exactly when
+    // guessing that wrong would be most expensive. `[]` is the honest answer
+    // only while the chain itself has not been read yet.
+    let attachedSides: Array<"bsc" | "sportlots"> = [];
     try {
       // Resolve ancestor chain → filter map + sport + cardNumberPrefix
       const chain = await ctx.runQuery(
         api.selectorOptions.getAncestorChain,
         { id: args.selectorOptionId },
       );
+      attachedSides = attachedSidesOf(chain);
 
       const filters: Record<string, string> = {};
       // NEO-6: both sides may now be arrays at any level. We keep the
@@ -8428,6 +8456,10 @@ export const fetchCardChecklist = action({
           // No candidates written at all — the client reads this as "nothing to
           // pair" and goes straight to entity resolution.
           candidateCount: 0,
+          // Reported even here. Neither side could be SCOPED, which is not the
+          // same claim as "nothing is attached" — an id with no `variant` tag
+          // above it lands on this branch with the id still on the row.
+          attachedSides,
         };
       }
       if (!resolution.bsc.resolvable) {
@@ -9242,6 +9274,7 @@ export const fetchCardChecklist = action({
           autoMatchedCards.length +
           unmatchedBscCards.length +
           unmatchedSlCards.length,
+        attachedSides,
       };
     } catch (error) {
       console.error(`[fetchCardChecklist] Error:`, error);
@@ -9252,6 +9285,9 @@ export const fetchCardChecklist = action({
         // count is what THIS call is handing the operator, and a failed call
         // hands them nothing — the client discards the batch on `!success`.
         candidateCount: 0,
+        // Whatever the chain said before it broke. Empty only if the throw beat
+        // `getAncestorChain`.
+        attachedSides,
       };
     }
   },

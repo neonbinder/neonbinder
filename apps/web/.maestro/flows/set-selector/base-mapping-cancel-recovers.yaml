@@ -180,10 +180,18 @@ tags:
 - assertVisible:
     text: ".*SportLots base.*"
 
-# We intentionally do NOT Confirm — leaving Big League's Base unmapped keeps the
+# We intentionally do NOT Confirm — leaving this set's Base unmapped keeps the
 # flow non-destructive (R7) and collision-free on the GLOBAL selectorOptions.
-# We also don't test "Close" here: in the unmapped auto-open path Close is a
-# no-op (baseHasMapping is still false, so the message panel simply re-renders
-# rather than returning to a "Re-map Base" button) — that clean return only
-# exists on the already-mapped Re-map path, which is out of scope for this
-# first-time-mapping dead-end regression.
+#
+# We also don't press "Close" here, and the reason changed on 2026-09-08. It
+# used to be that Close was a NO-OP on the unmapped auto-open path — the panel
+# just re-rendered, because `baseMappingFormOpen` was derived from
+# `baseHasMapping` alone. NEO-255 fixed that: Close now DISMISSES the panel for
+# this variantType and hands back a primary "Map Base Set" button (an unmapped
+# row is still a first-time mapping, so it is never "Re-map Base"), and the
+# dismissal clears when the variantType selection changes. So Close is a real
+# way out now — it is simply not what THIS flow is about. This flow's feature is
+# the Cancel → message → Retry recovery, and it must leave the panel standing so
+# that Retry is the last thing it proves. The dismissal is exercised end to end
+# by `checklist-one-marketplace-skips-match-dialog`, which taps Close and then
+# asserts the panel is gone and "Map Base Set" is offered.

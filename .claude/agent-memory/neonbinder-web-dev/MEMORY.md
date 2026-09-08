@@ -11,3 +11,5 @@
 - [No inline sub-object forms](feedback-no-inline-sub-object-forms.md) — a "+ Add a new …" select option opens a modal that creates and selects; never inline fields saved by the parent form
 - [Reword duplicate aria-labels, never suffix](disambiguate-duplicate-aria-labels-by-rewording.md) — Maestro's `id:` is a regex find, so "Add player to new card" makes `id: "Add player"` match two elements
 - [Team Location is any place, school included](feedback-team-location-is-any-place-including-a-school.md) — never write that colleges/national sides "carry none"; blank only when the name has no place in it
+- [Claude-in-Chrome tabs are hidden](reference_claude_in_chrome_tabs_are_hidden.md) — visibilityState hidden, rAF frozen, smooth scroll never moves; measure scroll/animation in Chrome for Testing, not the extension
+- [maestro-web frame stall kills scrolling](reference_maestro_web_frame_stall_kills_scrolling.md) — its only scroll is a frame-driven smooth one; a stalled compositor moves 0px and reports COMPLETED; fix is `--run-all-compositor-stages-before-draw`
