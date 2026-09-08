@@ -53,3 +53,22 @@ puppeteer-driven Chrome launched with maestro's own flag list keep rAF at
 45-90/s, smooth-scroll exactly 313px per swipe, and screenshot in 45-80ms.
 A second CDP client attached for the whole run prevents the stall entirely —
 that run scrolled `Sync card checklist` from y=429 to y=208 and finished green.
+
+**The fix, measured 2026-09-08.** Launch Chrome for Testing with
+`--run-all-compositor-stages-before-draw`. maestro's `ChromeSeleniumFactory`
+hard-codes its option list and exposes no hook for extra args, so the way in is
+a wrapper script pointed at by `SE_BROWSER_PATH` that `exec`s the real binary
+with the flag appended. An 8x (screenshot + `- scroll`) probe on the drilled
+set-selector page: **unpatched 1/9 screenshots before hanging; with the flag
+9/9 screenshots and 8/8 scrolls, twice in a row**, and the screenshots show the
+page actually moving. `--disable-new-content-rendering-timeout` alone does not
+help (hangs on the first screenshot) and neither does `--headless=old`.
+
+**The app was cleared as the cause.** `scrollColumnIntoView`
+(`EntityColumn.tsx`) writing `scrollContainer.scrollLeft` at the moment a
+column is revealed was the prime suspect, because the stall starts at exactly
+that render. Deferring the write to `requestAnimationFrame` still stalls (6/9
+screenshots). Making it a no-op is not even testable — the Sets column then
+never scrolls into view and the flow fails one step earlier — which is itself
+the reason the function exists. Nothing about the app changes whether the
+renderer stops producing frames.
