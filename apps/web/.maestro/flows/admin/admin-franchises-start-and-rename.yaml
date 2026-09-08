@@ -151,18 +151,61 @@ tags:
 # ============================================================
 
 - tapOn: "Start a franchise"
-- assertVisible: "One name for a team.s whole run.*"
 
+# The rest of this panel is reached by scrolling, not asserted where it happens
+# to sit — see the long note below on why nothing here is above the fold by
+# right. Both scrolls are their own assertions (R6) and cost nothing when the
+# target is already on screen.
+- scrollUntilVisible:
+    element:
+      text: "One name for a team.s whole run.*"
+- scrollUntilVisible:
+    element:
+      text: "Franchise name"
 - tapOn: "Franchise name"
 - inputText: "Fran${output.TOKEN}"
+
+# ⚠️ SCROLLED TO, NOT TAPPED BLIND — this is what failed CI run 34179568903
+# ("Element not found: Text matching regex: Start franchise", 17.5s of polling)
+# after three green runs, and nothing in the flow or the screen changed. THE
+# PAGE GREW UNDER IT.
+#
+# The header row is `flex flex-wrap items-end gap-3`: filter box, Sport select,
+# counter, then this trigger. The counter's text is the only thing in it whose
+# WIDTH is a function of the data — and by that run the deployment held 183
+# franchises, so "0 of 183 franchises" pushed the row past its container and
+# wrapped the trigger onto a second line. Measured from that run's own
+# artifacts: at the moment of the "Start a franchise" tap the button was still
+# inline at y=347-379; by the time the form was open it had wrapped to
+# y=391-423. Everything below moved down ~46px with it, which put the form's
+# button row at y≈650 — past the 629px fold, where maestro's viewport-clipped
+# hierarchy cannot see it at all. The dump for that step simply ENDS at the
+# name and sport inputs, bottom y=622.
+#
+# So the wrap is a live-query race (the counter grows when `franchises.list`
+# lands) on a number that only ever gets bigger. Nothing in this panel may be
+# assumed above the fold again.
+#
+# No `centerElement`: the add form is the last thing on the page, so its button
+# row is locked to the bottom and centring can never settle — R8's own stated
+# exception. The scroll is also the assertion (R6).
+- scrollUntilVisible:
+    element:
+      text: "Start franchise"
 - tapOn: "Start franchise"
 
 # "Started <name>." is said ONLY for an INSERTED row — `franchises.findOrCreate`
 # reports `created: false` for a row it merely found, and the screen then says
 # "<name> was already here — opened it for you." instead. So this line is the
 # create, and it is also this flow's proof that the per-attempt name was free.
-- extendedWaitUntil:
-    visible: ".*Started Fran${output.TOKEN}.*"
+# `direction: UP` — the page-level status line renders ABOVE the filter row, and
+# the scroll to the create button above just left the page at its bottom. A
+# plain wait here could never see it, for exactly the reason the tap above could
+# not see the button.
+- scrollUntilVisible:
+    element:
+      text: ".*Started Fran${output.TOKEN}.*"
+    direction: UP
 
 # ============================================================
 # STEP 3 — THE NEW ROW IS A REAL, EMPTY, CORRECTLY-FILED THREAD

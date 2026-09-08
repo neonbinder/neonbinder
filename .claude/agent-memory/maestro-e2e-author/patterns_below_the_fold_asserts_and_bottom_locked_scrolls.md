@@ -62,3 +62,29 @@ polls 17s and fails.
 Re-open with `tapOn: id: "Add team"` — the trigger is `setPopoverOpen(true)`,
 never a toggle, so it is always safe. (Selecting a match, by contrast, leaves the
 popover open on purpose — `addChip` clears the query and re-focuses the input.)
+
+## 4. The admin header row WRAPS as the data grows, and shoves the panel down
+
+The newest trigger, and the nastiest, because the flow does not change and the
+screen does not change — the *deployment's row count* does.
+
+Every admin editor's header is `flex flex-wrap items-end gap-3`: filter box,
+a `<select>`, the counter, and (on Franchises) the "Start a franchise" trigger.
+The counter is the one element whose WIDTH is a function of the data. CI run
+34179568903, after three green runs: 183 franchises existed, `0 of 183
+franchises` pushed the row past its container, and the trigger wrapped onto a
+second line. Measured from that run's artifacts — at the tap the button was
+still inline at y=347-379; once the form was open it had wrapped to y=391-423.
+Everything below moved down ~46px, which put the add form's button row at
+y≈650, and the step's hierarchy dump simply ENDS at the inputs (bottom y=622).
+`tapOn` polled 17.5s and reported "Element not found".
+
+It is also a RACE: the counter grows when `franchises.list` lands, so the wrap
+can happen between two commands. And the number only ever gets bigger.
+
+**Rule: on `/admin/{players,teams,franchises,leagues}`, treat nothing in the
+detail panel as above the fold.** Header-row controls (the filter, the select,
+the trigger) are safe; everything from the master/detail grid down is reached
+with `scrollUntilVisible`, and a page-level status line — which renders ABOVE
+the filter row — needs `direction: UP` once anything below has been scrolled to.
+
