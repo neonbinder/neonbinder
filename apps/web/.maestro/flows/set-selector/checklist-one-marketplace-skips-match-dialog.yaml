@@ -324,56 +324,34 @@ tags:
 # ============================================================
 # STEP 4 — SYNC. THIS MUST NOT OPEN THE DIALOG.
 #
-# ── NO SCROLL COMMAND APPEARS BELOW THIS POINT, ON PURPOSE ─────────────────
-# maestro-web's only scroll primitive is `window.scroll({behavior:'smooth'})`,
-# which is frame-driven, and headless Chrome's renderer stops producing frames
-# at the set-selection render — so every scroll silently moves 0px and still
-# reports COMPLETED. `- swipe:` is a Selenium PointerInput sequence and hangs to
-# its own 180s timeout for the same reason. Root cause, and how to tell a stall
-# apart in ten seconds:
+# The checklist renders BELOW the columns container, under the 1024x629 fold,
+# so it is reached the way setup.yaml reaches it: scroll to the Base-mapping
+# button (the settle anchor — here "Map Base Set", proof the row stayed
+# unmapped), then centre "Add Card" (same flex row as the Cards header) before
+# asserting and tapping.
+#
+# ⚠️ LOCAL RUNS ON A MAC CAN STALL HERE (NEO-258): maestro-web's only scroll is
+# `window.scroll({behavior:'smooth'})`, frame-driven, and headless Chrome's
+# renderer can stop producing frames at the set-selection render, so every
+# scroll moves 0px and still reports COMPLETED. CI (Linux) does not stall —
+# PR #242 run 5 rendered and scrolled this page normally. Tell a stall apart in
+# ten seconds and the harness fix (`--run-all-compositor-stages-before-draw`
+# via SE_BROWSER_PATH):
 #   .claude/agent-memory/neonbinder-web-dev/
 #     reference_maestro_web_frame_stall_kills_scrolling.md
-# The only scroll left in this flow is in STEP 2, before the set is picked,
-# where frames are still alive.
-#
-# ⛔ WHEN THE RENDERER STALLS THIS FLOW CANNOT PASS: the checklist is below the
-# fold and there is no way to reach it from YAML. The stall was reproduced on
-# a local Mac only; every other scrolling flow passes in CI, so this flow is
-# queued untagged and CI is its validation. If it reds the gate on the stall,
-# re-tag it `wip` and land the harness fix below.
-# Measured at 1024x625 on the PR #242 preview, with the panel dismissed:
-#
-#   viewport parked by the app at scrollY 42     document height  1338
-#   Map Base Set          abs 461–493   →  on screen at 419–451   ✅
-#   Multi-source sets     abs 534–554   →  492–512                ✅
-#   Cards / Add Card      abs 809–841   →  767–799                ❌
-#   "No cards in this…"   abs 881–905   →  839–863                ❌
-#   Sync card checklist   abs 921–953   →  879–911                ❌  (254px under)
-#
-# Four things were checked so nobody re-checks them:
-#
-# 1. **maestro-web's element lookup IS viewport-bounded.** `maestro-web.js`'s
-#    `traverse` emits the WHOLE DOM with `getBoundingClientRect()` bounds, but
-#    the driver then drops anything off-screen — which is what the
-#    `ignoreBoundsFiltering` attribute exists to opt synthetic nodes out of. A
-#    dumped hierarchy for this 1338px page holds 89 nodes and not one begins
-#    below y=625 except two zero-height Clerk portals. So `tapOn`/`assertVisible`
-#    on an id or text cannot reach the checklist either; measured, verbatim:
-#      `CommandFailed: Assertion is false: "No cards in this checklist yet." is visible`
-# 2. **There is no keyboard route.** maestro-web supports ENTER and BACK_SPACE
-#    only ("Keycode <X> is not supported on web"), so focus cannot be walked
-#    down the page with Tab to make the browser scroll natively.
-# 3. **A pre-selection scroll does not survive.** The app scrolls the page
-#    itself when a column is revealed: scrolled to its maximum (719) before
-#    picking the set leaves scrollY 219; filtered first, scrolled to 369, then
-#    picked leaves 92; and the Base → Cancel → Close sequence settles at 42.
-# 4. **A scrollbar-track click does not scroll either.** `tapOn: point:
-#    "99%, 85%"` (the gutter, below the `fixed right-0 top-1/2` BinderTabs rail)
-#    landed at (1013, 531) twice and the hierarchy stayed at `root=[0,0]`.
-#
-# The unblock is in the harness, not in this file: the same run scrolls and
-# finishes green with a second CDP client attached, which prevents the stall.
 # ============================================================
+
+- scrollUntilVisible:
+    element:
+      text: "Map Base Set"
+    centerElement: true
+    timeout: 30000
+- scrollUntilVisible:
+    element:
+      text: "Add Card"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 30000
 
 # The checklist is empty here, so the button reads "Fetch from Marketplaces";
 # its accessible name is stable in both states. Asserting the empty state first
@@ -491,17 +469,21 @@ tags:
 # ── LINK 3 OF THE CHAIN: fetched == offered == SAVED ────────────────────────
 # `.*`-wrapped because the banner appends the attention count after the
 # sentence as team enrichment lands ("Saved 25 cards. 7 need attention — …").
-- extendedWaitUntil:
-    visible:
+- scrollUntilVisible:
+    element:
       text: ".*Saved ${output.FETCHED} cards.*"
+    centerElement: true
     timeout: 60000
 
 # The checklist itself now holds exactly that many — asserted on the header's
 # own count. The set was empty before the fetch (STEP 4), so this is an exact
 # claim, not a lower bound. `.*`-wrapped because the driver emits the heading
 # and the count in one node ("Cards (25)").
-- assertVisible:
-    text: ".*[(]${output.FETCHED}[)].*"
+- scrollUntilVisible:
+    element:
+      text: ".*[(]${output.FETCHED}[)].*"
+    centerElement: true
+    timeout: 15000
 
 # ── THE BADGE: these cards came from ONE marketplace, and the row says so ───
 # The commit writes an `unmatched-sl` marker for a card kept from BSC alone
@@ -510,9 +492,8 @@ tags:
 # whole difference between "the dialog was skipped" and "the dialog was skipped
 # AND the cards were kept correctly linked".
 #
-# Virtuoso opens the list at its END, so a card row is on screen without any
-# scroll; the badge is inside the row, which is why this is a plain assert (and
-# why it must be: no scroll command may appear after the set was selected).
+# Centring the Cards header above put the first rows on screen; the badge is
+# inside the row.
 - assertVisible: "BSC only"
 # And nothing was invented on the side that was never attached.
 - assertNotVisible: "SL only"
