@@ -286,6 +286,124 @@ Reruns are for flakes — if a flow fails twice, fix the flow. Reach for
 `test:e2e:pick` to iterate on it locally (see above) rather than burning
 further CI attempts.
 
+## Flow rules R1–R10
+
+Every flow satisfies all ten. Flows cite them by number in comments
+(`# R8 …`), so the numbering is stable; a flow that violates one is not
+done. They came out of the NEO-46/47/49 stabilisation and were restated in
+NEO-239 vocabulary (rows either carry marketplace ids or they do not; there
+is no "custom" concept).
+
+**R1 — Validate one clear product feature.** The `name:` and a top comment
+state the single user-facing feature the flow proves. If it does not fit one
+sentence, split the flow.
+
+**R2 — Assert that, and only that; no silent fall-through.** The flow must
+fail if the feature is broken. A `when:` branch or conditional `runFlow`
+that wraps the core action needs a hard `assertVisible` of its precondition
+before it and a hard assert of the result after it; a flow that can go green
+without exercising its feature is a false positive. Do not pile on
+unrelated assertions either.
+
+**R3 — Reuse shared logic; never duplicate another flow.** Drive navigation
+through the shared utils (R9) and confirm no existing flow already proves
+the same thing. Deleting or merging a flow is propose-and-wait, never
+autonomous, and retiring a flow requires replacement coverage first:
+removing E2E flows without a replacement is eliminating tests.
+
+**R4 — Flows never log in in-body, but keep the sign-in entry URL.**
+Authenticated flows enter through the top-level `url:`
+`/testing/sign-in?redirect=<route>&worker=${WORKER_INDEX}`; that is the
+per-flow Clerk handshake and it stays. Banned is any in-body re-login,
+credential setup or re-seed step: flows rely on the Phase-0 worker bootstrap.
+Public `home/*` flows enter signed out (`launchApp: { clearState: true }`);
+`util-*` sub-flows run inside a parent's session and enter directly.
+
+**R5 — Everything reacts within Maestro's 7 s default.** The only longer
+waits: a step that directly drives a live BSC/SportLots round-trip on data
+that is not pre-synced, the setup track's cold sync, and the post-`launchApp`
+heading gate (see "Launching a flow" below). A slow non-marketplace response
+is a product finding to raise, never a timeout to inflate.
+
+**R6 — No redundant `assertVisible` after `scrollUntilVisible`.** The scroll
+already asserts the element; a trailing assert of the same element is dead
+time. Asserting a different element is fine.
+
+**R7 — No destructive data actions.** Never clear credentials without
+restoring them, never delete or overwrite shared data, never wipe. The
+global reset is not a flow step: since NEO-214 it is the scripted
+`e2e-baseline.sh reset` the smoke script runs before `setup.yaml`, and
+`setup.yaml` documents its removal. A flow that leaves a worker's state
+degraded poisons every later flow that worker claims off the queue.
+
+**R7a — Sets that carry marketplace ids are read-only and sole-writer;
+writes go to a per-worker hand-made set.** `SET-REGISTRY.md` is the
+authority: it lists every real set the suite touches, who provisions it and
+which single flow may write to it. No other flow may add, edit or delete
+cards, players, teams or variants on a registered set. Runners drain one
+shared queue concurrently against one Convex preview, so a write to a shared
+set is visible to whatever else is running; `ATTEMPT_ID` protects against
+prior runs, not concurrent workers. To write, create a hand-made set (no
+marketplace ids, so it costs no sync) under real ancestors, suffixed
+`-${WORKER_INDEX || 0}`, and register the prefix in `SET-REGISTRY.md` in the
+same commit. Never attach a marketplace to a hand-made row and never "Add as
+New" on a real set's children. Adding a new real set needs explicit owner
+approval every time: propose and wait. A constraint that seems to force a
+write to a real set is a finding to raise, not a licence.
+
+**R8 — `centerElement: true` on every scroll that precedes a tap.** The
+headless viewport is 1024×629; a target left at a viewport edge shifts out
+from under captured coordinates on re-render. Drop centering only for an
+element locked to the page bottom, with a comment citing this rule. There is
+no app footer and no "footer-steal zone"; the real occluders are the sticky
+binder header at the top and the `BinderTabs` rail on the right edge. A
+dropped tap is diagnosed, never attributed to a footer.
+
+**R9 — All set-builder drilling goes through the drill utils.** Use
+`util-drill-to-2024-topps-chrome`, `util-drill-to-base-variant`,
+`util-drill-to-custom`, `util-drill-to-custom-set` or
+`util-drill-to-cold-real-set` via `runFlow`; never hand-roll a
+Sport → Year → Manufacturer → Set → Variant drill inline. A flow targeting a
+genuinely different set with unique picker asserts may diverge and must say
+why.
+
+**R10 — No waits that synchronise nothing.** A `when: { notVisible: X }`
+guard on an element that is normally present polls the full 7 s every run; a
+create-or-fallback branch that runs when the entity already exists and a
+settle right after an action are the same dead time. Remove them. The
+residual ~2 s per tap is the driver's hierarchy wait and is not tunable
+from YAML.
+
+### Companion rules
+
+Each of these has its own section in this file or a memory entry; they are
+listed here so a flow author meets them in one place.
+
+- **Fixtures come from the UI.** A flow creates the data it needs through
+  the product (New Team dialog, set builder, checklist). The one scripted
+  exception is `/testing/seed-credentials` (see "Worker-state seeding").
+- **Minted names are single tokens** built with `${ATTEMPT_ID}`, never
+  `output.ATTEMPT_ID` and never hyphenated: search indexes tokenise on
+  separators, so multi-token names collide across flows.
+- **`pressKey` needs a unique DOM `id`** on its target (own section below).
+- **Prefer `openLink` over tapping a link** to reach a page (own section).
+- **Gate flow launch on the destination heading** (own section).
+- **Tags** are `smoke`, `regression`, a grouping tag such as `set-selector`
+  or `profile`, and the `requires:`/`provides:` cascade tags. There is no
+  smoke-plus-feature pair per flow. Never add `wip`: fix the bug instead
+  (`config.yaml` excludes `util` and `wip`).
+- **Run only the flows you changed, against the PR's Convex preview**, with
+  `npm run test:e2e:plan -- name:<flow>` then `test:e2e:pick`. Never the
+  full suite locally unless the change is to the harness itself, and never
+  against shared dev (see the wipe warning under `test:e2e:pick`).
+- **An environment stall is not a flow bug.** One timeboxed check with the
+  renderer test in "The macOS renderer stall" (NEO-258), then stop: push and
+  let CI validate, and report what you measured. Never change app or flow
+  code to appease local Maestro.
+- **A red CI flow** is re-run per "Re-running a red E2E (NEO-187)"; a full
+  rerun, not `--failed`, when the failing flow lived in a runner job that
+  succeeded.
+
 ## Navigation in flows: prefer `openLink` over tapping links
 
 **Tapping an element that triggers a page navigation can crash maestro-web

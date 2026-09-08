@@ -96,8 +96,8 @@ the write. The stamp belongs immediately before the outbound call.
 - `urlToken` and `secret` appear in **no** public validator; `lastError` is an
   NB-authored enum precisely because EasyPost echoes the rejected URL (which
   carries the token) — `redactWebhookToken` scrubs it in `describeError` *and*
-  again in the router. Note nothing scrubs the HMAC *secret* from an upstream
-  message; EasyPost does not echo it today.
+  again in the router. Re-check on every change that upstream error messages
+  are scrubbed of anything secret-shaped before they are stored or logged.
 - `REGISTERABLE_DEPLOYMENTS` fails closed and the dev slug `<dev-slug>` was
   **already** public in `.github/workflows/preview-cleanup.yml`; committing it
   in `convex/shipmentTracking.ts` discloses nothing new. What a dev slug reaches

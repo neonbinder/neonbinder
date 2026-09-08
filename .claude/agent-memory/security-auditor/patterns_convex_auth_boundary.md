@@ -5,7 +5,7 @@ metadata:
   type: project
 ---
 
-In `neonbinder_web/convex`, the auth boundary is `requireAdmin(ctx)` from `./auth` (verifies a signed Clerk JWT and checks `role === "admin"` from the `convex` JWT template's `role` claim). `getCurrentUserId(ctx)` only returns the subject; it is NOT an authorization check.
+In `apps/web/convex`, the auth boundary is `requireAdmin(ctx)` from `./auth` (verifies a signed Clerk JWT and checks `role === "admin"` from the `convex` JWT template's `role` claim). `getCurrentUserId(ctx)` only returns the subject; it is NOT an authorization check.
 
 **Why:** Set Builder + marketplace adapters are admin-only operator tooling. Every sibling adapter action follows this: `fetchSportLotsSelectorOptions`, `fetchSportLotsChecklist`, `fetchBscSelectorOptions`, `fetchBscChecklist`, and all `selectorOptions.ts` queries/mutations call `await requireAdmin(ctx)` as the first handler line. `getBscToken` was even converted from a requireAdmin-gated public action to an `internalAction` because "there is no longer any legitimate non-backend caller."
 

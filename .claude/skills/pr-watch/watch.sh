@@ -23,6 +23,11 @@
 #   E2E_QUEUE_SECRET    skip the convex env lookup if already set
 #   CONVEX_SITE_URL     skip preview resolution if already set
 #   PR_WATCH_NO_QUEUE=1 disable the Convex queue enrichment entirely (gh-only)
+#   PR_WATCH_REQUIRED_CHECK  the gate check that must be green before this
+#                       reports GREEN (default "CI Gate"). See the note on the
+#                       verdict in tick(): "no pending checks" alone is not a
+#                       terminal state, because a freshly pushed SHA has only
+#                       the fast third-party checks attached.
 set -uo pipefail
 { set +x; } 2>/dev/null  # defensive: never trace (the queue secret flows through here)
 
@@ -30,6 +35,7 @@ PR="${1:?usage: watch.sh <pr-number> [repo-dir]}"
 REPO_DIR="${2:-.}"
 INTERVAL="${PR_WATCH_INTERVAL:-120}"
 MAX_MIN="${PR_WATCH_MAX_MIN:-90}"
+REQUIRED_CHECK="${PR_WATCH_REQUIRED_CHECK:-CI Gate}"
 
 cd "$REPO_DIR" 2>/dev/null || { echo "DONE ERROR — cannot cd to repo dir: $REPO_DIR"; exit 3; }
 
@@ -129,6 +135,11 @@ tick() {
   r_total=$(echo "$rollup"   | jq '[.[]|select(.name|test("^runner"))]|length')
   r_done=$(echo "$rollup"    | jq '[.[]|select((.name|test("^runner")) and (.s=="COMPLETED"))]|length')
 
+  # The gate check's own conclusion — see the GREEN condition below.
+  local req
+  req=$(echo "$rollup" | jq -r --arg n "$REQUIRED_CHECK" \
+    'first(.[]|select(.name==$n)) | (if (.c|length)>0 then .c else .s end) // ""')
+
   symbol() { case "$1" in SUCCESS) echo ✓;; FAILURE|CANCELLED|TIMED_OUT|STARTUP_FAILURE|ACTION_REQUIRED) echo ✗;; NEUTRAL|SKIPPED) echo ⊘;; COMPLETED) echo ✓;; "") echo —;; *) echo ▶;; esac; }
   named() { echo "$rollup" | jq -r --arg re "$1" 'first(.[]|select(.name|test($re;"i"))) | (if (.c|length)>0 then .c else .s end) // "—"' 2>/dev/null; }
   seed=$(symbol "$(named "^seed$")"); gate=$(symbol "$(named "^e2e$")"); maestro=$(symbol "$(named "maestro")")
@@ -138,11 +149,29 @@ tick() {
   elif [ "${failed:-0}" -gt 0 ]; then
     VERDICT="FAILED"
     FAILED_NAMES=$(echo "$rollup" | jq -r '[.[]|select(.c=="FAILURE" or .c=="CANCELLED" or .c=="TIMED_OUT" or .c=="STARTUP_FAILURE" or .c=="ACTION_REQUIRED")|.name]|join(", ")')
-  elif [ "${total:-0}" -gt 0 ] && [ "${pending:-0}" -eq 0 ]; then VERDICT="GREEN"
+  elif [ "${total:-0}" -gt 0 ] && [ "${pending:-0}" -eq 0 ] && [ -n "$req" ] &&
+       { [ "$req" = "SUCCESS" ] || [ "$req" = "SKIPPED" ] || [ "$req" = "NEUTRAL" ]; }; then
+    VERDICT="GREEN"
   else VERDICT="RUNNING"; fi
 
-  printf '[t+%sm] %s — checks %s/%s done, %s failed · seed %s · runners %s/%s · e2e %s · maestro %s%s\n' \
-    "$(elapsed_min)" "$VERDICT" "$completed" "$total" "$failed" "$seed" "$r_done" "$r_total" "$gate" "$maestro" "$(queue_line)"
+  # "Nothing pending" is NOT the same as "the pipeline finished". Right after a
+  # push, GitHub has attached only the fast third-party checks (Vercel answers in
+  # seconds) while the PR Pipeline run is still queued and has registered nothing.
+  # The old condition — total>0 && pending==0 — read that as GREEN and exited, so
+  # every push produced a confident, wrong "mergeable" ~30s later. It happened
+  # four times in one session on PRs #117 and #119.
+  #
+  # $REQUIRED_CHECK is the pipeline's own gate job, which depends on every other
+  # job, so it cannot be green before the pipeline is genuinely done, and it is
+  # absent entirely until the run registers. Waiting on it is what distinguishes
+  # "finished" from "not started". SKIPPED/NEUTRAL count as satisfied so a PR
+  # whose pipeline legitimately skips does not sit here until the safety timeout.
+  local waiting=""
+  [ "$VERDICT" = "RUNNING" ] && [ "${pending:-0}" -eq 0 ] && [ -z "$req" ] &&
+    waiting=" · waiting for ${REQUIRED_CHECK} (pipeline not registered yet)"
+
+  printf '[t+%sm] %s — checks %s/%s done, %s failed · seed %s · runners %s/%s · e2e %s · maestro %s%s%s\n' \
+    "$(elapsed_min)" "$VERDICT" "$completed" "$total" "$failed" "$seed" "$r_done" "$r_total" "$gate" "$maestro" "$(queue_line)" "$waiting"
 }
 
 # ── main loop ────────────────────────────────────────────────────────────────

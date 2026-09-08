@@ -212,6 +212,7 @@ export function Autocomplete<T>({
             <li
               role="option"
               aria-disabled="true"
+              aria-selected={false}
               aria-live="polite"
               className="px-3 py-2 text-sm text-gray-400"
             >

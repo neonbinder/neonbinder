@@ -1,13 +1,13 @@
 ---
 name: project-vitest-projects-setup
-description: Vitest 4 multi-project config for neonbinder_web — node/edge-runtime for convex+lib, happy-dom for component tests
+description: Vitest 4 multi-project config for apps/web — node/edge-runtime for convex+lib, happy-dom for component tests
 metadata:
   type: project
 ---
 
-# Vitest multi-project config (neonbinder_web)
+# Vitest multi-project config (apps/web)
 
-**Established in NEO-39.** `vitest.config.ts` in `neonbinder_web/` (and its worktrees) uses `test.projects` (vitest 4 API) to run two isolated environments from a single config file.
+**Established in NEO-39.** `vitest.config.ts` in `apps/web/` (and its worktrees) uses `test.projects` (vitest 4 API) to run two isolated environments from a single config file.
 
 ## Project layout
 
@@ -57,6 +57,10 @@ npx vitest run                  # both projects
 npx vitest run --project components   # component tests only
 npx vitest run --project convex-lib   # convex+lib only
 ```
+
+## Worker-crash flake on full `convex/` run (parallel forks)
+
+Running `npx vitest run convex/` (all ~36 files at once, default parallel forks) has produced spurious `[vitest-pool]: Worker forks emitted error` / `Worker exited unexpectedly` — 2 of 36 files silently drop out of the run (e.g. "34 passed (36)") with no actual test failure reported, just missing files. Observed in the NEO-21 worktree (2026-07-26), likely the same laptop-memory-under-parallelism class of issue as [[reference_maestro_local_tab_crash_parallelism]]. **Fix: rerun with `--no-file-parallelism`** — same 36 files went fully green (348/348) in serial mode. When verifying "the full existing suite still passes" after a change, prefer `--no-file-parallelism` (slower, ~4-5s vs ~1.3s, but deterministic) over trusting a parallel run's file count.
 
 ## Key invariant test pattern (reactive-safe fields)
 

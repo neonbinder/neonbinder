@@ -1,12 +1,21 @@
 # Introduction
 
+> **Status (2026-09-08, NEO-259):** this is the original product and architecture
+> specification. Its *product intent* still stands; its *technical* sections
+> (Next.js App Router layout, `neonbinder_web` / `neonbinder_browser` /
+> `neonbinder_app` repos, mobile client, test matrix) predate the monorepo and are
+> historical. The web app is a Vite + React Router SPA in `apps/web`, the browser
+> service is `services/browser`, preprocessing is `services/preprocess`, and the
+> mobile client is paused outside this repo. The authoritative engineering rules
+> are in the repo-root `CLAUDE.md`; where this document disagrees, `CLAUDE.md` wins.
+
 NeonBinder is a unified platform built to serve collectors — whether they’re managing a personal collection or selling across multiple marketplaces. The system combines computer vision, structured hobby data, and marketplace APIs to automate the process of identifying, cataloging, and managing trading cards.
 
 While NeonBinder will eventually power end-to-end sales across platforms like eBay, SportLots, BuySportsCards, MySlabs, and MyCardPost, its first release focuses on the collector — providing a rich, personal space to track and celebrate their collection. Collectors can organize their inventory, build lists from official checklists, or create personalized “Go Get It” collections that express what makes their collection unique.
 
 Agents writing code for NeonBinder should design systems that treat collection management and marketplace selling as one continuous experience. The same underlying data, models, and UX principles should support both — ensuring that a collector who starts by tracking their collection can easily transition into selling, and vice versa.
 
-NeonBinder’s agents are expected to produce high-quality, maintainable TypeScript and JavaScript (Node.js + React/React Native), emphasizing:
+NeonBinder’s agents are expected to produce high-quality, maintainable TypeScript and JavaScript (Node.js + React for the web app in this repo; the React Native client is paused and lives outside the monorepo), emphasizing:
 	•	Data integrity across personal and marketplace use cases
 	•	Performance for managing large, image-rich collections
 	•	Consistency in shared UI/UX patterns across collection and selling workflows
@@ -1124,7 +1133,7 @@ Each repository should include a `test` job or step that enforces validation gat
 
 Minimum CI requirements:
 - ✅ Run all test suites (`pnpm test` or `npm run test`).  
-- ✅ Run `eslint` and `prettier --check` for code quality.  
+- ✅ Run `eslint` for code quality.  
 - ✅ Run `tsc --noEmit` to ensure TypeScript correctness.  
 - ✅ For Convex: run `npx convex codegen` and `npx convex check`.  
 - ✅ For Terraform: run `terraform validate` and `terraform fmt -check`.  

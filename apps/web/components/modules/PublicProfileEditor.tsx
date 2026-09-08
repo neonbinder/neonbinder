@@ -408,7 +408,7 @@ export default function PublicProfileEditor() {
           {photoPreview ? (
             <img
               src={photoPreview}
-              alt="Profile photo preview"
+              alt="Profile preview"
               className="w-20 h-20 rounded-full object-cover border-2 border-slate-700"
             />
           ) : (
