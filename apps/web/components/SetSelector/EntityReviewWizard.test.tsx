@@ -6210,3 +6210,75 @@ describe("EntityReviewWizard — the New League step keeps its footer pinned", (
     expect(screen.getByText("Skip — no league")).toBeTruthy();
   });
 });
+
+// ---------------------------------------------------------------------------
+// NEO-254 — a career team whose name belongs to several eras
+//
+// `teams.resolveNames` answers `ambiguous` rather than picking: the 1972-1996
+// Winnipeg Jets and the 2011- ones are different franchises, and a name alone
+// cannot say which. The chip reports that state and resolves NOTHING on the
+// client — the commit prelude resolves each stint by its own `fromYear`, which
+// is the only year that can settle it, so a chip that guessed here would
+// disagree with what the commit actually writes.
+// ---------------------------------------------------------------------------
+
+describe("EntityReviewWizard — a career team with several eras", () => {
+  const jetsPlayer = () =>
+    makeRow({
+      kind: "player",
+      name: "Bobby Hull",
+      status: "ready",
+      enrichment: {
+        careerTeams: [{ name: "Winnipeg Jets", fromYear: 1972, toYear: 1980 }],
+      },
+    });
+
+  it("says which era? instead of painting one of the two as resolved", () => {
+    currentResolvedNames = [{ name: "Winnipeg Jets", ambiguous: true }];
+    currentRows = [jetsPlayer()];
+    renderWizard();
+
+    expect(screen.getByText("Winnipeg Jets · which era?")).toBeTruthy();
+  });
+
+  it("does not claim the team is held, and does not demand a decision", () => {
+    // Neither of the two states beside it: nothing is resolved, and nothing is
+    // blocked — the stint's own years will settle it at commit.
+    currentResolvedNames = [{ name: "Winnipeg Jets", ambiguous: true }];
+    currentRows = [jetsPlayer()];
+    renderWizard();
+
+    expect(screen.queryByText("needs a team decision")).toBeNull();
+    // The chip's own label still carries the years, which are what the commit
+    // resolves by — so the operator can see and fix them.
+    expect(screen.getByText("Winnipeg Jets (1972–1980)")).toBeTruthy();
+  });
+
+  it("leaves Confirm reachable — an ambiguous name is not an unanswered one", () => {
+    currentResolvedNames = [{ name: "Winnipeg Jets", ambiguous: true }];
+    currentRows = [jetsPlayer()];
+    renderWizard();
+
+    expect(
+      screen.queryByText(/still needs a team decision, or untick it/),
+    ).toBeNull();
+  });
+
+  it("a resolved name is unchanged — it still shows the team we hold", () => {
+    currentResolvedNames = [
+      {
+        name: "Winnipeg Jets",
+        existingTeamId: "t1",
+        existingName: "Winnipeg Jets",
+      },
+    ];
+    currentRows = [jetsPlayer()];
+    renderWizard();
+
+    // No era question, and no unanswered-decision line either: the ordinary
+    // resolved path, untouched.
+    expect(screen.queryByText("Winnipeg Jets · which era?")).toBeNull();
+    expect(screen.queryByText("needs a team decision")).toBeNull();
+    expect(screen.getByText("Winnipeg Jets (1972–1980)")).toBeTruthy();
+  });
+});

@@ -821,6 +821,23 @@ export default function EntityReviewWizard({
   ):
     | { kind: "resolved" | "creating" | "linked"; name: string }
     | { kind: "checking" }
+    /**
+     * NEO-254 — the sport holds SEVERAL teams under this name, one per era.
+     *
+     * `teams.resolveNames` answers `ambiguous` rather than picking, because a
+     * name alone is not an answer: the 1972-1996 Winnipeg Jets and the 2011-
+     * ones are different franchises. Nothing is resolved on the client — the
+     * prelude resolves each stint by its OWN `fromYear`, which is the only
+     * year that can settle it, and a chip that guessed here would disagree
+     * with what the commit actually writes.
+     *
+     * So this reports the state and nothing else. The chip already carries its
+     * years, so for the ordinary case the operator has nothing to do: the
+     * commit will pick the right era on its own. It matters when the years are
+     * wrong or missing, and the existing "Add years" / stint editing is how
+     * that is fixed.
+     */
+    | { kind: "ambiguous" }
     // NEO-236 — `stagedRowId` is the step that answers this label, when the
     // batch holds one. Without it the chip said "needs a team decision" and
     // pointed nowhere, which is exactly what Jason hit: "There does not appear
@@ -833,6 +850,10 @@ export default function EntityReviewWizard({
     if (resolved?.existingTeamId) {
       return { kind: "resolved", name: resolved.existingName ?? label };
     }
+    // NEO-254 — several eras answer to this name. Reported, never guessed at;
+    // see the `ambiguous` case above. Checked BEFORE the staged-step branch,
+    // because a name we already hold has no staged step by construction.
+    if (resolved?.ambiguous) return { kind: "ambiguous" };
     const staged = stagedTeamRowsForCurrent.get(key);
     /*
      * The match query has not answered yet, and this chip has no staged step
@@ -2609,7 +2630,22 @@ export default function EntityReviewWizard({
                                       two are now siblings.
                                     */}
                                     {showStatus &&
-                                      (status.kind === "waiting" ? (
+                                      (status.kind === "ambiguous" ? (
+                                        /* NEO-254 — the name is not enough, and
+                                           saying so beats painting one of two
+                                           franchises as if we had chosen it.
+                                           Not the pink "needs a decision"
+                                           treatment: nothing is blocked, the
+                                           commit resolves this stint by its own
+                                           years, and the operator only has to
+                                           act if those years are wrong. */
+                                        <span
+                                          id={statusId}
+                                          className="text-xs text-gray-400"
+                                        >
+                                          {ct.name} · which era?
+                                        </span>
+                                      ) : status.kind === "waiting" ? (
                                         /* Not colour alone (SC 1.4.1): this
                                            says something different IN WORDS
                                            from the resolved case beside it,
