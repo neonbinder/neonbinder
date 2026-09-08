@@ -37,22 +37,33 @@ function sourceFiles(dir: string): string[] {
 }
 
 describe("NEO-254: only players.ts writes the alias index", () => {
-  test("no other module inserts into or deletes from playerAliases", () => {
+  test("no other module writes playerAliases per player", () => {
+    /*
+     * The exemption, and why it is narrow.
+     *
+     * The set-builder RESET drains this table wholesale, and it must not go
+     * through `syncPlayerAliases` — that helper rewrites one player's rows, and
+     * a drain has no player. So `resetPlayerAliasesBatch` is allowed to query
+     * and delete here; everything else, in any module, is the drift this file
+     * exists to catch.
+     */
     const offenders: string[] = [];
     for (const file of sourceFiles(CONVEX_DIR)) {
-      if (file.endsWith(`${join("convex", "players.ts")}`)) continue;
+      if (file.endsWith(join("convex", "players.ts"))) continue;
       const src = readFileSync(file, "utf8");
-      if (/\.(insert|delete|patch)\(\s*"playerAliases"/.test(src)) {
-        offenders.push(file);
-      }
-      // `db.delete(row._id)` on a row read from the table is the other shape;
-      // catch the read that would precede it outside the owning module.
-      if (
-        /query\(\s*"playerAliases"/.test(src) &&
-        !/withIndex\(\s*"by_alias_normalized_and_sport_id"/.test(src)
-      ) {
-        offenders.push(file);
-      }
+      const touches =
+        /\.(insert|patch)\(\s*"playerAliases"/.test(src) ||
+        /query\(\s*"playerAliases"/.test(src);
+      if (!touches) continue;
+      // The one sanctioned exception, checked by NAME rather than by file: a
+      // second function in this module doing it would still be flagged.
+      const drain = src.indexOf("export const resetPlayerAliasesBatch");
+      const onlyUse =
+        drain !== -1 &&
+        src.indexOf('query("playerAliases"') > drain &&
+        (src.match(/query\(\s*"playerAliases"/g) ?? []).length === 1 &&
+        !/\.(insert|patch)\(\s*"playerAliases"/.test(src);
+      if (!onlyUse) offenders.push(file);
     }
     // `bulkLoad.ts` and every other caller must go through `syncPlayerAliases`.
     expect(offenders).toEqual([]);

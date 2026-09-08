@@ -1460,3 +1460,103 @@ describe("NEO-254: stageLeagueRows reports which of the three things happened", 
     ).rejects.toThrow(/121 characters/);
   });
 });
+
+// ===========================================================================
+// NEO-254 — the era the operator typed reaches the decision
+// ===========================================================================
+
+describe("NEO-254: a New Team step's era travels with its decision", () => {
+  test("recordDecision stores create.yearsActive verbatim", async () => {
+    /*
+     * A sport can hold two teams under one name — the 1972-1996 Winnipeg Jets
+     * and the 2011- Jets — and the era is the only thing that tells them
+     * apart. Without it on the payload an operator could type "Winnipeg Jets,
+     * 1972-1996" into a 1985 set's step, the prelude would see a create with
+     * no dates, adopt the 2011 row it already held, and every 1985 card in the
+     * set would bind to a franchise that did not exist yet.
+     */
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const team = await insertRow(t, {
+      sportId,
+      kind: "team",
+      name: "Winnipeg Jets",
+      status: "ready",
+    });
+
+    await t.withIdentity(ADMIN_IDENTITY).mutation(
+      api.entityReviewQueue.recordDecision,
+      {
+        reviewRowId: team,
+        action: "create",
+        create: {
+          location: "Winnipeg",
+          name: "Jets",
+          yearsActive: { from: 1972, to: 1996 },
+        },
+      },
+    );
+
+    const row = await t.run(async (ctx) => ctx.db.get(team));
+    expect(row!.decision).toEqual({
+      action: "create",
+      create: {
+        location: "Winnipeg",
+        name: "Jets",
+        yearsActive: { from: 1972, to: 1996 },
+      },
+    });
+  });
+
+  test("an open era (no end year) survives the round trip", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const team = await insertRow(t, {
+      sportId,
+      kind: "team",
+      name: "Winnipeg Jets",
+      status: "ready",
+    });
+
+    await t.withIdentity(ADMIN_IDENTITY).mutation(
+      api.entityReviewQueue.recordDecision,
+      {
+        reviewRowId: team,
+        action: "create",
+        create: { name: "Jets", location: "Winnipeg", yearsActive: { from: 2011 } },
+      },
+    );
+
+    const row = await t.run(async (ctx) => ctx.db.get(team));
+    expect(
+      (row!.decision as { create?: { yearsActive?: unknown } }).create
+        ?.yearsActive,
+    ).toEqual({ from: 2011 });
+  });
+
+  test("a create with no era stores none — an undated row is a normal row", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const team = await insertRow(t, {
+      sportId,
+      kind: "team",
+      name: "Vancouver Canucks",
+      status: "ready",
+    });
+
+    await t.withIdentity(ADMIN_IDENTITY).mutation(
+      api.entityReviewQueue.recordDecision,
+      {
+        reviewRowId: team,
+        action: "create",
+        create: { name: "Canucks", location: "Vancouver" },
+      },
+    );
+
+    const row = await t.run(async (ctx) => ctx.db.get(team));
+    expect(
+      (row!.decision as { create?: { yearsActive?: unknown } }).create
+        ?.yearsActive,
+    ).toBeUndefined();
+  });
+});

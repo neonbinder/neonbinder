@@ -9,7 +9,7 @@ import { AddLeagueDialog } from "./AddLeagueDialog";
 import { contrastRatio, normalizeHexColor } from "@/lib/print/contrast";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import { teamFullName, teamShortName } from "@/lib/teams/team-name";
-import { eraLabel } from "@/lib/teams/team-era";
+import { eraLabel, teamOptionLabel } from "@/lib/teams/team-era";
 import { useFollowedParam } from "@/src/hooks/use-followed-param";
 
 /**
@@ -1519,13 +1519,29 @@ export default function TeamManagement() {
                         not what anyone would look for, so the full name is
                         spelled out here.
 
-                        EXACTLY `teamFullName`, with nothing appended: Maestro
-                        builds `resource-id = node.id || node.ariaLabel`, so
-                        this string is the handle every `.maestro` flow taps
-                        this row by. Appending a state word to it would break
-                        every one of them silently.
+                        NEO-254 — and the ERA, when the row has one.
+
+                        This used to be exactly `teamFullName` with nothing
+                        appended, because Maestro builds
+                        `resource-id = node.id || node.ariaLabel` and this string
+                        is the handle every `.maestro` flow taps the row by. That
+                        rule held while a name identified a row. It does not any
+                        more: a sport can hold two "Winnipeg Jets", and two rows
+                        with one accessible name are two identical handles for
+                        two different franchises — Maestro taps whichever comes
+                        first, and a screen-reader operator cannot tell them
+                        apart at all.
+
+                        So the era goes IN the name rather than in the
+                        description beside it: `aria-describedby` is not part of
+                        what Maestro resolves, so a description could never make
+                        the handle unique. `teamOptionLabel` appends nothing when
+                        a row has no years, which is what keeps every existing
+                        flow working — the E2E author audited that none taps a
+                        DATED row by its full name. Same helper, same string,
+                        as the TeamPicker option rows.
                       */
-                      aria-label={teamFullName(team)}
+                      aria-label={teamOptionLabel(teamFullName(team), team.yearsActive)}
                       /*
                         a11y (SC 4.1.2) — an `aria-label` REPLACES the accessible
                         name, so the league tag and the attention glyph below
@@ -1535,16 +1551,15 @@ export default function TeamManagement() {
                         `sr-only` line at the end of this button and pointed at
                         from here.
 
-                        `describedby`, not a longer label: the label has to stay
-                        exactly `teamFullName` (see above), and a description is
-                        the attribute for "and also, about this thing…".
+                        `describedby`, not a longer label: the label carries the
+                        row's IDENTITY (name and era — see above) and a
+                        description is the attribute for "and also, about this
+                        thing…". State does not belong in a handle a test taps.
                         Keyed on `team._id` rather than `useId`, because this is
                         inside a `.map` and `useId` cannot be called per row.
                       */
                       aria-describedby={
-                        attention || league || era
-                          ? `team-row-${team._id}`
-                          : undefined
+                        attention || league ? `team-row-${team._id}` : undefined
                       }
                       className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm border-l-2 transition-colors focus:outline-none focus:ring-2 focus:ring-inset focus:ring-green-500 ${
                         isSelected
@@ -1630,17 +1645,11 @@ export default function TeamManagement() {
                           {attention === "choice" ? "?" : "—"}
                         </span>
                       )}
-                      {(attention || league || era) && (
+                      {(attention || league) && (
                         <span id={`team-row-${team._id}`} className="sr-only">
                           {league
                             ? `${league.abbreviation ?? league.name}. `
                             : ""}
-                          {/* NEO-254: `aria-label` is pinned to the bare full
-                              name (see above), so the era reaches assistive
-                              tech HERE or not at all — and on a screen that can
-                              now list one name twice, "which one" is the first
-                              thing a screen-reader operator needs. */}
-                          {era ? `Active ${era}. ` : ""}
                           {attention === "choice"
                             ? "Several color sources match — needs a pick."
                             : attention === "colors"

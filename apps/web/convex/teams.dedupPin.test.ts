@@ -628,29 +628,112 @@ describe("NEO-236: no writer derives a team's dedup key by hand", () => {
     // the assertion. It took a name and returned one row via `.first()`, which
     // is precisely how a 1985 Winnipeg Jets card came to point at the franchise
     // that started in 2011. Its replacements each make the caller say what they
-    // are asking: every era under the name, the era a given year means, or just
-    // whether the name is held at all.
+    // are asking: every era under the name, or the era a given year means.
     expect(src).not.toContain("export async function findTeamByFullName(");
     expect(src).toContain("export async function findTeamsByFullName(");
     expect(src).toContain("export async function resolveTeamForSetYear(");
     expect(src).toContain("export async function findCollidingTeams(");
-    expect(src).toContain("export async function sportHoldsTeamName(");
+    // No name-only existence helper either: every caller that looked like it
+    // wanted one needs the year as well, and an era-blind check is the shape
+    // this ticket removed.
+    expect(src).not.toContain("export async function sportHoldsTeamName(");
   });
 
-  test("no caller resurrects a name-only team lookup", () => {
-    // The other half of the pin. `findTeamsByFullName` returning a LIST is only
-    // a safeguard while callers branch on its length; a helper that quietly
-    // took `[0]` would restore the old defect with a new name.
+  /**
+   * Does this source take the FIRST row out of a list-returning identity
+   * helper? See the test below for why both shapes are checked.
+   */
+  function indexesAListHelper(src: string): boolean {
+    const HELPERS = "(?:findTeamsByFullName|findCollidingTeams)";
+    const first = "(?:\\[0\\]|\\.at\\(0\\))";
+    if (new RegExp(`${HELPERS}\\([^;]*?\\)\\s*\\)?\\s*${first}`).test(src)) {
+      return true;
+    }
+    // `const rows = await findTeamsByFullName(…)` … thirty lines later …
+    // `rows[0]`. Flagged UNLESS the file also guards that same variable with an
+    // exactly-one check, which is the sanctioned shape: prove there is only one
+    // row, then name it.
+    //
+    // `=== 1` specifically, not any `.length` test. The defect that shipped was
+    // `if (colliding.length > 0) return colliding[0]` — a length branch, and
+    // the wrong one. "More than none" is what lets an arbitrary row through;
+    // "exactly one" is what makes naming it safe.
+    const assigned = new RegExp(
+      `(?:const|let)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*(?:await\\s+)?${HELPERS}\\(`,
+      "g",
+    );
+    for (const match of src.matchAll(assigned)) {
+      const name = match[1];
+      if (!new RegExp(`\\b${name}\\s*${first}`).test(src)) continue;
+      const guarded = new RegExp(`\\b${name}\\.length\\s*===\\s*1\\b`).test(src);
+      if (!guarded) return true;
+    }
+    return false;
+  }
+
+  test("no caller takes the first row out of a list-returning lookup", () => {
+    /*
+     * The other half of the pin. `findTeamsByFullName` and `findCollidingTeams`
+     * returning a LIST is only a safeguard while callers branch on its length;
+     * taking the first row restores the old defect under a new name — and it
+     * did. `selectorOptions.ts` attached an operator's reviewed team to
+     * whichever of two OVERLAPPING rows the index happened to return first,
+     * which is exactly the shape NEO-254 removed from every read path.
+     *
+     * Two forms are caught, because the one that actually shipped was the
+     * second: indexing the call directly, and indexing a VARIABLE the call was
+     * assigned to. The variable form is why this is a two-pass scan rather than
+     * one regex — the assignment and the index are typically thirty lines
+     * apart.
+     *
+     * A heuristic, and worth saying so: an alias of an alias, or a `.find()`
+     * that happens to pick the first row, walks past it. It catches the shape
+     * somebody reaches for by reflex, which is the shape that has shipped.
+     */
     const offenders: string[] = [];
     for (const file of sourceFiles(CONVEX_DIR)) {
+      const relative = file.slice(CONVEX_DIR.length + 1);
+      // The identity OWNERS are exempt, the same two files the index grep above
+      // exempts and for the same reason: they define what "the row for this
+      // name and era" means, so they are where the decision belongs. In
+      // particular `saveTeamFields` names one of several colliding rows in its
+      // `NAME_TAKEN:<id>` refusal — pointing the operator at any of them is
+      // correct, because the remedy is to go and look. The pin exists to stop
+      // CALLERS reaching past these two.
+      if (IDENTITY_OWNERS.includes(relative)) continue;
       const src = readFileSync(file, "utf8");
-      if (
-        /findTeamsByFullName\([^)]*\)\s*\)?\s*\[0\]/.test(src) ||
-        /await findTeamsByFullName\([\s\S]{0,200}?\)\s*\)?\.\s*at\(0\)/.test(src)
-      ) {
-        offenders.push(file.slice(CONVEX_DIR.length + 1));
-      }
+      if (indexesAListHelper(src)) offenders.push(relative);
     }
     expect(offenders).toEqual([]);
+  });
+
+  test("that detector catches both shapes, and leaves the sanctioned ones alone", () => {
+    // A guard on the guard, and not a hypothetical one: the first version of
+    // this pin matched only the DIRECT form, so it passed cleanly over the very
+    // line it had been written for.
+    expect(indexesAListHelper("(await findCollidingTeams(ctx, s, n, y))[0]")).toBe(
+      true,
+    );
+    // The defect that actually shipped: a length branch, and the wrong one.
+    expect(
+      indexesAListHelper(
+        [
+          "const colliding = await findCollidingTeams(ctx, sportId, name, years);",
+          "if (colliding.length > 0) return { id: colliding[0]._id };",
+        ].join("\n"),
+      ),
+    ).toBe(true);
+
+    // The sanctioned shape: prove there is exactly one, THEN name it.
+    expect(
+      indexesAListHelper(
+        [
+          "const colliding = await findCollidingTeams(ctx, sportId, name, years);",
+          "if (colliding.length === 1) return { id: colliding[0]._id };",
+          "if (colliding.length > 1) return null;",
+        ].join("\n"),
+      ),
+    ).toBe(false);
+    expect(indexesAListHelper("await findTeamsByFullName(ctx, s, n);")).toBe(false);
   });
 });

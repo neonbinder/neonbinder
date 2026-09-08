@@ -350,14 +350,25 @@ export const findOrCreate = mutation({
     if (!args.newEra) {
       const sameName = await findTeamsByFullName(ctx, args.sportId, fullName);
       if (sameName.length > 0) {
-        // A name that exists under a DIFFERENT era. Allowed — that is the
-        // Winnipeg Jets case — but not silently: the operator is told which
-        // era they are about to sit beside, and confirms with `newEra`.
-        throw new ConvexError(
-          `${fullName} already exists for ${sameName
-            .map((t) => eraLabel(t.yearsActive) || "no years")
-            .join(", ")}. Creating this one adds a second era.`,
-        );
+        /**
+         * A name that exists under a DIFFERENT era. Allowed — that is the
+         * Winnipeg Jets case — but not silently: the operator is told which era
+         * they are about to sit beside, and confirms with `newEra`.
+         *
+         * STRUCTURED data, not a sentence, following `NAME_TAKEN:<id>` below.
+         * The client has to recognise this refusal to arm its second press, and
+         * recognising it by `message.includes("adds a second era")` couples a
+         * control flow to a string somebody will reword — silently, because the
+         * arming just stops happening and the operator sees a dead-end error.
+         * The eras travel as data and the client composes its own copy.
+         */
+        throw new ConvexError({
+          code: "TEAM_ERA_EXISTS" as const,
+          eras: sameName.map((t) => ({
+            id: t._id,
+            years: eraLabel(t.yearsActive),
+          })),
+        });
       }
     }
 
@@ -1276,6 +1287,18 @@ export const resolveNames = query({
       name: v.string(),
       existingTeamId: v.optional(v.id("teams")),
       existingName: v.optional(v.string()),
+      /**
+       * NEO-254 — this sport holds SEVERAL teams under the name, and nothing
+       * here can say which one is meant.
+       *
+       * When it is set, `existingTeamId` and `existingName` are deliberately
+       * absent: this query has no year to narrow by, and the old `.first()`
+       * painted an arbitrary era's name onto the wizard's chip as though it
+       * were settled. A chip reading "Winnipeg Jets" for a stint that might be
+       * either franchise is worse than one that says it needs an era, because
+       * only the second sends the operator to fix it.
+       */
+      ambiguous: v.optional(v.boolean()),
     }),
   ),
   handler: async (ctx, args) => {
@@ -1292,11 +1315,15 @@ export const resolveNames = query({
     // NEO-236: `existingName` is the row's FULL name. The wizard shows it to
     // say "this is the row you would be reusing", and "Padres" alone does not
     // answer that for an operator who typed "San Diego Padres".
-    const seen = new Map<string, { id: Id<"teams">; name: string } | null>();
+    const seen = new Map<
+      string,
+      { id: Id<"teams">; name: string } | "ambiguous" | null
+    >();
     const results: Array<{
       name: string;
       existingTeamId?: Id<"teams">;
       existingName?: string;
+      ambiguous?: boolean;
     }> = [];
 
     for (const raw of args.names) {
@@ -1309,23 +1336,33 @@ export const resolveNames = query({
       }
 
       if (!seen.has(normalized)) {
+        // NEO-254: `.take(2)`, not `.first()`. A name can belong to two eras —
+        // the 1972-1996 Winnipeg Jets and the 2011- Jets — and `.first()`
+        // reported one of them as THE answer. Two is all this needs: the
+        // branch is none / one / more-than-one.
         const found = await ctx.db
           .query("teams")
           .withIndex("by_name_normalized_and_sport_id", (q) =>
             q.eq("nameNormalized", normalized).eq("sportId", args.sportId),
           )
-          .first();
+          .take(2);
         seen.set(
           normalized,
-          found ? { id: found._id, name: teamFullName(found) } : null,
+          found.length > 1
+            ? "ambiguous"
+            : found.length === 1
+              ? { id: found[0]._id, name: teamFullName(found[0]) }
+              : null,
         );
       }
 
       const hit = seen.get(normalized) ?? null;
       results.push(
-        hit
-          ? { name: raw, existingTeamId: hit.id, existingName: hit.name }
-          : { name: raw },
+        hit === "ambiguous"
+          ? { name: raw, ambiguous: true }
+          : hit
+            ? { name: raw, existingTeamId: hit.id, existingName: hit.name }
+            : { name: raw },
       );
     }
 

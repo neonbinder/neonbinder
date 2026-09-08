@@ -1242,6 +1242,17 @@ export const enrichPlayer = internalAction({
           // Career teams inherit the player's sport by REFERENCE, so they
           // can no longer land under a differently-cased duplicate.
           sportId: player.sportId,
+          /*
+           * NEO-254 — the STINT's year, not the set's.
+           *
+           * This lookup is not about a card; it is about a season the player
+           * actually played. A 1979 stint at a two-era club belongs to the
+           * 1972-1996 row, and the 2011- row did not exist yet — so the year
+           * that resolves it is the year the stint started. Without this the
+           * name matched several rows, the lookup answered null, and the stint
+           * was dropped from `teamYears` with a `career_team_unmatched` log.
+           */
+          setYear: ct.fromYear,
         },
       );
       if (!teamId) {

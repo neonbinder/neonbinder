@@ -687,3 +687,149 @@ describe("NewTeamDialog — end to end", () => {
     expect(onClose).toHaveBeenCalled();
   });
 });
+
+/**
+ * NEO-254 — the panel is capped at the viewport, and only the FIELDS scroll.
+ *
+ * The dialog used to be one box that grew as tall as its contents inside a
+ * centred flex container with no maximum. Survivable at four fields; the era
+ * fields added ~60px and an expanded league list adds a scroll box of its own,
+ * which between them push the actions and the `role="alert"` refusal off the
+ * bottom of the 1024x629 viewport CI runs at.
+ *
+ * An operator cannot press a button they cannot reach, and a refusal nobody can
+ * see reads as the dialog doing nothing — which matters more since that refusal
+ * became a QUESTION ("adds a second era") whose answer is the button under it.
+ */
+describe("NewTeamDialog — the panel fits the viewport", () => {
+  const body = () => screen.getByTestId("new-team-dialog-body");
+  const createButton = () =>
+    screen.getByRole("button", { name: /^Create team/ });
+
+  it("scrolls the fields, not the whole panel", () => {
+    renderDialog();
+    expect(body().className).toContain("overflow-y-auto");
+    // `min-h-0` is what lets a flex child actually shrink below its content
+    // height — without it the cap is declared and does nothing.
+    expect(body().className).toContain("min-h-0");
+    // The fields are inside it.
+    expect(body().contains(screen.getByLabelText("New team name"))).toBe(true);
+  });
+
+  it("keeps the actions OUTSIDE the scroll region", () => {
+    renderDialog();
+    expect(body().contains(createButton())).toBe(false);
+    expect(
+      body().contains(screen.getByRole("button", { name: "Cancel" })),
+    ).toBe(false);
+  });
+
+  it("keeps the refusal outside it too, beside the button that answers it", async () => {
+    mockFindOrCreate.mockRejectedValue(
+      new ConvexError("Winnipeg Jets already exists for 1972–1996."),
+    );
+    renderDialog({ initialName: "Winnipeg Jets" });
+    fireEvent.click(createButton());
+
+    const alert = await screen.findByRole("alert");
+    expect(body().contains(alert)).toBe(false);
+  });
+
+  it("caps the panel at the viewport height", () => {
+    renderDialog();
+    const panel = body().parentElement!;
+    expect(panel.className).toContain("max-h-[calc(100vh-2rem)]");
+    expect(panel.className).toContain("flex-col");
+  });
+});
+
+/**
+ * NEO-254 — creating a SECOND era of a name we already hold.
+ *
+ * There are two Winnipeg Jets. Creating the second is a real, necessary act —
+ * and it is also exactly what a typo of the first looks like, so the server
+ * refuses once and names the eras on file, and the next press is the answer.
+ *
+ * The refusal is recognised by its structured `code`, never by its prose:
+ * matching on message text would couple this control flow to a sentence
+ * somebody will reword, and it would fail silently — the arming would stop
+ * happening and the operator would meet a dead end where a question used to be.
+ */
+describe("NewTeamDialog — a second era", () => {
+  const eraRefusal = () =>
+    new ConvexError({
+      code: "TEAM_ERA_EXISTS",
+      eras: [{ id: "t1", years: "1972–1996" }],
+    });
+
+  it("turns the refusal into a question naming the era already there", async () => {
+    mockFindOrCreate.mockRejectedValueOnce(eraRefusal());
+    renderDialog({ initialName: "Winnipeg Jets" });
+
+    fireEvent.click(screen.getByRole("button", { name: /^Create team/ }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("1972–1996");
+    expect(alert.textContent).toContain("second era");
+  });
+
+  it("re-sends with newEra on the next press, and only then", async () => {
+    mockFindOrCreate
+      .mockRejectedValueOnce(eraRefusal())
+      .mockResolvedValueOnce("t-new");
+    renderDialog({ initialName: "Winnipeg Jets" });
+
+    const button = () => screen.getByRole("button", { name: /^Create team/ });
+    fireEvent.click(button());
+    await screen.findByRole("alert");
+    // The FIRST attempt carries no confirmation — that is what makes the
+    // refusal reachable at all.
+    expect(mockFindOrCreate.mock.calls[0][0].newEra).toBeUndefined();
+
+    fireEvent.click(button());
+    await waitFor(() => expect(mockFindOrCreate).toHaveBeenCalledTimes(2));
+    expect(mockFindOrCreate.mock.calls[1][0].newEra).toBe(true);
+  });
+
+  it("forgets the confirmation when the name changes", async () => {
+    // The refusal was about THAT name. Carrying a confirmation past an edit is
+    // how a typo would slip through the guard it had just triggered.
+    mockFindOrCreate.mockRejectedValueOnce(eraRefusal());
+    renderDialog({ initialName: "Winnipeg Jets" });
+
+    fireEvent.click(screen.getByRole("button", { name: /^Create team/ }));
+    await screen.findByRole("alert");
+
+    fireEvent.change(nameField(), { target: { value: "Jetz" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Create team/ }));
+
+    await waitFor(() => expect(mockFindOrCreate).toHaveBeenCalledTimes(2));
+    expect(mockFindOrCreate.mock.calls[1][0].newEra).toBeUndefined();
+  });
+
+  it("leaves an unrelated ConvexError alone — no arming, its own words", async () => {
+    mockFindOrCreate.mockRejectedValueOnce(new ConvexError("A team name is required."));
+    renderDialog({ initialName: "Winnipeg Jets" });
+
+    fireEvent.click(screen.getByRole("button", { name: /^Create team/ }));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("A team name is required.");
+
+    fireEvent.click(screen.getByRole("button", { name: /^Create team/ }));
+    await waitFor(() => expect(mockFindOrCreate).toHaveBeenCalledTimes(2));
+    expect(mockFindOrCreate.mock.calls[1][0].newEra).toBeUndefined();
+  });
+
+  it("ignores a malformed payload rather than crashing the dialog", async () => {
+    // `data` crosses a network boundary; a blind destructure would turn a bad
+    // payload into a render crash on the screen already showing a refusal.
+    mockFindOrCreate.mockRejectedValueOnce(
+      new ConvexError({ code: "TEAM_ERA_EXISTS", eras: "not an array" }),
+    );
+    renderDialog({ initialName: "Winnipeg Jets" });
+
+    fireEvent.click(screen.getByRole("button", { name: /^Create team/ }));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("Could not create team.");
+  });
+});

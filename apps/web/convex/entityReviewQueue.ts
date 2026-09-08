@@ -193,6 +193,24 @@ const teamCreateValidator = v.object({
    */
   leagueId: v.optional(v.union(v.id("leagues"), v.null())),
   leagueName: v.optional(v.string()),
+  /**
+   * ── NEO-254: the era the operator typed, and why it must travel ──────────
+   *
+   * A sport can hold two teams under one name — the 1972-1996 Winnipeg Jets
+   * and the 2011- Jets — and the era is the only thing that tells them apart.
+   * Without it on this payload the operator could type "Winnipeg Jets,
+   * 1972-1996" into a 1985 set's New Team step, the prelude would see a create
+   * with no dates, adopt the 2011 row it already held, and every 1985 card in
+   * the set would bind to a franchise that did not exist yet.
+   *
+   * Optional, and stays optional: most teams are created without anybody
+   * knowing or caring, and an undated row is a normal row. It matters exactly
+   * when the name is already taken, which is when the form asks for it.
+   */
+  yearsActive: v.optional(v.object({
+    from: v.number(),
+    to: v.optional(v.number()),
+  })),
 });
 
 /**
@@ -412,7 +430,52 @@ function toTeamCreate(input: TeamCreateInput): TeamCreate | null {
   const location = input.location?.trim().replace(/\s+/g, " ") || undefined;
   const fullLength = location ? location.length + 1 + name.length : name.length;
   if (fullLength > MAX_TEAM_FULL_NAME_LENGTH) return null;
-  return { name, ...(location ? { location } : {}), ...normalizeLeagueChoice(input) };
+  return {
+    name,
+    ...(location ? { location } : {}),
+    ...normalizeLeagueChoice(input),
+    /*
+     * NEO-254 — the era passes through, and it is what tells the 1972-1996
+     * Winnipeg Jets from the 2011- ones.
+     *
+     * Validated rather than merely copied: these two numbers decide which of
+     * two same-named franchises a whole set's cards bind to, and a decision is
+     * a durable record the commit reads much later with no operator in front
+     * of it. Refused, not dropped — the operator is standing at the form and
+     * an era they cannot see stored is worse than one they are told about.
+     */
+    ...(input.yearsActive ? { yearsActive: requireTeamEra(input.yearsActive) } : {}),
+  };
+}
+
+/**
+ * NEO-254 — whole years, in range, ending no earlier than they start.
+ *
+ * The same shape and the same bounds `leagues.validateLeagueYears` applies to
+ * a league's era; a team's era answers the same question about the same kind
+ * of thing, and two rules for one idea is one more thing to look up.
+ */
+function requireTeamEra(era: { from: number; to?: number }): {
+  from: number;
+  to?: number;
+} {
+  const maxYear = new Date().getFullYear() + 1;
+  if (!Number.isInteger(era.from) || era.from < MIN_CAREER_YEAR || era.from > maxYear) {
+    throw new ConvexError(
+      `A team start year must be a whole year between ${MIN_CAREER_YEAR} and ${maxYear}.`,
+    );
+  }
+  if (era.to !== undefined) {
+    if (!Number.isInteger(era.to) || era.to < MIN_CAREER_YEAR || era.to > maxYear) {
+      throw new ConvexError(
+        `A team end year must be a whole year between ${MIN_CAREER_YEAR} and ${maxYear}.`,
+      );
+    }
+    if (era.to < era.from) {
+      throw new ConvexError("A team cannot stop playing before it starts.");
+    }
+  }
+  return { from: era.from, ...(era.to !== undefined ? { to: era.to } : {}) };
 }
 
 /**
@@ -446,6 +509,8 @@ type TeamCreate = {
   name: string;
   leagueId?: Id<"leagues"> | null;
   leagueName?: string;
+  /** NEO-254 — the era the operator typed. See `teamCreateValidator`. */
+  yearsActive?: { from: number; to?: number };
 };
 type TeamCreateInput = TeamCreate;
 

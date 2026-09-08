@@ -13,6 +13,8 @@ import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { normalizeTeamName } from "./teams";
 import { teamFullName } from "../lib/teams/team-name";
+import { SEED_LEAGUES, SEED_TEAMS } from "../lib/teams/seed-team-colors";
+import { currentFranchiseParts } from "../lib/teams/seed-team-lookup";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -232,5 +234,104 @@ describe("seedFromBundledData", () => {
         .withIdentity({ subject: "u", role: "user" })
         .action(api.seedTeamColors.seedFromBundledData, {}),
     ).rejects.toThrow(/admin/i);
+  });
+
+  /**
+   * NEO-254 — the seed adopts the CURRENT era, and refuses to choose when it
+   * cannot tell which one that is.
+   *
+   * `SEED_TEAMS` lists franchises as they stand today and carries no years at
+   * all, so among two Winnipeg Jets it means the 2011 one. `currentEraTeam`
+   * says that the only honest way the data allows: the row whose era is open.
+   * Two open rows is not a tie the seed may break — a colour is not worth
+   * guessing an era for, and inserting would mint the very duplicate the lookup
+   * exists to prevent.
+   */
+  describe("NEO-254: a name that resolves to more than one era", () => {
+    /**
+     * The dataset's own first entry, split the way the seed splits it — so the
+     * fixture rows key exactly as the seed's own lookup will — with ONLY that
+     * entry's sport seeded. Every other entry then skips for no sport, which
+     * keeps the assertions about this one name rather than about the dataset.
+     */
+    const seedFirstEntry = async (t: ReturnType<typeof convexTest>) => {
+      const seed = SEED_TEAMS[0];
+      const sports = await seedSports(t, [SEED_LEAGUES[seed.league].sportValue]);
+      const parts = currentFranchiseParts(seed);
+      return {
+        parts,
+        full: teamFullName(parts),
+        sportId: Object.values(sports)[0],
+      };
+    };
+
+    test("adopts the OPEN era and leaves the closed one alone", async () => {
+      const t = convexTest(schema, modules);
+      const { parts, full, sportId } = await seedFirstEntry(t);
+
+      const closed = await t.run(async (ctx) =>
+        ctx.db.insert("teams", {
+          ...parts,
+          nameNormalized: normalizeTeamName(full),
+          sportId,
+          yearsActive: { from: 1901, to: 1950 },
+          lastUpdated: 1,
+        }),
+      );
+      const open = await t.run(async (ctx) =>
+        ctx.db.insert("teams", {
+          ...parts,
+          nameNormalized: normalizeTeamName(full),
+          sportId,
+          yearsActive: { from: 1951 },
+          lastUpdated: 1,
+        }),
+      );
+
+      const result = await t
+        .withIdentity(ADMIN)
+        .action(api.seedTeamColors.seedFromBundledData, {});
+      expect(result.skippedAmbiguous).toBe(0);
+
+      // The colours landed on the still-running franchise, and the historical
+      // row was not touched.
+      const openRow = await t.run(async (ctx) => ctx.db.get(open));
+      const closedRow = await t.run(async (ctx) => ctx.db.get(closed));
+      expect(openRow?.colors?.primary).toBeTruthy();
+      expect(closedRow?.colors ?? null).toBeNull();
+    });
+
+    test("skips — and REPORTS — when two rows are both open", async () => {
+      const t = convexTest(schema, modules);
+      const { parts, full, sportId } = await seedFirstEntry(t);
+
+      for (const yearsActive of [{ from: 1901 }, { from: 1951 }]) {
+        await t.run(async (ctx) =>
+          ctx.db.insert("teams", {
+            ...parts,
+            nameNormalized: normalizeTeamName(full),
+            sportId,
+            yearsActive,
+            lastUpdated: 1,
+          }),
+        );
+      }
+      const before = (await teams(t)).length;
+
+      const result = await t
+        .withIdentity(ADMIN)
+        .action(api.seedTeamColors.seedFromBundledData, {});
+
+      // Reported rather than silently skipped: it is the signal that two rows
+      // need an operator, and a run that said nothing would look like success.
+      expect(result.skippedAmbiguous).toBe(1);
+      // Nothing inserted for that name, and neither row patched.
+      expect((await teams(t)).length).toBe(before + result.teamsCreated);
+      const both = (await teams(t)).filter(
+        (row) => row.nameNormalized === normalizeTeamName(full),
+      );
+      expect(both).toHaveLength(2);
+      expect(both.every((row) => row.colors === undefined)).toBe(true);
+    });
   });
 });

@@ -224,9 +224,10 @@ describe("a card's team name resolves by the set's year", () => {
     ).resolves.toBeNull();
   });
 
-  test("one row is still the row, with or without a year", async () => {
-    // Every caller's pre-existing behaviour, restated — an unambiguous name
-    // must not start costing an operator a decision.
+  test("a lone UNDATED row is still the row, whatever the year", async () => {
+    // Unknown years cannot contradict anything, so an undated row answers for
+    // every set. This is the pre-existing behaviour, and it must not start
+    // costing an operator a decision.
     const t = convexTest(schema, modules);
     const { sportId } = await seedSportWithSet(t, "1985");
     const only = await t.run(async (ctx) =>
@@ -235,7 +236,6 @@ describe("a card's team name resolves by the set's year", () => {
         location: "Edmonton",
         nameNormalized: normalizeTeamName("Edmonton Oilers"),
         sportId,
-        yearsActive: { from: 1972 },
         lastUpdated: 1,
       }),
     );
@@ -249,6 +249,57 @@ describe("a card's team name resolves by the set's year", () => {
         }),
       ).resolves.toBe(only);
     }
+  });
+
+  test("a lone DATED row answers only for the years it covers", async () => {
+    /*
+     * The subtler half of the rule, and the one with no second row to make the
+     * mistake visible.
+     *
+     * A single row dated 2011- is positive evidence that a 1985 card does NOT
+     * mean it. Linking anyway is the same wrong answer the two-Jets case
+     * produces, just quieter: the operator sees a card filed under a franchise
+     * that did not exist, with nothing anywhere saying so. So the year rules it
+     * out exactly as it would rule out one of several rivals — we hold a
+     * Winnipeg Jets, it is not this one, and a human decides whether the other
+     * era needs creating.
+     */
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSportWithSet(t, "1985");
+    const revived = await t.run(async (ctx) =>
+      ctx.db.insert("teams", {
+        name: "Jets",
+        location: "Winnipeg",
+        nameNormalized: normalizeTeamName(JETS),
+        sportId,
+        yearsActive: { from: 2011 },
+        lastUpdated: 1,
+      }),
+    );
+
+    // Inside its era: the row.
+    await expect(
+      t.query(internal.teams.findByFullNameInternal, {
+        name: JETS,
+        sportId,
+        setYear: 2015,
+      }),
+    ).resolves.toBe(revived);
+
+    // Outside it: not an answer.
+    await expect(
+      t.query(internal.teams.findByFullNameInternal, {
+        name: JETS,
+        sportId,
+        setYear: 1985,
+      }),
+    ).resolves.toBeNull();
+
+    // …and with no year at all it still answers, because nothing contradicts
+    // it. No evidence is not counter-evidence.
+    await expect(
+      t.query(internal.teams.findByFullNameInternal, { name: JETS, sportId }),
+    ).resolves.toBe(revived);
   });
 });
 
@@ -476,5 +527,307 @@ describe("teams.nearMatches offers every era, labelled", () => {
       { from: 1972, to: 1996 },
       { from: 2011 },
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// End to end: the operator creates the second era, and a 1985 card finds it
+// ---------------------------------------------------------------------------
+
+describe("the review wizard's era reaches the row, and the card", () => {
+  test("an operator-typed era creates a second Jets beside the 2011 one", async () => {
+    /*
+     * The whole ticket in one path.
+     *
+     * The deployment already holds the 2011 Winnipeg Jets (the colour seed and
+     * the current-roster loads both produce it). A 1985 set names "Winnipeg
+     * Jets"; the name resolves to a row whose era excludes 1985, so it reaches
+     * the review wizard rather than being linked. The operator answers with the
+     * historical era, and the commit has to CREATE beside the existing row —
+     * not adopt it, not refuse — and then link the card to the one it made.
+     *
+     * `create.yearsActive` is what carries their answer, and it has to outrank
+     * `enrichment.yearsActive`: the lookup describes whichever Jets Wikidata
+     * matched, which is exactly the row the operator is trying to distinguish
+     * this one from.
+     */
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN);
+    const { sportId, setId } = await seedSportWithSet(t, "1985");
+    const revived = await t.run(async (ctx) =>
+      ctx.db.insert("teams", {
+        name: "Jets",
+        location: "Winnipeg",
+        nameNormalized: normalizeTeamName(JETS),
+        sportId,
+        yearsActive: { from: 2011 },
+        lastUpdated: 1,
+      }),
+    );
+
+    await t.run(async (ctx) =>
+      ctx.db.insert("entityReviewQueue", {
+        selectorOptionId: setId,
+        sportId,
+        batchId: "batch-era",
+        createdByUserId: "admin",
+        kind: "team",
+        name: JETS,
+        nameNormalized: normalizeTeamName(JETS),
+        status: "ready",
+        decision: {
+          action: "create",
+          create: {
+            location: "Winnipeg",
+            name: "Jets",
+            // The operator's own answer.
+            yearsActive: { from: 1972, to: 1996 },
+          },
+        },
+        // …and the lookup describing the OTHER franchise, which must lose.
+        enrichment: { yearsActive: { from: 2011 } },
+      }),
+    );
+
+    const prelude = await asAdmin.mutation(
+      internal.selectorOptions.commitCardChecklistPrelude,
+      {
+        selectorOptionId: setId,
+        sportId,
+        playerNames: [],
+        teamNames: [JETS],
+        batchId: "batch-era",
+      },
+    );
+
+    const rows = await t.run(async (ctx) =>
+      ctx.db
+        .query("teams")
+        .withIndex("by_name_normalized_and_sport_id", (q) =>
+          q.eq("nameNormalized", normalizeTeamName(JETS)).eq("sportId", sportId),
+        )
+        .collect(),
+    );
+    expect(rows).toHaveLength(2);
+
+    const created = rows.find((r) => r._id !== revived)!;
+    // The operator's era, not the enrichment's — the assertion this test exists
+    // for. `{ from: 2011 }` here would mean the lookup overwrote the answer.
+    expect(created.yearsActive).toEqual({ from: 1972, to: 1996 });
+    expect(prelude.unresolvedTeamNames).toEqual([]);
+
+    // …and the 1985 card resolves to the new row rather than the 2011 one.
+    await expect(
+      t.query(internal.teams.findByFullNameInternal, {
+        name: JETS,
+        sportId,
+        setYear: 1985,
+      }),
+    ).resolves.toBe(created._id);
+    await expect(
+      t.query(internal.teams.findByFullNameInternal, {
+        name: JETS,
+        sportId,
+        setYear: 2015,
+      }),
+    ).resolves.toBe(revived);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The gaps the review named
+// ---------------------------------------------------------------------------
+
+describe("findOrCreate refuses a mess rather than adding to it", () => {
+  test("two OVERLAPPING same-name rows: refused, with their eras named", async () => {
+    // Two rows sharing a name and an era means the data is already wrong. The
+    // picker cannot rule between them and must not mint a third; the operator
+    // is sent to the one screen that can sort it out.
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSportWithSet(t, "1985");
+    for (const yearsActive of [{ from: 1972, to: 1996 }, { from: 1990 }]) {
+      await t.run(async (ctx) =>
+        ctx.db.insert("teams", {
+          name: "Jets",
+          location: "Winnipeg",
+          nameNormalized: normalizeTeamName(JETS),
+          sportId,
+          yearsActive,
+          lastUpdated: 1,
+        }),
+      );
+    }
+
+    await expect(
+      t.withIdentity(ADMIN).mutation(api.teams.findOrCreate, {
+        name: "Jets",
+        location: "Winnipeg",
+        sportId,
+        yearsActive: { from: 1993, to: 1995 },
+      }),
+    ).rejects.toThrow(/Team Management/);
+    expect(await t.run(async (ctx) => ctx.db.query("teams").collect())).toHaveLength(2);
+  });
+
+  test("newEra with NO years beside an undated row returns the existing row", async () => {
+    /*
+     * `newEra` is a confirmation, not an override.
+     *
+     * With no years the incoming team overlaps everything — an undated side is
+     * unknown, and unknown cannot be ruled out — so the collision check finds
+     * the existing row and returns it BEFORE `newEra` is ever consulted. That
+     * ordering is deliberate: creating a second era requires saying when it
+     * played, which is the right bar for a decision that permanently splits a
+     * name, and it stops `newEra: true` becoming a way to mint duplicates that
+     * nothing can later tell apart.
+     */
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSportWithSet(t, "1985");
+    const undated = await t.run(async (ctx) =>
+      ctx.db.insert("teams", {
+        name: "Jets",
+        location: "Winnipeg",
+        nameNormalized: normalizeTeamName(JETS),
+        sportId,
+        lastUpdated: 1,
+      }),
+    );
+
+    const found = await t.withIdentity(ADMIN).mutation(api.teams.findOrCreate, {
+      name: "Jets",
+      location: "Winnipeg",
+      sportId,
+      newEra: true,
+    });
+    expect(found).toBe(undated);
+    expect(await t.run(async (ctx) => ctx.db.query("teams").collect())).toHaveLength(1);
+  });
+});
+
+describe("saveTeamFields — clearing an era", () => {
+  test("clearing years beside a DATED same-name row is refused", async () => {
+    // Clearing makes the row undated, and an undated row overlaps everything —
+    // so it collides with the sibling era it was separated from. Refusing is
+    // the same rule as widening, reached from the other direction: an operator
+    // must not be able to re-merge two franchises by emptying a box.
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSportWithSet(t, "1985");
+    const { old, revived } = await seedBothJets(t, sportId);
+
+    await expect(
+      t.withIdentity(ADMIN).mutation(api.teams.saveTeamFields, {
+        id: revived,
+        yearsActive: null,
+      }),
+    ).rejects.toThrow(`NAME_TAKEN:${old}`);
+    expect(
+      await t.run(async (ctx) => (await ctx.db.get(revived))?.yearsActive),
+    ).toEqual({ from: 2011 });
+  });
+
+  test("clearing years on a row with NO same-name sibling is fine", async () => {
+    // The permission this keeps: an era is optional, and a lone row may lose
+    // one without ceremony.
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSportWithSet(t, "1985");
+    const lone = await t.run(async (ctx) =>
+      ctx.db.insert("teams", {
+        name: "Oilers",
+        location: "Edmonton",
+        nameNormalized: normalizeTeamName("Edmonton Oilers"),
+        sportId,
+        yearsActive: { from: 1972 },
+        lastUpdated: 1,
+      }),
+    );
+
+    await t
+      .withIdentity(ADMIN)
+      .mutation(api.teams.saveTeamFields, { id: lone, yearsActive: null });
+    // `t.run`'s return crosses the Convex value boundary, where an absent
+    // optional arrives as `null` rather than `undefined`.
+    expect(
+      await t.run(async (ctx) => (await ctx.db.get(lone))?.yearsActive ?? null),
+    ).toBeNull();
+  });
+});
+
+describe("the card-linking paths narrow by the set's year", () => {
+  /**
+   * `backfillTeamToOnCardIds` and `applyBscTeamResolution` both turn a team
+   * STRING on a card into a team id. Both used `.first()`; both now ask about
+   * the card's own set year, and both treat "several eras, none decisive" the
+   * same way they already treated "no such team" — the string is kept, nothing
+   * is linked, and an operator decides.
+   */
+  const seedCard = async (
+    t: T,
+    setId: Id<"selectorOptions">,
+    team: string,
+  ): Promise<Id<"cardChecklist">> =>
+    t.run(async (ctx) =>
+      ctx.db.insert("cardChecklist", {
+        selectorOptionId: setId,
+        cardNumber: "1",
+        cardName: "Dale Hawerchuk",
+        // The legacy free-text field the backfill reads. `as never` bypasses
+        // the schema validator, exactly as `teamBackfill.test.ts` does — only
+        // pre-NEO-26 rows carry it, which is the point of a backfill.
+        team,
+        platformData: {},
+        sortOrder: 1,
+        lastUpdated: 1,
+      } as never),
+    );
+
+  test("the backfill links a 1985 card to the 1985 era", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, setId } = await seedSportWithSet(t, "1985");
+    const { old } = await seedBothJets(t, sportId);
+    const cardId = await seedCard(t, setId, JETS);
+
+    await t.mutation(internal.cardChecklist.backfillTeamToOnCardIds, {
+      batchSize: 10,
+    });
+
+    const card = await t.run(async (ctx) => ctx.db.get(cardId));
+    expect(card?.teamOnCardIds).toEqual([old]);
+  });
+
+  test("…and leaves the string alone when the year cannot separate the eras", async () => {
+    // No year row above this set, so there is no evidence — and the answer to
+    // no evidence is a human, not the first row an index returned.
+    const t = convexTest(schema, modules);
+    const sportId = await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Hockey",
+        platformData: {},
+        children: [],
+        lastUpdated: 1,
+      }),
+    );
+    const setId = await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "setName",
+        value: "O-Pee-Chee",
+        parentId: sportId,
+        platformData: {},
+        children: [],
+        lastUpdated: 1,
+      }),
+    );
+    await seedBothJets(t, sportId);
+    const cardId = await seedCard(t, setId, JETS);
+
+    await t.mutation(internal.cardChecklist.backfillTeamToOnCardIds, {
+      batchSize: 10,
+    });
+
+    const card = await t.run(async (ctx) => ctx.db.get(cardId));
+    expect(card?.teamOnCardIds ?? null).toBeNull();
+    // The evidence an operator needs is kept — clearing it would destroy the
+    // only record of what the marketplace claimed.
+    expect(card?.team).toBe(JETS);
   });
 });

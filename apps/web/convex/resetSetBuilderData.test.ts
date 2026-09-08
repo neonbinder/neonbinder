@@ -227,6 +227,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       cardChecklistDeleted: 5,
       crossListingsDeleted: 6,
       playersDeleted: 4,
+      playerAliasesDeleted: 0,
       teamsDeleted: 2,
       leaguesDeleted: 1,
     });
@@ -292,8 +293,59 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       cardChecklistDeleted: 0,
       crossListingsDeleted: 0,
       playersDeleted: 0,
+      playerAliasesDeleted: 0,
       teamsDeleted: 0,
       leaguesDeleted: 0,
     });
+  });
+});
+
+describe("NEO-254: the alias index is drained with the players it describes", () => {
+  test("playerAliases rows do not outlive their players", async () => {
+    /*
+     * `playerAliases` is one flat row per (player, alias), and it is what
+     * `by_alias_normalized_and_sport_id` answers from. A reset that wiped
+     * players and left it standing would leave rows pointing at nothing — and
+     * because `sameNamePlayers` drops a hit whose player is gone, the damage
+     * is quiet rather than loud: the table just grows on every reset until it
+     * is bigger than the one it indexes.
+     */
+    const t = convexTest(schema, modules);
+    process.env.ALLOW_RESET_SET_BUILDER_DATA = "true";
+    try {
+      const sportId = await t.run(async (ctx) =>
+        ctx.db.insert("selectorOptions", {
+          level: "sport",
+          value: "Basketball",
+          platformData: {},
+          children: [],
+          lastUpdated: Date.now(),
+        }),
+      );
+      await t.run(async (ctx) => {
+        const playerId = await ctx.db.insert("players", {
+          name: "Metta World Peace",
+          nameNormalized: "metta peace world",
+          sportId,
+          aliases: ["Ron Artest"],
+          lastUpdated: Date.now(),
+        });
+        await ctx.db.insert("playerAliases", {
+          playerId,
+          sportId,
+          aliasNormalized: "artest ron",
+        });
+      });
+
+      const result = await runReset(t);
+
+      expect(result.playersDeleted).toBe(1);
+      expect(result.playerAliasesDeleted).toBe(1);
+      expect(await t.run(async (ctx) => ctx.db.query("playerAliases").collect())).toEqual(
+        [],
+      );
+    } finally {
+      delete process.env.ALLOW_RESET_SET_BUILDER_DATA;
+    }
   });
 });

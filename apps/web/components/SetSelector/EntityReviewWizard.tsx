@@ -1381,6 +1381,8 @@ export default function EntityReviewWizard({
         name: string;
         leagueId?: Id<"leagues"> | null;
         leagueName?: string;
+        // NEO-254 — see `teamCreateValidator`.
+        yearsActive?: { from: number; to?: number };
       };
       // NEO-254 — league-kind only. See `NewLeagueForm`.
       createLeague?: {
@@ -1856,6 +1858,13 @@ export default function EntityReviewWizard({
             ? { leagueId: teamCreate.leagueId }
             : {}),
           ...(teamCreate.leagueName ? { leagueName: teamCreate.leagueName } : {}),
+          // NEO-254 — the era the operator typed. It is what tells the
+          // 1972-1996 Winnipeg Jets from the 2011- ones, so a create that
+          // dropped it would adopt whichever row the name already found. See
+          // `teamCreateValidator`.
+          ...(teamCreate.yearsActive
+            ? { yearsActive: teamCreate.yearsActive }
+            : {}),
         },
       };
     }

@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Theme } from "@radix-ui/themes";
 import { useMutation } from "convex/react";
+import { ConvexError } from "convex/values";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import { userFacingMessage } from "../../lib/errors/user-facing-message";
@@ -56,6 +57,35 @@ import NewTeamForm, {
  * explicitly. Escape and the scrim are refused while the create is in flight,
  * so the result never lands on an unmounted host.
  */
+/**
+ * The eras a `TEAM_ERA_EXISTS` refusal carries, or null for any other error.
+ *
+ * NEO-254 — recognised by a structured `code`, not by its prose. Matching on
+ * message text would couple the dialog's control flow to a sentence somebody
+ * will reword, and it would fail SILENTLY: the confirmation would simply stop
+ * arming, and the operator would meet a dead-end error where a confirmable one
+ * used to be. Same convention as `NAME_TAKEN:<id>` in `teams.saveTeamFields`.
+ *
+ * Narrowed structurally rather than trusted: `data` crosses a network boundary,
+ * and a client that destructured it blindly would turn a malformed payload into
+ * a render crash on the one screen an operator is already being refused on.
+ */
+function teamEraRefusal(err: unknown): Array<{ years: string }> | null {
+  if (!(err instanceof ConvexError)) return null;
+  const data = err.data as { code?: unknown; eras?: unknown } | null;
+  if (!data || typeof data !== "object" || data.code !== "TEAM_ERA_EXISTS") {
+    return null;
+  }
+  if (!Array.isArray(data.eras)) return null;
+  return data.eras.flatMap((era: unknown) =>
+    era &&
+    typeof era === "object" &&
+    typeof (era as { years?: unknown }).years === "string"
+      ? [{ years: (era as { years: string }).years }]
+      : [],
+  );
+}
+
 export default function NewTeamDialog({
   sportId,
   /** The name the operator typed in the picker. Becomes Name; Location starts
@@ -215,13 +245,29 @@ export default function NewTeamDialog({
     } catch (err) {
       // The ConvexError's `data`, never `.message`: production redacts a plain
       // Error, and a surviving message arrives wrapped in request-id noise.
-      const message = userFacingMessage(err, "Could not create team.");
-      setError(message);
-      // NEO-254: the "adds a second era" refusal is a QUESTION, not a failure.
-      // Arming the confirmation here turns the next press into the answer, so
-      // the operator reads which era is already there and then agrees — one
-      // extra deliberate press, rather than a checkbox nobody would read.
-      if (message.includes("adds a second era")) setConfirmNewEra(true);
+      /**
+       * NEO-254: the "this name already has eras" refusal is a QUESTION, not a
+       * failure, and it is recognised by its structured `code` rather than by
+       * its prose.
+       *
+       * Matching on message text would couple this control flow to a sentence
+       * somebody will reword — silently, because the arming would simply stop
+       * happening and the operator would meet a dead-end error instead of a
+       * confirmable one. The server sends the eras as data (`TEAM_ERA_EXISTS`,
+       * mirroring `NAME_TAKEN:<id>`) and the copy is composed here, which is
+       * also where it belongs: the server does not write UI strings.
+       */
+      const existing = teamEraRefusal(err);
+      if (existing) {
+        setConfirmNewEra(true);
+        setError(
+          `${fullName || draft.name.trim()} already exists for ${existing
+            .map((era) => era.years || "no years yet")
+            .join(", ")}. Create again to add this as a second era.`,
+        );
+      } else {
+        setError(userFacingMessage(err, "Could not create team."));
+      }
     } finally {
       setCreating(false);
     }
@@ -280,105 +326,138 @@ export default function NewTeamDialog({
           if (!creating) onClose();
         }}
       >
+        {/*
+          NEO-254 — header / body / footer, with only the BODY scrolling.
+
+          The panel used to be one box that grew as tall as its contents, inside
+          a centred flex container with no maximum. That was survivable while the
+          form was four fields; the era fields added ~60px, and an expanded
+          league pill list adds a scroll box of its own, which between them push
+          the button row and the `role="alert"` refusal off the bottom of the
+          1024x629 viewport CI runs at. An operator cannot press a button they
+          cannot reach, and a refusal nobody can see reads as the dialog doing
+          nothing.
+
+          So the panel is capped at the viewport and the FIELDS scroll inside it,
+          while the title, the error and the actions sit outside that region and
+          are always on screen. Same header/body/footer split the review wizard
+          uses, and for the same reason. `min-h-0` on the scroller is what makes
+          it actually shrink inside a flex column — without it the child's
+          content height wins and the cap does nothing.
+        */}
         <div
-          className="w-full max-w-lg rounded-lg border border-gray-700 bg-gray-900 p-5 shadow-xl space-y-4"
+          className="flex max-h-[calc(100vh-2rem)] w-full max-w-lg flex-col rounded-lg border border-gray-700 bg-gray-900 shadow-xl"
           onClick={(event) => event.stopPropagation()}
         >
           <h2
             id={titleId}
-            className="text-lg font-semibold text-gray-100"
+            className="shrink-0 px-5 pt-5 pb-4 text-lg font-semibold text-gray-100"
           >
             {/* The name the operator typed, so the dialog is visibly about the
                 thing they were doing rather than a generic form. */}
             New team{initialName.trim() ? `: ${initialName.trim()}` : ""}
           </h2>
 
-          <NewTeamForm
-            sportId={sportId}
-            draft={draft}
-            onChange={(patch) => {
-              // A refusal described the values that were in the boxes; the next
-              // keystroke makes it stale, so it goes with them.
-              setError(null);
-              setDraft((prev) => ({ ...prev, ...patch }));
-            }}
-            leagueSuggestion={leagueSuggestion}
-            onCreateLeague={async (leagueDraft) => {
-              const { id } = await createLeague({
-                name: leagueDraft.name.trim(),
-                sportId,
-                ...(leagueDraft.abbreviation.trim()
-                  ? { abbreviation: leagueDraft.abbreviation.trim() }
-                  : {}),
-                ...(leagueDraft.level ? { level: leagueDraft.level } : {}),
-                ...(leagueDraft.fromYear.trim()
-                  ? {
-                      yearsActive: {
-                        from: Number(leagueDraft.fromYear.trim()),
-                        ...(leagueDraft.toYear.trim()
-                          ? { to: Number(leagueDraft.toYear.trim()) }
-                          : {}),
-                      },
-                    }
-                  : {}),
-                ...(parseAliases(leagueDraft.aliases).length
-                  ? { aliases: parseAliases(leagueDraft.aliases) }
-                  : {}),
-                ...(leagueDraft.wikidataId.trim()
-                  ? { wikidataId: leagueDraft.wikidataId.trim() }
-                  : {}),
-              });
-              return { id, name: leagueDraft.name.trim() };
-            }}
-            onLeagueStatus={(status) =>
-              setError(status.isError ? status.text : null)
-            }
-            describedBy={error ? errorId : undefined}
-            // No field ids: see `titleId`. The fields are addressed by their
-            // aria-labels, which is what the flows target.
-            nameInputRef={nameInputRef}
-            disabled={creating}
-            onSubmit={() => void create()}
-          />
-
-          {error && (
-            <p id={errorId} role="alert" className="text-sm text-[#FF2EB3]">
-              {error}
-            </p>
-          )}
-
-          <div className="flex items-center gap-3">
-            <NeonButton
-              ref={createButtonRef}
-              type="button"
-              // `aria-disabled`, not `disabled`: a keyboard operator who has
-              // tabbed here must not be ejected from the dialog for the length
-              // of a round-trip, and the reason a blank name blocks the create
-              // has to stay reachable.
-              aria-disabled={creating || blocked !== null ? true : undefined}
-              // The accessible name every `.maestro` flow targets. It carries
-              // the COMPOSED name, so a screen reader announces exactly the row
-              // about to be written — and a team with no location reads exactly
-              // as it did before this dialog existed.
-              aria-label={
-                creating
-                  ? `Creating team${fullName ? ` ${fullName}` : ""}`
-                  : fullName
-                    ? `Create team ${fullName}`
-                    : "Create team"
+          <div
+            data-testid="new-team-dialog-body"
+            className="min-h-0 flex-1 overflow-y-auto px-5"
+          >
+            <NewTeamForm
+              sportId={sportId}
+              draft={draft}
+              onChange={(patch) => {
+                // A refusal described the values that were in the boxes; the next
+                // keystroke makes it stale, so it goes with them.
+                setError(null);
+                setDraft((prev) => ({ ...prev, ...patch }));
+              }}
+              leagueSuggestion={leagueSuggestion}
+              onCreateLeague={async (leagueDraft) => {
+                const { id } = await createLeague({
+                  name: leagueDraft.name.trim(),
+                  sportId,
+                  ...(leagueDraft.abbreviation.trim()
+                    ? { abbreviation: leagueDraft.abbreviation.trim() }
+                    : {}),
+                  ...(leagueDraft.level ? { level: leagueDraft.level } : {}),
+                  ...(leagueDraft.fromYear.trim()
+                    ? {
+                        yearsActive: {
+                          from: Number(leagueDraft.fromYear.trim()),
+                          ...(leagueDraft.toYear.trim()
+                            ? { to: Number(leagueDraft.toYear.trim()) }
+                            : {}),
+                        },
+                      }
+                    : {}),
+                  ...(parseAliases(leagueDraft.aliases).length
+                    ? { aliases: parseAliases(leagueDraft.aliases) }
+                    : {}),
+                  ...(leagueDraft.wikidataId.trim()
+                    ? { wikidataId: leagueDraft.wikidataId.trim() }
+                    : {}),
+                });
+                return { id, name: leagueDraft.name.trim() };
+              }}
+              onLeagueStatus={(status) =>
+                setError(status.isError ? status.text : null)
               }
-              onClick={() => void create()}
-            >
-              {creating ? "Creating…" : "Create team"}
-            </NeonButton>
-            <NeonButton
-              cancel
-              type="button"
-              onClick={onClose}
+              describedBy={error ? errorId : undefined}
+              // No field ids: see `titleId`. The fields are addressed by their
+              // aria-labels, which is what the flows target.
+              nameInputRef={nameInputRef}
               disabled={creating}
-            >
-              Cancel
-            </NeonButton>
+              onSubmit={() => void create()}
+            />
+          </div>
+
+          {/* Outside the scroll region, both of them.
+
+              The refusal because a message the operator has to scroll to find
+              is a message they will not find — and this one is now a QUESTION
+              ("adds a second era") whose answer is the button directly below
+              it. The actions because a dialog whose primary action can leave
+              the viewport is a dialog that cannot be completed. */}
+          <div className="shrink-0 space-y-4 border-t border-gray-800 px-5 pt-4 pb-5">
+            {error && (
+              <p id={errorId} role="alert" className="text-sm text-[#FF2EB3]">
+                {error}
+              </p>
+            )}
+
+            <div className="flex items-center gap-3">
+              <NeonButton
+                ref={createButtonRef}
+                type="button"
+                // `aria-disabled`, not `disabled`: a keyboard operator who has
+                // tabbed here must not be ejected from the dialog for the length
+                // of a round-trip, and the reason a blank name blocks the create
+                // has to stay reachable.
+                aria-disabled={creating || blocked !== null ? true : undefined}
+                // The accessible name every `.maestro` flow targets. It carries
+                // the COMPOSED name, so a screen reader announces exactly the row
+                // about to be written — and a team with no location reads exactly
+                // as it did before this dialog existed.
+                aria-label={
+                  creating
+                    ? `Creating team${fullName ? ` ${fullName}` : ""}`
+                    : fullName
+                      ? `Create team ${fullName}`
+                      : "Create team"
+                }
+                onClick={() => void create()}
+              >
+                {creating ? "Creating…" : "Create team"}
+              </NeonButton>
+              <NeonButton
+                cancel
+                type="button"
+                onClick={onClose}
+                disabled={creating}
+              >
+                Cancel
+              </NeonButton>
+            </div>
           </div>
         </div>
       </div>

@@ -1571,6 +1571,23 @@ export default defineSchema({
         create: v.optional(v.object({
           location: v.optional(v.string()),
           name: v.string(),
+          /**
+           * NEO-254 — the era the operator typed on the New Team step.
+           *
+           * A sport can hold two teams under one name: the 1972-1996 Winnipeg
+           * Jets and the 2011- Jets. The era is the only thing that tells them
+           * apart, so a create decision that dropped it would let the prelude
+           * adopt whichever row the NAME already found — and every 1985 card in
+           * the set would bind to a franchise that did not exist yet.
+           *
+           * Optional and staying so: most teams are created with nobody
+           * knowing or caring, and an undated row is a normal row. It matters
+           * exactly when the name is already taken.
+           */
+          yearsActive: v.optional(v.object({
+            from: v.number(),
+            to: v.optional(v.number()),
+          })),
           // ── NEO-236: the league the operator picked on the New Team step ──
           //
           // The bug this closes: a team created out of a PLAYER's career list

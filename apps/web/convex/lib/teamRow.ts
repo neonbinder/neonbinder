@@ -32,6 +32,12 @@
  * to a 2011 franchise, and `convex/teams.dedupPin.test.ts` greps to keep it
  * from coming back.
  *
+ * A "does this sport hold the name at all" helper was written alongside these
+ * and then deleted unused: every caller that looked like it wanted one turned
+ * out to need the YEAR too (the career-team staging loop narrows by the stint's
+ * own start). Left out on purpose — an existence check that ignores the era is
+ * the shape this ticket removed, and having one available invites its return.
+ *
  * Pure apart from the `ctx.db` reads. Imports the
  * verbatim normaliser copy from `entityNearMatch` (parity with
  * `teams.normalizeTeamName` is asserted in `entityNearMatch.test.ts`) so this
@@ -113,23 +119,6 @@ export async function findTeamsByFullName(
     .take(TEAM_ERA_SCAN_LIMIT);
 }
 
-/**
- * Does this sport hold ANY row under that name?
- *
- * The honest shape for the callers that only ever asked "do we know this
- * name" — the career-team staging loop, which skips names we already hold, and
- * the checklist's unknown-name gate. They were calling the old
- * `findTeamByFullName` and throwing the row away, so they never cared which era
- * it was; saying so in the signature stops the next reader assuming they did.
- */
-export async function sportHoldsTeamName(
-  ctx: QueryCtx | MutationCtx,
-  sportId: Id<"selectorOptions">,
-  fullName: string,
-): Promise<boolean> {
-  return (await findTeamsByFullName(ctx, sportId, fullName)).length > 0;
-}
-
 /** What resolving a card's team name concluded. */
 export type TeamNameResolution = {
   /**
@@ -151,9 +140,15 @@ export type TeamNameResolution = {
  * The team counterpart of `players.narrowSameNamePlayersByCardYear`, and it
  * follows the same rules for the same reasons:
  *
- * 1. **One row is the row.** With or without a year — a single match was never
- *    a question, and this is every caller's pre-existing behaviour restated so
- *    the function is safe to call unconditionally.
+ * 1. **One row is the row — unless its era rules the card out.** A single
+ *    match used never to be a question, and for an UNDATED row it still is not:
+ *    unknown years cannot contradict anything. But a lone row dated 2011- is
+ *    positive evidence that a 1985 card does NOT mean it, and linking anyway is
+ *    the same wrong answer this function exists to stop — just harder to see,
+ *    because there is no second row to make the mistake obvious. So a dated
+ *    lone row whose era excludes the set year returns `null`, with itself as
+ *    the candidate: we hold a Winnipeg Jets, it is not this one, and a human
+ *    decides whether the other era needs creating.
  * 2. **No set year → nothing is narrowed.** The year is the evidence; with
  *    none, several rows stay several and the name goes to a human. Never the
  *    first row an index returned.
@@ -177,9 +172,10 @@ export async function resolveTeamForSetYear(
 ): Promise<TeamNameResolution> {
   const candidates = await findTeamsByFullName(ctx, sportId, fullName);
   if (candidates.length === 0) return { teamId: null, candidates };
-  if (candidates.length === 1) {
-    return { teamId: candidates[0]._id, candidates };
-  }
+  // Rule 1 — and `teamsActiveInYear` is what encodes both halves of it: an
+  // undated row survives every year, a dated one only its own. Running it over
+  // a single candidate rather than short-circuiting is what makes the lone
+  // dated row obey the same rule as a row with rivals.
   const survivors = teamsActiveInYear(candidates, setYear);
   return {
     teamId: survivors.length === 1 ? survivors[0]._id : null,

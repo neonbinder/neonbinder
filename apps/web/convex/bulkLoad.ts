@@ -544,9 +544,36 @@ function eraMatch(
   const overlapping = candidates.filter((team) =>
     erasOverlap(team.yearsActive, yearsActive),
   );
-  if (overlapping.length === 1) return { kind: "one", team: overlapping[0] };
   if (overlapping.length === 0) return { kind: "none" };
-  return { kind: "several", teams: overlapping };
+  if (overlapping.length > 1) return { kind: "several", teams: overlapping };
+
+  /**
+   * One overlap — but if it overlaps only because it is UNDATED, adopting it
+   * is order-dependent, and that is a bug rather than a tie.
+   *
+   * The case: the colour seed has already created an undated "Winnipeg Jets"
+   * carrying a league, colours and a franchise link. The dataset then sends
+   * both eras. Whichever arrives FIRST matches the undated row, adopts it,
+   * gap-fills its years and inherits everything on it; the second arrives, no
+   * longer overlaps, and is created bare. Run the chunks in the other order and
+   * the colours land on the other franchise. Nothing errors, and the result
+   * depends on array order in a file.
+   *
+   * So an undated row is only adopted by an era that could plausibly BE it —
+   * an OPEN one, which is what an undated row created from a list of current
+   * franchises actually is. A CLOSED incoming era (1972-1996) is a historical
+   * franchise, the one thing an undated "as it stands today" row is least
+   * likely to mean, so it comes back ambiguous with that row as the candidate
+   * and the operator dates it once. Both arrival orders then converge, because
+   * neither writes.
+   */
+  const only = overlapping[0];
+  const undatedRival = only.yearsActive === undefined;
+  const incomingIsClosed = yearsActive?.to !== undefined;
+  if (undatedRival && incomingIsClosed) {
+    return { kind: "several", teams: overlapping };
+  }
+  return { kind: "one", team: only };
 }
 
 /**
@@ -569,6 +596,11 @@ function eraMatch(
  * adopts an undated row on file rather than forking beside it. That is the
  * conservative direction: adopting gap-fills the years, while forking would
  * mint a duplicate nobody asked for.
+ *
+ * With ONE exception, and it is about order-dependence rather than caution: an
+ * undated row matched by a CLOSED incoming era comes back ambiguous instead.
+ * See `eraMatch` for the seed-row scenario that makes the alternative depend on
+ * which chunk happens to arrive first.
  *
  * ## Franchise linkage
  *

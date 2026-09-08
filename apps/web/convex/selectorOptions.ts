@@ -1312,6 +1312,16 @@ async function resolveUnknownsAndStartBatch(
     const existing = await ctx.runQuery(api.teams.findByNameAndSport, {
       name,
       sportId: args.sportId,
+      /*
+       * NEO-254 — the SET'S year, which this gate already knows.
+       *
+       * Without it a name two eras share never resolves: `findByNameAndSport`
+       * answers `null` for several candidates by design, so every "Winnipeg
+       * Jets" would be reported unknown and queued for review on EVERY sync of
+       * the set, forever, no matter how many times an operator answered it.
+       * The year is what picks the row whose era covers the cards in hand.
+       */
+      ...(setYear !== undefined ? { setYear } : {}),
     });
     if (!existing) unknownTeams.push(name);
   }
@@ -5772,6 +5782,7 @@ async function runSetBuilderReset(ctx: ActionCtx): Promise<{
   cardChecklistDeleted: number;
   crossListingsDeleted: number;
   playersDeleted: number;
+  playerAliasesDeleted: number;
   teamsDeleted: number;
   leaguesDeleted: number;
 }> {
@@ -5828,6 +5839,18 @@ async function runSetBuilderReset(ctx: ActionCtx): Promise<{
       if (!result.hasMore) break;
     }
 
+    // NEO-254 — the alias index, drained with the players it describes. A row
+    // here that outlived its player keeps answering the alias lookup forever.
+    let playerAliasesDeleted = 0;
+    while (true) {
+      const result = await ctx.runMutation(
+        internal.selectorOptions.resetPlayerAliasesBatch,
+        {},
+      );
+      playerAliasesDeleted += result.deleted;
+      if (!result.hasMore) break;
+    }
+
     let teamsDeleted = 0;
     while (true) {
       const result = await ctx.runMutation(
@@ -5855,6 +5878,7 @@ async function runSetBuilderReset(ctx: ActionCtx): Promise<{
       cardChecklistDeleted,
       crossListingsDeleted,
       playersDeleted,
+      playerAliasesDeleted,
       teamsDeleted,
       leaguesDeleted,
     };
@@ -5956,6 +5980,9 @@ export const resetSetBuilderDataFromCli = internalAction({
     cardChecklistDeleted: v.number(),
     crossListingsDeleted: v.number(),
     playersDeleted: v.number(),
+    // NEO-254 — reported alongside the players, so a run that drained one and
+    // not the other is visible in the operator's own output.
+    playerAliasesDeleted: v.number(),
     teamsDeleted: v.number(),
     leaguesDeleted: v.number(),
   }),
@@ -5966,6 +5993,7 @@ export const resetSetBuilderDataFromCli = internalAction({
     cardChecklistDeleted: number;
     crossListingsDeleted: number;
     playersDeleted: number;
+    playerAliasesDeleted: number;
     teamsDeleted: number;
     leaguesDeleted: number;
   }> => {
@@ -6065,6 +6093,41 @@ export const resetPlayersBatch = internalMutation({
     // point — see assertResetArmed.
     assertResetArmed();
     const rows = await ctx.db.query("players").take(RESET_BATCH_SIZE);
+    for (const row of rows) {
+      await ctx.db.delete(row._id);
+    }
+    return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
+  },
+});
+
+/**
+ * Internal: drain `playerAliases`, looped by `runSetBuilderReset`.
+ *
+ * NEO-254. `playerAliases` is the index behind `players.aliases` — one flat row
+ * per (player, alias) — so a reset that wipes players and leaves it standing
+ * does not leave a clean slate, it leaves rows POINTING AT NOTHING. Every one
+ * of them keeps answering `by_alias_normalized_and_sport_id` for as long as it
+ * exists; `sameNamePlayers` drops a hit whose player is gone, so the damage is
+ * quiet rather than loud, and the residue accumulates over every reset until
+ * the table is larger than the one it indexes.
+ *
+ * Same reasoning as the leagues batch beside it: a table that only exists to
+ * describe another one has to be drained with it.
+ *
+ * Its OWN chunk rather than a cascade inside the players batch. The players
+ * delete already loops to exhaustion at 500 rows a call, and adding an indexed
+ * read plus N deletes per row to that loop would put the reset's biggest
+ * mutation over the read budget on exactly the deployments that most need it.
+ */
+export const resetPlayerAliasesBatch = internalMutation({
+  args: {},
+  returns: v.object({
+    deleted: v.number(),
+    hasMore: v.boolean(),
+  }),
+  handler: async (ctx) => {
+    assertResetArmed();
+    const rows = await ctx.db.query("playerAliases").take(RESET_BATCH_SIZE);
     for (const row of rows) {
       await ctx.db.delete(row._id);
     }
@@ -10006,14 +10069,19 @@ export const commitCardChecklistPrelude = internalMutation({
          */
         leagueChosen?: boolean;
       } = {},
-    ): Promise<{ id: Id<"teams">; created: boolean }> => {
+      /**
+       * `null` means "this name resolves to two or more overlapping rows, so
+       * nothing was written" — see the refusal below. Callers treat it exactly
+       * as they treat a name with no decision: unresolved, reported, untouched.
+       */
+    ): Promise<{ id: Id<"teams">; created: boolean } | null> => {
       const extra = opts.extra ?? {};
       const fields = teamRowFields(input);
       /**
        * NEO-254 — find the row for THIS ERA, or make one beside it.
        *
        * The operator's answer carries its own years (`reviewedTeamFields`
-       * writes `yearsActive` from the enrichment), and those years are what
+       * prefers what they typed over the enrichment's), and those years are what
        * says which Winnipeg Jets they meant. A same-name row whose era does not
        * overlap is a different franchise, so this creates rather than adopting
        * it — which is exactly how the second era comes into existence.
@@ -10021,8 +10089,9 @@ export const commitCardChecklistPrelude = internalMutation({
        * `findCollidingTeams` counts an undated side as overlapping, so an
        * answer with no years still finds the single row it always did and
        * cannot fork beside one by accident. Several overlapping rows is a mess
-       * the prelude must not add to: it adopts the first and leaves the rest
-       * for Team Management, because a commit is the wrong place to refuse.
+       * the prelude must not ADD to and must not pick a side in — it writes
+       * nothing and reports the name unresolved, because Team Management is
+       * the only screen that can sort a duplicate pair out.
        */
       const colliding = await findCollidingTeams(
         ctx,
@@ -10031,7 +10100,24 @@ export const commitCardChecklistPrelude = internalMutation({
         extra.yearsActive,
       );
       // NOT enqueued, and NOT counted as created — it already existed.
-      if (colliding.length > 0) return { id: colliding[0]._id, created: false };
+      if (colliding.length === 1) {
+        return { id: colliding[0]._id, created: false };
+      }
+      /**
+       * NEO-254 — two or more overlapping rows is a MESS, not a choice.
+       *
+       * `colliding[0]` here was a silent pick: it took whichever row the index
+       * returned first and attached the operator's answer to it, which is the
+       * exact defect this ticket exists to remove, one layer down. Two rows
+       * sharing a name AND an era means the data is already wrong, and a commit
+       * is the wrong place to guess which half of it the operator meant.
+       *
+       * So nothing is written and the name comes back unresolved — the same
+       * outcome an unreviewed name gets, which the caller already knows how to
+       * report. Team Management is where two overlapping rows get sorted out,
+       * and it is the only screen that can.
+       */
+      if (colliding.length > 1) return null;
       // NEO-156: every team-creation path attaches a league. The caller
       // supplies one when the enrichment named it; otherwise the sport's
       // default.
@@ -10157,6 +10243,14 @@ export const commitCardChecklistPrelude = internalMutation({
         name: string;
         leagueId?: Id<"leagues"> | null;
         leagueName?: string;
+        /**
+         * NEO-254 — the era the OPERATOR typed, which outranks the enrichment's.
+         *
+         * Optional because the wizard's team step only asks when it has to.
+         * Typed loosely rather than off the validator so this file compiles
+         * independently of the shape `entityReviewQueue` declares.
+         */
+        yearsActive?: { from: number; to?: number };
       },
       enrichment: (typeof reviewRows)[number]["enrichment"],
       /** The team's own review-row id — what a skipped league step is keyed to. */
@@ -10247,7 +10341,21 @@ export const commitCardChecklistPrelude = internalMutation({
       }
       return {
         ...(leagueId ? { leagueId } : {}),
-        ...(enrichment?.yearsActive ? { yearsActive: enrichment.yearsActive } : {}),
+        /**
+         * NEO-254 — the operator's own years WIN over the lookup's.
+         *
+         * Same precedence the League field above already has, and for a
+         * stronger reason: the era is now half of the team's identity, so it is
+         * what decides whether this answer finds the row we hold or makes a
+         * second one beside it. An operator disambiguating the two Winnipeg
+         * Jets is typing the years precisely because Wikidata's answer
+         * describes the other one.
+         */
+        ...(create.yearsActive
+          ? { yearsActive: create.yearsActive }
+          : enrichment?.yearsActive
+            ? { yearsActive: enrichment.yearsActive }
+            : {}),
         ...(enrichment?.colors ? { colors: enrichment.colors } : {}),
         ...(enrichment?.wikidataId || enrichment?.espnId
           ? {
@@ -10416,7 +10524,7 @@ export const commitCardChecklistPrelude = internalMutation({
       // design (Jason, 2026-09-05: "We simply shouldn't allow for full string
       // creation").
       if (!create || !create.name.trim()) continue;
-      const { id, created } = await createTeamFromOperatorInput(create, {
+      const made = await createTeamFromOperatorInput(create, {
         // Already enriched: the staged row's own Wikidata lookup ran while it
         // sat in the wizard, and its result is on `row.enrichment`.
         enqueueEnrichment: false,
@@ -10432,8 +10540,13 @@ export const commitCardChecklistPrelude = internalMutation({
           row._id as string,
         ),
       });
-      stagedTeamIdByLabel.set(norm(row.name), id);
-      if (created) createdTeamIds.push(id);
+      // NEO-254: two overlapping rows already hold this name, so nothing was
+      // written — see the refusal in `createTeamFromOperatorInput`. The step
+      // simply produces no staged id, and every stint that would have used it
+      // falls through to the unresolved list.
+      if (!made) continue;
+      stagedTeamIdByLabel.set(norm(row.name), made.id);
+      if (made.created) createdTeamIds.push(made.id);
     }
 
     /**
@@ -10538,7 +10651,7 @@ export const commitCardChecklistPrelude = internalMutation({
       }
       const teamReviewRow = reviewByKey.get(`team:${normalized}`);
       const enrichment = teamReviewRow?.enrichment;
-      const { id, created } = await createTeamFromOperatorInput(create, {
+      const made = await createTeamFromOperatorInput(create, {
         // The row the operator reviewed arrives complete — the wizard's own
         // Wikidata/ESPN lookup already ran — so it does not go back on the
         // enrichment queue (NEO-147's creation-only contract).
@@ -10557,14 +10670,22 @@ export const commitCardChecklistPrelude = internalMutation({
           teamReviewRow?._id as string | undefined,
         ),
       });
-      teamIdByName.set(name, id);
-      teamNameById.set(id, teamFullName(create));
+      // NEO-254: null means the name resolves to two or more OVERLAPPING rows.
+      // Nothing was written, and the name is reported unresolved exactly as an
+      // unreviewed one is — Team Management is where a duplicate pair is sorted
+      // out, and a commit must not pick a side.
+      if (!made) {
+        unresolvedTeamNames.add(name);
+        continue;
+      }
+      teamIdByName.set(name, made.id);
+      teamNameById.set(made.id, teamFullName(create));
       // `createTeamFromOperatorInput` LINKS instead of inserting when the
       // composed name already exists — the operator answered "SD Padres" with
       // the San Diego Padres row we already have. A row this commit did not
       // insert is not one it created, and `createdTeamIds` drives the finalize
       // phase's creation-only work, so the flag is what decides.
-      if (created) createdTeamIds.push(id);
+      if (made.created) createdTeamIds.push(made.id);
     }
 
     const playerIdByName = new Map<string, Id<"players">>();
@@ -10844,7 +10965,16 @@ export const commitCardChecklistPrelude = internalMutation({
         // The operator answered this label, so it is no longer unresolved —
         // `resolveTeamIdByName` recorded it on the way past.
         unresolvedTeamNames.delete(label.trim());
-        return (await createTeamFromOperatorInput(create)).id;
+        const made = await createTeamFromOperatorInput(create);
+        if (!made) {
+          // Two overlapping rows already hold this name — see the refusal in
+          // `createTeamFromOperatorInput`. The stint is left without a team
+          // rather than attached to a guess, and the label goes back on the
+          // unresolved list it was just taken off.
+          unresolvedTeamNames.add(label.trim());
+          return null;
+        }
+        return made.id;
       };
       const teamYearByKey = new Map<
         string,

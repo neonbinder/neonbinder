@@ -104,6 +104,13 @@ const FRANCHISES = [
  * sides and corporate-named clubs legitimately have none, and for them full ==
  * short. Every branch of the row and the preview has a team here.
  */
+/**
+ * NEO-254 — the teams the mocked query answers with. Mutable so the two-eras
+ * case can hand back a pair of same-name rows without every other test paying
+ * for them.
+ */
+let currentTeams: Array<Record<string, unknown>>;
+
 const TEAMS = [
   {
     _id: "t-yankees",
@@ -122,6 +129,9 @@ const TEAMS = [
     location: "Seattle",
     nameNormalized: "mariners seattle",
     sportId: "sport-baseball",
+    // NEO-254: a DATED row, so the era's effect on the row and on the row's
+    // accessible name is exercised by the fixtures every other test uses.
+    yearsActive: { from: 1977 },
     colors: { primary: "#0c2c56" },
   },
   {
@@ -219,7 +229,7 @@ vi.mock("convex/react", () => ({
   useQuery: (ref: string, args: unknown) => {
     if (args === "skip") return undefined;
     if (ref === "teams.listForManagement") {
-      return { teams: TEAMS, truncated: false };
+      return { teams: currentTeams, truncated: false };
     }
     if (ref === "leagues.list") return LEAGUES;
     if (ref === "franchises.list") {
@@ -273,6 +283,7 @@ beforeEach(() => {
     .mockReset()
     .mockResolvedValue({ id: "f-new", created: true });
   franchiseRows = FRANCHISES;
+  currentTeams = TEAMS;
 });
 
 /**
@@ -1002,18 +1013,23 @@ describe("TeamManagement — the master row", () => {
     expect(yankees.textContent).toContain("MLB");
   });
 
-  it("carries the FULL name as its accessible name, exactly", () => {
+  it("carries the FULL name — and the era — as its accessible name, exactly", () => {
     // The handle every `.maestro` flow taps this row by: maestro-web builds
-    // `resource-id = node.id || node.ariaLabel`. Appending a state word here —
-    // "needs colors", a league — would break every one of those selectors
-    // silently, so this asserts the whole attribute rather than a substring.
+    // `resource-id = node.id || node.ariaLabel`. Appending STATE here — "needs
+    // colors", a league — would break every one of those selectors silently, so
+    // this asserts the whole attribute rather than a substring.
+    //
+    // NEO-254 added the era, and the distinction is exactly that: an era is not
+    // state, it is half of which row this is. Two "Winnipeg Jets" with one
+    // accessible name are two identical handles for two different franchises.
+    // An undated row is unchanged, which is what makes the change safe.
     renderAt("/admin/teams");
 
     expect(row("New York Yankees").getAttribute("aria-label")).toBe(
       "New York Yankees",
     );
     expect(row("Seattle Mariners").getAttribute("aria-label")).toBe(
-      "Seattle Mariners",
+      "Seattle Mariners · 1977–present",
     );
   });
 
@@ -1091,7 +1107,9 @@ describe("TeamManagement — the order of the master list", () => {
       // the location is there to do.
       "New York Giants",
       "San Francisco Giants",
-      "Seattle Mariners",
+      // NEO-254: the era rides in the accessible name now — see the block
+      // below. The ORDER, which is what this test is about, is unchanged.
+      "Seattle Mariners · 1977–present",
       "San Diego State Aztecs",
       "New York Yankees",
     ]);
@@ -1307,5 +1325,79 @@ describe("TeamManagement — a name that is already taken", () => {
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toBe("Could not save this team. Try again.");
     expect(alert.textContent).not.toContain("kaboom");
+  });
+});
+
+/**
+ * NEO-254 — the era is part of a row's IDENTITY, so it is part of the row's
+ * accessible name.
+ *
+ * A sport can hold two "Winnipeg Jets". Two rows with one accessible name are
+ * two identical handles for two different franchises: Maestro builds
+ * `resource-id = node.id || node.ariaLabel` and taps whichever comes first, and
+ * a screen-reader operator cannot tell them apart at all.
+ *
+ * It has to be the LABEL and not the description: `aria-describedby` is not
+ * part of what Maestro resolves, so no amount of description could make the
+ * handle unique. The compensating promise is that an UNDATED row's name is
+ * unchanged, which is what keeps the existing flows working.
+ */
+describe("TeamManagement — a row's era", () => {
+  it("appends the era to a dated row's accessible name", () => {
+    renderAt("/admin/teams");
+    expect(
+      screen.getByRole("button", { name: "Seattle Mariners · 1977–present" }),
+    ).toBeTruthy();
+  });
+
+  it("leaves an UNDATED row's accessible name byte-identical", () => {
+    // The reason the change is safe to make at all — every `.maestro` flow taps
+    // undated rows, and none of them moves.
+    renderAt("/admin/teams");
+    expect(
+      screen.getByRole("button", { name: "New York Yankees" }),
+    ).toBeTruthy();
+  });
+
+  it("shows the era on the row, in tabular figures", () => {
+    renderAt("/admin/teams");
+    const era = screen.getByText("1977–present");
+    expect(era.className).toContain("tabular-nums");
+  });
+
+  it("orders two same-name rows oldest era first", () => {
+    // Two rows can now share a nickname AND a location — the two Winnipeg Jets
+    // do — and without the era as a sort key they land adjacent in whatever
+    // order the query returned, which is arbitrary and unstable between
+    // renders. A lineage reads forwards.
+    currentTeams = [
+      {
+        _id: "t-jets-new",
+        _creationTime: 0,
+        name: "Jets",
+        location: "Winnipeg",
+        nameNormalized: "jets winnipeg",
+        sportId: "sport-baseball",
+        yearsActive: { from: 2011 },
+      },
+      {
+        _id: "t-jets-old",
+        _creationTime: 0,
+        name: "Jets",
+        location: "Winnipeg",
+        nameNormalized: "jets winnipeg",
+        sportId: "sport-baseball",
+        yearsActive: { from: 1972, to: 1996 },
+      },
+    ];
+    renderAt("/admin/teams");
+    const labels = screen
+      .getAllByRole("button")
+      .map((b) => b.getAttribute("aria-label"))
+      .filter((l): l is string => !!l && l.startsWith("Winnipeg Jets"));
+    expect(labels).toEqual([
+      "Winnipeg Jets · 1972–1996",
+      "Winnipeg Jets · 2011–present",
+    ]);
   });
 });

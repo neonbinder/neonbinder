@@ -531,6 +531,147 @@ describe("upsertTeams", () => {
     expect(row?.yearsActive).toEqual({ from: 2011 });
   });
 
+  describe("an undated row on file, and both eras arriving", () => {
+    /**
+     * The colour seed creates undated rows carrying a league, colours and a
+     * franchise link. The dataset then sends both Winnipeg Jets eras.
+     *
+     * Adopting the undated row by whichever era arrives FIRST makes the result
+     * depend on array order in a file: that era inherits the seed's colours and
+     * league, the other is created bare, and running the chunks the other way
+     * round moves them. Nothing errors — which is what makes it worth a test
+     * rather than a comment.
+     */
+    const bothEras = [
+      { key: "wpg-old", location: "Winnipeg", name: "Jets", yearsActive: { from: 1972, to: 1996 } },
+      { key: "wpg-new", location: "Winnipeg", name: "Jets", yearsActive: { from: 2011 } },
+    ];
+
+    const seedUndated = async (t: T) => {
+      const sportId = await seedSport(t, "Hockey");
+      const undated = await seedTeam(t, sportId, {
+        location: "Winnipeg",
+        name: "Jets",
+      });
+      return { sportId, undated };
+    };
+
+    test.each([
+      ["oldest first", bothEras],
+      ["newest first", [...bothEras].reverse()],
+    ])(
+      "the seed row always becomes the OPEN era, whichever order they arrive in — %s",
+      async (_label, teams) => {
+        arm();
+        const t = convexTest(schema, modules);
+        const { undated } = await seedUndated(t);
+
+        const result = await t.mutation(internal.bulkLoad.upsertTeams, {
+          confirm: CONFIRM,
+          sport: "Hockey",
+          teams,
+        });
+        const byKey = new Map(result.results.map((r) => [r.key, r]));
+
+        // THE INVARIANT. The undated row came from a list of franchises as they
+        // stand today, so it is the 2011 club — and it ends up dated as the 2011
+        // club in both orders. Before the closed-era guard, whichever chunk
+        // arrived first took it, so the seed's colours, league and franchise
+        // link landed on a different franchise depending on array order in a
+        // file, with nothing erroring.
+        expect(byKey.get("wpg-new")).toMatchObject({
+          id: undated,
+          status: "adopted",
+        });
+        const row = await t.run(async (ctx) => ctx.db.get(undated));
+        expect(row?.yearsActive).toEqual({ from: 2011 });
+
+        // …and the historical era NEVER adopts it, by either route.
+        expect(byKey.get("wpg-old")!.id).not.toBe(undated);
+      },
+    );
+
+    test("the two orders differ only in whether the closed era needs an answer", async () => {
+      /*
+       * Worth stating rather than glossing, because it is the one asymmetry
+       * left and it looks like a bug until you follow it.
+       *
+       * Newest first: 2011 adopts the undated row and dates it, so by the time
+       * 1972-1996 is looked at there is a DATED rival it does not overlap — a
+       * clean create, two rows, done in one call.
+       *
+       * Oldest first: 1972-1996 meets an undated rival and asks (it will not
+       * take a current-franchise row for a historical club). Nothing is
+       * written for it; 2011 then adopts the undated row. One row, and one
+       * question for the operator — who answers it, and gets the same two rows.
+       *
+       * Both orders put the seed row on the same franchise, which is the
+       * property that matters. Only the number of round trips differs.
+       */
+      arm();
+      const newestFirst = convexTest(schema, modules);
+      await seedUndated(newestFirst);
+      const a = await newestFirst.mutation(internal.bulkLoad.upsertTeams, {
+        confirm: CONFIRM,
+        sport: "Hockey",
+        teams: [...bothEras].reverse(),
+      });
+      expect(a.results.map((r) => r.status).sort()).toEqual(["adopted", "created"]);
+      expect((await counts(newestFirst)).teams).toBe(2);
+
+      const oldestFirst = convexTest(schema, modules);
+      await seedUndated(oldestFirst);
+      const b = await oldestFirst.mutation(internal.bulkLoad.upsertTeams, {
+        confirm: CONFIRM,
+        sport: "Hockey",
+        teams: bothEras,
+      });
+      expect(b.results.map((r) => r.status).sort()).toEqual(["adopted", "ambiguous"]);
+      expect((await counts(oldestFirst)).teams).toBe(1);
+
+      // The operator answers the question, and the two states meet.
+      await oldestFirst.mutation(internal.bulkLoad.upsertTeams, {
+        confirm: CONFIRM,
+        sport: "Hockey",
+        teams: [{ ...bothEras[0], decision: { create: true } }],
+      });
+      expect((await counts(oldestFirst)).teams).toBe(2);
+    });
+
+    test("the ambiguous result names the undated row so the operator can date it", async () => {
+      arm();
+      const t = convexTest(schema, modules);
+      const { undated } = await seedUndated(t);
+
+      const result = await t.mutation(internal.bulkLoad.upsertTeams, {
+        confirm: CONFIRM,
+        sport: "Hockey",
+        teams: [bothEras[0]],
+      });
+
+      expect(result.results[0].candidates?.map((c) => c.id)).toEqual([undated]);
+      // No years on the candidate, which is the whole reason it is a question.
+      expect(result.results[0].candidates?.[0].yearsActive).toBeUndefined();
+    });
+
+    test("once the operator dates it, the closed era adopts it", async () => {
+      // The resolution path: an ambiguous result is answered, not retried.
+      arm();
+      const t = convexTest(schema, modules);
+      const { undated } = await seedUndated(t);
+      await t.run(async (ctx) =>
+        ctx.db.patch(undated, { yearsActive: { from: 1972, to: 1996 } }),
+      );
+
+      const result = await t.mutation(internal.bulkLoad.upsertTeams, {
+        confirm: CONFIRM,
+        sport: "Hockey",
+        teams: [bothEras[0]],
+      });
+      expect(result.results[0]).toMatchObject({ id: undated, status: "adopted" });
+    });
+  });
+
   test("two overlapping same-name rows are ambiguous, with their years", async () => {
     // The loader does not rule between two eras that both fit. The candidate
     // list carries `yearsActive`, because the years are the only thing that
