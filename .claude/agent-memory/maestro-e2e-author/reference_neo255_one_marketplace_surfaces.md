@@ -42,3 +42,22 @@ new `attachedSides` field the client reads `serverSides.length` off `undefined`
 and throws. See [[never-push-a-branch-convex-to-shared-dev]] and
 [[local-validation-needs-a-pr-preview]]. Fixture rules:
 [[all-brands-is-where-the-one-sided-sets-live]].
+
+## Measured on PR #242's preview, 2026-09-07
+
+The inline progress line is **too short-lived to assert**: on a 25-card BSC-only
+set the whole `Fetching from BSC… <n> of <m> cards ready.` sentence is up ~1.3s
+and the `<n> of <m>` half ~0.25s (32 cards: ~3.0s / ~0.75s), and the numerator
+never leaves 0. maestro-web spends ~2s per step in `hierarchyBasedTap`, so the
+window is gone before the next command reads the screen. Do not assert it and do
+not inflate the fixture to make it assertable — leave it to the unit tests. The
+same applies to `id: "Cancel checklist fetch"`, which lives in the same window.
+
+`Kept all N cards from <marketplace>. Nothing to match, no other marketplace
+attached.` IS assertable and is the R2 gate: it is produced on ONE branch
+(`expectSolo && agreed && serverSides.length === 1`, after the streamed batch
+arrived in full), while the pre-existing `candidateCount === 0` fall-through
+prints nothing at all.
+
+A flow on this path still cannot go green: see
+[[maestro-web-cannot-scroll-after-base-picker]].
