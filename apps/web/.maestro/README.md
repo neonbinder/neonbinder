@@ -50,6 +50,39 @@ export `SE_BROWSER_PATH` via `lib-e2e-chrome.sh` and **refuse to start** without
 it. Setting `SE_BROWSER_PATH` yourself overrides the pin, except that pointing
 it at branded Chrome is rejected outright.
 
+### The macOS renderer stall, and why local Chrome gets one extra flag (NEO-258)
+
+On macOS, headless Chrome for Testing under maestro-web can stop producing
+animation frames once the set-selector reveals a new column. maestro-web's only
+scroll primitive is `window.scroll({behavior:'smooth'})`, which is frame-driven,
+so from that moment every `scroll` / `swipe` / `scrollUntilVisible` moves 0px
+and still reports `COMPLETED`, `takeScreenshot` hangs, and anything below the
+fold is unreachable (element lookup is viewport-bounded). It is intermittent,
+it reads exactly like a product bug, and CI (Linux) has never shown it.
+
+`lib-e2e-chrome.sh` therefore points `SE_BROWSER_PATH` at a generated wrapper
+(next to the pinned build in the puppeteer cache, never in the repo) that
+launches the same binary with `--run-all-compositor-stages-before-draw`.
+Measured: 9/9 screenshots and 8/8 scrolls on two runs with the flag, 0-1
+screenshots without; `--headless=old` and
+`--disable-new-content-rendering-timeout` do not help. Opt out with
+`E2E_CHROME_COMPOSITOR_FLAG=0` (for a before/after comparison) or force it on
+another platform with `=1`.
+
+**Tell a stall apart from an app bug in ten seconds.** Attach any CDP client to
+the running Maestro Chrome (its profile dir holds `DevToolsActivePort`) and run:
+
+```js
+await new Promise(r => { let raf = 0, ivl = 0;
+  const a = () => { raf++; requestAnimationFrame(a); }; requestAnimationFrame(a);
+  const t = setInterval(() => ivl++, 16);
+  setTimeout(() => { clearInterval(t); console.log({ raf, ivl }); r(); }, 2000); });
+```
+
+`raf: 0` with `ivl` in the hundreds is the stall: JS runs, frames do not. An
+app bug never looks like that. Full write-up:
+`.claude/agent-memory/neonbinder-web-dev/reference_maestro_web_frame_stall_kills_scrolling.md`.
+
 ## Commands
 
 | Command | What it does |
