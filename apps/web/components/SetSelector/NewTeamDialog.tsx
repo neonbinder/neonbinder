@@ -155,6 +155,29 @@ export default function NewTeamDialog({
    */
   const blocked = draft.name.trim() ? null : "Enter a team name.";
 
+  /**
+   * NEO-254 — "yes, I mean a second era of a name we already hold."
+   *
+   * A sport can hold two teams under one name — the 1972-1996 Winnipeg Jets and
+   * the 2011- Jets — and creating the second is a real, necessary act. It is
+   * also exactly what a typo looks like, so the server refuses the first
+   * attempt and NAMES the eras already on file; this holds the operator's
+   * answer to that refusal, and the next press re-sends with it.
+   *
+   * State rather than a silent retry: an operator must see which team they are
+   * about to sit beside before they agree to it. Reset whenever the name or
+   * location changes, because the refusal was about THAT name — carrying a
+   * stale confirmation past an edit is how a typo would slip through the guard
+   * it just triggered.
+   */
+  const [confirmNewEra, setConfirmNewEra] = useState(false);
+  const draftIdentity = `${draft.location.trim()}|${draft.name.trim()}`;
+  const [confirmedFor, setConfirmedFor] = useState(draftIdentity);
+  if (confirmedFor !== draftIdentity) {
+    setConfirmedFor(draftIdentity);
+    setConfirmNewEra(false);
+  }
+
   const create = async () => {
     if (creating) return;
     if (blocked) {
@@ -182,13 +205,23 @@ export default function NewTeamDialog({
         // the sport default apply).
         ...(draft.leagueId !== undefined ? { leagueId: draft.leagueId } : {}),
         ...(draft.leagueName ? { leagueName: draft.leagueName } : {}),
+        // NEO-254 — the era, and the operator's confirmation of it. Both
+        // omitted rather than sent empty, for the same reason `location` is.
+        ...(draft.yearsActive ? { yearsActive: draft.yearsActive } : {}),
+        ...(confirmNewEra ? { newEra: true } : {}),
       });
       onCreated(id);
       onClose();
     } catch (err) {
       // The ConvexError's `data`, never `.message`: production redacts a plain
       // Error, and a surviving message arrives wrapped in request-id noise.
-      setError(userFacingMessage(err, "Could not create team."));
+      const message = userFacingMessage(err, "Could not create team.");
+      setError(message);
+      // NEO-254: the "adds a second era" refusal is a QUESTION, not a failure.
+      // Arming the confirmation here turns the next press into the answer, so
+      // the operator reads which era is already there and then agrees — one
+      // extra deliberate press, rather than a checkbox nobody would read.
+      if (message.includes("adds a second era")) setConfirmNewEra(true);
     } finally {
       setCreating(false);
     }

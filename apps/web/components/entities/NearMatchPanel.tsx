@@ -41,6 +41,18 @@ export interface NearMatch {
    * structural rather than becoming `Doc<"players">` by the back door.
    */
   birthYear?: number;
+  /**
+   * NEO-254, team rows only — the fact that separates two of THEM.
+   *
+   * The exact twin of `birthYear` above, added by the same change for the same
+   * reason. Once team identity became `(name, sport, yearsActive.from)`, this
+   * panel can legitimately receive two rows both called "Winnipeg Jets", and a
+   * duplicate-warning list that shows the same string twice warns of nothing —
+   * worse, it hands assistive tech two byte-identical accessible names. The
+   * panel does not render it; a caller builds the label from it via
+   * `pickLabel`.
+   */
+  yearsActive?: { from: number; to?: number };
 }
 
 export interface NearMatchPanelProps {

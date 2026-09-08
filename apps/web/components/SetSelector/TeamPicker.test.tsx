@@ -111,8 +111,15 @@ function tid(n: string): Id<"teams"> {
   return n as unknown as Id<"teams">;
 }
 
-function makeTeam(id: string, name: string, location?: string) {
-  return { _id: tid(id), name, location };
+function makeTeam(
+  id: string,
+  name: string,
+  location?: string,
+  // NEO-254: a team's era, which for two same-name rows is the only thing that
+  // tells them apart.
+  yearsActive?: { from: number; to?: number },
+) {
+  return { _id: tid(id), name, location, yearsActive };
 }
 
 function renderPicker(props: Partial<Parameters<typeof TeamPicker>[0]> = {}) {
@@ -462,8 +469,24 @@ describe("TeamPicker", () => {
     expect(within(screen.getByRole("listbox")).queryAllByRole("option")).toHaveLength(0);
   });
 
-  it("does NOT offer the create row when an exact (case-insensitive) match exists", () => {
-    currentCandidates = [makeTeam("t1", "New York Yankees")];
+  /**
+   * NEO-254 — the create row STAYS when the name is already taken, and says so.
+   *
+   * It used to be suppressed on an exact match, which was right while a sport
+   * could hold only one team per name. It cannot any more: the 1972-1996
+   * Winnipeg Jets and the 2011- Winnipeg Jets are two rows, and hiding Create
+   * whenever the name existed made the second franchise unreachable from this
+   * picker — an operator would see one Jets row, not recognise it as the wrong
+   * era, and attach the card to it.
+   *
+   * The duplicate is still guarded, just not here: the row names the eras
+   * already on file, and `teams.findOrCreate` refuses a second one until the
+   * operator confirms it in the dialog. The picker offers; the server insists.
+   */
+  it("still offers the create row on an exact match, and names what is already there", () => {
+    currentCandidates = [
+      makeTeam("t1", "Yankees", "New York", { from: 1913 }),
+    ];
     renderPicker();
     openPopover();
 
@@ -471,10 +494,19 @@ describe("TeamPicker", () => {
       target: { value: "new york yankees" },
     });
 
-    expect(createRow()).toBeNull();
+    expect(createRow()).not.toBeNull();
+    expect(createRow()!.textContent).toContain("Already here:");
+    expect(createRow()!.textContent).toContain("1913–present");
+    // …and the exact row is still matched, which is the half that has not
+    // changed: the operator's first option is the row we hold.
+    expect(
+      screen.getByRole("option", { name: "Add New York Yankees · 1913–present" }),
+    ).toBeTruthy();
   });
 
   it("does not offer the create row when the query is empty", () => {
+    // Still suppressed here, and for a reason NEO-254 did not change: there is
+    // no name to create.
     currentCandidates = [makeTeam("t1", "New York Yankees")];
     renderPicker();
     openPopover();
@@ -482,9 +514,9 @@ describe("TeamPicker", () => {
     expect(createRow()).toBeNull();
   });
 
-  // The exact-match suppression has to see through the split, or the picker
+  // The exact-match lookup has to see through the split, or the picker
   // offers to create a team it is already listing one row above.
-  it("offers no create row when the typed query is the full name of a split row", () => {
+  it("matches a split row from its full name (and still offers a new era)", () => {
     currentCandidates = [makeTeam("t1", "Padres", "San Diego")];
     renderPicker({ sportId: SPORT_ID });
     openPopover();
@@ -493,11 +525,15 @@ describe("TeamPicker", () => {
       target: { value: "san diego padres" },
     });
 
-    expect(createRow()).toBeNull();
+    // NEO-254: the create row is no longer suppressed on an exact match — a
+    // sport can hold two teams under one name. What these cases were really
+    // protecting is that the row is FOUND rather than missed, which is where a
+    // duplicate would have come from, so that is what they assert now.
     expect(screen.getByLabelText("Add San Diego Padres")).toBeTruthy();
+    expect(createRow()!.textContent).toContain("Already here:");
   });
 
-  it("finds an accented split row from an ASCII query, and offers no create for it (NEO-253)", () => {
+  it("finds an accented split row from an ASCII query (NEO-253)", () => {
     // The two halves of this box have to agree, and before the fold they did
     // not. The list filtered on a bare `toLowerCase().includes`, so typing
     // "Montreal Expos" HID the accented row; the create offer was decided the
@@ -517,10 +553,14 @@ describe("TeamPicker", () => {
     });
 
     expect(screen.getByLabelText("Add Montréal Expos")).toBeTruthy();
-    expect(createRow()).toBeNull();
+    // NEO-254: the create row is no longer suppressed on an exact match — a
+    // sport can hold two teams under one name. What these cases were really
+    // protecting is that the row is FOUND rather than missed, which is where a
+    // duplicate would have come from, so that is what they assert now.
+    expect(createRow()!.textContent).toContain("Already here:");
   });
 
-  it("finds an ASCII split row from an accented query (NEO-253)", () => {
+  it("finds an ASCII split row from an accented query, matched not created (NEO-253)", () => {
     // The reverse crossing: NB holds the plain spelling and the operator
     // types the real one. Symmetry matters because which side carries the
     // accent depends only on which source happened to create the row first.
@@ -533,7 +573,8 @@ describe("TeamPicker", () => {
     });
 
     expect(screen.getByLabelText("Add Montreal Expos")).toBeTruthy();
-    expect(createRow()).toBeNull();
+    // NEO-254: found, not suppressed — see the sibling case above.
+    expect(createRow()!.textContent).toContain("Already here:");
   });
 
   // NEO-96: this test used to assert the OPPOSITE — that with no sport prop the

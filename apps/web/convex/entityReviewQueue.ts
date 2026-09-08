@@ -39,7 +39,7 @@ import {
 } from "./leagues";
 // NEO-236: the ONE team lookup. Staging asks "do we already hold this career
 // team?" and must ask it exactly the way every writer keys the table.
-import { findTeamByFullName } from "./lib/teamRow";
+import { resolveTeamForSetYear } from "./lib/teamRow";
 // NEO-254: the set's year, for labelling which same-name candidates were
 // active in it. One ancestor walk per batch; see convex/lib/selectorAncestry.ts.
 import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
@@ -1355,6 +1355,18 @@ async function stageCareerTeamRowsImpl(
     name: string;
     wikidataId?: string;
     manualStint?: { fromYear: number; toYear?: number };
+    /**
+     * NEO-254 — the year this stint STARTED, used only to decide which era of
+     * a name we are talking about. Never stored.
+     *
+     * A club name can now belong to several team rows: a 1979 Winnipeg Jets
+     * stint and a 2015 one are different franchises. The "we hold this already,
+     * nothing to stage" check below therefore has to ask about a year, and the
+     * stint's own start is a far better signal than the set's year — the card
+     * this player appeared on says nothing about when they played for a club
+     * they left a decade earlier.
+     */
+    stintYear?: number;
   };
   const proposals: Proposal[] = [
     // A Wikidata proposal deliberately carries NO `manualStint` even though it
@@ -1364,8 +1376,13 @@ async function stageCareerTeamRowsImpl(
     ...(playerRow.enrichment?.careerTeams ?? []).map((ct) => ({
       name: ct.name,
       ...(ct.wikidataId ? { wikidataId: ct.wikidataId } : {}),
+      // …but it DOES carry the year for the era check — see `stintYear`.
+      ...(ct.fromYear !== undefined ? { stintYear: ct.fromYear } : {}),
     })),
-    ...extraCareerTeams,
+    ...extraCareerTeams.map((extra) => ({
+      ...extra,
+      ...(extra.manualStint ? { stintYear: extra.manualStint.fromYear } : {}),
+    })),
   ];
   if (proposals.length === 0) return [];
 
@@ -1493,7 +1510,19 @@ async function stageCareerTeamRowsImpl(
     // Held already — a link, not a question. Composed-name keyed, so a split
     // row ("San Diego" + "Padres") answers to the Wikidata label "San Diego
     // Padres" and nothing is staged.
-    if (await findTeamByFullName(ctx, playerRow.sportId, name)) continue;
+    //
+    // NEO-254: "held already" now means held FOR THIS STINT'S ERA. A name that
+    // resolves to several team rows is not held — it is a question, and it gets
+    // a step so the operator picks the era. Without the year here, a 1979
+    // Winnipeg Jets stint would be silently satisfied by the 2011 row simply
+    // because it exists.
+    const { teamId: heldTeamId } = await resolveTeamForSetYear(
+      ctx,
+      playerRow.sportId,
+      name,
+      proposal.stintYear,
+    );
+    if (heldTeamId) continue;
 
     /*
      * A guard rail on an unbounded write, not a security boundary — and it

@@ -21,7 +21,13 @@ import { normalizeEntityName } from "../lib/entities/normalize-name";
 // NEO-236: the split. `teamRowFields` is the ONE derivation of a row's
 // identity fields and `findTeamByFullName` the ONE lookup — see
 // convex/lib/teamRow.ts for why every writer in this file goes through them.
-import { findTeamByFullName, teamRowFields } from "./lib/teamRow";
+import {
+  findCollidingTeams,
+  findTeamsByFullName,
+  resolveTeamForSetYear,
+  teamRowFields,
+} from "./lib/teamRow";
+import { eraLabel, teamOptionLabel } from "../lib/teams/team-era";
 import { splitTeamName, teamFullName } from "../lib/teams/team-name";
 
 /**
@@ -100,6 +106,17 @@ export const findByNameAndSport = query({
   args: {
     name: v.string(),
     sportId: v.id("selectorOptions"),
+    /**
+     * NEO-254 — the year of the set the name came off, when the caller knows
+     * it.
+     *
+     * A name now resolves to several rows: there are two Winnipeg Jets, and
+     * their eras are the only thing that tells them apart. With a year, the row
+     * whose era covers it wins when exactly one does; without one, several
+     * candidates is `null` and the caller asks a human. See
+     * `resolveTeamForSetYear`.
+     */
+    setYear: v.optional(v.number()),
   },
   returns: v.union(teamDocValidator, v.null()),
   handler: async (ctx, args) => {
@@ -108,7 +125,68 @@ export const findByNameAndSport = query({
     // label, or an operator's typed string. It resolves to a split row because
     // the dedup key is derived from the composed full name; see
     // convex/lib/teamRow.ts.
-    return await findTeamByFullName(ctx, args.sportId, args.name);
+    //
+    // NEO-254: and to at most ONE of that name's eras. `null` where it used to
+    // return `.first()` is the point of the change — an ambiguous name is not
+    // an answer, and handing back an arbitrary era is what pointed 1985 cards
+    // at a 2011 franchise.
+    const { teamId } = await resolveTeamForSetYear(
+      ctx,
+      args.sportId,
+      args.name,
+      args.setYear,
+    );
+    return teamId ? await ctx.db.get(teamId) : null;
+  },
+});
+
+/**
+ * NEO-254 — every era this sport holds under a name, for the surfaces that let
+ * an operator PICK one.
+ *
+ * The counterpart of `findByNameAndSport` above: that one answers "which row
+ * does this card mean" and refuses to guess, this one answers "what are my
+ * options" and never guesses. The pickers and the review wizard need the
+ * second, because the whole remedy for an ambiguous name is showing the
+ * operator the eras and letting them say.
+ *
+ * `label` is composed here rather than in each client so a team reads the same
+ * way — "Winnipeg Jets · 1972–1996" — wherever the choice is offered.
+ */
+export const erasByNameAndSport = query({
+  args: {
+    name: v.string(),
+    sportId: v.id("selectorOptions"),
+  },
+  returns: v.array(
+    v.object({
+      _id: v.id("teams"),
+      name: v.string(),
+      location: v.optional(v.string()),
+      yearsActive: v.optional(
+        v.object({ from: v.number(), to: v.optional(v.number()) }),
+      ),
+      label: v.string(),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    if (!(await getCurrentUserId(ctx))) return [];
+    const rows = await findTeamsByFullName(ctx, args.sportId, args.name);
+    return rows
+      .map((team) => ({
+        _id: team._id,
+        name: team.name,
+        ...(team.location !== undefined ? { location: team.location } : {}),
+        ...(team.yearsActive !== undefined
+          ? { yearsActive: team.yearsActive }
+          : {}),
+        label: teamOptionLabel(teamFullName(team), team.yearsActive),
+      }))
+      // Oldest era first: a lineage reads forwards, and an operator scanning
+      // "1972–1996 / 2011–present" is reading a history.
+      .sort(
+        (a, b) => (a.yearsActive?.from ?? Infinity) - (b.yearsActive?.from ?? Infinity),
+      );
   },
 });
 
@@ -161,6 +239,26 @@ export const findOrCreate = mutation({
      */
     leagueId: v.optional(v.union(v.id("leagues"), v.null())),
     leagueName: v.optional(v.string()),
+    /**
+     * NEO-254 — the era this team played, when the operator knows it.
+     *
+     * Load-bearing for identity, not decoration: it is what separates the 1972
+     * Winnipeg Jets from the 2011 ones, and it is what decides whether this
+     * call finds a row or makes one.
+     */
+    yearsActive: v.optional(
+      v.object({ from: v.number(), to: v.optional(v.number()) }),
+    ),
+    /**
+     * "Yes, I mean a NEW era of a name we already hold."
+     *
+     * Creating a second row under an existing name is a real and necessary act
+     * — and it is also exactly what a typo looks like. So the first attempt is
+     * refused with the eras already on file named in the message, and the
+     * caller re-sends with this set. The refusal IS the confirmation prompt;
+     * see `components/SetSelector/NewTeamForm.tsx` for the operator's side.
+     */
+    newEra: v.optional(v.boolean()),
   },
   returns: v.id("teams"),
   handler: async (ctx, args): Promise<Id<"teams">> => {
@@ -211,13 +309,57 @@ export const findOrCreate = mutation({
       throw new ConvexError("A team must be created under a sport.");
     }
 
-    const existing = await findTeamByFullName(ctx, args.sportId, fullName);
-    // NOT enqueued — see the creation-only note on the insert below. A league
-    // the operator picked is deliberately NOT applied to a found row either:
-    // this mutation's contract is find-or-create, and re-filing an existing
-    // team is Team Management's job, done deliberately and with a screen in
-    // front of it.
-    if (existing) return existing._id;
+    /**
+     * NEO-254 — find the ERA, or create a new one.
+     *
+     * A name can now belong to several rows, so "does this team exist" is not a
+     * question the name alone answers. Three outcomes:
+     *
+     *  - **No row overlaps** the years the operator gave (including the case of
+     *    no rows at all) → CREATE. This is how the second Winnipeg Jets gets
+     *    made: the operator says 2011-, nothing on file overlaps that, and a
+     *    new era is exactly what they meant. `newEra` makes them say so.
+     *  - **Exactly one overlaps** → return it, unchanged. The mutation's
+     *    contract is find-or-create, and re-filing an existing team is Team
+     *    Management's job, done deliberately and with a screen in front of it.
+     *  - **Several overlap** → refuse. The picker cannot rule between them and
+     *    must not mint a third; the operator is sent to Team Management, which
+     *    is the screen that can.
+     *
+     * `erasOverlap` counts an UNDATED row as overlapping, so a caller that
+     * gives no years still finds the single row it always did, and cannot fork
+     * beside one by accident. Creating a second era therefore requires years —
+     * which is the right bar for a decision this consequential.
+     */
+    const colliding = await findCollidingTeams(
+      ctx,
+      args.sportId,
+      fullName,
+      args.yearsActive,
+    );
+    if (colliding.length === 1) return colliding[0]._id;
+    if (colliding.length > 1) {
+      // Names the eras, because that is the information the operator needs to
+      // go and fix it — and they are reference rows, not typed content.
+      throw new ConvexError(
+        `${fullName} already names ${colliding.length} teams in this sport ` +
+          `(${colliding.map((t) => eraLabel(t.yearsActive) || "no years").join(", ")}). ` +
+          `Sort them out in Team Management first.`,
+      );
+    }
+    if (!args.newEra) {
+      const sameName = await findTeamsByFullName(ctx, args.sportId, fullName);
+      if (sameName.length > 0) {
+        // A name that exists under a DIFFERENT era. Allowed — that is the
+        // Winnipeg Jets case — but not silently: the operator is told which
+        // era they are about to sit beside, and confirms with `newEra`.
+        throw new ConvexError(
+          `${fullName} already exists for ${sameName
+            .map((t) => eraLabel(t.yearsActive) || "no years")
+            .join(", ")}. Creating this one adds a second era.`,
+        );
+      }
+    }
 
     /**
      * NEO-236 — the operator's league, or the sport's default when they gave
@@ -241,6 +383,7 @@ export const findOrCreate = mutation({
     const id = await ctx.db.insert("teams", {
       ...teamRowFields({ name, location: args.location }),
       sportId: args.sportId,
+      ...(args.yearsActive ? { yearsActive: args.yearsActive } : {}),
       // NEO-156: every creation path attaches a league. Undefined when the
       // sport has no configured one (a custom sport) AND the operator named
       // none — legitimate, and assignable later in Team Management.
@@ -363,11 +506,25 @@ export const findByFullNameInternal = internalQuery({
   args: {
     name: v.string(),
     sportId: v.id("selectorOptions"),
+    /**
+     * NEO-254 — the year of the set this name came off.
+     *
+     * Without it an ambiguous name resolves to `null` rather than to an
+     * arbitrary era, which is the same "skip, never create" outcome callers
+     * already handle. With it, the row whose era covers the year wins when
+     * exactly one does.
+     */
+    setYear: v.optional(v.number()),
   },
   returns: v.union(v.id("teams"), v.null()),
   handler: async (ctx, args): Promise<Id<"teams"> | null> => {
-    const found = await findTeamByFullName(ctx, args.sportId, args.name);
-    return found?._id ?? null;
+    const { teamId } = await resolveTeamForSetYear(
+      ctx,
+      args.sportId,
+      args.name,
+      args.setYear,
+    );
+    return teamId;
   },
 });
 
@@ -713,8 +870,30 @@ export const saveTeamFields = mutation({
       args.location !== undefined
         ? (args.location ?? undefined)
         : existing.location;
+    /**
+     * NEO-254 — the era this save leaves the row with, which is now half of its
+     * identity. Read from the draft when the operator touched the years and
+     * from the row otherwise, exactly as name and location are.
+     */
+    const nextYears =
+      args.yearsActive !== undefined
+        ? (args.yearsActive ?? undefined)
+        : existing.yearsActive;
 
-    if (args.name !== undefined || args.location !== undefined) {
+    /**
+     * NEO-254 — a YEARS edit is an identity edit.
+     *
+     * Widening an era back over a neighbour's is the same collision as renaming
+     * onto it, so the check below runs whenever the name, the location OR the
+     * years moved. Before this, the two Winnipeg Jets could be separated by
+     * narrowing one era and then silently re-merged by widening it again, with
+     * no refusal anywhere.
+     */
+    if (
+      args.name !== undefined ||
+      args.location !== undefined ||
+      args.yearsActive !== undefined
+    ) {
       if (args.name !== undefined && !args.name.trim()) {
         throw new Error("Team name cannot be empty");
       }
@@ -768,20 +947,28 @@ export const saveTeamFields = mutation({
       // resolve by retyping one of them. Checked every time, and it costs one
       // indexed read of a bucket that holds one row in the healthy case.
       //
-      // `.take(2)` rather than `.first()` for the same reason: when a duplicate
-      // pair exists, `.first()` may well return the row being edited, and a
-      // self-match reads as "no collision". Among two or more rows sharing a
-      // key at most one is `args.id`, so any two of them contain a stranger.
+      // NEO-254 — and the ERA is now half of the check.
+      //
+      // A name may legitimately name several rows as long as their eras are
+      // disjoint: the 1972-1996 Winnipeg Jets and the 2011- Winnipeg Jets are
+      // two franchises and two rows. So a rename collides only with a same-name
+      // row whose years OVERLAP, and a years edit is checked too — narrowing an
+      // era is how an operator makes room for a second one, and widening it
+      // back over its neighbour has to be refused for the same reason the
+      // rename is.
+      //
+      // `findCollidingTeams` takes an undated side as overlapping, so nothing
+      // that used to be refused is now allowed by accident: the loosening
+      // applies only where BOTH rows say when they played.
       const clash = (
-        await ctx.db
-          .query("teams")
-          .withIndex("by_name_normalized_and_sport_id", (q) =>
-            q
-              .eq("nameNormalized", fields.nameNormalized)
-              .eq("sportId", existing.sportId),
-          )
-          .take(2)
-      ).find((row) => row._id !== args.id);
+        await findCollidingTeams(
+          ctx,
+          existing.sportId,
+          teamFullName(fields),
+          nextYears,
+          args.id,
+        )
+      )[0];
       if (clash) {
         throw new ConvexError(`NAME_TAKEN:${clash._id}`);
       }
@@ -1181,6 +1368,23 @@ export const nearMatches = query({
       _id: v.id("teams"),
       name: v.string(),
       confidence: v.union(v.literal("exact"), v.literal("close")),
+      /**
+       * NEO-254 — the row's era, so a caller can build a UNIQUE label.
+       *
+       * Its own field rather than appended to `name`, and that is not
+       * cosmetic: `rankTeamCandidates` scores the operator's typed string
+       * against `name`, so "Winnipeg Jets · 1972–1996" would stop scoring as an
+       * exact match for "Winnipeg Jets" and the duplicate warning would
+       * downgrade itself to "close". The panel composes the label with
+       * `teamOptionLabel`; the ranker keeps the bare name.
+       *
+       * Structural, and exactly the shape `NearMatch.birthYear` takes for
+       * players — added for the same reason, at the same time, by the same
+       * change of key.
+       */
+      yearsActive: v.optional(
+        v.object({ from: v.number(), to: v.optional(v.number()) }),
+      ),
     }),
   ),
   handler: async (ctx, args) => {
@@ -1210,7 +1414,10 @@ export const nearMatches = query({
     );
 
     // Keyed by id so the exact hit and a search hit for the same row collapse.
-    const candidates = new Map<Id<"teams">, { _id: Id<"teams">; name: string }>();
+    const candidates = new Map<
+      Id<"teams">,
+      { _id: Id<"teams">; name: string; yearsActive?: { from: number; to?: number } }
+    >();
 
     // NEO-236: the shared identity lookup, so this cannot disagree with what
     // `findOrCreate` would actually reuse — the whole point of step 1.
@@ -1220,9 +1427,19 @@ export const nearMatches = query({
     // `name` is what the "did you mean?" prompt renders. Ranking "Padres"
     // against "San Diego Padres" would score a real exact match as merely
     // close.
-    const exact = await findTeamByFullName(ctx, args.sportId, name);
-    if (exact) {
-      candidates.set(exact._id, { _id: exact._id, name: teamFullName(exact) });
+    // NEO-254: EVERY era under the key, not the first. A name that already
+    // names two teams is the single most important thing this prompt can tell
+    // an operator who is about to type it a third time, and `.first()` showed
+    // them one of the two at random. Each is labelled with its years, because
+    // "Winnipeg Jets" twice in a "did you mean?" list is worse than useless.
+    for (const exact of await findTeamsByFullName(ctx, args.sportId, name)) {
+      candidates.set(exact._id, {
+        _id: exact._id,
+        name: teamFullName(exact),
+        ...(exact.yearsActive !== undefined
+          ? { yearsActive: exact.yearsActive }
+          : {}),
+      });
     }
 
     // NEO-236: same normalisation, and for the same reason, as `search`
@@ -1246,7 +1463,11 @@ export const nearMatches = query({
       if (fallbackTerm) hits = await searchTeams(fallbackTerm);
     }
     for (const hit of hits) {
-      candidates.set(hit._id, { _id: hit._id, name: teamFullName(hit) });
+      candidates.set(hit._id, {
+        _id: hit._id,
+        name: teamFullName(hit),
+        ...(hit.yearsActive !== undefined ? { yearsActive: hit.yearsActive } : {}),
+      });
     }
 
     const rows = [...candidates.values()];
@@ -1256,6 +1477,9 @@ export const nearMatches = query({
         _id: rows[index]._id,
         name: rows[index].name,
         confidence,
+        ...(rows[index].yearsActive !== undefined
+          ? { yearsActive: rows[index].yearsActive }
+          : {}),
       }));
   },
 });

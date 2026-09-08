@@ -34,7 +34,7 @@ import { internal } from "./_generated/api";
 import { requireAdmin } from "./auth";
 // NEO-236: these two paths LOOK UP a team and link it; neither may create one.
 // See `convex/lib/teamRow.ts` and the notes on each handler below.
-import { findTeamByFullName } from "./lib/teamRow";
+import { resolveTeamForSetYear } from "./lib/teamRow";
 import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
 import { teamFullName } from "../lib/teams/team-name";
 
@@ -128,6 +128,28 @@ export const backfillTeamToOnCardIds = internalMutation({
     let processed = 0;
     let unmatched = 0;
     let skippedAmbiguous = 0;
+    /**
+     * NEO-254 — the set year per selectorOption, walked once.
+     *
+     * The narrowing needs it per ROW, and this loop runs over a batch whose
+     * rows share a handful of sets; the walk is several `ctx.db.get`s, so
+     * repeating it per row would spend the mutation's read budget re-deriving
+     * one number. `undefined` is a real answer (an orphaned subtree) and is
+     * cached as such, so a miss is not re-walked either.
+     */
+    const setYearCache = new Map<string, number | undefined>();
+    const setYearFor = async (
+      selectorOptionId: Id<"selectorOptions">,
+    ): Promise<number | undefined> => {
+      const key = selectorOptionId as string;
+      if (!setYearCache.has(key)) {
+        setYearCache.set(
+          key,
+          await findSetYearForSelectorOption(ctx, selectorOptionId),
+        );
+      }
+      return setYearCache.get(key);
+    };
     let remaining = 0;
 
     for (const row of rows) {
@@ -179,19 +201,34 @@ export const backfillTeamToOnCardIds = internalMutation({
       // keyed on the composed full name), so a legacy string still resolves
       // onto a row that has since been split into location + nickname. One
       // indexed read per team string.
-      const existing = await findTeamByFullName(ctx, sportId, teamString);
+      //
+      // NEO-254: narrowed by the SET'S year, because a name can now belong to
+      // several eras — a 1985 "Winnipeg Jets" card and a 2015 one are
+      // different franchises. The year is walked once per selectorOption and
+      // memoised across the batch: it is a property of the set, and this loop
+      // runs over hundreds of rows that share a handful of sets.
+      const setYear = await setYearFor(row.selectorOptionId);
+      const { teamId: resolvedTeamId } = await resolveTeamForSetYear(
+        ctx,
+        sportId,
+        teamString,
+        setYear,
+      );
 
-      if (!existing) {
+      if (!resolvedTeamId) {
         // NEO-236: no match, so no link — and NOT an insert. Deliberately
         // leaves `team` set as well: the string is the only record of what the
         // marketplace claimed, and clearing it would destroy the evidence an
         // operator needs to create the right team. The row simply stays
         // unmigrated and a later pass will link it once the team exists.
+        // NEO-254: this now also covers "several eras and the year did not
+        // separate them", which lands in the same place for the same reason —
+        // the string is kept, nothing is linked, and an operator decides.
         unmatched += 1;
         processed += 1;
         continue;
       }
-      const teamId: Id<"teams"> = existing._id;
+      const teamId: Id<"teams"> = resolvedTeamId;
 
       await ctx.db.patch(row._id, {
         teamOnCardIds: [teamId],
@@ -341,9 +378,17 @@ export const applyBscTeamResolution = internalMutation({
 
     // NEO-236: the shared identity lookup on BSC's full team string, so a row
     // already split into location + nickname still matches.
-    const existing = await findTeamByFullName(ctx, sportId, teamName);
+    //
+    // NEO-254: narrowed by the set's year — the name may name several eras,
+    // and BSC's string carries none of that.
+    const { teamId: resolvedTeamId } = await resolveTeamForSetYear(
+      ctx,
+      sportId,
+      teamName,
+      await findSetYearForSelectorOption(ctx, row.selectorOptionId),
+    );
 
-    if (!existing) {
+    if (!resolvedTeamId) {
       // NEO-236: link-or-leave. No insert, and no team on the card.
       //
       // `teamCheckDoneAt` is still STAMPED, and that is deliberate rather than
@@ -379,7 +424,7 @@ export const applyBscTeamResolution = internalMutation({
     }
 
     await ctx.db.patch(row._id, {
-      teamOnCardIds: [existing._id],
+      teamOnCardIds: [resolvedTeamId],
       teamCheckDoneAt: Date.now(),
       // A matched card has a real team now, so the hint has nothing left to
       // say — and a stale "Marketplace says: …" beside a resolved team reads

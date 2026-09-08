@@ -136,10 +136,12 @@ function resolve(
     sportId: Id<"selectorOptions">;
     cardYear?: number;
     cardTeamNames?: string[];
+    /** Defaults to the file's stock ambiguous name. */
+    name?: string;
   },
 ) {
   return t.query(internal.players.resolveNameForReview, {
-    name: "Bob Allen",
+    name: args.name ?? "Bob Allen",
     sportId: args.sportId,
     ...(args.cardYear !== undefined ? { cardYear: args.cardYear } : {}),
     ...(args.cardTeamNames ? { cardTeamNames: args.cardTeamNames } : {}),
@@ -691,5 +693,201 @@ describe("NEO-254: candidates carry whether they were active in the set's year",
     const candidates = row!.enrichment!.existingCandidates ?? [];
     expect(candidates).toHaveLength(2);
     expect(candidates.every((c) => c.activeInSetYear === undefined)).toBe(true);
+  });
+});
+
+// ===========================================================================
+// NEO-254 — the career-start rule, on the case it was written for
+//
+// Jason, 2026-09-08, verbatim: "not to consider any players that started their
+// career after the card was made." Both Griffeys answer to "Ken Griffey" —
+// that is the point of allowing a shared alias — and the card's year is what
+// decides which man a given card means.
+// ===========================================================================
+
+describe("NEO-254: two Griffeys, one alias, and the card's year", () => {
+  /** Sr 1973–1991, Jr 1989–2010 with "Ken Griffey" as an alias. */
+  async function seedGriffeys(
+    t: ReturnType<typeof convexTest>,
+    sportId: Id<"selectorOptions">,
+  ) {
+    const reds = await insertTeam(t, sportId, "Cincinnati", "Reds", "cincinnati reds");
+    const mariners = await insertTeam(t, sportId, "Seattle", "Mariners", "mariners seattle");
+    const father = await t.run(async (ctx) =>
+      ctx.db.insert("players", {
+        name: "Ken Griffey",
+        nameNormalized: "griffey ken",
+        sportId,
+        teamYears: [{ teamId: reds, fromYear: 1973, toYear: 1991 }],
+        lastUpdated: Date.now(),
+      }),
+    );
+    const son = await t.run(async (ctx) => {
+      const id = await ctx.db.insert("players", {
+        name: "Ken Griffey Jr",
+        nameNormalized: "griffey jr ken",
+        sportId,
+        aliases: ["Ken Griffey"],
+        teamYears: [{ teamId: mariners, fromYear: 1989, toYear: 2010 }],
+        lastUpdated: Date.now(),
+      });
+      await ctx.db.insert("playerAliases", {
+        playerId: id,
+        sportId,
+        aliasNormalized: "griffey ken",
+      });
+      return id;
+    });
+    return { father, son, mariners };
+  }
+
+  test("a 1985 card is the FATHER — the son had not started", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "1985");
+    const { father } = await seedGriffeys(t, sportId);
+
+    const resolved = await resolve(t, {
+      sportId,
+      cardYear: 1985,
+      name: "Ken Griffey",
+    });
+    expect(resolved.matchCount).toBe(2);
+    expect(resolved.playerId).toBe(father);
+    expect(resolved.narrowedByCardYear).toBe(true);
+  });
+
+  test("a 1989 card WITH the Mariners on it is the son", async () => {
+    // Both were playing in 1989, so the year alone cannot decide — the team
+    // printed on the card is what separates them.
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "1989");
+    const { son } = await seedGriffeys(t, sportId);
+
+    const resolved = await resolve(t, {
+      sportId,
+      cardYear: 1989,
+      cardTeamNames: ["Seattle Mariners"],
+      name: "Ken Griffey",
+    });
+    expect(resolved.playerId).toBe(son);
+  });
+
+  test("a 1989 card with NO team goes to review, with the son flagged active", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, variantTypeId } = await seedSetOfYear(t, "1989");
+    const { father, son } = await seedGriffeys(t, sportId);
+
+    // Neither wins: both were on a roster that year.
+    expect(
+      (await resolve(t, { sportId, cardYear: 1989, name: "Ken Griffey" }))
+        .playerId,
+    ).toBeUndefined();
+
+    const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId: variantTypeId,
+      createdByUserId: ADMIN_IDENTITY.subject,
+      sportId,
+      playerNames: ["Ken Griffey"],
+      teamNames: [],
+    });
+    const row = await t.run(async (ctx) =>
+      ctx.db
+        .query("entityReviewQueue")
+        .withIndex("by_selector_option_and_batch", (q) =>
+          q.eq("selectorOptionId", variantTypeId).eq("batchId", batchId),
+        )
+        .first(),
+    );
+    const byId = new Map(
+      (row!.enrichment!.existingCandidates ?? []).map((c) => [c.playerId, c]),
+    );
+    expect(byId.size).toBe(2);
+    expect(byId.get(son)!.activeInSetYear).toBe(true);
+    expect(byId.get(father)!.activeInSetYear).toBe(true);
+    // And the son says WHY he is on a list for a name that is not his.
+    expect(byId.get(son)!.matchedAlias).toBe("Ken Griffey");
+  });
+});
+
+describe("NEO-254: a prospect card printed before the debut", () => {
+  async function seedProspect(
+    t: ReturnType<typeof convexTest>,
+    sportId: Id<"selectorOptions">,
+    debutYear: number,
+    /** Absent = still playing. A retired rival is what makes the year decide. */
+    lastYear?: number,
+  ) {
+    const team = await insertTeam(t, sportId, "Seattle", "Mariners", "mariners seattle");
+    return t.run(async (ctx) =>
+      ctx.db.insert("players", {
+        name: "Julio Rodriguez",
+        nameNormalized: "julio rodriguez",
+        sportId,
+        teamYears: [
+          {
+            teamId: team,
+            fromYear: debutYear,
+            ...(lastYear !== undefined ? { toYear: lastYear } : {}),
+          },
+        ],
+        lastUpdated: Date.now(),
+      }),
+    );
+  }
+
+  test("2019 card, 2021 debut — inside the tolerance, so it links", async () => {
+    // The set year routinely precedes the first recorded game by a season, and
+    // a source's "first year" is its own opinion. ±2 covers an ordinary rookie
+    // card without re-admitting Griffey Jr. to a 1985 card.
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "2019");
+    const player = await seedProspect(t, sportId, 2021);
+    // A retired man of the same name — long out of the game by 2019, so the
+    // year rules him out and leaves the prospect alone.
+    await seedProspect(t, sportId, 1975, 1984);
+
+    const resolved = await t.query(internal.players.resolveNameForReview, {
+      name: "Julio Rodriguez",
+      sportId,
+      cardYear: 2019,
+    });
+    expect(resolved.matchCount).toBe(2);
+    expect(resolved.playerId).toBe(player);
+  });
+
+  test("2018 card, 2021 debut — past the tolerance, so it goes to review", async () => {
+    /*
+     * The Bowman caveat, stated as a test. A deep prospect card starts after
+     * the card by more than the window allows, so the candidate is excluded
+     * and the name routes to a human.
+     *
+     * That is the intended trade: widening the window to cover it would
+     * re-admit Griffey Jr. to a 1985 card, which is exactly the case the rule
+     * exists to exclude. Sending a genuine prospect card to review costs one
+     * decision and loses nothing.
+     */
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "2018");
+    await seedProspect(t, sportId, 2021);
+
+    const resolved = await t.query(internal.players.resolveNameForReview, {
+      name: "Julio Rodriguez",
+      sportId,
+      cardYear: 2018,
+    });
+    expect(resolved.matchCount).toBe(1);
+    // One row of that name, so it links regardless — the narrowing only ever
+    // rules between several. The exclusion is visible with a second candidate.
+    expect(resolved.playerId).toBeTruthy();
+
+    const second = await seedProspect(t, sportId, 1975, 2019);
+    const withRival = await t.query(internal.players.resolveNameForReview, {
+      name: "Julio Rodriguez",
+      sportId,
+      cardYear: 2018,
+    });
+    expect(withRival.matchCount).toBe(2);
+    // The 2021 debut is out; the 1975 man is the only survivor.
+    expect(withRival.playerId).toBe(second);
   });
 });

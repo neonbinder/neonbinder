@@ -25,6 +25,7 @@ import { CopyButton } from "../primitives/CopyButton";
 // question it asks there ("is a duplicate possible at all?") is the one
 // `hasExact` was written for.
 import { NearMatchPanel, type NearMatch } from "../entities/NearMatchPanel";
+import { teamOptionLabel } from "../../lib/teams/team-era";
 import EntityLinkSearch from "./EntityLinkSearch";
 import CareerTeamEntry, { type CareerTeamDraft } from "./CareerTeamEntry";
 // NEO-236: the one form a team is created from, shared with NewTeamDialog.
@@ -2800,6 +2801,23 @@ export default function EntityReviewWizard({
                       <NearMatchPanel
                         kind={current.kind}
                         matches={panelMatches}
+                        /* NEO-254 — a team's era goes INTO its label.
+                           
+                           Team identity is now (name, sport, era), so this
+                           panel can be handed two rows both called "Winnipeg
+                           Jets". Without the era they render as two identical
+                           buttons with two identical accessible names, and the
+                           operator picks one at random — which is the defect
+                           the era exists to fix, moved from the server to the
+                           screen. Players get the same treatment through
+                           `SameNamePlayerPanel`; leagues have no such
+                           collision and keep the default. */
+                        {...(current.kind === "team"
+                          ? {
+                              pickLabel: (name: string, match: NearMatch) =>
+                                `Link to ${teamOptionLabel(name, match.yearsActive)}`,
+                            }
+                          : {})}
                         onPick={(id) => {
                           if (busy) return;
                           void handleLink(

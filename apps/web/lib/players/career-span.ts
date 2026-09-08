@@ -102,7 +102,45 @@ export function spanCoversCardYear(
   tolerance: number = CARD_YEAR_TOLERANCE,
 ): boolean {
   if (span === null) return true;
-  return cardYear >= span.fromYear - tolerance && cardYear <= span.toYear + tolerance;
+  return (
+    !startsAfterCard(span, cardYear, tolerance) &&
+    cardYear <= span.toYear + tolerance
+  );
+}
+
+/**
+ * NEO-254 — did this career START after the card was printed?
+ *
+ * Jason, 2026-09-08, verbatim: "not to consider any players that started their
+ * career after the card was made." This is that rule, named, because it is the
+ * half of the span test that does the most work: a "Ken Griffey" card from
+ * 1985 cannot be Griffey Jr., who debuted in 1989, and saying so is what lets
+ * both Griffeys share the alias in the first place.
+ *
+ * It was already true as one half of a symmetric window; it is written out
+ * here so a future change to the END tolerance cannot silently change what
+ * this rule means, and so the caveat below has somewhere to live.
+ *
+ * ## The Bowman caveat
+ *
+ * The tolerance cuts the right way for an ordinary rookie card — the set year
+ * routinely precedes the first recorded game by a season, and a source's
+ * "first year" is its own opinion. It does NOT cover a deep prospect card: a
+ * Bowman Chrome of a player who debuts three or four years later starts after
+ * the card by more than the window allows, so that candidate is excluded and
+ * the name routes to REVIEW rather than linking.
+ *
+ * That is the intended trade. Widening the window to cover prospect cards
+ * would re-admit Griffey Jr. to a 1985 card, which is the case this exists to
+ * exclude; sending a genuine prospect card to a human costs one decision and
+ * loses nothing.
+ */
+export function startsAfterCard(
+  span: CareerSpan,
+  cardYear: number,
+  tolerance: number = CARD_YEAR_TOLERANCE,
+): boolean {
+  return span.fromYear > cardYear + tolerance;
 }
 
 /**

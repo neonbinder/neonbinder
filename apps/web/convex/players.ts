@@ -420,15 +420,20 @@ export async function syncPlayerAliases(
 }
 
 /**
- * NEO-254 — the OTHER player in this sport that already answers to one of
- * these aliases, or null.
+ * ── NEO-254: who else already answers to these aliases ───────────────────────
  *
- * The read half of `assertAliasesFree`, split out because the two callers want
- * different things done about it. An operator standing in front of a form gets
- * a refusal they can act on; the bulk loader, which has no operator, reports
- * the row as `ambiguous` with this player as the candidate — the same shape a
- * same-name collision already produces, so its interactive prompt needs no new
- * branch.
+ * ADVISORY, not a gate. Jason, 2026-09-08: an alias is allowed to collide.
+ * He wants "Ken Griffey" on Griffey Jr. as well as on Griffey Sr., so a card
+ * that says "Ken Griffey" considers BOTH men and the card-year narrowing
+ * decides which — a 1985 card is the father, a 1997 card is the son.
+ *
+ * Refusing the collision would have made that impossible to express, and the
+ * refusal was solving a problem the narrowing already solves better: two
+ * candidates is not a failure, it is the question the wizard exists to ask.
+ *
+ * So this only reports. The admin form renders it as a note ("… also answers
+ * to that name") so an operator knows the alias is shared rather than
+ * discovering it later; nothing anywhere acts on it.
  */
 export async function findAliasCollision(
   ctx: QueryCtx | MutationCtx,
@@ -469,66 +474,41 @@ export async function findAliasCollision(
 }
 
 /**
- * NEO-254 — refuse an alias another player in this sport already answers to.
+ * NEO-254 — who else in this sport already answers to these names.
  *
- * ## Why this is a refusal and not a merge
+ * Advisory only, for the note the player editor shows beside its alias box.
+ * A shared alias is legal and often deliberate (both Griffeys answer to "Ken
+ * Griffey"), but an operator typing one should know it is shared rather than
+ * finding out from a review queue three sets later.
  *
- * An alias that collides is one of two things, and neither is safe to guess
- * at: the two rows are the same person (so they should be MERGED, which is an
- * operator decision with inventory consequences), or the operator has typed
- * the wrong name onto the wrong row. Silently accepting it would make one card
- * name resolve to two candidates forever, which is the ambiguity this feature
- * exists to remove — arriving through the feature itself.
- *
- * Checks BOTH sides of the identity: another row's primary name, and another
- * row's alias. The name leg matters most — "Metta World Peace" typed as an
- * alias of a row that is not Ron Artest is exactly the mistake to catch.
- *
- * The colliding player's NAME is safe to name in the message: it is reference
- * data the operator is choosing between, not typed content, and without it the
- * refusal tells them nothing they can act on.
+ * Returns at most one other player per alias — the note says "X also answers
+ * to that name", and a second name would not change what the operator does.
  */
-async function assertAliasesFree(
-  ctx: QueryCtx | MutationCtx,
+export const aliasesInUse = query({
   args: {
-    sportId: Id<"selectorOptions">;
-    aliases: ReadonlyArray<string>;
-    /** The row being edited, which is allowed to own its own aliases. */
-    selfId?: Id<"players">;
+    sportId: v.id("selectorOptions"),
+    aliases: v.array(v.string()),
+    /** The row being edited, which does not collide with itself. */
+    selfId: v.optional(v.id("players")),
   },
-): Promise<void> {
-  for (const alias of args.aliases) {
-    const key = normalizePlayerName(alias);
-    if (!key) continue;
-
-    const byName = await ctx.db
-      .query("players")
-      .withIndex("by_name_normalized_and_sport_id", (q) =>
-        q.eq("nameNormalized", key).eq("sportId", args.sportId),
-      )
-      .first();
-    if (byName && byName._id !== args.selfId) {
-      throw new ConvexError(
-        `${byName.name} already goes by that name. Add the alias to that player, or merge the two.`,
-      );
+  returns: v.array(v.object({ alias: v.string(), name: v.string() })),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    // Bounded like every other alias read: the caller is a form, and an
+    // unbounded list would be one index read per entry.
+    const aliases = args.aliases.slice(0, MAX_PLAYER_ALIASES);
+    const out: Array<{ alias: string; name: string }> = [];
+    for (const alias of aliases) {
+      const other = await findAliasCollision(ctx, {
+        sportId: args.sportId,
+        aliases: [alias],
+        ...(args.selfId ? { selfId: args.selfId } : {}),
+      });
+      if (other) out.push({ alias: alias.trim(), name: other.name });
     }
-
-    const byAlias = await ctx.db
-      .query("playerAliases")
-      .withIndex("by_alias_normalized_and_sport_id", (q) =>
-        q.eq("aliasNormalized", key).eq("sportId", args.sportId),
-      )
-      .collect();
-    for (const row of byAlias) {
-      if (row.playerId === args.selfId) continue;
-      const other = await ctx.db.get(row.playerId);
-      if (!other) continue;
-      throw new ConvexError(
-        `${other.name} already has that alias. Add it to one player only, or merge the two.`,
-      );
-    }
-  }
-}
+    return out;
+  },
+});
 
 /**
  * NEO-254 — refuse a birth year that cannot be one.
@@ -1869,8 +1849,12 @@ export const createByAdmin = mutation({
     birthYear: v.optional(v.number()),
     /**
      * NEO-254 — other names this player's cards carry, comma-separated in the
-     * form and an array here. Refused when one collides with another player in
-     * the sport; see `assertAliasesFree`.
+     * form and an array here.
+     *
+     * An alias MAY collide with another player in the sport: "Ken Griffey" on
+     * both Griffeys is the point, and the card-year narrowing decides which
+     * man a given card means. See `findAliasCollision` for the advisory the
+     * form shows.
      */
     aliases: v.optional(v.array(v.string())),
   },
@@ -1930,12 +1914,12 @@ export const createByAdmin = mutation({
     // NOT enqueued — see the creation-only note on the insert below.
     if (adopted) return { id: adopted._id, created: false };
 
-    // NEO-254 — bounded and de-duplicated, then checked against the sport
-    // BEFORE the insert, so a refusal creates nothing.
+    // NEO-254 — bounded and de-duplicated. NOT checked for collisions: an
+    // alias another player already answers to is allowed, and the card-year
+    // narrowing is what tells the two apart.
     const aliases = args.aliases
       ? normalizePlayerAliasList(args.aliases, name)
       : [];
-    await assertAliasesFree(ctx, { sportId: args.sportId, aliases });
 
     const id = await ctx.db.insert("players", {
       name,
@@ -2223,11 +2207,6 @@ export const savePlayerFields = mutation({
         args.aliases,
         patch.name ?? existing.name,
       );
-      await assertAliasesFree(ctx, {
-        sportId: existing.sportId,
-        aliases,
-        selfId: args.id,
-      });
       // Dropped entirely once empty, so a cleared row is indistinguishable
       // from one that never had an alias — the rule `externalIds` follows.
       patch.aliases = aliases.length > 0 ? aliases : undefined;

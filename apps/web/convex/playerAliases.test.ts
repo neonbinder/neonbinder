@@ -338,34 +338,83 @@ describe("NEO-254: savePlayerFields writes aliases and keeps the index in step",
     ]);
   });
 
-  test("an alias another player's NAME already owns is refused", async () => {
+  test("an alias another player's NAME already owns is ALLOWED", async () => {
+    /*
+     * Jason, 2026-09-08: aliases may collide. He wants "Ken Griffey" on
+     * Griffey Jr. as well as on Griffey Sr., so a card carrying that name
+     * considers both men and the card-year narrowing decides which.
+     *
+     * Refusing it solved a problem the narrowing already solves better: two
+     * candidates is not a failure, it is the question the wizard exists to
+     * ask.
+     */
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
-    await insertPlayerWithAliases(t, sportId, "Chad Johnson");
-    const other = await insertPlayerWithAliases(t, sportId, "Somebody Else");
+    const father = await insertPlayerWithAliases(t, sportId, "Ken Griffey");
+    const son = await insertPlayerWithAliases(t, sportId, "Ken Griffey Jr");
 
-    await expect(
-      t.withIdentity(ADMIN_IDENTITY).mutation(api.players.savePlayerFields, {
-        id: other,
-        aliases: ["Chad Johnson"],
-      }),
-    ).rejects.toThrow(/Chad Johnson already goes by that name/);
-    // Nothing was written on the way to the refusal.
-    expect(await aliasRows(t)).toHaveLength(0);
+    await t.withIdentity(ADMIN_IDENTITY).mutation(api.players.savePlayerFields, {
+      id: son,
+      aliases: ["Ken Griffey"],
+    });
+
+    // Both rows now answer to the name, and BOTH are candidates.
+    const resolved = await t.query(internal.players.resolveNameForReview, {
+      name: "Ken Griffey",
+      sportId,
+    });
+    expect(resolved.matchCount).toBe(2);
+    expect(resolved.playerId).toBeUndefined();
+    expect(father).not.toBe(son);
   });
 
-  test("an alias another player's ALIAS already owns is refused", async () => {
+  test("an alias another player's ALIAS already owns is allowed too", async () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
-    await insertPlayerWithAliases(t, sportId, "Metta World Peace", ["Ron Artest"]);
-    const other = await insertPlayerWithAliases(t, sportId, "Somebody Else");
+    await insertPlayerWithAliases(t, sportId, "Somebody", ["Ken Griffey"]);
+    const other = await insertPlayerWithAliases(t, sportId, "Someone Else");
 
-    await expect(
-      t.withIdentity(ADMIN_IDENTITY).mutation(api.players.savePlayerFields, {
-        id: other,
-        aliases: ["Ron Artest"],
+    await t.withIdentity(ADMIN_IDENTITY).mutation(api.players.savePlayerFields, {
+      id: other,
+      aliases: ["Ken Griffey"],
+    });
+
+    expect(
+      (
+        await t.query(internal.players.resolveNameForReview, {
+          name: "Ken Griffey",
+          sportId,
+        })
+      ).matchCount,
+    ).toBe(2);
+  });
+
+  test("the editor is TOLD the alias is shared, without being stopped", async () => {
+    // A note, not a refusal: the operator should know it is shared rather than
+    // finding out from a review queue three sets later.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const father = await insertPlayerWithAliases(t, sportId, "Ken Griffey");
+    const son = await insertPlayerWithAliases(t, sportId, "Ken Griffey Jr");
+
+    const hits = await t
+      .withIdentity(ADMIN_IDENTITY)
+      .query(api.players.aliasesInUse, {
+        sportId,
+        aliases: ["Ken Griffey"],
+        selfId: son,
+      });
+    expect(hits).toEqual([{ alias: "Ken Griffey", name: "Ken Griffey" }]);
+    expect(father).toBeTruthy();
+
+    // And nothing is reported against the row that already owns it.
+    expect(
+      await t.withIdentity(ADMIN_IDENTITY).query(api.players.aliasesInUse, {
+        sportId,
+        aliases: ["Ken Griffey"],
+        selfId: father,
       }),
-    ).rejects.toThrow(/already has that alias/);
+    ).toEqual([]);
   });
 
   test("re-saving a row's own aliases is not a collision with itself", async () => {
@@ -422,20 +471,30 @@ describe("NEO-254: createByAdmin accepts aliases", () => {
     expect(await aliasRows(t)).toHaveLength(1);
   });
 
-  test("a colliding alias is refused and nothing is created", async () => {
+  test("a shared alias is created, not refused", async () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
-    await insertPlayerWithAliases(t, sportId, "Chad Johnson");
+    await insertPlayerWithAliases(t, sportId, "Ken Griffey");
 
-    await expect(
-      t.withIdentity(ADMIN_IDENTITY).mutation(api.players.createByAdmin, {
-        name: "Somebody Else",
+    const { id } = await t
+      .withIdentity(ADMIN_IDENTITY)
+      .mutation(api.players.createByAdmin, {
+        name: "Ken Griffey Jr",
         sportId,
-        aliases: ["Chad Johnson"],
-      }),
-    ).rejects.toThrow(/already goes by that name/);
-    const players = await t.run(async (ctx) => ctx.db.query("players").collect());
-    expect(players.map((p) => p.name)).toEqual(["Chad Johnson"]);
+        aliases: ["Ken Griffey"],
+      });
+
+    expect((await t.run(async (ctx) => ctx.db.get(id)))!.aliases).toEqual([
+      "Ken Griffey",
+    ]);
+    expect(
+      (
+        await t.query(internal.players.resolveNameForReview, {
+          name: "Ken Griffey",
+          sportId,
+        })
+      ).matchCount,
+    ).toBe(2);
   });
 });
 
@@ -584,10 +643,12 @@ describe("NEO-254: upsertPlayers carries aliases", () => {
     expect(await aliasRows(t)).toHaveLength(2);
   });
 
-  test("a colliding alias makes the row AMBIGUOUS, never a silent skip", async () => {
+  test("a shared alias loads, and both rows then answer to it", async () => {
+    // The loader is a second door into the same column and follows the same
+    // rule: a shared alias is the feature, not a fault.
     const t = convexTest(schema, modules);
     const sportId = await seedLoadableSport(t);
-    const chad = await insertPlayerWithAliases(t, sportId, "Chad Johnson");
+    const father = await insertPlayerWithAliases(t, sportId, "Ken Griffey");
 
     const res = await armed(() =>
       t.mutation(internal.bulkLoad.upsertPlayers, {
@@ -595,20 +656,25 @@ describe("NEO-254: upsertPlayers carries aliases", () => {
         sport: "Basketball",
         players: [
           {
-            key: "someone",
-            name: "Somebody Else",
-            aliases: ["Chad Johnson"],
+            key: "griffey-jr",
+            name: "Ken Griffey Jr",
+            aliases: ["Ken Griffey"],
             stints: [],
           },
         ],
       }),
     );
 
-    expect(res.results[0]).toMatchObject({ status: "ambiguous", id: null });
-    expect(res.results[0].candidates?.[0].id).toBe(chad);
-    // Nothing was written on the way to the report.
-    const players = await t.run(async (ctx) => ctx.db.query("players").collect());
-    expect(players.map((p) => p.name)).toEqual(["Chad Johnson"]);
+    expect(res.results[0].status).toBe("created");
+    expect(res.results[0].id).not.toBe(father);
+    expect(
+      (
+        await t.query(internal.players.resolveNameForReview, {
+          name: "Ken Griffey",
+          sportId,
+        })
+      ).matchCount,
+    ).toBe(2);
   });
 
   test("an alias equal to the row's own name is dropped, not a collision", async () => {

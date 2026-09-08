@@ -29,7 +29,8 @@ import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { requireAdmin } from "./auth";
 import { findOrCreateLeague } from "./leagues";
-import { findTeamByFullName, teamRowFields } from "./lib/teamRow";
+import { findTeamsByFullName, teamRowFields } from "./lib/teamRow";
+import { currentEraTeam } from "../lib/teams/team-era";
 import { SEED_LEAGUES, SEED_TEAMS } from "../lib/teams/seed-team-colors";
 import { currentFranchiseParts } from "../lib/teams/seed-team-lookup";
 import { teamFullName } from "../lib/teams/team-name";
@@ -43,6 +44,9 @@ export const seedChunkInternal = internalMutation({
     teamsCreated: v.number(),
     colorsApplied: v.number(),
     skippedNoSport: v.number(),
+    // NEO-254: a name that resolved to several open eras. Reported rather than
+    // silently skipped — it is the signal that two rows need an operator.
+    skippedAmbiguous: v.number(),
   }),
   handler: async (ctx, args) => {
     const slice = SEED_TEAMS.slice(args.start, args.start + args.count);
@@ -61,6 +65,7 @@ export const seedChunkInternal = internalMutation({
     let teamsCreated = 0;
     let colorsApplied = 0;
     let skippedNoSport = 0;
+    let skippedAmbiguous = 0;
 
     for (const seed of SEED_TEAMS.length ? slice : []) {
       const leagueMeta = SEED_LEAGUES[seed.league];
@@ -91,11 +96,30 @@ export const seedChunkInternal = internalMutation({
       const parts = currentFranchiseParts(seed);
       const fields = teamRowFields(parts);
 
-      const existing = await findTeamByFullName(
+      /**
+       * NEO-254 — the CURRENT era's row, when a name now resolves to several.
+       *
+       * `SEED_TEAMS` is a list of franchises as they stand today, carrying no
+       * years at all, so among two Winnipeg Jets it means the 2011 one.
+       * `currentEraTeam` says that the only honest way the data allows: the row
+       * whose era is open, or the single row when there is only one.
+       *
+       * It returns null when several rows are open, and this seed then treats
+       * that as "leave them alone" — it neither patches nor inserts. A colour is
+       * not worth guessing an era for, and inserting would mint the very
+       * duplicate the lookup exists to prevent. Counted as `skippedAmbiguous`
+       * so a release run says so rather than looking like a no-op.
+       */
+      const sameName = await findTeamsByFullName(
         ctx,
         sportId,
         teamFullName(parts),
       );
+      const existing = currentEraTeam(sameName);
+      if (existing === null && sameName.length > 0) {
+        skippedAmbiguous += 1;
+        continue;
+      }
 
       const colors =
         seed.hex.length > 0
@@ -127,7 +151,7 @@ export const seedChunkInternal = internalMutation({
       if (colors) colorsApplied += 1;
     }
 
-    return { teamsCreated, colorsApplied, skippedNoSport };
+    return { teamsCreated, colorsApplied, skippedNoSport, skippedAmbiguous };
   },
 });
 
@@ -137,7 +161,9 @@ export const seedChunkInternal = internalMutation({
  * Reports what it did rather than returning null, because "0 teams created"
  * after a release should be distinguishable from "did not run" — and
  * `skippedNoSport` is the signal that a sport has not been synced yet, which
- * is the one failure mode that looks like success.
+ * is the one failure mode that looks like success. NEO-254 adds
+ * `skippedAmbiguous` for the other one: a name this sport now holds under two
+ * open eras, which the seed refuses to choose between.
  */
 export const seedFromBundledData = action({
   args: {},
@@ -145,6 +171,7 @@ export const seedFromBundledData = action({
     teamsCreated: v.number(),
     colorsApplied: v.number(),
     skippedNoSport: v.number(),
+    skippedAmbiguous: v.number(),
     total: v.number(),
   }),
   handler: async (
@@ -153,6 +180,7 @@ export const seedFromBundledData = action({
     teamsCreated: number;
     colorsApplied: number;
     skippedNoSport: number;
+    skippedAmbiguous: number;
     total: number;
   }> => {
     await requireAdmin(ctx);
@@ -160,6 +188,7 @@ export const seedFromBundledData = action({
     let teamsCreated = 0;
     let colorsApplied = 0;
     let skippedNoSport = 0;
+    let skippedAmbiguous = 0;
 
     for (let start = 0; start < SEED_TEAMS.length; start += SEED_CHUNK_SIZE) {
       const result = await ctx.runMutation(
@@ -169,16 +198,19 @@ export const seedFromBundledData = action({
       teamsCreated += result.teamsCreated;
       colorsApplied += result.colorsApplied;
       skippedNoSport += result.skippedNoSport;
+      skippedAmbiguous += result.skippedAmbiguous;
     }
 
     console.log(
       `[seedTeamColors] created ${teamsCreated} teams, applied ${colorsApplied} colour sets, ` +
-        `skipped ${skippedNoSport} for unsynced sports, of ${SEED_TEAMS.length} entries`,
+        `skipped ${skippedNoSport} for unsynced sports and ${skippedAmbiguous} ` +
+        `whose name resolves to more than one open era, of ${SEED_TEAMS.length} entries`,
     );
     return {
       teamsCreated,
       colorsApplied,
       skippedNoSport,
+      skippedAmbiguous,
       total: SEED_TEAMS.length,
     };
   },

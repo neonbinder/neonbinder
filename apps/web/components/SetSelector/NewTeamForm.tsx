@@ -3,6 +3,7 @@ import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import { splitTeamName, teamFullName } from "../../lib/teams/team-name";
+import { eraLabel } from "../../lib/teams/team-era";
 import { normalizeOrderedEntityName } from "../../lib/entities/normalize-name";
 import { Input } from "../primitives/Input";
 import NeonButton from "../modules/NeonButton";
@@ -92,6 +93,19 @@ export type NewTeamDraft = {
    * which the pill handler enforces by clearing it.
    */
   leagueName: string | undefined;
+  /**
+   * NEO-254 — the years this team played, when the operator knows them.
+   *
+   * Load-bearing for identity, not decoration. A sport can hold two teams under
+   * one name — the 1972-1996 Winnipeg Jets and the 2011- Jets — and the era is
+   * the only thing that tells them apart, so it is what decides whether
+   * creating finds the row we hold or makes a second one beside it.
+   *
+   * Optional, and stays optional: most teams are created without anybody
+   * knowing or caring, and an undated row is a normal row. It matters exactly
+   * when the name is already taken, which is when the form asks for it.
+   */
+  yearsActive?: { from: number; to?: number };
 };
 
 /**
@@ -546,6 +560,31 @@ export default function NewTeamForm({
    *  group with no initial selection. */
   const tabStopIndex = checkedPillIndex === -1 ? 0 : checkedPillIndex;
 
+  /**
+   * NEO-254 — the eras this sport already holds under the name being typed.
+   *
+   * Read off `teams.erasByNameAndSport`, which answers with EVERY row under the
+   * key rather than the first — the whole point of the change. Skipped until
+   * there is a name, so an empty form costs nothing.
+   *
+   * The hint it feeds is a statement, not a block: a second era of a name is a
+   * legitimate thing to create, and the operator is the only one who knows
+   * whether this is the 2011 Winnipeg Jets or a typo of the 1972 ones.
+   */
+  const existingEras = useQuery(
+    api.teams.erasByNameAndSport,
+    sportId && draft.name.trim()
+      ? { name: draftFullName(draft), sportId }
+      : "skip",
+  );
+  const sameNameEras = useMemo(
+    () =>
+      (existingEras ?? []).map(
+        (row) => eraLabel(row.yearsActive) || "no years yet",
+      ),
+    [existingEras],
+  );
+
   const leagueGroupRef = useRef<HTMLDivElement>(null);
 
   /**
@@ -642,6 +681,80 @@ export default function NewTeamForm({
         Wisconsin / Badgers, San Diego State / Aztecs. Leave it blank only when
         the name has no place in it.
       </p>
+
+      {/* NEO-254 — the era.
+      
+          Asked for HERE, beside the name, rather than left to Team Management
+          afterwards: it is part of the team's identity, so a row created
+          without it cannot later be told apart from a same-named row someone
+          else creates. Two narrow number boxes on one line, the same shape
+          Team Management already uses for the same pair of facts.
+          
+          `sameNameEras` below turns this from an optional nicety into the
+          question the form is actually asking, but only when it has to. */}
+      <div className="flex items-end gap-2">
+        <FieldLabel text="Active from (optional)">
+          <Input
+            bare
+            type="number"
+            inputMode="numeric"
+            value={draft.yearsActive?.from ? String(draft.yearsActive.from) : ""}
+            placeholder="1972"
+            aria-label="New team active from (optional)"
+            disabled={disabled}
+            onChange={(e) => {
+              const from = Number.parseInt(e.target.value, 10);
+              onChange({
+                yearsActive: Number.isInteger(from)
+                  ? { from, ...(draft.yearsActive?.to !== undefined ? { to: draft.yearsActive.to } : {}) }
+                  : undefined,
+              });
+            }}
+            onKeyDown={onFieldKeyDown}
+            className="w-full p-1.5 text-sm"
+          />
+        </FieldLabel>
+        <FieldLabel text="to">
+          <Input
+            bare
+            type="number"
+            inputMode="numeric"
+            value={draft.yearsActive?.to ? String(draft.yearsActive.to) : ""}
+            placeholder="present"
+            aria-label="New team active to"
+            // A closing year with no opening one is not a span, and storing it
+            // would make an era nothing can compare. The box says so by being
+            // unavailable rather than by refusing after the fact.
+            disabled={disabled || draft.yearsActive === undefined}
+            onChange={(e) => {
+              if (!draft.yearsActive) return;
+              const to = Number.parseInt(e.target.value, 10);
+              onChange({
+                yearsActive: Number.isInteger(to)
+                  ? { from: draft.yearsActive.from, to }
+                  : { from: draft.yearsActive.from },
+              });
+            }}
+            onKeyDown={onFieldKeyDown}
+            className="w-full p-1.5 text-sm"
+          />
+        </FieldLabel>
+      </div>
+
+      {sameNameEras.length > 0 && (
+        /* The hint the ticket asks for, and it is a statement rather than a
+           warning: a second era is a legitimate thing to create — the Winnipeg
+           Jets did it — so this names what is already there and lets the
+           operator decide, instead of blocking with a colour that says
+           "mistake". `neon-yellow` would claim to know; gray states. */
+        <p className="text-xs text-gray-400">
+          {draftFullName(draft)} already exists for{" "}
+          <span className="font-mono tabular-nums">
+            {sameNameEras.join(", ")}
+          </span>
+          . Give this one its own years if it is a different era of the club.
+        </p>
+      )}
 
       <div className="flex flex-wrap items-center gap-1.5">
       <div

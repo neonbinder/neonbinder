@@ -54,16 +54,32 @@ import type { Id } from "../../convex/_generated/dataModel";
 // ---------------------------------------------------------------------------
 
 vi.mock("../../convex/_generated/api", () => ({
-  api: { leagues: { list: "leagues.list" } },
+  api: {
+    leagues: { list: "leagues.list" },
+    // NEO-254: every era this sport holds under the name being typed. The form
+    // reads it to say "already exists for 1972–1996" beside a name that is
+    // taken — a second era is legitimate, so it states rather than blocks.
+    teams: { erasByNameAndSport: "teams.erasByNameAndSport" },
+  },
 }));
 
 let currentLeagues: unknown;
+/** NEO-254 — what `teams.erasByNameAndSport` answers. Empty by default, so the
+ *  hint stays out of every test that is not about it. */
+let currentEras: Array<{
+  _id: string;
+  name: string;
+  location?: string;
+  yearsActive?: { from: number; to?: number };
+  label: string;
+}> = [];
 let queryCalls: Array<{ ref: string; args: unknown }>;
 
 vi.mock("convex/react", () => ({
   useQuery: (ref: string, args: unknown) => {
     queryCalls.push({ ref, args });
     if (ref === "leagues.list") return currentLeagues;
+    if (ref === "teams.erasByNameAndSport") return currentEras;
     return undefined;
   },
 }));
@@ -167,6 +183,7 @@ const previewText = () => screen.getByText("Shows as:").textContent;
 beforeEach(() => {
   vi.clearAllMocks();
   currentLeagues = [];
+  currentEras = [];
   queryCalls = [];
 });
 
@@ -1115,5 +1132,92 @@ describe("NewTeamForm — a league staged earlier in the batch is selectable", (
     expect(
       screen.getByRole("radio", { name: "United States Hockey League" }),
     ).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-254 — the era
+// ---------------------------------------------------------------------------
+
+/**
+ * A team's identity gained its years, so the form that creates teams has to ask
+ * for them.
+ *
+ * There are two Winnipeg Jets: 1972-1996, which became the Coyotes and then
+ * Utah, and 2011-, the revived name on the old Atlanta Thrashers. Under the old
+ * key they were one row, so a 1985 card and a 2015 card pointed at the same
+ * team. Creating the second one has to be POSSIBLE here — and has to be
+ * deliberate, because it is also exactly what a typo looks like.
+ */
+describe("NewTeamForm — active years", () => {
+  it("collects the era and hands it back on the draft", () => {
+    const onChangeSpy = vi.fn();
+    renderForm({ onChangeSpy });
+
+    fireEvent.change(screen.getByLabelText("New team active from (optional)"), {
+      target: { value: "1972" },
+    });
+    expect(onChangeSpy).toHaveBeenLastCalledWith({ yearsActive: { from: 1972 } });
+  });
+
+  it("keeps the closing year unavailable until there is an opening one", () => {
+    // A closing year with no opening one is not a span, and storing it would
+    // make an era nothing can compare against. The box says so by being
+    // unavailable rather than by refusing after the fact.
+    renderForm();
+    expect(
+      (screen.getByLabelText("New team active to") as HTMLInputElement).disabled,
+    ).toBe(true);
+
+    fireEvent.change(screen.getByLabelText("New team active from (optional)"), {
+      target: { value: "1972" },
+    });
+    expect(
+      (screen.getByLabelText("New team active to") as HTMLInputElement).disabled,
+    ).toBe(false);
+  });
+
+  it("clears the era when the opening year is emptied", () => {
+    const onChangeSpy = vi.fn();
+    renderForm({ initial: { ...EMPTY, yearsActive: { from: 1972, to: 1996 } }, onChangeSpy });
+
+    fireEvent.change(screen.getByLabelText("New team active from (optional)"), {
+      target: { value: "" },
+    });
+    expect(onChangeSpy).toHaveBeenLastCalledWith({ yearsActive: undefined });
+  });
+
+  it("says which eras the name already has, without blocking", () => {
+    // A statement, not a warning: a second era is a legitimate thing to create,
+    // and only the operator knows whether this is the 2011 Jets or a typo of
+    // the 1972 ones. The refusal that makes them confirm lives on the server.
+    currentEras = [
+      {
+        _id: "t1",
+        name: "Jets",
+        location: "Winnipeg",
+        yearsActive: { from: 1972, to: 1996 },
+        label: "Winnipeg Jets · 1972–1996",
+      },
+    ];
+    renderForm({ initial: { ...EMPTY, location: "Winnipeg", name: "Jets" } });
+
+    expect(screen.getByText(/Winnipeg Jets already exists for/)).toBeTruthy();
+    expect(screen.getByText("1972–1996")).toBeTruthy();
+    // Nothing is disabled by it — the operator can still create.
+    expect(screen.getByLabelText("New team name")).toBeTruthy();
+  });
+
+  it("names an undated rival as such rather than leaving a gap", () => {
+    currentEras = [
+      { _id: "t1", name: "Jets", location: "Winnipeg", label: "Winnipeg Jets" },
+    ];
+    renderForm({ initial: { ...EMPTY, location: "Winnipeg", name: "Jets" } });
+    expect(screen.getByText("no years yet")).toBeTruthy();
+  });
+
+  it("says nothing when the name is free", () => {
+    renderForm({ initial: { ...EMPTY, location: "Winnipeg", name: "Jets" } });
+    expect(screen.queryByText(/already exists for/)).toBeNull();
   });
 });

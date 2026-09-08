@@ -597,7 +597,7 @@ describe("NEO-236: no writer derives a team's dedup key by hand", () => {
     `;
     // The sanctioned call — no index name in sight.
     const good = `
-      const existing = await findTeamByFullName(ctx, sportId, name);
+      const existing = await resolveTeamForSetYear(ctx, sportId, name, setYear);
     `;
     // A PLAYERS lookup on the same-named index must not be flagged.
     const players = `
@@ -611,7 +611,7 @@ describe("NEO-236: no writer derives a team's dedup key by hand", () => {
     // A doc comment that merely names the index must not be flagged either.
     const mentioned = `
       // was a hand-rolled db.query("teams") by_name_normalized_and_sport_id read
-      const existing = await findTeamByFullName(ctx, sportId, name);
+      const existing = await resolveTeamForSetYear(ctx, sportId, name, setYear);
     `;
     expect(rawTeamIdentityLookups(bad)).toBe(1);
     expect(rawTeamIdentityLookups(good)).toBe(0);
@@ -624,6 +624,33 @@ describe("NEO-236: no writer derives a team's dedup key by hand", () => {
     // points at has been moved or renamed.
     const src = readFileSync(join(CONVEX_DIR, "lib", "teamRow.ts"), "utf8");
     expect(src).toContain("export function teamRowFields(");
-    expect(src).toContain("export async function findTeamByFullName(");
+    // NEO-254: the singular `findTeamByFullName` is GONE, and its absence is
+    // the assertion. It took a name and returned one row via `.first()`, which
+    // is precisely how a 1985 Winnipeg Jets card came to point at the franchise
+    // that started in 2011. Its replacements each make the caller say what they
+    // are asking: every era under the name, the era a given year means, or just
+    // whether the name is held at all.
+    expect(src).not.toContain("export async function findTeamByFullName(");
+    expect(src).toContain("export async function findTeamsByFullName(");
+    expect(src).toContain("export async function resolveTeamForSetYear(");
+    expect(src).toContain("export async function findCollidingTeams(");
+    expect(src).toContain("export async function sportHoldsTeamName(");
+  });
+
+  test("no caller resurrects a name-only team lookup", () => {
+    // The other half of the pin. `findTeamsByFullName` returning a LIST is only
+    // a safeguard while callers branch on its length; a helper that quietly
+    // took `[0]` would restore the old defect with a new name.
+    const offenders: string[] = [];
+    for (const file of sourceFiles(CONVEX_DIR)) {
+      const src = readFileSync(file, "utf8");
+      if (
+        /findTeamsByFullName\([^)]*\)\s*\)?\s*\[0\]/.test(src) ||
+        /await findTeamsByFullName\([\s\S]{0,200}?\)\s*\)?\.\s*at\(0\)/.test(src)
+      ) {
+        offenders.push(file.slice(CONVEX_DIR.length + 1));
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 });

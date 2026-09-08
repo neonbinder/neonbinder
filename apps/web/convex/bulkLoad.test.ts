@@ -408,8 +408,10 @@ describe("upsertTeams", () => {
     const result = await t.mutation(internal.bulkLoad.upsertTeams, {
       confirm: CONFIRM,
       sport: "Baseball",
-      // The dataset's own spelling: unsplit, and with a different span.
-      teams: [{ key: "SDN", name: "San Diego Padres", yearsActive: { from: 1900, to: 1901 } }],
+      // The dataset's own spelling: unsplit, and with a span that OVERLAPS the
+      // stored one — so it is the same era, and adoption is the right answer.
+      // A non-overlapping span is a different franchise; see the era block.
+      teams: [{ key: "SDN", name: "San Diego Padres", yearsActive: { from: 1970, to: 1990 } }],
     });
 
     expect(result.results[0]).toMatchObject({ id: teamId, status: "adopted" });
@@ -420,6 +422,154 @@ describe("upsertTeams", () => {
     expect(row?.name).toBe("Padres");
     expect(row?.location).toBe("San Diego");
     expect(row?.yearsActive).toEqual({ from: 1969 });
+  });
+
+  test("a same-name row whose era does NOT overlap is a second franchise", async () => {
+    // The Winnipeg Jets case, which is the whole reason team identity gained
+    // the era: 1972-1996 became the Coyotes and then Utah, and 2011- is the old
+    // Atlanta Thrashers under a revived name. Matching on the name alone filed
+    // every 1970s roster under the 2011 franchise.
+    arm();
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t, "Hockey");
+    const oldJets = await t.run(async (ctx) =>
+      ctx.db.insert("teams", {
+        name: "Jets",
+        location: "Winnipeg",
+        nameNormalized: normalizeTeamName("Winnipeg Jets"),
+        sportId,
+        yearsActive: { from: 1972, to: 1996 },
+        lastUpdated: 1,
+      }),
+    );
+
+    const result = await t.mutation(internal.bulkLoad.upsertTeams, {
+      confirm: CONFIRM,
+      sport: "Hockey",
+      teams: [
+        {
+          key: "WPG",
+          location: "Winnipeg",
+          name: "Jets",
+          yearsActive: { from: 2011 },
+        },
+      ],
+    });
+
+    expect(result.results[0].status).toBe("created");
+    expect(result.results[0].id).not.toBe(oldJets);
+    expect((await counts(t)).teams).toBe(2);
+
+    // …and the older row is left exactly as it was.
+    const older = await t.run(async (ctx) => ctx.db.get(oldJets));
+    expect(older?.yearsActive).toEqual({ from: 1972, to: 1996 });
+  });
+
+  test("an era that DOES overlap is the same franchise, and adopts", async () => {
+    arm();
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t, "Hockey");
+    const oldJets = await t.run(async (ctx) =>
+      ctx.db.insert("teams", {
+        name: "Jets",
+        location: "Winnipeg",
+        nameNormalized: normalizeTeamName("Winnipeg Jets"),
+        sportId,
+        yearsActive: { from: 1972, to: 1996 },
+        lastUpdated: 1,
+      }),
+    );
+
+    const result = await t.mutation(internal.bulkLoad.upsertTeams, {
+      confirm: CONFIRM,
+      sport: "Hockey",
+      teams: [
+        {
+          key: "WPG",
+          location: "Winnipeg",
+          name: "Jets",
+          yearsActive: { from: 1979, to: 1996 },
+        },
+      ],
+    });
+
+    expect(result.results[0]).toMatchObject({ id: oldJets, status: "adopted" });
+    expect((await counts(t)).teams).toBe(1);
+    // Never overwritten: the row keeps the span it had, not the dataset's.
+    const row = await t.run(async (ctx) => ctx.db.get(oldJets));
+    expect(row?.yearsActive).toEqual({ from: 1972, to: 1996 });
+  });
+
+  test("an UNDATED row on file adopts rather than forking beside it", async () => {
+    // `erasOverlap` counts an undated side as unknown, and unknown must not
+    // become "different team" — that would mint a duplicate out of a gap. The
+    // adoption gap-fills the years, which is the conservative direction.
+    arm();
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t, "Hockey");
+    const undated = await seedTeam(t, sportId, {
+      location: "Winnipeg",
+      name: "Jets",
+    });
+
+    const result = await t.mutation(internal.bulkLoad.upsertTeams, {
+      confirm: CONFIRM,
+      sport: "Hockey",
+      teams: [
+        {
+          key: "WPG",
+          location: "Winnipeg",
+          name: "Jets",
+          yearsActive: { from: 2011 },
+        },
+      ],
+    });
+
+    expect(result.results[0]).toMatchObject({ id: undated, status: "adopted" });
+    expect((await counts(t)).teams).toBe(1);
+    const row = await t.run(async (ctx) => ctx.db.get(undated));
+    expect(row?.yearsActive).toEqual({ from: 2011 });
+  });
+
+  test("two overlapping same-name rows are ambiguous, with their years", async () => {
+    // The loader does not rule between two eras that both fit. The candidate
+    // list carries `yearsActive`, because the years are the only thing that
+    // tells the operator which is which.
+    arm();
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t, "Hockey");
+    for (const yearsActive of [{ from: 1972, to: 1996 }, { from: 1990 }]) {
+      await t.run(async (ctx) =>
+        ctx.db.insert("teams", {
+          name: "Jets",
+          location: "Winnipeg",
+          nameNormalized: normalizeTeamName("Winnipeg Jets"),
+          sportId,
+          yearsActive,
+          lastUpdated: 1,
+        }),
+      );
+    }
+
+    const result = await t.mutation(internal.bulkLoad.upsertTeams, {
+      confirm: CONFIRM,
+      sport: "Hockey",
+      teams: [
+        {
+          key: "WPG",
+          location: "Winnipeg",
+          name: "Jets",
+          yearsActive: { from: 1993, to: 1995 },
+        },
+      ],
+    });
+
+    expect(result.results[0].status).toBe("ambiguous");
+    expect(result.results[0].id).toBeNull();
+    expect(
+      result.results[0].candidates?.map((c) => c.yearsActive),
+    ).toEqual([{ from: 1972, to: 1996 }, { from: 1990 }]);
+    expect((await counts(t)).teams).toBe(2);
   });
 
   test("two rows sharing the key come back ambiguous, with candidates and no write", async () => {

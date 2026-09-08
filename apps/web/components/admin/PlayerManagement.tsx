@@ -854,6 +854,21 @@ function PlayerDetail({
     .filter(Boolean);
   const aliasesChanged =
     parsedAliases.join("|") !== (player.aliases ?? []).join("|");
+  /**
+   * NEO-254 — who else already answers to these names.
+   *
+   * A shared alias is LEGAL and often deliberate: "Ken Griffey" belongs to
+   * both Griffeys, and the card-year narrowing is what decides which man a
+   * card means. So this is a note, never a refusal — but an operator typing
+   * one should know it is shared here, rather than finding out from a review
+   * queue three sets later.
+   */
+  const sharedAliases = useQuery(
+    api.players.aliasesInUse,
+    parsedAliases.length > 0
+      ? { sportId: player.sportId, aliases: parsedAliases, selfId: player._id }
+      : "skip",
+  );
 
   const dirty =
     nameChanged ||
@@ -1102,6 +1117,19 @@ function PlayerDetail({
                 : "Separate with commas. Other names this player's cards use."
             }
           />
+          {(sharedAliases ?? []).length > 0 && (
+            /* `role="status"`, not `alert`: nothing is wrong. The shared alias
+               is the feature working — a card carrying that name will offer
+               both men and the years will usually settle it. */
+            <p role="status" className="mt-1 text-xs text-slate-400">
+              {(sharedAliases ?? [])
+                .map(
+                  (hit) =>
+                    `${hit.name} also answers to that name. Cards will ask which one when the years don't decide.`,
+                )
+                .join(" ")}
+            </p>
+          )}
         </div>
 
         <div className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2 sm:items-end">

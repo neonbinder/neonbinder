@@ -9,6 +9,7 @@ import { AddLeagueDialog } from "./AddLeagueDialog";
 import { contrastRatio, normalizeHexColor } from "@/lib/print/contrast";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import { teamFullName, teamShortName } from "@/lib/teams/team-name";
+import { eraLabel } from "@/lib/teams/team-era";
 import { useFollowedParam } from "@/src/hooks/use-followed-param";
 
 /**
@@ -1389,7 +1390,14 @@ export default function TeamManagement() {
     return matched.sort(
       (a, b) =>
         teamShortName(a).localeCompare(teamShortName(b)) ||
-        (a.location ?? "").localeCompare(b.location ?? ""),
+        (a.location ?? "").localeCompare(b.location ?? "") ||
+        // NEO-254: era LAST, and oldest first. Two rows can now share a
+        // nickname and a location — the two Winnipeg Jets do — and without
+        // this they land adjacent in whatever order the query returned, which
+        // is both arbitrary and unstable between renders. A lineage reads
+        // forwards, so 1972 sits above 2011. Undated sorts last: it is the row
+        // with work outstanding, not the row the history starts with.
+        (a.yearsActive?.from ?? Infinity) - (b.yearsActive?.from ?? Infinity),
     );
   }, [teams, filter, leagueFilter]);
 
@@ -1474,6 +1482,13 @@ export default function TeamManagement() {
                 const league = team.leagueId
                   ? leagueById.get(team.leagueId)
                   : undefined;
+                /**
+                 * NEO-254 — "1972–1996", or "" for a row nobody has dated.
+                 *
+                 * Part of the row's identity now, not decoration: two Winnipeg
+                 * Jets rows are told apart by this and by nothing else.
+                 */
+                const era = eraLabel(team.yearsActive);
                 const isSelected = team._id === selectedId;
                 return (
                   <li key={team._id}>
@@ -1527,7 +1542,9 @@ export default function TeamManagement() {
                         inside a `.map` and `useId` cannot be called per row.
                       */
                       aria-describedby={
-                        attention || league ? `team-row-${team._id}` : undefined
+                        attention || league || era
+                          ? `team-row-${team._id}`
+                          : undefined
                       }
                       className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm border-l-2 transition-colors focus:outline-none focus:ring-2 focus:ring-inset focus:ring-green-500 ${
                         isSelected
@@ -1550,7 +1567,7 @@ export default function TeamManagement() {
                         <span className="block truncate">
                           {teamShortName(team)}
                         </span>
-                        {(team.location || league) && (
+                        {(team.location || league || era) && (
                           <span className="flex items-baseline gap-x-2 text-xs text-slate-400">
                             {team.location && (
                               <span className="min-w-0 truncate">
@@ -1566,6 +1583,32 @@ export default function TeamManagement() {
                                 className={`shrink-0 ${team.location ? "border-l border-slate-700 pl-2" : ""}`}
                               >
                                 {league.abbreviation ?? league.name}
+                              </span>
+                            )}
+                            {era && (
+                              /* NEO-254 — the era, last on the line and set in
+                                 tabular figures.
+                                 
+                                 It is here because it is now part of a team's
+                                 IDENTITY: two "Winnipeg Jets" rows differ by
+                                 nothing else, and without this the list shows
+                                 the operator the same row twice. Monospaced
+                                 digits rather than the body face, matching the
+                                 franchise thread on /admin/franchises — the
+                                 same fact should look the same wherever it
+                                 decides which row you are looking at.
+                                 
+                                 `shrink-0` and last: the nickname and location
+                                 truncate before a range that is the whole point
+                                 of the line loses a digit. */
+                              <span
+                                className={`shrink-0 font-mono tabular-nums ${
+                                  team.location || league
+                                    ? "border-l border-slate-700 pl-2"
+                                    : ""
+                                }`}
+                              >
+                                {era}
                               </span>
                             )}
                           </span>
@@ -1587,11 +1630,17 @@ export default function TeamManagement() {
                           {attention === "choice" ? "?" : "—"}
                         </span>
                       )}
-                      {(attention || league) && (
+                      {(attention || league || era) && (
                         <span id={`team-row-${team._id}`} className="sr-only">
                           {league
                             ? `${league.abbreviation ?? league.name}. `
                             : ""}
+                          {/* NEO-254: `aria-label` is pinned to the bare full
+                              name (see above), so the era reaches assistive
+                              tech HERE or not at all — and on a screen that can
+                              now list one name twice, "which one" is the first
+                              thing a screen-reader operator needs. */}
+                          {era ? `Active ${era}. ` : ""}
                           {attention === "choice"
                             ? "Several color sources match — needs a pick."
                             : attention === "colors"

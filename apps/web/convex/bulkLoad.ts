@@ -105,12 +105,12 @@ import { findOrCreateFranchise } from "./franchises";
 // editor does. A second derivation here is a second chance to write an alias
 // the editor would have refused.
 import {
-  findAliasCollision,
   normalizePlayerAliasList,
   normalizePlayerName,
   syncPlayerAliases,
 } from "./players";
 import { findTeamsByFullName, teamRowFields } from "./lib/teamRow";
+import { erasOverlap } from "../lib/teams/team-era";
 import { normalizeEntityName } from "./lib/entityNearMatch";
 import { teamFullName } from "../lib/teams/team-name";
 import { sortTeamYears } from "../lib/players/team-tenure";
@@ -495,25 +495,80 @@ export const upsertFranchises = internalMutation({
  * row rather than beside it — and so this file never touches the identity
  * index itself (`convex/teams.dedupPin.test.ts` greps for that, and the split
  * is exactly what it protects).
+ *
+ * NEO-254: the name is no longer an identity on its own, so this returns every
+ * ERA under it and `eraMatch` below decides which one the incoming row is.
  */
 async function sameKeyTeams(
   ctx: MutationCtx,
   sportId: Id<"selectorOptions">,
   fullName: string,
 ): Promise<Doc<"teams">[]> {
-  return await findTeamsByFullName(ctx, sportId, fullName, CANDIDATE_SCAN_LIMIT);
+  return await findTeamsByFullName(ctx, sportId, fullName);
+}
+
+/** What matching an incoming team row against the eras already on file found. */
+type EraMatch =
+  | { kind: "none" }
+  | { kind: "one"; team: Doc<"teams"> }
+  | { kind: "several"; teams: Doc<"teams">[] };
+
+/**
+ * NEO-254 — which ERA of this name the incoming row is.
+ *
+ * Two Winnipeg Jets exist: 1972-1996 and 2011-. Matching on the name alone
+ * folded them into one row, so the loader would have adopted the 2011
+ * franchise for every 1970s roster it carried.
+ *
+ * The rule, and each branch is a different kind of certainty:
+ *
+ *  - **Overlapping eras.** `erasOverlap` treats an undated side as unknown, so
+ *    a dataset row with years matches an undated row on file (we cannot say it
+ *    is a different team) and vice versa. Exactly one overlap is the answer.
+ *  - **No overlap at all.** Every row on file is a franchise that had ended
+ *    before this one began, or began after it ended. That is positive evidence
+ *    of a NEW era, so the caller creates — this is what puts the 1972 Jets
+ *    beside the 2011 Jets instead of on top of them.
+ *  - **Two or more overlaps.** The years do not separate them and the loader
+ *    does not guess. `ambiguous`, with the candidates and their years, for the
+ *    operator to answer and resubmit.
+ *
+ * Same three-way shape as the player fork rule, and for the same reason: every
+ * path is either "exactly one" or "ask".
+ */
+function eraMatch(
+  candidates: readonly Doc<"teams">[],
+  yearsActive: { from: number; to?: number } | undefined,
+): EraMatch {
+  if (candidates.length === 0) return { kind: "none" };
+  const overlapping = candidates.filter((team) =>
+    erasOverlap(team.yearsActive, yearsActive),
+  );
+  if (overlapping.length === 1) return { kind: "one", team: overlapping[0] };
+  if (overlapping.length === 0) return { kind: "none" };
+  return { kind: "several", teams: overlapping };
 }
 
 /**
  * Teams — one row per historical NAME, which is what a card says.
  *
- * ## Matching
+ * ## Matching — on the name AND the era
  *
- * On `(nameNormalized, sportId)`, the NEO-236 key. None → create. Exactly one →
- * adopt it. Two or more → `ambiguous` with the candidates and NOTHING written;
- * two rows sharing a key in one sport is already a defect (`saveTeamFields`
- * refuses to create one), so this is the loader refusing to pick a side in a
- * mess it did not make.
+ * NEO-254 made a team's identity `(nameNormalized, sportId, yearsActive.from)`,
+ * because there are two Winnipeg Jets and folding them into one row pointed
+ * every 1970s roster at the 2011 franchise. So the name finds the candidates
+ * and `eraMatch` decides which of them this row is:
+ *
+ *  - no candidate whose era overlaps the incoming years → **create**, a new
+ *    era beside the ones already there;
+ *  - exactly one overlapping → **adopt** it;
+ *  - two or more overlapping → **ambiguous**, with their years in the
+ *    candidate list, and nothing written.
+ *
+ * An undated side counts as overlapping, so a dataset row with years still
+ * adopts an undated row on file rather than forking beside it. That is the
+ * conservative direction: adopting gap-fills the years, while forking would
+ * mint a duplicate nobody asked for.
  *
  * ## Franchise linkage
  *
@@ -755,17 +810,22 @@ export const upsertTeams = internalMutation({
         continue;
       }
 
-      const candidates = await sameKeyTeams(ctx, sportId, fullName);
-      if (candidates.length === 0) {
+      // NEO-254: matched on name AND era — see `eraMatch`. A name with no
+      // overlapping era on file is a new era, not a duplicate.
+      const match = eraMatch(
+        await sameKeyTeams(ctx, sportId, fullName),
+        row.yearsActive,
+      );
+      if (match.kind === "none") {
         results.push(await create());
-      } else if (candidates.length === 1) {
-        results.push(await adopt(candidates[0]));
+      } else if (match.kind === "one") {
+        results.push(await adopt(match.team));
       } else {
         results.push({
           key,
           id: null,
           status: "ambiguous",
-          candidates: candidates.map((team) => ({
+          candidates: match.teams.map((team) => ({
             id: team._id,
             name: team.name,
             ...(team.location !== undefined ? { location: team.location } : {}),
@@ -986,26 +1046,14 @@ export const upsertPlayers = internalMutation({
       // Bounded and de-duplicated on the way in, exactly as the admin editor
       // does it — the loader is a second door into the same column and must
       // not be able to write what the editor refuses.
+      //
+      // NOT checked for collisions. Jason, 2026-09-08: an alias is allowed to
+      // be shared, because "Ken Griffey" belongs to both Griffeys and the
+      // card-year narrowing is what decides which man a card means. A loader
+      // that refused it could not express the very case the feature is for.
       const aliases = row.aliases
         ? normalizePlayerAliasList(row.aliases, name)
         : [];
-      /**
-       * Which OTHER player in this sport already answers to one of these
-       * aliases, if any.
-       *
-       * A collision is never silently dropped: the two rows are either the
-       * same person (a merge, which is an operator decision with inventory
-       * consequences) or a mis-keyed dataset row, and both need a human. It is
-       * reported as `ambiguous` with the colliding row as the candidate, which
-       * is the same shape a same-name collision already produces — so the
-       * loader's interactive prompt handles it with no new branch.
-       */
-      const aliasBlocker = await findAliasCollision(ctx, {
-        sportId,
-        aliases,
-        nameNormalized,
-      });
-
       // ---- write --------------------------------------------------------
       const adopt = async (existing: Doc<"players">): Promise<PlayerResult> => {
         const patch: Record<string, unknown> = {};
@@ -1073,34 +1121,6 @@ export const upsertPlayers = internalMutation({
         }
         return { key, id, status: "created" };
       };
-
-      /*
-       * NEO-254 — an alias collision outranks every decision below.
-       *
-       * Checked BEFORE the decision branches on purpose: an answers file that
-       * says "adopt this row" was written against a previous run's report, and
-       * if an alias has since been claimed by somebody else, replaying that
-       * answer would write this player's aliases onto a row that already
-       * answers to them. The operator has to see it again.
-       */
-      if (aliasBlocker) {
-        results.push({
-          key,
-          id: null,
-          status: "ambiguous",
-          candidates: [
-            {
-              id: aliasBlocker._id,
-              name: aliasBlocker.name,
-              ...(aliasBlocker.birthYear !== undefined
-                ? { birthYear: aliasBlocker.birthYear }
-                : {}),
-              careerSummary: await summariseCareer(aliasBlocker, readTeam),
-            },
-          ],
-        });
-        continue;
-      }
 
       // Three checks, for the reason spelled out on the team twin above: a
       // decision picks between rows that SHARE the natural key, so a chosen row

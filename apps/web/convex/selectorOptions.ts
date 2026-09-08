@@ -134,7 +134,11 @@ import { normalizeEntityName } from "../lib/entities/normalize-name";
 // for every name that leaves this file; `teamRowFields`/`findTeamByFullName`
 // are the ONE place a team row's identity fields are derived and looked up.
 import { teamFullName } from "../lib/teams/team-name";
-import { findTeamByFullName, teamRowFields } from "./lib/teamRow";
+import {
+  findCollidingTeams,
+  resolveTeamForSetYear,
+  teamRowFields,
+} from "./lib/teamRow";
 import {
   findOrCreateLeague,
   normalizeLeagueName,
@@ -9923,16 +9927,41 @@ export const commitCardChecklistPrelude = internalMutation({
      * strings genuinely are different keys and neither dedup nor the operator
      * ever saw the duplicate coming.
      *
-     * Goes through `findTeamByFullName` so the lookup and every writer derive
-     * the key from the same place (convex/lib/teamRow.ts). A miss is recorded
-     * and returned as `null`; creating from an operator's reviewed Location +
-     * Name is `createReviewedCareerTeam` / the team loop below.
+     * Goes through `resolveTeamForSetYear` so the lookup and every writer
+     * derive the key from the same place (convex/lib/teamRow.ts). A miss is
+     * recorded and returned as `null`; creating from an operator's reviewed
+     * Location + Name is `createReviewedCareerTeam` / the team loop below.
+     *
+     * ## NEO-254 — a name is not an identity, so this takes a YEAR
+     *
+     * A sport may hold several rows under one name, told apart by their era:
+     * the 1972-1996 Winnipeg Jets became the Coyotes and then Utah, and the
+     * 2011- Jets are the old Atlanta Thrashers. Resolving on the name alone
+     * pointed every one of them at whichever row the index returned first.
+     *
+     * The year to narrow by is the CALLER'S, not one this closure can work out,
+     * and the two callers have genuinely different answers: a card's team name
+     * means the set's year, while a career stint means the year the stint
+     * STARTED — a player's 1979 Jets stint has nothing to do with the year of
+     * the card that mentions it. Passing it in is what keeps that distinction
+     * visible at the call site.
+     *
+     * An ambiguous name is recorded as unresolved exactly like a missing one.
+     * That is the whole point: both mean "a human decides", and the difference
+     * between "we have none" and "we have two" is one the review wizard shows,
+     * not one this function may act on.
      */
     const resolveTeamIdByName = async (
       rawName: string,
+      forYear: number | undefined,
     ): Promise<Id<"teams"> | null> => {
-      const existing = await findTeamByFullName(ctx, args.sportId, rawName);
-      if (existing) return existing._id; // NOT enqueued — see above.
+      const { teamId } = await resolveTeamForSetYear(
+        ctx,
+        args.sportId,
+        rawName,
+        forYear,
+      );
+      if (teamId) return teamId; // NOT enqueued — see above.
       unresolvedTeamNames.add(rawName.trim());
       return null;
     };
@@ -9980,13 +10009,29 @@ export const commitCardChecklistPrelude = internalMutation({
     ): Promise<{ id: Id<"teams">; created: boolean }> => {
       const extra = opts.extra ?? {};
       const fields = teamRowFields(input);
-      const existing = await findTeamByFullName(
+      /**
+       * NEO-254 — find the row for THIS ERA, or make one beside it.
+       *
+       * The operator's answer carries its own years (`reviewedTeamFields`
+       * writes `yearsActive` from the enrichment), and those years are what
+       * says which Winnipeg Jets they meant. A same-name row whose era does not
+       * overlap is a different franchise, so this creates rather than adopting
+       * it — which is exactly how the second era comes into existence.
+       *
+       * `findCollidingTeams` counts an undated side as overlapping, so an
+       * answer with no years still finds the single row it always did and
+       * cannot fork beside one by accident. Several overlapping rows is a mess
+       * the prelude must not add to: it adopts the first and leaves the rest
+       * for Team Management, because a commit is the wrong place to refuse.
+       */
+      const colliding = await findCollidingTeams(
         ctx,
         args.sportId,
         teamFullName(fields),
+        extra.yearsActive,
       );
       // NOT enqueued, and NOT counted as created — it already existed.
-      if (existing) return { id: existing._id, created: false };
+      if (colliding.length > 0) return { id: colliding[0]._id, created: false };
       // NEO-156: every team-creation path attaches a league. The caller
       // supplies one when the enrichment named it; otherwise the sport's
       // default.
@@ -10391,6 +10436,23 @@ export const commitCardChecklistPrelude = internalMutation({
       if (created) createdTeamIds.push(id);
     }
 
+    /**
+     * NEO-254 — the set's year, walked ONCE for the whole commit.
+     *
+     * The narrowing runs per ambiguous name — for TEAMS in the loop directly
+     * below and for PLAYERS in the loop after it — while the year is a property
+     * of the set, so resolving it per name would be the same handful of reads
+     * repeated hundreds of times inside a mutation with a read budget.
+     * Undefined (an orphaned subtree, a fixture with no year row) means no
+     * narrowing happens at all — the names go to the operator, which is the
+     * behaviour before this existed.
+     *
+     * Declared here, above the TEAM loop, rather than beside the player one it
+     * was written for: NEO-254's era work gave teams the same need, and the
+     * team loop runs first.
+     */
+    const setYear = await findSetYearForSelectorOption(ctx, args.selectorOptionId);
+
     for (const name of allTeamNames) {
       // The review-row key, NOT a team-identity lookup: `reviewByKey` is built
       // with the same `norm` over the queue rows' own names, so the two sides
@@ -10405,8 +10467,24 @@ export const commitCardChecklistPrelude = internalMutation({
       // rule the others lack, this lookup starts missing rows it should find
       // and commit quietly mints a duplicate franchise. One derivation, one
       // place. `teams.dedupPin.test.ts` greps for the reintroduction.
-      const existing = await findTeamByFullName(ctx, args.sportId, name);
-      if (existing) {
+      //
+      // NEO-254 — and narrowed by the SET'S YEAR, because the name alone is no
+      // longer an identity. Two Winnipeg Jets rows exist; a 1985 card means the
+      // first and a 2015 card the second, and `.first()` meant whichever the
+      // index happened to return.
+      //
+      // The ordering matters and mirrors the player loop directly above: this
+      // exactly-one fast path runs FIRST, so an ordinary team name pays one
+      // indexed read and nothing else — and an ambiguous one falls through to
+      // the operator's decision below rather than being pre-empted by a guess.
+      const { teamId: existingTeamId } = await resolveTeamForSetYear(
+        ctx,
+        args.sportId,
+        name,
+        setYear,
+      );
+      if (existingTeamId) {
+        const existing = (await ctx.db.get(existingTeamId))!;
         teamIdByName.set(name, existing._id);
         // NEO-236: the FULL name — location plus nickname — everywhere a
         // stored team name leaves this mutation. This map feeds listing titles
@@ -10494,17 +10572,6 @@ export const commitCardChecklistPrelude = internalMutation({
     // player row it did not write.
     const playerNameById = new Map<Id<"players">, string>();
     const createdPlayerIds: Array<Id<"players">> = [];
-    /**
-     * NEO-254 — the set's year, walked ONCE for the whole commit.
-     *
-     * The narrowing below runs per ambiguous name; the year is a property of
-     * the set, so resolving it per name would be the same handful of reads
-     * repeated hundreds of times inside a mutation with a read budget.
-     * Undefined (an orphaned subtree, a fixture with no year row) means no
-     * narrowing happens at all — the names go to the operator, which is the
-     * behaviour before this existed.
-     */
-    const setYear = await findSetYearForSelectorOption(ctx, args.selectorOptionId);
     /** Normalized player name → the teams printed on the cards it appeared on. */
     const cardTeamNamesByPlayer = new Map<string, string[]>(
       (args.playerTeamNames ?? []).map(({ playerNameNormalized, teams }) => [
@@ -10754,13 +10821,23 @@ export const commitCardChecklistPrelude = internalMutation({
       }
       const resolveCareerTeamId = async (
         label: string,
+        /**
+         * NEO-254 — the year this STINT started, which is the year that says
+         * which era of the club it was.
+         *
+         * Deliberately not the set's year: a 2015 card can mention a stint that
+         * began in 1979, and narrowing that stint by 2015 would file it under
+         * the franchise that did not exist yet. The stint's own start is the
+         * only honest evidence here.
+         */
+        stintYear: number | undefined,
       ): Promise<Id<"teams"> | null> => {
         // NEO-236: the operator's own answer for THIS label, by id, first. See
         // `stagedTeamIdByLabel` — a step answered with a different spelling, or
         // by linking to a differently-named row, is unreachable by matching.
         const answered = stagedTeamIdByLabel.get(norm(label));
         if (answered) return answered;
-        const matched = await resolveTeamIdByName(label);
+        const matched = await resolveTeamIdByName(label, stintYear);
         if (matched) return matched;
         const create = careerTeamCreateBySource.get(norm(label));
         if (!create) return null;
@@ -10775,7 +10852,7 @@ export const commitCardChecklistPrelude = internalMutation({
       >();
       for (const ct of enrichment?.careerTeams ?? []) {
         if (excludedCareerTeamNames.has(norm(ct.name))) continue;
-        const teamId = await resolveCareerTeamId(ct.name);
+        const teamId = await resolveCareerTeamId(ct.name, ct.fromYear);
         if (!teamId) continue;
         teamYearByKey.set(`${teamId}|${ct.fromYear}`, {
           teamId,
@@ -10784,7 +10861,7 @@ export const commitCardChecklistPrelude = internalMutation({
         });
       }
       for (const ct of manualCareerTeams) {
-        const teamId = await resolveCareerTeamId(ct.name);
+        const teamId = await resolveCareerTeamId(ct.name, ct.fromYear);
         if (!teamId) continue;
         teamYearByKey.set(`${teamId}|${ct.fromYear}`, {
           teamId,
