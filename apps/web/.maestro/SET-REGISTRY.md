@@ -580,28 +580,47 @@ not change; none of them can express the =1 half.
     and in the same band as `checklist-pairing-dialog-cancel` (2m29s, measured
     on the same preview the same evening).
 
-#### ⛔ THE FLOW IS NOT GREEN YET, AND THE REASON IS NOT THE FIXTURE
+#### The base-mapping panel: Close now dismisses it, and the flow taps it
 
-Everything above passes under Maestro. The flow then **cannot reach its own
-Sync button**, because maestro-web cannot scroll the set-builder page once the
-base picker has been closed. Full write-up in the flow's STEP 4; the short
-version is that every maestro-web scroll primitive bottoms out on
-`window.scroll({ behavior: "smooth" })` and in that state it advances by zero —
-twelve `scrollUntilVisible` swipes, six `- scroll`s (including three fired
-while the picker's own skeletons were animating) and a `- swipe:` that hung the
-driver for 180s, across four runs, all leaving the dumped hierarchy at scroll 0.
-`util-fetch-real-set-checklist-to-wizard` scrolls to the SAME button on an
-equally empty Base checklist, and `checklist-pairing-dialog-cancel` scrolls
-~636px on the same screen — the only thing neither does is open and close the
-base picker.
+Since 2026-09-08 (`0411cd8`, `13deac4`) pressing **Close** on the
+"Base mapping cancelled — nothing was linked…" panel actually dismisses it for
+that variantType and hands back a primary **`Map Base Set`** button; the page
+also carries `pb-[50vh]` of scroll headroom. The flow uses both: it cancels the
+picker, asserts the cancelled-mapping message, presses **Close**, and then
+asserts the panel is gone and `Map Base Set` is offered. That last assertion
+earns its place twice over — it is the positive proof that Cancel left the row
+**unmapped**, because a Base that had picked up a SportLots mapping would read
+`Re-map Base` instead, and the whole one-marketplace precondition would be gone.
 
-That state is unavoidable for a one-sided set: `baseHasMapping` reads the
-SportLots slot alone, so a set with no SportLots side always auto-opens the
-picker, and attaching one to stop it would destroy the precondition under test.
-**So this needs a fix outside `.maestro`** — the recovery panel's `Close`
-actually dismissing the panel would do it, and so would anything that leaves the
-page scrollable after the picker unmounts. The flow keeps its `wip` tag until
-then, so an unpassable flow never reaches the CI gate.
+All of that is verified green under Maestro on PR #242's preview. Two sibling
+flows were re-run on the same build to prove the new button label collides with
+nothing: `base-mapping-cancel-recovers` (53s) and
+`checklist-wizard-skip-not-a-person` (6m14s), both of which gate on
+`.*Select Base Set.*|.*Re-map Base.*` — `Map Base Set` matches neither.
+
+#### ⛔ STILL NOT GREEN: maestro-web will not scroll this page
+
+The flow reaches its Sync button's scroll and stops. `Sync card checklist` sits
+~300px below the fold (y=921–953, document 1340, 715px of scroll room) and no
+maestro-web scroll primitive moves this page — six runs, five placements, three
+commands, every one leaving the dumped hierarchy at `root=[0,0]`. The sharpest
+of them: `scrollUntilVisible` on `Multi-source sets` when it is **already
+visible** at y=534 — the pure centring path — swiped five times without the
+bounds ever leaving 534.
+
+That same path works on the same route and build minutes apart:
+`base-mapping-cancel-recovers` moves the identical element 505 → 192 in one
+swipe, in the same post-Cancel state, and `checklist-wizard-skip-not-a-person`
+moves 432→119, 461→148, 529→216. Every successful swipe travels exactly 313px.
+Ruled out with evidence: page height and headroom, centring convergence, the
+recovery panel (fails with it up and dismissed), the focus park (fails without
+pressing Close), a scroll lock or leftover overlay (`overflow: visible` on both
+body and html, no covering fixed element, instant `window.scrollTo` works),
+busy-vs-idle timing, and the element under the swipe origin.
+
+The flow keeps its `wip` tag until this is fixed, so an unpassable flow never
+reaches the CI gate. Nothing about the FIXTURE is in question — every number in
+this section was measured on it.
 
 #### Why the fixture has to be REAL
 

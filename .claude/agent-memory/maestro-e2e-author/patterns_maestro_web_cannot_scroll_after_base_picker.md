@@ -1,6 +1,6 @@
 ---
 name: maestro-web-cannot-scroll-after-base-picker
-description: Once BaseSetPicker has been opened and closed, no maestro-web scroll primitive moves the set-builder page — measured four ways; `- swipe:` hangs the driver for 180s
+description: One set-builder page will not scroll for maestro-web in ANY mode while a structurally identical one moves 313px per swipe — six runs of evidence and everything ruled out
 metadata:
   type: reference
 ---
@@ -45,3 +45,42 @@ base picker cannot be written today. That state is unavoidable for a ONE-SIDED
 set — `baseHasMapping` reads the SportLots slot alone, so a set with no
 SportLots side always auto-opens the picker, and attaching one destroys the
 precondition. See [[neo255-one-marketplace-surfaces]].
+
+## Update 2026-09-08 — the cause is NOT the picker, and NOT frames
+
+Re-tested on the build that added `pb-[50vh]` scroll headroom and made Close
+dismiss the recovery panel. Both app changes work (Close dismisses, the
+replacement `Map Base Set` button appears, both asserted green). **The page
+still does not scroll**, six runs, five placements, three commands, every one
+leaving the dumped hierarchy at `root=[0,0]`.
+
+The sharpest measurement, and the one to quote: `scrollUntilVisible` on
+`Multi-source sets` when it is **already visible at y=534** — the pure centring
+path, not a blind search — swiped five times and the bounds never left 534.
+
+That path demonstrably works elsewhere on the same route, build and viewport,
+minutes apart: `base-mapping-cancel-recovers` moves the identical element
+505 → 192 in ONE swipe **in the same post-Cancel state**, and
+`checklist-wizard-skip-not-a-person` moves 432→119, 461→148, 529→216. Every
+successful swipe travels exactly 313px = `innerHeight / 2`.
+
+Ruled out, each with evidence — do not re-test these:
+
+| suspect | how it was killed |
+|---|---|
+| page height / bottom headroom | 715px of scroll room, target 300px down |
+| centring convergence | fails on an already-visible element too |
+| the recovery panel's height | fails with it up AND dismissed |
+| the focus park on `Map Base Set` | fails on a run that never pressed Close |
+| a scroll lock / leftover overlay | body and html `overflow: visible`, no covering fixed element, instant `window.scrollTo(0,300)` moves the page |
+| busy-vs-idle (frames) | fails 2.4s after a tap with a live marketplace fetch running; and `base-mapping-cancel-recovers` succeeds 8.3s after its tap |
+| the element under the swipe origin | `elementFromPoint(512,312)` has NO scrollable ancestor — the document is the scroller |
+
+**The probe browser cannot arbitrate this.** `window.scroll({behavior:"smooth"})`
+in headless Chrome-for-Testing works for a while after a page load and then
+stops, independently of the page — it "reproduced" a page-specific difference
+once and then contradicted itself on the next session. Use Maestro's own logs
+(`Element bounds` across `Scrolling try count`) as the only reliable signal.
+
+Consequence unchanged: a flow needing a page scroll on the one-marketplace
+Base page cannot be written today, and the fix is outside `.maestro`.

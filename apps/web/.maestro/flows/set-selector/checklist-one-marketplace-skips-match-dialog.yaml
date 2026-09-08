@@ -3,11 +3,10 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Checklist — a set with exactly ONE marketplace attached skips the Match Cards dialog and keeps every fetched card"
 tags:
   - set-selector
-  # ⛔ wip, and NOT because the feature is unproven — see STEP 4. maestro-web
-  # cannot scroll the set-builder page once the base picker has been closed, so
-  # this flow cannot reach its own Sync button. Everything above STEP 4 passes
-  # locally against PR #242's preview. Remove this tag in the commit that fixes
-  # the scroll, not before: an unpassable flow in the queue reds the CI gate.
+  # ⛔ wip — NOT because the feature is unproven. See STEP 4: maestro-web still
+  # cannot scroll this page to the Sync button once the base picker has been
+  # opened, which a one-sided set cannot avoid. Everything before that step is
+  # green on this build. Remove this tag in the commit that fixes the scroll.
   - wip
 ---
 # ════════════════════════════════════════════════════════════════════════════
@@ -311,54 +310,68 @@ tags:
 # Cancel leaves the recovery panel, NOT a dead end (that panel's own behaviour
 # is `base-mapping-cancel-recovers`' feature, not this flow's — it is asserted
 # here only as proof the picker really closed without writing a mapping).
-# A plain assert, not a scroll: measured at 1024x629 the panel sits at y=505,
-# fully in view at scroll 0, so a `scrollUntilVisible` here would only spend its
-# whole timeout swiping at something already visible (R10).
 - assertVisible:
     text: ".*Base mapping cancelled.*"
+
+# ── PUT THE PANEL AWAY — "Close to leave it unmapped for now" ────────────────
+# The operator's own way out of the recovery panel, and it writes nothing: it
+# dismisses the panel for this variantType and hands back a primary
+# `Map Base Set` button in its place. That button is also the positive proof
+# that Cancel left the row UNMAPPED — a Base that had acquired a SportLots
+# mapping would offer "Re-map Base" instead, and this flow's whole precondition
+# would be gone. Dismissal is per variantType and clears when the selection
+# changes, so it leaks into nothing.
+- tapOn: "Close"
+- extendedWaitUntil:
+    notVisible:
+      text: ".*Base mapping cancelled.*"
+    timeout: 7000
+- assertVisible: "Map Base Set"
 
 # ============================================================
 # STEP 4 — SYNC. THIS MUST NOT OPEN THE DIALOG.
 #
-# ⛔ THIS IS WHERE THE FLOW IS BLOCKED TODAY — READ BEFORE EDITING ───────────
-# Measured at 1024x629 on the PR #242 preview: with the base-mapping recovery
-# panel standing, the page is 1183px tall and `Sync card checklist` sits at
-# y=1055, so the checklist needs ~426px of PAGE scroll before it is in the view
-# hierarchy at all (maestro-web reports only what is inside the viewport).
+# ⛔ THE FLOW STOPS HERE TODAY — READ BEFORE EDITING ────────────────────────
+# `Sync card checklist` sits ~300px below the fold of the 1024x629 headless
+# viewport (measured y=921–953 once the panel is dismissed, document 1340, so
+# 715px of scroll room), and **maestro-web will not scroll this page at all.**
 #
-# **maestro-web cannot scroll this page once the base picker has been closed.**
-# Every scrolling primitive it has bottoms out on
-# `window.scroll({ top: …, behavior: "smooth" })`, and here that animation
-# advances by zero. Measured on this build, four ways, all on a page whose
-# dumped hierarchy still reads scroll 0 afterwards:
-#   • `scrollUntilVisible` (swipes from the viewport centre) — twelve swipes
-#     across two commands, target bounds unchanged at y=505, then
-#     "No visible element found: id: Sync card checklist"  (run 22:22).
-#   • `- scroll` x3 after the cancel — all three "Scroll vertically COMPLETED",
-#     page unmoved                                          (run 23:21).
-#   • `- scroll` x3 DURING the picker's own fetch (the one moment this screen
-#     is animating) plus x3 after — same                    (run 23:33).
-#   • `- swipe:` is worse — it HANGS the driver to its own 180s timeout
-#     (run 22:40), the same thing `checklist-wizard-skip-commits-and-unskip`
-#     records in its header. Do not reintroduce it.
-#   Tapping the recovery panel's own `Close` does not dismiss the panel and
-#   changes none of the above.
+# Six runs on the current build, five placements, three commands, every one
+# ending with the dumped hierarchy at `root=[0,0]`:
+#   • `scrollUntilVisible` + centerElement, after Close        7 swipes (00:32)
+#   • `scrollUntilVisible` + centerElement, panel still up     7 swipes (00:58)
+#   • `scrollUntilVisible` for "Multi-source sets", 43px away  7 swipes (01:07)
+#   • `scrollUntilVisible`, centering off, fired 2.4s after the Base tap with
+#     the picker's live BSC+SportLots fetch still running      9 swipes (01:18)
+#   • `scrollUntilVisible` for "Multi-source sets" when it is ALREADY VISIBLE
+#     at y=534 — the pure centring path — 5 swipes, bounds never leave 534
+#                                                                     (01:35)
+#   • `- scroll` x3, and `- swipe:` which HANGS the driver for 180s
+# The last one matters most: even centring an element that is already on screen
+# moves nothing here, and that is precisely the path that works elsewhere.
 #
-# It is NOT "the page is too tall" and NOT "the checklist is empty":
-# `util-fetch-real-set-checklist-to-wizard` scrolls to this same button on
-# Topps Big League's Base with an equally empty checklist (measured y=954), and
-# `checklist-pairing-dialog-cancel` scrolls ~636px on the same screen — both
-# green. The one thing neither of them does is OPEN AND CLOSE THE BASE PICKER,
-# which is the only state this flow can reach a one-sided checklist from
-# (`baseHasMapping` reads the SportLots slot alone, so a set with no SportLots
-# side ALWAYS auto-opens the picker, and attaching one to stop that would
-# destroy the very precondition under test).
+# Because it does work elsewhere, on this same route and build, in the same
+# post-Cancel state: `base-mapping-cancel-recovers` moves the identical element
+# 505 → 192 in ONE swipe (01:30:14), and `checklist-wizard-skip-not-a-person`
+# moves 432→119, 461→148 and 529→216 (00:45). Every successful swipe travels
+# exactly 313px = `innerHeight / 2`.
 #
-# So this needs a fix outside `.maestro` before the flow can go green — the
-# recovery panel's `Close` actually dismissing the panel would do it, and so
-# would anything that leaves the page scrollable after the picker unmounts.
-# The flow below is written the way it should be once that lands; the `wip`
-# tag stays until then so a flow that cannot pass never reaches the CI gate.
+# Ruled out, each with evidence: page height and bottom headroom; centring
+# convergence; the recovery panel (fails with it up AND dismissed); the focus
+# park on the replacement button (fails without ever pressing Close); a scroll
+# lock or leftover overlay (body and html both `overflow: visible`, no fixed
+# element covering the page, and an instant `window.scrollTo(0, 300)` moves it);
+# busy-vs-idle timing; and the element under the swipe origin (the document is
+# the scroller there, with no scrollable ancestor between).
+#
+# A one-sided set cannot dodge the base picker that seems to be implicated:
+# `baseHasMapping` reads the SportLots slot alone, so a Base with no SportLots
+# side always auto-opens it, and attaching one destroys the precondition this
+# flow exists to test. Everything before this step is green on this build,
+# including Close dismissing the panel and offering "Map Base Set". The `wip`
+# tag stays until the scroll works.
+# ============================================================
+
 - scrollUntilVisible:
     element:
       id: "Sync card checklist"
@@ -367,7 +380,7 @@ tags:
 
 # The checklist is empty here, so the button reads "Fetch from Marketplaces";
 # its accessible name is stable in both states. Asserting the empty state first
-# is what makes the saved COUNT in STEP 6 a claim about this fetch alone — and
+# is what makes the saved COUNT in STEP 7 a claim about this fetch alone — and
 # it is also the guard that fails a re-run against an already-committed
 # deployment, loudly and in the right place.
 - assertVisible: "No cards in this checklist yet."
