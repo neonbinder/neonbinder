@@ -317,6 +317,8 @@ const NOTHING_TO_FETCH_MESSAGE = NO_MARKETPLACE_IDS_MESSAGE;
 const VARIANT_ID = "variant-1" as unknown as Id<"selectorOptions">;
 const SPORT_ID = "sport-1" as unknown as Id<"selectorOptions">;
 const SET_ID = "set-1" as unknown as Id<"selectorOptions">;
+/** NEO-255 — a second variant, for the "operator switched sets mid-run" test. */
+const OTHER_VARIANT_ID = "variant-2" as unknown as Id<"selectorOptions">;
 
 /**
  * NEO-255 — an ancestor chain for a set with BOTH marketplaces attached.
@@ -939,6 +941,171 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     expect(mockCommitChecklist).not.toHaveBeenCalled();
     // The progress line is gone — the dialog is the surface now.
     expect(screen.queryByText(/Fetching from SportLots/)).toBeNull();
+  });
+
+  /**
+   * NEO-255 security review — the batch, not the mapping, has the last word on
+   * whether an operator is needed.
+   *
+   * `attachedSides === ["bsc"]` ought to guarantee every returned row is a BSC
+   * single, and does not quite: `fetchSportLotsChecklist` still falls back to a
+   * name-keyed DB lookup for the SportLots set id when no SL slot is attached
+   * (NEO-256, filed separately), so SportLots rows can come back, pair, and
+   * carry a real disagreement. Auto-keeping those would drop the operator's
+   * only chance to answer "which of these two names is this card" — and the
+   * losing answer would then read as settled NB data on every later re-sync.
+   */
+  it("hands over to the dialog when the one-sided batch contains a matched pair", async () => {
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    expect(screen.queryByText(/Match Cards/)).toBeNull();
+
+    await streamCandidates(rerender, {
+      batchId: "batch-255",
+      ready: 2,
+      total: 2,
+      cards: [
+        slCandidates[0],
+        // A pair, on a set that reports one attached marketplace.
+        {
+          cardNumber: "2",
+          cardName: "Paired Anyway",
+          bucket: "matched" as const,
+          confidence: 1,
+          platformData: { bsc: { ref: "bsc-2" }, sportlots: { ref: "sl-2" } },
+        },
+      ],
+    });
+    await act(async () => {
+      resolveFetch({
+        success: true,
+        message: "1 matched, 0 BSC-only, 1 SL-only",
+        candidateCount: 2,
+        attachedSides: ["sportlots"],
+      });
+    });
+
+    expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+    expect(mockResolveEntities).not.toHaveBeenCalled();
+    expect(mockCommitChecklist).not.toHaveBeenCalled();
+    // The fetch's own counts stand, as they do on the two-sided path — the
+    // "Kept all …" sentence would be a claim about something that did not
+    // happen.
+    expect(screen.getByText("1 matched, 0 BSC-only, 1 SL-only")).toBeTruthy();
+    expect(screen.queryByText(/Kept all/)).toBeNull();
+    expect(screen.queryByText(/Fetching from SportLots/)).toBeNull();
+  });
+
+  it("hands over to the dialog when an unpaired row carries a name conflict", async () => {
+    // The same guard read off the conflict rather than the bucket. Both are
+    // checked because either one on its own is a disagreement the operator
+    // has to settle, and `candidatesToPairingCards` drops both.
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+
+    await streamCandidates(rerender, {
+      batchId: "batch-255",
+      ready: 2,
+      total: 2,
+      cards: [
+        slCandidates[0],
+        {
+          ...slCandidates[1],
+          nameConflict: { bsc: "Ken Griffey Jr.", sportlots: "Ken Griffey" },
+        },
+      ],
+    });
+    await act(async () => {
+      resolveFetch({
+        success: true,
+        message: "0 matched, 0 BSC-only, 2 SL-only",
+        candidateCount: 2,
+        attachedSides: ["sportlots"],
+      });
+    });
+
+    expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+    expect(mockCommitChecklist).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Kept all/)).toBeNull();
+  });
+
+  it("abandons the run when the operator switches variant mid-await", async () => {
+    // `awaitStreamedBatch` polls a subscription keyed on the CURRENT variant
+    // while `handlePairingConfirm` writes to the variant the run captured.
+    // Without the variant check in `abandoned()`, a switch mid-await commits
+    // one set's cards onto another — and this path has no operator in front of
+    // it to notice.
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+
+    await act(async () => {
+      resolveFetch({
+        success: true,
+        message: "0 matched, 0 BSC-only, 2 SL-only",
+        candidateCount: 2,
+        attachedSides: ["sportlots"],
+      });
+    });
+    // Still waiting: the batch has not arrived.
+    expect(mockCommitChecklist).not.toHaveBeenCalled();
+
+    // The operator moves to another variant, and THAT variant's subscription
+    // happens to be showing a complete batch of the same size.
+    state.liveCandidates = arrivedBatch;
+    await act(async () => {
+      rerender(
+        <CardChecklist
+          variantId={OTHER_VARIANT_ID}
+          sourceChips={{}}
+          sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+        />,
+      );
+    });
+
+    // Give the poll several turns to do the wrong thing if it is going to.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    });
+    expect(mockResolveEntities).not.toHaveBeenCalled();
+    expect(mockCommitChecklist).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Kept all/)).toBeNull();
+  });
+
+  it("parks focus on the progress line when the run starts", async () => {
+    // a11y (WCAG 2.4.3): pressing Sync disables the Sync button, which blurs
+    // focus to <body>, and this path mounts no dialog to catch it. Without the
+    // park a keyboard operator spends the whole fetch at the top of the
+    // document with nothing announcing that anything began.
+    renderChecklist();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+
+    await waitFor(() => {
+      const parked = document.activeElement as HTMLElement | null;
+      expect(parked).not.toBe(document.body);
+      // The container itself, named by its own status line.
+      expect(parked?.getAttribute("aria-labelledby")).toBe("solo-fetch-status");
+      expect(parked?.getAttribute("tabindex")).toBe("-1");
+    });
+    // …and Cancel is inside it, so a single Tab reaches the way out.
+    expect(
+      (document.activeElement as HTMLElement).contains(
+        screen.getByLabelText("Cancel checklist fetch"),
+      ),
+    ).toBe(true);
+  });
+
+  it("does not steal focus the operator is already holding", async () => {
+    // The other half of the park: it fires only when focus is on <body>. An
+    // operator who has tabbed somewhere keeps it.
+    renderChecklist();
+    const addCard = screen.getByLabelText("Open add card form");
+    addCard.focus();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+
+    await waitFor(() =>
+      expect(screen.getByText(/Fetching from SportLots/)).toBeTruthy(),
+    );
+    expect(document.activeElement).toBe(addCard);
   });
 
   it("a one-sided run that publishes nothing still skips straight to entity resolution", async () => {

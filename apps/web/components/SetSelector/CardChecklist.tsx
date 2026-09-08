@@ -542,6 +542,19 @@ export default function CardChecklist({
    * end of a run.
    */
   const restoreSyncFocusRef = useRef(false);
+  /**
+   * a11y (NEO-255) — the focus park for the START of a dialog-less run.
+   *
+   * `restoreSyncFocusRef` above covers the END of one. This covers the other
+   * half of the same WCAG 2.4.3 gap, which happens first: pressing Sync
+   * disables the Sync button, disabling the focused element blurs it to
+   * `<body>`, and on every other path `CardPairingModal` mounts a moment later
+   * and takes focus. This path mounts nothing, so a keyboard operator is left
+   * at the top of the document for the whole fetch with no announcement that
+   * anything started — the established fix is to park on a stable
+   * `tabIndex={-1}` container, and here the progress line IS that container.
+   */
+  const soloFetchRef = useRef<HTMLDivElement>(null);
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>({
     bsc: null,
     sportlots: null,
@@ -620,6 +633,30 @@ export default function CardChecklist({
   // A ref, not state: the check runs inside an async closure that captured its
   // own render's values, which is exactly where a state read would be stale.
   const syncGenerationRef = useRef(0);
+  /**
+   * NEO-255 — the variant the operator is looking at NOW, for the same
+   * staleness check one field up.
+   *
+   * A run is abandoned when the operator moves to another variant, and the
+   * generation counter cannot say so on its own: `variantId` is a PROP, so
+   * nothing in an event handler bumps the counter when it changes, and the
+   * reset effect that clears the rest of the per-variant state is not allowed
+   * to (`react-hooks/immutability` — a ref mutated inside an effect may not be
+   * mutated anywhere else, and this one is, from `handleSync` and the pairing
+   * dialog's Cancel).
+   *
+   * It matters most on the one-marketplace path, which is the one that commits
+   * without an operator: `awaitStreamedBatch` polls a subscription keyed on the
+   * CURRENT variant while `handlePairingConfirm` writes to the `variantId` the
+   * run captured. Switch variants mid-await and those are two different sets —
+   * one variant's cards committed onto another. Read through a ref because the
+   * check runs inside an async closure holding its own render's values, which
+   * is exactly where a prop read would be stale.
+   */
+  const currentVariantIdRef = useRef(variantId);
+  useEffect(() => {
+    currentVariantIdRef.current = variantId;
+  }, [variantId]);
 
   /**
    * NEO-221 — end the pairing session for good and bin what it was reviewing.
@@ -665,6 +702,25 @@ export default function CardChecklist({
     restoreSyncFocusRef.current = false;
     syncButtonRef.current?.focus();
   }, [syncing, committing, pendingReview, pendingPreview, pairingPhase]);
+
+  /**
+   * a11y (NEO-255) — catch the blur the moment a dialog-less run starts.
+   *
+   * Keyed on `soloFetch` becoming non-null, which is the same render that
+   * disables the Sync button, so this runs immediately after the browser has
+   * dropped focus to `<body>`.
+   *
+   * Guarded on focus actually being ON `<body>`: if it is anywhere else the
+   * operator put it there — they tabbed on while the fetch runs, or started
+   * the sync from somewhere else entirely — and taking it would be the
+   * interruption this park exists to prevent, not a fix for it. Same guard as
+   * the `VariantForm` / `SyncDoneNotice` parks.
+   */
+  useEffect(() => {
+    if (!soloFetch) return;
+    if (document.activeElement !== document.body) return;
+    soloFetchRef.current?.focus();
+  }, [soloFetch]);
 
   /**
    * NEO-255 — call off a fetch that has no dialog to close.
@@ -794,7 +850,11 @@ export default function CardChecklist({
     // before the call, because `startCandidateBatch` replaces it.
     const previousBatchId = liveCandidatesRef.current?.batchId;
     const generation = ++syncGenerationRef.current;
-    const abandoned = () => syncGenerationRef.current !== generation;
+    // Superseded by a newer run or a cancel (the generation), or left behind
+    // because the operator moved to another variant (see the ref).
+    const abandoned = () =>
+      syncGenerationRef.current !== generation ||
+      currentVariantIdRef.current !== variantId;
     setSyncing(true);
     // NEO-195: opens the modal on the first streamed candidates, and gates
     // Confirm until the action resolves — reviewing early is the point,
@@ -881,6 +941,41 @@ export default function CardChecklist({
           setSoloFetch(null);
           setSyncMessage(SOLO_STREAM_TIMEOUT_MESSAGE, "error");
           abandonPairingSession();
+          return;
+        }
+        /**
+         * NEO-255 (security review) — the batch says otherwise. Hand it over.
+         *
+         * The auto-keep path is only safe while every row is a SINGLE: it
+         * commits with `conflictsByIndex: {}` and `candidatesToPairingCards`
+         * drops the two disagreement fields, which is the same lift the dialog
+         * performs — and is only a lift, rather than a LOSS, when there is no
+         * pair for a disagreement to sit on.
+         *
+         * One attached side ought to guarantee that, and does not quite.
+         * `fetchSportLotsChecklist` still falls back to a name-keyed DB lookup
+         * for the SportLots set id when no SL slot is attached (NEO-256, filed
+         * separately and deliberately not touched here), so a chain that
+         * reports `["bsc"]` can still come back with SportLots rows, pair them,
+         * and carry a real cross-marketplace disagreement. Committing that
+         * silently would throw away the operator's only chance to answer "which
+         * of these two names is this card", and the answer would then look like
+         * settled NB data on every later re-sync.
+         *
+         * So the batch itself gets the last word: anything paired, or carrying
+         * either conflict, goes to the dialog exactly as a two-sided run does.
+         * Checked on the LIVE rows rather than on `attachedSides`, because this
+         * is the case where attachment turned out not to describe what came
+         * back.
+         */
+        const needsOperator = live.cards.some(
+          (c) =>
+            c.bucket === "matched" || c.nameConflict || c.playersConflict,
+        );
+        if (needsOperator) {
+          setSoloFetch(null);
+          setPairingPhase("review");
+          setSyncMessage(result.message);
           return;
         }
         const cards = candidatesToPairingCards(live.cards);
@@ -1905,8 +2000,20 @@ export default function CardChecklist({
             Following the project's live-region pattern, the role carries the
             politeness and no explicit `aria-live` is set. */}
         {soloFetch && (
-          <div className="p-2 mb-3 bg-blue-100 dark:bg-blue-900/30 border border-blue-300 dark:border-blue-700 rounded-md text-blue-800 dark:text-blue-200 text-sm flex items-center justify-between gap-3">
-            <span role="status">
+          // a11y (WCAG 2.4.3): the focus park for the START of a dialog-less
+          // run — `tabIndex={-1}` so it can receive focus programmatically
+          // without entering the tab order, named by its own status line so
+          // landing here announces what is happening rather than an unnamed
+          // box, and carrying its own focus ring because a programmatic target
+          // still needs a visible indicator (2.4.7). A Tab from here reaches
+          // Cancel, which is the only control this run has.
+          <div
+            ref={soloFetchRef}
+            tabIndex={-1}
+            aria-labelledby="solo-fetch-status"
+            className="p-2 mb-3 bg-blue-100 dark:bg-blue-900/30 border border-blue-300 dark:border-blue-700 rounded-md text-blue-800 dark:text-blue-200 text-sm flex items-center justify-between gap-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 dark:focus-visible:ring-blue-300"
+          >
+            <span id="solo-fetch-status" role="status">
               {soloProgressMessage(
                 soloFetch.side,
                 liveCandidates
@@ -1916,12 +2023,19 @@ export default function CardChecklist({
             </span>
             {/* Reworded rather than suffixed, so Maestro's regex `id:` find
                 cannot match "Cancel card matching" or "Cancel entity review"
-                — and neither of theirs can match this one. */}
+                — and neither of theirs can match this one.
+
+                a11y (WCAG 2.5.8): `py-1.5 -my-1.5` takes the hit area from the
+                bare 20px `text-sm` line-height to 32px while the negative
+                margin leaves the row's geometry exactly as it was — the
+                `SyncDoneNotice` Dismiss precedent. An underline-styled button
+                with no vertical padding at all is the shape most likely to
+                fail this, because it reads as text rather than a control. */}
             <button
               type="button"
               onClick={cancelSoloFetch}
               aria-label="Cancel checklist fetch"
-              className="shrink-0 rounded-sm font-semibold underline decoration-dotted hover:decoration-solid"
+              className="shrink-0 rounded-sm font-semibold underline decoration-dotted hover:decoration-solid py-1.5 -my-1.5"
             >
               Cancel
             </button>
