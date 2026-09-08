@@ -28,6 +28,7 @@ import {
 import {
   BSC_REQUIRED_LEVELS,
   NO_MARKETPLACE_IDS_MESSAGE,
+  attachedSidesOf,
   SL_ATTACH_REQUIRED_LEVELS,
   SL_REQUIRED_LEVELS,
   missingSummary,
@@ -826,5 +827,153 @@ describe("missingSummary", () => {
         expect(out[side].missing.length).toBeGreaterThan(0);
       }
     }
+  });
+});
+
+// ===========================================================================
+// NEO-255 — which marketplaces are ATTACHED to this set
+// ===========================================================================
+
+/**
+ * `attachedSidesOf` answers a narrower question than `resolvableSides`, and
+ * the gap between the two is the whole reason it exists.
+ *
+ * "Resolvable" is about a REQUEST: can this side be scoped well enough to ask?
+ * "Attached" is about the MAPPING: did the operator name a marketplace set on
+ * this side at all? A side can be attached and unresolvable at the same time —
+ * an id sitting on the row with no `variant` tag above it — and NEO-255 keys
+ * the Match Cards dialog on attachment precisely so that a marketplace having
+ * a bad afternoon (or a chain that needs one more tag) can never make a
+ * two-marketplace set auto-commit as one-sided.
+ *
+ * The cases below are that distinction, stated as a table.
+ */
+describe("attachedSidesOf — NEO-255", () => {
+  test("a BSC id on the setName row alone attaches BSC", () => {
+    // The ordinary synced shape: the sync writes the set's slug onto the
+    // setName row untagged, and the level rule resolves it to `setName`.
+    expect(
+      attachedSidesOf([
+        row("sport", { bsc: { b0: "baseball" } }),
+        row("year", { bsc: { b0: "2024" } }),
+        row("setName", { bsc: { b0: "2024-topps" } }),
+        row("variantType", { value: "Base" }),
+      ]),
+    ).toEqual(["bsc"]);
+  });
+
+  test("a SportLots id on the variant row alone attaches SportLots", () => {
+    // SportLots has no setName level: its one flat set id hangs off whichever
+    // row corresponds to it, which is where `fetchSportLotsChecklist` reads it
+    // from too.
+    expect(
+      attachedSidesOf([
+        row("sport", { sportlots: { s0: "1" } }),
+        row("year", { sportlots: { s0: "2024" } }),
+        row("setName"),
+        row("variantType", { value: "Base", sportlots: { s0: "884412" } }),
+      ]),
+    ).toEqual(["sportlots"]);
+  });
+
+  test("both sides attached come back in the stable bsc-then-sportlots order", () => {
+    expect(
+      attachedSidesOf([
+        row("sport", { bsc: { b0: "baseball" }, sportlots: { s0: "1" } }),
+        row("year", { bsc: { b0: "2024" }, sportlots: { s0: "2024" } }),
+        row("setName", { bsc: { b0: "2024-topps" } }),
+        row("variantType", { value: "Base", sportlots: { s0: "884412" } }),
+      ]),
+    ).toEqual(["bsc", "sportlots"]);
+  });
+
+  test("a set with no marketplace ids on it attaches neither", () => {
+    // And this is an ordinary state, not a broken one — there is no "custom"
+    // kind of row. The sport and year still carry the sync's own ids.
+    expect(
+      attachedSidesOf([
+        row("sport", { bsc: { b0: "baseball" }, sportlots: { s0: "1" } }),
+        row("year", { bsc: { b0: "2024" }, sportlots: { s0: "2024" } }),
+        row("setName"),
+        row("variantType", { value: "Base" }),
+      ]),
+    ).toEqual([]);
+  });
+
+  test("sport and year ids alone attach nothing — they are query scope", () => {
+    // The load-bearing negative. Every real chain carries these, so counting
+    // them would make every set on the platform two-sided and delete the
+    // distinction NEO-255 turns on.
+    expect(
+      attachedSidesOf([
+        row("sport", { bsc: { b0: "baseball" }, sportlots: { s0: "1" } }),
+        row("year", { bsc: { b0: "2024" }, sportlots: { s0: "2024" } }),
+      ]),
+    ).toEqual([]);
+  });
+
+  test("an attached-but-UNRESOLVABLE BSC set still counts as attached", () => {
+    // The case the ticket turns on. Without a `variant`-tagged slot on the
+    // variantType row the checklist fetch skips BSC entirely — and the BSC set
+    // is still attached, so the dialog still opens with an empty BSC column,
+    // exactly as it does today.
+    const chain = [
+      row("sport", { bsc: { b0: "baseball" }, sportlots: { s0: "1" } }),
+      row("year", { bsc: { b0: "2024" }, sportlots: { s0: "2024" } }),
+      row("setName", { bsc: { b0: "2024-topps" } }),
+      row("variantType", { value: "Base", sportlots: { s0: "884412" } }),
+    ];
+    expect(attachedSidesOf(chain)).toEqual(["bsc", "sportlots"]);
+    // …while the fetch gate refuses BSC on the very same chain.
+    expect(
+      resolvableSides(chain, { bscScope: "checklist" }).bsc.resolvable,
+    ).toBe(false);
+  });
+
+  test("a BSC set attached at the LEAF and tagged setName attaches BSC", () => {
+    // NEO-189/NEO-252's shape: NB built the set first, so the setName row is
+    // NB's own and the BSC set hangs off the variant row.
+    expect(
+      attachedSidesOf([
+        row("sport", { bsc: { b0: "baseball" } }),
+        row("year", { bsc: { b0: "2024" } }),
+        row("setName", { value: "My Hand Typed Set" }),
+        row("variantType", {
+          value: "Base",
+          bsc: { b0: "base", b1: "2024-topps" },
+          facets: { b0: "variant", b1: "setName" },
+        }),
+      ]),
+    ).toEqual(["bsc"]);
+  });
+
+  test("a `variant`-tagged BSC slug alone does NOT attach BSC", () => {
+    // `variant` narrows a source; it does not name one. A row carrying only
+    // "the base cards" names no BSC set to draw them from, which is why the
+    // panel does not chip it either.
+    expect(
+      attachedSidesOf([
+        row("sport", { bsc: { b0: "baseball" } }),
+        row("year", { bsc: { b0: "2024" } }),
+        row("setName", { value: "My Hand Typed Set" }),
+        row("variantType", {
+          value: "Base",
+          bsc: { b0: "base" },
+          facets: { b0: "variant" },
+        }),
+      ]),
+    ).toEqual([]);
+  });
+
+  test("a BSC insert row's variantName id attaches BSC", () => {
+    // The other source facet. An insert's own slug is a place cards come from.
+    expect(
+      attachedSidesOf([
+        row("sport", { bsc: { b0: "baseball" } }),
+        row("year", { bsc: { b0: "2024" } }),
+        row("setName", { value: "My Hand Typed Set" }),
+        row("insert", { value: "Dugout", bsc: { b0: "dugout-collection" } }),
+      ]),
+    ).toEqual(["bsc"]);
   });
 });

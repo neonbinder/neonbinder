@@ -1,0 +1,494 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Checklist — a set with exactly ONE marketplace attached skips the Match Cards dialog and keeps every fetched card"
+tags:
+  - set-selector
+  # wip until the fixture set is probed on the PR preview (NEO-255); remove
+  # the tag in the same commit that names the real set.
+  - wip
+---
+# ════════════════════════════════════════════════════════════════════════════
+# R1 — ONE FEATURE (NEO-255): when exactly ONE marketplace is attached to a
+# set, "Sync card checklist" no longer opens the Match Cards dialog. There is
+# nothing to line up, so every fetched card is kept as a single-marketplace
+# card, an inline progress line reports the fetch under the Sync button, and
+# the operator lands straight on the entity review with NO "Back to matching".
+#
+# WHAT THIS FLOW PROVES, end to end, on live marketplace data:
+#   1. PRECONDITION, stated out loud: this set has a BSC set and NO SportLots
+#      counterpart — the base picker says so in its own words, and the flow
+#      cancels rather than attaching one, so exactly one side stays attached.
+#   2. Sync shows an INLINE PROGRESS line under the Sync button.
+#   3. The "Match Cards" dialog NEVER appears — asserted at the two moments it
+#      would have to be up if it were coming (once streaming has started, and
+#      again at the terminal surface), not once at a random instant.
+#   4. The entity review opens with NO "Back to matching": there was no pairing
+#      session to go back to.
+#   5. Every card the fetch produced is SAVED. The count is read ONCE, off the
+#      run's own "Kept all N cards from <marketplace>" sentence, and then has
+#      to hold at three later points — what the review offers to save, what the
+#      commit reports, and what the checklist header shows. Nothing can be
+#      dropped in between without failing.
+#   6. Each saved card carries the single-marketplace badge "BSC only", and no
+#      row carries "SL only" — the side that was never attached invented
+#      nothing.
+#
+# ── WHY THIS FLOW WRITES, AND IS THEREFORE A SOLE WRITER (R7 / R7a) ─────────
+#   The defining outcome of NEO-255 is that the cards are KEPT. That is only
+#   observable after a commit: without one, a build that skipped the dialog and
+#   then committed nothing would pass a read-only version of this flow. So this
+#   flow commits, and it is the 1996-Score / NEO-248-committing-fixture shape —
+#   its own real set, exactly ONE flow ever touching it, no other flow reading
+#   it. Nothing needs restoring afterwards, and it races nothing, because no
+#   other flow shares its `selectorOptionId`.
+#
+#   ⚠️ It DRAINS its own fixture, deliberately and acceptably: after a commit
+#   the set holds cards, so a second sync is a RE-SYNC (content-diff review,
+#   not a first fetch) and its names are known. CI reseeds the preview every
+#   run, so the first-fetch path is the CI path. A LOCAL re-run against an
+#   already-committed deployment fails at the wizard wait, correctly — same
+#   contract as `checklist-wizard-*-commits`. `MAESTRO_NO_DEPS=1` will not do.
+#
+# ── WHY THIS FIXTURE, AND WHY IT CANNOT BE A HAND-MADE SET ──────────────────
+#   A hand-made subtree carries no marketplace ids on any ancestor, so NEITHER
+#   side is resolvable, neither is fetched (NEO-239), no candidates exist, and
+#   `CardChecklist` takes its long-standing `candidateCount === 0` path. That
+#   path already skipped the dialog before this ticket — it would pass whether
+#   NEO-255 shipped or not. The feature only exists where ONE marketplace
+#   really answers, which needs a real, BSC-listed set synced through the real
+#   hierarchy.
+#
+#   Hockey → 199x → **All Brands** is where those live. "All Brands" is minted
+#   by `syncSetsAcrossManufacturers` with no marketplace ids of its own, and it
+#   collects exactly the BSC sets whose names match no SportLots brand — the
+#   minor-league, junior and college team sets SportLots does not carry. So
+#   SportLots is unresolvable at the base picker (it needs sport + year +
+#   MANUFACTURER, and this manufacturer has no id) and the set is one-sided
+#   through the product's own rules rather than by our declining to attach.
+#
+#   NB owns the data either way: nothing here depends on a marketplace NAME.
+#   The set is selected by its NB display value, and "one marketplace attached"
+#   is read off the row's slots, never off which marketplace it happens to be.
+#
+# ── R9 — ALL DRILLING GOES THROUGH `util-drill-to-cold-real-set` ────────────
+#   Twice, and the second pass is not redundant. "All Brands" does not exist
+#   until a Sets column has synced: the sets sync runs at the YEAR level and
+#   MINTS the manufacturer as it files the unmatched sets under it. So pass 1
+#   drills to a real SportLots brand purely to make the year's Sets column
+#   mount and run that sync; pass 2 then drills to "All Brands", which now
+#   exists. Selecting a row COLLAPSES its column, so re-picking a different
+#   manufacturer in place is not the cheaper option it looks like — a second
+#   util call re-enters at /set-selector and every level it re-walks is warm.
+#
+# ── R5 ──────────────────────────────────────────────────────────────────────
+#   The 7s default everywhere, EXCEPT the live marketplace round-trips: the
+#   cold Hockey year/manufacturer/set syncs (owned by the drill util), the cold
+#   variant-type sync, the base picker's own fetch, and the checklist fetch and
+#   its entity lookups. Each is commented where it appears.
+#
+# ── R3 — NO OTHER FLOW TESTS THIS ───────────────────────────────────────────
+#   Every other flow that reaches the pairing dialog is on a TWO-sided set and
+#   proves the opposite half of the same rule, unchanged by this ticket:
+#   `checklist-pairing-dialog-cancel` (Future Stars), `setup.yaml`,
+#   `util-fetch-real-set-checklist-to-wizard` (Topps Big League),
+#   `inserts-1996-score-one-nb-set-two-bsc-sources`. None of them is modified.
+#
+# maestro-lint: streaming-ok — this flow never DRIVES the pairing dialog; it
+#   proves the dialog is absent, and the only screen it has while the fetch
+#   runs IS the streaming one. `scripts/maestro-pairing-sync.test.mjs` keys on
+#   the literal "Match Cards" appearing anywhere in a file, which here appears
+#   only inside `assertNotVisible`. There is no Confirm button to settle on: the
+#   sync point this flow waits for instead is the run's own "Kept all N cards
+#   from <marketplace>" result line, which — exactly like `^Confirm$` — appears
+#   only once the fetch action has RESOLVED, and every count assertion below
+#   hangs off it rather than off a mid-stream reading.
+# ════════════════════════════════════════════════════════════════════════════
+
+# ============================================================
+# STEP 0 — THE FIXTURE, IN ONE PLACE
+#
+# ⚠️ TO BE CONFIRMED ON THE PR PREVIEW. These three values are the ONLY place
+# the fixture is named; swapping the set after the probe is a three-line edit
+# here and a matching edit to .maestro/SET-REGISTRY.md. See that file's
+# "TO PROBE ON THE PR PREVIEW" block for exactly what must be measured.
+#
+#   SET        the BSC-only set under All Brands. Small is better — every card
+#              is fetched, reviewed and committed by this flow.
+#   YEAR       plain four digits. NB files Hockey years as bare years, never
+#              "1994-95" (measured on dev 2026-09-03, NEO-211).
+#   SEED_BRAND any real SportLots hockey brand for that year. Nothing is
+#              selected under it and nothing is written to it — it exists only
+#              to make the year's Sets column mount so "All Brands" is minted.
+# ============================================================
+
+- evalScript: '${output.SET = "Kitchener Rangers"}'
+- evalScript: '${output.YEAR = "1995"}'
+- evalScript: '${output.SEED_BRAND = "Upper Deck"}'
+
+# ============================================================
+# LAUNCH + SIGN IN (R4 — the entry URL IS the Clerk handshake; no in-body login)
+# ============================================================
+
+- launchApp
+- extendedWaitUntil:
+    visible: ".*Build set parameters using marketplace APIs.*"
+    timeout: 45000
+
+# ============================================================
+# STEP 1 — DRILL PASS 1: MINT "All Brands" FOR THIS HOCKEY YEAR
+#
+# setup.yaml provisions Baseball only, so this whole hierarchy is COLD and the
+# cold util owns every marketplace-length wait in it. Its return contract is
+# "the manufacturer is selected and the Sets column has finished its own cold
+# sync" — and that sync is `syncSetsAcrossManufacturers`, which runs for the
+# WHOLE YEAR and creates "All Brands" as it files the sets no brand claimed.
+# That is the only thing this pass is for.
+# ============================================================
+
+- runFlow:
+    file: util-drill-to-cold-real-set.yaml
+    env:
+      SPORT: "Hockey"
+      YEAR: ${output.YEAR}
+      MANUFACTURER: ${output.SEED_BRAND}
+
+# ============================================================
+# STEP 2 — DRILL PASS 2: "All Brands"
+#
+# Warm at every level now (the util's `Syncing …` guards fall straight through)
+# and it re-enters at /set-selector, which is what clears pass 1's selection —
+# an EntitySelector collapses to a chip once a row is picked, so re-picking in
+# place would mean re-expanding the column by hand.
+# ============================================================
+
+- runFlow:
+    file: util-drill-to-cold-real-set.yaml
+    env:
+      SPORT: "Hockey"
+      YEAR: ${output.YEAR}
+      MANUFACTURER: "All Brands"
+
+# ============================================================
+# STEP 3 — SELECT THE SET
+#
+# The util stops one level short on purpose (its header says why: the caller
+# owns the set pick). Both column shapes are handled because `EntitySelector`
+# renders its search input only ABOVE 8 entries — "All Brands" normally holds
+# far more than that, but a year where it holds three would otherwise hang on a
+# `.*Search sets.*` wait that can never arrive.
+#
+# The exclusivity gate is the NEXT column ("Variant Types"), never the search
+# input: selecting a set collapses the Sets column and removes the input, so
+# gating both branches on the input runs BOTH and the second re-toggles the
+# selection. util-drill-to-2024-topps-chrome carries the full write-up.
+#
+# R10, documented exception: on the normal path the first branch runs and
+# "Variant Types" IS then present, so the second branch's `notVisible:` guard
+# polls its full ~7s before resolving false. That is the same price the drill
+# utils already pay at their own Set level, and it buys not having to know a
+# marketplace's entry count in advance.
+#
+# NOTE for whoever swaps the fixture: `text:` is a full-node REGEX, so a set
+# name carrying regex metacharacters — brackets, a `+`, a `?` — must be escaped
+# here and in STEP 4's picker assertion.
+# ============================================================
+
+- runFlow:
+    when:
+      visible: ".*Search sets.*"
+    commands:
+      - scrollUntilVisible:
+          element:
+            text: ".*Search sets.*"
+          centerElement: true
+          timeout: 10000
+      - tapOn:
+          text: ".*Search sets.*"
+          waitToSettleTimeoutMs: 250
+      - inputText: ${output.SET}
+      # NEO-85 residual coordinate-staleness: result-keyed retry — re-fire the
+      # row tap ONCE iff the next column never appears.
+      - retry:
+          maxRetries: 1
+          commands:
+            - tapOn:
+                text: ${output.SET}
+                below:
+                  id: "Search sets"
+                retryTapIfNoChange: true
+            - extendedWaitUntil:
+                visible: "Variant Types"
+                timeout: 20000
+
+- runFlow:
+    when:
+      notVisible: "Variant Types"
+    commands:
+      # 60s is the marketplace exception, absorbing any residual cold set sync
+      # the util's own guard did not already wait out.
+      - scrollUntilVisible:
+          element:
+            text: ${output.SET}
+            below:
+              text: "Sets"
+          centerElement: true
+          timeout: 60000
+      - retry:
+          maxRetries: 1
+          commands:
+            - tapOn:
+                text: ${output.SET}
+                below:
+                  text: "Sets"
+                retryTapIfNoChange: true
+            - extendedWaitUntil:
+                visible: "Variant Types"
+                timeout: 20000
+
+# Selecting the set fires its variant-type sync — BSC-only, and cold here.
+# 60s matches the drill utils' own variant-type contract (R5 exception).
+- extendedWaitUntil:
+    visible: "Base"
+    timeout: 60000
+
+# ============================================================
+# STEP 4 — SELECT Base, AND PROVE THE SET IS ONE-SIDED
+#
+# `baseHasMapping` counts the SPORTLOTS slot only, so an unmapped Base
+# auto-opens BaseSetPicker. That is not an obstacle here — it is the flow's
+# precondition, in the product's own words:
+#
+#   "SportLots returned no base set for <set>"
+#
+# renders exactly when SportLots came back with nothing for this set. Reading
+# it is a far stronger claim than our simply declining to attach: it says the
+# marketplace has no counterpart to attach.
+#
+# We then CANCEL. Cancelling writes nothing (R7) and leaves the SportLots slot
+# empty, which is what keeps "exactly one marketplace attached" true for the
+# sync below. `CardChecklist` mounts regardless of the mapping — `cardChecklistId`
+# is the variantType id the moment a Base row is selected — so the checklist is
+# reachable underneath the recovery panel.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      text: "Base"
+    centerElement: true
+    timeout: 10000
+# Result-keyed retry, same maestro-web tap-drop class the drill utils handle:
+# the still-settling Variant Types column reflows under the captured bounds.
+# 7s keys on the picker OPENING, which is synchronous — not the SL round-trip.
+- retry:
+    maxRetries: 1
+    commands:
+      - tapOn:
+          text: "Base"
+          retryTapIfNoChange: true
+      - extendedWaitUntil:
+          visible: "Select Base Set"
+          timeout: 7000
+
+# The confirm button reads "Loading…" until the live SportLots + BSC round-trip
+# lands and flips to "Confirm Base Set". Waiting on that flip is what makes the
+# "no base set" line below a FINISHED answer rather than an empty skeleton.
+# 60s — the R5 marketplace exception.
+- extendedWaitUntil:
+    visible: "Confirm Base Set"
+    timeout: 60000
+
+# ── THE PRECONDITION (R2): SportLots has nothing for this set ────────────────
+- assertVisible:
+    text: ".*SportLots returned no base set for.*"
+# …and BSC does, so the one attached side is real rather than an empty set on
+# both sides (which would take BaseMappingForm's "nothing to link" branch and
+# never open this picker at all).
+- assertVisible:
+    id: "BSC base candidate: .*"
+
+# The picker is a fixed full-viewport portal — nothing overlays it and it
+# cannot be scrolled, so a direct tap is correct (documented R8 exception).
+- tapOn: "Cancel"
+
+# Cancel leaves the recovery panel, NOT a dead end (that panel's own behaviour
+# is `base-mapping-cancel-recovers`' feature, not this flow's — it is asserted
+# here only as proof the picker really closed without writing a mapping).
+- scrollUntilVisible:
+    element:
+      text: ".*Base mapping cancelled.*"
+    centerElement: true
+    timeout: 10000
+
+# ============================================================
+# STEP 5 — SYNC. THIS MUST NOT OPEN THE DIALOG.
+#
+# The checklist is empty here, so the button reads "Fetch from Marketplaces";
+# its accessible name is stable in both states. Asserting the empty state first
+# is what makes the saved COUNT in STEP 8 a claim about this fetch alone.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      id: "Sync card checklist"
+    centerElement: true
+    timeout: 15000
+- assertVisible: "No cards in this checklist yet."
+- tapOn:
+    id: "Sync card checklist"
+
+# ── (2) THE INLINE PROGRESS LINE ────────────────────────────────────────────
+# NEO-255's replacement for the dialog: with nothing to match, the operator
+# still has to be told the fetch is alive, how far along it is, and how to get
+# out of it — reported inline under the Sync button instead of inside a modal.
+#
+# KEYED ON THE CANCEL BUTTON'S ACCESSIBLE NAME, which is the structural half of
+# this UI and the half that is an E2E contract: it renders ONLY while the
+# one-marketplace fetch is in flight, and it is deliberately worded so no
+# Maestro `id:` regex can confuse it with "Cancel card matching" (the dialog
+# that must not be here) or "Cancel entity review".
+#
+# 90s is the R5 marketplace exception. The line appears as soon as the fetch
+# starts and stays up for its whole duration, so this is a hard wait on a
+# durable state, not a race against a flicker.
+- extendedWaitUntil:
+    visible:
+      id: "Cancel checklist fetch"
+    timeout: 90000
+
+# …and it reports PROGRESS, not merely that a box appeared: the denominator is
+# published in one transaction and the numerator climbs as each card's team
+# enrichment lands.
+#
+# ⚠️ COPY-SENSITIVE. The sentence's wording is Jason's to sign off; what this
+# flow claims is that the line carries a "<ready> of <total>" reading at all.
+# Update the regex if the copy changes; do not delete the assertion.
+#
+# ⚠️ ALSO THE ONE TIMING RISK IN THIS FLOW, and the probe must settle it. The
+# denominator only exists once the candidate batch is published, and the
+# numerator only climbs while team enrichment catches up — so on a very small
+# fixture that window can be short. If the probe shows it is sub-second, widen
+# this to the whole sentence (`.*Fetching.*`), which is up for the entire
+# fetch; do not paper over it by deleting the check or by picking a big set.
+- extendedWaitUntil:
+    visible:
+      text: ".*[0-9]+ of [0-9]+ cards ready.*"
+    timeout: 90000
+
+# ── (3a) THE DIALOG IS NOT THERE — asserted where it would have to be ───────
+# The dialog mounts on the FIRST streamed candidates. The progress reading
+# above proves candidates ARE streaming, so this is the moment a regressed
+# build would already have it up. Paired with that positive assert on purpose:
+# an `assertNotVisible` on its own is satisfied by a dead error-boundary page.
+- assertNotVisible: "Match Cards.*"
+
+# ============================================================
+# STEP 6 — EVERY FETCHED CARD IS KEPT, AND THE REVIEW OPENS WITH NO WAY BACK
+#
+# The fetch resolved and the run said what it did with the cards, in the same
+# banner every other sync result uses. This sentence IS the feature's headline
+# and it carries the FETCH COUNT — the number the rest of this flow follows all
+# the way to the commit, so nothing can be dropped in between without failing.
+#
+# 120s covers the tail of the live BSC round-trip (R5 exception).
+#
+# ⚠️ COPY-SENSITIVE (the second and last such assertion). Matched loosely on
+# purpose: the count and "Kept all" are what is being claimed, not the wording
+# around them.
+# ============================================================
+
+- extendedWaitUntil:
+    visible:
+      text: ".*Kept all [0-9]+ cards? from .*"
+    timeout: 120000
+- copyTextFrom:
+    text: ".*Kept all [0-9]+ cards? from .*"
+- evalScript: '${output.FETCHED = maestro.copiedText.match(/[0-9]+/)[0]}'
+# A fetch that produced nothing would make every assertion below vacuously
+# true, so say the precondition out loud.
+- assertTrue: ${Number(output.FETCHED) > 0}
+
+# Entity resolution then runs on the kept set with no screen in between. 120s
+# covers the live Wikidata lookup each unknown name queues (R5 exception).
+- extendedWaitUntil:
+    visible: "Confirm New Players & Teams"
+    timeout: 120000
+
+# ── (3b) STILL NO DIALOG, at the terminal surface ───────────────────────────
+- assertNotVisible: "Match Cards.*"
+
+# ── (4) NO "Back to matching" ───────────────────────────────────────────────
+# The wizard offers it only when there is a parked pairing session to go back
+# TO. There was never one, so the footer must not offer it. This is the clause
+# that would break if the client entered the review phase "just in case".
+- assertNotVisible: "Back to matching"
+
+# ============================================================
+# STEP 7 — DECIDE EVERY NAME AS A SKIP, SO THE COMMIT IS ABOUT THE CARDS
+#
+# The names themselves are not what this flow is about, and skipping is the
+# cheapest way to reach a commit: it decides every remaining row in one press
+# — lookups included — creates no players, and raises none of the per-team
+# "New Team" steps the bulk ADD path raises (NEO-236). What lands is exactly
+# what NEO-255 is about: the CARDS.
+#
+# Skip coverage itself belongs to `checklist-wizard-skip-not-a-person` and the
+# entity-review unit files; nothing here re-asserts it.
+#
+# 120s: the ceiling covers a batch still draining its live Wikidata queue and
+# resolves the moment the wizard is done (R5 exception).
+# ============================================================
+
+- tapOn:
+    text: ".*Skip remaining names \\([0-9]+\\).*"
+- extendedWaitUntil:
+    visible:
+      text: ".*Confirm & Save.*"
+    timeout: 120000
+
+# ── LINK 2 OF THE CHAIN: the review is about EVERY card the fetch produced ──
+# How many cards this set has is the marketplace's business, not this flow's
+# claim — so the number is the one read off the "Kept all …" line, never a
+# literal. This is where a build that kept the dialog's narrowing behaviour
+# (only the matched bucket, only what was explicitly kept) would part company
+# with the fetch count.
+- assertVisible:
+    text: ".*All reviewed — save ${output.FETCHED} cards?.*"
+
+- tapOn:
+    text: ".*Confirm & Save.*"
+
+# ============================================================
+# STEP 8 — (5) EVERY FETCHED CARD IS SAVED, AS A SINGLE-MARKETPLACE CARD
+#
+# 60s — the same ceiling `checklist-wizard-link-commits` gives this commit, for
+# the same reason (one row per card plus its skip records). MEASURE it on the
+# first green run and trim; a commit that genuinely needs longer is a product
+# finding to raise, not a wait to inflate.
+# ============================================================
+
+# ── LINK 3 OF THE CHAIN: fetched == offered == SAVED ────────────────────────
+# `.*`-wrapped because the banner appends NEO-203's notes after the count when
+# there are any — the sentence this asserts is the first of several.
+- extendedWaitUntil:
+    visible:
+      text: ".*Saved ${output.FETCHED} cards.*"
+    timeout: 60000
+
+# The checklist itself now holds exactly that many — asserted on the header's
+# own count span. The set was empty before the fetch (STEP 5), so this is an
+# exact claim, not a lower bound. `.*`-wrapped so it matches whether the driver
+# emits the count span alone ("(24)") or folded into its heading ("Cards (24)").
+- assertVisible:
+    text: ".*[(]${output.FETCHED}[)].*"
+
+# ── THE BADGE: these cards came from ONE marketplace, and the row says so ───
+# The commit writes an `unmatched-<side>` marker for a card kept from a single
+# side; `CardChecklistItem` renders it as "BSC only". Its presence is the whole
+# difference between "the dialog was skipped" and "the dialog was skipped AND
+# the cards were kept correctly linked".
+#
+# Virtuoso opens the list at its END, so a card row is on screen without a
+# scroll; the badge is inside the row, which is why this is a plain assert.
+- assertVisible: "BSC only"
+# And nothing was invented on the side that was never attached.
+- assertNotVisible: "SL only"

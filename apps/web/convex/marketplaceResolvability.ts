@@ -74,6 +74,7 @@ import type {
 import { slotEntries, slotFacet } from "./platformSlots";
 import { platformServesLevel } from "./platformLevels";
 import {
+  BSC_SOURCE_FACETS,
   LEVEL_TO_BSC_FACET,
   legacyBscFacetForLevel,
   missingBscChecklistScope,
@@ -303,6 +304,82 @@ export function rowHasBscFacet(
     if (slotFacet(row, "bsc", slot) === facet) return true;
   }
   return false;
+}
+
+/**
+ * NEO-255 — the NB levels a SportLots SET id can sit on.
+ *
+ * SportLots has no setName concept: it files a set as one flat radio-button id
+ * that NeonBinder attaches to whichever row corresponds to it, which in
+ * practice is the variantType / insert / parallel row and occasionally the
+ * setName row itself. This list mirrors `fetchSportLotsChecklist`'s own
+ * precedence chain (`platformFilters.parallel || .insert || .variantType ||
+ * .setName`) exactly, because the question "is SportLots attached to this set"
+ * is only worth asking about ids that fetch would actually scope itself with.
+ *
+ * `sport` and `year` are deliberately absent. Their SL ids are query SCOPE
+ * (`sprt`, `yr`) written by the selector sync onto every real chain; counting
+ * them would make every set on the platform "SportLots-attached" and delete
+ * the distinction.
+ */
+const SL_SET_LEVELS: ReadonlySet<string> = new Set([
+  "setName",
+  "variantType",
+  "insert",
+  "parallel",
+]);
+
+/**
+ * NEO-255 — which marketplaces are ATTACHED to this set, in the stable
+ * `["bsc", "sportlots"]` order.
+ *
+ * ## Attached, not fetched, and not resolvable
+ *
+ * This answers one question only: does the operator's mapping name a
+ * marketplace set on this side? It reads SLOT DATA and nothing else — never
+ * `resolution`, never a returned card count, never a display value. Those are
+ * all downstream of it and all of them can be zero on a side that is very much
+ * attached: an outage returns no cards (`callSl` catches to `[]`), and an
+ * attached-but-unscopable side is skipped by `resolvableSides` while its id
+ * sits right there on the row.
+ *
+ * That distinction is the whole point. NEO-255 skips the Match Cards dialog
+ * when there is nothing to line up — exactly one marketplace attached — and
+ * keying that on anything downstream would auto-commit a two-marketplace set
+ * as one-sided the moment one side had a bad afternoon. Attachment does not
+ * move when a marketplace does.
+ *
+ * ## What counts, per side
+ *
+ * This is the same answer `MultiSourcePanel` renders as chips, and it is
+ * deliberately the same code path rather than a second opinion about it:
+ *
+ *   BSC — a SOURCE facet in the plan `resolveBscFacetFilters` builds, i.e.
+ *         `setName` or `variantName` (`BSC_SOURCE_FACETS`, what a chip IS).
+ *         Reading the PLAN rather than one row is what counts both real
+ *         shapes: the id on the setName ancestor, and the NEO-189 id attached
+ *         to the leaf and tagged `setName`. The `sport`/`year` facets are
+ *         scope, and a `variant` slug narrows a source rather than naming one
+ *         — none of the three makes BSC attached on its own.
+ *   SL  — an id on a row at one of `SL_SET_LEVELS`.
+ *
+ * There is no "custom" case here and no name-based guess anywhere in it: a row
+ * either carries marketplace ids or it does not, and both answers are ordinary.
+ */
+export function attachedSidesOf(
+  chain: readonly ResolvableRow[],
+): PlatformSide[] {
+  const out: PlatformSide[] = [];
+  const filters = resolveBscFacetFilters(chain).filters;
+  const bscAttached = [...BSC_SOURCE_FACETS].some(
+    (facet) => (filters[facet]?.length ?? 0) > 0,
+  );
+  if (bscAttached) out.push("bsc");
+  const slAttached = chain.some(
+    (row) => SL_SET_LEVELS.has(row.level) && rowHasSideId(row, "sportlots"),
+  );
+  if (slAttached) out.push("sportlots");
+  return out;
 }
 
 function label(row: ResolvableRow): string {

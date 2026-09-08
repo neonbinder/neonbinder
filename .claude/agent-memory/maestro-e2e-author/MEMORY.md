@@ -24,3 +24,5 @@
 - [NEO-219 confirm surfaces](reference_neo219_confirm_surfaces.md) — custom entry needs TWO Enters; Base picker needs an explicit pick; chips confirm detach; empty rows have a delete control
 - [CI's seed resets the preview under your local run](reference_ci_seed_resets_the_preview_under_your_local_run.md) — columns emptying + "no <ancestor> ancestor" mid-flow is a concurrent global reset, not a product bug; check `gh run view` seed startedAt first
 - [NEO-248 wizard fixture: SL-only is DISPROVEN, use a real BSC set](reference_neo248_wizard_fixture_via_attached_sl_set.md) — only BSC emits players; fixture is real Topps Big League Base (88 unknowns); CI has NO serialization so every reader must Cancel-Discard
+- [NEO-255 one-marketplace surfaces](reference_neo255_one_marketplace_surfaces.md) — no dialog, `Cancel checklist fetch` + "Kept all N cards from X"; the pairing-sync lint trips on merely NAMING "Match Cards"
+- [All Brands is where the one-sided sets live](reference_all_brands_manufacturer_chicken_and_egg.md) — minted by the year-level sets sync, so drill some other brand first; "SportLots returned no base set for X" is the precondition

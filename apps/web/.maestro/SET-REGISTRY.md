@@ -25,6 +25,7 @@ These are provisioned once by `flows/setup.yaml` at the head of every run and ar
 | Baseball → 2024 → Topps → Topps Brooklyn Collection | `Base` — same shape | `flows/setup.yaml` (structure); **sole writer** `checklist-wizard-link-commits.yaml` |
 | Baseball → 1996 → Score → Score | `Insert` (reconciled in-flow, NOT pre-synced) | `flows/set-selector/inserts-1996-score-one-nb-set-two-bsc-sources.yaml` — **sole writer** |
 | Hockey → 2024 → Topps → Topps NHL Sticker Collection | none — the flow never goes below `Variant Types` (NOT pre-synced) | `flows/set-selector/set-rename-survives-resync-and-suggests-bsc-name.yaml` — **sole writer** |
+| Hockey → &lt;199x&gt; → All Brands → &lt;TO PROBE&gt; | `Base` — fetched and COMMITTED in-flow, BSC only (NOT pre-synced) | `flows/set-selector/checklist-one-marketplace-skips-match-dialog.yaml` — **sole writer**. ⚠️ **PROPOSED — NEEDS OWNER APPROVAL** |
 
 ### 2024 Topps NHL Sticker Collection — NEO-211, sole-writer ⚠️ SUBSTITUTED, NEEDS SIGN-OFF
 
@@ -459,6 +460,147 @@ is safe for the drill because Maestro `text:` matchers are full-node-anchored;
 only `id:` selectors are regex FINDS. (`Topps 206 NPB` itself is unusable as a
 fixture — it has only an `Insert` variant type and opens a 2534-row
 `Reconcile Inserts` dialog on first drill.)
+
+### The ONE-MARKETPLACE fixture — Hockey / 199x / All Brands (NEO-255) ⚠️ PROPOSED, NEEDS OWNER APPROVAL
+
+`checklist-one-marketplace-skips-match-dialog.yaml` proves the NEO-255 rule:
+when exactly ONE marketplace is **attached** to a set, "Sync card checklist"
+skips the Match Cards dialog, reports the fetch on an inline progress line,
+keeps every fetched card as a single-marketplace card ("BSC only"), and goes
+straight to the entity review with **no "Back to matching"**.
+
+**There is currently ZERO one-sided coverage.** Every flow in the suite that
+reaches the pairing dialog — `setup.yaml` ×3, `checklist-pairing-dialog-cancel`,
+`util-fetch-real-set-checklist-to-wizard` and its four `checklist-wizard-*`
+callers, the three `*-commits` siblings, `inserts-1996-score` — is on a set with
+BOTH sides attached. They cover the ≥2 half of the rule, which this ticket does
+not change; none of them can express the =1 half.
+
+| | |
+| -- | -- |
+| ancestors | `Hockey → <199x> → All Brands` |
+| set | **TO PROBE** (see below) |
+| variant type | `Base` — its checklist is FETCHED and **COMMITTED** by the flow |
+| Base mapping | left **UNMAPPED** on SportLots, on purpose — the flow cancels the picker |
+| writer | `flows/set-selector/checklist-one-marketplace-skips-match-dialog.yaml`, **sole writer** |
+| pre-synced by `setup.yaml` | **no** — the flow pays its own cold syncs, on its own runner, in parallel (the NEO-248 rule: nothing goes in the seed) |
+
+#### Why the fixture has to be REAL, and has to be under "All Brands"
+
+A hand-made subtree carries no marketplace ids on any ancestor, so neither side
+is resolvable, neither is fetched (NEO-239), and `fetchCardChecklist` returns
+`candidateCount: 0`. `CardChecklist` has skipped the dialog on that path since
+NEO-137 — **it would pass whether NEO-255 shipped or not**, which is exactly
+the R2 fall-through this fixture exists to avoid. The feature only exists where
+one marketplace genuinely answers.
+
+"All Brands" is minted by `syncSetsAcrossManufacturers` with **no marketplace
+ids of its own**, and it collects precisely the BSC sets whose names prefix-match
+no SportLots brand — the minor-league, junior, college and team sets SportLots
+does not carry. SportLots therefore cannot even be *offered* at the base picker
+(it needs sport + year + **manufacturer**, and this manufacturer has no id), so
+the set is one-sided through the product's own rules rather than by our
+declining to attach one. The flow reads that back as its precondition, in the
+picker's own words: **"SportLots returned no base set for &lt;set&gt;"**.
+
+#### The chicken-and-egg: "All Brands" does not exist until a Sets column syncs
+
+`ensureSelectorOptions` dispatches `setName` to `syncSetsAcrossManufacturers`,
+which runs at the **year** level and CREATES the "All Brands" manufacturer as it
+files the sets no brand claimed. So the row cannot be selected until some
+manufacturer's Sets column has mounted once.
+
+The flow therefore calls `util-drill-to-cold-real-set` **twice**: pass 1 drills
+to a real SportLots hockey brand purely to make the year's Sets column mount and
+run that sync; pass 2 drills to "All Brands", which now exists. Pass 2 is warm
+at every level and re-enters at `/set-selector`, which is what clears pass 1's
+selection — an `EntitySelector` collapses to a chip once a row is picked, so
+re-picking a manufacturer in place would mean re-expanding the column by hand.
+
+#### Sole writer — and why this one cannot be read-only
+
+The four `checklist-wizard-*` flows share Topps Big League because they all exit
+through Cancel → Discard. **This flow cannot.** The defining outcome of NEO-255
+is that the cards are *kept*, and that is only observable after a commit: a
+build that skipped the dialog and then committed nothing would pass a read-only
+version of this flow. So it commits, on the 1996-Score / `*-commits` model —
+its own real set, exactly one flow touching it, no flow reading it. Different
+sets share no `selectorOptionId`, no `cardChecklist` rows and no skip records,
+so it runs concurrently with everything else and nothing needs restoring.
+
+It resolves every unknown name as a **skip** before committing: skips create no
+players and no teams, so the commit mints nothing global, raises none of
+NEO-236's per-team `New Team` steps, and leaves only this set's own cards and
+skip records behind.
+
+**It drains its own fixture**, deliberately and acceptably. After the commit the
+set holds cards, so the next sync is a RE-sync (content-diff review, not a first
+fetch) and its names are known. CI reseeds the preview every run, so the
+first-fetch path is the CI path; a LOCAL re-run against an already-committed
+deployment fails at the wizard wait, correctly. `MAESTRO_NO_DEPS=1` will not do.
+
+#### ⚠️ TO PROBE ON THE PR PREVIEW — nothing below has been measured
+
+No PR preview existed when this was written and dev is off-limits (NEO-249), so
+the three values in the flow's STEP 0 (`output.SET`, `output.YEAR`,
+`output.SEED_BRAND`) are placeholders. Probe, then edit those three lines and
+this section in the same commit.
+
+1. **The year.** Which 199x Hockey years exist in the Years column, and in what
+   form. NB files Hockey years as bare four-digit values (`1972`, not
+   `1972-73`) — confirm that still holds for the 90s, and pick a year whose
+   "All Brands" bucket is populated.
+2. **The seed brand.** A real SportLots hockey manufacturer that exists for that
+   year (the placeholder is `Upper Deck`). Nothing is selected under it; it only
+   has to be tappable so the Sets column mounts.
+3. **The set.** Under `All Brands`, pick the SMALLEST one that is genuinely
+   BSC-only. Every card is fetched, reviewed and committed by this flow, so
+   **card count is the flow's whole wall-clock budget** — aim for tens of cards,
+   not hundreds. Record the measured count here.
+4. **Does the base picker open at all, and say the right thing?** It must show
+   `SportLots returned no base set for <set>` AND at least one
+   `BSC base candidate:` row. If BOTH sides come back empty and the set carries
+   no BSC slug, `BaseMappingForm` takes its "nothing to link" branch and never
+   opens the picker — that set is unusable as this fixture.
+5. **Does the entity-review wizard open?** Only BSC returns names, and hockey
+   players are outside the ~494 baseball players `setup.yaml` creates, so it
+   should. Record the unknown count. If a set returns cards with no player
+   names at all, the flow's hard wait on `Confirm New Players & Teams` fails —
+   pick another set.
+6. **The count chain.** The flow reads N once, off `Kept all N cards from BSC.
+   Nothing to match, no other marketplace attached.`, and then requires the
+   review's `All reviewed — save N cards?`, the commit's `Saved N cards.` and
+   the header's `(N)` to agree with it. Confirm all four on a fresh deployment.
+   That "Kept all …" sentence is the second copy-sensitive assertion (see 9)
+   and the one that carries the number, so a wording change there is a flow
+   edit, not a flake.
+7. **The badge.** Confirm the saved rows render **`BSC only`** and that no row
+   renders `SL only`. (`unmatched-sl` is the token, "BSC only" the label — the
+   mapping in `CardChecklistItem.badgeLabel` reads inverted at a glance.)
+8. **SL pane substring collisions.** The flow asserts
+   `.*SportLots returned no base set for.*` inside the picker and
+   `assertNotVisible: "SL only"` on the committed checklist. Check no other
+   node on either screen matches those (the `MultiSourcePanel`'s SportLots
+   column reads `No sets attached.`, which is deliberately NOT asserted on —
+   both side columns render that same string side by side and `below:` cannot
+   disambiguate two nodes at the same y).
+9. **The progress line.** Its structural anchor is the Cancel button's
+   accessible name, `Cancel checklist fetch` — deliberately worded so no
+   Maestro `id:` regex confuses it with `Cancel card matching` or
+   `Cancel entity review`. The SENTENCE ("Fetching from BSC… 12 of 40 cards
+   ready.") is copy Jason signs off, and two things need checking: that it does
+   not begin with `Match Cards` or `Saved <n>` (`setup.yaml` and
+   `signed-by-autofills-from-players` gate on those two prefixes with
+   full-node-anchored regexes), and **how long the "<n> of <n> cards ready"
+   reading is actually on screen**. The denominator appears only once the
+   candidate batch is published and the numerator climbs only while enrichment
+   catches up, so on a very small fixture that window may be sub-second — in
+   which case widen the flow's assertion to the whole sentence rather than
+   dropping it or inflating the fixture.
+10. **Measured cost**, end to end, against the 600s per-flow kill in
+    `run-e2e-queue.sh`: two drill passes (one cold), a cold variant-type sync,
+    the base-picker fetch, the checklist fetch, the wizard's Wikidata queue and
+    the commit. State it in the PR.
 
 ### Topps Big League — the entity-review wizard fixture (NEO-248) ✅ APPROVED
 
