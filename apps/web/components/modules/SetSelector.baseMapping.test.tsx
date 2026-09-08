@@ -23,6 +23,9 @@
  *      dismissal reads as "not right now" rather than "never".
  *   5. A MAPPED Base is unchanged: no panel, a secondary "Re-map Base" button,
  *      and that button opens the dialog in `remap` mode.
+ *   6. WCAG 2.4.3: the click that unmounts the panel lands focus on the button
+ *      that replaced it — and never takes focus off an operator already
+ *      holding it elsewhere.
  *
  * --- Mocking strategy ---
  * The page is a 7-column cascade whose children each hold their own Convex
@@ -204,6 +207,33 @@ describe("SetSelector — Base mapping panel gating (NEO-255)", () => {
     expect(screen.getByText("Map Base Set")).toBeTruthy();
     // "Re-map Base" would be a lie about a row that holds no mapping.
     expect(screen.queryByText("Re-map Base")).toBeNull();
+  });
+
+  it("parks focus on the button that replaced the panel", () => {
+    render(<SetSelector />);
+    selectVariantType("vt-base");
+    // fireEvent.click does not move focus, so this is the real starting point:
+    // the browser has nowhere to put focus once the panel unmounts.
+    expect(document.activeElement).toBe(document.body);
+
+    fireEvent.click(screen.getByText("panel-close"));
+
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "Map Base Set" }),
+    );
+  });
+
+  it("does not steal focus the operator is already holding", () => {
+    render(<SetSelector />);
+    selectVariantType("vt-base");
+    // A control OUTSIDE the swapped subtree, so it survives the unmount.
+    const held = screen.getByText("select-vt-insert");
+    held.focus();
+
+    fireEvent.click(screen.getByText("panel-close"));
+
+    expect(screen.getByRole("button", { name: "Map Base Set" })).toBeTruthy();
+    expect(document.activeElement).toBe(held);
   });
 
   it("re-opening from that button is still a first-time mapping", () => {

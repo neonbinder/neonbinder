@@ -42,7 +42,7 @@
  * straight to /set-selector only ever lands on the credential gate.
  */
 import type { GenericId } from "convex/values";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import { slotEntries, slotIds, slotLabel } from "../../convex/platformSlots";
@@ -275,6 +275,27 @@ export default function SetSelector() {
       });
     }
   };
+  // WCAG 2.4.3 focus park. Close lives INSIDE BaseMappingForm, and pressing it
+  // runs `handleBaseMappingClose` synchronously — so React unmounts the form
+  // (the clicked button with it) and mounts the sibling button in its place in
+  // the same render pass, dropping keyboard/AT focus to <body> with nothing
+  // said about where the operator now is. The button that replaced the panel is
+  // the only control in that slot, so it is the unambiguous landing spot.
+  //
+  // The same shape as VariantForm/ParallelForm/SyncDoneNotice: a ref tracks the
+  // PREVIOUS value so this fires on the true→false transition only, and the
+  // `activeElement === body` guard means a park never yanks focus away from an
+  // operator who is already holding it somewhere else (a confirm that resolves
+  // while they have moved on, or a dialog that restored focus itself).
+  const baseMappingButtonRef = useRef<HTMLButtonElement | null>(null);
+  const wasBaseMappingFormOpen = useRef(baseMappingFormOpen);
+  useEffect(() => {
+    const wasOpen = wasBaseMappingFormOpen.current;
+    wasBaseMappingFormOpen.current = baseMappingFormOpen;
+    if (!wasOpen || baseMappingFormOpen) return;
+    if (document.activeElement !== document.body) return;
+    baseMappingButtonRef.current?.focus();
+  }, [baseMappingFormOpen]);
   // Parallel-grouping modal trigger for the Variants column.
   const [groupingOpen, setGroupingOpen] = useState(false);
 
@@ -724,6 +745,7 @@ export default function SetSelector() {
                   button is the primary one; a re-map is optional and stays
                   the quieter secondary. */}
               <NeonButton
+                ref={baseMappingButtonRef}
                 secondary={baseHasMapping}
                 onClick={() => setBaseMappingOpen(true)}
               >
