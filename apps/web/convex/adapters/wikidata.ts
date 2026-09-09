@@ -327,6 +327,17 @@ function yearFromBinding(binding?: SparqlBinding): number | undefined {
  * The third has no qualifiers at all, and `players.teamYears` requires
  * `fromYear`, so it cannot become a stint. See `CAREER_TEAM_STRATEGIES` below
  * for why we do NOT synthesize one from P2031/P2032.
+ *
+ * ## Career teams are not always the player's sport
+ *
+ * The second is a BASKETBALL team (its `P641` is Q5372). Gwynn is a baseball
+ * player, and before NEO-254 every `P54` became a stint regardless, so
+ * enriching him minted a Baseball-sport team "San Diego State Aztecs men's
+ * basketball" and, through that team's `P118`, a Baseball-sport league "NCAA
+ * Division I men's basketball" (Q94861615). The detail query now also binds
+ * the team's own `P641`, and `membershipIsOutsidePlayerSport` drops a
+ * membership whose team sport is known AND is not the player's. A team with
+ * no `P641` at all is kept: an unknown sport is not evidence of a wrong one.
  */
 
 /**
@@ -504,6 +515,30 @@ function safeSportQid(
   if (isWikidataQid(sportQid)) return sportQid;
   console.warn(JSON.stringify({ msg: "wikidata_sport_qid_not_a_qid", where }));
   return undefined;
+}
+
+/**
+ * NEO-254 — is this `P54` membership on a team of a DIFFERENT sport from the
+ * player's? True only when both sides are known QIDs and they differ.
+ *
+ * Both absences answer false on purpose:
+ *  - no `teamSportQid`: the team has no `P641`. Unknown is not evidence, and
+ *    dropping every un-annotated club would lose real memberships.
+ *  - no `playerSportQid` (or one that is not a QID): the sport row gives us
+ *    nothing to compare against, so nothing is filtered. Today this cannot be
+ *    reached from `lookupPlayerEnrichment` — `findPlayerQid` refuses to run
+ *    without the same QID — but the filter must not become a silent "drop
+ *    everything" if that guard is ever relaxed.
+ *
+ * Exported so the absent-sport case can be pinned directly.
+ */
+export function membershipIsOutsidePlayerSport(
+  teamSportQid: string | undefined,
+  playerSportQid: string | undefined,
+): boolean {
+  if (teamSportQid === undefined || !isWikidataQid(teamSportQid)) return false;
+  if (playerSportQid === undefined || !isWikidataQid(playerSportQid)) return false;
+  return teamSportQid !== playerSportQid;
 }
 
 /**
@@ -866,12 +901,13 @@ export async function lookupPlayerEnrichment(
   // discovered shape never means remembering to edit both the query and the
   // parser. They are omitted entirely for a sport with no usable Hall QID.
   const detailQuery = `
-    SELECT ?team ?teamLabel ?start ?end ${HALL_OF_FAME_STRATEGIES.map((s) => `?${s.binding} `).join("")}?descr ?dob ?title WHERE {
+    SELECT ?team ?teamLabel ?teamSport ?start ?end ${HALL_OF_FAME_STRATEGIES.map((s) => `?${s.binding} `).join("")}?descr ?dob ?title WHERE {
       OPTIONAL {
         wd:${qid} p:P54 ?membership .
         ?membership ps:P54 ?team .
         OPTIONAL { ?membership pq:P580 ?start . }
         OPTIONAL { ?membership pq:P582 ?end . }
+        OPTIONAL { ?team wdt:P641 ?teamSport . }
       }
 ${hallOfFameSparqlBlocks(qid, hofQid)}
       OPTIONAL {
@@ -925,6 +961,18 @@ ${hallOfFameSparqlBlocks(qid, hofQid)}
   // for one stint (Michael Jordan has North Carolina twice at 1981-1984, at
   // different date precisions), and those still arrive as two identical rows.
   const seenStints = new Set<string>();
+  // NEO-254: memberships on a team of another sport, keyed by the same stint
+  // key. A team can carry SEVERAL `P641` values (a multi-sport athletic
+  // program), and they arrive as one row per sport, so a membership is only
+  // truly outside the player's sport if NO row for it matches. A mismatching
+  // row parks the stint here; a later matching (or un-annotated) row accepts
+  // it through the ordinary path and removes it; whatever is still parked
+  // after the loop is skipped and logged, once per stint.
+  const playerSportQid = sport.wikidata?.sportQid;
+  const parkedOutsideSport = new Map<
+    string,
+    { teamWdId: string; teamLabel: string; teamSportQid: string }
+  >();
 
   for (const row of result.results.bindings) {
     // NEO-212 security review: `qidFromIri` now answers `undefined` for an IRI
@@ -936,8 +984,23 @@ ${hallOfFameSparqlBlocks(qid, hofQid)}
     const teamWdId = row.team ? qidFromIri(row.team.value) : undefined;
     if (row.team && row.teamLabel && teamWdId) {
       const stintKey = `${teamWdId}|${row.start?.value ?? ""}|${row.end?.value ?? ""}`;
-      if (!seenStints.has(stintKey)) {
+      const teamSportQid = row.teamSport ? qidFromIri(row.teamSport.value) : undefined;
+      if (
+        !seenStints.has(stintKey) &&
+        membershipIsOutsidePlayerSport(teamSportQid, playerSportQid)
+      ) {
+        // NEO-254: not accepted, not yet rejected — see `parkedOutsideSport`.
+        if (!parkedOutsideSport.has(stintKey)) {
+          parkedOutsideSport.set(stintKey, {
+            teamWdId,
+            teamLabel: row.teamLabel.value,
+            // `membershipIsOutsidePlayerSport` answered true, so it is a QID.
+            teamSportQid: teamSportQid as string,
+          });
+        }
+      } else if (!seenStints.has(stintKey)) {
         seenStints.add(stintKey);
+        parkedOutsideSport.delete(stintKey);
         // Wikidata's label service returns the bare QID as the label
         // when no label exists in the requested language (en).
         // Q127635 turned up via the Yakult Swallows lineage — a real
@@ -997,6 +1060,23 @@ ${hallOfFameSparqlBlocks(qid, hofQid)}
     if (description === undefined && row.descr?.value) description = row.descr.value;
     if (birthYear === undefined) birthYear = yearFromBinding(row.dob);
     if (enwikiTitle === undefined && row.title?.value) enwikiTitle = row.title.value;
+  }
+
+  // NEO-254: one line per membership dropped for being another sport's team
+  // — the Gwynn basketball case. Structured, and the label is truncated, for
+  // the reasons `career_team_unmatched` gives: `name` is operator input and
+  // the label is third-party text of no fixed length.
+  for (const parked of parkedOutsideSport.values()) {
+    console.log(
+      JSON.stringify({
+        msg: "wikidata_player_team_membership_skipped_other_sport",
+        name,
+        team: parked.teamLabel.slice(0, MAX_LOGGED_TEAM_NAME_LENGTH),
+        teamWdId: parked.teamWdId,
+        teamSportQid: parked.teamSportQid,
+        playerSportQid,
+      }),
+    );
   }
 
   // No HoF row matched, but the player IS in our HoF-aware sports — we
