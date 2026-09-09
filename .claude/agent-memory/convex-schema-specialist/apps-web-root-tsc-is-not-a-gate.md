@@ -1,12 +1,13 @@
 ---
 name: apps-web-root-tsc-is-not-a-gate
-description: `npx tsc --noEmit -p .` in apps/web is red at baseline (~39 errors); the real typecheck gate is `npx tsc -p convex/tsconfig.json --noEmit`
+description: `npx tsc --noEmit -p .` in apps/web is red at baseline (153 errors on 2026-09-08; the count drifts — 39 in Aug, 65 on 2026-09-04); the real typecheck gate is `npm run typecheck` (`tsc -p convex/tsconfig.json --noEmit`)
 metadata:
   type: project
 ---
 
-In `apps/web`, `npx tsc --noEmit -p .` exits 2 on a clean checkout — around 39
-pre-existing errors, concentrated in `convex/*.test.ts` files (they type
+In `apps/web`, `npx tsc --noEmit -p .` exits 2 on a clean checkout — 153
+pre-existing errors on 2026-09-08 (39 in Aug 2026, 65 on 2026-09-04; the number
+drifts, so never quote it without re-measuring), concentrated in `convex/*.test.ts` files (they type
 `ctx.db.query(...).withIndex()` against bare `SystemIndexes`, so every real
 index name is rejected) plus `vite.config.ts`. It is NOT a CI gate and never
 has been.

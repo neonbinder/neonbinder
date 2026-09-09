@@ -10,7 +10,7 @@ NeonBinder is a platform for trading card collectors to manage collections and s
 
 | Path | Purpose | Tech Stack | Deploy target |
 |------|---------|-----------|---------------|
-| `apps/web/` | Vite SPA + Convex backend | Vite 6, React 19, React Router 7, Convex, Clerk, TypeScript | Vercel (SPA) + Convex |
+| `apps/web/` | Vite SPA + Convex backend | Vite, React 19, React Router (declarative SPA mode), Convex, Clerk, TypeScript — versions in `apps/web/package.json` | Vercel (SPA) + Convex |
 | `services/browser/` | Puppeteer automation service for marketplace login/scraping | Node.js, Puppeteer, Express 5, TypeScript | GCP Cloud Run |
 | `services/preprocess/` | Image preprocessing (crop cascade + SAM, Vision OCR orient, Anthropic classify) | **Python 3.12**, FastAPI, PyTorch, pip | GCP Cloud Run |
 | `.claude/`, `CLAUDE.md` | Shared Claude Code config (agents, skills, memory) | — | — |
@@ -91,7 +91,7 @@ One repository, one git history. Standard model:
 3. **Feature branch → PR → squash-merge.** Trunk-based; never push directly to `main`.
 4. Terraform lives in the separate `neonbinder_ioc` repo and follows **GitFlow** there (feature → `develop` → `main`).
 
-End commit messages with: `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`.
+End commit messages with the `Co-Authored-By: Claude <model> <noreply@anthropic.com>` trailer for the model in use (the session's configured attribution).
 
 ### The PR loop — cheap gates locally, E2E in CI, local for debugging
 
@@ -130,7 +130,7 @@ the right place to fix them.**
 
 | You changed | Run before pushing |
 |---|---|
-| `apps/web/**` | `npm run lint`, `npm run test:unit`, `npm run build`, `npx tsc -p convex/tsconfig.json --noEmit` |
+| `apps/web/**` | `npm run lint`, `npm run test:unit`, `npm run typecheck`, `npm run build` |
 | `services/browser/**` | `npm run build && npm test` |
 | `services/preprocess/**` | `ruff check . && ruff format --check . && pytest tests/unit` |
 | Dependencies | see the `deps-batch` skill — gate each bump separately |
@@ -271,7 +271,6 @@ External Marketplaces (via Puppeteer / direct HTTP)
 - **Marketplace adapters (Convex side):** `apps/web/convex/adapters/`
 - **Browser automation:** `services/browser/src/index.ts` — Express server with adapter routes
 
-> `apps/web/app/layout.tsx` is a leftover Next.js stub kept only for migration reference — not the active root layout. Provider setup lives in `src/main.tsx`.
 
 ## Convex Development Patterns
 
@@ -359,7 +358,6 @@ Prerequisite: your user account needs `roles/iam.serviceAccountTokenCreator` on 
 # VITE_CONVEX_URL              - Convex deployment URL
 # VITE_CLERK_PUBLISHABLE_KEY   - Clerk public key
 # CLERK_SECRET_KEY             - Clerk secret (server-side / Convex only)
-# ENCRYPTION_KEY               - 32-char key for credential encryption
 # NEONBINDER_BROWSER_URL       - Browser service URL (Convex env; default: http://localhost:8080)
 # GCS_PLACEHOLDER_BUCKET       - Convex env only (set via `npx convex env set`, not .env.local).
 #                                 Name of the placeholder-uploads GCS bucket (NEO-148), e.g.
@@ -380,7 +378,7 @@ cd services/browser && npm start  # Runs on port 8080 (reads .env for GCP creden
 ## UI & Styling
 
 - **Theme:** Dark UI with neon accents (90s hobby-shop aesthetic)
-- **Colors:** Primary=Neon Green (#00D558), Cancel=Neon Pink (#FF2EB3), Accent=Blue (#00B7FF)
+- **Colors:** Primary=Neon Green (#00D558), Cancel=Neon Pink (#FF2E9A), Accent=Blue (#00C2FF) — `apps/web/tailwind.config.js` is the source of truth
 - **Font:** Lexend
 - **Components:** Radix UI Themes, Tailwind CSS 4.x
 - **Structure:** `apps/web/components/primitives/` (base), `apps/web/components/modules/` (composed)
@@ -402,7 +400,11 @@ cd services/browser && npm start  # Runs on port 8080 (reads .env for GCP creden
 
 ## Secrets Management
 
-Sensitive credentials are stored in **Google Cloud Secret Manager**, not `.env` files. Access via `services/browser/src/services/secrets-manager.ts`. The Convex backend proxies credential operations through the browser service HTTP API (`apps/web/convex/credentials.ts`) — only the browser service touches Secret Manager.
+Sensitive credentials are stored in **Google Cloud Secret Manager**, not `.env` files. Access via `services/browser/src/services/secrets-manager.ts`. The Convex backend proxies credential operations through the browser service HTTP API (`apps/web/convex/credentials.ts`) — only the browser service touches Secret Manager. There is no application-level encryption key: marketplace passwords are never stored (NEO-141); a login sends a transient `{username, password}` pair on one request (`services/browser/src/transient-credentials.ts`), and Convex keeps only `hasCredentials` plus an operation lock on `userProfiles`.
+
+## Agents and skills
+
+`.claude/agents/` and `.claude/skills/` in this repo are the **single source** for the specialist agents and the `pr-watch`, `pr-close` and `deps-batch` skills; there is no other copy. Agent memory under `.claude/agent-memory/<agent>/` is committed and public, so it holds **patterns only** (driver quirks, house conventions, gates that lie) — never a deployment name, account, secret name, internal URL or incident. An agent that learns something operational reports it under *Private notes* for the coordinator instead of saving it. Change an agent or skill through a normal PR.
 
 ## CI/CD
 

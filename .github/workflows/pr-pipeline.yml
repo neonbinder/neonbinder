@@ -815,6 +815,35 @@ jobs:
       - run: npm ci
       - run: npm run lint
 
+  web-typecheck:
+    name: Typecheck (apps/web convex)
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: apps/web
+    env:
+      HUSKY: 0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: apps/web/.nvmrc
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - run: npm ci
+      # `tsc -p convex/tsconfig.json` — the same config `npx convex deploy`
+      # typechecks against, so a red here is a red the Vercel build would hit
+      # later (and silently paper over via vercel.json's `|| npm run build`
+      # fallback). The app-root tsconfig.json is NOT the gate: it pulls in the
+      # convex/*.test.ts files whose convex-test generics do not typecheck
+      # under tsc (they are typechecked and run by vitest in web-unit).
+      - run: npm run typecheck
+
   web-unit:
     name: Unit & component tests (vitest, apps/web)
     needs: changes
@@ -1076,7 +1105,7 @@ jobs:
 
   ci-gate:
     name: CI Gate
-    needs: [changes, web-preview, web-lint, web-unit, browser-test, preprocess-test, preprocess-crop-matrix, wire-browser-url, wire-preprocess-url, e2e]
+    needs: [changes, web-preview, web-lint, web-typecheck, web-unit, browser-test, preprocess-test, preprocess-crop-matrix, wire-browser-url, wire-preprocess-url, e2e]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 3
@@ -1087,6 +1116,7 @@ jobs:
         env:
           R_CHANGES: ${{ needs.changes.result }}
           R_WEB_LINT: ${{ needs.web-lint.result }}
+          R_WEB_TYPECHECK: ${{ needs.web-typecheck.result }}
           R_WEB_UNIT: ${{ needs.web-unit.result }}
           R_BROWSER_TEST: ${{ needs.browser-test.result }}
           R_PREPROCESS_TEST: ${{ needs.preprocess-test.result }}
@@ -1098,7 +1128,7 @@ jobs:
           R_DEPS_ONLY: ${{ needs.changes.outputs.deps_only }}
         run: |
           set -euo pipefail
-          echo "changes=$R_CHANGES web-lint=$R_WEB_LINT web-unit=$R_WEB_UNIT browser-test=$R_BROWSER_TEST preprocess-test=$R_PREPROCESS_TEST crop-matrix=$R_CROP_MATRIX wire-browser-url=$R_WIRE wire-preprocess-url=$R_WIRE_PREPROCESS e2e=$R_E2E deps_only=$R_DEPS_ONLY"
+          echo "changes=$R_CHANGES web-lint=$R_WEB_LINT web-typecheck=$R_WEB_TYPECHECK web-unit=$R_WEB_UNIT browser-test=$R_BROWSER_TEST preprocess-test=$R_PREPROCESS_TEST crop-matrix=$R_CROP_MATRIX wire-browser-url=$R_WIRE wire-preprocess-url=$R_WIRE_PREPROCESS e2e=$R_E2E deps_only=$R_DEPS_ONLY"
           fail=0
           # changes must SUCCEED (skipped => gate unreliable)
           [ "$R_CHANGES" = "success" ] || { echo "::error::changes=$R_CHANGES (must succeed)"; fail=1; }
@@ -1117,7 +1147,7 @@ jobs:
           # (NEO-162): it is `skipped` exactly when deps_only skips E2E, and any
           # OTHER reason it fails to succeed already reds the gate through the
           # e2e rule above, since e2e `needs:` it.
-          for kv in "web-preview=$R_WEB_PREVIEW" "web-lint=$R_WEB_LINT" "web-unit=$R_WEB_UNIT" "browser-test=$R_BROWSER_TEST" "preprocess-test=$R_PREPROCESS_TEST" "preprocess-crop-matrix=$R_CROP_MATRIX" "wire-browser-url=$R_WIRE" "wire-preprocess-url=$R_WIRE_PREPROCESS"; do
+          for kv in "web-preview=$R_WEB_PREVIEW" "web-lint=$R_WEB_LINT" "web-typecheck=$R_WEB_TYPECHECK" "web-unit=$R_WEB_UNIT" "browser-test=$R_BROWSER_TEST" "preprocess-test=$R_PREPROCESS_TEST" "preprocess-crop-matrix=$R_CROP_MATRIX" "wire-browser-url=$R_WIRE" "wire-preprocess-url=$R_WIRE_PREPROCESS"; do
             r="${kv#*=}"
             case "$r" in
               success|skipped) ;;

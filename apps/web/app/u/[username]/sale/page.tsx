@@ -194,7 +194,7 @@ function QrScannerModal({
         </button>
       </div>
       <div className="flex-1 flex items-center justify-center">
-        <video ref={videoRef} className="w-full h-full object-cover" />
+        <video ref={videoRef} muted className="w-full h-full object-cover" />
       </div>
       {status && (
         <div className="absolute bottom-8 left-0 right-0 flex justify-center">
