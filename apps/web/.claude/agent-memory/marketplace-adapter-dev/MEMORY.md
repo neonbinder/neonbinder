@@ -1,1 +1,0 @@
-- [ESLint does not cover plain .ts](reference_eslint_does_not_cover_plain_ts.md) — `npm run lint` skips all of convex/ and lib/; tsc + vitest are the only real gates for adapter code

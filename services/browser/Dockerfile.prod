@@ -1,4 +1,4 @@
-# Use Node.js 18 slim image for smaller size
+# Use Node.js 22 slim image for smaller size
 FROM node:22-slim
 
 # Install Chrome dependencies

@@ -1,3 +1,10 @@
+---
+name: feedback-speaking-conch-run-serialization
+description: HARD RULE — only one local Maestro run at a time on this machine; acquire the /tmp lock immediately before a run, release it the instant the run ends, never run Maestro in the background
+metadata:
+  type: feedback
+---
+
 # 🐚 The Speaking Conch — maestro run serialization (HARD RULE)
 
 Only **one** maestro run may execute on the machine at a time. The "conch" is the

@@ -1,2 +1,0 @@
-- [BSC multi-card reschedule needs cancelScheduled](reference_neo247_bsc_multicard_reschedule_needs_cancel.md) — 2+ bsc cards in one commitCardChecklist call needs drainScheduled AND cancelScheduled
-- [Network guard timing blind spot](reference_neo247_network_guard_timing_blind_spot.md) — afterEach/afterAll checked too early for undrained runAfter(0) leaks; fixed with 30ms afterAll settle; diagnostic technique to find true leak source
