@@ -7,8 +7,8 @@
  */
 
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
-import { api } from "./_generated/api";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { normalizeTeamName } from "./teams";
@@ -20,7 +20,14 @@ const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
 }).glob("./**/*.*s");
 
-const ADMIN = { subject: "admin", role: "admin" };
+// NEO-254: the seed is armed by an env flag, not an identity (NEO-214 pattern).
+const CONFIRM = { confirm: "SEED_TEAM_COLORS" as const };
+beforeEach(() => {
+  vi.stubEnv("ALLOW_SEED_TEAM_COLORS", "true");
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 /** Sport rows are created by the marketplace sync; seeding never invents one. */
 async function seedSports(
@@ -55,7 +62,7 @@ const leagues = (t: ReturnType<typeof convexTest>) =>
   t.run(async (ctx) => ctx.db.query("leagues").collect());
 
 const run = (t: ReturnType<typeof convexTest>) =>
-  t.withIdentity(ADMIN).action(api.seedTeamColors.seedFromBundledData, {});
+  t.action(internal.seedTeamColors.seedFromBundledData, CONFIRM);
 
 describe("seedFromBundledData", () => {
   test("creates leagues and teams for the sports that exist", async () => {
@@ -227,13 +234,33 @@ describe("seedFromBundledData", () => {
     expect(celtics!.colors).toEqual({ primary: "#007a33", secondary: "#ba9653" });
   });
 
-  test("requires admin", async () => {
+  test("refuses when ALLOW_SEED_TEAM_COLORS is unset, and writes nothing", async () => {
+    vi.unstubAllEnvs();
     const t = convexTest(schema, modules);
+    await seedSports(t, ["Baseball"]);
+    await expect(run(t)).rejects.toThrow(/ALLOW_SEED_TEAM_COLORS/);
+    expect(await teams(t)).toEqual([]);
+    expect(await leagues(t)).toEqual([]);
+  });
+
+  test("refuses when the flag is any value other than \"true\"", async () => {
+    vi.stubEnv("ALLOW_SEED_TEAM_COLORS", "1");
+    const t = convexTest(schema, modules);
+    await seedSports(t, ["Baseball"]);
+    await expect(run(t)).rejects.toThrow(/ALLOW_SEED_TEAM_COLORS/);
+    expect(await teams(t)).toEqual([]);
+  });
+
+  test("the chunk mutation refuses when unarmed, even called directly", async () => {
+    // Anything already inside Convex can call the chunk; the flag is asserted
+    // there too, so the entry point is not the only door (NEO-214 finding 7).
+    vi.unstubAllEnvs();
+    const t = convexTest(schema, modules);
+    await seedSports(t, ["Baseball"]);
     await expect(
-      t
-        .withIdentity({ subject: "u", role: "user" })
-        .action(api.seedTeamColors.seedFromBundledData, {}),
-    ).rejects.toThrow(/admin/i);
+      t.mutation(internal.seedTeamColors.seedChunkInternal, { start: 0, count: 5 }),
+    ).rejects.toThrow(/ALLOW_SEED_TEAM_COLORS/);
+    expect(await teams(t)).toEqual([]);
   });
 
   /**
@@ -288,9 +315,10 @@ describe("seedFromBundledData", () => {
         }),
       );
 
-      const result = await t
-        .withIdentity(ADMIN)
-        .action(api.seedTeamColors.seedFromBundledData, {});
+      const result = await t.action(
+        internal.seedTeamColors.seedFromBundledData,
+        CONFIRM,
+      );
       expect(result.skippedAmbiguous).toBe(0);
 
       // The colours landed on the still-running franchise, and the historical
@@ -318,9 +346,10 @@ describe("seedFromBundledData", () => {
       }
       const before = (await teams(t)).length;
 
-      const result = await t
-        .withIdentity(ADMIN)
-        .action(api.seedTeamColors.seedFromBundledData, {});
+      const result = await t.action(
+        internal.seedTeamColors.seedFromBundledData,
+        CONFIRM,
+      );
 
       // Reported rather than silently skipped: it is the signal that two rows
       // need an operator, and a run that said nothing would look like success.

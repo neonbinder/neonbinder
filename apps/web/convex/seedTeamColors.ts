@@ -21,13 +21,24 @@
  * Chunked because a release step that half-succeeds should be resumable, and
  * because 165 upserts plus their league lookups is more document traffic than
  * belongs in one mutation.
+ *
+ * NEO-254 (Jason, 2026-09-09): armed like the other scripted admin tasks
+ * (NEO-214 reset, NEO-254 bulk load) — an INTERNAL action with a confirm
+ * literal and an env flag asserted inside every mutation, never an identity.
+ * `npx convex run --identity` cannot reach internal functions, and a public
+ * action behind `requireAdmin` needed a hand-typed admin identity on every
+ * deployment, which is what this replaces. To run:
+ *
+ *   npx convex env set ALLOW_SEED_TEAM_COLORS true --deployment <name>
+ *   npx convex run --deployment <name> seedTeamColors:seedFromBundledData '{"confirm":"SEED_TEAM_COLORS"}'
+ *   npx convex env remove ALLOW_SEED_TEAM_COLORS --deployment <name>
  */
 
 import { v } from "convex/values";
-import { action, internalMutation } from "./_generated/server";
+import { ConvexError } from "convex/values";
+import { internalAction, internalMutation } from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
-import { requireAdmin } from "./auth";
 import { findOrCreateLeague } from "./leagues";
 import { findTeamsByFullName, teamRowFields } from "./lib/teamRow";
 import { currentEraTeam } from "../lib/teams/team-era";
@@ -37,6 +48,23 @@ import { teamFullName } from "../lib/teams/team-name";
 
 /** Teams handled per mutation. Keeps each well inside the document budget. */
 const SEED_CHUNK_SIZE = 40;
+
+/**
+ * The arming flag, asserted at the entry point AND inside every chunk
+ * mutation, exactly as `assertResetArmed` is for the reset: anything already
+ * inside Convex can call the chunk directly, and the flag is the only thing
+ * between such a caller and a write.
+ */
+function assertSeedArmed(): void {
+  if (process.env.ALLOW_SEED_TEAM_COLORS !== "true") {
+    throw new ConvexError(
+      "Team colour seed is not armed on this deployment. Set " +
+        "ALLOW_SEED_TEAM_COLORS=true on it first " +
+        "(`npx convex env set ALLOW_SEED_TEAM_COLORS true`), and unset it " +
+        "again afterwards.",
+    );
+  }
+}
 
 export const seedChunkInternal = internalMutation({
   args: { start: v.number(), count: v.number() },
@@ -49,6 +77,7 @@ export const seedChunkInternal = internalMutation({
     skippedAmbiguous: v.number(),
   }),
   handler: async (ctx, args) => {
+    assertSeedArmed();
     const slice = SEED_TEAMS.slice(args.start, args.start + args.count);
 
     // Sport rows are created by the marketplace sync, never here: inventing
@@ -165,8 +194,8 @@ export const seedChunkInternal = internalMutation({
  * `skippedAmbiguous` for the other one: a name this sport now holds under two
  * open eras, which the seed refuses to choose between.
  */
-export const seedFromBundledData = action({
-  args: {},
+export const seedFromBundledData = internalAction({
+  args: { confirm: v.literal("SEED_TEAM_COLORS") },
   returns: v.object({
     teamsCreated: v.number(),
     colorsApplied: v.number(),
@@ -183,7 +212,8 @@ export const seedFromBundledData = action({
     skippedAmbiguous: number;
     total: number;
   }> => {
-    await requireAdmin(ctx);
+    // Fail here rather than partway through the chunks; each chunk re-asserts.
+    assertSeedArmed();
 
     let teamsCreated = 0;
     let colorsApplied = 0;
