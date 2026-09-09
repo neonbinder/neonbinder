@@ -189,7 +189,6 @@ tags:
     element:
       text: "Print Label"
     centerElement: true
-- assertVisible: "Print Label"
 
 # Step 7: bring the label itself on screen.
 #

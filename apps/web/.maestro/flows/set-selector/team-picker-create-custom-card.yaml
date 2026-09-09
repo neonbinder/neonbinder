@@ -26,11 +26,12 @@ tags:
 #     Save button, so the write goes out on the tap and the drawer's
 #     "Saved Teams" confirmation is asserted before the close.
 #
-# R3 — DEDUP: team-picker.yaml covers picking EXISTING (seeded) teams, remove,
-#   keyboard Enter, "No matches", close-and-reopen, and reload — but NOT the
-#   create-new path (it depends on seeded Baseball teams and must not pollute
-#   that shared pool). This flow owns create-new, on an ISOLATED per-worker
-#   custom sport so it neither depends on nor pollutes the Baseball seed. Mirrors
+# R3 — DEDUP: team-picker.yaml exercises create-new, remove, keyboard Enter,
+#   "No matches", close-and-reopen, and reload all against a single team it
+#   creates itself ("TPT-<attempt>") under the real Baseball sport — the
+#   seeded-team fixture is gone. This flow duplicates the create-new path
+#   deliberately, on an ISOLATED per-worker custom sport so it neither depends
+#   on nor adds load to the shared Baseball sport/team namespace. Mirrors
 #   player-picker-create-custom-card.yaml (the sibling PlayerPicker). Drill/add
 #   via util-add-custom-card.
 #
@@ -41,7 +42,8 @@ tags:
 # PER-WORKER DATA ISOLATION: E2E Test Sport ${WORKER_INDEX} -> 2026 -> Topps ->
 #   tpc-<WORKER_INDEX> (custom set, Insert VT, "Base" insert). The created teams
 #   carry sport "E2E Test Sport <WORKER_INDEX>", never colliding with another
-#   worker or with the real Baseball teams team-picker.yaml relies on.
+#   worker or with the real Baseball sport/team that team-picker.yaml creates
+#   its own team under.
 
 # ============================================================
 # LAUNCH + SIGN IN

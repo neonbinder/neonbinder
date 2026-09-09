@@ -34,11 +34,6 @@ tags:
     visible: ".*Build set parameters using marketplace APIs.*"
     timeout: 45000
 
-# The runner injects ATTEMPT_ID. This evalScript provides a fallback for
-# standalone runs where the runner is not involved. output.ATTEMPT_ID is only
-# set if unset — so a runner-injected value is preserved.
-- evalScript: ${output.ATTEMPT_ID = output.ATTEMPT_ID || String(Date.now()).slice(-4)}
-
 - runFlow:
     file: util-drill-to-custom-set.yaml
     env:

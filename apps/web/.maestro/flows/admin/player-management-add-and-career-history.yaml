@@ -110,10 +110,6 @@ tags:
     visible: ".*of .* players.*"
     timeout: 45000
 
-# The runner injects ATTEMPT_ID ("w<worker>-a<attempt>-<random>"). This gives a
-# standalone local run a fallback, and only when unset — a runner-injected value
-# is preserved. Same idiom as parallel-grouping-cancel-discards.
-- evalScript: ${output.ATTEMPT_ID = output.ATTEMPT_ID || String(Date.now()).slice(-4)}
 
 # ── EMPTY THE LIST FIRST ────────────────────────────────────────────────────
 # Not decoration, and not an assertion about filtering (team-management-filter

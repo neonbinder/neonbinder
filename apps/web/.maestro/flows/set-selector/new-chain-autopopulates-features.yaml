@@ -208,7 +208,7 @@ tags:
 
 # Step 3 — locate the SetAttributesPanel and prove it is scoped to the
 # freshly-created VARIANT TYPE node. The panel header ("Attributes for
-# WOVT2-<worker> (Variant)") is a plain <h3> with no aria-label, so its text
+# WOVT3-<worker> (Variant)") is a plain <h3> with no aria-label, so its text
 # content is reliably matchable. This scrollUntilVisible IS the assertion that
 # the panel exists at the right node (R6 — no redundant assertVisible after).
 # centerElement keeps the header/toggle fully in view (R8) so the expand tap

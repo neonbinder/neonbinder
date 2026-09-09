@@ -71,10 +71,6 @@ tags:
     visible: ".*Build set parameters using marketplace APIs.*"
     timeout: 45000
 
-# The runner injects ATTEMPT_ID per attempt; this is the standalone-run
-# fallback, matching move-parallels-of-inserts-custom.yaml.
-- evalScript: ${output.ATTEMPT_ID = output.ATTEMPT_ID || String(Date.now()).slice(-4)}
-
 # ============================================================
 # PART 1 — A CUSTOM YEAR MUST BE A YEAR
 #

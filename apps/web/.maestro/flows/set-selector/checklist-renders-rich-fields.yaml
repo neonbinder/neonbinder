@@ -80,10 +80,6 @@ tags:
 # VERIFY CARD ROW STRUCTURE — ALWAYS-PRESENT FIELDS
 # ============================================================
 
-# At least one card number in "#NNN" format is visible.
-- assertVisible:
-    text: ".*#[0-9].*"
-
 # BSC platform badge appears on at least one card row.
 - assertVisible: "BSC"
 

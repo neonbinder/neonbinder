@@ -35,11 +35,11 @@ tags:
 #   selectorOptions is GLOBAL (no per-user scoping) and this needs a REAL set
 #   with live SportLots base options (a synthetic custom subtree has no SL data,
 #   so the picker would never open — auto-take BSC fallback instead). We use
-#   2024 Topps BIG LEAGUE — a real set that NO other flow touches:
+#   Topps 206 — a real set that NO other flow touches:
 #     - setup.yaml maps 2024 Topps CHROME (mapped → auto-open won't fire)
 #     - sets-base.yaml CONFIRMS 2024 Topps HERITAGE (mapped globally → same)
 #   and we NEVER click Confirm, so platformData.sportlots is never written —
-#   Big League's Base stays unmapped (its natural pre-sync state). Nothing is
+#   Topps 206's Base stays unmapped (its natural pre-sync state). Nothing is
 #   mutated, nothing is left degraded for a concurrent worker or a re-run.
 #
 # R9 — all drilling via util-drill-to-2024-topps-chrome (SET override).

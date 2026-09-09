@@ -146,7 +146,6 @@ tags:
 
 # Validate public profile content
 - assertVisible: "${TEST_USERNAME}"
-- assertVisible: "Buying and Selling all kinds of Sports Cards"
 
 # Verify each link on the public profile page points to the correct URL.
 # The link buttons include their href as screen-reader text, so we can

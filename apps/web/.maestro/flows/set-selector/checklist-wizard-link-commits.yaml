@@ -95,21 +95,6 @@ tags:
 - assertVisible:
     text: "0 of [0-9]+ reviewed.*"
 
-# ============================================================
-# STEP 2 — THE KIND GUARD: make sure the current row is a PLAYER
-#
-# ORDER MATTERS. Wait for the row to become ACTIONABLE first: a row renders no
-# action controls at all until its background Wikidata lookup settles, so a kind
-# guard evaluated before that would poll an empty row, conclude "not a team",
-# and fall through — the failure would land on the link-panel assert with a
-# misleading message.
-#
-# The fixture is 11 players to 1 team, so a team row is the rare case. This is a
-# deliberate R10 exception: a `when: visible` on a normally-ABSENT element polls
-# the full default budget every run. Bounded to one poll, and the alternative is
-# a flake with no relationship to linking.
-# ============================================================
-
 # NEO-236 — the wizard does not open on a player row, and the first player it
 # shows can move out from under you while its career teams are staged. The util
 # walks to a settled player row the operator's way (see its header for the two

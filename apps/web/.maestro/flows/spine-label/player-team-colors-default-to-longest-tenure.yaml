@@ -64,10 +64,6 @@ tags:
     visible: ".*of .* players.*"
     timeout: 45000
 
-# The runner injects ATTEMPT_ID ("w<worker>-a<attempt>-<random>"). This gives a
-# standalone local run a fallback, and only when unset — a runner-injected value
-# is preserved.
-- evalScript: ${output.ATTEMPT_ID = output.ATTEMPT_ID || String(Date.now()).slice(-4)}
 
 # ════════════════════════════════════════════════════════════════════════════
 # STEP 1 — THE PLAYER, HIS TWO TEAMS AND HIS TWO STINTS

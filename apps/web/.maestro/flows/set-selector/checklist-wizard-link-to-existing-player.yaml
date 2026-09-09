@@ -76,22 +76,6 @@ tags:
 - assertVisible:
     text: "0 of [0-9]+ reviewed.*"
 
-# ============================================================
-# STEP 2 — THE KIND GUARD: make sure the current row is a PLAYER
-#
-# The wizard presents ONE row at a time and which one settles first is a race
-# between live Wikidata lookups. The fixture queues overwhelmingly players
-# (measured: 87 players + 1 team), but "overwhelmingly" is a flake, so this
-# skips a TEAM row if that is what came up. The control only exists on a team
-# row, so on the common path this `when:` costs one poll and does nothing.
-#
-# A DELIBERATE R10 EXCEPTION, and the only one here: a `when: visible` on a
-# normally-ABSENT element polls the full default budget every run. That is the
-# price of determinism, it is bounded to a single poll, and the alternative is
-# a flow that fails roughly once in every eighty-eight runs for a reason that
-# has nothing to do with linking. The skip writes nothing — this flow discards.
-# ============================================================
-
 # ORDER MATTERS. Wait for the row to become ACTIONABLE first: a row renders no
 # action controls at all until its background Wikidata lookup settles, so a kind
 # guard evaluated before that would poll an empty row, conclude "not a team",
@@ -167,8 +151,6 @@ tags:
 
 # ============================================================
 # STEP 5 — EXIT WITHOUT WRITING ANYTHING (R7)
-# The confirm's count is a regex: the kind guard above may have put a second
-# decision on the books, and this flow does not claim to know which.
 # ============================================================
 
 - tapOn:

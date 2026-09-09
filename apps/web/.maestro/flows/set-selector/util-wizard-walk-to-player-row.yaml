@@ -82,7 +82,7 @@ tags:
 # the hand-off happen (or not) BEFORE the next pass looks. Every other way of
 # expressing this either fails when no hand-off comes or returns the instant the
 # screen stops moving, which is too early.
-# This is the one sanctioned R10 exception in the suite; do not "optimise" it.
+# This is a sanctioned R10 exception; do not "optimise" it.
 - runFlow:
     when:
       notVisible: "Confirm New Players & Teams"

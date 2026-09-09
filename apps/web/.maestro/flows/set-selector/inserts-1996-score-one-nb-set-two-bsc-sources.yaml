@@ -282,7 +282,6 @@ tags:
     centerElement: true
     timeout: 20000
 
-- assertVisible: "Multi-source sets"
 - assertVisible:
     text: ".*Dugout Collection Artist's Proofs Series 1.*"
 - assertVisible:

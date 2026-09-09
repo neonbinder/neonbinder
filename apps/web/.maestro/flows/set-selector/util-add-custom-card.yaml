@@ -101,10 +101,6 @@ tags:
       text: ${INSERT_NAME || "Base"}
     centerElement: true
     timeout: 10000
-- extendedWaitUntil:
-    visible:
-      text: ${INSERT_NAME || "Base"}
-    timeout: 7000
 - tapOn: ${INSERT_NAME || "Base"}
 
 # ============================================================
@@ -122,10 +118,6 @@ tags:
     centerElement: true
     visibilityPercentage: 50
     timeout: 15000
-- extendedWaitUntil:
-    visible:
-      id: "Open add card form"
-    timeout: 7000
 
 # ============================================================
 # STEP 5 — OPEN THE ADD-CARD FORM

@@ -181,6 +181,7 @@ tags:
     element:
       id: "Add custom Variant Types"
     direction: UP
+    centerElement: true
     visibilityPercentage: 100
     timeout: 30000
 
@@ -222,6 +223,7 @@ tags:
 - scrollUntilVisible:
     element:
       id: "Add custom Inserts"
+    centerElement: true
     visibilityPercentage: 50
     timeout: 30000
 
@@ -250,6 +252,7 @@ tags:
 - scrollUntilVisible:
     element:
       text: "fp-insert-${WORKER_INDEX || 0}"
+    centerElement: true
     timeout: 10000
 - tapOn: "fp-insert-${WORKER_INDEX || 0}"
 
@@ -434,6 +437,7 @@ tags:
 - scrollUntilVisible:
     element:
       text: "fp-insert-${WORKER_INDEX || 0}"
+    centerElement: true
     timeout: 10000
 - tapOn: "fp-insert-${WORKER_INDEX || 0}"
 

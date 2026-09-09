@@ -111,6 +111,7 @@ tags:
 # timeout) — vis:50 is enough to bring its Edit control into the tappable band,
 # and it lands at ~y438, inside the fold. waitToSettleTimeoutMs lets
 # Virtuoso finish rendering each windowed row between scroll steps.
+# (R8 exception — bottom of a virtualised list, centering can never settle.)
 - scrollUntilVisible:
     element:
       id: "Edit card 300"

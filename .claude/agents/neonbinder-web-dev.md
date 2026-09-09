@@ -11,7 +11,7 @@ model: opus
 effort: high
 memory: project
 color: purple
-skills: [frontend-design]
+skills: frontend-design
 ---
 
 You are the application developer for `apps/web` in the NeonBinder monorepo: a

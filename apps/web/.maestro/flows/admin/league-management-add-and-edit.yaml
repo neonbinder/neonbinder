@@ -111,16 +111,13 @@ tags:
     timeout: 45000
 
 # The runner injects ATTEMPT_ID ("r<runner>-a<attempt>-<random>", or
-# "w<worker>-a<attempt>-<random>" from the smoke script). This gives a standalone
-# local run a fallback and only when unset, so a runner-injected value is
-# preserved. Same idiom as player-management-add-and-career-history.
+# "w<worker>-a<attempt>-<random>" from the smoke script).
 #
 # Length matters here in a way it does not on the Players screen: the
 # abbreviation below is "L<ATTEMPT_ID>" and `createByAdmin` REFUSES an
 # abbreviation over 16 characters (MAX_LEAGUE_ABBREVIATION_LENGTH). The longest
 # id either runner can mint is "r7-a3-32767" — 11 characters, 12 with the L —
-# and the local fallback is 4, so both clear it with room to spare.
-- evalScript: ${output.ATTEMPT_ID = output.ATTEMPT_ID || String(Date.now()).slice(-4)}
+# so it clears the cap with room to spare.
 
 # ── EMPTY THE LIST FIRST ────────────────────────────────────────────────────
 # Not decoration, and not an assertion about filtering for its own sake. This is

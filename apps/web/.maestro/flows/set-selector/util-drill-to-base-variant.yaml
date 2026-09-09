@@ -86,6 +86,7 @@ tags:
 - scrollUntilVisible:
     element:
       text: "Base"
+    centerElement: true
     timeout: 10000
 - tapOn: "Base"
 

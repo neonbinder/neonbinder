@@ -44,10 +44,6 @@ tags:
     visible: ".*Build set parameters using marketplace APIs.*"
     timeout: 45000
 
-# The runner injects ATTEMPT_ID. This evalScript provides a fallback for standalone
-# runs where the runner is not involved. output.ATTEMPT_ID is only set if unset.
-- evalScript: ${output.ATTEMPT_ID = output.ATTEMPT_ID || String(Date.now()).slice(-4)}
-
 # Drill to the STABLE per-worker custom set; returns with Inserts column at idle.
 - runFlow:
     file: util-drill-to-custom-set.yaml
@@ -322,7 +318,5 @@ tags:
       text: ".*${ATTEMPT_ID} Stars Gold.*"
     timeout: 10000
 # Both Gold and Red appear as parallels of <ID> Stars — the saved nesting is live.
-- assertVisible:
-    text: ".*${ATTEMPT_ID} Stars Gold.*"
 - assertVisible:
     text: ".*${ATTEMPT_ID} Stars Red.*"
