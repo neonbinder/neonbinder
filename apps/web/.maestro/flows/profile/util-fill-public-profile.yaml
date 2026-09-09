@@ -80,12 +80,9 @@ tags:
 - assertVisible: "→ cash.app/$${TEST_USERNAME}-cashapp"
 
 # Save and confirm.
-# R8: centre the Save button before tapping it — the sibling drill in
-# profile/fill-profile-data.yaml does the same.
 - scrollUntilVisible:
     element:
       text: "Save Public Profile"
-    centerElement: true
 - tapOn: "Save Public Profile"
 # Non-scrolling on purpose. The save confirmation renders BELOW the Save button,
 # which is the last element on /profile/public, so it used to land past the fold

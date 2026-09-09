@@ -231,7 +231,6 @@ tags:
     element:
       id: "Hide attributes"
     direction: UP
-    centerElement: true
     visibilityPercentage: 10
     waitToSettleTimeoutMs: 1000
     timeout: 15000
@@ -301,7 +300,6 @@ tags:
 - scrollUntilVisible:
     element:
       text: "BaseAttr-${WORKER_INDEX || 0}"
-    centerElement: true
     timeout: 10000
 - tapOn: "BaseAttr-${WORKER_INDEX || 0}"
 

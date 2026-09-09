@@ -58,7 +58,6 @@ tags:
 - scrollUntilVisible:
     element:
       id: "Edit attributes"
-    centerElement: true
     visibilityPercentage: 10
     timeout: 7000
 

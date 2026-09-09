@@ -437,7 +437,6 @@ tags:
                   - scrollUntilVisible:
                       element:
                         id: "Add custom Years"
-                      centerElement: true
                       visibilityPercentage: 50
                       timeout: 60000
                   - runFlow:
@@ -463,7 +462,6 @@ tags:
                   - scrollUntilVisible:
                       element:
                         text: ${YEAR}
-                      centerElement: true
                       timeout: 10000
                   - tapOn: ${YEAR}
 
@@ -615,7 +613,6 @@ tags:
                   - scrollUntilVisible:
                       element:
                         text: ${MANUFACTURER}
-                      centerElement: true
                       timeout: 10000
                   - tapOn: ${MANUFACTURER}
 
@@ -903,7 +900,6 @@ tags:
       - scrollUntilVisible:
           element:
             id: "Add custom ${VARIANT_TYPE}s"
-          centerElement: true
           visibilityPercentage: 50
           timeout: 30000
 

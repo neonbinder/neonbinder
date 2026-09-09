@@ -34,13 +34,14 @@ tags:
 # demonstrate is proven (for its unreadable checkbox value) via Country of
 # Origin (same 1-hop) in new-chain-autopopulates-features.yaml, and the
 # string-sentinel / no-cascade coverage now lives in features-propagation.yaml
-# on "Country of Origin".
+# on Country of Origin too (NOT "Signed By" — signedBy is hiddenAtLevels:
+# ["set"]).
 #
 # ISOLATION STORY (sole-writer tolerance):
 #   This flow is the SOLE writer of Topps Chrome's Reprint feature. No other flow
 #   writes that datum: topps-chrome-marketplace-read.yaml is read-only and only
 #   checks the row exists; features-propagation.yaml writes a per-worker custom
-#   set's Signed By (never touches the real Topps Chrome Reprint value); card
+#   set's Country of Origin (never touches the real Topps Chrome Reprint); card
 #   checklist flows read Base badges, not Reprint. Because only one instance of
 #   this flow is enqueued per run it never races itself. Each tap flips the value,
 #   and the flow taps exactly twice (once per session) → net self-restoring, so it
@@ -77,7 +78,6 @@ tags:
 - scrollUntilVisible:
     element:
       id: "Edit attributes"
-    centerElement: true
     visibilityPercentage: 10
     waitToSettleTimeoutMs: 1000
     timeout: 7000
@@ -135,7 +135,6 @@ tags:
 - scrollUntilVisible:
     element:
       id: "Edit attributes"
-    centerElement: true
     visibilityPercentage: 10
     waitToSettleTimeoutMs: 1000
     timeout: 7000

@@ -395,7 +395,6 @@ tags:
       - scrollUntilVisible:
           element:
             text: "Sync Variant Types"
-          centerElement: true
           timeout: 10000
       - tapOn: "Sync Variant Types"
       - extendedWaitUntil:
@@ -769,7 +768,6 @@ tags:
       - scrollUntilVisible:
           element:
             text: ".*Save [0-9]+ sets.*"
-          centerElement: true
       - tapOn:
           text: ".*Save [0-9]+ sets.*"
       - extendedWaitUntil:
@@ -991,7 +989,6 @@ tags:
       - scrollUntilVisible:
           element:
             text: ".*Save [0-9]+ sets.*"
-          centerElement: true
       - tapOn:
           text: ".*Save [0-9]+ sets.*"
       - extendedWaitUntil:
