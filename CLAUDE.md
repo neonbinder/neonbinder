@@ -177,7 +177,8 @@ against a real PR's Convex preview. One gotcha found in the process: phase-0
 bootstrap **hangs** against a preview at the default `MAESTRO_PARALLELISM=3` (3
 concurrent workers racing the same freshly-created preview data) — pass
 `MAESTRO_PARALLELISM=1` whenever `APP_URL` points at a PR preview instead of shared
-dev. `npm run test:e2e:pick` resolves the prerequisite closure for you either way.
+dev. `npm run test:e2e:pick` runs exactly the flows you name and nothing else, so
+seed the preview first with `npm run test:e2e -- setup`.
 
 A protected preview may additionally need `VERCEL_AUTOMATION_BYPASS_SECRET` — not
 exercised by the runs above; confirm on a PR with deployment protection enabled

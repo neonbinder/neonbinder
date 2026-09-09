@@ -125,13 +125,27 @@ tags:
 # fixed-sentinel no-op wedge an interrupted run can leave on shared dev).
 # ============================================================
 
+# R8 — centred, and `timeout: 20000` is not optional. MEASURED in CI (NEO-260,
+# maestro.log): this target CANNOT reach Maestro's centre band. It is the
+# collapsed SetAttributesPanel summary bar and the last thing on the page, and
+# SetSelector.tsx deliberately leaves NO scroll headroom below the last panel
+# (NEO-255 tried `pb-[50vh]` and reverted it — many flows scroll DOWN for an
+# anchor and rely on the document bottoming out). So at maximum scroll it parks
+# at y=518 of the 625px viewport while the centre band ends at ~375, and
+# `Element bounds` repeats unchanged across `Scrolling try count: 1`..`5` before
+# Maestro gives up and accepts the already-visible element.
+# Centring is kept anyway, because that give-up path does real work here: it
+# drives the page to maximum scroll, so the bar always ends ~91px clear of the
+# bottom edge instead of wherever the drill left it (measured as low as y=609,
+# flush against the fold). What it costs is the full 6-iteration budget, ~7.6s
+# in CI — which is why 7000/10000 failed three flows in NEO-260's first run.
 - scrollUntilVisible:
     element:
       id: "Edit attributes"
     centerElement: true
     visibilityPercentage: 10
     waitToSettleTimeoutMs: 1000
-    timeout: 15000
+    timeout: 20000
 
 # IDEMPOTENT EXPAND: custom sets default expanded; guard for prior-run collapse.
 - runFlow:
@@ -336,11 +350,17 @@ tags:
 # marker classes (useFieldTestClass on CardFeatureRow, mirroring SetFeatureRow),
 # so maestro-web's inputText lands in Country of Origin — NOT the first shared-class text
 # input (Card Type), which is where it wrongly landed before that fix.
+# R8 — `timeout: 20000`, not 10000. The Card features editor is a fixed drawer
+# a window swipe cannot move: measured in CI (NEO-260), `Element bounds` here
+# stayed at `Bounds(x=772, y=525, width=190, height=26)` across
+# `Scrolling try count: 0`..`5`, so centring always runs the full give-up budget
+# and the step COMPLETES at ~7.7s. At 10000 that left 2.3s of margin against
+# exactly the arithmetic that turned three flows red in NEO-260's first run.
 - scrollUntilVisible:
     element:
       id: "Value for Country of Origin"
     centerElement: true
-    timeout: 10000
+    timeout: 20000
 - tapOn:
     id: "Value for Country of Origin"
 - eraseText: 50
@@ -392,13 +412,27 @@ tags:
 
 - assertVisible: "Variant Types"
 
+# R8 — centred, and `timeout: 20000` is not optional. MEASURED in CI (NEO-260,
+# maestro.log): this target CANNOT reach Maestro's centre band. It is the
+# collapsed SetAttributesPanel summary bar and the last thing on the page, and
+# SetSelector.tsx deliberately leaves NO scroll headroom below the last panel
+# (NEO-255 tried `pb-[50vh]` and reverted it — many flows scroll DOWN for an
+# anchor and rely on the document bottoming out). So at maximum scroll it parks
+# at y=518 of the 625px viewport while the centre band ends at ~375, and
+# `Element bounds` repeats unchanged across `Scrolling try count: 1`..`5` before
+# Maestro gives up and accepts the already-visible element.
+# Centring is kept anyway, because that give-up path does real work here: it
+# drives the page to maximum scroll, so the bar always ends ~91px clear of the
+# bottom edge instead of wherever the drill left it (measured as low as y=609,
+# flush against the fold). What it costs is the full 6-iteration budget, ~7.6s
+# in CI — which is why 7000/10000 failed three flows in NEO-260's first run.
 - scrollUntilVisible:
     element:
       id: "Edit attributes"
     centerElement: true
     visibilityPercentage: 10
     waitToSettleTimeoutMs: 1000
-    timeout: 15000
+    timeout: 20000
 
 # IDEMPOTENT EXPAND for the Step C re-navigation.
 - runFlow:
@@ -490,12 +524,18 @@ tags:
 # THE CORE NO-CASCADE ASSERTION: the card's Country of Origin input still holds its own
 # value. The combined {id, text} selector matches ONLY the node whose aria-label
 # is "Value for Country of Origin" AND whose value is "CooTest-CARD".
+# R8 — `timeout: 20000`, not 10000. The Card features editor is a fixed drawer
+# a window swipe cannot move: measured in CI (NEO-260), `Element bounds` here
+# stayed at `Bounds(x=772, y=525, width=190, height=26)` across
+# `Scrolling try count: 0`..`5`, so centring always runs the full give-up budget
+# and the step COMPLETES at ~7.7s. At 10000 that left 2.3s of margin against
+# exactly the arithmetic that turned three flows red in NEO-260's first run.
 - scrollUntilVisible:
     element:
       id: "Value for Country of Origin"
       text: ".*CooTest-CARD.*"
     centerElement: true
-    timeout: 10000
+    timeout: 20000
 
 # The set-level value must appear NOWHERE on the card view — the set edit did
 # not reach this card (nor the fp-insert node the panel shows here).

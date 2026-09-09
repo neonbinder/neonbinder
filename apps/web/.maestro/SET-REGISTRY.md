@@ -140,7 +140,7 @@ dialog. Two consequences worth knowing:
 * The set is left with **220 cards still**, but the first card's NeonBinder
   name carries the run's `ATTEMPT_ID` marker. Nothing else reads that card, and
   `setup.yaml`'s reset clears it at the head of every run, so it accumulates
-  only across `MAESTRO_NO_DEPS=1` local re-runs.
+  only across local re-runs that skip a reseed.
 * This is the ONLY end-to-end coverage of the re-sync content-diff review, and
   it lives here rather than in its own flow because the costly part of testing
   a re-sync is having a committed marketplace-backed set to re-sync — which
@@ -190,13 +190,13 @@ Exactly ONE flow may ever touch this set —
 `inserts-1996-score-one-nb-set-two-bsc-sources.yaml`. Adding a second would
 reintroduce the cross-runner interference the read-only rule exists to prevent.
 
-It was briefly split into a `provides:`/`requires:` pair. That was wrong: CI does
-NOT use the dep-graph scheduler. `run-e2e-queue.sh` enqueues in LPT order
+It was briefly split into a producer/consumer pair on the old `provides:`/`requires:`
+dependency graph. That was wrong, and the graph is gone (NEO-260): nothing
+schedules one flow after another. `run-e2e-queue.sh` enqueues in LPT order
 (alphabetical without timing history) and 8 runners claim from a shared queue
-with no dependency handling — `requires:`/`provides:` are the LOCAL picker's
-feature only. Any flow in that queue must be independent of every other.
-Keeping it out of `setup.yaml` also means its sync cost is paid by one flow
-rather than added to every run's seed.
+with no dependency handling. Any flow in that queue must be independent of every
+other. Keeping it out of `setup.yaml` also means its sync cost is paid by one
+flow rather than added to every run's seed.
 
 **No other real set exists in the suite.** If a flow needs marketplace-backed
 data that isn't in the table above, it must either sync it itself (and accept the
@@ -364,10 +364,10 @@ they could only ever have been mapped BSC-only.
 #### Concurrency: one set, one writer — parallel-safe by construction
 
 **CI cannot serialize two flows.** `run-e2e-queue.sh` filters only
-`util` / `wip` / `setup`; the `isolated`, `serial-marketplace` and
-`requires:`/`provides:` dep-graph lanes exist ONLY in `run-e2e-smoke.sh`, the
-local runner. So there is no lane to put a writer on, and "sole writer" has to
-be structural rather than scheduled.
+`util` / `wip` / `setup`; the `isolated` and `serial-marketplace` lanes exist
+ONLY in `run-e2e-smoke.sh`, the local runner, and nothing orders one flow after
+another anywhere. So there is no lane to put a writer on, and "sole writer" has
+to be structural rather than scheduled.
 
 It is: **each of these three sets is touched by exactly one flow, and no flow
 reads another's set.** Different sets share no `selectorOptionId`, no
@@ -379,7 +379,7 @@ without interfering. Nothing needs restoring afterwards.
 that set's players known, and a known name never reaches the wizard again — so a
 second run against the same un-reseeded deployment would open on nothing. CI
 reseeds the preview every run, so the drain never outlives one run. A local
-re-run needs a fresh seed; `MAESTRO_NO_DEPS=1` will not do.
+re-run needs a fresh seed — rerun `npm run test:e2e -- setup`.
 
 #### Why these sets, specifically
 
@@ -679,7 +679,7 @@ set holds cards, so the next sync is a RE-sync (content-diff review, not a first
 fetch) and its names are known. CI reseeds the preview every run, so the
 first-fetch path is the CI path; a LOCAL re-run against an already-committed
 deployment fails at STEP 4's `No cards in this checklist yet.` assertion,
-correctly. `MAESTRO_NO_DEPS=1` will not do. **A local validation therefore gets
+correctly; the fix is a fresh `npm run test:e2e -- setup`. **A local validation therefore gets
 exactly one committing attempt per set per deployment.**
 
 #### Spares, if the set ever has to be swapped
@@ -749,9 +749,8 @@ skip record. That is what makes four flows on one shared set legal, and it is
 not a style preference — it is the only safe design available, because:
 
 * **CI cannot serialize two flows.** `run-e2e-queue.sh` filters only
-  `util` / `wip` / `setup`. The `isolated`, `serial-marketplace` and
-  `requires:`/`provides:` dep-graph lanes exist ONLY in `run-e2e-smoke.sh`, the
-  LOCAL runner. "Sole writer" (1996 Score) is a convention enforced by review,
+  `util` / `wip` / `setup`. The `isolated` and `serial-marketplace` lanes exist
+  ONLY in `run-e2e-smoke.sh`, the LOCAL runner. "Sole writer" (1996 Score) is a convention enforced by review,
   not a runtime mechanism — there is no lane to put a writer on.
 * **Concurrent reads are genuinely safe.** `startCandidateBatch` clears and
   reads `checklistCandidates` scoped to the operator who fetched, and

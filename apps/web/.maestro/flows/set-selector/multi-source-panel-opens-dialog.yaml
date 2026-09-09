@@ -119,14 +119,20 @@ tags:
 # Tap the visible "Cancel" button inside the dialog footer.
 # ============================================================
 
-# R8 EXCEPTION, investigated (NEO-260) — do NOT add `centerElement: true` here.
-# This "Cancel" lives in the Attach-more dialog's PINNED footer. The dialog is a
-# fixed-position overlay, so a window scroll cannot move the button at all:
-# measured in CI, its bounds stayed at y=529 across five consecutive swipes.
-# Maestro's centring then spends its whole 6-iteration budget (~13s at this
-# flow's settle speed) before giving up, which blew the timeout below and failed
-# on an element it had just logged at 100% visibility. A pinned dialog footer is
-# correct product behaviour, not a defect.
+# R8 EXCEPTION — the one R8 names verbatim: an element "pinned in a fixed
+# container such as a modal footer". SHOWN, not asserted. This "Cancel" is the
+# Attach-more dialog's pinned footer button; the dialog is a fixed-position
+# overlay, so a window swipe cannot move it. NEO-260's first CI run centred it
+# and maestro.log recorded `Element bounds: Bounds(x=806, y=529, width=71,
+# height=32)` IDENTICALLY at `Scrolling try count: 0`, `1`, `2`, `3` and `4`
+# — zero movement across five swipes — before the step hit its timeout at
+# ~12.8s and reported `No visible element found: "Cancel"` on an element it had
+# just logged at `Visibility Percent: 1.0`.
+# Unlike the SetAttributesPanel bar (which cannot centre but IS moved to maximum
+# scroll by the give-up path), centring buys this target nothing at all: it
+# cannot move, and the five phantom swipes land inside the open dialog, dragging
+# the BSC candidate list under it for no reason. Uncentred the step settles in
+# 0.9s. A pinned dialog footer is correct product behaviour, not a defect.
 - scrollUntilVisible:
     element:
       text: "Cancel"

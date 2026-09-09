@@ -94,7 +94,7 @@ app bug never looks like that. Full write-up:
 | `npm run test:e2e -- setup` | The seed track only (`flows/setup.yaml`) — the one entry point that runs it |
 | `npm run test:e2e:smoke` | Smoke tag only — the fast subset |
 | `npm run test:e2e:pick -- <selector>` | Run just a piece of the suite (by name / list / regex / tag) — see below |
-| `npm run test:e2e:plan -- <selector>` | Dry-run: print exactly what `:pick` *would* run (incl. pulled-in prerequisites) and exit |
+| `npm run test:e2e:plan -- <selector>` | Dry-run: print exactly what `:pick` *would* run and exit |
 | `npm run test:e2e:like-ci` | Run with CI-equivalent conditions — `MAESTRO_PARALLELISM=3`, no tag filter, pin gate enforced before start |
 | `npm run test:e2e:single` | One-off invocation; see `package.json` for the wrapper |
 
@@ -119,52 +119,34 @@ prints the resolved schedule without launching Maestro.
 
 ```bash
 npm run test:e2e:plan -- name:set-attributes-edit   # preview the plan
-npm run test:e2e:pick -- name:set-attributes-edit   # run it (+ its cascade)
+npm run test:e2e:pick -- name:set-attributes-edit   # run it
 npm run test:e2e:pick -- /parallel-grouping/        # run all parallel-grouping flows
 ```
 
-**Prerequisite closure resolves nothing today — seed by hand instead.**
-This section used to describe a `requires:`/`provides:` dependency graph that
-`:pick` walked to pull in a flow's producers. **No flow carries one any more**
-(verified NEO-260: zero occurrences of `requires:`, `provides:`, `cascade`,
-`isolated` or `serial-marketplace` in any `tags:` block). NEO-49 replaced the
-whole model with CI's work queue, and the flows were untagged as it landed —
-but the machinery in `run-e2e-smoke.sh` and the env vars below were left in
-place, so the closure step now runs and finds no edges.
-
-What that means in practice: **`:pick` will not seed for you.** A
-`set-selector` flow still needs the DB seeded before it can run, so seed it
-yourself first:
+**`:pick` runs exactly what you named — it does not seed for you.** A
+`set-selector` flow needs the DB seeded before it can run, so seed once, then
+run whatever you want as often as you want:
 
 ```bash
 npm run test:e2e -- setup    # runs e2e-baseline.sh reset + flows/setup.yaml
 npm run test:e2e:pick -- name:<your-flow>
 ```
 
-The env vars below still exist and still do what they say, but with no
-`requires:` edges to act on, `MAESTRO_MINIMAL_DEPS` and `MAESTRO_NO_DEPS` are
-currently no-ops:
+Only one env var affects what gets run:
 
 | Env var | Effect |
 | --- | --- |
-| `MAESTRO_MINIMAL_DEPS=1` | *(no-op today)* pull only **one** producer per required state |
-| `MAESTRO_NO_DEPS=1` | *(no-op today)* pull **no** prerequisites; treat `requires:` as already-satisfied |
-| `MAESTRO_SKIP_BOOTSTRAP=1` | skip the Phase 0 per-worker credential bootstrap (use only when worker creds are already seeded) — **this one is live** |
-
-> Whether to delete the dead scheduling code or re-tag the flows is an open
-> decision, not an oversight. Retiring it would also retire the
-> `serial-marketplace` lane, which locally is the only thing that keeps two
-> flows off a marketplace login at once.
+| `MAESTRO_SKIP_BOOTSTRAP=1` | skip the Phase 0 per-worker credential bootstrap (use only when worker creds are already seeded) |
 
 Typical fast local-iteration loop on one flow:
 
 ```bash
-# First run: seed everything, run the target (minimal cascade, single worker)
-MAESTRO_MINIMAL_DEPS=1 MAESTRO_PARALLELISM=1 \
-  npm run test:e2e:pick -- name:set-attributes-edit
+# Once: seed the deployment.
+npm run test:e2e -- setup
 
-# Re-runs while iterating: skip the cascade + bootstrap, just re-run the flow
-MAESTRO_NO_DEPS=1 MAESTRO_SKIP_BOOTSTRAP=1 MAESTRO_PARALLELISM=1 \
+# Then re-run the target as often as you like; skip the bootstrap after the
+# first pass, since the worker's credentials are already saved.
+MAESTRO_SKIP_BOOTSTRAP=1 MAESTRO_PARALLELISM=1 \
   npm run test:e2e:pick -- name:set-attributes-edit
 ```
 
@@ -172,10 +154,10 @@ MAESTRO_NO_DEPS=1 MAESTRO_SKIP_BOOTSTRAP=1 MAESTRO_PARALLELISM=1 \
 > tables**. Since NEO-214 that wipe is a scripted command
 > (`e2e-baseline.sh reset`, run by the smoke script's setup mode *before*
 > `setup.yaml`) rather than a button the flow clicks — the Admin Tools panel it
-> used to click is gone from `/admin/set-builder`. Nothing about the warning
-> changes: point `VITE_CONVEX_URL` at a **disposable preview** (your PR's Convex
-> preview), never shared `dev`. `MAESTRO_NO_DEPS=1` skips the setup track, so
-> re-run loops don't reset between attempts.
+> used to click is gone from `/admin/set-builder`. So point `VITE_CONVEX_URL` at
+> a **disposable preview** (your PR's Convex preview), never shared `dev`. Only
+> `test:e2e -- setup` resets; a `:pick` re-run never does, so iteration loops
+> keep the baseline you seeded.
 
 ## What's intentionally divergent (cross-platform coverage)
 
@@ -206,7 +188,7 @@ bug, not a flow bug:
 | Chrome build (local) | `.maestro/chrome-version` | `lib-e2e-chrome.sh` (hard gate in every local runner), `test:e2e:check` |
 | Worker parallelism | `MAESTRO_PARALLELISM=3` | CI workflow, `test:e2e:like-ci` |
 | Convex DB state at "setup-done" | scripted `e2e-baseline.sh reset`, then `setup.yaml` | `run-e2e-smoke.sh` setup mode |
-| Flow ordering | ~~`requires:` / `provides:` tags~~ — **retired**, see below | CI's NEO-49 work queue; locally, `test:e2e -- setup` then everything else |
+| Flow ordering | seed first, then anything | CI's NEO-49 work queue; locally, `test:e2e -- setup` then everything else |
 
 ## Troubleshooting: "passes locally, fails CI" (or vice versa)
 
@@ -216,11 +198,10 @@ two buckets.
 1. **Pin drift.** Run `npm run test:e2e:check`. If it complains, fix that
    first; reproducing CI on a drifted environment is impossible by
    construction.
-2. **Cascade flake.** A level-N flow failed (or SIGSEGV'd) and downstream
-   flows ran with stale state. Look at the JUnit report for any `FAIL`
-   marked `skipped: prerequisite "X" not satisfied` — those are flows that
-   were correctly skipped because a producer failed. The actual bug is in
-   the producer.
+2. **Missing baseline.** The flow needs seeded data that isn't there — locally
+   because `test:e2e -- setup` wasn't run (or was run against a different
+   deployment), in CI because the pre-matrix `seed` job failed. Check the seed
+   job / your own setup run before reading anything into the flow's failure.
 3. **JVM crash on macOS (Maestro 2.6 + OpenJDK 23).** Symptom:
    `hs_err_pid*.log` in cwd, flow stops mid-execution with no failure
    assertion. Fix: switch to Java 21 (`.java-version` and `.sdkmanrc`
@@ -379,13 +360,26 @@ from under captured coordinates on re-render. There is no app footer and no
 top and the `BinderTabs` rail on the right edge. A dropped tap is diagnosed,
 never attributed to a footer.
 
-Drop centering only for an element the page cannot scroll to its centre —
-locked to the page bottom, or pinned in a fixed container such as a modal
-footer — and only after you have SHOWN that is what it is: the
-`Element bounds` line in `maestro.log` repeats unchanged across
-`Scrolling try count: 0`…`4`. Record that measurement in a comment citing
-this rule. An element that *should* be centerable and is not is a **product
-bug to fix**, never an exception to claim.
+**Centre even when the element cannot reach the centre.** Not reaching the
+band is not a reason to drop `centerElement`. Maestro's give-up path swipes
+first and accepts second, so on a bottom-locked target centring still drives
+the page to its **maximum scroll** and parks the target as far from the fold
+as the document allows — which is the whole point of R8. Measured on
+`id: "Edit attributes"` (the collapsed `SetAttributesPanel` summary bar,
+last element on the page): the drill can leave it as low as `y=609` in the
+625px viewport, flush against the fold, and centring lifts it to `y=518`,
+~91px clear, every time. It never reaches the band (which ends at ~375) and
+the `Element bounds` line then repeats unchanged from
+`Scrolling try count: 1` to `5`, but the step COMPLETES and the tap is safe.
+
+The **only** real exception is an element a swipe cannot move **at all** —
+pinned in a fixed container such as a modal footer — and only after you have
+SHOWN that is what it is: `Element bounds` identical from
+`Scrolling try count: 0` through `4`, with **no** first-swipe movement.
+Record that measurement in a comment citing this rule.
+`multi-source-panel-opens-dialog.yaml`'s dialog-footer `Cancel` is the worked
+example (`y=529`, unmoved across five swipes). An element that *should* be
+centerable and is not is a **product bug to fix**, never an exception to claim.
 
 **And when you do centre, give the step `timeout: 20000` or more.**
 Measured from the pinned `maestro-orchestra.jar` (v2.8.0,
@@ -396,9 +390,16 @@ The `timeout` is checked at the *bottom* of that loop, so a shorter one turns
 a graceful give-up into `No visible element found` on an element Maestro just
 logged at `Visibility Percent: 1.0`. This is what actually failed three flows
 in NEO-260's first run: the reds were at `timeout: 7000`/`10000`, while
-`features-propagation.yaml` and `set-attributes-edit.yaml` centred the
+`features-propagation.yaml` and `set-attributes-edit.yaml` asked to centre the
 *identical* `id: "Edit attributes"` target at `timeout: 15000` and passed in
 the same run. It was never that centering is unsafe — it was arithmetic.
+
+Read those two green flows precisely, though, because an earlier NEO-260 note
+read them wrong: their logs show `Element bounds` frozen at `y=518`/`y=514`
+across `Scrolling try count: 1`…`5`, then COMPLETED at ~7.6s. They are **not**
+evidence that the bar centres — nothing centres it — they are evidence that the
+give-up path is graceful and costs ~7.6s, so 15000 cleared it and 7000 did not.
+Budget from the give-up cost, not from a hoped-for early exit.
 
 One more measurement worth knowing before you tune a number:
 `visibilityPercentage` is effectively **boolean** in Maestro 2.8 —
@@ -642,8 +643,8 @@ runs once, deliberately, and never as one thread among many (NEO-46). Note that
 neither step seeds a team or a player: those tables stay empty until a flow
 makes its own per-worker rows (see troubleshooting item 4 above).
 
-Flows no longer declare `requires:`/`provides:` — that graph was retired with
-NEO-49 (see "Prerequisite closure" above). Seed first, then run what you want.
+Nothing schedules around the seed: run `test:e2e -- setup` first, then run
+whatever flows you want.
 
 If you need to manually seed a particular worker's state for a local
 repro, just run `setup.yaml` first:
@@ -702,20 +703,14 @@ worker's MAIN account while `label-history-empty-state` asserts the empty state
 on the isolated `new-profile` account — two accounts, two states, neither flow
 able to disturb the other.
 
-## Cascade prerequisite check (NEO-23) — dormant
+## Flow ordering
 
-`run-e2e-smoke.sh` tracks which `provides:` states have at least one PASSing
-producer, skips any flow whose `requires:` set isn't fully satisfied, and
-records the skip as a FAIL with `skipped: prerequisite "X" not satisfied`. It
-was built to stop the "flaked producer → downstream flows run with stale state
-→ result depends on whether the producer flaked" failure mode that bit us in
-PR #33.
+There isn't any, beyond the seed. In CI, the pre-matrix `seed` job establishes
+the baseline and the NEO-49 work queue hands flows to a homogeneous runner pool
+in no particular order. Locally, `npm run test:e2e -- setup` establishes the
+same baseline and then flows run in whatever order the lanes hand them out.
 
-**It is dormant.** No flow declares `requires:` or `provides:` any more
-(NEO-49's work queue replaced the model; verified NEO-260), so the check has
-no edges to enforce and never skips anything. `MAESTRO_CASCADE_PERMISSIVE=true`
-opts out of a check that is already inert.
-
-The failure mode it guarded against has not gone away — it moved. In CI the
-queue and the pre-matrix `seed` job handle ordering; locally, nothing does, so
-seed with `npm run test:e2e -- setup` before running a flow that needs data.
+That is a constraint on flows, not a gap in the runner: **a flow must be
+self-contained** — it creates and uses its own per-worker data, or reads the
+seeded baseline without mutating it. A flow that only passes when some other
+flow ran first is a broken flow. Seed, then run whatever you want.

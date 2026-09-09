@@ -54,23 +54,27 @@ tags:
 # idempotent expand pattern in case a prior test collapsed it.
 # ============================================================
 
-# R8 EXCEPTION, investigated (NEO-260) — do NOT add `centerElement: true` here.
-# "Edit attributes" is the collapsed SetAttributesPanel summary bar, and at the
-# setName level nothing renders below it (CardChecklist needs a variant), so it
-# is the last element on the page. SetSelector.tsx deliberately leaves NO scroll
-# headroom below the last panel (NEO-255 tried `pb-[50vh]` and reverted it:
-# dozens of flows scroll DOWN for an anchor and rely on the document bottoming
-# out). Measured in CI: document 786px, viewport 625px, so scrollTop maxes at
-# 161px and the bar sits at viewport y=518 — centring needs y<=375, i.e. 367px
-# of scroll that does not exist. Maestro then burns its full 6-iteration centring
-# budget (~9s) on a target whose bounds never move before it gives up and accepts
-# the element, which blew this step's timeout and turned a 100%-visible element
-# into "No visible element found". Bottom-locked, not a product bug.
+# R8 — centred, and `timeout: 20000` is not optional. MEASURED in CI (NEO-260,
+# maestro.log): this target CANNOT reach Maestro's centre band. It is the
+# collapsed SetAttributesPanel summary bar and the last thing on the page, and
+# SetSelector.tsx deliberately leaves NO scroll headroom below the last panel
+# (NEO-255 tried `pb-[50vh]` and reverted it — many flows scroll DOWN for an
+# anchor and rely on the document bottoming out). So at maximum scroll it parks
+# at y=518 of the 625px viewport while the centre band ends at ~375, and
+# `Element bounds` repeats unchanged across `Scrolling try count: 1`..`5` before
+# Maestro gives up and accepts the already-visible element.
+# Centring is kept anyway, because that give-up path does real work here: it
+# drives the page to maximum scroll, so the bar always ends ~91px clear of the
+# bottom edge instead of wherever the drill left it (measured as low as y=609,
+# flush against the fold). What it costs is the full 6-iteration budget, ~7.6s
+# in CI — which is why 7000/10000 failed three flows in NEO-260's first run.
 - scrollUntilVisible:
     element:
       id: "Edit attributes"
+    centerElement: true
     visibilityPercentage: 10
-    timeout: 7000
+    waitToSettleTimeoutMs: 1000
+    timeout: 20000
 
 # IDEMPOTENT EXPAND: tap only if the panel is currently collapsed.
 - runFlow:
