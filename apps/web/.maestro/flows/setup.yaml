@@ -391,10 +391,16 @@ tags:
     when:
       notVisible: "Base"
     commands:
+      # R8: centre before the tap. Timeout raised to 20000 from 10000. With
+      # centerElement Maestro re-reads the view hierarchy up to six times (8-13s in CI)
+      # before it gives up and accepts an already-visible element, and the timeout is
+      # checked at the BOTTOM of that loop — a shorter ceiling turns that graceful
+      # give-up into a spurious "No visible element found". Do not lower it.
       - scrollUntilVisible:
           element:
             text: "Sync Variant Types"
-          timeout: 10000
+          centerElement: true
+          timeout: 20000
       - tapOn: "Sync Variant Types"
       - extendedWaitUntil:
           notVisible: "Syncing Variant Types"
@@ -764,9 +770,17 @@ tags:
           text: ".*[0-9]+ ready.*"
       - assertVisible:
           text: ".*Ready \\([0-9]+\\).*"
+      # R8: centre before the tap. Timeout added at 20000; the step carried none, so it
+      # defaulted to 7000. With centerElement Maestro re-reads the view hierarchy up to
+      # six times (8-13s in CI) before it gives up and accepts an already-visible
+      # element, and the timeout is checked at the BOTTOM of that loop — a shorter
+      # ceiling turns that graceful give-up into a spurious "No visible element found".
+      # Do not lower it.
       - scrollUntilVisible:
           element:
             text: ".*Save [0-9]+ sets.*"
+          centerElement: true
+          timeout: 20000
       - tapOn:
           text: ".*Save [0-9]+ sets.*"
       - extendedWaitUntil:
@@ -973,9 +987,17 @@ tags:
           text: ".*[0-9]+ ready.*"
       - assertVisible:
           text: ".*Ready \\([0-9]+\\).*"
+      # R8: centre before the tap. Timeout added at 20000; the step carried none, so it
+      # defaulted to 7000. With centerElement Maestro re-reads the view hierarchy up to
+      # six times (8-13s in CI) before it gives up and accepts an already-visible
+      # element, and the timeout is checked at the BOTTOM of that loop — a shorter
+      # ceiling turns that graceful give-up into a spurious "No visible element found".
+      # Do not lower it.
       - scrollUntilVisible:
           element:
             text: ".*Save [0-9]+ sets.*"
+          centerElement: true
+          timeout: 20000
       - tapOn:
           text: ".*Save [0-9]+ sets.*"
       - extendedWaitUntil:

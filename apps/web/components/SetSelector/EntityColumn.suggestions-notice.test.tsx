@@ -206,7 +206,7 @@ describe("EntityColumn — unlink notice (NEO-211 plan D)", () => {
    * screen, so the column box alone would announce to nobody.
    */
   function noticeBox() {
-    return screen.getByLabelText("Dismiss notice").closest('[role="status"]')!;
+    return screen.getByLabelText("Dismiss Sets notice").closest('[role="status"]')!;
   }
 
   it("names what stopped being listed, and says the rows are still ours", async () => {
@@ -242,7 +242,7 @@ describe("EntityColumn — unlink notice (NEO-211 plan D)", () => {
     state.status = doneWithUnlinked;
     await renderColumn();
     await act(async () => {
-      fireEvent.click(screen.getByLabelText("Dismiss notice"));
+      fireEvent.click(screen.getByLabelText("Dismiss Sets notice"));
     });
     expect(mockDismiss).toHaveBeenCalledWith({
       level: "setName",
@@ -250,7 +250,21 @@ describe("EntityColumn — unlink notice (NEO-211 plan D)", () => {
     });
     // Optimistically gone locally too, so the box disappears on click rather
     // than on round-trip.
-    expect(screen.queryByLabelText("Dismiss notice")).toBeNull();
+    expect(screen.queryByLabelText("Dismiss Sets notice")).toBeNull();
+  });
+
+  it("names Dismiss after the column, so two open notices are tellable apart", async () => {
+    // NEO-260: a bare "Dismiss notice" is one accessible name shared by every
+    // column showing a notice — indistinguishable to a screen-reader user and,
+    // as Maestro matches `resource-id` as an UNANCHORED regex, ambiguous to a
+    // flow too. Same ambiguity class as the bare "Collapse" this ticket fixed.
+    state.status = doneWithUnlinked;
+    await renderColumn();
+
+    const dismiss = screen.getByLabelText("Dismiss Sets notice");
+    // WCAG 2.5.3: the visible word is still inside the accessible name.
+    expect(dismiss.textContent).toBe("Dismiss");
+    expect(screen.queryByLabelText(/^Dismiss notice$/)).toBeNull();
   });
 
   it("parks focus on the column when Dismiss unmounts itself", async () => {
@@ -259,7 +273,7 @@ describe("EntityColumn — unlink notice (NEO-211 plan D)", () => {
     // the top of the document. Same guarded park the two sync forms use.
     state.status = doneWithUnlinked;
     const { container } = await renderColumn();
-    const dismiss = screen.getByLabelText("Dismiss notice");
+    const dismiss = screen.getByLabelText("Dismiss Sets notice");
     dismiss.focus();
     expect(document.activeElement).toBe(dismiss);
 
@@ -321,13 +335,13 @@ describe("EntityColumn — unlink notice (NEO-211 plan D)", () => {
       state.status = messageOnly;
       await renderColumn();
       await act(async () => {
-        fireEvent.click(screen.getByLabelText("Dismiss notice"));
+        fireEvent.click(screen.getByLabelText("Dismiss Sets notice"));
       });
       expect(mockDismiss).toHaveBeenCalledWith({
         level: "setName",
         parentId: undefined,
       });
-      expect(screen.queryByLabelText("Dismiss notice")).toBeNull();
+      expect(screen.queryByLabelText("Dismiss Sets notice")).toBeNull();
     });
 
     it("fires NO toast — there is nothing unlinked to announce", async () => {
@@ -346,7 +360,7 @@ describe("EntityColumn — unlink notice (NEO-211 plan D)", () => {
       expect(text).toContain(PARTIAL);
       expect(text).toContain("No longer listed on BSC: 2 sets");
       // One box, one Dismiss — not two stacked in a 260-340px column.
-      expect(screen.getAllByLabelText("Dismiss notice")).toHaveLength(1);
+      expect(screen.getAllByLabelText("Dismiss Sets notice")).toHaveLength(1);
     });
 
     it("leaves a total failure on the error path, with Retry semantics intact", async () => {
@@ -354,7 +368,7 @@ describe("EntityColumn — unlink notice (NEO-211 plan D)", () => {
       await renderColumn();
       expect(screen.getByText("Couldn't sync options.")).toBeTruthy();
       // An error row is not dismissable — Sync is the way out.
-      expect(screen.queryByLabelText("Dismiss notice")).toBeNull();
+      expect(screen.queryByLabelText("Dismiss Sets notice")).toBeNull();
     });
   });
 
@@ -369,7 +383,7 @@ describe("EntityColumn — unlink notice (NEO-211 plan D)", () => {
   it("says nothing when a sync unlinked nothing", async () => {
     state.status = { status: "done", unlinked: [] };
     await renderColumn();
-    expect(screen.queryByLabelText("Dismiss notice")).toBeNull();
+    expect(screen.queryByLabelText("Dismiss Sets notice")).toBeNull();
     expect(document.querySelector('[aria-live="polite"]')).toBeNull();
   });
 });

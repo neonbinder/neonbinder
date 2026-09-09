@@ -435,6 +435,13 @@ export default function VariantForm({
                     totalsBySide: totalsBySideFor(unlinked, unlinkedTotal),
                   })}
                   onDismiss={() => setUnlinked([])}
+                  // NEO-260: name the Dismiss button per column. Variants and
+                  // Parallels can each show a notice at once, and a bare
+                  // "Dismiss notice" gives both the same accessible name —
+                  // ambiguous for a screen reader, and an ambiguous
+                  // resource-id for an E2E `id:` selector, which Maestro
+                  // matches as an UNANCHORED regex.
+                  columnLabel="Variants"
                 />
               )}
 

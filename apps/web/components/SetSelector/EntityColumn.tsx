@@ -259,9 +259,11 @@ export default function EntityColumn({
   // a11y: tracks the notice going visible→hidden, so focus can be parked when
   // the control that had it unmounts. See the effect below.
   const hadNoticeRef = useRef(false);
-  // Same idea for the custom-entry form: every one of its controls unmounts the
-  // instant a create commits (or the form is cancelled). See the park effect.
-  const wasCustomRef = useRef(false);
+  // Which branch this column rendered last, and whether focus was inside it —
+  // together they are what lets the park below fire on ANY branch swap without
+  // grabbing focus from a column nobody has touched. See the park effect.
+  const renderedBranchRef = useRef<string>("idle");
+  const hadFocusInsideRef = useRef(false);
   // Reuses SetAttributesPanel's fixed-position toast verbatim rather than
   // inventing a second mechanism — the column may well have scrolled out of
   // view by the time a background sync lands its unlink report.
@@ -582,26 +584,90 @@ export default function EntityColumn({
     }
   }, [noticeVisible]);
 
-  // NEO-260 (a11y) — the same park, for the custom-entry form.
+  // Which of this column's mutually-exclusive branches is on screen right now.
   //
-  // Committing a create tears the whole form down: the button the operator was
-  // standing on unmounts, focus falls to <body>, and the next Tab restarts from
-  // the top of the DOCUMENT — several columns and a whole page header away from
-  // the cascade they were working in. Park focus on the column instead, so Tab
-  // resumes where they left off.
+  // Named once here rather than re-derived inside `newPathContent`, because two
+  // separate things need to agree on it: what to RENDER, and whether the render
+  // that just happened tore down whatever had focus (the park below).
   //
-  // Guarded on `document.activeElement === document.body` exactly like the
-  // notice park above: if the user (or a flow) has already moved focus
-  // somewhere real, it is never stolen back. `preventScroll` because this
-  // column's own reveal/settle logic owns the horizontal scroll position and a
-  // browser scroll-into-view here would fight it.
+  // `showSyncingPanel` is the ensureSync path's own condition, moved out
+  // verbatim — see `newPathContent` for why each clause is there.
+  const showSyncingPanel =
+    !!useEnsureSync &&
+    mode !== "custom" &&
+    syncStatus?.status === "syncing" &&
+    (!hasInteracted || selfRequestedSync);
+  const branchKey =
+    mode === "custom"
+      ? "custom"
+      : showSyncingPanel
+        ? "syncing"
+        : mode === "sync"
+          ? "sync"
+          : "idle";
+
+  // NEO-260 (a11y) — park focus on ANY branch swap, not just the custom form.
+  //
+  // Whatever this column is showing, swapping to a different branch unmounts
+  // every control in the old one. The button the operator was standing on goes
+  // with it, focus falls to <body>, and the next Tab restarts from the top of
+  // the DOCUMENT — several columns and a whole page header away from the
+  // cascade they were working in.
+  //
+  // The first version of this keyed on `mode`, which covered exactly one of the
+  // swaps: the custom-entry form committing. It missed the one an operator hits
+  // first. On the `useEnsureSync` path, pressing "Sync <X>" replaces the idle
+  // button row with the "Fetching from marketplaces…" panel — and `mode` never
+  // leaves "idle" on that path, so the park never fired and the very button
+  // that starts the column's main action dropped focus to <body>. Keying on
+  // which BRANCH is rendered covers every one of them, including any added
+  // later, because a new branch is a new value of the key by construction.
+  //
+  // Two guards, both load-bearing:
+  //
+  //  * **Focus was actually inside this column** (`focusin`/`focusout`, below).
+  //    Branch swaps happen unprompted — a background sync flips a never-touched
+  //    column's status while the page is still settling, and on first paint
+  //    `document.activeElement` IS <body>. Without this the cascade would grab
+  //    focus at load from a column nobody has touched, and move a screen
+  //    reader's cursor with it.
+  //  * **Focus really landed on <body>** — the same rule the notice park uses.
+  //    If the user (or a flow) has already moved focus somewhere real, it is
+  //    never stolen back.
+  //
+  // `preventScroll` because this column's own reveal/settle logic owns the
+  // horizontal scroll position of the cascade row and a browser
+  // scroll-into-view here would fight it.
   useEffect(() => {
-    const wasCustom = wasCustomRef.current;
-    wasCustomRef.current = mode === "custom";
-    if (wasCustom && mode !== "custom" && document.activeElement === document.body) {
-      containerRef.current?.focus({ preventScroll: true });
-    }
-  }, [mode]);
+    const el = containerRef.current;
+    if (!el) return;
+    const onFocusIn = () => {
+      hadFocusInsideRef.current = true;
+    };
+    const onFocusOut = (event: FocusEvent) => {
+      // A node UNMOUNTING while focused does not reliably fire focusout, which
+      // is exactly the case this ref exists to remember — so absence of the
+      // event has to mean "still ours". Only a focusout that names a new home
+      // outside the column clears it.
+      const next = event.relatedTarget;
+      hadFocusInsideRef.current = !!next && next instanceof Node && el.contains(next);
+    };
+    el.addEventListener("focusin", onFocusIn);
+    el.addEventListener("focusout", onFocusOut);
+    return () => {
+      el.removeEventListener("focusin", onFocusIn);
+      el.removeEventListener("focusout", onFocusOut);
+    };
+  }, []);
+
+  useEffect(() => {
+    const previous = renderedBranchRef.current;
+    renderedBranchRef.current = branchKey;
+    if (previous === branchKey) return;
+    if (!hadFocusInsideRef.current) return;
+    if (document.activeElement !== document.body) return;
+    containerRef.current?.focus({ preventScroll: true });
+  }, [branchKey]);
 
   // Auto-sync: when this column is visible, not frozen by interaction, in idle
   // mode, the items query has resolved to an empty list, and we haven't already
@@ -1234,7 +1300,7 @@ export default function EntityColumn({
     // still want the panel: the operator clicking "Sync <X>" themselves.
     // A never-touched column mid-INITIAL sync keeps the panel (hasInteracted is
     // still false — the interaction effect no-ops until the first sync lands).
-    if (syncStatus?.status === "syncing" && (!hasInteracted || selfRequestedSync)) {
+    if (showSyncingPanel) {
       return (
         <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
           <h2 className="text-xl font-semibold mb-4">
@@ -1269,6 +1335,7 @@ export default function EntityColumn({
             one Dismiss. */}
         {noticeVisible && (
           <SyncDoneNotice
+            columnLabel={levelLabelPlural(level)}
             message={doneMessage}
             notices={buildUnlinkedNotices(doneUnlinked, level, {
               totalsBySide: unlinkedTotals,

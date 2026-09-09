@@ -35,54 +35,79 @@ tags:
 - tapOn: "Tagline"
 - inputText: "Buying and Selling all kinds of Sports Cards"
 
-# Payment Handles — pre-existing pub-* selectors (same as fill-profile-data); the
-# "→ ..." preview text is the visible confirmation that the value landed.
+# Payment Handles — reached the way a person reaches them: scroll the VISIBLE
+# label into view, tap it (its htmlFor focuses the input), then type. The DOM
+# ids these steps used to target were invisible to user and screen reader alike
+# (NEO-260); the ids stay in the markup only because they are what wires each
+# label to its input. The "→ ..." preview text is the visible confirmation that
+# the value landed.
+#
+# Each label carries that trailing preview span once a value is typed, so they
+# are matched with .* on both sides rather than as an exact string, and each
+# names its row ("PayPal username" is in exactly one label, so it cannot collide
+# with the PayPal email row below).
+#
+# R8: every centred scroll here carries timeout: 20000 — with centerElement on,
+# Maestro re-reads the hierarchy up to six times (8-13s in CI) before giving up
+# and accepting an already-visible element, and the timeout is checked at the
+# BOTTOM of that loop, so a shorter one turns a graceful give-up into
+# "No visible element found".
 - scrollUntilVisible:
     element:
       text: "Payment Handles"
 - scrollUntilVisible:
     element:
-      id: "pub-paypal"
+      text: ".*PayPal username.*"
     centerElement: true
+    timeout: 20000
 - tapOn:
-    id: "pub-paypal"
+    text: ".*PayPal username.*"
 - inputText: "${TEST_USERNAME}-pp"
 - assertVisible: "→ paypal.me/${TEST_USERNAME}-pp"
 # PayPal email (Goods & Services) — set so the sale page renders the "PayPal
-# (G&S)" button (its href is gated on profile.paypalEmail). Target the VISIBLE
-# label (its htmlFor="pub-paypal-email" focuses the input), not the bare HTML id.
-# The label parens are regex-special — escaped as [(] / [)]. The label also has a
-# trailing "Buyer-protected payments" span, so wrap in .* (Maestro text matches
-# are full-string anchored). There is no "→" preview for the email field; the
-# G&S button on the sale page is the downstream proof the value persisted.
+# (G&S)" button (its href is gated on profile.paypalEmail). The label parens are
+# regex-special — escaped as [(] / [)]. The label also has a trailing
+# "Buyer-protected payments" span, so wrap in .* (Maestro text matches are
+# full-string anchored). There is no "→" preview for the email field; the G&S
+# button on the sale page is the downstream proof the value persisted.
 - scrollUntilVisible:
     element:
       text: ".*PayPal email [(]Goods & Services[)].*"
     centerElement: true
+    timeout: 20000
 - tapOn:
     text: ".*PayPal email [(]Goods & Services[)].*"
 - inputText: "${TEST_USERNAME}@example.com"
 - scrollUntilVisible:
     element:
-      id: "pub-venmo"
+      text: ".*Venmo username.*"
     centerElement: true
+    timeout: 20000
 - tapOn:
-    id: "pub-venmo"
+    text: ".*Venmo username.*"
 - inputText: "${TEST_USERNAME}-venmo"
 - assertVisible: "→ venmo.com/${TEST_USERNAME}-venmo"
 - scrollUntilVisible:
     element:
-      id: "pub-cashapp"
+      text: ".*Cash App username.*"
     centerElement: true
+    timeout: 20000
 - tapOn:
-    id: "pub-cashapp"
+    text: ".*Cash App username.*"
 - inputText: "${TEST_USERNAME}-cashapp"
 - assertVisible: "→ cash.app/$${TEST_USERNAME}-cashapp"
 
 # Save and confirm.
+# R8: centre the Save button before tapping it — the sibling drill in
+# profile/fill-profile-data.yaml does the same. Reapplied after ef28202 reverted
+# it wholesale; the first run's reds were centred scrolls left on a 7-10s
+# timeout, not the centring, so this one is explicitly given the 20s budget the
+# centring loop needs.
 - scrollUntilVisible:
     element:
       text: "Save Public Profile"
+    centerElement: true
+    timeout: 20000
 - tapOn: "Save Public Profile"
 # Non-scrolling on purpose. The save confirmation renders BELOW the Save button,
 # which is the last element on /profile/public, so it used to land past the fold

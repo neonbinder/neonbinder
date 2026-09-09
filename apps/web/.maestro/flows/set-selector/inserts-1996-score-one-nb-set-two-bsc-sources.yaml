@@ -559,14 +559,16 @@ tags:
 # KEYBOARD COMMIT, not a tap (NEO-220). Confirm & Save is autofocused the
 # moment every row is decided, and its label says "(Enter)" — so Enter
 # committing IS the feature, and a tap would leave that promise untested.
-# This works only because the button carries the id
-# `entity-review-confirm-save`: maestro-web's `pressKey` re-finds the
-# active element by an XPath that falls back to the class string, and the
-# footer's Cancel is a NeonButton with the IDENTICAL classes — without the
-# id the XPath matched both, Selenium returned the first, and Enter aimed
-# at Confirm landed on Cancel (the failure screenshot showed
-# "Discard 1 decision?" while the app's own focus was correct). The button
-# also handles Enter in its own onKeyDown, because a synthetic
+# This works only because the button carries its own `useFieldTestClass`
+# marker class (`mb-field-<id>-btn-confirm-save`): maestro-web's `pressKey`
+# re-finds the active element by an XPath that falls back to the class
+# string, and the footer's Cancel is a NeonButton whose Radix classes are
+# otherwise IDENTICAL — without a distinct marker the XPath matched both,
+# Selenium returned the first, and Enter aimed at Confirm landed on Cancel
+# (the failure screenshot showed "Discard 1 decision?" while the app's own
+# focus was correct). A class, never a DOM id: `resource-id` is
+# `node.id || node.ariaLabel`, so an id would shadow the accessible name.
+# The button also handles Enter in its own onKeyDown, because a synthetic
 # KeyboardEvent has no default action and cannot activate a <button>.
 - pressKey: Enter
 # NEO-163: no gate on the wizard closing. The "Saved N cards" wait below is

@@ -1031,10 +1031,12 @@ alphanumeric search token, no hyphen, underscore or space anywhere in it
 - evalScript: '${output.ATTEMPT_TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'
 ```
 
-`ATTEMPT_ID` is `w<worker>-a<attempt>-<random>`, so stripping its hyphens gives
-a token that is both per-attempt and per-worker: the readability the old
-`${WORKER_INDEX}` prefix bought is folded INTO the token rather than separated
-out by another hyphen.
+`ATTEMPT_ID` is `<worker>-a<attempt>-<random>` — CI's `run-e2e-queue.sh` spells
+the worker half `r<n>`, the local `run-e2e-smoke.sh` spells it `w<n>` — so
+stripping its hyphens gives a token that is both per-attempt and per-worker: the
+readability the old `${WORKER_INDEX}` prefix bought is folded INTO the token
+rather than separated out by another hyphen. Strip the hyphens and use the
+whole thing; never assume which letter the worker half starts with.
 
 | Prefix | Owning flow | Notes |
 |---|---|---|
@@ -1042,9 +1044,12 @@ out by another hyphen.
 | `CNWT` | `checklist-attention-walker-missing-team.yaml` | |
 | `NBTeam` | `team-picker-create-custom-card.yaml` | created under `E2E Test Sport <w>`, not Baseball |
 | `NBPlayer` | `player-picker-create-custom-card.yaml` | a PLAYER, not a team — `players.search` tokenises identically, and the row persists the same way |
+| `PM` | `admin/player-management-add-and-career-history.yaml` | the PLAYER this flow adds by hand; `PMT` below is the team it gives him. The two diverge at their THIRD character, so neither name is a prefix of the other and neither picker can be answered by the other's row |
 | `PMT` | `admin/player-management-add-and-career-history.yaml` | |
+| `SLP` | `spine-label/player-team-colors-default-to-longest-tenure.yaml` | the PLAYER; `SLA`/`SLB` are his two teams. This is the one flow that types a strict PREFIX of a minted name — see the prefix note below |
 | `SLA`, `SLB` | `spine-label/player-team-colors-default-to-longest-tenure.yaml` | coloured `#132448` / `#002d72` |
 | `TLF` | `checklist-title-length-limits-and-fixer.yaml` | kept SHORT on purpose: the name lands in a generated listing title measured against an 80-character cap. `TLF<token>` is 8-12 chars, 3 fewer than the `TLF-${ATTEMPT_ID}` it replaced and 4-8 fewer than the "New York Yankees" before that — the rename spends less of the budget, never more. Read the FIXTURE SIZING block in the flow before changing any name in it |
+| `TME` | `admin/team-management-edit-a-team.yaml` | the throwaway PLAYER that flow creates on the way in, because a career editor is the only place outside the set-builder cascade where a team can be born. `TMT` below is the team it makes there; the two diverge at their third character |
 | `TMT` | `admin/team-management-edit-a-team.yaml` | the ONLY team in the suite with a `location` (`Loc${WORKER_INDEX}`), so once it saves its composed name is `Loc<w> TMT<token>` — see the composed-name note above for why the extra term is inert |
 | `MintedTeam` | `checklist-wizard-career-team-commits.yaml` | |
 | `TPT` | `team-picker.yaml` | |
@@ -1104,19 +1109,34 @@ collided constantly. Correct form:
 **Always per-ATTEMPT, not just per-worker.** `+ New team <name>` is offered only
 while no team of that name exists, so a name a previous attempt left behind
 renders `Add <name>` instead and the create step reaches for a control that is
-not there. (`ATTEMPT_ID` is `w<worker>-a<attempt>-<random>`, so stripping its
-hyphens keeps the worker inside the token — which is why no name needs a
-separate `${WORKER_INDEX}` prefix any more.)
+not there. (`ATTEMPT_ID` carries the worker half before its first hyphen, so
+stripping the hyphens keeps the worker inside the token — which is why no name
+needs a separate `${WORKER_INDEX}` prefix any more.)
 
 **Players follow the same rule** — `players` is global, equally empty, and
-`players.search` is the same kind of index. `NBPlayer<token>`
-(`player-picker-create-custom-card.yaml`) is registered in the table above.
-Three older player fixtures still carry hyphens and are the remaining work here:
-`PM-` (`admin/player-management-add-and-career-history.yaml`), `SLP-`
+`players.search` is the same kind of index. Every minted player name in the
+suite is separator-free and registered in the table above: `NBPlayer`
+(`player-picker-create-custom-card.yaml`), `PM`
+(`admin/player-management-add-and-career-history.yaml`), `SLP`
 (`spine-label/player-team-colors-default-to-longest-tenure.yaml`) and the
-throwaway `TME-` that `team-management-edit-a-team.yaml` needs in order to reach
-a career editor at all. Do not add a fourth; a new player name is
-`<Prefix>${output.ATTEMPT_TOKEN}` like every team name.
+throwaway `TME` that `team-management-edit-a-team.yaml` needs in order to reach
+a career editor at all. There is no exception left, and no new one is coming: a
+new player name is `<Prefix>${output.ATTEMPT_TOKEN}` like every team name.
+
+**Typing a PREFIX of a minted name is still allowed — and it is still one
+token.** One step in the suite does it deliberately: the spine designer's player
+search in `player-team-colors-default-to-longest-tenure.yaml` types the bare
+`SLP` and then taps the full `SLP<token>`, because maestro-web reports an
+input's value as its text, so a full-name query would make the search box answer
+to the same string as the option under it and the tap could land on the box. A
+prefix of a single token still searches: Convex prefix-matches a query's LAST
+term, which in a one-token query is the whole query. Two things bound how much
+of the name a prefix may assume. It must be a prefix under BOTH runners —
+`run-e2e-queue.sh` builds `ATTEMPT_ID` as `r<n>-a<attempt>-<random>` while
+`run-e2e-smoke.sh` builds `w<n>-a<attempt>-<random>`, so nothing past the flow's
+own literal prefix is portable — and whatever it narrows to must be confirmed by
+a FULL-name assertion straight afterwards, because a prefix on its own no longer
+identifies the attempt.
 
 ## Read-only consumers of the shared real set
 

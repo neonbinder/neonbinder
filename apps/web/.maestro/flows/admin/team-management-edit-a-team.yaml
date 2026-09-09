@@ -52,11 +52,14 @@ tags:
 # be offered "+ New team" and would quietly make a SECOND Padres.
 #
 # R7 / R7a — writes to NO shared row. Both the player and the team are named
-# "<prefix>-<worker>-<attempt>", so eight concurrent runners and a retry can
-# never land on the same row, and nothing pre-existing is read or edited. The
-# per-attempt half is mechanical as well as safe: the typeahead offers
-# "+ New team <name>" only while no team of that name exists, so a name left
-# behind by a previous attempt would render "Add <name>" instead.
+# "<Prefix><token>" — ONE search token that carries the worker AND the attempt
+# inside it (see the ATTEMPT_TOKEN note below) — so eight concurrent runners and
+# a retry can never land on the same row, and nothing pre-existing is read or
+# edited. The per-attempt half is mechanical as well as safe: the typeahead
+# offers "+ New team <name>" only while no team of that name exists, so a name
+# left behind by a previous attempt would render "Add <name>" instead. The
+# player and the team diverge at their third character ("TME<token>" vs
+# "TMT<token>"), so neither name is a prefix of the other.
 #
 # "Discover" is NEVER tapped. It performs a live outbound fetch of
 # teamcolorcodes.com's sitemap (~1.5MB) from CI, against a third party with no
@@ -118,18 +121,18 @@ tags:
 # reach for fields that have not mounted yet.
 - assertVisible: "Add a player"
 - tapOn: "New player name"
-- inputText: "TME-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- inputText: "TME${output.ATTEMPT_TOKEN}"
 - scrollUntilVisible:
     element:
-      id: "Create player TME-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+      id: "Create player TME${output.ATTEMPT_TOKEN}"
     centerElement: true
 - tapOn:
-    id: "Create player TME-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    id: "Create player TME${output.ATTEMPT_TOKEN}"
 
 # "Added <name>." is said only for a row that was inserted, so this is also the
 # signal that the new player's own panel — and its career editor — is open.
 - extendedWaitUntil:
-    visible: ".*Added TME-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
+    visible: ".*Added TME${output.ATTEMPT_TOKEN}.*"
     timeout: 7000
 
 # ── THE TEAM THIS FLOW IS ACTUALLY ABOUT, CREATED FROM THE TYPEAHEAD ────────
@@ -431,12 +434,15 @@ tags:
 #
 # The count is not ours to predict. While a search term is present the counter
 # reads "{n} matches", and that query runs through Convex's search index, which
-# is WORD-WISE: "TME-2-r2-a1-4406" is a bag of tokens, and other workers'
-# fixtures share several of them. Measured in CI run 33982239886, this exact
-# filter returned "3 matches" — our TME row plus a `KOPlayer-r5-a1-…` and a
-# `PM-0-r0-a1-…` that merely shared the `a1` token. Any assertion on the number
-# is really an assertion about what the other seven runners happened to create,
-# which is not a fact this flow may depend on (the data-isolation rule).
+# is WORD-WISE — which is the whole reason the name above is one token. The
+# hyphenated "TME-2-r2-a1-4406" it replaced was a bag of tokens other workers'
+# fixtures shared: measured in CI run 33982239886, this exact filter returned
+# "3 matches" — our TME row plus a `KOPlayer-r5-a1-…` and a `PM-0-r0-a1-…` that
+# merely shared the `a1` token. "TME<token>" is one token nothing else can
+# share, so that particular collision is gone. The count still goes unasserted:
+# it would be a claim about what the other seven runners happened to create
+# rather than about this flow (the data-isolation rule), and the ROW below is
+# both the settle gate and the real assertion anyway.
 #
 # The ROW is unambiguous and is the thing actually needed next: every admin
 # master row prints its name in a `title`-bearing span, and maestro-web derives
@@ -445,13 +451,13 @@ tags:
 # Waiting on it is both the settle gate and the real assertion — the search
 # came back and it found the player this flow created.
 - tapOn: "Filter players"
-- inputText: "TME-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- inputText: "TME${output.ATTEMPT_TOKEN}"
 - extendedWaitUntil:
     visible:
-      id: "TME-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+      id: "TME${output.ATTEMPT_TOKEN}"
     timeout: 15000
 - tapOn:
-    id: "TME-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    id: "TME${output.ATTEMPT_TOKEN}"
 
 - scrollUntilVisible:
     element:

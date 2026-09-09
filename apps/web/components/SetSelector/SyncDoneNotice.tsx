@@ -56,6 +56,7 @@ export default function SyncDoneNotice({
   notices,
   onDismiss,
   dismissing,
+  columnLabel,
 }: {
   /** Server-composed partial-failure text. Rendered verbatim. */
   message?: string;
@@ -63,6 +64,22 @@ export default function SyncDoneNotice({
   onDismiss: () => void;
   /** Server round-trip in flight (column path); locks the button. */
   dismissing?: boolean;
+  /**
+   * NEO-260 — the noun of the column this notice belongs to ("Sports",
+   * "Sets"), used to NAME the Dismiss button.
+   *
+   * A bare `aria-label="Dismiss notice"` is ambiguous the moment two columns
+   * are showing a notice at once: a screen-reader user moving across the
+   * cascade hears the same button twice with nothing to say which sync it
+   * clears, and Maestro's `resource-id` (`node.id || node.ariaLabel`, matched
+   * as an UNANCHORED regex) finds both. Same ambiguity class as the bare
+   * "Collapse" this ticket already fixed, and the same remedy.
+   *
+   * Optional because two callers outside this change's scope (VariantForm,
+   * ParallelForm) still render the notice inside a sync form; they keep the
+   * old bare name until they are given one.
+   */
+  columnLabel?: string;
 }) {
   if (!message && notices.length === 0) return null;
 
@@ -103,7 +120,9 @@ export default function SyncDoneNotice({
         // finding one button at a time.
         onClick={dismissing ? undefined : onDismiss}
         aria-disabled={dismissing || undefined}
-        aria-label="Dismiss notice"
+        aria-label={
+          columnLabel ? `Dismiss ${columnLabel} notice` : "Dismiss notice"
+        }
         // px-2 py-1.5 (not px-1, no py): a bare underline link with no
         // vertical padding measures well under WCAG 2.5.8's 24px minimum
         // target size.

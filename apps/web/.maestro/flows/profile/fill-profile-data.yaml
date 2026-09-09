@@ -27,96 +27,117 @@ tags:
 - inputText: "Buying and Selling all kinds of Sports Cards"
 
 # Marketplace Links
-# Use id-based selectors — the section's text labels can be off-screen after
-# the bio inputText scrolls the page, and the credential section below this
-# editor also contains a "Username/Email" label that text-based taps could match.
+# Every field here is reached the way a person reaches it: scroll its VISIBLE
+# label into view, tap the label (its htmlFor focuses the input), then type.
+# These steps used to target the inputs' DOM ids, which no user can perceive —
+# NEO-260 retired that. The labels are unique full strings on this route
+# (/profile/public renders only PublicProfileEditor plus the section nav since
+# NEO-128 split the sections into routes, so the old "the credentials section
+# below also has a Username/Email label" caveat no longer applies).
+# R8: every centred scroll carries timeout: 20000 — centring re-reads the
+# hierarchy up to six times (8-13s in CI) before it gives up gracefully, and a
+# shorter timeout turns that give-up into "No visible element found".
 - scrollUntilVisible:
     element:
       text: "Marketplace Links"
 - scrollUntilVisible:
     element:
-      id: "pub-ebay"
+      text: "eBay Store URL"
     centerElement: true
-- tapOn:
-    id: "pub-ebay"
+    timeout: 20000
+- tapOn: "eBay Store URL"
 - inputText: "https://www.ebay.com/str/${TEST_USERNAME}"
 - scrollUntilVisible:
     element:
-      id: "pub-bsc"
+      text: "BuySportsCards URL"
     centerElement: true
-- tapOn:
-    id: "pub-bsc"
+    timeout: 20000
+- tapOn: "BuySportsCards URL"
+# The seller path and the MySlabs short link below are Jason's REAL PUBLIC
+# seller URLs, deliberately (confirmed 2026-09-09). Validating the real public
+# links is the point of this step, so do not "scrub" them to placeholders — the
+# assertions near the end of this flow match them exactly and would break.
 - inputText: "https://www.buysportscards.com/Seller/1d8570d204/${TEST_USERNAME}"
 - scrollUntilVisible:
     element:
-      id: "pub-sportlots"
+      text: "Sportlots URL"
     centerElement: true
-- tapOn:
-    id: "pub-sportlots"
+    timeout: 20000
+- tapOn: "Sportlots URL"
 - inputText: "https://sportlots.com/dealers/?dealer=${TEST_USERNAME}"
+# "MySlabs URL" is the label; the sibling helper button reads "Find my MySlabs
+# url", a different full string, and Maestro text matches are full-string
+# anchored, so this cannot pick up the button.
 - scrollUntilVisible:
     element:
-      id: "pub-myslabs"
+      text: "MySlabs URL"
     centerElement: true
-- tapOn:
-    id: "pub-myslabs"
+    timeout: 20000
+- tapOn: "MySlabs URL"
 - inputText: "http://myslabs.to/e8c447c0-5917-4326-be26-be2201e36d4a"
 
-# Payment Handles — use id-based selectors; the labels can be off-screen after
-# the marketplace links section, and "PayPal.*" matches both the username and
-# email rows ambiguously.
+# Payment Handles — same visible-label targeting. Each of these labels carries a
+# trailing "→ paypal.me/…" preview span once a value is typed, so they are
+# matched with .* on both sides rather than as an exact string. A bare
+# "PayPal.*" would still be ambiguous across the username and email rows, so
+# these name the row: "PayPal username" appears in exactly one label.
 - scrollUntilVisible:
     element:
       text: "Payment Handles"
 - scrollUntilVisible:
     element:
-      id: "pub-paypal"
+      text: ".*PayPal username.*"
     centerElement: true
+    timeout: 20000
 - tapOn:
-    id: "pub-paypal"
+    text: ".*PayPal username.*"
 - inputText: "${TEST_USERNAME}-pp"
 - assertVisible: "→ paypal.me/${TEST_USERNAME}-pp"
 - scrollUntilVisible:
     element:
-      id: "pub-venmo"
+      text: ".*Venmo username.*"
     centerElement: true
+    timeout: 20000
 - tapOn:
-    id: "pub-venmo"
+    text: ".*Venmo username.*"
 - inputText: "${TEST_USERNAME}-venmo"
 - assertVisible: "→ venmo.com/${TEST_USERNAME}-venmo"
 - scrollUntilVisible:
     element:
-      id: "pub-cashapp"
+      text: ".*Cash App username.*"
     centerElement: true
+    timeout: 20000
 - tapOn:
-    id: "pub-cashapp"
+    text: ".*Cash App username.*"
 - inputText: "${TEST_USERNAME}-cashapp"
 - assertVisible: "→ cash.app/$${TEST_USERNAME}-cashapp"
 
-# Social Media — id-based selectors (pub-twitter, pub-instagram, pub-tiktok)
+# Social Media — visible labels again ("Twitter / X URL", "Instagram URL",
+# "TikTok URL"). The remaining rows (YouTube / Facebook / Threads) are not
+# exercised here, as before.
 - scrollUntilVisible:
     element:
       text: "Social Media"
 - scrollUntilVisible:
     element:
-      id: "pub-twitter"
+      text: "Twitter / X URL"
     centerElement: true
-- tapOn:
-    id: "pub-twitter"
+    timeout: 20000
+- tapOn: "Twitter / X URL"
 - inputText: "https://x.com/${TEST_USERNAME}-twit"
 - scrollUntilVisible:
     element:
-      id: "pub-instagram"
+      text: "Instagram URL"
     centerElement: true
-- tapOn:
-    id: "pub-instagram"
+    timeout: 20000
+- tapOn: "Instagram URL"
 - inputText: "https://instagram.com/${TEST_USERNAME}-ig"
 - scrollUntilVisible:
     element:
-      id: "pub-tiktok"
+      text: "TikTok URL"
     centerElement: true
-- tapOn:
-    id: "pub-tiktok"
+    timeout: 20000
+- tapOn: "TikTok URL"
 - inputText: "https://tiktok.com/@${TEST_USERNAME}-tt"
 
 # Save — centerElement keeps "Save Public Profile" fully in view rather than
@@ -125,6 +146,7 @@ tags:
     element:
       text: "Save Public Profile"
     centerElement: true
+    timeout: 20000
 - tapOn: "Save Public Profile"
 # Non-scrolling on purpose. The save confirmation renders BELOW the Save button,
 # which is the last element on /profile/public, so it used to land past the fold

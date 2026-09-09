@@ -40,8 +40,11 @@ tags:
 # designer's own no-player fallback is #101820.
 #
 # R7 / R7a — writes to NO shared row. The player and both teams are named
-# "<prefix>-<worker>-<attempt>", so eight concurrent runners and a retry can
-# never land on the same rows, and nothing pre-existing is read or edited. The
+# "<Prefix><token>" — ONE search token that carries the worker AND the attempt
+# inside it (see the ATTEMPT_TOKEN note below) — so eight concurrent runners and
+# a retry can never land on the same rows, and nothing pre-existing is read or
+# edited. The three prefixes diverge at their third character ("SLP", "SLA",
+# "SLB"), so no name here is a prefix of another. The
 # per-attempt half is mechanical as well as safe: the typeahead offers
 # "+ New team <name>" only while no team of that name exists, so a name left by a
 # previous attempt would render "Add <name>" instead.
@@ -113,20 +116,20 @@ tags:
 # reach for fields that have not mounted yet.
 - assertVisible: "Add a player"
 - tapOn: "New player name"
-- inputText: "SLP-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- inputText: "SLP${output.ATTEMPT_TOKEN}"
 - scrollUntilVisible:
     element:
-      id: "Create player SLP-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+      id: "Create player SLP${output.ATTEMPT_TOKEN}"
     centerElement: true
 - tapOn:
-    id: "Create player SLP-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    id: "Create player SLP${output.ATTEMPT_TOKEN}"
 
 # "Added <name>." is said only for a row that was INSERTED — the screen says
 # "That player already exists — opened it." when it merely found one — so this
 # is also the proof this attempt's fixture is its own, and the signal that the
 # new player's panel and career editor are open.
 - extendedWaitUntil:
-    visible: ".*Added SLP-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
+    visible: ".*Added SLP${output.ATTEMPT_TOKEN}.*"
     timeout: 7000
 
 # ── THE LONG STINT — 10 years at team A ─────────────────────────────────────
@@ -335,7 +338,7 @@ tags:
     centerElement: true
 - tapOn: "Save"
 - extendedWaitUntil:
-    visible: ".*Saved SLP-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
+    visible: ".*Saved SLP${output.ATTEMPT_TOKEN}.*"
     timeout: 15000
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -425,25 +428,42 @@ tags:
     timeout: 30000
 
 # ── PICK THE FIXTURE PLAYER ─────────────────────────────────────────────────
-# The search runs against the players search index (NEO-147). A PREFIX is typed
-# and the FULL name tapped, deliberately: maestro-web reports an input's value
-# as its text, so typing the whole name would make the search box itself answer
-# to the same string as the option beneath it.
+# The search runs against the players search index (NEO-147). A STRICT PREFIX
+# of the name is typed and the FULL name tapped, deliberately: maestro-web
+# reports an input's value as its text, so typing the whole name would make the
+# search box itself answer to the same string as the option beneath it, and the
+# tap could land on the box rather than the option.
+#
+# THE PREFIX IS THE BARE "SLP", and it has to be. The name is now ONE search
+# token ("SLP<token>", see the ATTEMPT_TOKEN note at the top), and the token is
+# ATTEMPT_ID with its hyphens stripped — which the two runners spell
+# differently: run-e2e-queue.sh builds "r<n>-a<n>-<random>" and
+# run-e2e-smoke.sh builds "w<n>-a<n>-<random>". "SLP" is therefore the longest
+# string that is a prefix of this player's name under both, and reaching for
+# "SLP" + a worker index would be reaching for text that is not there in CI.
+#
+# A prefix of a single token still exercises the index the same way the old
+# "SLP-<worker>" did: Convex prefix-matches a search query's LAST term, which
+# here is the whole query, so "SLP" matches the token "slp<token>". What the
+# old prefix bought — narrowing to this worker — is not lost, because it was
+# never what proved anything: the two steps below name the player in FULL, so
+# a stray SLP row left by an earlier attempt can satisfy neither the wait nor
+# the tap. No other flow mints an SLP name.
 - scrollUntilVisible:
     element:
       text: "Find a player"
     centerElement: true
 - tapOn: "Find a player"
-- inputText: "SLP-${WORKER_INDEX || 0}"
+- inputText: "SLP"
 - extendedWaitUntil:
-    visible: "SLP-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    visible: "SLP${output.ATTEMPT_TOKEN}"
     timeout: 15000
-- tapOn: "SLP-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- tapOn: "SLP${output.ATTEMPT_TOKEN}"
 
 # The pick fills the label's own text — the name field is independent of the
 # search box, so this proves the selection propagated rather than just echoing.
 - extendedWaitUntil:
-    visible: ".*Defaults to the team SLP-${WORKER_INDEX || 0}-${ATTEMPT_ID} spent longest with.*"
+    visible: ".*Defaults to the team SLP${output.ATTEMPT_TOKEN} spent longest with.*"
     timeout: 15000
 
 # ── BOTH CAREER TEAMS ARE OFFERED ───────────────────────────────────────────

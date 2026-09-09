@@ -434,9 +434,16 @@ tags:
                       visible:
                         id: "Add custom Years"
                       timeout: 60000
+                  # R8: centre before the tap. Timeout kept at 60000, already over the
+                  # R8 floor. With centerElement Maestro re-reads the view hierarchy up
+                  # to six times (8-13s in CI) before it gives up and accepts an
+                  # already-visible element, and the timeout is checked at the BOTTOM of
+                  # that loop — a shorter ceiling turns that graceful give-up into a
+                  # spurious "No visible element found". Do not lower it.
                   - scrollUntilVisible:
                       element:
                         id: "Add custom Years"
+                      centerElement: true
                       visibilityPercentage: 50
                       timeout: 60000
                   - runFlow:
@@ -459,10 +466,17 @@ tags:
                   - extendedWaitUntil:
                       visible: ${YEAR}
                       timeout: 10000
+                  # R8: centre before the tap. Timeout raised to 20000 from 10000. With
+                  # centerElement Maestro re-reads the view hierarchy up to six times
+                  # (8-13s in CI) before it gives up and accepts an already-visible
+                  # element, and the timeout is checked at the BOTTOM of that loop — a
+                  # shorter ceiling turns that graceful give-up into a spurious "No
+                  # visible element found". Do not lower it.
                   - scrollUntilVisible:
                       element:
                         text: ${YEAR}
-                      timeout: 10000
+                      centerElement: true
+                      timeout: 20000
                   - tapOn: ${YEAR}
 
       # Wait for Manufacturers column to appear after Year selection.
@@ -610,10 +624,17 @@ tags:
                   - extendedWaitUntil:
                       visible: ${MANUFACTURER}
                       timeout: 10000
+                  # R8: centre before the tap. Timeout raised to 20000 from 10000. With
+                  # centerElement Maestro re-reads the view hierarchy up to six times
+                  # (8-13s in CI) before it gives up and accepts an already-visible
+                  # element, and the timeout is checked at the BOTTOM of that loop — a
+                  # shorter ceiling turns that graceful give-up into a spurious "No
+                  # visible element found". Do not lower it.
                   - scrollUntilVisible:
                       element:
                         text: ${MANUFACTURER}
-                      timeout: 10000
+                      centerElement: true
+                      timeout: 20000
                   - tapOn: ${MANUFACTURER}
 
       # Wait for Sets column to appear after Manufacturer selection.
@@ -897,9 +918,15 @@ tags:
       # For a real-synced VT (Insert/Parallel on 2024 Topps Chrome) the column
       # can auto-sync and open a ReconciliationModal — but the custom-set callers
       # pass a synthetic sport, so the VT here is custom and no modal fires.
+      # R8: centre before the tap. Timeout kept at 30000, already over the R8 floor.
+      # With centerElement Maestro re-reads the view hierarchy up to six times (8-13s in
+      # CI) before it gives up and accepts an already-visible element, and the timeout
+      # is checked at the BOTTOM of that loop — a shorter ceiling turns that graceful
+      # give-up into a spurious "No visible element found". Do not lower it.
       - scrollUntilVisible:
           element:
             id: "Add custom ${VARIANT_TYPE}s"
+          centerElement: true
           visibilityPercentage: 50
           timeout: 30000
 

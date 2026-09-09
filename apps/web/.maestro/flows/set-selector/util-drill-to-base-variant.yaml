@@ -83,10 +83,16 @@ tags:
 # If it never appears, skip straight to the CardChecklist wait.
 # ============================================================
 
+# R8: centre before the tap. Timeout raised to 20000 from 10000. With centerElement
+# Maestro re-reads the view hierarchy up to six times (8-13s in CI) before it gives up
+# and accepts an already-visible element, and the timeout is checked at the BOTTOM of
+# that loop — a shorter ceiling turns that graceful give-up into a spurious "No visible
+# element found". Do not lower it.
 - scrollUntilVisible:
     element:
       text: "Base"
-    timeout: 10000
+    centerElement: true
+    timeout: 20000
 - tapOn: "Base"
 
 # Selecting a variant type is the first thing that mounts BaseMappingForm and

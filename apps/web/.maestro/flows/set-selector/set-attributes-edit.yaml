@@ -226,13 +226,19 @@ tags:
 # features-propagation.yaml uses to scroll back up to "Base".
 # ============================================================
 
+# R8: centre before the tap. Timeout raised to 20000 from 15000. With centerElement
+# Maestro re-reads the view hierarchy up to six times (8-13s in CI) before it gives up
+# and accepts an already-visible element, and the timeout is checked at the BOTTOM of
+# that loop — a shorter ceiling turns that graceful give-up into a spurious "No visible
+# element found". Do not lower it.
 - scrollUntilVisible:
     element:
       id: "Hide attributes"
     direction: UP
+    centerElement: true
     visibilityPercentage: 10
     waitToSettleTimeoutMs: 1000
-    timeout: 15000
+    timeout: 20000
 
 - tapOn:
     id: "Hide attributes"
@@ -296,10 +302,16 @@ tags:
       - assertVisible:
           text: ".*BaseAttr-${WORKER_INDEX || 0}.*"
 
+# R8: centre before the tap. Timeout raised to 20000 from 10000. With centerElement
+# Maestro re-reads the view hierarchy up to six times (8-13s in CI) before it gives up
+# and accepts an already-visible element, and the timeout is checked at the BOTTOM of
+# that loop — a shorter ceiling turns that graceful give-up into a spurious "No visible
+# element found". Do not lower it.
 - scrollUntilVisible:
     element:
       text: "BaseAttr-${WORKER_INDEX || 0}"
-    timeout: 10000
+    centerElement: true
+    timeout: 20000
 - tapOn: "BaseAttr-${WORKER_INDEX || 0}"
 
 # Wait for the next column (pluralized variant type name) to appear,

@@ -441,8 +441,12 @@ listed here so a flow author meets them in one place.
   every minted team is visible to every other flow for the whole run. That is
   what broke CI run 34050688656. Derive the token with the blessed idiom —
   `evalScript: '${output.ATTEMPT_TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'`
-  — which folds the worker index inside the single token, since `ATTEMPT_ID`
-  is `w<worker>-a<attempt>-<random>`. (`output.ATTEMPT_TOKEN` is a value the
+  — which folds the runner index inside the single token. **The two runners
+  spell `ATTEMPT_ID` differently**: CI's queue runner builds
+  `r<n>-a<attempt>-<random>` (`run-e2e-queue.sh`), the local smoke runner builds
+  `w<worker>-a<attempt>-<random>` (`run-e2e-smoke.sh`). The hyphen-strip idiom
+  is indifferent to that, but anything that RECONSTRUCTS a prefix from
+  `${WORKER_INDEX}` matches nothing in CI — so never rebuild the token by hand. (`output.ATTEMPT_TOKEN` is a value the
   flow sets itself, which is fine; the banned one is `output.ATTEMPT_ID`, a
   binding the runner never populates.)
 - **`pressKey` needs a unique, user-visible handle** on its target — an
@@ -539,9 +543,22 @@ When two identically-classed siblings collapse into one XPath, fix it in
 Both are product requirements already: CLAUDE.md's UI section says every flow
 must be fully operable from the keyboard. The collision is the test telling you
 the app has an accessibility gap, so close the gap rather than routing around
-it. `components/SetSelector/EntityReviewWizard.tsx`'s `entity-review-confirm-save`
-is a real DOM id used as a handle — it is the **violation**, not the model, and
-is on the list to convert.
+it.
+
+**What makes the XPath itself resolve is a marker class, not an id.**
+`src/hooks/useFieldTestClass()` returns a document-unique class
+(`mb-field-<useId>-btn-confirm-save`); spread it onto each colliding sibling's
+`className` and each generated XPath names exactly one node. A class never
+touches `resource-id`, so the accessible name stays the handle. See
+`components/SetSelector/EntityColumn.tsx` for the worked pair — one marker class
+plus one distinct `aria-label` per button.
+
+`components/SetSelector/EntityReviewWizard.tsx`'s `Confirm & Save (Enter)` used
+to carry a real DOM id (`entity-review-confirm-save`) as its handle. NEO-260
+**converted it**: it and its `Cancel (Esc)` sibling now each carry a
+`useFieldTestClass` marker class and their own `aria-label`, and no DOM id. No
+flow changed — both were always targeted by `text:`, which reads the button's
+visible words.
 
 Two corollaries worth knowing before you write the selector:
 

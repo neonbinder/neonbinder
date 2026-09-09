@@ -92,11 +92,15 @@ describe("EntitySelector — keyboard operability (NEO-260)", () => {
   it("marks the selected row, so a screen reader hears which one is chosen", () => {
     renderSelector({ selectedId: "baseball" });
 
-    const rows = screen.getAllByRole("button");
+    const rows = screen.getAllByRole("option");
     const baseball = rows.find((r) => r.textContent?.includes("Baseball"));
     const football = rows.find((r) => r.textContent?.includes("Football"));
-    expect(baseball?.getAttribute("aria-pressed")).toBe("true");
-    expect(football?.getAttribute("aria-pressed")).toBe("false");
+    expect(baseball?.getAttribute("aria-selected")).toBe("true");
+    expect(football?.getAttribute("aria-selected")).toBe("false");
+    // `aria-pressed` is a toggle-BUTTON property and is not supported on
+    // `option`. The two must never both be present — one of them would be
+    // telling a screen reader something the other contradicts.
+    expect(baseball?.getAttribute("aria-pressed")).toBeNull();
   });
 
   it("the collapsed selection card is a real button, named with its column", () => {

@@ -70,6 +70,32 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Id } from "../../convex/_generated/dataModel";
 
 // ---------------------------------------------------------------------------
+// Accessible names for the footer's commit-or-leave pair
+//
+// NEO-260 retired the `entity-review-confirm-save` DOM id and replaced it with
+// a per-button `useFieldTestClass` marker class plus a distinct `aria-label`.
+// The buttons' VISIBLE words are unchanged ("Confirm & Save (Enter)",
+// "Cancel (Esc)"), but the aria-label now wins as the accessible name, so
+// every `getByRole("button", { name })` here addresses them by these.
+// ---------------------------------------------------------------------------
+
+const CONFIRM_SAVE_NAME = "Confirm & Save (Enter) — commit this review";
+const CANCEL_REVIEW_NAME = "Cancel (Esc) — leave without committing";
+
+/**
+ * The `useFieldTestClass` marker on an element — the class maestro-web's
+ * generated XPath resolves through. Throws rather than returning undefined so
+ * a missing marker fails as a missing marker, not as a `.undefined` selector.
+ */
+function markerClassOf(el: HTMLElement): string {
+  const marker = Array.from(el.classList).find((c) => c.startsWith("mb-field-"));
+  if (!marker) {
+    throw new Error(`no mb-field-* marker class on <${el.tagName.toLowerCase()}>`);
+  }
+  return marker;
+}
+
+// ---------------------------------------------------------------------------
 // Module mocks — declared before the component import
 // ---------------------------------------------------------------------------
 
@@ -815,7 +841,7 @@ describe("EntityReviewWizard — cancel", () => {
     currentRows = [makeRow({ status: "pending" })];
     const { onCancel } = renderWizard();
 
-    fireEvent.click(screen.getByRole("button", { name: "Cancel (Esc)" }));
+    fireEvent.click(screen.getByRole("button", { name: CANCEL_REVIEW_NAME }));
 
     await waitFor(() => {
       expect(mockCancelBatch).toHaveBeenCalledWith({
@@ -834,7 +860,7 @@ describe("EntityReviewWizard — cancel", () => {
     ];
     const { onCancel } = renderWizard();
 
-    fireEvent.click(screen.getByRole("button", { name: "Cancel (Esc)" }));
+    fireEvent.click(screen.getByRole("button", { name: CANCEL_REVIEW_NAME }));
 
     // The count is in the title, so the operator knows what they are throwing
     // away before they agree to throw it away. Singular, at one decision.
@@ -857,7 +883,7 @@ describe("EntityReviewWizard — cancel", () => {
     ];
     renderWizard();
 
-    fireEvent.click(screen.getByRole("button", { name: "Cancel (Esc)" }));
+    fireEvent.click(screen.getByRole("button", { name: CANCEL_REVIEW_NAME }));
     expect(screen.getByText("Discard 2 decisions?")).toBeTruthy();
   });
 
@@ -868,7 +894,7 @@ describe("EntityReviewWizard — cancel", () => {
     ];
     const { onCancel } = renderWizard();
 
-    fireEvent.click(screen.getByRole("button", { name: "Cancel (Esc)" }));
+    fireEvent.click(screen.getByRole("button", { name: CANCEL_REVIEW_NAME }));
     fireEvent.click(discardButton());
 
     await waitFor(() => expect(mockCancelBatch).toHaveBeenCalledTimes(1));
@@ -880,7 +906,7 @@ describe("EntityReviewWizard — cancel", () => {
     const { onCancel } = renderWizard();
 
     expect(screen.getByText(/All reviewed/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Cancel (Esc)" }));
+    fireEvent.click(screen.getByRole("button", { name: CANCEL_REVIEW_NAME }));
     fireEvent.click(discardButton());
 
     await waitFor(() => expect(mockCancelBatch).toHaveBeenCalledTimes(1));
@@ -900,7 +926,7 @@ describe("EntityReviewWizard — cancel", () => {
     ];
     const { onCancel } = renderWizard();
 
-    fireEvent.click(screen.getByRole("button", { name: "Cancel (Esc)" }));
+    fireEvent.click(screen.getByRole("button", { name: CANCEL_REVIEW_NAME }));
     fireEvent.click(discardButton());
 
     const alert = await screen.findByText(/Couldn't discard this review/);
@@ -916,7 +942,7 @@ describe("EntityReviewWizard — cancel", () => {
     currentRows = [makeRow({ status: "ready" })];
     const { onCancel } = renderWizard();
 
-    fireEvent.click(screen.getByRole("button", { name: "Cancel (Esc)" }));
+    fireEvent.click(screen.getByRole("button", { name: CANCEL_REVIEW_NAME }));
 
     const alert = await screen.findByText(/Couldn't discard this review/);
     expect(alert.getAttribute("role")).toBe("alert");
@@ -1007,7 +1033,7 @@ describe("EntityReviewWizard — cancel", () => {
     ];
     renderWizard();
 
-    fireEvent.click(screen.getByRole("button", { name: "Cancel (Esc)" }));
+    fireEvent.click(screen.getByRole("button", { name: CANCEL_REVIEW_NAME }));
     // The wizard overlay is the FIRST dialog in the document; the confirm is a
     // sibling rendered after it inside the same portal.
     fireEvent.keyDown(screen.getAllByRole("dialog")[0], { key: "Escape" });
@@ -1030,7 +1056,7 @@ describe("EntityReviewWizard — Enter", () => {
     currentRows = [makeRow({ decision: { action: "create" } })];
     const { onConfirm } = renderWizard();
 
-    const cancel = screen.getByRole("button", { name: "Cancel (Esc)" });
+    const cancel = screen.getByRole("button", { name: CANCEL_REVIEW_NAME });
     (cancel as HTMLElement).focus();
     fireEvent.keyDown(cancel, { key: "Enter" });
 
@@ -1071,9 +1097,9 @@ describe("EntityReviewWizard — Enter", () => {
     expect(onConfirm).toHaveBeenCalledTimes(1);
   });
 
-  it("carries a UNIQUE id — Maestro re-finds the active element by XPath", () => {
+  it("is UNIQUELY ADDRESSABLE by a marker class — Maestro re-finds the active element by XPath", () => {
     /*
-     * WHY AN id IS A BEHAVIOURAL CONTRACT HERE.
+     * WHY UNIQUE ADDRESSABILITY IS A BEHAVIOURAL CONTRACT HERE.
      *
      * maestro-web's `pressKey` does not type into `document.activeElement`. It
      * runs `createXPathFromElement(document.activeElement)`, re-finds the node
@@ -1089,26 +1115,59 @@ describe("EntityReviewWizard — Enter", () => {
      * committing. The old dialog-level Enter handler hid this by committing
      * from any non-input target, which is the D5 bug that had to go.
      *
-     * So: the id must exist, and it must be the only one in the document.
+     * NEO-220 closed that with a DOM `id`. NEO-260 replaced the id with a
+     * `useFieldTestClass` marker class — the MECHANISM changed, the property
+     * under test did not. A DOM id is invisible to a sighted user and to a
+     * screen reader alike, and Maestro's `resource-id` is
+     * `node.id || node.ariaLabel`, so an id also SHADOWS the accessible name
+     * every flow and every AT reads. A class fixes the XPath with neither cost.
+     *
+     * So: a marker class that names exactly ONE node, and no DOM id at all.
      */
     currentRows = [makeRow({ decision: { action: "create" } })];
     renderWizard();
 
-    const confirm = screen.getByRole("button", { name: "Confirm & Save (Enter)" });
-    expect(confirm.id).toBe("entity-review-confirm-save");
+    const confirm = screen.getByRole("button", { name: CONFIRM_SAVE_NAME });
+    // No DOM id — that is the rule this button used to be the exception to.
+    expect(confirm.id).toBe("");
+    expect(confirm.className).toMatch(
+      /\bmb-field-[A-Za-z0-9]+-btn-confirm-save\b/,
+    );
     expect(
-      document.querySelectorAll("#entity-review-confirm-save"),
+      document.querySelectorAll(`.${markerClassOf(confirm)}`),
     ).toHaveLength(1);
   });
 
-  it("does not give Cancel an id that could shadow it", () => {
-    // The sibling that used to win the XPath race. It needs no id of its own —
-    // and must not accidentally acquire the Confirm button's.
+  it("does not let Cancel share the confirm button's handle", () => {
+    /*
+     * The sibling that used to win the XPath race. It now carries its OWN
+     * marker class, so the two can never collapse into one XPath again, and
+     * its own accessible name, so a screen-reader user can tell them apart.
+     * Neither has a DOM id.
+     */
     currentRows = [makeRow({ decision: { action: "create" } })];
     renderWizard();
 
-    const cancel = screen.getByRole("button", { name: "Cancel (Esc)" });
-    expect(cancel.id).not.toBe("entity-review-confirm-save");
+    const confirm = screen.getByRole("button", { name: CONFIRM_SAVE_NAME });
+    const cancel = screen.getByRole("button", { name: CANCEL_REVIEW_NAME });
+
+    expect(cancel.id).toBe("");
+    expect(cancel.className).toMatch(
+      /\bmb-field-[A-Za-z0-9]+-btn-cancel-review\b/,
+    );
+    expect(markerClassOf(cancel)).not.toBe(markerClassOf(confirm));
+    expect(
+      document.querySelectorAll(`.${markerClassOf(cancel)}`),
+    ).toHaveLength(1);
+
+    // …and neither accessible name is a substring of the other: Maestro
+    // matches `id:` (which is the aria-label here) as an UNANCHORED regex.
+    const confirmName = confirm.getAttribute("aria-label") ?? "";
+    const cancelName = cancel.getAttribute("aria-label") ?? "";
+    expect(confirmName).not.toBe("");
+    expect(cancelName).not.toBe("");
+    expect(confirmName.includes(cancelName)).toBe(false);
+    expect(cancelName.includes(confirmName)).toBe(false);
   });
 
   it("prevents the default action so a REAL keypress cannot commit twice", () => {
@@ -1140,7 +1199,7 @@ describe("EntityReviewWizard — Enter", () => {
     currentRows = [makeRow({ decision: { action: "create" } })];
     const { onConfirm } = renderWizard();
 
-    const cancel = screen.getByRole("button", { name: "Cancel (Esc)" });
+    const cancel = screen.getByRole("button", { name: CANCEL_REVIEW_NAME });
     (cancel as HTMLElement).focus();
     fireEvent.keyDown(cancel, { key: "Enter" });
 
@@ -3430,7 +3489,7 @@ describe("EntityReviewWizard — expired session", () => {
     ).toBeTruthy();
     expect(screen.getByRole("button", { name: "Close" })).toBeTruthy();
     // Nothing to decide, nothing to discard: the review controls are gone.
-    expect(screen.queryByRole("button", { name: "Cancel (Esc)" })).toBeNull();
+    expect(screen.queryByRole("button", { name: CANCEL_REVIEW_NAME })).toBeNull();
     expect(screen.queryByText(/Add remaining players as new/)).toBeNull();
   });
 
@@ -3473,7 +3532,7 @@ describe("EntityReviewWizard — expired session", () => {
     const onCancel = vi.fn();
     const { rerender } = render(wizardEl({ onCancel }));
 
-    fireEvent.click(screen.getByRole("button", { name: "Cancel (Esc)" }));
+    fireEvent.click(screen.getByRole("button", { name: CANCEL_REVIEW_NAME }));
     await waitFor(() => expect(onCancel).toHaveBeenCalledTimes(1));
 
     currentRows = [];
@@ -3493,7 +3552,7 @@ describe("EntityReviewWizard — back to matching", () => {
     const { unmount } = renderWizard();
     expect(screen.queryByRole("button", { name: "Back to matching" })).toBeNull();
     // …and Cancel is still the only way out on the custom-subtree path.
-    expect(screen.getByRole("button", { name: "Cancel (Esc)" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: CANCEL_REVIEW_NAME })).toBeTruthy();
     unmount();
 
     currentRows = [makeRow({ status: "ready" })];
@@ -3743,7 +3802,7 @@ describe("EntityReviewWizard — keyboard-only bulk-then-commit", () => {
     currentRows = [solo({ decision: { action: "create" } })];
     rerender(wizardEl({ onConfirm }));
 
-    const confirm = screen.getByRole("button", { name: "Confirm & Save (Enter)" });
+    const confirm = screen.getByRole("button", { name: CONFIRM_SAVE_NAME });
     expect(document.activeElement).toBe(confirm);
 
     fireEvent.keyDown(document.activeElement as HTMLElement, { key: "Enter" });
@@ -3768,7 +3827,7 @@ describe("EntityReviewWizard — keyboard-only bulk-then-commit", () => {
 
     expect(document.activeElement).not.toBe(document.body);
     expect(document.activeElement).toBe(
-      screen.getByRole("button", { name: "Confirm & Save (Enter)" }),
+      screen.getByRole("button", { name: CONFIRM_SAVE_NAME }),
     );
   });
 });
@@ -3889,7 +3948,7 @@ describe("EntityReviewWizard — footer layout", () => {
     renderWizard({ onBack: vi.fn() });
 
     const { actions, status } = footerRows();
-    for (const name of ["Back to matching", "Cancel (Esc)"]) {
+    for (const name of ["Back to matching", CANCEL_REVIEW_NAME]) {
       const button = screen.getByRole("button", { name });
       expect(actions.contains(button)).toBe(true);
       expect(status.contains(button)).toBe(false);
@@ -5068,7 +5127,7 @@ describe("EntityReviewWizard — the bulk create is about players", () => {
     renderWizard();
 
     expect(screen.queryByText(/All reviewed/)).toBeNull();
-    expect(document.getElementById("entity-review-confirm-save")).toBeNull();
+    expect(screen.queryByRole("button", { name: CONFIRM_SAVE_NAME })).toBeNull();
     // And the step the operator still owes an answer to is what is on screen.
     expect(
       screen.getByRole("heading", { name: "New Team: Sydney Blue Sox" }),
@@ -5092,7 +5151,7 @@ describe("EntityReviewWizard — the bulk create is about players", () => {
     renderWizard();
 
     expect(screen.getByText(/All reviewed/)).toBeTruthy();
-    expect(document.getElementById("entity-review-confirm-save")).toBeTruthy();
+    expect(screen.getByRole("button", { name: CONFIRM_SAVE_NAME })).toBeTruthy();
   });
 
   it("arms the follow-up only for players still being looked up", async () => {
@@ -5245,7 +5304,7 @@ describe("EntityReviewWizard — the decision lives in the fixed footer", () => 
     expect(screen.queryByRole("button", { name: "Link to existing instead" })).toBeNull();
     // Confirm & Save takes the same footer slot — they are mutually exclusive
     // by construction, which is what keeps row 1 to one line.
-    expect(document.getElementById("entity-review-confirm-save")).toBeTruthy();
+    expect(screen.getByRole("button", { name: CONFIRM_SAVE_NAME })).toBeTruthy();
   });
 
   it("bounds the league picker's height so a growing league table cannot reach the footer", () => {

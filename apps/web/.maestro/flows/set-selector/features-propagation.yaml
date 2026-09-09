@@ -176,10 +176,16 @@ tags:
 # After Step A the Variant Types column is above the fold — scroll UP.
 # ============================================================
 
+# R8: centre before the tap. Timeout kept at 30000, already over the R8 floor. With
+# centerElement Maestro re-reads the view hierarchy up to six times (8-13s in CI) before
+# it gives up and accepts an already-visible element, and the timeout is checked at the
+# BOTTOM of that loop — a shorter ceiling turns that graceful give-up into a spurious
+# "No visible element found". Do not lower it.
 - scrollUntilVisible:
     element:
       id: "Add custom Variant Types"
     direction: UP
+    centerElement: true
     visibilityPercentage: 100
     timeout: 30000
 
@@ -218,9 +224,15 @@ tags:
 
 # Add a custom insert entry "fp-insert-{WORKER_INDEX}" if absent — the variant
 # that holds the card checklist.
+# R8: centre before the tap. Timeout kept at 30000, already over the R8 floor. With
+# centerElement Maestro re-reads the view hierarchy up to six times (8-13s in CI) before
+# it gives up and accepts an already-visible element, and the timeout is checked at the
+# BOTTOM of that loop — a shorter ceiling turns that graceful give-up into a spurious
+# "No visible element found". Do not lower it.
 - scrollUntilVisible:
     element:
       id: "Add custom Inserts"
+    centerElement: true
     visibilityPercentage: 50
     timeout: 30000
 
@@ -246,10 +258,16 @@ tags:
       - assertVisible:
           text: ".*fp-insert-${WORKER_INDEX || 0}.*"
 
+# R8: centre before the tap. Timeout raised to 20000 from 10000. With centerElement
+# Maestro re-reads the view hierarchy up to six times (8-13s in CI) before it gives up
+# and accepts an already-visible element, and the timeout is checked at the BOTTOM of
+# that loop — a shorter ceiling turns that graceful give-up into a spurious "No visible
+# element found". Do not lower it.
 - scrollUntilVisible:
     element:
       text: "fp-insert-${WORKER_INDEX || 0}"
-    timeout: 10000
+    centerElement: true
+    timeout: 20000
 - tapOn: "fp-insert-${WORKER_INDEX || 0}"
 
 # Wait for CardChecklist to render — "Open add card form" is the reliable signal
@@ -430,10 +448,16 @@ tags:
 
 - assertVisible: "Inserts"
 
+# R8: centre before the tap. Timeout raised to 20000 from 10000. With centerElement
+# Maestro re-reads the view hierarchy up to six times (8-13s in CI) before it gives up
+# and accepts an already-visible element, and the timeout is checked at the BOTTOM of
+# that loop — a shorter ceiling turns that graceful give-up into a spurious "No visible
+# element found". Do not lower it.
 - scrollUntilVisible:
     element:
       text: "fp-insert-${WORKER_INDEX || 0}"
-    timeout: 10000
+    centerElement: true
+    timeout: 20000
 - tapOn: "fp-insert-${WORKER_INDEX || 0}"
 
 # Wait for CardChecklist to render — same "Open add card form" signal as Step B.

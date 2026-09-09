@@ -70,9 +70,12 @@ tags:
 #
 # R7 / R7a — NOT destructive, and it writes to NO shared row:
 #   * players are global rows, so this flow CREATES its own, named
-#     "PM-<worker>-<attempt>" — unique per worker AND per attempt, so eight
-#     concurrent runners and a retry can never land on the same row. Nothing
-#     pre-existing is edited.
+#     "PM<token>" — ONE search token that carries the worker AND the attempt
+#     inside it (see the ATTEMPT_TOKEN note below), so eight concurrent runners
+#     and a retry can never land on the same row. Nothing pre-existing is
+#     edited. The player and the team differ from their third character on
+#     ("PM<token>" vs "PMT<token>"), so neither name is a prefix of the other
+#     and neither picker can be answered by the other's row.
 #   * the same is true of its team, "PMT<token>": it is CREATED
 #     here, never shared, and no pre-existing team row is read or written. The
 #     second stint reuses the row this flow made moments earlier, so even that
@@ -169,7 +172,7 @@ tags:
 - assertVisible: "Add a player"
 
 - tapOn: "New player name"
-- inputText: "PM-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- inputText: "PM${output.ATTEMPT_TOKEN}"
 
 # The green button names the player it is about to create, so this tap cannot
 # land on any other button, and it only appears at all when no player of that
@@ -177,16 +180,16 @@ tags:
 # "Open <name>" button when one does.
 - scrollUntilVisible:
     element:
-      id: "Create player PM-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+      id: "Create player PM${output.ATTEMPT_TOKEN}"
     centerElement: true
 - tapOn:
-    id: "Create player PM-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    id: "Create player PM${output.ATTEMPT_TOKEN}"
 
 # "Added <name>." is said ONLY for a row that was inserted. A create that found
 # an existing row instead says "That player already exists — opened it.", so
 # this is the assertion that the hand-entry actually created something.
 - extendedWaitUntil:
-    visible: ".*Added PM-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
+    visible: ".*Added PM${output.ATTEMPT_TOKEN}.*"
     timeout: 7000
 
 # The new player's own panel is now open — these two lines exist nowhere else on
@@ -410,7 +413,7 @@ tags:
 # the button, where a sighted user never saw it and this step had to scroll UP
 # to find it). Save was just centred, so the line is on screen — a plain wait.
 - extendedWaitUntil:
-    visible: ".*Saved PM-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
+    visible: ".*Saved PM${output.ATTEMPT_TOKEN}.*"
     timeout: 15000
 
 # ── IT PERSISTED, AND IT PERSISTED IN ORDER ─────────────────────────────────
@@ -423,7 +426,7 @@ tags:
     timeout: 30000
 
 - tapOn: "Filter players"
-- inputText: "PM-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- inputText: "PM${output.ATTEMPT_TOKEN}"
 - extendedWaitUntil:
     visible: ".*matches.*"
     timeout: 7000
@@ -457,7 +460,7 @@ tags:
 # — answers to the same string; the counter renders between the box and the
 # list, so "below the counter" is a list row and only a list row.
 - tapOn:
-    text: "PM-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    text: "PM${output.ATTEMPT_TOKEN}"
     below:
       text: ".*matches.*"
 

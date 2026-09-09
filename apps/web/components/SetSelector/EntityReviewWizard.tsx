@@ -13,6 +13,7 @@ import { wikidataUrl, wikipediaUrl } from "../../lib/players/wikidata-id";
 // NEO-236: the team name split. Pure, no Convex — see lib/teams/team-name.ts.
 import { teamFullName } from "../../lib/teams/team-name";
 import { isEditableTarget } from "../../lib/dom/is-editable-target";
+import { useFieldTestClass } from "../../src/hooks/useFieldTestClass";
 import NeonButton from "../modules/NeonButton";
 import { ConfirmDialog } from "../modules/confirm-dialog";
 import { Input } from "../primitives/Input";
@@ -228,6 +229,27 @@ const errorMessage = (e: unknown, fallback: string) => {
   }
   return e instanceof Error && e.message ? e.message : fallback;
 };
+
+/**
+ * NEO-260 — accessible names for the footer's two commit-or-leave buttons.
+ *
+ * They sit side by side and are the pair a `pressKey: Enter` can confuse, so a
+ * screen-reader user has to be able to tell which one they are on from the name
+ * alone. Two rules held here on purpose, the same two `EntityColumn` holds:
+ *
+ *  - **Each label CONTAINS its visible text** (WCAG 2.5.3 Label in Name), so a
+ *    voice-control user saying the words they can see still hits the control.
+ *  - **Neither label is a substring of the other.** Maestro matches `id:` as an
+ *    UNANCHORED regex, and `resource-id` is `node.id || node.ariaLabel`, so two
+ *    overlapping names would make one selector find both buttons.
+ *
+ * The visible text is unchanged — every flow that targets these two does so by
+ * `text:`, which reads the button's own words, not its accessible name.
+ */
+const CONFIRM_SAVE_LABEL = "Confirm & Save (Enter) — commit this review";
+/** The same button once `saving` flips: its words change, so its name must too. */
+const CONFIRM_SAVING_LABEL = "Saving... — committing this review";
+const CANCEL_REVIEW_LABEL = "Cancel (Esc) — leave without committing";
 
 /** What the final step is about to write, as counted by the PARENT. */
 export type EntityReviewSummary = {
@@ -464,6 +486,25 @@ export default function EntityReviewWizard({
   const [decidedListOpen, setDecidedListOpen] = useState<boolean | null>(null);
 
   const confirmButtonRef = useRef<HTMLButtonElement>(null);
+  /**
+   * NEO-260 — per-button marker classes for the footer's action row.
+   *
+   * maestro-web's `pressKey` does not send the key to `document.activeElement`:
+   * it runs `createXPathFromElement(activeElement)`, RE-FINDS by that XPath and
+   * dispatches to the match. The generator falls back to `tag[@class="…"]` per
+   * ancestor, and `Confirm & Save (Enter)` and `Cancel (Esc)` are sibling Radix
+   * <Button>s with the IDENTICAL class string (the neon colour is a
+   * `data-accent-color` attribute and an inline style, never a class) — so the
+   * XPath matched BOTH, Selenium returned the first, and Enter aimed at Confirm
+   * landed on Cancel while the app's own focus was perfectly correct.
+   *
+   * A unique CLASS per button makes each XPath name exactly one node. A class,
+   * never a DOM `id`: Maestro's `resource-id` is `node.id || node.ariaLabel`,
+   * so an id shadows the accessible name that flows and screen-reader users
+   * both read — and a DOM id is invisible to every user, which is the reason
+   * the house rule forbids it (see `useFieldTestClass` and `.maestro/README.md`).
+   */
+  const footerFieldClass = useFieldTestClass();
   /**
    * a11y (WCAG 2.4.3 / 4.1.2) — where to park focus while `cancelling` or
    * `saving` disables the footer button that was just clicked.
@@ -2899,6 +2940,11 @@ export default function EntityReviewWizard({
                   )}
                   <NeonButton
                     cancel
+                    /* The sibling that used to win the XPath race against
+                       Confirm & Save. Its own marker class is what stops the
+                       two collapsing into one XPath — see `footerFieldClass`. */
+                    className={footerFieldClass("btn-cancel-review")}
+                    aria-label={CANCEL_REVIEW_LABEL}
                     onClick={requestClose}
                     disabled={cancelling || saving}
                   >
@@ -2908,29 +2954,20 @@ export default function EntityReviewWizard({
                     <NeonButton
                       ref={confirmButtonRef}
                       /*
-                       * A UNIQUE id, and it is load-bearing for E2E.
+                       * A UNIQUE MARKER CLASS, and it is load-bearing for E2E.
                        *
-                       * maestro-web's `pressKey` does not send the key to
-                       * `document.activeElement`. It runs
-                       * `createXPathFromElement(document.activeElement)`, then
-                       * re-finds the element by that XPath and sends to the
-                       * match. The generator uses `id("…")` when the element
-                       * has one and falls back to `tag[@class="…"]` per
-                       * ancestor otherwise — and this button and its
-                       * `Cancel (Esc)` sibling are both Radix <Button>s with
-                       * the IDENTICAL class string (the neon colour is a
-                       * `data-accent-color` attribute and an inline style, not
-                       * a class). The XPath therefore matched both, Selenium
-                       * returned the first, and Enter aimed at Confirm landed
-                       * on Cancel — which is why the failure screenshot showed
-                       * "Discard 1 decision?" while the app's own focus was
-                       * correct. An id makes the XPath name exactly this node.
-                       *
-                       * Do not remove it, and do not reuse it: the wizard
-                       * title's `entity-review-wizard-title` is the only other
-                       * id here, for the same "must be addressable" reason.
+                       * This button used to carry `id="entity-review-confirm-save"`
+                       * for exactly this reason. NEO-260 retired it: a DOM id is
+                       * invisible to a sighted user and to a screen reader
+                       * alike, and Maestro's `resource-id` is
+                       * `node.id || node.ariaLabel`, so an id also SHADOWS the
+                       * accessible name. The class does the same job for the
+                       * XPath re-find without either cost — the full mechanism
+                       * is on `footerFieldClass` above. No flow ever selected
+                       * on the id; they target `text: ".*Confirm & Save.*"`.
                        */
-                      id="entity-review-confirm-save"
+                      className={footerFieldClass("btn-confirm-save")}
+                      aria-label={saving ? CONFIRM_SAVING_LABEL : CONFIRM_SAVE_LABEL}
                       onClick={onConfirm}
                       disabled={saving}
                       /*
