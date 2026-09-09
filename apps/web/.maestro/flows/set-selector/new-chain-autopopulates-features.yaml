@@ -212,13 +212,21 @@ tags:
 # the panel exists at the right node (R6 — no redundant assertVisible after).
 # centerElement keeps the header/toggle fully in view (R8) so the expand tap
 # below lands.
+# R5 — 7000, the bar; R8 keeps the centring. MEASURED (CI 34349299679 +
+# 34361627641): at maximum scroll this parked at y=518, 143px below the
+# end of the driver's centre band (~375), so centring ran its full
+# six-iteration give-up path — 7.72s here — on every run. A give-up on every
+# run is centring that never centres, so the remedy is the product's: the
+# 208px scroll spacer in src/layouts/binder-layout.tsx (NEO-260) puts this
+# target at y=310, mid-band, and it now centres in one or two swipes.
+# THIS STEP DEPENDS ON THAT SPACER — see R8.
 - scrollUntilVisible:
     element:
       text: ".*Attributes for WOVT3-${WORKER_INDEX || 0}.*"
     centerElement: true
     visibilityPercentage: 10
     waitToSettleTimeoutMs: 1000
-    timeout: 15000
+    timeout: 7000
 
 # Step 4 — prove the drill actually built the whole fresh chain: the breadcrumb
 # (a plain element, text content matchable) shows the custom pre-1980 YEAR and
@@ -265,7 +273,7 @@ tags:
       text: ".*1970-79.*"
     centerElement: true
     visibilityPercentage: 50
-    timeout: 15000
+    timeout: 7000
 
 # 6b — Card Thickness = "20pt" (a PHYSICAL default originating at the setName
 # node — deriveSetLevelFeatures unconditionally emits cardThickness="20pt" for
@@ -281,7 +289,7 @@ tags:
       text: "20pt"
     centerElement: true
     visibilityPercentage: 50
-    timeout: 15000
+    timeout: 7000
 
 # 6c — Country of Origin = "USA" (physical default originating at the setName
 # node — deriveSetLevelFeatures unconditionally emits countryOfOrigin="USA" —
@@ -293,4 +301,4 @@ tags:
       text: "USA"
     centerElement: true
     visibilityPercentage: 50
-    timeout: 15000
+    timeout: 7000

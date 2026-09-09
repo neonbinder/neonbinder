@@ -327,6 +327,82 @@ that is not pre-synced, the setup track's cold sync, and the post-`launchApp`
 heading gate (see "Launching a flow" below). A slow non-marketplace response
 is a product finding to raise, never a timeout to inflate.
 
+**`scrollUntilVisible` is the trap: its own default is 20000, not 7000.**
+`ScrollUntilVisibleCommand.DEFAULT_TIMEOUT_IN_MILLIS` is the string `"20000"`
+in the pinned `maestro-orchestra-models.jar` — verified by decompiling it,
+not by reading the docs. So a scroll step with no `timeout:` is running at
+**twenty seconds**, the loosest setting in the file, not the 7 s default the
+rest of this rule describes. Every `scrollUntilVisible` therefore states
+`timeout: 7000` explicitly; omitting the key is a violation of R5, not a way
+of complying with it. Before NEO-260 most of the suite was getting 20 s by
+omission.
+
+**Anything above 7000 needs Jason's sign-off, recorded at the site.** Jason,
+2026-09-09: "our rule is the 10s default on any user facing interaction
+unless I've explicitly ok'd it. We need to be strict about that rule. That is
+what ensures our UI is actually usable not just functional." Asked which
+number was canonical he chose 7 s — R5's existing one. A longer ceiling is
+allowed only for the three exceptions above; the comment at the step names
+which one and why. Anything else that will not fit in 7 s is a bug report,
+not a bigger number.
+
+**A sign-off recorded AT THE SITE is the only sanctioned way for an in-app
+step to exceed 7000.** Not a number chosen because it passed, not one
+inherited by omission, and not a rule in this file: the step's own comment
+carries the date, that Jason approved it, the measurement that justifies the
+figure, and what would void it. Jason signed off the first such budgets on
+2026-09-09 (NEO-260) — twelve steps whose cost is page-length TRAVEL rather
+than UI response: a `scrollUntilVisible` walking a seven- or eight-screen
+marketing page pays the driver's fixed ~2.2 s per swipe + view-hierarchy read
+before the target is ever seen, never enters the centring give-up path, and
+waits on nothing the product could make faster. Read one of those comments
+(`home/easypost-setup.yaml`, `home/landing-smoke.yaml`) before writing a new
+one; each says that shortening the page brings the budget back to 7000 and
+that raising it further is a new decision, not a tuning knob. A step that is
+merely slow still does not qualify — that is the bug report.
+
+**Where a step really does wait on one of those exceptions, split it.** The
+wait and the scroll are different jobs and want different ceilings: put a long
+`extendedWaitUntil` GATE above, named for what it is waiting on, and leave the
+`scrollUntilVisible` under it at 7000 to do nothing but centre. The gate fails
+loudly on the thing that was actually slow, and the scroll goes on measuring
+the UI. Keep the long ceiling on the scroll itself only when the target can be
+scroll-clipped — `extendedWaitUntil: visible` never scrolls, so it cannot
+recover an element under the fold — and say so at the step.
+
+**7 s across the board on every centred scroll — there is no holding pen.**
+Jason, 2026-09-09, on the sites this audit had parked at 10000 pending his
+sign-off: *"lets make 7s across the board. I don't think there should be
+anything hitting a give up on a regular basis, if there is then its not
+really doing anything is it?"* That is the whole rule, and it is a statement
+about the product, not about a number. A centred scroll that fails to centre
+does not run slow — it runs a fixed give-up path and then accepts the element
+it could already see (R8 has the mechanism), so a step that reaches that path
+on every run has been paying for centring that never centres. Raising its
+ceiling buys nothing: the step still does not centre, the suite still pays
+for the attempt, and the UI is exactly as unusable as it was.
+
+So a centred scroll has exactly two honest states, and both are `timeout:
+7000`:
+
+1. **It centres.** Either it always did, or a product fix gave the document
+   the scroll headroom it was missing (R8 case 1). Name the dependency in the
+   comment at the step, so whoever touches the layout knows what rides on it.
+2. **It cannot centre, and centring buys nothing there.** Remove
+   `centerElement` (R8 case 2, with the measurement it demands). Uncentred,
+   the step settles in well under a second.
+
+There is no third state. An explicit 10000 "until the product fix lands" is
+not a compromise, it is the give-up path with a bigger allowance, and it is
+what this rule now forbids. If a centred step cannot be put into one of those
+two states, it is a bug report.
+
+**The measurement behind that.** Across the 83 give-up steps in green CI run
+34361627641 the minimum was 7.007 s and none finished under 7 s, with or
+without `waitToSettleTimeoutMs`. `timeout: 7000` is therefore a binary canary
+rather than a stopwatch: a centred step either centres or fails. That is the
+property that makes it worth having.
+
 **R6 — No redundant `assertVisible` after `scrollUntilVisible`.** The scroll
 already asserts the element; a trailing assert of the same element is dead
 time. Asserting a different element is fine.
@@ -358,48 +434,95 @@ headless viewport is 1024×629; a target left at a viewport edge shifts out
 from under captured coordinates on re-render. There is no app footer and no
 "footer-steal zone"; the real occluders are the sticky binder header at the
 top and the `BinderTabs` rail on the right edge. A dropped tap is diagnosed,
-never attributed to a footer.
+never attributed to a footer. Centring is still the default and still the
+goal.
 
-**Centre even when the element cannot reach the centre.** Not reaching the
-band is not a reason to drop `centerElement`. Maestro's give-up path swipes
-first and accepts second, so on a bottom-locked target centring still drives
-the page to its **maximum scroll** and parks the target as far from the fold
-as the document allows — which is the whole point of R8. Measured on
-`id: "Edit attributes"` (the collapsed `SetAttributesPanel` summary bar,
-last element on the page): the drill can leave it as low as `y=609` in the
-625px viewport, flush against the fold, and centring lifts it to `y=518`,
-~91px clear, every time. It never reaches the band (which ends at ~375) and
-the `Element bounds` line then repeats unchanged from
-`Scrolling try count: 1` to `5`, but the step COMPLETES and the tap is safe.
+**What centring costs when it works, and when it doesn't.** With
+`centerElement` on, `Orchestra.scrollUntilVisible` re-reads the view
+hierarchy up to six times (`Scrolling try count: 0`..`5`), swiping between
+reads, then gives up and accepts the element it can already see. The
+`timeout` is checked at the *bottom* of that loop, so a ceiling shorter than
+the give-up cost turns a graceful give-up into `No visible element found` on
+an element Maestro just logged at `Visibility Percent: 1.0`. A target that
+centres exits at try 0 or 1 and costs 0.5–2.9 s. A target that cannot centre
+costs the whole budget: measured across the 83 give-up steps in green CI run
+34361627641, minimum 7.007 s, median 7.19 s, maximum 9.48 s — and
+`waitToSettleTimeoutMs` made no difference, because the cost is five swipes
+at `scrollDuration=601` plus six hierarchy reads either way.
 
-The **only** real exception is an element a swipe cannot move **at all** —
-pinned in a fixed container such as a modal footer — and only after you have
-SHOWN that is what it is: `Element bounds` identical from
-`Scrolling try count: 0` through `4`, with **no** first-swipe movement.
-Record that measurement in a comment citing this rule.
-`multi-source-panel-opens-dialog.yaml`'s dialog-footer `Cancel` is the worked
-example (`y=529`, unmoved across five swipes). An element that *should* be
-centerable and is not is a **product bug to fix**, never an exception to claim.
+**A centred step that runs long is a product finding, never a bigger
+ceiling.** There are exactly two legitimate remedies.
 
-**And when you do centre, give the step `timeout: 20000` or more.**
-Measured from the pinned `maestro-orchestra.jar` (v2.8.0,
-`Orchestra.scrollUntilVisible`): with `centerElement` on, Maestro re-reads the
-hierarchy up to six times (`retryCenterCount <= 4`, swiping between) before it
-gives up and accepts an already-visible element. That costs **8–13 s in CI**.
-The `timeout` is checked at the *bottom* of that loop, so a shorter one turns
-a graceful give-up into `No visible element found` on an element Maestro just
-logged at `Visibility Percent: 1.0`. This is what actually failed three flows
-in NEO-260's first run: the reds were at `timeout: 7000`/`10000`, while
-`features-propagation.yaml` and `set-attributes-edit.yaml` asked to centre the
-*identical* `id: "Edit attributes"` target at `timeout: 15000` and passed in
-the same run. It was never that centering is unsafe — it was arithmetic.
+1. **Make it centre.** A target parked at maximum scroll and still below the
+   band is missing scroll headroom: the document cannot scroll far enough.
+   That is the product's bug and the product's fix. `id: "Edit attributes"`
+   (the collapsed `SetAttributesPanel` summary bar) is the worked example —
+   the panel is the last thing on the page, maximum scroll left it at y=518
+   in the 625px viewport while the centre band ends at ~375, so every one of
+   those steps burned the full give-up budget on every run.
 
-Read those two green flows precisely, though, because an earlier NEO-260 note
-read them wrong: their logs show `Element bounds` frozen at `y=518`/`y=514`
-across `Scrolling try count: 1`…`5`, then COMPLETED at ~7.6s. They are **not**
-evidence that the bar centres — nothing centres it — they are evidence that the
-give-up path is graceful and costs ~7.6s, so 15000 cleared it and 7000 did not.
-Budget from the give-up cost, not from a hoped-for early exit.
+   It was never a set-builder problem. Every page in the app bottomed out
+   with its primary action jammed against the fold, between y=469 and y=569
+   at rest, which is why the same signature showed up on the first
+   `EntityColumn`'s `+ Custom` (y=514), on an empty checklist's `Fetch from
+   Marketplaces` (y=497) and on a `Rename …` control (y=516-518). The fix is
+   one 208px spacer below every page in the signed-in shell
+   (`src/layouts/binder-layout.tsx`), sized from that window: it needs
+   `H >= 569 - 375 = 194` to lift the lowest-parking control into the band
+   and `H <= 469 - 250 = 219` not to push the highest one out the top. Read
+   the note on that component before changing it — overshooting fails
+   exactly as hard as undershooting, and a `vh` value re-creates NEO-255
+   (50vh is 313px here, one whole driver swipe). Do not add a second helping
+   in a page: it stacks. The flows then centre in one or two swipes, inside
+   R5's 7000, and every such step says in its comment that it depends on the
+   spacer.
+2. **Stop centring where centring cannot work.** If a swipe cannot move the
+   target *at all*, centring buys literally nothing and only spends the
+   budget. SHOW that before claiming it: `Element bounds` identical from
+   `Scrolling try count: 0` through `5` with no first-swipe movement, plus a
+   structural reason — the element sits outside the page's scroller, e.g. a
+   footer in a `fixed inset-0` dialog whose body is the only thing that
+   scrolls (`ReconciliationModal`, `ParallelGroupingModal`, `BaseSetPicker`,
+   `CardDetailPanel` and the `CardFeaturesEditor` inside it), or a page with
+   no scrollable overflow at all. Record the measurement in a comment citing
+   this rule. Uncentred, those steps settle in well under a second.
+   `multi-source-panel-opens-dialog.yaml`'s dialog-footer `Cancel` is the
+   original worked example (`y=529`, unmoved across five swipes).
+
+Frozen bounds alone do not prove case 2 — a target already at maximum scroll
+shows the same signature. If any other sample of the same element moves on
+the first swipe, it is case 1. So does a target inside a *second* scroller:
+maestro-web's only scroll is `window.scroll`, so an element in a nested
+`overflow` box (react-virtuoso's fixed-height list in `CardChecklist`, which
+has no `customScrollParent`) never moves because the driver asked its list to
+move — it moves, or does not, because the window did. That still makes it
+case 1: give the window headroom and the whole box travels with it. Case 2 is
+only for an element the window cannot move at all, which in practice means
+`position: fixed`.
+
+**The band Maestro will actually accept is wider than the ~312 midpoint
+suggests — measured, not assumed.** Across the 2,396 centred DOWN scrolls in
+four green CI runs (34304943765, 34349299679, 34361627641 and its rerun), the
+lowest give-up sat at an element *centre* of y=464, with clean accepts spread
+right across 130-432. So the working test for "will this centre" is the
+element's centre against ~460, not against the ~250-375 window a strict
+reading of "centre band" implies. It matters at the deep end: the NEO-260
+spacer leaves `spine-label`'s "Add to sheet" at centre 377 — outside the
+narrow window, but 87px clear of the nearest observed give-up, and therefore
+safe rather than marginal. Measure the centre (`y + height/2`), not the top
+that `Element bounds` logs.
+
+**An earlier NEO-260 revision of this rule got this wrong, and the record
+should say so.** It read "**And when you do centre, give the step
+`timeout: 20000` or more**", and 46 sites across nine flow files were raised
+to 20000 on that basis. It was wrong twice over. It contradicted R5, which
+sits fifty lines above it and sets 7 s as the bar. And it treated the give-up
+cost as a budget to fund rather than as the symptom of a page that cannot
+scroll far enough: raising the ceiling hid the give-up path instead of fixing
+it, so the suite paid ~7.2 s per affected step on every run and the UI stayed
+as unusable as before. Jason ruled on 2026-09-09 that R5 as written is
+canonical. The mechanism that revision described was right; only its remedy
+was wrong.
 
 One more measurement worth knowing before you tune a number:
 `visibilityPercentage` is effectively **boolean** in Maestro 2.8 —

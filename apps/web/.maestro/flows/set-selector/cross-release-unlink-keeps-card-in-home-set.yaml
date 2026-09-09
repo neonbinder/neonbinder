@@ -107,7 +107,7 @@ tags:
     centerElement: true
     visibilityPercentage: 50
     waitToSettleTimeoutMs: 1000
-    timeout: 15000
+    timeout: 7000
 
 # ============================================================
 # Step 4 — ASSERTION 1: the destructive button reads "Unlink", not "Del"
@@ -122,7 +122,7 @@ tags:
       text: "Unlink"
     centerElement: true
     visibilityPercentage: 50
-    timeout: 15000
+    timeout: 7000
 - tapOn:
     id: "Remove card 957-${ATTEMPT_ID} from this set"
 
@@ -137,12 +137,16 @@ tags:
 - extendedWaitUntil:
     notVisible: "#957-${ATTEMPT_ID}"
     timeout: 7000
+# R8 exception, MEASURED (CI 34349299679 + 34361627641): `Element bounds`
+# held at y=457 across `Scrolling try count: 0`..`5` — the empty-checklist
+# page has no scrollable overflow to swipe — so a swipe cannot move this
+# target and centring buys only the six-iteration give-up path (>=7.0s).
+# Uncentred it settles well under a second, inside R5's 7000.
 - scrollUntilVisible:
     element:
       text: "No cards in this checklist yet."
-    centerElement: true
     visibilityPercentage: 50
-    timeout: 10000
+    timeout: 7000
 
 # ── ASSERTION 4: the guest appearance is really severed, not just hidden ────
 # The "Hide cross-release cards" control only exists while this checklist holds
@@ -174,7 +178,7 @@ tags:
     centerElement: true
     visibilityPercentage: 50
     waitToSettleTimeoutMs: 1000
-    timeout: 15000
+    timeout: 7000
 - assertVisible: "Cross Unlink ${ATTEMPT_ID}"
 
 # ============================================================
@@ -187,7 +191,7 @@ tags:
       id: "Delete card 957-${ATTEMPT_ID}"
     centerElement: true
     visibilityPercentage: 50
-    timeout: 15000
+    timeout: 7000
 - tapOn:
     id: "Delete card 957-${ATTEMPT_ID}"
 - tapOn:

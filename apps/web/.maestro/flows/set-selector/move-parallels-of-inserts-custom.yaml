@@ -79,6 +79,7 @@ tags:
     element:
       id: "Add custom Inserts"
     centerElement: true
+    timeout: 7000
 - tapOn:
     id: "Add custom Inserts"
 - assertVisible: "Add Custom Entry"
@@ -94,6 +95,7 @@ tags:
     element:
       id: "Add custom Inserts"
     centerElement: true
+    timeout: 7000
 - tapOn:
     id: "Add custom Inserts"
 - assertVisible: "Add Custom Entry"
@@ -109,6 +111,7 @@ tags:
     element:
       id: "Add custom Inserts"
     centerElement: true
+    timeout: 7000
 - tapOn:
     id: "Add custom Inserts"
 - assertVisible: "Add Custom Entry"
@@ -133,6 +136,7 @@ tags:
     element:
       text: "Group Parallels"
     centerElement: true
+    timeout: 7000
 - tapOn: "Group Parallels"
 - assertVisible: ".*Drag inserts under a parent.*"
 
@@ -175,6 +179,7 @@ tags:
     element:
       text: ".*Accept all suggestions.*"
     centerElement: true
+    timeout: 7000
 - tapOn: ".*Accept all suggestions.*"
 # Badges gone — this is the unique assertion Accept All owns.
 - assertNotVisible: "Suggested"
@@ -184,11 +189,16 @@ tags:
 - assertVisible: ".*Save [0-9]+ change.*"
 
 # ── SAVE → modal closes, DB mutation fires ───────────────────────────────────
-# Center the button first — modal footer clips at the 1024×629 headless viewport.
+# R8 exception, MEASURED (CI 34349299679 + 34361627641): `Element bounds`
+# held at y=521 across `Scrolling try count: 0`..`5` —
+# ParallelGroupingModal's footer sits outside the modal's only scroller — so
+# a swipe cannot move this target and centring buys only the six-iteration
+# give-up path (>=7.0s). Uncentred it settles well under a second, inside
+# R5's 7000.
 - scrollUntilVisible:
     element:
       text: ".*Save [0-9]+ change.*"
-    centerElement: true
+    timeout: 7000
 - tapOn: ".*Save [0-9]+ change.*"
 
 # applyParallelGroupings mutation runs; modal closes on success.
@@ -330,6 +340,7 @@ tags:
           element:
             text: ".*${ATTEMPT_ID} Stars$"
           centerElement: true
+          timeout: 7000
       - tapOn:
           text: ".*${ATTEMPT_ID} Stars$"
 

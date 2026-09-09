@@ -104,7 +104,7 @@ tags:
     element:
       text: "Renamed-${ATTEMPT_ID}"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 # Old Card name (cardName) is gone after rename.
 - assertNotVisible: "CRUDName-${ATTEMPT_ID}"
 
@@ -115,7 +115,7 @@ tags:
     element:
       id: "Delete card 999-${ATTEMPT_ID}"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     id: "Delete card 999-${ATTEMPT_ID}"
 - assertVisible: "Confirm?"

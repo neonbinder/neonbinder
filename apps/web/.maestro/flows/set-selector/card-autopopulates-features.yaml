@@ -240,7 +240,7 @@ tags:
       id: "Delete card 777-${ATTEMPT_ID}"
     centerElement: true
     visibilityPercentage: 50
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     id: "Delete card 777-${ATTEMPT_ID}"
 - assertVisible: "Confirm?"

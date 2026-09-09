@@ -237,7 +237,7 @@ tags:
     element:
       text: "Sports"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 - runFlow:
     when:
       notVisible: "Baseball"
@@ -262,7 +262,7 @@ tags:
     element:
       text: "Baseball"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 
 # STRICT SEED — no marketplace was quietly skipped on this step. See "A SYNC
 # THAT HALF-WORKED IS A FAILED SEED" in the header.
@@ -302,7 +302,7 @@ tags:
     element:
       text: ".*Search years.*"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     text: ".*Search years.*"
 - inputText: "2024"
@@ -337,7 +337,7 @@ tags:
     element:
       text: ".*Search manufacturers.*"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     text: ".*Search manufacturers.*"
 - inputText: "Topps"
@@ -374,7 +374,7 @@ tags:
     element:
       text: ".*Search sets.*"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     text: ".*Search sets.*"
 - inputText: "Topps Chrome"
@@ -391,16 +391,16 @@ tags:
     when:
       notVisible: "Base"
     commands:
-      # R8: centre before the tap. Timeout raised to 20000 from 10000. With
-      # centerElement Maestro re-reads the view hierarchy up to six times (8-13s in CI)
-      # before it gives up and accepts an already-visible element, and the timeout is
-      # checked at the BOTTOM of that loop — a shorter ceiling turns that graceful
-      # give-up into a spurious "No visible element found". Do not lower it.
+      # R8 — centre before the tap; R5 — 7000, the bar. An earlier NEO-260 revision
+      # raised this step to 20000 because the centring give-up path costs 8-13s. That
+      # was the wrong remedy and the rule now says so: a step that reaches the give-up
+      # path on every run is centring that never centres, and funding it hides the
+      # fault instead of fixing it. This target DOES centre, so 7000 measures the UI.
       - scrollUntilVisible:
           element:
             text: "Sync Variant Types"
           centerElement: true
-          timeout: 20000
+          timeout: 7000
       - tapOn: "Sync Variant Types"
       - extendedWaitUntil:
           notVisible: "Syncing Variant Types"
@@ -417,7 +417,7 @@ tags:
     element:
       text: "Base"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 - assertVisible: "Insert"
 - assertVisible: "Parallel"
 
@@ -456,13 +456,22 @@ tags:
 # Scroll, don't just look — the Base-mapping controls render BELOW the columns
 # container (components/modules/SetSelector.tsx:519-540), so any column that
 # grows (a shared partial-failure notice, a long list) parks them under the
-# 1024x629 fold. Same ceiling, same element; see util-drill-to-base-variant.yaml
-# for the CI evidence.
+# 1024x629 fold; see util-drill-to-base-variant.yaml for the CI evidence.
+#
+# R5 — 7000, the bar (was 60000). The 60s was booked as the SL round-trip
+# budget, but the round trip is NOT what this step waits on: BaseSetPicker
+# renders its "Select Base Set" title immediately and only its confirm
+# button reads "Loading…" until the fetch lands, and THAT flip is gated
+# below by `extendedWaitUntil: visible: "Confirm Base Set"` (45000, the R5
+# marketplace exception). MEASURED (CI 34349299679 + 34361627641): 30
+# samples across both green runs, worst 0.92s. The scroll is still a scroll
+# and not a bare `visible:` wait, for the reason above — the controls can
+# sit under the fold, and a wait cannot recover from that.
 - scrollUntilVisible:
     element:
       text: ".*Select Base Set.*|.*Re-map Base.*"
     centerElement: true
-    timeout: 60000
+    timeout: 7000
 - runFlow:
     when:
       visible: "Select Base Set"
@@ -518,17 +527,23 @@ tags:
 #   3. assertVisible "Fetch from Marketplaces|Refresh" — same flex row as Add
 #      Card, so the centring above already put it in view.
 #   4. tapOn it.
+# R5 — 7000, the bar (was 30000). MEASURED (CI 34349299679 +
+# 34361627641): worst 1.96s, 1 centring swipe. Nothing here waits on a
+# marketplace — the Convex write is gated by the `notVisible: "Select Base Set"` wait above.
 - scrollUntilVisible:
     element:
       text: "Re-map Base"
     centerElement: true
-    timeout: 30000
+    timeout: 7000
+# R5 — 7000, the bar (was 30000). MEASURED (CI 34349299679 +
+# 34361627641): worst 1.97s, 1 centring swipe. Nothing here waits on a
+# marketplace — same flex row as the anchor the step above just centred.
 - scrollUntilVisible:
     element:
       text: "Add Card"
     centerElement: true
     visibilityPercentage: 50
-    timeout: 30000
+    timeout: 7000
 - assertVisible:
     text: ".*Fetch from Marketplaces.*|Refresh"
 - tapOn:
@@ -731,7 +746,7 @@ tags:
     element:
       text: "Insert"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 - tapOn: "Insert"
 # Wait for the Inserts column to appear — this is the "variant type switched"
 # confirmation and the "auto-sync started" anchor point.
@@ -771,16 +786,15 @@ tags:
       - assertVisible:
           text: ".*Ready \\([0-9]+\\).*"
       # R8: centre before the tap. Timeout added at 20000; the step carried none, so it
-      # defaulted to 7000. With centerElement Maestro re-reads the view hierarchy up to
-      # six times (8-13s in CI) before it gives up and accepts an already-visible
-      # element, and the timeout is checked at the BOTTOM of that loop — a shorter
-      # ceiling turns that graceful give-up into a spurious "No visible element found".
-      # Do not lower it.
+      # R8 exception, MEASURED (CI 34349299679 + 34361627641): `Element bounds`
+      # held at y=545 across `Scrolling try count: 0`..`5` — ReconciliationModal's
+      # footer sits outside the modal's only scroller — so a swipe cannot move
+      # this target and centring buys only the six-iteration give-up path
+      # (>=7.0s). Uncentred it settles well under a second, inside R5's 7000.
       - scrollUntilVisible:
           element:
             text: ".*Save [0-9]+ sets.*"
-          centerElement: true
-          timeout: 20000
+          timeout: 7000
       - tapOn:
           text: ".*Save [0-9]+ sets.*"
       - extendedWaitUntil:
@@ -801,7 +815,7 @@ tags:
     element:
       text: ".*Search inserts.*"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 # 250ms settle after tap so the search input is focused before inputText fires
 # (mirrors util-drill-to-2024-topps-chrome pattern; prevents keystroke drop).
 - tapOn:
@@ -837,18 +851,24 @@ tags:
 #      Cards header row drags the Fetch button well above the fold.
 #   3. assertVisible "Fetch from Marketplaces|Refresh" — confirm it's in-view.
 #   4. tapOn it.
+# R5 — 7000, the bar (was 30000). MEASURED (CI 34349299679 +
+# 34361627641): worst 4.04s, 1 centring swipe. Nothing here waits on a
+# marketplace — the insert row was selected above; nothing here waits on a marketplace.
 - scrollUntilVisible:
     element:
       text: ".*Attributes for Future Stars.*"
     centerElement: true
     visibilityPercentage: 50
-    timeout: 30000
+    timeout: 7000
+# R5 — 7000, the bar (was 30000). MEASURED (CI 34349299679 +
+# 34361627641): worst 0.54s, 0 centring swipes. Nothing here waits on a
+# marketplace — same flex row as the Cards header.
 - scrollUntilVisible:
     element:
       text: "Add Card"
     centerElement: true
     visibilityPercentage: 50
-    timeout: 30000
+    timeout: 7000
 - assertVisible:
     text: ".*Fetch from Marketplaces.*|Refresh"
 - tapOn:
@@ -951,7 +971,7 @@ tags:
     element:
       text: "Parallel"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 - tapOn: "Parallel"
 # Wait for the Parallels column to appear as the switch confirmation.
 - extendedWaitUntil:
@@ -988,16 +1008,15 @@ tags:
       - assertVisible:
           text: ".*Ready \\([0-9]+\\).*"
       # R8: centre before the tap. Timeout added at 20000; the step carried none, so it
-      # defaulted to 7000. With centerElement Maestro re-reads the view hierarchy up to
-      # six times (8-13s in CI) before it gives up and accepts an already-visible
-      # element, and the timeout is checked at the BOTTOM of that loop — a shorter
-      # ceiling turns that graceful give-up into a spurious "No visible element found".
-      # Do not lower it.
+      # R8 exception, MEASURED (CI 34349299679 + 34361627641): `Element bounds`
+      # held at y=545 across `Scrolling try count: 0`..`5` — ReconciliationModal's
+      # footer sits outside the modal's only scroller — so a swipe cannot move
+      # this target and centring buys only the six-iteration give-up path
+      # (>=7.0s). Uncentred it settles well under a second, inside R5's 7000.
       - scrollUntilVisible:
           element:
             text: ".*Save [0-9]+ sets.*"
-          centerElement: true
-          timeout: 20000
+          timeout: 7000
       - tapOn:
           text: ".*Save [0-9]+ sets.*"
       - extendedWaitUntil:
@@ -1018,7 +1037,7 @@ tags:
     element:
       text: ".*Search parallels.*"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 # 250ms settle so the search input is focused before inputText fires.
 - tapOn:
     text: ".*Search parallels.*"
@@ -1039,18 +1058,24 @@ tags:
 # Same fold-clipping trap and the same fix as the Insert section above — see the
 # comment there. The settle anchor is the set attributes summary bar for the
 # parallel we just picked; it renders immediately above the Cards card.
+# R5 — 7000, the bar (was 30000). MEASURED (CI 34349299679 +
+# 34361627641): worst 4.02s, 1 centring swipe. Nothing here waits on a
+# marketplace — the parallel row was selected above; nothing here waits on a marketplace.
 - scrollUntilVisible:
     element:
       text: ".*Attributes for Gold Wave Refractors.*"
     centerElement: true
     visibilityPercentage: 50
-    timeout: 30000
+    timeout: 7000
+# R5 — 7000, the bar (was 30000). MEASURED (CI 34349299679 +
+# 34361627641): worst 0.54s, 0 centring swipes. Nothing here waits on a
+# marketplace — same flex row as the Cards header.
 - scrollUntilVisible:
     element:
       text: "Add Card"
     centerElement: true
     visibilityPercentage: 50
-    timeout: 30000
+    timeout: 7000
 - assertVisible:
     text: ".*Fetch from Marketplaces.*|Refresh"
 - tapOn:
@@ -1172,7 +1197,7 @@ tags:
     element:
       text: ".*#[0-9].*"
     centerElement: true
-    timeout: 15000
+    timeout: 7000
 - assertVisible: "SL"
 
 # ============================================================================
@@ -1210,16 +1235,23 @@ tags:
 # `baseHasMapping` is true. The util already confirmed the picker on the
 # first-run path; this is the seed's own assertion that the fixture is ready
 # for the queue.
+# R5 — 7000, the bar (was 60000). MEASURED (CI 34349299679 +
+# 34361627641): worst 0.54s, 0 centring swipes. Nothing here waits on a
+# marketplace — util-drill-to-base-variant already confirmed the picker and the mapping write.
 - scrollUntilVisible:
     element:
       text: ".*Re-map Base.*"
     centerElement: true
-    timeout: 60000
+    timeout: 7000
 
 # The checklist is EMPTY and must stay that way — the assertion is the contract.
+# R8 exception, MEASURED (CI 34349299679 + 34361627641): `Element bounds`
+# held at y=457 across `Scrolling try count: 0`..`5` — the empty-checklist
+# page has no scrollable overflow to swipe — so a swipe cannot move this
+# target and centring buys only the six-iteration give-up path (>=7.0s).
+# Uncentred it settles well under a second, inside R5's 7000.
 - scrollUntilVisible:
     element:
       text: "No cards in this checklist yet."
-    centerElement: true
-    timeout: 15000
+    timeout: 7000
 

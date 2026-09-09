@@ -72,7 +72,7 @@ tags:
     element:
       id: "Add custom ${VARIANT_TYPE || 'Insert'}s"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 
 - runFlow:
     when:
@@ -100,7 +100,7 @@ tags:
     element:
       text: ${INSERT_NAME || "Base"}
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 - tapOn: ${INSERT_NAME || "Base"}
 
 # ============================================================
@@ -117,7 +117,7 @@ tags:
       id: "Open add card form"
     centerElement: true
     visibilityPercentage: 50
-    timeout: 15000
+    timeout: 7000
 
 # ============================================================
 # STEP 5 — OPEN THE ADD-CARD FORM
@@ -181,7 +181,7 @@ tags:
     element:
       id: "Submit new card"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     id: "Submit new card"
 
@@ -212,4 +212,4 @@ tags:
     centerElement: true
     visibilityPercentage: 50
     waitToSettleTimeoutMs: 1000
-    timeout: 15000
+    timeout: 7000

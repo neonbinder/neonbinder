@@ -75,6 +75,7 @@ tags:
     element:
       text: "Your cards"
     centerElement: true
+    timeout: 7000
 - extendedWaitUntil:
     visible: "All 6 photos read."
     timeout: 180000
@@ -87,6 +88,7 @@ tags:
     element:
       text: "Finish the batch"
     centerElement: true
+    timeout: 7000
 - tapOn: "Finish the batch"
 - assertVisible: "Finish this batch?"
 - tapOn: "Finish it"
@@ -116,6 +118,7 @@ tags:
       # element's entire text.)
       text: ".*2 cards on 1 sheet of Letter, printed both sides.*"
     centerElement: true
+    timeout: 7000
 
 # ============================================================
 # Step 4: turn on calibration mode, so the pockets carry their numbers.
@@ -133,6 +136,7 @@ tags:
     element:
       text: ".*Show cutting guides.*"
     centerElement: true
+    timeout: 7000
 - tapOn: ".*Show cutting guides.*"
 
 # ============================================================
@@ -187,6 +191,7 @@ tags:
         above:
           text: "BACK"
     centerElement: true
+    timeout: 7000
 
 # ============================================================
 # Step 6: switch to a SHORT-edge flip and re-assert.
@@ -216,6 +221,7 @@ tags:
     element:
       text: "Short edge"
     centerElement: true
+    timeout: 7000
 - tapOn: "Short edge"
 - scrollUntilVisible:
     element:
@@ -227,6 +233,7 @@ tags:
         above:
           text: "BACK"
     centerElement: true
+    timeout: 7000
 
 # ============================================================
 # Step 7 — ASSERTION 3: turning the backs off drops the back sheet entirely.
@@ -241,6 +248,7 @@ tags:
     element:
       text: ".*Print the backs too.*"
     centerElement: true
+    timeout: 7000
 - tapOn: ".*Print the backs too.*"
 # UP: the summary sentence (y=1622) is above the two-sided control just tapped.
 - scrollUntilVisible:
@@ -248,6 +256,7 @@ tags:
     element:
       text: ".*2 cards on 1 sheet of Letter, front only.*"
     centerElement: true
+    timeout: 7000
 # The front sheet still renders. This SCROLLS rather than asserting in place:
 # the caption sits 636px below the summary sentence on the CI viewport (1024x625,
 # measured on the real page — sentence at y=1622, caption at y=2070 with backs
@@ -257,6 +266,7 @@ tags:
     element:
       text: "Sheet 1 . front"
     centerElement: true
+    timeout: 7000
 # And the back caption is gone. Read this as corroboration, not as the proof:
 # the load-bearing assertion that the setting reached the preview is the summary
 # sentence above ("front only"), which no input on the page holds and which is

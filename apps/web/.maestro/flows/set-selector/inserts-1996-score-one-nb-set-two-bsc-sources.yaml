@@ -94,7 +94,7 @@ tags:
     element:
       text: "Insert"
     centerElement: true
-    timeout: 15000
+    timeout: 7000
 - tapOn: "Insert"
 # REQUIRED, not optional. setup.yaml performs a global Set Builder reset before
 # any flow runs, so 1996 Score is always absent when this flow starts and
@@ -170,7 +170,7 @@ tags:
     element:
       id: "Add Dugout Collection Artist's Proofs Series 1 to Dugout Collection Artist's Proofs Series 2"
     centerElement: true
-    timeout: 15000
+    timeout: 7000
 - tapOn:
     id: "Add Dugout Collection Artist's Proofs Series 1 to Dugout Collection Artist's Proofs Series 2"
     retryTapIfNoChange: true
@@ -197,11 +197,15 @@ tags:
     timeout: 10000
 
 # ── SAVE ──────────────────────────────────────────────────────────
+# R8 exception, MEASURED (CI 34349299679 + 34361627641): `Element bounds`
+# held at y=545 across `Scrolling try count: 0`..`5` — ReconciliationModal's
+# footer sits outside the modal's only scroller — so a swipe cannot move
+# this target and centring buys only the six-iteration give-up path
+# (>=7.0s). Uncentred it settles well under a second, inside R5's 7000.
 - scrollUntilVisible:
     element:
       text: ".*Save [0-9]+ sets.*"
-    centerElement: true
-    timeout: 15000
+    timeout: 7000
 - tapOn:
     text: ".*Save [0-9]+ sets.*"
 - extendedWaitUntil:
@@ -234,7 +238,7 @@ tags:
     element:
       text: "Insert"
     centerElement: true
-    timeout: 15000
+    timeout: 7000
 - tapOn: "Insert"
 
 - extendedWaitUntil:
@@ -244,7 +248,7 @@ tags:
     element:
       text: ".*Search inserts.*"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     text: ".*Search inserts.*"
     waitToSettleTimeoutMs: 250
@@ -276,11 +280,14 @@ tags:
     text: ".*Dugout Collection Artists Proofs.*"
     below:
       id: "Search inserts"
+# R5 — 7000, the bar (was 20000). MEASURED (CI 34349299679 +
+# 34361627641): worst 2.67s, 0 centring swipes. Nothing here waits on a
+# marketplace — the panel is already mounted by the `tapOn` above.
 - scrollUntilVisible:
     element:
       text: "Multi-source sets"
     centerElement: true
-    timeout: 20000
+    timeout: 7000
 
 - assertVisible:
     text: ".*Dugout Collection Artist's Proofs Series 1.*"
@@ -302,11 +309,19 @@ tags:
 # sources were fetched and merged.
 # ============================================================
 
+# R5 — 7000, the bar; R8 keeps the centring. MEASURED (CI 34349299679 +
+# 34361627641): at maximum scroll this parked at y=497, 122px below the
+# end of the driver's centre band (~375), so centring ran its full
+# six-iteration give-up path — 9.89s here — on every run. A give-up on every
+# run is centring that never centres, so the remedy is the product's: the
+# 208px scroll spacer in src/layouts/binder-layout.tsx (NEO-260) puts this
+# target at y=289, mid-band, and it now centres in one or two swipes.
+# THIS STEP DEPENDS ON THAT SPACER — see R8.
 - scrollUntilVisible:
     element:
       text: ".*Fetch from Marketplaces.*|Refresh"
     centerElement: true
-    timeout: 30000
+    timeout: 7000
 - tapOn:
     text: ".*Fetch from Marketplaces.*|Refresh"
 
@@ -653,7 +668,7 @@ tags:
     element:
       text: "BSC source"
     centerElement: true
-    timeout: 15000
+    timeout: 7000
 
 # retry + a hard gate on the drawer opening: the tap target is now correct by
 # construction, but Virtuoso can still repaint between Maestro reading the row's
@@ -724,7 +739,7 @@ tags:
     element:
       id: "Sync card checklist"
     centerElement: true
-    timeout: 15000
+    timeout: 7000
 - tapOn:
     id: "Sync card checklist"
 
@@ -857,7 +872,7 @@ tags:
     element:
       text: "BSC source"
     centerElement: true
-    timeout: 15000
+    timeout: 7000
 - assertVisible:
     text: ".*NB203-${ATTEMPT_ID}.*"
     below:
@@ -927,7 +942,7 @@ tags:
       text: ".*Attributes for Dugout Collection Artists Proofs.*"
     direction: UP
     centerElement: true
-    timeout: 15000
+    timeout: 7000
 - tapOn:
     id: "Rename Dugout Collection Artists Proofs"
 - extendedWaitUntil:
@@ -947,7 +962,7 @@ tags:
     element:
       text: ".*Attributes for Dugout Collection Artists Proofs NB211-${ATTEMPT_ID}.*"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 
 # ============================================================
 # 8b. FORCE THE INSERT-LEVEL RE-SYNC
@@ -969,7 +984,7 @@ tags:
       text: "Sync Inserts"
     direction: UP
     centerElement: true
-    timeout: 15000
+    timeout: 7000
 - tapOn: "Sync Inserts"
 
 - extendedWaitUntil:
@@ -993,11 +1008,15 @@ tags:
 # Save with NO edits. Filtering first is what pulls the footer above the fold —
 # the dialog body is its own overflow-y-auto scroller and Maestro scrolls the
 # PAGE, not that container (see STEP 1's note).
+# R8 exception, MEASURED (CI 34349299679 + 34361627641): `Element bounds`
+# held at y=545 across `Scrolling try count: 0`..`5` — ReconciliationModal's
+# footer sits outside the modal's only scroller — so a swipe cannot move
+# this target and centring buys only the six-iteration give-up path
+# (>=7.0s). Uncentred it settles well under a second, inside R5's 7000.
 - scrollUntilVisible:
     element:
       text: ".*Save [0-9]+ sets.*"
-    centerElement: true
-    timeout: 15000
+    timeout: 7000
 - tapOn:
     text: ".*Save [0-9]+ sets.*"
 - extendedWaitUntil:
@@ -1025,7 +1044,7 @@ tags:
     element:
       text: "Insert"
     centerElement: true
-    timeout: 15000
+    timeout: 7000
 - tapOn: "Insert"
 
 - extendedWaitUntil:
@@ -1035,7 +1054,7 @@ tags:
     element:
       text: ".*Search inserts.*"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     text: ".*Search inserts.*"
     waitToSettleTimeoutMs: 250
@@ -1075,7 +1094,7 @@ tags:
     element:
       id: ".*names? to check — review suggestions"
     centerElement: true
-    timeout: 15000
+    timeout: 7000
 - tapOn:
     id: ".*names? to check — review suggestions"
 
@@ -1172,11 +1191,14 @@ tags:
 # PRECONDITION, asserted before anything is pressed (R2): both BSC sources are
 # still attached. Without this the cancel assertion at the end could pass on a
 # panel that never had two chips.
+# R5 — 7000, the bar (was 20000). MEASURED (CI 34349299679 +
+# 34361627641): worst 1.97s, 1 centring swipe. Nothing here waits on a
+# marketplace — the panel is already mounted by the `tapOn` above.
 - scrollUntilVisible:
     element:
       text: "Multi-source sets"
     centerElement: true
-    timeout: 20000
+    timeout: 7000
 - assertVisible:
     text: ".*Dugout Collection Artist.s Proofs Series 1.*"
 - assertVisible:
@@ -1191,7 +1213,7 @@ tags:
     element:
       text: ".*Dugout Collection Artist.s Proofs Series 1.*"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     id: "Remove Dugout Collection Artist.s Proofs Series 1"
 

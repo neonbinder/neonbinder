@@ -64,7 +64,7 @@ tags:
       text: "Multi-source sets"
     direction: UP
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 
 # ============================================================
 # OPEN THE ATTACH DIALOG
@@ -137,7 +137,7 @@ tags:
     element:
       text: "Cancel"
     visibilityPercentage: 50
-    timeout: 10000
+    timeout: 7000
 - tapOn: "Cancel"
 
 # Wait for dialog to close — the BSC search input disappears when the

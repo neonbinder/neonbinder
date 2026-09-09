@@ -96,6 +96,7 @@ tags:
     element:
       text: "Base"
     centerElement: true
+    timeout: 7000
 # NEO-85 residual coordinate-staleness (same maestro-web tap-drop class handled
 # across the drill utils): read the "Base" row bounds, the still-settling Variant
 # Types column reflows, the click lands stale → nothing selected. Result-keyed
@@ -139,6 +140,7 @@ tags:
     element:
       text: ".*Base mapping cancelled.*"
     centerElement: true
+    timeout: 7000
 # The picker is truly gone (message panel only renders when !pickerOpen) — this
 # distinguishes the recovery panel from a still-open picker.
 - assertNotVisible: "Confirm Base Set"

@@ -106,19 +106,37 @@ tags:
 # columns down and hid the next column's target.)
 # ============================================================
 
+# R5 — 7000, the bar; R8 keeps the centring. MEASURED (CI 34349299679 +
+# 34361627641): at maximum scroll this parked at y=520, 145px below the
+# end of the driver's centre band (~375), so centring ran its full
+# six-iteration give-up path — 7.66s here — on every run. A give-up on every
+# run is centring that never centres, so the remedy is the product's: the
+# 208px scroll spacer in src/layouts/binder-layout.tsx (NEO-260) puts this
+# target at y=312, mid-band, and it now centres in one or two swipes.
+# THIS STEP DEPENDS ON THAT SPACER — see R8.
 - scrollUntilVisible:
     element:
       text: ".*Attributes for rnm-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
     centerElement: true
+    timeout: 7000
 
 # ============================================================
 # RENAME THE ENTRY
 # ============================================================
 
+# R5 — 7000, the bar; R8 keeps the centring. MEASURED (CI 34349299679 +
+# 34361627641): at maximum scroll this parked at y=518, 143px below the
+# end of the driver's centre band (~375), so centring ran its full
+# six-iteration give-up path — 7.64s here — on every run. A give-up on every
+# run is centring that never centres, so the remedy is the product's: the
+# 208px scroll spacer in src/layouts/binder-layout.tsx (NEO-260) puts this
+# target at y=310, mid-band, and it now centres in one or two swipes.
+# THIS STEP DEPENDS ON THAT SPACER — see R8.
 - scrollUntilVisible:
     element:
       id: "Rename rnm-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
     centerElement: true
+    timeout: 7000
 - tapOn:
     id: "Rename rnm-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
 
@@ -141,10 +159,19 @@ tags:
 # that the selection still resolves to this row.
 # ============================================================
 
+# R5 — 7000, the bar; R8 keeps the centring. MEASURED (CI 34349299679 +
+# 34361627641): at maximum scroll this parked at y=520, 145px below the
+# end of the driver's centre band (~375), so centring ran its full
+# six-iteration give-up path — 7.63s here — on every run. A give-up on every
+# run is centring that never centres, so the remedy is the product's: the
+# 208px scroll spacer in src/layouts/binder-layout.tsx (NEO-260) puts this
+# target at y=312, mid-band, and it now centres in one or two swipes.
+# THIS STEP DEPENDS ON THAT SPACER — see R8.
 - scrollUntilVisible:
     element:
       text: ".*Attributes for rnmx-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
     centerElement: true
+    timeout: 7000
 
 # The old label is gone everywhere — the panel header, its breadcrumb, and the
 # Sets column's selected chip all re-render from the same row. Substring-safe:
@@ -186,6 +213,7 @@ tags:
       id: "Add custom Variant Types"
     direction: UP
     centerElement: true
+    timeout: 7000
 - tapOn:
     id: "Add custom Variant Types"
 
@@ -208,22 +236,41 @@ tags:
     element:
       text: "vt-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
     centerElement: true
+    timeout: 7000
 - tapOn:
     text: "vt-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
 
 # The panel header names the row we are about to rename — same precondition
 # assert as PART 1, so a mis-selected row fails here rather than renaming
 # something else.
+# R5 — 7000, the bar; R8 keeps the centring. MEASURED (CI 34349299679 +
+# 34361627641): at maximum scroll this parked at y=518, 143px below the
+# end of the driver's centre band (~375), so centring ran its full
+# six-iteration give-up path — 7.61s here — on every run. A give-up on every
+# run is centring that never centres, so the remedy is the product's: the
+# 208px scroll spacer in src/layouts/binder-layout.tsx (NEO-260) puts this
+# target at y=310, mid-band, and it now centres in one or two swipes.
+# THIS STEP DEPENDS ON THAT SPACER — see R8.
 - scrollUntilVisible:
     element:
       text: ".*Attributes for vt-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
     centerElement: true
+    timeout: 7000
 
 # Same pencil, same in-place input, same empty-opens behaviour as PART 1.
+# R5 — 7000, the bar; R8 keeps the centring. MEASURED (CI 34349299679 +
+# 34361627641): at maximum scroll this parked at y=516, 141px below the
+# end of the driver's centre band (~375), so centring ran its full
+# six-iteration give-up path — 7.61s here — on every run. A give-up on every
+# run is centring that never centres, so the remedy is the product's: the
+# 208px scroll spacer in src/layouts/binder-layout.tsx (NEO-260) puts this
+# target at y=308, mid-band, and it now centres in one or two swipes.
+# THIS STEP DEPENDS ON THAT SPACER — see R8.
 - scrollUntilVisible:
     element:
       id: "Rename vt-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
     centerElement: true
+    timeout: 7000
 - tapOn:
     id: "Rename vt-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
 - extendedWaitUntil:
@@ -239,10 +286,19 @@ tags:
 # THE ASSERTION: the panel header — which always renders the CURRENTLY
 # SELECTED row — now reads the NEW variant type name. That proves the write
 # landed AND that the selection still resolves to this row.
+# R5 — 7000, the bar; R8 keeps the centring. MEASURED (CI 34349299679 +
+# 34361627641): at maximum scroll this parked at y=518, 143px below the
+# end of the driver's centre band (~375), so centring ran its full
+# six-iteration give-up path — 7.61s here — on every run. A give-up on every
+# run is centring that never centres, so the remedy is the product's: the
+# 208px scroll spacer in src/layouts/binder-layout.tsx (NEO-260) puts this
+# target at y=310, mid-band, and it now centres in one or two swipes.
+# THIS STEP DEPENDS ON THAT SPACER — see R8.
 - scrollUntilVisible:
     element:
       text: ".*Attributes for vtx-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
     centerElement: true
+    timeout: 7000
 
 # The old variant type name is gone. Substring-safe: "vt-0-x" is not a
 # substring of "vtx-0-x", and Maestro's text match is full-anchored anyway.

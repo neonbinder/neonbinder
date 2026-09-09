@@ -138,7 +138,7 @@ tags:
     element:
       id: "Submit new card"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     id: "Submit new card"
 - scrollUntilVisible:
@@ -147,7 +147,7 @@ tags:
     centerElement: true
     visibilityPercentage: 50
     waitToSettleTimeoutMs: 1000
-    timeout: 15000
+    timeout: 7000
 
 # Second card, added inline rather than through util-add-custom-card: that
 # util's first act is a full six-level re-drill, and we are already standing on
@@ -160,7 +160,7 @@ tags:
     direction: UP
     centerElement: true
     visibilityPercentage: 50
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     id: "Open add card form"
 - extendedWaitUntil:
@@ -174,7 +174,7 @@ tags:
     element:
       id: "Submit new card"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     id: "Submit new card"
 - scrollUntilVisible:
@@ -183,7 +183,7 @@ tags:
     centerElement: true
     visibilityPercentage: 50
     waitToSettleTimeoutMs: 1000
-    timeout: 15000
+    timeout: 7000
 
 # ════════════════════════════════════════════════════════════════════════════
 # OPEN THE WALKER from the header. Centering the chip row also parks the two
@@ -198,7 +198,7 @@ tags:
       text: "2 need attention"
     direction: UP
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 - tapOn: "Fix them one at a time"
 
 - extendedWaitUntil:
@@ -435,7 +435,7 @@ tags:
     element:
       text: "Walker Bravo ${ATTEMPT_ID}"
     centerElement: true
-    timeout: 15000
+    timeout: 7000
 - assertVisible: "Walker Alpha ${ATTEMPT_ID}"
 - assertNotVisible:
     id: "Card 802-${ATTEMPT_ID} needs attention: no team on this card yet"

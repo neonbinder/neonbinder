@@ -63,18 +63,22 @@ tags:
     element:
       text: "PayPal [(]F&F[)]"
     centerElement: true
+    timeout: 7000
 - scrollUntilVisible:
     element:
       text: "PayPal [(]G&S[)]"
     centerElement: true
+    timeout: 7000
 - scrollUntilVisible:
     element:
       text: "Venmo"
     centerElement: true
+    timeout: 7000
 - scrollUntilVisible:
     element:
       text: "Cash App"
     centerElement: true
+    timeout: 7000
 
 # Reset-on-pay is DE-SCOPED (not testable cleanly in maestro-web): the ONLY
 # trigger for reset() → $0.00 is tapping a payment button, and that handler does

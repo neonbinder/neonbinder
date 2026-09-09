@@ -65,6 +65,7 @@ tags:
     element:
       id: "Configure credentials in Profile"
     centerElement: true
+    timeout: 7000
 - tapOn:
     id: "Configure credentials in Profile"
 - assertVisible: "Profile Settings"

@@ -55,6 +55,7 @@ tags:
     element:
       text: "Base"
     centerElement: true
+    timeout: 7000
 # NEO-85 residual coordinate-staleness — the SAME maestro-web tap-drop class that
 # 232a39f fixed for the drill row-selects, here on this flow's OWN "Base" tap:
 # maestro reads the "Base" row's bounds, the still-settling Variant Types column
@@ -134,10 +135,15 @@ tags:
           id: "BSC base candidate: .*"
       - tapOn:
           id: "SportLots base candidate: .*"
+      # R8 exception, MEASURED (CI 34349299679 + 34361627641): `Element bounds`
+      # held at y=529 across `Scrolling try count: 0`..`5` — BaseSetPicker's
+      # footer sits outside the dialog's only scroller — so a swipe cannot move
+      # this target and centring buys only the six-iteration give-up path
+      # (>=7.0s). Uncentred it settles well under a second, inside R5's 7000.
       - scrollUntilVisible:
           element:
             text: "Confirm Base Set"
-          centerElement: true
+          timeout: 7000
       - tapOn: "Confirm Base Set"
       # Wait for the modal to close; default 7s is enough — no backend
       # round-trip at this point, the Convex write fires optimistically.
@@ -160,7 +166,7 @@ tags:
           element:
             text: "Re-map Base"
           centerElement: true
-          timeout: 10000
+          timeout: 7000
 
 # ── CardChecklist renders after the mapping is confirmed ────────────────────
 # Scroll DOWN to the "Fetch from Marketplaces" / "Refresh" button to confirm
@@ -170,6 +176,7 @@ tags:
     element:
       text: ".*Fetch from Marketplaces.*|Refresh"
     visibilityPercentage: 50
+    timeout: 7000
 
 # Scroll UP to "Re-map Base" to confirm the base-mapping badge is visible.
 # scrollUntilVisible already asserts visibility — no trailing assertVisible needed.
@@ -178,3 +185,4 @@ tags:
       text: "Re-map Base"
     direction: UP
     visibilityPercentage: 50
+    timeout: 7000

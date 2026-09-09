@@ -195,7 +195,7 @@ tags:
       id: "Edit card 776-${ATTEMPT_ID}"
     centerElement: true
     visibilityPercentage: 50
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     id: "Edit card 776-${ATTEMPT_ID}"
     waitToSettleTimeoutMs: 2000
@@ -222,7 +222,7 @@ tags:
       id: "Delete card 776-${ATTEMPT_ID}"
     centerElement: true
     visibilityPercentage: 50
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     id: "Delete card 776-${ATTEMPT_ID}"
 - assertVisible: "Confirm?"

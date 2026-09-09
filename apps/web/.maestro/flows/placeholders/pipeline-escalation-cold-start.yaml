@@ -114,6 +114,7 @@ tags:
     element:
       text: "Your cards"
     centerElement: true
+    timeout: 7000
 
 # Step 3a: bring the session panel into view so the cold-start notice's location
 # is on screen when it appears. The notice renders asynchronously (only once the
@@ -132,6 +133,7 @@ tags:
 - scrollUntilVisible:
     element:
       text: "Your cards"
+    timeout: 7000
 
 # ── Step 3: THE hard requirement — the user is told during the cold start ──────
 # `heavyWarming` turns true the moment the first image escalates and stays true
@@ -163,6 +165,7 @@ tags:
 - scrollUntilVisible:
     element:
       text: ".*Escalating.*deeper processing.*"
+    timeout: 7000
 
 # Step 5: re-anchor the status line into view for the completion wait. Step 4
 # scrolled down to the Images section, so the status line is now ABOVE — scroll
@@ -175,6 +178,7 @@ tags:
     direction: UP
     element:
       text: "Your cards"
+    timeout: 7000
 
 # ── Step 6: the pair finishes through the HEAVY service (~5 min) ───────────────
 # This is the ONE sanctioned multi-minute wait, and it is legitimate ONLY because
@@ -212,6 +216,7 @@ tags:
     element:
       text: "Finish the batch"
     centerElement: true
+    timeout: 7000
 - tapOn: "Finish the batch"
 - assertVisible: "Finish this batch?"
 - tapOn: "Finish it"

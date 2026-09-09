@@ -125,27 +125,19 @@ tags:
 # fixed-sentinel no-op wedge an interrupted run can leave on shared dev).
 # ============================================================
 
-# R8 — centred, and `timeout: 20000` is not optional. MEASURED in CI (NEO-260,
-# maestro.log): this target CANNOT reach Maestro's centre band. It is the
-# collapsed SetAttributesPanel summary bar and the last thing on the page, and
-# SetSelector.tsx deliberately leaves NO scroll headroom below the last panel
-# (NEO-255 tried `pb-[50vh]` and reverted it — many flows scroll DOWN for an
-# anchor and rely on the document bottoming out). So at maximum scroll it parks
-# at y=518 of the 625px viewport while the centre band ends at ~375, and
-# `Element bounds` repeats unchanged across `Scrolling try count: 1`..`5` before
-# Maestro gives up and accepts the already-visible element.
-# Centring is kept anyway, because that give-up path does real work here: it
-# drives the page to maximum scroll, so the bar always ends ~91px clear of the
-# bottom edge instead of wherever the drill left it (measured as low as y=609,
-# flush against the fold). What it costs is the full 6-iteration budget, ~7.6s
-# in CI — which is why 7000/10000 failed three flows in NEO-260's first run.
+# R5 — 7000, the bar; R8 keeps the centring. MEASURED (CI 34349299679 +
+# 34361627641): at max scroll this parked at y=518 (band ends ~375) and
+# centring burned all six iterations (~7.6s), which only a 15000/20000
+# ceiling hid. The remedy is the product's: 208px of padding below the last
+# panel (`attributesPanelIsLast`) lifts it into the band so it centres in
+# 1-2 swipes. This step DEPENDS on that padding landing — see R8.
 - scrollUntilVisible:
     element:
       id: "Edit attributes"
     centerElement: true
     visibilityPercentage: 10
     waitToSettleTimeoutMs: 1000
-    timeout: 20000
+    timeout: 7000
 
 # IDEMPOTENT EXPAND: custom sets default expanded; guard for prior-run collapse.
 - runFlow:
@@ -167,7 +159,7 @@ tags:
     centerElement: true
     visibilityPercentage: 10
     waitToSettleTimeoutMs: 1000
-    timeout: 10000
+    timeout: 7000
 
 # Single per-attempt UNIQUE write — always a real change → toast always fires.
 - tapOn:
@@ -190,18 +182,18 @@ tags:
 # After Step A the Variant Types column is above the fold — scroll UP.
 # ============================================================
 
-# R8: centre before the tap. Timeout kept at 30000, already over the R8 floor. With
-# centerElement Maestro re-reads the view hierarchy up to six times (8-13s in CI) before
-# it gives up and accepts an already-visible element, and the timeout is checked at the
-# BOTTOM of that loop — a shorter ceiling turns that graceful give-up into a spurious
-# "No visible element found". Do not lower it.
+# R5 — 7000, the bar. MEASURED (CI 34349299679 + 34361627641): this
+# step settles in 2.64s (0 centring swipes). The 30000 it carried was
+# not a marketplace allowance — the round-trip is gated by the wait above;
+# this scroll is pure UI. An earlier NEO-260 note said not to lower it;
+# that was wrong, see R8.
 - scrollUntilVisible:
     element:
       id: "Add custom Variant Types"
     direction: UP
     centerElement: true
     visibilityPercentage: 100
-    timeout: 30000
+    timeout: 7000
 
 # Add "Insert" as a custom variant type if it's not already there.
 - runFlow:
@@ -230,7 +222,7 @@ tags:
     element:
       text: "Insert"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 - tapOn: "Insert"
 
 # Wait for the Inserts column header to confirm selection.
@@ -238,17 +230,17 @@ tags:
 
 # Add a custom insert entry "fp-insert-{WORKER_INDEX}" if absent — the variant
 # that holds the card checklist.
-# R8: centre before the tap. Timeout kept at 30000, already over the R8 floor. With
-# centerElement Maestro re-reads the view hierarchy up to six times (8-13s in CI) before
-# it gives up and accepts an already-visible element, and the timeout is checked at the
-# BOTTOM of that loop — a shorter ceiling turns that graceful give-up into a spurious
-# "No visible element found". Do not lower it.
+# R5 — 7000, the bar. MEASURED (CI 34349299679 + 34361627641): this
+# step settles in 1.97s (1 centring swipe). The 30000 it carried was
+# not a marketplace allowance — the round-trip is gated by the wait above;
+# this scroll is pure UI. An earlier NEO-260 note said not to lower it;
+# that was wrong, see R8.
 - scrollUntilVisible:
     element:
       id: "Add custom Inserts"
     centerElement: true
     visibilityPercentage: 50
-    timeout: 30000
+    timeout: 7000
 
 - runFlow:
     when:
@@ -272,27 +264,31 @@ tags:
       - assertVisible:
           text: ".*fp-insert-${WORKER_INDEX || 0}.*"
 
-# R8: centre before the tap. Timeout raised to 20000 from 10000. With centerElement
-# Maestro re-reads the view hierarchy up to six times (8-13s in CI) before it gives up
-# and accepts an already-visible element, and the timeout is checked at the BOTTOM of
-# that loop — a shorter ceiling turns that graceful give-up into a spurious "No visible
-# element found". Do not lower it.
+# R8 — centre before the tap; R5 — 7000, the bar. An earlier NEO-260 revision
+# raised this step to 20000 because the centring give-up path costs 8-13s. That
+# was the wrong remedy and the rule now says so: a step that reaches the give-up
+# path on every run is centring that never centres, and funding it hides the
+# fault instead of fixing it. This target DOES centre, so 7000 measures the UI.
 - scrollUntilVisible:
     element:
       text: "fp-insert-${WORKER_INDEX || 0}"
     centerElement: true
-    timeout: 20000
+    timeout: 7000
 - tapOn: "fp-insert-${WORKER_INDEX || 0}"
 
 # Wait for CardChecklist to render — "Open add card form" is the reliable signal
 # on custom sets (adapter calls short-circuit; no BSC/SL round-trip). Mirrors
 # card-detail-panel.yaml.
+# R5 — 7000, the bar (was 30000). MEASURED (CI 34349299679 +
+# 34361627641): worst 4.06s, 1 centring swipe. Nothing here waits on a
+# marketplace: a hand-made set short-circuits every adapter call, so this is
+# the CardChecklist's own render and nothing else.
 - scrollUntilVisible:
     element:
       id: "Open add card form"
     centerElement: true
     visibilityPercentage: 50
-    timeout: 30000
+    timeout: 7000
 
 - tapOn:
     id: "Open add card form"
@@ -311,7 +307,7 @@ tags:
     element:
       id: "Submit new card"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     id: "Submit new card"
 
@@ -320,7 +316,7 @@ tags:
     element:
       text: "Propagation Test Player ${ATTEMPT_ID}"
     centerElement: true
-    timeout: 15000
+    timeout: 7000
 
 # Open the edit form for our card.
 - scrollUntilVisible:
@@ -328,7 +324,7 @@ tags:
       id: "Edit card 992-${ATTEMPT_ID}"
     centerElement: true
     visibilityPercentage: 50
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     id: "Edit card 992-${ATTEMPT_ID}"
     waitToSettleTimeoutMs: 2000
@@ -350,17 +346,15 @@ tags:
 # marker classes (useFieldTestClass on CardFeatureRow, mirroring SetFeatureRow),
 # so maestro-web's inputText lands in Country of Origin — NOT the first shared-class text
 # input (Card Type), which is where it wrongly landed before that fix.
-# R8 — `timeout: 20000`, not 10000. The Card features editor is a fixed drawer
-# a window swipe cannot move: measured in CI (NEO-260), `Element bounds` here
-# stayed at `Bounds(x=772, y=525, width=190, height=26)` across
-# `Scrolling try count: 0`..`5`, so centring always runs the full give-up budget
-# and the step COMPLETES at ~7.7s. At 10000 that left 2.3s of margin against
-# exactly the arithmetic that turned three flows red in NEO-260's first run.
+# R8 exception, MEASURED (CI 34349299679 + 34361627641): `Element bounds`
+# held at y=525 across `Scrolling try count: 0`..`5` — CardFeaturesEditor
+# renders inside CardDetailPanel's `fixed inset-0` overlay — so a swipe
+# cannot move this target and centring buys only the six-iteration give-up
+# path (>=7.0s). Uncentred it settles well under a second, inside R5's 7000.
 - scrollUntilVisible:
     element:
       id: "Value for Country of Origin"
-    centerElement: true
-    timeout: 20000
+    timeout: 7000
 - tapOn:
     id: "Value for Country of Origin"
 - eraseText: 50
@@ -392,7 +386,7 @@ tags:
     element:
       text: "Propagation Test Player ${ATTEMPT_ID}"
     centerElement: true
-    timeout: 15000
+    timeout: 7000
 
 # ============================================================
 # STEP C — Edit the SET-level Country of Origin to "CooTest-SET2"
@@ -412,27 +406,19 @@ tags:
 
 - assertVisible: "Variant Types"
 
-# R8 — centred, and `timeout: 20000` is not optional. MEASURED in CI (NEO-260,
-# maestro.log): this target CANNOT reach Maestro's centre band. It is the
-# collapsed SetAttributesPanel summary bar and the last thing on the page, and
-# SetSelector.tsx deliberately leaves NO scroll headroom below the last panel
-# (NEO-255 tried `pb-[50vh]` and reverted it — many flows scroll DOWN for an
-# anchor and rely on the document bottoming out). So at maximum scroll it parks
-# at y=518 of the 625px viewport while the centre band ends at ~375, and
-# `Element bounds` repeats unchanged across `Scrolling try count: 1`..`5` before
-# Maestro gives up and accepts the already-visible element.
-# Centring is kept anyway, because that give-up path does real work here: it
-# drives the page to maximum scroll, so the bar always ends ~91px clear of the
-# bottom edge instead of wherever the drill left it (measured as low as y=609,
-# flush against the fold). What it costs is the full 6-iteration budget, ~7.6s
-# in CI — which is why 7000/10000 failed three flows in NEO-260's first run.
+# R5 — 7000, the bar; R8 keeps the centring. MEASURED (CI 34349299679 +
+# 34361627641): at max scroll this parked at y=518 (band ends ~375) and
+# centring burned all six iterations (~7.6s), which only a 15000/20000
+# ceiling hid. The remedy is the product's: 208px of padding below the last
+# panel (`attributesPanelIsLast`) lifts it into the band so it centres in
+# 1-2 swipes. This step DEPENDS on that padding landing — see R8.
 - scrollUntilVisible:
     element:
       id: "Edit attributes"
     centerElement: true
     visibilityPercentage: 10
     waitToSettleTimeoutMs: 1000
-    timeout: 20000
+    timeout: 7000
 
 # IDEMPOTENT EXPAND for the Step C re-navigation.
 - runFlow:
@@ -451,7 +437,7 @@ tags:
     centerElement: true
     visibilityPercentage: 10
     waitToSettleTimeoutMs: 1000
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     id: "Value for Country of Origin"
 - eraseText: 50
@@ -477,37 +463,43 @@ tags:
       text: "Insert"
     direction: UP
     centerElement: true
-    timeout: 15000
+    timeout: 7000
 - tapOn: "Insert"
 
 - assertVisible: "Inserts"
 
-# R8: centre before the tap. Timeout raised to 20000 from 10000. With centerElement
-# Maestro re-reads the view hierarchy up to six times (8-13s in CI) before it gives up
-# and accepts an already-visible element, and the timeout is checked at the BOTTOM of
-# that loop — a shorter ceiling turns that graceful give-up into a spurious "No visible
-# element found". Do not lower it.
+# R8 — centre before the tap; R5 — 7000, the bar. An earlier NEO-260 revision
+# raised this step to 20000 because the centring give-up path costs 8-13s. That
+# was the wrong remedy and the rule now says so: a step that reaches the give-up
+# path on every run is centring that never centres, and funding it hides the
+# fault instead of fixing it. This target DOES centre, so 7000 measures the UI.
 - scrollUntilVisible:
     element:
       text: "fp-insert-${WORKER_INDEX || 0}"
     centerElement: true
-    timeout: 20000
+    timeout: 7000
 - tapOn: "fp-insert-${WORKER_INDEX || 0}"
 
 # Wait for CardChecklist to render — same "Open add card form" signal as Step B.
+# R5 — 7000, the bar (was 30000). MEASURED (CI 34349299679 +
+# 34361627641): worst 4.04s, 1 centring swipe. Nothing here waits on a
+# marketplace: a hand-made set short-circuits every adapter call, so this is
+# the CardChecklist's own render and nothing else.
 - scrollUntilVisible:
     element:
       id: "Open add card form"
     centerElement: true
     visibilityPercentage: 50
-    timeout: 30000
+    timeout: 7000
 
+# R5 — 7000, the bar (was 30000). MEASURED (CI 34349299679 + 34361627641):
+# settles in 1.97s, 1 centring swipe; nothing here waits on a marketplace.
 - scrollUntilVisible:
     element:
       id: "Edit card 992-${ATTEMPT_ID}"
     centerElement: true
     visibilityPercentage: 50
-    timeout: 30000
+    timeout: 7000
 - tapOn:
     id: "Edit card 992-${ATTEMPT_ID}"
     waitToSettleTimeoutMs: 2000
@@ -524,18 +516,16 @@ tags:
 # THE CORE NO-CASCADE ASSERTION: the card's Country of Origin input still holds its own
 # value. The combined {id, text} selector matches ONLY the node whose aria-label
 # is "Value for Country of Origin" AND whose value is "CooTest-CARD".
-# R8 — `timeout: 20000`, not 10000. The Card features editor is a fixed drawer
-# a window swipe cannot move: measured in CI (NEO-260), `Element bounds` here
-# stayed at `Bounds(x=772, y=525, width=190, height=26)` across
-# `Scrolling try count: 0`..`5`, so centring always runs the full give-up budget
-# and the step COMPLETES at ~7.7s. At 10000 that left 2.3s of margin against
-# exactly the arithmetic that turned three flows red in NEO-260's first run.
+# R8 exception, MEASURED (CI 34349299679 + 34361627641): `Element bounds`
+# held at y=525 across `Scrolling try count: 0`..`5` — CardFeaturesEditor
+# renders inside CardDetailPanel's `fixed inset-0` overlay — so a swipe
+# cannot move this target and centring buys only the six-iteration give-up
+# path (>=7.0s). Uncentred it settles well under a second, inside R5's 7000.
 - scrollUntilVisible:
     element:
       id: "Value for Country of Origin"
       text: ".*CooTest-CARD.*"
-    centerElement: true
-    timeout: 20000
+    timeout: 7000
 
 # The set-level value must appear NOWHERE on the card view — the set edit did
 # not reach this card (nor the fp-insert node the panel shows here).
@@ -555,7 +545,7 @@ tags:
     element:
       text: "Propagation Test Player ${ATTEMPT_ID}"
     centerElement: true
-    timeout: 15000
+    timeout: 7000
 
 # ============================================================
 # CLEANUP — delete this attempt's test card
@@ -566,7 +556,7 @@ tags:
       id: "Delete card 992-${ATTEMPT_ID}"
     centerElement: true
     visibilityPercentage: 50
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     id: "Delete card 992-${ATTEMPT_ID}"
 - assertVisible: "Confirm?"

@@ -51,6 +51,7 @@ tags:
     element:
       id: "Add custom Inserts"
     centerElement: true
+    timeout: 7000
 - tapOn:
     id: "Add custom Inserts"
 - assertVisible: "Add Custom Entry"
@@ -66,6 +67,7 @@ tags:
     element:
       id: "Add custom Inserts"
     centerElement: true
+    timeout: 7000
 - tapOn:
     id: "Add custom Inserts"
 - assertVisible: "Add Custom Entry"
@@ -81,6 +83,7 @@ tags:
     element:
       id: "Add custom Inserts"
     centerElement: true
+    timeout: 7000
 - tapOn:
     id: "Add custom Inserts"
 - assertVisible: "Add Custom Entry"
@@ -96,6 +99,7 @@ tags:
     element:
       text: "Group Parallels"
     centerElement: true
+    timeout: 7000
 - tapOn: "Group Parallels"
 - assertVisible: ".*Drag inserts under a parent.*"
 - assertVisible: "Top-level inserts"
@@ -105,6 +109,7 @@ tags:
     element:
       text: ".*Accept all suggestions.*"
     centerElement: true
+    timeout: 7000
 - tapOn: ".*Accept all suggestions.*"
 - assertVisible: ".*[0-9]+ promotion.*"
 - assertVisible: ".*Parallels of.*${ATTEMPT_ID} Stars.*"
@@ -140,6 +145,7 @@ tags:
       id: "Add custom Inserts"
     direction: UP
     centerElement: true
+    timeout: 7000
 - runFlow:
     when:
       notVisible:
@@ -166,6 +172,7 @@ tags:
     element:
       text: "Group Parallels"
     centerElement: true
+    timeout: 7000
 - tapOn: "Group Parallels"
 - assertVisible: ".*Drag inserts under a parent.*"
 - assertVisible: "Top-level inserts"
@@ -177,6 +184,7 @@ tags:
       text: "Suggested"
     centerElement: true
     visibilityPercentage: 50
+    timeout: 7000
 # R6: no redundant assertVisible "Suggested" here — scrollUntilVisible already
 # confirmed visibility.
 - assertVisible: ".*Save [0-9]+ change.*"
@@ -189,6 +197,7 @@ tags:
     element:
       text: ".*Accept all suggestions.*"
     centerElement: true
+    timeout: 7000
 - tapOn: ".*Accept all suggestions.*"
 - assertVisible: ".*[0-9]+ promotion.*"
 - assertVisible: ".*Parallels of.*${ATTEMPT_ID} Stars.*"
@@ -211,6 +220,7 @@ tags:
     element:
       text: "Group Parallels"
     centerElement: true
+    timeout: 7000
 - tapOn: "Group Parallels"
 - assertVisible: ".*Drag inserts under a parent.*"
 
@@ -222,6 +232,7 @@ tags:
       text: "Suggested"
     centerElement: true
     visibilityPercentage: 50
+    timeout: 7000
 # R6: no redundant assertVisible here — scrollUntilVisible already confirmed it.
 - assertVisible: ".*Save [0-9]+ change.*"
 
@@ -243,4 +254,5 @@ tags:
       id: "Add custom Inserts"
     visibilityPercentage: 50
     centerElement: true
+    timeout: 7000
 - assertVisible: "Group Parallels"

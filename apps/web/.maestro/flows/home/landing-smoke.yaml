@@ -15,6 +15,17 @@ tags:
 - assertVisible: "Get Started"
 
 # Bottom CTA: Create Account
+# R5 EXCEPTION — SIGNED OFF by Jason, 2026-09-09 (NEO-260). The reason is
+# page-length TRAVEL, not centring and not a slow UI: nothing on this page is
+# slower than 7 s to respond, and this step never reaches the centring give-up
+# path. MEASURED over 4 green CI runs (n=3, spread <2%): 7 `ElementNotFound`
+# retries before the target is first seen — 7 screens of a signed-out
+# marketing page at the driver's fixed ~2.2 s per swipe + view-hierarchy read
+# — worst sample 17.38 s end to end. Budget is 1.4x that.
+# WHAT VOIDS THIS SIGN-OFF: shorten the page and the budget comes back down to
+# 7000. Do not raise it further without asking again — a bigger number here is
+# a new decision, not a tuning knob.
 - scrollUntilVisible:
     element:
       text: "Create Free Account"
+    timeout: 25000

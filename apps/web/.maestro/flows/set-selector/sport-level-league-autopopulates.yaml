@@ -83,13 +83,21 @@ tags:
 # node. The header ("Attributes for Baseball (Sport)") is a plain <h3> — its
 # text is reliably matchable. The scroll IS the scope assertion (R6). "Sport)"
 # (with the trailing paren shown) disambiguates from any breadcrumb "Baseball".
+# R5 — 7000, the bar; R8 keeps the centring. MEASURED (CI 34349299679 +
+# 34361627641): at maximum scroll this parked at y=520, 145px below the
+# end of the driver's centre band (~375), so centring ran its full
+# six-iteration give-up path — 12.33s here — on every run. A give-up on every
+# run is centring that never centres, so the remedy is the product's: the
+# 208px scroll spacer in src/layouts/binder-layout.tsx (NEO-260) puts this
+# target at y=312, mid-band, and it now centres in one or two swipes.
+# THIS STEP DEPENDS ON THAT SPACER — see R8.
 - scrollUntilVisible:
     element:
       text: ".*Attributes for Baseball.*Sport.*"
     centerElement: true
     visibilityPercentage: 10
     waitToSettleTimeoutMs: 1000
-    timeout: 15000
+    timeout: 7000
 
 # Step 5 — expand the panel (collapsed by default at the sport level).
 # Idempotent: tap "Edit attributes" only when showing; the hard assert of
@@ -119,4 +127,4 @@ tags:
       text: "MLB"
     centerElement: true
     visibilityPercentage: 50
-    timeout: 15000
+    timeout: 7000

@@ -117,10 +117,22 @@ tags:
 - assertVisible: "Add a player"
 - tapOn: "New player name"
 - inputText: "SLP${output.ATTEMPT_TOKEN}"
+# R8 case 1 -> R5's 7000. MEASURED over 4 green CI runs (n=3): `Element
+# bounds` frozen at y=552 through `Scrolling try count: 0`..`5`, completing on
+# the give-up path at 8.0 s EVERY run — the page is already at maximum
+# scroll, so the target never reaches the centre band (250-375) and the five
+# swipes buy nothing. NEO-260 ships the fix: a 208px spacer at the bottom of
+# the authenticated shell (`h-[208px]`, src/layouts/binder-layout.tsx), which
+# gives the page exactly that much more to scroll. 552 - 208 = 344 (centre
+# 360) — and across 2,396 centred DOWN scrolls in 4 green CI runs the lowest
+# give-up sat at a centre of 464, with clean accepts throughout this range.
+# So it centres on the first swipe (measured 1.38-1.43 s) and the whole step
+# costs ~2.1 s. 7000 DEPENDS on that spacer; delete it and this step reds.
 - scrollUntilVisible:
     element:
       id: "Create player SLP${output.ATTEMPT_TOKEN}"
     centerElement: true
+    timeout: 7000
 - tapOn:
     id: "Create player SLP${output.ATTEMPT_TOKEN}"
 
@@ -135,10 +147,22 @@ tags:
 # ── THE LONG STINT — 10 years at team A ─────────────────────────────────────
 # The career editor sits below the panel's five fields, past the fold on the
 # 1024x629 headless viewport, so every reach into it is scrolled and centred.
+# R8 case 1 -> R5's 7000. MEASURED over 4 green CI runs (n=6): `Element
+# bounds` frozen at y=484 through `Scrolling try count: 0`..`5`, completing on
+# the give-up path at 10.0 s EVERY run — the page is already at maximum
+# scroll, so the target never reaches the centre band (250-375) and the five
+# swipes buy nothing. NEO-260 ships the fix: a 208px spacer at the bottom of
+# the authenticated shell (`h-[208px]`, src/layouts/binder-layout.tsx), which
+# gives the page exactly that much more to scroll. 484 - 208 = 276 (centre
+# 287) — and across 2,396 centred DOWN scrolls in 4 green CI runs the lowest
+# give-up sat at a centre of 464, with clean accepts throughout this range.
+# So it centres on the first swipe (measured 1.38-1.43 s) and the whole step
+# costs ~4.2 s. 7000 DEPENDS on that spacer; delete it and this step reds.
 - scrollUntilVisible:
     element:
       id: "Add team"
     centerElement: true
+    timeout: 7000
 - tapOn:
     id: "Add team"
 - tapOn:
@@ -237,12 +261,26 @@ tags:
     element:
       text: ".*SLA${output.ATTEMPT_TOKEN} · 2000–2010.*"
     centerElement: true
+    timeout: 7000
 
 # ── THE SHORT STINT — 2 years at team B ─────────────────────────────────────
+# R8 case 1 -> R5's 7000. MEASURED over 4 green CI runs (n=6): `Element
+# bounds` frozen at y=484 through `Scrolling try count: 0`..`5`, completing on
+# the give-up path at 10.0 s EVERY run — the page is already at maximum
+# scroll, so the target never reaches the centre band (250-375) and the five
+# swipes buy nothing. NEO-260 ships the fix: a 208px spacer at the bottom of
+# the authenticated shell (`h-[208px]`, src/layouts/binder-layout.tsx), which
+# gives the page exactly that much more to scroll. 484 - 208 = 276 (centre
+# 287) — and across 2,396 centred DOWN scrolls in 4 green CI runs the lowest
+# give-up sat at a centre of 464, with clean accepts throughout this range.
+# So it centres on the first swipe (measured 1.38-1.43 s) and the whole step
+# costs ~4.2 s. 7000 DEPENDS on that spacer; delete it and this step reds.
+# Same step, same screen, same measurement as the first `Add team` above.
 - scrollUntilVisible:
     element:
       id: "Add team"
     centerElement: true
+    timeout: 7000
 - tapOn:
     id: "Add team"
 - tapOn:
@@ -328,14 +366,27 @@ tags:
     element:
       text: ".*SLB${output.ATTEMPT_TOKEN} · 2012–2014.*"
     centerElement: true
+    timeout: 7000
 
 # The stints live in the panel's DRAFT until Save — unlike the teams themselves,
 # which the typeahead created outright. `players.teamYears` is what the spine
 # designer reads, so this save is what makes the fixture exist at all.
+# R8 case 1 -> R5's 7000. MEASURED over 4 green CI runs (n=9): `Element
+# bounds` frozen at y=552 through `Scrolling try count: 0`..`5`, completing on
+# the give-up path at 7.8 s EVERY run — the page is already at maximum
+# scroll, so the target never reaches the centre band (250-375) and the five
+# swipes buy nothing. NEO-260 ships the fix: a 208px spacer at the bottom of
+# the authenticated shell (`h-[208px]`, src/layouts/binder-layout.tsx), which
+# gives the page exactly that much more to scroll. 552 - 208 = 344 (centre
+# 360) — and across 2,396 centred DOWN scrolls in 4 green CI runs the lowest
+# give-up sat at a centre of 464, with clean accepts throughout this range.
+# So it centres on the first swipe (measured 1.38-1.43 s) and the whole step
+# costs ~2.1 s. 7000 DEPENDS on that spacer; delete it and this step reds.
 - scrollUntilVisible:
     element:
       text: "Save"
     centerElement: true
+    timeout: 7000
 - tapOn: "Save"
 - extendedWaitUntil:
     visible: ".*Saved SLP${output.ATTEMPT_TOKEN}.*"
@@ -371,18 +422,35 @@ tags:
 # empty input as its placeholder, and "#01214b" is this field's and appears
 # nowhere else in the app. The scroll IS the assertion that the panel opened on
 # a team with no colours yet (R6).
+#
+# R8 case 1 -> R5's 7000. MEASURED over 4 green CI runs (n=6): `Element bounds`
+# FROZEN at y=490 through `Scrolling try count: 0`..`5` — no swipe moves it at
+# all — completing on the give-up path at 9.8 s EVERY run (2.7 s of travel plus
+# the 7.2 s give-up). The panel is in normal document flow (TeamManagement.tsx
+# renders it into a plain bordered div), so the freeze is the page already
+# sitting at its maximum scroll, not a fixed container.
+#
+# That was the PRODUCT finding, and NEO-260 is the fix: a 208px spacer at the
+# bottom of the authenticated shell (`h-[208px]`, src/layouts/binder-layout.tsx)
+# puts the box at 490 - 208 = 282 (centre 303) — across 2,396 centred DOWN
+# scrolls in 4 green CI runs the lowest give-up sat at a centre of 464, so this
+# is well clear. It then centres on the first swipe (measured 1.38-1.43 s) and
+# the whole step costs ~4.2 s. 7000 DEPENDS on that spacer; delete it and this
+# step reds. The identical pair for team B below carries the same measurement.
 - scrollUntilVisible:
     element:
       text: "#01214b"
     centerElement: true
-    timeout: 15000
+    timeout: 7000
 - tapOn: "#01214b"
 - inputText: "#132448"
+# Bounds FROZEN at y=552 across tries 0..5, give-up at 7.8 s over 4 green CI
+# runs (n=9). 552 - 208 = 344 (centre 360). Same spacer, same dependency.
 - scrollUntilVisible:
     element:
       text: "Save"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 - tapOn: "Save"
 # The mutation confirms by name, so this proves the colour landed on THIS team.
 - extendedWaitUntil:
@@ -402,18 +470,23 @@ tags:
     text: "SLB${output.ATTEMPT_TOKEN}"
     below:
       text: "1 of .* teams.*"
+# Same step, same screen, same measurement and same dependency as team A's
+# above: bounds FROZEN at y=490 across tries 0..5, give-up at 9.8 s over 4
+# green CI runs; 490 - 208 = 282 (centre 303) once NEO-260's 208px shell spacer
+# is counted.
 - scrollUntilVisible:
     element:
       text: "#01214b"
     centerElement: true
-    timeout: 15000
+    timeout: 7000
 - tapOn: "#01214b"
 - inputText: "#002d72"
+# Bounds FROZEN at y=552 across tries 0..5, give-up at 7.8 s. Same dependency.
 - scrollUntilVisible:
     element:
       text: "Save"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 - tapOn: "Save"
 - extendedWaitUntil:
     visible: ".*Saved SLB${output.ATTEMPT_TOKEN}.*"
@@ -453,6 +526,7 @@ tags:
     element:
       text: "Find a player"
     centerElement: true
+    timeout: 7000
 - tapOn: "Find a player"
 - inputText: "SLP"
 - extendedWaitUntil:
@@ -474,11 +548,17 @@ tags:
 # sits below the 1024x629 headless fold, and the chips sit under two fields.
 # The scroll is the assertion for the first chip (R6); the second is asserted
 # beside it.
+# R5: 7000, the bar. MEASURED in CI (green run, this flow's log): found on
+# scroll try 0, y=326, 0.001 s — the chips are already in the band when the
+# picker resolves. Note that DROPPING the value would not put this on the bar:
+# `scrollUntilVisible` defaults to 20 s, not 7 s
+# (ScrollUntilVisibleCommand.DEFAULT_TIMEOUT_IN_MILLIS = "20000" in the pinned
+# maestro-orchestra-models.jar), so the bar has to be written out.
 - scrollUntilVisible:
     element:
       text: ".*SLA${output.ATTEMPT_TOKEN}.*"
     centerElement: true
-    timeout: 15000
+    timeout: 7000
 - assertVisible: ".*SLB${output.ATTEMPT_TOKEN}.*"
 
 # The free-form team picker must NOT be present — the two controls are mutually
@@ -493,7 +573,7 @@ tags:
     element:
       text: "Background"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 - assertVisible: "#132448"
 - assertNotVisible: "#002d72"
 

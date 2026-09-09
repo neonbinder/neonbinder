@@ -77,6 +77,7 @@ tags:
     element:
       text: ".*Out for delivery.*last USPS scan.*"
     centerElement: true
+    timeout: 7000
 
 # The row we are asserting against is OUR fixture row and not some other row a
 # future flow might leave on this account: this recipient name is used nowhere
@@ -118,10 +119,22 @@ tags:
 # have failed long before reaching it.
 - assertNotVisible: ".*Cancellation of Postage.*postmarked.*"
 
+# R8 case 1 -> R5's 7000. MEASURED over 4 green CI runs (n=3): `Element
+# bounds` frozen at y=546 through `Scrolling try count: 0`..`5`, completing on
+# the give-up path at 8.1 s EVERY run — the page is already at maximum
+# scroll, so the target never reaches the centre band (250-375) and the five
+# swipes buy nothing. NEO-260 ships the fix: a 208px spacer at the bottom of
+# the authenticated shell (`h-[208px]`, src/layouts/binder-layout.tsx), which
+# gives the page exactly that much more to scroll. 546 - 208 = 338 (centre
+# 356) — and across 2,396 centred DOWN scrolls in 4 green CI runs the lowest
+# give-up sat at a centre of 464, with clean accepts throughout this range.
+# So it centres on the first swipe (measured 1.38-1.43 s) and the whole step
+# costs ~2.1 s. 7000 DEPENDS on that spacer; delete it and this step reds.
 - scrollUntilVisible:
     element:
       text: ".*Show all scans \\(4\\).*"
     centerElement: true
+    timeout: 7000
 - tapOn:
     text: ".*Show all scans \\(4\\).*"
 

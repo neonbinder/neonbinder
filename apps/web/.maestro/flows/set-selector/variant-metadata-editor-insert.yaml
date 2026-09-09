@@ -49,6 +49,7 @@ tags:
     element:
       id: "Add custom Inserts"
     centerElement: true
+    timeout: 7000
 - tapOn:
     id: "Add custom Inserts"
 - assertVisible: "Add Custom Entry"
@@ -70,12 +71,14 @@ tags:
     element:
       text: "META-TEST"
     centerElement: true
+    timeout: 7000
 - tapOn: "META-TEST"
 
 # The Metadata panel renders below the Variants list (off-fold) — scroll to it.
 - scrollUntilVisible:
     element:
       text: "Metadata"
+    timeout: 7000
 # Insert checkbox (read-only, checked); Parallel checkbox (read-only, unchecked).
 - assertVisible: "Insert"
 - assertVisible: "Parallel"
@@ -91,6 +94,7 @@ tags:
     element:
       text: "Prefix:"
     centerElement: true
+    timeout: 7000
 - tapOn: "Prefix:"
 - eraseText: 20
 - inputText: "TEST-${ATTEMPT_ID}"
@@ -103,6 +107,7 @@ tags:
     element:
       text: "Save"
     centerElement: true
+    timeout: 7000
 - tapOn: "Save"
 - assertNotVisible: "Save"
 - assertVisible: "Metadata"

@@ -54,6 +54,7 @@ tags:
     element:
       id: "Add custom Inserts"
     centerElement: true
+    timeout: 7000
 - tapOn:
     id: "Add custom Inserts"
 - assertVisible: "Add Custom Entry"
@@ -69,6 +70,7 @@ tags:
     element:
       id: "Add custom Inserts"
     centerElement: true
+    timeout: 7000
 - tapOn:
     id: "Add custom Inserts"
 - assertVisible: "Add Custom Entry"
@@ -84,6 +86,7 @@ tags:
     element:
       id: "Add custom Inserts"
     centerElement: true
+    timeout: 7000
 - tapOn:
     id: "Add custom Inserts"
 - assertVisible: "Add Custom Entry"
@@ -104,6 +107,7 @@ tags:
     element:
       text: "Group Parallels"
     centerElement: true
+    timeout: 7000
 - tapOn: "Group Parallels"
 - assertVisible: ".*Drag inserts under a parent.*"
 - assertVisible: "Top-level inserts"
@@ -114,6 +118,7 @@ tags:
     element:
       text: ".*Accept all suggestions.*"
     centerElement: true
+    timeout: 7000
 - tapOn: ".*Accept all suggestions.*"
 - assertVisible: ".*[0-9]+ promotion.*"
 # Stars Gold should now be inside the "Parallels of <ID> Stars" zone.

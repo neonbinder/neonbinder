@@ -61,6 +61,7 @@ tags:
     element:
       text: "Name on the label"
     centerElement: true
+    timeout: 7000
 - tapOn: "Name on the label"
 - inputText: "Ken Griffey Jr."
 
@@ -77,6 +78,7 @@ tags:
     element:
       text: ".*Contrast .*:1.*"
     centerElement: true
+    timeout: 7000
 
 # Step 4: choose the typeface. Eleven buttons, each labelled with its own font
 # name and set in that face; "Graduate" is the collegiate slab.
@@ -84,6 +86,7 @@ tags:
     element:
       text: "Graduate"
     centerElement: true
+    timeout: 7000
 - tapOn: "Graduate"
 
 # The one-line character note under the picker follows the SELECTED font, so it
@@ -99,6 +102,7 @@ tags:
     element:
       text: '3"'
     centerElement: true
+    timeout: 7000
 - tapOn: '3"'
 
 # The "labels per sheet" line is computed from the chosen width — two 3" spines
@@ -108,10 +112,25 @@ tags:
 - assertVisible: ".*2 labels per sheet at 3. wide.*"
 
 # Step 6: queue the label.
+# R8 case 1 -> R5's 7000. MEASURED over 4 green CI runs (n=3): `Element
+# bounds` frozen at y=569 through `Scrolling try count: 0`..`5`, completing on
+# the give-up path at 10.0 s EVERY run — the page is already at maximum
+# scroll, so the target never reaches the centre band (250-375) and the five
+# swipes buy nothing. NEO-260 ships the fix: a 208px spacer at the bottom of
+# the authenticated shell (`h-[208px]`, src/layouts/binder-layout.tsx), which
+# gives the page exactly that much more to scroll. 569 - 208 = 361 (centre
+# 377) — and across 2,396 centred DOWN scrolls in 4 green CI runs the lowest
+# give-up sat at a centre of 464, with clean accepts throughout this range.
+# So it centres on the first swipe (measured 1.38-1.43 s) and the whole step
+# costs ~4.2 s. 7000 DEPENDS on that spacer; delete it and this step reds.
+# y=569 is the DEEPEST give-up in the area, so it is the thinnest margin against
+# the 208px spacer: centre 377, still 87px clear of the lowest give-up centre
+# observed anywhere (464). Any future trim of that spacer breaks this site first.
 - scrollUntilVisible:
     element:
       text: "Add to sheet"
     centerElement: true
+    timeout: 7000
 - tapOn: "Add to sheet"
 
 # Step 7: the label is on the sheet.
@@ -135,6 +154,7 @@ tags:
       id: "Remove Ken Griffey Jr., 3 inch spine in Graduate, from the sheet"
     direction: UP
     centerElement: true
+    timeout: 7000
 
 # The Sheet heading counts what will PRINT. One 3" label at the default 10.5"
 # height is one page. (Parens escaped — a Maestro text matcher is a fully
@@ -160,3 +180,4 @@ tags:
     element:
       text: "Pick a player, or type a name, to see the label."
     centerElement: true
+    timeout: 7000

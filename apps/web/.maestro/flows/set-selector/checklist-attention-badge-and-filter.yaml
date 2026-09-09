@@ -154,7 +154,7 @@ tags:
     element:
       id: "Submit new card"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     id: "Submit new card"
 
@@ -169,7 +169,7 @@ tags:
     centerElement: true
     visibilityPercentage: 50
     waitToSettleTimeoutMs: 1000
-    timeout: 15000
+    timeout: 7000
 
 # ════════════════════════════════════════════════════════════════════════════
 # CARD 2 — #702, also with no team.
@@ -187,7 +187,7 @@ tags:
     direction: UP
     centerElement: true
     visibilityPercentage: 50
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     id: "Open add card form"
 - extendedWaitUntil:
@@ -201,7 +201,7 @@ tags:
     element:
       id: "Submit new card"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     id: "Submit new card"
 - scrollUntilVisible:
@@ -210,7 +210,7 @@ tags:
     centerElement: true
     visibilityPercentage: 50
     waitToSettleTimeoutMs: 1000
-    timeout: 15000
+    timeout: 7000
 
 # ════════════════════════════════════════════════════════════════════════════
 # CARD 3 — #703, added WITH a team picked on the way in (NEO-208).
@@ -240,7 +240,7 @@ tags:
     direction: UP
     centerElement: true
     visibilityPercentage: 50
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     id: "Open add card form"
 - extendedWaitUntil:
@@ -276,7 +276,7 @@ tags:
     element:
       id: "Add team"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     id: "Add team"
 - assertVisible:
@@ -346,7 +346,7 @@ tags:
     element:
       id: "Submit new card"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     id: "Submit new card"
 
@@ -358,7 +358,7 @@ tags:
     centerElement: true
     visibilityPercentage: 50
     waitToSettleTimeoutMs: 1000
-    timeout: 15000
+    timeout: 7000
 
 # THE TEAM IS ON THE ROW. The sub-line is one text node — the row's facts joined
 # with " · " — and a hand-added card's only fact is its team, so this is the
@@ -399,7 +399,7 @@ tags:
       id: "Card 701-${ATTEMPT_ID} needs attention: no team on this card yet"
     direction: UP
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 - assertVisible:
     id: "Card 702-${ATTEMPT_ID} needs attention: no team on this card yet"
 
@@ -419,7 +419,7 @@ tags:
       text: "2 need attention"
     direction: UP
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 - assertVisible: "Fix them one at a time"
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -440,7 +440,7 @@ tags:
       id: "Edit card 702-${ATTEMPT_ID}"
     centerElement: true
     visibilityPercentage: 50
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     id: "Edit card 702-${ATTEMPT_ID}"
     waitToSettleTimeoutMs: 2000
@@ -543,7 +543,7 @@ tags:
       id: "Show only cards needing attention"
     direction: UP
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     id: "Show only cards needing attention"
 

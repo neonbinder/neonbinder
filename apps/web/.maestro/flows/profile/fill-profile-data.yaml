@@ -19,6 +19,7 @@ tags:
 - scrollUntilVisible:
     element:
       text: "Basic Info"
+    timeout: 7000
 - tapOn: "Username.*"
 - inputText: "${TEST_USERNAME}"
 - tapOn: "Display Name"
@@ -34,24 +35,35 @@ tags:
 # (/profile/public renders only PublicProfileEditor plus the section nav since
 # NEO-128 split the sections into routes, so the old "the credentials section
 # below also has a Username/Email label" caveat no longer applies).
-# R8: every centred scroll carries timeout: 20000 — centring re-reads the
-# hierarchy up to six times (8-13s in CI) before it gives up gracefully, and a
-# shorter timeout turns that give-up into "No visible element found".
+# R5: every centred scroll below carries timeout: 7000, the bar. Two facts make
+# that the right number, both measured off this flow's own CI log:
+#   1. `scrollUntilVisible` does NOT default to 7 s. Its default is 20 s
+#      (ScrollUntilVisibleCommand.DEFAULT_TIMEOUT_IN_MILLIS = "20000" in the
+#      pinned maestro-orchestra-models.jar; the log line for a scroll with no
+#      `timeout:` in the YAML reads "timeout 20000 ms"). So OMITTING the value
+#      here would leave these steps at 20 s, not bring them to the bar — only an
+#      explicit 7000 does that.
+#   2. Centring is cheap on this route. Every label below is found on scroll try
+#      0 or try 1 — 0.001 s to 1.46 s — because each field follows the previous
+#      one down a single form. 7000 leaves room for four retries.
+# The one step that does NOT fit is the Save button at the bottom of the file;
+# its measurement and its number are recorded there.
 - scrollUntilVisible:
     element:
       text: "Marketplace Links"
+    timeout: 7000
 - scrollUntilVisible:
     element:
       text: "eBay Store URL"
     centerElement: true
-    timeout: 20000
+    timeout: 7000
 - tapOn: "eBay Store URL"
 - inputText: "https://www.ebay.com/str/${TEST_USERNAME}"
 - scrollUntilVisible:
     element:
       text: "BuySportsCards URL"
     centerElement: true
-    timeout: 20000
+    timeout: 7000
 - tapOn: "BuySportsCards URL"
 # The seller path and the MySlabs short link below are Jason's REAL PUBLIC
 # seller URLs, deliberately (confirmed 2026-09-09). Validating the real public
@@ -62,7 +74,7 @@ tags:
     element:
       text: "Sportlots URL"
     centerElement: true
-    timeout: 20000
+    timeout: 7000
 - tapOn: "Sportlots URL"
 - inputText: "https://sportlots.com/dealers/?dealer=${TEST_USERNAME}"
 # "MySlabs URL" is the label; the sibling helper button reads "Find my MySlabs
@@ -72,7 +84,7 @@ tags:
     element:
       text: "MySlabs URL"
     centerElement: true
-    timeout: 20000
+    timeout: 7000
 - tapOn: "MySlabs URL"
 - inputText: "http://myslabs.to/e8c447c0-5917-4326-be26-be2201e36d4a"
 
@@ -84,11 +96,12 @@ tags:
 - scrollUntilVisible:
     element:
       text: "Payment Handles"
+    timeout: 7000
 - scrollUntilVisible:
     element:
       text: ".*PayPal username.*"
     centerElement: true
-    timeout: 20000
+    timeout: 7000
 - tapOn:
     text: ".*PayPal username.*"
 - inputText: "${TEST_USERNAME}-pp"
@@ -97,7 +110,7 @@ tags:
     element:
       text: ".*Venmo username.*"
     centerElement: true
-    timeout: 20000
+    timeout: 7000
 - tapOn:
     text: ".*Venmo username.*"
 - inputText: "${TEST_USERNAME}-venmo"
@@ -106,7 +119,7 @@ tags:
     element:
       text: ".*Cash App username.*"
     centerElement: true
-    timeout: 20000
+    timeout: 7000
 - tapOn:
     text: ".*Cash App username.*"
 - inputText: "${TEST_USERNAME}-cashapp"
@@ -118,35 +131,47 @@ tags:
 - scrollUntilVisible:
     element:
       text: "Social Media"
+    timeout: 7000
 - scrollUntilVisible:
     element:
       text: "Twitter / X URL"
     centerElement: true
-    timeout: 20000
+    timeout: 7000
 - tapOn: "Twitter / X URL"
 - inputText: "https://x.com/${TEST_USERNAME}-twit"
 - scrollUntilVisible:
     element:
       text: "Instagram URL"
     centerElement: true
-    timeout: 20000
+    timeout: 7000
 - tapOn: "Instagram URL"
 - inputText: "https://instagram.com/${TEST_USERNAME}-ig"
 - scrollUntilVisible:
     element:
       text: "TikTok URL"
     centerElement: true
-    timeout: 20000
+    timeout: 7000
 - tapOn: "TikTok URL"
 - inputText: "https://tiktok.com/@${TEST_USERNAME}-tt"
 
-# Save — centerElement keeps "Save Public Profile" fully in view rather than
-# clipped at the edge of the 1024x629 headless viewport (R8).
+# R8 case 1 -> R5's 7000. MEASURED over 4 green CI runs (n=3): the centring
+# loop runs to exhaustion — `Scrolling try count: 0`..`5`, `Element bounds`
+# y=553 then y=544 unchanged for tries 1-5 — completing on the give-up path at
+# 7.8 s EVERY run. The first swipe buys 9px; the next four buy nothing, because
+# /profile/public is already at its maximum scroll when this step starts.
+#
+# That was the PRODUCT finding, and NEO-260 is the fix: a 208px spacer at the
+# bottom of the authenticated shell (`h-[208px]`, src/layouts/binder-layout.tsx)
+# puts the button at 544 - 208 = 336 (centre 352) — comfortably inside the range
+# where centring succeeds; across 2,396 centred DOWN scrolls in 4 green CI runs
+# the lowest give-up sat at a centre of 464. It then centres on the first swipe
+# (measured 1.38-1.43 s) and the whole step costs ~2.1 s. 7000 DEPENDS on that
+# spacer; delete it and this step reds.
 - scrollUntilVisible:
     element:
       text: "Save Public Profile"
     centerElement: true
-    timeout: 20000
+    timeout: 7000
 - tapOn: "Save Public Profile"
 # Non-scrolling on purpose. The save confirmation renders BELOW the Save button,
 # which is the last element on /profile/public, so it used to land past the fold
@@ -186,16 +211,20 @@ tags:
 - scrollUntilVisible:
     element:
       text: ".*paypal.me/${TEST_USERNAME}-pp.*"
+    timeout: 7000
 - scrollUntilVisible:
     element:
       text: ".*venmo.com/${TEST_USERNAME}-venmo.*"
+    timeout: 7000
 - scrollUntilVisible:
     element:
       text: ".*cash.app.*${TEST_USERNAME}-cashapp.*"
+    timeout: 7000
 
 # Social media links
 - scrollUntilVisible:
     element:
       text: ".*x.com/${TEST_USERNAME}-twit.*"
+    timeout: 7000
 - assertVisible: ".*instagram.com/${TEST_USERNAME}-ig.*"
 - assertVisible: ".*tiktok.com.*${TEST_USERNAME}-tt.*"

@@ -25,9 +25,11 @@ tags:
 - assertVisible: "Profile Settings"
 
 # Basic Info — tap the visible label to focus, then type.
+# R5: 7000, the bar — MEASURED over 4 green CI runs (n=3), worst sample 0.60 s.
 - scrollUntilVisible:
     element:
       text: "Basic Info"
+    timeout: 7000
 - tapOn: "Username.*"
 - inputText: "${TEST_USERNAME}"
 - tapOn: "Display Name"
@@ -47,19 +49,37 @@ tags:
 # names its row ("PayPal username" is in exactly one label, so it cannot collide
 # with the PayPal email row below).
 #
-# R8: every centred scroll here carries timeout: 20000 — with centerElement on,
-# Maestro re-reads the hierarchy up to six times (8-13s in CI) before giving up
-# and accepting an already-visible element, and the timeout is checked at the
-# BOTTOM of that loop, so a shorter one turns a graceful give-up into
-# "No visible element found".
+# R5: the four centred scrolls below carry timeout: 7000, the bar. Note that
+# OMITTING the value would not do that — `scrollUntilVisible` defaults to 20 s,
+# not 7 s (ScrollUntilVisibleCommand.DEFAULT_TIMEOUT_IN_MILLIS = "20000" in the
+# pinned maestro-orchestra-models.jar, and a scroll with no `timeout:` logs
+# "timeout 20000 ms"), so only an explicit 7000 puts a step on the bar.
+# MEASURED in CI (green run, from both callers' logs): each of these four is
+# found on scroll try 0 or try 1 — 0.001 s to 1.47 s. The section-heading scroll
+# immediately below, and the Save step at the bottom, carry their own numbers.
+#
+# R5 EXCEPTION — SIGNED OFF by Jason, 2026-09-09 (NEO-260), and the only one of
+# these outside home/. The reason is page-length TRAVEL, not centring and not a
+# slow UI: this step is not centred at all, so it never reaches the give-up
+# path, and nothing on /profile/public is slower than 7 s to respond.
+# MEASURED over 4 green CI runs from both callers (n=3, spread 7.00-7.06 s):
+# 3 `ElementNotFound` retries before the heading is first seen — three screens
+# of /profile/public at the driver's fixed ~2.2 s per swipe + view-hierarchy
+# read. The 208px shell spacer does not help here: the cost is above the fold
+# line, not below it. Budget is 1.4x the worst sample.
+# WHAT VOIDS THIS SIGN-OFF: shorten the route (or reach Payment Handles from
+# further down, as fill-profile-data.yaml does — its copy of this step costs
+# 0.56 s) and the budget comes back down to 7000. Do not raise it further
+# without asking again.
 - scrollUntilVisible:
     element:
       text: "Payment Handles"
+    timeout: 10000
 - scrollUntilVisible:
     element:
       text: ".*PayPal username.*"
     centerElement: true
-    timeout: 20000
+    timeout: 7000
 - tapOn:
     text: ".*PayPal username.*"
 - inputText: "${TEST_USERNAME}-pp"
@@ -74,7 +94,7 @@ tags:
     element:
       text: ".*PayPal email [(]Goods & Services[)].*"
     centerElement: true
-    timeout: 20000
+    timeout: 7000
 - tapOn:
     text: ".*PayPal email [(]Goods & Services[)].*"
 - inputText: "${TEST_USERNAME}@example.com"
@@ -82,7 +102,7 @@ tags:
     element:
       text: ".*Venmo username.*"
     centerElement: true
-    timeout: 20000
+    timeout: 7000
 - tapOn:
     text: ".*Venmo username.*"
 - inputText: "${TEST_USERNAME}-venmo"
@@ -91,23 +111,31 @@ tags:
     element:
       text: ".*Cash App username.*"
     centerElement: true
-    timeout: 20000
+    timeout: 7000
 - tapOn:
     text: ".*Cash App username.*"
 - inputText: "${TEST_USERNAME}-cashapp"
 - assertVisible: "→ cash.app/$${TEST_USERNAME}-cashapp"
 
 # Save and confirm.
-# R8: centre the Save button before tapping it — the sibling drill in
-# profile/fill-profile-data.yaml does the same. Reapplied after ef28202 reverted
-# it wholesale; the first run's reds were centred scrolls left on a 7-10s
-# timeout, not the centring, so this one is explicitly given the 20s budget the
-# centring loop needs.
+# R8 case 1 -> R5's 7000. R8 still wants this centred before the tap; what
+# changes is that centring can now succeed. MEASURED over 4 green CI runs
+# (n=2, both callers agree): the centring loop runs to exhaustion — `Scrolling
+# try count: 0`..`5`, `Element bounds` y=593 then y=544 unchanged for tries
+# 1-5 — completing on the give-up path at 9.9 s EVERY run (2.7 s of travel plus
+# the 7.2 s give-up). The resting y=544 is identical to the sibling flow's from
+# a different starting position: the signature of a page at maximum scroll, not
+# of a slow response.
+#
+# NEO-260's 208px spacer at the bottom of the authenticated shell (`h-[208px]`,
+# src/layouts/binder-layout.tsx) puts the button at 544 - 208 = 336 (centre
+# 352), so it centres on the first swipe (measured 1.38-1.43 s) and the whole
+# step costs ~4.2 s. 7000 DEPENDS on that spacer; delete it and this step reds.
 - scrollUntilVisible:
     element:
       text: "Save Public Profile"
     centerElement: true
-    timeout: 20000
+    timeout: 7000
 - tapOn: "Save Public Profile"
 # Non-scrolling on purpose. The save confirmation renders BELOW the Save button,
 # which is the last element on /profile/public, so it used to land past the fold

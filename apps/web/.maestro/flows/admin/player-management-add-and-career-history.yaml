@@ -178,10 +178,22 @@ tags:
 # land on any other button, and it only appears at all when no player of that
 # name already exists — the screen demotes it to "Create anyway" behind an
 # "Open <name>" button when one does.
+# R8 case 1 -> R5's 7000. MEASURED over 4 green CI runs (n=3): `Element
+# bounds` frozen at y=552 through `Scrolling try count: 0`..`5`, completing on
+# the give-up path at 7.9 s EVERY run — the page is already at maximum
+# scroll, so the target never reaches the centre band (250-375) and the five
+# swipes buy nothing. NEO-260 ships the fix: a 208px spacer at the bottom of
+# the authenticated shell (`h-[208px]`, src/layouts/binder-layout.tsx), which
+# gives the page exactly that much more to scroll. 552 - 208 = 344 (centre
+# 360) — and across 2,396 centred DOWN scrolls in 4 green CI runs the lowest
+# give-up sat at a centre of 464, with clean accepts throughout this range.
+# So it centres on the first swipe (measured 1.38-1.43 s) and the whole step
+# costs ~2.1 s. 7000 DEPENDS on that spacer; delete it and this step reds.
 - scrollUntilVisible:
     element:
       id: "Create player PM${output.ATTEMPT_TOKEN}"
     centerElement: true
+    timeout: 7000
 - tapOn:
     id: "Create player PM${output.ATTEMPT_TOKEN}"
 
@@ -206,15 +218,28 @@ tags:
     element:
       text: "No stints recorded yet."
     centerElement: true
+    timeout: 7000
 
 # ── STINT 1 — THE LATER ONE, ADDED FIRST ────────────────────────────────────
 # Deliberately out of chronological order. Adding 2010–2012 before 2001–2005 is
 # what makes the ordering assertion below mean something: if the screen simply
 # listed stints as they were typed, the flow would fail.
+# R8 case 1 -> R5's 7000. MEASURED over 4 green CI runs (n=6): `Element
+# bounds` frozen at y=484 through `Scrolling try count: 0`..`5`, completing on
+# the give-up path at 7.8 s EVERY run — the page is already at maximum
+# scroll, so the target never reaches the centre band (250-375) and the five
+# swipes buy nothing. NEO-260 ships the fix: a 208px spacer at the bottom of
+# the authenticated shell (`h-[208px]`, src/layouts/binder-layout.tsx), which
+# gives the page exactly that much more to scroll. 484 - 208 = 276 (centre
+# 287) — and across 2,396 centred DOWN scrolls in 4 green CI runs the lowest
+# give-up sat at a centre of 464, with clean accepts throughout this range.
+# So it centres on the first swipe (measured 1.38-1.43 s) and the whole step
+# costs ~2.1 s. 7000 DEPENDS on that spacer; delete it and this step reds.
 - scrollUntilVisible:
     element:
       id: "Add team"
     centerElement: true
+    timeout: 7000
 - tapOn:
     id: "Add team"
 - tapOn:
@@ -334,6 +359,7 @@ tags:
     element:
       text: ".*PMT${output.ATTEMPT_TOKEN} · 2010–2012.*"
     centerElement: true
+    timeout: 7000
 
 # ── STINT 2 — THE EARLIER ONE, AT THE SAME TEAM ─────────────────────────────
 # Two stints at one franchise is the case the feature exists for (traded away,
@@ -344,10 +370,23 @@ tags:
 # it a few steps ago — and an exact match suppresses the create row. The
 # difference is the assertion: reaching for "Add" here proves the first stint's
 # creation actually persisted a row the picker can find again.
+# R8 case 1 -> R5's 7000. MEASURED over 4 green CI runs (n=6): `Element
+# bounds` frozen at y=484 through `Scrolling try count: 0`..`5`, completing on
+# the give-up path at 7.8 s EVERY run — the page is already at maximum
+# scroll, so the target never reaches the centre band (250-375) and the five
+# swipes buy nothing. NEO-260 ships the fix: a 208px spacer at the bottom of
+# the authenticated shell (`h-[208px]`, src/layouts/binder-layout.tsx), which
+# gives the page exactly that much more to scroll. 484 - 208 = 276 (centre
+# 287) — and across 2,396 centred DOWN scrolls in 4 green CI runs the lowest
+# give-up sat at a centre of 464, with clean accepts throughout this range.
+# So it centres on the first swipe (measured 1.38-1.43 s) and the whole step
+# costs ~2.1 s. 7000 DEPENDS on that spacer; delete it and this step reds.
+# Same step, same screen, same measurement as the first `Add team` above.
 - scrollUntilVisible:
     element:
       id: "Add team"
     centerElement: true
+    timeout: 7000
 - tapOn:
     id: "Add team"
 - tapOn:
@@ -373,16 +412,29 @@ tags:
     element:
       text: ".*PMT${output.ATTEMPT_TOKEN} · 2001–2005.*"
     centerElement: true
+    timeout: 7000
 - assertVisible:
     text: ".*PMT${output.ATTEMPT_TOKEN} · 2010–2012.*"
     below:
       text: ".*PMT${output.ATTEMPT_TOKEN} · 2001–2005.*"
 
 # ── SAVE ────────────────────────────────────────────────────────────────────
+# R8 case 1 -> R5's 7000. MEASURED over 4 green CI runs (n=3): `Element
+# bounds` frozen at y=552 through `Scrolling try count: 0`..`5`, completing on
+# the give-up path at 7.7 s EVERY run — the page is already at maximum
+# scroll, so the target never reaches the centre band (250-375) and the five
+# swipes buy nothing. NEO-260 ships the fix: a 208px spacer at the bottom of
+# the authenticated shell (`h-[208px]`, src/layouts/binder-layout.tsx), which
+# gives the page exactly that much more to scroll. 552 - 208 = 344 (centre
+# 360) — and across 2,396 centred DOWN scrolls in 4 green CI runs the lowest
+# give-up sat at a centre of 464, with clean accepts throughout this range.
+# So it centres on the first swipe (measured 1.38-1.43 s) and the whole step
+# costs ~2.0 s. 7000 DEPENDS on that spacer; delete it and this step reds.
 - scrollUntilVisible:
     element:
       text: "Save"
     centerElement: true
+    timeout: 7000
 - tapOn: "Save"
 
 # SCROLL BACK UP FOR THE CONFIRMATION — it is not next to the button that
@@ -470,6 +522,7 @@ tags:
     element:
       text: ".*PMT${output.ATTEMPT_TOKEN} · 2001–2005.*"
     centerElement: true
+    timeout: 7000
 # ...and this asserts the OTHER stint, still below it. Same single assertion as
 # before the reload, which is the whole point: the order is a property of the
 # stored data, not of the draft that was on screen when Save was pressed.

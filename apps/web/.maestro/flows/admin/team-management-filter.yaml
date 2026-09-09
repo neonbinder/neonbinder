@@ -80,6 +80,7 @@ tags:
     element:
       text: "Filter teams"
     centerElement: true
+    timeout: 7000
 - inputText: "zzzznotateam"
 
 # The filter now HOLDS that text — maestro-web reports an input's value as its

@@ -535,10 +535,21 @@ export default function SetSelector() {
     return { bsc: build("bsc"), sportlots: build("sportlots") };
   }, [cardChecklistRow]);
 
-  // No scroll headroom below the last panel, deliberately (NEO-255 tried
-  // pb-[50vh]): dozens of Maestro flows scroll DOWN for an anchor and rely on
-  // the document bottoming out to keep it in view; extra slack let them
-  // scroll past it.
+  // NO SCROLL HEADROOM HERE, deliberately — the shell owns it now (NEO-260).
+  //
+  // This container used to be the one place in the app that had a bottom-pad
+  // question: the collapsed SetAttributesPanel's "Edit attributes" control
+  // parked at y=518 on the 625px headless document, 143px below the driver's
+  // centre band, so every step that centred it burned the full give-up path.
+  // That was never a set-builder problem — every page in the app bottomed out
+  // with its primary action jammed against the fold. It is fixed once, for all
+  // of them, by the 208px spacer in src/layouts/binder-layout.tsx, which this
+  // page renders inside: 518 - 208 = 310, mid-band.
+  //
+  // So do NOT add padding-bottom back here. A second helping stacks on the
+  // shell's and lifts targets ABOVE the band, which fails exactly as hard as
+  // being below it. (NEO-255's pb-[50vh] — 313px, exactly one driver swipe —
+  // is the other way to get this wrong; read the note in binder-layout.tsx.)
   return (
     <div className="max-w-full mx-auto p-6 flex flex-col gap-6">
       {/* `sr-only` is position:absolute, so this is NOT a flex item and costs

@@ -68,6 +68,7 @@ tags:
     element:
       id: "Add custom Sports"
     visibilityPercentage: 50
+    timeout: 7000
 # NEO-85 residual coordinate-staleness: this flow advances the drill via the
 # Sports "+ Custom" form (NOT a search-row-select), so its one droppable tap is
 # the form-open trigger. Result-keyed retry — re-fire ONCE iff the "Add Custom
@@ -148,3 +149,4 @@ tags:
     element:
       text: "Sync Years"
     centerElement: true
+    timeout: 7000

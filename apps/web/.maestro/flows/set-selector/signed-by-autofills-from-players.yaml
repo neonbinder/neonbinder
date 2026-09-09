@@ -187,15 +187,35 @@ tags:
 # top-anchored card like #1 is NOT reliably reachable — a DOWN scroll walks to
 # the bottom). waitToSettleTimeoutMs absorbs the virtualisation/reactive-refetch
 # race from any concurrent Base re-sync shifting row y-coords between Maestro's
-# lookup and tap dispatch. 30s covers the full-list DOWN walk.
+# lookup and tap dispatch.
+#
+# The "a DOWN scroll walks to the bottom" claim above is not something the driver
+# can actually do, and the old 30s ceiling was budgeting for it: maestro-web's
+# only scroll is `window.scroll`, so it never drives react-virtuoso's own
+# scroller. In both green CI runs the row was already rendered at try 0. If
+# virtuoso ever mounts somewhere that does not include card 300, this step fails
+# rather than walks — that is a flow finding to fix at the source, not a ceiling.
 # ============================================================
 
+# R5 — 7000, the bar; R8 keeps the centring. MEASURED (CI 34349299679 +
+# 34361627641): `Element bounds` held at y=508 across `Scrolling try count:
+# 0`..`5` in both green runs — 9.92s of give-up, the longest in this area.
+# That is NOT a pinned element. maestro-web's only scroll is
+# `window.scroll`, and the row lives in a react-virtuoso list with a fixed
+# `height: min(70vh, 800px)` and no `customScrollParent` — so the driver
+# never touches the list's own scroller, and the row was frozen only
+# because the WINDOW had no headroom left. The 208px spacer in
+# src/layouts/binder-layout.tsx supplies it: 508 - 208 = 300, mid-band.
+# Both green runs found the row already rendered at try 0, so no walk was
+# needed; the walk this step's old 30000 was budgeting for is not something
+# the driver can do anyway (it cannot scroll Virtuoso), which is a separate
+# finding, not a ceiling.
 - scrollUntilVisible:
     element:
       id: "Edit card 300"
     centerElement: true
     visibilityPercentage: 50
-    timeout: 30000
+    timeout: 7000
 - tapOn:
     id: "Edit card 300"
     waitToSettleTimeoutMs: 2000
@@ -211,11 +231,13 @@ tags:
 # drawer was mounted and correct — the failure screenshot showed a healthy card
 # list with no drawer in frame. scrollUntilVisible both waits and scrolls, so a
 # drawer that genuinely fails to open still fails here.
+# R5 — 7000, the bar (was 20000). MEASURED (CI 34349299679 + 34361627641):
+# settles in 0.56s, 0 centring swipes; nothing here waits on a marketplace.
 - scrollUntilVisible:
     element:
       id: "Card name"
     centerElement: true
-    timeout: 20000
+    timeout: 7000
 
 # Confirm we opened the intended card (drawer header shows "Card #300").
 - assertVisible:
@@ -240,7 +262,7 @@ tags:
       id: "Show features editor"
     centerElement: true
     visibilityPercentage: 50
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     id: "Show features editor"
 - assertVisible:

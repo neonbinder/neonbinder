@@ -167,11 +167,15 @@ tags:
 # business, not this flow's claim.
 # ============================================================
 
+# R5 — 7000, the bar (was 15000). NO LOG EVIDENCE: this step did not
+# execute in either green CI run (34349299679, 34361627641), so 7000 is
+# the rule's default rather than a measurement. It is an ordinary in-app
+# scroll — the `.*Saved [0-9]+ cards.*` gate above owns the commit wait.
 - scrollUntilVisible:
     element:
       id: "Skipped names \\([0-9]+\\) . not players or teams"
     centerElement: true
-    timeout: 15000
+    timeout: 7000
 - tapOn:
     id: "Skipped names \\([0-9]+\\) . not players or teams"
 - assertVisible:
@@ -206,7 +210,7 @@ tags:
     element:
       id: "Unskip .*"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     id: "Unskip .*"
     retryTapIfNoChange: true
@@ -214,4 +218,4 @@ tags:
     element:
       text: "Unskipped .* it will be reviewed on the next sync."
     centerElement: true
-    timeout: 15000
+    timeout: 7000

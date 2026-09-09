@@ -41,6 +41,7 @@ tags:
     element:
       text: "Base"
     centerElement: true
+    timeout: 7000
 - assertVisible: "Insert"
 - assertVisible: "Parallel"
 
@@ -54,3 +55,4 @@ tags:
 - scrollUntilVisible:
     element:
       text: "Sync Variant Types"
+    timeout: 7000

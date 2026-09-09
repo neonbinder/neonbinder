@@ -240,7 +240,7 @@ tags:
     element:
       id: "Add team"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     id: "Add team"
 - assertVisible:
@@ -319,7 +319,7 @@ tags:
     element:
       id: "Submit new card"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     id: "Submit new card"
 
@@ -331,7 +331,7 @@ tags:
     centerElement: true
     visibilityPercentage: 50
     waitToSettleTimeoutMs: 1000
-    timeout: 15000
+    timeout: 7000
 - tapOn:
     id: "Edit card 101-${ATTEMPT_ID}"
     waitToSettleTimeoutMs: 2000
@@ -541,7 +541,7 @@ tags:
     element:
       id: "Card 101-${ATTEMPT_ID} needs attention: variation text is over the 65-character limit"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 
 # An EXACT count — this attempt's checklist holds exactly one card, so a rule
 # that over- or under-flags fails here rather than reading as "a badge exists".
@@ -550,7 +550,7 @@ tags:
       text: "1 need attention"
     direction: UP
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 
 # ════════════════════════════════════════════════════════════════════════════
 # THE WALKER — opened by hand from the header (it never opens itself).

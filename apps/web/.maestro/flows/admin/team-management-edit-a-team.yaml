@@ -122,10 +122,22 @@ tags:
 - assertVisible: "Add a player"
 - tapOn: "New player name"
 - inputText: "TME${output.ATTEMPT_TOKEN}"
+# R8 case 1 -> R5's 7000. MEASURED over 4 green CI runs (n=3): `Element
+# bounds` frozen at y=552 through `Scrolling try count: 0`..`5`, completing on
+# the give-up path at 8.0 s EVERY run — the page is already at maximum
+# scroll, so the target never reaches the centre band (250-375) and the five
+# swipes buy nothing. NEO-260 ships the fix: a 208px spacer at the bottom of
+# the authenticated shell (`h-[208px]`, src/layouts/binder-layout.tsx), which
+# gives the page exactly that much more to scroll. 552 - 208 = 344 (centre
+# 360) — and across 2,396 centred DOWN scrolls in 4 green CI runs the lowest
+# give-up sat at a centre of 464, with clean accepts throughout this range.
+# So it centres on the first swipe (measured 1.38-1.43 s) and the whole step
+# costs ~2.1 s. 7000 DEPENDS on that spacer; delete it and this step reds.
 - scrollUntilVisible:
     element:
       id: "Create player TME${output.ATTEMPT_TOKEN}"
     centerElement: true
+    timeout: 7000
 - tapOn:
     id: "Create player TME${output.ATTEMPT_TOKEN}"
 
@@ -138,10 +150,22 @@ tags:
 # ── THE TEAM THIS FLOW IS ACTUALLY ABOUT, CREATED FROM THE TYPEAHEAD ────────
 # The career editor sits below the panel's five fields, past the fold on the
 # 1024x629 headless viewport, so it is scrolled to and centred first.
+# R8 case 1 -> R5's 7000. MEASURED over 4 green CI runs (n=6): `Element
+# bounds` frozen at y=484 through `Scrolling try count: 0`..`5`, completing on
+# the give-up path at 10.0 s EVERY run — the page is already at maximum
+# scroll, so the target never reaches the centre band (250-375) and the five
+# swipes buy nothing. NEO-260 ships the fix: a 208px spacer at the bottom of
+# the authenticated shell (`h-[208px]`, src/layouts/binder-layout.tsx), which
+# gives the page exactly that much more to scroll. 484 - 208 = 276 (centre
+# 287) — and across 2,396 centred DOWN scrolls in 4 green CI runs the lowest
+# give-up sat at a centre of 464, with clean accepts throughout this range.
+# So it centres on the first swipe (measured 1.38-1.43 s) and the whole step
+# costs ~4.2 s. 7000 DEPENDS on that spacer; delete it and this step reds.
 - scrollUntilVisible:
     element:
       id: "Add team"
     centerElement: true
+    timeout: 7000
 - tapOn:
     id: "Add team"
 - tapOn:
@@ -278,11 +302,17 @@ tags:
 # arrival, so neither needs erasing first, and they are filled top-down in the
 # order the form lists them (NEO-236 put Location and Name at the TOP, above the
 # league and the colours) so every scroll below moves the page one way.
+#
+# R5: 7000, the bar. MEASURED in CI (green run, this flow's log): found on
+# scroll try 1, y=500 → y=229, 1.44 s. Note that DROPPING the value would not
+# put this on the bar — `scrollUntilVisible` defaults to 20 s, not 7 s
+# (ScrollUntilVisibleCommand.DEFAULT_TIMEOUT_IN_MILLIS = "20000" in the pinned
+# maestro-orchestra-models.jar), so the bar has to be written out.
 - scrollUntilVisible:
     element:
       text: "San Diego"
     centerElement: true
-    timeout: 15000
+    timeout: 7000
 - tapOn: "San Diego"
 - inputText: 'Loc${WORKER_INDEX || "0"}'
 # THE ONLY COMPOSED NAME IN THE SUITE — and the one place the single-token rule
@@ -309,11 +339,26 @@ tags:
 # both of those arguments lapse — the Location half would then need a
 # per-attempt token of its own.
 
+# R8 case 1 -> R5's 7000. MEASURED over 4 green CI runs (n=3): `Element bounds`
+# FROZEN at y=490 through `Scrolling try count: 0`..`5` — not one of the five
+# swipes moves it a pixel — completing on the give-up path at 7.7 s EVERY run.
+# The panel is in normal document flow (TeamManagement.tsx renders it into a
+# plain bordered div), so the freeze is not a fixed container: the page is
+# already at its maximum scroll and nothing sits below the panel to scroll.
+#
+# NEO-260 ships the fix: a 208px spacer at the bottom of the authenticated
+# shell (`h-[208px]`, src/layouts/binder-layout.tsx). 490 - 208 = 282 (centre
+# 303), well inside the range where centring demonstrably succeeds — across
+# 2,396 centred DOWN scrolls in 4 green CI runs the lowest give-up sat at a
+# centre of 464. It centres on the first swipe (measured 1.38-1.43 s) and the
+# whole step costs ~2.1 s. Jason 2026-09-09 ruled
+# 7s across the board, and a step that reaches the give-up path every run is
+# centring that never centres. 7000 DEPENDS on that padding landing.
 - scrollUntilVisible:
     element:
       text: "#01214b"
     centerElement: true
-    timeout: 15000
+    timeout: 7000
 - tapOn: "#01214b"
 - inputText: "#132448"
 
@@ -321,11 +366,14 @@ tags:
 # half of the proof that it opened rather than rendering the "Select a team"
 # placeholder. Discover is asserted, never tapped — it fires a live outbound
 # fetch of teamcolorcodes.com's ~1.5MB sitemap from CI.
+# Same screen, same cause, same remedy as the colour box above: bounds FROZEN
+# at y=552 across tries 0..5, give-up at 7.7 s over 4 green CI runs (n=3).
+# 552 - 208 = 344 (centre 360). 7000 depends on the same 208px spacer.
 - scrollUntilVisible:
     element:
       text: "Save"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 - assertVisible: "Discover"
 - tapOn: "Save"
 
@@ -363,11 +411,15 @@ tags:
 # row at ≈259, the panel heading at ≈267 and the colour boxes at ≈480. So the
 # four assertions below need no further scrolling, and each one names a
 # DIFFERENT node than the scroll did (R6).
+#
+# R5: 7000, the bar. MEASURED in CI (green run, this flow's log): found on
+# scroll try 1, y=476 → y=205, 1.43 s — this one DOES centre, because the page
+# has just been re-entered at the top and has headroom below.
 - scrollUntilVisible:
     element:
       text: "Location"
     centerElement: true
-    timeout: 15000
+    timeout: 7000
 
 # 1. THE HEADING SAYS THE FULL NAME. Anchored ABOVE the Location label, because
 #    the live "Shows as: <full name>" preview under the two boxes says the same
@@ -459,10 +511,23 @@ tags:
 - tapOn:
     id: "TME${output.ATTEMPT_TOKEN}"
 
+# R8 case 1 -> R5's 7000. MEASURED over 4 green CI runs (n=6): `Element
+# bounds` frozen at y=484 through `Scrolling try count: 0`..`5`, completing on
+# the give-up path at 10.0 s EVERY run — the page is already at maximum
+# scroll, so the target never reaches the centre band (250-375) and the five
+# swipes buy nothing. NEO-260 ships the fix: a 208px spacer at the bottom of
+# the authenticated shell (`h-[208px]`, src/layouts/binder-layout.tsx), which
+# gives the page exactly that much more to scroll. 484 - 208 = 276 (centre
+# 287) — and across 2,396 centred DOWN scrolls in 4 green CI runs the lowest
+# give-up sat at a centre of 464, with clean accepts throughout this range.
+# So it centres on the first swipe (measured 1.38-1.43 s) and the whole step
+# costs ~4.2 s. 7000 DEPENDS on that spacer; delete it and this step reds.
+# Same step, same screen, same measurement as the first `Add team` above.
 - scrollUntilVisible:
     element:
       id: "Add team"
     centerElement: true
+    timeout: 7000
 - tapOn:
     id: "Add team"
 - tapOn:

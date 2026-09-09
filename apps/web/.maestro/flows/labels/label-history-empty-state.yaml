@@ -67,6 +67,7 @@ tags:
     element:
       text: ".*Reprint a label you already paid for.*"
     centerElement: true
+    timeout: 7000
 - tapOn:
     text: ".*Reprint a label you already paid for.*"
 

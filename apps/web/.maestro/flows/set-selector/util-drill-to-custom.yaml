@@ -164,7 +164,7 @@ tags:
                 element:
                   id: "Search sports"
                 centerElement: true
-                timeout: 10000
+                timeout: 7000
             - tapOn:
                 id: "Search sports"
             - inputText: ${SPORT}
@@ -224,11 +224,19 @@ tags:
                         # "No matches found" state (no re-render in progress), so CDP
                         # scroll works safely. scrollUntilVisible + centerElement: true
                         # brings the button to y≈315, fully in view.
+                        # R5 — 7000, the bar; R8 keeps the centring. MEASURED (CI 34349299679 +
+                        # 34361627641): at maximum scroll this parked at y=514, 139px below the
+                        # end of the driver's centre band (~375), so centring ran its full
+                        # six-iteration give-up path — 10.19s here — on every run. A give-up on every
+                        # run is centring that never centres, so the remedy is the product's: the
+                        # 208px scroll spacer in src/layouts/binder-layout.tsx (NEO-260) puts this
+                        # target at y=306, mid-band, and it now centres in one or two swipes.
+                        # THIS STEP DEPENDS ON THAT SPACER — see R8.
                         - scrollUntilVisible:
                             element:
                               id: "Add custom Sports"
                             centerElement: true
-                            timeout: 10000
+                            timeout: 7000
                         - tapOn:
                             id: "Add custom Sports"
                         - extendedWaitUntil:
@@ -275,11 +283,19 @@ tags:
                       when:
                         notVisible: ${SPORT}
                       commands:
+                        # R5 — 7000, the bar; R8 keeps the centring. MEASURED (CI 34349299679 +
+                        # 34361627641): at maximum scroll this parked at y=514, 139px below the
+                        # end of the driver's centre band (~375), so centring ran its full
+                        # six-iteration give-up path — 10.19s here — on every run. A give-up on every
+                        # run is centring that never centres, so the remedy is the product's: the
+                        # 208px scroll spacer in src/layouts/binder-layout.tsx (NEO-260) puts this
+                        # target at y=306, mid-band, and it now centres in one or two swipes.
+                        # THIS STEP DEPENDS ON THAT SPACER — see R8.
                         - scrollUntilVisible:
                             element:
                               id: "Add custom Sports"
                             centerElement: true
-                            timeout: 10000
+                            timeout: 7000
                         - tapOn:
                             id: "Add custom Sports"
                         - extendedWaitUntil:
@@ -296,11 +312,15 @@ tags:
                   - extendedWaitUntil:
                       visible: ${SPORT}
                       timeout: 10000
+                  # R5 — 7000, the bar (was 10000). NO LOG EVIDENCE: this step did not
+                  # execute in either green CI run (34349299679, 34361627641), so 7000 is
+                  # the rule's default rather than a measurement. It is an ordinary in-app
+                  # scroll — the `visible: ${SPORT}` gate above owns the wait.
                   - scrollUntilVisible:
                       element:
                         text: ${SPORT}
                       centerElement: true
-                      timeout: 10000
+                      timeout: 7000
                   - tapOn: ${SPORT}
 
       # Wait for Years column to appear after Sport selection.
@@ -384,7 +404,7 @@ tags:
                             element:
                               id: "Add custom Years"
                             centerElement: true
-                            timeout: 10000
+                            timeout: 7000
                         - tapOn:
                             id: "Add custom Years"
                         - extendedWaitUntil:
@@ -434,18 +454,17 @@ tags:
                       visible:
                         id: "Add custom Years"
                       timeout: 60000
-                  # R8: centre before the tap. Timeout kept at 60000, already over the
-                  # R8 floor. With centerElement Maestro re-reads the view hierarchy up
-                  # to six times (8-13s in CI) before it gives up and accepts an
-                  # already-visible element, and the timeout is checked at the BOTTOM of
-                  # that loop — a shorter ceiling turns that graceful give-up into a
-                  # spurious "No visible element found". Do not lower it.
+                  # R5 — 7000, the bar. MEASURED (CI 34349299679 + 34361627641): this
+                  # step settles in 2.27s (1 centring swipe). The 60000 it carried was
+                  # not a marketplace allowance — the round-trip is gated by the wait above;
+                  # this scroll is pure UI. An earlier NEO-260 note said not to lower it;
+                  # that was wrong, see R8.
                   - scrollUntilVisible:
                       element:
                         id: "Add custom Years"
                       centerElement: true
                       visibilityPercentage: 50
-                      timeout: 60000
+                      timeout: 7000
                   - runFlow:
                       when:
                         notVisible: ${YEAR}
@@ -466,17 +485,16 @@ tags:
                   - extendedWaitUntil:
                       visible: ${YEAR}
                       timeout: 10000
-                  # R8: centre before the tap. Timeout raised to 20000 from 10000. With
-                  # centerElement Maestro re-reads the view hierarchy up to six times
-                  # (8-13s in CI) before it gives up and accepts an already-visible
-                  # element, and the timeout is checked at the BOTTOM of that loop — a
-                  # shorter ceiling turns that graceful give-up into a spurious "No
-                  # visible element found". Do not lower it.
+                  # R8 — centre before the tap; R5 — 7000, the bar. An earlier NEO-260 revision
+                  # raised this step to 20000 because the centring give-up path costs 8-13s. That
+                  # was the wrong remedy and the rule now says so: a step that reaches the give-up
+                  # path on every run is centring that never centres, and funding it hides the
+                  # fault instead of fixing it. This target DOES centre, so 7000 measures the UI.
                   - scrollUntilVisible:
                       element:
                         text: ${YEAR}
                       centerElement: true
-                      timeout: 20000
+                      timeout: 7000
                   - tapOn: ${YEAR}
 
       # Wait for Manufacturers column to appear after Year selection.
@@ -551,7 +569,7 @@ tags:
                             element:
                               id: "Add custom Manufacturers"
                             centerElement: true
-                            timeout: 10000
+                            timeout: 7000
                         - tapOn:
                             id: "Add custom Manufacturers"
                         - extendedWaitUntil:
@@ -599,11 +617,13 @@ tags:
                       visible:
                         id: "Add custom Manufacturers"
                       timeout: 60000
+                  # R5 — 7000, the bar (was 60000). MEASURED (CI 34349299679 + 34361627641):
+                  # settles in 2.01s, 1 centring swipe; nothing here waits on a marketplace.
                   - scrollUntilVisible:
                       element:
                         id: "Add custom Manufacturers"
                       centerElement: true
-                      timeout: 60000
+                      timeout: 7000
                   - runFlow:
                       when:
                         notVisible: ${MANUFACTURER}
@@ -624,17 +644,16 @@ tags:
                   - extendedWaitUntil:
                       visible: ${MANUFACTURER}
                       timeout: 10000
-                  # R8: centre before the tap. Timeout raised to 20000 from 10000. With
-                  # centerElement Maestro re-reads the view hierarchy up to six times
-                  # (8-13s in CI) before it gives up and accepts an already-visible
-                  # element, and the timeout is checked at the BOTTOM of that loop — a
-                  # shorter ceiling turns that graceful give-up into a spurious "No
-                  # visible element found". Do not lower it.
+                  # R8 — centre before the tap; R5 — 7000, the bar. An earlier NEO-260 revision
+                  # raised this step to 20000 because the centring give-up path costs 8-13s. That
+                  # was the wrong remedy and the rule now says so: a step that reaches the give-up
+                  # path on every run is centring that never centres, and funding it hides the
+                  # fault instead of fixing it. This target DOES centre, so 7000 measures the UI.
                   - scrollUntilVisible:
                       element:
                         text: ${MANUFACTURER}
                       centerElement: true
-                      timeout: 20000
+                      timeout: 7000
                   - tapOn: ${MANUFACTURER}
 
       # Wait for Sets column to appear after Manufacturer selection.
@@ -662,11 +681,15 @@ tags:
     commands:
       # Wait for Sets column idle. Scroll to the Add-custom button as
       # the idle signal — it appears only when mode=idle. centerElement: true.
+      # R5 — 7000, the bar (was 10000). MEASURED (CI 34349299679 + 34361627641):
+      # 4.72s worst, 1 centring swipe — a slow single hierarchy read on this
+      # page, never a give-up. 7000 is the ceiling; the slow read itself is the
+      # product finding to raise, not something to settle with a bigger number.
       - scrollUntilVisible:
           element:
             id: "Add custom Sets"
           centerElement: true
-          timeout: 60000
+          timeout: 7000
 
       # Add the SET_NAME if not already present.
       - runFlow:
@@ -708,7 +731,7 @@ tags:
             text: "^Sets$"
           direction: UP
           centerElement: true
-          timeout: 8000
+          timeout: 7000
           optional: true
 
       # Tap the SET_NAME row — search path if the list grew large (>8 items),
@@ -779,7 +802,7 @@ tags:
                   text: ".*${SET_NAME}.*"
                 centerElement: true
                 waitToSettleTimeoutMs: 1000
-                timeout: 10000
+                timeout: 7000
             - tapOn:
                 text: ".*${SET_NAME}.*"
                 waitToSettleTimeoutMs: 2000
@@ -811,11 +834,13 @@ tags:
       # plus a first-run cold path where the Variant Types column briefly shows
       # "Syncing Variant Types" after a fresh custom Set is created (~32s recorded
       # on the cold path in CI; 30s was intermittently too short).
+      # R5 — 7000, the bar (was 45000). MEASURED (CI 34349299679 + 34361627641):
+      # settles in 2.64s, 0 centring swipes; nothing here waits on a marketplace.
       - scrollUntilVisible:
           element:
             id: "Add custom Variant Types"
           centerElement: true
-          timeout: 45000
+          timeout: 7000
 
       # Add VARIANT_TYPE if not present yet.
       # waitToSettleTimeoutMs defends against the stale-coordinate race observed in
@@ -829,11 +854,13 @@ tags:
           when:
             notVisible: ${VARIANT_TYPE}
           commands:
+            # R5 — 7000, the bar (was 30000). MEASURED (CI 34349299679 + 34361627641):
+            # settles in 2.64s, 0 centring swipes; nothing here waits on a marketplace.
             - scrollUntilVisible:
                 element:
                   id: "Add custom Variant Types"
                 centerElement: true
-                timeout: 30000
+                timeout: 7000
             - tapOn:
                 id: "Add custom Variant Types"
                 waitToSettleTimeoutMs: 2000
@@ -882,7 +909,7 @@ tags:
             text: ${VARIANT_TYPE}
           centerElement: true
           waitToSettleTimeoutMs: 1000
-          timeout: 10000
+          timeout: 7000
       - tapOn:
           text: ${VARIANT_TYPE}
           waitToSettleTimeoutMs: 2000
@@ -918,17 +945,17 @@ tags:
       # For a real-synced VT (Insert/Parallel on 2024 Topps Chrome) the column
       # can auto-sync and open a ReconciliationModal — but the custom-set callers
       # pass a synthetic sport, so the VT here is custom and no modal fires.
-      # R8: centre before the tap. Timeout kept at 30000, already over the R8 floor.
-      # With centerElement Maestro re-reads the view hierarchy up to six times (8-13s in
-      # CI) before it gives up and accepts an already-visible element, and the timeout
-      # is checked at the BOTTOM of that loop — a shorter ceiling turns that graceful
-      # give-up into a spurious "No visible element found". Do not lower it.
+      # R5 — 7000, the bar. MEASURED (CI 34349299679 + 34361627641): this
+      # step settles in 1.99s (1 centring swipe). The 30000 it carried was
+      # not a marketplace allowance — the round-trip is gated by the wait above;
+      # this scroll is pure UI. An earlier NEO-260 note said not to lower it;
+      # that was wrong, see R8.
       - scrollUntilVisible:
           element:
             id: "Add custom ${VARIANT_TYPE}s"
           centerElement: true
           visibilityPercentage: 50
-          timeout: 30000
+          timeout: 7000
 
 # ============================================================
 # LEVEL 6 — Variant (VARIANT)
@@ -969,7 +996,7 @@ tags:
           element:
             text: ${VARIANT}
           centerElement: true
-          timeout: 10000
+          timeout: 7000
       - tapOn: ${VARIANT}
 
       # Wait for the CardChecklist panel to appear.
@@ -978,4 +1005,4 @@ tags:
             id: "Open add card form"
           centerElement: true
           visibilityPercentage: 50
-          timeout: 15000
+          timeout: 7000

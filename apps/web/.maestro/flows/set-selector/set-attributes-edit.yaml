@@ -87,27 +87,19 @@ tags:
 # Scroll to the "Edit attributes" toggle to locate the panel area.
 # Using the toggle (small, reliably centerable) avoids the fragile
 # centerElement scroll on the full panel wrapper at 1024×629.
-# R8 — centred, and `timeout: 20000` is not optional. MEASURED in CI (NEO-260,
-# maestro.log): this target CANNOT reach Maestro's centre band. It is the
-# collapsed SetAttributesPanel summary bar and the last thing on the page, and
-# SetSelector.tsx deliberately leaves NO scroll headroom below the last panel
-# (NEO-255 tried `pb-[50vh]` and reverted it — many flows scroll DOWN for an
-# anchor and rely on the document bottoming out). So at maximum scroll it parks
-# at y=518 of the 625px viewport while the centre band ends at ~375, and
-# `Element bounds` repeats unchanged across `Scrolling try count: 1`..`5` before
-# Maestro gives up and accepts the already-visible element.
-# Centring is kept anyway, because that give-up path does real work here: it
-# drives the page to maximum scroll, so the bar always ends ~91px clear of the
-# bottom edge instead of wherever the drill left it (measured as low as y=609,
-# flush against the fold). What it costs is the full 6-iteration budget, ~7.6s
-# in CI — which is why 7000/10000 failed three flows in NEO-260's first run.
+# R5 — 7000, the bar; R8 keeps the centring. MEASURED (CI 34349299679 +
+# 34361627641): at max scroll this parked at y=518 (band ends ~375) and
+# centring burned all six iterations (~7.6s), which only a 15000/20000
+# ceiling hid. The remedy is the product's: 208px of padding below the last
+# panel (`attributesPanelIsLast`) lifts it into the band so it centres in
+# 1-2 swipes. This step DEPENDS on that padding landing — see R8.
 - scrollUntilVisible:
     element:
       id: "Edit attributes"
     centerElement: true
     visibilityPercentage: 10
     waitToSettleTimeoutMs: 1000
-    timeout: 20000
+    timeout: 7000
 
 # IDEMPOTENT EXPAND: at setName level the panel defaults EXPANDED (no card
 # checklist on a custom set). A prior run may have left it collapsed — guard.
@@ -156,7 +148,7 @@ tags:
       id: "Value for Total Cards"
     visibilityPercentage: 10
     waitToSettleTimeoutMs: 1000
-    timeout: 15000
+    timeout: 7000
 - assertVisible:
     id: "Value for Release Date"
 
@@ -240,11 +232,11 @@ tags:
 # features-propagation.yaml uses to scroll back up to "Base".
 # ============================================================
 
-# R8: centre before the tap. Timeout raised to 20000 from 15000. With centerElement
-# Maestro re-reads the view hierarchy up to six times (8-13s in CI) before it gives up
-# and accepts an already-visible element, and the timeout is checked at the BOTTOM of
-# that loop — a shorter ceiling turns that graceful give-up into a spurious "No visible
-# element found". Do not lower it.
+# R8 — centre before the tap; R5 — 7000, the bar. An earlier NEO-260 revision
+# raised this step to 20000 because the centring give-up path costs 8-13s. That
+# was the wrong remedy and the rule now says so: a step that reaches the give-up
+# path on every run is centring that never centres, and funding it hides the
+# fault instead of fixing it. This target DOES centre, so 7000 measures the UI.
 - scrollUntilVisible:
     element:
       id: "Hide attributes"
@@ -252,7 +244,7 @@ tags:
     centerElement: true
     visibilityPercentage: 10
     waitToSettleTimeoutMs: 1000
-    timeout: 20000
+    timeout: 7000
 
 - tapOn:
     id: "Hide attributes"
@@ -292,7 +284,7 @@ tags:
     direction: UP
     visibilityPercentage: 100
     centerElement: true
-    timeout: 15000
+    timeout: 7000
 
 - runFlow:
     when:
@@ -316,16 +308,16 @@ tags:
       - assertVisible:
           text: ".*BaseAttr-${WORKER_INDEX || 0}.*"
 
-# R8: centre before the tap. Timeout raised to 20000 from 10000. With centerElement
-# Maestro re-reads the view hierarchy up to six times (8-13s in CI) before it gives up
-# and accepts an already-visible element, and the timeout is checked at the BOTTOM of
-# that loop — a shorter ceiling turns that graceful give-up into a spurious "No visible
-# element found". Do not lower it.
+# R8 — centre before the tap; R5 — 7000, the bar. An earlier NEO-260 revision
+# raised this step to 20000 because the centring give-up path costs 8-13s. That
+# was the wrong remedy and the rule now says so: a step that reaches the give-up
+# path on every run is centring that never centres, and funding it hides the
+# fault instead of fixing it. This target DOES centre, so 7000 measures the UI.
 - scrollUntilVisible:
     element:
       text: "BaseAttr-${WORKER_INDEX || 0}"
     centerElement: true
-    timeout: 20000
+    timeout: 7000
 - tapOn: "BaseAttr-${WORKER_INDEX || 0}"
 
 # Wait for the next column (pluralized variant type name) to appear,
@@ -339,27 +331,19 @@ tags:
 # contains "›" (ancestry separator) — confirming the panel re-rendered for
 # the child context. The exact text will be something like
 # "Attributes for BaseAttr-0 (Variant Type) — ... › attr-edit-0".
-# R8 — centred, and `timeout: 20000` is not optional. MEASURED in CI (NEO-260,
-# maestro.log): this target CANNOT reach Maestro's centre band. It is the
-# collapsed SetAttributesPanel summary bar and the last thing on the page, and
-# SetSelector.tsx deliberately leaves NO scroll headroom below the last panel
-# (NEO-255 tried `pb-[50vh]` and reverted it — many flows scroll DOWN for an
-# anchor and rely on the document bottoming out). So at maximum scroll it parks
-# at y=518 of the 625px viewport while the centre band ends at ~375, and
-# `Element bounds` repeats unchanged across `Scrolling try count: 1`..`5` before
-# Maestro gives up and accepts the already-visible element.
-# Centring is kept anyway, because that give-up path does real work here: it
-# drives the page to maximum scroll, so the bar always ends ~91px clear of the
-# bottom edge instead of wherever the drill left it (measured as low as y=609,
-# flush against the fold). What it costs is the full 6-iteration budget, ~7.6s
-# in CI — which is why 7000/10000 failed three flows in NEO-260's first run.
+# R5 — 7000, the bar; R8 keeps the centring. MEASURED (CI 34349299679 +
+# 34361627641): at max scroll this parked at y=514 (band ends ~375) and
+# centring burned all six iterations (~7.6s), which only a 15000/20000
+# ceiling hid. The remedy is the product's: 208px of padding below the last
+# panel (`attributesPanelIsLast`) lifts it into the band so it centres in
+# 1-2 swipes. This step DEPENDS on that padding landing — see R8.
 - scrollUntilVisible:
     element:
       id: "Edit attributes"
     centerElement: true
     visibilityPercentage: 10
     waitToSettleTimeoutMs: 1000
-    timeout: 20000
+    timeout: 7000
 
 # IDEMPOTENT EXPAND at variant-type level.
 - runFlow:

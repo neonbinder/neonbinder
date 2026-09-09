@@ -111,7 +111,7 @@ tags:
       id: "Open add card form"
     centerElement: true
     visibilityPercentage: 50
-    timeout: 15000
+    timeout: 7000
 
 # Per-attempt-unique card number + player name. The runner injects
 # ATTEMPT_ID="w<worker>-a<attempt>-<RANDOM>" so attempt-2 doesn't
@@ -140,7 +140,7 @@ tags:
     element:
       id: "Submit new card"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     id: "Submit new card"
 - assertVisible: "Team Feature Player ${ATTEMPT_ID}"
@@ -151,7 +151,7 @@ tags:
       id: "Edit card 889-${ATTEMPT_ID}"
     centerElement: true
     visibilityPercentage: 50
-    timeout: 10000
+    timeout: 7000
 
 # ============================================================
 # TEST 1 — No old "Team" text field: the edit form shows TeamPicker only
@@ -373,10 +373,12 @@ tags:
       VARIANT: "Base"
 
 # After reload, find our card and confirm the team name is in the sub-line.
+# R5 — 7000, the bar (was 30000). MEASURED (CI 34349299679 + 34361627641):
+# settles in 0.55s, 0 centring swipes; nothing here waits on a marketplace.
 - scrollUntilVisible:
     element:
       text: "Team Feature Player ${ATTEMPT_ID}"
-    timeout: 30000
+    timeout: 7000
 - assertVisible:
     text: ".*TPT${output.ATTEMPT_TOKEN}.*"
 

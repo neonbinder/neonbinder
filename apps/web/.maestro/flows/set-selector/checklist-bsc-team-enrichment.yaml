@@ -111,12 +111,14 @@ tags:
 # and it lands at ~y438, inside the fold. waitToSettleTimeoutMs lets
 # Virtuoso finish rendering each windowed row between scroll steps.
 # (R8 exception — bottom of a virtualised list, centering can never settle.)
+# R5 — 7000, the bar (was 30000). MEASURED (CI 34349299679 + 34361627641):
+# settles in 2.68s, 0 centring swipes; nothing here waits on a marketplace.
 - scrollUntilVisible:
     element:
       id: "Edit card 300"
     visibilityPercentage: 50
     waitToSettleTimeoutMs: 1000
-    timeout: 30000
+    timeout: 7000
 - tapOn:
     id: "Edit card 300"
     waitToSettleTimeoutMs: 2000

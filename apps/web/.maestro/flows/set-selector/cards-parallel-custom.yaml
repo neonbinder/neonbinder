@@ -44,6 +44,7 @@ tags:
     element:
       id: "Add custom Parallels"
     centerElement: true
+    timeout: 7000
 - tapOn:
     id: "Add custom Parallels"
 - assertVisible: "Add Custom Entry"
@@ -72,6 +73,7 @@ tags:
     element:
       text: ".*Prizm Gold.*"
     centerElement: true
+    timeout: 7000
 - tapOn: ".*Prizm Gold.*"
 
 # R8 EXCEPTION — deliberately NOT centred. "Fetch from Marketplaces" is the last
@@ -89,7 +91,13 @@ tags:
 # variant now renders the whole "Multi-source sets / Attach more… / BSC /
 # SportLots" block above its checklist. Any flow that centre-scrolls to
 # something at the bottom of a hand-made variant's checklist can hit this.
+#
+# R5 — 7000, the bar (was 10000). MEASURED (CI 34349299679 + 34361627641):
+# 4.73s worst, 0 centring swipes — a slow single hierarchy read on this
+# page, never a give-up. 7000 is the ceiling; the slow read itself is the
+# product finding to raise, not something to settle with a bigger number.
 - scrollUntilVisible:
     element:
       text: ".*Fetch from Marketplaces.*|Refresh"
+    timeout: 7000
 - assertVisible: "No cards in this checklist yet."

@@ -168,20 +168,44 @@ tags:
 # just a button, and it is the only thing on the page that says so while the add
 # form is open. Centred first because the group sits below the two fields and the
 # sport picker, which on a 629px-tall viewport puts it at the fold.
+# R8 case 1 -> R5's 7000. MEASURED over 4 green CI runs (n=3): `Element
+# bounds` frozen at y=466 through `Scrolling try count: 0`..`5`, completing on
+# the give-up path at 10.1 s EVERY run — the page is already at maximum
+# scroll, so the target never reaches the centre band (250-375) and the five
+# swipes buy nothing. NEO-260 ships the fix: a 208px spacer at the bottom of
+# the authenticated shell (`h-[208px]`, src/layouts/binder-layout.tsx), which
+# gives the page exactly that much more to scroll. 466 - 208 = 258 (centre
+# 274) — and across 2,396 centred DOWN scrolls in 4 green CI runs the lowest
+# give-up sat at a centre of 464, with clean accepts throughout this range.
+# So it centres on the first swipe (measured 1.38-1.43 s) and the whole step
+# costs ~4.2 s. 7000 DEPENDS on that spacer; delete it and this step reds.
 - scrollUntilVisible:
     element:
       text: "Minor"
     centerElement: true
+    timeout: 7000
 - tapOn: "Minor"
 
 # The green button NAMES the league it is about to create, so this tap cannot
 # land on any other button — and it carries that name only while no league of
 # that name already exists (an exact match swaps the primary to "Open <name>"
 # and demotes creating to a "Create anyway" link beside it).
+# R8 case 1 -> R5's 7000. MEASURED over 4 green CI runs (n=3): `Element
+# bounds` frozen at y=552 through `Scrolling try count: 0`..`5`, completing on
+# the give-up path at 7.8 s EVERY run — the page is already at maximum
+# scroll, so the target never reaches the centre band (250-375) and the five
+# swipes buy nothing. NEO-260 ships the fix: a 208px spacer at the bottom of
+# the authenticated shell (`h-[208px]`, src/layouts/binder-layout.tsx), which
+# gives the page exactly that much more to scroll. 552 - 208 = 344 (centre
+# 360) — and across 2,396 centred DOWN scrolls in 4 green CI runs the lowest
+# give-up sat at a centre of 464, with clean accepts throughout this range.
+# So it centres on the first swipe (measured 1.38-1.43 s) and the whole step
+# costs ~2.1 s. 7000 DEPENDS on that spacer; delete it and this step reds.
 - scrollUntilVisible:
     element:
       id: "Create league LG-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
     centerElement: true
+    timeout: 7000
 - tapOn:
     id: "Create league LG-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
 
@@ -201,6 +225,7 @@ tags:
     element:
       text: ".*Added LG-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
     direction: UP
+    timeout: 7000
 
 # The new league's own panel has replaced the add form. This line exists nowhere
 # else on the screen and proves the row was filed under the sport that was
@@ -211,6 +236,7 @@ tags:
     element:
       text: ".*Sport: Baseball.*"
     centerElement: true
+    timeout: 7000
 
 # ── EDIT WHAT WE KNOW ABOUT IT ──────────────────────────────────────────────
 # The era. A league that started in 1901 and is still running is the ordinary
@@ -220,6 +246,7 @@ tags:
     element:
       text: "Active from"
     centerElement: true
+    timeout: 7000
 - tapOn: "Active from"
 - inputText: "1901"
 
@@ -239,13 +266,26 @@ tags:
     element:
       text: "Aliases"
     centerElement: true
+    timeout: 7000
 - tapOn: "Aliases"
 - inputText: "Alias-${ATTEMPT_ID}, Second-${ATTEMPT_ID}"
 
+# R8 case 1 -> R5's 7000. MEASURED over 4 green CI runs (n=3): `Element
+# bounds` frozen at y=552 through `Scrolling try count: 0`..`5`, completing on
+# the give-up path at 7.8 s EVERY run — the page is already at maximum
+# scroll, so the target never reaches the centre band (250-375) and the five
+# swipes buy nothing. NEO-260 ships the fix: a 208px spacer at the bottom of
+# the authenticated shell (`h-[208px]`, src/layouts/binder-layout.tsx), which
+# gives the page exactly that much more to scroll. 552 - 208 = 344 (centre
+# 360) — and across 2,396 centred DOWN scrolls in 4 green CI runs the lowest
+# give-up sat at a centre of 464, with clean accepts throughout this range.
+# So it centres on the first swipe (measured 1.38-1.43 s) and the whole step
+# costs ~2.1 s. 7000 DEPENDS on that spacer; delete it and this step reds.
 - scrollUntilVisible:
     element:
       text: "Save"
     centerElement: true
+    timeout: 7000
 - tapOn: "Save"
 
 # The confirmation renders directly BELOW the action row — NEO-240 put the
@@ -297,6 +337,7 @@ tags:
     element:
       id: "LG-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
     centerElement: true
+    timeout: 7000
 - tapOn:
     id: "LG-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
 
@@ -314,6 +355,7 @@ tags:
     element:
       text: "Alias-${ATTEMPT_ID}"
     centerElement: true
+    timeout: 7000
 - assertVisible: "Second-${ATTEMPT_ID}"
 
 # ...and the era came back with them. "Active from" reads its stored value, which
@@ -325,10 +367,22 @@ tags:
 # empty state and what makes the cross-screen assertion below unambiguous: with
 # no team in this league, no team row on /admin/teams can print its
 # abbreviation. The scroll IS the assertion (R6).
+# R8 case 1 -> R5's 7000. MEASURED over 4 green CI runs (n=3): `Element
+# bounds` frozen at y=445 through `Scrolling try count: 0`..`5`, completing on
+# the give-up path at 7.7 s EVERY run — the page is already at maximum
+# scroll, so the target never reaches the centre band (250-375) and the five
+# swipes buy nothing. NEO-260 ships the fix: a 208px spacer at the bottom of
+# the authenticated shell (`h-[208px]`, src/layouts/binder-layout.tsx), which
+# gives the page exactly that much more to scroll. 445 - 208 = 237 (centre
+# 256) — and across 2,396 centred DOWN scrolls in 4 green CI runs the lowest
+# give-up sat at a centre of 464, with clean accepts throughout this range.
+# So it centres on the first swipe (measured 1.38-1.43 s) and the whole step
+# costs ~2.1 s. 7000 DEPENDS on that spacer; delete it and this step reds.
 - scrollUntilVisible:
     element:
       text: "No teams yet."
     centerElement: true
+    timeout: 7000
 
 # ── AND THE ABBREVIATION REACHED THE OTHER SCREEN ───────────────────────────
 # Team Management offers leagues by `abbreviation ?? name`, so this league can

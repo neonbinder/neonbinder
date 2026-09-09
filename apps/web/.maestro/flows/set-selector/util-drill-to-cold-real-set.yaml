@@ -78,7 +78,7 @@ tags:
     element:
       text: ".*Search sports.*"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     text: ".*Search sports.*"
     waitToSettleTimeoutMs: 250
@@ -126,7 +126,7 @@ tags:
           element:
             text: ".*Search years.*"
           centerElement: true
-          timeout: 10000
+          timeout: 7000
       - tapOn:
           text: ".*Search years.*"
           waitToSettleTimeoutMs: 250
@@ -150,13 +150,18 @@ tags:
       # 8-or-fewer entries: no search input to anchor on, so anchor on the
       # column HEADER, which is always rendered. Never a bare `text: ${YEAR}` —
       # a year string also appears in a breadcrumb and in an ancestor chip.
+      # R5 — 7000, the bar (was 15000). NO LOG EVIDENCE: this step did not
+      # execute in either green CI run (34349299679, 34361627641), so 7000 is
+      # the rule's default rather than a measurement. It is an ordinary in-app
+      # scroll — the `.*Search years.*|${YEAR}` gate above owns the cold-sync
+      # wait.
       - scrollUntilVisible:
           element:
             text: ${YEAR || "2024"}
             below:
               text: "Years"
           centerElement: true
-          timeout: 15000
+          timeout: 7000
       - retry:
           maxRetries: 1
           commands:
@@ -189,7 +194,7 @@ tags:
           element:
             text: ".*Search manufacturers.*"
           centerElement: true
-          timeout: 10000
+          timeout: 7000
       - tapOn:
           text: ".*Search manufacturers.*"
           waitToSettleTimeoutMs: 250
@@ -210,13 +215,18 @@ tags:
     when:
       notVisible: "Sets"
     commands:
+      # R5 — 7000, the bar (was 15000). NO LOG EVIDENCE: this step did not
+      # execute in either green CI run (34349299679, 34361627641), so 7000 is
+      # the rule's default rather than a measurement. It is an ordinary in-app
+      # scroll — the `.*Search manufacturers.*|${MANUFACTURER}` gate above owns
+      # the cold-sync wait.
       - scrollUntilVisible:
           element:
             text: ${MANUFACTURER || "Topps"}
             below:
               text: "Manufacturers"
           centerElement: true
-          timeout: 15000
+          timeout: 7000
       - retry:
           maxRetries: 1
           commands:
