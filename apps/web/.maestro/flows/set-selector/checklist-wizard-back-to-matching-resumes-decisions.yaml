@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Entity review — Back to matching leaves the wizard without discarding, and re-confirming comes back to the same review with the decision still on it"
 tags:
   - set-selector
-  - regression
 ---
 # R1 — ONE FEATURE (NEO-221, D9): "Back to matching". Before it, the only way
 # out of the entity-review wizard was Cancel, which threw the whole review

@@ -90,9 +90,9 @@ app bug never looks like that. Full write-up:
 | `npm run setup:e2e` | Install pinned Maestro + Java + Chrome for Testing (idempotent; safe to re-run) |
 | `npm run test:e2e:check` | Verify installed Maestro + Java + Chrome match the pins; print actionable next steps if not |
 | `npm run e2e:clean-chrome` | Kill Chrome/chromedriver processes a previous run left detached (never touches your real browser) |
-| `npm run test:e2e` | Run the full suite (smoke + regression) |
-| `npm run test:e2e:smoke` | Smoke tag only |
-| `npm run test:e2e:regression` | Regression tag only |
+| `npm run test:e2e` | **The full suite** — every flow, no tag filter (minus `util`/`wip`/`setup`) |
+| `npm run test:e2e -- setup` | The seed track only (`flows/setup.yaml`) — the one entry point that runs it |
+| `npm run test:e2e:smoke` | Smoke tag only — the fast subset |
 | `npm run test:e2e:pick -- <selector>` | Run just a piece of the suite (by name / list / regex / tag) — see below |
 | `npm run test:e2e:plan -- <selector>` | Dry-run: print exactly what `:pick` *would* run (incl. pulled-in prerequisites) and exit |
 | `npm run test:e2e:like-ci` | Run with CI-equivalent conditions — `MAESTRO_PARALLELISM=3`, no tag filter, pin gate enforced before start |
@@ -110,7 +110,7 @@ prints the resolved schedule without launching Maestro.
 | Selector | Matches |
 | --- | --- |
 | *(empty)* | all flows (minus `util`/`wip`) — same as `test:e2e` |
-| `smoke` / `regression` / `tag:NAME` | flows carrying that tag (bare word ⇒ tag, unchanged) |
+| `smoke` / `tag:NAME` | flows carrying that tag (bare word ⇒ tag, unchanged) |
 | `name:set-attributes-edit` | flows whose **path** contains the substring |
 | `name:features,team-picker` | comma list of substrings, OR-matched |
 | `set-attributes-edit,team-picker` | bare comma list ⇒ name match |
@@ -123,17 +123,38 @@ npm run test:e2e:pick -- name:set-attributes-edit   # run it (+ its cascade)
 npm run test:e2e:pick -- /parallel-grouping/        # run all parallel-grouping flows
 ```
 
-**Prerequisite closure (default ON).** Most `set-selector` flows are tagged
-`requires:cards-loaded` (or `requires:setup-done`) and can't run standalone —
-they need the `setup → sets → cards` cascade to seed the DB first. `:pick`
-automatically pulls in the transitive `provides:` producers for whatever you
-select, so a single targeted flow still runs with its data seeded. Controls:
+**Prerequisite closure resolves nothing today — seed by hand instead.**
+This section used to describe a `requires:`/`provides:` dependency graph that
+`:pick` walked to pull in a flow's producers. **No flow carries one any more**
+(verified NEO-260: zero occurrences of `requires:`, `provides:`, `cascade`,
+`isolated` or `serial-marketplace` in any `tags:` block). NEO-49 replaced the
+whole model with CI's work queue, and the flows were untagged as it landed —
+but the machinery in `run-e2e-smoke.sh` and the env vars below were left in
+place, so the closure step now runs and finds no edges.
+
+What that means in practice: **`:pick` will not seed for you.** A
+`set-selector` flow still needs the DB seeded before it can run, so seed it
+yourself first:
+
+```bash
+npm run test:e2e -- setup    # runs e2e-baseline.sh reset + flows/setup.yaml
+npm run test:e2e:pick -- name:<your-flow>
+```
+
+The env vars below still exist and still do what they say, but with no
+`requires:` edges to act on, `MAESTRO_MINIMAL_DEPS` and `MAESTRO_NO_DEPS` are
+currently no-ops:
 
 | Env var | Effect |
 | --- | --- |
-| `MAESTRO_MINIMAL_DEPS=1` | pull only **one** producer per required state (prefers the `cascade`-tagged one) — fastest correct run, e.g. `setup → sets-base → cards-base → target` |
-| `MAESTRO_NO_DEPS=1` | pull **no** prerequisites; treat `requires:` as already-satisfied (use only when the DB is already seeded from a prior run) |
-| `MAESTRO_SKIP_BOOTSTRAP=1` | skip the Phase 0 per-worker credential bootstrap (use only when worker creds are already seeded) |
+| `MAESTRO_MINIMAL_DEPS=1` | *(no-op today)* pull only **one** producer per required state |
+| `MAESTRO_NO_DEPS=1` | *(no-op today)* pull **no** prerequisites; treat `requires:` as already-satisfied |
+| `MAESTRO_SKIP_BOOTSTRAP=1` | skip the Phase 0 per-worker credential bootstrap (use only when worker creds are already seeded) — **this one is live** |
+
+> Whether to delete the dead scheduling code or re-tag the flows is an open
+> decision, not an oversight. Retiring it would also retire the
+> `serial-marketplace` lane, which locally is the only thing that keeps two
+> flows off a marketplace login at once.
 
 Typical fast local-iteration loop on one flow:
 
@@ -185,7 +206,7 @@ bug, not a flow bug:
 | Chrome build (local) | `.maestro/chrome-version` | `lib-e2e-chrome.sh` (hard gate in every local runner), `test:e2e:check` |
 | Worker parallelism | `MAESTRO_PARALLELISM=3` | CI workflow, `test:e2e:like-ci` |
 | Convex DB state at "setup-done" | scripted `e2e-baseline.sh reset`, then `setup.yaml` | `run-e2e-smoke.sh` setup mode |
-| Cascade dependency ordering | `requires:` / `provides:` tags | `run-e2e-smoke.sh` topo-sort + cascade-prerequisite check (NEO-23) |
+| Flow ordering | ~~`requires:` / `provides:` tags~~ — **retired**, see below | CI's NEO-49 work queue; locally, `test:e2e -- setup` then everything else |
 
 ## Troubleshooting: "passes locally, fails CI" (or vice versa)
 
@@ -353,11 +374,36 @@ write to a real set is a finding to raise, not a licence.
 
 **R8 — `centerElement: true` on every scroll that precedes a tap.** The
 headless viewport is 1024×629; a target left at a viewport edge shifts out
-from under captured coordinates on re-render. Drop centering only for an
-element locked to the page bottom, with a comment citing this rule. There is
-no app footer and no "footer-steal zone"; the real occluders are the sticky
-binder header at the top and the `BinderTabs` rail on the right edge. A
-dropped tap is diagnosed, never attributed to a footer.
+from under captured coordinates on re-render. There is no app footer and no
+"footer-steal zone"; the real occluders are the sticky binder header at the
+top and the `BinderTabs` rail on the right edge. A dropped tap is diagnosed,
+never attributed to a footer.
+
+Drop centering only for an element the page cannot scroll to its centre —
+locked to the page bottom, or pinned in a fixed container such as a modal
+footer — and only after you have SHOWN that is what it is: the
+`Element bounds` line in `maestro.log` repeats unchanged across
+`Scrolling try count: 0`…`4`. Record that measurement in a comment citing
+this rule. An element that *should* be centerable and is not is a **product
+bug to fix**, never an exception to claim.
+
+**And when you do centre, give the step `timeout: 20000` or more.**
+Measured from the pinned `maestro-orchestra.jar` (v2.8.0,
+`Orchestra.scrollUntilVisible`): with `centerElement` on, Maestro re-reads the
+hierarchy up to six times (`retryCenterCount <= 4`, swiping between) before it
+gives up and accepts an already-visible element. That costs **8–13 s in CI**.
+The `timeout` is checked at the *bottom* of that loop, so a shorter one turns
+a graceful give-up into `No visible element found` on an element Maestro just
+logged at `Visibility Percent: 1.0`. This is what actually failed three flows
+in NEO-260's first run: the reds were at `timeout: 7000`/`10000`, while
+`features-propagation.yaml` and `set-attributes-edit.yaml` centred the
+*identical* `id: "Edit attributes"` target at `timeout: 15000` and passed in
+the same run. It was never that centering is unsafe — it was arithmetic.
+
+One more measurement worth knowing before you tune a number:
+`visibilityPercentage` is effectively **boolean** in Maestro 2.8 —
+`visibilityPercentageNormalized` integer-divides by 100, so `50` and `10`
+behave identically to `1`.
 
 **R9 — All set-builder drilling goes through the drill utils.** Use
 `util-drill-to-2024-topps-chrome`, `util-drill-to-base-variant`,
@@ -383,15 +429,34 @@ listed here so a flow author meets them in one place.
   the product (New Team dialog, set builder, checklist). The one scripted
   exception is `/testing/seed-credentials` (see "Worker-state seeding").
 - **Minted names are single tokens** built with `${ATTEMPT_ID}`, never
-  `output.ATTEMPT_ID` and never hyphenated: search indexes tokenise on
-  separators, so multi-token names collide across flows.
-- **`pressKey` needs a unique DOM `id`** on its target (own section below).
+  `output.ATTEMPT_ID` and never hyphenated: `teams.search` is a Convex SEARCH
+  index matching TOKENS split at non-alphanumerics, so `TLF-9351` tokenises to
+  ["TLF","9351"] and collides with every persisted team starting `TLF`. This
+  holds for **every** minted name without exception. There is no delete-team
+  affordance in the app — the picker's `Remove team <name>` *unlinks* a team
+  from a card and the row survives — so nothing a flow creates is removed
+  within the run that created it. `e2e-baseline.sh reset` wipes teams once at
+  the START of each run, which is no help against the run they were minted in:
+  a pool of runners drains one shared queue against one Convex preview, so
+  every minted team is visible to every other flow for the whole run. That is
+  what broke CI run 34050688656. Derive the token with the blessed idiom —
+  `evalScript: '${output.ATTEMPT_TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'`
+  — which folds the worker index inside the single token, since `ATTEMPT_ID`
+  is `w<worker>-a<attempt>-<random>`. (`output.ATTEMPT_TOKEN` is a value the
+  flow sets itself, which is fine; the banned one is `output.ATTEMPT_ID`, a
+  binding the runner never populates.)
+- **`pressKey` needs a unique, user-visible handle** on its target — an
+  accessible name, never a DOM `id` (own section below).
 - **Prefer `openLink` over tapping a link** to reach a page (own section).
 - **Gate flow launch on the destination heading** (own section).
-- **Tags** are `smoke`, `regression`, a grouping tag such as `set-selector`
-  or `profile`, and the `requires:`/`provides:` cascade tags. There is no
-  smoke-plus-feature pair per flow. Never add `wip`: fix the bug instead
-  (`config.yaml` excludes `util` and `wip`).
+- **Tags** are `smoke` (the fast subset), a grouping tag such as
+  `set-selector` or `profile`, and the three the runner treats specially:
+  `util`, `wip` and `setup`. There is no smoke-plus-feature pair per flow.
+  **There is no `regression` tag** — it was deleted suite-wide in NEO-260
+  because `smoke` and `regression` had drifted into disjoint sets with 38
+  flows in neither, while `npm run test:e2e` already runs everything. The
+  full suite is `test:e2e`; `smoke` is the only subset. Never add `wip`: fix
+  the bug instead (`config.yaml` excludes `util` and `wip`).
 - **Run only the flows you changed, against the PR's Convex preview**, with
   `npm run test:e2e:plan -- name:<flow>` then `test:e2e:pick`. Never the
   full suite locally unless the change is to the harness itself, and never
@@ -430,7 +495,7 @@ something beyond plain navigation; for a plain `<a href>` you lose nothing by
 navigating directly. **Watch #2944**: once it's fixed and we bump maestro, real
 click-navigation becomes reliable and this convention can relax.
 
-## Anything a flow drives with `pressKey` needs a unique DOM id
+## Anything a flow drives with `pressKey` needs a unique, user-visible handle
 
 **maestro-web does not send the key to `document.activeElement`.** It runs
 `createXPathFromElement(document.activeElement)`, then RE-FINDS the element by
@@ -447,20 +512,45 @@ screenshot. NEO-220 hit exactly this: the wizard's `Confirm & Save` and its
 class), so `pressKey: Enter` aimed at Confirm pressed Cancel, and the failure
 screenshot showed "Discard 1 decision?" while focus was on Confirm.
 
-**The rule:** if a flow presses a key at an element, that element must carry a
-unique DOM `id` in the component. Add it in the component, with a comment saying
-it is load-bearing for E2E, and do not reuse it
-(`components/SetSelector/EntityReviewWizard.tsx`'s `entity-review-confirm-save`
-is the worked example).
+**The rule — and it is not what this section used to say.** Jason, 2026-09-09
+(NEO-260), verbatim: *"NEVER USE AN ID VALUE, USE ONLY THINGS VISIBLE TO USER. I
+do consider an aria label visible to the user."*
+
+So the remedy is **never** a DOM `id`. A DOM id is invisible to a sighted user
+and to a screen reader alike; targeting one lets a flow pass while the real
+experience stays broken, which is the opposite of what these tests are for. Note
+that most `id:` selectors in this suite are already matching an **aria-label**,
+not a DOM id — the driver resolves `resource-id = node.id || node.ariaLabel`, so
+`id: "Search teams"` is the accessible name. That is correct and stays. Adding a
+real DOM id to such an element *replaces* the handle every flow targets by, and
+silently breaks them.
+
+When two identically-classed siblings collapse into one XPath, fix it in
+**product code**, two changes together:
+
+1. **Give them distinct accessible names**, so a screen-reader user can tell
+   which button they are on — `aria-label="Create team"` and
+   `aria-label="Back to team search"`, not two bare `Create`/`Back`. Then target
+   the accessible name from the flow.
+2. **Make the control genuinely keyboard-operable** — real Enter handling at the
+   level that makes sense (form or column submit), so the right thing happens
+   regardless of which node an XPath re-find resolves.
+
+Both are product requirements already: CLAUDE.md's UI section says every flow
+must be fully operable from the keyboard. The collision is the test telling you
+the app has an accessibility gap, so close the gap rather than routing around
+it. `components/SetSelector/EntityReviewWizard.tsx`'s `entity-review-confirm-save`
+is a real DOM id used as a handle — it is the **violation**, not the model, and
+is on the list to convert.
 
 Two corollaries worth knowing before you write the selector:
 
 * **A synthetic KeyboardEvent has no default action.** `dispatchEvent` runs the
   listeners and stops, so a focused `<button>` is NOT activated by
-  `pressKey: Enter` the way a real keypress activates it. The button has to
-  handle Enter in its own `onKeyDown`. Every other Enter in this suite is aimed
-  at an `<input>` whose own handler does the work, which is why this only ever
-  bites on buttons.
+  `pressKey: Enter` the way a real keypress activates it. Something has to
+  handle Enter explicitly. Every other Enter in this suite is aimed at an
+  `<input>` whose own handler does the work, which is why this only ever bites
+  on buttons — and it is a second reason the fix belongs in product code.
 * **`id:` selectors are regex FINDS, not exact matches.** Maestro exposes an
   element's `aria-label` as its `id` and matches it as an unanchored regular
   expression — so `id: "Remove Topps"` also matches `Remove Topps Chrome`. When a
@@ -527,13 +617,16 @@ screenshot for `[testing] …` before suspecting anything else.
 
 ## Worker-state seeding
 
-The cascade's `requires:` / `provides:` dependency graph IS the seeding
-infrastructure. The setup track (level 0) does the heavy lift — the scripted
-`e2e-baseline.sh reset` first, then `setup.yaml` for credential save + drill to
-2024 Topps Chrome + Variant Types sync. Every subsequent flow declares what
-state it needs (`requires:`) and produces (`provides:`). Note that neither step
-seeds a team or a player: those tables stay empty until a flow makes its own
-per-worker rows (see troubleshooting item 4 above).
+The **setup track** is the seeding infrastructure: the scripted
+`e2e-baseline.sh reset` first, then `flows/setup.yaml` for credential save +
+drill to 2024 Topps Chrome + Variant Types sync. `run-e2e-smoke.sh` excludes
+`setup`-tagged flows from every mode except `test:e2e -- setup`, so the seed
+runs once, deliberately, and never as one thread among many (NEO-46). Note that
+neither step seeds a team or a player: those tables stay empty until a flow
+makes its own per-worker rows (see troubleshooting item 4 above).
+
+Flows no longer declare `requires:`/`provides:` — that graph was retired with
+NEO-49 (see "Prerequisite closure" above). Seed first, then run what you want.
 
 If you need to manually seed a particular worker's state for a local
 repro, just run `setup.yaml` first:
@@ -544,7 +637,7 @@ PATH=$HOME/.maestro/bin:$PATH \
   WORKER_INDEX=0 \
   TEST_USERNAME=neontester-$(date +%s) \
   maestro test --platform web --config .maestro/config.yaml --headless \
-    .maestro/flows/set-selector/cascade/setup.yaml
+    .maestro/flows/setup.yaml
 ```
 
 Then run the flow you're debugging. If you need a different worker's
@@ -592,15 +685,20 @@ worker's MAIN account while `label-history-empty-state` asserts the empty state
 on the isolated `new-profile` account — two accounts, two states, neither flow
 able to disturb the other.
 
-## Cascade prerequisite check (NEO-23)
+## Cascade prerequisite check (NEO-23) — dormant
 
-`run-e2e-smoke.sh` now tracks which `provides:` states have at least one
-PASSing producer. When iterating each cascade level, it skips any flow
-whose `requires:` set isn't fully satisfied and records the skip as a
-FAIL with `skipped: prerequisite "X" not satisfied`. This prevents the
-"flaked producer → downstream flows run with stale state → result depends
-on whether the producer flaked" failure mode that bit us in PR #33.
+`run-e2e-smoke.sh` tracks which `provides:` states have at least one PASSing
+producer, skips any flow whose `requires:` set isn't fully satisfied, and
+records the skip as a FAIL with `skipped: prerequisite "X" not satisfied`. It
+was built to stop the "flaked producer → downstream flows run with stale state
+→ result depends on whether the producer flaked" failure mode that bit us in
+PR #33.
 
-Opt out via `MAESTRO_CASCADE_PERMISSIVE=true ./run-e2e-smoke.sh` if you
-need the old run-anyway behavior to debug a single level-0 flow without
-the rest of the cascade interfering.
+**It is dormant.** No flow declares `requires:` or `provides:` any more
+(NEO-49's work queue replaced the model; verified NEO-260), so the check has
+no edges to enforce and never skips anything. `MAESTRO_CASCADE_PERMISSIVE=true`
+opts out of a check that is already inert.
+
+The failure mode it guarded against has not gone away — it moved. In CI the
+queue and the pre-matrix `seed` job handle ordering; locally, nothing does, so
+seed with `npm run test:e2e -- setup` before running a flow that needs data.

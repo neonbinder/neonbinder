@@ -43,7 +43,6 @@ url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/se
 name: "Print settings — the flip edge re-mirrors the backs, and backs can be turned off"
 tags:
   - placeholders
-  - regression
 ---
 # ============================================================
 # Step 1: land on the run view with a real batch behind it.

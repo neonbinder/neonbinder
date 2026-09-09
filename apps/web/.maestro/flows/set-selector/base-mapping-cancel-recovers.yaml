@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Base-set picker Cancel recovers — message + working Retry, no dead-end (NEO-71-74)"
 tags:
   - set-selector
-  - regression
 ---
 # ════════════════════════════════════════════════════════════════════════════
 # R1 — ONE feature: cancelling the "Select Base Set" picker for a first-time

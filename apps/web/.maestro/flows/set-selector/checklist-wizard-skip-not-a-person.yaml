@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Entity review — Skip marks a name as not a person, and the footer skip decides every row that is left, lookups included"
 tags:
   - set-selector
-  - regression
 ---
 # R1 — ONE FEATURE (NEO-212): the THIRD way out of an unknown name. "Checklist",
 # "Team Card" and subset headers land in the player column of a real marketplace

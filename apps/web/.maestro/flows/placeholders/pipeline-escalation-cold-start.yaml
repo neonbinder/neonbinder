@@ -80,7 +80,6 @@ url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/se
 name: Placeholder pipeline (heavy escalation) — inset pair, cold-start notice, one pair
 tags:
   - placeholders
-  - regression
 ---
 # Step 1: sign in, then the seed page uploads the two inset fixtures and forwards
 # to the run view. This wait covers cold Clerk sign-in, fetching the fixtures, and

@@ -2,7 +2,6 @@ appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
 name: "Write-once feature snapshots — a freshly-created CARD ROW auto-populates its own features with the inherited physical/production defaults from its ancestor chain"
 tags:
-  - regression
   - set-selector
 ---
 # ============================================================================

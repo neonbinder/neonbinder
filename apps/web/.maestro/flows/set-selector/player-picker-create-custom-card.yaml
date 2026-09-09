@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Player picker — create a brand-new player and attach it to a CUSTOM card (the gap this closes); it persists across reopen"
 tags:
   - set-selector
-  - regression
 ---
 # R1 — SINGLE FEATURE: the Players section of a card's detail panel is now an
 # editable typeahead chip picker with a "+ Create '<name>'" escape hatch (via
@@ -36,7 +35,7 @@ tags:
 #   acquire playerIds via sync — this flow proves it now can, via manual create.
 #   No other flow exercises PlayerPicker. Drill/add via util-add-custom-card.
 #
-# WHY A UNIQUE NAME ("NBPlayer-${ATTEMPT_ID}"): guarantees no exact match in the
+# WHY A UNIQUE NAME ("NBPlayer${output.ATTEMPT_TOKEN}"): guarantees no exact match in the
 #   players table (per attempt), so the create option is always offered — even
 #   after prior runs seeded players under this synthetic sport. findOrCreate is
 #   idempotent, so a re-run is harmless.
@@ -54,6 +53,31 @@ tags:
 - extendedWaitUntil:
     visible: ".*Build set parameters using marketplace APIs.*"
     timeout: 45000
+
+# ── The minted name's single search token (SET-REGISTRY.md, "A name typed into
+# a team picker must be a SINGLE search token") ──────────────────────────────
+# `teams.search` / `players.search` are Convex SEARCH indexes: they match on
+# TOKENS split at non-alphanumerics, so a hyphenated `Prefix-<attempt>` name
+# tokenizes to ["Prefix", "<attempt>"] and every row any flow ever left behind
+# under that prefix comes back as a suggestion — the per-attempt suffix buys
+# nothing. Nothing deletes a team (the app has no delete-team affordance; the
+# picker's "Remove team" only unlinks it from the card), so those rows stand for
+# the whole run and are visible to every concurrent worker. The names below are
+# therefore ONE alphanumeric token with no separator at all.
+#
+# The token is ATTEMPT_ID with its hyphens stripped: "w3-a1-23945" is three
+# search terms, "w3a123945" is one — and it still carries the worker index, so
+# the per-worker distinction the old `${WORKER_INDEX}` prefix gave is folded in
+# rather than separated out.
+#
+# ⚠️ READ `ATTEMPT_ID`, NOT `output.ATTEMPT_ID`. The runner injects it with
+# `-e ATTEMPT_ID=…`, which Maestro exposes as the binding `${ATTEMPT_ID}`; it
+# never populates `output.ATTEMPT_ID`, so the older idiom always fell through to
+# its 4-digit `Date.now()` fallback and two runners collided constantly.
+#
+# Single-quoted: the expression contains double quotes, and quoting the scalar
+# keeps YAML out of it. `Date.now()` is the standalone-run fallback.
+- evalScript: '${output.ATTEMPT_TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'
 
 # ============================================================
 # DRILL TO PER-WORKER CUSTOM SET + ADD A CUSTOM CARD
@@ -115,17 +139,17 @@ tags:
     id: "Search players"
 - tapOn:
     id: "Search players"
-- inputText: "NBPlayer-${ATTEMPT_ID}"
+- inputText: "NBPlayer${output.ATTEMPT_TOKEN}"
 
 # No existing player matches this unique name, so the "+ Create" row appears.
 - assertVisible:
-    id: "Create player NBPlayer-${ATTEMPT_ID}"
+    id: "Create player NBPlayer${output.ATTEMPT_TOKEN}"
 - tapOn:
-    id: "Create player NBPlayer-${ATTEMPT_ID}"
+    id: "Create player NBPlayer${output.ATTEMPT_TOKEN}"
 
 # The created player is attached as a chip (its remove button proves the chip).
 - assertVisible:
-    id: "Remove player NBPlayer-${ATTEMPT_ID}"
+    id: "Remove player NBPlayer${output.ATTEMPT_TOKEN}"
 
 # ============================================================
 # THE WRITE — NEO-216: choosing "+ Create" both creates the player entity
@@ -176,7 +200,7 @@ tags:
     end: "80%, 20%"
 
 - assertVisible:
-    id: "Remove player NBPlayer-${ATTEMPT_ID}"
+    id: "Remove player NBPlayer${output.ATTEMPT_TOKEN}"
 
 # ============================================================
 # CLOSE + CLEANUP — delete this attempt's test card

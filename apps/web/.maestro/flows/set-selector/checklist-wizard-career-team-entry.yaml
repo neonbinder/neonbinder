@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Entity review — a player row takes hand-entered career teams, refuses an entry with no from-year, and carries the staged history into the Add as New decision"
 tags:
   - set-selector
-  - regression
 ---
 # R1 — ONE FEATURE (NEO-92 follow-up): the CareerTeamEntry mini-form the review
 # wizard renders inline for a PLAYER row. Wikidata does not know every player —

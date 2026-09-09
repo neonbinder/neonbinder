@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Set-level feature edit saves that single row (Saved toast) and does NOT cascade to a card with its own value (per-worker custom set)"
 tags:
   - set-selector
-  - regression
 ---
 # NEO-71-74 write-once feature snapshots — single-row edit, NO cascade.
 #

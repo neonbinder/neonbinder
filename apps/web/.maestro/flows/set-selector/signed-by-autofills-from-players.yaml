@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Signed By auto-fills from the card's players when Autographed flips None → On Card (real Topps Chrome Base, sole-writer)"
 tags:
   - set-selector
-  - regression
 ---
 # ============================================================================
 # R1 — ONE FEATURE UNDER TEST: the setCardFeature side-effect (NEO-24 typed
@@ -95,9 +94,9 @@ tags:
 #
 # FLOW:
 #   0. Drill to real 2024 Topps Chrome Base.
-#   0b. Ensure the Base checklist is populated WITH playerIds — skipped when the
-#       setup track already pre-synced it (CI); self-fetches + player-confirms
-#       when empty (local single-flow run), so the flow needs no setup track.
+#   0b. Assert the Base checklist is already populated WITH playerIds. That is
+#       the setup track's job; NEO-260 deleted the self-fetch fallback that used
+#       to rebuild the shared checklist here (see Step 0b for why).
 #   1-2. Open a real Base card's detail drawer (card #300 — Julio Rodriguez, a
 #        stable single-player card).
 #   3. PRECONDITION (Signed By sentinel): EXPAND the editor, swipe to the Signed By
@@ -143,126 +142,40 @@ tags:
     file: util-drill-to-base-variant.yaml
 
 # ============================================================
-# STEP 0b — ENSURE THE BASE CHECKLIST IS POPULATED (with playerIds)
-# In the CI work-queue the setup track pre-syncs + player-confirms the Base
-# checklist BEFORE this flow runs, so the checklist is already populated and
-# this guarded block is SKIPPED (the empty-state text is absent → the `when`
-# resolves false immediately). It only runs when the checklist is empty (e.g. a
-# local single-flow run where the setup track did not run): tap "Fetch from
-# Marketplaces" (a live BSC/SL round-trip, ~60s) and CONFIRM the
-# EntityReviewWizard so every real card is saved WITH resolved playerIds —
-# the precondition the auto-fill reads. This keeps the flow self-sufficient
-# without depending on (or re-running) the destructive setup track.
-- runFlow:
-    when:
-      visible: "No cards in this checklist yet."
-    commands:
-      # The fetch CTA is the last thing in the Cards card, below the fold on a
-      # 1024x629 viewport — scroll and centre it before tapping (R8).
-      - scrollUntilVisible:
-          element:
-            text: ".*Fetch from Marketplaces.*"
-          centerElement: true
-          timeout: 15000
-      - tapOn:
-          text: ".*Fetch from Marketplaces.*"
-      # NEO-137: pairing runs before any card is generated. This is a real set,
-      # so the dialog opens; "Keep all" on both columns reproduces exactly what
-      # a pre-NEO-137 sync produced, keeping this fallback's baseline identical.
-      - extendedWaitUntil:
-          visible:
-            text: "Match Cards.*|.*Confirm New Players.*|.*Saved [0-9]+ cards.*"
-          timeout: 60000
-      - runFlow:
-          when:
-            visible: "Match Cards.*"
-          commands:
-            # NEO-195 — Confirm is gated on `isStreaming` and `handleConfirm`
-            # returns early while it is true, so tapping it before the fetch
-            # resolves is a SILENT no-op and the `notVisible` below times out
-            # blaming the modal. Same sync point setup.yaml and
-            # checklist-pairing-dialog-cancel.yaml use.
-            - extendedWaitUntil:
-                visible:
-                  text: "^Confirm$"
-                timeout: 120000
-            - runFlow:
-                when:
-                  visible:
-                    text: ".*BSC only \\([1-9][0-9]*\\).*"
-                commands:
-                  - tapOn:
-                      id: "Keep all BSC-only cards"
-            - runFlow:
-                when:
-                  visible:
-                    text: ".*SportLots only \\([1-9][0-9]*\\).*"
-                commands:
-                  - tapOn:
-                      id: "Keep all SportLots-only cards"
-            - tapOn:
-                id: "Confirm card matches"
-            - extendedWaitUntil:
-                notVisible: "Match Cards.*"
-                timeout: 60000
-      # First fetch: all players/teams are new → EntityReviewWizard opens.
-      # A populated-enough set may commit immediately ("Saved N cards.").
-      - extendedWaitUntil:
-          visible:
-            text: ".*Confirm New Players.*|.*Saved [0-9]+ cards.*"
-          timeout: 60000
-      # NEO-92 bulk-confirm: this LOCAL-ONLY fallback runs only when the checklist
-      # is empty (setup track did not pre-sync); in CI the setup track populates
-      # it and this whole block is skipped. A fresh real-Base fetch surfaces
-      # HUNDREDS of unknowns, so tap the footer "Add remaining players as new
-      # (N)" button (one recordAllRemainingAsCreate call marks every settled
-      # not-yet-decided PLAYER as "create") rather than draining them, answer
-      # the New Team steps it leaves, then confirm & save.
-      - runFlow:
-          when:
-            visible: "Confirm New Players & Teams"
-          commands:
-            - tapOn:
-                text: ".*Add remaining players as new.*"
-            # NEO-236 — the bulk tap decides PLAYERS only, so every New Team
-            # step it leaves behind has to be answered before the batch can
-            # commit. One tap per step accepts the Location, Name and League
-            # the step is already showing, which is what an operator who agrees
-            # with the pre-fill would do. Keyed on the terminal state rather
-            # than on a step being visible: players and their staged teams
-            # drain at the same time, so a loop keyed on "New Team:" would exit
-            # the first time it caught the batch between lookups. See
-            # setup.yaml for the long version.
-            - repeat:
-                times: 250
-                while:
-                  notVisible:
-                    text: ".*Confirm & Save.*"
-                commands:
-                  - runFlow:
-                      when:
-                        visible: "New Team: .*"
-                      commands:
-                        - tapOn: "Add as New Team"
-            # NEO-221 — the bulk add now decides only rows whose Wikidata lookup has
-            # SETTLED, staying armed for the rest, so this wait is gated on that live
-            # external round-trip rather than on one mutation. Raised for that reason;
-            # it resolves the moment the wizard is done, so a healthy run pays nothing
-            # for the bigger ceiling.
-            - extendedWaitUntil:
-                visible:
-                  text: ".*Confirm & Save.*"
-                timeout: 240000
-            - tapOn:
-                text: ".*Confirm & Save.*"
-            # NEO-163: no gate on the wizard closing. The "Saved N cards" wait below is
-            # a positive terminal signal proving the same thing and more, so this
-            # negative gate against a repainting node only added a failure mode.
-      - extendedWaitUntil:
-          visible:
-            text: ".*Saved [0-9]+ cards.*"
-          # NEO-163: absorbs the removed notVisible gate's budget.
-          timeout: 120000
+# STEP 0b — PRECONDITION: THE BASE CHECKLIST IS ALREADY POPULATED
+#
+# flows/setup.yaml is this flow's documented precondition (util-drill-to-base-
+# variant's caller notes say so too): the setup track fetches the 2024 Topps
+# Chrome Base checklist and confirms its EntityReviewWizard, so every Base card
+# carries the playerIds the auto-fill under test reads.
+#
+# THIS WAS A `when: visible "No cards in this checklist yet."` FALLBACK that
+# fetched and COMMITTED the whole shared Base checklist whenever it found the
+# set empty. Deleted in NEO-260, and it must not come back. Two rules said no:
+#   R7a — 2024 Topps Chrome Base is a registered shared set. This flow is its
+#     sole writer for one card's `autographed`/`signedBy` features and for
+#     nothing else; rebuilding its checklist is a write to a fixture the rest of
+#     the queue reads concurrently.
+#   R2  — an empty shared set means the SEED FAILED. Silently rebuilding it
+#     turns a loud seed failure into a green run that proved nothing, and buys
+#     that green with ~2 minutes of live marketplace round-trip mid-suite.
+#
+# So the precondition is stated and left to fail loudly. "Refresh" is the
+# CardChecklist action button's label when `sortedCards.length > 0`; the SAME
+# button reads "Fetch from Marketplaces" while the checklist is empty
+# (CardChecklist.tsx `fetchLabel`), so this is a POSITIVE assert that cards
+# exist rather than a bare negative that would also pass on a blank page, and
+# the string is unique in the app. It costs nothing extra: the drill util has
+# just centred that row and its own closing assertion is the alternation
+# `.*Fetch from Marketplaces.*|Refresh` — this narrows it to the branch this
+# flow requires.
+#
+# The local-run consequence is the intended one: run the setup track before
+# picking this flow. NOTE it carries no `requires:` tag, so `test:e2e:pick`
+# will NOT pull the seed in for you — seed explicitly. Do NOT re-add a
+# self-heal branch to paper over an unseeded run.
+# ============================================================
+- assertVisible: "Refresh"
 
 # ============================================================
 # STEP 1 — OPEN A REAL BASE CARD's DETAIL DRAWER

@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: Custom Entry Survives Re-Sync
 tags:
   - set-selector
-  - regression
   # Column inputs now carry unique per-input classes: EntitySelector search
   # inputs have `mb-search-<col>` (NEO-46) and the custom-entry form input
   # has `mb-field-*` via useFieldTestClass() (EntityColumn.tsx). Maestro's

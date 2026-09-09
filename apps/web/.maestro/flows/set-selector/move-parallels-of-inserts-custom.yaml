@@ -4,7 +4,6 @@ name: "Move parallels-of-inserts — suggestions pre-placed on open, Accept All 
 tags:
   - parallel-grouping
   - set-selector
-  - regression
 ---
 # PRODUCT-FEATURE test: the full happy-path lifecycle of the Group Parallels modal.
 # Covers:
@@ -291,14 +290,41 @@ tags:
           text: ".*${ATTEMPT_ID} Stars$"
           below:
             id: "Search inserts"
+      # END THIS BRANCH ON THE STATE THE NEXT ONE GATES ON (NEO-260). The
+      # `notVisible: "Parallels"` guard below is only sound if this branch has
+      # actually REACHED that state before it is evaluated; a bare tap would
+      # leave a window in which the column has not mounted yet and the second
+      # branch fires anyway — the same race, one render later.
+      # util-drill-to-2024-topps-chrome.yaml closes it the same way (its
+      # `extendedWaitUntil: visible "Variant Types"` inside the retry).
+      - extendedWaitUntil:
+          visible: "Parallels"
+          timeout: 10000
 
 # Scroll path: Inserts column has ≤8 entries (clean CI state) → no search input.
 # scrollUntilVisible works because the column fits within the page-level scroll
 # axis (no overflow-y-auto needed when all items fit in the visible container).
+#
+# GATED ON "Parallels", *NOT* on `notVisible: id "Search inserts"` (NEO-260).
+# The two branches must be mutually exclusive, and gating this one on the
+# ABSENCE of the search input does not achieve that: `when:` conditions are
+# evaluated sequentially against live state, and selecting an insert COLLAPSES
+# the Inserts column, removing the very input the first branch tested. So on a
+# crowded column BOTH branches fired — the second tapping the already-selected
+# insert a second time, re-toggling the selection every assertion below depends
+# on. util-drill-to-2024-topps-chrome.yaml documents the identical failure at
+# its SET level and carries the same fix; this is R2 (no silent fall-through).
+#
+# "Parallels" is the state the FIRST branch is defined to reach, not the state
+# it leaves behind: SetSelector mounts the ParallelSelector column
+# (title="Parallels") only once an insert is selected, and the drill util's
+# return contract leaves nothing selected in the Inserts column. So the gate is
+# skipped when the first branch already advanced, and runs when the column had
+# no search input for it to use. A text selector is a whole-text match, so the
+# "Group Parallels" button beside the column does not satisfy it.
 - runFlow:
     when:
-      notVisible:
-        id: "Search inserts"
+      notVisible: "Parallels"
     commands:
       - scrollUntilVisible:
           element:

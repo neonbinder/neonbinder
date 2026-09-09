@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Cross-release — 'Unlink' removes a visiting card from this checklist without deleting it from the set it was printed in"
 tags:
   - set-selector
-  - regression
 ---
 # ============================================================================
 # R1 — ONE FEATURE: detaching a visiting card is a REMOVAL, not a DELETION.

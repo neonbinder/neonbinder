@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Entity review — a Link to Existing decision is carried through Confirm & Save into the committed checklist"
 tags:
   - set-selector
-  - regression
 ---
 # R1 — ONE FEATURE (NEO-92): a link decision survives the COMMIT. The sibling
 # read-only flow (checklist-wizard-link-to-existing-player) proves the link

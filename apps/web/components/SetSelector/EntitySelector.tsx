@@ -1,8 +1,9 @@
-import { memo, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "convex/react";
 import { Input } from "../primitives/Input";
 import { ChevronDownIcon, ChevronUpIcon } from "@heroicons/react/24/solid";
 import { FunctionReference } from "convex/server";
+import { activateOnEnter } from "@/lib/dom/activate-on-enter";
 
 export type SelectorItem = { _id: string; [key: string]: unknown };
 
@@ -88,6 +89,35 @@ function EntitySelector({
     });
   }, [items, getDisplayName]);
 
+  // NEO-260 (a11y) — hand focus to the collapsed card when a selection closes
+  // the list.
+  //
+  // Choosing a row unmounts that row: the column shrinks to its single
+  // collapsed card, focus falls to <body>, and the next Tab restarts from the
+  // top of the DOCUMENT rather than continuing into the column this selection
+  // just opened. Six columns deep that makes the cascade unusable by keyboard
+  // even though every control in it is now reachable.
+  //
+  // Guarded on `document.activeElement === document.body`, the same rule
+  // EntityColumn's parks use, so focus a user or a flow has already placed is
+  // never stolen. `preventScroll` because EntityColumn owns the horizontal
+  // scroll position of the column row (it scrolls each newly-revealed column
+  // into view) and a browser scroll-into-view here would pull it straight back.
+  const collapsedCardRef = useRef<HTMLButtonElement | null>(null);
+  const showedListRef = useRef(false);
+  const showsCollapsedCard = !!(selectedId && selected && !expanded);
+  useEffect(() => {
+    const showedList = showedListRef.current;
+    showedListRef.current = !showsCollapsedCard;
+    if (
+      showedList &&
+      showsCollapsedCard &&
+      document.activeElement === document.body
+    ) {
+      collapsedCardRef.current?.focus({ preventScroll: true });
+    }
+  }, [showsCollapsedCard]);
+
   // NEO-167 — keep the heading on screen while the read is in flight.
   //
   // This used to be `return <div>Loading {title}...</div>`, which removed the
@@ -168,17 +198,32 @@ function EntitySelector({
       )
     : sortedItems;
 
-  if (selectedId && selected && !expanded) {
+  if (showsCollapsedCard && selected) {
+    // NEO-260 — a real <button>, not a clickable <div>.
+    //
+    // Once a column has a selection it collapses to this single card, and
+    // re-opening it is the ONLY way to change that selection. As a <div> it was
+    // unreachable by Tab, so a keyboard-only operator who picked the wrong
+    // sport could not get back to the list — the cascade was one-way. It also
+    // drops the column's <h2>, so the accessible name has to carry the column
+    // ("Sports: Baseball — change"); the visible name is inside it, which is
+    // what WCAG 2.5.3 asks and what keeps a voice-control "click Baseball"
+    // working. `aria-expanded` states what pressing it does.
     return (
-      <div
-        className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow flex items-center justify-between cursor-pointer"
+      <button
+        ref={collapsedCardRef}
+        type="button"
+        className="w-full text-left bg-white dark:bg-gray-800 p-6 rounded-lg shadow flex items-center justify-between cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF]"
+        aria-label={`${title}: ${getDisplayName(selected)} — change`}
+        aria-expanded={false}
         onClick={() => setExpanded(true)}
+        onKeyDown={(e) => activateOnEnter(e, () => setExpanded(true))}
       >
         <div className="flex items-center gap-2">
           <div className="font-semibold">{getDisplayName(selected)}</div>
         </div>
         <ChevronDownIcon className="w-5 h-5 text-gray-500" />
-      </div>
+      </button>
     );
   }
 
@@ -190,9 +235,17 @@ function EntitySelector({
         <h2 className="text-xl font-semibold">{title}</h2>
         {selectedId && expanded && (
           <button
+            type="button"
             onClick={() => setExpanded(false)}
-            aria-label="Collapse"
-            className="ml-2"
+            onKeyDown={(e) => activateOnEnter(e, () => setExpanded(false))}
+            // Named per column. Every open column with a selection renders one
+            // of these, so a bare "Collapse" is neither distinguishable to a
+            // screen-reader user moving across the cascade nor unambiguous as a
+            // Maestro `resource-id` (matched as an UNANCHORED regex, so a bare
+            // "Collapse" also finds "Collapse matched cards…" elsewhere).
+            aria-label={`Collapse ${title.toLowerCase()}`}
+            aria-expanded={true}
+            className="ml-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] rounded"
           >
             <ChevronUpIcon className="w-5 h-5 text-gray-500" />
           </button>
@@ -229,15 +282,23 @@ function EntitySelector({
           filteredItems.map((item: SelectorItem) => {
             const pd = getPlatformData(item);
             const showPills = isItemTerminal?.(item) ?? false;
+            const select = () => {
+              onSelect(item._id);
+              setExpanded(false);
+              setSearchFilter("");
+            };
             return (
               <button
                 key={item._id}
-                onClick={() => {
-                  onSelect(item._id);
-                  setExpanded(false);
-                  setSearchFilter("");
-                }}
-                className={`w-full text-left p-3 rounded-md border transition-colors ${
+                type="button"
+                onClick={select}
+                // A synthetic KeyboardEvent has no default action, so a focused
+                // row is NOT clicked by `pressKey: Enter` — the row has to
+                // activate itself. Harmless for a real keypress, which this
+                // handler consumes instead of letting it click twice.
+                onKeyDown={(e) => activateOnEnter(e, select)}
+                aria-pressed={selectedId === item._id}
+                className={`w-full text-left p-3 rounded-md border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] ${
                   selectedId === item._id
                     ? `${selectedColor}`
                     : "bg-gray-50 dark:bg-gray-700 border-gray-200 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-600"

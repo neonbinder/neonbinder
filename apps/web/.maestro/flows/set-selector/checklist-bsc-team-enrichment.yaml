@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Checklist — a synced Base card carries its real BSC-resolved team into the card detail drawer (NEO-90, NEO-195)"
 tags:
   - set-selector
-  - regression
 ---
 # ════════════════════════════════════════════════════════════════════════════
 # R1 — ONE feature: a synced BSC Base card carries its real, marketplace-

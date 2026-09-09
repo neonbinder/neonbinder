@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Checklist attention — a card with no team is badged, counted, and filterable"
 tags:
   - set-selector
-  - regression
 ---
 # ════════════════════════════════════════════════════════════════════════════
 # R1 — ONE feature (NEO-102): a stored checklist card that carries NO team is
@@ -55,7 +54,7 @@ tags:
 #       TeamPicker scopes its list by and TAGS a team it creates with — and no
 #       sport row means no "+ New team" row at all (NEO-96). This flow creates
 #       both of the teams it uses (NEO-214 removed the global seeded fixture),
-#       named CNAA-/CNAB-<worker>-<attempt> so eight runners and a retry cannot
+#       named CNAA<token>/CNAB<token> so eight runners and a retry cannot
 #       collide, and so the create row is offered rather than an "Add" row.
 #     • A custom Set node makes the subtree custom, so no BSC/SL call fires and
 #       nothing shared is read or written.
@@ -80,6 +79,31 @@ tags:
 - extendedWaitUntil:
     visible: ".*Build set parameters using marketplace APIs.*"
     timeout: 45000
+
+# ── The minted name's single search token (SET-REGISTRY.md, "A name typed into
+# a team picker must be a SINGLE search token") ──────────────────────────────
+# `teams.search` / `players.search` are Convex SEARCH indexes: they match on
+# TOKENS split at non-alphanumerics, so a hyphenated `Prefix-<attempt>` name
+# tokenizes to ["Prefix", "<attempt>"] and every row any flow ever left behind
+# under that prefix comes back as a suggestion — the per-attempt suffix buys
+# nothing. Nothing deletes a team (the app has no delete-team affordance; the
+# picker's "Remove team" only unlinks it from the card), so those rows stand for
+# the whole run and are visible to every concurrent worker. The names below are
+# therefore ONE alphanumeric token with no separator at all.
+#
+# The token is ATTEMPT_ID with its hyphens stripped: "w3-a1-23945" is three
+# search terms, "w3a123945" is one — and it still carries the worker index, so
+# the per-worker distinction the old `${WORKER_INDEX}` prefix gave is folded in
+# rather than separated out.
+#
+# ⚠️ READ `ATTEMPT_ID`, NOT `output.ATTEMPT_ID`. The runner injects it with
+# `-e ATTEMPT_ID=…`, which Maestro exposes as the binding `${ATTEMPT_ID}`; it
+# never populates `output.ATTEMPT_ID`, so the older idiom always fell through to
+# its 4-digit `Date.now()` fallback and two runners collided constantly.
+#
+# Single-quoted: the expression contains double quotes, and quoting the scalar
+# keeps YAML out of it. `Date.now()` is the standalone-run fallback.
+- evalScript: '${output.ATTEMPT_TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'
 
 # ════════════════════════════════════════════════════════════════════════════
 # DRILL to this attempt's private custom set (R9 — the drill util owns this).
@@ -259,12 +283,12 @@ tags:
     id: "Search teams"
 - tapOn:
     id: "Search teams"
-- inputText: "CNAB-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- inputText: "CNAB${output.ATTEMPT_TOKEN}"
 # Offered only for a name no team in this sport already carries, and labelled
 # with the name it would create, so this cannot land on another team. NEO-236 —
 # the row OPENS the New Team dialog; the dialog is what writes.
 - tapOn:
-    id: "New team CNAB-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    id: "New team CNAB${output.ATTEMPT_TOKEN}"
 
 # The New Team dialog — portalled to `document.body` at `z-[60]`, `fixed inset-0`
 # and centred, so nothing clips it. It is where the three questions a team row
@@ -282,10 +306,10 @@ tags:
 # The NAME BOX and its VALUE is the dialog being correctly SEEDED — maestro-web
 # reports an input by its value, so this says the search text really reached the
 # field the operator is about to submit.
-- assertVisible: "New team: CNAB-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- assertVisible: "New team: CNAB${output.ATTEMPT_TOKEN}"
 - assertVisible:
     id: "New team name"
-    text: "CNAB-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    text: "CNAB${output.ATTEMPT_TOKEN}"
 
 # THE WRITE. Nothing is typed in the dialog: Team name is pre-filled with what
 # was searched, Location stays blank and no League is picked, so the COMPOSED
@@ -298,11 +322,11 @@ tags:
 # element by an XPath that falls back to that class, so an Enter aimed at Create
 # could land on Cancel.
 - tapOn:
-    id: "Create team CNAB-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    id: "Create team CNAB${output.ATTEMPT_TOKEN}"
 # The chip is the proof the pick landed. Unlike the drawer's picker this one is
 # not a draft — its value goes straight into `addCustomCard` on Submit.
 - assertVisible:
-    id: "Remove team CNAB-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    id: "Remove team CNAB${output.ATTEMPT_TOKEN}"
 
 # Close the popover BEFORE reaching for Submit. It is `absolute top-full`, and
 # in this form the picker sits directly above the Add/Cancel row, so an open
@@ -341,7 +365,7 @@ tags:
 # operator seeing what they picked. Before NEO-208 this line was empty: the
 # typed name went to `pendingTeamNames`, which nothing rendered at all, and
 # that invisibility is the whole of the ticket.
-- assertVisible: ".*CNAB-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
+- assertVisible: ".*CNAB${output.ATTEMPT_TOKEN}.*"
 
 # AND THE ROW IS NOT BADGED, because a picked team IS a `teamOnCardIds` link and
 # that is precisely what deriveCardAttention asks for. The scroll above is what
@@ -431,13 +455,13 @@ tags:
     id: "Search teams"
 - tapOn:
     id: "Search teams"
-- inputText: "CNAA-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- inputText: "CNAA${output.ATTEMPT_TOKEN}"
 # NEO-236 — the popover's one create affordance, which opens the New Team
 # dialog rather than writing.
 - assertVisible:
-    id: "New team CNAA-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    id: "New team CNAA${output.ATTEMPT_TOKEN}"
 - tapOn:
-    id: "New team CNAA-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    id: "New team CNAA${output.ATTEMPT_TOKEN}"
 
 # The New Team dialog — portalled to `document.body` at `z-[60]`, `fixed inset-0`
 # and centred, so nothing clips it. It is where the three questions a team row
@@ -455,10 +479,10 @@ tags:
 # The NAME BOX and its VALUE is the dialog being correctly SEEDED — maestro-web
 # reports an input by its value, so this says the search text really reached the
 # field the operator is about to submit.
-- assertVisible: "New team: CNAA-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- assertVisible: "New team: CNAA${output.ATTEMPT_TOKEN}"
 - assertVisible:
     id: "New team name"
-    text: "CNAA-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    text: "CNAA${output.ATTEMPT_TOKEN}"
 
 # THE WRITE. Nothing is typed in the dialog: Team name is pre-filled with what
 # was searched, Location stays blank and no League is picked, so the COMPOSED
@@ -471,7 +495,7 @@ tags:
 # element by an XPath that falls back to that class, so an Enter aimed at Create
 # could land on Cancel.
 - tapOn:
-    id: "Create team CNAA-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    id: "Create team CNAA${output.ATTEMPT_TOKEN}"
 
 # The chip proves the pick landed. NEO-216: there is no draft and no Save
 # button — TeamPicker sends `updateCard.teamOnCardIds` on the tap itself, and
@@ -479,7 +503,7 @@ tags:
 # is what makes the badge assertion below meaningful: without it we would be
 # racing an in-flight mutation.
 - assertVisible:
-    id: "Remove team CNAA-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    id: "Remove team CNAA${output.ATTEMPT_TOKEN}"
 - extendedWaitUntil:
     visible: ".*Saved Teams.*"
     timeout: 7000
@@ -506,7 +530,7 @@ tags:
 - assertVisible: "1 need attention"
 # The row now shows the team it was given — the reason its badge went away.
 - assertVisible:
-    text: ".*CNAA-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
+    text: ".*CNAA${output.ATTEMPT_TOKEN}.*"
 
 # ════════════════════════════════════════════════════════════════════════════
 # THE FILTER — the chip collapses the grid to the flagged rows, and back.

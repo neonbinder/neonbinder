@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Cross-release — the 'Hide cross-release cards' filter collapses a checklist back to only its own cards, and restores them"
 tags:
   - set-selector
-  - regression
 ---
 # ============================================================================
 # R1 — ONE FEATURE: the show/hide filter for visiting cards.

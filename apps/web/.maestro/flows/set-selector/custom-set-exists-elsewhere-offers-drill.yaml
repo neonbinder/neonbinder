@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Custom entry — a name that already exists under another brand offers to go to it instead of making a second row (NEO-219)"
 tags:
   - set-selector
-  - regression
 ---
 # ════════════════════════════════════════════════════════════════════════════
 # R1 — ONE FEATURE: typing a custom SET name that already exists somewhere else

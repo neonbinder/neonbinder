@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Parallel Grouping — Cancel discards changes (reopen shows original); also closes via backdrop"
 tags:
   - parallel-grouping
-  - regression
 ---
 # PRODUCT-FEATURE test: Cancel discards pending groupings and does NOT persist.
 # Also covers the modal's two close mechanisms (Cancel button + backdrop tap).

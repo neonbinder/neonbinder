@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Card detail — the unified Autographed control is always-visible (promoted out of Show features), not gated behind the features editor"
 tags:
   - set-selector
-  - regression
 ---
 # R1 — SINGLE FEATURE: the Autographed control now lives as an ALWAYS-VISIBLE
 # cell in the main CardDetailPanel body (position 7, next to Print run), promoted

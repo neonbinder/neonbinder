@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Entity review — Link to Existing resolves an unknown name onto a player we already have instead of minting a duplicate"
 tags:
   - set-selector
-  - regression
 ---
 # R1 — ONE FEATURE (NEO-92, extended by NEO-212): "Link to Existing…". A
 # marketplace spells a player we already hold differently, and the fetch

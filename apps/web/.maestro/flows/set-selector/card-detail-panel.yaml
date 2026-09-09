@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Card detail drawer — every field autosaves as you leave it (no Save button)"
 tags:
   - set-selector
-  - regression
 ---
 # NEO-25 drawer, re-pointed at the NEO-216 behaviour: the card detail drawer is
 # a LIVE per-field editor. There is no Save button, no draft, and no discard

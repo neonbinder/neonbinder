@@ -2,7 +2,6 @@ appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/admin/leagues&worker=${WORKER_INDEX || "0"}
 name: "League Management — add a league by hand, classify it, and edit what we know about it"
 tags:
-  - regression
   - admin
 ---
 # R1 — Single feature: /admin/leagues (NEO-240) lets an operator ADD a league by

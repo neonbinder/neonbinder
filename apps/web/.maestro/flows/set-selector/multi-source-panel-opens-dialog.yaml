@@ -2,7 +2,6 @@ appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
 name: "Multi-source sets panel — Attach more dialog opens and cancels"
 tags:
-  - regression
   - set-selector
   - neo-6
 ---
@@ -120,6 +119,14 @@ tags:
 # Tap the visible "Cancel" button inside the dialog footer.
 # ============================================================
 
+# R8 EXCEPTION, investigated (NEO-260) — do NOT add `centerElement: true` here.
+# This "Cancel" lives in the Attach-more dialog's PINNED footer. The dialog is a
+# fixed-position overlay, so a window scroll cannot move the button at all:
+# measured in CI, its bounds stayed at y=529 across five consecutive swipes.
+# Maestro's centring then spends its whole 6-iteration budget (~13s at this
+# flow's settle speed) before giving up, which blew the timeout below and failed
+# on an element it had just logged at 100% visibility. A pinned dialog footer is
+# correct product behaviour, not a defect.
 - scrollUntilVisible:
     element:
       text: "Cancel"

@@ -95,7 +95,6 @@ url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/se
 name: Placeholder pipeline (fast path) — six frame-filling scans process fast, no cold start
 tags:
   - placeholders
-  - regression
 ---
 # Step 1: sign in, then the seed page uploads the six full-bleed fixtures and
 # forwards to the run view for the session it just created.

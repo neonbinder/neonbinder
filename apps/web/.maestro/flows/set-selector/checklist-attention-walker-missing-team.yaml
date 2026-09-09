@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Attention walker — answering a card's missing team, one card at a time"
 tags:
   - set-selector
-  - regression
 ---
 # ════════════════════════════════════════════════════════════════════════════
 # R1 — ONE feature (NEO-102): the "Fix them one at a time" walker lets an
@@ -73,6 +72,31 @@ tags:
 - extendedWaitUntil:
     visible: ".*Build set parameters using marketplace APIs.*"
     timeout: 45000
+
+# ── The minted name's single search token (SET-REGISTRY.md, "A name typed into
+# a team picker must be a SINGLE search token") ──────────────────────────────
+# `teams.search` / `players.search` are Convex SEARCH indexes: they match on
+# TOKENS split at non-alphanumerics, so a hyphenated `Prefix-<attempt>` name
+# tokenizes to ["Prefix", "<attempt>"] and every row any flow ever left behind
+# under that prefix comes back as a suggestion — the per-attempt suffix buys
+# nothing. Nothing deletes a team (the app has no delete-team affordance; the
+# picker's "Remove team" only unlinks it from the card), so those rows stand for
+# the whole run and are visible to every concurrent worker. The names below are
+# therefore ONE alphanumeric token with no separator at all.
+#
+# The token is ATTEMPT_ID with its hyphens stripped: "w3-a1-23945" is three
+# search terms, "w3a123945" is one — and it still carries the worker index, so
+# the per-worker distinction the old `${WORKER_INDEX}` prefix gave is folded in
+# rather than separated out.
+#
+# ⚠️ READ `ATTEMPT_ID`, NOT `output.ATTEMPT_ID`. The runner injects it with
+# `-e ATTEMPT_ID=…`, which Maestro exposes as the binding `${ATTEMPT_ID}`; it
+# never populates `output.ATTEMPT_ID`, so the older idiom always fell through to
+# its 4-digit `Date.now()` fallback and two runners collided constantly.
+#
+# Single-quoted: the expression contains double quotes, and quoting the scalar
+# keeps YAML out of it. `Date.now()` is the standalone-run fallback.
+- evalScript: '${output.ATTEMPT_TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'
 
 # R9 — the drill util owns the six-level navigation.
 - runFlow:
@@ -258,7 +282,7 @@ tags:
     id: "Search teams"
 - tapOn:
     id: "Search teams"
-- inputText: "CNWT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- inputText: "CNWT${output.ATTEMPT_TOKEN}"
 
 # NOTHING MATCHES THAT NAME — the precondition for creating it, and a real
 # assertion that the name is this attempt's alone.
@@ -311,10 +335,10 @@ tags:
 # The NAME BOX and its VALUE is the dialog being correctly SEEDED — maestro-web
 # reports an input by its value, so this says the search text really reached the
 # field the operator is about to submit.
-- assertVisible: "New team: CNWT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- assertVisible: "New team: CNWT${output.ATTEMPT_TOKEN}"
 - assertVisible:
     id: "New team name"
-    text: "CNWT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    text: "CNWT${output.ATTEMPT_TOKEN}"
 
 # THE WRITE. `Create team <composed full name>` is the SAME accessible name this
 # flow has always used — it moved from the popover row onto the dialog's own
@@ -326,7 +350,7 @@ tags:
 # pressKey re-finds the focused element by an XPath that falls back to that
 # class — so a synthetic Enter aimed at Create can land on Cancel.
 - tapOn:
-    id: "Create team CNWT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    id: "Create team CNWT${output.ATTEMPT_TOKEN}"
 
 # Wait for the chip to carry the resolved NAME before tapping Save. Two
 # reasons: it proves the pick landed, and the chip's width is what pushes the
@@ -336,7 +360,7 @@ tags:
 # see the product finding filed with NEO-102.
 - extendedWaitUntil:
     visible:
-      id: "Remove team CNWT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+      id: "Remove team CNWT${output.ATTEMPT_TOKEN}"
     timeout: 7000
 
 # CLOSE THE POPOVER BEFORE REACHING FOR SAVE — and close it from the WALKER
@@ -386,7 +410,7 @@ tags:
     timeout: 7000
 - assertNotVisible: "Fix them one at a time"
 - assertVisible:
-    text: ".*CNWT-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
+    text: ".*CNWT${output.ATTEMPT_TOKEN}.*"
 
 # ════════════════════════════════════════════════════════════════════════════
 # RELOAD — the answers were written to the server, not just to this tab.

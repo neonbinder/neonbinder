@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Variant metadata editor — edit Prefix on a custom Insert variant and verify persistence"
 tags:
   - set-selector
-  - regression
 ---
 # PRODUCT-FEATURE test: add a custom Insert variant, then edit its metadata
 # (the Prefix field) via VariantMetadataEditor and confirm it persists.

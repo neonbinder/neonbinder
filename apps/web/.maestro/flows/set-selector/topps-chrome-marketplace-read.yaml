@@ -2,7 +2,6 @@ appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
 name: "Topps Chrome — read-only verify marketplace-derived set attributes are present (read-only)"
 tags:
-  - regression
   - set-selector
 ---
 # Read-only verification of the SetAttributesPanel on the REAL 2024 Topps Chrome set.
@@ -55,6 +54,18 @@ tags:
 # idempotent expand pattern in case a prior test collapsed it.
 # ============================================================
 
+# R8 EXCEPTION, investigated (NEO-260) — do NOT add `centerElement: true` here.
+# "Edit attributes" is the collapsed SetAttributesPanel summary bar, and at the
+# setName level nothing renders below it (CardChecklist needs a variant), so it
+# is the last element on the page. SetSelector.tsx deliberately leaves NO scroll
+# headroom below the last panel (NEO-255 tried `pb-[50vh]` and reverted it:
+# dozens of flows scroll DOWN for an anchor and rely on the document bottoming
+# out). Measured in CI: document 786px, viewport 625px, so scrollTop maxes at
+# 161px and the bar sits at viewport y=518 — centring needs y<=375, i.e. 367px
+# of scroll that does not exist. Maestro then burns its full 6-iteration centring
+# budget (~9s) on a target whose bounds never move before it gives up and accepts
+# the element, which blew this step's timeout and turned a 100%-visible element
+# into "No visible element found". Bottom-locked, not a product bug.
 - scrollUntilVisible:
     element:
       id: "Edit attributes"

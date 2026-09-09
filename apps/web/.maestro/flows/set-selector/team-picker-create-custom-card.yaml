@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Team picker — create a brand-new team via the New Team dialog and attach it to a card; it persists across reopen"
 tags:
   - set-selector
-  - regression
 ---
 # R1 — SINGLE FEATURE: the TeamPicker "Add team" popover offers a
 # "+ New team '<name>'" row when the typed name has no exact match; taking it
@@ -28,14 +27,14 @@ tags:
 #
 # R3 — DEDUP: team-picker.yaml exercises create-new, remove, keyboard Enter,
 #   "No matches", close-and-reopen, and reload all against a single team it
-#   creates itself ("TPT-<attempt>") under the real Baseball sport — the
+#   creates itself ("TPT<token>") under the real Baseball sport — the
 #   seeded-team fixture is gone. This flow duplicates the create-new path
 #   deliberately, on an ISOLATED per-worker custom sport so it neither depends
 #   on nor adds load to the shared Baseball sport/team namespace. Mirrors
 #   player-picker-create-custom-card.yaml (the sibling PlayerPicker). Drill/add
 #   via util-add-custom-card.
 #
-# WHY A UNIQUE NAME ("NBTeam-${ATTEMPT_ID}"): guarantees no exact match in the
+# WHY A UNIQUE NAME ("NBTeam${output.ATTEMPT_TOKEN}"): guarantees no exact match in the
 #   candidate pool (teams under the synthetic sport), so the "+ New team" row is
 #   always offered. findOrCreate is idempotent, so a re-run is harmless.
 #
@@ -53,6 +52,31 @@ tags:
 - extendedWaitUntil:
     visible: ".*Build set parameters using marketplace APIs.*"
     timeout: 45000
+
+# ── The minted name's single search token (SET-REGISTRY.md, "A name typed into
+# a team picker must be a SINGLE search token") ──────────────────────────────
+# `teams.search` / `players.search` are Convex SEARCH indexes: they match on
+# TOKENS split at non-alphanumerics, so a hyphenated `Prefix-<attempt>` name
+# tokenizes to ["Prefix", "<attempt>"] and every row any flow ever left behind
+# under that prefix comes back as a suggestion — the per-attempt suffix buys
+# nothing. Nothing deletes a team (the app has no delete-team affordance; the
+# picker's "Remove team" only unlinks it from the card), so those rows stand for
+# the whole run and are visible to every concurrent worker. The names below are
+# therefore ONE alphanumeric token with no separator at all.
+#
+# The token is ATTEMPT_ID with its hyphens stripped: "w3-a1-23945" is three
+# search terms, "w3a123945" is one — and it still carries the worker index, so
+# the per-worker distinction the old `${WORKER_INDEX}` prefix gave is folded in
+# rather than separated out.
+#
+# ⚠️ READ `ATTEMPT_ID`, NOT `output.ATTEMPT_ID`. The runner injects it with
+# `-e ATTEMPT_ID=…`, which Maestro exposes as the binding `${ATTEMPT_ID}`; it
+# never populates `output.ATTEMPT_ID`, so the older idiom always fell through to
+# its 4-digit `Date.now()` fallback and two runners collided constantly.
+#
+# Single-quoted: the expression contains double quotes, and quoting the scalar
+# keeps YAML out of it. `Date.now()` is the standalone-run fallback.
+- evalScript: '${output.ATTEMPT_TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'
 
 # ============================================================
 # DRILL TO PER-WORKER CUSTOM SET + ADD A CUSTOM CARD
@@ -95,15 +119,15 @@ tags:
     id: "Search teams"
 - tapOn:
     id: "Search teams"
-- inputText: "NBTeam-${ATTEMPT_ID}"
+- inputText: "NBTeam${output.ATTEMPT_TOKEN}"
 
 # No existing team matches this unique name → the popover's one create
 # affordance appears: `+ New team "<typed>"…` (accessible name
 # `New team <typed>`), which OPENS the New Team dialog rather than writing.
 - assertVisible:
-    id: "New team NBTeam-${ATTEMPT_ID}"
+    id: "New team NBTeam${output.ATTEMPT_TOKEN}"
 - tapOn:
-    id: "New team NBTeam-${ATTEMPT_ID}"
+    id: "New team NBTeam${output.ATTEMPT_TOKEN}"
 
 # The New Team dialog — portalled to `document.body` at `z-[60]`, `fixed inset-0`
 # and centred, so nothing clips it. It is where the three questions a team row
@@ -121,10 +145,10 @@ tags:
 # The NAME BOX and its VALUE is the dialog being correctly SEEDED — maestro-web
 # reports an input by its value, so this says the search text really reached the
 # field the operator is about to submit.
-- assertVisible: "New team: NBTeam-${ATTEMPT_ID}"
+- assertVisible: "New team: NBTeam${output.ATTEMPT_TOKEN}"
 - assertVisible:
     id: "New team name"
-    text: "NBTeam-${ATTEMPT_ID}"
+    text: "NBTeam${output.ATTEMPT_TOKEN}"
 
 # THE WRITE. Nothing is typed in the dialog: Team name is pre-filled with what
 # was searched, Location stays blank and no League is picked, so the COMPOSED
@@ -137,11 +161,11 @@ tags:
 # element by an XPath that falls back to that class, so an Enter aimed at Create
 # could land on Cancel.
 - tapOn:
-    id: "Create team NBTeam-${ATTEMPT_ID}"
+    id: "Create team NBTeam${output.ATTEMPT_TOKEN}"
 
 # The created team is attached as a chip (its remove button proves the chip).
 - assertVisible:
-    id: "Remove team NBTeam-${ATTEMPT_ID}"
+    id: "Remove team NBTeam${output.ATTEMPT_TOKEN}"
 
 # ============================================================
 # THE WRITE — NEO-216: the dialog's Create button both creates the team entity
@@ -182,7 +206,7 @@ tags:
 
 # The chip survived close + reopen (its label resolves from the created team row).
 - assertVisible:
-    id: "Remove team NBTeam-${ATTEMPT_ID}"
+    id: "Remove team NBTeam${output.ATTEMPT_TOKEN}"
 
 # ============================================================
 # CLOSE + CLEANUP — delete this attempt's test card

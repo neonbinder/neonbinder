@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Card variations — point a card at the card it varies, see it group under it, and unlink it back out"
 tags:
   - set-selector
-  - regression
 ---
 # R1 — ONE FEATURE (NEO-189): the variation relationship between two cards in
 # the same checklist, end to end through the UI an operator actually uses.

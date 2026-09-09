@@ -23,9 +23,10 @@ These are provisioned once by `flows/setup.yaml` at the head of every run and ar
 | Baseball → 2024 → Topps → Topps Chicago Cubs | `Base` — variant types synced, Base MAPPED on BOTH sides, checklist deliberately EMPTY | `flows/setup.yaml` (structure); **sole writer** `checklist-wizard-skip-commits-and-unskip.yaml` |
 | Baseball → 2024 → Topps → Topps Baltimore Orioles | `Base` — same shape | `flows/setup.yaml` (structure); **sole writer** `checklist-wizard-career-team-commits.yaml` |
 | Baseball → 2024 → Topps → Topps Brooklyn Collection | `Base` — same shape | `flows/setup.yaml` (structure); **sole writer** `checklist-wizard-link-commits.yaml` |
+| Baseball → 2024 → Topps → Topps Heritage | `Base` — SportLots base mapping CONFIRMED in-flow (NOT pre-synced) | `flows/set-selector/sets-base.yaml` — **sole writer** of that mapping. ✅ **RATIFIED 2026-09-09** (NEO-260) — it was already in use and had never been listed |
 | Baseball → 1996 → Score → Score | `Insert` (reconciled in-flow, NOT pre-synced) | `flows/set-selector/inserts-1996-score-one-nb-set-two-bsc-sources.yaml` — **sole writer** |
 | Hockey → 2024 → Topps → Topps NHL Sticker Collection | none — the flow never goes below `Variant Types` (NOT pre-synced) | `flows/set-selector/set-rename-survives-resync-and-suggests-bsc-name.yaml` — **sole writer** |
-| Hockey → 1995 → All Brands → Roanoke Express ECHL | `Base` — 25 cards, fetched and COMMITTED in-flow, BSC only (NOT pre-synced) | `flows/set-selector/checklist-one-marketplace-skips-match-dialog.yaml` — **sole writer**. ⚠️ **AWAITING JASON'S APPROVAL** |
+| Hockey → 1995 → All Brands → Roanoke Express ECHL | `Base` — 25 cards, fetched and COMMITTED in-flow, BSC only (NOT pre-synced) | `flows/set-selector/checklist-one-marketplace-skips-match-dialog.yaml` — **sole writer**. ✅ **APPROVED 2026-09-09** (NEO-260) |
 
 ### 2024 Topps NHL Sticker Collection — NEO-211, sole-writer ⚠️ SUBSTITUTED, NEEDS SIGN-OFF
 
@@ -461,9 +462,15 @@ only `id:` selectors are regex FINDS. (`Topps 206 NPB` itself is unusable as a
 fixture — it has only an `Insert` variant type and opens a 2534-row
 `Reconcile Inserts` dialog on first drill.)
 
-### The ONE-MARKETPLACE fixture — Hockey / 1995 / All Brands / Roanoke Express ECHL (NEO-255) ⚠️ AWAITING JASON'S APPROVAL
+### The ONE-MARKETPLACE fixture — Hockey / 1995 / All Brands / Roanoke Express ECHL (NEO-255) ✅ APPROVED
 
-**What is being asked for:** one new real set —
+> **Approved by Jason, 2026-09-09 (NEO-260).** This section previously said the
+> flow would keep its `wip` tag until approval landed. It never carried one —
+> nothing excluded it and it had been running on every PR regardless, which is
+> how the gap was found. The `wip` note and the NEO-258 stall rationale are both
+> stale and are struck; the flow runs in the full suite like any other.
+
+**What was asked for:** one new real set —
 **Hockey → 1995 → All Brands → Roanoke Express ECHL**, `Base` — touched by
 exactly one flow, `checklist-one-marketplace-skips-match-dialog.yaml`, which
 fetches and COMMITS its 25-card checklist. Everything below was measured live
@@ -906,11 +913,27 @@ unchanged. That is a fixture convenience, not the product rule: Location is
 wherever a real team is from — city, state, region or school — and only a name
 with no place in it ("Athletics", "Liverpool") is meant to ship blank. **`admin/team-management-edit-a-team.yaml` is the one exception**:
 it types `Loc${WORKER_INDEX}` into the Location box, so from the moment it
-saves, its team answers to `Loc<w> TMT-<w>-<attempt>` (heading, picker option,
+saves, its team answers to `Loc<w> TMT<token>` (heading, picker option,
 chip, `Saved …` line, master-row `aria-label`) while the master row still
-PRINTS `TMT-<w>-<attempt>`. Any new flow that sets a Location must register it
+PRINTS `TMT<token>`. Any new flow that sets a Location must register it
 here the same way, because the composed string is what every other surface
 matches on.
+
+That composed string is the ONE place a separator survives, and it is worth
+being precise about why it is still safe. `nameNormalized` splits on
+whitespace, so `Loc<w> TMT<token>` is indexed as two search terms — "loc\<w\>"
+and "tmt\<token\>". The single-token rule protects the step where a flow types
+a name **in order to create it** and then reaches for the `+ New team` row,
+because a stray suggestion there covers the row and replaces the typed text.
+That step still types `TMT<token>` alone; the second term arrives afterwards,
+from a Save, and no flow anywhere types a name beginning "Loc", so it is never
+queried. The suite's one deliberately multi-term query is the same flow's
+full-name lookup at the bottom of the file, which exists to prove the typeahead
+finds the composed row: it asserts on the exact composed option id
+(`Add Loc<w> TMT<token>`) and never reaches for a create affordance, so a
+suggestion cannot satisfy it by accident. Give a second flow a Location, or
+type one into a picker before creating, and both arguments lapse — the
+Location half would then need a per-attempt token of its own.
 
 ### NEO-236 — the review wizard's bulk add is about PLAYERS only
 
@@ -927,14 +950,17 @@ or a career team staged off a player's Wikidata history — gets its own
 **New Team step** (`New Team: <name>`), because that step asks which LEAGUE and
 the bulk path could only ever guess it from the enrichment's suggestion.
 
-Three flows press that button — `setup.yaml`,
-`set-selector/signed-by-autofills-from-players.yaml` and
+Two flows press that button — `setup.yaml` (in its **Base** block only;
+NEO-260 deleted the dead Insert and Parallel copies) and
 `set-selector/inserts-1996-score-one-nb-set-two-bsc-sources.yaml` — and each
-now answers those steps with the same loop:
+now answers those steps with the same loop.
+`set-selector/signed-by-autofills-from-players.yaml` used to be the third; it
+pressed the button inside a self-heal fallback that NEO-260 removed (see its
+entry under the sole-writer notes):
 
 ```yaml
 - repeat:
-    maxRuns: 250
+    times: 250
     while:
       notVisible:
         text: ".*Confirm & Save.*"
@@ -951,8 +977,16 @@ shows — what an operator who agrees with the pre-fill would do. Keyed on the
 TERMINAL state (`Confirm & Save` not yet visible) rather than on a step being
 visible, because players and their staged teams drain at the same time and a
 loop keyed on `New Team:` exits the first time it catches the batch between
-lookups. `maxRuns` is a runaway guard; the `extendedWaitUntil` on
+lookups. `times` is a runaway guard; the `extendedWaitUntil` on
 `Confirm & Save` after the loop is still the real gate.
+
+> **It is `times`, not `maxRuns`.** This snippet published `maxRuns: 250`
+> until NEO-260. `maxRuns` is not in Maestro's `YamlRepeatCommand` schema — it
+> was invented — and an unknown property is a **hard parse error that kills the
+> entire flow before a single command runs**, with a message pointing at a line
+> nobody just edited. That is exactly how it took the seed job down once.
+> Anyone who copy-pasted this block reproduced the outage the registry
+> elsewhere describes. See the comment at `flows/setup.yaml`'s own loop.
 
 **Do not answer these with a seed.** `e2e-baseline.sh` says it outright —
 NEO-214 removed the seed-teams fixture — and the standing rule is that E2E
@@ -989,18 +1023,32 @@ Two consequences worth knowing before writing a picker step:
     `pressKey: Enter` on the search input — guarded by
     `assertVisible: "No matches."` — instead of tapping the row.
 
-| Prefix | Owning flow | Shape |
+Every name in this table is `<Prefix>${output.ATTEMPT_TOKEN}` — one
+alphanumeric search token, no hyphen, underscore or space anywhere in it
+(NEO-260). The token is derived once per flow, right after the launch gate:
+
+```yaml
+- evalScript: '${output.ATTEMPT_TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'
+```
+
+`ATTEMPT_ID` is `w<worker>-a<attempt>-<random>`, so stripping its hyphens gives
+a token that is both per-attempt and per-worker: the readability the old
+`${WORKER_INDEX}` prefix bought is folded INTO the token rather than separated
+out by another hyphen.
+
+| Prefix | Owning flow | Notes |
 |---|---|---|
-| `CNAA-`, `CNAB-` | `checklist-attention-badge-and-filter.yaml` | `-${WORKER_INDEX}-${ATTEMPT_ID}` |
-| `CNWT-` | `checklist-attention-walker-missing-team.yaml` | `-${WORKER_INDEX}-${ATTEMPT_ID}` |
-| `NBTeam-` | `team-picker-create-custom-card.yaml` | `-${ATTEMPT_ID}` |
-| `PMT-` | `admin/player-management-add-and-career-history.yaml` | `-${WORKER_INDEX}-${ATTEMPT_ID}` |
-| `SLA-`, `SLB-` | `spine-label/player-team-colors-default-to-longest-tenure.yaml` | `-${WORKER_INDEX}-${ATTEMPT_ID}` (coloured `#132448` / `#002d72`) |
-| `TLF-` | `checklist-title-length-limits-and-fixer.yaml` | `-${ATTEMPT_ID}` — kept SHORT on purpose; the name lands in a generated listing title measured against an 80-character cap |
-| `TMT-` | `admin/team-management-edit-a-team.yaml` | `-${WORKER_INDEX}-${ATTEMPT_ID}`, and the ONLY team in the suite with a `location`: `Loc${WORKER_INDEX}`, so its composed name is `Loc<w> TMT-<w>-<attempt>` |
-| `TPT-` | `team-picker.yaml` | `-${ATTEMPT_ID}` |
-| `MintedTeam` | `checklist-wizard-career-team-commits.yaml` | `MintedTeam${ATTEMPT_TOKEN}` — **no separator** |
-| `ProbeTeam` / `TempTeam` | `checklist-wizard-career-team-entry.yaml` | `…${ATTEMPT_TOKEN}` — **no separator**, never persisted |
+| `CNAA`, `CNAB` | `checklist-attention-badge-and-filter.yaml` | two teams; CNAB is the born-linked card's alone, which is what makes its row assertion single-row |
+| `CNWT` | `checklist-attention-walker-missing-team.yaml` | |
+| `NBTeam` | `team-picker-create-custom-card.yaml` | created under `E2E Test Sport <w>`, not Baseball |
+| `NBPlayer` | `player-picker-create-custom-card.yaml` | a PLAYER, not a team — `players.search` tokenises identically, and the row persists the same way |
+| `PMT` | `admin/player-management-add-and-career-history.yaml` | |
+| `SLA`, `SLB` | `spine-label/player-team-colors-default-to-longest-tenure.yaml` | coloured `#132448` / `#002d72` |
+| `TLF` | `checklist-title-length-limits-and-fixer.yaml` | kept SHORT on purpose: the name lands in a generated listing title measured against an 80-character cap. `TLF<token>` is 8-12 chars, 3 fewer than the `TLF-${ATTEMPT_ID}` it replaced and 4-8 fewer than the "New York Yankees" before that — the rename spends less of the budget, never more. Read the FIXTURE SIZING block in the flow before changing any name in it |
+| `TMT` | `admin/team-management-edit-a-team.yaml` | the ONLY team in the suite with a `location` (`Loc${WORKER_INDEX}`), so once it saves its composed name is `Loc<w> TMT<token>` — see the composed-name note above for why the extra term is inert |
+| `MintedTeam` | `checklist-wizard-career-team-commits.yaml` | |
+| `TPT` | `team-picker.yaml` | |
+| `ProbeTeam` / `TempTeam` | `checklist-wizard-career-team-entry.yaml` | never persisted — the flow discards its batch |
 
 ### ⚠️ A name typed into a team picker must be a SINGLE search token
 
@@ -1017,12 +1065,30 @@ Renaming only the writer is NOT enough: reproduced locally, typing
 `CareerTeam-w7a26340` with `CareerTeam-4180` still in the table failed
 identically.
 
-**The rule: any name typed into a TeamPicker or the career-team form is
-separator-free** (`MintedTeam<token>`, `ProbeTeam<token>`), so it is one token
-nothing else can share. The `TMT-`/`PMT-`/`SLA-`/`CNAA-`/`TPT-`/`NBTeam-`/`TLF-`
-names above keep their hyphens only because each is created and consumed inside
-one flow that also removes it; the moment a flow PERSISTS a team another flow
-might see, it needs a separator-free name.
+**The rule: every minted team or player name is separator-free**
+(`MintedTeam<token>`, `TPT<token>`, `NBPlayer<token>`), so it is one token
+nothing else can share. **This holds without exception, for every name in the
+table above.**
+
+The exception this section used to grant — that `TMT-`/`PMT-`/`SLA-`/`CNAA-`/
+`TPT-`/`NBTeam-`/`TLF-` could keep their hyphens because "each is created and
+consumed inside one flow that also removes it" — was simply **false**, and
+NEO-260 retired both the claim and the names. **Nothing removes them.** There is
+no delete-team (or delete-player) affordance anywhere in the product: the only
+deletes in the codebase are the armed internal reset batches
+(`selectorOptions:resetTeamsBatch` / `resetLeaguesBatch`, reachable only through
+`e2e-baseline.sh reset`) and `entityReviewQueue:cancelBatch`, which by its own
+contract touches only review-queue rows and never `teams`, `players` or
+`cardChecklist`. The TeamPicker's `Remove team <name>` control **unlinks** a team
+from a card; the row it points at is untouched.
+
+So every team a flow creates stands for the **whole run**, on the one Convex
+preview a pool of concurrent runners is draining a shared queue against. A name
+another flow could type is therefore visible to that flow the moment it exists —
+which is exactly what run 34050688656 was, two flows in the SAME run. (The
+`seed` job's scripted reset does wipe `teams` at the START of each run, so the
+rows do not survive from one run into the next; that is the only thing that ever
+clears them, and it is no help at all against the run they were created in.)
 
 **And derive the token from `${ATTEMPT_ID}`, not `output.ATTEMPT_ID`.** The
 runner injects it with `-e ATTEMPT_ID=…`, which Maestro exposes as the binding
@@ -1038,19 +1104,24 @@ collided constantly. Correct form:
 **Always per-ATTEMPT, not just per-worker.** `+ New team <name>` is offered only
 while no team of that name exists, so a name a previous attempt left behind
 renders `Add <name>` instead and the create step reaches for a control that is
-not there. (`ATTEMPT_ID` is `w<worker>-a<attempt>-<random>`, so it already
-carries the worker; the flows that also prefix `${WORKER_INDEX}` do so for
-readability in a failure screenshot, not for uniqueness.)
+not there. (`ATTEMPT_ID` is `w<worker>-a<attempt>-<random>`, so stripping its
+hyphens keeps the worker inside the token — which is why no name needs a
+separate `${WORKER_INDEX}` prefix any more.)
 
-Players follow the same rule — `players` is global and equally empty. The two
-flows that create one name it `PM-`/`SLP-` + `${WORKER_INDEX}` + `${ATTEMPT_ID}`,
-plus the throwaway `TME-` that `team-management-edit-a-team.yaml` needs in order
-to reach a career editor at all.
+**Players follow the same rule** — `players` is global, equally empty, and
+`players.search` is the same kind of index. `NBPlayer<token>`
+(`player-picker-create-custom-card.yaml`) is registered in the table above.
+Three older player fixtures still carry hyphens and are the remaining work here:
+`PM-` (`admin/player-management-add-and-career-history.yaml`), `SLP-`
+(`spine-label/player-team-colors-default-to-longest-tenure.yaml`) and the
+throwaway `TME-` that `team-management-edit-a-team.yaml` needs in order to reach
+a career editor at all. Do not add a fourth; a new player name is
+`<Prefix>${output.ATTEMPT_TOKEN}` like every team name.
 
 ## Read-only consumers of the shared real set
 
-These flows drill to 2024 Topps Chrome and only read. They are the reason the set
-must stay pristine.
+These flows drill to 2024 Topps Chrome and do not write its **cards, players,
+teams or variants**. They are the reason the set must stay pristine.
 
 - `base-mapping-cancel-recovers.yaml`
 - `checklist-bsc-team-enrichment.yaml`
@@ -1058,9 +1129,27 @@ must stay pristine.
 - `multi-source-panel-opens-dialog.yaml`
 - `sets-base.yaml`
 - `sets-resync-already-loaded.yaml`
-- `signed-by-autofills-from-players.yaml`
-- `topps-chrome-add-feature.yaml`
 - `topps-chrome-marketplace-read.yaml`
+
+**Two flows on this set are NOT read-only, and the list used to say they were**
+(corrected NEO-260). Each is **sole writer of one datum on the anchor** —
+approved by Jason, 2026-09-09 — and neither touches the checklist itself:
+
+| Flow | What it writes | Tolerance |
+|---|---|---|
+| `signed-by-autofills-from-players.yaml` | `autographed` / `signedBy` on card **#300** | sole writer of those two fields; no other flow reads or writes them |
+| `topps-chrome-add-feature.yaml` | toggles one feature on the anchor, twice per run | sole writer of that feature; returns it to its starting state |
+
+**`signed-by-autofills-from-players.yaml` no longer self-heals an empty Base
+checklist (NEO-260).** It used to carry a `when:`-guarded fallback that fetched
+and COMMITTED the entire shared Base checklist when it found the set empty —
+a write to a registered shared set by a flow entitled to two card fields and
+nothing else, and one that converted a failed seed into a green run proving
+nothing. `flows/setup.yaml` is the flow's documented precondition. The fallback
+is now a single positive assertion that the checklist has cards, so an unseeded
+run fails loudly instead of rebuilding a fixture the rest of the queue is
+reading. **Do not re-add a self-heal branch to any consumer of this set: the fix
+for an empty shared set is to fix the seed.**
 
 ## Adding a set
 

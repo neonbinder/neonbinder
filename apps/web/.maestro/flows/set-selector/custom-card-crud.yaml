@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Custom card lifecycle — add a card by hand, rename it, delete it"
 tags:
   - set-selector
-  - regression
 ---
 # PRODUCT-FEATURE test: the lifecycle of a manually-added card in a
 # checklist — add via the Add Card form, confirm it renders with #num + player

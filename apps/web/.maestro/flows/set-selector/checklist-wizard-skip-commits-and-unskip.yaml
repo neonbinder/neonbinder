@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Entity review — committing a review of skips leaves the set its own Skipped names list, and Unskip puts a name back"
 tags:
   - set-selector
-  - regression
 ---
 # R1 — ONE FEATURE (NEO-212): what a COMMITTED skip leaves behind. The sibling
 # read-only flow (checklist-wizard-skip-not-a-person) proves the skip CONTROL —

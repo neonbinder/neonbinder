@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Parallel Grouping — reject (✕) button moves a parallel back to top-level inserts"
 tags:
   - parallel-grouping
-  - regression
 ---
 # PRODUCT-FEATURE test: the per-row ✕ (reject) button inside a "Parallels of X"
 # card. Add <ID> Stars / <ID> Stars Gold / <ID> Champions:

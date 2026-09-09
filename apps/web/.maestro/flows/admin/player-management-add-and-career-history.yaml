@@ -2,7 +2,6 @@ appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/admin/players&worker=${WORKER_INDEX || "0"}
 name: "Player Management — add a player by hand and record two stints at one team"
 tags:
-  - regression
   - admin
 ---
 # R1 — Single feature: /admin/players (NEO-212) lets an operator ADD a player
@@ -30,7 +29,7 @@ tags:
 # operator would: the career editor's team typeahead offers a "+ New team" row for
 # a name it does not know, and that is `teams.findOrCreate`.
 #
-# The team is named "PMT-<worker>-<attempt>", per-worker AND per-attempt for the
+# The team is named "PMT<token>" — one search token, per-worker AND per-attempt for the
 # same reason the player is: eight runners share one deployment and `teams` is a
 # global table, so a name reused across workers would have them creating and
 # reading each other's row. Per-attempt matters mechanically too — the picker
@@ -74,7 +73,7 @@ tags:
 #     "PM-<worker>-<attempt>" — unique per worker AND per attempt, so eight
 #     concurrent runners and a retry can never land on the same row. Nothing
 #     pre-existing is edited.
-#   * the same is true of its team, "PMT-<worker>-<attempt>": it is CREATED
+#   * the same is true of its team, "PMT<token>": it is CREATED
 #     here, never shared, and no pre-existing team row is read or written. The
 #     second stint reuses the row this flow made moments earlier, so even that
 #     is not a read of anything global.
@@ -110,6 +109,30 @@ tags:
     visible: ".*of .* players.*"
     timeout: 45000
 
+# ── The minted name's single search token (SET-REGISTRY.md, "A name typed into
+# a team picker must be a SINGLE search token") ──────────────────────────────
+# `teams.search` / `players.search` are Convex SEARCH indexes: they match on
+# TOKENS split at non-alphanumerics, so a hyphenated `Prefix-<attempt>` name
+# tokenizes to ["Prefix", "<attempt>"] and every row any flow ever left behind
+# under that prefix comes back as a suggestion — the per-attempt suffix buys
+# nothing. Nothing deletes a team (the app has no delete-team affordance; the
+# picker's "Remove team" only unlinks it from the card), so those rows stand for
+# the whole run and are visible to every concurrent worker. The names below are
+# therefore ONE alphanumeric token with no separator at all.
+#
+# The token is ATTEMPT_ID with its hyphens stripped: "w3-a1-23945" is three
+# search terms, "w3a123945" is one — and it still carries the worker index, so
+# the per-worker distinction the old `${WORKER_INDEX}` prefix gave is folded in
+# rather than separated out.
+#
+# ⚠️ READ `ATTEMPT_ID`, NOT `output.ATTEMPT_ID`. The runner injects it with
+# `-e ATTEMPT_ID=…`, which Maestro exposes as the binding `${ATTEMPT_ID}`; it
+# never populates `output.ATTEMPT_ID`, so the older idiom always fell through to
+# its 4-digit `Date.now()` fallback and two runners collided constantly.
+#
+# Single-quoted: the expression contains double quotes, and quoting the scalar
+# keeps YAML out of it. `Date.now()` is the standalone-run fallback.
+- evalScript: '${output.ATTEMPT_TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'
 
 # ── EMPTY THE LIST FIRST ────────────────────────────────────────────────────
 # Not decoration, and not an assertion about filtering (team-management-filter
@@ -193,7 +216,7 @@ tags:
     id: "Add team"
 - tapOn:
     id: "Search teams"
-- inputText: "PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- inputText: "PMT${output.ATTEMPT_TOKEN}"
 
 # NOTHING MATCHES THAT NAME — which is the precondition for creating it, and the
 # reason the popover is now showing its "+ New team" row. It is also a real
@@ -242,10 +265,10 @@ tags:
 # The NAME BOX and its VALUE is the dialog being correctly SEEDED — maestro-web
 # reports an input by its value, so this says the search text really reached the
 # field the operator is about to submit.
-- assertVisible: "New team: PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- assertVisible: "New team: PMT${output.ATTEMPT_TOKEN}"
 - assertVisible:
     id: "New team name"
-    text: "PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    text: "PMT${output.ATTEMPT_TOKEN}"
 
 # THE WRITE. `Create team <composed full name>` is the SAME accessible name this
 # flow has always used — it moved from the popover row onto the dialog's own
@@ -257,14 +280,14 @@ tags:
 # pressKey re-finds the focused element by an XPath that falls back to that
 # class — so a synthetic Enter aimed at Create can land on Cancel.
 - tapOn:
-    id: "Create team PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    id: "Create team PMT${output.ATTEMPT_TOKEN}"
 
 # The chip is the proof the creation landed. Waiting for it before touching
 # anything else also removes a race: the create is a round-trip, and the chip is
 # what the picker paints when it returns.
 - extendedWaitUntil:
     visible:
-      id: "Remove team PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+      id: "Remove team PMT${output.ATTEMPT_TOKEN}"
     timeout: 7000
 
 # CLOSE THE TEAM TYPEAHEAD FIRST, by tapping the section heading above it.
@@ -306,7 +329,7 @@ tags:
 # stint grows it, so the row this asserts moves. The scroll is the assertion (R6).
 - scrollUntilVisible:
     element:
-      text: ".*PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID} · 2010–2012.*"
+      text: ".*PMT${output.ATTEMPT_TOKEN} · 2010–2012.*"
     centerElement: true
 
 # ── STINT 2 — THE EARLIER ONE, AT THE SAME TEAM ─────────────────────────────
@@ -326,9 +349,9 @@ tags:
     id: "Add team"
 - tapOn:
     id: "Search teams"
-- inputText: "PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- inputText: "PMT${output.ATTEMPT_TOKEN}"
 - tapOn:
-    id: "Add PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    id: "Add PMT${output.ATTEMPT_TOKEN}"
 # Same popover, same dismissal as above — tap the heading, never a keycode.
 - tapOn: "Career history"
 - tapOn: ".*Stint from year.*"
@@ -345,12 +368,12 @@ tags:
 # which is the point: the same assertion, run twice.
 - scrollUntilVisible:
     element:
-      text: ".*PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID} · 2001–2005.*"
+      text: ".*PMT${output.ATTEMPT_TOKEN} · 2001–2005.*"
     centerElement: true
 - assertVisible:
-    text: ".*PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID} · 2010–2012.*"
+    text: ".*PMT${output.ATTEMPT_TOKEN} · 2010–2012.*"
     below:
-      text: ".*PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID} · 2001–2005.*"
+      text: ".*PMT${output.ATTEMPT_TOKEN} · 2001–2005.*"
 
 # ── SAVE ────────────────────────────────────────────────────────────────────
 - scrollUntilVisible:
@@ -425,7 +448,7 @@ tags:
 # no such hedge — it is unique to this run and cannot be answered by another
 # team. The split itself is proved in admin/team-management-edit-a-team.)
 - assertVisible:
-    text: ".*PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
+    text: ".*PMT${output.ATTEMPT_TOKEN}.*"
     below:
       text: ".*matches.*"
 
@@ -442,12 +465,12 @@ tags:
 # earlier stint came back (R6 — no redundant assertVisible of it here)...
 - scrollUntilVisible:
     element:
-      text: ".*PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID} · 2001–2005.*"
+      text: ".*PMT${output.ATTEMPT_TOKEN} · 2001–2005.*"
     centerElement: true
 # ...and this asserts the OTHER stint, still below it. Same single assertion as
 # before the reload, which is the whole point: the order is a property of the
 # stored data, not of the draft that was on screen when Save was pressed.
 - assertVisible:
-    text: ".*PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID} · 2010–2012.*"
+    text: ".*PMT${output.ATTEMPT_TOKEN} · 2010–2012.*"
     below:
-      text: ".*PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID} · 2001–2005.*"
+      text: ".*PMT${output.ATTEMPT_TOKEN} · 2001–2005.*"

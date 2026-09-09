@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "BaseSetPicker — confirm SportLots base-set mapping for 2024 Topps Heritage"
 tags:
   - set-selector
-  - regression
 ---
 # Independent BaseSetPicker test (was cascade/sets-base). Uses 2024 Topps HERITAGE
 # — a DIFFERENT set from the setup track's Topps Chrome — so it exercises the

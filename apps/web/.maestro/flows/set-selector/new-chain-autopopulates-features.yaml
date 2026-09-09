@@ -2,7 +2,6 @@ appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
 name: "Write-once feature snapshots — a freshly-built set chain auto-populates its SetAttributesPanel feature values with NO card-checklist step"
 tags:
-  - regression
   - set-selector
 ---
 # ============================================================================

@@ -5,6 +5,7 @@ import { api } from "../../convex/_generated/api";
 import type { GenericId } from "convex/values";
 import NeonButton from "../modules/NeonButton";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
+import { activateOnEnter } from "@/lib/dom/activate-on-enter";
 import SelectorSyncReviewModal, {
   MAX_DECISIONS_PER_CALL,
   type SelectorSyncSuggestion,
@@ -121,6 +122,28 @@ function breadcrumbOf(
     .join(" \u203a ");
 }
 
+/**
+ * NEO-260 — every button in this column's custom-entry form carries three
+ * things a plain `<NeonButton>Create</NeonButton>` does not, and all three are
+ * load-bearing:
+ *
+ *  1. **Its own `useFieldTestClass` marker class.** maestro-web's `pressKey`
+ *     does not send the key to `document.activeElement`; it runs
+ *     `createXPathFromElement(activeElement)`, RE-FINDS by that XPath and
+ *     dispatches to the match. The generator falls back to `tag[@class="…"]`
+ *     per ancestor, so two identically-classed sibling buttons collapse into
+ *     ONE XPath and Selenium returns the FIRST — the NEO-220 shape, and the
+ *     reason Enter aimed at this form's Create has been landing on Create only
+ *     by luck of DOM order. A unique class makes each XPath name exactly one
+ *     node. A CLASS, never a DOM `id`: Maestro's `resource-id` is
+ *     `node.id || node.ariaLabel`, so an id would shadow the aria-label that
+ *     flows and screen-reader users both read (see `useFieldTestClass`).
+ *  2. **A distinct, human-meaningful `aria-label`.** See the label block inside
+ *     the component.
+ *  3. **An explicit Enter activation** (`lib/dom/activate-on-enter`), because a
+ *     synthetic KeyboardEvent has no default action, and because the house rule
+ *     is that every flow is fully operable from the keyboard.
+ */
 export type EntityColumnProps = {
   selector: ReactNode;
   renderForm: (onDone: () => void) => ReactNode;
@@ -236,6 +259,9 @@ export default function EntityColumn({
   // a11y: tracks the notice going visible→hidden, so focus can be parked when
   // the control that had it unmounts. See the effect below.
   const hadNoticeRef = useRef(false);
+  // Same idea for the custom-entry form: every one of its controls unmounts the
+  // instant a create commits (or the form is cancelled). See the park effect.
+  const wasCustomRef = useRef(false);
   // Reuses SetAttributesPanel's fixed-position toast verbatim rather than
   // inventing a second mechanism — the column may well have scrolled out of
   // view by the time a background sync lands its unlink report.
@@ -556,6 +582,27 @@ export default function EntityColumn({
     }
   }, [noticeVisible]);
 
+  // NEO-260 (a11y) — the same park, for the custom-entry form.
+  //
+  // Committing a create tears the whole form down: the button the operator was
+  // standing on unmounts, focus falls to <body>, and the next Tab restarts from
+  // the top of the DOCUMENT — several columns and a whole page header away from
+  // the cascade they were working in. Park focus on the column instead, so Tab
+  // resumes where they left off.
+  //
+  // Guarded on `document.activeElement === document.body` exactly like the
+  // notice park above: if the user (or a flow) has already moved focus
+  // somewhere real, it is never stolen back. `preventScroll` because this
+  // column's own reveal/settle logic owns the horizontal scroll position and a
+  // browser scroll-into-view here would fight it.
+  useEffect(() => {
+    const wasCustom = wasCustomRef.current;
+    wasCustomRef.current = mode === "custom";
+    if (wasCustom && mode !== "custom" && document.activeElement === document.body) {
+      containerRef.current?.focus({ preventScroll: true });
+    }
+  }, [mode]);
+
   // Auto-sync: when this column is visible, not frozen by interaction, in idle
   // mode, the items query has resolved to an empty list, and we haven't already
   // auto-synced this (level, parentId) — switch to sync mode. The form itself
@@ -828,6 +875,31 @@ export default function EntityColumn({
 
   // The noun this column creates, mid-sentence ("set", "sport", "sub-variant").
   const levelNounSingular = level ? LEVEL_SINGULAR[level].toLowerCase() : "entry";
+  /**
+   * NEO-260 — accessible names for the custom-entry form's buttons.
+   *
+   * Every stage of this form puts two or three `NeonButton`s side by side, and
+   * their visible words alone ("Add", "Create", "Back") do not tell a screen
+   * reader user which control they are on, nor which column's form they are in.
+   * Naming them by the noun THIS column creates does both: "Create set" and
+   * "Back to set name" are unambiguous read aloud, and unambiguous as Maestro
+   * `resource-id`s (which are `node.id || node.ariaLabel`).
+   *
+   * Two rules held here on purpose:
+   *  - **Every label CONTAINS its visible text** (WCAG 2.5.3 Label in Name), so
+   *    a voice-control user saying the words they can see still hits the
+   *    control. That is why the exists-elsewhere pair reads "Go to it — …" and
+   *    "Create here anyway — …" rather than being reworded around.
+   *  - **No label is a substring of another.** Maestro matches `id:` as an
+   *    UNANCHORED regex, so "Create set" must not also find the create-anyway
+   *    button — and it does not, because that one never spells "Create <noun>".
+   */
+  const confirmCreateLabel = `Create ${levelNounSingular}`;
+  const backToInputLabel = `Back to ${levelNounSingular} name`;
+  const addLabel = `Add new ${levelNounSingular}`;
+  const cancelLabel = `Cancel new ${levelNounSingular}`;
+  const goToExistingLabel = `Go to it — the existing ${levelNounSingular}`;
+  const createAnywayLabel = `Create here anyway — a second ${levelNounSingular}`;
   const parentBreadcrumb = breadcrumbOf(parentChain);
   const confirmValue =
     customStage.kind === "confirm-create" || customStage.kind === "confirm-exists"
@@ -919,12 +991,27 @@ export default function EntityColumn({
           )}
           <div className="flex gap-2">
             <NeonButton
+              className={fieldClass("btn-add")}
+              aria-label={addLabel}
               onClick={handleCustomSubmit}
+              onKeyDown={(e) =>
+                activateOnEnter(
+                  e,
+                  () => void handleCustomSubmit(),
+                  customStage.kind === "checking",
+                )
+              }
               disabled={customStage.kind === "checking"}
             >
               Add
             </NeonButton>
-            <NeonButton cancel onClick={closeCustomForm}>
+            <NeonButton
+              cancel
+              className={fieldClass("btn-cancel")}
+              aria-label={cancelLabel}
+              onClick={closeCustomForm}
+              onKeyDown={(e) => activateOnEnter(e, closeCustomForm)}
+            >
               Cancel
             </NeonButton>
           </div>
@@ -948,12 +1035,28 @@ export default function EntityColumn({
                 type → Enter → Enter. */}
             <NeonButton
               ref={confirmPrimaryRef}
+              className={fieldClass("btn-confirm-create")}
+              aria-label={confirmCreateLabel}
               onClick={() => void runCreate(customStage.value, false)}
+              onKeyDown={(e) =>
+                activateOnEnter(
+                  e,
+                  () => void runCreate(customStage.value, false),
+                  creating,
+                )
+              }
               disabled={creating}
             >
               Create
             </NeonButton>
-            <NeonButton secondary onClick={backToInput} disabled={creating}>
+            <NeonButton
+              secondary
+              className={fieldClass("btn-confirm-back")}
+              aria-label={backToInputLabel}
+              onClick={backToInput}
+              onKeyDown={(e) => activateOnEnter(e, backToInput, creating)}
+              disabled={creating}
+            >
               Back
             </NeonButton>
           </div>
@@ -985,7 +1088,12 @@ export default function EntityColumn({
           <div className="flex flex-wrap gap-2">
             <NeonButton
               ref={confirmPrimaryRef}
+              className={fieldClass("btn-goto-existing")}
+              aria-label={goToExistingLabel}
               onClick={() => handleDrillToMatch(firstMatch)}
+              onKeyDown={(e) =>
+                activateOnEnter(e, () => handleDrillToMatch(firstMatch), creating)
+              }
               disabled={creating}
             >
               Go to it
@@ -994,12 +1102,28 @@ export default function EntityColumn({
                 name across parents is sometimes right, and never a default. */}
             <NeonButton
               secondary
+              className={fieldClass("btn-create-anyway")}
+              aria-label={createAnywayLabel}
               onClick={() => void runCreate(customStage.value, true)}
+              onKeyDown={(e) =>
+                activateOnEnter(
+                  e,
+                  () => void runCreate(customStage.value, true),
+                  creating,
+                )
+              }
               disabled={creating}
             >
               Create here anyway
             </NeonButton>
-            <NeonButton cancel onClick={backToInput} disabled={creating}>
+            <NeonButton
+              cancel
+              className={fieldClass("btn-exists-back")}
+              aria-label={backToInputLabel}
+              onClick={backToInput}
+              onKeyDown={(e) => activateOnEnter(e, backToInput, creating)}
+              disabled={creating}
+            >
               Back
             </NeonButton>
           </div>
@@ -1037,32 +1161,49 @@ export default function EntityColumn({
       </button>
     ) : null;
 
-  const idleButtons = (onSync: () => void) => (
-    <div className="flex gap-2 items-center flex-wrap">
-      <NeonButton onClick={onSync}>{addButtonText}</NeonButton>
-      {/* After Sync, before "+ Custom", so `extraActions` ("Group Parallels")
-          still sits last. */}
-      {suggestionsPill}
-      {level && (
+  // Sync and "+ Custom" get the same marker-class + explicit-Enter treatment as
+  // the form's own buttons: they are identically-classed NeonButton siblings
+  // too, and they are the gate a keyboard-only pass through the cascade has to
+  // get through before the form even opens.
+  const idleButtons = (onSync: () => void) => {
+    // Always open on a clean form: a stage left over from a previous visit
+    // would put the operator straight into a confirm for a value they no
+    // longer see. Declared inside this builder rather than at component scope
+    // so it stays an event-handler closure — hoisted, `idleButtons()` itself
+    // would read a ref during render (react-hooks/refs).
+    const openCustomForm = () => {
+      setCustomError(null);
+      setCustomStage({ kind: "input" });
+      pendingCreateEnterRef.current = false;
+      setMode("custom");
+    };
+    return (
+      <div className="flex gap-2 items-center flex-wrap">
         <NeonButton
-          secondary
-          onClick={() => {
-            // Always open on a clean form: a stage left over from a previous
-            // visit would put the operator straight into a confirm for a value
-            // they no longer see.
-            setCustomError(null);
-            setCustomStage({ kind: "input" });
-            pendingCreateEnterRef.current = false;
-            setMode("custom");
-          }}
-          aria-label={`Add custom ${addButtonText.replace(/^Sync /, "")}`}
+          className={fieldClass("btn-sync")}
+          onClick={onSync}
+          onKeyDown={(e) => activateOnEnter(e, onSync)}
         >
-          + Custom
+          {addButtonText}
         </NeonButton>
-      )}
-      {extraActions}
-    </div>
-  );
+        {/* After Sync, before "+ Custom", so `extraActions` ("Group Parallels")
+            still sits last. */}
+        {suggestionsPill}
+        {level && (
+          <NeonButton
+            secondary
+            className={fieldClass("btn-open-custom")}
+            onClick={openCustomForm}
+            onKeyDown={(e) => activateOnEnter(e, openCustomForm)}
+            aria-label={`Add custom ${addButtonText.replace(/^Sync /, "")}`}
+          >
+            + Custom
+          </NeonButton>
+        )}
+        {extraActions}
+      </div>
+    );
+  };
 
   // NEO-47 new path: loading/error derived from the reactive selectorSyncStatus
   // (no FE sync mode → no onDone handoff to drop). Sync button = forced re-sync

@@ -2,7 +2,6 @@ appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/admin/players&worker=${WORKER_INDEX || "0"}
 name: "Spine Labels — a player's colours default to their longest-tenure team"
 tags:
-  - regression
   - spine-label
 ---
 # R1 — Single feature: the PLAYER-driven half of the spine designer. Picking a
@@ -64,6 +63,30 @@ tags:
     visible: ".*of .* players.*"
     timeout: 45000
 
+# ── The minted name's single search token (SET-REGISTRY.md, "A name typed into
+# a team picker must be a SINGLE search token") ──────────────────────────────
+# `teams.search` / `players.search` are Convex SEARCH indexes: they match on
+# TOKENS split at non-alphanumerics, so a hyphenated `Prefix-<attempt>` name
+# tokenizes to ["Prefix", "<attempt>"] and every row any flow ever left behind
+# under that prefix comes back as a suggestion — the per-attempt suffix buys
+# nothing. Nothing deletes a team (the app has no delete-team affordance; the
+# picker's "Remove team" only unlinks it from the card), so those rows stand for
+# the whole run and are visible to every concurrent worker. The names below are
+# therefore ONE alphanumeric token with no separator at all.
+#
+# The token is ATTEMPT_ID with its hyphens stripped: "w3-a1-23945" is three
+# search terms, "w3a123945" is one — and it still carries the worker index, so
+# the per-worker distinction the old `${WORKER_INDEX}` prefix gave is folded in
+# rather than separated out.
+#
+# ⚠️ READ `ATTEMPT_ID`, NOT `output.ATTEMPT_ID`. The runner injects it with
+# `-e ATTEMPT_ID=…`, which Maestro exposes as the binding `${ATTEMPT_ID}`; it
+# never populates `output.ATTEMPT_ID`, so the older idiom always fell through to
+# its 4-digit `Date.now()` fallback and two runners collided constantly.
+#
+# Single-quoted: the expression contains double quotes, and quoting the scalar
+# keeps YAML out of it. `Date.now()` is the standalone-run fallback.
+- evalScript: '${output.ATTEMPT_TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'
 
 # ════════════════════════════════════════════════════════════════════════════
 # STEP 1 — THE PLAYER, HIS TWO TEAMS AND HIS TWO STINTS
@@ -117,7 +140,7 @@ tags:
     id: "Add team"
 - tapOn:
     id: "Search teams"
-- inputText: "SLA-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- inputText: "SLA${output.ATTEMPT_TOKEN}"
 
 # NOTHING MATCHES THAT NAME — which is the precondition for creating it, and the
 # reason the popover is now showing its "+ New team" row. It is also a real
@@ -166,10 +189,10 @@ tags:
 # The NAME BOX and its VALUE is the dialog being correctly SEEDED — maestro-web
 # reports an input by its value, so this says the search text really reached the
 # field the operator is about to submit.
-- assertVisible: "New team: SLA-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- assertVisible: "New team: SLA${output.ATTEMPT_TOKEN}"
 - assertVisible:
     id: "New team name"
-    text: "SLA-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    text: "SLA${output.ATTEMPT_TOKEN}"
 
 # THE WRITE. `Create team <composed full name>` is the SAME accessible name this
 # flow has always used — it moved from the popover row onto the dialog's own
@@ -181,13 +204,13 @@ tags:
 # pressKey re-finds the focused element by an XPath that falls back to that
 # class — so a synthetic Enter aimed at Create can land on Cancel.
 - tapOn:
-    id: "Create team SLA-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    id: "Create team SLA${output.ATTEMPT_TOKEN}"
 
 # The chip is the proof the creation landed; it is a round-trip, and the chip is
 # what the picker paints when it returns.
 - extendedWaitUntil:
     visible:
-      id: "Remove team SLA-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+      id: "Remove team SLA${output.ATTEMPT_TOKEN}"
     timeout: 7000
 
 # CLOSE THE TEAM TYPEAHEAD FIRST, by tapping the section heading above it.
@@ -209,7 +232,7 @@ tags:
 # The scroll IS the assertion (R6).
 - scrollUntilVisible:
     element:
-      text: ".*SLA-${WORKER_INDEX || 0}-${ATTEMPT_ID} · 2000–2010.*"
+      text: ".*SLA${output.ATTEMPT_TOKEN} · 2000–2010.*"
     centerElement: true
 
 # ── THE SHORT STINT — 2 years at team B ─────────────────────────────────────
@@ -221,7 +244,7 @@ tags:
     id: "Add team"
 - tapOn:
     id: "Search teams"
-- inputText: "SLB-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- inputText: "SLB${output.ATTEMPT_TOKEN}"
 
 # NOTHING MATCHES THAT NAME — which is the precondition for creating it, and the
 # reason the popover is now showing its "+ New team" row. It is also a real
@@ -270,10 +293,10 @@ tags:
 # The NAME BOX and its VALUE is the dialog being correctly SEEDED — maestro-web
 # reports an input by its value, so this says the search text really reached the
 # field the operator is about to submit.
-- assertVisible: "New team: SLB-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- assertVisible: "New team: SLB${output.ATTEMPT_TOKEN}"
 - assertVisible:
     id: "New team name"
-    text: "SLB-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    text: "SLB${output.ATTEMPT_TOKEN}"
 
 # THE WRITE. `Create team <composed full name>` is the SAME accessible name this
 # flow has always used — it moved from the popover row onto the dialog's own
@@ -285,11 +308,11 @@ tags:
 # pressKey re-finds the focused element by an XPath that falls back to that
 # class — so a synthetic Enter aimed at Create can land on Cancel.
 - tapOn:
-    id: "Create team SLB-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    id: "Create team SLB${output.ATTEMPT_TOKEN}"
 
 - extendedWaitUntil:
     visible:
-      id: "Remove team SLB-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+      id: "Remove team SLB${output.ATTEMPT_TOKEN}"
     timeout: 7000
 # Same popover, same dismissal as above — tap the heading, never a keycode.
 - tapOn: "Career history"
@@ -300,7 +323,7 @@ tags:
 - tapOn: "Add stint"
 - scrollUntilVisible:
     element:
-      text: ".*SLB-${WORKER_INDEX || 0}-${ATTEMPT_ID} · 2012–2014.*"
+      text: ".*SLB${output.ATTEMPT_TOKEN} · 2012–2014.*"
     centerElement: true
 
 # The stints live in the panel's DRAFT until Save — unlike the teams themselves,
@@ -330,7 +353,7 @@ tags:
 - extendedWaitUntil:
     visible: ".*of .* teams.*"
     timeout: 30000
-- inputText: "SLA-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- inputText: "SLA${output.ATTEMPT_TOKEN}"
 - extendedWaitUntil:
     visible: "1 of .* teams.*"
     timeout: 15000
@@ -338,7 +361,7 @@ tags:
 # so the filter box now answers to this same string, and it sits above the list.
 # The counter renders between the two, so "below the counter" is the row alone.
 - tapOn:
-    text: "SLA-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    text: "SLA${output.ATTEMPT_TOKEN}"
     below:
       text: "1 of .* teams.*"
 # The Primary colour field, reached by its PLACEHOLDER: maestro-web reports an
@@ -360,7 +383,7 @@ tags:
 - tapOn: "Save"
 # The mutation confirms by name, so this proves the colour landed on THIS team.
 - extendedWaitUntil:
-    visible: ".*Saved SLA-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
+    visible: ".*Saved SLA${output.ATTEMPT_TOKEN}.*"
     timeout: 15000
 
 # ── TEAM B — the short stint, in a colour nothing like team A's ─────────────
@@ -368,12 +391,12 @@ tags:
 - extendedWaitUntil:
     visible: ".*of .* teams.*"
     timeout: 30000
-- inputText: "SLB-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- inputText: "SLB${output.ATTEMPT_TOKEN}"
 - extendedWaitUntil:
     visible: "1 of .* teams.*"
     timeout: 15000
 - tapOn:
-    text: "SLB-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    text: "SLB${output.ATTEMPT_TOKEN}"
     below:
       text: "1 of .* teams.*"
 - scrollUntilVisible:
@@ -390,7 +413,7 @@ tags:
     timeout: 10000
 - tapOn: "Save"
 - extendedWaitUntil:
-    visible: ".*Saved SLB-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
+    visible: ".*Saved SLB${output.ATTEMPT_TOKEN}.*"
     timeout: 15000
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -433,10 +456,10 @@ tags:
 # beside it.
 - scrollUntilVisible:
     element:
-      text: ".*SLA-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
+      text: ".*SLA${output.ATTEMPT_TOKEN}.*"
     centerElement: true
     timeout: 15000
-- assertVisible: ".*SLB-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
+- assertVisible: ".*SLB${output.ATTEMPT_TOKEN}.*"
 
 # The free-form team picker must NOT be present — the two controls are mutually
 # exclusive, and showing both would be two controls competing to set one value.
@@ -457,7 +480,7 @@ tags:
 # ── OVERRIDING TO THE OTHER TEAM WORKS ──────────────────────────────────────
 # The default is a default, not a decision — NEO-147 requires the user can pick
 # any team in teamYears. Tapping the other chip swaps the colours.
-- tapOn: ".*SLB-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
+- tapOn: ".*SLB${output.ATTEMPT_TOKEN}.*"
 - extendedWaitUntil:
     visible: "#002d72"
     timeout: 10000

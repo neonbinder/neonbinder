@@ -2,7 +2,6 @@ appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
 name: "Write-once feature snapshots — the SPORT-level attributes panel auto-populates League from the sport, with NO card-checklist step"
 tags:
-  - regression
   - set-selector
 ---
 # ============================================================================

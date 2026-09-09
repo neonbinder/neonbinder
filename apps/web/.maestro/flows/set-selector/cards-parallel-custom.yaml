@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Add custom Parallel — a hand-added parallel appears in the Parallels column and is selectable"
 tags:
   - set-selector
-  - regression
 ---
 # PRODUCT-FEATURE test: a user can ADD A CUSTOM PARALLEL under a set's Parallel
 # variant type, and the new entry shows up as a selectable row in the column.

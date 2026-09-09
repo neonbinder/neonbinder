@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Custom field — typing a known synced value selects it instead of creating a duplicate"
 tags:
   - set-selector
-  - regression
 ---
 # Regression test for the "forgiving + Custom field" behaviour introduced in NEO-46.
 #
