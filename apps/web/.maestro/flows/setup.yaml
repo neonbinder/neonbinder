@@ -237,7 +237,7 @@ tags:
     element:
       text: "Sports"
     centerElement: true
-    timeout: 7000
+    timeout: 10000
 - runFlow:
     when:
       notVisible: "Baseball"
@@ -262,7 +262,7 @@ tags:
     element:
       text: "Baseball"
     centerElement: true
-    timeout: 7000
+    timeout: 10000
 
 # STRICT SEED — no marketplace was quietly skipped on this step. See "A SYNC
 # THAT HALF-WORKED IS A FAILED SEED" in the header.
@@ -302,7 +302,7 @@ tags:
     element:
       text: ".*Search years.*"
     centerElement: true
-    timeout: 7000
+    timeout: 10000
 - tapOn:
     text: ".*Search years.*"
 - inputText: "2024"
@@ -337,7 +337,7 @@ tags:
     element:
       text: ".*Search manufacturers.*"
     centerElement: true
-    timeout: 7000
+    timeout: 10000
 - tapOn:
     text: ".*Search manufacturers.*"
 - inputText: "Topps"
@@ -374,7 +374,7 @@ tags:
     element:
       text: ".*Search sets.*"
     centerElement: true
-    timeout: 7000
+    timeout: 10000
 - tapOn:
     text: ".*Search sets.*"
 - inputText: "Topps Chrome"
@@ -391,7 +391,8 @@ tags:
     when:
       notVisible: "Base"
     commands:
-      # R8 — centre before the tap; R5 — 7000, the bar. An earlier NEO-260 revision
+      # R8 — centre before the tap. R5 EXCEPTION: this is the setup track's cold
+      # sync (45000), which R5 sanctions by name. An earlier NEO-260 revision
       # raised this step to 20000 because the centring give-up path costs 8-13s. That
       # was the wrong remedy and the rule now says so: a step that reaches the give-up
       # path on every run is centring that never centres, and funding it hides the
@@ -400,7 +401,7 @@ tags:
           element:
             text: "Sync Variant Types"
           centerElement: true
-          timeout: 7000
+          timeout: 45000
       - tapOn: "Sync Variant Types"
       - extendedWaitUntil:
           notVisible: "Syncing Variant Types"
@@ -417,7 +418,7 @@ tags:
     element:
       text: "Base"
     centerElement: true
-    timeout: 7000
+    timeout: 10000
 - assertVisible: "Insert"
 - assertVisible: "Parallel"
 
@@ -458,20 +459,21 @@ tags:
 # grows (a shared partial-failure notice, a long list) parks them under the
 # 1024x629 fold; see util-drill-to-base-variant.yaml for the CI evidence.
 #
-# R5 — 7000, the bar (was 60000). The 60s was booked as the SL round-trip
-# budget, but the round trip is NOT what this step waits on: BaseSetPicker
-# renders its "Select Base Set" title immediately and only its confirm
-# button reads "Loading…" until the fetch lands, and THAT flip is gated
-# below by `extendedWaitUntil: visible: "Confirm Base Set"` (45000, the R5
-# marketplace exception). MEASURED (CI 34349299679 + 34361627641): 30
-# samples across both green runs, worst 0.92s. The scroll is still a scroll
-# and not a bare `visible:` wait, for the reason above — the controls can
-# sit under the fold, and a wait cannot recover from that.
+# R5 EXCEPTION — the setup track's cold sync, which R5 sanctions by name.
+# RESTORED to 60000 in NEO-260 after the 7000 sweep broke the seed (CI run
+# 34394655674): the tap on `Confirm Base Set` completed at 19:37:50 and the
+# button had still not flipped to `Re-map Base` fourteen seconds later, so the
+# step failed after four ElementNotFound retries. The label is gated on
+# `baseHasMapping`, a Convex query that only settles once the write following a
+# LIVE SportLots confirm has landed — a marketplace round-trip, not UI latency.
+# The sweep's 'measured worst 0.5-4s' came from runs where the flip had already
+# happened, so it measured the wrong branch. Do NOT lower this to the 7s bar:
+# this flow reseeds from empty and always takes the cold path.
 - scrollUntilVisible:
     element:
       text: ".*Select Base Set.*|.*Re-map Base.*"
     centerElement: true
-    timeout: 7000
+    timeout: 60000
 - runFlow:
     when:
       visible: "Select Base Set"
@@ -527,23 +529,37 @@ tags:
 #   3. assertVisible "Fetch from Marketplaces|Refresh" — same flex row as Add
 #      Card, so the centring above already put it in view.
 #   4. tapOn it.
-# R5 — 7000, the bar (was 30000). MEASURED (CI 34349299679 +
-# 34361627641): worst 1.96s, 1 centring swipe. Nothing here waits on a
-# marketplace — the Convex write is gated by the `notVisible: "Select Base Set"` wait above.
+# R5 EXCEPTION — the setup track's cold sync, which R5 sanctions by name.
+# RESTORED to 30000 in NEO-260 after the 7000 sweep broke the seed (CI run
+# 34394655674): the tap on `Confirm Base Set` completed at 19:37:50 and the
+# button had still not flipped to `Re-map Base` fourteen seconds later, so the
+# step failed after four ElementNotFound retries. The label is gated on
+# `baseHasMapping`, a Convex query that only settles once the write following a
+# LIVE SportLots confirm has landed — a marketplace round-trip, not UI latency.
+# The sweep's 'measured worst 0.5-4s' came from runs where the flip had already
+# happened, so it measured the wrong branch. Do NOT lower this to the 7s bar:
+# this flow reseeds from empty and always takes the cold path.
 - scrollUntilVisible:
     element:
       text: "Re-map Base"
     centerElement: true
-    timeout: 7000
-# R5 — 7000, the bar (was 30000). MEASURED (CI 34349299679 +
-# 34361627641): worst 1.97s, 1 centring swipe. Nothing here waits on a
-# marketplace — same flex row as the anchor the step above just centred.
+    timeout: 30000
+# R5 EXCEPTION — the setup track's cold sync, which R5 sanctions by name.
+# RESTORED to 30000 in NEO-260 after the 7000 sweep broke the seed (CI run
+# 34394655674): the tap on `Confirm Base Set` completed at 19:37:50 and the
+# button had still not flipped to `Re-map Base` fourteen seconds later, so the
+# step failed after four ElementNotFound retries. The label is gated on
+# `baseHasMapping`, a Convex query that only settles once the write following a
+# LIVE SportLots confirm has landed — a marketplace round-trip, not UI latency.
+# The sweep's 'measured worst 0.5-4s' came from runs where the flip had already
+# happened, so it measured the wrong branch. Do NOT lower this to the 7s bar:
+# this flow reseeds from empty and always takes the cold path.
 - scrollUntilVisible:
     element:
       text: "Add Card"
     centerElement: true
     visibilityPercentage: 50
-    timeout: 7000
+    timeout: 30000
 - assertVisible:
     text: ".*Fetch from Marketplaces.*|Refresh"
 - tapOn:
@@ -746,7 +762,7 @@ tags:
     element:
       text: "Insert"
     centerElement: true
-    timeout: 7000
+    timeout: 10000
 - tapOn: "Insert"
 # Wait for the Inserts column to appear — this is the "variant type switched"
 # confirmation and the "auto-sync started" anchor point.
@@ -794,7 +810,7 @@ tags:
       - scrollUntilVisible:
           element:
             text: ".*Save [0-9]+ sets.*"
-          timeout: 7000
+          timeout: 30000
       - tapOn:
           text: ".*Save [0-9]+ sets.*"
       - extendedWaitUntil:
@@ -815,7 +831,7 @@ tags:
     element:
       text: ".*Search inserts.*"
     centerElement: true
-    timeout: 7000
+    timeout: 10000
 # 250ms settle after tap so the search input is focused before inputText fires
 # (mirrors util-drill-to-2024-topps-chrome pattern; prevents keystroke drop).
 - tapOn:
@@ -851,24 +867,33 @@ tags:
 #      Cards header row drags the Fetch button well above the fold.
 #   3. assertVisible "Fetch from Marketplaces|Refresh" — confirm it's in-view.
 #   4. tapOn it.
-# R5 — 7000, the bar (was 30000). MEASURED (CI 34349299679 +
-# 34361627641): worst 4.04s, 1 centring swipe. Nothing here waits on a
-# marketplace — the insert row was selected above; nothing here waits on a marketplace.
+# R5 EXCEPTION — the setup track's cold sync, which R5 sanctions by name.
+# RESTORED to 30000 in NEO-260 after the 7000 sweep broke the seed (CI run
+# 34394655674): the tap on `Confirm Base Set` completed at 19:37:50 and the
+# button had still not flipped to `Re-map Base` fourteen seconds later, so the
+# step failed after four ElementNotFound retries. The label is gated on
+# `baseHasMapping`, a Convex query that only settles once the write following a
+# LIVE SportLots confirm has landed — a marketplace round-trip, not UI latency.
+# The sweep's 'measured worst 0.5-4s' came from runs where the flip had already
+# happened, so it measured the wrong branch. Do NOT lower this to the 7s bar:
+# this flow reseeds from empty and always takes the cold path.
 - scrollUntilVisible:
     element:
       text: ".*Attributes for Future Stars.*"
     centerElement: true
     visibilityPercentage: 50
-    timeout: 7000
-# R5 — 7000, the bar (was 30000). MEASURED (CI 34349299679 +
-# 34361627641): worst 0.54s, 0 centring swipes. Nothing here waits on a
-# marketplace — same flex row as the Cards header.
+    timeout: 30000
+# R5 EXCEPTION — the setup track's cold sync, which R5 sanctions by name.
+# RESTORED in NEO-260 after the 7000 sweep broke the seed (CI 34394655674).
+# The seed reseeds from empty, so every step here runs the COLD path behind a
+# live marketplace round-trip; the sweep's measurements came from runs where
+# the data had already landed. Do NOT lower these to the 7s bar.
 - scrollUntilVisible:
     element:
       text: "Add Card"
     centerElement: true
     visibilityPercentage: 50
-    timeout: 7000
+    timeout: 30000
 - assertVisible:
     text: ".*Fetch from Marketplaces.*|Refresh"
 - tapOn:
@@ -971,7 +996,7 @@ tags:
     element:
       text: "Parallel"
     centerElement: true
-    timeout: 7000
+    timeout: 10000
 - tapOn: "Parallel"
 # Wait for the Parallels column to appear as the switch confirmation.
 - extendedWaitUntil:
@@ -1016,7 +1041,7 @@ tags:
       - scrollUntilVisible:
           element:
             text: ".*Save [0-9]+ sets.*"
-          timeout: 7000
+          timeout: 30000
       - tapOn:
           text: ".*Save [0-9]+ sets.*"
       - extendedWaitUntil:
@@ -1037,7 +1062,7 @@ tags:
     element:
       text: ".*Search parallels.*"
     centerElement: true
-    timeout: 7000
+    timeout: 10000
 # 250ms settle so the search input is focused before inputText fires.
 - tapOn:
     text: ".*Search parallels.*"
@@ -1058,24 +1083,33 @@ tags:
 # Same fold-clipping trap and the same fix as the Insert section above — see the
 # comment there. The settle anchor is the set attributes summary bar for the
 # parallel we just picked; it renders immediately above the Cards card.
-# R5 — 7000, the bar (was 30000). MEASURED (CI 34349299679 +
-# 34361627641): worst 4.02s, 1 centring swipe. Nothing here waits on a
-# marketplace — the parallel row was selected above; nothing here waits on a marketplace.
+# R5 EXCEPTION — the setup track's cold sync, which R5 sanctions by name.
+# RESTORED to 30000 in NEO-260 after the 7000 sweep broke the seed (CI run
+# 34394655674): the tap on `Confirm Base Set` completed at 19:37:50 and the
+# button had still not flipped to `Re-map Base` fourteen seconds later, so the
+# step failed after four ElementNotFound retries. The label is gated on
+# `baseHasMapping`, a Convex query that only settles once the write following a
+# LIVE SportLots confirm has landed — a marketplace round-trip, not UI latency.
+# The sweep's 'measured worst 0.5-4s' came from runs where the flip had already
+# happened, so it measured the wrong branch. Do NOT lower this to the 7s bar:
+# this flow reseeds from empty and always takes the cold path.
 - scrollUntilVisible:
     element:
       text: ".*Attributes for Gold Wave Refractors.*"
     centerElement: true
     visibilityPercentage: 50
-    timeout: 7000
-# R5 — 7000, the bar (was 30000). MEASURED (CI 34349299679 +
-# 34361627641): worst 0.54s, 0 centring swipes. Nothing here waits on a
-# marketplace — same flex row as the Cards header.
+    timeout: 30000
+# R5 EXCEPTION — the setup track's cold sync, which R5 sanctions by name.
+# RESTORED in NEO-260 after the 7000 sweep broke the seed (CI 34394655674).
+# The seed reseeds from empty, so every step here runs the COLD path behind a
+# live marketplace round-trip; the sweep's measurements came from runs where
+# the data had already landed. Do NOT lower these to the 7s bar.
 - scrollUntilVisible:
     element:
       text: "Add Card"
     centerElement: true
     visibilityPercentage: 50
-    timeout: 7000
+    timeout: 30000
 - assertVisible:
     text: ".*Fetch from Marketplaces.*|Refresh"
 - tapOn:
@@ -1197,7 +1231,7 @@ tags:
     element:
       text: ".*#[0-9].*"
     centerElement: true
-    timeout: 7000
+    timeout: 15000
 - assertVisible: "SL"
 
 # ============================================================================
@@ -1235,14 +1269,21 @@ tags:
 # `baseHasMapping` is true. The util already confirmed the picker on the
 # first-run path; this is the seed's own assertion that the fixture is ready
 # for the queue.
-# R5 — 7000, the bar (was 60000). MEASURED (CI 34349299679 +
-# 34361627641): worst 0.54s, 0 centring swipes. Nothing here waits on a
-# marketplace — util-drill-to-base-variant already confirmed the picker and the mapping write.
+# R5 EXCEPTION — the setup track's cold sync, which R5 sanctions by name.
+# RESTORED to 60000 in NEO-260 after the 7000 sweep broke the seed (CI run
+# 34394655674): the tap on `Confirm Base Set` completed at 19:37:50 and the
+# button had still not flipped to `Re-map Base` fourteen seconds later, so the
+# step failed after four ElementNotFound retries. The label is gated on
+# `baseHasMapping`, a Convex query that only settles once the write following a
+# LIVE SportLots confirm has landed — a marketplace round-trip, not UI latency.
+# The sweep's 'measured worst 0.5-4s' came from runs where the flip had already
+# happened, so it measured the wrong branch. Do NOT lower this to the 7s bar:
+# this flow reseeds from empty and always takes the cold path.
 - scrollUntilVisible:
     element:
       text: ".*Re-map Base.*"
     centerElement: true
-    timeout: 7000
+    timeout: 60000
 
 # The checklist is EMPTY and must stay that way — the assertion is the contract.
 # R8 exception, MEASURED (CI 34349299679 + 34361627641): `Element bounds`
@@ -1253,5 +1294,5 @@ tags:
 - scrollUntilVisible:
     element:
       text: "No cards in this checklist yet."
-    timeout: 7000
+    timeout: 15000
 

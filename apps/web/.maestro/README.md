@@ -327,6 +327,23 @@ that is not pre-synced, the setup track's cold sync, and the post-`launchApp`
 heading gate (see "Launching a flow" below). A slow non-marketplace response
 is a product finding to raise, never a timeout to inflate.
 
+**`flows/setup.yaml` is exempt as a class, and that is not a loophole.** R5
+already names "the setup track's cold sync" as a sanctioned exception, and the
+seed is the one flow that reseeds from empty — so every step in it runs the COLD
+path, behind a live marketplace round-trip, on data no earlier flow has warmed.
+It is a data-loading track, not a user-facing interaction, so the 7s bar does
+not apply to it and its timeouts stay at their measured cold-path values.
+
+NEO-260 learned this the hard way: the suite-wide 7000 sweep took the seed with
+it and CI run 34394655674 died at `.*Re-map Base.*`. The tap on `Confirm Base
+Set` completed at 19:37:50 and the button had still not flipped fourteen seconds
+later — the label is gated on `baseHasMapping`, a Convex query that settles only
+once the write following a live SportLots confirm lands. The sweep had measured
+that step at "worst 0.5-4s" from green runs where the flip had **already
+happened**, i.e. it measured the warm branch and applied the number to the cold
+one. **Measuring a step tells you nothing until you know which branch the
+measurement came from.** Every seed timeout is now back at its pre-sweep value.
+
 **`scrollUntilVisible` is the trap: its own default is 20000, not 7000.**
 `ScrollUntilVisibleCommand.DEFAULT_TIMEOUT_IN_MILLIS` is the string `"20000"`
 in the pinned `maestro-orchestra-models.jar` — verified by decompiling it,
