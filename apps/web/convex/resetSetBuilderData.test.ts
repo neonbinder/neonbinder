@@ -91,12 +91,21 @@ async function seedAllSixTables(
       lastUpdated: NOW,
     });
 
+    // franchises: 1 (NEO-254)
+    const franchiseId = await ctx.db.insert("franchises", {
+      name: "Yankees",
+      nameNormalized: "yankees",
+      sportId,
+      lastUpdated: NOW,
+    });
+
     // teams: 2
     const teamId = await ctx.db.insert("teams", {
       name: "New York Yankees",
       nameNormalized: "new york yankees",
       sportId,
       leagueId,
+      franchiseId,
       lastUpdated: NOW,
     });
     await ctx.db.insert("teams", {
@@ -167,6 +176,7 @@ async function tableCounts(t: ReturnType<typeof convexTest>) {
       .length,
     players: (await ctx.db.query("players").collect()).length,
     teams: (await ctx.db.query("teams").collect()).length,
+    franchises: (await ctx.db.query("franchises").collect()).length,
     leagues: (await ctx.db.query("leagues").collect()).length,
   }));
 }
@@ -191,6 +201,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       cardCrossListings: 6,
       players: 4,
       teams: 2,
+      franchises: 1,
       leagues: 1,
     });
   });
@@ -211,6 +222,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       cardCrossListings: 6,
       players: 4,
       teams: 2,
+      franchises: 1,
       leagues: 1,
     });
   });
@@ -229,6 +241,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       playersDeleted: 4,
       playerAliasesDeleted: 0,
       teamsDeleted: 2,
+      franchisesDeleted: 1,
       leaguesDeleted: 1,
     });
 
@@ -238,6 +251,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       cardCrossListings: 0,
       players: 0,
       teams: 0,
+      franchises: 0,
       leagues: 0,
     });
   });
@@ -255,6 +269,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
     ["resetCardCrossListingsBatch", "cardCrossListings"],
     ["resetPlayersBatch", "players"],
     ["resetTeamsBatch", "teams"],
+    ["resetFranchisesBatch", "franchises"],
     ["resetLeaguesBatch", "leagues"],
   ] as const)(
     "%s refuses when unarmed, even called directly, and deletes nothing",
@@ -277,6 +292,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
         cardCrossListings: 6,
         players: 4,
         teams: 2,
+        franchises: 1,
         leagues: 1,
       });
     },
@@ -295,6 +311,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       playersDeleted: 0,
       playerAliasesDeleted: 0,
       teamsDeleted: 0,
+      franchisesDeleted: 0,
       leaguesDeleted: 0,
     });
   });

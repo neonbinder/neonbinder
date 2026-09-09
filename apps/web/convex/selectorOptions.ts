@@ -5872,7 +5872,7 @@ export const updateSelectorOptionMetadata = mutation({
 // ===== ADMIN UTILITIES =====
 
 /**
- * The reset itself: drains the six tables by looping each `reset*Batch`
+ * The reset itself: drains every set-builder entity table by looping each `reset*Batch`
  * internal mutation to exhaustion.
  *
  * This function performs no check of its own, but the delete is NOT
@@ -5888,6 +5888,7 @@ async function runSetBuilderReset(ctx: ActionCtx): Promise<{
   playersDeleted: number;
   playerAliasesDeleted: number;
   teamsDeleted: number;
+  franchisesDeleted: number;
   leaguesDeleted: number;
 }> {
     let selectorOptionsDeleted = 0;
@@ -5965,6 +5966,20 @@ async function runSetBuilderReset(ctx: ActionCtx): Promise<{
       if (!result.hasMore) break;
     }
 
+    // NEO-254 — franchises after the teams that reference them, for the same
+    // reason leagues go after teams. E2E flows mint franchises under a per-run
+    // sport row; without this loop those rows outlive the sport, invisible to
+    // every sport-scoped list and growing by a handful per run.
+    let franchisesDeleted = 0;
+    while (true) {
+      const result = await ctx.runMutation(
+        internal.selectorOptions.resetFranchisesBatch,
+        {},
+      );
+      franchisesDeleted += result.deleted;
+      if (!result.hasMore) break;
+    }
+
     // NEO-156: leagues go last, after the teams that reference them, so an
     // interrupted reset never leaves teams pointing at deleted leagues.
     let leaguesDeleted = 0;
@@ -5984,6 +5999,7 @@ async function runSetBuilderReset(ctx: ActionCtx): Promise<{
       playersDeleted,
       playerAliasesDeleted,
       teamsDeleted,
+      franchisesDeleted,
       leaguesDeleted,
     };
 }
@@ -6088,6 +6104,8 @@ export const resetSetBuilderDataFromCli = internalAction({
     // not the other is visible in the operator's own output.
     playerAliasesDeleted: v.number(),
     teamsDeleted: v.number(),
+    // NEO-254 — franchises are drained after the teams that point at them.
+    franchisesDeleted: v.number(),
     leaguesDeleted: v.number(),
   }),
   handler: async (
@@ -6099,6 +6117,7 @@ export const resetSetBuilderDataFromCli = internalAction({
     playersDeleted: number;
     playerAliasesDeleted: number;
     teamsDeleted: number;
+    franchisesDeleted: number;
     leaguesDeleted: number;
   }> => {
     // Fail here rather than partway through the loop, so an unarmed run costs
@@ -6375,6 +6394,28 @@ export const resetTeamsBatch = internalMutation({
     // point — see assertResetArmed.
     assertResetArmed();
     const rows = await ctx.db.query("teams").take(RESET_BATCH_SIZE);
+    for (const row of rows) {
+      await ctx.db.delete(row._id);
+    }
+    return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
+  },
+});
+
+/**
+ * Internal: delete up to RESET_BATCH_SIZE rows from `franchises`, looped by
+ * `runSetBuilderReset` until no rows remain. NEO-254.
+ */
+export const resetFranchisesBatch = internalMutation({
+  args: {},
+  returns: v.object({
+    deleted: v.number(),
+    hasMore: v.boolean(),
+  }),
+  handler: async (ctx) => {
+    // Armed-check here rather than only at the entry point, same as every
+    // other batch — see the note in resetSelectorOptionsBatch.
+    assertResetArmed();
+    const rows = await ctx.db.query("franchises").take(RESET_BATCH_SIZE);
     for (const row of rows) {
       await ctx.db.delete(row._id);
     }
