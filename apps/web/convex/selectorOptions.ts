@@ -8,6 +8,7 @@ import {
   ActionCtx,
   QueryCtx,
 } from "./_generated/server";
+import type { FunctionReference } from "convex/server";
 import { ConvexError, v } from "convex/values";
 import { api, internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
@@ -5872,16 +5873,34 @@ export const updateSelectorOptionMetadata = mutation({
 // ===== ADMIN UTILITIES =====
 
 /**
- * The reset itself: drains every set-builder entity table by looping each `reset*Batch`
- * internal mutation to exhaustion.
+ * Wall-clock budget for one call of the reset, in milliseconds.
  *
- * This function performs no check of its own, but the delete is NOT
- * unconditional — `assertResetArmed()` is asserted at both layers around it,
- * once at the `resetSetBuilderDataFromCli` entry point and again as the first
- * line of every batch mutation this loops. Reaching a table with the
- * deployment unarmed is not possible through either door.
+ * `runSetBuilderReset` is invoked by `npx convex run`, and the CLI gives up
+ * waiting on an action after roughly five minutes — it prints a bare `Error`
+ * and exits 1 while the action carries on server-side (CI run 34390342992,
+ * 2026-09-09, on a preview bulk-loaded with 110k players / 24k aliases / 9k
+ * teams). So one call never tries to drain everything: it stops after the
+ * first batch that lands past this budget and reports `complete: false`, and
+ * the caller (`e2e-baseline.sh reset`) calls again until `complete: true`.
+ * 2.5 minutes leaves the CLI's wait a comfortable margin over the worst-case
+ * single batch.
+ *
+ * Override with the `RESET_TIME_BUDGET_MS` env var on the deployment when it
+ * parses as a non-negative integer — the tests set it to `0`, which makes
+ * every call drain exactly one table's worth of work before yielding.
  */
-async function runSetBuilderReset(ctx: ActionCtx): Promise<{
+const RESET_TIME_BUDGET_MS = 150_000;
+
+function resetTimeBudgetMs(): number {
+  const raw = process.env.RESET_TIME_BUDGET_MS;
+  if (raw !== undefined && /^\d+$/.test(raw.trim())) {
+    return Number(raw.trim());
+  }
+  return RESET_TIME_BUDGET_MS;
+}
+
+/** The per-table reset counts, plus whether the run got through every table. */
+type SetBuilderResetResult = {
   selectorOptionsDeleted: number;
   cardChecklistDeleted: number;
   crossListingsDeleted: number;
@@ -5890,118 +5909,119 @@ async function runSetBuilderReset(ctx: ActionCtx): Promise<{
   teamsDeleted: number;
   franchisesDeleted: number;
   leaguesDeleted: number;
-}> {
-    let selectorOptionsDeleted = 0;
-    while (true) {
-      // Well inside MAX_RETURNED_IDS: this list is one LEVEL's options for one
-      // parent, de-duplicated — the biggest real case is a year's set list,
-      // which SportLots tops out at a few thousand for. The store degrades
-      // rather than throws if that ever stops being true.
-      const result = await ctx.runMutation(
-        internal.selectorOptions.resetSelectorOptionsBatch,
-        {},
-      );
-      selectorOptionsDeleted += result.deleted;
-      if (!result.hasMore) break;
-    }
+  /**
+   * `true` when every table was drained to exhaustion in this call. `false`
+   * means the call stopped at the time budget with rows still to delete —
+   * call again; the counts are what THIS call removed, not a running total.
+   */
+  complete: boolean;
+};
 
-    let cardChecklistDeleted = 0;
-    while (true) {
-      const result = await ctx.runMutation(
-        internal.selectorOptions.resetCardChecklistBatch,
-        {},
-      );
-      cardChecklistDeleted += result.deleted;
-      if (!result.hasMore) break;
-    }
+type ResetBatchRef = FunctionReference<
+  "mutation",
+  "internal",
+  Record<string, never>,
+  { deleted: number; hasMore: boolean }
+>;
 
+/**
+ * The reset itself: drains every set-builder entity table by looping each
+ * `reset*Batch` internal mutation to exhaustion, in a fixed table order, for
+ * as long as the time budget allows (`RESET_TIME_BUDGET_MS`).
+ *
+ * Resumable by design. After every batch that deleted rows, if the wall clock
+ * has run past the budget the loop returns `complete: false` with the counts
+ * drained so far, and the next call picks up where it left off — each table is
+ * re-examined from the top, and a batch that finds nothing to delete is one
+ * cheap read that never trips the budget. That last point is what keeps a
+ * zero budget making progress (one table per call) rather than stalling on
+ * the first, already-empty, table forever.
+ *
+ * This function performs no arming check of its own, but the delete is NOT
+ * unconditional — `assertResetArmed()` is asserted at both layers around it,
+ * once at the `resetSetBuilderDataFromCli` entry point and again as the first
+ * line of every batch mutation this loops. Reaching a table with the
+ * deployment unarmed is not possible through either door, and the budget
+ * check runs only after a batch, so it can never pre-empt the arming check.
+ */
+async function runSetBuilderReset(
+  ctx: ActionCtx,
+): Promise<SetBuilderResetResult> {
+  const startedAt = Date.now();
+  const budgetMs = resetTimeBudgetMs();
+
+  const counts = {
+    selectorOptionsDeleted: 0,
+    cardChecklistDeleted: 0,
+    crossListingsDeleted: 0,
+    playersDeleted: 0,
+    playerAliasesDeleted: 0,
+    teamsDeleted: 0,
+    franchisesDeleted: 0,
+    leaguesDeleted: 0,
+  };
+
+  // Table order is load-bearing — do not reorder. Each entry is the count it
+  // feeds and the batch mutation that drains it.
+  const steps: Array<[keyof typeof counts, ResetBatchRef]> = [
+    // Well inside MAX_RETURNED_IDS: this list is one LEVEL's options for one
+    // parent, de-duplicated — the biggest real case is a year's set list,
+    // which SportLots tops out at a few thousand for. The store degrades
+    // rather than throws if that ever stops being true.
+    [
+      "selectorOptionsDeleted",
+      internal.selectorOptions.resetSelectorOptionsBatch,
+    ],
+    ["cardChecklistDeleted", internal.selectorOptions.resetCardChecklistBatch],
     // NEO-21: cardCrossListings rows outlive nothing on their own (they're
     // pure junction rows), but a wipe that skips this table leaves them
     // pointing at cardChecklist ids that no longer exist post-reset.
-    let crossListingsDeleted = 0;
-    while (true) {
-      const result = await ctx.runMutation(
-        internal.selectorOptions.resetCardCrossListingsBatch,
-        {},
-      );
-      crossListingsDeleted += result.deleted;
-      if (!result.hasMore) break;
-    }
-
+    [
+      "crossListingsDeleted",
+      internal.selectorOptions.resetCardCrossListingsBatch,
+    ],
     // Players + teams are populated alongside cardChecklist by the
     // commitCardChecklist flow. Wipe them too so subsequent dev/test
     // runs see a clean "unknown entities" state and the
     // UnknownEntitiesDialog re-opens for confirmation. Without this,
     // E2E flows that rely on the dialog appearing fail because the
     // entities from prior runs are already known.
-    let playersDeleted = 0;
-    while (true) {
-      const result = await ctx.runMutation(
-        internal.selectorOptions.resetPlayersBatch,
-        {},
-      );
-      playersDeleted += result.deleted;
-      if (!result.hasMore) break;
-    }
-
+    ["playersDeleted", internal.selectorOptions.resetPlayersBatch],
     // NEO-254 — the alias index, drained with the players it describes. A row
     // here that outlived its player keeps answering the alias lookup forever.
-    let playerAliasesDeleted = 0;
-    while (true) {
-      const result = await ctx.runMutation(
-        internal.selectorOptions.resetPlayerAliasesBatch,
-        {},
-      );
-      playerAliasesDeleted += result.deleted;
-      if (!result.hasMore) break;
-    }
-
-    let teamsDeleted = 0;
-    while (true) {
-      const result = await ctx.runMutation(
-        internal.selectorOptions.resetTeamsBatch,
-        {},
-      );
-      teamsDeleted += result.deleted;
-      if (!result.hasMore) break;
-    }
-
+    ["playerAliasesDeleted", internal.selectorOptions.resetPlayerAliasesBatch],
+    ["teamsDeleted", internal.selectorOptions.resetTeamsBatch],
     // NEO-254 — franchises after the teams that reference them, for the same
     // reason leagues go after teams. E2E flows mint franchises under a per-run
     // sport row; without this loop those rows outlive the sport, invisible to
     // every sport-scoped list and growing by a handful per run.
-    let franchisesDeleted = 0;
-    while (true) {
-      const result = await ctx.runMutation(
-        internal.selectorOptions.resetFranchisesBatch,
-        {},
-      );
-      franchisesDeleted += result.deleted;
-      if (!result.hasMore) break;
-    }
-
+    ["franchisesDeleted", internal.selectorOptions.resetFranchisesBatch],
     // NEO-156: leagues go last, after the teams that reference them, so an
     // interrupted reset never leaves teams pointing at deleted leagues.
-    let leaguesDeleted = 0;
-    while (true) {
-      const result = await ctx.runMutation(
-        internal.selectorOptions.resetLeaguesBatch,
-        {},
-      );
-      leaguesDeleted += result.deleted;
-      if (!result.hasMore) break;
-    }
+    ["leaguesDeleted", internal.selectorOptions.resetLeaguesBatch],
+  ];
 
-    return {
-      selectorOptionsDeleted,
-      cardChecklistDeleted,
-      crossListingsDeleted,
-      playersDeleted,
-      playerAliasesDeleted,
-      teamsDeleted,
-      franchisesDeleted,
-      leaguesDeleted,
-    };
+  for (let i = 0; i < steps.length; i += 1) {
+    const [key, batch] = steps[i];
+    let hasMore = true;
+    while (hasMore) {
+      const result = await ctx.runMutation(batch, {});
+      counts[key] += result.deleted;
+      hasMore = result.hasMore;
+      // Only a batch that did work can spend the budget, and only when there
+      // is more work after it: a drained last table is complete regardless.
+      const moreWork = hasMore || i < steps.length - 1;
+      if (
+        result.deleted > 0 &&
+        moreWork &&
+        Date.now() - startedAt >= budgetMs
+      ) {
+        return { ...counts, complete: false };
+      }
+    }
+  }
+
+  return { ...counts, complete: true };
 }
 
 /**
@@ -6066,6 +6086,11 @@ function assertResetArmed(): void {
  *   npx convex run selectorOptions:resetSetBuilderDataFromCli \
  *     '{"confirm":"RESET"}' --prod
  *
+ * Each call works for at most `RESET_TIME_BUDGET_MS` (2.5 min by default,
+ * inside the CLI's ~5-minute wait) and returns `complete: false` if rows
+ * remain — re-run the same command until it prints `"complete": true`.
+ * `e2e-baseline.sh reset` does that loop for you.
+ *
  * DO NOT ADD `--identity`. It does not authorise this and it BREAKS it:
  * `convex run --identity` routes the call through the path that resolves
  * PUBLIC functions only, so an internal function comes back "Could not find
@@ -6107,19 +6132,11 @@ export const resetSetBuilderDataFromCli = internalAction({
     // NEO-254 — franchises are drained after the teams that point at them.
     franchisesDeleted: v.number(),
     leaguesDeleted: v.number(),
+    // `false` when the run stopped at RESET_TIME_BUDGET_MS with rows still to
+    // delete. Run again until it is `true`; `e2e-baseline.sh reset` does.
+    complete: v.boolean(),
   }),
-  handler: async (
-    ctx,
-  ): Promise<{
-    selectorOptionsDeleted: number;
-    cardChecklistDeleted: number;
-    crossListingsDeleted: number;
-    playersDeleted: number;
-    playerAliasesDeleted: number;
-    teamsDeleted: number;
-    franchisesDeleted: number;
-    leaguesDeleted: number;
-  }> => {
+  handler: async (ctx): Promise<SetBuilderResetResult> => {
     // Fail here rather than partway through the loop, so an unarmed run costs
     // nothing. Each batch re-asserts it independently.
     assertResetArmed();
