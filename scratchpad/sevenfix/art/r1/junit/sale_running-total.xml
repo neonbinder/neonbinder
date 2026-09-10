@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="sale_running-total" tests="1" failures="0" time="69.02" timestamp="2026-09-10T02:46:39">
+    <testcase id="Sale page — running total accumulates" name="Sale page — running total accumulates" classname="Sale page — running total accumulates" file=".maestro/flows/sale/running-total.yaml" time="68.996" timestamp="2026-09-10T02:46:39" status="SUCCESS">
+      <properties>
+        <property name="tags" value="smoke, sale"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

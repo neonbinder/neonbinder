@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="admin_player-management-add-and-career-history" tests="1" failures="0" time="83.069" timestamp="2026-09-10T02:47:14">
+    <testcase id="Player Management — add a player by hand and record two stints at one team" name="Player Management — add a player by hand and record two stints at one team" classname="Player Management — add a player by hand and record two stints at one team" file=".maestro/flows/admin/player-management-add-and-career-history.yaml" time="83.029" timestamp="2026-09-10T02:47:14" status="SUCCESS">
+      <properties>
+        <property name="tags" value="admin"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

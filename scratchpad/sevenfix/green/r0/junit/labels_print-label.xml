@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="labels_print-label" tests="1" failures="0" time="69.175" timestamp="2026-09-09T14:34:12">
+    <testcase id="Shipping Labels — type a recipient and the label preview follows" name="Shipping Labels — type a recipient and the label preview follows" classname="Shipping Labels — type a recipient and the label preview follows" file=".maestro/flows/labels/print-label.yaml" time="69.153" timestamp="2026-09-09T14:34:12" status="SUCCESS">
+      <properties>
+        <property name="tags" value="smoke, labels"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

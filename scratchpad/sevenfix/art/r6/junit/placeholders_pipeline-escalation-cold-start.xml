@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="placeholders_pipeline-escalation-cold-start" tests="1" failures="0" time="285.121" timestamp="2026-09-10T02:48:40">
+    <testcase id="Placeholder pipeline (heavy escalation) — inset pair, cold-start notice, one pair" name="Placeholder pipeline (heavy escalation) — inset pair, cold-start notice, one pair" classname="Placeholder pipeline (heavy escalation) — inset pair, cold-start notice, one pair" file=".maestro/flows/placeholders/pipeline-escalation-cold-start.yaml" time="285.096" timestamp="2026-09-10T02:48:40" status="SUCCESS">
+      <properties>
+        <property name="tags" value="placeholders"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="dashboard_view-collection" tests="1" failures="0" time="4.488" timestamp="2026-09-10T03:03:33">
+    <testcase id="View Collection (Dashboard)" name="View Collection (Dashboard)" classname="View Collection (Dashboard)" file=".maestro/flows/dashboard/view-collection.yaml" time="4.477" timestamp="2026-09-10T03:03:33" status="SUCCESS">
+      <properties>
+        <property name="tags" value="smoke, dashboard"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

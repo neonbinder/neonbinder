@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="home_print-shop" tests="1" failures="0" time="41.97" timestamp="2026-09-10T02:47:49">
+    <testcase id="Print Shop Feature Page" name="Print Shop Feature Page" classname="Print Shop Feature Page" file=".maestro/flows/home/print-shop.yaml" time="41.945" timestamp="2026-09-10T02:47:49" status="SUCCESS">
+      <properties>
+        <property name="tags" value="marketing, home"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

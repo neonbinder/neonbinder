@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="set-selector_checklist-wizard-link-commits" tests="1" failures="0" time="135.194" timestamp="2026-09-09T14:38:20">
+    <testcase id="Entity review — a Link to Existing decision is carried through Confirm &amp; Save into the committed checklist" name="Entity review — a Link to Existing decision is carried through Confirm &amp; Save into the committed checklist" classname="Entity review — a Link to Existing decision is carried through Confirm &amp; Save into the committed checklist" file=".maestro/flows/set-selector/checklist-wizard-link-commits.yaml" time="135.133" timestamp="2026-09-09T14:38:20" status="SUCCESS">
+      <properties>
+        <property name="tags" value="set-selector"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

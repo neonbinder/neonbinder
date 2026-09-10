@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="placeholders_pipeline-pairs-uploaded-scans" tests="1" failures="0" time="28.234" timestamp="2026-09-09T14:34:36">
+    <testcase id="Placeholder pipeline (fast path) — six frame-filling scans process fast, no cold start" name="Placeholder pipeline (fast path) — six frame-filling scans process fast, no cold start" classname="Placeholder pipeline (fast path) — six frame-filling scans process fast, no cold start" file=".maestro/flows/placeholders/pipeline-pairs-uploaded-scans.yaml" time="28.211" timestamp="2026-09-09T14:34:36" status="SUCCESS">
+      <properties>
+        <property name="tags" value="placeholders"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

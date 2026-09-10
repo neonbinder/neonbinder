@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="set-selector_signed-by-autofills-from-players" tests="1" failures="0" time="101.384" timestamp="2026-09-09T14:45:56">
+    <testcase id="Signed By auto-fills from the card's players when Autographed flips None → On Card (real Topps Chrome Base, sole-writer)" name="Signed By auto-fills from the card's players when Autographed flips None → On Card (real Topps Chrome Base, sole-writer)" classname="Signed By auto-fills from the card's players when Autographed flips None → On Card (real Topps Chrome Base, sole-writer)" file=".maestro/flows/set-selector/signed-by-autofills-from-players.yaml" time="101.34" timestamp="2026-09-09T14:45:56" status="SUCCESS">
+      <properties>
+        <property name="tags" value="set-selector"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

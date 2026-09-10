@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="set-selector_checklist-wizard-link-to-existing-player" tests="1" failures="0" time="205.596" timestamp="2026-09-10T02:53:15">
+    <testcase id="Entity review — Link to Existing resolves an unknown name onto a player we already have instead of minting a duplicate" name="Entity review — Link to Existing resolves an unknown name onto a player we already have instead of minting a duplicate" classname="Entity review — Link to Existing resolves an unknown name onto a player we already have instead of minting a duplicate" file=".maestro/flows/set-selector/checklist-wizard-link-to-existing-player.yaml" time="205.501" timestamp="2026-09-10T02:53:15" status="SUCCESS">
+      <properties>
+        <property name="tags" value="set-selector"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

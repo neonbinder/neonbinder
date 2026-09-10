@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="set-selector_sets-resync-already-loaded" tests="1" failures="0" time="40.659" timestamp="2026-09-09T14:49:30">
+    <testcase id="Variant types persist across sessions; auto-sync guard skips re-sync when present" name="Variant types persist across sessions; auto-sync guard skips re-sync when present" classname="Variant types persist across sessions; auto-sync guard skips re-sync when present" file=".maestro/flows/set-selector/sets-resync-already-loaded.yaml" time="40.627" timestamp="2026-09-09T14:49:30" status="SUCCESS">
+      <properties>
+        <property name="tags" value="set-selector"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

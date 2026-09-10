@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="home_landing-marketing" tests="1" failures="0" time="18.132" timestamp="2026-09-09T14:49:58">
+    <testcase id="Landing Page Marketing Content" name="Landing Page Marketing Content" classname="Landing Page Marketing Content" file=".maestro/flows/home/landing-marketing.yaml" time="18.117" timestamp="2026-09-09T14:49:58" status="SUCCESS">
+      <properties>
+        <property name="tags" value="marketing, home"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

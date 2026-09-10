@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="set-selector_multi-source-panel-opens-dialog" tests="1" failures="0" time="70.646" timestamp="2026-09-10T03:01:16">
+    <testcase id="Multi-source sets panel — Attach more dialog opens and cancels" name="Multi-source sets panel — Attach more dialog opens and cancels" classname="Multi-source sets panel — Attach more dialog opens and cancels" file=".maestro/flows/set-selector/multi-source-panel-opens-dialog.yaml" time="70.577" timestamp="2026-09-10T03:01:16" status="SUCCESS">
+      <properties>
+        <property name="tags" value="set-selector, neo-6"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

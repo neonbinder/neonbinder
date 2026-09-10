@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="profile_worker-bootstrap" tests="1" failures="0" time="26.797" timestamp="2026-09-09T14:26:23">
+    <testcase id="Worker bootstrap — sign in as TEST_EMAIL_${WORKER_INDEX}, reset state, and seed BSC + SL creds" name="Worker bootstrap — sign in as TEST_EMAIL_${WORKER_INDEX}, reset state, and seed BSC + SL creds" classname="Worker bootstrap — sign in as TEST_EMAIL_${WORKER_INDEX}, reset state, and seed BSC + SL creds" file=".maestro/flows/profile/worker-bootstrap.yaml" time="26.771" timestamp="2026-09-09T14:26:23" status="SUCCESS">
+      <properties>
+        <property name="tags" value="util"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="labels_scan-visibility" tests="1" failures="0" time="17.488" timestamp="2026-09-10T02:48:25">
+    <testcase id="Label History — see what USPS has scanned" name="Label History — see what USPS has scanned" classname="Label History — see what USPS has scanned" file=".maestro/flows/labels/scan-visibility.yaml" time="17.453" timestamp="2026-09-10T02:48:25" status="SUCCESS">
+      <properties>
+        <property name="tags" value="labels"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

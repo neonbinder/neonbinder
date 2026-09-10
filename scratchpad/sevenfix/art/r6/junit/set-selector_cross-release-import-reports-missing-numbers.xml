@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="set-selector_cross-release-import-reports-missing-numbers" tests="1" failures="0" time="280.094" timestamp="2026-09-10T02:54:52">
+    <testcase id="Cross-release — the import names every card number it could not find in the chosen source set" name="Cross-release — the import names every card number it could not find in the chosen source set" classname="Cross-release — the import names every card number it could not find in the chosen source set" file=".maestro/flows/set-selector/cross-release-import-reports-missing-numbers.yaml" time="279.943" timestamp="2026-09-10T02:54:53" status="SUCCESS">
+      <properties>
+        <property name="tags" value="set-selector"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

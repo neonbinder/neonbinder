@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="home_easypost-setup" tests="1" failures="0" time="56.883" timestamp="2026-09-10T02:47:41">
+    <testcase id="EasyPost Setup Guide Page" name="EasyPost Setup Guide Page" classname="EasyPost Setup Guide Page" file=".maestro/flows/home/easypost-setup.yaml" time="56.862" timestamp="2026-09-10T02:47:41" status="SUCCESS">
+      <properties>
+        <property name="tags" value="marketing, home"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

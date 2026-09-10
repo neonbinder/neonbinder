@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="auth_sign-in" tests="1" failures="0" time="5.797" timestamp="2026-09-09T14:50:18">
+    <testcase id="Sign In" name="Sign In" classname="Sign In" file=".maestro/flows/auth/sign-in.yaml" time="5.787" timestamp="2026-09-09T14:50:18" status="SUCCESS">
+      <properties>
+        <property name="tags" value="smoke, auth"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

@@ -1,0 +1,294 @@
+{
+  "attributes" : {
+    "text" : "      \n\n",
+    "bounds" : "[0,-1064][1009,696]",
+    "url" : "http://localhost:3000/admin/set-builder"
+  },
+  "children" : [ {
+    "attributes" : {
+      "bounds" : "[0,-1064][1009,696]",
+      "resource-id" : "root"
+    },
+    "children" : [ {
+      "attributes" : {
+        "bounds" : "[0,-1064][1009,696]"
+      },
+      "children" : [ {
+        "attributes" : {
+          "bounds" : "[0,-1064][1009,696]"
+        },
+        "children" : [ {
+          "attributes" : {
+            "bounds" : "[0,0][1009,79]"
+          },
+          "children" : [ {
+            "attributes" : {
+              "bounds" : "[16,16][228,61]"
+            },
+            "children" : [ {
+              "attributes" : {
+                "text" : "Neon Binder",
+                "bounds" : "[64,16][228,61]"
+              }
+            } ]
+          }, {
+            "attributes" : {
+              "bounds" : "[871,23][993,55]"
+            },
+            "children" : [ {
+              "attributes" : {
+                "bounds" : "[871,25][899,53]"
+              },
+              "children" : [ {
+                "attributes" : {
+                  "bounds" : "[871,25][899,53]",
+                  "resource-id" : "Open user menu"
+                },
+                "children" : [ {
+                  "attributes" : {
+                    "bounds" : "[871,25][899,53]"
+                  },
+                  "children" : [ {
+                    "attributes" : {
+                      "bounds" : "[871,25][899,53]"
+                    },
+                    "children" : [ {
+                      "attributes" : {
+                        "bounds" : "[836,25][871,53]"
+                      }
+                    } ]
+                  } ]
+                } ]
+              } ]
+            }, {
+              "attributes" : {
+                "text" : "Sign out",
+                "bounds" : "[911,23][993,55]"
+              }
+            } ]
+          } ]
+        }, {
+          "attributes" : {
+            "bounds" : "[0,-985][1009,696]"
+          },
+          "children" : [ {
+            "attributes" : {
+              "bounds" : "[0,-985][1009,696]"
+            },
+            "children" : [ {
+              "attributes" : {
+                "bounds" : "[0,-985][839,488]"
+              },
+              "children" : [ {
+                "attributes" : {
+                  "bounds" : "[24,-961][815,464]"
+                },
+                "children" : [ {
+                  "attributes" : {
+                    "bounds" : "[24,-851][815,464]"
+                  },
+                  "children" : [ {
+                    "attributes" : {
+                      "bounds" : "[24,-787][815,464]"
+                    },
+                    "children" : [ {
+                      "attributes" : {
+                        "bounds" : "[48,-160][791,440]"
+                      },
+                      "children" : [ {
+                        "attributes" : {
+                          "bounds" : "[48,-160][791,440]"
+                        },
+                        "children" : [ {
+                          "attributes" : {
+                            "bounds" : "[72,-22][767,416]",
+                            "resource-id" : "virtuoso-scroller"
+                          },
+                          "children" : [ {
+                            "attributes" : {
+                              "bounds" : "[72,-22][767,416]"
+                            },
+                            "children" : [ {
+                              "attributes" : {
+                                "bounds" : "[72,-22][767,86]",
+                                "resource-id" : "virtuoso-item-list"
+                              },
+                              "children" : [ {
+                                "attributes" : {
+                                  "bounds" : "[72,-22][767,86]"
+                                },
+                                "children" : [ {
+                                  "attributes" : {
+                                    "bounds" : "[72,-22][767,86]"
+                                  },
+                                  "children" : [ {
+                                    "attributes" : {
+                                      "bounds" : "[72,-22][767,80]"
+                                    },
+                                    "children" : [ {
+                                      "attributes" : {
+                                        "bounds" : "[83,17][107,41]"
+                                      },
+                                      "children" : [ {
+                                        "attributes" : {
+                                          "bounds" : "[83,17][107,41]",
+                                          "resource-id" : "Show 1 variation of card 700-r1-a1-4776"
+                                        },
+                                        "children" : [ {
+                                          "attributes" : {
+                                            "text" : "▸",
+                                            "bounds" : "[92,21][98,37]"
+                                          }
+                                        } ]
+                                      } ]
+                                    }, {
+                                      "attributes" : {
+                                        "text" : "#700-r1-a1-4776",
+                                        "bounds" : "[119,-11][167,69]"
+                                      }
+                                    }, {
+                                      "attributes" : {
+                                        "bounds" : "[179,11][629,47]"
+                                      },
+                                      "children" : [ {
+                                        "attributes" : {
+                                          "text" : "Base Player r1-a1-4776",
+                                          "bounds" : "[179,11][629,31]"
+                                        }
+                                      }, {
+                                        "attributes" : {
+                                          "text" : "1 variation",
+                                          "bounds" : "[179,31][629,47]"
+                                        }
+                                      } ]
+                                    }, {
+                                      "attributes" : {
+                                        "bounds" : "[653,19][673,39]"
+                                      },
+                                      "children" : [ {
+                                        "attributes" : {
+                                          "bounds" : "[653,19][673,39]",
+                                          "resource-id" : "Card 700-r1-a1-4776 needs attention: no team on this card yet"
+                                        },
+                                        "children" : [ {
+                                          "attributes" : {
+                                            "text" : "!",
+                                            "bounds" : "[660,21][665,37]"
+                                          }
+                                        } ]
+                                      } ]
+                                    }, {
+                                      "attributes" : {
+                                        "bounds" : "[685,19][756,39]"
+                                      },
+                                      "children" : [ {
+                                        "attributes" : {
+                                          "text" : "Edit",
+                                          "bounds" : "[685,19][720,39]",
+                                          "resource-id" : "Edit card 700-r1-a1-4776"
+                                        }
+                                      }, {
+                                        "attributes" : {
+                                          "text" : "Del",
+                                          "bounds" : "[724,19][756,39]",
+                                          "resource-id" : "Delete card 700-r1-a1-4776"
+                                        }
+                                      } ]
+                                    } ]
+                                  } ]
+                                } ]
+                              } ]
+                            } ]
+                          } ]
+                        } ]
+                      } ]
+                    } ]
+                  } ]
+                } ]
+              } ]
+            }, {
+              "attributes" : {
+                "bounds" : "[0,488][839,696]"
+              }
+            } ]
+          }, {
+            "attributes" : {
+              "bounds" : "[849,125][1009,501]"
+            },
+            "children" : [ {
+              "attributes" : {
+                "bounds" : "[849,125][1009,181]"
+              },
+              "children" : [ {
+                "attributes" : {
+                  "text" : "Dashboard",
+                  "bounds" : "[901,141][988,165]"
+                }
+              } ]
+            }, {
+              "attributes" : {
+                "bounds" : "[849,189][1009,245]"
+              },
+              "children" : [ {
+                "attributes" : {
+                  "text" : "Collection",
+                  "bounds" : "[901,205][980,229]"
+                }
+              } ]
+            }, {
+              "attributes" : {
+                "bounds" : "[849,253][1009,309]"
+              },
+              "children" : [ {
+                "attributes" : {
+                  "text" : "Inventory",
+                  "bounds" : "[901,269][977,293]"
+                }
+              } ]
+            }, {
+              "attributes" : {
+                "bounds" : "[849,317][1019,373]"
+              },
+              "children" : [ {
+                "attributes" : {
+                  "text" : "Admin",
+                  "bounds" : "[901,333][952,357]"
+                }
+              } ]
+            }, {
+              "attributes" : {
+                "bounds" : "[849,381][1009,437]"
+              },
+              "children" : [ {
+                "attributes" : {
+                  "text" : "Print Shop",
+                  "bounds" : "[901,397][983,421]"
+                }
+              } ]
+            }, {
+              "attributes" : {
+                "bounds" : "[849,445][1009,501]"
+              },
+              "children" : [ {
+                "attributes" : {
+                  "text" : "Profile",
+                  "bounds" : "[901,461][951,485]"
+                }
+              } ]
+            } ]
+          } ]
+        } ]
+      } ]
+    } ]
+  }, {
+    "attributes" : {
+      "bounds" : "[0,696][1009,696]",
+      "resource-id" : "clerk-components"
+    }
+  }, {
+    "attributes" : {
+      "bounds" : "[0,696][1009,696]",
+      "resource-id" : ":r3:"
+    }
+  } ]
+}

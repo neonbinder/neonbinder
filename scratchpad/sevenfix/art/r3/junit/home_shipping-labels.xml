@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="home_shipping-labels" tests="1" failures="0" time="48.164" timestamp="2026-09-10T02:47:51">
+    <testcase id="Shipping Labels Feature Page" name="Shipping Labels Feature Page" classname="Shipping Labels Feature Page" file=".maestro/flows/home/shipping-labels.yaml" time="48.144" timestamp="2026-09-10T02:47:51" status="SUCCESS">
+      <properties>
+        <property name="tags" value="marketing, home"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

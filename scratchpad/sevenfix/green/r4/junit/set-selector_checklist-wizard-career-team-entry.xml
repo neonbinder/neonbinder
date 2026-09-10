@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="set-selector_checklist-wizard-career-team-entry" tests="1" failures="0" time="252.928" timestamp="2026-09-09T14:38:07">
+    <testcase id="Entity review — a player row takes hand-entered career teams, refuses an entry with no from-year, and carries the staged history into the Add as New decision" name="Entity review — a player row takes hand-entered career teams, refuses an entry with no from-year, and carries the staged history into the Add as New decision" classname="Entity review — a player row takes hand-entered career teams, refuses an entry with no from-year, and carries the staged history into the Add as New decision" file=".maestro/flows/set-selector/checklist-wizard-career-team-entry.yaml" time="252.857" timestamp="2026-09-09T14:38:07" status="SUCCESS">
+      <properties>
+        <property name="tags" value="set-selector"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

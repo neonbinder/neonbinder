@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="set-selector_sport-level-league-autopopulates" tests="1" failures="0" time="49.651" timestamp="2026-09-09T14:46:06">
+    <testcase id="Write-once feature snapshots — the SPORT-level attributes panel auto-populates League from the sport, with NO card-checklist step" name="Write-once feature snapshots — the SPORT-level attributes panel auto-populates League from the sport, with NO card-checklist step" classname="Write-once feature snapshots — the SPORT-level attributes panel auto-populates League from the sport, with NO card-checklist step" file=".maestro/flows/set-selector/sport-level-league-autopopulates.yaml" time="49.589" timestamp="2026-09-09T14:46:06" status="SUCCESS">
+      <properties>
+        <property name="tags" value="set-selector"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="set-selector_cards-parallel-custom" tests="1" failures="0" time="129.234" timestamp="2026-09-09T14:30:35">
+    <testcase id="Add custom Parallel — a hand-added parallel appears in the Parallels column and is selectable" name="Add custom Parallel — a hand-added parallel appears in the Parallels column and is selectable" classname="Add custom Parallel — a hand-added parallel appears in the Parallels column and is selectable" file=".maestro/flows/set-selector/cards-parallel-custom.yaml" time="129.149" timestamp="2026-09-09T14:30:35" status="SUCCESS">
+      <properties>
+        <property name="tags" value="set-selector"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

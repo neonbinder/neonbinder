@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="labels_no-return-address-empty-state" tests="1" failures="0" time="6.196" timestamp="2026-09-10T02:48:14">
+    <testcase id="Shipping Labels — no return address empty state" name="Shipping Labels — no return address empty state" classname="Shipping Labels — no return address empty state" file=".maestro/flows/labels/no-return-address-empty-state.yaml" time="6.183" timestamp="2026-09-10T02:48:14" status="SUCCESS">
+      <properties>
+        <property name="tags" value="labels"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

@@ -1,0 +1,466 @@
+{
+  "attributes" : {
+    "text" : "      \n\n",
+    "bounds" : "[0,0][1009,1864]",
+    "url" : "http://localhost:3000/print/spine-label"
+  },
+  "children" : [ {
+    "attributes" : {
+      "bounds" : "[0,0][1009,1864]",
+      "resource-id" : "root"
+    },
+    "children" : [ {
+      "attributes" : {
+        "bounds" : "[0,0][1009,1864]"
+      },
+      "children" : [ {
+        "attributes" : {
+          "bounds" : "[0,0][1009,1864]"
+        },
+        "children" : [ {
+          "attributes" : {
+            "bounds" : "[0,0][1009,79]"
+          },
+          "children" : [ {
+            "attributes" : {
+              "bounds" : "[16,16][228,61]"
+            },
+            "children" : [ {
+              "attributes" : {
+                "text" : "Neon Binder",
+                "bounds" : "[64,16][228,61]"
+              }
+            } ]
+          }, {
+            "attributes" : {
+              "bounds" : "[871,23][993,55]"
+            },
+            "children" : [ {
+              "attributes" : {
+                "bounds" : "[871,25][899,53]"
+              },
+              "children" : [ {
+                "attributes" : {
+                  "bounds" : "[871,25][899,53]",
+                  "resource-id" : "Open user menu"
+                },
+                "children" : [ {
+                  "attributes" : {
+                    "bounds" : "[871,25][899,53]"
+                  },
+                  "children" : [ {
+                    "attributes" : {
+                      "bounds" : "[871,25][899,53]"
+                    },
+                    "children" : [ {
+                      "attributes" : {
+                        "bounds" : "[836,25][871,53]"
+                      }
+                    } ]
+                  } ]
+                } ]
+              } ]
+            }, {
+              "attributes" : {
+                "text" : "Sign out",
+                "bounds" : "[911,23][993,55]"
+              }
+            } ]
+          } ]
+        }, {
+          "attributes" : {
+            "bounds" : "[0,79][1009,1864]"
+          },
+          "children" : [ {
+            "attributes" : {
+              "bounds" : "[0,79][1009,1864]"
+            },
+            "children" : [ {
+              "attributes" : {
+                "bounds" : "[0,79][839,1656]"
+              },
+              "children" : [ {
+                "attributes" : {
+                  "bounds" : "[24,103][815,1632]"
+                },
+                "children" : [ {
+                  "attributes" : {
+                    "bounds" : "[24,103][815,171]"
+                  },
+                  "children" : [ {
+                    "attributes" : {
+                      "text" : "Print Shop",
+                      "bounds" : "[24,103][815,139]"
+                    }
+                  }, {
+                    "attributes" : {
+                      "text" : "Everything you print — shipping labels, sale QR codes, and binder inserts.",
+                      "bounds" : "[24,147][815,171]"
+                    }
+                  } ]
+                }, {
+                  "attributes" : {
+                    "bounds" : "[24,203][815,249]",
+                    "resource-id" : "Print Shop sections"
+                  },
+                  "children" : [ {
+                    "attributes" : {
+                      "bounds" : "[24,203][815,248]"
+                    },
+                    "children" : [ {
+                      "attributes" : {
+                        "bounds" : "[24,203][93,248]"
+                      },
+                      "children" : [ {
+                        "attributes" : {
+                          "text" : "Shipping",
+                          "bounds" : "[24,203][93,249]"
+                        }
+                      } ]
+                    }, {
+                      "attributes" : {
+                        "bounds" : "[117,203][217,248]"
+                      },
+                      "children" : [ {
+                        "attributes" : {
+                          "text" : "Label History",
+                          "bounds" : "[117,203][217,249]"
+                        }
+                      } ]
+                    }, {
+                      "attributes" : {
+                        "bounds" : "[241,203][310,248]"
+                      },
+                      "children" : [ {
+                        "attributes" : {
+                          "text" : "QR Code",
+                          "bounds" : "[241,203][310,249]"
+                        }
+                      } ]
+                    }, {
+                      "attributes" : {
+                        "bounds" : "[334,203][431,248]"
+                      },
+                      "children" : [ {
+                        "attributes" : {
+                          "text" : "Placeholders",
+                          "bounds" : "[334,203][431,249]"
+                        }
+                      } ]
+                    }, {
+                      "attributes" : {
+                        "bounds" : "[455,203][552,248]"
+                      },
+                      "children" : [ {
+                        "attributes" : {
+                          "text" : "Spine Labels",
+                          "bounds" : "[455,203][552,249]"
+                        }
+                      } ]
+                    } ]
+                  } ]
+                }, {
+                  "attributes" : {
+                    "bounds" : "[24,281][815,1632]"
+                  },
+                  "children" : [ {
+                    "attributes" : {
+                      "text" : "Added Ken Griffey Jr. to the sheet. 1 label queued.",
+                      "bounds" : "[23,280][24,281]"
+                    }
+                  }, {
+                    "attributes" : {
+                      "bounds" : "[24,281][815,337]"
+                    },
+                    "children" : [ {
+                      "attributes" : {
+                        "text" : "Spine Labels",
+                        "bounds" : "[24,281][815,313]"
+                      }
+                    }, {
+                      "attributes" : {
+                        "text" : "Print a binder spine label with a player’s name in their team colors. Several labels print on one sheet.",
+                        "bounds" : "[24,317][815,337]"
+                      }
+                    } ]
+                  }, {
+                    "attributes" : {
+                      "bounds" : "[24,361][815,1632]"
+                    },
+                    "children" : [ {
+                      "attributes" : {
+                        "bounds" : "[24,361][404,1632]"
+                      },
+                      "children" : [ {
+                        "attributes" : {
+                          "bounds" : "[24,361][404,563]"
+                        },
+                        "children" : [ {
+                          "attributes" : {
+                            "text" : "Player",
+                            "bounds" : "[24,361][404,381]"
+                          }
+                        }, {
+                          "attributes" : {
+                            "bounds" : "[24,393][404,459]"
+                          },
+                          "children" : [ {
+                            "attributes" : {
+                              "text" : "Find a player",
+                              "bounds" : "[24,393][404,413]"
+                            }
+                          }, {
+                            "attributes" : {
+                              "bounds" : "[24,417][404,459]"
+                            },
+                            "children" : [ {
+                              "attributes" : {
+                                "text" : "Search players…",
+                                "bounds" : "[24,417][404,459]",
+                                "resource-id" : "Find a player"
+                              }
+                            } ]
+                          } ]
+                        }, {
+                          "attributes" : {
+                            "bounds" : "[24,471][404,563]"
+                          },
+                          "children" : [ {
+                            "attributes" : {
+                              "bounds" : "[24,471][404,537]"
+                            },
+                            "children" : [ {
+                              "attributes" : {
+                                "text" : "Name on the label",
+                                "bounds" : "[24,471][404,491]"
+                              }
+                            }, {
+                              "attributes" : {
+                                "bounds" : "[24,495][404,537]"
+                              }
+                            } ]
+                          }, {
+                            "attributes" : {
+                              "text" : "Edit freely — the label prints exactly this.",
+                              "bounds" : "[24,543][404,563]",
+                              "resource-id" : "_r_4_"
+                            }
+                          } ]
+                        } ]
+                      }, {
+                        "attributes" : {
+                          "bounds" : "[24,587][404,681]"
+                        },
+                        "children" : [ {
+                          "attributes" : {
+                            "text" : "Team colors",
+                            "bounds" : "[24,587][404,607]"
+                          }
+                        }, {
+                          "attributes" : {
+                            "bounds" : "[24,615][404,681]"
+                          },
+                          "children" : [ {
+                            "attributes" : {
+                              "bounds" : "[24,615][208,678]"
+                            },
+                            "children" : [ {
+                              "attributes" : {
+                                "text" : "League",
+                                "bounds" : "[24,615][208,635]",
+                                "resource-id" : "spine-league-filter"
+                              }
+                            } ]
+                          }, {
+                            "attributes" : {
+                              "bounds" : "[220,615][404,681]"
+                            },
+                            "children" : [ {
+                              "attributes" : {
+                                "text" : "Find a team",
+                                "bounds" : "[220,615][404,635]"
+                              }
+                            } ]
+                          } ]
+                        } ]
+                      } ]
+                    }, {
+                      "attributes" : {
+                        "bounds" : "[436,361][815,1632]"
+                      },
+                      "children" : [ {
+                        "attributes" : {
+                          "bounds" : "[436,361][815,393]"
+                        },
+                        "children" : [ {
+                          "attributes" : {
+                            "text" : "Sheet (1 label, 1 page)",
+                            "bounds" : "[436,367][616,387]"
+                          }
+                        }, {
+                          "attributes" : {
+                            "text" : "Print",
+                            "bounds" : "[759,361][815,393]"
+                          }
+                        } ]
+                      }, {
+                        "attributes" : {
+                          "bounds" : "[436,409][815,455]"
+                        },
+                        "children" : [ {
+                          "attributes" : {
+                            "bounds" : "[436,409][815,455]"
+                          },
+                          "children" : [ {
+                            "attributes" : {
+                              "bounds" : "[449,426][461,438]"
+                            }
+                          }, {
+                            "attributes" : {
+                              "text" : "Ken Griffey Jr.",
+                              "bounds" : "[469,422][625,442]"
+                            }
+                          }, {
+                            "attributes" : {
+                              "text" : "3″ · Graduate",
+                              "bounds" : "[633,424][713,440]"
+                            }
+                          }, {
+                            "attributes" : {
+                              "text" : "Remove",
+                              "bounds" : "[721,416][802,448]",
+                              "resource-id" : "Remove Ken Griffey Jr., 3 inch spine in Graduate, from the sheet"
+                            }
+                          } ]
+                        } ]
+                      }, {
+                        "attributes" : {
+                          "bounds" : "[436,471][815,1063]"
+                        },
+                        "children" : [ {
+                          "attributes" : {
+                            "text" : "Preview",
+                            "bounds" : "[436,471][815,491]"
+                          }
+                        }, {
+                          "attributes" : {
+                            "bounds" : "[436,499][816,991]"
+                          },
+                          "children" : [ {
+                            "attributes" : {
+                              "bounds" : "[437,500][613,992]"
+                            },
+                            "children" : [ {
+                              "attributes" : {
+                                "bounds" : "[437,500][613,992]"
+                              },
+                              "children" : [ {
+                                "attributes" : {
+                                  "bounds" : "[437,500][817,992]"
+                                },
+                                "children" : [ {
+                                  "attributes" : {
+                                    "bounds" : "[448,511][582,981]"
+                                  },
+                                  "children" : [ {
+                                    "attributes" : {
+                                      "text" : "Ken Griffey Jr.",
+                                      "bounds" : "[448,511][582,981]"
+                                    }
+                                  } ]
+                                }, {
+                                  "attributes" : {
+                                    "bounds" : "[582,511][805,511]"
+                                  }
+                                } ]
+                              } ]
+                            } ]
+                          } ]
+                        } ]
+                      } ]
+                    } ]
+                  } ]
+                } ]
+              } ]
+            } ]
+          }, {
+            "attributes" : {
+              "bounds" : "[849,125][1009,501]"
+            },
+            "children" : [ {
+              "attributes" : {
+                "bounds" : "[849,125][1009,181]"
+              },
+              "children" : [ {
+                "attributes" : {
+                  "text" : "Dashboard",
+                  "bounds" : "[901,141][988,165]"
+                }
+              } ]
+            }, {
+              "attributes" : {
+                "bounds" : "[849,189][1009,245]"
+              },
+              "children" : [ {
+                "attributes" : {
+                  "text" : "Collection",
+                  "bounds" : "[901,205][980,229]"
+                }
+              } ]
+            }, {
+              "attributes" : {
+                "bounds" : "[849,253][1009,309]"
+              },
+              "children" : [ {
+                "attributes" : {
+                  "text" : "Inventory",
+                  "bounds" : "[901,269][977,293]"
+                }
+              } ]
+            }, {
+              "attributes" : {
+                "bounds" : "[849,317][1009,373]"
+              },
+              "children" : [ {
+                "attributes" : {
+                  "text" : "Admin",
+                  "bounds" : "[901,333][952,357]"
+                }
+              } ]
+            }, {
+              "attributes" : {
+                "bounds" : "[849,381][1019,437]"
+              },
+              "children" : [ {
+                "attributes" : {
+                  "text" : "Print Shop",
+                  "bounds" : "[901,397][983,421]"
+                }
+              } ]
+            }, {
+              "attributes" : {
+                "bounds" : "[849,445][1009,501]"
+              },
+              "children" : [ {
+                "attributes" : {
+                  "text" : "Profile",
+                  "bounds" : "[901,461][951,485]"
+                }
+              } ]
+            } ]
+          } ]
+        } ]
+      } ]
+    } ]
+  }, {
+    "attributes" : {
+      "bounds" : "[0,1864][1009,1864]",
+      "resource-id" : "clerk-components"
+    }
+  }, {
+    "attributes" : {
+      "bounds" : "[0,1864][1009,1864]",
+      "resource-id" : ":r3:"
+    }
+  } ]
+}

@@ -1,0 +1,11 @@
+PASS .maestro/flows/profile/worker-bootstrap.yaml
+PASS .maestro/flows/set-selector/move-parallels-of-inserts-custom.yaml
+PASS .maestro/flows/qr-code/generate-qr.yaml
+PASS .maestro/flows/home/print-shop.yaml
+PASS .maestro/flows/placeholders/flip-edge-mirrors-the-backs.yaml
+PASS .maestro/flows/set-selector/checklist-one-marketplace-skips-match-dialog.yaml
+FAIL .maestro/flows/set-selector/checklist-title-length-limits-and-fixer.yaml
+PASS .maestro/flows/set-selector/cross-release-hide-toggle-filters-guest-cards.yaml
+PASS .maestro/flows/set-selector/team-picker-create-custom-card.yaml
+PASS .maestro/flows/set-selector/sets-resync-already-loaded.yaml
+PASS .maestro/flows/profile/view-profile.yaml

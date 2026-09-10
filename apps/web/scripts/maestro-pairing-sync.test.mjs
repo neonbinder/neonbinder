@@ -41,7 +41,8 @@
  */
 
 import { describe, expect, test } from "vitest";
-import { readFileSync, globSync } from "node:fs";
+import { globSync } from "node:fs";
+import { readFileStable } from "./read-flow-files.mjs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -57,7 +58,7 @@ const DRIVES_DIALOG = /Match Cards/;
 
 function flowsDrivingTheDialog() {
   return globSync("**/*.yaml", { cwd: FLOWS_DIR })
-    .map((rel) => ({ rel, text: readFileSync(join(FLOWS_DIR, rel), "utf8") }))
+    .map((rel) => ({ rel, text: readFileStable(join(FLOWS_DIR, rel)) }))
     .filter(({ text }) => DRIVES_DIALOG.test(text));
 }
 

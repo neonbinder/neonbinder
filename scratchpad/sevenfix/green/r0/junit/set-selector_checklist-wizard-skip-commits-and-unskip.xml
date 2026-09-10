@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="set-selector_checklist-wizard-skip-commits-and-unskip" tests="1" failures="0" time="86.716" timestamp="2026-09-09T14:39:11">
+    <testcase id="Entity review — committing a review of skips leaves the set its own Skipped names list, and Unskip puts a name back" name="Entity review — committing a review of skips leaves the set its own Skipped names list, and Unskip puts a name back" classname="Entity review — committing a review of skips leaves the set its own Skipped names list, and Unskip puts a name back" file=".maestro/flows/set-selector/checklist-wizard-skip-commits-and-unskip.yaml" time="86.664" timestamp="2026-09-09T14:39:11" status="SUCCESS">
+      <properties>
+        <property name="tags" value="set-selector"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

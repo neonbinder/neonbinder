@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="set-selector_checklist-one-marketplace-skips-match-dialog" tests="1" failures="0" time="84.826" timestamp="2026-09-10T02:49:49">
+    <testcase id="Checklist — a set with exactly ONE marketplace attached skips the Match Cards dialog and keeps every fetched card" name="Checklist — a set with exactly ONE marketplace attached skips the Match Cards dialog and keeps every fetched card" classname="Checklist — a set with exactly ONE marketplace attached skips the Match Cards dialog and keeps every fetched card" file=".maestro/flows/set-selector/checklist-one-marketplace-skips-match-dialog.yaml" time="84.778" timestamp="2026-09-10T02:49:49" status="SUCCESS">
+      <properties>
+        <property name="tags" value="set-selector"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

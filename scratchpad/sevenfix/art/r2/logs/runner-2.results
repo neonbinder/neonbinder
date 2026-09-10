@@ -1,0 +1,10 @@
+PASS .maestro/flows/profile/worker-bootstrap.yaml
+PASS .maestro/flows/set-selector/custom-card-crud.yaml
+PASS .maestro/flows/profile/fill-profile-data.yaml
+PASS .maestro/flows/home/easypost-setup.yaml
+PASS .maestro/flows/profile/api-keys-create-copy-and-revoke.yaml
+PASS .maestro/flows/set-selector/checklist-attention-badge-and-filter.yaml
+PASS .maestro/flows/set-selector/checklist-wizard-link-to-existing-player.yaml
+PASS .maestro/flows/set-selector/inserts-1996-score-one-nb-set-two-bsc-sources.yaml
+PASS .maestro/flows/profile/test-credentials.yaml
+PASS .maestro/flows/home/landing-marketing.yaml

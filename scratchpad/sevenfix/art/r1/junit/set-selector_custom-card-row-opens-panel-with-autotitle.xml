@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="set-selector_custom-card-row-opens-panel-with-autotitle" tests="1" failures="0" time="146.986" timestamp="2026-09-10T02:55:01">
+    <testcase id="Card row — clicking the card NUMBER (not the name or Edit button) opens the detail panel, which shows an auto-generated Card title" name="Card row — clicking the card NUMBER (not the name or Edit button) opens the detail panel, which shows an auto-generated Card title" classname="Card row — clicking the card NUMBER (not the name or Edit button) opens the detail panel, which shows an auto-generated Card title" file=".maestro/flows/set-selector/custom-card-row-opens-panel-with-autotitle.yaml" time="146.901" timestamp="2026-09-10T02:55:01" status="SUCCESS">
+      <properties>
+        <property name="tags" value="set-selector"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

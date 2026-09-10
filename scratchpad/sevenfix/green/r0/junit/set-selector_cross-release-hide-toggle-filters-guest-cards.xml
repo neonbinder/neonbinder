@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="set-selector_cross-release-hide-toggle-filters-guest-cards" tests="1" failures="0" time="310.153" timestamp="2026-09-09T14:40:42">
+    <testcase id="Cross-release — the 'Hide cross-release cards' filter collapses a checklist back to only its own cards, and restores them" name="Cross-release — the 'Hide cross-release cards' filter collapses a checklist back to only its own cards, and restores them" classname="Cross-release — the 'Hide cross-release cards' filter collapses a checklist back to only its own cards, and restores them" file=".maestro/flows/set-selector/cross-release-hide-toggle-filters-guest-cards.yaml" time="310.062" timestamp="2026-09-09T14:40:42" status="SUCCESS">
+      <properties>
+        <property name="tags" value="set-selector"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

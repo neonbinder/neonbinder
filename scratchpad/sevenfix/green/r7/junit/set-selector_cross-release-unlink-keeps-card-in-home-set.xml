@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="set-selector_cross-release-unlink-keeps-card-in-home-set" tests="1" failures="0" time="445.656" timestamp="2026-09-09T14:41:06">
+    <testcase id="Cross-release — 'Unlink' removes a visiting card from this checklist without deleting it from the set it was printed in" name="Cross-release — 'Unlink' removes a visiting card from this checklist without deleting it from the set it was printed in" classname="Cross-release — 'Unlink' removes a visiting card from this checklist without deleting it from the set it was printed in" file=".maestro/flows/set-selector/cross-release-unlink-keeps-card-in-home-set.yaml" time="445.474" timestamp="2026-09-09T14:41:06" status="SUCCESS">
+      <properties>
+        <property name="tags" value="set-selector"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

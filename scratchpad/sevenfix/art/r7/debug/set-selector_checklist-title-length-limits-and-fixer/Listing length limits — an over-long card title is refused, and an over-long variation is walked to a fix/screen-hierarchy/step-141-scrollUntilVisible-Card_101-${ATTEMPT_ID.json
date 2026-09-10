@@ -1,0 +1,219 @@
+{
+  "attributes" : {
+    "text" : "      \n\n",
+    "bounds" : "[0,-1135][1009,625]",
+    "url" : "http://localhost:3000/admin/set-builder"
+  },
+  "children" : [ {
+    "attributes" : {
+      "bounds" : "[0,-1135][1009,625]",
+      "resource-id" : "root"
+    },
+    "children" : [ {
+      "attributes" : {
+        "bounds" : "[0,-1135][1009,625]"
+      },
+      "children" : [ {
+        "attributes" : {
+          "bounds" : "[0,-1135][1009,625]"
+        },
+        "children" : [ {
+          "attributes" : {
+            "bounds" : "[0,0][1009,79]"
+          },
+          "children" : [ {
+            "attributes" : {
+              "bounds" : "[16,16][228,61]"
+            },
+            "children" : [ {
+              "attributes" : {
+                "text" : "Neon Binder",
+                "bounds" : "[64,16][228,61]"
+              }
+            } ]
+          }, {
+            "attributes" : {
+              "bounds" : "[871,23][993,55]"
+            },
+            "children" : [ {
+              "attributes" : {
+                "bounds" : "[871,25][899,53]"
+              },
+              "children" : [ {
+                "attributes" : {
+                  "bounds" : "[871,25][899,53]",
+                  "resource-id" : "Open user menu"
+                },
+                "children" : [ {
+                  "attributes" : {
+                    "bounds" : "[871,25][899,53]"
+                  },
+                  "children" : [ {
+                    "attributes" : {
+                      "bounds" : "[871,25][899,53]"
+                    },
+                    "children" : [ {
+                      "attributes" : {
+                        "bounds" : "[836,25][871,53]"
+                      }
+                    } ]
+                  } ]
+                } ]
+              } ]
+            }, {
+              "attributes" : {
+                "text" : "Sign out",
+                "bounds" : "[911,23][993,55]"
+              }
+            } ]
+          } ]
+        }, {
+          "attributes" : {
+            "bounds" : "[0,-1056][1009,625]"
+          },
+          "children" : [ {
+            "attributes" : {
+              "bounds" : "[0,-1056][1009,625]"
+            },
+            "children" : [ {
+              "attributes" : {
+                "bounds" : "[0,-1056][839,417]"
+              },
+              "children" : [ {
+                "attributes" : {
+                  "bounds" : "[24,-1032][815,393]"
+                },
+                "children" : [ {
+                  "attributes" : {
+                    "bounds" : "[24,-922][815,393]"
+                  },
+                  "children" : [ {
+                    "attributes" : {
+                      "bounds" : "[24,-858][815,393]"
+                    },
+                    "children" : [ {
+                      "attributes" : {
+                        "bounds" : "[48,-231][791,369]"
+                      },
+                      "children" : [ {
+                        "attributes" : {
+                          "bounds" : "[48,-231][791,369]"
+                        },
+                        "children" : [ {
+                          "attributes" : {
+                            "bounds" : "[72,-93][767,345]",
+                            "resource-id" : "virtuoso-scroller"
+                          },
+                          "children" : [ {
+                            "attributes" : {
+                              "bounds" : "[72,-93][767,345]"
+                            },
+                            "children" : [ {
+                              "attributes" : {
+                                "bounds" : "[72,-93][767,15]",
+                                "resource-id" : "virtuoso-item-list"
+                              },
+                              "children" : [ {
+                                "attributes" : {
+                                  "bounds" : "[72,-93][767,15]"
+                                },
+                                "children" : [ {
+                                  "attributes" : {
+                                    "bounds" : "[72,-93][767,15]"
+                                  }
+                                } ]
+                              } ]
+                            } ]
+                          } ]
+                        } ]
+                      } ]
+                    } ]
+                  } ]
+                } ]
+              } ]
+            }, {
+              "attributes" : {
+                "bounds" : "[0,417][839,625]"
+              }
+            } ]
+          }, {
+            "attributes" : {
+              "bounds" : "[849,125][1009,501]"
+            },
+            "children" : [ {
+              "attributes" : {
+                "bounds" : "[849,125][1009,181]"
+              },
+              "children" : [ {
+                "attributes" : {
+                  "text" : "Dashboard",
+                  "bounds" : "[901,141][988,165]"
+                }
+              } ]
+            }, {
+              "attributes" : {
+                "bounds" : "[849,189][1009,245]"
+              },
+              "children" : [ {
+                "attributes" : {
+                  "text" : "Collection",
+                  "bounds" : "[901,205][980,229]"
+                }
+              } ]
+            }, {
+              "attributes" : {
+                "bounds" : "[849,253][1009,309]"
+              },
+              "children" : [ {
+                "attributes" : {
+                  "text" : "Inventory",
+                  "bounds" : "[901,269][977,293]"
+                }
+              } ]
+            }, {
+              "attributes" : {
+                "bounds" : "[849,317][1019,373]"
+              },
+              "children" : [ {
+                "attributes" : {
+                  "text" : "Admin",
+                  "bounds" : "[901,333][952,357]"
+                }
+              } ]
+            }, {
+              "attributes" : {
+                "bounds" : "[849,381][1009,437]"
+              },
+              "children" : [ {
+                "attributes" : {
+                  "text" : "Print Shop",
+                  "bounds" : "[901,397][983,421]"
+                }
+              } ]
+            }, {
+              "attributes" : {
+                "bounds" : "[849,445][1009,501]"
+              },
+              "children" : [ {
+                "attributes" : {
+                  "text" : "Profile",
+                  "bounds" : "[901,461][951,485]"
+                }
+              } ]
+            } ]
+          } ]
+        } ]
+      } ]
+    } ]
+  }, {
+    "attributes" : {
+      "bounds" : "[0,625][1009,625]",
+      "resource-id" : "clerk-components"
+    }
+  }, {
+    "attributes" : {
+      "bounds" : "[0,625][1009,625]",
+      "resource-id" : ":r3:"
+    }
+  } ]
+}

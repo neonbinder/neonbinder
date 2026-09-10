@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="set-selector_sets-base" tests="1" failures="0" time="67.662" timestamp="2026-09-09T14:47:58">
+    <testcase id="BaseSetPicker — confirm SportLots base-set mapping for 2024 Topps Heritage" name="BaseSetPicker — confirm SportLots base-set mapping for 2024 Topps Heritage" classname="BaseSetPicker — confirm SportLots base-set mapping for 2024 Topps Heritage" file=".maestro/flows/set-selector/sets-base.yaml" time="67.612" timestamp="2026-09-09T14:47:58" status="SUCCESS">
+      <properties>
+        <property name="tags" value="set-selector"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

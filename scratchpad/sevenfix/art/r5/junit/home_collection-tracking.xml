@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="home_collection-tracking" tests="1" failures="0" time="41.008" timestamp="2026-09-10T03:01:57">
+    <testcase id="Collection Tracking Feature Page" name="Collection Tracking Feature Page" classname="Collection Tracking Feature Page" file=".maestro/flows/home/collection-tracking.yaml" time="40.971" timestamp="2026-09-10T03:01:57" status="SUCCESS">
+      <properties>
+        <property name="tags" value="marketing, home"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

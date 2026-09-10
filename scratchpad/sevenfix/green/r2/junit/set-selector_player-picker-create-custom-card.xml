@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="set-selector_player-picker-create-custom-card" tests="1" failures="0" time="178.719" timestamp="2026-09-09T14:44:08">
+    <testcase id="Player picker — create a brand-new player and attach it to a CUSTOM card (the gap this closes); it persists across reopen" name="Player picker — create a brand-new player and attach it to a CUSTOM card (the gap this closes); it persists across reopen" classname="Player picker — create a brand-new player and attach it to a CUSTOM card (the gap this closes); it persists across reopen" file=".maestro/flows/set-selector/player-picker-create-custom-card.yaml" time="178.58" timestamp="2026-09-09T14:44:08" status="SUCCESS">
+      <properties>
+        <property name="tags" value="set-selector"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

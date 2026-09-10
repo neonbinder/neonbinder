@@ -1,0 +1,11 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="admin_team-management-edit-a-team" tests="1" failures="1" time="69.569" timestamp="2026-09-10T02:47:26">
+    <testcase id="Team Management — select a team and edit it" name="Team Management — select a team and edit it" classname="Team Management — select a team and edit it" file=".maestro/flows/admin/team-management-edit-a-team.yaml" time="69.499" timestamp="2026-09-10T02:47:26" status="ERROR">
+      <properties>
+        <property name="tags" value="admin"/>
+      </properties>
+      <failure>Assertion is false: ".*Saved Loc6 TMTr6a132069.*" is visible</failure>
+    </testcase>
+  </testsuite>
+</testsuites>

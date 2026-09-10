@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="admin_admin-section-navigation" tests="1" failures="0" time="16.664" timestamp="2026-09-09T14:32:32">
+    <testcase id="Admin — the hub and its Set Builder / Teams sub-tabs" name="Admin — the hub and its Set Builder / Teams sub-tabs" classname="Admin — the hub and its Set Builder / Teams sub-tabs" file=".maestro/flows/admin/admin-section-navigation.yaml" time="16.642" timestamp="2026-09-09T14:32:32" status="SUCCESS">
+      <properties>
+        <property name="tags" value="smoke, admin"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

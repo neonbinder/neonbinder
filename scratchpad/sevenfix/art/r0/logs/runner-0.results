@@ -1,0 +1,14 @@
+PASS .maestro/flows/profile/worker-bootstrap.yaml
+PASS .maestro/flows/set-selector/card-detail-panel.yaml
+PASS .maestro/flows/set-selector/topps-chrome-add-feature.yaml
+PASS .maestro/flows/admin/player-management-add-and-career-history.yaml
+PASS .maestro/flows/placeholders/pipeline-pairs-uploaded-scans.yaml
+PASS .maestro/flows/set-selector/card-features-editor-toggle.yaml
+PASS .maestro/flows/set-selector/checklist-wizard-career-team-entry.yaml
+PASS .maestro/flows/set-selector/custom-set-exists-elsewhere-offers-drill.yaml
+PASS .maestro/flows/set-selector/sport-level-league-autopopulates.yaml
+FAIL .maestro/flows/spine-label/design-and-queue-a-spine-label.yaml
+PASS .maestro/flows/set-selector/multi-source-panel-opens-dialog.yaml
+PASS .maestro/flows/home/ai-identification.yaml
+PASS .maestro/flows/set-selector/admin-missing-both-shows-warning.yaml
+PASS .maestro/flows/dashboard/view-collection.yaml

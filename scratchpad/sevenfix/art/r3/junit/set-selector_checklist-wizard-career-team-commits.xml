@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="set-selector_checklist-wizard-career-team-commits" tests="1" failures="0" time="118.18" timestamp="2026-09-10T02:52:00">
+    <testcase id="Entity review — a hand-staged career team survives the commit and becomes a real team row" name="Entity review — a hand-staged career team survives the commit and becomes a real team row" classname="Entity review — a hand-staged career team survives the commit and becomes a real team row" file=".maestro/flows/set-selector/checklist-wizard-career-team-commits.yaml" time="118.093" timestamp="2026-09-10T02:52:00" status="SUCCESS">
+      <properties>
+        <property name="tags" value="set-selector"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

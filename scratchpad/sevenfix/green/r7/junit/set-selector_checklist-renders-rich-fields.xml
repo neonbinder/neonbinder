@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="set-selector_checklist-renders-rich-fields" tests="1" failures="0" time="55.452" timestamp="2026-09-09T14:48:37">
+    <testcase id="Checklist — card rows render card number, sub-line, attribute badges, and platform badges" name="Checklist — card rows render card number, sub-line, attribute badges, and platform badges" classname="Checklist — card rows render card number, sub-line, attribute badges, and platform badges" file=".maestro/flows/set-selector/checklist-renders-rich-fields.yaml" time="55.383" timestamp="2026-09-09T14:48:37" status="SUCCESS">
+      <properties>
+        <property name="tags" value="set-selector"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

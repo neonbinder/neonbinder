@@ -1,0 +1,11 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="set-selector_variation-link-group-and-unlink" tests="1" failures="1" time="177.412" timestamp="2026-09-10T03:00:21">
+    <testcase id="Card variations — point a card at the card it varies, see it group under it, and unlink it back out" name="Card variations — point a card at the card it varies, see it group under it, and unlink it back out" classname="Card variations — point a card at the card it varies, see it group under it, and unlink it back out" file=".maestro/flows/set-selector/variation-link-group-and-unlink.yaml" time="177.289" timestamp="2026-09-10T03:00:21" status="ERROR">
+      <properties>
+        <property name="tags" value="set-selector"/>
+      </properties>
+      <failure>Assertion is false: "#701-r1-a1-4776" is visible</failure>
+    </testcase>
+  </testsuite>
+</testsuites>

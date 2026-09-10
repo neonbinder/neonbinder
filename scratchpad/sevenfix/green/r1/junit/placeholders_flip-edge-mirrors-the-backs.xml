@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="placeholders_flip-edge-mirrors-the-backs" tests="1" failures="0" time="66.685" timestamp="2026-09-09T14:34:24">
+    <testcase id="Print settings — the flip edge re-mirrors the backs, and backs can be turned off" name="Print settings — the flip edge re-mirrors the backs, and backs can be turned off" classname="Print settings — the flip edge re-mirrors the backs, and backs can be turned off" file=".maestro/flows/placeholders/flip-edge-mirrors-the-backs.yaml" time="66.649" timestamp="2026-09-09T14:34:24" status="SUCCESS">
+      <properties>
+        <property name="tags" value="placeholders"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

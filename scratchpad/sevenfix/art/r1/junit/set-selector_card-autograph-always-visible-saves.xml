@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="set-selector_card-autograph-always-visible-saves" tests="1" failures="0" time="148.297" timestamp="2026-09-10T02:49:03">
+    <testcase id="Card detail — the unified Autographed control is always-visible (promoted out of Show features), not gated behind the features editor" name="Card detail — the unified Autographed control is always-visible (promoted out of Show features), not gated behind the features editor" classname="Card detail — the unified Autographed control is always-visible (promoted out of Show features), not gated behind the features editor" file=".maestro/flows/set-selector/card-autograph-always-visible-saves.yaml" time="148.177" timestamp="2026-09-10T02:49:03" status="SUCCESS">
+      <properties>
+        <property name="tags" value="set-selector"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

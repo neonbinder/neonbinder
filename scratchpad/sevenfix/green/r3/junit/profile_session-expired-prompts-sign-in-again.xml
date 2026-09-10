@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="profile_session-expired-prompts-sign-in-again" tests="1" failures="0" time="29.573" timestamp="2026-09-09T14:34:46">
+    <testcase id="Expired marketplace session — the panel says sign in again, and goes back to connected once the session proves good" name="Expired marketplace session — the panel says sign in again, and goes back to connected once the session proves good" classname="Expired marketplace session — the panel says sign in again, and goes back to connected once the session proves good" file=".maestro/flows/profile/session-expired-prompts-sign-in-again.yaml" time="29.553" timestamp="2026-09-09T14:34:46" status="SUCCESS">
+      <properties>
+        <property name="tags" value="credentials, profile"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="set-selector_variant-metadata-editor-insert" tests="1" failures="0" time="139.027" timestamp="2026-09-10T02:44:16">
+    <testcase id="Variant metadata editor — edit Prefix on a custom Insert variant and verify persistence" name="Variant metadata editor — edit Prefix on a custom Insert variant and verify persistence" classname="Variant metadata editor — edit Prefix on a custom Insert variant and verify persistence" file=".maestro/flows/set-selector/variant-metadata-editor-insert.yaml" time="138.947" timestamp="2026-09-10T02:44:16" status="SUCCESS">
+      <properties>
+        <property name="tags" value="set-selector"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

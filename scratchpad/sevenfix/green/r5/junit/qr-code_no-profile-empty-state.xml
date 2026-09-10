@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="qr-code_no-profile-empty-state" tests="1" failures="0" time="4.408" timestamp="2026-09-09T14:50:17">
+    <testcase id="QR Code — no profile empty state" name="QR Code — no profile empty state" classname="QR Code — no profile empty state" file=".maestro/flows/qr-code/no-profile-empty-state.yaml" time="4.395" timestamp="2026-09-09T14:50:17" status="SUCCESS">
+      <properties>
+        <property name="tags" value="smoke, qr-code"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

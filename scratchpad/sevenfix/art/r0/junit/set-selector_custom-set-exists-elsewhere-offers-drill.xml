@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="set-selector_custom-set-exists-elsewhere-offers-drill" tests="1" failures="0" time="217.364" timestamp="2026-09-10T02:56:09">
+    <testcase id="Custom entry — a name that already exists under another brand offers to go to it instead of making a second row (NEO-219)" name="Custom entry — a name that already exists under another brand offers to go to it instead of making a second row (NEO-219)" classname="Custom entry — a name that already exists under another brand offers to go to it instead of making a second row (NEO-219)" file=".maestro/flows/set-selector/custom-set-exists-elsewhere-offers-drill.yaml" time="217.211" timestamp="2026-09-10T02:56:09" status="SUCCESS">
+      <properties>
+        <property name="tags" value="set-selector"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

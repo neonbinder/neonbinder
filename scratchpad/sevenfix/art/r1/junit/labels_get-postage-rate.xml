@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="labels_get-postage-rate" tests="1" failures="0" time="67.264" timestamp="2026-09-10T02:47:52">
+    <testcase id="Shipping Labels — price a letter before buying it" name="Shipping Labels — price a letter before buying it" classname="Shipping Labels — price a letter before buying it" file=".maestro/flows/labels/get-postage-rate.yaml" time="67.236" timestamp="2026-09-10T02:47:52" status="SUCCESS">
+      <properties>
+        <property name="tags" value="postage"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

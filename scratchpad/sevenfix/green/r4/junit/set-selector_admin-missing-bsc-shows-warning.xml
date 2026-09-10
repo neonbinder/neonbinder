@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="set-selector_admin-missing-bsc-shows-warning" tests="1" failures="0" time="12.227" timestamp="2026-09-09T14:50:14">
+    <testcase id="Set Builder Gate — admin without BSC credentials sees the warning banner" name="Set Builder Gate — admin without BSC credentials sees the warning banner" classname="Set Builder Gate — admin without BSC credentials sees the warning banner" file=".maestro/flows/set-selector/admin-missing-bsc-shows-warning.yaml" time="12.212" timestamp="2026-09-09T14:50:14" status="SUCCESS">
+      <properties>
+        <property name="tags" value="set-selector"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

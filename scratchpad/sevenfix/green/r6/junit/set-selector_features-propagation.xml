@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="set-selector_features-propagation" tests="1" failures="0" time="348.875" timestamp="2026-09-09T14:26:51">
+    <testcase id="Set-level feature edit saves that single row (Saved toast) and does NOT cascade to a card with its own value (per-worker custom set)" name="Set-level feature edit saves that single row (Saved toast) and does NOT cascade to a card with its own value (per-worker custom set)" classname="Set-level feature edit saves that single row (Saved toast) and does NOT cascade to a card with its own value (per-worker custom set)" file=".maestro/flows/set-selector/features-propagation.yaml" time="348.718" timestamp="2026-09-09T14:26:51" status="SUCCESS">
+      <properties>
+        <property name="tags" value="set-selector"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

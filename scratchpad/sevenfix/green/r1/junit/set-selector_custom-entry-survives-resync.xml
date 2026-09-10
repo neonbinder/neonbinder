@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="set-selector_custom-entry-survives-resync" tests="1" failures="0" time="91.266" timestamp="2026-09-09T14:32:22">
+    <testcase id="Custom Entry Survives Re-Sync" name="Custom Entry Survives Re-Sync" classname="Custom Entry Survives Re-Sync" file=".maestro/flows/set-selector/custom-entry-survives-resync.yaml" time="91.232" timestamp="2026-09-09T14:32:22" status="SUCCESS">
+      <properties>
+        <property name="tags" value="set-selector"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

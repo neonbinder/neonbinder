@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="set-selector_parallel-grouping-cancel-discards" tests="1" failures="0" time="195.406" timestamp="2026-09-09T14:27:15">
+    <testcase id="Parallel Grouping — Cancel discards changes (reopen shows original); also closes via backdrop" name="Parallel Grouping — Cancel discards changes (reopen shows original); also closes via backdrop" classname="Parallel Grouping — Cancel discards changes (reopen shows original); also closes via backdrop" file=".maestro/flows/set-selector/parallel-grouping-cancel-discards.yaml" time="195.339" timestamp="2026-09-09T14:27:15" status="SUCCESS">
+      <properties>
+        <property name="tags" value="parallel-grouping"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

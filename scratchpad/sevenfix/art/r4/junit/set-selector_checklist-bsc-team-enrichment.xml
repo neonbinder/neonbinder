@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="set-selector_checklist-bsc-team-enrichment" tests="1" failures="0" time="62.495" timestamp="2026-09-10T02:49:43">
+    <testcase id="Checklist — a synced Base card carries its real BSC-resolved team into the card detail drawer (NEO-90, NEO-195)" name="Checklist — a synced Base card carries its real BSC-resolved team into the card detail drawer (NEO-90, NEO-195)" classname="Checklist — a synced Base card carries its real BSC-resolved team into the card detail drawer (NEO-90, NEO-195)" file=".maestro/flows/set-selector/checklist-bsc-team-enrichment.yaml" time="62.435" timestamp="2026-09-10T02:49:43" status="SUCCESS">
+      <properties>
+        <property name="tags" value="set-selector"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

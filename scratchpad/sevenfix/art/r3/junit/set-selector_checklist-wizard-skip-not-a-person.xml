@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="set-selector_checklist-wizard-skip-not-a-person" tests="1" failures="0" time="203.848" timestamp="2026-09-10T02:54:03">
+    <testcase id="Entity review — Skip marks a name as not a person, and the footer skip decides every row that is left, lookups included" name="Entity review — Skip marks a name as not a person, and the footer skip decides every row that is left, lookups included" classname="Entity review — Skip marks a name as not a person, and the footer skip decides every row that is left, lookups included" file=".maestro/flows/set-selector/checklist-wizard-skip-not-a-person.yaml" time="203.784" timestamp="2026-09-10T02:54:03" status="SUCCESS">
+      <properties>
+        <property name="tags" value="set-selector"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

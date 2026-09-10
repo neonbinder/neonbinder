@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="profile_view-profile" tests="1" failures="0" time="4.329" timestamp="2026-09-10T03:03:32">
+    <testcase id="View Profile" name="View Profile" classname="View Profile" file=".maestro/flows/profile/view-profile.yaml" time="4.316" timestamp="2026-09-10T03:03:32" status="SUCCESS">
+      <properties>
+        <property name="tags" value="smoke, profile"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

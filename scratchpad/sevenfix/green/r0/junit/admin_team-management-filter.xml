@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="admin_team-management-filter" tests="1" failures="0" time="9.328" timestamp="2026-09-09T14:33:08">
+    <testcase id="Team Management — filtering to a name nothing matches reports no matches" name="Team Management — filtering to a name nothing matches reports no matches" classname="Team Management — filtering to a name nothing matches reports no matches" file=".maestro/flows/admin/team-management-filter.yaml" time="9.164" timestamp="2026-09-09T14:33:08" status="SUCCESS">
+      <properties>
+        <property name="tags" value="smoke, admin"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

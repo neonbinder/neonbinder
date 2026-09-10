@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="auth_sign-out" tests="1" failures="0" time="7.49" timestamp="2026-09-10T03:03:22">
+    <testcase id="Sign Out" name="Sign Out" classname="Sign Out" file=".maestro/flows/auth/sign-out.yaml" time="7.477" timestamp="2026-09-10T03:03:22" status="SUCCESS">
+      <properties>
+        <property name="tags" value="auth"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>
