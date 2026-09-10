@@ -280,7 +280,20 @@ stopped. Do not disarm until it has completed.
 
 ---
 
-## 6. Fixture teams and players
+## 6. Other scripted admin tasks that follow this pattern
+
+Same trust model, same arm-then-fire flag, each with its own flag name so a
+deployment armed for one cannot be mistaken for one armed for another:
+
+- [`neo236-split-team-locations.md`](./neo236-split-team-locations.md) —
+  `ALLOW_SPLIT_TEAM_LOCATIONS`, the one-shot Location / Name split.
+- [`neo254-backfill-player-links.md`](./neo254-backfill-player-links.md) —
+  `ALLOW_BACKFILL_PLAYER_LINKS`, the `cardChecklist.playerLinks` backfill.
+- [`neo254-prod-data-repair.md`](./neo254-prod-data-repair.md) —
+  `ALLOW_NEO254_REPAIR`, the seven targeted repairs of the 2026-09-10
+  production bulk load (`repairs/neo254ProdData:*`).
+
+## 7. Fixture teams and players
 
 There is no seeding function any more. `teams.seedTestTeams` was deleted in
 NEO-214 (Jason, 2026-09-04: *"we can use admin/teams and admin/players to
@@ -289,7 +302,7 @@ create teams and players"*). Create what a flow or a manual test needs through
 
 ---
 
-## 7. Triage
+## 8. Triage
 
 **"It says it is not armed."** §3 — the deployment does not have
 `ALLOW_RESET_SET_BUILDER_DATA=true`. Confirm you are pointed at the

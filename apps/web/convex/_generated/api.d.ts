@@ -77,6 +77,7 @@ import type * as preprocessAudience from "../preprocessAudience.js";
 import type * as preprocessCapacity from "../preprocessCapacity.js";
 import type * as publicProfile from "../publicProfile.js";
 import type * as repairSportHallOfFameQids from "../repairSportHallOfFameQids.js";
+import type * as repairs_neo254ProdData from "../repairs/neo254ProdData.js";
 import type * as seedTeamColors from "../seedTeamColors.js";
 import type * as selectorOptions from "../selectorOptions.js";
 import type * as selectorSyncMatch from "../selectorSyncMatch.js";
@@ -169,6 +170,7 @@ declare const fullApi: ApiFromModules<{
   preprocessCapacity: typeof preprocessCapacity;
   publicProfile: typeof publicProfile;
   repairSportHallOfFameQids: typeof repairSportHallOfFameQids;
+  "repairs/neo254ProdData": typeof repairs_neo254ProdData;
   seedTeamColors: typeof seedTeamColors;
   selectorOptions: typeof selectorOptions;
   selectorSyncMatch: typeof selectorSyncMatch;
