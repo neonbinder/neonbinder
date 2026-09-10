@@ -32,6 +32,11 @@ export const SECTIONS = [
   // in the order the data does: a card names a player, the player names teams.
   { label: "Players", path: "/admin/players" },
   { label: "Teams", path: "/admin/teams" },
+  // NEO-254. Straight after Teams, by the same "read in the order the data
+  // does" rule: a card names a player, the player names teams, and a franchise
+  // is the thread through several of those team rows. It sits before Leagues
+  // because it is a lens ON teams rather than the next thing up the pyramid.
+  { label: "Franchises", path: "/admin/franchises" },
   // NEO-240. After Teams for the same reason Players sits before it: the entity
   // tools read in the order the data does — a card names a player, the player
   // names teams, a team belongs to a league.

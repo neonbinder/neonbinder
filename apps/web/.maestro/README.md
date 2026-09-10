@@ -669,6 +669,36 @@ click-navigation becomes reliable and this convention can relax.
 
 ## Anything a flow drives with `pressKey` needs a unique, user-visible handle
 
+## Asserting inside a dialog: header and footer only, never the body
+
+**`maestro-web` scrolls with `window.scrollTo`, which cannot drive an inner
+`overflow-y-auto` box — so anything below the fold inside one is unreachable by
+any scroll a flow can perform.** The entity-review wizard is the shape that
+bites: a fixed-height flex column of a `shrink-0` header, a
+`flex-1 min-h-0 overflow-y-auto` body, and a pinned footer. The header and the
+footer are always on screen; the body is whatever height the current step wants,
+and on a tall step (a Possible-matches panel plus a whole New Team form) its
+lower half is simply gone.
+
+So: **assert only on the pinned header and footer.** They carry everything a
+flow needs — `Confirm New Players & Teams`, the `N of M reviewed` counter, and
+every decision control. Body content is for the operator to read.
+
+Two runs paid for this rule. CI 34007264279 killed a `tapOn` outright
+(`null cannot be cast to non-null type kotlin.Int`) when a step's primary action
+grew past the dialog's own bottom edge — which is why the decision controls now
+live in the footer. CI 34071657961 then failed
+`inserts-1996-score-one-nb-set-two-bsc-sources` on `Decided (1)`, a disclosure at
+the bottom of the body, with a count that was entirely correct; the header's
+`1 of N reviewed` is the same number (`decided` and `decidedRows` are the same
+`rows.filter(r => r.decision)`) and cannot move.
+
+The same rule applies to any inner scroller — a `max-h-*` picker group, the
+admin master lists — with the softer conclusion that you must get the target
+into the box's own visible slice (filter or narrow it) rather than scroll to it.
+
+## Anything a flow drives with `pressKey` needs a unique DOM id
+
 **maestro-web does not send the key to `document.activeElement`.** It runs
 `createXPathFromElement(document.activeElement)`, then RE-FINDS the element by
 that XPath and dispatches to whatever the XPath matches. The generator uses
@@ -736,11 +766,24 @@ Two corollaries worth knowing before you write the selector:
   handle Enter explicitly. Every other Enter in this suite is aimed at an
   `<input>` whose own handler does the work, which is why this only ever bites
   on buttons — and it is a second reason the fix belongs in product code.
-* **`id:` selectors are regex FINDS, not exact matches.** Maestro exposes an
-  element's `aria-label` as its `id` and matches it as an unanchored regular
-  expression — so `id: "Remove Topps"` also matches `Remove Topps Chrome`. When a
-  screen can hold two instances of the same control, give them labels that share
-  no substring, or anchor the matcher.
+* **Two controls whose labels share a prefix are a hazard — but anchor the
+  matcher, do not assume the match is loose.** This bullet used to say `id:`
+  selectors are unanchored FINDS, so that `id: "Remove Topps"` also matched
+  `Remove Topps Chrome`. That is not what the pinned CLI does: decompiling
+  `maestro.Filters` out of `~/.maestro/lib/maestro-client.jar` (2.8.0, the
+  version CI runs) shows `idMatches` and `textMatches` both calling Kotlin's
+  `Regex.matches(CharSequence)` — a FULL match of the whole attribute — and
+  `Orchestra` hands the pattern to `StringUtils.toRegexSafe` with no `.*`
+  wrapping. `id:` is checked twice, against the raw `resource-id` and against
+  its `substringAfterLast('/')`, and both are full matches. So `Remove Topps`
+  does NOT match `Remove Topps Chrome` on this version.
+
+  Something evidently bit whoever wrote the original — a different CLI version,
+  or another filter in the same selector — so treat the HAZARD as real and the
+  MECHANISM as the decompiled one: when a screen can hold two instances of the
+  same control, give them labels that share no substring, or write the matcher
+  anchored (`^…$`), which is a no-op under full-match semantics and correct
+  under either. Do not reach for `.*…*` defensively; that genuinely is loose.
 
 ## Launching a flow: always gate on the destination heading
 

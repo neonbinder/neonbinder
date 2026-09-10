@@ -201,6 +201,60 @@ function qidFromIri(iri: string): string | undefined {
 }
 
 /**
+ * NEO-254 — the label service's language list, in ONE place.
+ *
+ * ## Why `en,mul` and not `en`
+ *
+ * Wikidata has been migrating names that are the same in every language into
+ * the `mul` (multilingual) label since 2024, and REMOVING the per-language
+ * copies as it goes. `wikibase:label` does not fall back across languages
+ * unless the list says so, so a query asking only for `en` gets nothing for
+ * such an entity — and the service's documented behaviour when it finds no
+ * label is to hand back the bare QID as the label.
+ *
+ * That is not hypothetical. Q1215892 is the National Hockey League; its name
+ * lives in `mul` and it has no `en` label at all, so `?leagueLabel` came back
+ * as the string "Q1215892" and the review wizard offered to create a league
+ * literally named that (Jason, preview test on California Golden Seals
+ * Q849315). Asking for `en,mul` fixes it at the source for every entity in
+ * that migration — which is a growing share of them.
+ *
+ * Order matters and `en` stays first: where both exist, the English label is
+ * the one that has been curated for an English audience.
+ *
+ * A constant rather than three copies of the string, for the reason
+ * `lib/players/wikidata-id.ts` gives about `Q<digits>`: three copies of a rule
+ * are three chances for the next query added here to be written against the
+ * old one. `wikidata.labelService.test.ts` asserts nothing in this file builds
+ * a label-service block any other way.
+ */
+const LABEL_SERVICE_LANGUAGES = "en,mul";
+
+/**
+ * The `SERVICE wikibase:label` block every query here shares.
+ */
+const LABEL_SERVICE = `SERVICE wikibase:label { bd:serviceParam wikibase:language "${LABEL_SERVICE_LANGUAGES}". }`;
+
+/**
+ * NEO-254 — a label-service value, or undefined when it handed back a QID.
+ *
+ * The second line of defence behind `LABEL_SERVICE`. `en,mul` finds a name for
+ * everything that HAS one somewhere, but an entity with no label in either
+ * still yields the bare QID, and "Q127635" must never reach an operator as a
+ * name — it is not a name, and offering to create a row called that is how a
+ * junk row gets made with the app's own encouragement.
+ *
+ * Undefined rather than the QID, so every caller's existing "no value" branch
+ * handles it: the wizard shows its existing-league pills and "No league"
+ * instead of a `Create Q1215892` pill.
+ */
+function labelValue(binding?: SparqlBinding): string | undefined {
+  const value = binding?.value;
+  if (value === undefined) return undefined;
+  return isWikidataQid(value) ? undefined : value;
+}
+
+/**
  * Parse a Wikidata date binding (xsd:dateTime, e.g. "2011-01-01T00:00:00Z")
  * to a 4-digit year. Wikidata sometimes uses "+0000-01-01" for unknown
  * precision — those return undefined.
@@ -273,6 +327,17 @@ function yearFromBinding(binding?: SparqlBinding): number | undefined {
  * The third has no qualifiers at all, and `players.teamYears` requires
  * `fromYear`, so it cannot become a stint. See `CAREER_TEAM_STRATEGIES` below
  * for why we do NOT synthesize one from P2031/P2032.
+ *
+ * ## Career teams are not always the player's sport
+ *
+ * The second is a BASKETBALL team (its `P641` is Q5372). Gwynn is a baseball
+ * player, and before NEO-254 every `P54` became a stint regardless, so
+ * enriching him minted a Baseball-sport team "San Diego State Aztecs men's
+ * basketball" and, through that team's `P118`, a Baseball-sport league "NCAA
+ * Division I men's basketball" (Q94861615). The detail query now also binds
+ * the team's own `P641`, and `membershipIsOutsidePlayerSport` drops a
+ * membership whose team sport is known AND is not the player's. A team with
+ * no `P641` at all is kept: an unknown sport is not evidence of a wrong one.
  */
 
 /**
@@ -450,6 +515,30 @@ function safeSportQid(
   if (isWikidataQid(sportQid)) return sportQid;
   console.warn(JSON.stringify({ msg: "wikidata_sport_qid_not_a_qid", where }));
   return undefined;
+}
+
+/**
+ * NEO-254 — is this `P54` membership on a team of a DIFFERENT sport from the
+ * player's? True only when both sides are known QIDs and they differ.
+ *
+ * Both absences answer false on purpose:
+ *  - no `teamSportQid`: the team has no `P641`. Unknown is not evidence, and
+ *    dropping every un-annotated club would lose real memberships.
+ *  - no `playerSportQid` (or one that is not a QID): the sport row gives us
+ *    nothing to compare against, so nothing is filtered. Today this cannot be
+ *    reached from `lookupPlayerEnrichment` — `findPlayerQid` refuses to run
+ *    without the same QID — but the filter must not become a silent "drop
+ *    everything" if that guard is ever relaxed.
+ *
+ * Exported so the absent-sport case can be pinned directly.
+ */
+export function membershipIsOutsidePlayerSport(
+  teamSportQid: string | undefined,
+  playerSportQid: string | undefined,
+): boolean {
+  if (teamSportQid === undefined || !isWikidataQid(teamSportQid)) return false;
+  if (playerSportQid === undefined || !isWikidataQid(playerSportQid)) return false;
+  return teamSportQid !== playerSportQid;
 }
 
 /**
@@ -724,6 +813,21 @@ export interface PlayerLookupResult {
 export interface TeamLookupResult {
   wikidataId?: string;
   league?: string;
+  /**
+   * NEO-254 — the LEAGUE's own Wikidata QID, off the same P118 statement the
+   * label came from.
+   *
+   * Carried for the reason `careerTeams[].wikidataId` is (NEO-236): the review
+   * wizard now stages a real league row for a league we do not hold, and that
+   * row needs its own lookup. Searching EntitySearch for "National Hockey
+   * League" is a guess that can land on a video game or a defunct namesake;
+   * the QID Wikidata just handed us for this team's league is the same
+   * competition by construction.
+   *
+   * LINKAGE, not truth: it selects which upstream record to read, and nothing
+   * user-facing is keyed on it.
+   */
+  leagueWikidataId?: string;
   /** NEO-236: the place part of the team name. Location, not city. */
   location?: string;
   yearsActive?: { from: number; to?: number };
@@ -797,12 +901,13 @@ export async function lookupPlayerEnrichment(
   // discovered shape never means remembering to edit both the query and the
   // parser. They are omitted entirely for a sport with no usable Hall QID.
   const detailQuery = `
-    SELECT ?team ?teamLabel ?start ?end ${HALL_OF_FAME_STRATEGIES.map((s) => `?${s.binding} `).join("")}?descr ?dob ?title WHERE {
+    SELECT ?team ?teamLabel ?teamSport ?start ?end ${HALL_OF_FAME_STRATEGIES.map((s) => `?${s.binding} `).join("")}?descr ?dob ?title WHERE {
       OPTIONAL {
         wd:${qid} p:P54 ?membership .
         ?membership ps:P54 ?team .
         OPTIONAL { ?membership pq:P580 ?start . }
         OPTIONAL { ?membership pq:P582 ?end . }
+        OPTIONAL { ?team wdt:P641 ?teamSport . }
       }
 ${hallOfFameSparqlBlocks(qid, hofQid)}
       OPTIONAL {
@@ -815,7 +920,7 @@ ${hallOfFameSparqlBlocks(qid, hofQid)}
                  schema:isPartOf <https://en.wikipedia.org/> ;
                  schema:name ?title .
       }
-      SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
+      ${LABEL_SERVICE}
     }
   `;
   const result = await runSparql(detailQuery);
@@ -856,6 +961,18 @@ ${hallOfFameSparqlBlocks(qid, hofQid)}
   // for one stint (Michael Jordan has North Carolina twice at 1981-1984, at
   // different date precisions), and those still arrive as two identical rows.
   const seenStints = new Set<string>();
+  // NEO-254: memberships on a team of another sport, keyed by the same stint
+  // key. A team can carry SEVERAL `P641` values (a multi-sport athletic
+  // program), and they arrive as one row per sport, so a membership is only
+  // truly outside the player's sport if NO row for it matches. A mismatching
+  // row parks the stint here; a later matching (or un-annotated) row accepts
+  // it through the ordinary path and removes it; whatever is still parked
+  // after the loop is skipped and logged, once per stint.
+  const playerSportQid = sport.wikidata?.sportQid;
+  const parkedOutsideSport = new Map<
+    string,
+    { teamWdId: string; teamLabel: string; teamSportQid: string }
+  >();
 
   for (const row of result.results.bindings) {
     // NEO-212 security review: `qidFromIri` now answers `undefined` for an IRI
@@ -867,8 +984,23 @@ ${hallOfFameSparqlBlocks(qid, hofQid)}
     const teamWdId = row.team ? qidFromIri(row.team.value) : undefined;
     if (row.team && row.teamLabel && teamWdId) {
       const stintKey = `${teamWdId}|${row.start?.value ?? ""}|${row.end?.value ?? ""}`;
-      if (!seenStints.has(stintKey)) {
+      const teamSportQid = row.teamSport ? qidFromIri(row.teamSport.value) : undefined;
+      if (
+        !seenStints.has(stintKey) &&
+        membershipIsOutsidePlayerSport(teamSportQid, playerSportQid)
+      ) {
+        // NEO-254: not accepted, not yet rejected — see `parkedOutsideSport`.
+        if (!parkedOutsideSport.has(stintKey)) {
+          parkedOutsideSport.set(stintKey, {
+            teamWdId,
+            teamLabel: row.teamLabel.value,
+            // `membershipIsOutsidePlayerSport` answered true, so it is a QID.
+            teamSportQid: teamSportQid as string,
+          });
+        }
+      } else if (!seenStints.has(stintKey)) {
         seenStints.add(stintKey);
+        parkedOutsideSport.delete(stintKey);
         // Wikidata's label service returns the bare QID as the label
         // when no label exists in the requested language (en).
         // Q127635 turned up via the Yakult Swallows lineage — a real
@@ -880,7 +1012,7 @@ ${hallOfFameSparqlBlocks(qid, hofQid)}
         // NEO-235: hoisted ABOVE the dated/undated split — an unlabelled team
         // is unusable in `undatedCareerTeams` for exactly the same reason it is
         // unusable as a stint (the operator would be shown "Q127635").
-        const labelLooksLikeQid = /^Q\d+$/.test(row.teamLabel.value);
+        const labelLooksLikeQid = isWikidataQid(row.teamLabel.value);
         if (labelLooksLikeQid) {
           // NEO-208: structured for the same reason as the no-match log
           // above — `name` is operator input.
@@ -930,6 +1062,23 @@ ${hallOfFameSparqlBlocks(qid, hofQid)}
     if (enwikiTitle === undefined && row.title?.value) enwikiTitle = row.title.value;
   }
 
+  // NEO-254: one line per membership dropped for being another sport's team
+  // — the Gwynn basketball case. Structured, and the label is truncated, for
+  // the reasons `career_team_unmatched` gives: `name` is operator input and
+  // the label is third-party text of no fixed length.
+  for (const parked of parkedOutsideSport.values()) {
+    console.log(
+      JSON.stringify({
+        msg: "wikidata_player_team_membership_skipped_other_sport",
+        name,
+        team: parked.teamLabel.slice(0, MAX_LOGGED_TEAM_NAME_LENGTH),
+        teamWdId: parked.teamWdId,
+        teamSportQid: parked.teamSportQid,
+        playerSportQid,
+      }),
+    );
+  }
+
   // No HoF row matched, but the player IS in our HoF-aware sports — we
   // can confidently say not-HoF. Otherwise leave undefined so unsupported
   // sports don't claim a definitive answer.
@@ -963,8 +1112,22 @@ ${hallOfFameSparqlBlocks(qid, hofQid)}
     careerTeams: sortTeamYears(careerTeams),
     // NEO-235: alphabetical, and omitted entirely when empty so a player with
     // nothing undated does not carry an empty array through the review row.
+    //
+    // NEO-254: deduped by LABEL on the way out, having been collected by QID.
+    // The QID key is what collapses one membership repeated across the
+    // cross-product rows, and it has to stay that key — two genuinely
+    // different clubs can share a label. But the consumers downstream are all
+    // name-shaped: `players.undatedCareerTeams` stores names, the wizard keys
+    // its list items by name, and two identical strings there mean duplicate
+    // React keys and two forms opening on one click. A label collision is
+    // rare, and when it happens one entry the operator can date is a better
+    // outcome than two they cannot tell apart.
     ...(undatedByTeamQid.size > 0
-      ? { undatedCareerTeams: Array.from(undatedByTeamQid.values()).sort() }
+      ? {
+          undatedCareerTeams: Array.from(
+            new Set(undatedByTeamQid.values()),
+          ).sort(),
+        }
       : {}),
     isHallOfFame,
     ...(description !== undefined ? { description } : {}),
@@ -1159,6 +1322,17 @@ export const enrichPlayer = internalAction({
           // Career teams inherit the player's sport by REFERENCE, so they
           // can no longer land under a differently-cased duplicate.
           sportId: player.sportId,
+          /*
+           * NEO-254 — the STINT's year, not the set's.
+           *
+           * This lookup is not about a card; it is about a season the player
+           * actually played. A 1979 stint at a two-era club belongs to the
+           * 1972-1996 row, and the 2011- row did not exist yet — so the year
+           * that resolves it is the year the stint started. Without this the
+           * name matched several rows, the lookup answered null, and the stint
+           * was dropped from `teamYears` with a `career_team_unmatched` log.
+           */
+          setYear: ct.fromYear,
         },
       );
       if (!teamId) {
@@ -1296,7 +1470,7 @@ export async function lookupTeamEnrichment(
       OPTIONAL { wd:${qid} wdt:P118 ?league . }
       OPTIONAL { wd:${qid} wdt:P571 ?inception . }
       OPTIONAL { wd:${qid} wdt:P576 ?dissolved . }
-      SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
+      ${LABEL_SERVICE}
     }
     LIMIT 1
   `;
@@ -1309,7 +1483,12 @@ export async function lookupTeamEnrichment(
 
   return {
     wikidataId: qid,
-    league: espnInfo?.league ?? row?.leagueLabel?.value,
+    league: espnInfo?.league ?? labelValue(row?.leagueLabel),
+    // NEO-254 — the P118 value's own id, when the binding parses as one. Taken
+    // from Wikidata even when ESPN supplied the league NAME: the two agree
+    // about which competition this is, and only Wikidata can say which record
+    // it is.
+    ...(row?.league ? { leagueWikidataId: qidFromIri(row.league.value) } : {}),
     // ESPN or nothing — see the note on the SPARQL above.
     location: espnInfo?.location,
     yearsActive,
@@ -1407,6 +1586,32 @@ export const enrichTeam = internalAction({
 });
 
 /**
+ * NEO-254 — the subset of a lookup result an `entityReviewQueue` row can hold.
+ *
+ * `enrichmentValidator` is a closed object, so a field the lookup returns and
+ * the row has no column for is not ignored — it is a runtime refusal on every
+ * function that returns the row, which reads to an operator as the wizard
+ * failing to open. (That exact failure shipped once already this ticket, when
+ * `activeInSetYear` was added to the schema and not to the validator.)
+ *
+ * Only the LEAGUE shape needs narrowing today: `lookupLeagueEnrichment`
+ * returns `country` for context, and `leagues` has no column for it. The other
+ * two kinds pass through whole, as they always have.
+ */
+function reviewEnrichmentFor(
+  kind: "player" | "team" | "league",
+  result: PlayerLookupResult | TeamLookupResult | LeagueLookupResult,
+): Record<string, unknown> {
+  if (kind !== "league") return result as unknown as Record<string, unknown>;
+  const league = result as LeagueLookupResult;
+  return {
+    wikidataId: league.wikidataId,
+    ...(league.abbreviation ? { abbreviation: league.abbreviation } : {}),
+    ...(league.yearsActive ? { yearsActive: league.yearsActive } : {}),
+  };
+}
+
+/**
  * NEO-99: one review row's Wikidata preview lookup — the `wikidataPool` work
  * item that replaced the old chained `processEntityReviewQueue`.
  *
@@ -1453,16 +1658,38 @@ export const runEntityReviewLookup = internalAction({
         ? null
         : row.kind === "player"
           ? await lookupPlayerEnrichment(row.name, sportCtx)
-          : // NEO-236: a row staged off a player's career list carries the QID
-            // Wikidata attached to that P54 membership. Reading THAT record is
-            // not a search — it is the same club by construction, which is what
-            // gets "Sydney Blue Sox" its league instead of a null match from an
-            // EntitySearch that has no `wdt:P641` to filter on.
-            await lookupTeamEnrichment(row.name, sportCtx, row.source?.wikidataId);
+          : row.kind === "league"
+            ? /*
+               * NEO-254 — a staged New League step, pre-filled.
+               *
+               * Without this the step arrived carrying a name and nothing
+               * else, which is the very shape the feature exists to stop an
+               * operator having to produce by hand. `source.wikidataId` is the
+               * league QID off the team's own P118 statement, so this reads
+               * the right record rather than searching for a label.
+               *
+               * `country` is DROPPED on the way out: `lookupLeagueEnrichment`
+               * returns it for context, `leagues` has no column for it, and
+               * the New League step does not render it. Spreading the whole
+               * result would put a field on the row that nothing can store —
+               * and `enrichmentValidator` would refuse it at runtime, which is
+               * the wizard failing to open.
+               */
+              await lookupLeagueEnrichment(
+                row.name,
+                sportCtx.wikidata?.sportQid,
+                row.source?.wikidataId,
+              )
+            : // NEO-236: a row staged off a player's career list carries the QID
+              // Wikidata attached to that P54 membership. Reading THAT record is
+              // not a search — it is the same club by construction, which is what
+              // gets "Sydney Blue Sox" its league instead of a null match from an
+              // EntitySearch that has no `wdt:P641` to filter on.
+              await lookupTeamEnrichment(row.name, sportCtx, row.source?.wikidataId);
       await ctx.runMutation(internal.entityReviewQueue.applyLookupResult, {
         id: args.rowId,
         status: result ? "ready" : "error",
-        enrichment: result ?? undefined,
+        enrichment: result ? reviewEnrichmentFor(row.kind, result) : undefined,
       });
     } catch (error) {
       console.error(`[entity-review-lookup] lookup for ${args.rowId} failed:`, error);
@@ -1517,8 +1744,26 @@ export interface LeagueLookupResult {
 export async function lookupLeagueEnrichment(
   name: string,
   sportQid?: string,
+  /**
+   * NEO-254 — the league's QID when the caller already holds it.
+   *
+   * A staged New League step is raised off a team's P118 statement, so the
+   * league's own id is already in hand. Reading THAT record is not a search:
+   * it is the same competition by construction, where an EntitySearch for
+   * "National Hockey League" can land on a video game or a defunct namesake.
+   * Same argument, and the same shape, as `lookupTeamEnrichment`'s knownQid.
+   *
+   * Validated rather than trusted: the value crossed a trust boundary (it was
+   * read out of a SPARQL response and stored on a throwaway review row) and it
+   * is interpolated into a query. Anything that is not `Q<digits>` is not an
+   * id, and the name search runs instead.
+   */
+  knownQid?: string,
 ): Promise<LeagueLookupResult | null> {
-  const qid = await findLeagueQid(name, sportQid);
+  const qid =
+    knownQid && isWikidataQid(knownQid)
+      ? knownQid
+      : await findLeagueQid(name, sportQid);
   if (!qid) {
     // Structured for the same reason as the player/team no-match lines
     // (NEO-208): a league name is operator input and must not be able to shape
@@ -1551,7 +1796,7 @@ export async function lookupLeagueEnrichment(
       OPTIONAL { wd:${qid} wdt:P571 ?inception . }
       OPTIONAL { wd:${qid} wdt:P576 ?dissolved . }
       OPTIONAL { wd:${qid} wdt:P17 ?country . }
-      SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
+      ${LABEL_SERVICE}
     }
     ORDER BY ?inception ?countryLabel
     LIMIT 1
@@ -1569,7 +1814,7 @@ export async function lookupLeagueEnrichment(
     wikidataId: qid,
     abbreviation: row?.shortName?.value,
     yearsActive: fromYear !== undefined ? { from: fromYear, to: toYear } : undefined,
-    country: row?.countryLabel?.value,
+    country: labelValue(row?.countryLabel),
   };
 }
 

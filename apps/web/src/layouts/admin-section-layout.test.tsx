@@ -57,6 +57,9 @@ describe("AdminSectionLayout", () => {
       ["Set Builder", "/admin/set-builder"],
       ["Players", "/admin/players"],
       ["Teams", "/admin/teams"],
+      // NEO-254 — a lens on team rows, so it sits with Teams rather than
+      // further up the pyramid.
+      ["Franchises", "/admin/franchises"],
       ["Leagues", "/admin/leagues"],
       ["Pipeline Runs", "/admin/pipeline-runs"],
     ]);

@@ -3,6 +3,7 @@ import { useQuery } from "convex/react";
 import { Input } from "../primitives/Input";
 import { api } from "../../convex/_generated/api";
 import { teamFullName } from "../../lib/teams/team-name";
+import { eraLabel, teamOptionLabel } from "../../lib/teams/team-era";
 import type { Id } from "../../convex/_generated/dataModel";
 import {
   nameHasQueryPrefix,
@@ -84,16 +85,48 @@ export default function TeamPicker({
   // Convex deduplicates this between sibling pickers on the same page.
   const selectedRows = useQuery(api.teams.getManyByIds, { ids: value });
 
-  // Candidate pool. `list` caps at 100 by default; for the per-sport
-  // typeahead that's plenty (every league hits well below). The pool
-  // is filtered + ranked client-side in the popover.
-  const candidates = useQuery(
+  /**
+   * The "nothing typed yet" pool. Filtered and ranked client-side below.
+   *
+   * Deliberately small and deliberately NOT the thing that finds a team: it is
+   * the handful of rows the popover shows before the operator types.
+   */
+  const browsePool = useQuery(
     api.teams.list,
     sportId ? { sportId, limit: 500 } : { limit: 500 },
   );
 
-  const [popoverOpen, setPopoverOpen] = useState(false);
+  /**
+   * NEO-254 — once anything is TYPED, the server does the finding.
+   *
+   * This screen used to filter that 500-row pool client-side, and the pool is
+   * an unordered `.take(500)` off the sport index. That was fine at a few dozen
+   * teams per sport and is wrong at the volumes the preload produces: soccer
+   * alone loads 8,305 teams into one sport, so 7,805 of them were unreachable
+   * from this box — and worse, unreachable teams made `sameNameTeams` empty, so
+   * the create row offered to make a team NB already held. A picker that cannot
+   * find a row is a picker that mints duplicates.
+   *
+   * `teams.search` is the same `search_name` index `CareerTeamEntry` already
+   * types against, filtered by sport server-side, so what comes back is ranked
+   * against the whole table rather than against whichever 500 rows the index
+   * walked first.
+   */
   const [query, setQuery] = useState("");
+  const searched = useQuery(
+    api.teams.search,
+    query.trim()
+      ? { query: query.trim(), limit: 25, ...(sportId ? { sportId } : {}) }
+      : "skip",
+  );
+  /**
+   * One pool for everything downstream — the option rows, the exact-match
+   * hint, the create offer. They must all see the same rows, or the create
+   * offer starts contradicting the list directly above it.
+   */
+  const candidates = query.trim() ? searched : browsePool;
+
+  const [popoverOpen, setPopoverOpen] = useState(false);
   const [highlightIdx, setHighlightIdx] = useState(0);
   /**
    * NEO-236 — the New Team dialog is open over this picker.
@@ -221,18 +254,31 @@ export default function TeamPicker({
   // whole point of the split being safe to roll out row by row.
   //
   // NEO-253: the DEDUP key here, sorting and all, unlike the filter above —
-  // this must answer exactly as `findTeamByFullName` will, or Create is offered
-  // for a row the server would simply return.
-  const hasExactMatch = useMemo(() => {
+  // this must answer exactly as the server's own identity lookup will, or
+  // Create is offered for a row the server would simply return.
+  //
+  // NEO-254 — and "an exact match exists" is no longer the same question as
+  // "creating would be a duplicate".
+  //
+  // A sport can hold several rows under one name, told apart by their era: the
+  // 1972-1996 Winnipeg Jets and the 2011- Winnipeg Jets. Suppressing Create
+  // whenever the NAME exists would make the second one unreachable from this
+  // picker — the operator would see one Jets row, not recognise it as the wrong
+  // franchise, and attach a card to it.
+  //
+  // So Create stays on offer, and `sameNameTeams` below is what stops that
+  // being a duplicate-minting trap: the rows already holding the name are named
+  // on the create row, and `teams.findOrCreate` refuses a second era until the
+  // operator confirms it. The picker offers; the server insists.
+  const sameNameTeams = useMemo(() => {
     const q = normalizeEntityName(query.trim());
-    if (!q || !candidates) return true;
-    return candidates.some((c) => normalizeEntityName(teamFullName(c)) === q);
+    if (!q || !candidates) return [];
+    return candidates.filter((c) => normalizeEntityName(teamFullName(c)) === q);
   }, [query, candidates]);
 
   // NEO-96: no sport row → no create. A team must reference a real sport; the
   // old `sport ?? ""` fallback produced orphaned rows.
-  const showCreateOption =
-    query.trim().length > 0 && !hasExactMatch && !!sportId;
+  const showCreateOption = query.trim().length > 0 && !!sportId;
 
   /**
    * NEO-236 — open the New Team dialog on the typed name.
@@ -451,13 +497,24 @@ export default function TeamPicker({
                 // what is announced, and what a Maestro selector targets — so
                 // those three can never disagree about a team's name.
                 const fullName = teamFullName(m);
+                /**
+                 * NEO-254 — the era, which for two same-name rows is the only
+                 * thing that tells them apart.
+                 *
+                 * It goes into the accessible name as well as the visible row:
+                 * two "Add Winnipeg Jets" options are two identical handles for
+                 * two different franchises, both to a screen reader and to a
+                 * Maestro `tapOn`. `teamOptionLabel` leaves an undated row as
+                 * its plain name, so nothing changes for the 99% case.
+                 */
+                const optionLabel = teamOptionLabel(fullName, m.yearsActive);
                 return (
                   <button
                     key={m._id}
                     type="button"
                     onClick={() => addChip(m._id)}
                     onMouseEnter={() => setHighlightIdx(idx)}
-                    aria-label={`Add ${fullName}`}
+                    aria-label={`Add ${optionLabel}`}
                     role="option"
                     aria-selected={idx === highlightIdx}
                     className={`w-full text-left px-2 py-1 text-sm rounded ${
@@ -467,6 +524,16 @@ export default function TeamPicker({
                     }`}
                   >
                     {fullName}
+                    {/* NEO-254: tabular figures, matching the era wherever else
+                        it decides which row you are looking at (Team
+                        Management's list, the franchise thread). Before the
+                        league, because it is identity and the league is
+                        context. */}
+                    {m.yearsActive && (
+                      <span className="ml-2 font-mono text-[10px] tabular-nums text-gray-600 dark:text-gray-400">
+                        {eraLabel(m.yearsActive)}
+                      </span>
+                    )}
                     {/* League only. The location is no longer a separate fact
                         about the row — it is the first half of the name printed
                         immediately to the left, and repeating it read as a
@@ -513,6 +580,25 @@ export default function TeamPicker({
                 }`}
               >
                 + New team “{query.trim()}”…
+                {/* NEO-254 — the create row now shows when the name is already
+                    taken, because Create is no longer hidden in that case.
+                    
+                    A sport can hold two teams under one name (the two Winnipeg
+                    Jets), so suppressing this row whenever the name existed
+                    made the second franchise unreachable from the picker. It
+                    stays on offer and says what it is about to sit beside; the
+                    server refuses a second era until the operator confirms it
+                    in the dialog. Offer here, insist there. */}
+                {sameNameTeams.length > 0 && (
+                  <span className="mt-0.5 block text-[10px] text-gray-600 dark:text-gray-400">
+                    Already here:{" "}
+                    <span className="font-mono tabular-nums">
+                      {sameNameTeams
+                        .map((t) => eraLabel(t.yearsActive) || "no years")
+                        .join(", ")}
+                    </span>
+                  </span>
+                )}
               </button>
             )}
           </div>

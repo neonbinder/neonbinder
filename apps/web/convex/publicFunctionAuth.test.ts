@@ -552,6 +552,107 @@ describe("NEO-240: the League Management surface is admin-gated", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// NEO-254 — the Franchise Management public surface
+// ---------------------------------------------------------------------------
+
+describe("NEO-254: the Franchise surface is gated as intended", () => {
+  /**
+   * Four public functions arrived with `/admin/franchises`, and they split two
+   * ways on purpose:
+   *
+   *  - `findOrCreate` and `save` MINT AND RENAME a globally-shared row, so they
+   *    are admin, the same gate `teams.findOrCreate` carries and for the same
+   *    reason: sign-up is open, so "signed in" is no bound on who may create
+   *    shared rows.
+   *  - `get` is admin too, matching `leagues.getByIdParam`: the only screen
+   *    that opens a franchise is an editor.
+   *  - `list` is the softer SIGNED-IN read, matching `leagues.list` and
+   *    `teams.listForPicker` — a franchise is a name and a sport with no user
+   *    content on it, so the gate is about cost, and it returns EMPTY rather
+   *    than throwing so a signed-out render is a quiet no-op.
+   *
+   * Called with arguments that are valid but inert: the gate runs before any of
+   * them is used, so a refusal here cannot be argument validation wearing a
+   * guard's clothes.
+   */
+  test.each([
+    [
+      "franchises.get",
+      // A string that is deliberately NOT an id, for the reason
+      // `leagues.getByIdParam` is called that way above.
+      (t: ReturnType<typeof convexTest>) =>
+        t.query(api.franchises.get, { id: "not-an-id" }),
+    ],
+    [
+      "franchises.findOrCreate",
+      (t: ReturnType<typeof convexTest>, sportId: Id<"selectorOptions">) =>
+        t.mutation(api.franchises.findOrCreate, { name: "Titans", sportId }),
+    ],
+  ] as const)("%s refuses a signed-in non-admin", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await expect(call(t.withIdentity(SIGNED_IN), sportId)).rejects.toThrow();
+    await expect(call(t, sportId)).rejects.toThrow();
+  });
+
+  test("franchises.save refuses a signed-in non-admin", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const franchiseId = await t.run(async (ctx) =>
+      ctx.db.insert("franchises", {
+        name: "Titans",
+        nameNormalized: "titans",
+        sportId,
+        lastUpdated: 1,
+      }),
+    );
+    await expect(
+      t
+        .withIdentity(SIGNED_IN)
+        .mutation(api.franchises.save, { id: franchiseId, name: "Oilers" }),
+    ).rejects.toThrow();
+  });
+
+  test("franchises.list is signed-in and returns empty when signed out", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await t.run(async (ctx) =>
+      ctx.db.insert("franchises", {
+        name: "Titans",
+        nameNormalized: "titans",
+        sportId,
+        lastUpdated: 1,
+      }),
+    );
+
+    expect((await t.query(api.franchises.list, {})).franchises).toEqual([]);
+    expect(
+      (await t.withIdentity(SIGNED_IN).query(api.franchises.list, {})).franchises.map(
+        (r) => r.name,
+      ),
+    ).toEqual(["Titans"]);
+  });
+
+  test("every bulkLoad mutation is declared internalMutation, not mutation", () => {
+    // Same reasoning as the reset batches below: these four write in bulk with
+    // NO identity check, because a `npx convex run` call carries none. The
+    // arming flag is what guards them, and that trade is only sound while they
+    // stay unreachable from a client — so the declaration keyword is
+    // load-bearing here in a way it is not elsewhere.
+    const src = readFileSync(join(__dirname, "bulkLoad.ts"), "utf8");
+    for (const fn of [
+      "upsertLeagues",
+      "upsertFranchises",
+      "upsertTeams",
+      "upsertPlayers",
+    ]) {
+      expect(src).toContain(`export const ${fn} = internalMutation({`);
+      expect(src).not.toContain(`export const ${fn} = mutation(`);
+    }
+  });
+});
+
 describe("NEO-214: the Set Builder admin panel and its client-callable functions are gone", () => {
   /**
    * Jason, 2026-09-03: "Those should just not be there in production. If we

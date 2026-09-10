@@ -8,6 +8,7 @@ import {
   ActionCtx,
   QueryCtx,
 } from "./_generated/server";
+import type { FunctionReference } from "convex/server";
 import { ConvexError, v } from "convex/values";
 import { api, internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
@@ -116,8 +117,16 @@ import {
   platformsServingLevel,
 } from "./platformLevels";
 import { findSportForSelectorOption } from "./cardChecklist";
+// NEO-254: the set's year — the evidence that turns "two same-name players"
+// back into one. See convex/lib/selectorAncestry.ts.
+import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "./features/cardAttention";
-import { normalizePlayerName } from "./players";
+import {
+  createCardYearTeamCache,
+  narrowSameNamePlayersByCardYear,
+  normalizePlayerName,
+  sameNamePlayers,
+} from "./players";
 import { normalizeTeamName } from "./teams";
 // NEO-253: the shared normalisation core, imported rather than transcribed —
 // this file used to carry two separate hand copies of it.
@@ -126,8 +135,16 @@ import { normalizeEntityName } from "../lib/entities/normalize-name";
 // for every name that leaves this file; `teamRowFields`/`findTeamByFullName`
 // are the ONE place a team row's identity fields are derived and looked up.
 import { teamFullName } from "../lib/teams/team-name";
-import { findTeamByFullName, teamRowFields } from "./lib/teamRow";
-import { findOrCreateLeague, resolveDefaultLeagueId } from "./leagues";
+import {
+  findCollidingTeams,
+  resolveTeamForSetYear,
+  teamRowFields,
+} from "./lib/teamRow";
+import {
+  findOrCreateLeague,
+  normalizeLeagueName,
+  resolveDefaultLeagueId,
+} from "./leagues";
 import {
   cardPlatformDataValidator,
   cardPlatformWireDataValidator,
@@ -1011,6 +1028,87 @@ export const findSkippedEntityNames = internalQuery({
 });
 
 /**
+ * NEO-254 — the team names printed on one incoming card.
+ *
+ * `teams[]` is the current shape; `team` is the legacy single-value column
+ * (NEO-26), read only when `teams[]` is empty so a row carrying both is not
+ * counted twice. Trimmed and deduped, because these become lookup keys.
+ */
+function cardTeamNames(card: {
+  team?: string;
+  teams?: string[];
+}): string[] {
+  const named = (card.teams ?? []).map((t) => t.trim()).filter(Boolean);
+  if (named.length === 0 && card.team?.trim()) named.push(card.team.trim());
+  return Array.from(new Set(named));
+}
+
+/**
+ * NEO-254 — record "this player appeared on a card carrying these teams".
+ *
+ * ## Keyed by the NORMALIZED name
+ *
+ * The same person is routinely spelled two ways across one checklist — "J.T.
+ * Realmuto" on the base card, "JT Realmuto" on the subset — and `players`
+ * dedupes them into ONE row. Keying this map by the raw string would file the
+ * two spellings apart, so a lookup for whichever spelling the consumer happens
+ * to hold would see only half the teams. Both consumers already have the
+ * normalized form to hand (it is what they looked the player up by), so the
+ * map speaks the same language as the table it is used against.
+ *
+ * A name can appear on many cards in one set (a base card, a subset, a league
+ * leaders card), and a traded player's cards can legitimately name different
+ * teams. Every one of them is kept: the tie-break asks "does exactly ONE
+ * candidate have a stint on ANY of these teams in this year", so a wider set of
+ * teams makes the tie-break LESS likely to fire, never more likely to fire
+ * wrongly.
+ *
+ * Bounded, because this is a per-name accumulator over an operator-sized card
+ * batch and an unbounded one would grow with the set. The bound is far above
+ * what a real player's cards produce; hitting it simply stops adding, and the
+ * tie-break works with what it has.
+ */
+const MAX_CARD_TEAM_NAMES_PER_PLAYER = 8;
+
+function addCardTeamNames(
+  target: Map<string, string[]>,
+  playerName: string,
+  teamsOnCard: ReadonlyArray<string>,
+): void {
+  if (teamsOnCard.length === 0) return;
+  const key = normalizePlayerName(playerName);
+  if (!key) return;
+  const existing = target.get(key);
+  if (!existing) {
+    target.set(key, teamsOnCard.slice(0, MAX_CARD_TEAM_NAMES_PER_PLAYER));
+    return;
+  }
+  for (const team of teamsOnCard) {
+    if (existing.length >= MAX_CARD_TEAM_NAMES_PER_PLAYER) return;
+    if (!existing.includes(team)) existing.push(team);
+  }
+}
+
+/**
+ * NEO-254 — the set's year, for an ACTION that needs it.
+ *
+ * `resolveUnknownsAndStartBatch` runs in an action, so it cannot walk the
+ * parent chain itself. A thin wrapper around the shared walk
+ * (`convex/lib/selectorAncestry.ts`) rather than a second copy of it, for the
+ * reason that module exists: the review gate, the commit prelude and the
+ * card-attention roster suggestions must not be able to disagree about what
+ * counts as this set's year.
+ */
+export const findSetYearForSelectorOptionQuery = internalQuery({
+  args: { selectorOptionId: v.id("selectorOptions") },
+  returns: v.union(v.number(), v.null()),
+  handler: async (ctx, args) => {
+    const year = await findSetYearForSelectorOption(ctx, args.selectorOptionId);
+    return year ?? null;
+  },
+});
+
+/**
  * Detect unresolved player/team names for a selectorOption and kick off the
  * NEO-92 review-wizard batch for whatever's unresolved. Shared by both the
  * marketplace path (folds in names observed on freshly-reconciled cards via
@@ -1036,6 +1134,16 @@ async function resolveUnknownsAndStartBatch(
     sportLabel: string;
     additionalPlayerNames?: string[];
     additionalTeamNames?: string[];
+    /**
+     * NEO-254 — the team names printed on the SAME card as each player name.
+     *
+     * Keyed by the NORMALIZED player name (see `addCardTeamNames`); the map is
+     * built where the cards are, because this function only ever sees flat
+     * name lists. Used solely as a tie-break when the card's year leaves two
+     * same-name candidates standing, so an absent entry costs nothing but the
+     * tie-break.
+     */
+    cardTeamNamesByPlayer?: Map<string, string[]>;
   },
 ): Promise<{
   unknownPlayers: string[];
@@ -1110,19 +1218,112 @@ async function resolveUnknownsAndStartBatch(
     }),
   );
 
+  /**
+   * NEO-254 — the year of the set these names were read off, resolved ONCE.
+   *
+   * One ancestor walk for the whole gate rather than one per name. Undefined
+   * for an orphaned subtree or a fixture with no year row, and every caller
+   * below treats that as "cannot narrow" — the name goes to a human, never to
+   * whichever row the index returned first.
+   */
+  const setYear =
+    (await ctx.runQuery(
+      internal.selectorOptions.findSetYearForSelectorOptionQuery,
+      { selectorOptionId: args.selectorOptionId },
+    )) ?? undefined;
+  /**
+   * The team names that appeared on a card alongside this player, deduped and
+   * keyed by the NORMALIZED name — the same key `playerByNorm` and the
+   * `players` table itself use, so two spellings of one person pool their
+   * teams instead of filing apart. See `addCardTeamNames`.
+   */
+  const cardTeamNamesFor = (nameNormalized: string): string[] =>
+    args.cardTeamNamesByPlayer?.get(nameNormalized) ?? [];
+
   for (const [normalized, name] of playerByNorm) {
     if (skippedKeys.has(`player:${normalized}`)) continue;
-    const existing = await ctx.runQuery(api.players.findByNameAndSport, {
+    const cardTeamNames = cardTeamNamesFor(normalized);
+    /**
+     * NEO-254 — THE "needs review" GATE for players, and the reason it is no
+     * longer `findByNameAndSport`.
+     *
+     * That query answers "a player, or null", which cannot express the case
+     * this ticket exists for. `(nameNormalized, sportId)` is a DEDUP key, not
+     * a unique one, and after the bulk preload a great many real names match
+     * more than one row — same name, same sport, different people. Handing
+     * back one of them read here as "known, nothing to review", so the name
+     * never reached an operator and the commit prelude then bound every card
+     * carrying it to whichever row the index happened to return first.
+     *
+     * The rule is the card-number invariant's rule (#7), applied to a name:
+     *   0 matches  → unknown, review it (unchanged);
+     *   1 match    → resolved, no review (unchanged);
+     *   2 or more  → UNRESOLVED. Only a human can say which one, so it goes
+     *                to the wizard, where `enrichment.existingCandidates`
+     *                puts the matching rows in front of them for a one-click
+     *                link.
+     */
+    const resolved = await ctx.runQuery(internal.players.resolveNameForReview, {
       name,
       sportId: args.sportId,
+      // NEO-254 — the card's OWN year and team, which is what turns "2 or
+      // more" back into "1" for most collisions. See
+      // `players.narrowSameNamePlayersByCardYear`: a 1990 card is not about a
+      // man who retired in 1937, and when two contemporaries share a name the
+      // team printed on the card separates them. Undefined year → no
+      // narrowing at all, which is the pre-NEO-254 behaviour.
+      ...(setYear !== undefined ? { cardYear: setYear } : {}),
+      ...(cardTeamNames.length > 0 ? { cardTeamNames } : {}),
     });
-    if (!existing) unknownPlayers.push(name);
+    // `playerId`, not `matchCount`: several rows can still resolve to one
+    // person once the year is taken into account.
+    if (!resolved.playerId) {
+      unknownPlayers.push(name);
+    } else if (resolved.narrowedByCardYear) {
+      /*
+       * NEO-254 — an auto-link the OPERATOR never saw.
+       *
+       * Every other link in this product is either unambiguous (one row of that
+       * name) or a human's answer. This one is neither: two or more people are
+       * on file under the name and the card's year picked between them. It is
+       * the right call far more often than it is not, but it is still an
+       * inference, and the day it goes wrong the only question that matters is
+       * "which cards did this happen to". So it leaves a trace naming the row
+       * chosen, the set it happened in, and the name — enough to find every
+       * affected card and to re-run the decision by hand.
+       *
+       * The NAME is safe to log: it is a checklist string off a marketplace
+       * payload, not anything a user typed about themselves.
+       */
+      console.log(
+        JSON.stringify({
+          msg: "player_narrowed_by_card_year",
+          selectorOptionId: args.selectorOptionId,
+          sportId: args.sportId,
+          setYear,
+          name,
+          playerId: resolved.playerId,
+          matchCount: resolved.matchCount,
+          usedCardTeamNames: cardTeamNames.length > 0,
+        }),
+      );
+    }
   }
   for (const [normalized, name] of teamByNorm) {
     if (skippedKeys.has(`team:${normalized}`)) continue;
     const existing = await ctx.runQuery(api.teams.findByNameAndSport, {
       name,
       sportId: args.sportId,
+      /*
+       * NEO-254 — the SET'S year, which this gate already knows.
+       *
+       * Without it a name two eras share never resolves: `findByNameAndSport`
+       * answers `null` for several candidates by design, so every "Winnipeg
+       * Jets" would be reported unknown and queued for review on EVERY sync of
+       * the set, forever, no matter how many times an operator answered it.
+       * The year is what picks the row whose era covers the cards in hand.
+       */
+      ...(setYear !== undefined ? { setYear } : {}),
     });
     if (!existing) unknownTeams.push(name);
   }
@@ -1229,6 +1430,13 @@ export const getCardChecklist = query({
       // confirmed clean on prod + dev.
       team: v.optional(v.string()),
       playerIds: v.optional(v.array(v.id("players"))),
+      // NEO-254 — the name each card PRINTED for its players. The card detail
+      // panel renders "As printed: Doc Gooden" beside a chip whose player is
+      // filed under a different name. See schema.ts.
+      playerLinks: v.optional(v.array(v.object({
+        playerId: v.id("players"),
+        nameOnCard: v.string(),
+      }))),
       teamOnCardIds: v.optional(v.array(v.id("teams"))),
       // NEO-90: set once the BSC per-card team-enrichment queue has
       // checked this card, regardless of outcome (see schema.ts).
@@ -3735,11 +3943,44 @@ async function resolveTeamOnCardIdsForWrite(
  * The returned `names` are the rows this already read, so the listing-title
  * generator does not read them a second time. Order matches `ids`.
  */
+/**
+ * NEO-254 — the optional per-player printed names, as a lookup.
+ *
+ * One helper because both writers take the same argument and must read it the
+ * same way; a blank entry is dropped rather than stored, so an empty box falls
+ * back to the player's own name instead of blanking the card's record of what
+ * it says.
+ */
+function nameOnCardMap(
+  entries?: ReadonlyArray<{ playerId: Id<"players">; nameOnCard: string }>,
+): Map<string, string> | undefined {
+  if (!entries || entries.length === 0) return undefined;
+  const out = new Map<string, string>();
+  for (const entry of entries) {
+    const name = entry.nameOnCard.trim();
+    if (name) out.set(entry.playerId as string, name);
+  }
+  return out.size > 0 ? out : undefined;
+}
+
 async function resolvePlayerIdsForWrite(
   ctx: QueryCtx,
   selectorOptionId: Id<"selectorOptions">,
   requested: ReadonlyArray<Id<"players">>,
-): Promise<{ ids: Array<Id<"players">>; names: string[] }> {
+  /**
+   * NEO-254 — the name each card actually PRINTS for a player, by id.
+   *
+   * A picker hands over an id and nothing else, so for these paths the honest
+   * default is the player's own name: that IS what the operator saw when they
+   * picked it. A caller who knows better — a form that captured the printed
+   * spelling — passes it here and it wins.
+   */
+  nameOnCardById?: ReadonlyMap<string, string>,
+): Promise<{
+  ids: Array<Id<"players">>;
+  names: string[];
+  links: Array<{ playerId: Id<"players">; nameOnCard: string }>;
+}> {
   const ids: Array<Id<"players">> = [];
   const seen = new Set<string>();
   for (const playerId of requested) {
@@ -3752,7 +3993,7 @@ async function resolvePlayerIdsForWrite(
       `A card can carry at most ${MAX_CARD_PLAYERS} players.`,
     );
   }
-  if (ids.length === 0) return { ids, names: [] };
+  if (ids.length === 0) return { ids, names: [], links: [] };
 
   const sportId = await findSportForSelectorOption(ctx, selectorOptionId);
   const playerRows = await Promise.all(ids.map((id) => ctx.db.get(id)));
@@ -3773,7 +4014,16 @@ async function resolvePlayerIdsForWrite(
     }
     names.push(player.name);
   }
-  return { ids, names };
+  /*
+   * NEO-254 — built HERE, from the same loop that validated the ids, so the
+   * two lists cannot diverge: `links` is `ids` with a name attached, in the
+   * same order, by construction rather than by discipline.
+   */
+  const links = ids.map((playerId, i) => ({
+    playerId,
+    nameOnCard: nameOnCardById?.get(playerId as string)?.trim() || names[i],
+  }));
+  return { ids, names, links };
 }
 
 export const addCustomCard = mutation({
@@ -3781,6 +4031,20 @@ export const addCustomCard = mutation({
     selectorOptionId: v.id("selectorOptions"),
     cardNumber: v.string(),
     cardName: v.string(),
+    /**
+     * NEO-254 — the name this card PRINTS for a player, when it differs from
+     * the player's own.
+     *
+     * Optional and rarely sent: a picker hands over an id, and the honest
+     * default is the player's name, because that is what the operator saw when
+     * they picked it. A caller that captured the printed spelling ("Doc
+     * Gooden" on a card linked to Dwight Gooden) sends it here. See
+     * `cardChecklist.playerLinks` in schema.ts.
+     */
+    playerNamesOnCard: v.optional(
+      v.array(v.object({ playerId: v.id("players"), nameOnCard: v.string() })),
+    ),
+
     // NEO-26: legacy `team: v.string()` removed. Callers that have a
     // team display string should put it in `teams: [string]` so the
     // commitCardChecklist resolution path can turn it into a teams
@@ -3854,11 +4118,12 @@ export const addCustomCard = mutation({
     // so a bad id (unknown, wrong sport, over the cap) leaves no half-created
     // card behind. The returned names are the rows this already read; the
     // listing title uses them rather than reading the same players again.
-    const { ids: playerIds, names: linkedPlayerNames } =
+    const { ids: playerIds, names: linkedPlayerNames, links: playerLinks } =
       await resolvePlayerIdsForWrite(
         ctx,
         args.selectorOptionId,
         args.playerIds ?? [],
+        nameOnCardMap(args.playerNamesOnCard),
       );
     const hasLinkedPlayers = playerIds.length > 0;
 
@@ -3921,6 +4186,17 @@ export const addCustomCard = mutation({
       await findAncestorLabels(ctx, parentNode);
     const listingInputs: ListingCardInputs = {
       cardNumber: args.cardNumber,
+      /*
+       * NEO-254 — the CANONICAL name, deliberately, not `playerLinks`'s
+       * printed one.
+       *
+       * A listing title is what a buyer searches for today, and they search
+       * the name the player is known by — "Dwight Gooden", not the "Doc
+       * Gooden" a 1986 card happens to print. Changing that is a separate
+       * decision with marketplace consequences (titles are write-once, and a
+       * re-titled listing is a different listing to eBay), so the printed name
+       * is recorded on the card and read by the detail panel only.
+       */
       playerNames: hasLinkedPlayers ? linkedPlayerNames : pendingPlayerNames,
       year: mergedFeatures.season,
       manufacturer: mergedFeatures.manufacturer,
@@ -3983,7 +4259,9 @@ export const addCustomCard = mutation({
         : {}),
       // NEO-220: real `players` ids from the quick-add PlayerPicker. Mutually
       // exclusive with `pendingPlayerNames` above by construction.
-      ...(hasLinkedPlayers ? { playerIds } : {}),
+      // NEO-254: `playerLinks` is written in the same breath and is the same
+      // list — see the note in schema.ts. Never one without the other.
+      ...(hasLinkedPlayers ? { playerIds, playerLinks } : {}),
       ...(hasLinkedTeams ? { teamOnCardIds } : {}),
       ...(featuresOrUndefined ? { features: featuresOrUndefined } : {}),
       listingTitle: listingTitle.title,
@@ -4025,6 +4303,20 @@ export const updateCard = mutation({
     id: v.id("cardChecklist"),
     cardNumber: v.optional(v.string()),
     cardName: v.optional(v.string()),
+    /**
+     * NEO-254 — the name this card PRINTS for a player, when it differs from
+     * the player's own.
+     *
+     * Optional and rarely sent: a picker hands over an id, and the honest
+     * default is the player's name, because that is what the operator saw when
+     * they picked it. A caller that captured the printed spelling ("Doc
+     * Gooden" on a card linked to Dwight Gooden) sends it here. See
+     * `cardChecklist.playerLinks` in schema.ts.
+     */
+    playerNamesOnCard: v.optional(
+      v.array(v.object({ playerId: v.id("players"), nameOnCard: v.string() })),
+    ),
+
     // NEO-26: full-replacement teams patch. Callers pass the entire
     // desired array of team entity ids (or omit to leave untouched).
     // Empty array clears the link; the legacy free-text `team` field
@@ -4077,7 +4369,15 @@ export const updateCard = mutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
-    const { id, ...updates } = args;
+    /*
+     * NEO-254 — `playerNamesOnCard` is an INPUT, not a column.
+     *
+     * It tells the write what name to record for each player; the column it
+     * feeds is `playerLinks`, written below from the shared helper. Left in
+     * `updates` it would be spread straight into `ctx.db.patch` and refused by
+     * the schema as an unexpected field — which is exactly what happened.
+     */
+    const { id, playerNamesOnCard: _printedNames, ...updates } = args;
     const filtered: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(updates)) {
       if (value !== undefined) {
@@ -4212,12 +4512,16 @@ export const updateCard = mutation({
     // on what they accept, and the operator sees the same refusal wording
     // whichever one they are standing in.
     if (Array.isArray(filtered.playerIds)) {
-      const { ids } = await resolvePlayerIdsForWrite(
+      const { ids, links } = await resolvePlayerIdsForWrite(
         ctx,
         (await loadStoredCard()).selectorOptionId,
         filtered.playerIds as Array<Id<"players">>,
+        nameOnCardMap(args.playerNamesOnCard),
       );
       filtered.playerIds = ids;
+      // NEO-254 — written in the same breath as the ids. The two lists are one
+      // fact; see the `playerLinks` note in schema.ts.
+      filtered.playerLinks = links;
     }
 
     // NEO-246: the TYPED spelling of those same two fields gets the same
@@ -5569,106 +5873,155 @@ export const updateSelectorOptionMetadata = mutation({
 // ===== ADMIN UTILITIES =====
 
 /**
- * The reset itself: drains the six tables by looping each `reset*Batch`
- * internal mutation to exhaustion.
+ * Wall-clock budget for one call of the reset, in milliseconds.
  *
- * This function performs no check of its own, but the delete is NOT
- * unconditional — `assertResetArmed()` is asserted at both layers around it,
- * once at the `resetSetBuilderDataFromCli` entry point and again as the first
- * line of every batch mutation this loops. Reaching a table with the
- * deployment unarmed is not possible through either door.
+ * `runSetBuilderReset` is invoked by `npx convex run`, and the CLI gives up
+ * waiting on an action after roughly five minutes — it prints a bare `Error`
+ * and exits 1 while the action carries on server-side (CI run 34390342992,
+ * 2026-09-09, on a preview bulk-loaded with 110k players / 24k aliases / 9k
+ * teams). So one call never tries to drain everything: it stops after the
+ * first batch that lands past this budget and reports `complete: false`, and
+ * the caller (`e2e-baseline.sh reset`) calls again until `complete: true`.
+ * 2.5 minutes leaves the CLI's wait a comfortable margin over the worst-case
+ * single batch.
+ *
+ * Override with the `RESET_TIME_BUDGET_MS` env var on the deployment when it
+ * parses as a non-negative integer — the tests set it to `0`, which makes
+ * every call drain exactly one table's worth of work before yielding.
  */
-async function runSetBuilderReset(ctx: ActionCtx): Promise<{
+const RESET_TIME_BUDGET_MS = 150_000;
+
+function resetTimeBudgetMs(): number {
+  const raw = process.env.RESET_TIME_BUDGET_MS;
+  if (raw !== undefined && /^\d+$/.test(raw.trim())) {
+    return Number(raw.trim());
+  }
+  return RESET_TIME_BUDGET_MS;
+}
+
+/** The per-table reset counts, plus whether the run got through every table. */
+type SetBuilderResetResult = {
   selectorOptionsDeleted: number;
   cardChecklistDeleted: number;
   crossListingsDeleted: number;
   playersDeleted: number;
+  playerAliasesDeleted: number;
   teamsDeleted: number;
+  franchisesDeleted: number;
   leaguesDeleted: number;
-}> {
-    let selectorOptionsDeleted = 0;
-    while (true) {
-      // Well inside MAX_RETURNED_IDS: this list is one LEVEL's options for one
-      // parent, de-duplicated — the biggest real case is a year's set list,
-      // which SportLots tops out at a few thousand for. The store degrades
-      // rather than throws if that ever stops being true.
-      const result = await ctx.runMutation(
-        internal.selectorOptions.resetSelectorOptionsBatch,
-        {},
-      );
-      selectorOptionsDeleted += result.deleted;
-      if (!result.hasMore) break;
-    }
+  /**
+   * `true` when every table was drained to exhaustion in this call. `false`
+   * means the call stopped at the time budget with rows still to delete —
+   * call again; the counts are what THIS call removed, not a running total.
+   */
+  complete: boolean;
+};
 
-    let cardChecklistDeleted = 0;
-    while (true) {
-      const result = await ctx.runMutation(
-        internal.selectorOptions.resetCardChecklistBatch,
-        {},
-      );
-      cardChecklistDeleted += result.deleted;
-      if (!result.hasMore) break;
-    }
+type ResetBatchRef = FunctionReference<
+  "mutation",
+  "internal",
+  Record<string, never>,
+  { deleted: number; hasMore: boolean }
+>;
 
+/**
+ * The reset itself: drains every set-builder entity table by looping each
+ * `reset*Batch` internal mutation to exhaustion, in a fixed table order, for
+ * as long as the time budget allows (`RESET_TIME_BUDGET_MS`).
+ *
+ * Resumable by design. After every batch that deleted rows, if the wall clock
+ * has run past the budget the loop returns `complete: false` with the counts
+ * drained so far, and the next call picks up where it left off — each table is
+ * re-examined from the top, and a batch that finds nothing to delete is one
+ * cheap read that never trips the budget. That last point is what keeps a
+ * zero budget making progress (one table per call) rather than stalling on
+ * the first, already-empty, table forever.
+ *
+ * This function performs no arming check of its own, but the delete is NOT
+ * unconditional — `assertResetArmed()` is asserted at both layers around it,
+ * once at the `resetSetBuilderDataFromCli` entry point and again as the first
+ * line of every batch mutation this loops. Reaching a table with the
+ * deployment unarmed is not possible through either door, and the budget
+ * check runs only after a batch, so it can never pre-empt the arming check.
+ */
+async function runSetBuilderReset(
+  ctx: ActionCtx,
+): Promise<SetBuilderResetResult> {
+  const startedAt = Date.now();
+  const budgetMs = resetTimeBudgetMs();
+
+  const counts = {
+    selectorOptionsDeleted: 0,
+    cardChecklistDeleted: 0,
+    crossListingsDeleted: 0,
+    playersDeleted: 0,
+    playerAliasesDeleted: 0,
+    teamsDeleted: 0,
+    franchisesDeleted: 0,
+    leaguesDeleted: 0,
+  };
+
+  // Table order is load-bearing — do not reorder. Each entry is the count it
+  // feeds and the batch mutation that drains it.
+  const steps: Array<[keyof typeof counts, ResetBatchRef]> = [
+    // Well inside MAX_RETURNED_IDS: this list is one LEVEL's options for one
+    // parent, de-duplicated — the biggest real case is a year's set list,
+    // which SportLots tops out at a few thousand for. The store degrades
+    // rather than throws if that ever stops being true.
+    [
+      "selectorOptionsDeleted",
+      internal.selectorOptions.resetSelectorOptionsBatch,
+    ],
+    ["cardChecklistDeleted", internal.selectorOptions.resetCardChecklistBatch],
     // NEO-21: cardCrossListings rows outlive nothing on their own (they're
     // pure junction rows), but a wipe that skips this table leaves them
     // pointing at cardChecklist ids that no longer exist post-reset.
-    let crossListingsDeleted = 0;
-    while (true) {
-      const result = await ctx.runMutation(
-        internal.selectorOptions.resetCardCrossListingsBatch,
-        {},
-      );
-      crossListingsDeleted += result.deleted;
-      if (!result.hasMore) break;
-    }
-
+    [
+      "crossListingsDeleted",
+      internal.selectorOptions.resetCardCrossListingsBatch,
+    ],
     // Players + teams are populated alongside cardChecklist by the
     // commitCardChecklist flow. Wipe them too so subsequent dev/test
     // runs see a clean "unknown entities" state and the
     // UnknownEntitiesDialog re-opens for confirmation. Without this,
     // E2E flows that rely on the dialog appearing fail because the
     // entities from prior runs are already known.
-    let playersDeleted = 0;
-    while (true) {
-      const result = await ctx.runMutation(
-        internal.selectorOptions.resetPlayersBatch,
-        {},
-      );
-      playersDeleted += result.deleted;
-      if (!result.hasMore) break;
-    }
-
-    let teamsDeleted = 0;
-    while (true) {
-      const result = await ctx.runMutation(
-        internal.selectorOptions.resetTeamsBatch,
-        {},
-      );
-      teamsDeleted += result.deleted;
-      if (!result.hasMore) break;
-    }
-
+    ["playersDeleted", internal.selectorOptions.resetPlayersBatch],
+    // NEO-254 — the alias index, drained with the players it describes. A row
+    // here that outlived its player keeps answering the alias lookup forever.
+    ["playerAliasesDeleted", internal.selectorOptions.resetPlayerAliasesBatch],
+    ["teamsDeleted", internal.selectorOptions.resetTeamsBatch],
+    // NEO-254 — franchises after the teams that reference them, for the same
+    // reason leagues go after teams. E2E flows mint franchises under a per-run
+    // sport row; without this loop those rows outlive the sport, invisible to
+    // every sport-scoped list and growing by a handful per run.
+    ["franchisesDeleted", internal.selectorOptions.resetFranchisesBatch],
     // NEO-156: leagues go last, after the teams that reference them, so an
     // interrupted reset never leaves teams pointing at deleted leagues.
-    let leaguesDeleted = 0;
-    while (true) {
-      const result = await ctx.runMutation(
-        internal.selectorOptions.resetLeaguesBatch,
-        {},
-      );
-      leaguesDeleted += result.deleted;
-      if (!result.hasMore) break;
-    }
+    ["leaguesDeleted", internal.selectorOptions.resetLeaguesBatch],
+  ];
 
-    return {
-      selectorOptionsDeleted,
-      cardChecklistDeleted,
-      crossListingsDeleted,
-      playersDeleted,
-      teamsDeleted,
-      leaguesDeleted,
-    };
+  for (let i = 0; i < steps.length; i += 1) {
+    const [key, batch] = steps[i];
+    let hasMore = true;
+    while (hasMore) {
+      const result = await ctx.runMutation(batch, {});
+      counts[key] += result.deleted;
+      hasMore = result.hasMore;
+      // Only a batch that did work can spend the budget, and only when there
+      // is more work after it: a drained last table is complete regardless.
+      const moreWork = hasMore || i < steps.length - 1;
+      if (
+        result.deleted > 0 &&
+        moreWork &&
+        Date.now() - startedAt >= budgetMs
+      ) {
+        return { ...counts, complete: false };
+      }
+    }
+  }
+
+  return { ...counts, complete: true };
 }
 
 /**
@@ -5733,6 +6086,11 @@ function assertResetArmed(): void {
  *   npx convex run selectorOptions:resetSetBuilderDataFromCli \
  *     '{"confirm":"RESET"}' --prod
  *
+ * Each call works for at most `RESET_TIME_BUDGET_MS` (2.5 min by default,
+ * inside the CLI's ~5-minute wait) and returns `complete: false` if rows
+ * remain — re-run the same command until it prints `"complete": true`.
+ * `e2e-baseline.sh reset` does that loop for you.
+ *
  * DO NOT ADD `--identity`. It does not authorise this and it BREAKS it:
  * `convex run --identity` routes the call through the path that resolves
  * PUBLIC functions only, so an internal function comes back "Could not find
@@ -5767,19 +6125,18 @@ export const resetSetBuilderDataFromCli = internalAction({
     cardChecklistDeleted: v.number(),
     crossListingsDeleted: v.number(),
     playersDeleted: v.number(),
+    // NEO-254 — reported alongside the players, so a run that drained one and
+    // not the other is visible in the operator's own output.
+    playerAliasesDeleted: v.number(),
     teamsDeleted: v.number(),
+    // NEO-254 — franchises are drained after the teams that point at them.
+    franchisesDeleted: v.number(),
     leaguesDeleted: v.number(),
+    // `false` when the run stopped at RESET_TIME_BUDGET_MS with rows still to
+    // delete. Run again until it is `true`; `e2e-baseline.sh reset` does.
+    complete: v.boolean(),
   }),
-  handler: async (
-    ctx,
-  ): Promise<{
-    selectorOptionsDeleted: number;
-    cardChecklistDeleted: number;
-    crossListingsDeleted: number;
-    playersDeleted: number;
-    teamsDeleted: number;
-    leaguesDeleted: number;
-  }> => {
+  handler: async (ctx): Promise<SetBuilderResetResult> => {
     // Fail here rather than partway through the loop, so an unarmed run costs
     // nothing. Each batch re-asserts it independently.
     assertResetArmed();
@@ -5884,6 +6241,134 @@ export const resetPlayersBatch = internalMutation({
 });
 
 /**
+ * Internal: drain `playerAliases`, looped by `runSetBuilderReset`.
+ *
+ * NEO-254. `playerAliases` is the index behind `players.aliases` — one flat row
+ * per (player, alias) — so a reset that wipes players and leaves it standing
+ * does not leave a clean slate, it leaves rows POINTING AT NOTHING. Every one
+ * of them keeps answering `by_alias_normalized_and_sport_id` for as long as it
+ * exists; `sameNamePlayers` drops a hit whose player is gone, so the damage is
+ * quiet rather than loud, and the residue accumulates over every reset until
+ * the table is larger than the one it indexes.
+ *
+ * Same reasoning as the leagues batch beside it: a table that only exists to
+ * describe another one has to be drained with it.
+ *
+ * Its OWN chunk rather than a cascade inside the players batch. The players
+ * delete already loops to exhaustion at 500 rows a call, and adding an indexed
+ * read plus N deletes per row to that loop would put the reset's biggest
+ * mutation over the read budget on exactly the deployments that most need it.
+ */
+/**
+ * ── NEO-254: fill `playerLinks` on rows written before the field existed ────
+ *
+ * Every such row has `playerIds` and no record of the name it printed, and
+ * there is nowhere to recover that string from — the checklist payload that
+ * produced it is long gone. So the backfill writes the player's CANONICAL
+ * name, which is the honest answer: "this card links to Dwight Gooden, and
+ * nobody kept what it actually said."
+ *
+ * That is exactly what the panel then shows — no "As printed" line, because
+ * the name matches — so a backfilled row is indistinguishable from a card that
+ * really did print the canonical name. Which is correct: we do not know that
+ * it did not.
+ *
+ * Chunked and resumable, armed like the other scripted admin tasks (NEO-214):
+ * `confirm` literal plus `ALLOW_BACKFILL_PLAYER_LINKS`, asserted inside the
+ * mutation rather than only at an entry point. Idempotent — a row that already
+ * has `playerLinks` is skipped, so a re-run after a partial pass costs one
+ * read per row and writes nothing.
+ *
+ * Runbook: docs/operations/neo254-backfill-player-links.md
+ */
+export const backfillPlayerLinks = internalMutation({
+  args: {
+    confirm: v.literal("BACKFILL_PLAYER_LINKS"),
+    /** Rows to visit this call. Defaults to 200 — each is one read plus, for a
+     *  row with players, one read per player and one patch. */
+    batchSize: v.optional(v.number()),
+    /** Resume point: the `_id` the previous call returned as `nextCursor`. */
+    cursor: v.optional(v.string()),
+  },
+  returns: v.object({
+    scanned: v.number(),
+    filled: v.number(),
+    /** Absent when the table is exhausted. */
+    nextCursor: v.optional(v.string()),
+  }),
+  handler: async (ctx, args) => {
+    if (process.env.ALLOW_BACKFILL_PLAYER_LINKS !== "true") {
+      throw new ConvexError(
+        "playerLinks backfill is not armed on this deployment. Set " +
+          "ALLOW_BACKFILL_PLAYER_LINKS=true on it first " +
+          "(`npx convex env set ALLOW_BACKFILL_PLAYER_LINKS true`), and unset " +
+          "it again afterwards on production.",
+      );
+    }
+    const batchSize = Math.min(Math.max(args.batchSize ?? 200, 1), 500);
+    const page = await ctx.db
+      .query("cardChecklist")
+      .paginate({ numItems: batchSize, cursor: args.cursor ?? null });
+
+    // One read per distinct player across the page. A page of one set's cards
+    // shares a small roster, so without this the player reads alone would be
+    // the budget.
+    const nameCache = new Map<string, string | null>();
+    const playerName = async (id: Id<"players">): Promise<string | null> => {
+      const key = id as string;
+      if (!nameCache.has(key)) {
+        const row = await ctx.db.get(id);
+        nameCache.set(key, row?.name ?? null);
+      }
+      return nameCache.get(key) ?? null;
+    };
+
+    let filled = 0;
+    for (const row of page.page) {
+      // Idempotent: already answered, or nothing to answer.
+      if (row.playerLinks !== undefined) continue;
+      const ids = row.playerIds ?? [];
+      if (ids.length === 0) continue;
+      const links: Array<{ playerId: Id<"players">; nameOnCard: string }> = [];
+      for (const id of ids) {
+        const name = await playerName(id);
+        // A dangling id is left OUT of `playerLinks` and left IN `playerIds`,
+        // deliberately: this migration's job is to add a field, not to prune
+        // a card's links behind an operator's back. The pin test's invariant
+        // is checked on writers, and the attention walker is what surfaces a
+        // card pointing at a player that no longer exists.
+        if (name !== null) links.push({ playerId: id, nameOnCard: name });
+      }
+      if (links.length === 0) continue;
+      await ctx.db.patch(row._id, { playerLinks: links });
+      filled += 1;
+    }
+
+    return {
+      scanned: page.page.length,
+      filled,
+      ...(page.isDone ? {} : { nextCursor: page.continueCursor }),
+    };
+  },
+});
+
+export const resetPlayerAliasesBatch = internalMutation({
+  args: {},
+  returns: v.object({
+    deleted: v.number(),
+    hasMore: v.boolean(),
+  }),
+  handler: async (ctx) => {
+    assertResetArmed();
+    const rows = await ctx.db.query("playerAliases").take(RESET_BATCH_SIZE);
+    for (const row of rows) {
+      await ctx.db.delete(row._id);
+    }
+    return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
+  },
+});
+
+/**
  * Internal: delete up to RESET_BATCH_SIZE rows from `leagues`, looped by
  * `runSetBuilderReset` until no rows remain.
  *
@@ -5926,6 +6411,28 @@ export const resetTeamsBatch = internalMutation({
     // point — see assertResetArmed.
     assertResetArmed();
     const rows = await ctx.db.query("teams").take(RESET_BATCH_SIZE);
+    for (const row of rows) {
+      await ctx.db.delete(row._id);
+    }
+    return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
+  },
+});
+
+/**
+ * Internal: delete up to RESET_BATCH_SIZE rows from `franchises`, looped by
+ * `runSetBuilderReset` until no rows remain. NEO-254.
+ */
+export const resetFranchisesBatch = internalMutation({
+  args: {},
+  returns: v.object({
+    deleted: v.number(),
+    hasMore: v.boolean(),
+  }),
+  handler: async (ctx) => {
+    // Armed-check here rather than only at the entry point, same as every
+    // other batch — see the note in resetSelectorOptionsBatch.
+    assertResetArmed();
+    const rows = await ctx.db.query("franchises").take(RESET_BATCH_SIZE);
     for (const row of rows) {
       await ctx.db.delete(row._id);
     }
@@ -9103,10 +9610,17 @@ export const resolveChecklistEntities = action({
     // not produce two unknowns and two Wikidata lookups.
     const additionalPlayerNames: string[] = [];
     const additionalTeamNames: string[] = [];
+    // NEO-254 — which teams appeared on the same card as which player. The
+    // gate resolves names in one flat pass, so the per-card association has to
+    // be captured HERE, where the cards still exist, or it is gone.
+    const cardTeamNamesByPlayer = new Map<string, string[]>();
     for (const c of args.cards) {
-      for (const p of c.players ?? []) additionalPlayerNames.push(p);
-      for (const t of c.teams ?? []) additionalTeamNames.push(t);
-      if (c.team && !c.teams?.length) additionalTeamNames.push(c.team);
+      const teamsOnCard = cardTeamNames(c);
+      for (const p of c.players ?? []) {
+        additionalPlayerNames.push(p);
+        addCardTeamNames(cardTeamNamesByPlayer, p, teamsOnCard);
+      }
+      for (const t of teamsOnCard) additionalTeamNames.push(t);
     }
 
     const sportRow = await ctx.runQuery(
@@ -9120,6 +9634,7 @@ export const resolveChecklistEntities = action({
       sportLabel: sportRow?.value ?? "",
       additionalPlayerNames,
       additionalTeamNames,
+      cardTeamNamesByPlayer,
     });
   },
 });
@@ -9380,6 +9895,26 @@ export const commitCardChecklistPrelude = internalMutation({
     // only reads names off them is pure wire cost.
     playerNames: v.array(v.string()),
     teamNames: v.array(v.string()),
+    /**
+     * NEO-254 — the teams printed on the same card as each player name.
+     *
+     * The prelude is handed names, not cards (see `playerNames` above), so the
+     * per-card association has to travel with them or it is lost. Used ONLY as
+     * a tie-break when the set's year leaves two same-name candidates standing;
+     * an absent entry costs the tie-break and nothing else. Optional so a
+     * commit in flight across a deploy still resolves.
+     */
+    playerTeamNames: v.optional(
+      v.array(
+        v.object({
+          // The NORMALIZED name (`players.normalizePlayerName`), which is what
+          // this loop looks players up by — see `addCardTeamNames` for why the
+          // raw spelling would file one person under two keys.
+          playerNameNormalized: v.string(),
+          teams: v.array(v.string()),
+        }),
+      ),
+    ),
     batchId: v.optional(v.string()),
   },
   returns: v.object({
@@ -9653,13 +10188,27 @@ export const commitCardChecklistPrelude = internalMutation({
     const skippedTeamNames: string[] = [];
     for (const row of reviewRows) {
       if (row.decision?.action !== "skip") continue;
+      /*
+       * NEO-254 — a skipped LEAGUE is not a suppressed name.
+       *
+       * `entityReviewSkips` is permanent, per-set, and means "this string is
+       * not an entity — never ask me again". That is the right record for a
+       * sponsor logo masquerading as a player. It is the WRONG record for a
+       * league step: "Skip — no league" says this team belongs to no league,
+       * which is a fact about the team, not about the string. Storing it would
+       * also suppress the league name on every later fetch of the set, so an
+       * operator who later wanted the league could never be asked again.
+       */
+      if (row.kind === "league") continue;
+      // Captured so the narrowing above survives into the index closure below.
+      const skipKind: "player" | "team" = row.kind;
       const nameNormalized = norm(row.name);
       const existingSkip = await ctx.db
         .query("entityReviewSkips")
         .withIndex("by_selector_option_and_kind_and_name", (q) =>
           q
             .eq("selectorOptionId", args.selectorOptionId)
-            .eq("kind", row.kind)
+            .eq("kind", skipKind)
             .eq("nameNormalized", nameNormalized),
         )
         .first();
@@ -9677,7 +10226,7 @@ export const commitCardChecklistPrelude = internalMutation({
       } else {
         await ctx.db.insert("entityReviewSkips", {
           selectorOptionId: args.selectorOptionId,
-          kind: row.kind,
+          kind: skipKind,
           nameNormalized,
           name: row.name,
           skippedAt: Date.now(),
@@ -9731,16 +10280,41 @@ export const commitCardChecklistPrelude = internalMutation({
      * strings genuinely are different keys and neither dedup nor the operator
      * ever saw the duplicate coming.
      *
-     * Goes through `findTeamByFullName` so the lookup and every writer derive
-     * the key from the same place (convex/lib/teamRow.ts). A miss is recorded
-     * and returned as `null`; creating from an operator's reviewed Location +
-     * Name is `createReviewedCareerTeam` / the team loop below.
+     * Goes through `resolveTeamForSetYear` so the lookup and every writer
+     * derive the key from the same place (convex/lib/teamRow.ts). A miss is
+     * recorded and returned as `null`; creating from an operator's reviewed
+     * Location + Name is `createReviewedCareerTeam` / the team loop below.
+     *
+     * ## NEO-254 — a name is not an identity, so this takes a YEAR
+     *
+     * A sport may hold several rows under one name, told apart by their era:
+     * the 1972-1996 Winnipeg Jets became the Coyotes and then Utah, and the
+     * 2011- Jets are the old Atlanta Thrashers. Resolving on the name alone
+     * pointed every one of them at whichever row the index returned first.
+     *
+     * The year to narrow by is the CALLER'S, not one this closure can work out,
+     * and the two callers have genuinely different answers: a card's team name
+     * means the set's year, while a career stint means the year the stint
+     * STARTED — a player's 1979 Jets stint has nothing to do with the year of
+     * the card that mentions it. Passing it in is what keeps that distinction
+     * visible at the call site.
+     *
+     * An ambiguous name is recorded as unresolved exactly like a missing one.
+     * That is the whole point: both mean "a human decides", and the difference
+     * between "we have none" and "we have two" is one the review wizard shows,
+     * not one this function may act on.
      */
     const resolveTeamIdByName = async (
       rawName: string,
+      forYear: number | undefined,
     ): Promise<Id<"teams"> | null> => {
-      const existing = await findTeamByFullName(ctx, args.sportId, rawName);
-      if (existing) return existing._id; // NOT enqueued — see above.
+      const { teamId } = await resolveTeamForSetYear(
+        ctx,
+        args.sportId,
+        rawName,
+        forYear,
+      );
+      if (teamId) return teamId; // NOT enqueued — see above.
       unresolvedTeamNames.add(rawName.trim());
       return null;
     };
@@ -9785,16 +10359,55 @@ export const commitCardChecklistPrelude = internalMutation({
          */
         leagueChosen?: boolean;
       } = {},
-    ): Promise<{ id: Id<"teams">; created: boolean }> => {
+      /**
+       * `null` means "this name resolves to two or more overlapping rows, so
+       * nothing was written" — see the refusal below. Callers treat it exactly
+       * as they treat a name with no decision: unresolved, reported, untouched.
+       */
+    ): Promise<{ id: Id<"teams">; created: boolean } | null> => {
       const extra = opts.extra ?? {};
       const fields = teamRowFields(input);
-      const existing = await findTeamByFullName(
+      /**
+       * NEO-254 — find the row for THIS ERA, or make one beside it.
+       *
+       * The operator's answer carries its own years (`reviewedTeamFields`
+       * prefers what they typed over the enrichment's), and those years are what
+       * says which Winnipeg Jets they meant. A same-name row whose era does not
+       * overlap is a different franchise, so this creates rather than adopting
+       * it — which is exactly how the second era comes into existence.
+       *
+       * `findCollidingTeams` counts an undated side as overlapping, so an
+       * answer with no years still finds the single row it always did and
+       * cannot fork beside one by accident. Several overlapping rows is a mess
+       * the prelude must not ADD to and must not pick a side in — it writes
+       * nothing and reports the name unresolved, because Team Management is
+       * the only screen that can sort a duplicate pair out.
+       */
+      const colliding = await findCollidingTeams(
         ctx,
         args.sportId,
         teamFullName(fields),
+        extra.yearsActive,
       );
       // NOT enqueued, and NOT counted as created — it already existed.
-      if (existing) return { id: existing._id, created: false };
+      if (colliding.length === 1) {
+        return { id: colliding[0]._id, created: false };
+      }
+      /**
+       * NEO-254 — two or more overlapping rows is a MESS, not a choice.
+       *
+       * `colliding[0]` here was a silent pick: it took whichever row the index
+       * returned first and attached the operator's answer to it, which is the
+       * exact defect this ticket exists to remove, one layer down. Two rows
+       * sharing a name AND an era means the data is already wrong, and a commit
+       * is the wrong place to guess which half of it the operator meant.
+       *
+       * So nothing is written and the name comes back unresolved — the same
+       * outcome an unreviewed name gets, which the caller already knows how to
+       * report. Team Management is where two overlapping rows get sorted out,
+       * and it is the only screen that can.
+       */
+      if (colliding.length > 1) return null;
       // NEO-156: every team-creation path attaches a league. The caller
       // supplies one when the enrichment named it; otherwise the sport's
       // default.
@@ -9868,13 +10481,50 @@ export const commitCardChecklistPrelude = internalMutation({
      * answer; a dangling or cross-sport id is not, and treating it as one would
      * leave the team with no league at all rather than the sport's default.
      */
-    const leagueAnswered = async (create: {
-      leagueId?: Id<"leagues"> | null;
-    }): Promise<boolean> => {
-      if (create.leagueId === undefined) return false;
+    const leagueAnswered = async (
+      create: { leagueId?: Id<"leagues"> | null; leagueName?: string },
+      suggestion?: string,
+      teamRowId?: string,
+    ): Promise<boolean> => {
       if (create.leagueId === null) return true;
-      const league = await ctx.db.get(create.leagueId);
-      return !!league && league.sportId === args.sportId;
+      if (create.leagueId !== undefined) {
+        const league = await ctx.db.get(create.leagueId);
+        return !!league && league.sportId === args.sportId;
+      }
+      // NEO-254 — a skipped league STEP is an answer too, even though the team
+      // row itself carries no `leagueId`. Asked only once the explicit fields
+      // have had their turn; see `leagueStepSkipped`.
+      return leagueStepSkipped(create, teamRowId);
+    };
+
+    /**
+     * NEO-254 — did THIS team's own league step answer "no league"?
+     *
+     * ## The skip never overrules an explicit answer
+     *
+     * A skip suppresses the SUGGESTION, which is the only thing it was ever
+     * about: the operator looked at "National Hockey League", said this team
+     * has no league, and the pre-fill must stop asserting itself. It says
+     * nothing about an answer the operator then gave on the team's own step —
+     * picking an existing "AHL" pill (`leagueId`) or typing "WHA"
+     * (`leagueName`) is a later, more specific instruction, and discarding it
+     * would be the skip overruling the very operator who made it.
+     *
+     * So this returns false the moment either explicit field is present, and
+     * the caller consults it only after both have had their turn.
+     *
+     * Scoped to the team the step was raised for — see
+     * `skippedLeagueByTeamRow`.
+     */
+    const leagueStepSkipped = (
+      create: { leagueId?: Id<"leagues"> | null; leagueName?: string },
+      teamRowId: string | undefined,
+    ) => {
+      if (!teamRowId) return false;
+      // An explicit answer on the team's own step outranks the skip.
+      if (create.leagueId !== undefined) return false;
+      if (create.leagueName?.trim()) return false;
+      return teamsWithSkippedLeague.has(teamRowId);
     };
 
     const reviewedTeamFields = async (
@@ -9883,8 +10533,18 @@ export const commitCardChecklistPrelude = internalMutation({
         name: string;
         leagueId?: Id<"leagues"> | null;
         leagueName?: string;
+        /**
+         * NEO-254 — the era the OPERATOR typed, which outranks the enrichment's.
+         *
+         * Optional because the wizard's team step only asks when it has to.
+         * Typed loosely rather than off the validator so this file compiles
+         * independently of the shape `entityReviewQueue` declares.
+         */
+        yearsActive?: { from: number; to?: number };
       },
       enrichment: (typeof reviewRows)[number]["enrichment"],
+      /** The team's own review-row id — what a skipped league step is keyed to. */
+      teamRowId?: string,
     ): Promise<Partial<Doc<"teams">>> => {
       let leagueId: Id<"leagues"> | undefined;
       /*
@@ -9919,6 +10579,17 @@ export const commitCardChecklistPrelude = internalMutation({
         // written — `createTeamFromOperatorInput` reads `leagueChosen` to know
         // the difference between that and "not answered".
         leagueId = create.leagueId ?? undefined;
+      } else if (
+        create.leagueName?.trim() &&
+        stagedLeagueIdByName.has(normalizeLeagueName(create.leagueName))
+      ) {
+        // NEO-254 — the league this batch just created (or linked) for exactly
+        // this name. Consulted BEFORE `findOrCreateLeague` below so the whole
+        // record the operator entered on the New League step is what the team
+        // lands on, rather than a second lookup by name that would find the
+        // same row anyway but would also be the path that used to mint a
+        // name-only league when it did not.
+        leagueId = stagedLeagueIdByName.get(normalizeLeagueName(create.leagueName))!;
       } else if (create.leagueName?.trim()) {
         // The operator's OWN answer, and it outranks the suggestion for the
         // same reason `create.leagueId` does: "Create league X" is a decision
@@ -9931,6 +10602,27 @@ export const commitCardChecklistPrelude = internalMutation({
           name: create.leagueName.trim(),
           sportId: args.sportId,
         });
+      } else if (
+        enrichment?.league &&
+        stagedLeagueIdByName.has(normalizeLeagueName(enrichment.league))
+      ) {
+        // Same rule for the suggestion the team never overrode: if this batch
+        // staged a step for that league, its answer is the one to use.
+        leagueId = stagedLeagueIdByName.get(normalizeLeagueName(enrichment.league))!;
+      } else if (leagueStepSkipped(create, teamRowId)) {
+        /*
+         * NEO-254 — this team's own league step answered "no league".
+         *
+         * Ordered deliberately. It sits BELOW both explicit branches because
+         * the skip suppresses the SUGGESTION, and an answer the operator then
+         * gave on the team's own step is later and more specific. It sits
+         * below the staged-suggestion branch so a team that skipped one step
+         * and created another still lands on the one it created. And it sits
+         * ABOVE the plain enrichment branch and the sport default, which are
+         * exactly what it exists to silence — `leagueAnswered` reports the
+         * same, so the default stays out of it too.
+         */
+        leagueId = undefined;
       } else if (enrichment?.league) {
         leagueId = await findOrCreateLeague(ctx, {
           name: enrichment.league,
@@ -9939,7 +10631,21 @@ export const commitCardChecklistPrelude = internalMutation({
       }
       return {
         ...(leagueId ? { leagueId } : {}),
-        ...(enrichment?.yearsActive ? { yearsActive: enrichment.yearsActive } : {}),
+        /**
+         * NEO-254 — the operator's own years WIN over the lookup's.
+         *
+         * Same precedence the League field above already has, and for a
+         * stronger reason: the era is now half of the team's identity, so it is
+         * what decides whether this answer finds the row we hold or makes a
+         * second one beside it. An operator disambiguating the two Winnipeg
+         * Jets is typing the years precisely because Wikidata's answer
+         * describes the other one.
+         */
+        ...(create.yearsActive
+          ? { yearsActive: create.yearsActive }
+          : enrichment?.yearsActive
+            ? { yearsActive: enrichment.yearsActive }
+            : {}),
         ...(enrichment?.colors ? { colors: enrichment.colors } : {}),
         ...(enrichment?.wikidataId || enrichment?.espnId
           ? {
@@ -9989,6 +10695,107 @@ export const commitCardChecklistPrelude = internalMutation({
      * id-keyed link the product invariant asks for: the label was only ever the
      * question, and this is the answer.
      */
+    /**
+     * ── NEO-254: staged LEAGUES are created before the teams that need them ──
+     *
+     * The same mechanism one level up, and it runs before the team pass for
+     * exactly the reason that pass runs before the player loop: a team's
+     * league has to exist by the time the team row is written, or the team is
+     * filed under the sport default and the operator's answer is lost.
+     *
+     * Jason, preview test 2026-09-06: on a fresh deployment every hockey team
+     * offered `Create National Hockey League`, and whichever one was finally
+     * pressed produced a league with a name and nothing else. This map is the
+     * fix for both halves — the league is created ONCE for the batch, and it
+     * is created with the whole record the New League step collected.
+     *
+     * Keyed by the NORMALISED LEAGUE NAME (`normalizeLeagueName`, which does
+     * not token-sort — "National League" is not "League National"), because
+     * that is the key a team row's `create.leagueName` will be looked up by.
+     * A step the operator LINKED contributes its target's id; a step they
+     * skipped or never answered contributes nothing, and the team then falls
+     * through to its own league precedence exactly as before.
+     */
+    const stagedLeagueIdByName = new Map<string, Id<"leagues">>();
+    /**
+     * NEO-254 — "Skip — no league", SCOPED TO THE TEAM THAT RAISED THE STEP.
+     *
+     * A skip on a league step is an answer about one team: this team belongs
+     * to no league. Batch-wide it would be a much larger claim than the button
+     * makes — a step raised by the Canucks would silently strip the league
+     * from every other team that happened to name it, none of which the
+     * operator was looking at. So the answer travels with `source.teamRowId`,
+     * and a second team naming the same league gets its own step and its own
+     * answer.
+     *
+     * Without it the skip did nothing at all: the team rows still carry
+     * `create.leagueName`, so the precedence below fell through to
+     * `findOrCreateLeague` and minted the very league the operator had just
+     * declined — and the sport default would have reasserted itself if it had
+     * not.
+     */
+    const teamsWithSkippedLeague = new Set<string>();
+
+    for (const row of reviewRows) {
+      if (row.kind !== "league") continue;
+      const leagueKey = normalizeLeagueName(row.name);
+      if (!leagueKey) continue;
+      if (row.decision?.action === "skip") {
+        // Only a STAGED league can be skipped for a team — a league row with no
+        // `source` was not raised on anyone's behalf, so there is nobody for
+        // the answer to apply to.
+        if (row.source?.kind === "leagueOf") {
+          teamsWithSkippedLeague.add(row.source.teamRowId as string);
+        }
+        continue;
+      }
+      if (row.decision?.action === "link" && row.decision.linkedLeagueId) {
+        // Re-checked before it is used, for the reason `reviewedTeamFields`
+        // re-checks a stored `leagueId`: a decision is a durable record read
+        // some time after it was made, and the row can have been deleted or
+        // (via a stale client) belong to another sport. Dropped rather than
+        // thrown on — there is no operator here, and losing one league must
+        // not abort a whole checklist commit.
+        const linked = await ctx.db.get(row.decision.linkedLeagueId);
+        if (linked && linked.sportId === args.sportId) {
+          stagedLeagueIdByName.set(leagueKey, linked._id);
+        }
+        continue;
+      }
+      if (row.decision?.action !== "create") continue;
+      const createLeague = row.decision.createLeague;
+      // No payload means the step was never filled in. Nothing to build a row
+      // from, and no fallback to the bare label by design: a league created
+      // from a name alone is precisely the defect this step exists to remove.
+      if (!createLeague || !createLeague.name.trim()) continue;
+      /*
+       * `findOrCreateLeague` gap-fills, so a league another operator already
+       * created keeps ITS abbreviation, level, years and Wikidata id, and this
+       * batch only fills what was blank. Aliases are passed on the insert path
+       * only (that helper deliberately never widens an existing row's aliases
+       * — see its note) which is the right rule here too: this operator's
+       * spelling should not silently change what an existing league answers to.
+       */
+      const leagueId = await findOrCreateLeague(ctx, {
+        name: createLeague.name,
+        sportId: args.sportId,
+        ...(createLeague.abbreviation ? { abbreviation: createLeague.abbreviation } : {}),
+        ...(createLeague.level ? { level: createLeague.level } : {}),
+        ...(createLeague.yearsActive ? { yearsActive: createLeague.yearsActive } : {}),
+        ...(createLeague.aliases?.length ? { aliases: createLeague.aliases } : {}),
+        ...(createLeague.wikidataId ? { wikidataId: createLeague.wikidataId } : {}),
+      });
+      // `leagueKey` IS the label the step was raised for, and that is what a
+      // team row's `leagueName`/`enrichment.league` carries. When the operator
+      // RENAMED the league on the step, register the typed name too, so a team
+      // that somehow refers to it by the new spelling still resolves.
+      stagedLeagueIdByName.set(leagueKey, leagueId);
+      const typedKey = normalizeLeagueName(createLeague.name);
+      if (typedKey && typedKey !== leagueKey) {
+        stagedLeagueIdByName.set(typedKey, leagueId);
+      }
+    }
+
     const stagedTeamIdByLabel = new Map<string, Id<"teams">>();
 
     for (const row of reviewRows) {
@@ -10007,21 +10814,47 @@ export const commitCardChecklistPrelude = internalMutation({
       // design (Jason, 2026-09-05: "We simply shouldn't allow for full string
       // creation").
       if (!create || !create.name.trim()) continue;
-      const { id, created } = await createTeamFromOperatorInput(create, {
+      const made = await createTeamFromOperatorInput(create, {
         // Already enriched: the staged row's own Wikidata lookup ran while it
         // sat in the wizard, and its result is on `row.enrichment`.
         enqueueEnrichment: false,
-        extra: await reviewedTeamFields(create, row.enrichment),
+        extra: await reviewedTeamFields(create, row.enrichment, row._id as string),
         // NEO-236 security review, finding 1: a league that failed the re-check
         // above is NOT an answer, so it must not suppress the sport default —
         // `reviewedTeamFields` has already fallen through to `leagueName` or
         // the enrichment, and if both were empty the row is better off with the
         // sport's default than with nothing.
-        leagueChosen: await leagueAnswered(create),
+        leagueChosen: await leagueAnswered(
+          create,
+          row.enrichment?.league,
+          row._id as string,
+        ),
       });
-      stagedTeamIdByLabel.set(norm(row.name), id);
-      if (created) createdTeamIds.push(id);
+      // NEO-254: two overlapping rows already hold this name, so nothing was
+      // written — see the refusal in `createTeamFromOperatorInput`. The step
+      // simply produces no staged id, and every stint that would have used it
+      // falls through to the unresolved list.
+      if (!made) continue;
+      stagedTeamIdByLabel.set(norm(row.name), made.id);
+      if (made.created) createdTeamIds.push(made.id);
     }
+
+    /**
+     * NEO-254 — the set's year, walked ONCE for the whole commit.
+     *
+     * The narrowing runs per ambiguous name — for TEAMS in the loop directly
+     * below and for PLAYERS in the loop after it — while the year is a property
+     * of the set, so resolving it per name would be the same handful of reads
+     * repeated hundreds of times inside a mutation with a read budget.
+     * Undefined (an orphaned subtree, a fixture with no year row) means no
+     * narrowing happens at all — the names go to the operator, which is the
+     * behaviour before this existed.
+     *
+     * Declared here, above the TEAM loop, rather than beside the player one it
+     * was written for: NEO-254's era work gave teams the same need, and the
+     * team loop runs first.
+     */
+    const setYear = await findSetYearForSelectorOption(ctx, args.selectorOptionId);
 
     for (const name of allTeamNames) {
       // The review-row key, NOT a team-identity lookup: `reviewByKey` is built
@@ -10037,8 +10870,24 @@ export const commitCardChecklistPrelude = internalMutation({
       // rule the others lack, this lookup starts missing rows it should find
       // and commit quietly mints a duplicate franchise. One derivation, one
       // place. `teams.dedupPin.test.ts` greps for the reintroduction.
-      const existing = await findTeamByFullName(ctx, args.sportId, name);
-      if (existing) {
+      //
+      // NEO-254 — and narrowed by the SET'S YEAR, because the name alone is no
+      // longer an identity. Two Winnipeg Jets rows exist; a 1985 card means the
+      // first and a 2015 card the second, and `.first()` meant whichever the
+      // index happened to return.
+      //
+      // The ordering matters and mirrors the player loop directly above: this
+      // exactly-one fast path runs FIRST, so an ordinary team name pays one
+      // indexed read and nothing else — and an ambiguous one falls through to
+      // the operator's decision below rather than being pre-empted by a guess.
+      const { teamId: existingTeamId } = await resolveTeamForSetYear(
+        ctx,
+        args.sportId,
+        name,
+        setYear,
+      );
+      if (existingTeamId) {
+        const existing = (await ctx.db.get(existingTeamId))!;
         teamIdByName.set(name, existing._id);
         // NEO-236: the FULL name — location plus nickname — everywhere a
         // stored team name leaves this mutation. This map feeds listing titles
@@ -10090,8 +10939,9 @@ export const commitCardChecklistPrelude = internalMutation({
         unresolvedTeamNames.add(name);
         continue;
       }
-      const enrichment = reviewByKey.get(`team:${normalized}`)?.enrichment;
-      const { id, created } = await createTeamFromOperatorInput(create, {
+      const teamReviewRow = reviewByKey.get(`team:${normalized}`);
+      const enrichment = teamReviewRow?.enrichment;
+      const made = await createTeamFromOperatorInput(create, {
         // The row the operator reviewed arrives complete — the wizard's own
         // Wikidata/ESPN lookup already ran — so it does not go back on the
         // enrichment queue (NEO-147's creation-only contract).
@@ -10099,17 +10949,33 @@ export const commitCardChecklistPrelude = internalMutation({
         // NEO-236: league, era, colours and ids in one place, shared with the
         // staged-career-team pass above. The operator's League choice wins over
         // the enrichment's suggestion — see `reviewedTeamFields`.
-        extra: await reviewedTeamFields(create, enrichment),
-        leagueChosen: await leagueAnswered(create),
+        extra: await reviewedTeamFields(
+          create,
+          enrichment,
+          teamReviewRow?._id as string | undefined,
+        ),
+        leagueChosen: await leagueAnswered(
+          create,
+          enrichment?.league,
+          teamReviewRow?._id as string | undefined,
+        ),
       });
-      teamIdByName.set(name, id);
-      teamNameById.set(id, teamFullName(create));
+      // NEO-254: null means the name resolves to two or more OVERLAPPING rows.
+      // Nothing was written, and the name is reported unresolved exactly as an
+      // unreviewed one is — Team Management is where a duplicate pair is sorted
+      // out, and a commit must not pick a side.
+      if (!made) {
+        unresolvedTeamNames.add(name);
+        continue;
+      }
+      teamIdByName.set(name, made.id);
+      teamNameById.set(made.id, teamFullName(create));
       // `createTeamFromOperatorInput` LINKS instead of inserting when the
       // composed name already exists — the operator answered "SD Padres" with
       // the San Diego Padres row we already have. A row this commit did not
       // insert is not one it created, and `createdTeamIds` drives the finalize
       // phase's creation-only work, so the flag is what decides.
-      if (created) createdTeamIds.push(id);
+      if (made.created) createdTeamIds.push(made.id);
     }
 
     const playerIdByName = new Map<string, Id<"players">>();
@@ -10117,22 +10983,113 @@ export const commitCardChecklistPrelude = internalMutation({
     // player row it did not write.
     const playerNameById = new Map<Id<"players">, string>();
     const createdPlayerIds: Array<Id<"players">> = [];
+    /** Normalized player name → the teams printed on the cards it appeared on. */
+    const cardTeamNamesByPlayer = new Map<string, string[]>(
+      (args.playerTeamNames ?? []).map(({ playerNameNormalized, teams }) => [
+        playerNameNormalized,
+        teams,
+      ]),
+    );
+    /**
+     * NEO-254 — team lookups and the tie-break read budget, shared across every
+     * ambiguous name in this commit.
+     *
+     * A set's whole team vocabulary is a couple of dozen rows repeating over
+     * hundreds of cards, so after the first few names the tie-break reads
+     * nothing at all. Per-name caches would have re-read the same teams for
+     * every collision AND re-armed the budget each time, which is no bound on
+     * a commit's reads.
+     */
+    const cardYearTeamCache = createCardYearTeamCache();
     for (const name of allPlayerNames) {
       const normalized = norm(name);
-      // Compound index returns 0 or 1 row per lookup — independent of how
-      // many cross-sport duplicates of this normalized name exist.
-      const existing = await ctx.db
-        .query("players")
-        .withIndex("by_name_normalized_and_sport_id", (q) =>
-          q.eq("nameNormalized", normalized).eq("sportId", args.sportId),
-        )
-        .first();
-      if (existing) {
+      /**
+       * NEO-254 — the compound index returns as many rows as share this key,
+       * and that number is the decision.
+       *
+       * This was `.first()`, whose comment claimed the index "returns 0 or 1
+       * row per lookup". It returns 0 or 1 per (name, SPORT) pair — which is
+       * not the same as 0 or 1 full stop, because nothing makes that pair
+       * unique. Two people named Bob Allen played in the majors; the bulk
+       * preload (plan decision 3) puts both on file, and `.first()` then
+       * silently attached every "Bob Allen" card in the set to one of them.
+       *
+       * Bounded rather than collected: the branch only needs "none / one /
+       * more than one", and a name that normalizes to something a thousand
+       * rows share must not turn a per-name lookup inside a commit into an
+       * unbounded read.
+       *
+       *   exactly 1 → adopt it, exactly as before;
+       *   0 or >1   → fall through to the operator's decision below. For 0
+       *               that is the behaviour this loop always had. For >1 it
+       *               is the fix: a `link` decision names WHICH row (the
+       *               wizard listed them), a `create` decision means the
+       *               operator looked at those rows and said this is somebody
+       *               else, and NO decision leaves the card unlinked and the
+       *               name reported as unreviewed — never bound by a guess.
+       */
+      // NEO-254 — the shared derivation, not a fourth copy of the index read.
+      // It is what carries the ALIAS leg: a 2010 "Ron Artest" card and a 2011
+      // "Metta World Peace" card have to land on one row, and a hand-rolled
+      // read here would have found only the primary name.
+      const existingMatches = await sameNamePlayers(ctx, normalized, args.sportId);
+      if (existingMatches.length === 1) {
+        const existing = existingMatches[0];
         playerIdByName.set(name, existing._id);
         playerNameById.set(existing._id, existing.name);
         continue;
       }
       const decision = reviewByKey.get(`player:${normalized}`)?.decision;
+      /**
+       * NEO-254 — the card's own year narrows "more than one" back to one.
+       *
+       * The guard above is correct and, on its own, expensive: a 1990 set with
+       * eight hundred commons would hand the operator a decision for every
+       * name two people have ever shared, almost all of which have exactly one
+       * plausible answer because the other man retired in 1937.
+       *
+       * The card is evidence about which one it is, and this uses it — the
+       * year first, then the team printed on the card when two contemporaries
+       * share a name. `narrowSameNamePlayersByCardYear` returns a row only when
+       * exactly one survives; every other outcome falls through to the
+       * operator's decision below, exactly as before. With no set year it
+       * narrows nothing at all: the rule is never to guess, only to rule out.
+       *
+       * ## Only when there is NO decision, and that ordering is load-bearing
+       *
+       * A review session is human-paced and a commit happens at the end of it.
+       * Between the operator ruling on this name and pressing Confirm, a
+       * colleague's commit or a bulk load can add a stint that makes the year
+       * evidence point somewhere — including somewhere ELSE. Narrowing first
+       * would let that late data silently overrule a person who had already
+       * looked at these very rows and said which one it was, or said "this is
+       * somebody new", or said "not a person at all". Inference never
+       * overrules an answer; it only fills a silence.
+       *
+       * `!decision` and not `decision?.action !== "link"`: a skip is an answer
+       * too, and a `create` means the operator saw the candidates and rejected
+       * all of them.
+       *
+       * Placed AFTER the exactly-one fast path so the ordinary name pays
+       * nothing for it.
+       */
+      if (!decision && existingMatches.length > 1) {
+        const narrowed = await narrowSameNamePlayersByCardYear(
+          ctx,
+          existingMatches,
+          {
+            ...(setYear !== undefined ? { cardYear: setYear } : {}),
+            cardTeamNames: cardTeamNamesByPlayer.get(normalized) ?? [],
+            teamCache: cardYearTeamCache,
+          },
+        );
+        if (narrowed.playerId) {
+          const picked = existingMatches.find((p) => p._id === narrowed.playerId)!;
+          playerIdByName.set(name, picked._id);
+          playerNameById.set(picked._id, picked.name);
+          continue;
+        }
+      }
       // Not reviewed (shouldn't happen), or reviewed as "not a person"
       // (NEO-212). Both leave the name out of `playerIdByName`, so the card
       // keeps it as raw text and links to nothing — a skip is deliberately
@@ -10148,14 +11105,44 @@ export const commitCardChecklistPrelude = internalMutation({
       }
       if (decision.action === "link") {
         if (decision.linkedPlayerId) {
+          /**
+           * NEO-254 — the linked row is RE-VALIDATED, not trusted.
+           *
+           * A decision is recorded when the operator makes it and consumed
+           * when they hit Confirm, and a review session is a human-paced thing
+           * that can span a long while. Between the two, the row they picked
+           * can be deleted or merged away by another operator or by an admin
+           * tool — and this branch used to write the id into `playerIdByName`
+           * on the strength of the decision alone. The card then carried a
+           * `playerIds` entry pointing at nothing: invisible to every query
+           * that joins through it, unfixable by any later pass, and with
+           * nothing anywhere saying it had happened.
+           *
+           * The `db.get` was ALREADY here — it read the linked row's canonical
+           * spelling — and its result was simply discarded when the row was
+           * gone. Reading it once and acting on the answer costs nothing extra.
+           *
+           * The sport is checked too, for the reason `savePlayerFields` checks
+           * it on a stint: a cross-sport player is unreachable by every query
+           * that matters (all of them key on the sport row id), so linking to
+           * one is the same dangling reference wearing a valid id.
+           *
+           * Treated as UNREVIEWED rather than failed: the operator's answer
+           * has become unanswerable, which is exactly the state
+           * `unreviewedPlayerNames` reports and stamps on the card. The commit
+           * still lands — refusing it would cost them the whole sync over one
+           * name — and they are told which name to look at again.
+           */
+          const linked = await ctx.db.get(decision.linkedPlayerId);
+          if (!linked || linked.sportId !== args.sportId) {
+            unreviewedPlayerNames.push(name);
+            continue;
+          }
           playerIdByName.set(name, decision.linkedPlayerId);
           // The LINKED row's own spelling is what the old write loop's
-          // `db.get(...).name` produced, so read it here (once) rather than
-          // assuming the reviewed name matches it.
-          if (!playerNameById.has(decision.linkedPlayerId)) {
-            const linked = await ctx.db.get(decision.linkedPlayerId);
-            if (linked) playerNameById.set(decision.linkedPlayerId, linked.name);
-          }
+          // `db.get(...).name` produced, so use it here rather than assuming
+          // the reviewed name matches it.
+          playerNameById.set(decision.linkedPlayerId, linked.name);
         }
         continue;
       }
@@ -10245,20 +11232,39 @@ export const commitCardChecklistPrelude = internalMutation({
       }
       const resolveCareerTeamId = async (
         label: string,
+        /**
+         * NEO-254 — the year this STINT started, which is the year that says
+         * which era of the club it was.
+         *
+         * Deliberately not the set's year: a 2015 card can mention a stint that
+         * began in 1979, and narrowing that stint by 2015 would file it under
+         * the franchise that did not exist yet. The stint's own start is the
+         * only honest evidence here.
+         */
+        stintYear: number | undefined,
       ): Promise<Id<"teams"> | null> => {
         // NEO-236: the operator's own answer for THIS label, by id, first. See
         // `stagedTeamIdByLabel` — a step answered with a different spelling, or
         // by linking to a differently-named row, is unreachable by matching.
         const answered = stagedTeamIdByLabel.get(norm(label));
         if (answered) return answered;
-        const matched = await resolveTeamIdByName(label);
+        const matched = await resolveTeamIdByName(label, stintYear);
         if (matched) return matched;
         const create = careerTeamCreateBySource.get(norm(label));
         if (!create) return null;
         // The operator answered this label, so it is no longer unresolved —
         // `resolveTeamIdByName` recorded it on the way past.
         unresolvedTeamNames.delete(label.trim());
-        return (await createTeamFromOperatorInput(create)).id;
+        const made = await createTeamFromOperatorInput(create);
+        if (!made) {
+          // Two overlapping rows already hold this name — see the refusal in
+          // `createTeamFromOperatorInput`. The stint is left without a team
+          // rather than attached to a guess, and the label goes back on the
+          // unresolved list it was just taken off.
+          unresolvedTeamNames.add(label.trim());
+          return null;
+        }
+        return made.id;
       };
       const teamYearByKey = new Map<
         string,
@@ -10266,7 +11272,7 @@ export const commitCardChecklistPrelude = internalMutation({
       >();
       for (const ct of enrichment?.careerTeams ?? []) {
         if (excludedCareerTeamNames.has(norm(ct.name))) continue;
-        const teamId = await resolveCareerTeamId(ct.name);
+        const teamId = await resolveCareerTeamId(ct.name, ct.fromYear);
         if (!teamId) continue;
         teamYearByKey.set(`${teamId}|${ct.fromYear}`, {
           teamId,
@@ -10275,7 +11281,7 @@ export const commitCardChecklistPrelude = internalMutation({
         });
       }
       for (const ct of manualCareerTeams) {
-        const teamId = await resolveCareerTeamId(ct.name);
+        const teamId = await resolveCareerTeamId(ct.name, ct.fromYear);
         if (!teamId) continue;
         teamYearByKey.set(`${teamId}|${ct.fromYear}`, {
           teamId,
@@ -10295,6 +11301,14 @@ export const commitCardChecklistPrelude = internalMutation({
         ...(enrichment?.isHallOfFame !== undefined
           ? { isHallOfFame: enrichment.isHallOfFame }
           : {}),
+        // NEO-254: `birthYear` from the lookup is deliberately NOT written
+        // here. It is the field that tells two same-name players apart, and a
+        // Wikidata birth year for a name the operator has just told us is a
+        // NEW person would be the previous person's — the wizard's whole
+        // candidate list exists because the lookup and the operator can
+        // disagree about who this is. It is written only where the source
+        // identifies the PLAYER rather than merely their name — a human typing
+        // it into the admin player form, or a dataset keyed on the player.
         ...(enrichment?.wikidataId
           ? { externalIds: { wikidataId: enrichment.wikidataId } }
           : {}),
@@ -10436,6 +11450,12 @@ const commitChunkCardValidator = v.object({
   cardNumber: v.string(),
   cardName: v.string(),
   playerIds: v.optional(v.array(v.id("players"))),
+  // NEO-254 — the same ids with the name each card PRINTED attached, built by
+  // the prelude's own loop so the two cannot get out of step. See schema.ts.
+  playerLinks: v.optional(v.array(v.object({
+    playerId: v.id("players"),
+    nameOnCard: v.string(),
+  }))),
   teamOnCardIds: v.optional(v.array(v.id("teams"))),
   attributes: v.optional(v.array(v.string())),
   isRookie: v.optional(v.boolean()),
@@ -10703,6 +11723,19 @@ export const commitCardChecklistChunk = internalMutation({
           if (!accepted.has(field)) continue;
           if (sameContentValue(existing[field], incoming[field])) continue;
           contentPatch[field] = incoming[field];
+        }
+        /*
+         * NEO-254 — `playerLinks` RIDES WITH `playerIds`; it is never diffed
+         * on its own.
+         *
+         * It is not an independent fact: it is the same list with the printed
+         * name attached, so putting it in `NB_CONTENT_FIELDS` would ask the
+         * operator to rule on it separately and let the two be accepted apart
+         * — the exact divergence the invariant forbids. Written only when the
+         * ids were actually written, and always in the same patch.
+         */
+        if (contentPatch.playerIds !== undefined) {
+          contentPatch.playerLinks = card.playerLinks;
         }
         if (Object.keys(contentPatch).length > 0) contentAppliedCount++;
 
@@ -10983,6 +12016,9 @@ export const commitCardChecklistChunk = internalMutation({
           cardName: card.cardName,
           // NEO-26: legacy `team` removed; only teamOnCardIds[] is written.
           playerIds: card.playerIds,
+          // NEO-254 — the same list with the printed name attached; see
+          // schema.ts. Never written without the ids beside it.
+          playerLinks: card.playerLinks,
           teamOnCardIds: card.teamOnCardIds,
           attributes: card.attributes,
           isRookie: card.isRookie,
@@ -12988,10 +14024,18 @@ export const commitCardChecklist = action({
 
     const playerNames: string[] = [];
     const teamNames: string[] = [];
+    // NEO-254 — which teams shared a card with which player. The prelude is
+    // handed names rather than cards, so this association has to be built here
+    // or it is gone; see `commitCardChecklistPrelude.playerTeamNames`.
+    const playerTeamNamesByPlayer = new Map<string, string[]>();
     for (const c of args.cards) {
-      for (const p of c.players ?? []) if (p.trim()) playerNames.push(p.trim());
-      for (const t of c.teams ?? []) if (t.trim()) teamNames.push(t.trim());
-      if (c.team && c.team.trim() && !c.teams?.length) teamNames.push(c.team.trim());
+      const teamsOnCard = cardTeamNames(c);
+      for (const p of c.players ?? []) {
+        if (!p.trim()) continue;
+        playerNames.push(p.trim());
+        addCardTeamNames(playerTeamNamesByPlayer, p, teamsOnCard);
+      }
+      for (const t of teamsOnCard) teamNames.push(t);
     }
 
     const prelude: CommitPrelude = await phase("prelude", () =>
@@ -13000,6 +14044,10 @@ export const commitCardChecklist = action({
         sportId: args.sportId,
         playerNames: Array.from(new Set(playerNames)),
         teamNames: Array.from(new Set(teamNames)),
+        playerTeamNames: Array.from(
+          playerTeamNamesByPlayer,
+          ([playerNameNormalized, teams]) => ({ playerNameNormalized, teams }),
+        ),
         batchId: args.batchId,
       }),
     );
@@ -13071,9 +14119,28 @@ export const commitCardChecklist = action({
     // all unresolved end up with empty arrays (left undefined).
     const chunkCards = committed.map(({ card: c, index }) => {
       const playerIds: Array<Id<"players">> = [];
+      /*
+       * NEO-254 — the RAW string this card printed, kept beside the id.
+       *
+       * `p` is the checklist's own per-player name off BSC/SportLots, before
+       * any normalising: "Doc Gooden" on a 1986 card that resolves to Dwight
+       * Gooden through an alias, or through a link the operator made in the
+       * wizard. That string is the card's fact and the player's name is not —
+       * renaming or re-aliasing a player must never rewrite what a 1986 card
+       * says it says.
+       *
+       * Built in this loop rather than after it, so the two arrays are one
+       * list by construction: same ids, same order, no second pass to get out
+       * of step. See `cardChecklist.playerLinks` in schema.ts.
+       */
+      const playerLinks: Array<{ playerId: Id<"players">; nameOnCard: string }> = [];
       for (const p of c.players ?? []) {
-        const id = playerIdByName.get(p.trim());
-        if (id) playerIds.push(id);
+        const nameOnCard = p.trim();
+        const id = playerIdByName.get(nameOnCard);
+        if (id) {
+          playerIds.push(id);
+          playerLinks.push({ playerId: id, nameOnCard });
+        }
       }
       const teamOnCardIds: Array<Id<"teams">> = [];
       const teamSources = c.teams?.length ? c.teams : c.team ? [c.team] : [];
@@ -13135,6 +14202,7 @@ export const commitCardChecklist = action({
           // from the adapter is consumed above to resolve teamOnCardIds[];
           // it isn't written to cardChecklist anywhere.
           playerIds: playerIds.length ? playerIds : undefined,
+          playerLinks: playerLinks.length ? playerLinks : undefined,
           teamOnCardIds: teamOnCardIds.length ? teamOnCardIds : undefined,
           attributes: markers.length
             ? Array.from(new Set([...(c.attributes ?? []), ...markers]))

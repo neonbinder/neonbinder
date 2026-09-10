@@ -435,15 +435,6 @@ tags:
 # needs. 30s, not the 7s default, because the row only offers an action
 # once its live Wikidata lookup has come back — an external round-trip.
 #
-# PLAYER **OR** TEAM. Unlike the retired custom-subtree flows, whose only
-# unknowns were two invented player names, a real 1996 fetch queues
-# unknown TEAMS as well (1996's Expos / Marlins / Anaheim Angels are not
-# in the roster the 2024 Topps Chrome seed created). The button's
-# accessible name is "Add as New {Player|Team}", so pinning it to Player
-# would fail whenever a team happens to settle first. Both are the same
-# "create" decision and either leaves exactly ONE decision on the books,
-# which is all 6a asserts.
-#
 # ⚠️ WAIT FOR THE BATCH TO STOP MOVING BEFORE DECIDING (NEO-236 / NEO-248).
 # `resolveNav` yields a PLAYER row the wizard walked to the moment any team row
 # is settled and undecided — teams are answered before players so that the
@@ -469,12 +460,21 @@ tags:
 - extendedWaitUntil:
     notVisible: ".*still looking up.*"
     timeout: 180000
+# PLAYER, TEAM **OR LEAGUE** (NEO-254). Unlike the retired custom-subtree
+# flows, whose only unknowns were two invented player names, a real 1996 fetch
+# queues unknown TEAMS as well (1996's Expos / Marlins / Anaheim Angels are not
+# in the roster the 2024 Topps Chrome seed created), and the wizard now stages a
+# New LEAGUE step ahead of the first team that needs one — so a league can
+# perfectly well be the first row to settle. Pinning this to any subset fails
+# whenever one of the others comes up first. All three are the same "create"
+# decision and any of them leaves exactly ONE decision on the books, which is
+# all 6a asserts.
 - extendedWaitUntil:
     visible:
-      id: "Add as New (Player|Team)"
+      id: "^Add as New (Player|Team|League)$"
     timeout: 30000
 - tapOn:
-    id: "Add as New (Player|Team)"
+    id: "^Add as New (Player|Team|League)$"
 - tapOn:
     text: "Cancel (Esc)"
     retryTapIfNoChange: true
@@ -510,6 +510,8 @@ tags:
 #
 # "1 of N reviewed" is the same claim, exactly as strict — one decision, no
 # more — against a node that sits at the top of the dialog and is always there.
+# Generalised in `.maestro/README.md` → "Asserting inside a dialog: header and
+# footer only, never the body"; two runs found this independently.
 - assertVisible:
     text: "1 of [0-9]+ reviewed.*"
 
@@ -557,11 +559,49 @@ tags:
       notVisible:
         text: ".*Confirm & Save.*"
     commands:
+      # NEO-254 — ANSWER WHATEVER STEP IS UP, WITH ONE GUARD.
+      #
+      # The wizard now stages a New League step immediately AHEAD of the first
+      # team that needs that league (later teams pick the staged one), and the
+      # bulk decides PLAYERS only — so this loop is what answers both kinds. A
+      # loop that knew only `New Team:` parks on the league step and spins its
+      # whole `times` budget; that is how the seed job died.
+      #
+      # ONE guard, keyed on the step's own primary BUTTON in the pinned footer,
+      # rather than one per step HEADING. Measured, not tidied. Same loop, two
+      # CI runs: with a single always-matching `New Team: .*` guard it cost
+      # 80.8s (22 iterations, 7.6s of probing); adding a second `New League: .*`
+      # guard that missed in 23 of 29 iterations took it to 294.9s — +214s, of
+      # which +192s was pure guard overhead against 11.5s of actual league taps.
+      # A `when: visible` that MISSES waits out the full visibility timeout
+      # (~6.6s); one that matches costs ~2.3s. Key on something present whenever
+      # there is work and every iteration is the cheap case.
+      #
+      # The button is also the right thing to look at for the reason the header
+      # assertion above exists: it lives in the dialog's fixed footer, where a
+      # step heading lives in the `overflow-y-auto` body that no flow can scroll.
+      #
+      # `(Team|League)` AND NOT `(Player|Team|League)` — the whole safety of this
+      # step, and the opposite of 6a above, which wants any single decision. A
+      # player row the bulk deliberately LEFT undecided is an ambiguous same-name
+      # row: two NB players already carry that name and the wizard is asking
+      # which one is on the card (`decideAllRemaining`). Tapping `Add as New
+      # Player` there mints a third one silently — the exact failure NEO-254
+      # exists to remove. Left out of the matcher, the loop runs out and the wait
+      # below fails loudly, which is the outcome to want.
+      #
+      # Anchored `^…$` so it cannot reach the demoted `Add as New {kind} anyway`
+      # link (rendered when an exact match promotes `Link to <name>` instead).
+      # The pinned CLI matches an `id:` as a FULL match, so the anchors are a
+      # no-op there — they are belt-and-braces against the looser reading the
+      # README's pressKey section used to claim.
       - runFlow:
           when:
-            visible: "New Team: .*"
+            visible:
+              id: "^Add as New (Team|League)$"
           commands:
-            - tapOn: "Add as New Team"
+            - tapOn:
+                id: "^Add as New (Team|League)$"
 # NEO-221 — the bulk add now decides only rows whose Wikidata lookup has
 # SETTLED, staying armed for the rest, so this wait is gated on that live
 # external round-trip rather than on one mutation. Raised for that reason;

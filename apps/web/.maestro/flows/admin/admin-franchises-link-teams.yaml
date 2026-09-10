@@ -1,0 +1,479 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/admin/players&worker=${WORKER_INDEX || "0"}
+name: "Franchises — two team rows are strung onto one franchise from the team side, and taken off again from the franchise side"
+tags:
+  - regression
+  - admin
+---
+# R1 — ONE FEATURE (NEO-254): **franchise MEMBERSHIP**. A franchise is an
+# operator saying that two separately-named team rows are one continuous club,
+# and this flow drives the whole round trip of that decision:
+#   Team Management's Franchise picker STARTS a thread and puts team A on it →
+#   the same picker puts team B on the SAME thread by picking the pill →
+#   Franchise Management shows both on the thread →
+#   "Remove <team>" takes one back off.
+# Nothing else in the product can do any of that.
+#
+# ── WHY THIS FLOW EXISTS ONLY NOW ───────────────────────────────────────────
+# It could not be written before 4666a57. The Franchise control was a native
+# `<select>`, and maestro-web gives an `<option>` synthetic tap bounds from its
+# index inside its own parent, then resolves a tap by scanning
+# `document.querySelectorAll('option')` in DOCUMENT ORDER and taking the FIRST
+# bounds match — so on a page with several selects only the first is reachable.
+# `/admin/teams` had `league-filter`, then `team-league`, then `team-franchise`:
+# a tap meant for the third silently mutated the first. 4666a57 rebuilt it as a
+# `role="radiogroup"` of `role="radio"` pills with a separate
+# "+ Start a new franchise…" disclosure — the same remedy `NewTeamForm` already
+# used for its League pills — and that is what makes every step below possible.
+#
+# ⚠️ The League `<select>` beside it still has the defect and is deliberately
+# NOT touched by this flow (deferred, per that commit's own note). Do not add a
+# league here; the tap would land in the screen's league FILTER.
+#
+# R2 — HARD ASSERTIONS, none satisfiable by an inert page:
+#     (a) both teams really were written: after a page load, filtering
+#         `/admin/teams` by this run's token reads "2 of N teams";
+#     (b) the thread is STARTED, not adopted: the inline box's pill appears
+#         carrying this run's own franchise name, which no other row can be;
+#     (c) team A's link is COMMITTED by Save, not by picking — the franchise
+#         view is reached from team B's own "See the franchise" deep link, and
+#         it can only name a franchise id that a save actually stored;
+#     (d) BOTH teams are on ONE thread: "2 teams on this thread" plus both
+#         composed names. Two rows that merely *have* a franchise each would
+#         not produce this — the count is the join, read back out of Convex by
+#         a different query (`franchises.get`) than the one that wrote it;
+#     (e) removal is real and is only a LINK being cut: the thread drops to
+#         "1 team on this thread", team B is gone from it, and team A is
+#         untouched beside it.
+#     There are no `when:` branches and no conditional runFlow, so no path
+#     reaches the end without exercising all of it.
+#
+# R3 — DEDUP. Nothing else links a team to a franchise.
+#   * `admin-franchises-start-and-rename.yaml` owns the franchise ROW — start
+#     it, name it, rename it — and asserts an EMPTY thread. It never links.
+#   * `player-management-add-and-career-history.yaml` owns adding a player and
+#     recording stints; this flow adds no stint and never saves the player.
+#   * `team-management-edit-a-team.yaml` owns the Location/Name split and the
+#     colours; this flow edits neither.
+#   The "mint a player, then create a team through its career picker" PREAMBLE
+#   is shared with those last two by copy, not by util — there is no
+#   `util-create-team-*` in the suite today, and extracting one would mean
+#   editing two flows this change has no other reason to touch. Worth doing as
+#   its own change; noted rather than smuggled in here. (R9 governs set-builder
+#   drilling, and this flow does none.)
+#
+# ── WHY A PLAYER IS MINTED AT ALL ───────────────────────────────────────────
+# Because there is no other door. A team row can ONLY be created through the
+# New Team dialog, and every mount of that dialog is behind a TeamPicker:
+# CardDetailPanel, the checklist quick-add and UnreviewedNameFixer all live
+# inside `/admin/set-builder` behind a full Sport→Year→Manufacturer→Set→Variant
+# drill, and the career-history editor on `/admin/players` does not.
+# `/admin/teams` itself has no "add team" control. So the cheapest way to two
+# team rows is one throwaway player, exactly as the two sibling admin flows do
+# it. No stint is added and the player is never saved — the teams exist the
+# moment the dialog's Create returns, which is what the chip proves.
+#
+# R4 — the entry URL is the whole setup. No in-body login, no credential step.
+#
+# R5 — every wait is Maestro's 7s default except the cold sign-in (45s) and the
+#   one mid-flow reload (30s, the value both sibling admin flows use for an
+#   identical openLink). No marketplace is touched. Note the sibling flows
+#   still carry 10–15s on their Convex saves; those predate the 7s rule and are
+#   not copied here — a team save that needs longer than 7s is a finding.
+#
+# R7 / R7a — no set, checklist, card or variant is touched, so this flow owns no
+#   SET-REGISTRY.md entry and writes to no shared row. It CREATES four
+#   permanent, globally-shared rows — one player, two teams, one franchise —
+#   and the product has no delete mutation for any of them, so they stay. They
+#   are made inert by their names: every one is suffixed with this run's own
+#   attempt token, unique per worker AND per attempt, so no two runners and no
+#   retry can collide, and nothing else in the suite or the product will ever
+#   search for them. The teams are left with no league, no colours and no
+#   years; the franchise is left holding exactly one of them.
+#
+#   ⚠️ SINGLE-TOKEN NAMES. `players.search` and the team typeahead are Convex
+#   SEARCH indexes and match on TOKENS: a hyphenated "Fr-w3-a1-23945" tokenizes
+#   into four terms and would answer to another flow's rows. Stripping the
+#   hyphens out of ATTEMPT_ID makes each name one term nothing else can share.
+#   `Loc…` is a separate word by design — a Location and a Name are two fields
+#   — but each half is itself a single token.
+#
+# R8 — every scroll that precedes a tap centers its target, and the ones that
+#   have to travel back UP the page say so (the default is DOWN, and a downward
+#   scroll can never find a target above the current position). On the 1024x629
+#   headless viewport the team detail panel is taller than the page: the
+#   Franchise group, Save, and "See the franchise" are each below the fold, and
+#   the master list is above it once Save has been reached.
+#
+#   TWO deliberate exceptions on the player page, both measured in CI run
+#   34071657961 rather than assumed. The add form and the career editor are the
+#   LAST things on that page, so anything in them is locked to the page bottom
+#   and centring can never settle — the run logged six futile swipes against an
+#   already-100%-visible Create button and five more against "+ Add team", ~17s
+#   of scrolling that moved nothing (R10). So the Create button scroll drops
+#   `centerElement`, and "+ Add team" is asserted rather than scrolled to at
+#   all. Which makes the "No stints recorded yet." scroll load-bearing: its
+#   centring is what drives the page to maximum scroll, and every measurement
+#   quoted below is taken from that position. Do not remove it.
+#
+# R10 — no conditional branches, no `notVisible:` guard on a normally-present
+#   element, no settle waits. Every scroll is its own assertion (R6), so none is
+#   followed by an assertVisible of the same text.
+
+- launchApp
+
+# The COUNTER, not the "Player Management" heading — the heading paints while
+# the list is still loading and the filter box exists during loading, so the
+# heading is actively misleading. The counter renders when the query resolves.
+- extendedWaitUntil:
+    visible: ".*of .* players.*"
+    timeout: 45000
+
+# Both runners inject ATTEMPT_ID with `-e` on every attempt, so the binding is
+# always there. Single-quoted because the expression contains double quotes.
+- evalScript: '${output.TOKEN = String(ATTEMPT_ID).split("-").join("")}'
+
+# ============================================================
+# PART 1 — THE FIXTURE: ONE PLAYER, THEN TWO TEAMS THROUGH THE NEW TEAM DIALOG
+# ============================================================
+
+# ── EMPTY THE LIST, THEN PICK THE SPORT ─────────────────────────────────────
+# A precondition, not a claim about filtering. Every player row prints its sport
+# beside the name, so with rows on screen "Baseball" is on the page many times
+# over and the sport picker could not be identified by what it says. And the
+# sport MUST be chosen with the add form CLOSED: maestro resolves an <option>
+# tap by index against the FIRST <select> in the document, so a pick made while
+# the form's own `new-player-sport` is mounted would land in the list's
+# `sport-filter`. With the form closed the list's picker is the only one there,
+# and the form then opens with this sport already selected.
+#
+# The sport carries all the way through: the player's sport is the picker's
+# sport, which is the sport the teams are created under, which is the sport the
+# Franchise pills are scoped to.
+- tapOn: "Filter players"
+- inputText: "zzzznotaplayer"
+- assertVisible: "No players match that filter."
+- assertVisible: "0 matches"
+
+- tapOn: "All sports"
+- tapOn: "Baseball"
+# maestro reads a <select> as its SELECTED option's text, so this is a direct
+# read of what the picker holds. The list is empty, so nothing else can answer.
+- assertVisible: "Baseball"
+
+- tapOn: "Add player"
+- tapOn: "New player name"
+- inputText: "Frp${output.TOKEN}"
+# NO `centerElement` — R8's own exception, and it is measured rather than
+# assumed. The add form is the last thing on this page, so its button row is
+# LOCKED to the page bottom and centring can never settle: CI run 34071657961
+# logged six consecutive swipes with this button already at 100% visibility and
+# bounds unchanged at y=552, ~10s of scrolling that moved nothing. Stopping at
+# "fully visible" is both the correct target and the cheap one, and the tap
+# below re-reads the settled hierarchy for its coordinates anyway.
+- scrollUntilVisible:
+    element:
+      id: "Create player Frp${output.TOKEN}"
+- tapOn:
+    id: "Create player Frp${output.TOKEN}"
+# "Added <name>." is said only for an INSERTED row — an adopted one says "That
+# player already exists — opened it." So the vehicle for the rest of the flow
+# is this run's own player and nobody else's.
+- extendedWaitUntil:
+    visible: ".*Added Frp${output.TOKEN}.*"
+
+# The career-history section is below the fold the moment the panel opens: at
+# 1024x629 the panel runs out of viewport around the Wikidata box. The scroll IS
+# the check (R6) that we are on a player with no history, so the picker below is
+# starting from nothing.
+#
+# `centerElement` is LOAD-BEARING here rather than habit (see the R8 note): this
+# line cannot be centred either, so the swipes run until the page stops moving,
+# and that maximum-scroll position is what puts "+ Add team" at y=484 and the
+# picker's popover clear of the fold for every step that follows.
+- scrollUntilVisible:
+    element:
+      text: "No stints recorded yet."
+    centerElement: true
+
+# ── TEAM A ──────────────────────────────────────────────────────────────────
+# NO SCROLL — the step above already did it. Centring "No stints recorded yet."
+# drives the page to its maximum scroll, and CI run 34071657961 measured the
+# trigger at y=484 with 100% visibility from the first check, after which five
+# more swipes moved nothing (the page had no room left). An `assertVisible` says
+# the same thing in 0.3s instead of 7, and it is still a hard assertion that the
+# career editor rendered.
+- assertVisible:
+    id: "Add team"
+- tapOn:
+    id: "Add team"
+- tapOn:
+    id: "Search teams"
+- inputText: "Fr${output.TOKEN}A"
+
+# NOTHING MATCHES — the precondition for creating it, and a real assertion that
+# this name is this attempt's alone.
+- assertVisible: "No matches."
+
+# OPEN THE DIALOG WITH ENTER, NOT BY TAPPING THE "+ New team" ROW. The career
+# editor is the LAST thing on the player panel, so once the page is scrolled as
+# far as it goes the picker sits near the bottom of the viewport and its
+# `absolute top-full` popover opens below it: the search box and one result row
+# fit, and the "+ New team" row under "No matches." lands past y=629. maestro
+# still reports its layout bounds, so a `tapOn` "succeeds" while the click lands
+# outside the picker — which is a pointerdown-outside, so the popover closes and
+# nothing opens. Enter on the input runs the SAME handler: TeamPicker's keydown
+# takes the highlighted match when there is one and otherwise opens the dialog,
+# and "No matches." above is what proves there is none.
+- pressKey: Enter
+
+# THE DIALOG IS OPEN. Portalled to `document.body` at `z-[60]`, `fixed inset-0
+# flex items-center justify-center`, so it is centred and clipped by nothing —
+# none of the geometry above can reach it. The heading is its `aria-labelledby`
+# target, so this is the dialog being correctly LABELLED and correctly SEEDED
+# with what was typed.
+- assertVisible: "New team: Fr${output.TOKEN}A"
+
+# LOCATION IS THE HALF NEO-236 ADDED, and filling it is what makes the composed
+# name below more than an echo of the search box. Addressed by its aria-label —
+# `NewTeamForm` sets one explicitly, which `primitives/Input` never does — and
+# the brackets are escaped because a matcher is a regex.
+- tapOn:
+    id: "New team location \\(optional\\)"
+- inputText: "Loc${output.TOKEN}"
+
+# THE WRITE. The Create button's accessible name is the COMPOSED name, rebuilt
+# on every keystroke, so targeting it by that string is itself the assertion
+# that Location and Name were put together in that order. Tapped by id rather
+# than driven with a second Enter: Create and Cancel are NeonButtons with an
+# identical class string, and maestro-web's pressKey re-finds the focused
+# element by an XPath that falls back to that class — an Enter aimed at Create
+# can land on Cancel.
+- tapOn:
+    id: "Create team Loc${output.TOKEN} Fr${output.TOKEN}A"
+
+# The chip is the proof the row was written — the picker paints it from the id
+# the mutation returned. Waiting for it also removes a race before the next tap.
+- extendedWaitUntil:
+    visible:
+      id: "Remove team Loc${output.TOKEN} Fr${output.TOKEN}A"
+
+# ── DROP THE CHIP BEFORE BUILDING TEAM B ────────────────────────────────────
+# Geometry, not tidiness. The popover is positioned under the WHOLE picker —
+# chips included — so a chip left in place pushes the popover down by a line,
+# and the "No matches." row team B depends on would land past the bottom of the
+# 629px viewport (see the note above; the picker is already at max scroll). The
+# team row itself is untouched: this unstages it from a career draft that is
+# never saved. PART 2 re-finds it on `/admin/teams`, which is the honest proof
+# it persisted anyway.
+- tapOn:
+    id: "Remove team Loc${output.TOKEN} Fr${output.TOKEN}A"
+
+# ── REOPEN THE PICKER ───────────────────────────────────────────────────────
+# Removing a chip CLOSES the popover, and that is correct app behaviour rather
+# than a bug: the × button that was just tapped is the focused element, removing
+# the chip unmounts it, `document.activeElement` falls back to `<body>`, and
+# TeamPicker's `handleRootBlur` — which defers a read of activeElement precisely
+# because `relatedTarget` is unreliable — sees focus outside its root and runs
+# `setPopoverOpen(false); setQuery("")`. CI run 34071657961 failed here:
+# "Element not found: Id matching regex: Search teams", 17s of polling at a
+# picker whose popover had closed a second earlier.
+#
+# The trigger ALWAYS opens (`setPopoverOpen(true)`, never a toggle — TeamPicker
+# documents why), so this is one tap and the picker is back to the exact shape
+# team A was created from: no chip, trigger at y=484, search box at y=519,
+# "No matches." clear of the fold.
+- assertVisible:
+    id: "Add team"
+- tapOn:
+    id: "Add team"
+
+# ── TEAM B ──────────────────────────────────────────────────────────────────
+- tapOn:
+    id: "Search teams"
+- inputText: "Fr${output.TOKEN}B"
+# Still nothing — team A does not answer to this name, so the create row is
+# what Enter reaches.
+- assertVisible: "No matches."
+- pressKey: Enter
+
+- assertVisible: "New team: Fr${output.TOKEN}B"
+- tapOn:
+    id: "New team location \\(optional\\)"
+- inputText: "Loc${output.TOKEN}"
+- tapOn:
+    id: "Create team Loc${output.TOKEN} Fr${output.TOKEN}B"
+- extendedWaitUntil:
+    visible:
+      id: "Remove team Loc${output.TOKEN} Fr${output.TOKEN}B"
+
+# ============================================================
+# PART 2 — THE THREAD IS STARTED FROM TEAM A AND JOINED BY TEAM B
+# ============================================================
+
+# A full reload rather than a tab click: it separates "the picker is holding
+# what I made" from "the database holds it", and it lands on the screen with
+# the Franchise control. 30s matches the identical openLink in both sibling
+# admin flows — a full SPA reload and re-auth, not a UI wait.
+- openLink: ${APP_URL || "http://localhost:3000"}/admin/teams
+- extendedWaitUntil:
+    visible: ".*of .* teams.*"
+    timeout: 30000
+
+# R2(a). The filter matches on the COMPOSED name, so one needle finds both rows,
+# and the counter saying TWO is the proof that PART 1 wrote two rows and that
+# both carry the Location typed into the dialog.
+- tapOn: "Filter teams"
+- inputText: "Fr${output.TOKEN}"
+- extendedWaitUntil:
+    visible: "2 of .* teams.*"
+
+# ── TEAM A: START THE FRANCHISE, THEN SAVE ──────────────────────────────────
+# The master row is targeted by `id:` — NEO-236 made the row's `aria-label` the
+# full composed name exactly, which maestro turns into `resource-id`, so this
+# names one row and cannot drift onto the panel heading or the "Shows as:"
+# preview that print the same string as TEXT.
+- tapOn:
+    id: "Loc${output.TOKEN} Fr${output.TOKEN}A"
+
+# The Franchise group is below the fold once the panel opens. Matched loosely
+# on purpose: the button reads "+ Start a new franchise…" and a leading "+" is
+# an invalid regex quantifier, so the literal is avoided rather than escaped.
+# Nothing else on this screen says "Start a new franchise".
+- scrollUntilVisible:
+    element:
+      text: ".*Start a new franchise.*"
+    centerElement: true
+- tapOn: ".*Start a new franchise.*"
+
+- tapOn: "New franchise name"
+- inputText: "Fran${output.TOKEN}"
+- tapOn: "Start"
+
+# R2(b). `createFranchise` closes the box, clears it, and makes the new thread
+# the CHECKED pill — so this run's franchise name being on screen at all, with
+# the box gone, is the pill and only the pill. It is a find-or-create, and the
+# per-attempt name is what makes this one a create.
+#
+# Nothing is written to the TEAM yet: starting a thread and deciding this team
+# belongs to it are two decisions, and Save commits the second.
+- extendedWaitUntil:
+    visible: "Fran${output.TOKEN}"
+
+- scrollUntilVisible:
+    element:
+      text: "Save"
+    centerElement: true
+- tapOn: "Save"
+
+# The mutation confirms by the composed name, which is also the first read-back
+# proving the save took the row this flow means.
+- extendedWaitUntil:
+    visible: ".*Saved Loc${output.TOKEN} Fr${output.TOKEN}A.*"
+
+# ── TEAM B: PICK THE PILL THAT NOW EXISTS, THEN SAVE ────────────────────────
+# `direction: UP` is load-bearing: reaching Save scrolled the panel down, and
+# the master list sits ABOVE it. A default downward scroll can never find this.
+- scrollUntilVisible:
+    element:
+      id: "Loc${output.TOKEN} Fr${output.TOKEN}B"
+    direction: UP
+    centerElement: true
+- tapOn:
+    id: "Loc${output.TOKEN} Fr${output.TOKEN}B"
+
+# THE STEP THE WHOLE FLOW EXISTS FOR. Team B's panel is a fresh mount with no
+# franchise, and this pill is offered because `franchises.list` returned the row
+# team A's save committed — so tapping it is an operator picking an EXISTING
+# thread, not making a second one. Before 4666a57 this tap was impossible.
+#
+# The pill lives inside a `max-h-40 overflow-y-auto` wrap of the whole group, so
+# it is centred rather than merely scrolled to. See the note at the end of this
+# file about what happens once a sport carries more than 24 franchises.
+- scrollUntilVisible:
+    element:
+      text: "Fran${output.TOKEN}"
+    centerElement: true
+- tapOn: "Fran${output.TOKEN}"
+
+- scrollUntilVisible:
+    element:
+      text: "Save"
+    centerElement: true
+- tapOn: "Save"
+- extendedWaitUntil:
+    visible: ".*Saved Loc${output.TOKEN} Fr${output.TOKEN}B.*"
+
+# ============================================================
+# PART 3 — THE FRANCHISE VIEW: BOTH TEAMS ON ONE THREAD, THEN ONE TAKEN OFF
+# ============================================================
+
+# R2(c). Reached by team B's OWN deep link rather than by typing a URL: the link
+# is `/admin/franchises?franchise=<franchiseId>`, and that id is read off the
+# panel's committed draft — so a save that dropped the franchise would send this
+# to the bare list instead, and every assertion below would fail. `direction: UP`
+# for the same reason as before: Save is below this link.
+- scrollUntilVisible:
+    element:
+      text: "See the franchise"
+    direction: UP
+    centerElement: true
+- tapOn: "See the franchise"
+
+# The followed param selects the row and clears the screen's own filters, so the
+# panel below is this franchise's.
+- extendedWaitUntil:
+    visible: ".*of .* franchises.*"
+
+# R2(d) — THE JOIN, read back by a different query than the one that wrote it.
+# `franchises.get` counts the team rows pointing AT this franchise; two teams
+# that merely each had a franchise could not produce this line.
+- extendedWaitUntil:
+    visible: ".*2 teams on this thread.*"
+
+# Both members, by their composed names. Neither team name appears anywhere else
+# on this screen — the master list on the left prints FRANCHISE names — so these
+# can only be the thread's own rows. They carry no active years, so they sit in
+# the undated group under the rail rather than in it.
+- scrollUntilVisible:
+    element:
+      text: "Loc${output.TOKEN} Fr${output.TOKEN}A"
+    centerElement: true
+- assertVisible: "Loc${output.TOKEN} Fr${output.TOKEN}B"
+
+# ── TAKE TEAM B BACK OFF ────────────────────────────────────────────────────
+# The inverse of the pill, and the only membership control this screen has: it
+# sends the same `franchiseId: null` the "No franchise" pill sends. The button's
+# visible text IS its accessible name and it names the team, so this cannot land
+# on team A's.
+- scrollUntilVisible:
+    element:
+      text: "Remove Loc${output.TOKEN} Fr${output.TOKEN}B"
+    centerElement: true
+- tapOn: "Remove Loc${output.TOKEN} Fr${output.TOKEN}B"
+
+# R2(e). The count is the assertion — it is recomputed from the database, not
+# from the row disappearing on screen. "1 team", singular, is the screen's own
+# wording for exactly one.
+- extendedWaitUntil:
+    visible: ".*1 team on this thread.*"
+
+# And the removal cut a LINK, not a row, and only team B's: A is still on the
+# thread, B is off it. The negative is paired with a positive so an error
+# boundary — which satisfies every notVisible — cannot pass this.
+- assertVisible: "Loc${output.TOKEN} Fr${output.TOKEN}A"
+- assertNotVisible: "Loc${output.TOKEN} Fr${output.TOKEN}B"
+
+# ── ONE KNOWN LIMIT, WRITTEN DOWN RATHER THAN GUARDED ───────────────────────
+# `FRANCHISE_PILL_CAP` is 24: past 24 franchises IN ONE SPORT the pill group
+# renders a filtered slice and grows its own "Filter franchises" box, and the
+# pill this flow taps for team B could be sliced out (team A's is safe either
+# way — the picked thread is always force-kept). It is not guarded here because
+# a `when:` on a normally-absent element costs a full 7s poll on every run for
+# a case that cannot arise on a healthy preview: a preview starts empty, only
+# these two admin flows ever create a franchise, and they add at most two per CI
+# run. It also degrades LOUDLY — the tap fails to find the pill — rather than
+# silently. Alphabetical ordering buys further headroom: this flow's names sort
+# under "Fran", and `admin-franchises-start-and-rename` leaves its rows renamed
+# to "Ren", which sort after. If this ever does bite, type the token into that
+# filter box before the tap; do not raise the cap.

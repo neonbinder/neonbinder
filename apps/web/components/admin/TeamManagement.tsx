@@ -9,6 +9,8 @@ import { AddLeagueDialog } from "./AddLeagueDialog";
 import { contrastRatio, normalizeHexColor } from "@/lib/print/contrast";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import { teamFullName, teamShortName } from "@/lib/teams/team-name";
+import { eraLabel, teamOptionLabel } from "@/lib/teams/team-era";
+import { useFollowedParam } from "@/src/hooks/use-followed-param";
 
 /**
  * NEO-236 security review — the browser-side half of `teams.saveTeamFields`'s
@@ -24,7 +26,6 @@ import { teamFullName, teamShortName } from "@/lib/teams/team-name";
  * them. Keep this in step with `MAX_TEAM_NAME_LENGTH` in convex/teams.ts.
  */
 const MAX_TEAM_NAME_LENGTH = 120;
-
 
 /**
  * NEO-156 — Team Management.
@@ -57,6 +58,19 @@ type Team = Doc<"teams">;
  */
 type League = Doc<"leagues"> & { level?: string };
 
+/**
+ * NEO-254 — a franchise row, as this screen needs it.
+ *
+ * Structural rather than `Doc<"franchises">` for the reason `League` above is:
+ * the screen only reads a name, a sport and a count, and typing it that way
+ * keeps it compiling independently of the table's other columns.
+ */
+type Franchise = {
+  _id: Id<"franchises">;
+  name: string;
+  sportId: Id<"selectorOptions">;
+};
+
 /** Sentinel for the "no league" option — a select's value must be a string. */
 const NO_LEAGUE = "";
 /**
@@ -70,6 +84,68 @@ const NO_LEAGUE = "";
 const ADD_LEAGUE = "__add__";
 /** The league filter's "every team" value — not an id, so it is never a param. */
 const ALL_LEAGUES = "all";
+
+/** NEO-254 — the franchise field's "not on a thread" value. */
+const NO_FRANCHISE = "";
+
+/**
+ * NEO-254 — how many franchise pills render before the filter box appears.
+ *
+ * The League group next door bounds itself with `max-h-40 overflow-y-auto` and
+ * a "Change league" disclosure, which works because a sport holds tens of
+ * leagues. Franchises are about to be different: the NEO-254 preload mints one
+ * per franchise thread across five sports, so a scroll box would become a
+ * hundred-pill haystack with no way to aim at one. Past the cap the group grows
+ * a filter instead, and says how many it is hiding.
+ */
+const FRANCHISE_PILL_CAP = 24;
+
+/**
+ * Pill styling, copied deliberately from `SetSelector/NewTeamForm.tsx` and kept
+ * in step with it — the two are the same control answering two versions of the
+ * same question, and an operator should not have to learn it twice. The
+ * accessibility reasoning behind each line lives on the original:
+ *
+ *  - `py-1` not `py-0.5`: a text-xs pill at py-0.5 is 22px and only clears
+ *    SC 2.5.8's 24px floor by leaning on the spacing exception.
+ *  - The focus ring is declared on BOTH states: an indicator that only changed
+ *    the unchecked border left the checked pill with no visible focus at all,
+ *    so arrowing through the group was invisible (SC 2.4.7).
+ *  - `border-slate-500` not `slate-700`: slate-700 on this panel is ~1.7:1, so
+ *    an unchecked option's boundary was effectively not there (SC 1.4.11).
+ *
+ * The CHECKED state deliberately diverges from that file — see the comment on
+ * the branch below. Copying its filled-pill treatment would have failed
+ * contrast, because the colour differs.
+ */
+function franchisePillClass(picked: boolean): string {
+  return [
+    "rounded-full border px-2 py-1 text-xs transition-colors",
+    "focus:outline-none focus-visible:ring-2 focus-visible:ring-neon-blue",
+    "focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950",
+    "disabled:opacity-50 disabled:cursor-not-allowed",
+    picked
+      ? // A SOLID fill with a black label, not the translucent tint
+        // `NewTeamForm`'s green pills use. Measured, not copied: this project's
+        // own note is that raising opacity on a SAME-HUE tint lowers contrast,
+        // and `bg-neon-purple/20` over this panel's ground composites to
+        // #29173b, on which #A44AFF text is 3.91:1 — under SC 1.4.3's 4.5:1
+        // floor for text this size, so the checked pill would have been the one
+        // option in the group nobody could read. Dropping the tint gets 4.72:1,
+        // a hairline pass; black on the solid colour is 5.00:1, and it is the
+        // black-on-neon convention `NeonButton`'s primary variant already uses.
+        // Green survives its own tint (it is far brighter); purple does not.
+        //
+        // The fill is also the non-colour cue (SC 1.4.1) — checked and
+        // unchecked differ by presence of a fill and by weight, not by hue
+        // alone.
+        "border-neon-purple bg-neon-purple font-semibold text-black"
+      : // border-slate-500, not slate-700 (SC 1.4.11): slate-700 here is ~1.7:1,
+        // so an unchecked option's boundary was effectively invisible.
+        // slate-500 is 4.16:1 on this ground.
+        "border-slate-500 text-slate-300 hover:border-neon-purple",
+  ].join(" ");
+}
 
 /**
  * Competitive tier, most prominent first.
@@ -103,38 +179,11 @@ function byLevelThenName(a: League, b: League): number {
 type Status = { text: string; isError: boolean } | null;
 
 /**
- * A URL param this screen follows ONCE per distinct value.
- *
- * The screen re-renders on every reactive update to the tables it reads, so a
- * param applied on each of them would keep yanking the operator back to the
- * state they arrived in. This remembers what has already been applied.
- *
- * TWO values are remembered, not one, and that is not belt-and-braces. React
- * Router applies every location update inside `startTransition` — the app's
- * `BrowserRouter` and the tests' `MemoryRouter` share that code path — so the
- * render that commits a change is a render in which `searchParams` STILL
- * CARRIES THE PREVIOUS VALUE; the URL catches up one render later. A one-slot
- * marker cannot tell that stale value apart from a fresh link back to it, so it
- * follows it — undoing the operator's own action under their hands. Remembering
- * the superseded value closes exactly that window.
- *
- * The cost of the second slot is that a link back to the value just left is
- * ignored for as long as the screen stays mounted. Every write here is a
- * `replace`, so there is no history entry to go back to, and every inbound link
- * arrives as a fresh mount.
+ * NEO-254 moved `useFollowedParam` to `src/hooks/use-followed-param.ts`, so
+ * Franchise Management shares it rather than growing a second copy. Its
+ * docstring carries the `startTransition` reasoning the two-slot marker exists
+ * for; read that before changing either caller.
  */
-function useFollowedParam() {
-  const [slots, setSlots] = useState<readonly [string | null, string | null]>([
-    null,
-    null,
-  ]);
-  return {
-    /** The value most recently followed — an effect dependency, not state. */
-    latest: slots[0],
-    hasFollowed: (value: string) => slots.includes(value),
-    follow: (value: string) => setSlots(([current]) => [value, current]),
-  };
-}
 
 function ColorSwatch({ hex, label }: { hex?: string; label: string }) {
   return (
@@ -166,11 +215,13 @@ function attentionFor(team: Team): "choice" | "colors" | null {
 function TeamDetail({
   team,
   leagues,
+  franchises,
   onStatus,
   onSelect,
 }: {
   team: Team;
   leagues: League[];
+  franchises: Franchise[];
   onStatus: (status: Status) => void;
   /**
    * NEO-253 — open another team from this panel. Today's only caller is the
@@ -181,6 +232,7 @@ function TeamDetail({
   onSelect: (id: Id<"teams">) => void;
 }) {
   const saveTeamFields = useMutation(api.teams.saveTeamFields);
+  const findOrCreateFranchise = useMutation(api.franchises.findOrCreate);
   const enrichFromWikidata = useAction(api.teams.enrichFromWikidata);
   const chooseColorSource = useAction(api.teamColorSources.chooseColorSource);
 
@@ -204,6 +256,29 @@ function TeamDetail({
     { id: Id<"leagues">; name: string }[]
   >([]);
   const leagueSelectRef = useRef<HTMLSelectElement>(null);
+  /**
+   * NEO-254 — the franchise thread, and the inline "start a new one" box.
+   *
+   * A box rather than a dialog, unlike leagues: a franchise has exactly one
+   * field, so a modal would be three clicks and a focus trap around a single
+   * text input. `newFranchises` is the same optimistic tail `addedLeagues` is,
+   * and exists for the same reason — a controlled select whose value names an
+   * option it does not have renders BLANK, so the thread the operator just
+   * created would vanish for the moment before the query catches up.
+   */
+  const [franchiseId, setFranchiseId] = useState<string>(
+    team.franchiseId ?? NO_FRANCHISE,
+  );
+  const [newFranchiseName, setNewFranchiseName] = useState("");
+  const [namingFranchise, setNamingFranchise] = useState(false);
+  const [franchiseFilter, setFranchiseFilter] = useState("");
+  const [newFranchises, setNewFranchises] = useState<
+    { id: Id<"franchises">; name: string }[]
+  >([]);
+  const franchiseGroupRef = useRef<HTMLDivElement>(null);
+  const startFranchiseRef = useRef<HTMLButtonElement>(null);
+  const franchiseGroupLabelId = useId();
+  const franchiseFormId = useId();
   const [location, setLocation] = useState(team.location ?? "");
   const [fromYear, setFromYear] = useState(
     team.yearsActive?.from ? String(team.yearsActive.from) : "",
@@ -228,6 +303,29 @@ function TeamDetail({
    * the fallback (see `userFacingMessage`).
    */
   const [saveError, setSaveError] = useState<string | null>(null);
+  /**
+   * NEO-254 — the SUCCESS line, in the panel, beside the button that produced
+   * it.
+   *
+   * It used to be hoisted to the screen-level status line at the top of the
+   * page through `onStatus`, and the note on `saveError` directly above already
+   * said why that was wrong for a refusal: this panel is usually scrolled past
+   * the fold, so the top of the page is off-screen at the moment Save is
+   * pressed. The success line had the same defect and nothing had tripped over
+   * it yet.
+   *
+   * NEO-254's Franchise field made the panel tall enough to trip it. Two E2E
+   * flows scroll the Save button into view, tap it, and assert "Saved <name>."
+   * is VISIBLE; with the page pinned at its new maximum scroll, the line
+   * rendered correctly at the top of the document and was simply not on screen.
+   * Both had been green for months, which is the tell — nothing about saving
+   * changed, only the height above it.
+   *
+   * So it renders where its cause is. `role="status"` rather than a plain
+   * paragraph: it appears after an async round trip that a screen-reader user
+   * has no other way to know finished.
+   */
+  const [saveStatus, setSaveStatus] = useState<string | null>(null);
   /**
    * NEO-212 (a11y) — the preview and the refusal are ASSOCIATED with BOTH
    * fields, not merely printed under them.
@@ -255,12 +353,18 @@ function TeamDetail({
     setLeagueId(team.leagueId ?? NO_LEAGUE);
     setAddingLeague(false);
     setAddedLeagues([]);
+    setFranchiseId(team.franchiseId ?? NO_FRANCHISE);
+    setNamingFranchise(false);
+    setNewFranchiseName("");
+    setFranchiseFilter("");
+    setNewFranchises([]);
     setLocation(team.location ?? "");
     setFromYear(team.yearsActive?.from ? String(team.yearsActive.from) : "");
     setToYear(team.yearsActive?.to ? String(team.yearsActive.to) : "");
     setPrimary(team.colors?.primary ?? "");
     setSecondary(team.colors?.secondary ?? "");
     setSaveError(null);
+    setSaveStatus(null);
     setNameTakenId(null);
   }
 
@@ -312,11 +416,178 @@ function TeamDetail({
     ];
   }, [leagues, addedLeagues]);
 
+  /** Every thread this group can offer, plus anything just started here. */
+  const franchiseOptions = useMemo(() => {
+    const known = new Set(franchises.map((f) => f._id as string));
+    return [
+      ...franchises
+        .map((f) => ({ id: f._id as string, label: f.name }))
+        .sort((a, b) => a.label.localeCompare(b.label)),
+      // The optimistic tail: a thread started from the box below is offered at
+      // once rather than disappearing for the moment before `franchises.list`
+      // re-runs. Deliberately unsorted — a pill that moved somewhere else while
+      // the operator was looking at it is worse than one out of order.
+      ...newFranchises
+        .filter((f) => !known.has(f.id as string))
+        .map((f) => ({ id: f.id as string, label: f.name })),
+    ];
+  }, [franchises, newFranchises]);
+
+  /**
+   * The filtered, capped slice actually rendered, and whether the filter box is
+   * needed at all.
+   *
+   * The currently-picked thread is always kept, even when the filter would
+   * exclude it: a radio group whose checked option is not in the DOM announces
+   * "nothing selected" and leaves the roving tab stop with nowhere to sit.
+   */
+  const franchiseListing = useMemo(() => {
+    const needle = franchiseFilter.trim().toLowerCase();
+    const matching = needle
+      ? franchiseOptions.filter((f) => f.label.toLowerCase().includes(needle))
+      : franchiseOptions;
+    const capped = matching.slice(0, FRANCHISE_PILL_CAP);
+    const picked = franchiseOptions.find((f) => f.id === franchiseId);
+    if (picked && !capped.some((f) => f.id === picked.id))
+      capped.unshift(picked);
+    return {
+      shown: capped,
+      hidden: Math.max(0, matching.length - capped.length),
+      filterable: franchiseOptions.length > FRANCHISE_PILL_CAP,
+    };
+  }, [franchiseOptions, franchiseFilter, franchiseId]);
+
+  /**
+   * The Franchise options IN RENDERED ORDER — one model the JSX, the roving
+   * tabindex and the arrow keys all read from. Same shape, and the same
+   * reasoning, as `NewTeamForm`'s league pills.
+   *
+   * Every entry is a VALUE, and exactly one is checked at any moment, because
+   * each `checked` is the same comparison against `franchiseId`. "Start a new
+   * franchise" is deliberately NOT in here: it is a command that reveals a text
+   * box and never becomes the answer, so its checked-ness was an independent
+   * boolean — select a franchise, then open the box, and the group reported TWO
+   * checked radios, which is a single-selection contract broken for anyone
+   * reading it through assistive tech (SC 4.1.2) and invisible to everyone
+   * else. It is a disclosure button beside the group instead, the same shape
+   * `NewTeamForm` gives its "Change league" toggle.
+   */
+  const franchisePills: Array<{
+    key: string;
+    label: string;
+    checked: boolean;
+    choose: () => void;
+  }> = [
+    {
+      key: NO_FRANCHISE,
+      // "No franchise", not "— none —". This is a BUTTON now, so its label is
+      // spoken, and an em dash either side reads as punctuation noise; it is
+      // also the string a Maestro `text:` selector has to match.
+      label: "No franchise",
+      checked: franchiseId === NO_FRANCHISE,
+      choose: () => {
+        setNamingFranchise(false);
+        setFranchiseId(NO_FRANCHISE);
+      },
+    },
+    ...franchiseListing.shown.map((franchise) => ({
+      key: franchise.id,
+      label: franchise.label,
+      checked: franchiseId === franchise.id,
+      choose: () => {
+        setNamingFranchise(false);
+        setFranchiseId(franchise.id);
+      },
+    })),
+  ];
+
+  const checkedFranchiseIndex = franchisePills.findIndex((p) => p.checked);
+  /** Roving tabindex: the checked pill is the group's single Tab stop, and the
+   *  first pill is when nothing is checked — a native radio group's behaviour. */
+  const franchiseTabStop =
+    checkedFranchiseIndex === -1 ? 0 : checkedFranchiseIndex;
+
+  /**
+   * Focus follows selection, which the APG radio pattern requires and which is
+   * the only thing that makes the arrow keys usable: the pill that becomes
+   * checked becomes the Tab stop, so it has to end up focused. Re-queried after
+   * the render rather than held as a ref, because the newly-checked pill only
+   * carries `tabindex="0"` once the state change has committed.
+   */
+  const refocusFranchisePill = () => {
+    requestAnimationFrame(() => {
+      franchiseGroupRef.current
+        ?.querySelector<HTMLElement>('[role="radio"][tabindex="0"]')
+        ?.focus();
+    });
+  };
+
+  const onFranchiseKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const step =
+      e.key === "ArrowLeft" || e.key === "ArrowUp"
+        ? -1
+        : e.key === "ArrowRight" || e.key === "ArrowDown"
+          ? 1
+          : 0;
+    if (step === 0) return;
+    // Also stops the arrow scrolling the panel out from under the group.
+    e.preventDefault();
+    const from = checkedFranchiseIndex === -1 ? 0 : checkedFranchiseIndex;
+    franchisePills[
+      (from + step + franchisePills.length) % franchisePills.length
+    ].choose();
+    refocusFranchisePill();
+  };
+
+  /**
+   * Create the thread the operator just named and put this team's draft on it.
+   *
+   * Find-or-create, so pressing it twice — or naming a thread that already
+   * exists under a different word order — selects the existing row rather than
+   * failing on a duplicate the operator cannot see. The TEAM is not saved here:
+   * starting a franchise and deciding this team belongs to it are two
+   * decisions, and Save still commits the second.
+   */
+  const createFranchise = async () => {
+    const name = newFranchiseName.trim();
+    if (!name) return;
+    setBusy("franchise");
+    setSaveError(null);
+    try {
+      const { id, created } = await findOrCreateFranchise({
+        name,
+        sportId: team.sportId,
+      });
+      setNewFranchises((rows) =>
+        rows.some((row) => row.id === id) ? rows : [...rows, { id, name }],
+      );
+      setFranchiseId(id);
+      setNamingFranchise(false);
+      setNewFranchiseName("");
+      setFranchiseFilter("");
+      onStatus({
+        text: created
+          ? `Started the ${name} franchise. Save the team to put it on there.`
+          : `${name} was already a franchise. Save the team to put it on there.`,
+        isError: false,
+      });
+      // The new thread is now the checked pill, so focus lands there.
+      refocusFranchisePill();
+    } catch (e) {
+      setSaveError(
+        userFacingMessage(e, "Could not start that franchise. Try again."),
+      );
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const save = async () => {
     if (!canSave) return;
     setBusy("save");
     onStatus(null);
     setSaveError(null);
+    setSaveStatus(null);
     setNameTakenId(null);
     try {
       // The league already exists by the time Save is pressed — the dialog
@@ -324,6 +595,11 @@ function TeamDetail({
       // from here any more.
       const resolvedLeagueId: Id<"leagues"> | null =
         leagueId !== NO_LEAGUE ? (leagueId as Id<"leagues">) : null;
+      // NEO-254: the franchise exists by the time Save is pressed — the inline
+      // box creates it and hands back an id. `null` is a real answer here, and
+      // it is the one the franchise view's "Remove from franchise" sends too.
+      const resolvedFranchiseId: Id<"franchises"> | null =
+        franchiseId !== NO_FRANCHISE ? (franchiseId as Id<"franchises">) : null;
 
       const from = Number(fromYear);
       const to = Number(toYear);
@@ -331,18 +607,23 @@ function TeamDetail({
         id: team._id,
         name: name.trim(),
         leagueId: resolvedLeagueId,
+        franchiseId: resolvedFranchiseId,
         location: location.trim() || null,
-        yearsActive: fromYear && Number.isFinite(from)
-          ? { from, ...(toYear && Number.isFinite(to) ? { to } : {}) }
-          : null,
+        yearsActive:
+          fromYear && Number.isFinite(from)
+            ? { from, ...(toYear && Number.isFinite(to) ? { to } : {}) }
+            : null,
         colors: normalizedPrimary
           ? {
               primary: normalizedPrimary,
-              ...(normalizedSecondary ? { secondary: normalizedSecondary } : {}),
+              ...(normalizedSecondary
+                ? { secondary: normalizedSecondary }
+                : {}),
             }
           : null,
       });
-      onStatus({ text: `Saved ${draftFullName}.`, isError: false });
+      // In the panel, not hoisted — see `saveStatus`.
+      setSaveStatus(`Saved ${draftFullName}.`);
     } catch (e) {
       // Inline, not the status line: every way this call can fail is a thing
       // about the fields above it — the name is taken, the name is empty, the
@@ -398,7 +679,10 @@ function TeamDetail({
     onStatus(null);
     try {
       const outcome = await enrichFromWikidata({ id: team._id, force: true });
-      const message: Record<typeof outcome, { text: string; isError: boolean }> = {
+      const message: Record<
+        typeof outcome,
+        { text: string; isError: boolean }
+      > = {
         resolved: { text: `Found colors for ${fullName}.`, isError: false },
         ambiguous: {
           text: `Several source pages match “${fullName}”. Pick the right one above.`,
@@ -412,7 +696,10 @@ function TeamDetail({
           text: `Found a page for ${fullName} but could not read colors from it.`,
           isError: true,
         },
-        skipped: { text: `Nothing to look up for ${fullName}.`, isError: false },
+        skipped: {
+          text: `Nothing to look up for ${fullName}.`,
+          isError: false,
+        },
       };
       onStatus(message[outcome]);
     } catch (e) {
@@ -463,8 +750,8 @@ function TeamDetail({
       {(team.colorCandidates?.length ?? 0) > 0 && (
         <div className="rounded-md border border-neon-orange/40 bg-neon-orange/5 p-3 space-y-2">
           <p className="text-sm text-neon-orange">
-            {team.colorCandidates!.length} source pages match this name. Pick the
-            right team — nothing is applied until you do.
+            {team.colorCandidates!.length} source pages match this name. Pick
+            the right team — nothing is applied until you do.
           </p>
           <ul className="flex flex-wrap gap-2">
             {team.colorCandidates!.map((candidate, index) => (
@@ -549,7 +836,10 @@ function TeamDetail({
         </p>
 
         {name.trim() && (
-          <p id={previewId} className="sm:col-span-2 -mt-1 text-xs text-slate-400">
+          <p
+            id={previewId}
+            className="sm:col-span-2 -mt-1 text-xs text-slate-400"
+          >
             Shows as:{" "}
             <span className="font-medium text-slate-200">{draftFullName}</span>
           </p>
@@ -639,6 +929,172 @@ function TeamDetail({
           </Link>
         </div>
 
+        {/* NEO-254 — the franchise thread.
+            Beside League rather than below it: both answer "what larger thing
+            does this team belong to", and a franchise is the only one of the
+            two an operator invents themselves. Jason, 2026-09-06: "building a
+            collection of all Tennessee Titans and letting the user determine
+            if that should also include Houston Oilers and Tennessee Oilers
+            players."
+
+            ## Why this is a radio group and not a `<select>`
+
+            It WAS a select, and that made it untappable in E2E. Maestro's web
+            driver gives every `<option>` synthetic tap bounds from its index
+            inside its own parent, then resolves a tap by scanning
+            `document.querySelectorAll('option')` and taking the FIRST bounds
+            match — so on a page with more than one select, only the first in
+            document order is reachable, and a tap meant for a later one
+            silently mutates the earlier. This panel already had two selects
+            above it (the screen's league filter and this panel's League), so
+            the Franchise select was the third and could never be driven.
+            `SetSelector/NewTeamForm.tsx` hit the identical trap and documents
+            it; this is the same remedy, deliberately.
+
+            The League select beside it has the same defect and is NOT converted
+            here — it is pre-existing, it is not what this ticket changed, and
+            swapping a control an E2E suite already drives is its own change.
+            Filed as a follow-up. */}
+        <div>
+          <span
+            id={franchiseGroupLabelId}
+            className="block text-sm font-medium mb-1 text-slate-300"
+          >
+            Franchise
+          </span>
+
+          {/* The filter appears only past the cap — see FRANCHISE_PILL_CAP.
+              Outside the radiogroup, because a text box is not one of the
+              options and a non-radio child of a radiogroup is a shape
+              assistive tech cannot read. */}
+          {franchiseListing.filterable && (
+            <div className="mb-1.5">
+              <Input
+                label="Filter franchises"
+                value={franchiseFilter}
+                placeholder="Start typing a franchise name…"
+                onChange={(e) => setFranchiseFilter(e.target.value)}
+              />
+            </div>
+          )}
+
+          <div
+            id="team-franchise"
+            ref={franchiseGroupRef}
+            role="radiogroup"
+            aria-labelledby={franchiseGroupLabelId}
+            className="flex max-h-40 flex-wrap items-center gap-1.5 overflow-y-auto"
+            onKeyDown={onFranchiseKeyDown}
+          >
+            {franchisePills.map((pill, idx) => (
+              <button
+                key={pill.key}
+                type="button"
+                role="radio"
+                aria-checked={pill.checked}
+                // Roving tabindex — one Tab stop for the whole group; the
+                // arrow keys move within it. See `franchiseTabStop`.
+                tabIndex={idx === franchiseTabStop ? 0 : -1}
+                // SC 4.1.2: counted against what is RENDERED, which past the
+                // cap is a filtered slice. The hidden count is announced by
+                // the status line below rather than being folded in here,
+                // where "3 of 41" would claim the other 38 are arrowable.
+                aria-posinset={idx + 1}
+                aria-setsize={franchisePills.length}
+                onClick={() => pill.choose()}
+                className={franchisePillClass(pill.checked)}
+              >
+                {pill.label}
+              </button>
+            ))}
+            {/* Outside the radiogroup on purpose — see the note on
+                `franchisePills`. It is a command, not one of the options, and a
+                non-radio child of a radiogroup is a shape assistive tech cannot
+                read. Styled as a pill anyway: it belongs to this control
+                visually, and `aria-expanded` is what says it is a disclosure.
+                Rendered inside the same flex row so it still sits at the end of
+                the pills, which is where an operator looks for it. */}
+          </div>
+
+          <button
+            type="button"
+            ref={startFranchiseRef}
+            aria-expanded={namingFranchise}
+            aria-controls={franchiseFormId}
+            onClick={() => setNamingFranchise((open) => !open)}
+            className={`${franchisePillClass(false)} mt-1.5`}
+          >
+            + Start a new franchise…
+          </button>
+
+          {franchiseListing.filterable && (
+            /* SC 4.1.3: the group changes shape as the filter bites, so the
+               count that explains why is announced, not only drawn.
+
+               Mounted for as long as the filter exists, EMPTY included, rather
+               than only while something is hidden. A live region that appears
+               at the same moment its text does is frequently missed entirely —
+               the region has to already exist for the change to be a CHANGE.
+               Same rule as the counter on Franchise Management. */
+            <p role="status" className="mt-1 text-xs text-slate-400">
+              {franchiseListing.hidden > 0
+                ? `${franchiseListing.hidden} more — keep typing to narrow it down.`
+                : ""}
+            </p>
+          )}
+
+          {namingFranchise && (
+            <div id={franchiseFormId} className="mt-2 flex items-end gap-2">
+              <Input
+                label="New franchise name"
+                value={newFranchiseName}
+                maxLength={MAX_TEAM_NAME_LENGTH}
+                placeholder="Titans / Oilers"
+                autoFocus
+                onKeyDown={(e) => {
+                  // Keyboard-first: Enter commits, Escape backs out. The whole
+                  // control is one text box, so a form round trip would be
+                  // ceremony around a single keystroke.
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    void createFranchise();
+                  }
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    setNamingFranchise(false);
+                    setNewFranchiseName("");
+                    // Back to the disclosure that opened it, not to `<body>` —
+                    // closing unmounts the focused input.
+                    startFranchiseRef.current?.focus();
+                  }
+                }}
+                onChange={(e) => setNewFranchiseName(e.target.value)}
+              />
+              <NeonButton
+                type="button"
+                onClick={() => void createFranchise()}
+                disabled={busy !== null || !newFranchiseName.trim()}
+              >
+                {busy === "franchise" ? "Starting…" : "Start"}
+              </NeonButton>
+            </div>
+          )}
+
+          {/* Deep-linked to the thread in hand, because "see the franchise"
+              from here nearly always means this one. Same 24px pointer-target
+              padding as the leagues link beside it (WCAG 2.2 SC 2.5.8). */}
+          <Link
+            to={
+              franchiseId
+                ? `/admin/franchises?franchise=${franchiseId}`
+                : "/admin/franchises"
+            }
+            className="mt-1 inline-block rounded-sm py-1 text-xs text-neon-purple underline underline-offset-2 transition-colors hover:text-neon-purple/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-purple"
+          >
+            See the franchise
+          </Link>
+        </div>
+
         <div className="flex gap-2">
           <Input
             label="Active from"
@@ -693,6 +1149,18 @@ function TeamDetail({
         >
           {busy === "discover" ? "Searching…" : "Discover"}
         </NeonButton>
+        {saveStatus && (
+          /* IN the button row, not under it. The row already exists and is on
+             screen whenever Save is, so the confirmation costs no extra height
+             — which matters because the two E2E flows scroll Save to the bottom
+             of a page that is already at its maximum scroll, and anything
+             appended BELOW the button would land under the fold for the same
+             reason the screen-level line did. It wraps to its own line only
+             when the panel is too narrow to hold it beside the buttons. */
+          <p role="status" className="self-center text-sm text-slate-300">
+            {saveStatus}
+          </p>
+        )}
       </div>
 
       {/* Last in the tree, and last for a reason: everything above it is the
@@ -917,11 +1385,37 @@ export default function TeamManagement() {
     return matched.sort(
       (a, b) =>
         teamShortName(a).localeCompare(teamShortName(b)) ||
-        (a.location ?? "").localeCompare(b.location ?? ""),
+        (a.location ?? "").localeCompare(b.location ?? "") ||
+        // NEO-254: era LAST, and oldest first. Two rows can now share a
+        // nickname and a location — the two Winnipeg Jets do — and without
+        // this they land adjacent in whatever order the query returned, which
+        // is both arbitrary and unstable between renders. A lineage reads
+        // forwards, so 1972 sits above 2011. Undated sorts last: it is the row
+        // with work outstanding, not the row the history starts with.
+        (a.yearsActive?.from ?? Infinity) - (b.yearsActive?.from ?? Infinity),
     );
   }, [teams, filter, leagueFilter]);
 
   const selected = teams.find((t) => t._id === selectedId) ?? null;
+  /**
+   * NEO-254 — the franchise threads for the panel's Franchise pills, scoped to
+   * the SELECTED team's sport.
+   *
+   * It used to ask for every franchise in every sport and filter client-side,
+   * which broke twice over once the load landed. `list` without a `sportId`
+   * walks the table and caps at 500, so with 202 franchises per sport across
+   * several sports a thread was simply outside the window and never offered —
+   * and the ones that were offered cost a full-table read on a screen that
+   * re-renders on every keystroke.
+   *
+   * Scoped, it is an indexed read of ~202 rows, well inside the cap, so the
+   * window cannot bite. `"skip"` until a team is selected: with no panel open
+   * there is no sport to ask about and nothing to render them into.
+   */
+  const franchises = useQuery(
+    api.franchises.list,
+    selected ? { sportId: selected.sportId } : "skip",
+  );
   const needingAttention = teams.filter((t) => attentionFor(t) !== null).length;
 
   if (management === undefined) {
@@ -1002,6 +1496,13 @@ export default function TeamManagement() {
                 const league = team.leagueId
                   ? leagueById.get(team.leagueId)
                   : undefined;
+                /**
+                 * NEO-254 — "1972–1996", or "" for a row nobody has dated.
+                 *
+                 * Part of the row's identity now, not decoration: two Winnipeg
+                 * Jets rows are told apart by this and by nothing else.
+                 */
+                const era = eraLabel(team.yearsActive);
                 const isSelected = team._id === selectedId;
                 return (
                   <li key={team._id}>
@@ -1032,13 +1533,29 @@ export default function TeamManagement() {
                         not what anyone would look for, so the full name is
                         spelled out here.
 
-                        EXACTLY `teamFullName`, with nothing appended: Maestro
-                        builds `resource-id = node.id || node.ariaLabel`, so
-                        this string is the handle every `.maestro` flow taps
-                        this row by. Appending a state word to it would break
-                        every one of them silently.
+                        NEO-254 — and the ERA, when the row has one.
+
+                        This used to be exactly `teamFullName` with nothing
+                        appended, because Maestro builds
+                        `resource-id = node.id || node.ariaLabel` and this string
+                        is the handle every `.maestro` flow taps the row by. That
+                        rule held while a name identified a row. It does not any
+                        more: a sport can hold two "Winnipeg Jets", and two rows
+                        with one accessible name are two identical handles for
+                        two different franchises — Maestro taps whichever comes
+                        first, and a screen-reader operator cannot tell them
+                        apart at all.
+
+                        So the era goes IN the name rather than in the
+                        description beside it: `aria-describedby` is not part of
+                        what Maestro resolves, so a description could never make
+                        the handle unique. `teamOptionLabel` appends nothing when
+                        a row has no years, which is what keeps every existing
+                        flow working — the E2E author audited that none taps a
+                        DATED row by its full name. Same helper, same string,
+                        as the TeamPicker option rows.
                       */
-                      aria-label={teamFullName(team)}
+                      aria-label={teamOptionLabel(teamFullName(team), team.yearsActive)}
                       /*
                         a11y (SC 4.1.2) — an `aria-label` REPLACES the accessible
                         name, so the league tag and the attention glyph below
@@ -1048,9 +1565,10 @@ export default function TeamManagement() {
                         `sr-only` line at the end of this button and pointed at
                         from here.
 
-                        `describedby`, not a longer label: the label has to stay
-                        exactly `teamFullName` (see above), and a description is
-                        the attribute for "and also, about this thing…".
+                        `describedby`, not a longer label: the label carries the
+                        row's IDENTITY (name and era — see above) and a
+                        description is the attribute for "and also, about this
+                        thing…". State does not belong in a handle a test taps.
                         Keyed on `team._id` rather than `useId`, because this is
                         inside a `.map` and `useId` cannot be called per row.
                       */
@@ -1078,7 +1596,7 @@ export default function TeamManagement() {
                         <span className="block truncate">
                           {teamShortName(team)}
                         </span>
-                        {(team.location || league) && (
+                        {(team.location || league || era) && (
                           <span className="flex items-baseline gap-x-2 text-xs text-slate-400">
                             {team.location && (
                               <span className="min-w-0 truncate">
@@ -1094,6 +1612,32 @@ export default function TeamManagement() {
                                 className={`shrink-0 ${team.location ? "border-l border-slate-700 pl-2" : ""}`}
                               >
                                 {league.abbreviation ?? league.name}
+                              </span>
+                            )}
+                            {era && (
+                              /* NEO-254 — the era, last on the line and set in
+                                 tabular figures.
+                                 
+                                 It is here because it is now part of a team's
+                                 IDENTITY: two "Winnipeg Jets" rows differ by
+                                 nothing else, and without this the list shows
+                                 the operator the same row twice. Monospaced
+                                 digits rather than the body face, matching the
+                                 franchise thread on /admin/franchises — the
+                                 same fact should look the same wherever it
+                                 decides which row you are looking at.
+                                 
+                                 `shrink-0` and last: the nickname and location
+                                 truncate before a range that is the whole point
+                                 of the line loses a digit. */
+                              <span
+                                className={`shrink-0 font-mono tabular-nums ${
+                                  team.location || league
+                                    ? "border-l border-slate-700 pl-2"
+                                    : ""
+                                }`}
+                              >
+                                {era}
                               </span>
                             )}
                           </span>
@@ -1117,7 +1661,9 @@ export default function TeamManagement() {
                       )}
                       {(attention || league) && (
                         <span id={`team-row-${team._id}`} className="sr-only">
-                          {league ? `${league.abbreviation ?? league.name}. ` : ""}
+                          {league
+                            ? `${league.abbreviation ?? league.name}. `
+                            : ""}
                           {attention === "choice"
                             ? "Several color sources match — needs a pick."
                             : attention === "colors"
@@ -1140,6 +1686,7 @@ export default function TeamManagement() {
               key={selected._id}
               team={selected}
               leagues={leagueList.filter((l) => l.sportId === selected.sportId)}
+              franchises={franchises?.franchises ?? []}
               onStatus={setStatus}
               onSelect={selectTeam}
             />

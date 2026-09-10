@@ -68,7 +68,10 @@ export interface StagingCareerTeam {
  */
 export interface StagingRow {
   _id: string;
-  kind: "player" | "team";
+  // NEO-254: `"league"` joins the two. This module only ever reads TEAM rows,
+  // so a league row simply falls through every branch — the kind is widened so
+  // the wizard can pass its rows straight through without a cast.
+  kind: "player" | "team" | "league";
   name: string;
   enrichment?: { careerTeams?: StagingCareerTeam[] } | null;
   decision?:

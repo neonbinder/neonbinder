@@ -57,13 +57,23 @@ tags:
       notVisible:
         id: "Skip .* not a person"
     commands:
+      # NEO-254 — the matcher covers a LEAGUE step as well as a team step.
+      # The wizard stages a `New League:` step ahead of the first team that
+      # needs that league, and its skip control is worded differently on
+      # purpose: a league row's accessible name is
+      # `Skip <name> — this team has no league` (the string IS a league;
+      # skipping says this TEAM has none), not `— not a league`. A matcher
+      # pinned to `not a team` therefore misses it, taps nothing, and this loop
+      # spins its whole `times` budget before the wait below fails. Neither
+      # alternative matches a PLAYER row's `— not a person`, which is what this
+      # loop exits on.
       - runFlow:
           when:
             visible:
-              id: "Skip .* not a team"
+              id: "Skip .*(not a team|has no league)"
           commands:
             - tapOn:
-                id: "Skip .* not a team"
+                id: "Skip .*(not a team|has no league)"
 - extendedWaitUntil:
     visible:
       id: "Skip .* not a person"
@@ -99,13 +109,23 @@ tags:
       notVisible:
         id: "Skip .* not a person"
     commands:
+      # NEO-254 — the matcher covers a LEAGUE step as well as a team step.
+      # The wizard stages a `New League:` step ahead of the first team that
+      # needs that league, and its skip control is worded differently on
+      # purpose: a league row's accessible name is
+      # `Skip <name> — this team has no league` (the string IS a league;
+      # skipping says this TEAM has none), not `— not a league`. A matcher
+      # pinned to `not a team` therefore misses it, taps nothing, and this loop
+      # spins its whole `times` budget before the wait below fails. Neither
+      # alternative matches a PLAYER row's `— not a person`, which is what this
+      # loop exits on.
       - runFlow:
           when:
             visible:
-              id: "Skip .* not a team"
+              id: "Skip .*(not a team|has no league)"
           commands:
             - tapOn:
-                id: "Skip .* not a team"
+                id: "Skip .*(not a team|has no league)"
 - extendedWaitUntil:
     visible:
       id: "Skip .* not a person"

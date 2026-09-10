@@ -39,6 +39,15 @@ set that goes astray is fixed, never deleted).
 It is an action looping paginated internal mutations, so it is **re-runnable**
 and safe to run twice; a run against already-empty tables returns all zeros.
 
+Each call works for at most `RESET_TIME_BUDGET_MS` (2.5 minutes by default,
+overridable per deployment with the env var of the same name) and then returns
+`"complete": false` with the counts it removed so far, because `npx convex run`
+gives up waiting after about five minutes and reports a bare `Error` even
+though the action keeps running (CI run 34390342992, on a preview bulk-loaded
+with 110k players). Re-run the same command until it prints `"complete": true`
+— `e2e-baseline.sh reset` does that loop for you, one line per pass, and fails
+if 20 passes still have not finished.
+
 ---
 
 ## 2. Local: reset the dev deployment
@@ -68,9 +77,13 @@ On success it prints the per-table counts:
   "leaguesDeleted": 3,
   "playersDeleted": 288,
   "selectorOptionsDeleted": 9134,
-  "teamsDeleted": 76
+  "teamsDeleted": 76,
+  "complete": true
 }
 ```
+
+`"complete": false` means the time budget ran out first — the counts are real,
+but rows remain; run it again until it reports `true`.
 
 ### 2.1 The trust model, and the flag you must NOT pass
 

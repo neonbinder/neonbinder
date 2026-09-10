@@ -392,8 +392,17 @@ tags:
 - tapOn:
     id: "Search teams"
 - inputText: "PMT${output.ATTEMPT_TOKEN}"
+# NEO-254 — the optional `( · <era>)` tail. A TeamPicker option's accessible
+# name is `Add {teamOptionLabel}`, which appends " · 1972–1996" once the row
+# carries a `yearsActive`. This flow's team is created through the dialog with
+# the era boxes left blank, so today the label is the bare name — but a matcher
+# is a FULL match, so the day anyone dates that fixture this selector would
+# stop matching with no other symptom. The optional group costs nothing and
+# covers both.
+# NEO-260 kept the separator-free name (teams.search tokenises on
+# non-alphanumerics, so a hyphen makes the per-attempt suffix worthless).
 - tapOn:
-    id: "Add PMT${output.ATTEMPT_TOKEN}"
+    id: "Add PMT${output.ATTEMPT_TOKEN}( · .*)?"
 # Same popover, same dismissal as above — tap the heading, never a keycode.
 - tapOn: "Career history"
 - tapOn: ".*Stint from year.*"

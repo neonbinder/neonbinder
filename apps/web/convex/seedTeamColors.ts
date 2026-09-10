@@ -21,15 +21,27 @@
  * Chunked because a release step that half-succeeds should be resumable, and
  * because 165 upserts plus their league lookups is more document traffic than
  * belongs in one mutation.
+ *
+ * NEO-254 (Jason, 2026-09-09): armed like the other scripted admin tasks
+ * (NEO-214 reset, NEO-254 bulk load) — an INTERNAL action with a confirm
+ * literal and an env flag asserted inside every mutation, never an identity.
+ * `npx convex run --identity` cannot reach internal functions, and a public
+ * action behind `requireAdmin` needed a hand-typed admin identity on every
+ * deployment, which is what this replaces. To run:
+ *
+ *   npx convex env set ALLOW_SEED_TEAM_COLORS true --deployment <name>
+ *   npx convex run --deployment <name> seedTeamColors:seedFromBundledData '{"confirm":"SEED_TEAM_COLORS"}'
+ *   npx convex env remove ALLOW_SEED_TEAM_COLORS --deployment <name>
  */
 
 import { v } from "convex/values";
-import { action, internalMutation } from "./_generated/server";
+import { ConvexError } from "convex/values";
+import { internalAction, internalMutation } from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
-import { requireAdmin } from "./auth";
 import { findOrCreateLeague } from "./leagues";
-import { findTeamByFullName, teamRowFields } from "./lib/teamRow";
+import { findTeamsByFullName, teamRowFields } from "./lib/teamRow";
+import { currentEraTeam } from "../lib/teams/team-era";
 import { SEED_LEAGUES, SEED_TEAMS } from "../lib/teams/seed-team-colors";
 import { currentFranchiseParts } from "../lib/teams/seed-team-lookup";
 import { teamFullName } from "../lib/teams/team-name";
@@ -37,14 +49,35 @@ import { teamFullName } from "../lib/teams/team-name";
 /** Teams handled per mutation. Keeps each well inside the document budget. */
 const SEED_CHUNK_SIZE = 40;
 
+/**
+ * The arming flag, asserted at the entry point AND inside every chunk
+ * mutation, exactly as `assertResetArmed` is for the reset: anything already
+ * inside Convex can call the chunk directly, and the flag is the only thing
+ * between such a caller and a write.
+ */
+function assertSeedArmed(): void {
+  if (process.env.ALLOW_SEED_TEAM_COLORS !== "true") {
+    throw new ConvexError(
+      "Team colour seed is not armed on this deployment. Set " +
+        "ALLOW_SEED_TEAM_COLORS=true on it first " +
+        "(`npx convex env set ALLOW_SEED_TEAM_COLORS true`), and unset it " +
+        "again afterwards.",
+    );
+  }
+}
+
 export const seedChunkInternal = internalMutation({
   args: { start: v.number(), count: v.number() },
   returns: v.object({
     teamsCreated: v.number(),
     colorsApplied: v.number(),
     skippedNoSport: v.number(),
+    // NEO-254: a name that resolved to several open eras. Reported rather than
+    // silently skipped — it is the signal that two rows need an operator.
+    skippedAmbiguous: v.number(),
   }),
   handler: async (ctx, args) => {
+    assertSeedArmed();
     const slice = SEED_TEAMS.slice(args.start, args.start + args.count);
 
     // Sport rows are created by the marketplace sync, never here: inventing
@@ -61,6 +94,7 @@ export const seedChunkInternal = internalMutation({
     let teamsCreated = 0;
     let colorsApplied = 0;
     let skippedNoSport = 0;
+    let skippedAmbiguous = 0;
 
     for (const seed of SEED_TEAMS.length ? slice : []) {
       const leagueMeta = SEED_LEAGUES[seed.league];
@@ -91,11 +125,30 @@ export const seedChunkInternal = internalMutation({
       const parts = currentFranchiseParts(seed);
       const fields = teamRowFields(parts);
 
-      const existing = await findTeamByFullName(
+      /**
+       * NEO-254 — the CURRENT era's row, when a name now resolves to several.
+       *
+       * `SEED_TEAMS` is a list of franchises as they stand today, carrying no
+       * years at all, so among two Winnipeg Jets it means the 2011 one.
+       * `currentEraTeam` says that the only honest way the data allows: the row
+       * whose era is open, or the single row when there is only one.
+       *
+       * It returns null when several rows are open, and this seed then treats
+       * that as "leave them alone" — it neither patches nor inserts. A colour is
+       * not worth guessing an era for, and inserting would mint the very
+       * duplicate the lookup exists to prevent. Counted as `skippedAmbiguous`
+       * so a release run says so rather than looking like a no-op.
+       */
+      const sameName = await findTeamsByFullName(
         ctx,
         sportId,
         teamFullName(parts),
       );
+      const existing = currentEraTeam(sameName);
+      if (existing === null && sameName.length > 0) {
+        skippedAmbiguous += 1;
+        continue;
+      }
 
       const colors =
         seed.hex.length > 0
@@ -127,7 +180,7 @@ export const seedChunkInternal = internalMutation({
       if (colors) colorsApplied += 1;
     }
 
-    return { teamsCreated, colorsApplied, skippedNoSport };
+    return { teamsCreated, colorsApplied, skippedNoSport, skippedAmbiguous };
   },
 });
 
@@ -137,14 +190,17 @@ export const seedChunkInternal = internalMutation({
  * Reports what it did rather than returning null, because "0 teams created"
  * after a release should be distinguishable from "did not run" — and
  * `skippedNoSport` is the signal that a sport has not been synced yet, which
- * is the one failure mode that looks like success.
+ * is the one failure mode that looks like success. NEO-254 adds
+ * `skippedAmbiguous` for the other one: a name this sport now holds under two
+ * open eras, which the seed refuses to choose between.
  */
-export const seedFromBundledData = action({
-  args: {},
+export const seedFromBundledData = internalAction({
+  args: { confirm: v.literal("SEED_TEAM_COLORS") },
   returns: v.object({
     teamsCreated: v.number(),
     colorsApplied: v.number(),
     skippedNoSport: v.number(),
+    skippedAmbiguous: v.number(),
     total: v.number(),
   }),
   handler: async (
@@ -153,13 +209,16 @@ export const seedFromBundledData = action({
     teamsCreated: number;
     colorsApplied: number;
     skippedNoSport: number;
+    skippedAmbiguous: number;
     total: number;
   }> => {
-    await requireAdmin(ctx);
+    // Fail here rather than partway through the chunks; each chunk re-asserts.
+    assertSeedArmed();
 
     let teamsCreated = 0;
     let colorsApplied = 0;
     let skippedNoSport = 0;
+    let skippedAmbiguous = 0;
 
     for (let start = 0; start < SEED_TEAMS.length; start += SEED_CHUNK_SIZE) {
       const result = await ctx.runMutation(
@@ -169,16 +228,19 @@ export const seedFromBundledData = action({
       teamsCreated += result.teamsCreated;
       colorsApplied += result.colorsApplied;
       skippedNoSport += result.skippedNoSport;
+      skippedAmbiguous += result.skippedAmbiguous;
     }
 
     console.log(
       `[seedTeamColors] created ${teamsCreated} teams, applied ${colorsApplied} colour sets, ` +
-        `skipped ${skippedNoSport} for unsynced sports, of ${SEED_TEAMS.length} entries`,
+        `skipped ${skippedNoSport} for unsynced sports and ${skippedAmbiguous} ` +
+        `whose name resolves to more than one open era, of ${SEED_TEAMS.length} entries`,
     );
     return {
       teamsCreated,
       colorsApplied,
       skippedNoSport,
+      skippedAmbiguous,
       total: SEED_TEAMS.length,
     };
   },

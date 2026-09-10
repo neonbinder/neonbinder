@@ -77,7 +77,10 @@ vi.mock("../../convex/_generated/api", () => ({
       savePlayerFields: "players.savePlayerFields",
       enrichFromWikidata: "players.enrichFromWikidata",
     },
-    teams: { getManyByIds: "teams.getManyByIds" },
+    teams: {
+      getManyByIds: "teams.getManyByIds",
+      resolveNames: "teams.resolveNames",
+    },
     selectorOptions: {
       getSelectorOptions: "selectorOptions.getSelectorOptions",
     },
@@ -217,7 +220,19 @@ const ENRICHED_TROUT = {
   lastUpdated: 2,
 };
 
+/** NEO-254 — a player carrying a birth year, for the birth-year field. */
+const GWYNN = {
+  _id: "p-gwynn",
+  _creationTime: 5,
+  name: "Tony Gwynn",
+  nameNormalized: "gwynn tony",
+  sportId: "sport-baseball",
+  birthYear: 1960,
+  lastUpdated: 1,
+};
+
 const PLAYERS_BY_ID: Record<string, unknown> = {
+  "p-gwynn": GWYNN,
   "p-griffey": GRIFFEY,
   "p-trout": TROUT,
   "p-rice": RICE,
@@ -403,6 +418,7 @@ beforeEach(() => {
   };
   searchResults = [GRIFFEY, TROUT];
   nearMatches = undefined;
+  PLAYERS_BY_ID["p-gwynn"] = GWYNN;
   mockCreateByAdmin.mockResolvedValue({ id: "p-trout", created: true });
   mockSavePlayerFields.mockResolvedValue(null);
   mockEnrich.mockResolvedValue(null);
@@ -1534,5 +1550,322 @@ describe("PlayerManagement — the ?player deep link", () => {
     expect(url()).toBe("?player=p-trout");
     expect(screen.getByLabelText("Filter players")).toHaveProperty("value", "r");
     expect(listRow(/Mike Trout/).getAttribute("aria-current")).toBe("true");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-254 — birth year
+// ---------------------------------------------------------------------------
+
+/**
+ * Render the screen with Gwynn in the list and his detail panel open.
+ *
+ * The list has to hold him BEFORE the first render — `management` is read
+ * during render, and setting it afterwards leaves the row that the click is
+ * looking for un-drawn.
+ */
+function renderWithGwynn() {
+  management = {
+    players: [GWYNN, GRIFFEY, TROUT],
+    totalCount: 3,
+    truncated: false,
+  };
+  const utils = render(<PlayerManagement />);
+  fireEvent.click(screen.getByRole("button", { name: /Tony Gwynn/ }));
+  return utils;
+}
+
+describe("NEO-254: birth year", () => {
+  it("sends the birth year the add form was given", async () => {
+    // Without this field a SECOND person with an existing name cannot be
+    // created through the UI at all: `createByAdmin` refuses an ambiguous name,
+    // and the form's own near-match hierarchy pushes creation behind
+    // "Create anyway". The field IS the mechanism, not decoration on it.
+    const { container } = render(<PlayerManagement />);
+    openAddForm(container);
+
+    fireEvent.change(screen.getByLabelText("New player name"), {
+      target: { value: "Bob Allen" },
+    });
+    fireEvent.change(screen.getByLabelText("Birth year (optional)"), {
+      target: { value: "1937" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create player Bob Allen" }));
+
+    await waitFor(() =>
+      expect(mockCreateByAdmin).toHaveBeenCalledWith({
+        name: "Bob Allen",
+        sportId: "sport-baseball",
+        birthYear: 1937,
+      }),
+    );
+  });
+
+  it("'Create anyway' carries the birth year — the fork path", async () => {
+    /*
+     * The exact UI path that was broken. With an exact match on screen the
+     * primary flips to "Open {name}" and creation demotes to "Create anyway";
+     * that button has to send the year, because the year is the only thing
+     * that makes `createByAdmin` fork rather than hand the existing row back.
+     */
+    nearMatches = [
+      { _id: "p-existing", name: "Bob Allen", confidence: "exact" },
+    ];
+    mockCreateByAdmin.mockResolvedValue({ id: "p-new", created: true });
+    const { container } = render(<PlayerManagement />);
+    openAddForm(container);
+    fireEvent.change(screen.getByLabelText("New player name"), {
+      target: { value: "Bob Allen" },
+    });
+    fireEvent.change(screen.getByLabelText("Birth year (optional)"), {
+      target: { value: "1975" },
+    });
+
+    // The primary is the safe move; creation is the deliberate second control.
+    // `nearMatches` is debounced, so the demotion lands a tick later.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Open Bob Allen" })).toBeTruthy(),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Create player Bob Allen anyway" }),
+    );
+
+    await waitFor(() =>
+      expect(mockCreateByAdmin).toHaveBeenCalledWith({
+        name: "Bob Allen",
+        sportId: "sport-baseball",
+        birthYear: 1975,
+      }),
+    );
+    // "Added", not "already exists" — the operator really did get a new row.
+    await waitFor(() => expect(screen.getByText("Added Bob Allen.")).toBeTruthy());
+  });
+
+  it("gives two exact same-name rows DIFFERENT Open labels", async () => {
+    /*
+     * The collision a fork creates. `players.nearMatches` no longer reads the
+     * exact key with `.first()`, so both Bob Allens come back `exact`: one is
+     * promoted to the primary, the other renders in the panel, and a label
+     * built from the name alone made both `Open Bob Allen` — two controls with
+     * one accessible name on the screen meant to tell those people apart.
+     */
+    nearMatches = [
+      { _id: "p-old", name: "Bob Allen", confidence: "exact", birthYear: 1960 },
+      { _id: "p-new", name: "Bob Allen", confidence: "exact", birthYear: 1975 },
+    ];
+    const { container } = render(<PlayerManagement />);
+    openAddForm(container);
+    fireEvent.change(screen.getByLabelText("New player name"), {
+      target: { value: "Bob Allen" },
+    });
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Open Bob Allen, b. 1960" }),
+      ).toBeTruthy(),
+    );
+    // The panel appends its own "— same name" tag to an exact row's
+    // accessible name (NEO-212: a warning only sighted operators receive is
+    // not a warning). Uniqueness holds with or without it.
+    expect(
+      screen.getByRole("button", { name: "Open Bob Allen, b. 1975 — same name" }),
+    ).toBeTruthy();
+    // The ambiguous label is gone entirely — including from the promoted
+    // primary, which would otherwise not say which man it opens.
+    expect(screen.queryByRole("button", { name: "Open Bob Allen" })).toBeNull();
+
+    const openNames = screen
+      .getAllByRole("button")
+      .map((b) => b.getAttribute("aria-label") ?? b.textContent ?? "")
+      .filter((n) => n.startsWith("Open Bob Allen"));
+    expect(openNames).toHaveLength(2);
+    expect(new Set(openNames).size).toBe(2);
+
+    // And the E2E-targeted create control is untouched.
+    expect(
+      screen.getByRole("button", { name: "Create player Bob Allen anyway" }),
+    ).toBeTruthy();
+  });
+
+  it("falls back to an ordinal when neither same-name row has a birth year", async () => {
+    // "no birth year" twice is the same collision in different words.
+    nearMatches = [
+      { _id: "p-a", name: "Bob Allen", confidence: "exact" },
+      { _id: "p-b", name: "Bob Allen", confidence: "exact" },
+    ];
+    const { container } = render(<PlayerManagement />);
+    openAddForm(container);
+    fireEvent.change(screen.getByLabelText("New player name"), {
+      target: { value: "Bob Allen" },
+    });
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", {
+          name: "Open Bob Allen, no birth year (1 of 2)",
+        }),
+      ).toBeTruthy(),
+    );
+    expect(
+      screen.getByRole("button", {
+        name: "Open Bob Allen, no birth year (2 of 2) — same name",
+      }),
+    ).toBeTruthy();
+  });
+
+  it("leaves the single-match label exactly as it was", async () => {
+    // Not timidity about churn: with nothing to distinguish it from, the bare
+    // label is the correct one — and the E2E flows target it.
+    nearMatches = [
+      {
+        _id: "p-griffey",
+        name: "Ken Griffey Jr.",
+        confidence: "exact",
+        birthYear: 1969,
+      },
+    ];
+    const { container } = render(<PlayerManagement />);
+    openAddForm(container);
+    fireEvent.change(screen.getByLabelText("New player name"), {
+      target: { value: "Ken Griffey Jr." },
+    });
+
+    await waitFor(() =>
+      expect(
+        screen.getAllByRole("button", { name: "Open Ken Griffey Jr." }),
+      ).toHaveLength(1),
+    );
+    expect(screen.queryByText(/b\. 1969/)).toBeNull();
+  });
+
+  it("omits the key entirely when the field is left blank", async () => {
+    // Most players are the only one of their name, and demanding a year for
+    // them would be a tax on the common case.
+    const { container } = render(<PlayerManagement />);
+    openAddForm(container);
+    fireEvent.change(screen.getByLabelText("New player name"), {
+      target: { value: "Daulton Varsho" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Create player Daulton Varsho" }),
+    );
+
+    await waitFor(() => expect(mockCreateByAdmin).toHaveBeenCalledTimes(1));
+    expect(Object.keys(mockCreateByAdmin.mock.calls[0][0])).toEqual([
+      "name",
+      "sportId",
+    ]);
+  });
+
+  it("does NOT say 'already exists' when the create goes through", async () => {
+    // `created: true` is the server saying it minted a new row — which is
+    // exactly what a differing birth year buys against an existing same-name
+    // player. Reporting "already exists" there would tell the operator their
+    // second Bob Allen was not created when it was.
+    mockCreateByAdmin.mockResolvedValue({ id: "p-new", created: true });
+    const { container } = render(<PlayerManagement />);
+    openAddForm(container);
+    fireEvent.change(screen.getByLabelText("New player name"), {
+      target: { value: "Bob Allen" },
+    });
+    fireEvent.change(screen.getByLabelText("Birth year (optional)"), {
+      target: { value: "1937" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create player Bob Allen" }));
+
+    await waitFor(() => expect(screen.getByText("Added Bob Allen.")).toBeTruthy());
+    expect(screen.queryByText(/already exists/)).toBeNull();
+  });
+
+  it("shows the server's ambiguity refusal verbatim", async () => {
+    // The message IS the instruction — how many rows share the name, and that
+    // the operator has to pick one. Swallowing it into "Could not add that
+    // player" would say nothing they can act on.
+    mockCreateByAdmin.mockRejectedValue(
+      new ConvexError(
+        "2 players are already filed under Bob Allen. Pick the right one instead of adding another.",
+      ),
+    );
+    const { container } = render(<PlayerManagement />);
+    openAddForm(container);
+    fireEvent.change(screen.getByLabelText("New player name"), {
+      target: { value: "Bob Allen" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create player Bob Allen" }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(
+          "2 players are already filed under Bob Allen. Pick the right one instead of adding another.",
+        ),
+      ).toBeTruthy(),
+    );
+  });
+
+  it("refuses to send a birth year outside the bounds", async () => {
+    const { container } = render(<PlayerManagement />);
+    openAddForm(container);
+    fireEvent.change(screen.getByLabelText("New player name"), {
+      target: { value: "Bob Allen" },
+    });
+    fireEvent.change(screen.getByLabelText("Birth year (optional)"), {
+      target: { value: "1700" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create player Bob Allen" }));
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockCreateByAdmin).not.toHaveBeenCalled();
+    expect(screen.getByText(/Use a whole year between 1850 and/)).toBeTruthy();
+  });
+
+  it("shows the birth year on the list row", () => {
+    // NEO-235 stripped this row back to "which of the people with similar
+    // names is this?". A birth year is the one thing on a player that answers
+    // it, so it belongs by that edit's own rule.
+    renderWithGwynn();
+    expect(
+      within(screen.getByRole("button", { name: /Tony Gwynn/ })).getByText("b. 1960"),
+    ).toBeTruthy();
+  });
+
+  it("edits the birth year from the detail panel", async () => {
+    renderWithGwynn();
+    fireEvent.change(screen.getByLabelText("Birth year"), {
+      target: { value: "1961" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^Save$/ }));
+
+    await waitFor(() =>
+      expect(mockSavePlayerFields).toHaveBeenCalledWith({
+        id: "p-gwynn",
+        birthYear: 1961,
+      }),
+    );
+  });
+
+  it("clears the birth year with null when the field is emptied", async () => {
+    // "" and "unset" are different states, and a year nobody is sure of is
+    // better absent than wrong — the wizard's candidate list acts on it.
+    renderWithGwynn();
+    fireEvent.change(screen.getByLabelText("Birth year"), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Save$/ }));
+
+    await waitFor(() =>
+      expect(mockSavePlayerFields).toHaveBeenCalledWith({
+        id: "p-gwynn",
+        birthYear: null,
+      }),
+    );
+  });
+
+  it("will not save an out-of-bounds birth year", async () => {
+    renderWithGwynn();
+    fireEvent.change(screen.getByLabelText("Birth year"), {
+      target: { value: "20999" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^Save$/ }));
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockSavePlayerFields).not.toHaveBeenCalled();
   });
 });

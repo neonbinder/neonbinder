@@ -200,7 +200,7 @@ vi.mock("./EntityLinkSearch", () => ({
     sportId,
     onSelect,
   }: {
-    kind: "player" | "team";
+    kind: "player" | "team" | "league";
     sportId: string;
     onSelect: (id: string) => void;
   }) => {
@@ -228,7 +228,7 @@ type Row = {
   _creationTime: number;
   selectorOptionId: Id<"selectorOptions">;
   batchId: string;
-  kind: "player" | "team";
+  kind: "player" | "team" | "league";
   name: string;
   sportId: Id<"selectorOptions">;
   sportValue: string;
@@ -251,6 +251,9 @@ type Row = {
          */
         manualStint?: { fromYear: number; toYear?: number };
       }
+    // NEO-254 — set on a league row staged for the team that needs it. No
+    // `manualStint`: a league step has no years of its own.
+    | { kind: "leagueOf"; teamRowId: string }
     | null;
   decision?:
     | {
@@ -5743,5 +5746,598 @@ describe("EntityReviewWizard — Decide team stages a step when there is none", 
         screen.getByRole("heading", { name: "New Team: Quebec Remparts" }),
       ).toBeTruthy(),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-254 — same-name candidates and undated Wikidata teams
+//
+// The panels have their own files (SameNamePlayerPanel.test.tsx,
+// UndatedCareerTeams.test.tsx). What is asserted HERE is the wiring only the
+// wizard owns: which panel gets the same-name rows, what happens to the action
+// hierarchy when there is no single "the" exact match, and that dating a lead
+// reaches `recordDecision` as an ordinary manual career team.
+// ---------------------------------------------------------------------------
+
+describe("NEO-254: an ambiguous name is a choice, not a promoted primary", () => {
+  const CANDIDATES = [
+    {
+      playerId: "player-old",
+      name: "Bob Allen",
+      birthYear: 1867,
+      careerSummary: "Phillies 1890–1894",
+    },
+    {
+      playerId: "player-young",
+      name: "Bob Allen",
+      birthYear: 1937,
+      careerSummary: "Padres 1961–present",
+    },
+  ];
+
+  it("shows the candidates and does NOT promote one of them to the primary", () => {
+    // `players.nearMatches` returns every row on the exact key now, so without
+    // the guard `showExactHierarchy` would turn the main button into "Link to
+    // Bob Allen" for whichever came first — a one-tap path to the wrong man.
+    currentRows = [
+      makeRow({ name: "Bob Allen", enrichment: { existingCandidates: CANDIDATES } }),
+    ];
+    currentNearMatches = [
+      { _id: "player-old", name: "Bob Allen", confidence: "exact" },
+      { _id: "player-young", name: "Bob Allen", confidence: "exact" },
+    ];
+    renderWizard();
+
+    expect(screen.getByText("Same name, different people")).toBeTruthy();
+    // The primary is still creation, not a link to one of two identical names.
+    expect(screen.getByRole("button", { name: "Add as New Player" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Link to Bob Allen" })).toBeNull();
+  });
+
+  it("keeps the same-name rows out of the Possible matches panel", () => {
+    // Both panels render a link control per row. Left alone, the two Bob
+    // Allens would appear in each — four buttons, two accessible names, and no
+    // way to tell which pair is which.
+    currentRows = [
+      makeRow({ name: "Bob Allen", enrichment: { existingCandidates: CANDIDATES } }),
+    ];
+    currentNearMatches = [
+      { _id: "player-old", name: "Bob Allen", confidence: "exact" },
+      { _id: "player-young", name: "Bob Allen", confidence: "exact" },
+      { _id: "player-other", name: "Bobby Allen", confidence: "close" },
+    ];
+    renderWizard();
+
+    // Only the genuinely-different name is left for the fuzzy panel.
+    expect(screen.getByRole("button", { name: "Link to Bobby Allen" })).toBeTruthy();
+    const labels = screen
+      .getAllByRole("button")
+      .map((b) => b.getAttribute("aria-label") ?? b.textContent ?? "");
+    expect(new Set(labels).size).toBe(labels.length);
+  });
+
+  it("picking a candidate records a link decision naming that player", async () => {
+    currentRows = [
+      makeRow({ name: "Bob Allen", enrichment: { existingCandidates: CANDIDATES } }),
+    ];
+    currentNearMatches = [];
+    renderWizard();
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Link to Bob Allen, b. 1937 · Padres 1961–present",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(mockRecordDecision).toHaveBeenCalledWith({
+        reviewRowId: "row-" + nextRowId,
+        action: "link",
+        linkedPlayerId: "player-young",
+        linkedTeamId: undefined,
+      }),
+    );
+  });
+
+  it("shows no candidate panel for an ordinary name", () => {
+    currentRows = [makeRow({ enrichment: { wikidataId: "Q1" } })];
+    currentNearMatches = [];
+    renderWizard();
+    expect(screen.queryByText("Same name, different people")).toBeNull();
+  });
+});
+
+describe("NEO-254: undated Wikidata teams in the player step", () => {
+  it("lists the undated teams under the dated ones", () => {
+    currentRows = [
+      makeRow({
+        name: "Tony Gwynn",
+        enrichment: {
+          careerTeams: [{ name: "San Diego Padres", fromYear: 1982, toYear: 2001 }],
+          undatedCareerTeams: ["San Diego State Aztecs"],
+        },
+      }),
+    ];
+    currentNearMatches = [];
+    renderWizard();
+
+    expect(screen.getByText("Also on Wikidata, no years yet")).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Add years for San Diego State Aztecs" }),
+    ).toBeTruthy();
+  });
+
+  it("dating a lead stages it as a career team and drops it from the list", () => {
+    currentRows = [
+      makeRow({
+        name: "Tony Gwynn",
+        enrichment: { undatedCareerTeams: ["San Diego State Aztecs"] },
+      }),
+    ];
+    currentNearMatches = [];
+    renderWizard();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Add years for San Diego State Aztecs" }),
+    );
+    fireEvent.change(
+      screen.getByLabelText("From year for San Diego State Aztecs"),
+      { target: { value: "1979" } },
+    );
+    fireEvent.change(
+      screen.getByLabelText("To year for San Diego State Aztecs (optional)"),
+      { target: { value: "1981" } },
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Save years for San Diego State Aztecs" }),
+    );
+
+    // It is now a staged chip…
+    const staged = screen.getByRole("list", { name: "Staged career teams" });
+    expect(within(staged).getByText(/San Diego State Aztecs/)).toBeTruthy();
+    // …and no longer a lead, so it is not offered in both places at once.
+    expect(
+      screen.queryByRole("button", { name: "Add years for San Diego State Aztecs" }),
+    ).toBeNull();
+  });
+
+  it("carries a dated lead into the create decision as a manual career team", async () => {
+    currentRows = [
+      makeRow({
+        name: "Tony Gwynn",
+        enrichment: { undatedCareerTeams: ["San Diego State Aztecs"] },
+      }),
+    ];
+    currentNearMatches = [];
+    renderWizard();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Add years for San Diego State Aztecs" }),
+    );
+    fireEvent.change(
+      screen.getByLabelText("From year for San Diego State Aztecs"),
+      { target: { value: "1979" } },
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Save years for San Diego State Aztecs" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Player" }));
+
+    await waitFor(() =>
+      expect(mockRecordDecision).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "create",
+          manualCareerTeams: [
+            { name: "San Diego State Aztecs", fromYear: 1979 },
+          ],
+        }),
+      ),
+    );
+  });
+
+  it("renders no undated section when the lookup returned none", () => {
+    currentRows = [
+      makeRow({
+        enrichment: { careerTeams: [{ name: "Angels", fromYear: 2011 }] },
+      }),
+    ];
+    currentNearMatches = [];
+    renderWizard();
+    expect(screen.queryByText("Also on Wikidata, no years yet")).toBeNull();
+  });
+});
+
+describe("NEO-254: the wizard defends itself when the stored marker is missing", () => {
+  it("does NOT promote a primary when nearMatches holds two exact rows and enrichment is absent", () => {
+    // The row the completion backstop or the stale-row sweep settled: status
+    // "error", no enrichment ever written, so `existingCandidates` is missing
+    // even though two people really do share this name. The independent check
+    // is the count of exact rows in `nearMatches`, which is read live.
+    currentRows = [makeRow({ name: "Bob Allen", status: "error" })];
+    currentNearMatches = [
+      { _id: "player-old", name: "Bob Allen", confidence: "exact" },
+      { _id: "player-young", name: "Bob Allen", confidence: "exact" },
+    ];
+    renderWizard();
+
+    expect(screen.getByRole("button", { name: "Add as New Player" })).toBeTruthy();
+    // Two identically-named rows must never collapse into one promoted button.
+    expect(screen.queryByRole("button", { name: /^Add as New Player anyway$/ })).toBeNull();
+
+    // They are routed to the same-name panel, NOT to NearMatchPanel — which
+    // would have labelled both `Link to Bob Allen — same name`, two controls
+    // with one accessible name on the screen where telling them apart is the
+    // whole task.
+    expect(screen.getByText("Same name, different people")).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Link to Bob Allen, option 1 of 2" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Link to Bob Allen, option 2 of 2" }),
+    ).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: "Link to Bob Allen — same name" }),
+    ).toBeNull();
+  });
+
+  it("still promotes when there is exactly one exact match", () => {
+    // The unchanged behaviour, pinned: one exact row is a real answer and the
+    // hierarchy that NEO-212 built for it must survive this guard.
+    currentRows = [makeRow({ name: "Mike Trout" })];
+    currentNearMatches = [
+      { _id: "player-1", name: "Mike Trout", confidence: "exact" },
+    ];
+    renderWizard();
+
+    expect(screen.getByRole("button", { name: "Link to Mike Trout" })).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Add as New Player anyway" }),
+    ).toBeTruthy();
+  });
+
+  it("says so when the server stopped counting at its scan cap", () => {
+    // A silently truncated list invites the operator to conclude none of the
+    // eight is right and create a ninth — the duplicate the panel exists to
+    // prevent, with the panel's own blessing.
+    currentRows = [
+      makeRow({
+        name: "John Smith",
+        enrichment: {
+          existingCandidates: Array.from({ length: 8 }, (_, i) => ({
+            playerId: `p${i}`,
+            name: "John Smith",
+            birthYear: 1900 + i,
+            careerSummary: `Team ${i} 1920–1925`,
+          })),
+        },
+      }),
+    ];
+    currentNearMatches = [];
+    renderWizard();
+
+    expect(
+      screen.getByText(/More than 8 players are already filed under this name/),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(/use Link to Existing to search them all/),
+    ).toBeTruthy();
+  });
+
+  it("gives an exact count when the scan did not hit the cap", () => {
+    currentRows = [
+      makeRow({
+        name: "Bob Allen",
+        enrichment: {
+          existingCandidates: [
+            { playerId: "p1", name: "Bob Allen", careerSummary: "Phillies 1890–1894" },
+            { playerId: "p2", name: "Bob Allen", careerSummary: "Padres 1961–present" },
+          ],
+        },
+      }),
+    ];
+    currentNearMatches = [];
+    renderWizard();
+
+    expect(
+      screen.getByText(/^2 players are already filed under this name\./),
+    ).toBeTruthy();
+    expect(screen.queryByText(/More than/)).toBeNull();
+  });
+
+  it("drops a half-typed year form when the operator steps to another row", () => {
+    // The form is state about ONE player. Carried across a row change it would
+    // offer to date the previous player's team on this one's record.
+    const rowA = makeRow({
+      name: "Tony Gwynn",
+      enrichment: { undatedCareerTeams: ["San Diego State Aztecs"] },
+    });
+    const rowB = makeRow({
+      name: "Ozzie Smith",
+      enrichment: { undatedCareerTeams: ["San Diego State Aztecs"] },
+    });
+    currentRows = [rowA, rowB];
+    currentNearMatches = [];
+    const { rerender } = renderWizard();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Add years for San Diego State Aztecs" }),
+    );
+    fireEvent.change(
+      screen.getByLabelText("From year for San Diego State Aztecs"),
+      { target: { value: "1979" } },
+    );
+
+    // Decide row A, so the wizard walks on to row B.
+    currentRows = [{ ...rowA, decision: { action: "skip" } }, rowB];
+    rerender(
+      <EntityReviewWizard
+        isOpen
+        selectorOptionId={"selopt-1" as unknown as Id<"selectorOptions">}
+        batchId="batch-1"
+        summary={SUMMARY}
+        onConfirm={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+
+    // Row B's lead is offered fresh, not mid-edit with row A's year in it.
+    expect(
+      screen.getByRole("button", { name: "Add years for San Diego State Aztecs" }),
+    ).toBeTruthy();
+    expect(
+      screen.queryByLabelText("From year for San Diego State Aztecs"),
+    ).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-254 — where a count lives decides whether a flow can read it
+//
+// CI run 34071657961 failed `inserts-1996-score-…` on
+// `assertVisible: "Decided (1)"` while the count itself was correct: the
+// wizard was parked on a tall New Team step, and the decided disclosure sits
+// in the dialog's inner `overflow-y-auto` body below the 1024x629 fold.
+// maestro-web's scroll is `window.scrollTo` and cannot drive an inner
+// scrollbox, so nothing a flow does can reach it — the same limitation that
+// made NEO-236 move the per-row decision controls into the fixed footer.
+//
+// These pin the structure that argument rests on, so the next person to read
+// that failure does not go looking for a broken counter.
+// ---------------------------------------------------------------------------
+
+describe("EntityReviewWizard — the decided count and the scroll box", () => {
+  /** A decided player plus the tall staged New Team step CI was parked on. */
+  function seedStagedTeamStepAfterOneDecision() {
+    const player = makeRow({
+      _id: "row-player" as unknown as Id<"entityReviewQueue">,
+      kind: "player",
+      name: "Steve Finley",
+      status: "ready",
+      decision: { action: "create" },
+    });
+    currentRows = [
+      makeCareerTeamRow(player._id, "Southern Illinois Salukis baseball", {
+        enrichment: { wikidataId: "Q7570020" },
+      }),
+      player,
+    ];
+    // The five "Possible matches" that made the step overflow in CI.
+    currentNearMatches = [
+      { _id: "t1", name: "Arizona Wildcats baseball", confidence: "close" },
+      { _id: "t2", name: "Baylor Bears baseball", confidence: "close" },
+      { _id: "t3", name: "Centenary Gentlemen baseball", confidence: "close" },
+      { _id: "t4", name: "Florida Gators baseball", confidence: "close" },
+      { _id: "t5", name: "Indiana Hoosiers baseball", confidence: "close" },
+    ];
+  }
+
+  it("counts the decision on a staged New Team step — the count is not the bug", () => {
+    seedStagedTeamStepAfterOneDecision();
+    renderWizard();
+
+    expect(
+      screen.getByRole("heading", { name: /New Team: Southern Illinois/ }),
+    ).toBeTruthy();
+    expect(screen.getByText("1 of 2 reviewed")).toBeTruthy();
+    expect(screen.getByText("Decided (1)")).toBeTruthy();
+  });
+
+  it("puts the count in the PINNED header and the disclosure in the scroll box", () => {
+    // The structural fact behind the CI failure, and the reason the flow should
+    // assert the header line instead: `shrink-0` never moves, and a flow cannot
+    // scroll an `overflow-y-auto` body at all.
+    seedStagedTeamStepAfterOneDecision();
+    renderWizard();
+
+    // The dialog is portalled, so it is not under the render container.
+    const scrollBox = document.querySelector(".overflow-y-auto");
+    expect(scrollBox).toBeTruthy();
+
+    const header = screen.getByText("1 of 2 reviewed");
+    expect(scrollBox!.contains(header)).toBe(false);
+
+    const disclosure = screen.getByText("Decided (1)");
+    expect(scrollBox!.contains(disclosure)).toBe(true);
+  });
+
+  it("shows no same-name panel on a team step, whatever its near matches", () => {
+    // NEO-254 changed `showExactHierarchy` from "any exact match" to "exactly
+    // one". `teams` dedupes on (nameNormalized, sportId) and near matches are
+    // sport-scoped, so a team row can never have two exacts and the change is
+    // a no-op for team steps — which is why nothing NEO-254 added is on the
+    // screen that failed in CI.
+    seedStagedTeamStepAfterOneDecision();
+    renderWizard();
+
+    expect(screen.queryByText("Same name, different people")).toBeNull();
+    expect(screen.getByRole("button", { name: "Add as New Team" })).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-254 — the New League step must not push the footer into the scroll box
+//
+// This step has SEVEN fields where the New Team step has three, and this
+// ticket has already lost two CI runs to a wizard step outgrowing the dialog
+// body: a team step's primary action landing at y=620 on the 1024x629
+// viewport, and the decided-list disclosure falling below the fold. Neither is
+// reachable — maestro-web's scroll is `window.scrollTo` and cannot drive an
+// inner `overflow-y-auto` box.
+//
+// The structural guarantee is the one NEO-236 established: anything a flow
+// must reach lives in the FIXED footer. These assert it holds for the league
+// step, pre-filled and expanded alike, so the two-tier layout cannot regress
+// into the body.
+// ---------------------------------------------------------------------------
+
+describe("EntityReviewWizard — the New League step keeps its footer pinned", () => {
+  function seedLeagueStep(enrichment?: Record<string, unknown>) {
+    const team = makeRow({
+      _id: "row-team" as unknown as Id<"entityReviewQueue">,
+      kind: "team",
+      name: "Vancouver Canucks",
+      status: "ready",
+    });
+    currentRows = [
+      makeRow({
+        _id: "row-league" as unknown as Id<"entityReviewQueue">,
+        kind: "league",
+        name: "National Hockey League",
+        status: "ready",
+        source: {
+          kind: "leagueOf",
+          teamRowId: team._id as unknown as string,
+        },
+        ...(enrichment ? { enrichment } : {}),
+      }),
+      team,
+    ];
+    currentNearMatches = [];
+  }
+
+  it("renders the step and names who needs it", () => {
+    seedLeagueStep();
+    renderWizard();
+    expect(
+      screen.getByRole("heading", { name: "New League: National Hockey League" }),
+    ).toBeTruthy();
+    expect(screen.getByText("Needed by: Vancouver Canucks")).toBeTruthy();
+  });
+
+  it("keeps the decision buttons OUTSIDE the scroll box, pre-filled", () => {
+    seedLeagueStep({
+      wikidataId: "Q1215892",
+      abbreviation: "NHL",
+      yearsActive: { from: 1917 },
+    });
+    renderWizard();
+
+    // The dialog is portalled, so it is not under the render container.
+    const scrollBox = document.querySelector(".overflow-y-auto");
+    expect(scrollBox).toBeTruthy();
+
+    const primary = screen.getByRole("button", { name: "Add as New League" });
+    expect(scrollBox!.contains(primary)).toBe(false);
+    const skip = screen.getByRole("button", {
+      name: "Skip National Hockey League — this team has no league",
+    });
+    expect(scrollBox!.contains(skip)).toBe(false);
+
+    // …and the form itself IS in the body, which is what makes the check mean
+    // something: the two are on opposite sides of the fold by construction.
+    expect(scrollBox!.contains(screen.getByLabelText("New league name"))).toBe(true);
+  });
+
+  it("keeps them outside it with every field expanded, too", () => {
+    // The worst case for height: no prefill, so the disclosure opens itself and
+    // all seven fields are on screen at once.
+    seedLeagueStep();
+    renderWizard();
+    expect(screen.getByLabelText("New league aliases")).toBeTruthy();
+
+    const scrollBox = document.querySelector(".overflow-y-auto");
+    const primary = screen.getByRole("button", { name: "Add as New League" });
+    expect(scrollBox!.contains(primary)).toBe(false);
+  });
+
+  it("offers 'Skip — no league', not 'not a league'", () => {
+    // A skip here is an answer about the TEAM (it belongs to no league), not a
+    // judgement about the string — and the commit does not record it in
+    // `entityReviewSkips` as a suppressed name.
+    seedLeagueStep();
+    renderWizard();
+    expect(screen.getByText("Skip — no league")).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-254 — a career team whose name belongs to several eras
+//
+// `teams.resolveNames` answers `ambiguous` rather than picking: the 1972-1996
+// Winnipeg Jets and the 2011- ones are different franchises, and a name alone
+// cannot say which. The chip reports that state and resolves NOTHING on the
+// client — the commit prelude resolves each stint by its own `fromYear`, which
+// is the only year that can settle it, so a chip that guessed here would
+// disagree with what the commit actually writes.
+// ---------------------------------------------------------------------------
+
+describe("EntityReviewWizard — a career team with several eras", () => {
+  const jetsPlayer = () =>
+    makeRow({
+      kind: "player",
+      name: "Bobby Hull",
+      status: "ready",
+      enrichment: {
+        careerTeams: [{ name: "Winnipeg Jets", fromYear: 1972, toYear: 1980 }],
+      },
+    });
+
+  it("says which era? instead of painting one of the two as resolved", () => {
+    currentResolvedNames = [{ name: "Winnipeg Jets", ambiguous: true }];
+    currentRows = [jetsPlayer()];
+    renderWizard();
+
+    expect(screen.getByText("Winnipeg Jets · which era?")).toBeTruthy();
+  });
+
+  it("does not claim the team is held, and does not demand a decision", () => {
+    // Neither of the two states beside it: nothing is resolved, and nothing is
+    // blocked — the stint's own years will settle it at commit.
+    currentResolvedNames = [{ name: "Winnipeg Jets", ambiguous: true }];
+    currentRows = [jetsPlayer()];
+    renderWizard();
+
+    expect(screen.queryByText("needs a team decision")).toBeNull();
+    // The chip's own label still carries the years, which are what the commit
+    // resolves by — so the operator can see and fix them.
+    expect(screen.getByText("Winnipeg Jets (1972–1980)")).toBeTruthy();
+  });
+
+  it("leaves Confirm reachable — an ambiguous name is not an unanswered one", () => {
+    currentResolvedNames = [{ name: "Winnipeg Jets", ambiguous: true }];
+    currentRows = [jetsPlayer()];
+    renderWizard();
+
+    expect(
+      screen.queryByText(/still needs a team decision, or untick it/),
+    ).toBeNull();
+  });
+
+  it("a resolved name is unchanged — it still shows the team we hold", () => {
+    currentResolvedNames = [
+      {
+        name: "Winnipeg Jets",
+        existingTeamId: "t1",
+        existingName: "Winnipeg Jets",
+      },
+    ];
+    currentRows = [jetsPlayer()];
+    renderWizard();
+
+    // No era question, and no unanswered-decision line either: the ordinary
+    // resolved path, untouched.
+    expect(screen.queryByText("Winnipeg Jets · which era?")).toBeNull();
+    expect(screen.queryByText("needs a team decision")).toBeNull();
+    expect(screen.getByText("Winnipeg Jets (1972–1980)")).toBeTruthy();
   });
 });

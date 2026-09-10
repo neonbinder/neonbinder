@@ -64,6 +64,12 @@ vi.mock("../../convex/_generated/api", () => ({
       createByAdmin: "leagues.createByAdmin",
       nearMatches: "leagues.nearMatches",
     },
+    // NEO-254 — the Franchise field on the panel reads the list and creates
+    // through find-or-create, the same two calls the Franchise screen makes.
+    franchises: {
+      list: "franchises.list",
+      findOrCreate: "franchises.findOrCreate",
+    },
     selectorOptions: { getSelectorOptions: "selectorOptions.getSelectorOptions" },
     teamColorSources: { chooseColorSource: "teamColorSources.chooseColorSource" },
   },
@@ -71,6 +77,22 @@ vi.mock("../../convex/_generated/api", () => ({
 
 const SPORTS = [
   { _id: "sport-baseball", _creationTime: 0, level: "sport", value: "Baseball" },
+];
+
+/**
+ * NEO-254 — one franchise thread, so the panel's dropdown has something real to
+ * offer and the "already on a thread" branch has a value to render.
+ */
+const FRANCHISES = [
+  {
+    _id: "f-giants",
+    _creationTime: 0,
+    name: "Giants",
+    nameNormalized: "giants",
+    sportId: "sport-baseball",
+    lastUpdated: 0,
+    teamCount: 2,
+  },
 ];
 
 /**
@@ -82,6 +104,13 @@ const SPORTS = [
  * sides and corporate-named clubs legitimately have none, and for them full ==
  * short. Every branch of the row and the preview has a team here.
  */
+/**
+ * NEO-254 — the teams the mocked query answers with. Mutable so the two-eras
+ * case can hand back a pair of same-name rows without every other test paying
+ * for them.
+ */
+let currentTeams: Array<Record<string, unknown>>;
+
 const TEAMS = [
   {
     _id: "t-yankees",
@@ -100,6 +129,9 @@ const TEAMS = [
     location: "Seattle",
     nameNormalized: "mariners seattle",
     sportId: "sport-baseball",
+    // NEO-254: a DATED row, so the era's effect on the row and on the row's
+    // accessible name is exercised by the fixtures every other test uses.
+    yearsActive: { from: 1977 },
     colors: { primary: "#0c2c56" },
   },
   {
@@ -182,17 +214,27 @@ const LEAGUES = [
 
 const mockCreateByAdmin = vi.fn();
 const mockSaveTeamFields = vi.fn();
+const mockFindOrCreateFranchise = vi.fn();
 
 /** Near matches the dialog's form should offer. Set per test. */
 let nearMatches: unknown;
+/**
+ * The franchise list the mocked query returns. Mutable so the cap/filter case
+ * can hand back more than `FRANCHISE_PILL_CAP` rows without every other test
+ * paying for a 30-pill render. Reset in `beforeEach`.
+ */
+let franchiseRows: Array<Record<string, unknown>> = FRANCHISES;
 
 vi.mock("convex/react", () => ({
   useQuery: (ref: string, args: unknown) => {
     if (args === "skip") return undefined;
     if (ref === "teams.listForManagement") {
-      return { teams: TEAMS, truncated: false };
+      return { teams: currentTeams, truncated: false };
     }
     if (ref === "leagues.list") return LEAGUES;
+    if (ref === "franchises.list") {
+      return { franchises: franchiseRows, truncated: false };
+    }
     if (ref === "selectorOptions.getSelectorOptions") return SPORTS;
     if (ref === "leagues.nearMatches") return nearMatches;
     return undefined;
@@ -200,6 +242,7 @@ vi.mock("convex/react", () => ({
   useMutation: (ref: string) => {
     if (ref === "leagues.createByAdmin") return mockCreateByAdmin;
     if (ref === "teams.saveTeamFields") return mockSaveTeamFields;
+    if (ref === "franchises.findOrCreate") return mockFindOrCreateFranchise;
     return vi.fn();
   },
   useAction: () => vi.fn(),
@@ -236,6 +279,343 @@ beforeEach(() => {
     .mockReset()
     .mockResolvedValue({ id: "l-new", created: true });
   mockSaveTeamFields.mockReset().mockResolvedValue(null);
+  mockFindOrCreateFranchise
+    .mockReset()
+    .mockResolvedValue({ id: "f-new", created: true });
+  franchiseRows = FRANCHISES;
+  currentTeams = TEAMS;
+});
+
+/**
+ * NEO-254 — the save confirmation, WHERE the operator can see it.
+ *
+ * This block exists because CI caught what the unit tests did not. Two flows
+ * that had been green for months —
+ * `admin/team-management-edit-a-team.yaml` and
+ * `spine-label/player-team-colors-default-to-longest-tenure.yaml` — began
+ * failing on `".*Saved <name>.*" is visible` the moment the Franchise field
+ * landed. Nothing about saving had changed. What changed was the HEIGHT of the
+ * panel above the Save button: both flows scroll Save into view, tap it, and
+ * assert the confirmation, and the confirmation used to render at the very top
+ * of the screen. With the page pinned at its new maximum scroll, the line was
+ * rendered correctly and simply off-screen.
+ *
+ * `saveError` had already been moved into the panel for exactly this reason
+ * (its comment says the top of the page "is off-screen at the moment Save is
+ * pressed"); the success line had the same defect and nothing had tripped over
+ * it yet. So these tests assert not just that the text appears, but WHERE —
+ * inside the detail panel, after the Save button — because "it renders" was
+ * always true and is not the property that broke.
+ */
+describe("TeamManagement — saving a team confirms in the panel", () => {
+  const panel = () =>
+    screen.getByRole("button", { name: "Save" }).closest("div.rounded-lg")!;
+
+  it("mirrors the E2E flow: edit the name, Save, read the confirmation", async () => {
+    renderAt("/admin/teams?team=t-mariners");
+    fireEvent.change(screen.getByLabelText("Name"), {
+      target: { value: "Pilots" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    // The composed full name, which is what the flow's regex matches on.
+    expect(await screen.findByText("Saved Seattle Pilots.")).toBeTruthy();
+  });
+
+  it("renders the confirmation in the Save button's own row, not at the top of the page", () => {
+    // The regression itself, and the SAME ROW is the load-bearing half of it.
+    // The two flows scroll Save to the bottom of a page already at maximum
+    // scroll, so a line appended below the button would be under the fold for
+    // exactly the reason the screen-level one was. Sharing the row the button
+    // is in costs no height at all.
+    renderAt("/admin/teams?team=t-mariners");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    return waitFor(() => {
+      const line = screen.getByText("Saved Seattle Mariners.");
+      expect(panel().contains(line)).toBe(true);
+      expect(
+        screen.getByRole("button", { name: "Save" }).parentElement,
+      ).toBe(line.parentElement);
+      // Announced, because it lands after a round trip a screen-reader user
+      // has no other way to know finished.
+      expect(line.getAttribute("role")).toBe("status");
+    });
+  });
+
+  it("clears the confirmation when a different team is selected", async () => {
+    renderAt("/admin/teams?team=t-mariners");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText("Saved Seattle Mariners.");
+
+    fireEvent.click(row("New York Yankees"));
+    expect(screen.queryByText("Saved Seattle Mariners.")).toBeNull();
+  });
+
+  it("shows a refusal in the panel instead, and no confirmation", async () => {
+    mockSaveTeamFields.mockRejectedValue(
+      new ConvexError("Another team in this sport is already called X."),
+    );
+    renderAt("/admin/teams?team=t-mariners");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    const error = await screen.findByText(
+      "Another team in this sport is already called X.",
+    );
+    expect(panel().contains(error)).toBe(true);
+    expect(screen.queryByText(/^Saved /)).toBeNull();
+  });
+});
+
+/**
+ * NEO-254 — the Franchise field, a `role="radiogroup"` of pills.
+ *
+ * ## Why it is not a `<select>`, and why that is asserted here
+ *
+ * It was one, and that made it undrivable in E2E. Maestro's web driver gives
+ * every `<option>` synthetic tap bounds from its index inside its own parent,
+ * then resolves a tap by scanning `document.querySelectorAll('option')` and
+ * taking the first bounds match — so only the FIRST select on a page is ever
+ * reachable and a tap meant for a later one silently mutates the earlier. This
+ * panel already had two selects above Franchise. `SetSelector/NewTeamForm.tsx`
+ * documents the identical trap and uses the identical remedy.
+ *
+ * The first test below is the regression pin for that: it asserts the control
+ * is not a select at all, because "it works" and "a flow can drive it" are
+ * different facts and only the second one is at stake.
+ *
+ * ## The behavioural failure this whole block guards
+ *
+ * The one every re-seeded panel field has: forget to reset it on selection
+ * change and the operator saves the PREVIOUS team's franchise onto this one,
+ * silently, with the right-looking value on screen.
+ */
+describe("TeamManagement — the Franchise field", () => {
+  const group = () => document.getElementById("team-franchise")!;
+  const pills = () =>
+    Array.from(group().querySelectorAll<HTMLButtonElement>('[role="radio"]'));
+  const pillLabels = () => pills().map((b) => b.textContent);
+  const pill = (label: string) =>
+    pills().find((b) => b.textContent === label)!;
+  const checkedPill = () =>
+    pills().find((b) => b.getAttribute("aria-checked") === "true");
+  const startFranchise = () =>
+    screen.getByRole("button", { name: "+ Start a new franchise…" });
+
+  it("is a radio group, not a select — a select here is undrivable in E2E", () => {
+    renderAt("/admin/teams?team=t-sf-giants");
+    expect(group().getAttribute("role")).toBe("radiogroup");
+    expect(group().tagName).not.toBe("SELECT");
+    expect(group().querySelector("select")).toBeNull();
+    // Named by the visible "Franchise" label rather than an aria-label, so the
+    // two cannot drift apart.
+    expect(
+      document.getElementById(group().getAttribute("aria-labelledby")!)
+        ?.textContent,
+    ).toBe("Franchise");
+  });
+
+  it("offers every franchise in the sport, plus none", () => {
+    renderAt("/admin/teams?team=t-sf-giants");
+    // "Start a new franchise" is NOT one of these — it is a command, and a
+    // command inside a radiogroup made two radios report checked at once.
+    expect(pillLabels()).toEqual(["No franchise", "Giants"]);
+    // Nothing picked yet, so "No franchise" is the answer AND the Tab stop.
+    expect(checkedPill()?.textContent).toBe("No franchise");
+    expect(pill("No franchise").tabIndex).toBe(0);
+    expect(pill("Giants").tabIndex).toBe(-1);
+  });
+
+  it("sends the picked franchise on save", async () => {
+    renderAt("/admin/teams?team=t-sf-giants");
+    fireEvent.click(pill("Giants"));
+    expect(checkedPill()?.textContent).toBe("Giants");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(mockSaveTeamFields).toHaveBeenCalled());
+    expect(mockSaveTeamFields.mock.calls[0][0]).toMatchObject({
+      id: "t-sf-giants",
+      franchiseId: "f-giants",
+    });
+  });
+
+  it("sends null when the team is taken off its thread", async () => {
+    // `null` is the clear, and it is the same value the franchise view's
+    // "Remove" sends. Omitting the field would leave the link in place.
+    renderAt("/admin/teams?team=t-sf-giants");
+    fireEvent.click(pill("Giants"));
+    fireEvent.click(pill("No franchise"));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(mockSaveTeamFields).toHaveBeenCalled());
+    expect(mockSaveTeamFields.mock.calls[0][0]).toMatchObject({
+      franchiseId: null,
+    });
+  });
+
+  it("moves between pills with the arrow keys, as one Tab stop", () => {
+    // The promise `role="radiogroup"` makes. Before the pills were radios,
+    // every option was its own Tab stop and the arrows did nothing.
+    renderAt("/admin/teams?team=t-sf-giants");
+    fireEvent.keyDown(group(), { key: "ArrowRight" });
+    expect(checkedPill()?.textContent).toBe("Giants");
+    expect(pill("Giants").tabIndex).toBe(0);
+    expect(pill("No franchise").tabIndex).toBe(-1);
+
+    // Wraps, like a native radio group.
+    fireEvent.keyDown(group(), { key: "ArrowLeft" });
+    expect(checkedPill()?.textContent).toBe("No franchise");
+  });
+
+  it("never reports two checked radios at once", () => {
+    // The defect that put the command pill outside the group: with it inside,
+    // picking a franchise and then opening the name box left BOTH checked, and
+    // a radiogroup that reports two selections is a broken contract for anyone
+    // reading it through assistive tech — and invisible to everyone else.
+    renderAt("/admin/teams?team=t-sf-giants");
+    const checkedCount = () =>
+      pills().filter((b) => b.getAttribute("aria-checked") === "true").length;
+
+    expect(checkedCount()).toBe(1);
+    fireEvent.click(pill("Giants"));
+    expect(checkedCount()).toBe(1);
+    fireEvent.click(startFranchise());
+    expect(checkedCount()).toBe(1);
+    expect(checkedPill()?.textContent).toBe("Giants");
+  });
+
+  it("the start-a-franchise control is a disclosure beside the group, not a radio", () => {
+    renderAt("/admin/teams?team=t-sf-giants");
+    const trigger = startFranchise();
+    expect(trigger.getAttribute("role")).toBeNull();
+    expect(group().contains(trigger)).toBe(false);
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+
+    fireEvent.click(trigger);
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+    // …and it names the region it opened.
+    expect(document.getElementById(trigger.getAttribute("aria-controls")!)).toBeTruthy();
+  });
+
+  it("starts a franchise from the panel and selects it without saving the team", async () => {
+    renderAt("/admin/teams?team=t-sf-giants");
+    fireEvent.click(startFranchise());
+    fireEvent.change(screen.getByLabelText("New franchise name"), {
+      target: { value: "Giants" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+
+    await waitFor(() =>
+      expect(mockFindOrCreateFranchise).toHaveBeenCalledWith({
+        name: "Giants",
+        sportId: "sport-baseball",
+      }),
+    );
+    // Creating a thread and putting this team on it are two decisions.
+    expect(mockSaveTeamFields).not.toHaveBeenCalled();
+    // The new row is offered immediately, rather than the group losing its
+    // answer until `franchises.list` catches up.
+    await waitFor(() => expect(checkedPill()?.textContent).toBe("Giants"));
+  });
+
+  it("backs out of the name box on Escape without changing the answer", () => {
+    renderAt("/admin/teams?team=t-sf-giants");
+    fireEvent.click(pill("Giants"));
+    fireEvent.click(startFranchise());
+    fireEvent.keyDown(screen.getByLabelText("New franchise name"), {
+      key: "Escape",
+    });
+
+    expect(screen.queryByLabelText("New franchise name")).toBeNull();
+    // The draft's franchise never moved — the control is a command, not a value.
+    expect(checkedPill()?.textContent).toBe("Giants");
+    // Focus goes back to the trigger, not to `<body>`: closing unmounts the
+    // input that had it.
+    expect(document.activeElement).toBe(startFranchise());
+  });
+
+  it("re-seeds the field when a different team is selected", () => {
+    renderAt("/admin/teams?team=t-sf-giants");
+    fireEvent.click(pill("Giants"));
+    expect(checkedPill()?.textContent).toBe("Giants");
+
+    fireEvent.click(row("Seattle Mariners"));
+    expect(checkedPill()?.textContent).toBe("No franchise");
+  });
+
+  it("shows no filter box while the list is short", () => {
+    renderAt("/admin/teams?team=t-sf-giants");
+    expect(screen.queryByLabelText("Filter franchises")).toBeNull();
+  });
+});
+
+/**
+ * NEO-254 — the bound on the pill group.
+ *
+ * The League group next door bounds itself with a scroll box, which works
+ * because a sport holds tens of leagues. The preload is about to mint one
+ * franchise per thread across five sports, and a hundred-pill scroll box with
+ * no way to aim at one is not a control. Past the cap the group grows a filter
+ * and says how many it is hiding.
+ */
+describe("TeamManagement — the Franchise group past its cap", () => {
+  const group = () => document.getElementById("team-franchise")!;
+  const pillLabels = () =>
+    Array.from(group().querySelectorAll('[role="radio"]')).map(
+      (b) => b.textContent,
+    );
+
+  const many = Array.from({ length: 30 }, (_, i) => ({
+    _id: `f-${i}`,
+    _creationTime: 0,
+    name: `Franchise ${String(i).padStart(2, "0")}`,
+    nameNormalized: `franchise ${i}`,
+    sportId: "sport-baseball",
+    lastUpdated: 0,
+    teamCount: 0,
+  }));
+
+  it("caps the pills, offers a filter, and says how many are hidden", () => {
+    franchiseRows = many;
+    renderAt("/admin/teams?team=t-sf-giants");
+
+    // 24 franchises + "No franchise". The disclosure is not a radio.
+    expect(pillLabels()).toHaveLength(25);
+    expect(screen.getByLabelText("Filter franchises")).toBeTruthy();
+    expect(screen.getByText("6 more — keep typing to narrow it down.")).toBeTruthy();
+  });
+
+  it("narrows to what was typed", () => {
+    franchiseRows = many;
+    renderAt("/admin/teams?team=t-sf-giants");
+
+    fireEvent.change(screen.getByLabelText("Filter franchises"), {
+      target: { value: "Franchise 07" },
+    });
+    expect(pillLabels()).toEqual(["No franchise", "Franchise 07"]);
+  });
+
+  it("keeps the picked franchise visible even when the filter excludes it", () => {
+    // A radio group whose checked option is not in the DOM announces "nothing
+    // selected" and leaves the roving Tab stop with nowhere to sit.
+    franchiseRows = many;
+    renderAt("/admin/teams?team=t-sf-giants");
+
+    const target = Array.from(
+      group().querySelectorAll<HTMLButtonElement>('[role="radio"]'),
+    ).find((b) => b.textContent === "Franchise 03")!;
+    fireEvent.click(target);
+
+    fireEvent.change(screen.getByLabelText("Filter franchises"), {
+      target: { value: "Franchise 21" },
+    });
+    expect(pillLabels()).toContain("Franchise 03");
+    expect(
+      Array.from(group().querySelectorAll('[role="radio"]')).find(
+        (b) => b.getAttribute("aria-checked") === "true",
+      )?.textContent,
+    ).toBe("Franchise 03");
+  });
 });
 
 describe("TeamManagement — the ?team deep link", () => {
@@ -633,18 +1013,23 @@ describe("TeamManagement — the master row", () => {
     expect(yankees.textContent).toContain("MLB");
   });
 
-  it("carries the FULL name as its accessible name, exactly", () => {
+  it("carries the FULL name — and the era — as its accessible name, exactly", () => {
     // The handle every `.maestro` flow taps this row by: maestro-web builds
-    // `resource-id = node.id || node.ariaLabel`. Appending a state word here —
-    // "needs colors", a league — would break every one of those selectors
-    // silently, so this asserts the whole attribute rather than a substring.
+    // `resource-id = node.id || node.ariaLabel`. Appending STATE here — "needs
+    // colors", a league — would break every one of those selectors silently, so
+    // this asserts the whole attribute rather than a substring.
+    //
+    // NEO-254 added the era, and the distinction is exactly that: an era is not
+    // state, it is half of which row this is. Two "Winnipeg Jets" with one
+    // accessible name are two identical handles for two different franchises.
+    // An undated row is unchanged, which is what makes the change safe.
     renderAt("/admin/teams");
 
     expect(row("New York Yankees").getAttribute("aria-label")).toBe(
       "New York Yankees",
     );
     expect(row("Seattle Mariners").getAttribute("aria-label")).toBe(
-      "Seattle Mariners",
+      "Seattle Mariners · 1977–present",
     );
   });
 
@@ -722,7 +1107,9 @@ describe("TeamManagement — the order of the master list", () => {
       // the location is there to do.
       "New York Giants",
       "San Francisco Giants",
-      "Seattle Mariners",
+      // NEO-254: the era rides in the accessible name now — see the block
+      // below. The ORDER, which is what this test is about, is unchanged.
+      "Seattle Mariners · 1977–present",
       "San Diego State Aztecs",
       "New York Yankees",
     ]);
@@ -938,5 +1325,79 @@ describe("TeamManagement — a name that is already taken", () => {
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toBe("Could not save this team. Try again.");
     expect(alert.textContent).not.toContain("kaboom");
+  });
+});
+
+/**
+ * NEO-254 — the era is part of a row's IDENTITY, so it is part of the row's
+ * accessible name.
+ *
+ * A sport can hold two "Winnipeg Jets". Two rows with one accessible name are
+ * two identical handles for two different franchises: Maestro builds
+ * `resource-id = node.id || node.ariaLabel` and taps whichever comes first, and
+ * a screen-reader operator cannot tell them apart at all.
+ *
+ * It has to be the LABEL and not the description: `aria-describedby` is not
+ * part of what Maestro resolves, so no amount of description could make the
+ * handle unique. The compensating promise is that an UNDATED row's name is
+ * unchanged, which is what keeps the existing flows working.
+ */
+describe("TeamManagement — a row's era", () => {
+  it("appends the era to a dated row's accessible name", () => {
+    renderAt("/admin/teams");
+    expect(
+      screen.getByRole("button", { name: "Seattle Mariners · 1977–present" }),
+    ).toBeTruthy();
+  });
+
+  it("leaves an UNDATED row's accessible name byte-identical", () => {
+    // The reason the change is safe to make at all — every `.maestro` flow taps
+    // undated rows, and none of them moves.
+    renderAt("/admin/teams");
+    expect(
+      screen.getByRole("button", { name: "New York Yankees" }),
+    ).toBeTruthy();
+  });
+
+  it("shows the era on the row, in tabular figures", () => {
+    renderAt("/admin/teams");
+    const era = screen.getByText("1977–present");
+    expect(era.className).toContain("tabular-nums");
+  });
+
+  it("orders two same-name rows oldest era first", () => {
+    // Two rows can now share a nickname AND a location — the two Winnipeg Jets
+    // do — and without the era as a sort key they land adjacent in whatever
+    // order the query returned, which is arbitrary and unstable between
+    // renders. A lineage reads forwards.
+    currentTeams = [
+      {
+        _id: "t-jets-new",
+        _creationTime: 0,
+        name: "Jets",
+        location: "Winnipeg",
+        nameNormalized: "jets winnipeg",
+        sportId: "sport-baseball",
+        yearsActive: { from: 2011 },
+      },
+      {
+        _id: "t-jets-old",
+        _creationTime: 0,
+        name: "Jets",
+        location: "Winnipeg",
+        nameNormalized: "jets winnipeg",
+        sportId: "sport-baseball",
+        yearsActive: { from: 1972, to: 1996 },
+      },
+    ];
+    renderAt("/admin/teams");
+    const labels = screen
+      .getAllByRole("button")
+      .map((b) => b.getAttribute("aria-label"))
+      .filter((l): l is string => !!l && l.startsWith("Winnipeg Jets"));
+    expect(labels).toEqual([
+      "Winnipeg Jets · 1972–1996",
+      "Winnipeg Jets · 2011–present",
+    ]);
   });
 });

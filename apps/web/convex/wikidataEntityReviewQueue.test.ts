@@ -38,6 +38,7 @@ import { Id } from "./_generated/dataModel";
 import {
   lookupPlayerEnrichment,
   lookupTeamEnrichment,
+  membershipIsOutsidePlayerSport,
 } from "./adapters/wikidata";
 // NEO-236: the ESPN team list is memoised per league path for the life of the
 // module, and the knownQid cases below stub a different body for "baseball/mlb".
@@ -77,6 +78,12 @@ type CareerTeamFixture = {
   // a full-precision P580 ("1982-07-19T00:00:00Z"). Wins over fromYear/toYear.
   startRaw?: string;
   endRaw?: string;
+  // NEO-254: the team's OWN sport, its `wdt:P641`, bound as `?teamSport`.
+  // Absent means the team has no P641 statement (the column is OPTIONAL).
+  // `teamSportQids` is the multi-valued form: a team with several P641s
+  // arrives as one row per sport, exactly as the real endpoint returns it.
+  teamSportQid?: string;
+  teamSportQids?: string[];
 };
 
 function makePlayerDetailBody(opts: {
@@ -126,11 +133,19 @@ function makePlayerDetailBody(opts: {
     else if (ct.fromYear !== undefined) base.start = literalBinding(`${ct.fromYear}-01-01T00:00:00Z`);
     if (ct.endRaw !== undefined) base.end = literalBinding(ct.endRaw);
     else if (ct.toYear !== undefined) base.end = literalBinding(`${ct.toYear}-01-01T00:00:00Z`);
-    if (awards.length === 0) {
-      rows.push(decorate(withMemberOf({ ...base })));
-    } else {
-      for (const award of awards) {
-        rows.push(decorate(withMemberOf({ ...base, award: uriBinding(award) })));
+    // NEO-254: membership × sport × award. `[undefined]` is the no-P641 case
+    // — one row, no `teamSport` column.
+    const teamSports: Array<string | undefined> =
+      ct.teamSportQids ?? (ct.teamSportQid !== undefined ? [ct.teamSportQid] : [undefined]);
+    for (const teamSport of teamSports) {
+      const withSport: Record<string, SparqlBindingFixture> = { ...base };
+      if (teamSport !== undefined) withSport.teamSport = uriBinding(teamSport);
+      if (awards.length === 0) {
+        rows.push(decorate(withMemberOf({ ...withSport })));
+      } else {
+        for (const award of awards) {
+          rows.push(decorate(withMemberOf({ ...withSport, award: uriBinding(award) })));
+        }
       }
     }
   }
@@ -735,6 +750,250 @@ describe("lookupPlayerEnrichment: career-team strategies (NEO-235)", () => {
 
     const result = await lookupPlayerEnrichment("Someone", BASEBALL_SPORT);
     expect(result!.undatedCareerTeams).toEqual(["San Diego State Aztecs baseball"]);
+  });
+});
+
+// ===========================================================================
+// NEO-254 — a P54 on a team of ANOTHER sport is not a career team.
+//
+// Gwynn's second membership is San Diego State Aztecs MEN'S BASKETBALL. Before
+// this fix it became a Baseball-sport team, and its P118 a Baseball-sport
+// league "NCAA Division I men's basketball" (Q94861615). The detail query now
+// binds each team's own `wdt:P641`, and a membership is dropped when that
+// sport is present AND is not the player's. Absence on either side filters
+// nothing — an unknown sport is not evidence.
+// ===========================================================================
+
+/** Baseball Q5369; basketball Q5372 — the real QIDs, as `wdt:P641` binds them. */
+const BASKETBALL_QID = "Q5372";
+
+describe("lookupPlayerEnrichment: memberships outside the player's sport (NEO-254)", () => {
+  /** Captures every JSON log line so the skip breadcrumb can be asserted. */
+  function captureLogs(): { lines: string[]; restore: () => void } {
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      lines.push(String(args[0]));
+    });
+    return { lines, restore: () => spy.mockRestore() };
+  }
+  const parsed = (lines: string[], msg: string) =>
+    lines
+      .map((line) => {
+        try {
+          return JSON.parse(line) as Record<string, unknown>;
+        } catch {
+          return null;
+        }
+      })
+      .filter((entry) => entry?.msg === msg);
+
+  test("the detail query binds the team's own sport, OPTIONAL, without touching the label service", async () => {
+    let detailQuery = "";
+    vi.stubGlobal(
+      "fetch",
+      (async (url: string | URL) => {
+        const decoded = decodeURIComponent(String(url));
+        if (decoded.includes("p:P54")) detailQuery = decoded;
+        return makePlayerFetchStub({ qid: "Q1000", detail: {} })(url);
+      }) as unknown as typeof fetch,
+    );
+
+    await lookupPlayerEnrichment("Some Player", BASEBALL_SPORT);
+
+    expect(detailQuery).toContain("?teamSport");
+    expect(detailQuery).toContain("OPTIONAL { ?team wdt:P641 ?teamSport . }");
+    expect(detailQuery).toContain('wikibase:language "en,mul"');
+  });
+
+  test("a DATED membership on a team of a different sport is skipped — the Gwynn basketball shape", async () => {
+    const logs = captureLogs();
+    try {
+      vi.stubGlobal(
+        "fetch",
+        makePlayerFetchStub({
+          qid: "Q1145222",
+          detail: {
+            careerTeams: [
+              {
+                teamQid: "Q721134",
+                teamLabel: "San Diego Padres",
+                startRaw: "1982-07-19T00:00:00Z",
+                endRaw: "2001-01-01T00:00:00Z",
+                teamSportQid: "Q5369",
+              },
+              {
+                teamQid: "Q7413724",
+                teamLabel: "San Diego State Aztecs men's basketball",
+                fromYear: 1977,
+                toYear: 1981,
+                teamSportQid: BASKETBALL_QID,
+              },
+            ],
+          },
+        }),
+      );
+
+      const result = await lookupPlayerEnrichment("Tony Gwynn", BASEBALL_SPORT);
+
+      expect(result!.careerTeams).toEqual([
+        { name: "San Diego Padres", fromYear: 1982, toYear: 2001, wikidataId: "Q721134" },
+      ]);
+      expect(result!.undatedCareerTeams).toBeUndefined();
+      // One breadcrumb per skipped membership, naming the team and BOTH sports.
+      expect(parsed(logs.lines, "wikidata_player_team_membership_skipped_other_sport")).toEqual([
+        {
+          msg: "wikidata_player_team_membership_skipped_other_sport",
+          name: "Tony Gwynn",
+          team: "San Diego State Aztecs men's basketball",
+          teamWdId: "Q7413724",
+          teamSportQid: BASKETBALL_QID,
+          playerSportQid: "Q5369",
+        },
+      ]);
+    } finally {
+      logs.restore();
+    }
+  });
+
+  test("an UNDATED membership on a team of a different sport is kept out of undatedCareerTeams too", async () => {
+    // The wizard's "Also on Wikidata, no years yet" list comes off the same
+    // query, and offering a basketball program there is the same bug.
+    vi.stubGlobal(
+      "fetch",
+      makePlayerFetchStub({
+        qid: "Q1000",
+        detail: {
+          careerTeams: [
+            { teamQid: "Q16969667", teamLabel: "San Diego State Aztecs baseball", teamSportQid: "Q5369" },
+            { teamQid: "Q7413724", teamLabel: "San Diego State Aztecs men's basketball", teamSportQid: BASKETBALL_QID },
+          ],
+        },
+      }),
+    );
+
+    const result = await lookupPlayerEnrichment("Someone", BASEBALL_SPORT);
+    expect(result!.careerTeams).toEqual([]);
+    expect(result!.undatedCareerTeams).toEqual(["San Diego State Aztecs baseball"]);
+  });
+
+  test("a membership whose team has NO sport binding is kept — unknown is not evidence", async () => {
+    const logs = captureLogs();
+    try {
+      vi.stubGlobal(
+        "fetch",
+        makePlayerFetchStub({
+          qid: "Q1000",
+          detail: {
+            careerTeams: [
+              { teamQid: "Q127636", teamLabel: "Unannotated Club", fromYear: 1990, toYear: 1992 },
+              { teamQid: "Q127637", teamLabel: "Unannotated Undated Club" },
+            ],
+          },
+        }),
+      );
+
+      const result = await lookupPlayerEnrichment("Someone", BASEBALL_SPORT);
+      expect(result!.careerTeams).toEqual([
+        { name: "Unannotated Club", fromYear: 1990, toYear: 1992, wikidataId: "Q127636" },
+      ]);
+      expect(result!.undatedCareerTeams).toEqual(["Unannotated Undated Club"]);
+      expect(parsed(logs.lines, "wikidata_player_team_membership_skipped_other_sport")).toEqual([]);
+    } finally {
+      logs.restore();
+    }
+  });
+
+  test("a membership whose team sport MATCHES the player's is kept", async () => {
+    vi.stubGlobal(
+      "fetch",
+      makePlayerFetchStub({
+        qid: "Q1000",
+        detail: {
+          careerTeams: [
+            { teamQid: "Q721134", teamLabel: "San Diego Padres", fromYear: 1982, toYear: 2001, teamSportQid: "Q5369" },
+          ],
+        },
+      }),
+    );
+
+    const result = await lookupPlayerEnrichment("Someone", BASEBALL_SPORT);
+    expect(result!.careerTeams).toEqual([
+      { name: "San Diego Padres", fromYear: 1982, toYear: 2001, wikidataId: "Q721134" },
+    ]);
+  });
+
+  test("a multi-sport team is kept when ANY of its P641 values is the player's sport, whichever row arrives first", async () => {
+    const logs = captureLogs();
+    try {
+      vi.stubGlobal(
+        "fetch",
+        makePlayerFetchStub({
+          qid: "Q1000",
+          detail: {
+            careerTeams: [
+              {
+                teamQid: "Q999001",
+                teamLabel: "Two-Sport Athletic Program",
+                fromYear: 1977,
+                toYear: 1981,
+                // Basketball row FIRST — the order that would wrongly drop it
+                // if the decision were made on the first row seen.
+                teamSportQids: [BASKETBALL_QID, "Q5369"],
+              },
+            ],
+            // Awards multiply the rows further; still one stint, no log.
+            awardQids: ["Q120649", "Q1366948"],
+          },
+        }),
+      );
+
+      const result = await lookupPlayerEnrichment("Someone", BASEBALL_SPORT);
+      expect(result!.careerTeams).toEqual([
+        { name: "Two-Sport Athletic Program", fromYear: 1977, toYear: 1981, wikidataId: "Q999001" },
+      ]);
+      expect(parsed(logs.lines, "wikidata_player_team_membership_skipped_other_sport")).toEqual([]);
+    } finally {
+      logs.restore();
+    }
+  });
+
+  test("a skipped membership repeated across cross-product rows is logged ONCE", async () => {
+    const logs = captureLogs();
+    try {
+      vi.stubGlobal(
+        "fetch",
+        makePlayerFetchStub({
+          qid: "Q1000",
+          detail: {
+            careerTeams: [
+              { teamQid: "Q7413724", teamLabel: "San Diego State Aztecs men's basketball", fromYear: 1977, toYear: 1981, teamSportQid: BASKETBALL_QID },
+            ],
+            awardQids: ["Q120649", "Q1366948", "Q3405246"],
+          },
+        }),
+      );
+
+      const result = await lookupPlayerEnrichment("Someone", BASEBALL_SPORT);
+      expect(result!.careerTeams).toEqual([]);
+      expect(parsed(logs.lines, "wikidata_player_team_membership_skipped_other_sport")).toHaveLength(1);
+    } finally {
+      logs.restore();
+    }
+  });
+
+  test("when the player's sport has no sportQid, nothing is filtered", () => {
+    // Not reachable end-to-end: `findPlayerQid` refuses to run without the
+    // sport QID, so `lookupPlayerEnrichment` answers null before the detail
+    // query exists (pinned above, "returns null for a sport with no
+    // sportConfig.wikidata mapping"). The predicate is what must hold if that
+    // guard is ever relaxed — an absent comparison side must never become
+    // "drop everything".
+    expect(membershipIsOutsidePlayerSport(BASKETBALL_QID, undefined)).toBe(false);
+    expect(membershipIsOutsidePlayerSport(BASKETBALL_QID, "not-a-qid")).toBe(false);
+    // The other three cases, stated on the predicate for completeness.
+    expect(membershipIsOutsidePlayerSport(undefined, "Q5369")).toBe(false);
+    expect(membershipIsOutsidePlayerSport("Q5369", "Q5369")).toBe(false);
+    expect(membershipIsOutsidePlayerSport(BASKETBALL_QID, "Q5369")).toBe(true);
   });
 });
 
@@ -1482,5 +1741,91 @@ describe("lookupTeamEnrichment: knownQid (NEO-236)", () => {
     const row = await t.run(async (ctx) => ctx.db.get(rowId));
     expect(row!.enrichment?.wikidataId).toBe("Q1421");
     expect(kinds).toEqual(["search", "detail"]);
+  });
+  // ── NEO-254 — a league label that is really a QID ─────────────────────────
+  //
+  // Jason, preview test on California Golden Seals (Q849315): the New Team step
+  // showed `League: Q1215892` and offered a pill `Create Q1215892`.
+  //
+  // Q1215892 IS the National Hockey League. It has no `en` label at all — its
+  // name lives in the `mul` (multilingual) label, where Wikidata has been
+  // migrating language-independent names since 2024 — and `wikibase:label` does
+  // not fall back across languages unless the list says so, so it handed back
+  // the bare QID as the label. Two fixes, and both are asserted: the query now
+  // asks for `en,mul`, and any label that still comes back QID-shaped is
+  // treated as no label at all.
+
+  test("the detail query asks the label service for en,mul, not just en", async () => {
+    // The root fix. Without it the NHL — and every other entity mid-migration —
+    // has no label to return.
+    const queries: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      makeTeamFetchStub({
+        searchQid: null,
+        detailLeague: "National Hockey League",
+        onSparql: (_kind, decoded) => queries.push(decoded),
+      }),
+    );
+
+    await lookupTeamEnrichment("California Golden Seals", BASEBALL, "Q849315");
+
+    expect(queries).toHaveLength(1);
+    expect(queries[0]).toContain('bd:serviceParam wikibase:language "en,mul".');
+  });
+
+  test("a leagueLabel that is a bare QID yields NO league", async () => {
+    // The second line of defence, for an entity with no label in en OR mul.
+    // `undefined`, not the QID: every consumer's "no value" branch then does
+    // the right thing, and the wizard shows its existing-league pills and
+    // "No league" rather than offering to create a league named "Q1215892".
+    vi.stubGlobal(
+      "fetch",
+      makeTeamFetchStub({ searchQid: null, detailLeague: "Q1215892" }),
+    );
+
+    const result = await lookupTeamEnrichment(
+      "California Golden Seals",
+      BASEBALL,
+      "Q849315",
+    );
+
+    expect(result).not.toBeNull();
+    expect(result!.wikidataId).toBe("Q849315");
+    expect(result!.league).toBeUndefined();
+    // Everything else on the row still lands — one unusable label must not
+    // cost the operator the whole lookup.
+    expect(result!.yearsActive).toEqual({ from: 2009, to: undefined });
+  });
+
+  test("a real league label still passes through untouched", async () => {
+    vi.stubGlobal(
+      "fetch",
+      makeTeamFetchStub({
+        searchQid: null,
+        detailLeague: "National Hockey League",
+      }),
+    );
+
+    const result = await lookupTeamEnrichment(
+      "California Golden Seals",
+      BASEBALL,
+      "Q849315",
+    );
+
+    expect(result!.league).toBe("National Hockey League");
+  });
+
+  test("a label that merely STARTS with a Q is not a QID", async () => {
+    // The guard is anchored at both ends (`lib/players/wikidata-id.ts`), so a
+    // real name is never mistaken for an id.
+    vi.stubGlobal(
+      "fetch",
+      makeTeamFetchStub({ searchQid: null, detailLeague: "Quebec Major Junior" }),
+    );
+
+    const result = await lookupTeamEnrichment("Quebec Remparts", BASEBALL, "Q849315");
+
+    expect(result!.league).toBe("Quebec Major Junior");
   });
 });

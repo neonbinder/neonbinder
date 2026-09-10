@@ -61,11 +61,27 @@ tags:
       notVisible:
         id: "Skip .* not a person"
     commands:
+      # NEO-254 — ONE guard, on the step's primary BUTTON, covering team AND
+      # league steps. The wizard now stages a `New League:` step immediately
+      # ahead of the first team that needs that league, so a guard that knows
+      # only `New Team:` misses it, taps nothing, and this loop spins its whole
+      # `times` budget before the wait below fails. And a MISSING
+      # `when: visible` is not free: it waits out the full visibility timeout
+      # (~6.6s measured), where a matching one costs ~2.3s — so a second guard
+      # for leagues would be the expensive way to fix it. One guard on a
+      # selector that is present whenever there is work is the cheap way.
+      #
+      # `(Team|League)` excludes Player deliberately: this loop exits ON a
+      # player row, and tapping `Add as New Player` would both break that and
+      # risk minting a duplicate of an ambiguous same-name row. Anchored so it
+      # cannot reach the demoted `Add as New {kind} anyway` link.
       - runFlow:
           when:
-            visible: "New Team: .*"
+            visible:
+              id: "^Add as New (Team|League)$"
           commands:
-            - tapOn: "Add as New Team"
+            - tapOn:
+                id: "^Add as New (Team|League)$"
 - extendedWaitUntil:
     visible:
       id: "Skip .* not a person"
@@ -101,11 +117,27 @@ tags:
       notVisible:
         id: "Skip .* not a person"
     commands:
+      # NEO-254 — ONE guard, on the step's primary BUTTON, covering team AND
+      # league steps. The wizard now stages a `New League:` step immediately
+      # ahead of the first team that needs that league, so a guard that knows
+      # only `New Team:` misses it, taps nothing, and this loop spins its whole
+      # `times` budget before the wait below fails. And a MISSING
+      # `when: visible` is not free: it waits out the full visibility timeout
+      # (~6.6s measured), where a matching one costs ~2.3s — so a second guard
+      # for leagues would be the expensive way to fix it. One guard on a
+      # selector that is present whenever there is work is the cheap way.
+      #
+      # `(Team|League)` excludes Player deliberately: this loop exits ON a
+      # player row, and tapping `Add as New Player` would both break that and
+      # risk minting a duplicate of an ambiguous same-name row. Anchored so it
+      # cannot reach the demoted `Add as New {kind} anyway` link.
       - runFlow:
           when:
-            visible: "New Team: .*"
+            visible:
+              id: "^Add as New (Team|League)$"
           commands:
-            - tapOn: "Add as New Team"
+            - tapOn:
+                id: "^Add as New (Team|League)$"
 - extendedWaitUntil:
     visible:
       id: "Skip .* not a person"

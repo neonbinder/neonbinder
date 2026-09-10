@@ -1,0 +1,367 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/admin/players&worker=${WORKER_INDEX || "0"}
+name: "Player Management — a birth year is bounded, shows on the row, and is what lets a repeated name become a genuinely second player"
+tags:
+  - regression
+  - admin
+---
+# R1 — ONE FEATURE (NEO-254): the **birth year** on `/admin/players`. It is the
+# field that tells two people with one name apart, and on this form it is also
+# the MECHANISM by which the second of them gets created. This flow drives the
+# whole of that: the field's bounds, the year showing up on the master row, and
+# the three-way adopt / fork decision the add form makes.
+#
+# `players.createByAdmin` → `adoptOrForkOnCreate`:
+#   * no birth year, one row on file          → ADOPT ("already exists")
+#   * a birth year no row on file carries     → FORK  ("Added <name>.")
+#   * a birth year exactly one row carries    → ADOPT
+# `players.findOrCreate` (the pickers) deliberately does NOT fork — one match
+# there is an answer, because a picker's job is to LINK, not to create.
+#
+# R2 — HARD ASSERTIONS, none satisfiable by an inert page:
+#     (a) an out-of-bounds year is REFUSED client-side: the field says what it
+#         wants and the create button is inert — the form is still open, still
+#         holding the typed name, and no "Added …" was ever said;
+#     (b) a valid year lets that same create through — "Added <name>." is said
+#         only for an INSERTED row (an adopted one says "already exists");
+#     (c) the year is stored: after a server-side search re-reads the row from
+#         the database, the master row prints "b. 1960";
+#     (d) repeating the name DEMOTES creation — the primary becomes
+#         "Open <name>" and creation moves behind "Create anyway". That control
+#         exists only when an exact match came back, so waiting for it also
+#         proves the first row persisted;
+#     (e) "Create anyway" with NO year ADOPTS: the page says the player already
+#         exists and the list still reads "1 matches";
+#     (f) "Create anyway" with a year nobody carries FORKS: "Added <name>." and
+#         the list grows to "2 matches" holding BOTH "b. 1960" and "b. 1975" —
+#         which is the state the review wizard's "Same name, different people"
+#         panel exists for, and which nothing in the product could produce from
+#         the UI before this ticket.
+#
+# ── WHAT THIS FLOW DELIBERATELY DOES NOT PROVE ──────────────────────────────
+# The PlayerPicker's refusal. Once two rows share the name, a picker's
+# "+ Create" (`players.findOrCreate`) throws
+# "2 players are already filed under <name>. Pick the right one instead of
+# adding another." into the picker's own role="alert" and adds no chip. It is
+# NOT asserted here because every PlayerPicker in the product (CardDetailPanel,
+# CardChecklist's quick-add, UnreviewedNameFixer) is mounted inside
+# `/admin/set-builder` behind a full Sport→Year→Manufacturer→Set→Variant drill.
+# Reaching one read-only would mean this flow creating and OWNING a per-worker
+# set + variant — rows it would then have to register in SET-REGISTRY.md —
+# which is state left behind, a second feature on a second screen (R1), and a
+# set-builder fixture bolted onto the one admin flow that today leans on no
+# fixture at all. The refusal is covered where it is cheap:
+# `PlayerPicker.test.tsx` and `convex/playersAmbiguity.test.ts`.
+#
+# R3 — DEDUP: `player-management-add-and-career-history.yaml` owns hand-adding a
+#   player and its career history; it never types a birth year, never repeats a
+#   name and never touches the near-match hierarchy. Nothing else in the suite
+#   goes near `/admin/players`.
+#
+# R4 — the entry URL is the whole setup. No in-body login, no credential step.
+#
+# R5 — every wait is Maestro's 7s default except the cold sign-in (45s). No
+#   marketplace is touched, so nothing here earns a long timeout.
+#
+# R7 / R7a — no set, checklist, card or variant is touched, so this flow owns no
+#   SET-REGISTRY.md entry. It DOES create TWO globally-shared `players` rows and
+#   there is no delete-player mutation anywhere in the product, so they are
+#   permanent — the same footprint the sibling admin flow already carries, one
+#   row larger. They are made harmless by the name: "Samename<attempt token>" is
+#   unique per worker AND per attempt, so no two runners or retries can collide,
+#   and nothing else in the suite or the product will ever search for it.
+#
+#   ⚠️ THE NAME MUST BE A SINGLE TOKEN. `players.search` is a Convex SEARCH
+#   index and matches on TOKENS: a hyphenated "Samename-w3-a1-23945" tokenizes
+#   into four terms, so it would answer to any other flow's "Samename-…" row and
+#   the exact-match hierarchy below could resolve against somebody else's
+#   player. Stripping the hyphens out of ATTEMPT_ID makes it one term nothing
+#   else can share.
+#
+# R8 — EVERYTHING on this form is below the fold on the 1024x629 headless
+#   viewport, and that is the whole geometry story of this flow (CI run
+#   34071657961 failed on it): the birth-year box ends at y=625, so its helper
+#   line — which is where the bounds refusal is SAID — and the button row under
+#   it are both off-screen, and maestro's hierarchy is viewport-clipped, so an
+#   `assertVisible` cannot see them however long it waits. Every one of those
+#   targets is therefore reached by a `scrollUntilVisible`, and the scroll is
+#   left to be its own assertion (R6).
+#
+#   None of those scrolls centers, and that is R8's own stated exception rather
+#   than a shortcut: the add form is the LAST thing on the page, so its button
+#   row is locked to the bottom and centring can never settle — the same run
+#   logged six futile swipes against an already-100%-visible button, ~10s of
+#   scrolling that moved nothing (R10). Where a target sits ABOVE the current
+#   position the scroll says `direction: UP`, because the default is DOWN and a
+#   downward scroll can never find it.
+#
+# R10 — no conditional branches at all, so there is no poll on a normally-absent
+#   element and no path to the end that skips the feature.
+
+- launchApp
+
+# Wait for the COUNTER, not the "Player Management" heading: the heading paints
+# while the list is still loading and the filter box exists during loading, so
+# the heading is actively misleading. The counter renders when the query
+# resolves.
+- extendedWaitUntil:
+    visible: ".*of .* players.*"
+    timeout: 45000
+
+# ⚠️ READ `ATTEMPT_ID`, NOT `output.ATTEMPT_ID` — both runners inject it with
+# `-e` on EVERY attempt (run-e2e-smoke.sh and run-e2e-queue.sh), which Maestro
+# exposes as the binding, so there is no un-injected path to guard against. The
+# hyphen strip is explained in the R7 note above. Single-quoted because the
+# expression contains double quotes.
+- evalScript: '${output.TOKEN = String(ATTEMPT_ID).split("-").join("")}'
+
+# ============================================================
+# STEP 1 — EMPTY THE LIST, THEN PICK THE SPORT
+#
+# Not decoration. Every player row prints its sport beside the name, so with
+# rows on screen "Baseball" is on the page many times over and the sport picker
+# could not be identified by what it says. And the sport MUST be chosen with the
+# add form CLOSED: Maestro reaches a native picker's options by their index
+# within their own parent and then resolves that index against the FIRST
+# <select> in the document, so a choice made while the form's own picker
+# (`new-player-sport`) is mounted would land in the list's (`sport-filter`)
+# instead. With the form closed the list's picker is the only one there. The add
+# form then opens with this sport already selected (`defaultSportId={sportId}`).
+# ============================================================
+
+- tapOn: "Filter players"
+- inputText: "zzzznotaplayer"
+- assertVisible: "No players match that filter."
+- assertVisible: "0 matches"
+
+- tapOn: "All sports"
+- tapOn: "Baseball"
+# maestro reads a <select> as its SELECTED option's text, so this is a direct
+# read of what the picker now holds. The list is empty, so nothing else on the
+# page can be answering here.
+- assertVisible: "Baseball"
+
+# ============================================================
+# STEP 2 — R2(a): A YEAR OUTSIDE THE BOUNDS IS REFUSED, AND SAYS SO
+#
+# 1700 is below `MIN_BIRTH_YEAR` (1850, lib/players/career-years.ts). The upper
+# bound is `maxBirthYear()` — THIS year, not next, because nobody is born in a
+# year that has not started — so it is matched as a pattern rather than written
+# down: a literal would fail on 1 January.
+#
+# The label is escaped: Maestro treats a matcher as a regex, and a bare
+# "(optional)" would be a capture group matching the word without its brackets.
+# ============================================================
+
+- tapOn: "Add player"
+- assertVisible: "Add a player"
+
+- tapOn: "New player name"
+- inputText: "Samename${output.TOKEN}"
+
+- tapOn: "Birth year \\(optional\\)"
+- inputText: "1700"
+# ⚠️ SCROLLED TO, NOT MERELY ASSERTED. The refusal renders in the field's own
+# helper line, directly under the box — and on the 1024x629 headless viewport
+# that line sits at y≈635, off the bottom. `assertVisible` never scrolls, and
+# maestro's hierarchy is viewport-CLIPPED, so the line was simply absent from
+# it: CI run 34071657961 failed here with "Assertion is false", and its
+# hierarchy dump ends at the birth-year input at [345,583][798,625]. The refusal
+# was rendering correctly the whole time. The scroll IS the assertion (R6).
+- scrollUntilVisible:
+    element:
+      text: "Use a whole year between 1850 and 2[0-9]{3}\\."
+
+# The create button is inert while the year is out of bounds, so this tap must
+# do nothing. Three independent readings of "nothing happened" follow it: the
+# form is still open (the scroll back up to its heading), the name is still
+# sitting in the field a successful create would have taken away with it, and
+# the page never said it added anything.
+#
+# NO `centerElement`, here or on any of the button scrolls below — R8's own
+# exception, measured rather than assumed. The add form is the last thing on
+# this page, so its button row is LOCKED to the page bottom and centring can
+# never settle: CI run 34071657961 logged six consecutive swipes with an
+# identical button already at 100% visibility and bounds unchanged, ~10s of
+# scrolling that moved nothing. Stopping at "fully visible" is both the correct
+# target and the cheap one, and `tapOn` re-reads the settled hierarchy for its
+# coordinates anyway.
+- scrollUntilVisible:
+    element:
+      id: "Create player Samename${output.TOKEN}"
+- tapOn:
+    id: "Create player Samename${output.TOKEN}"
+# Back UP to the top of the form to read the two "nothing happened" facts. The
+# tap above left the page at the bottom, and the heading and the name box are
+# both above the fold from there. The scroll is the first of the two assertions.
+- scrollUntilVisible:
+    element:
+      text: "Add a player"
+    direction: UP
+# Matched as bare text, NOT as `id: "New player name"`. `primitives/Input`
+# deliberately emits no `id` and no `aria-label` (its header says why: an
+# auto-generated id would clobber the `resource-id` every `tapOn id:` selector
+# in the suite depends on), and maestro-web builds `resource-id` from
+# `node.id || node.ariaLabel` — the ATTRIBUTE, not the computed accessible name
+# — so this field has no resource-id at all. What it does have is its VALUE:
+# maestro reads an <input> as `node.value`, so the run's own name is the field,
+# exactly and uniquely. Nothing else on screen carries it — the near-match panel
+# renders nothing while there are no matches, and the button's visible text is
+# "Create player".
+- assertVisible: "Samename${output.TOKEN}"
+- assertNotVisible:
+    text: ".*Added Samename${output.TOKEN}.*"
+
+# ============================================================
+# STEP 3 — R2(b): CORRECT THE YEAR AND THE SAME CREATE GOES THROUGH
+#
+# The field is re-tapped before erasing because focus is not where the previous
+# step left it — a disabled button never takes it. `eraseText: 6` clears the
+# four digits with headroom.
+#
+# The helper line flipping back to the explanatory copy is the other half of
+# STEP 2: it says the refusal was the FIELD's, and that it lifted.
+# ============================================================
+
+- tapOn: "Birth year \\(optional\\)"
+- eraseText: 6
+- inputText: "1960"
+# Same helper line, same place below the fold — so the same scroll-as-assertion.
+# The line flipping back to the explanatory copy is what says the refusal was
+# the FIELD's, and that it lifted.
+- scrollUntilVisible:
+    element:
+      text: "Tells this player apart from anyone else with the same name."
+
+- scrollUntilVisible:
+    element:
+      id: "Create player Samename${output.TOKEN}"
+- tapOn:
+    id: "Create player Samename${output.TOKEN}"
+
+# "Added <name>." is said ONLY for a row that was INSERTED — a create that
+# adopted an existing row says "That player already exists — opened it."
+# instead, which is exactly the string STEP 5 asserts. So this line is the
+# create, not the adopt.
+- extendedWaitUntil:
+    visible: ".*Added Samename${output.TOKEN}.*"
+
+# ============================================================
+# STEP 4 — R2(c): THE YEAR IS STORED, AND THE MASTER ROW PRINTS IT
+#
+# The filter box still holds "zzzznotaplayer" from STEP 1, so it is erased
+# rather than appended to. Past `SEARCH_MIN_CHARS` this screen switches to a
+# server SEARCH, so the row below is read back out of the database rather than
+# off the draft that was on screen a moment ago.
+#
+# Anchored `below:` the counter for the reason the sibling admin flow documents:
+# maestro reports an input's current value as its text, so the filter box itself
+# answers to this name. The counter renders between the box and the list, so
+# "below the counter" is a list row and only a list row.
+#
+# The filter is left holding this name for the rest of the flow — the search is
+# a live Convex query, so STEP 6's second row appears in it without retyping.
+# ============================================================
+
+- tapOn: "Filter players"
+- eraseText: 20
+- inputText: "Samename${output.TOKEN}"
+- extendedWaitUntil:
+    visible: "1 matches"
+- assertVisible:
+    text: ".*b. 1960.*"
+    below:
+      text: "1 matches"
+
+# ============================================================
+# STEP 5 — R2(d)+(e): THE SAME NAME AGAIN, WITH NO BIRTH YEAR → ADOPT
+#
+# The form is reopened and the identical name typed. `players.nearMatches` finds
+# the row this flow made, and the screen REACTS: the green button becomes
+# "Open <name>" and creation is demoted to a plain "Create anyway" link. Waiting
+# for that demoted control is an assertion in itself — it exists only when an
+# exact match came back (~300ms after typing stops), so it proves the row
+# persisted and that the hierarchy fired.
+#
+# Taking "Create anyway" with NO year offers the mutation no tiebreaker, so
+# `adoptOrForkOnCreate` adopts the single candidate. That is the guard half of
+# the feature: a repeated name does not become a second person by accident.
+# ============================================================
+
+- tapOn: "Add player"
+- tapOn: "New player name"
+- inputText: "Samename${output.TOKEN}"
+
+# ONE command, not a wait and then a scroll. A bare `extendedWaitUntil` here
+# would be asserting a control that lives in the same bottom-locked button row
+# as the one above — it can be present and still off the fold, which is exactly
+# how the refusal line failed this flow in CI run 34071657961.
+# `scrollUntilVisible` polls for it AND brings it on screen, and it still fails
+# loudly if the demoted control never appears — which is the assertion this step
+# is for: it exists only when an exact match came back.
+- scrollUntilVisible:
+    element:
+      id: "Create player Samename${output.TOKEN} anyway"
+- tapOn:
+    id: "Create player Samename${output.TOKEN} anyway"
+- extendedWaitUntil:
+    visible: "That player already exists — opened it."
+
+# Nothing was added. The list is still the one row, still carrying the year it
+# was created with — so the adopt neither inserted nor overwrote.
+- assertVisible: "1 matches"
+- assertVisible:
+    text: ".*b. 1960.*"
+    below:
+      text: "1 matches"
+
+# ============================================================
+# STEP 6 — R2(f): THE FEATURE — A YEAR NOBODY CARRIES FORKS A SECOND PERSON
+#
+# 1975 against a single row born 1960. `adoptOrForkOnCreate` reads that as the
+# operator asserting a different man — they have been shown the existing row and
+# pressed the button that says "anyway" — so it INSERTS rather than adopting.
+#
+# This is the only way in the product to reach two same-name players from the
+# UI, and therefore the only thing that makes the review wizard's "Same name,
+# different people" panel reachable at all outside the terminal-only preload.
+# ============================================================
+
+- tapOn: "Add player"
+- tapOn: "New player name"
+- inputText: "Samename${output.TOKEN}"
+- tapOn: "Birth year \\(optional\\)"
+- inputText: "1975"
+
+# ONE command, not a wait and then a scroll. A bare `extendedWaitUntil` here
+# would be asserting a control that lives in the same bottom-locked button row
+# as the one above — it can be present and still off the fold, which is exactly
+# how the refusal line failed this flow in CI run 34071657961.
+# `scrollUntilVisible` polls for it AND brings it on screen, and it still fails
+# loudly if the demoted control never appears — which is the assertion this step
+# is for: it exists only when an exact match came back.
+- scrollUntilVisible:
+    element:
+      id: "Create player Samename${output.TOKEN} anyway"
+- tapOn:
+    id: "Create player Samename${output.TOKEN} anyway"
+
+# "Added", not "already exists" — the same string STEP 3 earned and STEP 5 was
+# refused. One line, and it separates a fork from an adopt outright.
+- extendedWaitUntil:
+    visible: ".*Added Samename${output.TOKEN}.*"
+
+# THE LIST IS THE PROOF, not the message. The filter has held this name since
+# STEP 4 and the search behind it is a live Convex query, so the count moving
+# 1 → 2 is the database answering: two rows now share this name, and they are
+# told apart by the one field that can tell them apart.
+- extendedWaitUntil:
+    visible: "2 matches"
+- assertVisible:
+    text: ".*b. 1960.*"
+    below:
+      text: "2 matches"
+- assertVisible:
+    text: ".*b. 1975.*"
+    below:
+      text: "2 matches"

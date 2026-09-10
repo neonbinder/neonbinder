@@ -616,6 +616,40 @@ export default defineSchema({
     // team(s) printed on the card — independent of players[].teamYears,
     // which can drift in the offseason before sets are released.
     playerIds: v.optional(v.array(v.id("players"))),
+    /**
+     * ── NEO-254: which NAME this card printed for each player ────────────────
+     *
+     * Jason, 2026-09-08: a card has to record the name it actually carries. A
+     * 1986 card says "Doc Gooden" and a 1990 card says "Dwight Gooden"; both
+     * link to one player row, and until now the card kept no trace of which
+     * string it was printed with. That string is the card's own fact — the
+     * player's name is NB data that can be corrected, renamed or aliased at any
+     * time, and correcting it must not silently rewrite what a 1986 card says.
+     *
+     * `nameOnCard` is the raw string that was RESOLVED: the checklist's
+     * per-player name off BSC/SportLots, or the name the operator reviewed in
+     * the wizard. It is stored whether that string matched the player's primary
+     * name, one of their aliases, or nothing at all until a human linked it.
+     *
+     * ## The invariant
+     *
+     *     playerIds === playerLinks.map(l => l.playerId)   — same ids, SAME ORDER
+     *
+     * `playerIds` stays as the fast index: it is what `by_player` reads, what
+     * the sync diff compares, and what listing titles iterate. `playerLinks` is
+     * the same list with the printed name attached. Two copies of one list can
+     * disagree, so every writer builds both together and
+     * `cardChecklist.playerLinksPin.test.ts` greps for one written without the
+     * other.
+     *
+     * Optional because every row written before this field predates it; the
+     * backfill (`backfillPlayerLinks`) fills them in with the canonical name,
+     * which is the honest answer for a row whose printed name was never kept.
+     */
+    playerLinks: v.optional(v.array(v.object({
+      playerId: v.id("players"),
+      nameOnCard: v.string(),
+    }))),
     teamOnCardIds: v.optional(v.array(v.id("teams"))),
     // NEO-90: set once the BSC per-card team-enrichment queue has checked
     // this card's `platformData.bsc` detail endpoint for a team, regardless
@@ -906,6 +940,42 @@ export default defineSchema({
       toYear: v.optional(v.number()),
     }))),
     isHallOfFame: v.optional(v.boolean()),
+    /**
+     * ── NEO-254: the other names this player's cards carry ──────────────────
+     *
+     * Jason, 2026-09-08: "cards from different years read differently for one
+     * person." Ron Artest and Metta World Peace are one man; so are B.J. Upton
+     * and Melvin Upton Jr., Mike and Giancarlo Stanton, Fausto Carmona and
+     * Roberto Hernández, Chad Johnson and Chad Ochocinco, Lloyd Free and World
+     * B. Free, Lew Alcindor and Kareem Abdul-Jabbar. A checklist prints
+     * whichever name was current, so without this the 2010 card and the 2011
+     * card resolve to two rows and one player's inventory is split in half.
+     *
+     * Stored RAW, matched NORMALIZED — the same contract `leagues.aliases`
+     * (NEO-240) has, and deliberately the same shape so the two do not become
+     * two ideas. The operator's spelling is what an editor shows back; the
+     * key everything matches on is `normalizePlayerName`, so NEO-253's
+     * diacritic folding applies to an alias exactly as it does to a name
+     * ("Roberto Hernández" answers to "Roberto Hernandez").
+     *
+     * A row's own primary name is never also an alias: it is dropped on the
+     * way in, because an operator typing it has expressed a redundancy rather
+     * than an error and the row already answers to it.
+     *
+     * Bounded like every other array written from an upstream payload — see
+     * MAX_PLAYER_ALIASES in convex/players.ts.
+     *
+     * NOT the index. An alias lives inside an array, and Convex indexes fields
+     * rather than array members, so the lookup goes through the `playerAliases`
+     * side table below. This column is what an operator edits and what an
+     * editor renders; that table is how a card name finds this row.
+     */
+    aliases: v.optional(v.array(v.string())),
+    // NEO-254: the one fact that tells two players with the same name apart
+    // (Lahman alone has 750 first-plus-last collisions, and both Tony Gwynns
+    // are real). Written by the bulk preload from the source dataset; optional
+    // because every hand-created and Wikidata-enriched row predates it.
+    birthYear: v.optional(v.number()),
     externalIds: v.optional(v.object({
       wikidataId: v.optional(v.string()), // e.g. "Q123456"
     })),
@@ -1033,6 +1103,50 @@ export default defineSchema({
     .index("by_name_normalized_and_sport_id", ["nameNormalized", "sportId"])
     .index("by_sport_id", ["sportId"]),
 
+  /**
+   * NEO-254 — the continuous thread through a franchise's renames and moves.
+   *
+   * `teams` deliberately holds ONE ROW PER HISTORICAL NAME: "Houston Oilers",
+   * "Tennessee Oilers" and "Tennessee Titans" are three rows, because that is
+   * what a card says and what a stint should read as ("Oilers 1993-96", never
+   * "Titans 1993-96"). That is right for cards and useless for the question a
+   * collector actually asks — Jason, 2026-09-06: "building a collection of all
+   * Tennessee Titans and letting the user determine if that should also include
+   * Houston Oilers and Tennessee Oilers players."
+   *
+   * A franchise is the operator's answer to that question and nothing more: a
+   * NAME, a sport, and the set of team rows an operator has pointed at it
+   * (`teams.franchiseId`). It carries no years, no colours and no marketplace
+   * anything — every fact about a season still lives on the team row that
+   * played it.
+   *
+   * ## Entirely NB's own, in both directions
+   *
+   * No marketplace sends a franchise concept and none is derived from one. The
+   * linkage is an operator decision made on `/admin/franchises`, never inferred
+   * from a name (there is no rule that reads "Oilers" and guesses "Titans" —
+   * the Oilers/Titans thread and the Browns/Ravens split look identical from
+   * the outside, and only a human knows which is which).
+   *
+   * Optional on `teams` and always will be: a team with no franchise is a
+   * normal team, exactly as a team with no league is. Nothing user-facing may
+   * require one.
+   */
+  franchises: defineTable({
+    // The operator's own label for the thread — "Titans / Oilers", "Athletics",
+    // whatever reads right to them. Not required to equal any team's name.
+    name: v.string(),
+    // `normalizeTeamName`'s key (token-sorted, punctuation-stripped), so
+    // "Titans / Oilers" and "Oilers Titans" cannot become two rows.
+    nameNormalized: v.string(),
+    // Per-sport, for the same reason leagues are: "Cardinals" is a franchise in
+    // two sports and they are not the same thread.
+    sportId: v.id("selectorOptions"),
+    lastUpdated: v.number(),
+  })
+    .index("by_name_normalized_and_sport_id", ["nameNormalized", "sportId"])
+    .index("by_sport_id", ["sportId"]),
+
   // Teams — first-class entity. Modeled with location + yearsActive to support
   // defunct franchises (Expos → Nationals, SuperSonics, etc.) since vintage
   // sets reference teams that no longer exist.
@@ -1051,6 +1165,10 @@ export default defineSchema({
     // more, and reads prefer `leagueId`. Remove once prod shows zero rows
     // carrying it and no `leagueId`.
     league: v.optional(v.string()),
+    // NEO-254: which franchise thread this team row belongs to, if an operator
+    // has said. Optional and staying that way — see the `franchises` table for
+    // why nothing may require one, and why it is never inferred from a name.
+    franchiseId: v.optional(v.id("franchises")),
     // NEO-236: the place part of the franchise name — "San Diego" in "San
     // Diego Padres". Location, not city: wherever the team is FROM, so a bay
     // (Tampa Bay), a region (New England), a state (Wisconsin / Badgers) and a
@@ -1113,6 +1231,10 @@ export default defineSchema({
     // `by_sport_id` index above exists to avoid, and it gets worse as the
     // MiLB/defunct-franchise rows arrive.
     .index("by_league_id", ["leagueId"])
+    // NEO-254: the reverse of `teams.franchiseId`, for the franchise view's
+    // "every team on this thread" list — the same shape, and the same reason,
+    // as `by_league_id` above.
+    .index("by_franchise_id", ["franchiseId"])
     // NEO-212: mirrors players.search_name. The entity-review wizard's team
     // pickers (and the team editor's) were the same 500-row fetch + client-side
     // `.includes()` filter that NEO-147 removed from the player typeahead —
@@ -1163,11 +1285,64 @@ export default defineSchema({
   // field existed — a dropped Cancel tap (one worker's commit collapsed
   // another's wizard footer mid-click) and a wrong-item-shown wizard (one
   // worker's unknown name preempted another's in shared queue order).
+  /**
+   * ── NEO-254: the alias index `players.aliases` cannot be ────────────────
+   *
+   * An alias lives inside an array on the player row, and Convex indexes
+   * FIELDS, not array members. `leagues` gets away with a scan because a sport
+   * holds a couple of dozen leagues; `players` holds hundreds of thousands,
+   * and the alias leg sits on the hot path — the commit prelude resolves one
+   * name per card, and the review gate one per unknown. A scan there would
+   * turn a per-name index read into a per-name table read, which is precisely
+   * the shape NEO-189 diagnosed and removed.
+   *
+   * So the aliases are ALSO stored flat, one row per (player, alias), and the
+   * lookup is one indexed read exactly like the primary-name lookup beside it.
+   *
+   * ## The cost, and how it is contained
+   *
+   * Two copies of one fact can disagree. Every write goes through
+   * `syncPlayerAliases` in convex/players.ts — the single writer — and
+   * `players.aliasIndexPin.test.ts` greps for anything else inserting into
+   * this table, the same guard `teams.dedupPin.test.ts` puts on the team
+   * dedup key. `aliasNormalized` is `normalizePlayerName(alias)`, so NEO-253's
+   * diacritic folding reaches an alias the same way it reaches a name.
+   *
+   * `sportId` is denormalised onto the row so the lookup is one compound index
+   * read rather than a read plus a `db.get` per hit to check the sport.
+   */
+  playerAliases: defineTable({
+    playerId: v.id("players"),
+    sportId: v.id("selectorOptions"),
+    /** `normalizePlayerName(alias)` — never the raw spelling. */
+    aliasNormalized: v.string(),
+  })
+    .index("by_alias_normalized_and_sport_id", ["aliasNormalized", "sportId"])
+    // Every row for one player, for the rewrite `syncPlayerAliases` performs
+    // and for the cleanup a deleted player would need.
+    .index("by_player_id", ["playerId"]),
+
   entityReviewQueue: defineTable({
     selectorOptionId: v.id("selectorOptions"),
     batchId: v.string(),
     createdByUserId: v.string(),
-    kind: v.union(v.literal("player"), v.literal("team")),
+    /**
+     * NEO-254 — `"league"` joins the two original kinds, one level up.
+     *
+     * Jason, preview test 2026-09-06: on a fresh deployment every hockey team
+     * row offered `Create National Hockey League`, because nothing is written
+     * until commit and so each team re-asked the same question; and a league
+     * born that way arrived carrying only a name — no abbreviation, level,
+     * years or aliases. "The proper fix is pulling league up before team as
+     * we'll need to fill in the rest of the year information too … I'm ok
+     * putting extra steps in the user's face."
+     *
+     * So a league the batch will have to create becomes a row of its own,
+     * walked BEFORE the team that needs it, exactly as NEO-236 made a career
+     * team a row walked before the player that needs it. One question, asked
+     * once, answered with the whole record.
+     */
+    kind: v.union(v.literal("player"), v.literal("team"), v.literal("league")),
     name: v.string(),
     // NEO-236 — `normalizeTeamName`/`normalizePlayerName` of `name`, stored so
     // the batch can be asked "do you already hold this name?" through an INDEX
@@ -1227,15 +1402,40 @@ export default defineSchema({
      * That asymmetry is what lets the wizard rebuild exactly the hand-typed
      * chips and no others.
      */
-    source: v.optional(v.object({
-      kind: v.literal("careerTeamOf"),
-      playerRowId: v.id("entityReviewQueue"),
-      wikidataId: v.optional(v.string()),
-      manualStint: v.optional(v.object({
-        fromYear: v.number(),
-        toYear: v.optional(v.number()),
-      })),
-    })),
+    source: v.optional(v.union(
+      v.object({
+        kind: v.literal("careerTeamOf"),
+        playerRowId: v.id("entityReviewQueue"),
+        wikidataId: v.optional(v.string()),
+        // NEO-248 — the years the operator typed, travelling with the step
+        // they caused. See the note above.
+        manualStint: v.optional(v.object({
+          fromYear: v.number(),
+          toYear: v.optional(v.number()),
+        })),
+      }),
+      /**
+       * NEO-254 — the same relationship one level up: a league row staged for
+       * the TEAM row that needs it.
+       *
+       * `teamRowId` is what lets the step say "Needed by: Vancouver Canucks"
+       * and what lets the team's own step tell a league that is answered from
+       * one still waiting. `wikidataId` is the P118 statement's league QID
+       * when Wikidata gave one — linkage, so the staged row's lookup reads the
+       * right record rather than guessing from a label, exactly as
+       * `careerTeamOf` does.
+       *
+       * No `manualStint`: a league is not a stint. NEO-248's field answers
+       * "which years did the operator type for this career team", and a league
+       * step has no years of its own — its dates live on the league record the
+       * step collects.
+       */
+      v.object({
+        kind: v.literal("leagueOf"),
+        teamRowId: v.id("entityReviewQueue"),
+        wikidataId: v.optional(v.string()),
+      }),
+    )),
     status: v.union(
       v.literal("pending"),
       v.literal("ready"),
@@ -1288,8 +1488,60 @@ export default defineSchema({
       // Title of the English Wikipedia article (enwiki sitelink), so the wizard
       // can link out to the full article for a human to confirm against.
       enwikiTitle: v.optional(v.string()),
+      /**
+       * NEO-254, player-only — the NB player rows that already carry this
+       * row's normalized name in this sport.
+       *
+       * Present only when there is more than one. ONE match is not a choice:
+       * the commit prelude adopts it silently, exactly as it always has, and
+       * the name never reaches the wizard at all. Two or more IS a choice, and
+       * it is a choice only a human can make — the bulk preload (decision 3)
+       * makes same-name players ordinary rather than exotic, and `.first()` on
+       * the dedupe index would have quietly attached every 1990 "Bob Allen"
+       * card to whichever row Convex returned first.
+       *
+       * Written by `applyLookupResult` from the `players` table, not by a
+       * marketplace or by Wikidata: this is NB's own data, offered back to the
+       * operator as the FIRST thing they see. `careerSummary` is rendered
+       * server-side ("Padres 1982-2001") so the wizard does not have to join
+       * `teamYears` to `teams` per candidate to draw a one-line identity.
+       */
+      existingCandidates: v.optional(v.array(v.object({
+        playerId: v.id("players"),
+        name: v.string(),
+        birthYear: v.optional(v.number()),
+        careerSummary: v.string(),
+        /**
+         * NEO-254 — this candidate was on a roster in the SET'S year.
+         *
+         * The card-year narrowing (`players.narrowSameNamePlayersByCardYear`)
+         * resolves most same-name collisions on its own; a row that still
+         * reaches the wizard is one it could not, so the operator is choosing
+         * between people who were genuinely contemporaries — or between one
+         * whose stints we hold and one whose we do not.
+         *
+         * Absent means "we cannot say", NEVER "no": a candidate with no stints
+         * on file, and every candidate on a row whose set has no year, is
+         * unflagged. It is a hint on the evidence, not a verdict, which is why
+         * it never removes a candidate from the list.
+         */
+        activeInSetYear: v.optional(v.boolean()),
+        /**
+         * NEO-254 — the alias that answered, when the card's name is not this
+         * player's primary one.
+         *
+         * Without it the panel lists "Metta World Peace" under a card that
+         * says "Ron Artest" and the operator has to guess why. Absent when the
+         * primary name matched, which is the norm.
+         */
+        matchedAlias: v.optional(v.string()),
+      }))),
       // team-only
       league: v.optional(v.string()),
+      // NEO-254, team-only — the league's OWN QID, off the same P118 statement
+      // as `league` above. Linkage: it is what the staged New League step's
+      // lookup reads instead of searching EntitySearch for a label.
+      leagueWikidataId: v.optional(v.string()),
       // NEO-236: the place part of the team's name. Location, not city —
       // see `teams.location`.
       location: v.optional(v.string()),
@@ -1302,6 +1554,13 @@ export default defineSchema({
         secondary: v.optional(v.string()),
       })),
       espnId: v.optional(v.string()),
+      // ── NEO-254: league-only, from `adapters/wikidata.lookupLeague` ───────
+      //
+      // Pre-fill for the New League step, never a value written anywhere on
+      // its own. `yearsActive` and `wikidataId` above are shared with the team
+      // shape — a league's years are the same shape as a team's — so only the
+      // two fields with no team counterpart are new here.
+      abbreviation: v.optional(v.string()),
     })),
     decision: v.optional(v.union(
       v.object({
@@ -1346,6 +1605,23 @@ export default defineSchema({
         create: v.optional(v.object({
           location: v.optional(v.string()),
           name: v.string(),
+          /**
+           * NEO-254 — the era the operator typed on the New Team step.
+           *
+           * A sport can hold two teams under one name: the 1972-1996 Winnipeg
+           * Jets and the 2011- Jets. The era is the only thing that tells them
+           * apart, so a create decision that dropped it would let the prelude
+           * adopt whichever row the NAME already found — and every 1985 card in
+           * the set would bind to a franchise that did not exist yet.
+           *
+           * Optional and staying so: most teams are created with nobody
+           * knowing or caring, and an undated row is a normal row. It matters
+           * exactly when the name is already taken.
+           */
+          yearsActive: v.optional(v.object({
+            from: v.number(),
+            to: v.optional(v.number()),
+          })),
           // ── NEO-236: the league the operator picked on the New Team step ──
           //
           // The bug this closes: a team created out of a PLAYER's career list
@@ -1385,11 +1661,55 @@ export default defineSchema({
           location: v.optional(v.string()),
           name: v.string(),
         }))),
+        /**
+         * ── NEO-254: the whole league record, league-kind only ──────────────
+         *
+         * Jason, preview test 2026-09-06: a league created from the New Team
+         * step's `Create <name>` pill "lands with only a name — no
+         * abbreviation, level, years, aliases". This is the payload that fixes
+         * that: the New League step asks for everything League Management
+         * edits, once, and the prelude writes it through `findOrCreateLeague`.
+         *
+         * `name` is the only required field — the rest are an invitation to
+         * complete the record while the operator is already here, pre-filled
+         * from `adapters/wikidata.lookupLeague`. An absent field is "not
+         * answered", and `findOrCreateLeague`'s gap-fill leaves an existing
+         * row's value alone rather than clearing it.
+         *
+         * Bounds mirror `convex/leagues.ts` exactly (name ≤120, abbreviation
+         * ≤16, ≤32 aliases of ≤64, years ≥1850 and `to >= from`) and are
+         * enforced in `recordDecision`, because `findOrCreateLeague` itself
+         * validates nothing — see the note there.
+         */
+        createLeague: v.optional(v.object({
+          name: v.string(),
+          abbreviation: v.optional(v.string()),
+          level: v.optional(v.union(
+            v.literal("major"), v.literal("minor"), v.literal("college"),
+            v.literal("international"), v.literal("independent"), v.literal("other"),
+          )),
+          yearsActive: v.optional(v.object({
+            from: v.number(),
+            to: v.optional(v.number()),
+          })),
+          aliases: v.optional(v.array(v.string())),
+          wikidataId: v.optional(v.string()),
+        })),
       }),
       v.object({
         action: v.literal("link"),
         linkedPlayerId: v.optional(v.id("players")),
         linkedTeamId: v.optional(v.id("teams")),
+        /**
+         * NEO-254, league-kind only — the existing league the operator picked
+         * on a New League step.
+         *
+         * Every team row that named the same league then uses THIS id rather
+         * than creating anything, which is the whole point of pulling the
+         * league up: the question is asked once for the batch, not once per
+         * team.
+         */
+        linkedLeagueId: v.optional(v.id("leagues")),
       }),
       // NEO-212: "this name is not a person / not a team". Carries no payload —
       // nothing is created, nothing is linked, and the card keeps the raw name
@@ -1423,6 +1743,11 @@ export default defineSchema({
     // from `applyLookupResult`, where a collect of the batch is the NEO-189
     // optimistic-concurrency storm.
     .index("by_source_player", ["source.playerRowId"])
+    // NEO-254 — the league twin, for the per-team staging cap. Same reason the
+    // player one exists: the cap has to be counted through an index rather than
+    // by collecting the batch, because staging runs inside `applyLookupResult`
+    // five-wide under the pool while a commit may be reading the same rows.
+    .index("by_source_team", ["source.teamRowId"])
     .index("by_batch_and_kind_and_name", [
       "selectorOptionId",
       "batchId",
