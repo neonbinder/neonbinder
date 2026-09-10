@@ -90,11 +90,11 @@ app bug never looks like that. Full write-up:
 | `npm run setup:e2e` | Install pinned Maestro + Java + Chrome for Testing (idempotent; safe to re-run) |
 | `npm run test:e2e:check` | Verify installed Maestro + Java + Chrome match the pins; print actionable next steps if not |
 | `npm run e2e:clean-chrome` | Kill Chrome/chromedriver processes a previous run left detached (never touches your real browser) |
-| `npm run test:e2e` | Run the full suite (smoke + regression) |
-| `npm run test:e2e:smoke` | Smoke tag only |
-| `npm run test:e2e:regression` | Regression tag only |
+| `npm run test:e2e` | **The full suite** — every flow, no tag filter (minus `util`/`wip`/`setup`) |
+| `npm run test:e2e -- setup` | The seed track only (`flows/setup.yaml`) — the one entry point that runs it |
+| `npm run test:e2e:smoke` | Smoke tag only — the fast subset |
 | `npm run test:e2e:pick -- <selector>` | Run just a piece of the suite (by name / list / regex / tag) — see below |
-| `npm run test:e2e:plan -- <selector>` | Dry-run: print exactly what `:pick` *would* run (incl. pulled-in prerequisites) and exit |
+| `npm run test:e2e:plan -- <selector>` | Dry-run: print exactly what `:pick` *would* run and exit |
 | `npm run test:e2e:like-ci` | Run with CI-equivalent conditions — `MAESTRO_PARALLELISM=3`, no tag filter, pin gate enforced before start |
 | `npm run test:e2e:single` | One-off invocation; see `package.json` for the wrapper |
 
@@ -110,7 +110,7 @@ prints the resolved schedule without launching Maestro.
 | Selector | Matches |
 | --- | --- |
 | *(empty)* | all flows (minus `util`/`wip`) — same as `test:e2e` |
-| `smoke` / `regression` / `tag:NAME` | flows carrying that tag (bare word ⇒ tag, unchanged) |
+| `smoke` / `tag:NAME` | flows carrying that tag (bare word ⇒ tag, unchanged) |
 | `name:set-attributes-edit` | flows whose **path** contains the substring |
 | `name:features,team-picker` | comma list of substrings, OR-matched |
 | `set-attributes-edit,team-picker` | bare comma list ⇒ name match |
@@ -119,31 +119,34 @@ prints the resolved schedule without launching Maestro.
 
 ```bash
 npm run test:e2e:plan -- name:set-attributes-edit   # preview the plan
-npm run test:e2e:pick -- name:set-attributes-edit   # run it (+ its cascade)
+npm run test:e2e:pick -- name:set-attributes-edit   # run it
 npm run test:e2e:pick -- /parallel-grouping/        # run all parallel-grouping flows
 ```
 
-**Prerequisite closure (default ON).** Most `set-selector` flows are tagged
-`requires:cards-loaded` (or `requires:setup-done`) and can't run standalone —
-they need the `setup → sets → cards` cascade to seed the DB first. `:pick`
-automatically pulls in the transitive `provides:` producers for whatever you
-select, so a single targeted flow still runs with its data seeded. Controls:
+**`:pick` runs exactly what you named — it does not seed for you.** A
+`set-selector` flow needs the DB seeded before it can run, so seed once, then
+run whatever you want as often as you want:
+
+```bash
+npm run test:e2e -- setup    # runs e2e-baseline.sh reset + flows/setup.yaml
+npm run test:e2e:pick -- name:<your-flow>
+```
+
+Only one env var affects what gets run:
 
 | Env var | Effect |
 | --- | --- |
-| `MAESTRO_MINIMAL_DEPS=1` | pull only **one** producer per required state (prefers the `cascade`-tagged one) — fastest correct run, e.g. `setup → sets-base → cards-base → target` |
-| `MAESTRO_NO_DEPS=1` | pull **no** prerequisites; treat `requires:` as already-satisfied (use only when the DB is already seeded from a prior run) |
 | `MAESTRO_SKIP_BOOTSTRAP=1` | skip the Phase 0 per-worker credential bootstrap (use only when worker creds are already seeded) |
 
 Typical fast local-iteration loop on one flow:
 
 ```bash
-# First run: seed everything, run the target (minimal cascade, single worker)
-MAESTRO_MINIMAL_DEPS=1 MAESTRO_PARALLELISM=1 \
-  npm run test:e2e:pick -- name:set-attributes-edit
+# Once: seed the deployment.
+npm run test:e2e -- setup
 
-# Re-runs while iterating: skip the cascade + bootstrap, just re-run the flow
-MAESTRO_NO_DEPS=1 MAESTRO_SKIP_BOOTSTRAP=1 MAESTRO_PARALLELISM=1 \
+# Then re-run the target as often as you like; skip the bootstrap after the
+# first pass, since the worker's credentials are already saved.
+MAESTRO_SKIP_BOOTSTRAP=1 MAESTRO_PARALLELISM=1 \
   npm run test:e2e:pick -- name:set-attributes-edit
 ```
 
@@ -151,10 +154,10 @@ MAESTRO_NO_DEPS=1 MAESTRO_SKIP_BOOTSTRAP=1 MAESTRO_PARALLELISM=1 \
 > tables**. Since NEO-214 that wipe is a scripted command
 > (`e2e-baseline.sh reset`, run by the smoke script's setup mode *before*
 > `setup.yaml`) rather than a button the flow clicks — the Admin Tools panel it
-> used to click is gone from `/admin/set-builder`. Nothing about the warning
-> changes: point `VITE_CONVEX_URL` at a **disposable preview** (your PR's Convex
-> preview), never shared `dev`. `MAESTRO_NO_DEPS=1` skips the setup track, so
-> re-run loops don't reset between attempts.
+> used to click is gone from `/admin/set-builder`. So point `VITE_CONVEX_URL` at
+> a **disposable preview** (your PR's Convex preview), never shared `dev`. Only
+> `test:e2e -- setup` resets; a `:pick` re-run never does, so iteration loops
+> keep the baseline you seeded.
 
 ## What's intentionally divergent (cross-platform coverage)
 
@@ -185,7 +188,7 @@ bug, not a flow bug:
 | Chrome build (local) | `.maestro/chrome-version` | `lib-e2e-chrome.sh` (hard gate in every local runner), `test:e2e:check` |
 | Worker parallelism | `MAESTRO_PARALLELISM=3` | CI workflow, `test:e2e:like-ci` |
 | Convex DB state at "setup-done" | scripted `e2e-baseline.sh reset`, then `setup.yaml` | `run-e2e-smoke.sh` setup mode |
-| Cascade dependency ordering | `requires:` / `provides:` tags | `run-e2e-smoke.sh` topo-sort + cascade-prerequisite check (NEO-23) |
+| Flow ordering | seed first, then anything | CI's NEO-49 work queue; locally, `test:e2e -- setup` then everything else |
 
 ## Troubleshooting: "passes locally, fails CI" (or vice versa)
 
@@ -195,11 +198,10 @@ two buckets.
 1. **Pin drift.** Run `npm run test:e2e:check`. If it complains, fix that
    first; reproducing CI on a drifted environment is impossible by
    construction.
-2. **Cascade flake.** A level-N flow failed (or SIGSEGV'd) and downstream
-   flows ran with stale state. Look at the JUnit report for any `FAIL`
-   marked `skipped: prerequisite "X" not satisfied` — those are flows that
-   were correctly skipped because a producer failed. The actual bug is in
-   the producer.
+2. **Missing baseline.** The flow needs seeded data that isn't there — locally
+   because `test:e2e -- setup` wasn't run (or was run against a different
+   deployment), in CI because the pre-matrix `seed` job failed. Check the seed
+   job / your own setup run before reading anything into the flow's failure.
 3. **JVM crash on macOS (Maestro 2.6 + OpenJDK 23).** Symptom:
    `hs_err_pid*.log` in cwd, flow stops mid-execution with no failure
    assertion. Fix: switch to Java 21 (`.java-version` and `.sdkmanrc`
@@ -319,11 +321,142 @@ credential setup or re-seed step: flows rely on the Phase-0 worker bootstrap.
 Public `home/*` flows enter signed out (`launchApp: { clearState: true }`);
 `util-*` sub-flows run inside a parent's session and enter directly.
 
-**R5 — Everything reacts within Maestro's 7 s default.** The only longer
+**R5 — Everything reacts fast, and every wait says so explicitly.**
+
+> **There is no 7 s default.** This rule was written believing there was, and
+> both numbers turned out wrong — decompiled from the pinned jars:
+> `ScrollUntilVisibleCommand.DEFAULT_TIMEOUT_IN_MILLIS` is **20000**, and
+> `Orchestra.lookupTimeoutMs` — what a bare `extendedWaitUntil` /
+> `assertVisible` gets — is **17000** (`optionalLookupTimeoutMs`, 7000, applies
+> only to `optional: true`). So omitting a timeout is not "taking the 7 s
+> default", it is taking the loosest setting available. **State the timeout.**
+> The bar is 7000 for anything in-app.
+
+The only longer
 waits: a step that directly drives a live BSC/SportLots round-trip on data
 that is not pre-synced, the setup track's cold sync, and the post-`launchApp`
 heading gate (see "Launching a flow" below). A slow non-marketplace response
 is a product finding to raise, never a timeout to inflate.
+
+**`flows/setup.yaml` is exempt as a class, and that is not a loophole.** R5
+already names "the setup track's cold sync" as a sanctioned exception, and the
+seed is the one flow that reseeds from empty — so every step in it runs the COLD
+path, behind a live marketplace round-trip, on data no earlier flow has warmed.
+It is a data-loading track, not a user-facing interaction, so the 7s bar does
+not apply to it and its timeouts stay at their measured cold-path values.
+
+NEO-260 learned this the hard way: the suite-wide 7000 sweep took the seed with
+it and the seed then failed at `.*Re-map Base.*` in CI runs 34394655674 and
+34400136389. The sweep had measured that step at "worst 0.5-4s" from green runs
+where the mapping had **already** landed, i.e. it measured the warm branch and
+applied the number to the cold one. **Measuring a step tells you nothing until
+you know which branch the measurement came from.** Every seed timeout is now
+back at its pre-sweep value.
+
+**But the timeout was not what failed that step, and the record should say so.**
+The first reading of run 34394655674 — that the tap on `Confirm Base Set`
+completed at 19:37:50 and the button "had still not flipped" fourteen seconds
+later — is wrong, and both failure hierarchy dumps disprove it. Each shows root
+bounds `[0,-680][1009,625]`, i.e. the page pinned at MAXIMUM SCROLL, with
+`Set attributes panel` as the first thing on screen at y=49 and its
+`Clear base set from Base` control present: the mapping had landed, the button
+read `Re-map Base`, and it was simply ABOVE the top of the viewport. The step
+scrolls DOWN, and `scrollUntilVisible` with `direction: DOWN` only ever travels
+away from an anchor that sits above the current position — so it burned all
+60s in 29 `ElementNotFound` retries on an element that was rendered the whole
+time. The seed's exemption and its 60000 stand; the *direction* was the bug, and
+that step now scrolls UP. See the next rule.
+
+**A `scrollUntilVisible` must never depend on the document bottoming out.** That
+seed step passed for months only because the page ran out of scroll before the
+anchor left the viewport — measured at y=4 in green run 34361627641, four pixels
+of slack that no flow states and nothing defends. NEO-260's 208px spacer gave
+every page exactly 208px more travel and the slack was gone. So: before you
+write a `direction:`, say where the PREVIOUS step leaves the page and where the
+anchor sits relative to it in DOM order — `components/modules/SetSelector.tsx`
+renders selector columns → base-mapping button → `MultiSourcePanel` →
+`SetAttributesPanel` → `CardChecklist`, and `EntityColumn` puts each column's
+`Add custom …` button below every row in it. An anchor above the current
+position takes `direction: UP`; it is not a style choice. A DOWN scroll toward
+an anchor above the page's position cannot fail *safely* either: it drives the
+page to the bottom and then accepts whatever is still on screen, after paying
+the full six-iteration give-up path on every run.
+
+**`scrollUntilVisible` is the trap: its own default is 20000, not 7000.**
+`ScrollUntilVisibleCommand.DEFAULT_TIMEOUT_IN_MILLIS` is the string `"20000"`
+in the pinned `maestro-orchestra-models.jar` — verified by decompiling it,
+not by reading the docs. So a scroll step with no `timeout:` is running at
+**twenty seconds**, the loosest setting in the file, not the 7 s default the
+rest of this rule describes. Every `scrollUntilVisible` therefore states
+`timeout: 7000` explicitly; omitting the key is a violation of R5, not a way
+of complying with it. Before NEO-260 most of the suite was getting 20 s by
+omission.
+
+**Anything above 7000 needs Jason's sign-off, recorded at the site.** Jason,
+2026-09-09: "our rule is the 10s default on any user facing interaction
+unless I've explicitly ok'd it. We need to be strict about that rule. That is
+what ensures our UI is actually usable not just functional." Asked which
+number was canonical he chose 7 s — R5's existing one. A longer ceiling is
+allowed only for the three exceptions above; the comment at the step names
+which one and why. Anything else that will not fit in 7 s is a bug report,
+not a bigger number.
+
+**A sign-off recorded AT THE SITE is the only sanctioned way for an in-app
+step to exceed 7000.** Not a number chosen because it passed, not one
+inherited by omission, and not a rule in this file: the step's own comment
+carries the date, that Jason approved it, the measurement that justifies the
+figure, and what would void it. Jason signed off the first such budgets on
+2026-09-09 (NEO-260) — twelve steps whose cost is page-length TRAVEL rather
+than UI response: a `scrollUntilVisible` walking a seven- or eight-screen
+marketing page pays the driver's fixed ~2.2 s per swipe + view-hierarchy read
+before the target is ever seen, never enters the centring give-up path, and
+waits on nothing the product could make faster. Read one of those comments
+(`home/easypost-setup.yaml`, `home/landing-smoke.yaml`) before writing a new
+one; each says that shortening the page brings the budget back to 7000 and
+that raising it further is a new decision, not a tuning knob. A step that is
+merely slow still does not qualify — that is the bug report.
+
+**Where a step really does wait on one of those exceptions, split it.** The
+wait and the scroll are different jobs and want different ceilings: put a long
+`extendedWaitUntil` GATE above, named for what it is waiting on, and leave the
+`scrollUntilVisible` under it at 7000 to do nothing but centre. The gate fails
+loudly on the thing that was actually slow, and the scroll goes on measuring
+the UI. Keep the long ceiling on the scroll itself only when the target can be
+scroll-clipped — `extendedWaitUntil: visible` never scrolls, so it cannot
+recover an element under the fold — and say so at the step.
+
+**7 s across the board on every centred scroll — there is no holding pen.**
+Jason, 2026-09-09, on the sites this audit had parked at 10000 pending his
+sign-off: *"lets make 7s across the board. I don't think there should be
+anything hitting a give up on a regular basis, if there is then its not
+really doing anything is it?"* That is the whole rule, and it is a statement
+about the product, not about a number. A centred scroll that fails to centre
+does not run slow — it runs a fixed give-up path and then accepts the element
+it could already see (R8 has the mechanism), so a step that reaches that path
+on every run has been paying for centring that never centres. Raising its
+ceiling buys nothing: the step still does not centre, the suite still pays
+for the attempt, and the UI is exactly as unusable as it was.
+
+So a centred scroll has exactly two honest states, and both are `timeout:
+7000`:
+
+1. **It centres.** Either it always did, or a product fix gave the document
+   the scroll headroom it was missing (R8 case 1). Name the dependency in the
+   comment at the step, so whoever touches the layout knows what rides on it.
+2. **It cannot centre, and centring buys nothing there.** Remove
+   `centerElement` (R8 case 2, with the measurement it demands). Uncentred,
+   the step settles in well under a second.
+
+There is no third state. An explicit 10000 "until the product fix lands" is
+not a compromise, it is the give-up path with a bigger allowance, and it is
+what this rule now forbids. If a centred step cannot be put into one of those
+two states, it is a bug report.
+
+**The measurement behind that.** Across the 83 give-up steps in green CI run
+34361627641 the minimum was 7.007 s and none finished under 7 s, with or
+without `waitToSettleTimeoutMs`. `timeout: 7000` is therefore a binary canary
+rather than a stopwatch: a centred step either centres or fails. That is the
+property that makes it worth having.
 
 **R6 — No redundant `assertVisible` after `scrollUntilVisible`.** The scroll
 already asserts the element; a trailing assert of the same element is dead
@@ -353,11 +486,103 @@ write to a real set is a finding to raise, not a licence.
 
 **R8 — `centerElement: true` on every scroll that precedes a tap.** The
 headless viewport is 1024×629; a target left at a viewport edge shifts out
-from under captured coordinates on re-render. Drop centering only for an
-element locked to the page bottom, with a comment citing this rule. There is
-no app footer and no "footer-steal zone"; the real occluders are the sticky
-binder header at the top and the `BinderTabs` rail on the right edge. A
-dropped tap is diagnosed, never attributed to a footer.
+from under captured coordinates on re-render. There is no app footer and no
+"footer-steal zone"; the real occluders are the sticky binder header at the
+top and the `BinderTabs` rail on the right edge. A dropped tap is diagnosed,
+never attributed to a footer. Centring is still the default and still the
+goal.
+
+**What centring costs when it works, and when it doesn't.** With
+`centerElement` on, `Orchestra.scrollUntilVisible` re-reads the view
+hierarchy up to six times (`Scrolling try count: 0`..`5`), swiping between
+reads, then gives up and accepts the element it can already see. The
+`timeout` is checked at the *bottom* of that loop, so a ceiling shorter than
+the give-up cost turns a graceful give-up into `No visible element found` on
+an element Maestro just logged at `Visibility Percent: 1.0`. A target that
+centres exits at try 0 or 1 and costs 0.5–2.9 s. A target that cannot centre
+costs the whole budget: measured across the 83 give-up steps in green CI run
+34361627641, minimum 7.007 s, median 7.19 s, maximum 9.48 s — and
+`waitToSettleTimeoutMs` made no difference, because the cost is five swipes
+at `scrollDuration=601` plus six hierarchy reads either way.
+
+**A centred step that runs long is a product finding, never a bigger
+ceiling.** There are exactly two legitimate remedies.
+
+1. **Make it centre.** A target parked at maximum scroll and still below the
+   band is missing scroll headroom: the document cannot scroll far enough.
+   That is the product's bug and the product's fix. `id: "Edit attributes"`
+   (the collapsed `SetAttributesPanel` summary bar) is the worked example —
+   the panel is the last thing on the page, maximum scroll left it at y=518
+   in the 625px viewport while the centre band ends at ~375, so every one of
+   those steps burned the full give-up budget on every run.
+
+   It was never a set-builder problem. Every page in the app bottomed out
+   with its primary action jammed against the fold, between y=469 and y=569
+   at rest, which is why the same signature showed up on the first
+   `EntityColumn`'s `+ Custom` (y=514), on an empty checklist's `Fetch from
+   Marketplaces` (y=497) and on a `Rename …` control (y=516-518). The fix is
+   one 208px spacer below every page in the signed-in shell
+   (`src/layouts/binder-layout.tsx`), sized from that window: it needs
+   `H >= 569 - 375 = 194` to lift the lowest-parking control into the band
+   and `H <= 469 - 250 = 219` not to push the highest one out the top. Read
+   the note on that component before changing it — overshooting fails
+   exactly as hard as undershooting, and a `vh` value re-creates NEO-255
+   (50vh is 313px here, one whole driver swipe). Do not add a second helping
+   in a page: it stacks. The flows then centre in one or two swipes, inside
+   R5's 7000, and every such step says in its comment that it depends on the
+   spacer.
+2. **Stop centring where centring cannot work.** If a swipe cannot move the
+   target *at all*, centring buys literally nothing and only spends the
+   budget. SHOW that before claiming it: `Element bounds` identical from
+   `Scrolling try count: 0` through `5` with no first-swipe movement, plus a
+   structural reason — the element sits outside the page's scroller, e.g. a
+   footer in a `fixed inset-0` dialog whose body is the only thing that
+   scrolls (`ReconciliationModal`, `ParallelGroupingModal`, `BaseSetPicker`,
+   `CardDetailPanel` and the `CardFeaturesEditor` inside it), or a page with
+   no scrollable overflow at all. Record the measurement in a comment citing
+   this rule. Uncentred, those steps settle in well under a second.
+   `multi-source-panel-opens-dialog.yaml`'s dialog-footer `Cancel` is the
+   original worked example (`y=529`, unmoved across five swipes).
+
+Frozen bounds alone do not prove case 2 — a target already at maximum scroll
+shows the same signature. If any other sample of the same element moves on
+the first swipe, it is case 1. So does a target inside a *second* scroller:
+maestro-web's only scroll is `window.scroll`, so an element in a nested
+`overflow` box (react-virtuoso's fixed-height list in `CardChecklist`, which
+has no `customScrollParent`) never moves because the driver asked its list to
+move — it moves, or does not, because the window did. That still makes it
+case 1: give the window headroom and the whole box travels with it. Case 2 is
+only for an element the window cannot move at all, which in practice means
+`position: fixed`.
+
+**The band Maestro will actually accept is wider than the ~312 midpoint
+suggests — measured, not assumed.** Across the 2,396 centred DOWN scrolls in
+four green CI runs (34304943765, 34349299679, 34361627641 and its rerun), the
+lowest give-up sat at an element *centre* of y=464, with clean accepts spread
+right across 130-432. So the working test for "will this centre" is the
+element's centre against ~460, not against the ~250-375 window a strict
+reading of "centre band" implies. It matters at the deep end: the NEO-260
+spacer leaves `spine-label`'s "Add to sheet" at centre 377 — outside the
+narrow window, but 87px clear of the nearest observed give-up, and therefore
+safe rather than marginal. Measure the centre (`y + height/2`), not the top
+that `Element bounds` logs.
+
+**An earlier NEO-260 revision of this rule got this wrong, and the record
+should say so.** It read "**And when you do centre, give the step
+`timeout: 20000` or more**", and 46 sites across nine flow files were raised
+to 20000 on that basis. It was wrong twice over. It contradicted R5, which
+sits fifty lines above it and sets 7 s as the bar. And it treated the give-up
+cost as a budget to fund rather than as the symptom of a page that cannot
+scroll far enough: raising the ceiling hid the give-up path instead of fixing
+it, so the suite paid ~7.2 s per affected step on every run and the UI stayed
+as unusable as before. Jason ruled on 2026-09-09 that R5 as written is
+canonical. The mechanism that revision described was right; only its remedy
+was wrong.
+
+One more measurement worth knowing before you tune a number:
+`visibilityPercentage` is effectively **boolean** in Maestro 2.8 —
+`visibilityPercentageNormalized` integer-divides by 100, so `50` and `10`
+behave identically to `1`.
 
 **R9 — All set-builder drilling goes through the drill utils.** Use
 `util-drill-to-2024-topps-chrome`, `util-drill-to-base-variant`,
@@ -383,15 +608,38 @@ listed here so a flow author meets them in one place.
   the product (New Team dialog, set builder, checklist). The one scripted
   exception is `/testing/seed-credentials` (see "Worker-state seeding").
 - **Minted names are single tokens** built with `${ATTEMPT_ID}`, never
-  `output.ATTEMPT_ID` and never hyphenated: search indexes tokenise on
-  separators, so multi-token names collide across flows.
-- **`pressKey` needs a unique DOM `id`** on its target (own section below).
+  `output.ATTEMPT_ID` and never hyphenated: `teams.search` is a Convex SEARCH
+  index matching TOKENS split at non-alphanumerics, so `TLF-9351` tokenises to
+  ["TLF","9351"] and collides with every persisted team starting `TLF`. This
+  holds for **every** minted name without exception. There is no delete-team
+  affordance in the app — the picker's `Remove team <name>` *unlinks* a team
+  from a card and the row survives — so nothing a flow creates is removed
+  within the run that created it. `e2e-baseline.sh reset` wipes teams once at
+  the START of each run, which is no help against the run they were minted in:
+  a pool of runners drains one shared queue against one Convex preview, so
+  every minted team is visible to every other flow for the whole run. That is
+  what broke CI run 34050688656. Derive the token with the blessed idiom —
+  `evalScript: '${output.ATTEMPT_TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'`
+  — which folds the runner index inside the single token. **The two runners
+  spell `ATTEMPT_ID` differently**: CI's queue runner builds
+  `r<n>-a<attempt>-<random>` (`run-e2e-queue.sh`), the local smoke runner builds
+  `w<worker>-a<attempt>-<random>` (`run-e2e-smoke.sh`). The hyphen-strip idiom
+  is indifferent to that, but anything that RECONSTRUCTS a prefix from
+  `${WORKER_INDEX}` matches nothing in CI — so never rebuild the token by hand. (`output.ATTEMPT_TOKEN` is a value the
+  flow sets itself, which is fine; the banned one is `output.ATTEMPT_ID`, a
+  binding the runner never populates.)
+- **`pressKey` needs a unique, user-visible handle** on its target — an
+  accessible name, never a DOM `id` (own section below).
 - **Prefer `openLink` over tapping a link** to reach a page (own section).
 - **Gate flow launch on the destination heading** (own section).
-- **Tags** are `smoke`, `regression`, a grouping tag such as `set-selector`
-  or `profile`, and the `requires:`/`provides:` cascade tags. There is no
-  smoke-plus-feature pair per flow. Never add `wip`: fix the bug instead
-  (`config.yaml` excludes `util` and `wip`).
+- **Tags** are `smoke` (the fast subset), a grouping tag such as
+  `set-selector` or `profile`, and the three the runner treats specially:
+  `util`, `wip` and `setup`. There is no smoke-plus-feature pair per flow.
+  **There is no `regression` tag** — it was deleted suite-wide in NEO-260
+  because `smoke` and `regression` had drifted into disjoint sets with 38
+  flows in neither, while `npm run test:e2e` already runs everything. The
+  full suite is `test:e2e`; `smoke` is the only subset. Never add `wip`: fix
+  the bug instead (`config.yaml` excludes `util` and `wip`).
 - **Run only the flows you changed, against the PR's Convex preview**, with
   `npm run test:e2e:plan -- name:<flow>` then `test:e2e:pick`. Never the
   full suite locally unless the change is to the harness itself, and never
@@ -429,6 +677,8 @@ Navigation is usually a *means*, not the thing under test — when it's a means,
 something beyond plain navigation; for a plain `<a href>` you lose nothing by
 navigating directly. **Watch #2944**: once it's fixed and we bump maestro, real
 click-navigation becomes reliable and this convention can relax.
+
+## Anything a flow drives with `pressKey` needs a unique, user-visible handle
 
 ## Asserting inside a dialog: header and footer only, never the body
 
@@ -475,20 +725,58 @@ screenshot. NEO-220 hit exactly this: the wizard's `Confirm & Save` and its
 class), so `pressKey: Enter` aimed at Confirm pressed Cancel, and the failure
 screenshot showed "Discard 1 decision?" while focus was on Confirm.
 
-**The rule:** if a flow presses a key at an element, that element must carry a
-unique DOM `id` in the component. Add it in the component, with a comment saying
-it is load-bearing for E2E, and do not reuse it
-(`components/SetSelector/EntityReviewWizard.tsx`'s `entity-review-confirm-save`
-is the worked example).
+**The rule — and it is not what this section used to say.** Jason, 2026-09-09
+(NEO-260), verbatim: *"NEVER USE AN ID VALUE, USE ONLY THINGS VISIBLE TO USER. I
+do consider an aria label visible to the user."*
+
+So the remedy is **never** a DOM `id`. A DOM id is invisible to a sighted user
+and to a screen reader alike; targeting one lets a flow pass while the real
+experience stays broken, which is the opposite of what these tests are for. Note
+that most `id:` selectors in this suite are already matching an **aria-label**,
+not a DOM id — the driver resolves `resource-id = node.id || node.ariaLabel`, so
+`id: "Search teams"` is the accessible name. That is correct and stays. Adding a
+real DOM id to such an element *replaces* the handle every flow targets by, and
+silently breaks them.
+
+When two identically-classed siblings collapse into one XPath, fix it in
+**product code**, two changes together:
+
+1. **Give them distinct accessible names**, so a screen-reader user can tell
+   which button they are on — `aria-label="Create team"` and
+   `aria-label="Back to team search"`, not two bare `Create`/`Back`. Then target
+   the accessible name from the flow.
+2. **Make the control genuinely keyboard-operable** — real Enter handling at the
+   level that makes sense (form or column submit), so the right thing happens
+   regardless of which node an XPath re-find resolves.
+
+Both are product requirements already: CLAUDE.md's UI section says every flow
+must be fully operable from the keyboard. The collision is the test telling you
+the app has an accessibility gap, so close the gap rather than routing around
+it.
+
+**What makes the XPath itself resolve is a marker class, not an id.**
+`src/hooks/useFieldTestClass()` returns a document-unique class
+(`mb-field-<useId>-btn-confirm-save`); spread it onto each colliding sibling's
+`className` and each generated XPath names exactly one node. A class never
+touches `resource-id`, so the accessible name stays the handle. See
+`components/SetSelector/EntityColumn.tsx` for the worked pair — one marker class
+plus one distinct `aria-label` per button.
+
+`components/SetSelector/EntityReviewWizard.tsx`'s `Confirm & Save (Enter)` used
+to carry a real DOM id (`entity-review-confirm-save`) as its handle. NEO-260
+**converted it**: it and its `Cancel (Esc)` sibling now each carry a
+`useFieldTestClass` marker class and their own `aria-label`, and no DOM id. No
+flow changed — both were always targeted by `text:`, which reads the button's
+visible words.
 
 Two corollaries worth knowing before you write the selector:
 
 * **A synthetic KeyboardEvent has no default action.** `dispatchEvent` runs the
   listeners and stops, so a focused `<button>` is NOT activated by
-  `pressKey: Enter` the way a real keypress activates it. The button has to
-  handle Enter in its own `onKeyDown`. Every other Enter in this suite is aimed
-  at an `<input>` whose own handler does the work, which is why this only ever
-  bites on buttons.
+  `pressKey: Enter` the way a real keypress activates it. Something has to
+  handle Enter explicitly. Every other Enter in this suite is aimed at an
+  `<input>` whose own handler does the work, which is why this only ever bites
+  on buttons — and it is a second reason the fix belongs in product code.
 * **Two controls whose labels share a prefix are a hazard — but anchor the
   matcher, do not assume the match is loose.** This bullet used to say `id:`
   selectors are unanchored FINDS, so that `id: "Remove Topps"` also matched
@@ -568,13 +856,16 @@ screenshot for `[testing] …` before suspecting anything else.
 
 ## Worker-state seeding
 
-The cascade's `requires:` / `provides:` dependency graph IS the seeding
-infrastructure. The setup track (level 0) does the heavy lift — the scripted
-`e2e-baseline.sh reset` first, then `setup.yaml` for credential save + drill to
-2024 Topps Chrome + Variant Types sync. Every subsequent flow declares what
-state it needs (`requires:`) and produces (`provides:`). Note that neither step
-seeds a team or a player: those tables stay empty until a flow makes its own
-per-worker rows (see troubleshooting item 4 above).
+The **setup track** is the seeding infrastructure: the scripted
+`e2e-baseline.sh reset` first, then `flows/setup.yaml` for credential save +
+drill to 2024 Topps Chrome + Variant Types sync. `run-e2e-smoke.sh` excludes
+`setup`-tagged flows from every mode except `test:e2e -- setup`, so the seed
+runs once, deliberately, and never as one thread among many (NEO-46). Note that
+neither step seeds a team or a player: those tables stay empty until a flow
+makes its own per-worker rows (see troubleshooting item 4 above).
+
+Nothing schedules around the seed: run `test:e2e -- setup` first, then run
+whatever flows you want.
 
 If you need to manually seed a particular worker's state for a local
 repro, just run `setup.yaml` first:
@@ -585,7 +876,7 @@ PATH=$HOME/.maestro/bin:$PATH \
   WORKER_INDEX=0 \
   TEST_USERNAME=neontester-$(date +%s) \
   maestro test --platform web --config .maestro/config.yaml --headless \
-    .maestro/flows/set-selector/cascade/setup.yaml
+    .maestro/flows/setup.yaml
 ```
 
 Then run the flow you're debugging. If you need a different worker's
@@ -633,15 +924,14 @@ worker's MAIN account while `label-history-empty-state` asserts the empty state
 on the isolated `new-profile` account — two accounts, two states, neither flow
 able to disturb the other.
 
-## Cascade prerequisite check (NEO-23)
+## Flow ordering
 
-`run-e2e-smoke.sh` now tracks which `provides:` states have at least one
-PASSing producer. When iterating each cascade level, it skips any flow
-whose `requires:` set isn't fully satisfied and records the skip as a
-FAIL with `skipped: prerequisite "X" not satisfied`. This prevents the
-"flaked producer → downstream flows run with stale state → result depends
-on whether the producer flaked" failure mode that bit us in PR #33.
+There isn't any, beyond the seed. In CI, the pre-matrix `seed` job establishes
+the baseline and the NEO-49 work queue hands flows to a homogeneous runner pool
+in no particular order. Locally, `npm run test:e2e -- setup` establishes the
+same baseline and then flows run in whatever order the lanes hand them out.
 
-Opt out via `MAESTRO_CASCADE_PERMISSIVE=true ./run-e2e-smoke.sh` if you
-need the old run-anyway behavior to debug a single level-0 flow without
-the rest of the cascade interfering.
+That is a constraint on flows, not a gap in the runner: **a flow must be
+self-contained** — it creates and uses its own per-worker data, or reads the
+seeded baseline without mutating it. A flow that only passes when some other
+flow ran first is a broken flow. Seed, then run whatever you want.

@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Card variations — point a card at the card it varies, see it group under it, and unlink it back out"
 tags:
   - set-selector
-  - regression
 ---
 # R1 — ONE FEATURE (NEO-189): the variation relationship between two cards in
 # the same checklist, end to end through the UI an operator actually uses.
@@ -88,7 +87,7 @@ tags:
     direction: UP
     centerElement: true
     visibilityPercentage: 50
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     id: "Open add card form"
 - extendedWaitUntil:
@@ -107,7 +106,7 @@ tags:
     element:
       id: "Submit new card"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     id: "Submit new card"
 
@@ -122,7 +121,7 @@ tags:
     centerElement: true
     visibilityPercentage: 50
     waitToSettleTimeoutMs: 1000
-    timeout: 15000
+    timeout: 7000
 
 # Both rows are ordinary top-level cards before anything is linked. This is the
 # baseline the grouping assertion below is measured against.
@@ -198,12 +197,34 @@ tags:
 # longer a row of its own. A 908-card set has to read as its 725 real cards.
 - assertNotVisible: "#701-${ATTEMPT_ID}"
 
+# WHERE THE PAGE IS, WHERE THE ANCHOR IS, AND WHY *UP*. Closing the drawer
+# leaves the page deep in the checklist — the x=80% drawer swipes above chain to
+# the window once the drawer's own scroller bottoms out — and this disclosure
+# caret is a cell in the parent's checklist row, i.e. ABOVE the page's position.
+# A DOWN scroll cannot travel toward it. Worse, a DOWN scroll toward an anchor
+# already above the centre ACCEPTS it at try 0 without moving the page at all,
+# so the step goes green and hands the tap a target parked at the very top of
+# the viewport.
+# THAT is what failed here, and the failure surfaced two steps later. Run
+# 34429321550 runner 1: the caret was accepted at `[83,17][107,41]`, tapped at
+# (95, 29) — and the tap did nothing. `binder-header.tsx` is `pointer-events-
+# none` EXCEPT on its two interactive groups, and the left logo group occupies
+# [16,16][228,61]: x=95, y=29 is inside it, so the caret never received the tap.
+# The log shows the tell — no "Something has changed in the UI" line after the
+# tap — and the failure hierarchy 8s later still reads "▸" and "1 variation".
+# The assertion below was reporting the consequence, not the bug.
+# MEASURED: green CI 34361627641 found the same caret at y=270 and tapped it at
+# (95, 282), clear of the header. NEO-260's 208px spacer
+# (src/layouts/binder-layout.tsx) lets the page travel that much further, which
+# is what put the row under the logo. UP centres it (one swipe, ~y330) so every
+# tap in this section lands on the caret.
 - scrollUntilVisible:
     element:
       id: "Show 1 variation of card 700-${ATTEMPT_ID}"
+    direction: UP
     centerElement: true
     visibilityPercentage: 50
-    timeout: 10000
+    timeout: 7000
 # The count is stated in words on the parent's subtitle line — the caret alone
 # would show there is something to open but not whether it is worth opening.
 - assertVisible:
@@ -246,7 +267,7 @@ tags:
       id: "Edit card 701-${ATTEMPT_ID}"
     centerElement: true
     visibilityPercentage: 50
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     id: "Edit card 701-${ATTEMPT_ID}"
     waitToSettleTimeoutMs: 2000
@@ -301,7 +322,7 @@ tags:
     centerElement: true
     visibilityPercentage: 50
     waitToSettleTimeoutMs: 1000
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     id: "Delete card 701-${ATTEMPT_ID}"
 - assertVisible: "Confirm?"
@@ -317,7 +338,7 @@ tags:
     centerElement: true
     visibilityPercentage: 50
     waitToSettleTimeoutMs: 1000
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     id: "Delete card 700-${ATTEMPT_ID}"
 - assertVisible: "Confirm?"

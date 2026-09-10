@@ -58,6 +58,7 @@ tags:
     element:
       text: ".*Resolve team colors, confirm ambiguous matches.*"
     centerElement: true
+    timeout: 7000
 - tapOn: ".*Resolve team colors, confirm ambiguous matches.*"
 - assertVisible: "Team Management"
 
@@ -67,6 +68,7 @@ tags:
     element:
       text: "Set Builder"
     centerElement: true
+    timeout: 7000
 - tapOn: "Set Builder"
 
 # The Set Builder PANEL's own subtitle. Deliberately not "Set Builder": that is
@@ -100,5 +102,6 @@ tags:
     element:
       text: "Teams"
     centerElement: true
+    timeout: 7000
 - tapOn: "Teams"
 - assertVisible: "Team Management"

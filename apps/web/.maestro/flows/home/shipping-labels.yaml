@@ -21,35 +21,75 @@ tags:
 # before the tap per R8). The card's real heading is "Print 4×6 Shipping Labels"
 # with a U+00D7 MULTIPLICATION SIGN, not the letter x; matching on the trailing
 # words sidesteps the glyph entirely.
+# R5 EXCEPTION — SIGNED OFF by Jason, 2026-09-09 (NEO-260). The reason is
+# page-length TRAVEL, not centring and not a slow UI: nothing on this page is
+# slower than 7 s to respond, and this step never reaches the centring give-up
+# path. MEASURED over 4 green CI runs (n=3, spread <2%): 4 `ElementNotFound`
+# retries before the target is first seen — 4 screens of a signed-out
+# marketing page at the driver's fixed ~2.2 s per swipe + view-hierarchy read
+# — worst sample 10.99 s end to end. Budget is 1.4x that.
+# WHAT VOIDS THIS SIGN-OFF: shorten the page and the budget comes back down to
+# 7000. Do not raise it further without asking again — a bigger number here is
+# a new decision, not a tuning knob.
 - scrollUntilVisible:
     element:
       text: ".*Shipping Labels.*"
     centerElement: true
+    timeout: 16000
 - tapOn:
     text: ".*Shipping Labels.*"
 
 # The page's own promise, then its three feature sections.
 - assertVisible: "Print the Label, Ship the Card"
+# R5: 7000, the bar — MEASURED over 4 green CI runs (n=3), worst sample 0.56 s.
 - scrollUntilVisible:
     element:
       text: "Your Address, Saved Once"
+    timeout: 7000
+# R5: 7000, the bar — MEASURED over 4 green CI runs (n=3), worst sample 4.84 s.
 - scrollUntilVisible:
     element:
       text: "Type The Buyer, Hit Print"
+    timeout: 7000
 # "Fits Any 4×6 Label Printer" — the . stands in for the multiplication sign.
+# R5: 7000, the bar — MEASURED over 4 green CI runs (n=3), worst sample 4.81 s.
 - scrollUntilVisible:
     element:
       text: "Fits Any 4.6 Label Printer"
+    timeout: 7000
 # NEO-207 — the postage section added when NEO-120 shipped.
+# R5: 7000, the bar — MEASURED over 4 green CI runs (n=3), worst sample 4.11 s.
 - scrollUntilVisible:
     element:
       text: "Buy The Postage Too"
+    timeout: 7000
 
 # CTA: verify Get Started button opens Clerk dialog
+# R8 case 1, product fix SHIPPED. MEASURED over 4 green CI runs (n=3):
+# `Element bounds` frozen at y=469 through `Scrolling try count: 0`..`5`,
+# completing on the give-up path at 14.1 s every run — the CTA was the last
+# thing on the page, so the document was already at maximum scroll and the five
+# swipes moved it nothing. NEO-260 adds the same 208px spacer the authenticated
+# shell got (`h-[208px]` in app/shipping-labels/page.tsx), which is what
+# gives the page more to scroll: 469 - 208 = 261 (centre 291), and across 2,396
+# centred DOWN scrolls in those runs the lowest give-up sat at a centre of 464.
+# So this now centres on the first swipe (measured 1.38-1.43 s).
+# Delete that spacer and the step goes straight back to the 14.1 s give-up.
+#
+# BUDGET IS TRAVEL, NOT CENTRING — R5 exception, SIGNED OFF by Jason,
+# 2026-09-09 (NEO-260), under the same ruling as this flow's other above-bar
+# step. MEASURED: 6.82-6.89 s elapses BEFORE centring even starts — three
+# `ElementNotFound` retries walking three screens of a long marketing page at
+# the driver's fixed ~2.2 s per swipe + view-hierarchy read — so even a
+# first-swipe centring success lands at ~8.3 s, and the step never reaches the
+# give-up path. 7000 would red it on travel the 208px spacer cannot remove.
+# Budget is 1.4x that estimate. WHAT VOIDS THIS SIGN-OFF: shorten the page and
+# it comes back down to 7000; do not raise it further without asking again.
 - scrollUntilVisible:
     element:
       text: "Get Started"
     centerElement: true
+    timeout: 12000
 - tapOn: "Get Started"
 - assertVisible: "Create your account"
 

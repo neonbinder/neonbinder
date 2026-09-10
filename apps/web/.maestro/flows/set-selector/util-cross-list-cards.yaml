@@ -47,7 +47,7 @@ tags:
       id: "Open add cross-release cards form"
     centerElement: true
     visibilityPercentage: 50
-    timeout: 15000
+    timeout: 7000
 - tapOn:
     id: "Open add cross-release cards form"
 - extendedWaitUntil:

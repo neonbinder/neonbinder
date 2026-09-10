@@ -66,9 +66,14 @@ tags:
     timeout: 10000
 - tapOn: "SportLots"
 
+# R5: 7000, the bar. This is a local tab switch, not a marketplace round-trip —
+# the tap above is already gated on the tab being present — so it is exactly the
+# kind of interaction the bar exists to hold. MEASURED in CI (green run): the
+# heading resolves 0.33 s after the tap, every time, on both flows. The old
+# 20000 was 60x the measurement and would have hidden a real regression.
 - extendedWaitUntil:
     visible: ".*SportLots Credentials.*"
-    timeout: 20000
+    timeout: 7000
 
 - extendedWaitUntil:
     visible: ".*Connected to SportLots.*"
@@ -99,9 +104,14 @@ tags:
     timeout: 10000
 - tapOn: "SportLots"
 
+# R5: 7000, the bar. This is a local tab switch, not a marketplace round-trip —
+# the tap above is already gated on the tab being present — so it is exactly the
+# kind of interaction the bar exists to hold. MEASURED in CI (green run): the
+# heading resolves 0.33 s after the tap, every time, on both flows. The old
+# 20000 was 60x the measurement and would have hidden a real regression.
 - extendedWaitUntil:
     visible: ".*SportLots Credentials.*"
-    timeout: 20000
+    timeout: 7000
 
 # THE FEATURE. Three assertions, one per state the panel can be in, so this
 # cannot pass unless the panel is in the re-auth state specifically:
@@ -127,7 +137,7 @@ tags:
     element:
       text: "Sign in again"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
     waitToSettleTimeoutMs: 1000
 - tapOn: "Sign in again"
 
@@ -144,7 +154,7 @@ tags:
     element:
       text: "Test Stored Credentials"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
     waitToSettleTimeoutMs: 1000
 - tapOn: "Test Stored Credentials"
 
@@ -162,7 +172,7 @@ tags:
     element:
       text: "Cancel"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
     waitToSettleTimeoutMs: 1000
 - tapOn: "Cancel"
 

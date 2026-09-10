@@ -5,6 +5,7 @@ import { api } from "../../convex/_generated/api";
 import type { GenericId } from "convex/values";
 import NeonButton from "../modules/NeonButton";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
+import { activateOnEnter } from "@/lib/dom/activate-on-enter";
 import SelectorSyncReviewModal, {
   MAX_DECISIONS_PER_CALL,
   type SelectorSyncSuggestion,
@@ -121,6 +122,28 @@ function breadcrumbOf(
     .join(" \u203a ");
 }
 
+/**
+ * NEO-260 — every button in this column's custom-entry form carries three
+ * things a plain `<NeonButton>Create</NeonButton>` does not, and all three are
+ * load-bearing:
+ *
+ *  1. **Its own `useFieldTestClass` marker class.** maestro-web's `pressKey`
+ *     does not send the key to `document.activeElement`; it runs
+ *     `createXPathFromElement(activeElement)`, RE-FINDS by that XPath and
+ *     dispatches to the match. The generator falls back to `tag[@class="…"]`
+ *     per ancestor, so two identically-classed sibling buttons collapse into
+ *     ONE XPath and Selenium returns the FIRST — the NEO-220 shape, and the
+ *     reason Enter aimed at this form's Create has been landing on Create only
+ *     by luck of DOM order. A unique class makes each XPath name exactly one
+ *     node. A CLASS, never a DOM `id`: Maestro's `resource-id` is
+ *     `node.id || node.ariaLabel`, so an id would shadow the aria-label that
+ *     flows and screen-reader users both read (see `useFieldTestClass`).
+ *  2. **A distinct, human-meaningful `aria-label`.** See the label block inside
+ *     the component.
+ *  3. **An explicit Enter activation** (`lib/dom/activate-on-enter`), because a
+ *     synthetic KeyboardEvent has no default action, and because the house rule
+ *     is that every flow is fully operable from the keyboard.
+ */
 export type EntityColumnProps = {
   selector: ReactNode;
   renderForm: (onDone: () => void) => ReactNode;
@@ -236,6 +259,11 @@ export default function EntityColumn({
   // a11y: tracks the notice going visible→hidden, so focus can be parked when
   // the control that had it unmounts. See the effect below.
   const hadNoticeRef = useRef(false);
+  // Which branch this column rendered last, and whether focus was inside it —
+  // together they are what lets the park below fire on ANY branch swap without
+  // grabbing focus from a column nobody has touched. See the park effect.
+  const renderedBranchRef = useRef<string>("idle");
+  const hadFocusInsideRef = useRef(false);
   // Reuses SetAttributesPanel's fixed-position toast verbatim rather than
   // inventing a second mechanism — the column may well have scrolled out of
   // view by the time a background sync lands its unlink report.
@@ -556,6 +584,91 @@ export default function EntityColumn({
     }
   }, [noticeVisible]);
 
+  // Which of this column's mutually-exclusive branches is on screen right now.
+  //
+  // Named once here rather than re-derived inside `newPathContent`, because two
+  // separate things need to agree on it: what to RENDER, and whether the render
+  // that just happened tore down whatever had focus (the park below).
+  //
+  // `showSyncingPanel` is the ensureSync path's own condition, moved out
+  // verbatim — see `newPathContent` for why each clause is there.
+  const showSyncingPanel =
+    !!useEnsureSync &&
+    mode !== "custom" &&
+    syncStatus?.status === "syncing" &&
+    (!hasInteracted || selfRequestedSync);
+  const branchKey =
+    mode === "custom"
+      ? "custom"
+      : showSyncingPanel
+        ? "syncing"
+        : mode === "sync"
+          ? "sync"
+          : "idle";
+
+  // NEO-260 (a11y) — park focus on ANY branch swap, not just the custom form.
+  //
+  // Whatever this column is showing, swapping to a different branch unmounts
+  // every control in the old one. The button the operator was standing on goes
+  // with it, focus falls to <body>, and the next Tab restarts from the top of
+  // the DOCUMENT — several columns and a whole page header away from the
+  // cascade they were working in.
+  //
+  // The first version of this keyed on `mode`, which covered exactly one of the
+  // swaps: the custom-entry form committing. It missed the one an operator hits
+  // first. On the `useEnsureSync` path, pressing "Sync <X>" replaces the idle
+  // button row with the "Fetching from marketplaces…" panel — and `mode` never
+  // leaves "idle" on that path, so the park never fired and the very button
+  // that starts the column's main action dropped focus to <body>. Keying on
+  // which BRANCH is rendered covers every one of them, including any added
+  // later, because a new branch is a new value of the key by construction.
+  //
+  // Two guards, both load-bearing:
+  //
+  //  * **Focus was actually inside this column** (`focusin`/`focusout`, below).
+  //    Branch swaps happen unprompted — a background sync flips a never-touched
+  //    column's status while the page is still settling, and on first paint
+  //    `document.activeElement` IS <body>. Without this the cascade would grab
+  //    focus at load from a column nobody has touched, and move a screen
+  //    reader's cursor with it.
+  //  * **Focus really landed on <body>** — the same rule the notice park uses.
+  //    If the user (or a flow) has already moved focus somewhere real, it is
+  //    never stolen back.
+  //
+  // `preventScroll` because this column's own reveal/settle logic owns the
+  // horizontal scroll position of the cascade row and a browser
+  // scroll-into-view here would fight it.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const onFocusIn = () => {
+      hadFocusInsideRef.current = true;
+    };
+    const onFocusOut = (event: FocusEvent) => {
+      // A node UNMOUNTING while focused does not reliably fire focusout, which
+      // is exactly the case this ref exists to remember — so absence of the
+      // event has to mean "still ours". Only a focusout that names a new home
+      // outside the column clears it.
+      const next = event.relatedTarget;
+      hadFocusInsideRef.current = !!next && next instanceof Node && el.contains(next);
+    };
+    el.addEventListener("focusin", onFocusIn);
+    el.addEventListener("focusout", onFocusOut);
+    return () => {
+      el.removeEventListener("focusin", onFocusIn);
+      el.removeEventListener("focusout", onFocusOut);
+    };
+  }, []);
+
+  useEffect(() => {
+    const previous = renderedBranchRef.current;
+    renderedBranchRef.current = branchKey;
+    if (previous === branchKey) return;
+    if (!hadFocusInsideRef.current) return;
+    if (document.activeElement !== document.body) return;
+    containerRef.current?.focus({ preventScroll: true });
+  }, [branchKey]);
+
   // Auto-sync: when this column is visible, not frozen by interaction, in idle
   // mode, the items query has resolved to an empty list, and we haven't already
   // auto-synced this (level, parentId) — switch to sync mode. The form itself
@@ -828,6 +941,31 @@ export default function EntityColumn({
 
   // The noun this column creates, mid-sentence ("set", "sport", "sub-variant").
   const levelNounSingular = level ? LEVEL_SINGULAR[level].toLowerCase() : "entry";
+  /**
+   * NEO-260 — accessible names for the custom-entry form's buttons.
+   *
+   * Every stage of this form puts two or three `NeonButton`s side by side, and
+   * their visible words alone ("Add", "Create", "Back") do not tell a screen
+   * reader user which control they are on, nor which column's form they are in.
+   * Naming them by the noun THIS column creates does both: "Create set" and
+   * "Back to set name" are unambiguous read aloud, and unambiguous as Maestro
+   * `resource-id`s (which are `node.id || node.ariaLabel`).
+   *
+   * Two rules held here on purpose:
+   *  - **Every label CONTAINS its visible text** (WCAG 2.5.3 Label in Name), so
+   *    a voice-control user saying the words they can see still hits the
+   *    control. That is why the exists-elsewhere pair reads "Go to it — …" and
+   *    "Create here anyway — …" rather than being reworded around.
+   *  - **No label is a substring of another.** Maestro matches `id:` as an
+   *    UNANCHORED regex, so "Create set" must not also find the create-anyway
+   *    button — and it does not, because that one never spells "Create <noun>".
+   */
+  const confirmCreateLabel = `Create ${levelNounSingular}`;
+  const backToInputLabel = `Back to ${levelNounSingular} name`;
+  const addLabel = `Add new ${levelNounSingular}`;
+  const cancelLabel = `Cancel new ${levelNounSingular}`;
+  const goToExistingLabel = `Go to it — the existing ${levelNounSingular}`;
+  const createAnywayLabel = `Create here anyway — a second ${levelNounSingular}`;
   const parentBreadcrumb = breadcrumbOf(parentChain);
   const confirmValue =
     customStage.kind === "confirm-create" || customStage.kind === "confirm-exists"
@@ -919,12 +1057,27 @@ export default function EntityColumn({
           )}
           <div className="flex gap-2">
             <NeonButton
+              className={fieldClass("btn-add")}
+              aria-label={addLabel}
               onClick={handleCustomSubmit}
+              onKeyDown={(e) =>
+                activateOnEnter(
+                  e,
+                  () => void handleCustomSubmit(),
+                  customStage.kind === "checking",
+                )
+              }
               disabled={customStage.kind === "checking"}
             >
               Add
             </NeonButton>
-            <NeonButton cancel onClick={closeCustomForm}>
+            <NeonButton
+              cancel
+              className={fieldClass("btn-cancel")}
+              aria-label={cancelLabel}
+              onClick={closeCustomForm}
+              onKeyDown={(e) => activateOnEnter(e, closeCustomForm)}
+            >
               Cancel
             </NeonButton>
           </div>
@@ -948,12 +1101,28 @@ export default function EntityColumn({
                 type → Enter → Enter. */}
             <NeonButton
               ref={confirmPrimaryRef}
+              className={fieldClass("btn-confirm-create")}
+              aria-label={confirmCreateLabel}
               onClick={() => void runCreate(customStage.value, false)}
+              onKeyDown={(e) =>
+                activateOnEnter(
+                  e,
+                  () => void runCreate(customStage.value, false),
+                  creating,
+                )
+              }
               disabled={creating}
             >
               Create
             </NeonButton>
-            <NeonButton secondary onClick={backToInput} disabled={creating}>
+            <NeonButton
+              secondary
+              className={fieldClass("btn-confirm-back")}
+              aria-label={backToInputLabel}
+              onClick={backToInput}
+              onKeyDown={(e) => activateOnEnter(e, backToInput, creating)}
+              disabled={creating}
+            >
               Back
             </NeonButton>
           </div>
@@ -985,7 +1154,12 @@ export default function EntityColumn({
           <div className="flex flex-wrap gap-2">
             <NeonButton
               ref={confirmPrimaryRef}
+              className={fieldClass("btn-goto-existing")}
+              aria-label={goToExistingLabel}
               onClick={() => handleDrillToMatch(firstMatch)}
+              onKeyDown={(e) =>
+                activateOnEnter(e, () => handleDrillToMatch(firstMatch), creating)
+              }
               disabled={creating}
             >
               Go to it
@@ -994,12 +1168,28 @@ export default function EntityColumn({
                 name across parents is sometimes right, and never a default. */}
             <NeonButton
               secondary
+              className={fieldClass("btn-create-anyway")}
+              aria-label={createAnywayLabel}
               onClick={() => void runCreate(customStage.value, true)}
+              onKeyDown={(e) =>
+                activateOnEnter(
+                  e,
+                  () => void runCreate(customStage.value, true),
+                  creating,
+                )
+              }
               disabled={creating}
             >
               Create here anyway
             </NeonButton>
-            <NeonButton cancel onClick={backToInput} disabled={creating}>
+            <NeonButton
+              cancel
+              className={fieldClass("btn-exists-back")}
+              aria-label={backToInputLabel}
+              onClick={backToInput}
+              onKeyDown={(e) => activateOnEnter(e, backToInput, creating)}
+              disabled={creating}
+            >
               Back
             </NeonButton>
           </div>
@@ -1037,32 +1227,49 @@ export default function EntityColumn({
       </button>
     ) : null;
 
-  const idleButtons = (onSync: () => void) => (
-    <div className="flex gap-2 items-center flex-wrap">
-      <NeonButton onClick={onSync}>{addButtonText}</NeonButton>
-      {/* After Sync, before "+ Custom", so `extraActions` ("Group Parallels")
-          still sits last. */}
-      {suggestionsPill}
-      {level && (
+  // Sync and "+ Custom" get the same marker-class + explicit-Enter treatment as
+  // the form's own buttons: they are identically-classed NeonButton siblings
+  // too, and they are the gate a keyboard-only pass through the cascade has to
+  // get through before the form even opens.
+  const idleButtons = (onSync: () => void) => {
+    // Always open on a clean form: a stage left over from a previous visit
+    // would put the operator straight into a confirm for a value they no
+    // longer see. Declared inside this builder rather than at component scope
+    // so it stays an event-handler closure — hoisted, `idleButtons()` itself
+    // would read a ref during render (react-hooks/refs).
+    const openCustomForm = () => {
+      setCustomError(null);
+      setCustomStage({ kind: "input" });
+      pendingCreateEnterRef.current = false;
+      setMode("custom");
+    };
+    return (
+      <div className="flex gap-2 items-center flex-wrap">
         <NeonButton
-          secondary
-          onClick={() => {
-            // Always open on a clean form: a stage left over from a previous
-            // visit would put the operator straight into a confirm for a value
-            // they no longer see.
-            setCustomError(null);
-            setCustomStage({ kind: "input" });
-            pendingCreateEnterRef.current = false;
-            setMode("custom");
-          }}
-          aria-label={`Add custom ${addButtonText.replace(/^Sync /, "")}`}
+          className={fieldClass("btn-sync")}
+          onClick={onSync}
+          onKeyDown={(e) => activateOnEnter(e, onSync)}
         >
-          + Custom
+          {addButtonText}
         </NeonButton>
-      )}
-      {extraActions}
-    </div>
-  );
+        {/* After Sync, before "+ Custom", so `extraActions` ("Group Parallels")
+            still sits last. */}
+        {suggestionsPill}
+        {level && (
+          <NeonButton
+            secondary
+            className={fieldClass("btn-open-custom")}
+            onClick={openCustomForm}
+            onKeyDown={(e) => activateOnEnter(e, openCustomForm)}
+            aria-label={`Add custom ${addButtonText.replace(/^Sync /, "")}`}
+          >
+            + Custom
+          </NeonButton>
+        )}
+        {extraActions}
+      </div>
+    );
+  };
 
   // NEO-47 new path: loading/error derived from the reactive selectorSyncStatus
   // (no FE sync mode → no onDone handoff to drop). Sync button = forced re-sync
@@ -1093,7 +1300,7 @@ export default function EntityColumn({
     // still want the panel: the operator clicking "Sync <X>" themselves.
     // A never-touched column mid-INITIAL sync keeps the panel (hasInteracted is
     // still false — the interaction effect no-ops until the first sync lands).
-    if (syncStatus?.status === "syncing" && (!hasInteracted || selfRequestedSync)) {
+    if (showSyncingPanel) {
       return (
         <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
           <h2 className="text-xl font-semibold mb-4">
@@ -1128,6 +1335,7 @@ export default function EntityColumn({
             one Dismiss. */}
         {noticeVisible && (
           <SyncDoneNotice
+            columnLabel={levelLabelPlural(level)}
             message={doneMessage}
             notices={buildUnlinkedNotices(doneUnlinked, level, {
               totalsBySide: unlinkedTotals,

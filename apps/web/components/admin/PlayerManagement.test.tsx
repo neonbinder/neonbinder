@@ -822,6 +822,94 @@ describe("PlayerManagement — the add form", () => {
     ).toBeTruthy();
   });
 
+  /**
+   * NEO-260 — WHERE the add form's messages render, which is the half that
+   * broke.
+   *
+   * `Added {name}.` and `That player already exists — opened it.` used to be a
+   * screen-level line above the filter row, at document y=293-313 on the CI
+   * viewport, while the `Create player` button that earns them sits at y=809
+   * — 516px below it, and no scroll position on a 1024x629 viewport showed
+   * both (the button needs scroll >= 216, the line is clear of the 79px sticky
+   * header only to scroll 214). Six E2E flows went red on it in run
+   * 34437403394 and a seventh had been passing with the line entirely
+   * underneath the header, because maestro-web reads the accessibility tree
+   * and the accessibility tree does not model occlusion.
+   *
+   * "It renders" was always true, so these assert the position instead: the
+   * confirmation in the column that REPLACES the form (the form is unmounted by
+   * the selection, so there is no button row left to use), the refusal in the
+   * form's own button row while the form is still there.
+   */
+  it("renders the confirmation in the detail column, pinned under the header", async () => {
+    const { container } = render(<PlayerManagement />);
+    openAddForm(container);
+    fireEvent.change(screen.getByLabelText("New player name"), {
+      target: { value: "Mike Trout" },
+    });
+    fireEvent.click(screen.getByLabelText("Create player Mike Trout"));
+
+    const line = await screen.findByText("Added Mike Trout.");
+    // In the column the new player's panel now occupies — the panel heading is
+    // its sibling, not somewhere above the filter row.
+    const column = screen
+      .getByRole("heading", { level: 3, name: "Mike Trout" })
+      .closest("div.rounded-lg")!;
+    expect(column.contains(line)).toBe(true);
+    // `sticky` is what makes it reliable rather than another guess about where
+    // the page happens to be: the column's top is above the sticky header at
+    // every measured create site, so the notice pins itself beneath it.
+    expect(line.className).toContain("sticky");
+    // Announced: it lands after a round trip a screen-reader user has no other
+    // way to know finished.
+    expect(line.getAttribute("role")).toBe("status");
+    // And it must NOT still be above the filter row.
+    const filterRow = screen.getByLabelText("Filter players").closest("div")!;
+    expect(filterRow.contains(line)).toBe(false);
+  });
+
+  it("clears the confirmation when a different player is selected", async () => {
+    const { container } = render(<PlayerManagement />);
+    openAddForm(container);
+    fireEvent.change(screen.getByLabelText("New player name"), {
+      target: { value: "Mike Trout" },
+    });
+    fireEvent.click(screen.getByLabelText("Create player Mike Trout"));
+    await screen.findByText("Added Mike Trout.");
+
+    // A message about the row that was just created must not still be on
+    // screen over the next row the operator opens.
+    fireEvent.click(screen.getByRole("button", { name: /Ken Griffey Jr\./ }));
+    await waitFor(() =>
+      expect(screen.queryByText("Added Mike Trout.")).toBeNull(),
+    );
+  });
+
+  it("puts a refused create in the button row it was refused from", async () => {
+    mockCreateByAdmin.mockRejectedValue(
+      new ConvexError("Two players are already called Mike Trout."),
+    );
+    const { container } = render(<PlayerManagement />);
+    openAddForm(container);
+    fireEvent.change(screen.getByLabelText("New player name"), {
+      target: { value: "Mike Trout" },
+    });
+    fireEvent.click(screen.getByLabelText("Create player Mike Trout"));
+
+    const line = await screen.findByText(
+      "Two players are already called Mike Trout.",
+    );
+    // The SAME ROW as the button, exactly as TeamManagement's refusal: the row
+    // is on screen whenever Create is, so the message costs no extra height.
+    expect(screen.getByLabelText("Create player Mike Trout").parentElement).toBe(
+      line.parentElement,
+    );
+    // Something is wrong and needs fixing, so `alert`, not `status`.
+    expect(line.getAttribute("role")).toBe("alert");
+    // The form is still open — a refusal does not select anything.
+    expect(screen.getByLabelText("New player name")).toBeTruthy();
+  });
+
   it("closes on Cancel without creating anything", () => {
     const { container } = render(<PlayerManagement />);
     openAddForm(container);

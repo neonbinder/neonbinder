@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "TeamPicker — chip add, remove, keyboard Enter, 'No matches' state, autosaved on the tap"
 tags:
   - set-selector
-  - regression
 ---
 # Full feature test for the NEO-26 TeamPicker chip-list component.
 #
@@ -44,7 +43,7 @@ tags:
 #     That button and the mutation behind it are gone, so `teams` is empty until
 #     a flow fills it — and this flow, being a test OF the team picker, is
 #     exactly the right place to create one. It uses a single team named
-#     "TPT-<attempt>", where ATTEMPT_ID is already "w<worker>-a<attempt>-<rand>"
+#     "TPT<token>", where the token is ATTEMPT_ID ("w<worker>-a<attempt>-<rand>")
 #     and therefore unique per worker AND per attempt. Per-attempt matters
 #     mechanically: "+ New team <name>" is offered only while no team of that name
 #     exists, so a name a previous attempt left behind would render "Add <name>"
@@ -60,6 +59,31 @@ tags:
 - extendedWaitUntil:
     visible: ".*Build set parameters using marketplace APIs.*"
     timeout: 45000
+
+# ── The minted name's single search token (SET-REGISTRY.md, "A name typed into
+# a team picker must be a SINGLE search token") ──────────────────────────────
+# `teams.search` / `players.search` are Convex SEARCH indexes: they match on
+# TOKENS split at non-alphanumerics, so a hyphenated `Prefix-<attempt>` name
+# tokenizes to ["Prefix", "<attempt>"] and every row any flow ever left behind
+# under that prefix comes back as a suggestion — the per-attempt suffix buys
+# nothing. Nothing deletes a team (the app has no delete-team affordance; the
+# picker's "Remove team" only unlinks it from the card), so those rows stand for
+# the whole run and are visible to every concurrent worker. The names below are
+# therefore ONE alphanumeric token with no separator at all.
+#
+# The token is ATTEMPT_ID with its hyphens stripped: "w3-a1-23945" is three
+# search terms, "w3a123945" is one — and it still carries the worker index, so
+# the per-worker distinction the old `${WORKER_INDEX}` prefix gave is folded in
+# rather than separated out.
+#
+# ⚠️ READ `ATTEMPT_ID`, NOT `output.ATTEMPT_ID`. The runner injects it with
+# `-e ATTEMPT_ID=…`, which Maestro exposes as the binding `${ATTEMPT_ID}`; it
+# never populates `output.ATTEMPT_ID`, so the older idiom always fell through to
+# its 4-digit `Date.now()` fallback and two runners collided constantly.
+#
+# Single-quoted: the expression contains double quotes, and quoting the scalar
+# keeps YAML out of it. `Date.now()` is the standalone-run fallback.
+- evalScript: '${output.ATTEMPT_TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'
 
 # ============================================================
 # DRILL TO PER-WORKER CUSTOM SET
@@ -87,7 +111,7 @@ tags:
       id: "Open add card form"
     centerElement: true
     visibilityPercentage: 50
-    timeout: 15000
+    timeout: 7000
 
 # Per-attempt-unique card number + player name. The runner injects
 # ATTEMPT_ID="w<worker>-a<attempt>-<RANDOM>" so attempt-2 doesn't
@@ -116,7 +140,7 @@ tags:
     element:
       id: "Submit new card"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     id: "Submit new card"
 - assertVisible: "Team Feature Player ${ATTEMPT_ID}"
@@ -127,7 +151,7 @@ tags:
       id: "Edit card 889-${ATTEMPT_ID}"
     centerElement: true
     visibilityPercentage: 50
-    timeout: 10000
+    timeout: 7000
 
 # ============================================================
 # TEST 1 — No old "Team" text field: the edit form shows TeamPicker only
@@ -165,17 +189,17 @@ tags:
 
 - tapOn:
     id: "Search teams"
-- inputText: "TPT-${ATTEMPT_ID}"
+- inputText: "TPT${output.ATTEMPT_TOKEN}"
 # NEO-236 — the popover's ONE create affordance opens a dialog rather than
 # writing: `+ New team "<typed>"…`, accessible name `New team <typed>`. It is
 # labelled with the name it would create, so this cannot be satisfied by some
 # other team's row — and it is offered only because no team of this name exists,
 # which is the precondition TEST 5 then reverses.
 - assertVisible:
-    id: "New team TPT-${ATTEMPT_ID}"
+    id: "New team TPT${output.ATTEMPT_TOKEN}"
 
 - tapOn:
-    id: "New team TPT-${ATTEMPT_ID}"
+    id: "New team TPT${output.ATTEMPT_TOKEN}"
 
 # The New Team dialog — portalled to `document.body` at `z-[60]`, `fixed inset-0`
 # and centred, so nothing clips it. It is where the three questions a team row
@@ -193,10 +217,10 @@ tags:
 # The NAME BOX and its VALUE is the dialog being correctly SEEDED — maestro-web
 # reports an input by its value, so this says the search text really reached the
 # field the operator is about to submit.
-- assertVisible: "New team: TPT-${ATTEMPT_ID}"
+- assertVisible: "New team: TPT${output.ATTEMPT_TOKEN}"
 - assertVisible:
     id: "New team name"
-    text: "TPT-${ATTEMPT_ID}"
+    text: "TPT${output.ATTEMPT_TOKEN}"
 
 # THE WRITE. Nothing is typed in the dialog: Team name is pre-filled with what
 # was searched, Location stays blank and no League is picked, so the COMPOSED
@@ -209,22 +233,22 @@ tags:
 # element by an XPath that falls back to that class, so an Enter aimed at Create
 # could land on Cancel.
 - tapOn:
-    id: "Create team TPT-${ATTEMPT_ID}"
+    id: "Create team TPT${output.ATTEMPT_TOKEN}"
 
 # The chip appears. Close popover by clicking card name.
 - tapOn:
     id: "Card name"
 - assertVisible:
-    id: "Remove team TPT-${ATTEMPT_ID}"
+    id: "Remove team TPT${output.ATTEMPT_TOKEN}"
 
 # ============================================================
 # TEST 3 — Remove the chip using the × button
 # ============================================================
 
 - tapOn:
-    id: "Remove team TPT-${ATTEMPT_ID}"
+    id: "Remove team TPT${output.ATTEMPT_TOKEN}"
 - assertNotVisible:
-    id: "Remove team TPT-${ATTEMPT_ID}"
+    id: "Remove team TPT${output.ATTEMPT_TOKEN}"
 
 # ============================================================
 # TEST 4 — "No matches." state when search finds nothing
@@ -249,7 +273,7 @@ tags:
 # The SAME team as TEST 2, and this time it is offered as a MATCH rather than as
 # a create: TEST 2 really persisted a row, so an exact name now suppresses the
 # "+ New team" row and the typeahead lists the team instead. That is the assertion
-# in "Add TPT-…" — it can only be satisfied by a team that exists.
+# in "Add TPT<token>" — it can only be satisfied by a team that exists.
 # ============================================================
 
 - tapOn:
@@ -259,7 +283,7 @@ tags:
 - tapOn:
     id: "Search teams"
 - eraseText: 20
-- inputText: "TPT-${ATTEMPT_ID}"
+- inputText: "TPT${output.ATTEMPT_TOKEN}"
 # NEO-254 — the optional `( · <era>)` tail. A TeamPicker option's accessible
 # name is `Add {teamOptionLabel}`, which appends " · 1972–1996" once the row
 # carries a `yearsActive`. This flow's team is created through the dialog with
@@ -267,8 +291,10 @@ tags:
 # is a FULL match, so the day anyone dates that fixture this selector would
 # stop matching with no other symptom. The optional group costs nothing and
 # covers both.
+# NEO-260 kept the separator-free name (teams.search tokenises on
+# non-alphanumerics, so a hyphen makes the per-attempt suffix worthless).
 - assertVisible:
-    id: "Add TPT-${ATTEMPT_ID}( · .*)?"
+    id: "Add TPT${output.ATTEMPT_TOKEN}( · .*)?"
 
 # Press Enter to confirm the highlighted first match.
 - pressKey: Enter
@@ -286,7 +312,7 @@ tags:
 
 # The chip should now be back.
 - assertVisible:
-    id: "Remove team TPT-${ATTEMPT_ID}"
+    id: "Remove team TPT${output.ATTEMPT_TOKEN}"
 
 # ============================================================
 # TEST 6 — NEO-216: the pick was ALREADY saved, so closing keeps it
@@ -313,7 +339,7 @@ tags:
     timeout: 15000
 
 - assertVisible:
-    id: "Remove team TPT-${ATTEMPT_ID}"
+    id: "Remove team TPT${output.ATTEMPT_TOKEN}"
 
 # ============================================================
 # TEST 7 — the write reaches the ROW and survives a reload
@@ -322,7 +348,7 @@ tags:
 # and TEST 5 already re-attached it — so re-adding would be reaching for a
 # control the picker does not render: `matches` drops every id already in
 # `value` (TeamPicker.tsx), and an exact case-insensitive name match also
-# suppresses the "+ New team" row, so typing "TPT-<attempt>" with the chip
+# suppresses the "+ New team" row, so typing "TPT<token>" with the chip
 # attached shows "No matches." That is correct product behaviour, not a bug —
 # the flow simply has nothing left to add. What is still unproven at this point
 # is that the write reached the ROW behind the drawer and survives a reload,
@@ -335,7 +361,7 @@ tags:
 - assertVisible: "Team Feature Player ${ATTEMPT_ID}"
 
 - assertVisible:
-    text: ".*TPT-${ATTEMPT_ID}.*"
+    text: ".*TPT${output.ATTEMPT_TOKEN}.*"
 
 # ============================================================
 # Reload and re-drill to the SAME per-worker custom set to confirm
@@ -356,12 +382,14 @@ tags:
       VARIANT: "Base"
 
 # After reload, find our card and confirm the team name is in the sub-line.
+# R5 — 7000, the bar (was 30000). MEASURED (CI 34349299679 + 34361627641):
+# settles in 0.55s, 0 centring swipes; nothing here waits on a marketplace.
 - scrollUntilVisible:
     element:
       text: "Team Feature Player ${ATTEMPT_ID}"
-    timeout: 30000
+    timeout: 7000
 - assertVisible:
-    text: ".*TPT-${ATTEMPT_ID}.*"
+    text: ".*TPT${output.ATTEMPT_TOKEN}.*"
 
 # ============================================================
 # CLEANUP — delete this attempt's test card

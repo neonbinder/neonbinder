@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Card row — clicking the card NUMBER (not the name or Edit button) opens the detail panel, which shows an auto-generated Card title"
 tags:
   - set-selector
-  - regression
 ---
 # R1 — SINGLE FEATURE: clicking anywhere on a card row (here the card-number
 # cell, which is neither the card-name text nor the Edit/Del buttons) opens that
@@ -80,7 +79,7 @@ tags:
     centerElement: true
     visibilityPercentage: 50
     waitToSettleTimeoutMs: 1000
-    timeout: 15000
+    timeout: 7000
 - tapOn:
     text: "#779-${ATTEMPT_ID}"
     waitToSettleTimeoutMs: 2000
@@ -126,7 +125,7 @@ tags:
       id: "Delete card 779-${ATTEMPT_ID}"
     centerElement: true
     visibilityPercentage: 50
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     id: "Delete card 779-${ATTEMPT_ID}"
 - assertVisible: "Confirm?"

@@ -25,9 +25,11 @@ tags:
 - assertVisible: "Profile Settings"
 
 # Basic Info — tap the visible label to focus, then type.
+# R5: 7000, the bar — MEASURED over 4 green CI runs (n=3), worst sample 0.60 s.
 - scrollUntilVisible:
     element:
       text: "Basic Info"
+    timeout: 7000
 - tapOn: "Username.*"
 - inputText: "${TEST_USERNAME}"
 - tapOn: "Display Name"
@@ -35,54 +37,105 @@ tags:
 - tapOn: "Tagline"
 - inputText: "Buying and Selling all kinds of Sports Cards"
 
-# Payment Handles — pre-existing pub-* selectors (same as fill-profile-data); the
-# "→ ..." preview text is the visible confirmation that the value landed.
+# Payment Handles — reached the way a person reaches them: scroll the VISIBLE
+# label into view, tap it (its htmlFor focuses the input), then type. The DOM
+# ids these steps used to target were invisible to user and screen reader alike
+# (NEO-260); the ids stay in the markup only because they are what wires each
+# label to its input. The "→ ..." preview text is the visible confirmation that
+# the value landed.
+#
+# Each label carries that trailing preview span once a value is typed, so they
+# are matched with .* on both sides rather than as an exact string, and each
+# names its row ("PayPal username" is in exactly one label, so it cannot collide
+# with the PayPal email row below).
+#
+# R5: the four centred scrolls below carry timeout: 7000, the bar. Note that
+# OMITTING the value would not do that — `scrollUntilVisible` defaults to 20 s,
+# not 7 s (ScrollUntilVisibleCommand.DEFAULT_TIMEOUT_IN_MILLIS = "20000" in the
+# pinned maestro-orchestra-models.jar, and a scroll with no `timeout:` logs
+# "timeout 20000 ms"), so only an explicit 7000 puts a step on the bar.
+# MEASURED in CI (green run, from both callers' logs): each of these four is
+# found on scroll try 0 or try 1 — 0.001 s to 1.47 s. The section-heading scroll
+# immediately below, and the Save step at the bottom, carry their own numbers.
+#
+# R5 EXCEPTION — SIGNED OFF by Jason, 2026-09-09 (NEO-260), and the only one of
+# these outside home/. The reason is page-length TRAVEL, not centring and not a
+# slow UI: this step is not centred at all, so it never reaches the give-up
+# path, and nothing on /profile/public is slower than 7 s to respond.
+# MEASURED over 4 green CI runs from both callers (n=3, spread 7.00-7.06 s):
+# 3 `ElementNotFound` retries before the heading is first seen — three screens
+# of /profile/public at the driver's fixed ~2.2 s per swipe + view-hierarchy
+# read. The 208px shell spacer does not help here: the cost is above the fold
+# line, not below it. Budget is 1.4x the worst sample.
+# WHAT VOIDS THIS SIGN-OFF: shorten the route (or reach Payment Handles from
+# further down, as fill-profile-data.yaml does — its copy of this step costs
+# 0.56 s) and the budget comes back down to 7000. Do not raise it further
+# without asking again.
 - scrollUntilVisible:
     element:
       text: "Payment Handles"
+    timeout: 10000
 - scrollUntilVisible:
     element:
-      id: "pub-paypal"
+      text: ".*PayPal username.*"
     centerElement: true
+    timeout: 7000
 - tapOn:
-    id: "pub-paypal"
+    text: ".*PayPal username.*"
 - inputText: "${TEST_USERNAME}-pp"
 - assertVisible: "→ paypal.me/${TEST_USERNAME}-pp"
 # PayPal email (Goods & Services) — set so the sale page renders the "PayPal
-# (G&S)" button (its href is gated on profile.paypalEmail). Target the VISIBLE
-# label (its htmlFor="pub-paypal-email" focuses the input), not the bare HTML id.
-# The label parens are regex-special — escaped as [(] / [)]. The label also has a
-# trailing "Buyer-protected payments" span, so wrap in .* (Maestro text matches
-# are full-string anchored). There is no "→" preview for the email field; the
-# G&S button on the sale page is the downstream proof the value persisted.
+# (G&S)" button (its href is gated on profile.paypalEmail). The label parens are
+# regex-special — escaped as [(] / [)]. The label also has a trailing
+# "Buyer-protected payments" span, so wrap in .* (Maestro text matches are
+# full-string anchored). There is no "→" preview for the email field; the G&S
+# button on the sale page is the downstream proof the value persisted.
 - scrollUntilVisible:
     element:
       text: ".*PayPal email [(]Goods & Services[)].*"
     centerElement: true
+    timeout: 7000
 - tapOn:
     text: ".*PayPal email [(]Goods & Services[)].*"
 - inputText: "${TEST_USERNAME}@example.com"
 - scrollUntilVisible:
     element:
-      id: "pub-venmo"
+      text: ".*Venmo username.*"
     centerElement: true
+    timeout: 7000
 - tapOn:
-    id: "pub-venmo"
+    text: ".*Venmo username.*"
 - inputText: "${TEST_USERNAME}-venmo"
 - assertVisible: "→ venmo.com/${TEST_USERNAME}-venmo"
 - scrollUntilVisible:
     element:
-      id: "pub-cashapp"
+      text: ".*Cash App username.*"
     centerElement: true
+    timeout: 7000
 - tapOn:
-    id: "pub-cashapp"
+    text: ".*Cash App username.*"
 - inputText: "${TEST_USERNAME}-cashapp"
 - assertVisible: "→ cash.app/$${TEST_USERNAME}-cashapp"
 
 # Save and confirm.
+# R8 case 1 -> R5's 7000. R8 still wants this centred before the tap; what
+# changes is that centring can now succeed. MEASURED over 4 green CI runs
+# (n=2, both callers agree): the centring loop runs to exhaustion — `Scrolling
+# try count: 0`..`5`, `Element bounds` y=593 then y=544 unchanged for tries
+# 1-5 — completing on the give-up path at 9.9 s EVERY run (2.7 s of travel plus
+# the 7.2 s give-up). The resting y=544 is identical to the sibling flow's from
+# a different starting position: the signature of a page at maximum scroll, not
+# of a slow response.
+#
+# NEO-260's 208px spacer at the bottom of the authenticated shell (`h-[208px]`,
+# src/layouts/binder-layout.tsx) puts the button at 544 - 208 = 336 (centre
+# 352), so it centres on the first swipe (measured 1.38-1.43 s) and the whole
+# step costs ~4.2 s. 7000 DEPENDS on that spacer; delete it and this step reds.
 - scrollUntilVisible:
     element:
       text: "Save Public Profile"
+    centerElement: true
+    timeout: 7000
 - tapOn: "Save Public Profile"
 # Non-scrolling on purpose. The save confirmation renders BELOW the Save button,
 # which is the last element on /profile/public, so it used to land past the fold

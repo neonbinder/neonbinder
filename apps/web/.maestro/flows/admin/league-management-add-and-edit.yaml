@@ -2,7 +2,6 @@ appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/admin/leagues&worker=${WORKER_INDEX || "0"}
 name: "League Management — add a league by hand, classify it, and edit what we know about it"
 tags:
-  - regression
   - admin
 ---
 # R1 — Single feature: /admin/leagues (NEO-240) lets an operator ADD a league by
@@ -111,16 +110,13 @@ tags:
     timeout: 45000
 
 # The runner injects ATTEMPT_ID ("r<runner>-a<attempt>-<random>", or
-# "w<worker>-a<attempt>-<random>" from the smoke script). This gives a standalone
-# local run a fallback and only when unset, so a runner-injected value is
-# preserved. Same idiom as player-management-add-and-career-history.
+# "w<worker>-a<attempt>-<random>" from the smoke script).
 #
 # Length matters here in a way it does not on the Players screen: the
 # abbreviation below is "L<ATTEMPT_ID>" and `createByAdmin` REFUSES an
 # abbreviation over 16 characters (MAX_LEAGUE_ABBREVIATION_LENGTH). The longest
 # id either runner can mint is "r7-a3-32767" — 11 characters, 12 with the L —
-# and the local fallback is 4, so both clear it with room to spare.
-- evalScript: ${output.ATTEMPT_ID = output.ATTEMPT_ID || String(Date.now()).slice(-4)}
+# so it clears the cap with room to spare.
 
 # ── EMPTY THE LIST FIRST ────────────────────────────────────────────────────
 # Not decoration, and not an assertion about filtering for its own sake. This is
@@ -172,20 +168,44 @@ tags:
 # just a button, and it is the only thing on the page that says so while the add
 # form is open. Centred first because the group sits below the two fields and the
 # sport picker, which on a 629px-tall viewport puts it at the fold.
+# R8 case 1 -> R5's 7000. MEASURED over 4 green CI runs (n=3): `Element
+# bounds` frozen at y=466 through `Scrolling try count: 0`..`5`, completing on
+# the give-up path at 10.1 s EVERY run — the page is already at maximum
+# scroll, so the target never reaches the centre band (250-375) and the five
+# swipes buy nothing. NEO-260 ships the fix: a 208px spacer at the bottom of
+# the authenticated shell (`h-[208px]`, src/layouts/binder-layout.tsx), which
+# gives the page exactly that much more to scroll. 466 - 208 = 258 (centre
+# 274) — and across 2,396 centred DOWN scrolls in 4 green CI runs the lowest
+# give-up sat at a centre of 464, with clean accepts throughout this range.
+# So it centres on the first swipe (measured 1.38-1.43 s) and the whole step
+# costs ~4.2 s. 7000 DEPENDS on that spacer; delete it and this step reds.
 - scrollUntilVisible:
     element:
       text: "Minor"
     centerElement: true
+    timeout: 7000
 - tapOn: "Minor"
 
 # The green button NAMES the league it is about to create, so this tap cannot
 # land on any other button — and it carries that name only while no league of
 # that name already exists (an exact match swaps the primary to "Open <name>"
 # and demotes creating to a "Create anyway" link beside it).
+# R8 case 1 -> R5's 7000. MEASURED over 4 green CI runs (n=3): `Element
+# bounds` frozen at y=552 through `Scrolling try count: 0`..`5`, completing on
+# the give-up path at 7.8 s EVERY run — the page is already at maximum
+# scroll, so the target never reaches the centre band (250-375) and the five
+# swipes buy nothing. NEO-260 ships the fix: a 208px spacer at the bottom of
+# the authenticated shell (`h-[208px]`, src/layouts/binder-layout.tsx), which
+# gives the page exactly that much more to scroll. 552 - 208 = 344 (centre
+# 360) — and across 2,396 centred DOWN scrolls in 4 green CI runs the lowest
+# give-up sat at a centre of 464, with clean accepts throughout this range.
+# So it centres on the first swipe (measured 1.38-1.43 s) and the whole step
+# costs ~2.1 s. 7000 DEPENDS on that spacer; delete it and this step reds.
 - scrollUntilVisible:
     element:
       id: "Create league LG-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
     centerElement: true
+    timeout: 7000
 - tapOn:
     id: "Create league LG-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
 
@@ -194,17 +214,24 @@ tags:
 # league already exists — opened it." when it did. So this is the assertion that
 # the hand-entry actually created something.
 #
-# It is reached by scrolling UP because it is not next to the button that earns
-# it: this message is the PAGE-level status line, rendered above the filter row
-# at the top of the screen, while the Create button was just centred near the
-# bottom. No `centerElement` on this one (R8's stated exception, mirrored): the
-# line sits less than half a viewport below the top of the document, so no
-# scroll position centres it and asking for one can never settle. The scroll IS
-# the assertion (R6) — it fails loudly if the line never appears.
+# It used to be reached by scrolling UP because it was not next to the button
+# that earns it: the message was the PAGE-level status line, rendered above the
+# filter row at the top of the screen, while the Create button had just been
+# centred near the bottom. NEO-260 moved it to the head of the DETAIL COLUMN,
+# `sticky` under the binder header, for the reason `PlayerManagement`'s twin
+# was moved: no scroll position on a 1024x629 viewport showed both the line and
+# the button that earns it. This step is kept and unchanged — a stuck element
+# reports its stuck position to the driver, so the scroll now finds the message
+# at try 0 without moving the page, which is what the green run already did
+# (run 34442670233 read it at viewport y=205 and accepted at try 0). Still no
+# `centerElement` (R8's stated exception, mirrored): a pinned line cannot be
+# centred and asking for one can never settle. The scroll IS the assertion
+# (R6) — it fails loudly if the line never appears.
 - scrollUntilVisible:
     element:
       text: ".*Added LG-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
     direction: UP
+    timeout: 7000
 
 # The new league's own panel has replaced the add form. This line exists nowhere
 # else on the screen and proves the row was filed under the sport that was
@@ -215,6 +242,7 @@ tags:
     element:
       text: ".*Sport: Baseball.*"
     centerElement: true
+    timeout: 7000
 
 # ── EDIT WHAT WE KNOW ABOUT IT ──────────────────────────────────────────────
 # The era. A league that started in 1901 and is still running is the ordinary
@@ -224,6 +252,7 @@ tags:
     element:
       text: "Active from"
     centerElement: true
+    timeout: 7000
 - tapOn: "Active from"
 - inputText: "1901"
 
@@ -243,13 +272,26 @@ tags:
     element:
       text: "Aliases"
     centerElement: true
+    timeout: 7000
 - tapOn: "Aliases"
 - inputText: "Alias-${ATTEMPT_ID}, Second-${ATTEMPT_ID}"
 
+# R8 case 1 -> R5's 7000. MEASURED over 4 green CI runs (n=3): `Element
+# bounds` frozen at y=552 through `Scrolling try count: 0`..`5`, completing on
+# the give-up path at 7.8 s EVERY run — the page is already at maximum
+# scroll, so the target never reaches the centre band (250-375) and the five
+# swipes buy nothing. NEO-260 ships the fix: a 208px spacer at the bottom of
+# the authenticated shell (`h-[208px]`, src/layouts/binder-layout.tsx), which
+# gives the page exactly that much more to scroll. 552 - 208 = 344 (centre
+# 360) — and across 2,396 centred DOWN scrolls in 4 green CI runs the lowest
+# give-up sat at a centre of 464, with clean accepts throughout this range.
+# So it centres on the first swipe (measured 1.38-1.43 s) and the whole step
+# costs ~2.1 s. 7000 DEPENDS on that spacer; delete it and this step reds.
 - scrollUntilVisible:
     element:
       text: "Save"
     centerElement: true
+    timeout: 7000
 - tapOn: "Save"
 
 # The confirmation renders directly BELOW the action row — NEO-240 put the
@@ -301,6 +343,7 @@ tags:
     element:
       id: "LG-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
     centerElement: true
+    timeout: 7000
 - tapOn:
     id: "LG-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
 
@@ -318,7 +361,50 @@ tags:
     element:
       text: "Alias-${ATTEMPT_ID}"
     centerElement: true
+    timeout: 7000
 - assertVisible: "Second-${ATTEMPT_ID}"
+
+# GO BACK UP TO THE YEARS ROW — the alias chips are not next to it.
+#
+# WHERE THE PAGE SITS WHEN THIS STEP BEGINS: at the bottom of the alias-chip
+# scroll above, which is the last thing that moved it. WHERE THE ANCHOR IS IN
+# DOM ORDER: `LeagueDetailPanel` stacks its fields League name/Sport ->
+# Abbreviation/Wikidata id -> qid caption -> **Active from/Active to** -> years
+# caption -> LevelGroup -> Aliases -> the chips. So the years row is FIVE
+# children ABOVE the chip the previous step just centred, and a DOWN scroll can
+# never recover it.
+#
+# MEASURED, and it is R5's "never depend on the document bottoming out" exactly.
+# Green CI 34361627641 (r6): the chip scroll read y=601 at try 0 and y=302 at
+# try 1 and stopped there. 302 was not centring — it was the document bottom:
+# the same run's next step froze "No teams yet." at y=445 through
+# `Scrolling try count: 0`..`5`, which puts maximum scroll at 612, and the chip
+# landed at exactly 612. The driver's swipe is ~313px; it asked for 313 and the
+# page had 299 left. With the page pinned there the "Active from" box sat at
+# y≈36-78 — on screen by 36 pixels, which is the entire margin this assertion
+# ever had.
+# NEO-260's 208px spacer (`h-[208px]`, src/layouts/binder-layout.tsx) takes
+# maximum scroll from 612 to 820, so the same swipe no longer clamps: run
+# 34433476511 (r0) read the chip at y=501 then y=188, i.e. scroll 726, 114px
+# deeper than green. The failure dump agrees — root bounds [0,-726][1009,719]
+# (94px still below the fold, so NOT maximum scroll), "Level" the first thing on
+# screen at y=8 — which puts the years row at y≈-102..-36 and its value out of
+# the hierarchy entirely. Nothing about the era failed to save; the assertion was
+# reporting where the field had scrolled to.
+# So re-anchor first, the same remedy as `team-management-edit-a-team`'s
+# `Location`. "Active from" is the row's own label, 102px above the top of the
+# viewport, so one UP swipe brings it to y≈211 (centre 221, inside the measured
+# UP accept band which starts at 206) and it centres at try 0 — leaving the box
+# and its year at y≈235-277, clear of the 64px sticky header. Positioning only:
+# nothing this flow proves changes. It leaves the page ~313px higher, so the
+# "No teams yet." scroll below now needs one swipe instead of none (~2.9s, still
+# well inside its 7000).
+- scrollUntilVisible:
+    element:
+      text: "Active from"
+    direction: UP
+    centerElement: true
+    timeout: 7000
 
 # ...and the era came back with them. "Active from" reads its stored value, which
 # is the only place on this screen a year can appear.
@@ -329,10 +415,22 @@ tags:
 # empty state and what makes the cross-screen assertion below unambiguous: with
 # no team in this league, no team row on /admin/teams can print its
 # abbreviation. The scroll IS the assertion (R6).
+# R8 case 1 -> R5's 7000. MEASURED over 4 green CI runs (n=3): `Element
+# bounds` frozen at y=445 through `Scrolling try count: 0`..`5`, completing on
+# the give-up path at 7.7 s EVERY run — the page is already at maximum
+# scroll, so the target never reaches the centre band (250-375) and the five
+# swipes buy nothing. NEO-260 ships the fix: a 208px spacer at the bottom of
+# the authenticated shell (`h-[208px]`, src/layouts/binder-layout.tsx), which
+# gives the page exactly that much more to scroll. 445 - 208 = 237 (centre
+# 256) — and across 2,396 centred DOWN scrolls in 4 green CI runs the lowest
+# give-up sat at a centre of 464, with clean accepts throughout this range.
+# So it centres on the first swipe (measured 1.38-1.43 s) and the whole step
+# costs ~2.1 s. 7000 DEPENDS on that spacer; delete it and this step reds.
 - scrollUntilVisible:
     element:
       text: "No teams yet."
     centerElement: true
+    timeout: 7000
 
 # ── AND THE ABBREVIATION REACHED THE OTHER SCREEN ───────────────────────────
 # Team Management offers leagues by `abbreviation ?? name`, so this league can

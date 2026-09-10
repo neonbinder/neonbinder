@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Set Builder Gate — admin without BSC credentials sees the warning banner"
 tags:
   - set-selector
-  - regression
 ---
 # Verifies the credentials gate on /set-selector:
 #   - Signs in as the dedicated admin-sl-only account (dev+e2e-sl-only@neonbinder.io).
@@ -21,9 +20,22 @@ tags:
 # to be big enough for the runs that don't.
 
 # Step 1: open /set-selector as admin-sl-only (nothing seeded yet — don't assert gate here)
+#
+# GATED ON THE BANNER'S OWN HEADING, NOT ON "Set Builder" (NEO-260, R2/R5).
+# /set-selector redirects to /admin/set-builder, where "Set Builder" is ALSO the
+# admin section's sub-tab NavLink — the layout paints that strip before the page
+# body mounts, so the old gate passed early and raced (README → "Launching a
+# flow", NEO-155 note). Every other flow re-anchors on the panel subtitle
+# ".*Build set parameters using marketplace APIs.*"; this flow cannot, because it
+# asserts that subtitle is ABSENT — on a credential-gated account
+# app/admin/set-builder/page.tsx renders MissingCredentialsBanner INSTEAD of the
+# panel. The banner's own h2 is the equivalent mount signal: it renders only once
+# userProfile.getUserProfile has resolved and the gate has decided, so neither the
+# nav strip nor the "Loading credentials…" placeholder can satisfy it. It names no
+# platform, so it still does not pre-judge Step 3.
 - launchApp
 - extendedWaitUntil:
-    visible: "Set Builder"
+    visible: "Set Builder requires marketplace credentials"
     timeout: 45000
 
 # Step 2: seed ONLY SportLots, then redirect back to /set-selector.
@@ -33,8 +45,9 @@ tags:
 # exception (live marketplace round-trip) — see the NEO-141 note above; the seed
 # page does not forward until its sign-in finishes, and a bare assert here would
 # be judging the seed page instead of /set-selector.
+# Same anchor as Step 1 (NEO-260): the banner's h2, not the sub-tab NavLink.
 - extendedWaitUntil:
-    visible: "Set Builder"
+    visible: "Set Builder requires marketplace credentials"
     timeout: 90000
 
 # Step 3: the gate banner must appear naming BuySportsCards only
@@ -52,6 +65,7 @@ tags:
     element:
       id: "Configure credentials in Profile"
     centerElement: true
+    timeout: 7000
 - tapOn:
     id: "Configure credentials in Profile"
 - assertVisible: "Profile Settings"

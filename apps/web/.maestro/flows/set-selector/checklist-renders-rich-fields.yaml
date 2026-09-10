@@ -74,15 +74,11 @@ tags:
     element:
       text: ".*#[0-9].*"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 
 # ============================================================
 # VERIFY CARD ROW STRUCTURE — ALWAYS-PRESENT FIELDS
 # ============================================================
-
-# At least one card number in "#NNN" format is visible.
-- assertVisible:
-    text: ".*#[0-9].*"
 
 # BSC platform badge appears on at least one card row.
 - assertVisible: "BSC"
@@ -98,8 +94,10 @@ tags:
 # scrollUntilVisible failing loudly is the assertion — no redundant assertVisible.
 # ============================================================
 
+# R5 — 7000, the bar (was 30000). MEASURED (CI 34349299679 + 34361627641):
+# settles in 0.56s, 0 centring swipes; nothing here waits on a marketplace.
 - scrollUntilVisible:
     element:
       text: "RC"
     centerElement: true
-    timeout: 30000
+    timeout: 7000

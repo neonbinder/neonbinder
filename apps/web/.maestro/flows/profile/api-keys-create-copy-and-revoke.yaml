@@ -89,6 +89,7 @@ tags:
 - scrollUntilVisible:
     element:
       text: "Add new key"
+    timeout: 7000
 - tapOn: "Add new key"
 
 # Step 5: name the key after this worker + attempt, so no two runners (and no
@@ -97,6 +98,7 @@ tags:
 - scrollUntilVisible:
     element:
       text: "Enter your secret key name"
+    timeout: 7000
 - assertVisible: "Add new API key"
 - tapOn:
     text: "Enter your secret key name"
@@ -123,6 +125,7 @@ tags:
 - scrollUntilVisible:
     element:
       text: "Create key"
+    timeout: 7000
 - tapOn: "Create key"
 
 # Step 6: the one and only showing of the secret. The dialog names the key we
@@ -143,6 +146,7 @@ tags:
 - scrollUntilVisible:
     element:
       text: "Search keys"
+    timeout: 7000
 - tapOn:
     text: "Search keys"
 - inputText: "e2e-${ATTEMPT_ID}"
@@ -154,6 +158,7 @@ tags:
       text: "e2e-${ATTEMPT_ID}"
       below:
         text: "Name"
+    timeout: 7000
 # And the row carries the one-day life we chose, which is how we know the
 # expiration reached the key that was actually created rather than just the
 # form. Left loose on the dates — Clerk formats them for the reader's locale.
@@ -190,3 +195,4 @@ tags:
 - scrollUntilVisible:
     element:
       text: "No API keys found"
+    timeout: 7000

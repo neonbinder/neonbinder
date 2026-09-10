@@ -27,8 +27,8 @@
  */
 
 import { describe, expect, test } from "vitest";
-import { readFileSync } from "node:fs";
 import { globSync } from "node:fs";
+import { readFileStable } from "./read-flow-files.mjs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -64,7 +64,7 @@ function flowNames() {
   const files = globSync("**/*.yaml", { cwd: FLOWS_DIR });
   return files
     .map((rel) => {
-      const text = readFileSync(join(FLOWS_DIR, rel), "utf8");
+      const text = readFileStable(join(FLOWS_DIR, rel));
       // The flow's own `name:` is a top-level key — column 0. Nested `name:`
       // keys inside commands are indented and are not directory names.
       const match = text.match(/^name:\s*(.+)$/m);

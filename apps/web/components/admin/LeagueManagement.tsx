@@ -504,10 +504,19 @@ function LeagueDetail({
         {/* h3, not h4: nothing on this screen renders an <h3> above it, so an
             <h4> here would skip a level and hand a screen reader navigating by
             heading a broken outline (WCAG 2.2 SC 1.3.1). */}
+        {/* `scroll-mt-32` (128px) — NOT decoration, and not the sticky
+            header's 80px either. `focus()` scrolls, and `html` carries
+            `scroll-padding-top: 80px`, so focusing this heading parks it at
+            viewport y=80 — which is exactly where the screen's `sticky`
+            confirmation notice pins itself after a create. The focus ring
+            would land underneath it (WCAG 2.2 SC 2.4.11, Focus Not Obscured).
+            128px clears the notice's 38px box with room to spare, and costs
+            nothing when there is no notice: the heading simply lands 48px
+            lower. NEO-260. */}
         <h3
           ref={headingRef}
           tabIndex={-1}
-          className="text-lg font-semibold leading-tight focus:outline-none focus-visible:rounded-sm focus-visible:ring-2 focus-visible:ring-neon-teal"
+          className="scroll-mt-32 text-lg font-semibold leading-tight focus:outline-none focus-visible:rounded-sm focus-visible:ring-2 focus-visible:ring-neon-teal"
         >
           {league.name}
         </h3>
@@ -968,8 +977,14 @@ export default function LeagueManagement() {
    * form's `Added {name}.`, its near-match `Open {name}` pick, and the detail
    * panel's `NAME_TAKEN` destination — so the URL cannot fall out of step with
    * the panel by one of them forgetting to write it.
+   *
+   * `keepStatus` is set by exactly one caller, the add form, which has already
+   * put its confirmation in `status` by the time it calls this. Every other
+   * path clears it: the add form's message is about the row it created and must
+   * not still be on screen over the next row the operator clicks (NEO-260).
    */
-  const selectLeague = (id: Id<"leagues">) => {
+  const selectLeague = (id: Id<"leagues">, keepStatus = false) => {
+    if (!keepStatus) setStatus(null);
     setSelectedId(id);
     setAdding(false);
     // `followParam` is part of writing the URL, not bookkeeping after the fact:
@@ -1004,18 +1019,12 @@ export default function LeagueManagement() {
 
   return (
     <div className="space-y-4">
-      {/* Page-level status — the ADD FORM's messages only. Those report on the
-          LIST, which sits directly below this line. The detail panel keeps its
-          own status line under its action row instead. */}
-      {status && (
-        <p
-          className={`text-sm ${status.isError ? "text-neon-pink" : "text-slate-300"}`}
-          role={status.isError ? "alert" : "status"}
-        >
-          {status.text}
-        </p>
-      )}
-
+      {/* NEO-260 removed the screen-level status line that used to sit here.
+          Its messages are the add form's, and the add form is in the detail
+          column with its Create button ~440px below the top of that column —
+          so on the 1024x629 viewport no scroll position ever showed both the
+          button and a line rendered up here. It now renders at the head of the
+          detail column instead; see the notice below. */}
       <div className="flex flex-wrap items-end gap-3">
         <Input
           ref={filterRef}
@@ -1179,6 +1188,30 @@ export default function LeagueManagement() {
             than opening a dialog. A modal here would hide the very list the
             operator is checking their new name against. */}
         <div className="rounded-lg border border-slate-800 p-4">
+          {status && (
+            /* The add form's own line, at the head of the column that carries
+               the form — and `sticky`, so it is pinned under the sticky header
+               rather than left above the fold however far down the operator had
+               scrolled to reach Create. A successful create SELECTS the new
+               league, which unmounts the form, so there is no button row left
+               to render into the way `TeamManagement` does; the column is what
+               survives the swap. `z-10` sits below `binder-header`'s `z-20`,
+               and the solid background is what stops panel content showing
+               through once it is pinned. `pointer-events-none` so a pinned box
+               can never become a dead zone over a control it happens to cover
+               — the mistake `binder-header`'s logo group made, which cost this
+               suite a swallowed tap in NEO-260. It never scrolls the page: the
+               operator is being handed to the new league's panel and moving
+               them off it would be a worse bug than the one this fixes. */
+            <p
+              className={`pointer-events-none sticky top-20 z-10 mb-3 rounded-md border border-slate-800 bg-background px-3 py-2 text-sm ${
+                status.isError ? "text-neon-pink" : "text-slate-300"
+              }`}
+              role={status.isError ? "alert" : "status"}
+            >
+              {status.text}
+            </p>
+          )}
           {adding ? (
             <AddLeagueForm
               sports={sportList}
@@ -1186,7 +1219,9 @@ export default function LeagueManagement() {
               onStatus={setStatus}
               // The form reports WHAT it opened; this screen only ever needs
               // the id, because the panel it hands off to re-reads the row.
-              onCreated={(league) => selectLeague(league.id)}
+              // `true`: keep the confirmation the form has just set — see
+              // `selectLeague`.
+              onCreated={(league) => selectLeague(league.id, true)}
               onCancel={() => setAdding(false)}
             />
           ) : selected ? (

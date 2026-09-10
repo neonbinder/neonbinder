@@ -118,7 +118,7 @@ tags:
           element:
             text: ".*Search sets.*"
           centerElement: true
-          timeout: 10000
+          timeout: 7000
       - tapOn:
           text: ".*Search sets.*"
           waitToSettleTimeoutMs: 250
@@ -142,19 +142,23 @@ tags:
 # run BOTH branches and the second would re-toggle the selection. See
 # util-drill-to-2024-topps-chrome's long comment on exactly this.
 #
-# The 60s scroll ceiling is the marketplace exception, absorbing any residual
-# cold set sync the util's own guard did not already wait out.
+# There is no marketplace wait left to absorb here. util-drill-to-cold-real-set's
+# return contract already waits "Syncing Sets" out (150000) before it returns, so
+# by the time this branch runs the Sets column is populated and idle.
 - runFlow:
     when:
       notVisible: "Variant Types"
     commands:
+      # R5 — 7000, the bar (was 60000). MEASURED (CI 34349299679 +
+      # 34361627641): worst 0.55s, 0 centring swipes. Nothing here waits on a
+      # marketplace, for the reason above; this is an ordinary in-app scroll.
       - scrollUntilVisible:
           element:
             text: "Topps NHL Sticker Collection|TCG"
             below:
               text: "Sets"
           centerElement: true
-          timeout: 60000
+          timeout: 7000
       - retry:
           maxRetries: 1
           commands:
@@ -201,11 +205,19 @@ tags:
     when:
       notVisible: "TCG"
     commands:
+      # R5 — 7000, the bar; R8 keeps the centring. MEASURED (CI 34349299679 +
+      # 34361627641): at maximum scroll this parked at y=518, 143px below the
+      # end of the driver's centre band (~375), so centring ran its full
+      # six-iteration give-up path — 7.72s here — on every run. A give-up on every
+      # run is centring that never centres, so the remedy is the product's: the
+      # 208px scroll spacer in src/layouts/binder-layout.tsx (NEO-260) puts this
+      # target at y=310, mid-band, and it now centres in one or two swipes.
+      # THIS STEP DEPENDS ON THAT SPACER — see R8.
       - scrollUntilVisible:
           element:
             id: "Rename Topps NHL Sticker Collection"
           centerElement: true
-          timeout: 15000
+          timeout: 7000
       - tapOn:
           id: "Rename Topps NHL Sticker Collection"
       - extendedWaitUntil:
@@ -222,11 +234,19 @@ tags:
 # as "Attributes for <name> (Set)", so this proves both halves at once: the name
 # is ours now, and the selection still resolves to this row. Everything below is
 # meaningless without it.
+# R5 — 7000, the bar; R8 keeps the centring. MEASURED (CI 34349299679 +
+# 34361627641): at maximum scroll this parked at y=520, 145px below the
+# end of the driver's centre band (~375), so centring ran its full
+# six-iteration give-up path — 7.71s here — on every run. A give-up on every
+# run is centring that never centres, so the remedy is the product's: the
+# 208px scroll spacer in src/layouts/binder-layout.tsx (NEO-260) puts this
+# target at y=312, mid-band, and it now centres in one or two swipes.
+# THIS STEP DEPENDS ON THAT SPACER — see R8.
 - scrollUntilVisible:
     element:
       text: ".*Attributes for TCG.*"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 
 # ============================================================
 # STEP 4 — FORCE A FULL RE-SYNC OF THE SETS COLUMN
@@ -247,11 +267,28 @@ tags:
 # records a label here and can never disagree with our name.
 # ============================================================
 
+# WHERE THE PAGE IS, WHERE THE ANCHOR IS, AND WHY *UP*. The step above centres
+# `Attributes for TCG` — and, as its own comment records, it does that AT
+# MAXIMUM SCROLL: pre-spacer it parked frozen at y=520 through `Scrolling try
+# count: 0`..`5`, and the 208px spacer simply lets the page travel 208px further
+# so the same panel lands at y=312. Either way the page ends at the BOTTOM of
+# the document. "Sync Sets" is the Sets column's own action button, up in the
+# selector cascade, which SetSelector.tsx renders ABOVE SetAttributesPanel — so
+# from there the anchor is above the viewport centre and a DOWN scroll can only
+# push it further up.
+# MEASURED (green CI 34361627641): found at y=286 with the page pinned at
+# maximum scroll — i.e. it was on screen only because the document had run out
+# of scroll, and the spacer's extra 208px of travel leaves it at y=78, inside
+# the sticky binder header's band and one layout change from gone. UP centres it
+# properly and skips the six-iteration give-up path a DOWN scroll would run here
+# on every single run (R8: a centred scroll that never centres is the fault, not
+# the budget).
 - scrollUntilVisible:
     element:
       text: "Sync Sets"
+    direction: UP
     centerElement: true
-    timeout: 15000
+    timeout: 7000
 - tapOn: "Sync Sets"
 
 - extendedWaitUntil:
@@ -267,18 +304,36 @@ tags:
 # orphaned, and the Variant Types column would be empty.
 # ============================================================
 
+# R5 — 7000, the bar; R8 keeps the centring. MEASURED (CI 34349299679 +
+# 34361627641): at maximum scroll this parked at y=520, 145px below the
+# end of the driver's centre band (~375), so centring ran its full
+# six-iteration give-up path — 7.68s here — on every run. A give-up on every
+# run is centring that never centres, so the remedy is the product's: the
+# 208px scroll spacer in src/layouts/binder-layout.tsx (NEO-260) puts this
+# target at y=312, mid-band, and it now centres in one or two swipes.
+# THIS STEP DEPENDS ON THAT SPACER — see R8.
 - scrollUntilVisible:
     element:
       text: ".*Attributes for TCG.*"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 
+# Same shape, same reasoning as "Sync Sets" above: the step before this one
+# centres `Attributes for TCG` at maximum scroll, and "Base" is a Variant Types
+# row — one of the selector columns, which render ABOVE SetAttributesPanel. It
+# is therefore above the page's current position, so UP.
+# MEASURED (green CI 34361627641): y=279 with the page at maximum scroll; the
+# 208px spacer leaves it at y=71.
 - scrollUntilVisible:
     element:
       text: "Base"
+    direction: UP
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 
+# The suggestion pill hangs off the SETS column, so once "Base" is centred it
+# sits just BELOW the page's position (measured 10px below "Base" in the same
+# viewport read) — DOWN, the default, is right here.
 # ============================================================
 # STEP 6 — REVIEW BSC'S NAME AND ACCEPT IT
 #
@@ -290,7 +345,7 @@ tags:
     element:
       text: "1 name to check"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     id: "1 name to check — review suggestions"
 
@@ -339,11 +394,19 @@ tags:
 # error-boundary page would satisfy a `notVisible` on its own.
 # ============================================================
 
+# R5 — 7000, the bar; R8 keeps the centring. MEASURED (CI 34349299679 +
+# 34361627641): at maximum scroll this parked at y=520, 145px below the
+# end of the driver's centre band (~375), so centring ran its full
+# six-iteration give-up path — 7.71s here — on every run. A give-up on every
+# run is centring that never centres, so the remedy is the product's: the
+# 208px scroll spacer in src/layouts/binder-layout.tsx (NEO-260) puts this
+# target at y=312, mid-band, and it now centres in one or two swipes.
+# THIS STEP DEPENDS ON THAT SPACER — see R8.
 - scrollUntilVisible:
     element:
       text: ".*Attributes for Topps NHL Sticker Collection.*"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 
 - assertNotVisible: "TCG"
 - assertNotVisible: "1 name to check"

@@ -83,10 +83,16 @@ tags:
 # If it never appears, skip straight to the CardChecklist wait.
 # ============================================================
 
+# R8 — centre before the tap; R5 — 7000, the bar. An earlier NEO-260 revision
+# raised this step to 20000 because the centring give-up path costs 8-13s. That
+# was the wrong remedy and the rule now says so: a step that reaches the give-up
+# path on every run is centring that never centres, and funding it hides the
+# fault instead of fixing it. This target DOES centre, so 7000 measures the UI.
 - scrollUntilVisible:
     element:
       text: "Base"
-    timeout: 10000
+    centerElement: true
+    timeout: 7000
 - tapOn: "Base"
 
 # Selecting a variant type is the first thing that mounts BaseMappingForm and
@@ -127,15 +133,20 @@ tags:
 # dismissing deletes the status row for every worker, including the one that
 # actually needs to see it.
 #
-# The 60s ceiling is unchanged — it is the SL round-trip budget, and
-# scrollUntilVisible polls for the element the whole time exactly as the wait
-# did. (The picker itself is a fixed-position portal, so on Path A the scroll is
-# a no-op and it matches immediately.)
+# R5 — 7000, the bar (was 60000). The 60s was booked as the SL round-trip
+# budget, but the round trip is NOT what this step waits on: BaseSetPicker
+# renders its "Select Base Set" title immediately and only its confirm
+# button reads "Loading…" until the fetch lands, and THAT flip is gated
+# below by `extendedWaitUntil: visible: "Confirm Base Set"` (45000, the R5
+# marketplace exception). MEASURED (CI 34349299679 + 34361627641): 30
+# samples across both green runs, worst 2.05s. The scroll is still a scroll
+# and not a bare `visible:` wait, for the reason above — the controls can
+# sit under the fold, and a wait cannot recover from that.
 - scrollUntilVisible:
     element:
       text: ".*Select Base Set.*|.*Re-map Base.*"
     centerElement: true
-    timeout: 60000
+    timeout: 7000
 
 # Path A — the picker is open: PICK a set on each side, then confirm.
 - runFlow:
@@ -196,6 +207,6 @@ tags:
       text: "Add Card"
     centerElement: true
     visibilityPercentage: 50
-    timeout: 10000
+    timeout: 7000
 - assertVisible:
     text: ".*Fetch from Marketplaces.*|Refresh"

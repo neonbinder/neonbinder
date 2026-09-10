@@ -356,6 +356,10 @@ export default function ParallelForm({
                     totalsBySide: totalsBySideFor(unlinked, unlinkedTotal),
                   })}
                   onDismiss={() => setUnlinked([])}
+                  // NEO-260: see the matching note in VariantForm — these two
+                  // columns can both show a notice at once, so each Dismiss
+                  // needs its own accessible name.
+                  columnLabel="Parallels"
                 />
               )}
 

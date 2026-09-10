@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Cross-release — the import names every card number it could not find in the chosen source set"
 tags:
   - set-selector
-  - regression
 ---
 # ============================================================================
 # R1 — ONE FEATURE: the cross-release import never silently drops a number.
@@ -103,7 +102,7 @@ tags:
       id: "Open add cross-release cards form"
     centerElement: true
     visibilityPercentage: 50
-    timeout: 15000
+    timeout: 7000
 - tapOn:
     id: "Open add cross-release cards form"
 - extendedWaitUntil:

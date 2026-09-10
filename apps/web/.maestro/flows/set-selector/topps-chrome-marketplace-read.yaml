@@ -2,7 +2,6 @@ appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
 name: "Topps Chrome — read-only verify marketplace-derived set attributes are present (read-only)"
 tags:
-  - regression
   - set-selector
 ---
 # Read-only verification of the SetAttributesPanel on the REAL 2024 Topps Chrome set.
@@ -55,10 +54,18 @@ tags:
 # idempotent expand pattern in case a prior test collapsed it.
 # ============================================================
 
+# R5 — 7000, the bar; R8 keeps the centring. MEASURED (CI 34349299679 +
+# 34361627641): at max scroll this parked at y=518 (band ends ~375) and
+# centring burned all six iterations (~7.6s), which only a 15000/20000
+# ceiling hid. The remedy is the product's: 208px of padding below the last
+# panel (`attributesPanelIsLast`) lifts it into the band so it centres in
+# 1-2 swipes. This step DEPENDS on that padding landing — see R8.
 - scrollUntilVisible:
     element:
       id: "Edit attributes"
+    centerElement: true
     visibilityPercentage: 10
+    waitToSettleTimeoutMs: 1000
     timeout: 7000
 
 # IDEMPOTENT EXPAND: tap only if the panel is currently collapsed.

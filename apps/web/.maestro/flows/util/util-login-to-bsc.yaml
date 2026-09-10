@@ -95,7 +95,7 @@ tags:
     element:
       text: "Test Credentials"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
     waitToSettleTimeoutMs: 1000
 
 - tapOn: "Test Credentials"

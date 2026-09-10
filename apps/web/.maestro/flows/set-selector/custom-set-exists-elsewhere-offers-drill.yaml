@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Custom entry — a name that already exists under another brand offers to go to it instead of making a second row (NEO-219)"
 tags:
   - set-selector
-  - regression
 ---
 # ════════════════════════════════════════════════════════════════════════════
 # R1 — ONE FEATURE: typing a custom SET name that already exists somewhere else
@@ -71,10 +70,6 @@ tags:
     visible: ".*Build set parameters using marketplace APIs.*"
     timeout: 45000
 
-# The runner injects ATTEMPT_ID per attempt; this is the standalone-run
-# fallback, matching move-parallels-of-inserts-custom.yaml.
-- evalScript: ${output.ATTEMPT_ID = output.ATTEMPT_ID || String(Date.now()).slice(-4)}
-
 # ============================================================
 # PART 1 — A CUSTOM YEAR MUST BE A YEAR
 #
@@ -93,7 +88,7 @@ tags:
     element:
       id: "Add custom Years"
     centerElement: true
-    timeout: 15000
+    timeout: 7000
 - tapOn:
     id: "Add custom Years"
 - assertVisible: "Add Custom Entry"
@@ -131,11 +126,19 @@ tags:
 # PRECONDITION (R2): the set really is under brand B. The attributes header
 # follows the deepest selection, so this names both the row and the brand it
 # hangs off — everything below is meaningless without it.
+# R5 — 7000, the bar; R8 keeps the centring. MEASURED (CI 34349299679 +
+# 34361627641): at maximum scroll this parked at y=520, 145px below the
+# end of the driver's centre band (~375), so centring ran its full
+# six-iteration give-up path — 7.65s here — on every run. A give-up on every
+# run is centring that never centres, so the remedy is the product's: the
+# 208px scroll spacer in src/layouts/binder-layout.tsx (NEO-260) puts this
+# target at y=312, mid-band, and it now centres in one or two swipes.
+# THIS STEP DEPENDS ON THAT SPACER — see R8.
 - scrollUntilVisible:
     element:
       text: ".*Attributes for xp-${WORKER_INDEX || 0}-${ATTEMPT_ID} Chrome.*"
     centerElement: true
-    timeout: 15000
+    timeout: 7000
 - assertVisible:
     text: ".*2026 › xp-${WORKER_INDEX || 0}-B › xp-${WORKER_INDEX || 0}-${ATTEMPT_ID} Chrome.*"
 
@@ -157,7 +160,7 @@ tags:
     element:
       id: "Add custom Sets"
     centerElement: true
-    timeout: 15000
+    timeout: 7000
 - tapOn:
     id: "Add custom Sets"
 - assertVisible: "Add Custom Entry"
@@ -195,10 +198,18 @@ tags:
 # second row was created under brand A and the operator was taken to the one
 # that already existed. The header renders below the selector columns, so scroll
 # to it; the scroll IS the assertion (R6).
+# R5 — 7000, the bar; R8 keeps the centring. MEASURED (CI 34349299679 +
+# 34361627641): at maximum scroll this parked at y=520, 145px below the
+# end of the driver's centre band (~375), so centring ran its full
+# six-iteration give-up path — 7.6s here — on every run. A give-up on every
+# run is centring that never centres, so the remedy is the product's: the
+# 208px scroll spacer in src/layouts/binder-layout.tsx (NEO-260) puts this
+# target at y=312, mid-band, and it now centres in one or two swipes.
+# THIS STEP DEPENDS ON THAT SPACER — see R8.
 - scrollUntilVisible:
     element:
       text: ".*Attributes for xp-${WORKER_INDEX || 0}-${ATTEMPT_ID} Chrome.*"
     centerElement: true
-    timeout: 15000
+    timeout: 7000
 - assertVisible:
     text: ".*2026 › xp-${WORKER_INDEX || 0}-B › xp-${WORKER_INDEX || 0}-${ATTEMPT_ID} Chrome.*"

@@ -177,7 +177,8 @@ against a real PR's Convex preview. One gotcha found in the process: phase-0
 bootstrap **hangs** against a preview at the default `MAESTRO_PARALLELISM=3` (3
 concurrent workers racing the same freshly-created preview data) — pass
 `MAESTRO_PARALLELISM=1` whenever `APP_URL` points at a PR preview instead of shared
-dev. `npm run test:e2e:pick` resolves the prerequisite closure for you either way.
+dev. `npm run test:e2e:pick` runs exactly the flows you name and nothing else, so
+seed the preview first with `npm run test:e2e -- setup`.
 
 A protected preview may additionally need `VERCEL_AUTOMATION_BYPASS_SECRET` — not
 exercised by the runs above; confirm on a PR with deployment protection enabled
@@ -431,11 +432,12 @@ Maestro flows live in `apps/web/.maestro/flows/`, mirroring app routes.
 ```bash
 cd apps/web
 APP_URL=http://localhost:3000 npm run test:e2e
-npm run test:e2e:pick -- <flow>   # run a subset (name / list / regex / tag) with prereq closure
+npm run test:e2e -- setup         # seed first: e2e-baseline.sh reset + flows/setup.yaml
+npm run test:e2e:pick -- <flow>   # then run a subset (name / list / regex / tag)
 ```
 
 > Local Maestro web runs headless at CI's **1024×629** viewport — always run via the npm scripts (bare `maestro test` is non-headless and hides CI-only fold/layout gotchas). Use parallelism 1 locally (higher crashes Chrome tabs on a laptop).
 
 **In CI:** the suite runs via `pr-pipeline.yml` → `e2e.yml` on every PR (see CI/CD). The `e2e` check is the merge-blocking gate. Test users are provisioned per work-queue runner (`dev+e2e-<N>@neonbinder.io`); flows must be self-contained and parallel-safe (create-and-use their own data; no shared global state).
 
-**Test tags:** `smoke`, `regression`, plus feature groupings (`auth`/`dashboard`/`profile`/...). Never add a `wip` tag — fix the underlying bug instead.
+**Test tags:** `smoke` plus feature groupings (`auth`/`dashboard`/`profile`/...), and the three the runner treats specially (`util`, `wip`, `setup`). **There is no `regression` tag** — NEO-260 deleted it suite-wide: `smoke` and `regression` had drifted into disjoint sets with 38 flows in neither, while `npm run test:e2e` already runs every flow. The full suite is `test:e2e`; `smoke` is the only subset. Never add a `wip` tag — fix the underlying bug instead.

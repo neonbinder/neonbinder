@@ -32,11 +32,31 @@ NEO-220 hit exactly this: the wizard's `Confirm & Save` and its `Cancel (Esc)`
 sibling are both `NeonButton`s with the IDENTICAL class string (the neon colour
 is a `data-accent-color` attribute and an inline style, not a class), so Enter
 aimed at Confirm pressed Cancel — the failure screenshot showed
-"Discard 1 decision?". The fix was a unique DOM id on the button
-(`entity-review-confirm-save`).
+"Discard 1 decision?". NEO-220's original fix was a unique DOM id
+(`entity-review-confirm-save`); **NEO-260 replaced that mechanism.**
 
-**Rule: any element a flow drives with `pressKey` needs a unique DOM id**, added
-in the component with a comment saying it is load-bearing for E2E.
+**Rule: never a DOM id — give the element a unique, USER-VISIBLE handle.**
+Jason, 2026-09-09, verbatim: "NEVER USE AN ID VALUE, USE ONLY THINGS VISIBLE TO
+USER. I do consider an aria label visible to the user." A DOM id is invisible to
+sighted and screen-reader users alike, so targeting one lets a flow pass while
+the real experience stays broken. Note most `id:` selectors in the suite are
+already matching an **aria-label** — the driver resolves
+`resource-id = node.id || node.ariaLabel` — which is correct and stays; adding a
+real DOM id to such an element REPLACES the handle flows target by.
+
+When identically-classed siblings collapse into one XPath, fix it in product
+code, two changes together:
+1. **A per-button `useFieldTestClass()` marker class** (`mb-field-<useId>-btn-…`)
+   so `createXPathFromElement` names exactly one node. This is the house pattern
+   — see `components/SetSelector/EntityColumn.tsx` and the converted
+   `EntityReviewWizard.tsx` footer.
+2. **Distinct accessible names** so a screen-reader user can tell the buttons
+   apart, plus real Enter handling (`lib/dom/activate-on-enter.ts`). Keyboard
+   operability is a product requirement: CLAUDE.md says every flow must be fully
+   operable from the keyboard.
+
+The collision is the test reporting an accessibility gap. Close the gap rather
+than routing around it.
 
 Corollary — **a synthetic KeyboardEvent has no default action.** `dispatchEvent`
 runs the listeners and stops, so a focused `<button>` is NOT activated the way a

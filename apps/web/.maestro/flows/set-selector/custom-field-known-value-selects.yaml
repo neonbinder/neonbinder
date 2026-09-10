@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Custom field — typing a known synced value selects it instead of creating a duplicate"
 tags:
   - set-selector
-  - regression
 ---
 # Regression test for the "forgiving + Custom field" behaviour introduced in NEO-46.
 #
@@ -69,6 +68,7 @@ tags:
     element:
       id: "Add custom Sports"
     visibilityPercentage: 50
+    timeout: 7000
 # NEO-85 residual coordinate-staleness: this flow advances the drill via the
 # Sports "+ Custom" form (NOT a search-row-select), so its one droppable tap is
 # the form-open trigger. Result-keyed retry — re-fire ONCE iff the "Add Custom
@@ -149,3 +149,4 @@ tags:
     element:
       text: "Sync Years"
     centerElement: true
+    timeout: 7000

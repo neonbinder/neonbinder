@@ -235,10 +235,19 @@ function FranchiseDetail({
   return (
     <div className="space-y-5">
       <div>
+        {/* `scroll-mt-32` (128px) — NOT decoration, and not the sticky
+            header's 80px either. `focus()` scrolls, and `html` carries
+            `scroll-padding-top: 80px`, so focusing this heading parks it at
+            viewport y=80 — which is exactly where the screen's `sticky`
+            confirmation notice pins itself after a create. The focus ring
+            would land underneath it (WCAG 2.2 SC 2.4.11, Focus Not Obscured).
+            128px clears the notice's 38px box with room to spare, and costs
+            nothing when there is no notice: the heading simply lands 48px
+            lower. NEO-260. */}
         <h3
           ref={headingRef}
           tabIndex={-1}
-          className="text-lg font-semibold leading-tight focus:outline-none focus-visible:rounded-sm focus-visible:ring-2 focus-visible:ring-neon-purple"
+          className="scroll-mt-32 text-lg font-semibold leading-tight focus:outline-none focus-visible:rounded-sm focus-visible:ring-2 focus-visible:ring-neon-purple"
         >
           {franchise.name}
         </h3>
@@ -480,7 +489,15 @@ export default function FranchiseManagement() {
       selectedRowRef.current?.scrollIntoView({ block: "nearest" });
   }, [followedLatest]);
 
-  const select = (id: string) => {
+  /**
+   * `keepStatus` is set by exactly one caller, `add()`, which has already put
+   * its confirmation in `status` by the time it gets here. Every other path
+   * clears it: that message is about the franchise that was just started and
+   * must not still be on screen over the next one the operator clicks
+   * (NEO-260).
+   */
+  const select = (id: string, keepStatus = false) => {
+    if (!keepStatus) setStatus(null);
     setSelectedId(id);
     setAdding(false);
     followed.follow(id);
@@ -560,7 +577,8 @@ export default function FranchiseManagement() {
       });
       setNewName("");
       setAdding(false);
-      select(id);
+      // `true`: keep the confirmation just set — see `select`.
+      select(id, true);
     } catch (e) {
       setStatus({
         text: userFacingMessage(e, "Could not start that franchise."),
@@ -573,15 +591,14 @@ export default function FranchiseManagement() {
 
   return (
     <div className="space-y-4">
-      {status && (
-        <p
-          className={`text-sm ${status.isError ? "text-neon-pink" : "text-slate-300"}`}
-          role={status.isError ? "alert" : "status"}
-        >
-          {status.text}
-        </p>
-      )}
-
+      {/* NEO-260 removed the screen-level status line that used to sit here.
+          It carried the "Start a franchise" form's messages, and that form is
+          in the detail column with its button row below the fold — measured in
+          run 34442670233, "Started <name>." was read at viewport y=27, i.e.
+          entirely underneath the 79px sticky header. The E2E assertion passed
+          on it anyway, because maestro-web reads the accessibility tree and the
+          accessibility tree does not model occlusion. It renders at the head of
+          the detail column now; see the notice below. */}
       <div className="flex flex-wrap items-end gap-3">
         <Input
           ref={filterRef}
@@ -684,6 +701,27 @@ export default function FranchiseManagement() {
 
         {/* Detail */}
         <div className="rounded-lg border border-slate-800 p-4">
+          {status && (
+            /* The add form's own line, at the head of the column that carries
+               the form — and `sticky`, so it is pinned under the sticky header
+               instead of scrolled off above it. Starting a franchise SELECTS
+               it, which unmounts the form, so there is no button row left to
+               render into; the column is what survives the swap. `z-10` sits
+               below `binder-header`'s `z-20`, and the solid background stops
+               panel content showing through once it is pinned.
+               `pointer-events-none` so a pinned box can never become a dead
+               zone over a control it happens to cover — the mistake
+               `binder-header`'s logo group made, which cost this suite a
+               swallowed tap in NEO-260. It never scrolls the page. */
+            <p
+              className={`pointer-events-none sticky top-20 z-10 mb-3 rounded-md border border-slate-800 bg-background px-3 py-2 text-sm ${
+                status.isError ? "text-neon-pink" : "text-slate-300"
+              }`}
+              role={status.isError ? "alert" : "status"}
+            >
+              {status.text}
+            </p>
+          )}
           {adding ? (
             <div className="space-y-4">
               <h3 className="text-lg font-semibold">Start a franchise</h3>
