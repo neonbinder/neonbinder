@@ -1,8 +1,0 @@
-PASS .maestro/flows/profile/worker-bootstrap.yaml
-PASS .maestro/flows/set-selector/features-propagation.yaml
-PASS .maestro/flows/admin/league-management-add-and-edit.yaml
-PASS .maestro/flows/placeholders/pipeline-escalation-cold-start.yaml
-PASS .maestro/flows/set-selector/checklist-wizard-link-to-existing-player.yaml
-PASS .maestro/flows/set-selector/inserts-1996-score-one-nb-set-two-bsc-sources.yaml
-PASS .maestro/flows/set-selector/sets-resync-already-loaded.yaml
-PASS .maestro/flows/auth/sign-out.yaml

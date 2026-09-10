@@ -358,6 +358,48 @@ tags:
     timeout: 7000
 - assertVisible: "Second-${ATTEMPT_ID}"
 
+# GO BACK UP TO THE YEARS ROW — the alias chips are not next to it.
+#
+# WHERE THE PAGE SITS WHEN THIS STEP BEGINS: at the bottom of the alias-chip
+# scroll above, which is the last thing that moved it. WHERE THE ANCHOR IS IN
+# DOM ORDER: `LeagueDetailPanel` stacks its fields League name/Sport ->
+# Abbreviation/Wikidata id -> qid caption -> **Active from/Active to** -> years
+# caption -> LevelGroup -> Aliases -> the chips. So the years row is FIVE
+# children ABOVE the chip the previous step just centred, and a DOWN scroll can
+# never recover it.
+#
+# MEASURED, and it is R5's "never depend on the document bottoming out" exactly.
+# Green CI 34361627641 (r6): the chip scroll read y=601 at try 0 and y=302 at
+# try 1 and stopped there. 302 was not centring — it was the document bottom:
+# the same run's next step froze "No teams yet." at y=445 through
+# `Scrolling try count: 0`..`5`, which puts maximum scroll at 612, and the chip
+# landed at exactly 612. The driver's swipe is ~313px; it asked for 313 and the
+# page had 299 left. With the page pinned there the "Active from" box sat at
+# y≈36-78 — on screen by 36 pixels, which is the entire margin this assertion
+# ever had.
+# NEO-260's 208px spacer (`h-[208px]`, src/layouts/binder-layout.tsx) takes
+# maximum scroll from 612 to 820, so the same swipe no longer clamps: run
+# 34433476511 (r0) read the chip at y=501 then y=188, i.e. scroll 726, 114px
+# deeper than green. The failure dump agrees — root bounds [0,-726][1009,719]
+# (94px still below the fold, so NOT maximum scroll), "Level" the first thing on
+# screen at y=8 — which puts the years row at y≈-102..-36 and its value out of
+# the hierarchy entirely. Nothing about the era failed to save; the assertion was
+# reporting where the field had scrolled to.
+# So re-anchor first, the same remedy as `team-management-edit-a-team`'s
+# `Location`. "Active from" is the row's own label, 102px above the top of the
+# viewport, so one UP swipe brings it to y≈211 (centre 221, inside the measured
+# UP accept band which starts at 206) and it centres at try 0 — leaving the box
+# and its year at y≈235-277, clear of the 64px sticky header. Positioning only:
+# nothing this flow proves changes. It leaves the page ~313px higher, so the
+# "No teams yet." scroll below now needs one swipe instead of none (~2.9s, still
+# well inside its 7000).
+- scrollUntilVisible:
+    element:
+      text: "Active from"
+    direction: UP
+    centerElement: true
+    timeout: 7000
+
 # ...and the era came back with them. "Active from" reads its stored value, which
 # is the only place on this screen a year can appear.
 - assertVisible: "1901"

@@ -229,9 +229,33 @@ tags:
 - assertNotVisible:
     id: "Card name"
 
+# SAME ROW, SAME PROBLEM, SAME DIRECTION as the Edit button above — Del and Edit
+# are two cells of ONE checklist row, so whatever is true of one is true of the
+# other. This step was simply not touched when that one was fixed.
+#
+# WHERE THE PAGE SITS WHEN THIS STEP BEGINS: at maximum scroll. The three
+# x=80% swipes that reached the Players section drive the drawer's own scroller
+# and chain to the window once it bottoms out, and "Done editing card" only
+# closes the drawer — it does not scroll. WHERE THE ANCHOR IS IN DOM ORDER: the
+# checklist row is in `CardChecklist`, the LAST block on the page, which by then
+# is off the TOP of the viewport. A DOWN scroll travels away from it.
+# MEASURED. Green CI 34361627641 (r2) read this exact button at y=156 and
+# accepted it at try 0 without swiping at all. NEO-260's 208px spacer
+# (`h-[208px]`, src/layouts/binder-layout.tsx) puts the same row at 156-208 =
+# -52, and run 34433476511 (r0) failed here after four `ElementNotFound`
+# retries. The dump is the same signature the Edit step above documents: root
+# bounds [0,-1135][1009,625] — document bottom flush with the viewport bottom,
+# i.e. maximum scroll — with `virtuoso-item-list` at [72,-93][767,15] holding
+# ZERO rendered rows. react-virtuoso has UNMOUNTED the row, so the button is not
+# merely off-screen, it is out of the DOM and no DOWN scroll can ever find it.
+# UP re-anchors instead (R5: never depend on the document bottoming out). One
+# swipe brings the row from -52 to ~261 — the Edit step measured exactly that a
+# few commands earlier in this same run — which centres at try 0 and leaves the
+# tap clear of the 64px sticky header.
 - scrollUntilVisible:
     element:
       id: "Delete card 777-${ATTEMPT_ID}"
+    direction: UP
     centerElement: true
     visibilityPercentage: 50
     timeout: 7000
