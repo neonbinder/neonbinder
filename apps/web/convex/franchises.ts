@@ -99,8 +99,11 @@ const franchiseTeamValidator = v.object({
  * The one place a franchise name becomes storable fields. Mirrors
  * `teamRowFields` — the dedup key is derived here and nowhere else, so a
  * writer cannot store a name whose key disagrees with it.
+ *
+ * Exported for `repairs/neo254ProdData.renameFranchise`, which is a second
+ * door into a rename and must derive the key exactly as `save` does.
  */
-function franchiseRowFields(raw: string): {
+export function franchiseRowFields(raw: string): {
   name: string;
   nameNormalized: string;
 } {
@@ -125,7 +128,7 @@ function franchiseRowFields(raw: string): {
 }
 
 /** The row this sport already holds under that name, or null. Never inserts. */
-async function findFranchiseByName(
+export async function findFranchiseByName(
   ctx: QueryCtx | MutationCtx,
   sportId: Id<"selectorOptions">,
   name: string,
