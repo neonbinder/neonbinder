@@ -1,5 +1,6 @@
 import { Link } from "react-router";
 import {
+  BuildingOffice2Icon,
   SignalIcon,
   SquaresPlusIcon,
   TrophyIcon,
@@ -45,6 +46,14 @@ const TOOL_DETAILS: Record<
     description:
       "Resolve team colors, confirm ambiguous matches, and correct team details by hand.",
     icon: UserGroupIcon,
+    accent: "text-neon-purple group-hover:border-neon-purple/50",
+  },
+  "/admin/franchises": {
+    description:
+      "String a club's old names into one thread — Oilers to Titans — and see every team on it in order.",
+    icon: BuildingOffice2Icon,
+    // Deliberately the SAME accent as Teams. Franchises are not a fifth kind
+    // of entity; they are a lens on team rows, and the shared colour says so.
     accent: "text-neon-purple group-hover:border-neon-purple/50",
   },
   "/admin/leagues": {

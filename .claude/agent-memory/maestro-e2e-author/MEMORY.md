@@ -74,3 +74,7 @@
 - [Write once feature snapshots panel assertability](reference_write_once_feature_snapshots_neo71_74.md) — NEO-71-74 write-once feature snapshots — how to E2E-assert auto-populated SetAttributesPanel feature VALUES (only derived Vintage is text-assertable), and root fully-c…
 
 Non-markdown helpers: `tools/`
+- [/admin/teams: what a flow can drive](reference_admin_teams_selects_are_unreachable.md) — `team-league` is still untappable (3 selects); the Franchise picker is pills since 4666a57 — its selectors, the 24-pill cap, and Save-commits-the-link
+- [Input primitive has no resource-id](patterns_input_primitive_has_no_resource_id.md) — `id: "<label>"` never resolves on `primitives/Input`; tap the label text, assert the VALUE
+- [Below-the-fold asserts + bottom-locked scrolls](patterns_below_the_fold_asserts_and_bottom_locked_scrolls.md) — a form's inline validation line is past y=629 and the hierarchy is clipped, so assertVisible lies; the admin header row WRAPS as the row count grows and shoves the panel 46px down; centerElement on a bottom-locked target burns futile swipes but IS what reaches max scroll; removing a TeamPicker chip closes the popover
+- [A non-matching `runFlow when` costs ~6.6s](reference_wizard_drain_loop_one_footer_guard.md) — drain the wizard with ONE guard on the footer button `Add as New (Team|League)`, never one per step heading; two guards cost +214s on one flow

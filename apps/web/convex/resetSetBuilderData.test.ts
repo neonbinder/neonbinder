@@ -91,12 +91,21 @@ async function seedAllSixTables(
       lastUpdated: NOW,
     });
 
+    // franchises: 1 (NEO-254)
+    const franchiseId = await ctx.db.insert("franchises", {
+      name: "Yankees",
+      nameNormalized: "yankees",
+      sportId,
+      lastUpdated: NOW,
+    });
+
     // teams: 2
     const teamId = await ctx.db.insert("teams", {
       name: "New York Yankees",
       nameNormalized: "new york yankees",
       sportId,
       leagueId,
+      franchiseId,
       lastUpdated: NOW,
     });
     await ctx.db.insert("teams", {
@@ -167,6 +176,7 @@ async function tableCounts(t: ReturnType<typeof convexTest>) {
       .length,
     players: (await ctx.db.query("players").collect()).length,
     teams: (await ctx.db.query("teams").collect()).length,
+    franchises: (await ctx.db.query("franchises").collect()).length,
     leagues: (await ctx.db.query("leagues").collect()).length,
   }));
 }
@@ -191,6 +201,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       cardCrossListings: 6,
       players: 4,
       teams: 2,
+      franchises: 1,
       leagues: 1,
     });
   });
@@ -211,6 +222,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       cardCrossListings: 6,
       players: 4,
       teams: 2,
+      franchises: 1,
       leagues: 1,
     });
   });
@@ -227,8 +239,11 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       cardChecklistDeleted: 5,
       crossListingsDeleted: 6,
       playersDeleted: 4,
+      playerAliasesDeleted: 0,
       teamsDeleted: 2,
+      franchisesDeleted: 1,
       leaguesDeleted: 1,
+      complete: true,
     });
 
     expect(await tableCounts(t)).toEqual({
@@ -237,6 +252,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       cardCrossListings: 0,
       players: 0,
       teams: 0,
+      franchises: 0,
       leagues: 0,
     });
   });
@@ -254,6 +270,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
     ["resetCardCrossListingsBatch", "cardCrossListings"],
     ["resetPlayersBatch", "players"],
     ["resetTeamsBatch", "teams"],
+    ["resetFranchisesBatch", "franchises"],
     ["resetLeaguesBatch", "leagues"],
   ] as const)(
     "%s refuses when unarmed, even called directly, and deletes nothing",
@@ -276,6 +293,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
         cardCrossListings: 6,
         players: 4,
         teams: 2,
+        franchises: 1,
         leagues: 1,
       });
     },
@@ -292,8 +310,170 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       cardChecklistDeleted: 0,
       crossListingsDeleted: 0,
       playersDeleted: 0,
+      playerAliasesDeleted: 0,
       teamsDeleted: 0,
+      franchisesDeleted: 0,
       leaguesDeleted: 0,
+      complete: true,
     });
+  });
+});
+
+/**
+ * NEO-254 — the reset is resumable under a wall-clock budget.
+ *
+ * `npx convex run` waits roughly five minutes for an action and then prints a
+ * bare `Error` and exits 1, even though the action keeps running. A preview
+ * bulk-loaded with 110k players tripped that (CI run 34390342992, 2026-09-09).
+ * So one call works for `RESET_TIME_BUDGET_MS` and returns `complete: false`
+ * with rows still to delete; `e2e-baseline.sh reset` calls again until it
+ * sees `complete: true`. A zero budget is the deterministic way to exercise
+ * that: every call yields after the first batch that did any work.
+ */
+describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => {
+  test("a zero budget returns complete: false after draining the first table", async () => {
+    vi.stubEnv("ALLOW_RESET_SET_BUILDER_DATA", "true");
+    vi.stubEnv("RESET_TIME_BUDGET_MS", "0");
+    const t = convexTest(schema, modules);
+    await seedAllSixTables(t);
+
+    const result = await runReset(t);
+
+    expect(result.complete).toBe(false);
+    // The first table in the order is selectorOptions; that batch ran and
+    // finished before the budget check could stop anything.
+    expect(result.selectorOptionsDeleted).toBe(3);
+    const counts = await tableCounts(t);
+    expect(counts.selectorOptions).toBe(0);
+    // Not everything: at least one later table still has its rows. Which ones
+    // is not pinned — only that a single zero-budget pass is partial.
+    expect(counts.leagues).toBe(1);
+  });
+
+  test("repeated zero-budget runs eventually return complete: true with every table empty", async () => {
+    vi.stubEnv("ALLOW_RESET_SET_BUILDER_DATA", "true");
+    vi.stubEnv("RESET_TIME_BUDGET_MS", "0");
+    const t = convexTest(schema, modules);
+    await seedAllSixTables(t);
+
+    // Mirrors the shell loop's cap: eight tables need at most eight passes
+    // under a zero budget, and a loop that needs more than 20 is stuck.
+    const MAX_PASSES = 20;
+    let passes = 0;
+    let complete = false;
+    const totals = {
+      selectorOptionsDeleted: 0,
+      cardChecklistDeleted: 0,
+      crossListingsDeleted: 0,
+      playersDeleted: 0,
+      playerAliasesDeleted: 0,
+      teamsDeleted: 0,
+      franchisesDeleted: 0,
+      leaguesDeleted: 0,
+    };
+    while (!complete && passes < MAX_PASSES) {
+      passes += 1;
+      const result = await runReset(t);
+      complete = result.complete;
+      for (const key of Object.keys(totals) as Array<keyof typeof totals>) {
+        totals[key] += result[key];
+      }
+    }
+
+    expect(complete).toBe(true);
+    expect(passes).toBeGreaterThan(1);
+    expect(passes).toBeLessThanOrEqual(MAX_PASSES);
+    // Every row was deleted exactly once across the passes — resuming never
+    // double-counts or skips a table.
+    expect(totals).toEqual({
+      selectorOptionsDeleted: 3,
+      cardChecklistDeleted: 5,
+      crossListingsDeleted: 6,
+      playersDeleted: 4,
+      playerAliasesDeleted: 0,
+      teamsDeleted: 2,
+      franchisesDeleted: 1,
+      leaguesDeleted: 1,
+    });
+    expect(await tableCounts(t)).toEqual({
+      selectorOptions: 0,
+      cardChecklist: 0,
+      cardCrossListings: 0,
+      players: 0,
+      teams: 0,
+      franchises: 0,
+      leagues: 0,
+    });
+  });
+
+  test("the budget never pre-empts the arming check: unarmed + zero budget still refuses and deletes nothing", async () => {
+    // The budget check lives AFTER a batch; a batch asserts arming first. So
+    // a zero budget must not turn an unarmed run into "stopped early, deleted
+    // a little" — it has to be the same hard refusal as before.
+    vi.stubEnv("RESET_TIME_BUDGET_MS", "0");
+    const t = convexTest(schema, modules);
+    await seedAllSixTables(t);
+
+    await expect(runReset(t)).rejects.toThrow(/ALLOW_RESET_SET_BUILDER_DATA/);
+
+    expect(await tableCounts(t)).toEqual({
+      selectorOptions: 3,
+      cardChecklist: 5,
+      cardCrossListings: 6,
+      players: 4,
+      teams: 2,
+      franchises: 1,
+      leagues: 1,
+    });
+  });
+});
+
+describe("NEO-254: the alias index is drained with the players it describes", () => {
+  test("playerAliases rows do not outlive their players", async () => {
+    /*
+     * `playerAliases` is one flat row per (player, alias), and it is what
+     * `by_alias_normalized_and_sport_id` answers from. A reset that wiped
+     * players and left it standing would leave rows pointing at nothing — and
+     * because `sameNamePlayers` drops a hit whose player is gone, the damage
+     * is quiet rather than loud: the table just grows on every reset until it
+     * is bigger than the one it indexes.
+     */
+    const t = convexTest(schema, modules);
+    process.env.ALLOW_RESET_SET_BUILDER_DATA = "true";
+    try {
+      const sportId = await t.run(async (ctx) =>
+        ctx.db.insert("selectorOptions", {
+          level: "sport",
+          value: "Basketball",
+          platformData: {},
+          children: [],
+          lastUpdated: Date.now(),
+        }),
+      );
+      await t.run(async (ctx) => {
+        const playerId = await ctx.db.insert("players", {
+          name: "Metta World Peace",
+          nameNormalized: "metta peace world",
+          sportId,
+          aliases: ["Ron Artest"],
+          lastUpdated: Date.now(),
+        });
+        await ctx.db.insert("playerAliases", {
+          playerId,
+          sportId,
+          aliasNormalized: "artest ron",
+        });
+      });
+
+      const result = await runReset(t);
+
+      expect(result.playersDeleted).toBe(1);
+      expect(result.playerAliasesDeleted).toBe(1);
+      expect(await t.run(async (ctx) => ctx.db.query("playerAliases").collect())).toEqual(
+        [],
+      );
+    } finally {
+      delete process.env.ALLOW_RESET_SET_BUILDER_DATA;
+    }
   });
 });

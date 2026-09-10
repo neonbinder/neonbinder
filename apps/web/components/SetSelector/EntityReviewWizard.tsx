@@ -5,6 +5,8 @@ import { useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import { normalizeEntityName } from "../../convex/lib/entityNearMatch";
+// NEO-254: the server's scan cap, so the panel can say when it was hit.
+import { PLAYER_AMBIGUITY_SCAN_LIMIT } from "../../lib/players/name-limits";
 // NEO-212 security review: an enrichment `wikidataId` arrives from
 // query.wikidata.org, so it is external input on its way into an `href`.
 // `wikidataUrl` returns null unless it is really a `Q<digits>` id — see
@@ -17,11 +19,13 @@ import NeonButton from "../modules/NeonButton";
 import { ConfirmDialog } from "../modules/confirm-dialog";
 import { Input } from "../primitives/Input";
 import { CopyButton } from "../primitives/CopyButton";
-import {
-  NearMatchPanel,
-  hasExact,
-  type NearMatch,
-} from "../entities/NearMatchPanel";
+// `hasExact` is deliberately no longer imported: NEO-254 needs to know
+// whether there is EXACTLY ONE exact match, not whether there is at least one,
+// and the boolean cannot answer that. The admin add form still uses it — the
+// question it asks there ("is a duplicate possible at all?") is the one
+// `hasExact` was written for.
+import { NearMatchPanel, type NearMatch } from "../entities/NearMatchPanel";
+import { teamOptionLabel } from "../../lib/teams/team-era";
 import EntityLinkSearch from "./EntityLinkSearch";
 import CareerTeamEntry, { type CareerTeamDraft } from "./CareerTeamEntry";
 // NEO-236: the one form a team is created from, shared with NewTeamDialog.
@@ -30,6 +34,15 @@ import NewTeamForm, {
   newTeamPrefill,
   type NewTeamDraft,
 } from "./NewTeamForm";
+import type { LeagueLevel } from "../admin/AddLeagueForm";
+import NewLeagueForm, {
+  leagueDraftError,
+  newLeaguePrefill,
+  parseAliases,
+  type NewLeagueDraft,
+} from "./NewLeagueForm";
+import SameNamePlayerPanel from "./SameNamePlayerPanel";
+import UndatedCareerTeams from "./UndatedCareerTeams";
 import { deriveStagedTeamNames } from "./entity-review-staging";
 import {
   countBulkCreatable,
@@ -154,6 +167,12 @@ const TEAM_LOCATION_FIELD_ID = "entity-review-team-location";
 const TEAM_NAME_FIELD_ID = "entity-review-team-name";
 /** NEO-236 — the League pill group on the New Team step, same reasoning. */
 const TEAM_LEAGUE_FIELD_ID = "entity-review-team-league";
+// NEO-254 — the New League step's two addressable controls. Same reason the
+// three above carry ids: maestro-web derives `resource-id` from `node.id ||
+// node.ariaLabel`, and a stable id is what a flow can target without depending
+// on the label copy.
+const LEAGUE_NAME_FIELD_ID = "entity-review-league-name";
+const LEAGUE_LEVEL_FIELD_ID = "entity-review-league-level";
 
 /**
  * NEO-236 — what the Location + Name pair shows for a team row before the
@@ -296,6 +315,11 @@ export default function EntityReviewWizard({
   );
   // NEO-236 — turn a player's career teams into their own New Team steps.
   const stageCareerTeams = useMutation(api.entityReviewQueue.stageCareerTeamRows);
+  // NEO-254 — a league the operator TYPES on a team step gets a step of its
+  // own, so it is asked the same questions a suggested league is. Without it
+  // the commit fell back to a bare `findOrCreateLeague(name)`, which is the
+  // name-only league this feature exists to stop.
+  const stageLeagueRows = useMutation(api.entityReviewQueue.stageLeagueRows);
   // NEO-248 — removing a chip has to be as durable as adding one was.
   const clearCareerTeamStint = useMutation(
     api.entityReviewQueue.clearCareerTeamStint,
@@ -361,6 +385,14 @@ export default function EntityReviewWizard({
    */
   const [teamCreateByRow, setTeamCreateByRow] = useState<
     Record<string, NewTeamDraft>
+  >({});
+  /**
+   * NEO-254 — the same, per LEAGUE row, and never reset per row for the same
+   * reason: a typed correction must survive NEO-221 back-navigation. Absent
+   * means "untouched", which renders the live prefill.
+   */
+  const [leagueCreateByRow, setLeagueCreateByRow] = useState<
+    Record<string, NewLeagueDraft>
   >({});
   /*
    * NEO-236 — there is no per-career-team draft state any more.
@@ -789,6 +821,23 @@ export default function EntityReviewWizard({
   ):
     | { kind: "resolved" | "creating" | "linked"; name: string }
     | { kind: "checking" }
+    /**
+     * NEO-254 — the sport holds SEVERAL teams under this name, one per era.
+     *
+     * `teams.resolveNames` answers `ambiguous` rather than picking, because a
+     * name alone is not an answer: the 1972-1996 Winnipeg Jets and the 2011-
+     * ones are different franchises. Nothing is resolved on the client — the
+     * prelude resolves each stint by its OWN `fromYear`, which is the only
+     * year that can settle it, and a chip that guessed here would disagree
+     * with what the commit actually writes.
+     *
+     * So this reports the state and nothing else. The chip already carries its
+     * years, so for the ordinary case the operator has nothing to do: the
+     * commit will pick the right era on its own. It matters when the years are
+     * wrong or missing, and the existing "Add years" / stint editing is how
+     * that is fixed.
+     */
+    | { kind: "ambiguous" }
     // NEO-236 — `stagedRowId` is the step that answers this label, when the
     // batch holds one. Without it the chip said "needs a team decision" and
     // pointed nowhere, which is exactly what Jason hit: "There does not appear
@@ -801,6 +850,10 @@ export default function EntityReviewWizard({
     if (resolved?.existingTeamId) {
       return { kind: "resolved", name: resolved.existingName ?? label };
     }
+    // NEO-254 — several eras answer to this name. Reported, never guessed at;
+    // see the `ambiguous` case above. Checked BEFORE the staged-step branch,
+    // because a name we already hold has no staged step by construction.
+    if (resolved?.ambiguous) return { kind: "ambiguous" };
     const staged = stagedTeamRowsForCurrent.get(key);
     /*
      * The match query has not answered yet, and this chip has no staged step
@@ -1349,6 +1402,17 @@ export default function EntityReviewWizard({
         name: string;
         leagueId?: Id<"leagues"> | null;
         leagueName?: string;
+        // NEO-254 — see `teamCreateValidator`.
+        yearsActive?: { from: number; to?: number };
+      };
+      // NEO-254 — league-kind only. See `NewLeagueForm`.
+      createLeague?: {
+        name: string;
+        abbreviation?: string;
+        level?: LeagueLevel;
+        yearsActive?: { from: number; to?: number };
+        aliases?: string[];
+        wikidataId?: string;
       };
     } = {},
   ) =>
@@ -1367,12 +1431,13 @@ export default function EntityReviewWizard({
           ? payload.excludedCareerTeamNames
           : undefined,
         create: payload.create,
+        createLeague: payload.createLeague,
       }),
     );
   const handleLink = async (
     reviewRowId: Id<"entityReviewQueue">,
-    kind: "player" | "team",
-    linkedId: Id<"players"> | Id<"teams">,
+    kind: "player" | "team" | "league",
+    linkedId: Id<"players"> | Id<"teams"> | Id<"leagues">,
   ) =>
     decide(reviewRowId, () =>
       recordDecision({
@@ -1380,6 +1445,9 @@ export default function EntityReviewWizard({
         action: "link",
         linkedPlayerId: kind === "player" ? (linkedId as Id<"players">) : undefined,
         linkedTeamId: kind === "team" ? (linkedId as Id<"teams">) : undefined,
+        // NEO-254 — every team in the batch that named this league then uses
+        // the linked row rather than creating anything.
+        linkedLeagueId: kind === "league" ? (linkedId as Id<"leagues">) : undefined,
       }),
     );
   const handleSkip = async (reviewRowId: Id<"entityReviewQueue">) =>
@@ -1562,9 +1630,23 @@ export default function EntityReviewWizard({
 
   if (!isOpen || rows === undefined) return null;
 
-  const kindLabel = (kind: "player" | "team") => (kind === "player" ? "Player" : "Team");
+  const kindLabel = (kind: "player" | "team" | "league") =>
+    kind === "player" ? "Player" : kind === "league" ? "League" : "Team";
   /** "not a person" / "not a team" — the skip control says what it is denying. */
-  const notAWhat = (kind: "player" | "team") => (kind === "player" ? "person" : "team");
+  /*
+   * NEO-254 — a league's third way out is NOT "not a league".
+   *
+   * On a player or team step, Skip means "this string is not an entity" and is
+   * remembered per set in `entityReviewSkips` so the name never comes back. A
+   * league step is a different question: the string IS a league, and skipping
+   * says this TEAM has no league. That is an answer about the team, not a
+   * judgement about the name, so it is worded as one and the commit does not
+   * record it as a suppressed name (see the prelude's skip loop).
+   */
+  const notAWhat = (kind: "player" | "team" | "league") =>
+    kind === "player" ? "person" : kind === "league" ? "league" : "team";
+  const skipLabel = (kind: "player" | "team" | "league") =>
+    kind === "league" ? "Skip — no league" : `Skip — not a ${notAWhat(kind)}`;
 
   /**
    * NEO-236 — the Location + Name pair for the current TEAM row.
@@ -1582,6 +1664,68 @@ export default function EntityReviewWizard({
     setTeamCreateByRow((prev) => ({
       ...prev,
       [rowId]: { ...(prev[rowId] ?? teamCreate), ...patch },
+    }));
+  };
+
+  // NEO-254 — the league step's draft, read and written the same way.
+  const leagueCreate: NewLeagueDraft =
+    current && current.kind === "league"
+      ? (leagueCreateByRow[current._id] ?? newLeaguePrefill(current))
+      : {
+          name: "",
+          abbreviation: "",
+          level: null,
+          fromYear: "",
+          toYear: "",
+          aliases: "",
+          wikidataId: "",
+        };
+
+  /**
+   * NEO-254 — the row this staged step was raised FOR, by name.
+   *
+   * One derivation for both staged kinds: a team staged for a player reads
+   * `source.playerRowId`, a league staged for a team reads `source.teamRowId`.
+   * Undefined on a row that came off the checklist — that name was asked for
+   * directly, and saying who needs it would answer a question nobody asked.
+   */
+  const neededByName: string | undefined = (() => {
+    const source = current?.source;
+    if (!source) return undefined;
+    const parentId =
+      source.kind === "careerTeamOf" ? source.playerRowId : source.teamRowId;
+    return rows.find((r) => r._id === parentId)?.name ?? undefined;
+  })();
+
+  /**
+   * NEO-254 — the leagues this batch has ANSWERED, by the name a team row
+   * would refer to them by.
+   *
+   * Nothing is written until commit, so `api.leagues.list` cannot see a league
+   * the New League step just created. Without this the team step went on
+   * offering `Create National Hockey League` for a league already answered —
+   * the exact defect the step exists to remove.
+   *
+   * Both names are contributed: the label the STEP was raised for (which is
+   * what the team's `enrichment.league` and `create.leagueName` carry) and the
+   * name the operator actually typed, which they are free to change.
+   */
+  const stagedLeagueNames: string[] = rows.flatMap((r) => {
+    if (r.kind !== "league" || !r.decision) return [];
+    if (r.decision.action === "create") {
+      const typed = r.decision.createLeague?.name?.trim();
+      return typed && typed !== r.name ? [r.name, typed] : [r.name];
+    }
+    if (r.decision.action === "link") return [r.name];
+    // A skipped league is NOT staged: nothing will be created for it, and the
+    // team step should keep offering its own answer.
+    return [];
+  });
+
+  const patchLeagueCreate = (rowId: string, patch: Partial<NewLeagueDraft>) => {
+    setLeagueCreateByRow((prev) => ({
+      ...prev,
+      [rowId]: { ...(prev[rowId] ?? leagueCreate), ...patch },
     }));
   };
 
@@ -1647,6 +1791,12 @@ export default function EntityReviewWizard({
    */
   const createBlocked: string | null = (() => {
     if (!current) return null;
+    if (current.kind === "league") {
+      // NEO-254 — the same bounds `convex/leagues.ts` refuses, checked while
+      // the field is still in front of the operator. The server re-validates;
+      // this is the fast half of defence in depth.
+      return leagueDraftError(leagueCreate, new Date().getFullYear() + 1);
+    }
     if (current.kind === "team") {
       if (!teamCreate.name.trim()) return "Enter a team name before adding it.";
       // Mirrors MAX_TEAM_FULL_NAME_LENGTH in convex/entityReviewQueue.ts,
@@ -1687,6 +1837,35 @@ export default function EntityReviewWizard({
    */
   const buildCreatePayload = () => {
     if (!current) return {};
+    if (current.kind === "league") {
+      // NEO-254 — the whole record, trimmed and shaped exactly as
+      // `entityReviewQueue.leagueCreateValidator` expects. An empty field is
+      // OMITTED rather than sent as "": absent means "not answered", which is
+      // what lets `findOrCreateLeague`'s gap-fill leave an existing league's
+      // value alone instead of clearing it.
+      const from = leagueCreate.fromYear.trim();
+      const to = leagueCreate.toYear.trim();
+      const aliases = parseAliases(leagueCreate.aliases);
+      const abbreviation = leagueCreate.abbreviation.trim();
+      const wikidataId = leagueCreate.wikidataId.trim();
+      return {
+        createLeague: {
+          name: leagueCreate.name.trim(),
+          ...(abbreviation ? { abbreviation } : {}),
+          ...(leagueCreate.level ? { level: leagueCreate.level } : {}),
+          ...(from
+            ? {
+                yearsActive: {
+                  from: Number(from),
+                  ...(to ? { to: Number(to) } : {}),
+                },
+              }
+            : {}),
+          ...(aliases.length ? { aliases } : {}),
+          ...(wikidataId ? { wikidataId } : {}),
+        },
+      };
+    }
     if (current.kind === "team") {
       const location = teamCreate.location.trim();
       return {
@@ -1700,6 +1879,13 @@ export default function EntityReviewWizard({
             ? { leagueId: teamCreate.leagueId }
             : {}),
           ...(teamCreate.leagueName ? { leagueName: teamCreate.leagueName } : {}),
+          // NEO-254 — the era the operator typed. It is what tells the
+          // 1972-1996 Winnipeg Jets from the 2011- ones, so a create that
+          // dropped it would adopt whichever row the name already found. See
+          // `teamCreateValidator`.
+          ...(teamCreate.yearsActive
+            ? { yearsActive: teamCreate.yearsActive }
+            : {}),
         },
       };
     }
@@ -1709,8 +1895,119 @@ export default function EntityReviewWizard({
     };
   };
 
-  const exactMatch = (nearMatches ?? []).find((m) => m.confidence === "exact") ?? null;
-  const showExactHierarchy = hasExact(nearMatches) && exactMatch !== null;
+  /**
+  /**
+   * NEO-254 — Wikidata teams with no years, minus the ones the operator has
+   * already dated on this row.
+   *
+   * Filtered against the staged chips because dating a lead moves it: it
+   * becomes an ordinary staged career team, and leaving the bare name in this
+   * list as well would read as two different teams — one with years, one
+   * without — for the same club.
+   */
+  const undatedCareerTeams = (() => {
+    if (!current || reviewingDecided || current.kind !== "player") return [];
+    const staged = new Set(stagedCareerTeams.map((ct) => normalizeEntityName(ct.name)));
+    return (current.enrichment?.undatedCareerTeams ?? []).filter(
+      (name) => !staged.has(normalizeEntityName(name)),
+    );
+  })();
+
+  const exactRows = (nearMatches ?? []).filter((m) => m.confidence === "exact");
+  const exactMatch = exactRows[0] ?? null;
+
+  /**
+   * NEO-254 — the NB rows already filed under this exact name.
+   *
+   * Normally the server's own list (`players.buildExistingPlayerCandidates`,
+   * attached when the row is enqueued and refreshed when its lookup lands),
+   * which carries the birth year and career line that make the choice
+   * possible. Present only when there are TWO OR MORE, so this is empty for
+   * every ordinary name and the panel never renders.
+   *
+   * Not shown on a decided row: the read-only panel states the outcome, and a
+   * list of link buttons under it would offer to re-decide something that
+   * already has a "Change decision" control.
+   *
+   * ## The fallback, and why it is not "no panel"
+   *
+   * The stored list is missing on a row the completion backstop or the
+   * stale-row sweep settled without ever reading `players`, and on any row
+   * queued before this shipped. `nearMatches` still sees the truth — it reads
+   * the exact key live — so when it returns more than one exact row, those
+   * rows ARE the candidates and are used as such, minus the detail the server
+   * would have supplied.
+   *
+   * Falling back to nothing was the tempting option and it is wrong twice
+   * over. `NearMatchPanel` would render the list instead, and it labels an
+   * exact row `Link to {name} — same name` — so two rows sharing a name get
+   * two controls with byte-identical accessible names, on the one screen where
+   * telling them apart is the entire task. `SameNamePlayerPanel` already
+   * solves that (it folds a position into the label when a row has no
+   * distinguishing fact), so the degraded path gets the component built for
+   * the job rather than the one that cannot express it.
+   */
+  const storedSameNameCandidates =
+    current && !reviewingDecided && current.kind === "player"
+      ? (current.enrichment?.existingCandidates ?? [])
+      : [];
+  const sameNameCandidates =
+    storedSameNameCandidates.length > 0
+      ? storedSameNameCandidates
+      : current && !reviewingDecided && current.kind === "player" && exactRows.length > 1
+        ? exactRows.map((m) => ({
+            playerId: m._id,
+            name: m.name,
+            // No birth year and no career: this path has only what the
+            // near-match query returns. The panel renders "Nothing on file
+            // yet" for them, which is honest — it is what we can see from
+            // here, not a claim about the row.
+            careerSummary: "",
+          }))
+        : [];
+  /**
+   * NEO-254 — did the server stop counting?
+   *
+   * `buildExistingPlayerCandidates` reads at most `PLAYER_AMBIGUITY_SCAN_LIMIT`
+   * rows, so a stored list exactly that long means "at least this many", not
+   * "this many". Saying so matters: a panel that silently shows eight of
+   * eleven "John Smith"s invites the operator to conclude none of them is
+   * right and create a twelfth, which is the failure this whole panel exists
+   * to stop.
+   *
+   * Only ever true of the STORED list. The fallback above is bounded by
+   * `players.nearMatches`' own limit, which is a different number and a
+   * different question, and claiming the scan cap for it would be a guess.
+   */
+  const sameNameScanCapped =
+    storedSameNameCandidates.length >= PLAYER_AMBIGUITY_SCAN_LIMIT;
+  /**
+   * NEO-254 — never promote one of several same-name rows to the primary
+   * action.
+   *
+   * `showExactHierarchy` turns the main button into "Link to {name}" for the
+   * one exact match. With two people on file under that name there is no "the"
+   * exact match, and promoting whichever the ranking returned first is a
+   * one-tap path to the wrong man. When `sameNameCandidates` is populated the
+   * panel above lists every one of them instead, and the primary action goes
+   * back to being "Add as New Player" — which is the honest default: if the
+   * operator wanted one of ours, they have just been shown all of ours.
+   *
+   * ## Two conditions, because the stored marker can be missing
+   *
+   * `sameNameCandidates` comes off `enrichment`, which is written when the row
+   * is enqueued and refreshed when its lookup lands. Neither happens for a row
+   * the completion backstop or the stale-row sweep settled to "error", nor for
+   * one that was already queued when this shipped. So the marker's absence is
+   * NOT proof the name is unambiguous.
+   *
+   * `exactRows.length === 1` is the independent check, and it needs no stored
+   * state at all: `players.nearMatches` reads the exact key live, so two exact
+   * rows in its answer means two people share this name whatever `enrichment`
+   * does or does not say. Either condition alone is enough to demote the
+   * primary; both have to pass to promote it.
+   */
+  const showExactHierarchy = sameNameCandidates.length === 0 && exactRows.length === 1;
   const hasCloseOnly = !showExactHierarchy && (nearMatches?.length ?? 0) > 0;
   /**
    * What the panel is left to show once the primary action has been promoted.
@@ -1719,10 +2016,26 @@ export default function EntityReviewWizard({
    * a Maestro `tapOn` alike. Any OTHER row is a genuinely different entity and
    * still belongs in the list, whatever its confidence.
    */
-  const panelMatches =
-    showExactHierarchy && nearMatches
-      ? nearMatches.filter((m) => m._id !== exactMatch._id)
-      : nearMatches;
+  const panelMatches = (() => {
+    const base =
+      showExactHierarchy && nearMatches
+        ? nearMatches.filter((m) => m._id !== exactMatch._id)
+        : nearMatches;
+    if (sameNameCandidates.length === 0 || !base) return base;
+    /**
+     * NEO-254 — the same-name rows belong to ONE list.
+     *
+     * `players.nearMatches` returns every row on the exact key now, so without
+     * this both panels would render a `Link to {name}` control for each of the
+     * two Bob Allens: four buttons, two accessible names, and the operator
+     * with no way to tell which pair is which. The same-name panel wins them
+     * because it is the only one that shows a birth year and a career line —
+     * the two things that make the choice possible. What is left here is what
+     * this panel is actually for: names that are CLOSE but not identical.
+     */
+    const owned = new Set(sameNameCandidates.map((c) => c.playerId as string));
+    return base.filter((m) => !owned.has(m._id));
+  })();
   const remaining = total - decided;
   /**
    * NEO-236 — the two bulk buttons act on DIFFERENT sets, so they count
@@ -1881,7 +2194,7 @@ export default function EntityReviewWizard({
               void handleLink(
                 current._id,
                 current.kind,
-                exactMatch._id as Id<"players"> | Id<"teams">,
+                exactMatch._id as Id<"players"> | Id<"teams"> | Id<"leagues">,
               );
               return;
             }
@@ -1947,10 +2260,14 @@ export default function EntityReviewWizard({
             if (busy) return;
             void handleSkip(current._id);
           }}
-          aria-label={`Skip ${current.name} — not a ${notAWhat(current.kind)}`}
+          aria-label={
+            current.kind === "league"
+              ? `Skip ${current.name} — this team has no league`
+              : `Skip ${current.name} — not a ${notAWhat(current.kind)}`
+          }
           className="py-2 -my-2 text-xs text-gray-400 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none underline decoration-dotted aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
         >
-          Skip — not a {notAWhat(current.kind)}
+          {skipLabel(current.kind)}
         </button>
 
         {backTargetId && (
@@ -2106,9 +2423,12 @@ export default function EntityReviewWizard({
                           the "Shows as" line below, where it belongs. Only
                           while the step is live: a decided row is being read
                           back, not created. */}
-                      {current.kind === "team" && !reviewingDecided
+                      {/* NEO-254: and the same for a league, one level up. */}
+                      {!reviewingDecided && current.kind === "team"
                         ? `New Team: ${current.name}`
-                        : current.name}
+                        : !reviewingDecided && current.kind === "league"
+                          ? `New League: ${current.name}`
+                          : current.name}
                     </h3>
                     {/* NEO-212 (audit G10): these names are copied out into
                         Wikidata, Google and the marketplaces constantly during
@@ -2134,6 +2454,28 @@ export default function EntityReviewWizard({
                       {rowError.message} This name is still waiting on a decision.
                     </p>
                   )}
+
+                  {/* NEO-254 — FIRST, above everything Wikidata said.
+
+                      When two NB rows already carry this name, the operator's
+                      question is "which of ours is this?", and no amount of
+                      Wikidata detail answers it: both rows are ours, both are
+                      real, and the lookup only ever describes one person. So
+                      the choice between them leads, and the source record
+                      below becomes the tiebreaker rather than the subject. */}
+                  <SameNamePlayerPanel
+                    candidates={sameNameCandidates}
+                    scanCapped={sameNameScanCapped}
+                    disabled={busy}
+                    onPick={(playerId) => {
+                      if (busy) return;
+                      void handleLink(
+                        current._id,
+                        "player",
+                        playerId as Id<"players">,
+                      );
+                    }}
+                  />
 
                   {/* NEO-212: the operator's escape hatch when the enrichment
                       below is not enough to tell two people apart — the source
@@ -2288,7 +2630,22 @@ export default function EntityReviewWizard({
                                       two are now siblings.
                                     */}
                                     {showStatus &&
-                                      (status.kind === "waiting" ? (
+                                      (status.kind === "ambiguous" ? (
+                                        /* NEO-254 — the name is not enough, and
+                                           saying so beats painting one of two
+                                           franchises as if we had chosen it.
+                                           Not the pink "needs a decision"
+                                           treatment: nothing is blocked, the
+                                           commit resolves this stint by its own
+                                           years, and the operator only has to
+                                           act if those years are wrong. */
+                                        <span
+                                          id={statusId}
+                                          className="text-xs text-gray-400"
+                                        >
+                                          {ct.name} · which era?
+                                        </span>
+                                      ) : status.kind === "waiting" ? (
                                         /* Not colour alone (SC 1.4.1): this
                                            says something different IN WORDS
                                            from the resolved case beside it,
@@ -2379,6 +2736,21 @@ export default function EntityReviewWizard({
                         ) : (
                           <p>No career-team history found.</p>
                         )}
+                        {/* NEO-254 — under the dated list, because these are
+                            not career data yet. See UndatedCareerTeams. */}
+                        <UndatedCareerTeams
+                          // NEO-254: keyed by the ROW, so stepping to another
+                          // name remounts it. Its open form and half-typed
+                          // years are state about one player; carried across a
+                          // row change they would offer to date the previous
+                          // player's team on this one's record.
+                          key={current._id}
+                          names={undatedCareerTeams}
+                          disabled={busy}
+                          onAdd={(entry) =>
+                            setStagedCareerTeams((prev) => [...prev, entry])
+                          }
+                        />
                       </>
                     ) : (
                       <>
@@ -2474,12 +2846,29 @@ export default function EntityReviewWizard({
                       <NearMatchPanel
                         kind={current.kind}
                         matches={panelMatches}
+                        /* NEO-254 — a team's era goes INTO its label.
+                           
+                           Team identity is now (name, sport, era), so this
+                           panel can be handed two rows both called "Winnipeg
+                           Jets". Without the era they render as two identical
+                           buttons with two identical accessible names, and the
+                           operator picks one at random — which is the defect
+                           the era exists to fix, moved from the server to the
+                           screen. Players get the same treatment through
+                           `SameNamePlayerPanel`; leagues have no such
+                           collision and keep the default. */
+                        {...(current.kind === "team"
+                          ? {
+                              pickLabel: (name: string, match: NearMatch) =>
+                                `Link to ${teamOptionLabel(name, match.yearsActive)}`,
+                            }
+                          : {})}
                         onPick={(id) => {
                           if (busy) return;
                           void handleLink(
                             current._id,
                             current.kind,
-                            id as Id<"players"> | Id<"teams">,
+                            id as Id<"players"> | Id<"teams"> | Id<"leagues">,
                           );
                         }}
                       />
@@ -2517,27 +2906,95 @@ export default function EntityReviewWizard({
                           <NewTeamForm
                             sportId={current.sportId}
                             draft={teamCreate}
-                            onChange={(patch) =>
-                              patchTeamCreate(current._id, patch)
-                            }
+                            onChange={(patch) => {
+                              patchTeamCreate(current._id, patch);
+                              /*
+                               * A typed league is a commitment, so it raises
+                               * its step the moment it is made rather than at
+                               * Confirm. Fire-and-forget: staging is
+                               * idempotent and never blocks the form, and a
+                               * failure leaves the team's own answer intact —
+                               * the commit still resolves the name, it just
+                               * does not get the fuller record.
+                               */
+                              if (patch.leagueName?.trim()) {
+                                void stageLeagueRows({
+                                  reviewRowId: current._id,
+                                  leagueName: patch.leagueName,
+                                }).catch(() => {});
+                              }
+                            }}
                             leagueSuggestion={current.enrichment?.league}
+                            stagedLeagueNames={stagedLeagueNames}
+                            /* NEO-254 — a league the operator names here gets a
+                               step of its own, walked next (leagues come before
+                               teams), and this team comes back with the pill
+                               reading "<name> (new)" and selected. */
+                            onStageLeague={async (name) => {
+                              const staged = await stageLeagueRows({
+                                reviewRowId: current._id,
+                                leagueName: name,
+                              });
+                              if (staged.outcome === "existing") {
+                                return {
+                                  kind: "existing" as const,
+                                  leagueId: staged.leagueId!,
+                                  name: staged.name,
+                                };
+                              }
+                              if (staged.outcome === "over-cap") {
+                                return { kind: "over-cap" as const };
+                              }
+                              return { kind: "staged" as const, name: staged.name };
+                            }}
+                            /* Reuses the per-row line NEO-221 already renders
+                               under the step, so a league message lands where
+                               every other per-row message does. */
+                            onLeagueStatus={(status) =>
+                              setRowError(
+                                status.isError
+                                  ? { rowId: current._id, message: status.text }
+                                  : null,
+                              )
+                            }
                             /* Only on a row the batch staged for itself: a
                                checklist team was asked for directly, and saying
                                who needs it would be answering a question nobody
                                asked. */
-                            neededBy={
-                              current.source?.kind === "careerTeamOf"
-                                ? (rows.find(
-                                    (r) => r._id === current.source?.playerRowId,
-                                  )?.name ?? undefined)
-                                : undefined
-                            }
+                            neededBy={neededByName}
                             describedBy={
                               createBlocked ? createBlockedId : undefined
                             }
                             locationFieldId={TEAM_LOCATION_FIELD_ID}
                             nameFieldId={TEAM_NAME_FIELD_ID}
                             leagueGroupId={TEAM_LEAGUE_FIELD_ID}
+                          />
+                        )}
+
+                        {current.kind === "league" && (
+                          /* NEO-254 — the New League step, in exactly the place
+                             the New Team step occupies, so the two read as one
+                             family. Its own module explains the two-tier layout
+                             (the dialog body cannot hold seven stacked fields on
+                             CI's 1024x629 viewport) and why Level is toggle
+                             buttons rather than a radiogroup. */
+                          <NewLeagueForm
+                            /* Keyed by row: `detailsOpen` is local state, and
+                               without this the disclosure an operator opened on
+                               one league would stay open on the next — whose
+                               prefill may be complete and want it shut. */
+                            key={current._id}
+                            draft={leagueCreate}
+                            onChange={(patch) =>
+                              patchLeagueCreate(current._id, patch)
+                            }
+                            neededBy={neededByName}
+                            describedBy={
+                              createBlocked ? createBlockedId : undefined
+                            }
+                            nameFieldId={LEAGUE_NAME_FIELD_ID}
+                            levelGroupId={LEAGUE_LEVEL_FIELD_ID}
+                            disabled={busy}
                           />
                         )}
 

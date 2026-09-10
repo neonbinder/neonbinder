@@ -265,11 +265,50 @@ echo "▶ running resetSetBuilderDataFromCli against $DISPLAY_TARGET ..."
 # via a real CI failure ("Could not find function") even though the preview
 # listed the function; confirmed by reproducing on dev. Passing --identity
 # here would silently 404 the function lookup, not fail auth.
-if ! "${DOTENV[@]+"${DOTENV[@]}"}" npx --yes "$CONVEX_CLI" run selectorOptions:resetSetBuilderDataFromCli \
+#
+# LOOPED, not called once: the action works for RESET_TIME_BUDGET_MS (2.5 min
+# by default) and then returns `"complete": false` with rows still to delete,
+# because `convex run` gives up waiting after ~5 minutes — it prints a bare
+# `Error` and exits 1 while the action keeps draining server-side (CI run
+# 34390342992, 2026-09-09, on a preview bulk-loaded with 110k players). Each
+# pass resumes where the last stopped; we keep going until the action reports
+# `"complete": true`, with a hard cap so a deployment that can never finish
+# (something re-inserting rows underneath us) fails loudly instead of forever.
+# stdout is captured for the `complete` check; the CLI's own progress/errors go
+# to stderr and still show in the log.
+RESET_MAX_PASSES=20
+pass_n=0
+reset_complete=""
+while [ "$pass_n" -lt "$RESET_MAX_PASSES" ]; do
+  pass_n=$((pass_n + 1))
+  # `|| true` inside the substitution would mask the exit code; capture it via
+  # an intermediate so `set -e` does not kill the script on a failed pass
+  # before we can print the message.
+  reset_out=""
+  reset_rc=0
+  reset_out="$("${DOTENV[@]+"${DOTENV[@]}"}" npx --yes "$CONVEX_CLI" run selectorOptions:resetSetBuilderDataFromCli \
     '{"confirm":"RESET"}' \
     --typecheck disable --codegen disable \
-    "${DEPLOY_ARGS[@]+"${DEPLOY_ARGS[@]}"}"; then
-  echo "✗ reset failed — see the convex run output above. If it says the deployment isn't armed, see docs/operations/neo214-set-builder-admin-scripts.md." >&2
+    "${DEPLOY_ARGS[@]+"${DEPLOY_ARGS[@]}"}")" || reset_rc=$?
+  # Echo the JSON so the per-table counts stay in the log as before.
+  printf '%s\n' "$reset_out"
+  if [ "$reset_rc" -ne 0 ]; then
+    echo "✗ reset failed — see the convex run output above. If it says the deployment isn't armed, see docs/operations/neo214-set-builder-admin-scripts.md." >&2
+    exit 1
+  fi
+  # `complete` is a boolean in the printed JSON; tolerate either spacing the
+  # CLI might choose. A missing key (an older deployment that predates the
+  # budget) reads as complete so the loop cannot spin on it.
+  if printf '%s' "$reset_out" | grep -Eq '"complete":[[:space:]]*false'; then
+    echo "pass $pass_n: complete=false — rows remain, running again ..."
+  else
+    reset_complete=1
+    echo "pass $pass_n: complete=true"
+    break
+  fi
+done
+if [ -z "$reset_complete" ]; then
+  echo "✗ reset still not complete after $RESET_MAX_PASSES passes on $DISPLAY_TARGET — something is re-inserting rows, or the deployment is far larger than the budget expects. See docs/operations/neo214-set-builder-admin-scripts.md." >&2
   exit 1
 fi
 echo "✅ Set Builder data reset on $DISPLAY_TARGET."

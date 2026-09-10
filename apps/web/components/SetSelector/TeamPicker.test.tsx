@@ -65,6 +65,12 @@ vi.mock("../../convex/_generated/api", () => ({
     teams: {
       getManyByIds: "teams.getManyByIds",
       list: "teams.list",
+      // NEO-254: once anything is typed the picker asks the SERVER to find the
+      // rows, because a client-side filter over a 500-row window cannot reach
+      // soccer's 8,305 teams in one sport. The fixture answers both refs with
+      // the same rows: finding is the server's job, ranking is the client's,
+      // and these tests are about the ranking.
+      search: "teams.search",
       findOrCreate: "teams.findOrCreate",
     },
     // NEO-236: the New Team dialog this picker opens renders `NewTeamForm`,
@@ -73,15 +79,20 @@ vi.mock("../../convex/_generated/api", () => ({
   },
 }));
 
+let queryCalls: Array<{ ref: string; args: unknown }> = [];
 let currentSelectedRows: unknown;
 let currentCandidates: unknown;
 let currentLeagues: unknown;
 const mockFindOrCreate = vi.fn();
 
 vi.mock("convex/react", () => ({
-  useQuery: (ref: string) => {
+  useQuery: (ref: string, args: unknown) => {
+    // NEO-254: recorded so a test can assert WHICH query the picker asked and
+    // with what — the difference between finding a team server-side and
+    // filtering a stale window is invisible in the rendered output.
+    queryCalls.push({ ref, args });
     if (ref === "teams.getManyByIds") return currentSelectedRows;
-    if (ref === "teams.list") return currentCandidates;
+    if (ref === "teams.list" || ref === "teams.search") return currentCandidates;
     if (ref === "leagues.list") return currentLeagues;
     return undefined;
   },
@@ -111,8 +122,15 @@ function tid(n: string): Id<"teams"> {
   return n as unknown as Id<"teams">;
 }
 
-function makeTeam(id: string, name: string, location?: string) {
-  return { _id: tid(id), name, location };
+function makeTeam(
+  id: string,
+  name: string,
+  location?: string,
+  // NEO-254: a team's era, which for two same-name rows is the only thing that
+  // tells them apart.
+  yearsActive?: { from: number; to?: number },
+) {
+  return { _id: tid(id), name, location, yearsActive };
 }
 
 function renderPicker(props: Partial<Parameters<typeof TeamPicker>[0]> = {}) {
@@ -155,6 +173,7 @@ describe("TeamPicker", () => {
     currentSelectedRows = [];
     currentCandidates = [];
     currentLeagues = [];
+    queryCalls = [];
     mockFindOrCreate.mockResolvedValue(tid("new-team-1"));
   });
 
@@ -462,8 +481,24 @@ describe("TeamPicker", () => {
     expect(within(screen.getByRole("listbox")).queryAllByRole("option")).toHaveLength(0);
   });
 
-  it("does NOT offer the create row when an exact (case-insensitive) match exists", () => {
-    currentCandidates = [makeTeam("t1", "New York Yankees")];
+  /**
+   * NEO-254 — the create row STAYS when the name is already taken, and says so.
+   *
+   * It used to be suppressed on an exact match, which was right while a sport
+   * could hold only one team per name. It cannot any more: the 1972-1996
+   * Winnipeg Jets and the 2011- Winnipeg Jets are two rows, and hiding Create
+   * whenever the name existed made the second franchise unreachable from this
+   * picker — an operator would see one Jets row, not recognise it as the wrong
+   * era, and attach the card to it.
+   *
+   * The duplicate is still guarded, just not here: the row names the eras
+   * already on file, and `teams.findOrCreate` refuses a second one until the
+   * operator confirms it in the dialog. The picker offers; the server insists.
+   */
+  it("still offers the create row on an exact match, and names what is already there", () => {
+    currentCandidates = [
+      makeTeam("t1", "Yankees", "New York", { from: 1913 }),
+    ];
     renderPicker();
     openPopover();
 
@@ -471,10 +506,19 @@ describe("TeamPicker", () => {
       target: { value: "new york yankees" },
     });
 
-    expect(createRow()).toBeNull();
+    expect(createRow()).not.toBeNull();
+    expect(createRow()!.textContent).toContain("Already here:");
+    expect(createRow()!.textContent).toContain("1913–present");
+    // …and the exact row is still matched, which is the half that has not
+    // changed: the operator's first option is the row we hold.
+    expect(
+      screen.getByRole("option", { name: "Add New York Yankees · 1913–present" }),
+    ).toBeTruthy();
   });
 
   it("does not offer the create row when the query is empty", () => {
+    // Still suppressed here, and for a reason NEO-254 did not change: there is
+    // no name to create.
     currentCandidates = [makeTeam("t1", "New York Yankees")];
     renderPicker();
     openPopover();
@@ -482,9 +526,9 @@ describe("TeamPicker", () => {
     expect(createRow()).toBeNull();
   });
 
-  // The exact-match suppression has to see through the split, or the picker
+  // The exact-match lookup has to see through the split, or the picker
   // offers to create a team it is already listing one row above.
-  it("offers no create row when the typed query is the full name of a split row", () => {
+  it("matches a split row from its full name (and still offers a new era)", () => {
     currentCandidates = [makeTeam("t1", "Padres", "San Diego")];
     renderPicker({ sportId: SPORT_ID });
     openPopover();
@@ -493,11 +537,15 @@ describe("TeamPicker", () => {
       target: { value: "san diego padres" },
     });
 
-    expect(createRow()).toBeNull();
+    // NEO-254: the create row is no longer suppressed on an exact match — a
+    // sport can hold two teams under one name. What these cases were really
+    // protecting is that the row is FOUND rather than missed, which is where a
+    // duplicate would have come from, so that is what they assert now.
     expect(screen.getByLabelText("Add San Diego Padres")).toBeTruthy();
+    expect(createRow()!.textContent).toContain("Already here:");
   });
 
-  it("finds an accented split row from an ASCII query, and offers no create for it (NEO-253)", () => {
+  it("finds an accented split row from an ASCII query (NEO-253)", () => {
     // The two halves of this box have to agree, and before the fold they did
     // not. The list filtered on a bare `toLowerCase().includes`, so typing
     // "Montreal Expos" HID the accented row; the create offer was decided the
@@ -517,10 +565,14 @@ describe("TeamPicker", () => {
     });
 
     expect(screen.getByLabelText("Add Montréal Expos")).toBeTruthy();
-    expect(createRow()).toBeNull();
+    // NEO-254: the create row is no longer suppressed on an exact match — a
+    // sport can hold two teams under one name. What these cases were really
+    // protecting is that the row is FOUND rather than missed, which is where a
+    // duplicate would have come from, so that is what they assert now.
+    expect(createRow()!.textContent).toContain("Already here:");
   });
 
-  it("finds an ASCII split row from an accented query (NEO-253)", () => {
+  it("finds an ASCII split row from an accented query, matched not created (NEO-253)", () => {
     // The reverse crossing: NB holds the plain spelling and the operator
     // types the real one. Symmetry matters because which side carries the
     // accent depends only on which source happened to create the row first.
@@ -533,7 +585,8 @@ describe("TeamPicker", () => {
     });
 
     expect(screen.getByLabelText("Add Montreal Expos")).toBeTruthy();
-    expect(createRow()).toBeNull();
+    // NEO-254: found, not suppressed — see the sibling case above.
+    expect(createRow()!.textContent).toContain("Already here:");
   });
 
   // NEO-96: this test used to assert the OPPOSITE — that with no sport prop the
@@ -940,5 +993,53 @@ describe("TeamPicker", () => {
       expect(screen.getByRole("dialog")).toBeTruthy();
       expect(scrollSpy).not.toHaveBeenCalled();
     });
+  });
+});
+
+/**
+ * NEO-254 — the server finds the team; the client only ranks what it is given.
+ *
+ * This box used to filter a 500-row `teams.list` window client-side. That is
+ * fine at a few dozen teams per sport and wrong at the volumes the preload
+ * produces: soccer loads 8,305 teams into ONE sport, so 7,805 were unreachable
+ * from here — and an unreachable team made `sameNameTeams` empty, so the create
+ * row offered to make a team NB already held. A picker that cannot find a row
+ * is a picker that mints duplicates.
+ */
+describe("TeamPicker — finding past the list window", () => {
+  // Its own reset: this block sits outside the main suite's `beforeEach`, and
+  // `queryCalls` is what these two assert on — inheriting another test's calls
+  // is how the second one first passed for the wrong reason.
+  beforeEach(() => {
+    vi.clearAllMocks();
+    currentSelectedRows = [];
+    currentCandidates = [];
+    currentLeagues = [];
+    queryCalls = [];
+  });
+
+  it("asks the server once anything is typed, scoped to the sport", () => {
+    renderPicker();
+    openPopover();
+    fireEvent.change(screen.getByLabelText("Search teams"), {
+      target: { value: "yank" },
+    });
+
+    const search = queryCalls.filter((c) => c.ref === "teams.search");
+    expect(search.length).toBeGreaterThan(0);
+    expect(search[search.length - 1].args).toMatchObject({
+      query: "yank",
+      sportId: SPORT_ID,
+    });
+  });
+
+  it("does NOT search before anything is typed", () => {
+    // A typeahead that queries before you type is noise, and the browse pool
+    // already covers the empty state.
+    renderPicker();
+    openPopover();
+    expect(
+      queryCalls.filter((c) => c.ref === "teams.search" && c.args !== "skip"),
+    ).toHaveLength(0);
   });
 });

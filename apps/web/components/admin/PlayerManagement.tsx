@@ -17,6 +17,9 @@ import { teamFullName, teamShortName } from "@/lib/teams/team-name";
 // through the current year). `primaryTeamId` below sums it per team rather than
 // re-deriving it — see that function for why it is not `pickDefaultTeamYear`.
 import { tenureYears } from "@/lib/players/team-tenure";
+// NEO-254: the birth-year bounds, shared with `players.assertBirthYear` so
+// the field cannot offer a year the round-trip then refuses.
+import { MIN_BIRTH_YEAR, maxBirthYear } from "@/lib/players/career-years";
 // NEO-235: the same two helpers TeamManagement's contrast readout uses, so the
 // row and that readout can never disagree about what a colour pair scores.
 import { contrastRatio, normalizeHexColor } from "@/lib/print/contrast";
@@ -217,12 +220,20 @@ function fieldSignature(fields: {
   name: string;
   isHallOfFame: boolean;
   wikidataId: string;
+  /** NEO-254: the raw comma-separated box, compared as typed. */
+  aliases: string;
+  // NEO-254: the draft holds it as a STRING (it is an input), so the signature
+  // compares the trimmed string. "" and "1960" are the two states that matter
+  // and both survive the round-trip through `rowSignature` below.
+  birthYear: string;
   stints: Stint[];
 }): string {
   return JSON.stringify([
     fields.name.trim(),
     fields.isHallOfFame,
     fields.wikidataId.trim(),
+    fields.aliases.trim(),
+    fields.birthYear.trim(),
     sortStints(fields.stints).map((s) => [
       s.teamId,
       s.fromYear,
@@ -237,6 +248,8 @@ function rowSignature(row: Player): string {
     name: row.name,
     isHallOfFame: row.isHallOfFame ?? false,
     wikidataId: row.externalIds?.wikidataId ?? "",
+    aliases: (row.aliases ?? []).join(", "),
+    birthYear: row.birthYear === undefined ? "" : String(row.birthYear),
     stints: row.teamYears ?? [],
   });
 }
@@ -246,6 +259,85 @@ function rowSignature(row: Player): string {
  * Anything that has to sit on the same baseline as a field — the read-only
  * sport, the Hall of Fame checkbox — matches it rather than guessing.
  */
+/**
+ * NEO-254 — a unique "Open …" label for every near-match row on screen.
+ *
+ * ## Why this is needed at all
+ *
+ * `players.nearMatches` stopped reading the exact key with `.first()`, so a
+ * forked name — the very thing the birth-year field on this form now produces
+ * — comes back as TWO rows both `confidence: "exact"`. The add form renders
+ * one control per row (one promoted to the primary, the rest in the panel),
+ * and a label built from the name alone made both of them `Open Bob Allen`:
+ * two controls with one accessible name, on the screen whose entire purpose is
+ * telling those two people apart. A screen-reader user hears the same option
+ * twice, and a Maestro `tapOn` matches whichever comes first.
+ *
+ * ## Only when it is needed
+ *
+ * A name that appears once keeps the bare `Open {name}` it has always had.
+ * That is not timidity about churn — it is the correct label: there is nothing
+ * to distinguish it FROM, and appending a birth year to the single-match case
+ * would be noise on the common path (and would silently rename a control the
+ * E2E flows already target).
+ *
+ * ## The ordinal fallback
+ *
+ * The birth year is the distinguishing fact, so it is used when there is one.
+ * Two rows that share a name AND have no year are still two different people,
+ * and "no birth year" twice is the same collision in different words — so the
+ * position stands in, exactly as `candidateLinkLabel` does in the review
+ * wizard. Weak information, but unique, and the operator can act on "the
+ * second one" after reading the list.
+ */
+function openLabelsFor(matches: ReadonlyArray<NearMatch>): Map<string, string> {
+  const byName = new Map<string, NearMatch[]>();
+  for (const match of matches) {
+    const group = byName.get(match.name);
+    if (group) group.push(match);
+    else byName.set(match.name, [match]);
+  }
+
+  const labels = new Map<string, string>();
+  for (const [name, group] of byName) {
+    if (group.length === 1) {
+      labels.set(group[0]._id, `Open ${name}`);
+      continue;
+    }
+    // Provisional labels from the distinguishing fact…
+    const provisional = group.map((m) =>
+      m.birthYear !== undefined
+        ? `Open ${name}, b. ${m.birthYear}`
+        : `Open ${name}, no birth year`,
+    );
+    // …then an ordinal for any that STILL collide, which is the undated pair
+    // and (in principle) two rows sharing a year.
+    const seen = new Map<string, number>();
+    for (const label of provisional) {
+      seen.set(label, (seen.get(label) ?? 0) + 1);
+    }
+    group.forEach((m, i) => {
+      const label = provisional[i];
+      labels.set(
+        m._id,
+        (seen.get(label) ?? 0) > 1
+          ? `${label} (${i + 1} of ${group.length})`
+          : label,
+      );
+    });
+  }
+  return labels;
+}
+
+/**
+ * NEO-254 — evaluated once per module load rather than per render.
+ *
+ * `maxBirthYear()` reads the clock, and recomputing it inside render would
+ * make two otherwise identical renders differ on New Year's Eve. The server
+ * re-derives it per call, which is where it matters.
+ */
+const MAX_BIRTH_YEAR = maxBirthYear();
+
 const FIELD_BOX_HEIGHT = "min-h-[2.625rem]";
 
 /**
@@ -289,6 +381,27 @@ function AddPlayerForm({
   const [sportId, setSportId] = useState<string>(defaultSportId ?? "");
   const [debouncedName, setDebouncedName] = useState("");
   const [busy, setBusy] = useState(false);
+  /**
+   * NEO-254 — the birth year, and the only way to add a SECOND person with a
+   * name we already have.
+   *
+   * This form is where plan decision 3's identity rule — a distinct birth year
+   * means a distinct person — becomes reachable by a human. The near-match
+   * panel promotes "Open {name}" the moment an exact match appears, so
+   * creation is already behind a deliberate "Create anyway"; the year is what
+   * makes that button able to do what it says. `createByAdmin` reads it as the
+   * operator asserting a different man: one existing row whose year differs
+   * (or is absent) FORKS, one whose year matches adopts, and several rivals
+   * fall back to the tiebreaker (see `adoptOrForkOnCreate` for the whole
+   * rule). Without it the mutation adopted the single candidate before it ever
+   * looked, and the operator was told the player already existed.
+   *
+   * Optional, because most players are the only one of their name and
+   * demanding a year for them would be a tax on the common case.
+   */
+  const [birthYear, setBirthYear] = useState("");
+  /** NEO-254 — other names this player's cards carry. See the detail panel. */
+  const [newAliases, setNewAliases] = useState("");
 
   useEffect(() => {
     const timer = setTimeout(
@@ -328,16 +441,44 @@ function AddPlayerForm({
   const panelMatches = exact
     ? (matches ?? []).filter((m) => m._id !== exact._id)
     : matches;
-  const canCreate = trimmed.length > 0 && sportId.length > 0 && !busy;
+  /**
+   * NEO-254 — computed over EVERY match, not just the panel's share.
+   *
+   * The promoted primary is one of these rows and the panel holds the rest, so
+   * a label set built from the panel alone would leave the primary saying
+   * `Open Bob Allen` while the row beside it said `Open Bob Allen, b. 1975` —
+   * unique, but the primary would not say which man it opens. One computation
+   * over the whole list gives both halves the same treatment.
+   */
+  const openLabels = openLabelsFor(matches ?? []);
+  const openLabel = (m: NearMatch) => openLabels.get(m._id) ?? `Open ${m.name}`;
+  // Client-side mirror of `assertBirthYear`, so a typo is caught while the
+  // field is still in front of the operator. The server re-validates; this is
+  // the fast half of defense in depth, not the guarantee.
+  const trimmedBirthYear = birthYear.trim();
+  const birthYearNum = trimmedBirthYear === "" ? undefined : Number(trimmedBirthYear);
+  const birthYearValid =
+    birthYearNum === undefined ||
+    (Number.isInteger(birthYearNum) &&
+      birthYearNum >= MIN_BIRTH_YEAR &&
+      birthYearNum <= MAX_BIRTH_YEAR);
+  const canCreate =
+    trimmed.length > 0 && sportId.length > 0 && birthYearValid && !busy;
 
   const create = async () => {
     if (!canCreate) return;
     setBusy(true);
     onStatus(null);
     try {
+      const parsedNewAliases = newAliases
+        .split(",")
+        .map((a) => a.trim())
+        .filter(Boolean);
       const result = await createByAdmin({
         name: trimmed,
         sportId: sportId as Id<"selectorOptions">,
+        ...(birthYearNum !== undefined ? { birthYear: birthYearNum } : {}),
+        ...(parsedNewAliases.length ? { aliases: parsedNewAliases } : {}),
       });
       onStatus(
         result.created
@@ -346,6 +487,18 @@ function AddPlayerForm({
       );
       onCreated(result.id);
     } catch (e) {
+      /**
+       * NEO-254 — the ambiguity refusal reaches the operator verbatim.
+       *
+       * `createByAdmin` throws a `ConvexError` naming how many players already
+       * carry this name when it cannot tell which one is meant, and that
+       * message IS the instruction: pick one, or give a birth year that
+       * separates them. `userFacingMessage` already prefers `.data` (the only
+       * part that survives production's redaction) over the generic fallback,
+       * so nothing extra is needed to route it — but it must not be swallowed
+       * into "Could not add that player", which says nothing the operator can
+       * act on.
+       */
       onStatus({
         text: userFacingMessage(e, "Could not add that player."),
         isError: true,
@@ -388,12 +541,44 @@ function AddPlayerForm({
         </select>
       </div>
 
+      {/* Under Sport, because it is the tiebreaker rather than the subject —
+          and captioned with what it is FOR, since an operator adding a player
+          nobody shares a name with has no reason to guess why it is here. */}
+      <Input
+        label="Birth year (optional)"
+        type="number"
+        inputMode="numeric"
+        min={MIN_BIRTH_YEAR}
+        max={MAX_BIRTH_YEAR}
+        value={birthYear}
+        placeholder="1969"
+        aria-invalid={birthYearValid ? undefined : true}
+        onChange={(e) => setBirthYear(e.target.value)}
+        helperText={
+          birthYearValid
+            ? "Tells this player apart from anyone else with the same name."
+            : `Use a whole year between ${MIN_BIRTH_YEAR} and ${MAX_BIRTH_YEAR}.`
+        }
+      />
+
+      {/* NEO-254 — offered at creation as well as on the detail panel: a
+          player added from a 2011 card is very often the same man as one
+          already on file under a 2010 name, and the alias is what stops the
+          second row being created at all. */}
+      <Input
+        label="Other names (optional)"
+        value={newAliases}
+        placeholder="Ron Artest"
+        onChange={(e) => setNewAliases(e.target.value)}
+        helperText="Separate with commas. Names this player's cards also use."
+      />
+
       <NearMatchPanel
         kind="player"
         matches={panelMatches}
         // Not "Link to": this button opens the row for editing, it does not
         // link anything to anything.
-        pickLabel={(n) => `Open ${n}`}
+        pickLabel={(_n, match) => openLabel(match)}
         onPick={(id) => onCreated(id as Id<"players">)}
       />
 
@@ -426,7 +611,13 @@ function AddPlayerForm({
           disabled={exact ? false : !canCreate}
           aria-label={exact ? undefined : `Create player ${trimmed}`}
         >
-          {exact ? `Open ${exact.name}` : busy ? "Adding…" : "Create player"}
+          {/* NEO-254: the disambiguated label, which is byte-identical to
+              `Open {name}` whenever the name matches exactly one row — so the
+              common case, and every E2E flow that targets it, is unchanged.
+              Rendered as the visible TEXT rather than an aria-label override,
+              so the accessible name and what is on screen stay the same string
+              (WCAG 2.2 SC 2.5.3). */}
+          {exact ? openLabel(exact) : busy ? "Adding…" : "Create player"}
         </NeonButton>
         {exact && (
           <button
@@ -473,6 +664,27 @@ function PlayerDetail({
   const [wikidataId, setWikidataId] = useState(
     player.externalIds?.wikidataId ?? "",
   );
+  /**
+   * NEO-254 — held as a string, like every other field here.
+   *
+   * "" means CLEARED, and that is a real state distinct from a year: a birth
+   * year nobody is sure of is better absent than wrong, because the review
+   * wizard's candidate list and `findOrCreate`'s tiebreaker both act on it.
+   * `savePlayerFields` takes `null` for that, the same shape `wikidataId` uses.
+   */
+  const [birthYear, setBirthYear] = useState(
+    player.birthYear === undefined ? "" : String(player.birthYear),
+  );
+  /**
+   * NEO-254 — the other names this player's cards carry, comma-separated
+   * exactly as League Management's alias box.
+   *
+   * Ron Artest / Metta World Peace, B.J. Upton / Melvin Upton Jr., Lew
+   * Alcindor / Kareem Abdul-Jabbar: one man, two names, and a checklist prints
+   * whichever was current. Held as the raw string the operator typed; the
+   * server splits, bounds and de-duplicates it.
+   */
+  const [aliases, setAliases] = useState((player.aliases ?? []).join(", "));
   const [stints, setStints] = useState<Stint[]>(
     sortStints(player.teamYears ?? []),
   );
@@ -533,6 +745,8 @@ function PlayerDetail({
     setName(row.name);
     setIsHallOfFame(row.isHallOfFame ?? false);
     setWikidataId(row.externalIds?.wikidataId ?? "");
+    setBirthYear(row.birthYear === undefined ? "" : String(row.birthYear));
+    setAliases((row.aliases ?? []).join(", "));
     setStints(sortStints(row.teamYears ?? []));
     setSeeded({ id: row._id, signature: rowSignature(row) });
     setRowMovedUnderDraft(false);
@@ -543,6 +757,8 @@ function PlayerDetail({
     name,
     isHallOfFame,
     wikidataId,
+    birthYear,
+    aliases,
     stints,
   });
 
@@ -614,9 +830,55 @@ function PlayerDetail({
   const hofChanged = isHallOfFame !== (player.isHallOfFame ?? false);
   const qidChanged = trimmedQid !== (player.externalIds?.wikidataId ?? "");
   const stintsChanged = !stintsEqual(stints, player.teamYears ?? []);
-  const dirty = nameChanged || hofChanged || qidChanged || stintsChanged;
+
+  // NEO-254 — same client-side mirror of `assertBirthYear` as the add form.
+  const trimmedBirthYear = birthYear.trim();
+  const birthYearNum =
+    trimmedBirthYear === "" ? undefined : Number(trimmedBirthYear);
+  const birthYearValid =
+    birthYearNum === undefined ||
+    (Number.isInteger(birthYearNum) &&
+      birthYearNum >= MIN_BIRTH_YEAR &&
+      birthYearNum <= MAX_BIRTH_YEAR);
+  const birthYearChanged =
+    trimmedBirthYear !==
+    (player.birthYear === undefined ? "" : String(player.birthYear));
+
+  /**
+   * NEO-254 — parsed the same way League Management parses its alias box, so
+   * the two editors cannot disagree about what a comma means.
+   */
+  const parsedAliases = aliases
+    .split(",")
+    .map((a) => a.trim())
+    .filter(Boolean);
+  const aliasesChanged =
+    parsedAliases.join("|") !== (player.aliases ?? []).join("|");
+  /**
+   * NEO-254 — who else already answers to these names.
+   *
+   * A shared alias is LEGAL and often deliberate: "Ken Griffey" belongs to
+   * both Griffeys, and the card-year narrowing is what decides which man a
+   * card means. So this is a note, never a refusal — but an operator typing
+   * one should know it is shared here, rather than finding out from a review
+   * queue three sets later.
+   */
+  const sharedAliases = useQuery(
+    api.players.aliasesInUse,
+    parsedAliases.length > 0
+      ? { sportId: player.sportId, aliases: parsedAliases, selfId: player._id }
+      : "skip",
+  );
+
+  const dirty =
+    nameChanged ||
+    hofChanged ||
+    qidChanged ||
+    birthYearChanged ||
+    aliasesChanged ||
+    stintsChanged;
   const canSave =
-    dirty && trimmedName.length > 0 && qidValid && busy === null;
+    dirty && trimmedName.length > 0 && qidValid && birthYearValid && busy === null;
 
   const addStint = () => {
     setStintError(null);
@@ -675,6 +937,15 @@ function PlayerDetail({
         ...(nameChanged ? { name: trimmedName } : {}),
         ...(hofChanged ? { isHallOfFame } : {}),
         ...(qidChanged ? { wikidataId: trimmedQid || null } : {}),
+        // NEO-254: `null` CLEARS, matching `wikidataId` above — an empty field
+        // is the operator saying they do not know, which is a different and
+        // more useful answer than leaving a wrong year on the row.
+        ...(birthYearChanged
+          ? { birthYear: birthYearNum === undefined ? null : birthYearNum }
+          : {}),
+        // NEO-254: sent whole, including empty — an empty box is the operator
+        // saying "these were wrong", which is a real answer.
+        ...(aliasesChanged ? { aliases: parsedAliases } : {}),
         ...(stintsChanged ? { teamYears: sortStints(stints) } : {}),
       });
       setStatus({ text: `Saved ${trimmedName}.`, isError: false });
@@ -804,6 +1075,61 @@ function PlayerDetail({
           >
             Sport: {sportLabel}
           </p>
+        </div>
+
+        {/* NEO-254 — its own row above the Wikidata/HoF pair, and captioned
+            with what it is FOR. It is the field that tells two players with
+            one name apart, so it is what the review wizard's candidate list
+            renders and what `findOrCreate`'s tiebreaker reads; an operator
+            correcting it is fixing those, not filling in trivia. */}
+        <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
+          <Input
+            label="Birth year"
+            type="number"
+            inputMode="numeric"
+            min={MIN_BIRTH_YEAR}
+            max={MAX_BIRTH_YEAR}
+            value={birthYear}
+            placeholder="1969"
+            aria-invalid={birthYearValid ? undefined : true}
+            onChange={(e) => setBirthYear(e.target.value)}
+            helperText={
+              birthYearValid
+                ? "Tells this player apart from anyone with the same name. Clear it to unset."
+                : `Use a whole year between ${MIN_BIRTH_YEAR} and ${MAX_BIRTH_YEAR}.`
+            }
+          />
+        </div>
+
+        {/* NEO-254 — under the birth year, because both answer the same
+            question: which person is this card about. A card prints whichever
+            name was current, so a rename is the other way one man reads two
+            ways. */}
+        <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
+          <Input
+            label="Aliases"
+            value={aliases}
+            placeholder="Ron Artest, Metta Sandiford-Artest"
+            onChange={(e) => setAliases(e.target.value)}
+            helperText={
+              parsedAliases.length > 0
+                ? `Separate with commas. ${parsedAliases.length === 1 ? "1 other name" : `${parsedAliases.length} other names`} this player's cards use.`
+                : "Separate with commas. Other names this player's cards use."
+            }
+          />
+          {(sharedAliases ?? []).length > 0 && (
+            /* `role="status"`, not `alert`: nothing is wrong. The shared alias
+               is the feature working — a card carrying that name will offer
+               both men and the years will usually settle it. */
+            <p role="status" className="mt-1 text-xs text-slate-400">
+              {(sharedAliases ?? [])
+                .map(
+                  (hit) =>
+                    `${hit.name} also answers to that name. Cards will ask which one when the years don't decide.`,
+                )
+                .join(" ")}
+            </p>
+          )}
         </div>
 
         <div className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2 sm:items-end">
@@ -1459,6 +1785,19 @@ export default function PlayerManagement() {
                         {sportLabel && (
                           <span className="shrink-0 text-slate-400">
                             {sportLabel}
+                          </span>
+                        )}
+                        {/* NEO-254 — the ONE fact NEO-235 moved out of this row
+                            that belongs back in it. That edit's rule was "the
+                            row answers 'which of the people with similar names
+                            is this?', and nothing else"; a birth year is the
+                            only thing on a player that answers it, and after
+                            the bulk preload this list really does hold two Bob
+                            Allens. Same muted treatment as the sport, and only
+                            when the row has one. */}
+                        {player.birthYear !== undefined && (
+                          <span className="shrink-0 text-slate-400">
+                            b. {player.birthYear}
                           </span>
                         )}
                         {/* The team nod, held apart from the sport by a hairline

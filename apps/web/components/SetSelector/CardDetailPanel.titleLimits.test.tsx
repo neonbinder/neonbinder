@@ -28,6 +28,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../convex/_generated/api", () => ({
   api: {
+    // NEO-254: the panel resolves canonical names for its "As printed" note.
+    players: { getManyByIds: "players.getManyByIds" },
     selectorOptions: {
       updateCard: "updateCard",
       setCardFeature: "setCardFeature",

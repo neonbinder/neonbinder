@@ -3,8 +3,28 @@ import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import { splitTeamName, teamFullName } from "../../lib/teams/team-name";
+import { eraLabel } from "../../lib/teams/team-era";
 import { normalizeOrderedEntityName } from "../../lib/entities/normalize-name";
 import { Input } from "../primitives/Input";
+import NeonButton from "../modules/NeonButton";
+import NewLeagueForm, {
+  leagueDraftError,
+  newLeaguePrefill,
+  type NewLeagueDraft,
+} from "./NewLeagueForm";
+
+/**
+ * NEO-254 — what staging a typed league name did.
+ *
+ * Three outcomes, and they read differently to the operator: a step was raised
+ * ("you will fill in the details next"), the sport already answers to that name
+ * ("picked it for you" — no second row for one league), or this team has
+ * already raised as many league steps as it may.
+ */
+export type StageLeagueOutcome =
+  | { kind: "staged"; name: string }
+  | { kind: "existing"; leagueId: Id<"leagues">; name: string }
+  | { kind: "over-cap" };
 
 /**
  * NEO-236 — the one form a team is ever created from.
@@ -73,6 +93,19 @@ export type NewTeamDraft = {
    * which the pill handler enforces by clearing it.
    */
   leagueName: string | undefined;
+  /**
+   * NEO-254 — the years this team played, when the operator knows them.
+   *
+   * Load-bearing for identity, not decoration. A sport can hold two teams under
+   * one name — the 1972-1996 Winnipeg Jets and the 2011- Jets — and the era is
+   * the only thing that tells them apart, so it is what decides whether
+   * creating finds the row we hold or makes a second one beside it.
+   *
+   * Optional, and stays optional: most teams are created without anybody
+   * knowing or caring, and an undated row is a normal row. It matters exactly
+   * when the name is already taken, which is when the form asks for it.
+   */
+  yearsActive?: { from: number; to?: number };
 };
 
 /**
@@ -147,6 +180,11 @@ export default function NewTeamForm({
    * team no source has heard of.
    */
   leagueSuggestion,
+  /** NEO-254 — leagues this batch has answered but not yet written. */
+  stagedLeagueNames,
+  onStageLeague,
+  onCreateLeague,
+  onLeagueStatus,
   /** "Needed by: Travis Bazzana" — why this step exists, on the steps that
    *  were not asked for directly. */
   neededBy,
@@ -179,6 +217,46 @@ export default function NewTeamForm({
   draft: NewTeamDraft;
   onChange: (patch: Partial<NewTeamDraft>) => void;
   leagueSuggestion?: string;
+  /**
+   * NEO-254 — leagues this BATCH has answered but not yet written.
+   *
+   * Nothing is stored until commit, so `api.leagues.list` cannot see a league
+   * the New League step just created — and without this the team step went on
+   * offering `Create National Hockey League` for a league the operator had
+   * already answered, which is exactly the bug that step exists to remove
+   * (Jason, preview test 2026-09-06: every hockey team row showed it).
+   *
+   * Names only, keyed the way `convex/leagues.ts` keys them. The team's
+   * decision still travels as `create.leagueName`, and the commit prelude maps
+   * that name to the row the league step produced.
+   */
+  stagedLeagueNames?: readonly string[];
+  /**
+   * NEO-254 — WIZARD context: stage a New League step for a name the operator
+   * typed here.
+   *
+   * Jason, preview 2026-09-07, on "New Team: Lincoln Stars" (USHL): Wikidata
+   * carried no league, the sport had none yet, and the step offered a lone
+   * `No league` pill. There was nowhere to say what the league IS, so the
+   * operator was stuck with a team he knew the league of and no way to record
+   * it.
+   *
+   * Returns what happened, because the three outcomes read differently to the
+   * operator: a step was raised, the sport already answers to that name (so the
+   * existing league is picked instead), or the team has raised as many league
+   * steps as it may.
+   */
+  onStageLeague?: (name: string) => Promise<StageLeagueOutcome>;
+  /**
+   * NEO-254 — PICKER context: create the league outright.
+   *
+   * There is no batch to stage into and no later step, so this is the only
+   * chance to collect the record — which is why this shape opens the full
+   * `NewLeagueForm` rather than a single text box.
+   */
+  onCreateLeague?: (draft: NewLeagueDraft) => Promise<{ id: Id<"leagues">; name: string }>;
+  /** Where the two shapes above report what happened. */
+  onLeagueStatus?: (status: { text: string; isError: boolean }) => void;
   neededBy?: string;
   describedBy?: string;
   locationFieldId?: string;
@@ -284,7 +362,46 @@ export default function NewTeamForm({
     checked: boolean;
     choose: () => void;
   }> = [];
-  if (suggestion?.kind === "create") {
+  /*
+   * ── NEO-254: every league this batch can offer, in one list ──────────────
+   *
+   * Three sources, and the order is the order an operator would look in.
+   *
+   * 1. Leagues this BATCH has staged but not yet written. `api.leagues.list`
+   *    cannot see them — nothing is stored until commit — so without this the
+   *    operator creates "USHL" on one team's step and the next team has no way
+   *    to pick it (Jason, preview 2026-09-07). Offered to EVERY later team,
+   *    not just the ones whose enrichment happened to name that league: the
+   *    Lincoln Stars had no suggestion at all, which is the case that made the
+   *    gap visible.
+   *
+   *    Labelled "<name> (new)" rather than "Create <name>": once a step has
+   *    been raised, the commitment exists, and re-offering it as a decision
+   *    would invite a second row for one league.
+   *
+   * 2. THIS team's own suggestion, when the batch has not already staged it —
+   *    still worded as the commitment it is.
+   *
+   * 3. Every league the sport actually holds, then "No league".
+   */
+  const existingKeys = new Set(
+    (leagues ?? []).map((l) => normalizeLeagueName(l.name)),
+  );
+  const stagedKeys = new Set<string>();
+  for (const name of stagedLeagueNames ?? []) {
+    const key = normalizeLeagueName(name);
+    // A staged name the sport ALREADY holds is not a separate option — it is
+    // that league, and its own pill is below.
+    if (!key || existingKeys.has(key) || stagedKeys.has(key)) continue;
+    stagedKeys.add(key);
+    leaguePills.push({
+      key: `staged:${key}`,
+      label: `${name} (new)`,
+      checked: !!draft.leagueName && normalizeLeagueName(draft.leagueName) === key,
+      choose: () => pick({ leagueName: name }),
+    });
+  }
+  if (suggestion?.kind === "create" && !stagedKeys.has(normalizeLeagueName(suggestion.name))) {
     const checked = unanswered || draft.leagueName === suggestion.name;
     leaguePills.push({
       key: `create:${suggestion.name}`,
@@ -343,6 +460,96 @@ export default function NewTeamForm({
    * the disclosure's own "Done" closes it.
    */
   const [leagueListOpen, setLeagueListOpen] = useState<boolean | null>(null);
+
+  // ── NEO-254: naming a league that does not exist yet ──────────────────────
+  const newLeagueFormId = useId();
+  const newLeagueTriggerRef = useRef<HTMLButtonElement>(null);
+  const [namingLeague, setNamingLeague] = useState(false);
+  const [newLeagueName, setNewLeagueName] = useState("");
+  const [newLeagueDraft, setNewLeagueDraft] = useState<NewLeagueDraft>(() =>
+    newLeaguePrefill({ name: "" }),
+  );
+  const [leagueBusy, setLeagueBusy] = useState(false);
+
+  /** Close and hand focus back to the control that opened it. */
+  const closeNewLeague = () => {
+    setNamingLeague(false);
+    setNewLeagueName("");
+    setNewLeagueDraft(newLeaguePrefill({ name: "" }));
+    // Back to the disclosure, not to `<body>` — closing unmounts the focused
+    // field. Same rule as TeamManagement's franchise picker.
+    newLeagueTriggerRef.current?.focus();
+  };
+
+  /**
+   * NEO-254 — commit whichever shape is open.
+   *
+   * The two contexts differ in what "commit" MEANS, which is why they are two
+   * shapes rather than one with a flag: the wizard records an intention the
+   * batch will act on, the picker writes a row. Both end the same way — the
+   * league is the team's answer, and the operator is told what happened.
+   */
+  const submitNewLeague = async () => {
+    if (leagueBusy) return;
+    if (onStageLeague) {
+      const name = newLeagueName.trim();
+      if (!name) return;
+      setLeagueBusy(true);
+      try {
+        const outcome = await onStageLeague(name);
+        if (outcome.kind === "over-cap") {
+          onLeagueStatus?.({
+            text: "That's the most new leagues this team can raise. Answer one first.",
+            isError: true,
+          });
+          return;
+        }
+        if (outcome.kind === "existing") {
+          // No second row for one league — the sport already answers to this
+          // name (or an alias of it), so the answer is that league.
+          pick({ leagueId: outcome.leagueId });
+          onLeagueStatus?.({
+            text: `${outcome.name} is already a league here — picked it for you.`,
+            isError: false,
+          });
+        } else {
+          pick({ leagueName: outcome.name });
+          onLeagueStatus?.({
+            text: `${outcome.name} will be added. You'll fill in the details next.`,
+            isError: false,
+          });
+        }
+        closeNewLeague();
+      } catch {
+        onLeagueStatus?.({
+          text: "Could not add that league. Try again.",
+          isError: true,
+        });
+      } finally {
+        setLeagueBusy(false);
+      }
+      return;
+    }
+    if (!onCreateLeague) return;
+    if (leagueDraftError(newLeagueDraft, new Date().getFullYear() + 1)) return;
+    setLeagueBusy(true);
+    try {
+      const created = await onCreateLeague(newLeagueDraft);
+      pick({ leagueId: created.id });
+      onLeagueStatus?.({
+        text: `Added ${created.name}. It is this team's league.`,
+        isError: false,
+      });
+      closeNewLeague();
+    } catch {
+      onLeagueStatus?.({
+        text: "Could not add that league. Try again.",
+        isError: true,
+      });
+    } finally {
+      setLeagueBusy(false);
+    }
+  };
   const collapsible = answeredIndex !== -1;
   const listOpen = leagueListOpen ?? !collapsible;
   const visiblePills = listOpen ? leaguePills : [leaguePills[answeredIndex]];
@@ -352,6 +559,31 @@ export default function NewTeamForm({
    *  when nothing is checked yet the first pill is — matching a native radio
    *  group with no initial selection. */
   const tabStopIndex = checkedPillIndex === -1 ? 0 : checkedPillIndex;
+
+  /**
+   * NEO-254 — the eras this sport already holds under the name being typed.
+   *
+   * Read off `teams.erasByNameAndSport`, which answers with EVERY row under the
+   * key rather than the first — the whole point of the change. Skipped until
+   * there is a name, so an empty form costs nothing.
+   *
+   * The hint it feeds is a statement, not a block: a second era of a name is a
+   * legitimate thing to create, and the operator is the only one who knows
+   * whether this is the 2011 Winnipeg Jets or a typo of the 1972 ones.
+   */
+  const existingEras = useQuery(
+    api.teams.erasByNameAndSport,
+    sportId && draft.name.trim()
+      ? { name: draftFullName(draft), sportId }
+      : "skip",
+  );
+  const sameNameEras = useMemo(
+    () =>
+      (existingEras ?? []).map(
+        (row) => eraLabel(row.yearsActive) || "no years yet",
+      ),
+    [existingEras],
+  );
 
   const leagueGroupRef = useRef<HTMLDivElement>(null);
 
@@ -450,6 +682,80 @@ export default function NewTeamForm({
         the name has no place in it.
       </p>
 
+      {/* NEO-254 — the era.
+      
+          Asked for HERE, beside the name, rather than left to Team Management
+          afterwards: it is part of the team's identity, so a row created
+          without it cannot later be told apart from a same-named row someone
+          else creates. Two narrow number boxes on one line, the same shape
+          Team Management already uses for the same pair of facts.
+          
+          `sameNameEras` below turns this from an optional nicety into the
+          question the form is actually asking, but only when it has to. */}
+      <div className="flex items-end gap-2">
+        <FieldLabel text="Active from (optional)">
+          <Input
+            bare
+            type="number"
+            inputMode="numeric"
+            value={draft.yearsActive?.from ? String(draft.yearsActive.from) : ""}
+            placeholder="1972"
+            aria-label="New team active from (optional)"
+            disabled={disabled}
+            onChange={(e) => {
+              const from = Number.parseInt(e.target.value, 10);
+              onChange({
+                yearsActive: Number.isInteger(from)
+                  ? { from, ...(draft.yearsActive?.to !== undefined ? { to: draft.yearsActive.to } : {}) }
+                  : undefined,
+              });
+            }}
+            onKeyDown={onFieldKeyDown}
+            className="w-full p-1.5 text-sm"
+          />
+        </FieldLabel>
+        <FieldLabel text="to">
+          <Input
+            bare
+            type="number"
+            inputMode="numeric"
+            value={draft.yearsActive?.to ? String(draft.yearsActive.to) : ""}
+            placeholder="present"
+            aria-label="New team active to"
+            // A closing year with no opening one is not a span, and storing it
+            // would make an era nothing can compare. The box says so by being
+            // unavailable rather than by refusing after the fact.
+            disabled={disabled || draft.yearsActive === undefined}
+            onChange={(e) => {
+              if (!draft.yearsActive) return;
+              const to = Number.parseInt(e.target.value, 10);
+              onChange({
+                yearsActive: Number.isInteger(to)
+                  ? { from: draft.yearsActive.from, to }
+                  : { from: draft.yearsActive.from },
+              });
+            }}
+            onKeyDown={onFieldKeyDown}
+            className="w-full p-1.5 text-sm"
+          />
+        </FieldLabel>
+      </div>
+
+      {sameNameEras.length > 0 && (
+        /* The hint the ticket asks for, and it is a statement rather than a
+           warning: a second era is a legitimate thing to create — the Winnipeg
+           Jets did it — so this names what is already there and lets the
+           operator decide, instead of blocking with a colour that says
+           "mistake". `neon-yellow` would claim to know; gray states. */
+        <p className="text-xs text-gray-400">
+          {draftFullName(draft)} already exists for{" "}
+          <span className="font-mono tabular-nums">
+            {sameNameEras.join(", ")}
+          </span>
+          . Give this one its own years if it is a different era of the club.
+        </p>
+      )}
+
       <div className="flex flex-wrap items-center gap-1.5">
       <div
         ref={leagueGroupRef}
@@ -536,10 +842,135 @@ export default function NewTeamForm({
              and the CI-run-8 height win is untouched. */
           className="py-2 -my-2 text-xs text-gray-400 underline decoration-dotted hover:text-[#00D558] focus-visible:text-[#00D558] focus:outline-none disabled:opacity-50"
         >
-          {listOpen ? "Done" : "Change league"}
+          {/* NEO-254 — "Show all leagues", not "Change league".
+              Jason, preview 2026-09-07: with a standing answer the row shows
+              ONE pill, and an operator looking for a league they created a
+              moment ago reads that as "it is not here". The label now says
+              what the control does. */}
+          {listOpen ? "Hide leagues" : "Show all leagues"}
+        </button>
+      )}
+      {(onStageLeague || onCreateLeague) && (
+        /*
+          NEO-254 — the way to name a league that does not exist yet.
+
+          Jason, preview 2026-09-07, on "New Team: Lincoln Stars" (USHL):
+          Wikidata carried no league, the sport had none, and the step offered a
+          lone `No league` pill. There was nowhere to say what the league IS.
+
+          OUTSIDE the radiogroup, and a disclosure rather than an option: it is
+          a command, and a non-radio child of a radiogroup is a shape assistive
+          tech cannot read. Styled as a pill anyway, because it belongs to this
+          control visually — the same call `TeamManagement`'s
+          "+ Start a new franchise…" makes. ALWAYS present: the case it exists
+          for is precisely the one where there is nothing else on the row.
+        */
+        <button
+          type="button"
+          ref={newLeagueTriggerRef}
+          aria-expanded={namingLeague}
+          aria-controls={newLeagueFormId}
+          disabled={disabled}
+          onClick={() => setNamingLeague((open) => !open)}
+          className={pillClass(false)}
+        >
+          + New league…
         </button>
       )}
       </div>
+
+      {leagues !== undefined && leaguePills.length === 1 && (
+        /* Only "No league" on the row. Saying so is the difference between an
+           empty control and a broken one — and the trigger beside it is the
+           invitation to act. */
+        <p className="text-xs text-gray-400">No leagues in this sport yet.</p>
+      )}
+
+      {namingLeague && (
+        <div id={newLeagueFormId} className="rounded-md border border-gray-700 p-2">
+          {onStageLeague ? (
+            /*
+              WIZARD — one text box, because the league gets a step of its own
+              in a moment and asking for the whole record twice would be the
+              wizard arguing with itself. The button says what happens.
+            */
+            <div className="flex items-end gap-2">
+              <Input
+                label="New league name"
+                aria-label="New league name"
+                value={newLeagueName}
+                placeholder="United States Hockey League"
+                autoFocus
+                disabled={disabled || leagueBusy}
+                onKeyDown={(e) => {
+                  // Keyboard-first: Enter commits, Escape backs out to the
+                  // control that opened it — closing unmounts the focused input.
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    void submitNewLeague();
+                  }
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    closeNewLeague();
+                  }
+                }}
+                onChange={(e) => setNewLeagueName(e.target.value)}
+              />
+              <NeonButton
+                type="button"
+                onClick={() => void submitNewLeague()}
+                disabled={disabled || leagueBusy || !newLeagueName.trim()}
+              >
+                {leagueBusy ? "Staging…" : "Stage"}
+              </NeonButton>
+            </div>
+          ) : (
+            /*
+              PICKER — there is no batch to stage into and no later step, so
+              this is the only chance to collect the record. The full
+              `NewLeagueForm`, reused rather than restated, so its validation
+              and its bounds are the ones that apply here too.
+            */
+            <div
+              className="flex flex-col gap-2"
+              onKeyDown={(e) => {
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  closeNewLeague();
+                }
+              }}
+            >
+              <NewLeagueForm
+                draft={newLeagueDraft}
+                onChange={(patch) =>
+                  setNewLeagueDraft((prev) => ({ ...prev, ...patch }))
+                }
+                disabled={disabled || leagueBusy}
+              />
+              <div className="flex items-center gap-2">
+                <NeonButton
+                  type="button"
+                  onClick={() => void submitNewLeague()}
+                  disabled={
+                    disabled ||
+                    leagueBusy ||
+                    leagueDraftError(newLeagueDraft, new Date().getFullYear() + 1) !== null
+                  }
+                >
+                  {leagueBusy ? "Adding…" : "Add league"}
+                </NeonButton>
+                <button
+                  type="button"
+                  onClick={closeNewLeague}
+                  className="py-2 -my-2 text-xs text-gray-400 underline decoration-dotted hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* The whole point of three fields: the operator reads the row they are
           about to create, composed the way it will read everywhere else.

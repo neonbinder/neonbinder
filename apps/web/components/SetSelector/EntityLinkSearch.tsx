@@ -46,10 +46,13 @@ export default function EntityLinkSearch({
   onSelect,
   onCancel,
 }: {
-  kind: "player" | "team";
+  kind: "player" | "team" | "league";
   /** NEO-96: the sport-level selectorOptions row id, not its display name. */
   sportId: Id<"selectorOptions">;
-  onSelect: (id: Id<"players"> | Id<"teams">, name: string) => void;
+  onSelect: (
+    id: Id<"players"> | Id<"teams"> | Id<"leagues">,
+    name: string,
+  ) => void;
   onCancel: () => void;
 }) {
   const [query, setQuery] = useState("");
@@ -76,6 +79,19 @@ export default function EntityLinkSearch({
     api.teams.search,
     kind === "team" && trimmed ? { query: trimmed, sportId } : "skip",
   );
+  /*
+   * NEO-254 — leagues have no `search` query, and do not need one.
+   *
+   * `players.search` and `teams.search` exist because those tables hold tens
+   * of thousands of rows. A sport's leagues are a couple of dozen at most, so
+   * the whole list is one indexed read and the filtering happens below with
+   * the same ranking the other two get. Adding a server-side search for a list
+   * that fits on a screen would be a second thing to keep in step for nothing.
+   */
+  const leagues = useQuery(
+    api.leagues.list,
+    kind === "league" && trimmed ? { sportId } : "skip",
+  );
   /**
    * One `{ _id, name }` shape for both kinds, with a TEAM's name composed from
    * its location and nickname (NEO-236).
@@ -86,10 +102,20 @@ export default function EntityLinkSearch({
    * "Padres" in a list that also holds "Padres" from another franchise is not
    * a name an operator can choose between.
    */
-  const candidates: Array<{ _id: Id<"players"> | Id<"teams">; name: string }> | undefined =
+  const candidates:
+    | Array<{ _id: Id<"players"> | Id<"teams"> | Id<"leagues">; name: string }>
+    | undefined =
     kind === "player"
       ? players
-      : teams?.map((t) => ({ _id: t._id, name: teamFullName(t) }));
+      : kind === "league"
+        ? // Filtered client-side — see the note on the query above. Matched on
+          // a substring rather than a prefix so "hockey" finds "National
+          // Hockey League", which is how an operator actually reaches a league
+          // whose distinguishing word is not its first.
+          leagues?.filter((l) =>
+            l.name.toLowerCase().includes(trimmed.toLowerCase()),
+          )
+        : teams?.map((t) => ({ _id: t._id, name: teamFullName(t) }));
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- typeahead highlight resets with the query it indexes into
@@ -113,7 +139,8 @@ export default function EntityLinkSearch({
       .slice(0, MAX_RESULTS);
   }, [candidates, trimmed]);
 
-  const label = kind === "player" ? "player" : "team";
+  const label =
+    kind === "player" ? "player" : kind === "league" ? "league" : "team";
 
   // Three distinct empty states, and conflating any two of them is how a
   // typeahead lies: nothing typed yet, a search in flight, and a search that

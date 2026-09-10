@@ -623,8 +623,15 @@ tags:
       # fresh team steps. A loop keyed on a New Team step being visible would
       # exit the first time it caught the batch between lookups, with steps
       # still to come. Keyed on the terminal state instead, it cannot exit
-      # early — and the `runFlow when` inside means an iteration that finds no
-      # step to answer costs one hierarchy read and nothing else.
+      # early.
+      #
+      # ⚠️ AN IDLE ITERATION IS NOT FREE. This note used to claim a `runFlow
+      # when` that finds no step "costs one hierarchy read and nothing else".
+      # Measured in CI run 34123557194, that is false: a `when: visible` that
+      # resolves FALSE pays a full settle, ~6.5s median, against well under a
+      # second when it resolves TRUE. That is why the probe below is keyed on a
+      # selector present whenever there is anything to answer, and why there is
+      # exactly ONE of them.
       #
       # `times` is a runaway guard, not a budget: it must exceed the number
       # of distinct new teams a real Base set can surface (~30 checklist teams
@@ -647,11 +654,43 @@ tags:
             notVisible:
               text: ".*Confirm & Save.*"
           commands:
+            # NEO-254 — ANSWER WHATEVER STEP IS UP. The wizard stages a New League step
+            # immediately AHEAD of the first team that needs that league, and later teams
+            # pick the staged one; the bulk decides PLAYERS only, so both kinds are left
+            # for this loop. A loop that knew only `New Team:` parked on the league step
+            # and spun its whole `times` budget — that is how the seed job died.
+            #
+            # ONE probe per iteration, keyed on the step's own primary BUTTON rather
+            # than on two step HEADINGS — measured, not tidied. In CI run 34123557194
+            # the two-heading form cost 257.5s across 29 iterations while doing only
+            # 58.0s of actual tapping: a `when: visible` that resolves FALSE pays a
+            # full settle (~6.5s median) where one that resolves TRUE costs well under
+            # a second, and the league heading is absent in most iterations, so the
+            # league probe alone burned ~150s doing nothing. Keying on a selector that
+            # is PRESENT whenever there is anything to answer turns every iteration
+            # into the cheap case.
+            #
+            # `(Team|League)` AND NOT `(Player|Team|League)`, which is the whole safety
+            # of this step. The id is a regex over the button's accessible name, and a
+            # player row that the bulk deliberately LEFT undecided is an ambiguous
+            # same-name row — two NB players already carry that name and the wizard is
+            # asking which one is on the card (NEO-254 `decideAllRemaining`). Tapping
+            # `Add as New Player` there mints a third one silently, which is the exact
+            # failure this ticket exists to remove. Excluded from the matcher, the
+            # loop instead runs out and the `extendedWaitUntil` below fails loudly —
+            # the outcome to want.
+            #
+            # It also cannot hit the two other buttons that carry a similar name: the
+            # demoted `Add as New {kind} anyway` link (an exact-match step promotes
+            # `Link to <name>` instead) and the footer bulk. A matcher is a FULL match,
+            # so neither is reachable from this one.
             - runFlow:
                 when:
-                  visible: "New Team: .*"
+                  visible:
+                    id: "Add as New (Team|League)"
                 commands:
-                  - tapOn: "Add as New Team"
+                  - tapOn:
+                      id: "Add as New (Team|League)"
       # NEO-221 — the bulk button no longer decides rows whose Wikidata lookup
       # is still in flight (deciding a name nobody has looked up yet was the
       # defect). It decides the SETTLED rows now and stays armed, adding the
@@ -902,8 +941,62 @@ tags:
       # below). The button is visible as soon as the wizard opens (any undecided
       # items). Since NEO-221 its label can carry a "— N still looking up, wait
       # or skip" suffix, which is why the matcher is a prefix regex.
+      # ⚠️ THE LABEL IS "Add remaining players as new (N)". "Add All Remaining
+      # as New" is the pre-NEO-236 wording and survives only in the wizard's
+      # prose comments — `EntityReviewWizard.tsx` renders
+      # `Add remaining players as new ({remainingPlayers})`. This matcher was
+      # stale and would have failed the tap outright; it never showed because
+      # this whole `runFlow when` is normally SKIPPED — by the time these two
+      # smaller sets are fetched, the Base sync above has already created
+      # every player and team in this roster, so no wizard opens. Corrected
+      # rather than left, because "normally skipped" is not "never runs".
       - tapOn:
-          text: ".*Add All Remaining as New.*"
+          text: ".*Add remaining players as new.*"
+      # NEO-254 — and the same drain loop the Base section runs, for the same
+      # reason: the bulk decides PLAYERS ONLY (`decideAllRemaining` returns
+      # early on `row.kind !== "player"`), so any team or league row it leaves
+      # behind has to be answered before "Confirm & Save" can appear. Free when
+      # there is nothing to answer — the loop exits the moment Confirm & Save
+      # shows, so it spends exactly the time the wait below would have spent,
+      # and zero if the branch is skipped. See the Base section for the long
+      # version of every choice in it.
+      - repeat:
+          times: 250
+          while:
+            notVisible:
+              text: ".*Confirm & Save.*"
+          commands:
+            # ONE probe per iteration, keyed on the step's own primary BUTTON rather
+            # than on two step HEADINGS — measured, not tidied. In CI run 34123557194
+            # the two-heading form cost 257.5s across 29 iterations while doing only
+            # 58.0s of actual tapping: a `when: visible` that resolves FALSE pays a
+            # full settle (~6.5s median) where one that resolves TRUE costs well under
+            # a second, and the league heading is absent in most iterations, so the
+            # league probe alone burned ~150s doing nothing. Keying on a selector that
+            # is PRESENT whenever there is anything to answer turns every iteration
+            # into the cheap case.
+            #
+            # `(Team|League)` AND NOT `(Player|Team|League)`, which is the whole safety
+            # of this step. The id is a regex over the button's accessible name, and a
+            # player row that the bulk deliberately LEFT undecided is an ambiguous
+            # same-name row — two NB players already carry that name and the wizard is
+            # asking which one is on the card (NEO-254 `decideAllRemaining`). Tapping
+            # `Add as New Player` there mints a third one silently, which is the exact
+            # failure this ticket exists to remove. Excluded from the matcher, the
+            # loop instead runs out and the `extendedWaitUntil` below fails loudly —
+            # the outcome to want.
+            #
+            # It also cannot hit the two other buttons that carry a similar name: the
+            # demoted `Add as New {kind} anyway` link (an exact-match step promotes
+            # `Link to <name>` instead) and the footer bulk. A matcher is a FULL match,
+            # so neither is reachable from this one.
+            - runFlow:
+                when:
+                  visible:
+                    id: "Add as New (Team|League)"
+                commands:
+                  - tapOn:
+                      id: "Add as New (Team|League)"
       # NEO-221 — the bulk button no longer decides rows whose Wikidata lookup
       # is still in flight (deciding a name nobody has looked up yet was the
       # defect). It decides the SETTLED rows now and stays armed, adding the
@@ -1108,8 +1201,62 @@ tags:
       # below). The button is visible as soon as the wizard opens (any undecided
       # items). Since NEO-221 its label can carry a "— N still looking up, wait
       # or skip" suffix, which is why the matcher is a prefix regex.
+      # ⚠️ THE LABEL IS "Add remaining players as new (N)". "Add All Remaining
+      # as New" is the pre-NEO-236 wording and survives only in the wizard's
+      # prose comments — `EntityReviewWizard.tsx` renders
+      # `Add remaining players as new ({remainingPlayers})`. This matcher was
+      # stale and would have failed the tap outright; it never showed because
+      # this whole `runFlow when` is normally SKIPPED — by the time these two
+      # smaller sets are fetched, the Base sync above has already created
+      # every player and team in this roster, so no wizard opens. Corrected
+      # rather than left, because "normally skipped" is not "never runs".
       - tapOn:
-          text: ".*Add All Remaining as New.*"
+          text: ".*Add remaining players as new.*"
+      # NEO-254 — and the same drain loop the Base section runs, for the same
+      # reason: the bulk decides PLAYERS ONLY (`decideAllRemaining` returns
+      # early on `row.kind !== "player"`), so any team or league row it leaves
+      # behind has to be answered before "Confirm & Save" can appear. Free when
+      # there is nothing to answer — the loop exits the moment Confirm & Save
+      # shows, so it spends exactly the time the wait below would have spent,
+      # and zero if the branch is skipped. See the Base section for the long
+      # version of every choice in it.
+      - repeat:
+          times: 250
+          while:
+            notVisible:
+              text: ".*Confirm & Save.*"
+          commands:
+            # ONE probe per iteration, keyed on the step's own primary BUTTON rather
+            # than on two step HEADINGS — measured, not tidied. In CI run 34123557194
+            # the two-heading form cost 257.5s across 29 iterations while doing only
+            # 58.0s of actual tapping: a `when: visible` that resolves FALSE pays a
+            # full settle (~6.5s median) where one that resolves TRUE costs well under
+            # a second, and the league heading is absent in most iterations, so the
+            # league probe alone burned ~150s doing nothing. Keying on a selector that
+            # is PRESENT whenever there is anything to answer turns every iteration
+            # into the cheap case.
+            #
+            # `(Team|League)` AND NOT `(Player|Team|League)`, which is the whole safety
+            # of this step. The id is a regex over the button's accessible name, and a
+            # player row that the bulk deliberately LEFT undecided is an ambiguous
+            # same-name row — two NB players already carry that name and the wizard is
+            # asking which one is on the card (NEO-254 `decideAllRemaining`). Tapping
+            # `Add as New Player` there mints a third one silently, which is the exact
+            # failure this ticket exists to remove. Excluded from the matcher, the
+            # loop instead runs out and the `extendedWaitUntil` below fails loudly —
+            # the outcome to want.
+            #
+            # It also cannot hit the two other buttons that carry a similar name: the
+            # demoted `Add as New {kind} anyway` link (an exact-match step promotes
+            # `Link to <name>` instead) and the footer bulk. A matcher is a FULL match,
+            # so neither is reachable from this one.
+            - runFlow:
+                when:
+                  visible:
+                    id: "Add as New (Team|League)"
+                commands:
+                  - tapOn:
+                      id: "Add as New (Team|League)"
       # NEO-221 — the bulk button no longer decides rows whose Wikidata lookup
       # is still in flight (deciding a name nobody has looked up yet was the
       # defect). It decides the SETTLED rows now and stays armed, adding the
