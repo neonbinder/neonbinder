@@ -377,6 +377,41 @@ tags:
 - assertVisible: "Discover"
 - tapOn: "Save"
 
+# GO AND LOOK AT THE STATUS LINE — it is not where Save is.
+#
+# `TeamManagement` prints `Saved <full name>` in the PAGE-LEVEL status line, the
+# first child of the screen's container, ~250px above the fold at document
+# y≈293; the panel that carries Save is the right-hand column far below it. The
+# component says so itself, in the comment above `saveError`: the screen-level
+# status line "on a panel that is usually scrolled past the fold, is off-screen
+# at the moment Save is pressed" — which is why a REFUSED save was moved inline
+# in NEO-236. The success message was left where it was.
+# MEASURED. `extendedWaitUntil: visible` never scrolls, so this assertion can
+# only read what is already on screen. Green CI 34361627641 passed it in 0.34 s
+# with the page at maximum scroll (Save at y=552, i.e. document scroll 307): the
+# status line was at viewport y≈-14 and six of its twenty pixels were on screen.
+# That is the whole margin it ever had. NEO-260's 208px spacer
+# (src/layouts/binder-layout.tsx) gives the page 208px more travel, and run
+# 34429321550 runner 6 failed here with root bounds [0,-515][1009,625] — maximum
+# scroll, 208 lower — putting the line ~222px above the viewport, where the
+# driver prunes it from the hierarchy entirely.
+# THE SAVE ITSELF WAS FINE, and the dump proves it rather than assuming it: 16 s
+# after the tap the button still reads "Save" and not "Saving…", so `busy` had
+# cleared; no `role="alert"` refusal is present, so the mutation did not throw;
+# and the only branch left calls `onStatus({text: "Saved …"})`. The assertion was
+# reporting where the confirmation renders, not whether the save happened.
+# So re-anchor first. "Location" is the panel's own first field label and is on
+# screen at maximum scroll (y=33 in the failure dump), so this scroll always
+# finds it at try 0 and needs exactly one swipe to centre it (~y346), which
+# leaves the page ~313px higher and the status line comfortably in view. It is
+# positioning only: nothing about what this flow proves changes.
+- scrollUntilVisible:
+    element:
+      text: "Location"
+    direction: UP
+    centerElement: true
+    timeout: 7000
+
 # The mutation confirms by name — and NEO-236 made that the COMPOSED name, so
 # this line is itself the first read-back of the split: "Saved Loc0 TMT<token>"
 # can only be said by a save that took the Location box and the Name box and

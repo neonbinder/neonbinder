@@ -174,9 +174,27 @@ tags:
 # REOPEN + VERIFY PERSISTENCE (a custom card now durably holds a player)
 # ============================================================
 
+# WHERE THE PAGE IS, WHERE THE ANCHOR IS, AND WHY *UP*. "Done editing card"
+# closes the drawer and leaves the page at MAXIMUM SCROLL — the three x=80%
+# swipes above drive the drawer's own scroller and chain to the window once it
+# bottoms out. This Edit button is a cell in the checklist row, i.e. in the LAST
+# block on the page, which by then has gone off the TOP of the viewport. A DOWN
+# scroll travels away from it, and CardChecklist's react-virtuoso list unmounts
+# an off-screen row, so the button is not in the hierarchy at all.
+# MEASURED, both halves in the same runs. Green CI 34361627641: the same button
+# at y=272 before the drawer opened and y=156 after it closed, accepted at try 0.
+# Run 34429321550 runner 1 (first run with NEO-260's 208px spacer): y=64 before
+# (272 - 208) and, after the close, 156 - 208 = -52 — five ElementNotFound
+# retries, and the failure dump shows root bounds [0,-1135][1009,625] (document
+# bottom flush with the viewport bottom = maximum scroll) with
+# `virtuoso-item-list` at [72,-93][767,15] holding no rendered rows.
+# UP re-anchors rather than depending on the document bottoming out (R5); one
+# swipe brings the row from -52 to ~261, inside the band, and the tap that
+# follows lands clear of the sticky header.
 - scrollUntilVisible:
     element:
       id: "Edit card 777-${ATTEMPT_ID}"
+    direction: UP
     centerElement: true
     visibilityPercentage: 50
     timeout: 7000

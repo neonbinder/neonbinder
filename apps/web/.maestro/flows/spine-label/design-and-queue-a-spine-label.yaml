@@ -149,6 +149,42 @@ tags:
 # target forever, and an off-screen element is pruned from the hierarchy before
 # any selector runs, so it reads as "no visible element found" rather than as a
 # scrolling problem.
+#
+# THE THREE SWIPES BELOW ARE POSITIONING, NOT ASSERTION — and they are what
+# NEO-260's 208px spacer made necessary. This is the only one of the seven
+# post-spacer failures that is a TRAVEL problem rather than a direction problem:
+# the direction was already right.
+# THE ARITHMETIC. This Remove button sits at document y=429; the page is at
+# maximum scroll when "Add to sheet" is pressed, and the spacer moved that
+# maximum from 1044 to 1252. A driver swipe covers a flat 313px, so the UP scroll
+# can only sample the page at P, P-313, P-626 … and the ladder decides
+# everything. Green CI 34361627641 started at 1044 and its rungs were
+# 1044/731/418/105 — it found the button at y=11 on the third read, swiped once
+# more to y=324 and accepted, in 6.29 s. Post-spacer the rungs are
+# 1252/939/626/313/0: an extra rung, five reads instead of four, and run
+# 34429321550 runner 0 was cut off by `timeout: 7000` at 8.47 s having just
+# logged the button at y=116 — the step never got to the read that would have
+# accepted it at y=429 (centre 445; measured across the 64 centred UP scrolls in
+# the green run, UP accepts from centre 206 upward and rejects at 178 and below,
+# so 445 is an accept, not a give-up).
+# So we close the distance first and let the centred scroll do only the last
+# leg. Three swipes at 312px take the page to ~314, from which the scroll needs
+# at most two hierarchy reads (~2.7 s) whatever the page height does: it accepts
+# at the first rung whose centre clears ~200, and the document running out of
+# scroll at the top puts the button at 429, which is itself an accept.
+# R5 is untouched — the ceiling stays 7000 and the step now finishes far inside
+# it. Swiping at x=50% is the driver's own swipe axis on this page (every
+# `swipeFromCenter` in this flow's log moved the window a full 313px from there),
+# so it drives the window and nothing nested.
+- swipe:
+    start: "50%, 25%"
+    end: "50%, 75%"
+- swipe:
+    start: "50%, 25%"
+    end: "50%, 75%"
+- swipe:
+    start: "50%, 25%"
+    end: "50%, 75%"
 - scrollUntilVisible:
     element:
       id: "Remove Ken Griffey Jr., 3 inch spine in Graduate, from the sheet"

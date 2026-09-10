@@ -537,9 +537,25 @@ tags:
 # THIS row and THIS kind. R6: the scroll IS the assertion; nothing repeats it.
 # ════════════════════════════════════════════════════════════════════════════
 
+# WHERE THE PAGE IS, WHERE THE ANCHOR IS, AND WHY *UP*. The drawer above closes
+# with the page at MAXIMUM SCROLL, and this badge is a cell in the checklist ROW
+# — the last block on the page, whose rows have already gone off the TOP of the
+# viewport by the time the document has run out of scroll. A DOWN scroll from
+# there travels away from it, and CardChecklist's react-virtuoso list unmounts a
+# row that is off-screen, so the badge is not merely out of view: it is not in
+# the hierarchy at all, and the step reads as "No visible element found".
+# MEASURED. Green CI 34361627641 found it at y=194 at try 0 with no swipe.
+# NEO-260's 208px spacer (src/layouts/binder-layout.tsx) gives the page exactly
+# that much more travel: 194 - 208 = -14. Run 34429321550 runner 7 failed here
+# with root bounds [0,-1135][1009,625] (document bottom flush with the viewport
+# bottom = maximum scroll) and `virtuoso-item-list` at [72,-93][767,15] holding
+# no rendered rows at all. UP re-anchors instead of relying on the page having
+# run out of scroll first (R5, "must never depend on the document bottoming
+# out"); one swipe puts the row back in the band.
 - scrollUntilVisible:
     element:
       id: "Card 101-${ATTEMPT_ID} needs attention: variation text is over the 65-character limit"
+    direction: UP
     centerElement: true
     timeout: 7000
 

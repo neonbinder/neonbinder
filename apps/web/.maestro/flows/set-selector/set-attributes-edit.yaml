@@ -136,16 +136,33 @@ tags:
 # setSetMetadata works on custom sets. Two-step write avoids no-op when
 # the DB already holds the intended value from a prior run.
 #
-# CI VIEWPORT FIX: "Value for Release Date" renders at y≈626 in the
-# 1024×629 headless viewport — right at the fold. Scrolling to "Value for
-# Total Cards" (the editable field BELOW Release Date in the same grid) lifts
-# Release Date fully into view. tapOn then needs no further scroll.
-# See patterns_scroll_visibility.md for the centerElement 0.0 trap.
+# CI VIEWPORT FIX: "Value for Release Date" renders at the fold in the
+# 1024×629 headless viewport. Scrolling to "Value for Total Cards" (the
+# editable field BELOW Release Date in the same grid) lifts Release Date fully
+# into view. tapOn then needs no further scroll.
 # ============================================================
 
+# R8 — this scroll PRECEDES A TAP (of Release Date here, and of Total Cards
+# itself further down), so it centres. It used to run uncentred, which is what
+# broke it: uncentred, the step accepts the target wherever it first sees it,
+# and NEO-260's 208px spacer moved "wherever" past the bottom edge.
+# MEASURED. Green CI 34361627641: the step above ("Edit attributes") could not
+# centre — frozen at y=518 through tries 0..5 at maximum scroll — and this
+# scroll then found Total Cards missing at try 0, swiped once, and accepted it
+# at y=510, fully on screen. In run 34429321550 runner 5 the spacer let "Edit
+# attributes" centre at y=310 instead of parking at 518, so the page began 208px
+# further down and Total Cards was already in the hierarchy at try 0 at
+# `[74,615][407,641]` — 823 - 208, i.e. the position the green run swiped PAST.
+# Ten of its 26 pixels were on screen, which `visibilityPercentage: 10` accepts,
+# so the scroll completed and the later `tapOn` computed a tap centre of y=628,
+# three pixels BELOW the 625px viewport. Maestro cannot dispatch that and dies
+# inside the driver with "null cannot be cast to non-null type kotlin.Int".
+# Centred, it swipes once to y≈302 (centre ~315) and both fields are wholly on
+# screen: Release Date sits 67px above it at y≈235.
 - scrollUntilVisible:
     element:
       id: "Value for Total Cards"
+    centerElement: true
     visibilityPercentage: 10
     waitToSettleTimeoutMs: 1000
     timeout: 7000
