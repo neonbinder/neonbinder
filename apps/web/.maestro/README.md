@@ -335,14 +335,41 @@ It is a data-loading track, not a user-facing interaction, so the 7s bar does
 not apply to it and its timeouts stay at their measured cold-path values.
 
 NEO-260 learned this the hard way: the suite-wide 7000 sweep took the seed with
-it and CI run 34394655674 died at `.*Re-map Base.*`. The tap on `Confirm Base
-Set` completed at 19:37:50 and the button had still not flipped fourteen seconds
-later — the label is gated on `baseHasMapping`, a Convex query that settles only
-once the write following a live SportLots confirm lands. The sweep had measured
-that step at "worst 0.5-4s" from green runs where the flip had **already
-happened**, i.e. it measured the warm branch and applied the number to the cold
-one. **Measuring a step tells you nothing until you know which branch the
-measurement came from.** Every seed timeout is now back at its pre-sweep value.
+it and the seed then failed at `.*Re-map Base.*` in CI runs 34394655674 and
+34400136389. The sweep had measured that step at "worst 0.5-4s" from green runs
+where the mapping had **already** landed, i.e. it measured the warm branch and
+applied the number to the cold one. **Measuring a step tells you nothing until
+you know which branch the measurement came from.** Every seed timeout is now
+back at its pre-sweep value.
+
+**But the timeout was not what failed that step, and the record should say so.**
+The first reading of run 34394655674 — that the tap on `Confirm Base Set`
+completed at 19:37:50 and the button "had still not flipped" fourteen seconds
+later — is wrong, and both failure hierarchy dumps disprove it. Each shows root
+bounds `[0,-680][1009,625]`, i.e. the page pinned at MAXIMUM SCROLL, with
+`Set attributes panel` as the first thing on screen at y=49 and its
+`Clear base set from Base` control present: the mapping had landed, the button
+read `Re-map Base`, and it was simply ABOVE the top of the viewport. The step
+scrolls DOWN, and `scrollUntilVisible` with `direction: DOWN` only ever travels
+away from an anchor that sits above the current position — so it burned all
+60s in 29 `ElementNotFound` retries on an element that was rendered the whole
+time. The seed's exemption and its 60000 stand; the *direction* was the bug, and
+that step now scrolls UP. See the next rule.
+
+**A `scrollUntilVisible` must never depend on the document bottoming out.** That
+seed step passed for months only because the page ran out of scroll before the
+anchor left the viewport — measured at y=4 in green run 34361627641, four pixels
+of slack that no flow states and nothing defends. NEO-260's 208px spacer gave
+every page exactly 208px more travel and the slack was gone. So: before you
+write a `direction:`, say where the PREVIOUS step leaves the page and where the
+anchor sits relative to it in DOM order — `components/modules/SetSelector.tsx`
+renders selector columns → base-mapping button → `MultiSourcePanel` →
+`SetAttributesPanel` → `CardChecklist`, and `EntityColumn` puts each column's
+`Add custom …` button below every row in it. An anchor above the current
+position takes `direction: UP`; it is not a style choice. A DOWN scroll toward
+an anchor above the page's position cannot fail *safely* either: it drives the
+page to the bottom and then accepts whatever is still on screen, after paying
+the full six-iteration give-up path on every run.
 
 **`scrollUntilVisible` is the trap: its own default is 20000, not 7000.**
 `ScrollUntilVisibleCommand.DEFAULT_TIMEOUT_IN_MILLIS` is the string `"20000"`

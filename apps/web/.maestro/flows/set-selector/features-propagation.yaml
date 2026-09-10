@@ -218,9 +218,21 @@ tags:
       - assertVisible:
           text: "Insert"
 
+# WHERE THE PAGE IS, WHERE THE ANCHOR IS, AND WHY *UP*. The step above scrolled
+# UP to `Add custom Variant Types`, which EntityColumn renders at the FOOT of
+# the Variant Types column, below every row in it — so "Insert", a row in that
+# same column, is ABOVE the page's current position and a DOWN scroll travels
+# away from it.
+# MEASURED (green CI 34361627641): `Add custom Variant Types` ended at y=227 and
+# "Insert" was then found at y=144 — 83px above it. It passed only because the
+# document had nowhere further to go; that is the implicit page-height contract
+# NEO-260's 208px spacer broke for the seed. The identical step in STEP D below
+# already spells out `direction: UP` for the same anchor; this makes the two
+# agree.
 - scrollUntilVisible:
     element:
       text: "Insert"
+    direction: UP
     centerElement: true
     timeout: 7000
 - tapOn: "Insert"

@@ -735,9 +735,24 @@ tags:
 # BSC + SportLots round-trip — the sanctioned long wait.
 # ============================================================
 
+# WHERE THE PAGE IS, WHERE THE ANCHOR IS, AND WHY *UP*. Step 7a leaves the page
+# centred on "BSC source" — the ChecklistSourceFilter, which CardChecklist.tsx
+# renders ~320 JSX lines BELOW the action row this button lives in (filter at
+# :2158, the button at :1835). So the anchor is ABOVE the current position and a
+# DOWN scroll travels away from it: it can only drive the page to the bottom and
+# then accept whatever is still on screen.
+# MEASURED (green CI 34361627641): "BSC source" ended at y=165 and this button
+# was found at y=34 — 131px above it, and 34px from the top of the 629px
+# viewport. That 34px of slack is the document running out of scroll, not a
+# margin anything states; NEO-260's 208px spacer (src/layouts/binder-layout.tsx)
+# adds exactly that much extra travel, which is what took the seed's
+# `.*Re-map Base.*` off the top of the screen. UP centres it instead of relying
+# on the slack, and leaves the page above the checklist, which is where 7c's
+# DOWN scroll back to "BSC source" expects to start.
 - scrollUntilVisible:
     element:
       id: "Sync card checklist"
+    direction: UP
     centerElement: true
     timeout: 7000
 - tapOn:

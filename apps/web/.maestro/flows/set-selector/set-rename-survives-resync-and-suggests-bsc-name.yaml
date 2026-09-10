@@ -267,9 +267,26 @@ tags:
 # records a label here and can never disagree with our name.
 # ============================================================
 
+# WHERE THE PAGE IS, WHERE THE ANCHOR IS, AND WHY *UP*. The step above centres
+# `Attributes for TCG` — and, as its own comment records, it does that AT
+# MAXIMUM SCROLL: pre-spacer it parked frozen at y=520 through `Scrolling try
+# count: 0`..`5`, and the 208px spacer simply lets the page travel 208px further
+# so the same panel lands at y=312. Either way the page ends at the BOTTOM of
+# the document. "Sync Sets" is the Sets column's own action button, up in the
+# selector cascade, which SetSelector.tsx renders ABOVE SetAttributesPanel — so
+# from there the anchor is above the viewport centre and a DOWN scroll can only
+# push it further up.
+# MEASURED (green CI 34361627641): found at y=286 with the page pinned at
+# maximum scroll — i.e. it was on screen only because the document had run out
+# of scroll, and the spacer's extra 208px of travel leaves it at y=78, inside
+# the sticky binder header's band and one layout change from gone. UP centres it
+# properly and skips the six-iteration give-up path a DOWN scroll would run here
+# on every single run (R8: a centred scroll that never centres is the fault, not
+# the budget).
 - scrollUntilVisible:
     element:
       text: "Sync Sets"
+    direction: UP
     centerElement: true
     timeout: 7000
 - tapOn: "Sync Sets"
@@ -301,12 +318,22 @@ tags:
     centerElement: true
     timeout: 7000
 
+# Same shape, same reasoning as "Sync Sets" above: the step before this one
+# centres `Attributes for TCG` at maximum scroll, and "Base" is a Variant Types
+# row — one of the selector columns, which render ABOVE SetAttributesPanel. It
+# is therefore above the page's current position, so UP.
+# MEASURED (green CI 34361627641): y=279 with the page at maximum scroll; the
+# 208px spacer leaves it at y=71.
 - scrollUntilVisible:
     element:
       text: "Base"
+    direction: UP
     centerElement: true
     timeout: 7000
 
+# The suggestion pill hangs off the SETS column, so once "Base" is centred it
+# sits just BELOW the page's position (measured 10px below "Base" in the same
+# viewport read) — DOWN, the default, is right here.
 # ============================================================
 # STEP 6 — REVIEW BSC'S NAME AND ACCEPT IT
 #

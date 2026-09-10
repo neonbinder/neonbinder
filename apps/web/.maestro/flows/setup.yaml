@@ -1269,28 +1269,53 @@ tags:
 # `baseHasMapping` is true. The util already confirmed the picker on the
 # first-run path; this is the seed's own assertion that the fixture is ready
 # for the queue.
-# R5 EXCEPTION — the setup track's cold sync, which R5 sanctions by name.
-# RESTORED to 60000 in NEO-260 after the 7000 sweep broke the seed (CI run
-# 34394655674): the tap on `Confirm Base Set` completed at 19:37:50 and the
-# button had still not flipped to `Re-map Base` fourteen seconds later, so the
-# step failed after four ElementNotFound retries. The label is gated on
-# `baseHasMapping`, a Convex query that only settles once the write following a
-# LIVE SportLots confirm has landed — a marketplace round-trip, not UI latency.
-# The sweep's 'measured worst 0.5-4s' came from runs where the flip had already
-# happened, so it measured the wrong branch. Do NOT lower this to the 7s bar:
-# this flow reseeds from empty and always takes the cold path.
+#
+# WHERE THE PAGE IS WHEN THIS STEP BEGINS, WHERE THE ANCHOR IS, AND WHY *UP*.
+# The step above (`util-drill-to-base-variant`) ends by centring "Add Card",
+# the first control in the CardChecklist action row, so the page is left at or
+# near the BOTTOM of the document. The base-mapping button is the LAST thing
+# rendered before `MultiSourcePanel`, `SetAttributesPanel` and `CardChecklist`
+# (components/modules/SetSelector.tsx renders them in exactly that order), so
+# from there the anchor is three panels ABOVE the viewport. A DOWN scroll can
+# only travel further away from it, so `direction: UP` is the only direction
+# that can ever reach it.
+#
+# IT USED TO PASS ONLY BECAUSE THE DOCUMENT RAN OUT OF SCROLL — an implicit
+# contract on page height that no flow ever stated. MEASURED: green CI run
+# 34361627641 found this button at y=4, four pixels below the top of the
+# 629px viewport, with the page pinned at maximum scroll. NEO-260's 208px
+# spacer (src/layouts/binder-layout.tsx) added exactly that much extra scroll
+# range, the page travelled 208px further, and the button left the viewport
+# through the top: CI runs 34394655674 and 34400136389 both died here after
+# 29 ElementNotFound retries. Both failure hierarchy dumps show root bounds
+# [0,-680][1009,625] (maximum scroll) with `Set attributes panel` — the panel
+# BELOW this button — as the first thing on screen at y=49, and the panel
+# carrying "Clear base set from Base", i.e. the mapping this step waits for had
+# already landed. The button was rendered the whole time; DOWN simply could
+# not reach it.
+#
+# R5 EXCEPTION — the setup track's cold sync, which R5 sanctions by name, and
+# the timeout stays at 60000: the label is gated on `baseHasMapping`, a Convex
+# query that only settles once the write following a LIVE SportLots confirm has
+# landed. Do NOT lower it to the 7s bar; this flow reseeds from empty and always
+# takes the cold path.
 - scrollUntilVisible:
     element:
       text: ".*Re-map Base.*"
+    direction: UP
     centerElement: true
     timeout: 60000
 
 # The checklist is EMPTY and must stay that way — the assertion is the contract.
-# R8 exception, MEASURED (CI 34349299679 + 34361627641): `Element bounds`
-# held at y=457 across `Scrolling try count: 0`..`5` — the empty-checklist
-# page has no scrollable overflow to swipe — so a swipe cannot move this
-# target and centring buys only the six-iteration give-up path (>=7.0s).
-# Uncentred it settles well under a second, inside R5's 7000.
+# The step above now leaves the page centred on the base-mapping button, so this
+# anchor — the empty-state line inside CardChecklist, two panels BELOW it — is
+# below the viewport and DOWN (the default) is the right direction.
+# NOT centred: the recorded R8 case-2 measurement for this step (CI 34349299679
+# + 34361627641, `Element bounds` frozen at y=457 across try 0..5) was taken
+# with the page pinned at maximum scroll, which is why nothing moved; it is the
+# page-bottom signature, not "no scrollable overflow". Post-spacer the document
+# does have headroom, but centring still buys nothing here and the uncentred
+# step settles in well under a second, so leave it uncentred.
 - scrollUntilVisible:
     element:
       text: "No cards in this checklist yet."
