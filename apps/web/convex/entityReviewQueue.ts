@@ -2378,12 +2378,19 @@ export const recordDecision = mutation({
  * un-deciding it would hand the operator a row stuck on "Looking up…" forever.
  * Re-scheduling the pool enqueue is what makes the row answerable again.
  *
- * This is a LOOKUP, not entity enrichment. The creation-only rule
- * (`enqueueEnrichment`, and the note on `resolveTeamIdByName` in
- * selectorOptions.ts) is about re-enriching a `players`/`teams` row that
- * already exists; nothing here touches those tables. An `entityReviewQueue`
+ * This is a LOOKUP, not entity enrichment. The creation-only rule on
+ * `wikidataPool.enqueueEnrichment` is about enriching a `players`/`teams` row
+ * in the database; nothing here touches those tables. An `entityReviewQueue`
  * row is a throwaway question awaiting an answer, and this is the same enqueue
  * `startBatch` performs when the question is first asked.
+ *
+ * The two are easy to confuse and NEO-254 made the distinction load-bearing:
+ * teams are no longer enriched automatically at creation at all, so for a TEAM
+ * this lookup is the only source of league, era, colours and ids a created row
+ * will ever have without an operator pressing Discover. Deciding a team row
+ * before its lookup lands mints a permanently bare team — which is exactly why
+ * a team row is staged `pending`, and why `recordAllRemainingAsCreate` refuses
+ * to decide a pending row.
  *
  * Bounded by operator clicks — one enqueue per "Change decision" tap on a row
  * that never resolved, which is a rare shape to begin with.
@@ -2440,7 +2447,9 @@ export const clearDecision = mutation({
  *     player/team's Wikidata id, career teams, league, city and colours, so
  *     deciding a pending row "create" mints a permanently bare row for a
  *     player Wikidata knows perfectly well — silently, and with no later path
- *     back to the enrichment (`enqueueEnrichment` is creation-only). The
+ *     back to the enrichment (`enqueueEnrichment` is creation-only for
+ *     players, and NEO-254 removed the automatic TEAM leg altogether, so a
+ *     team decided while pending has no later automatic path at all). The
  *     operator asked for "everything else is new", not "everything else is new
  *     and unenriched". So create passes `false` and the caller re-arms as
  *     lookups land.

@@ -181,7 +181,7 @@ afterEach(() => {
 // ===========================================================================
 
 describe("enrichTeam", () => {
-  test("ESPN matches AND Wikidata matches: location/league from ESPN, yearsActive/wikidataId from Wikidata, espnId persisted, colors from the bundled dataset", async () => {
+  test("ESPN matches AND Wikidata matches: location/league from ESPN, yearsActive/wikidataId from Wikidata, espnId persisted, colors from ESPN", async () => {
     const t = convexTest(schema, modules);
     const teamId = await insertTeam(t, "Washington Nationals");
 
@@ -213,11 +213,11 @@ describe("enrichTeam", () => {
     expect(await getLeagueName(t, teamId)).toBe("Major League Baseball");
     expect(team!.location).toBe("Washington");
     expect(team!.name).toBe("Nationals");
-    // NEO-156: colors do NOT come from ESPN for a team the bundled dataset
-    // carries. `enrichTeam` runs the color resolver last, and a dedicated color
-    // source outranks ESPN — the same precedence teamcolorcodes.com already
-    // had. Washington Nationals is one of the dataset's 30 MLB rows.
-    expect(team!.colors).toEqual({ primary: "#ab0003", secondary: "#11225b" });
+    // ESPN's colors stand. `enrichTeam` runs the color resolver last and a
+    // resolved teamcolorcodes.com page WOULD outrank them, but the stub above
+    // throws for that host, so the resolver reports "unreadable" and writes
+    // nothing. That precedence is covered in teamColorSourcesResolve.test.ts.
+    expect(team!.colors).toEqual({ primary: "#0d2340", secondary: "#ba122b" });
     // Wikidata is the only source for yearsActive/wikidataId.
     expect(team!.yearsActive?.from).toBe(1969);
     expect(team!.yearsActive?.to).toBeUndefined();
@@ -251,14 +251,9 @@ describe("enrichTeam", () => {
     expect(await getLeagueName(t, teamId)).toBe("Major League Baseball");
     expect(team!.location).toBe("Washington");
     expect(team!.name).toBe("Nationals");
-    // NEO-156: colors do NOT come from ESPN for a team the bundled dataset
-    // carries. `enrichTeam` runs the color resolver last, and a dedicated color
-    // source outranks ESPN — the same precedence teamcolorcodes.com already
-    // had. Washington Nationals is one of the dataset's 30 MLB rows.
-    //
-    // NEO-236: and it still matches AFTER the split, because the colour
-    // lookup composes the full name rather than reading `name`.
-    expect(team!.colors).toEqual({ primary: "#ab0003", secondary: "#11225b" });
+    // As above: the color resolver runs last and cannot reach
+    // teamcolorcodes.com under this stub, so ESPN's colors stand.
+    expect(team!.colors).toEqual({ primary: "#0d2340", secondary: "#ba122b" });
     expect(team!.externalIds?.espnId).toBe("20");
     expect(team!.externalIds?.wikidataId).toBeUndefined();
     expect(team!.yearsActive).toBeUndefined();

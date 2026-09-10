@@ -162,22 +162,36 @@ export const enqueueEntityReviewLookups = internalMutation({
  *
  * So every automatic caller of this mutation must pass ids for rows created in
  * the SAME operation — which each of them knows at insert time, and none of
- * them has to go looking up. Concretely, today:
- *
- *   - `commitCardChecklistFinalize` passes `prelude.enrichmentTeamIds`, which
- *     `resolveTeamIdByName` appends to ONLY on the branch immediately after
- *     `ctx.db.insert("teams", …)`. It deliberately passes no `playerIds` at
- *     all: players created in that prelude were already enriched from the
- *     review wizard's own preview lookup.
+ * them has to go looking up.
  *
  * A row that already exists must never be enqueued here. Passing one is not a
  * silent no-op — `enrichPlayer`/`enrichTeam` carry a structural guard that
  * skips and logs — but the guard is a belt, not the contract. Do not lean on it.
  *
- * `force` is the ONE sanctioned exception and belongs to human-initiated
- * re-enrichment only: `teams.enrichFromWikidata` / `players.enrichFromWikidata`,
- * the admin-gated operator remedy for a wrong franchise or a bad match. No
- * automatic path may set it.
+ * ## AND `teamIds` HAS NO AUTOMATIC CALLER AT ALL (NEO-254)
+ *
+ * Players and leagues still enqueue themselves at creation. Teams do not, and
+ * the difference is not an oversight to be tidied up. Jason, 2026-09-10: "we
+ * do not need to enrich anymore on team creation because all major teams are
+ * created already; if at some point there is a rare case of needing to create
+ * a team it will need to be manual."
+ *
+ * `enrichTeam` is also the expensive one: it finishes in
+ * `teamColorSources.resolveTeamColors`, a live ~1.5MB read of
+ * teamcolorcodes.com's sitemap whose own module header forbids "a loop, a
+ * background queue, or a render path". Enqueued per created team it was
+ * exactly that — and it shares THIS 5-wide lane with the review wizard's
+ * lookups, so a checklist commit's worth of new teams starved the lookups the
+ * operator was waiting on and the wizard sat on "N still looking up".
+ *
+ * `teamIds` therefore exists today for one caller: `teams.enrichFromWikidata`,
+ * with `force`. Adding an automatic one puts that bulk loop back.
+ *
+ * `force` is the ONE sanctioned exception to the creation-only rule and
+ * belongs to human-initiated re-enrichment only:
+ * `teams.enrichFromWikidata` / `players.enrichFromWikidata`, the admin-gated
+ * operator remedy for a wrong franchise or a bad match. No automatic path may
+ * set it.
  *
  * No `onComplete`: unlike a review row, an un-enriched player or team is a
  * perfectly valid end state (the long-standing "a miss is fall-back, not

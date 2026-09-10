@@ -1690,10 +1690,6 @@ describe("commitCardChecklist: an operator's Location + Name LINKS before it cre
     expect(teams[0].nameNormalized).toBe("surge wichita wind");
     expect(prelude.createdTeamIds).toEqual([teams[0]._id]);
     expect(prelude.unresolvedTeamNames).toEqual([]);
-    // The wizard already enriched this row before it was created — NEO-147's
-    // creation-only enrichment queue is for the incidental career teams, not
-    // for a team the operator reviewed.
-    expect(prelude.enrichmentTeamIds).toEqual([]);
     // And the FULL name is what leaves the prelude.
     expect(prelude.teamNameById).toEqual([
       { id: teams[0]._id, name: "Wichita Wind Surge" },
@@ -1828,9 +1824,12 @@ describe("commitCardChecklist: career teams link on a match and are dropped with
     expect(teams).toHaveLength(1);
     expect(teams[0].name).toBe("Padres");
     expect(teams[0].location).toBe("San Diego");
-    // An incidental career team lands bare, so it DOES go on the enrichment
-    // queue — unlike a team the operator reviewed directly.
-    expect(prelude.enrichmentTeamIds).toEqual([teams[0]._id]);
+    // NEO-254 — it lands BARE and stays bare. This used to assert the id came
+    // back on `prelude.enrichmentTeamIds` for `commitCardChecklistFinalize` to
+    // enqueue; teams are no longer enriched automatically at creation, so
+    // there is no such list and the only remedy is Team Management's
+    // Discover. The row itself is what the commit is responsible for, and it
+    // is asserted above.
     // Answered, so it is not reported as unresolved.
     expect(prelude.unresolvedTeamNames).toEqual([]);
   });

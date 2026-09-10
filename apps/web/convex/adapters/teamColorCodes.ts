@@ -154,10 +154,6 @@ const SPORT_SUFFIXES = [
  * default grey and nothing anywhere says why. teamcolorcodes.com spells its
  * slugs in ASCII, NB stores the franchise's real name, and before the fold
  * "Montréal Expos" keyed as "montr al expos" — no match, forever.
- *
- * `seedMatchKey` (lib/teams/seed-team-lookup.ts) is the same key for the
- * bundled dataset and must move in step; `teamColorCodes.test.ts` asserts the
- * two agree on a shared fixture set.
  */
 export function colorSourceMatchKey(raw: string): string {
   let s = foldDiacritics(raw)

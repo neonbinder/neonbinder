@@ -13,8 +13,17 @@
  * That trade is only sound because the ask is manual and one team at a time:
  * a search costs the sitemap index plus up to four children, roughly 1.5MB.
  * **Nothing here may be called from a loop, a background queue, or a render
- * path.** `enrichTeam` deliberately does NOT call it for that reason — the
- * queues feed it dozens of teams at a time.
+ * path.**
+ *
+ * `enrichTeam` DOES call `resolveTeamColors`, and that is safe again as of
+ * NEO-254 for a reason worth stating: nothing enqueues `enrichTeam`
+ * automatically any more. Team creation used to schedule it from three places
+ * (the pickers' `teams.findOrCreate`, and a checklist commit's career teams),
+ * which put this search behind exactly the bulk loop the paragraph above
+ * forbids — dozens of 1.5MB reads occupying the shared 5-wide Wikidata lane
+ * that the review wizard's own lookups queue on, so the wizard sat on "N still
+ * looking up". Today `enrichTeam` is reached only from
+ * `teams.enrichFromWikidata`, one operator click on one team.
  *
  * ## Ambiguity is still never guessed
  *
@@ -28,18 +37,9 @@ import { action, internalMutation, internalAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { requireAdmin } from "./auth";
 import { colorSourceMatchKey, fetchTeamColors, findTeamColorPages } from "./adapters/teamColorCodes";
-import { findSeedColors } from "../lib/teams/seed-team-lookup";
-// NEO-236: teamcolorcodes.com and the bundled dataset both name teams in full
-// ("San Diego Padres"), so every match here is on the composed name.
+// NEO-236: teamcolorcodes.com names teams in full ("San Diego Padres"), so
+// every match here is on the composed name.
 import { teamFullName } from "../lib/teams/team-name";
-
-/**
- * Provenance marker for a colour that came from the bundled dataset rather
- * than a scraped page. `colorSource.url` is otherwise a real page URL, and the
- * Team Management panel shows it — so a seeded row needs to say so plainly
- * instead of pointing at a page nobody fetched.
- */
-const SEED_SOURCE_URL = "bundled:seed-team-colors";
 
 /**
  * NEO-203 — provenance for colors an OPERATOR typed in Team Management.
@@ -47,14 +47,14 @@ const SEED_SOURCE_URL = "bundled:seed-team-colors";
  * `resolveTeamColors` below already refuses to overwrite a team that carries a
  * `colorSource` unless explicitly forced. Hand-entered colors had no
  * provenance at all, so they failed that check and were silently replaced by
- * the next background lookup — and a checklist commit enqueues one
- * (`commitCardChecklistFinalize` → `wikidataPool.enqueueEnrichment` →
- * `enrichTeam`), so "the operator's colors survive until the next sync" was
- * the real behaviour.
+ * the next background lookup — and a checklist commit used to enqueue one per
+ * team it created, so "the operator's colors survive until the next sync" was
+ * the real behaviour. NEO-254 retired that automatic enqueue, which removes
+ * the routine trigger; the marker stays, because the operator's force path can
+ * still reach a hand-coloured row and provenance is what tells it apart.
  *
- * Stamped by `teams.updateTeam`. Same shape and same purpose as
- * `SEED_SOURCE_URL`: a `colorSource.url` that names where the answer came from
- * when it was not a fetched page.
+ * Stamped by `teams.updateTeam`. A `colorSource.url` that names where the
+ * answer came from when it was not a fetched page.
  */
 export const MANUAL_COLOR_SOURCE_URL = "operator:team-management";
 
@@ -138,43 +138,9 @@ export const resolveTeamColors = internalAction({
     // NEO-236: the FULL name is the match key for every step below. The source
     // site's pages are titled "San Diego Padres"; a split row's `name` alone is
     // "Padres", which matches nothing there and would collide the two Chicago
-    // and two Los Angeles franchises with each other in the bundled dataset.
+    // and two Los Angeles franchises with each other.
     const fullName = teamFullName(team);
     if (!colorSourceMatchKey(fullName)) return "no-match";
-
-    // NEO-156: the bundled dataset first — 135 teams across the six big
-    // leagues, offline and instant. Most lookups end here and never touch the
-    // network.
-    const seeded = findSeedColors(fullName);
-    if (seeded) {
-      await ctx.runMutation(internal.teamColorSources.applyColorsInternal, {
-        teamId: args.teamId,
-        colors: { primary: seeded.primary, secondary: seeded.secondary },
-        colorSource: {
-          url: SEED_SOURCE_URL,
-          matchedName: seeded.matchedName,
-          resolvedAt: Date.now(),
-        },
-      });
-      return "resolved";
-    }
-
-    // A miss is EXPECTED for the long tail the dataset does not carry — NCAA,
-    // NPB, MiLB, Dominican winter league — which is most of our table. It is
-    // reported anyway, because the aggregate is the useful signal: a rising
-    // miss rate for teams that SHOULD be in a covered league means the dataset
-    // has drifted from reality (a rename, an expansion franchise), and nothing
-    // else would surface that. Fire-and-forget — telemetry must never be what
-    // stops a colour lookup.
-    await ctx
-      .runAction(internal.posthog.captureEvent, {
-        distinctId: `team:${args.teamId}`,
-        event: "team_colors_seed_miss",
-        properties: { teamName: fullName, sportId: team.sportId },
-      })
-      .catch((error: unknown) => {
-        console.error("[teamColorSources] posthog capture failed:", error);
-      });
 
     const matches = await findTeamColorPages(fullName);
 

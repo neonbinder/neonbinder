@@ -99,9 +99,6 @@ const franchiseTeamValidator = v.object({
  * The one place a franchise name becomes storable fields. Mirrors
  * `teamRowFields` — the dedup key is derived here and nowhere else, so a
  * writer cannot store a name whose key disagrees with it.
- *
- * Exported for `repairs/neo254ProdData.renameFranchise`, which is a second
- * door into a rename and must derive the key exactly as `save` does.
  */
 export function franchiseRowFields(raw: string): {
   name: string;
@@ -165,11 +162,11 @@ async function requireSportRow(
  *
  * Not a Convex function, for the same reason `findOrCreateLeague` is not: its
  * callers are already inside mutations, and a mutation cannot call another
- * mutation. `convex/bulkLoad.ts` (`upsertFranchises`) is the second caller.
+ * mutation.
  *
- * Reports whether it inserted, because both callers need to tell "we made this
- * one" from "it was already there" — the bulk loader returns it as `created`,
- * and the admin path uses it to say so in the status line.
+ * Reports whether it inserted, because a caller needs to tell "we made this
+ * one" from "it was already there" — the admin path uses it to say so in the
+ * status line.
  */
 export async function findOrCreateFranchise(
   ctx: MutationCtx,
