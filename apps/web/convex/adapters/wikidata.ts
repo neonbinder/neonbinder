@@ -1137,23 +1137,26 @@ ${hallOfFameSparqlBlocks(qid, hofQid)}
 }
 
 /**
- * NEO-203 — "has this row already been enriched?", for the creation-only guard
- * on `enrichPlayer` / `enrichTeam` below.
+ * NEO-203 — "has this row already been enriched?", for the already-enriched
+ * guard on `enrichPlayer` / `enrichTeam` below.
  *
  * ## Choosing markers that cannot mis-fire on a legitimately bare new row
  *
- * The guard must never suppress enrichment for a team or player that was just
- * created and genuinely has nothing yet. So the marker set is exactly the
- * fields that NO creation path writes, checked against every path that can
- * insert a row and then enqueue it:
+ * The guard must never suppress enrichment for a team or player that has
+ * nothing yet. So the marker set is exactly the fields that NO creation path
+ * writes, checked against every path that can insert a row:
  *
  *   teams — `selectorOptions` prelude `createTeamFromOperatorInput`, and
  *           `teams.findOrCreate` (the operator surfaces: TeamPicker's
  *           "+ Create", MissingTeamFixer, Team Management). Both insert
  *           exactly `{name, location?, nameNormalized, sportId, leagueId,
- *           lastUpdated}`.
+ *           lastUpdated}`. Since NEO-254 neither enqueues `enrichTeam` at all,
+ *           so for teams this guard is now read by the operator's Discover
+ *           button rather than by a creation path — a bare team reaching it is
+ *           one a human is asking about.
  *   players — the `selectorOptions` prelude create path, which is the only one
- *           that inserts a player row outside Team/Player Management.
+ *           that inserts a player row outside Team/Player Management, and
+ *           which does still enqueue at creation.
  *
  * `leagueId`, `lastUpdated` and — since NEO-236 — `location` are therefore NOT
  * markers, and must never become ones: every creation path can set all three,
@@ -1498,6 +1501,29 @@ export async function lookupTeamEnrichment(
   };
 }
 
+/**
+ * Resolve one team's league, location, years and colours from ESPN, Wikidata
+ * and teamcolorcodes.com, and write what is found.
+ *
+ * ## NEO-254 — OPERATOR-INITIATED ONLY. There is no automatic caller.
+ *
+ * Team creation used to enqueue this: `teams.findOrCreate` for a team born in
+ * a picker, and `commitCardChecklistFinalize` for the career teams a checklist
+ * commit invented. Both enqueues are gone. Jason, 2026-09-10: "we do not need
+ * to enrich anymore on team creation because all major teams are created
+ * already; if at some point there is a rare case of needing to create a team
+ * it will need to be manual."
+ *
+ * The remaining caller is `teams.enrichFromWikidata` — Team Management's
+ * "Discover" button, admin-gated, one team per click. That is what makes the
+ * colour leg at the bottom of this handler affordable: it reads
+ * teamcolorcodes.com's sitemap live (~1.5MB), which that module's header
+ * permits for a manual one-team action and forbids "from a loop, a background
+ * queue, or a render path". Enqueued per created team it WAS such a loop, and
+ * because it shares one 5-wide lane with the review wizard's own lookups
+ * (`convex/wikidataPool.ts`) it starved them: the wizard sat on "N still
+ * looking up" while the lane worked through colour searches nobody asked for.
+ */
 export const enrichTeam = internalAction({
   args: { teamId: v.id("teams"), force: v.optional(v.boolean()) },
   returns: v.null(),
@@ -1505,21 +1531,22 @@ export const enrichTeam = internalAction({
     const team = await ctx.runQuery(internal.teams.getInternal, { id: args.teamId });
     if (!team) return null;
 
-    // ── NEO-203: automatic enrichment is CREATION-ONLY ──────────────────────
+    // ── NEO-203: enrichment never overwrites an answer already on the row ───
     //
     // Jason, 2026-09-02: "the enrichment writes should only fire if the team is
     // new. We should never be firing that on an update. Team data generally
     // doesn't change."
     //
-    // Every automatic call site already passes only ids it just inserted, but
-    // that was a convention held by four separate callers. This is the
-    // structural belt behind it: if the row already carries an enrichment
-    // answer, the lookup does not run at all — no SPARQL round-trip, no ESPN
-    // fetch, no colour sitemap read, no write.
+    // This began as the structural belt behind a convention four automatic
+    // callers held. They are gone (see the docblock above), so today it guards
+    // the operator path: pressing Discover on a team that already has an
+    // answer does nothing unless `force` says the answer is wrong. If the row
+    // already carries an enrichment marker, the lookup does not run at all —
+    // no SPARQL round-trip, no ESPN fetch, no colour sitemap read, no write.
     //
     // Cheap by design: it is a field check on a row this handler already read,
-    // and it sits ABOVE the network calls, so a mis-enqueued existing team
-    // costs nothing rather than three outbound requests.
+    // and it sits ABOVE the network calls, so a skipped team costs nothing
+    // rather than three outbound requests.
     const alreadyEnriched = teamEnrichmentMarkers(team);
     if (alreadyEnriched.length > 0 && !args.force) {
       console.log(
@@ -1567,12 +1594,11 @@ export const enrichTeam = internalAction({
     // it writes nothing at all when the name is ambiguous (that parks in
     // `colorCandidates` for a human instead).
     //
-    // NEO-156 note on cost: this now reads the sitemap live (~1.5MB per team)
-    // rather than consulting a cached index, so a newly discovered team is one
-    // such read. That is the intended trade — a team gets its colors the moment
-    // it appears, with no stale local copy of the site to maintain. It stays
-    // affordable ONLY because the queue paces one team every
-    // INTER_ENTITY_DELAY_MS; nothing may call this in a tight loop.
+    // NEO-156/254 note on cost: this reads the sitemap live (~1.5MB per team)
+    // rather than consulting a cached index. That is affordable because the
+    // only way to get here is an operator pressing Discover on one team — see
+    // the docblock on this action. Nothing may call this in a loop or from a
+    // creation path.
     await ctx.runAction(internal.teamColorSources.resolveTeamColors, {
       teamId: args.teamId,
       // Not `args.force`: the operator's force path calls `resolveTeamColors`

@@ -13,8 +13,17 @@
  * That trade is only sound because the ask is manual and one team at a time:
  * a search costs the sitemap index plus up to four children, roughly 1.5MB.
  * **Nothing here may be called from a loop, a background queue, or a render
- * path.** `enrichTeam` deliberately does NOT call it for that reason — the
- * queues feed it dozens of teams at a time.
+ * path.**
+ *
+ * `enrichTeam` DOES call `resolveTeamColors`, and that is safe again as of
+ * NEO-254 for a reason worth stating: nothing enqueues `enrichTeam`
+ * automatically any more. Team creation used to schedule it from three places
+ * (the pickers' `teams.findOrCreate`, and a checklist commit's career teams),
+ * which put this search behind exactly the bulk loop the paragraph above
+ * forbids — dozens of 1.5MB reads occupying the shared 5-wide Wikidata lane
+ * that the review wizard's own lookups queue on, so the wizard sat on "N still
+ * looking up". Today `enrichTeam` is reached only from
+ * `teams.enrichFromWikidata`, one operator click on one team.
  *
  * ## Ambiguity is still never guessed
  *
@@ -38,10 +47,11 @@ import { teamFullName } from "../lib/teams/team-name";
  * `resolveTeamColors` below already refuses to overwrite a team that carries a
  * `colorSource` unless explicitly forced. Hand-entered colors had no
  * provenance at all, so they failed that check and were silently replaced by
- * the next background lookup — and a checklist commit enqueues one
- * (`commitCardChecklistFinalize` → `wikidataPool.enqueueEnrichment` →
- * `enrichTeam`), so "the operator's colors survive until the next sync" was
- * the real behaviour.
+ * the next background lookup — and a checklist commit used to enqueue one per
+ * team it created, so "the operator's colors survive until the next sync" was
+ * the real behaviour. NEO-254 retired that automatic enqueue, which removes
+ * the routine trigger; the marker stays, because the operator's force path can
+ * still reach a hand-coloured row and provenance is what tells it apart.
  *
  * Stamped by `teams.updateTeam`. A `colorSource.url` that names where the
  * answer came from when it was not a fetched page.

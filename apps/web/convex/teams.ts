@@ -409,31 +409,31 @@ export const findOrCreate = mutation({
       JSON.stringify({ msg: "team_created", teamId: id, sportId: args.sportId, userId }),
     );
 
-    /**
-     * NEO-208 — enrich the team we just INSERTED, and only that.
+    /*
+     * ── NEO-254: a team born here is NOT enriched, and that is deliberate ───
      *
-     * This was the one team-creation path in the product with no enrichment at
-     * all. A team the review wizard creates arrives already enriched
-     * (`processEntityReviewQueue` → `lookupTeamEnrichment` runs before the
-     * insert); a career team the commit prelude invents is enqueued by
-     * `commitCardChecklistFinalize` from `prelude.enrichmentTeamIds` (see
-     * `selectorOptions.ts`, `resolveTeamIdByName`). A team born HERE — from
-     * the drawer's picker, the attention walker's fixer, and since NEO-208 the
-     * quick-add form — stayed bare forever, and `teams.colors` is what spine
-     * labels read, so "bare forever" is user-visible.
+     * Jason, 2026-09-10: "we do not need to enrich anymore on team creation
+     * because all major teams are created already; if at some point there is a
+     * rare case of needing to create a team it will need to be manual."
      *
-     * The early `return existing._id` above is what makes this honour
-     * `enqueueEnrichment`'s CREATION-ONLY contract (see the contract note in
-     * `wikidataPool.ts`): a team this mutation FOUND leaves without being
-     * enqueued. Jason, 2026-09-02: "the enrichment writes should only fire if
-     * the team is new. We should never be firing that on an update. Team data
-     * generally doesn't change." Scheduled rather than awaited inline because
-     * enrichment is a network round-trip and this is a mutation — the same
-     * reason the prelude collects ids and lets finalize enqueue them.
+     * So this path used to schedule `wikidataPool.enqueueEnrichment` and no
+     * longer does. The row leaves with exactly what the operator typed, and
+     * colours, ESPN location and Wikidata years are supplied — if anyone wants
+     * them — by the one operator-initiated remedy that survives:
+     * `teams.enrichFromWikidata` (Team Management's "Discover"), which is
+     * admin-gated and one team at a time.
+     *
+     * That is not merely a policy preference, it is what makes the cost sound.
+     * `enrichTeam` ends in `teamColorSources.resolveTeamColors`, which reads
+     * teamcolorcodes.com's sitemap live — ~1.5MB per team — and that module's
+     * own header says it "may not be called from a loop, a background queue,
+     * or a render path". Every automatic creation path fed exactly such a
+     * queue, five wide, in front of the review wizard's Wikidata lane
+     * (`convex/wikidataPool.ts`): the enrichment jobs starved the lookups the
+     * wizard is actually waiting on and the batch sat on "N still looking up"
+     * indefinitely. Removing the automatic enqueue is what gives that lane
+     * back to the lookups.
      */
-    await ctx.scheduler.runAfter(0, internal.wikidataPool.enqueueEnrichment, {
-      teamIds: [id],
-    });
 
     return id;
   },
@@ -599,8 +599,8 @@ export const applyEnrichmentInternal = internalMutation({
     // (`updateTeam` below), and every one of them was being blindly restamped
     // on each re-enrichment: a corrected location, a hand-entered franchise span,
     // or hand-picked spine-label colors survived only until the next time the
-    // team was enqueued — which a checklist commit does routinely
-    // (`commitCardChecklistFinalize` → `wikidataPool.enqueueEnrichment`).
+    // team was enqueued — which, before NEO-254 retired automatic team
+    // enrichment, a checklist commit did routinely.
     //
     // Enrichment beating enrichment is still fine and still happens: a team
     // with no colors takes ESPN's here, and `resolveTeamColors` may then
@@ -680,13 +680,25 @@ export const applyEnrichmentInternal = internalMutation({
 });
 
 /**
- * "Discover" — re-run every source for ONE team, on demand.
+ * "Discover" — run every source for ONE team, on demand.
  *
- * A newly created team already gets this automatically: every creation path
- * enqueues it, and `adapters/wikidata.enrichTeam` resolves league, location, years
- * and colors for it. This action is the manual counterpart — for a team that
- * predates the pipeline, one whose sources had nothing at the time, or one
- * whose match turned out to be the wrong franchise.
+ * ## NEO-254: this is now the ONLY way a team is ever enriched
+ *
+ * It used to be the manual counterpart to an automatic pipeline — every
+ * creation path enqueued the row it had just inserted and
+ * `adapters/wikidata.enrichTeam` filled in league, location, years and colours
+ * in the background. Those enqueues are gone. Jason, 2026-09-10: "we do not
+ * need to enrich anymore on team creation because all major teams are created
+ * already; if at some point there is a rare case of needing to create a team
+ * it will need to be manual."
+ *
+ * So a team acquires colours, an ESPN location or Wikidata years when — and
+ * only when — an operator stands in Team Management and presses this. Which is
+ * also what makes the cost honest: the colour leg reads teamcolorcodes.com's
+ * sitemap live (~1.5MB), a price that module's header says is "affordable
+ * precisely because this is a manual, one-team-at-a-time action". Keeping this
+ * entry point working is therefore not optional — it is the whole remaining
+ * feature.
  *
  * NEO-99: the Wikidata leg enqueues onto the shared pool
  * (convex/wikidataPool.ts) rather than running inline, so this entry point
@@ -710,20 +722,21 @@ export const applyEnrichmentInternal = internalMutation({
  * stay swallowed: it is best-effort by design, and an unchanged row IS the
  * "found nothing" signal.
  *
- * ## THE ONLY SANCTIONED PATH TO RE-ENRICH AN EXISTING TEAM (NEO-203)
+ * ## THE ONLY SANCTIONED PATH TO ENRICH A TEAM AT ALL (NEO-203, NEO-254)
  *
- * Jason, 2026-09-02: automatic enrichment fires for NEW teams only — "we should
- * never be firing that on an update. Team data generally doesn't change." This
- * action is the deliberate exception and the only one: it is admin-gated, it is
- * initiated by a human looking at the row, and it exists precisely for the case
- * where the stored answer is WRONG (a match against the wrong franchise), which
- * is the one situation where re-running a source is the remedy rather than
- * churn.
+ * Jason, 2026-09-02, on re-enrichment: "we should never be firing that on an
+ * update. Team data generally doesn't change." NEO-254 extended that to
+ * creation as well, so the rule no longer has an automatic half: it is
+ * admin-gated, it is initiated by a human looking at the row, and it exists
+ * for the case where the stored answer is MISSING or WRONG (a match against
+ * the wrong franchise) — the one situation where running a source is the
+ * remedy rather than churn.
  *
  * That is why it passes `force` down both legs. `enrichTeam` otherwise skips
  * any team already carrying enrichment markers, which is every team an operator
- * would want to fix. Do NOT copy this flag into an automatic caller — see the
- * contract on `wikidataPool.enqueueEnrichment`.
+ * would want to fix. Nothing automatic may set `force`, and — since NEO-254 —
+ * nothing automatic may enqueue a team for enrichment at all; see the contract
+ * on `wikidataPool.enqueueEnrichment`.
  */
 export const enrichFromWikidata = action({
   args: { id: v.id("teams"), force: v.optional(v.boolean()) },

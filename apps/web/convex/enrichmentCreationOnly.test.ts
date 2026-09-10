@@ -34,6 +34,8 @@
  * insert.
  */
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
@@ -461,8 +463,14 @@ describe("findOrCreateLeague enqueues enrichment on INSERT only (NEO-240)", () =
   test("creating the first team of a sport enqueues the DEFAULT league exactly once", async () => {
     // The path that actually creates most league rows in production:
     // `teams.findOrCreate` → `resolveDefaultLeagueId` → `findOrCreateLeague`.
-    // Two enqueues, one per kind — and the second team reuses the league, so
-    // the league is never enqueued twice.
+    // The second team reuses the league, so the league is never enqueued twice.
+    //
+    // NEO-254: the `teamIds` counts here used to be 1 and 2 alongside these.
+    // Team enrichment no longer fires at creation, so they are 0 — and they
+    // stay in this test deliberately rather than moving out of it, because
+    // this is the case that could most easily restore one by accident: the
+    // team path and the league path run in the same mutation, and the league
+    // half must keep firing while the team half does not.
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
     const asAdmin = t.withIdentity({ subject: "admin_neo240", role: "admin" });
@@ -471,14 +479,14 @@ describe("findOrCreateLeague enqueues enrichment on INSERT only (NEO-240)", () =
       name: "New York Yankees",
       sportId,
     });
-    expect(await scheduledEnrichmentCount(t, "teamIds")).toBe(1);
+    expect(await scheduledEnrichmentCount(t, "teamIds")).toBe(0);
     expect(await scheduledEnrichmentCount(t, "leagueIds")).toBe(1);
 
     await asAdmin.mutation(api.teams.findOrCreate, {
       name: "Boston Red Sox",
       sportId,
     });
-    expect(await scheduledEnrichmentCount(t, "teamIds")).toBe(2);
+    expect(await scheduledEnrichmentCount(t, "teamIds")).toBe(0);
     expect(await scheduledEnrichmentCount(t, "leagueIds")).toBe(1);
   });
 });
@@ -571,65 +579,31 @@ describe("enrichPlayer — creation-only (NEO-203)", () => {
   });
 });
 
-describe("the automatic enqueue path never carries an existing row", () => {
-  test("resolveTeamIdByName enqueues the team it INSERTED and not the one it FOUND", async () => {
-    // The contract `wikidataPool.enqueueEnrichment` documents, asserted at the
-    // only automatic call site that feeds it: `commitCardChecklistFinalize`
-    // enqueues `prelude.enrichmentTeamIds`, and that list is appended to only
-    // on the insert branch of `resolveTeamIdByName`.
-    //
-    // Driven through the real commit so the assertion covers the wiring, not a
-    // re-implementation of it: one career team already exists, one does not.
-    const t = convexTest(schema, modules);
-    const sportId = await seedSport(t);
-    const existingTeamId = await insertBareTeam(t, sportId, "Existing Team");
-
-    const enrichmentTeamIds = await t.run(async (ctx) => {
-      // Mirror of the prelude's helper, kept deliberately small: the behaviour
-      // under test is "found → not enqueued, inserted → enqueued".
-      const collected: Array<Id<"teams">> = [];
-      for (const name of ["Existing Team", "Newly Created Team"]) {
-        const normalized = normalizeTeamName(name);
-        const found = await ctx.db
-          .query("teams")
-          .withIndex("by_name_normalized_and_sport_id", (q) =>
-            q.eq("nameNormalized", normalized).eq("sportId", sportId),
-          )
-          .first();
-        if (found) continue; // NOT enqueued
-        collected.push(
-          await ctx.db.insert("teams", {
-            name,
-            nameNormalized: normalized,
-            sportId,
-            lastUpdated: Date.now(),
-          }),
-        );
-      }
-      return collected;
-    });
-
-    expect(enrichmentTeamIds).toHaveLength(1);
-    expect(enrichmentTeamIds).not.toContain(existingTeamId);
-  });
-});
-
 /**
- * NEO-208 — `teams.findOrCreate` joins the enqueueing creation paths.
+ * NEO-254 — NO TEAM CREATION PATH ENRICHES, AND THAT IS THE ASSERTION.
  *
- * It was the one team-creation path in the product with no enrichment route at
- * all. A reviewed team arrives already enriched (`processEntityReviewQueue` →
- * `lookupTeamEnrichment` runs before the insert); a career team the commit
- * prelude invents is enqueued by `commitCardChecklistFinalize`. A team born in
- * `TeamPicker` — the card drawer, the attention walker's fixer, and since
- * NEO-208 the quick-add form — stayed bare forever, and `teams.colors` is what
- * spine labels read, so "bare forever" was user-visible.
+ * These tests are the inverse of what they were, and the inversion is the
+ * point. Jason, 2026-09-10: "we do not need to enrich anymore on team creation
+ * because all major teams are created already; if at some point there is a
+ * rare case of needing to create a team it will need to be manual."
  *
- * These assert the CONTRACT half rather than the network half: that the insert
- * branch schedules exactly one enrichment and the FOUND branch schedules none.
- * The scheduled work is not run — `enrichTeam`'s own creation-only guard is
- * already covered above, and letting the pool actually drain here would test
- * the pool, not this wiring.
+ * The block used to pin NEO-208's claim — that `teams.findOrCreate` schedules
+ * exactly one `enqueueEnrichment` on its insert branch and none on its found
+ * branch — alongside a hand-rolled mirror of the commit prelude's
+ * insert-vs-found bookkeeping for `prelude.enrichmentTeamIds`. Neither claim
+ * has a subject any more: the enqueue is gone from `teams.findOrCreate` and
+ * the list is gone from the prelude, so asserting "1 on insert" would assert a
+ * behaviour the product deliberately dropped.
+ *
+ * What replaces them is stronger than a deletion, because the cost of
+ * regressing is concrete rather than stylistic. `enrichTeam` ends in
+ * `teamColorSources.resolveTeamColors`, a live ~1.5MB read of
+ * teamcolorcodes.com's sitemap, and it shares one 5-wide lane
+ * (`convex/wikidataPool.ts`) with the review wizard's own Wikidata lookups.
+ * Put back behind a creation path it is a bulk loop in front of that lane —
+ * which is what left the wizard sitting on "N still looking up" and cost eight
+ * E2E flows. So every creation path is pinned at ZERO scheduled team
+ * enrichments, and the operator's Discover button is pinned at one.
  */
 /**
  * How many `enqueueEnrichment` calls were scheduled FOR ONE KIND of row.
@@ -670,10 +644,12 @@ async function scheduledEnrichmentCount(
   }).length;
 }
 
-describe("teams.findOrCreate enqueues enrichment on INSERT only (NEO-208)", () => {
+describe("no team-creation path enqueues enrichment (NEO-254)", () => {
   const ADMIN = { subject: "admin_neo208", role: "admin" };
 
-  test("a team it CREATED is enqueued exactly once", async () => {
+  test("a team `findOrCreate` CREATED is not enqueued", async () => {
+    // The row is still created — that half is unchanged and asserted here so
+    // "0 enqueues" cannot pass by the mutation having quietly stopped working.
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
 
@@ -682,13 +658,20 @@ describe("teams.findOrCreate enqueues enrichment on INSERT only (NEO-208)", () =
       .mutation(api.teams.findOrCreate, { name: "New York Yankees", sportId });
 
     expect(teamId).toBeDefined();
-    expect(await scheduledEnrichmentCount(t, "teamIds")).toBe(1);
+    expect(await scheduledEnrichmentCount(t, "teamIds")).toBe(0);
+    // And it leaves BARE, which is the product decision made visible: colours,
+    // an ESPN location and Wikidata years now arrive only via Discover.
+    const created = await t.run(async (ctx) => ctx.db.get(teamId));
+    expect(created?.colors).toBeUndefined();
+    expect(created?.location).toBeUndefined();
+    expect(created?.yearsActive).toBeUndefined();
+    expect(created?.externalIds).toBeUndefined();
   });
 
-  test("a team it FOUND is not enqueued at all", async () => {
-    // The early `return existing._id` is what makes this mutation honour
-    // `enqueueEnrichment`'s creation-only contract. Jason, 2026-09-02: "we
-    // should never be firing that on an update."
+  test("a team it FOUND is not enqueued either", async () => {
+    // Unchanged by NEO-254 and kept deliberately: the found branch has always
+    // been the one that must not fire, and it is the assertion that survives
+    // if the creation leg is ever restored.
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
     const existingId = await insertBareTeam(t, sportId, "New York Yankees");
@@ -701,9 +684,10 @@ describe("teams.findOrCreate enqueues enrichment on INSERT only (NEO-208)", () =
     expect(await scheduledEnrichmentCount(t, "teamIds")).toBe(0);
   });
 
-  test("the second call for the same name enqueues nothing more", async () => {
+  test("two calls for the same name still resolve to one row, and still enqueue nothing", async () => {
     // The realistic shape: two operators (or one operator twice) reach for the
-    // same team through the picker. Only the first creation costs a lookup.
+    // same team through the picker. The dedupe claim is what this test is for;
+    // the enqueue count rides along as the regression pin.
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
     const asAdmin = t.withIdentity(ADMIN);
@@ -712,7 +696,7 @@ describe("teams.findOrCreate enqueues enrichment on INSERT only (NEO-208)", () =
       name: "New York Yankees",
       sportId,
     });
-    expect(await scheduledEnrichmentCount(t, "teamIds")).toBe(1);
+    expect(await scheduledEnrichmentCount(t, "teamIds")).toBe(0);
 
     // The normalizer token-SORTS and strips punctuation, so this resolves to
     // the same row — proving the guard is the row lookup, not string equality.
@@ -722,15 +706,13 @@ describe("teams.findOrCreate enqueues enrichment on INSERT only (NEO-208)", () =
     });
 
     expect(second).toBe(first);
-    expect(await scheduledEnrichmentCount(t, "teamIds")).toBe(1);
+    expect(await scheduledEnrichmentCount(t, "teamIds")).toBe(0);
   });
 
   test("findByFullNameInternal creates nothing, so there is nothing to enqueue", async () => {
-    // NEO-208 left `findOrCreateInternal` alone: its server-side callers
-    // enqueued (or deliberately did not) at the site that knew whether the row
-    // was new. NEO-236 removed the question entirely — the server-side path is
-    // a QUERY now and cannot insert, so "enqueues nothing" is structural
-    // rather than a convention.
+    // NEO-236 made the server-side path a QUERY, so "creates nothing" is
+    // structural rather than a convention — which is the half of this that
+    // still matters now that no creation path enqueues either.
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
 
@@ -830,7 +812,7 @@ describe("teams.findOrCreate enqueues enrichment on INSERT only (NEO-208)", () =
     expect(team!.name).toBe("z".repeat(120));
   });
 
-  test("whitespace-and-case variants of the same name collide onto ONE row and enqueue ONCE", async () => {
+  test("whitespace-and-case variants of the same name collide onto ONE row", async () => {
     // `normalizeTeamName` lowercases, collapses whitespace, and token-sorts —
     // this pins the collision on a variant that is neither the exact string
     // nor the comma-reordered one already covered above: extra internal
@@ -850,7 +832,7 @@ describe("teams.findOrCreate enqueues enrichment on INSERT only (NEO-208)", () =
 
     expect(second).toBe(first);
     expect(await t.run(async (ctx) => ctx.db.query("teams").collect())).toHaveLength(1);
-    expect(await scheduledEnrichmentCount(t, "teamIds")).toBe(1);
+    expect(await scheduledEnrichmentCount(t, "teamIds")).toBe(0);
   });
 
   test("team_created is logged as structured JSON, never string-concatenated with the name", async () => {
@@ -875,6 +857,43 @@ describe("teams.findOrCreate enqueues enrichment on INSERT only (NEO-208)", () =
     expect(parsed.userId).toBe(ADMIN.subject);
 
     logSpy.mockRestore();
+  });
+
+  test("the ONLY remaining `teamIds` enqueue in the codebase is the operator's Discover", async () => {
+    /*
+     * Structural, and on purpose. The behavioural half cannot be asserted here
+     * — `wikidataPool.enqueueEnrichment` reaches `Workpool.enqueueAction` and
+     * convex-test cannot register the workpool component, the same reason
+     * convex/leagues.management.test.ts reads source for its own force
+     * assertion.
+     *
+     * What this pins is the invariant the counting tests above can only pin
+     * one call site at a time: that `teams.findOrCreate` carries no enqueue,
+     * that `commitCardChecklistFinalize` carries no team enqueue, and that
+     * `teams.enrichFromWikidata` still does. A future creation path that
+     * enqueues would slip past a per-site count; it cannot slip past a scan of
+     * both files.
+     */
+    const teamsSrc = readFileSync(join(__dirname, "teams.ts"), "utf8");
+    const findOrCreate = teamsSrc.slice(
+      teamsSrc.indexOf("export const findOrCreate"),
+      teamsSrc.indexOf("export const list"),
+    );
+    expect(findOrCreate).not.toContain("internal.wikidataPool.enqueueEnrichment");
+
+    const discover = teamsSrc.slice(
+      teamsSrc.indexOf("export const enrichFromWikidata"),
+    );
+    expect(discover).toContain("teamIds: [args.id]");
+    expect(discover).toContain("force: true");
+
+    // The commit path: no `teamIds` enqueue and no list feeding one.
+    const selectorSrc = readFileSync(
+      join(__dirname, "selectorOptions.ts"),
+      "utf8",
+    );
+    expect(selectorSrc).not.toContain("enrichmentTeamIds:");
+    expect(selectorSrc).not.toContain("internal.wikidataPool.enqueueEnrichment");
   });
 
   test("a FOUND (not created) team logs no team_created line", async () => {

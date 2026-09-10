@@ -9940,7 +9940,6 @@ export const commitCardChecklistPrelude = internalMutation({
     teamNameById: v.array(v.object({ id: v.id("teams"), name: v.string() })),
     createdPlayerIds: v.array(v.id("players")),
     createdTeamIds: v.array(v.id("teams")),
-    enrichmentTeamIds: v.array(v.id("teams")),
     reviewRowIds: v.array(v.id("entityReviewQueue")),
     // NEO-212: names this commit recorded in `entityReviewSkips`, split by
     // kind. Returned rather than re-derived because the finalize phase, which
@@ -10247,16 +10246,6 @@ export const commitCardChecklistPrelude = internalMutation({
       );
     }
 
-    // Teams this commit BROUGHT INTO BEING, handed back to the action so the
-    // finalize phase can enqueue them for enrichment after the writes land
-    // (enrichment is a network round-trip per team and this is a mutation).
-    //
-    // NEO-203: this array carries `enqueueEnrichment`'s creation-only
-    // contract — a team that ALREADY EXISTED must never be pushed here.
-    // Enrichment is for rows this commit created; an existing team's data is
-    // not re-looked up by any automatic path.
-    const enrichmentTeamIds: Array<Id<"teams">> = [];
-
     // ── NEO-236: names this commit could not resolve to a team ─────────────
     //
     // Returned rather than silently dropped. A card whose team name resolved
@@ -10335,16 +10324,20 @@ export const commitCardChecklistPrelude = internalMutation({
     const createTeamFromOperatorInput = async (
       input: { location?: string; name: string },
       /**
-       * Extra stored fields the caller already has in hand, plus whether the
-       * new row still needs enrichment. A team the operator reviewed DIRECTLY
-       * arrives with league/years/colors/externalIds from the wizard's own
-       * Wikidata lookup, so it is complete and `enqueueEnrichment: false`; an
-       * incidental career team created from a bare Location + Name is not, and
-       * goes on the enrichment queue exactly as before (NEO-147).
+       * Extra stored fields the caller already has in hand.
+       *
+       * NEO-254 — there used to be an `enqueueEnrichment` flag beside them,
+       * and every caller passed `false`. It marked a team the operator had
+       * reviewed DIRECTLY (league/years/colours/externalIds already on the
+       * row, from the wizard's own Wikidata lookup) as needing nothing
+       * further, leaving the incidental career team built from a bare
+       * Location + Name to be enqueued for background enrichment. No team is
+       * enqueued automatically any more (see `teams.findOrCreate`), so the
+       * flag had exactly one possible value and is gone. A bare team stays
+       * bare until an operator presses Discover on it.
        */
       opts: {
         extra?: Partial<Doc<"teams">>;
-        enqueueEnrichment?: boolean;
         /**
          * NEO-236 — the operator answered the League question, so the sport
          * default must not be applied on top of their answer.
@@ -10423,7 +10416,6 @@ export const commitCardChecklistPrelude = internalMutation({
         ...(leagueId ? { leagueId } : {}),
         lastUpdated: Date.now(),
       });
-      if (opts.enqueueEnrichment !== false) enrichmentTeamIds.push(id);
       return { id, created: true };
     };
 
@@ -10816,8 +10808,10 @@ export const commitCardChecklistPrelude = internalMutation({
       if (!create || !create.name.trim()) continue;
       const made = await createTeamFromOperatorInput(create, {
         // Already enriched: the staged row's own Wikidata lookup ran while it
-        // sat in the wizard, and its result is on `row.enrichment`.
-        enqueueEnrichment: false,
+        // sat in the wizard, and its result is on `row.enrichment`. Since
+        // NEO-254 that lookup is the ONLY enrichment a team ever gets without
+        // an operator asking, which is why `recordAllRemainingAsCreate` still
+        // refuses to decide a row whose lookup has not landed.
         extra: await reviewedTeamFields(create, row.enrichment, row._id as string),
         // NEO-236 security review, finding 1: a league that failed the re-check
         // above is NOT an answer, so it must not suppress the sport default —
@@ -10943,9 +10937,8 @@ export const commitCardChecklistPrelude = internalMutation({
       const enrichment = teamReviewRow?.enrichment;
       const made = await createTeamFromOperatorInput(create, {
         // The row the operator reviewed arrives complete — the wizard's own
-        // Wikidata/ESPN lookup already ran — so it does not go back on the
-        // enrichment queue (NEO-147's creation-only contract).
-        enqueueEnrichment: false,
+        // Wikidata/ESPN lookup already ran, and since NEO-254 that lookup is
+        // the only enrichment a team gets that no operator asked for.
         // NEO-236: league, era, colours and ids in one place, shared with the
         // staged-career-team pass above. The operator's League choice wins over
         // the enrichment's suggestion — see `reviewedTeamFields`.
@@ -11377,7 +11370,6 @@ export const commitCardChecklistPrelude = internalMutation({
       teamNameById: Array.from(teamNameById, ([id, name]) => ({ id, name })),
       createdPlayerIds,
       createdTeamIds,
-      enrichmentTeamIds,
       reviewRowIds: reviewRows.map((r) => r._id),
       skippedPlayerNames,
       skippedTeamNames,
@@ -11413,7 +11405,6 @@ type CommitPrelude = {
   teamNameById: Array<{ id: Id<"teams">; name: string }>;
   createdPlayerIds: Array<Id<"players">>;
   createdTeamIds: Array<Id<"teams">>;
-  enrichmentTeamIds: Array<Id<"teams">>;
   reviewRowIds: Array<Id<"entityReviewQueue">>;
   skippedPlayerNames: string[];
   skippedTeamNames: string[];
@@ -12156,7 +12147,6 @@ export const commitCardChecklistFinalize = internalMutation({
     skippedPlayerNames: v.array(v.string()),
     skippedTeamNames: v.array(v.string()),
     reviewRowIds: v.array(v.id("entityReviewQueue")),
-    enrichmentTeamIds: v.array(v.id("teams")),
     bscTeamEnrichmentIds: v.array(v.id("cardChecklist")),
     setNameAncestorId: v.optional(v.id("selectorOptions")),
     cardCount: v.number(),
@@ -12402,39 +12392,29 @@ export const commitCardChecklistFinalize = internalMutation({
       await ctx.db.delete(id);
     }
 
-    // NEO-147: enrich the career teams the prelude created from an operator's
-    // reviewed Location + Name (`createTeamFromOperatorInput`, career-team
-    // branch). Deliberately NOT the reviewed teams in `createdTeamIds` — those
-    // already carry whatever processEntityReviewQueue's lookupTeamEnrichment
-    // found before they were inserted, so re-running it here would be a second
-    // identical network round-trip per team for the same answer. Only the rows
-    // that had no enrichment path at all are enqueued.
-    //
-    // NEO-99 routed this through the shared Wikidata pool
-    // (convex/wikidataPool.ts), which replaced the self-paced
-    // processEnrichmentQueue: the pool's deployment-wide 5-parallel SPARQL
-    // budget is what keeps a fetch that creates fifty career teams from
-    // producing fifty concurrent requests. No `playerIds` because players
-    // created there were already enriched from the wizard's own preview.
-    //
-    // NEO-203 — this satisfies `enqueueEnrichment`'s CREATION-ONLY contract,
-    // and the reason is worth stating rather than leaving to be re-derived:
-    // `enrichmentTeamIds` is appended to at exactly one place in the prelude,
-    // in `createTeamFromOperatorInput` immediately after
-    // `ctx.db.insert("teams", …)`. A team `findTeamByFullName` FOUND returns
-    // early and is never added, and NEO-236's match-only `resolveTeamIdByName`
-    // cannot add to it at all — it no longer inserts. So this list is,
-    // structurally, "teams this commit created" — never a pre-existing row. Automatic enrichment must never
-    // fire for a team that already exists (Jason, 2026-09-02: team data
-    // generally doesn't change); if you ever widen what feeds this list,
-    // that invariant is what you are breaking.
-    if (args.enrichmentTeamIds.length > 0) {
-      await ctx.scheduler.runAfter(
-        0,
-        internal.wikidataPool.enqueueEnrichment,
-        { teamIds: args.enrichmentTeamIds },
-      );
-    }
+    /*
+     * ── NEO-254: this commit enqueues NO team enrichment, deliberately ──────
+     *
+     * A `prelude.enrichmentTeamIds` list used to arrive here and go onto the
+     * shared Wikidata pool — the career teams the prelude built from a bare
+     * Location + Name, which had no other enrichment path. Jason, 2026-09-10:
+     * "we do not need to enrich anymore on team creation because all major
+     * teams are created already; if at some point there is a rare case of
+     * needing to create a team it will need to be manual."
+     *
+     * The list, the argument and the enqueue are all gone. What made keeping
+     * them actively harmful rather than merely unwanted: `enrichTeam` ends in
+     * a live ~1.5MB read of teamcolorcodes.com's sitemap, and a checklist
+     * commit can create dozens of career teams at once — so this was a bulk
+     * loop in front of the very 5-wide lane the review wizard's own lookups
+     * queue on (`convex/wikidataPool.ts`), and starving that lane is what left
+     * a batch reading "N still looking up" indefinitely.
+     *
+     * A team created here therefore keeps whatever the wizard's own
+     * `runEntityReviewLookup` put on its review row and nothing more. Team
+     * Management's "Discover" (`teams.enrichFromWikidata`) is the operator's
+     * remedy for the rest.
+     */
 
     // NEO-90: same chained-queue shape, for BSC per-card team resolution.
     // Cards whose team wasn't already recoverable from the bulk `players`
@@ -14397,7 +14377,6 @@ export const commitCardChecklist = action({
         skippedPlayerNames: prelude.skippedPlayerNames,
         skippedTeamNames: prelude.skippedTeamNames,
         reviewRowIds: args.batchId ? prelude.reviewRowIds : [],
-        enrichmentTeamIds: prelude.enrichmentTeamIds,
         bscTeamEnrichmentIds,
         setNameAncestorId: prelude.setNameAncestorId,
         cardCount: args.cards.length,
