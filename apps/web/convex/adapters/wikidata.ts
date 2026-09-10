@@ -1151,8 +1151,7 @@ ${hallOfFameSparqlBlocks(qid, hofQid)}
  *           `teams.findOrCreate` (the operator surfaces: TeamPicker's
  *           "+ Create", MissingTeamFixer, Team Management). Both insert
  *           exactly `{name, location?, nameNormalized, sportId, leagueId,
- *           lastUpdated}`. `convex/seedTeamColors.ts` inserts the same shape
- *           from the bundled dataset.
+ *           lastUpdated}`.
  *   players — the `selectorOptions` prelude create path, which is the only one
  *           that inserts a player row outside Team/Player Management.
  *

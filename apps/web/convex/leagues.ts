@@ -209,27 +209,6 @@ export async function findOrCreateLeague(
     abbreviation?: string;
     sportId: Id<"selectorOptions">;
     level?: LeagueLevel;
-    /**
-     * NEO-254 — insert the row WITHOUT queueing its Wikidata lookup.
-     *
-     * Default false, and it stays false for every interactive caller: a league
-     * an operator creates by hand should be enriched, and that is the whole
-     * point of the creation-only hook below.
-     *
-     * `convex/bulkLoad.ts` passes true. It is a scripted admin task the
-     * operator drives from a laptop against a chosen deployment, minting
-     * leagues from a dataset they already curated — queueing pooled network
-     * work as a side effect of a bulk write makes the run's cost depend on
-     * `wikidataPool`'s depth and on Wikidata being up, neither of which the
-     * operator asked for. Anything a preloaded league is missing is still
-     * reachable through League Management's "Re-enrich from Wikidata", which
-     * is the deliberate, human version of the same lookup.
-     *
-     * NOT a way to skip enrichment generally: an automatic caller that wants
-     * this is almost certainly the wrong shape. Adding a second `true` needs
-     * the same argument this one carries.
-     */
-    skipEnrichment?: boolean;
     aliases?: string[];
     /**
      * NEO-254 — the rest of the record, from a New League review step.
@@ -302,9 +281,8 @@ export async function findOrCreateLeague(
   });
 
   // CREATION ONLY. The `return existing._id` above is what makes that true:
-  // a league this helper FOUND leaves without being enqueued. `skipEnrichment`
-  // is the one opt-out, and it is documented on the argument.
-  if (!args.skipEnrichment) await scheduleLeagueEnrichment(ctx, id);
+  // a league this helper FOUND leaves without being enqueued.
+  await scheduleLeagueEnrichment(ctx, id);
 
   return id;
 }
@@ -389,12 +367,6 @@ export async function resolveOperatorLeagueId(
 export async function resolveDefaultLeagueId(
   ctx: MutationCtx,
   sportId: Id<"selectorOptions">,
-  /**
-   * NEO-254 — passed straight through to `findOrCreateLeague`. The sport
-   * default is the league a bulk-loaded team falls back to, so without this the
-   * opt-out would leak on the one path that takes it most often.
-   */
-  options?: { skipEnrichment?: boolean },
 ): Promise<Id<"leagues"> | undefined> {
   const sport = await ctx.db.get(sportId);
   if (!sport) return undefined;
@@ -411,7 +383,6 @@ export async function resolveDefaultLeagueId(
     name,
     abbreviation,
     sportId,
-    ...(options?.skipEnrichment ? { skipEnrichment: true } : {}),
     // NEO-240: the sport's CONFIGURED league is by definition its top flight —
     // `sportConfig.league` is "MLB"/"NFL"/"NBA", never a farm system — so this
     // is the one place a level can be asserted without an operator saying so.

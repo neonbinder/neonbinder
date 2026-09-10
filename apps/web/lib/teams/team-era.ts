@@ -116,26 +116,6 @@ export function teamsActiveInYear<T extends TeamEraRow>(
 }
 
 /**
- * The row a still-running dataset means: the one whose era is open, or which
- * has no era at all.
- *
- * `seedTeamColors` is the caller. Its dataset carries CURRENT franchises with
- * no years on them, so among two Winnipeg Jets it means the 2011 one — and
- * "the one that has not ended" is the only honest way to say that from the
- * data. Returns null when several rows are open, which the seed treats as
- * "leave them all alone": a colour is not worth guessing an era for.
- */
-export function currentEraTeam<T extends TeamEraRow>(
-  rows: readonly T[],
-): T | null {
-  if (rows.length === 1) return rows[0];
-  const open = rows.filter(
-    (row) => row.yearsActive === undefined || row.yearsActive.to === undefined,
-  );
-  return open.length === 1 ? open[0] : null;
-}
-
-/**
  * "San Diego Padres · 1969–present" — a team named the way a picker has to name
  * it once two rows can share the name.
  *

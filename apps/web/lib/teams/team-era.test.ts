@@ -14,7 +14,6 @@
 
 import { describe, expect, test } from "vitest";
 import {
-  currentEraTeam,
   eraCoversYear,
   eraLabel,
   erasOverlap,
@@ -122,28 +121,6 @@ describe("teamsActiveInYear", () => {
   test("returns a new array — the caller's list is never mutated", () => {
     const out = teamsActiveInYear(rows, undefined);
     expect(out).not.toBe(rows);
-  });
-});
-
-describe("currentEraTeam", () => {
-  test("picks the one still running", () => {
-    // What a dataset of CURRENT franchises with no years on it means.
-    expect(currentEraTeam([OLD_JETS, NEW_JETS])).toBe(NEW_JETS);
-  });
-
-  test("one row is the row, dated or not", () => {
-    expect(currentEraTeam([OLD_JETS])).toBe(OLD_JETS);
-    expect(currentEraTeam([UNDATED])).toBe(UNDATED);
-  });
-
-  test("refuses to choose between two open rows", () => {
-    // A colour is not worth guessing an era for.
-    expect(currentEraTeam([NEW_JETS, UNDATED])).toBeNull();
-    expect(currentEraTeam([])).toBeNull();
-  });
-
-  test("refuses when every row has ended", () => {
-    expect(currentEraTeam([OLD_JETS, { yearsActive: { from: 1997, to: 2000 } }])).toBeNull();
   });
 });
 

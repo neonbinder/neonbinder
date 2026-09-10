@@ -633,24 +633,6 @@ describe("NEO-254: the Franchise surface is gated as intended", () => {
       ),
     ).toEqual(["Titans"]);
   });
-
-  test("every bulkLoad mutation is declared internalMutation, not mutation", () => {
-    // Same reasoning as the reset batches below: these four write in bulk with
-    // NO identity check, because a `npx convex run` call carries none. The
-    // arming flag is what guards them, and that trade is only sound while they
-    // stay unreachable from a client — so the declaration keyword is
-    // load-bearing here in a way it is not elsewhere.
-    const src = readFileSync(join(__dirname, "bulkLoad.ts"), "utf8");
-    for (const fn of [
-      "upsertLeagues",
-      "upsertFranchises",
-      "upsertTeams",
-      "upsertPlayers",
-    ]) {
-      expect(src).toContain(`export const ${fn} = internalMutation({`);
-      expect(src).not.toContain(`export const ${fn} = mutation(`);
-    }
-  });
 });
 
 describe("NEO-214: the Set Builder admin panel and its client-callable functions are gone", () => {

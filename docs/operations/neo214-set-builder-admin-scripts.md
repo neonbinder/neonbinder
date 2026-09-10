@@ -289,9 +289,6 @@ deployment armed for one cannot be mistaken for one armed for another:
   `ALLOW_SPLIT_TEAM_LOCATIONS`, the one-shot Location / Name split.
 - [`neo254-backfill-player-links.md`](./neo254-backfill-player-links.md) —
   `ALLOW_BACKFILL_PLAYER_LINKS`, the `cardChecklist.playerLinks` backfill.
-- [`neo254-prod-data-repair.md`](./neo254-prod-data-repair.md) —
-  `ALLOW_NEO254_REPAIR`, the seven targeted repairs of the 2026-09-10
-  production bulk load (`repairs/neo254ProdData:*`).
 
 ## 7. Fixture teams and players
 

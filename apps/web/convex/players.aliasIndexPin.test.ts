@@ -65,7 +65,7 @@ describe("NEO-254: only players.ts writes the alias index", () => {
         !/\.(insert|patch)\(\s*"playerAliases"/.test(src);
       if (!onlyUse) offenders.push(file);
     }
-    // `bulkLoad.ts` and every other caller must go through `syncPlayerAliases`.
+    // Every other caller must go through `syncPlayerAliases`.
     expect(offenders).toEqual([]);
   });
 
@@ -86,9 +86,7 @@ describe("NEO-254: only players.ts writes the alias index", () => {
     // `syncPlayerAliases` beside it is the drift this file exists to catch.
     const src = readFileSync(join(CONVEX_DIR, "players.ts"), "utf8");
     const syncCalls = (src.match(/syncPlayerAliases\(ctx/g) ?? []).length;
-    // createByAdmin, savePlayerFields — and bulkLoad calls the exported helper.
+    // createByAdmin, savePlayerFields.
     expect(syncCalls).toBeGreaterThanOrEqual(2);
-    const bulk = readFileSync(join(CONVEX_DIR, "bulkLoad.ts"), "utf8");
-    expect(bulk).toContain("syncPlayerAliases(ctx");
   });
 });
