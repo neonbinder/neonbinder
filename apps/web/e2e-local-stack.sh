@@ -2,7 +2,7 @@
 # ─── One-command local E2E stack ─────────────────────────────────────────────
 # Brings up everything needed to validate Maestro flows locally the way CI does,
 # in the right order:
-#   1. push THIS branch's Convex functions to dev   (one-shot)
+#   1. (opt-in) push THIS branch's Convex functions to a backend (one-shot)
 #   2. Vite at https://localhost:3000               (auto-restart keeper, pinned node)
 #   3. the 2-worker persistent harness draining the real /e2e queue
 # then blocks in the foreground. Ctrl-C tears the whole stack down (workers + Vite).
@@ -13,8 +13,16 @@
 # Once up, authors validate flows from another terminal:
 #   ./e2e-enqueue.sh <flow>  &&  ./e2e-watch.sh <flow>
 #
-# Knobs: WORKERS (2) · APP_URL (https://localhost:3000) · SKIP_CONVEX_PUSH=1
+# Knobs: WORKERS (2) · APP_URL (https://localhost:3000) · CONVEX_PUSH=1
 #        SEED=1 (or pass --seed) to run the setup track once the workers are up.
+#
+# NOTE ON STEP 1: the push is OFF by default. The dev deployment is shared by
+# every Claude session on this laptop, so pushing a branch's schema there breaks
+# concurrent worktrees in a way that looks exactly like a product bug. Validate
+# against the PR's own Convex preview instead: put its URL in .env.convex (the
+# PR pipeline's setup job log prints "Convex site URL: ..."), and this script
+# will use it without any push at all. Set CONVEX_PUSH=1 only when you have
+# deliberately decided the target is yours alone.
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"; cd "$ROOT"
 
@@ -39,13 +47,26 @@ cleanup() {
 }
 trap cleanup INT TERM
 
-# ── 1. Push this branch's Convex functions to dev (one-shot) ─────────────────
-if [ -z "${SKIP_CONVEX_PUSH:-}" ]; then
-  echo "▶ pushing this branch's Convex functions to dev (one-shot)…"
+# ── 1. Push this branch's Convex functions (opt-in, one-shot) ────────────────
+# Off by default: dev is shared with every other session on this laptop, and a
+# branch push there is indistinguishable from a product bug in the worktrees
+# that were already using it. Point .env.convex at the PR preview instead.
+if [ -n "${CONVEX_PUSH:-}" ]; then
+  target="dev"; [ -f .env.convex ] && target=".env.convex target"
+  echo "▶ CONVEX_PUSH=1 — pushing this branch's Convex functions to $target (one-shot)…"
   if [ -f .env.convex ]; then
     npx dotenv-cli -e .env.convex -- npx convex dev --once --typecheck disable
   else
     npx convex dev --once --typecheck disable
+  fi
+else
+  if [ -f .env.convex ]; then
+    echo "▶ skipping the Convex push — using the backend in .env.convex as-is."
+  else
+    echo "▶ skipping the Convex push — no .env.convex, so Vite will talk to whatever"
+    echo "  CONVEX_DEPLOYMENT in .env.local already points at (shared dev)."
+    echo "  To validate against this PR's own preview, put its URL in .env.convex."
+    echo "  To push anyway (only if the target is yours alone): CONVEX_PUSH=1 $0"
   fi
 fi
 

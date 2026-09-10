@@ -38,3 +38,9 @@ just activated a control that LOOKS clickable and IS clickable. See
 this popover layout (per `TeamPicker.tsx`'s own docstring) and likely shares the
 same convention — check it for the same pattern before assuming it needs the
 `disabled` "fix".
+
+**The same mechanism on a different surface:** see
+[[pattern_aria_disabled_busy_buttons]] for the admin/*Management.tsx variant —
+per-row buttons in a `.map()` sharing one `busy` state. There the popover is not
+what breaks (there is none); the plain focus loss to `<body>` is, and the fix is
+the same aria-disabled + manual re-entry guard.

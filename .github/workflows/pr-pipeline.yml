@@ -1103,9 +1103,35 @@ jobs:
           SMOKE_ID_TOKEN: ${{ steps.probe-token.outputs.id_token }}
         run: pytest tests/functional -v
 
+  repo-hygiene:
+    name: Repo hygiene (stray agent memory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Agents write memory relative to their cwd, so a session started in
+      # apps/web silently creates apps/web/.claude/agent-memory/ and then reads
+      # a different, much smaller index than a session started at the repo root.
+      # That happened through NEO-259 and cost three accessibility-auditor
+      # memories that no root-level run could see (NEO-238). The canonical
+      # location is the repo root .claude/agent-memory/ and nowhere else.
+      - name: No .claude directory outside the repo root
+        run: |
+          set -euo pipefail
+          stray="$(find . -mindepth 2 -type d -name .claude -not -path './node_modules/*' -not -path './*/node_modules/*' || true)"
+          if [ -n "$stray" ]; then
+            echo "::error::Agent memory must live at the repo root .claude/agent-memory/ only. Found:"
+            echo "$stray"
+            echo "Move the files into ./.claude/agent-memory/<agent>/, merge their MEMORY.md entries into the root index, and delete the stray directory."
+            exit 1
+          fi
+          echo "OK — the repo root .claude/ is the only one."
+
   ci-gate:
     name: CI Gate
-    needs: [changes, web-preview, web-lint, web-typecheck, web-unit, browser-test, preprocess-test, preprocess-crop-matrix, wire-browser-url, wire-preprocess-url, e2e]
+    needs: [changes, web-preview, web-lint, web-typecheck, web-unit, browser-test, preprocess-test, preprocess-crop-matrix, wire-browser-url, wire-preprocess-url, e2e, repo-hygiene]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 3
@@ -1126,12 +1152,15 @@ jobs:
           R_WEB_PREVIEW: ${{ needs.web-preview.result }}
           R_E2E: ${{ needs.e2e.result }}
           R_DEPS_ONLY: ${{ needs.changes.outputs.deps_only }}
+          R_HYGIENE: ${{ needs.repo-hygiene.result }}
         run: |
           set -euo pipefail
-          echo "changes=$R_CHANGES web-lint=$R_WEB_LINT web-typecheck=$R_WEB_TYPECHECK web-unit=$R_WEB_UNIT browser-test=$R_BROWSER_TEST preprocess-test=$R_PREPROCESS_TEST crop-matrix=$R_CROP_MATRIX wire-browser-url=$R_WIRE wire-preprocess-url=$R_WIRE_PREPROCESS e2e=$R_E2E deps_only=$R_DEPS_ONLY"
+          echo "hygiene=$R_HYGIENE changes=$R_CHANGES web-lint=$R_WEB_LINT web-typecheck=$R_WEB_TYPECHECK web-unit=$R_WEB_UNIT browser-test=$R_BROWSER_TEST preprocess-test=$R_PREPROCESS_TEST crop-matrix=$R_CROP_MATRIX wire-browser-url=$R_WIRE wire-preprocess-url=$R_WIRE_PREPROCESS e2e=$R_E2E deps_only=$R_DEPS_ONLY"
           fail=0
           # changes must SUCCEED (skipped => gate unreliable)
           [ "$R_CHANGES" = "success" ] || { echo "::error::changes=$R_CHANGES (must succeed)"; fail=1; }
+          # repo-hygiene is ungated (it always runs), so `skipped` is a fault, not out-of-scope.
+          [ "$R_HYGIENE" = "success" ] || { echo "::error::repo-hygiene=$R_HYGIENE (must succeed)"; fail=1; }
           # e2e must SUCCEED, except on a dependency-manifest-only PR where a
           # SKIP is the intended outcome (NEO-87). Note the deps_only check reads
           # the same job output that gated the skip, so the two can't disagree.

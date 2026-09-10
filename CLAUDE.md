@@ -407,6 +407,8 @@ Sensitive credentials are stored in **Google Cloud Secret Manager**, not `.env` 
 
 `.claude/agents/` and `.claude/skills/` in this repo are the **single source** for the specialist agents and the `pr-watch`, `pr-close` and `deps-batch` skills; there is no other copy. Agent memory under `.claude/agent-memory/<agent>/` is committed and public, so it holds **patterns only** (driver quirks, house conventions, gates that lie) — never a deployment name, account, secret name, internal URL or incident. An agent that learns something operational reports it under *Private notes* for the coordinator instead of saving it. Change an agent or skill through a normal PR.
 
+Agent memory lives at the **repo root** `.claude/agent-memory/<agent>/` and nowhere else. Agents write memory relative to their working directory, so a session started in `apps/web` will happily create `apps/web/.claude/agent-memory/` and then read a much smaller index than a root-level session — the two diverge silently and knowledge is lost rather than shadowed. If you are working under `apps/web`, write memory to the root path explicitly. The `repo-hygiene` job in `pr-pipeline.yml` fails any PR that leaves a `.claude/` directory outside the repo root.
+
 ## CI/CD
 
 All workflows live in `.github/workflows/`. `pr-pipeline.yml` is the single all-PR orchestrator; area CI is keyed on `apps/web/**` vs `services/browser/**` vs `services/preprocess/**`:
