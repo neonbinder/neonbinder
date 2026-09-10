@@ -215,37 +215,33 @@ tags:
 # player already exists — opened it." So the vehicle for the rest of the flow
 # is this run's own player and nobody else's.
 
-# GO AND LOOK AT THE STATUS LINE — it is not where "Create player" is.
+# THE CONFIRMATION MOVED. THIS SCROLL STAYED, AND NOT FOR THE ASSERTION.
 #
-# `PlayerManagement` renders `Added <name>.` in the PAGE-LEVEL status line, the
-# FIRST child of the screen container, at document y=293-313. The component says
-# so itself above that `<p>`: "Page-level status — the ADD FORM's messages only
-# … those report on the LIST, which sits directly below this line, so the top of
-# the page is where they belong." The button that produces it, the add form's
-# `Create player`, is at document y=809-841 — 516px BELOW the line that
-# reports on it. (NEO-254 put it there: Birth year and Other names added 212px
-# to the form, which was at y=597-629 in green run 34433476511.)
-# MEASURED from run 34437403394, not assumed. `extendedWaitUntil: visible` never
-# scrolls, so this assertion can only read what is already on screen. The step
-# above leaves the page at scroll 309; the successful create then inserts the
-# status line ABOVE the viewport, Chrome's scroll anchoring compensates by
-# exactly the height that insert added (+39px), and the page settles at scroll
-# 349 — root bounds [0,-349][1009,1090] in the failure dump — with
-# the line at viewport y=-56..-36, 36px above the top of the viewport,
-# where maestro-web prunes it from the hierarchy outright.
-# THE CREATE ITSELF SUCCEEDED, and the dump proves it rather than assuming it:
-# the new player's own detail panel is open with this run's name in its
-# `Player name` box, which only the `onCreated(result.id)` -> `selectPlayer` path
-# reached from the success branch can do; the button is not left reading
-# "Adding…", and no `role="alert"` refusal is on screen. The assertion was
-# reporting where the confirmation renders, not whether the create happened.
-# So re-anchor first. "Filter players" is the label on the very control the
-# status line is about, 36px below it, and it is on the page whatever the create
-# did — so a create that was genuinely REFUSED still fails on the assertion
-# below, with the refusal on screen in the screenshot. Centred it settles the
-# page at scroll ~20-40, putting the line at viewport y~253-273, clear of the
-# 79px sticky binder header that occludes anything above y=79. Positioning only;
-# nothing this flow proves changes.
+# NEO-260 took `Added <name>.` out of `PlayerManagement`'s page-level status
+# line and put it at the head of the DETAIL COLUMN, `sticky` under the binder
+# header. The old line sat at document y=293-313 while the `Create player`
+# button that earns it is at y=809-841: the button is fully visible only from
+# scroll 216 and the line is clear of the 79px header only to scroll 214, so no
+# scroll position on the 1024x629 viewport ever showed both, and the line's own
+# insertion moved the page away from it (+39px of content above the scroll
+# position, +39px of Chrome scroll anchoring). That is what reddened six flows
+# in run 34437403394. A stuck element reports its STUCK position to the driver
+# — `binder-header`, `sticky top-0`, reads [64,16][228,61] in every hierarchy
+# dump at every scroll — so the assertion below now passes from wherever the
+# tap left the page, with or without this step.
+#
+# WHAT THIS STEP IS FOR NOW is the commands AFTER it: the centred career-history scroll below, whose measured bounds were taken
+# from the page position THIS step produces. It stays until a green run says
+# otherwise.
+# It is positioning only, and nothing this flow proves changes. `Filter
+# players` is still the right anchor — it is the label of the list this screen
+# is built around and it is on the page whatever the create did, so a create
+# that was genuinely REFUSED still fails on the assertion below with the
+# refusal on screen in the screenshot. Its document position moved 332 -> 293
+# with the page-level line's removal, and the post-create scroll is now
+# 367 (813 - 500 for the button, +54 for the notice inserted above the
+# scroll position), so the travel is one UP swipe of ~313px, landing the page at scroll ~54 — the same swipe count as the
+# green measurement this note replaces.
 - scrollUntilVisible:
     element:
       text: "Filter players"
@@ -577,11 +573,52 @@ tags:
     timeout: 7000
 - tapOn: "Remove Loc${output.TOKEN} Fr${output.TOKEN}B"
 
+# ⚠️ THIS ONE IS NOT THE STATUS LINE. The screen's own confirmation, "Took
+# <team> off this franchise.", is fine and was on screen: run 34442670233
+# runner 7 shows it at viewport y=360, immediately under the "Remove <team>"
+# button that was tapped at y=346. What failed is this COUNT, which is the
+# panel's SUBTITLE, directly under the franchise-name heading — 410px above the
+# control that changes it, and above the fold at the position the tap left.
+# MEASURED, from that run's failure dump: root [0,-483][1009,629] with
+# "Franchise name" (the panel's first field label) at viewport y=-8, which puts
+# the heading and its subtitle at roughly y=-60..-20, pruned outright. The
+# REMOVAL WORKED and the dump proves it: team B's row is gone from the thread,
+# team A's is still there at y=311, and the confirmation names team B.
+# WHY IT ONLY BROKE NOW, and it is the spacer rather than any product change:
+# pre-spacer, maximum scroll on this page was 279, so the centred scroll to
+# "Remove <team>" above could not reach the centre band and gave up with the
+# page CLAMPED at 279 — where the count sat at viewport y=164 and team A at
+# y=515, both comfortably on screen. NEO-260's 208px spacer (`h-[208px]`,
+# src/layouts/binder-layout.tsx) takes maximum scroll to 487, the centring now
+# succeeds, and it parks the page 204px deeper. Textbook R5 "never depend on
+# the document bottoming out".
+# THE TWO ASSERTIONS CANNOT SHARE ONE POSITION. The count needs scroll <= 363
+# and team A's row needs scroll >= 189; the driver's swipe is ~313px, so from
+# 483 the reachable stops are 483 and 170, and neither is in [189, 363]. So
+# each read gets its own anchor: UP to the panel's own "Franchise name" label
+# for the count (one swipe to scroll 170, label centred at ~315, count at
+# ~y=273), then DOWN to team A's OWN "Remove" button for the row (one swipe
+# back to ~483, where the run already measured the row at y=311). Positioning
+# only, and neither anchor is a target of the assertion it precedes (R6).
+- scrollUntilVisible:
+    element:
+      text: "Franchise name"
+    direction: UP
+    centerElement: true
+    timeout: 7000
+
 # R2(e). The count is the assertion — it is recomputed from the database, not
 # from the row disappearing on screen. "1 team", singular, is the screen's own
 # wording for exactly one.
 - extendedWaitUntil:
     visible: ".*1 team on this thread.*"
+    timeout: 7000
+
+- scrollUntilVisible:
+    element:
+      text: "Remove Loc${output.TOKEN} Fr${output.TOKEN}A"
+    direction: DOWN
+    centerElement: true
     timeout: 7000
 
 # And the removal cut a LINK, not a row, and only team B's: A is still on the

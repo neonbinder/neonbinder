@@ -226,10 +226,17 @@ tags:
 # reports `created: false` for a row it merely found, and the screen then says
 # "<name> was already here — opened it for you." instead. So this line is the
 # create, and it is also this flow's proof that the per-attempt name was free.
-# `direction: UP` — the page-level status line renders ABOVE the filter row, and
-# the scroll to the create button above just left the page at its bottom. A
-# plain wait here could never see it, for exactly the reason the tap above could
-# not see the button.
+# `direction: UP` and unchanged, but the reason has changed under it. It used to
+# be a page-level status line ABOVE the filter row, and the scroll to the create
+# button had just left the page at its bottom — which is why a plain wait could
+# never see it. MEASURED in run 34442670233: this step found the line at
+# viewport y=27, i.e. ENTIRELY UNDERNEATH the 79px sticky binder header, and
+# passed anyway, because maestro-web reads the accessibility tree and the
+# accessibility tree does not model occlusion. A human pressing the button saw
+# nothing. NEO-260 moved the line to the head of the detail column and made it
+# `sticky` beneath that header, so it now lands at viewport y=80 and is
+# genuinely on screen; the driver reports a stuck element at its stuck
+# position, so this step still finds it at try 0 without moving the page.
 - scrollUntilVisible:
     element:
       text: ".*Started Fran${output.TOKEN}.*"

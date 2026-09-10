@@ -364,15 +364,23 @@ const STINT_LABEL_CLASS =
 function AddPlayerForm({
   sports,
   defaultSportId,
-  onStatus,
   onCreated,
   onCancel,
 }: {
   sports: SportRow[];
   /** Pre-selected from the list's sport filter, when one is set. */
   defaultSportId: Id<"selectorOptions"> | null;
-  onStatus: (status: Status) => void;
-  onCreated: (id: Id<"players">) => void;
+  /**
+   * NEO-260 — the confirmation travels WITH the id, because this form is gone
+   * by the time anyone could read it.
+   *
+   * A successful create selects the new player, and selecting unmounts this
+   * form: there is no "under the button row" left to render into, which is the
+   * one way this screen differs from `TeamManagement`'s panel. So the text is
+   * handed to the surface that REPLACES the form and rendered at the top of
+   * that column — see the note on `createdNotice` in the screen below.
+   */
+  onCreated: (id: Id<"players">, notice?: string) => void;
   onCancel: () => void;
 }) {
   const createByAdmin = useMutation(api.players.createByAdmin);
@@ -381,6 +389,22 @@ function AddPlayerForm({
   const [sportId, setSportId] = useState<string>(defaultSportId ?? "");
   const [debouncedName, setDebouncedName] = useState("");
   const [busy, setBusy] = useState(false);
+  /**
+   * NEO-260 — a REFUSED create, shown where the operator can act on it.
+   *
+   * Verbatim the call `TeamManagement` made in NEO-236 for its own refusal: the
+   * message is about the fields directly above the button and is fixed by
+   * editing them, so it belongs beside them rather than in a screen-level line
+   * that, on a form whose button row sits 437px below the top of its column, is
+   * off screen at the moment Create is pressed. It renders in the button row
+   * itself for the same reason NEO-254 put `Saved <name>` there: the row is on
+   * screen whenever the button is, so the message costs no extra height.
+   *
+   * A refusal keeps this form mounted, which is what makes an inline slot
+   * possible at all — the two SUCCESS messages cannot use it (see `onCreated`).
+   * `role="alert"`, not `status`: something is wrong and needs fixing.
+   */
+  const [error, setError] = useState<string | null>(null);
   /**
    * NEO-254 — the birth year, and the only way to add a SECOND person with a
    * name we already have.
@@ -468,7 +492,7 @@ function AddPlayerForm({
   const create = async () => {
     if (!canCreate) return;
     setBusy(true);
-    onStatus(null);
+    setError(null);
     try {
       const parsedNewAliases = newAliases
         .split(",")
@@ -480,12 +504,13 @@ function AddPlayerForm({
         ...(birthYearNum !== undefined ? { birthYear: birthYearNum } : {}),
         ...(parsedNewAliases.length ? { aliases: parsedNewAliases } : {}),
       });
-      onStatus(
+      // Both strings are unchanged; only where they land moved (NEO-260).
+      onCreated(
+        result.id,
         result.created
-          ? { text: `Added ${trimmed}.`, isError: false }
-          : { text: "That player already exists — opened it.", isError: false },
+          ? `Added ${trimmed}.`
+          : "That player already exists — opened it.",
       );
-      onCreated(result.id);
     } catch (e) {
       /**
        * NEO-254 — the ambiguity refusal reaches the operator verbatim.
@@ -499,10 +524,7 @@ function AddPlayerForm({
        * into "Could not add that player", which says nothing the operator can
        * act on.
        */
-      onStatus({
-        text: userFacingMessage(e, "Could not add that player."),
-        isError: true,
-      });
+      setError(userFacingMessage(e, "Could not add that player."));
     } finally {
       setBusy(false);
     }
@@ -633,6 +655,16 @@ function AddPlayerForm({
         <NeonButton type="button" cancel onClick={onCancel} disabled={busy}>
           Cancel
         </NeonButton>
+        {error && (
+          /* IN the button row, not under it — the shape NEO-236 gave
+             `TeamManagement`'s refusal and NEO-254 gave its `Saved <name>`. The
+             row already exists and is on screen whenever Create is, so the
+             refusal costs no extra height; it wraps to its own line only when
+             the column is too narrow to hold it beside the buttons. */
+          <p role="alert" className="self-center text-sm text-neon-pink">
+            {error}
+          </p>
+        )}
       </div>
     </div>
   );
@@ -1376,7 +1408,41 @@ export default function PlayerManagement() {
   // that is not a live player id — see the comment on the deep link below.
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
-  const [status, setStatus] = useState<Status>(null);
+  /**
+   * NEO-260 — the add form's confirmation, rendered in the DETAIL COLUMN and
+   * pinned under the sticky header while that column is on screen.
+   *
+   * It used to be a screen-level line above the filter row, at document
+   * y=293-313, and the reasoning written beside it ("those report on the LIST,
+   * which sits directly below this line") was wrong about the only thing that
+   * matters: whether anyone can see it. `Create player` is at document
+   * y=809-841 — 516px below it, and NEO-254's two new fields are what widened
+   * that from 304px. Measured on the 1024x629 CI viewport: the button is fully
+   * visible only from scroll 216, the line is clear of the 79px sticky header
+   * only to scroll 214, so NO scroll position showed both. Worse, the line's
+   * own appearance moved the page away from it — it inserts ~39px ABOVE the
+   * scroll position and Chrome's scroll anchoring compensates by exactly that,
+   * so it landed where it started, off screen. Six E2E flows went red on it
+   * (run 34437403394); a seventh had been passing with the line at viewport
+   * y=1-21, entirely underneath the header, because the driver reads the
+   * accessibility tree and the accessibility tree does not model occlusion.
+   *
+   * WHY NOT "under the button row", which is where `TeamManagement` puts its
+   * equivalent: a successful create SELECTS the new player, and selecting
+   * unmounts the add form. There is no button row left. So the message goes to
+   * the surface that replaces the form — the detail column — and `sticky`
+   * is what makes that reliable rather than another guess about scroll: the
+   * column's top is between 93px above and 63px below the fold across the eight
+   * measured create sites, i.e. always above the sticky header, so the notice
+   * pins itself directly beneath it every time. (maestro-web reports a sticky
+   * element at its stuck position — `binder-header`, `sticky top-0`, reads
+   * [64,16][228,61] in every hierarchy dump at every scroll.)
+   *
+   * Held by the screen rather than the panel because it outlives the form that
+   * earned it, and cleared by every OTHER way of selecting a player, so it can
+   * never be read as a report about a row it is not about.
+   */
+  const [createdNotice, setCreatedNotice] = useState<string | null>(null);
 
   useEffect(() => {
     const timer = setTimeout(
@@ -1611,8 +1677,14 @@ export default function PlayerManagement() {
    * form's `Added {name}.`, its near-match `Open {name}` pick, and the detail
    * panel's `NAME_TAKEN` destination — so the URL cannot fall out of step with
    * the panel by one of them forgetting to write it.
+   *
+   * `notice` is the add form's confirmation and ONLY the add form's: every
+   * other caller omits it, which is what clears a stale one. A message about
+   * the row that was just created must not still be on screen over the next
+   * row the operator clicks (NEO-260).
    */
-  const selectPlayer = (id: Id<"players">) => {
+  const selectPlayer = (id: Id<"players">, notice?: string) => {
+    setCreatedNotice(notice ?? null);
     setSelectedId(id);
     setAdding(false);
     // Keep the URL in step with the selection, so the player on screen is the
@@ -1639,20 +1711,12 @@ export default function PlayerManagement() {
 
   return (
     <div className="space-y-4">
-      {/* Page-level status — the ADD FORM's messages only ("Added {name}.",
-          "That player already exists — opened it."). Those report on the LIST,
-          which sits directly below this line, so the top of the page is where
-          they belong. The detail panel keeps its own status line under its
-          action row instead; see PlayerDetail (NEO-212). */}
-      {status && (
-        <p
-          className={`text-sm ${status.isError ? "text-neon-pink" : "text-slate-300"}`}
-          role={status.isError ? "alert" : "status"}
-        >
-          {status.text}
-        </p>
-      )}
-
+      {/* NEO-260 removed the screen-level status line that used to sit here.
+          Read the note on `createdNotice` above for why: nothing an operator
+          does on this screen produces a message that belongs 500px away from
+          the control that produced it. The add form's refusal renders in its
+          own button row, its confirmation in the detail column, and the detail
+          panel has had its own line under its action row since NEO-212. */}
       <div className="flex flex-wrap items-end gap-3">
         <Input
           ref={filterRef}
@@ -1700,7 +1764,7 @@ export default function PlayerManagement() {
           type="button"
           onClick={() => {
             setAdding(true);
-            setStatus(null);
+            setCreatedNotice(null);
           }}
         >
           Add player
@@ -1842,11 +1906,33 @@ export default function PlayerManagement() {
             than opening a dialog. A modal here would hide the very list the
             operator is checking their new name against. */}
         <div className="rounded-lg border border-slate-800 p-4">
+          {createdNotice && (
+            /* The add form's confirmation, at the head of the column that
+               replaced the form — and `sticky`, so it is under the header
+               rather than above it however far down the page the operator was
+               when they pressed Create. See `createdNotice` for the
+               measurements. `z-10` sits below `binder-header`'s `z-20`; the
+               solid background is what stops panel content showing through it
+               once it is pinned. It does not move the page: the operator is
+               being handed to the career editor and scrolling them off it
+               would be a worse bug than the one this fixes.
+
+               `pointer-events-none` for the reason `binder-header` carries it
+               and NEO-260 found the cost of getting it wrong: a sticky box
+               that eats clicks becomes a dead zone over whatever it happens to
+               be covering, and the header's own logo group cost this suite a
+               swallowed tap. There is nothing here to click. */
+            <p
+              role="status"
+              className="pointer-events-none sticky top-20 z-10 mb-3 rounded-md border border-slate-800 bg-background px-3 py-2 text-sm text-slate-300"
+            >
+              {createdNotice}
+            </p>
+          )}
           {adding ? (
             <AddPlayerForm
               sports={sportList}
               defaultSportId={sportId ?? null}
-              onStatus={setStatus}
               onCreated={selectPlayer}
               onCancel={() => setAdding(false)}
             />

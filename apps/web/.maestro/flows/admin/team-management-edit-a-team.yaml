@@ -144,37 +144,33 @@ tags:
 # "Added <name>." is said only for a row that was inserted, so this is also the
 # signal that the new player's own panel — and its career editor — is open.
 
-# GO AND LOOK AT THE STATUS LINE — it is not where "Create player" is.
+# THE CONFIRMATION MOVED. THIS SCROLL STAYED, AND NOT FOR THE ASSERTION.
 #
-# `PlayerManagement` renders `Added <name>.` in the PAGE-LEVEL status line, the
-# FIRST child of the screen container, at document y=293-313. The component says
-# so itself above that `<p>`: "Page-level status — the ADD FORM's messages only
-# … those report on the LIST, which sits directly below this line, so the top of
-# the page is where they belong." The button that produces it, the add form's
-# `Create player`, is at document y=809-841 — 516px BELOW the line that
-# reports on it. (NEO-254 put it there: Birth year and Other names added 212px
-# to the form, which was at y=597-629 in green run 34433476511.)
-# MEASURED from run 34437403394, not assumed. `extendedWaitUntil: visible` never
-# scrolls, so this assertion can only read what is already on screen. The step
-# above leaves the page at scroll 465; the successful create then inserts the
-# status line ABOVE the viewport, Chrome's scroll anchoring compensates by
-# exactly the height that insert added (+39px), and the page settles at scroll
-# 505 — root bounds [0,-505][1009,934] in the failure dump — with
-# the line at viewport y=-212..-192, 192px above the top of the viewport,
-# where maestro-web prunes it from the hierarchy outright.
-# THE CREATE ITSELF SUCCEEDED, and the dump proves it rather than assuming it:
-# the new player's own detail panel is open with this run's name in its
-# `Player name` box, which only the `onCreated(result.id)` -> `selectPlayer` path
-# reached from the success branch can do; the button is not left reading
-# "Adding…", and no `role="alert"` refusal is on screen. The assertion was
-# reporting where the confirmation renders, not whether the create happened.
-# So re-anchor first. "Filter players" is the label on the very control the
-# status line is about, 36px below it, and it is on the page whatever the create
-# did — so a create that was genuinely REFUSED still fails on the assertion
-# below, with the refusal on screen in the screenshot. Centred it settles the
-# page at scroll ~20-40, putting the line at viewport y~253-273, clear of the
-# 79px sticky binder header that occludes anything above y=79. Positioning only;
-# nothing this flow proves changes.
+# NEO-260 took `Added <name>.` out of `PlayerManagement`'s page-level status
+# line and put it at the head of the DETAIL COLUMN, `sticky` under the binder
+# header. The old line sat at document y=293-313 while the `Create player`
+# button that earns it is at y=809-841: the button is fully visible only from
+# scroll 216 and the line is clear of the 79px header only to scroll 214, so no
+# scroll position on the 1024x629 viewport ever showed both, and the line's own
+# insertion moved the page away from it (+39px of content above the scroll
+# position, +39px of Chrome scroll anchoring). That is what reddened six flows
+# in run 34437403394. A stuck element reports its STUCK position to the driver
+# — `binder-header`, `sticky top-0`, reads [64,16][228,61] in every hierarchy
+# dump at every scroll — so the assertion below now passes from wherever the
+# tap left the page, with or without this step.
+#
+# WHAT THIS STEP IS FOR NOW is the commands AFTER it: the centred `+ Add team` scroll below, whose note records the exact bounds
+# it expects. Those were measured from the page position THIS step produces, so
+# it stays until a green run says otherwise.
+# It is positioning only, and nothing this flow proves changes. `Filter
+# players` is still the right anchor — it is the label of the list this screen
+# is built around and it is on the page whatever the create did, so a create
+# that was genuinely REFUSED still fails on the assertion below with the
+# refusal on screen in the screenshot. Its document position moved 332 -> 293
+# with the page-level line's removal, and the post-create scroll is now
+# 523 (813 - 344 for the button, +54 for the notice inserted above the
+# scroll position), so the travel is two UP swipes of ~313px, landing the page at scroll 0 — the same swipe count as the
+# green measurement this note replaces.
 - scrollUntilVisible:
     element:
       text: "Filter players"
@@ -416,40 +412,29 @@ tags:
 - assertVisible: "Discover"
 - tapOn: "Save"
 
-# GO AND LOOK AT THE STATUS LINE — it is not where Save is.
+# NO POSITIONING STEP HERE, AND THE ONE THAT USED TO BE HERE IS WHY THIS FLOW
+# WAS RED.
 #
-# `TeamManagement` prints `Saved <full name>` in the PAGE-LEVEL status line, the
-# first child of the screen's container, ~250px above the fold at document
-# y≈293; the panel that carries Save is the right-hand column far below it. The
-# component says so itself, in the comment above `saveError`: the screen-level
-# status line "on a panel that is usually scrolled past the fold, is off-screen
-# at the moment Save is pressed" — which is why a REFUSED save was moved inline
-# in NEO-236. The success message was left where it was.
-# MEASURED. `extendedWaitUntil: visible` never scrolls, so this assertion can
-# only read what is already on screen. Green CI 34361627641 passed it in 0.34 s
-# with the page at maximum scroll (Save at y=552, i.e. document scroll 307): the
-# status line was at viewport y≈-14 and six of its twenty pixels were on screen.
-# That is the whole margin it ever had. NEO-260's 208px spacer
-# (src/layouts/binder-layout.tsx) gives the page 208px more travel, and run
-# 34429321550 runner 6 failed here with root bounds [0,-515][1009,625] — maximum
-# scroll, 208 lower — putting the line ~222px above the viewport, where the
-# driver prunes it from the hierarchy entirely.
-# THE SAVE ITSELF WAS FINE, and the dump proves it rather than assuming it: 16 s
-# after the tap the button still reads "Save" and not "Saving…", so `busy` had
-# cleared; no `role="alert"` refusal is present, so the mutation did not throw;
-# and the only branch left calls `onStatus({text: "Saved …"})`. The assertion was
-# reporting where the confirmation renders, not whether the save happened.
-# So re-anchor first. "Location" is the panel's own first field label and is on
-# screen at maximum scroll (y=33 in the failure dump), so this scroll always
-# finds it at try 0 and needs exactly one swipe to centre it (~y346), which
-# leaves the page ~313px higher and the status line comfortably in view. It is
-# positioning only: nothing about what this flow proves changes.
-- scrollUntilVisible:
-    element:
-      text: "Location"
-    direction: UP
-    centerElement: true
-    timeout: 7000
+# `de82c5e` added a `scrollUntilVisible` UP to the panel's "Location" label
+# before this assertion, because at the time `TeamManagement` printed
+# `Saved <full name>` in the PAGE-LEVEL status line at document y≈293 while the
+# panel carrying Save sat far below it. NEO-254 then moved that confirmation
+# INTO the Save button's own row — and the positioning scroll, which had been
+# the fix, became the failure.
+# MEASURED, run 34442670233 runner 5. Save was found and tapped at viewport
+# y=344. The "Location" scroll then took one UP swipe (~313px) and accepted the
+# label at y=259, leaving root bounds [0,-217][1009,938]. In that dump the panel
+# ends at "Secondary #ffffff" [692,595][798,637] and the Save button — with the
+# confirmation now beside it — is BELOW y=637, i.e. under the fold. The step
+# that used to drag the message into view now drags it out of view.
+# THE SAVE ITSELF WAS FINE, and the dump proves it rather than assuming it: the
+# button reads "Save" and not "Saving…", so `busy` had cleared, and no
+# `role="alert"` refusal is present, so the mutation did not throw.
+# So there is nothing to re-anchor. `extendedWaitUntil: visible` never scrolls,
+# and it does not have to: the confirmation shares the flex row with the button
+# this flow just tapped at y=344, so it is on screen the moment it exists, for
+# the same reason the button was. `admin-franchises-link-teams` asserts the same
+# string with no positioning step at all and is green.
 
 # The mutation confirms by name — and NEO-236 made that the COMPOSED name, so
 # this line is itself the first read-back of the split: "Saved Loc0 TMT<token>"

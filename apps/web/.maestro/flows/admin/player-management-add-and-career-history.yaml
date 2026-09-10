@@ -201,37 +201,34 @@ tags:
 # an existing row instead says "That player already exists — opened it.", so
 # this is the assertion that the hand-entry actually created something.
 
-# GO AND LOOK AT THE STATUS LINE — it is not where "Create player" is.
+# THE CONFIRMATION MOVED. THIS SCROLL STAYED, AND NOT FOR THE ASSERTION.
 #
-# `PlayerManagement` renders `Added <name>.` in the PAGE-LEVEL status line, the
-# FIRST child of the screen container, at document y=293-313. The component says
-# so itself above that `<p>`: "Page-level status — the ADD FORM's messages only
-# … those report on the LIST, which sits directly below this line, so the top of
-# the page is where they belong." The button that produces it, the add form's
-# `Create player`, is at document y=809-841 — 516px BELOW the line that
-# reports on it. (NEO-254 put it there: Birth year and Other names added 212px
-# to the form, which was at y=597-629 in green run 34433476511.)
-# MEASURED from run 34437403394, not assumed. `extendedWaitUntil: visible` never
-# scrolls, so this assertion can only read what is already on screen. The step
-# above leaves the page at scroll 465; the successful create then inserts the
-# status line ABOVE the viewport, Chrome's scroll anchoring compensates by
-# exactly the height that insert added (+39px), and the page settles at scroll
-# 505 — root bounds [0,-505][1009,934] in the failure dump — with
-# the line at viewport y=-212..-192, 192px above the top of the viewport,
-# where maestro-web prunes it from the hierarchy outright.
-# THE CREATE ITSELF SUCCEEDED, and the dump proves it rather than assuming it:
-# the new player's own detail panel is open with this run's name in its
-# `Player name` box, which only the `onCreated(result.id)` -> `selectPlayer` path
-# reached from the success branch can do; the button is not left reading
-# "Adding…", and no `role="alert"` refusal is on screen. The assertion was
-# reporting where the confirmation renders, not whether the create happened.
-# So re-anchor first. "Filter players" is the label on the very control the
-# status line is about, 36px below it, and it is on the page whatever the create
-# did — so a create that was genuinely REFUSED still fails on the assertion
-# below, with the refusal on screen in the screenshot. Centred it settles the
-# page at scroll ~20-40, putting the line at viewport y~253-273, clear of the
-# 79px sticky binder header that occludes anything above y=79. Positioning only;
-# nothing this flow proves changes.
+# NEO-260 took `Added <name>.` out of `PlayerManagement`'s page-level status
+# line and put it at the head of the DETAIL COLUMN, `sticky` under the binder
+# header. The old line sat at document y=293-313 while the `Create player`
+# button that earns it is at y=809-841: the button is fully visible only from
+# scroll 216 and the line is clear of the 79px header only to scroll 214, so no
+# scroll position on the 1024x629 viewport ever showed both, and the line's own
+# insertion moved the page away from it (+39px of content above the scroll
+# position, +39px of Chrome scroll anchoring). That is what reddened six flows
+# in run 34437403394. A stuck element reports its STUCK position to the driver
+# — `binder-header`, `sticky top-0`, reads [64,16][228,61] in every hierarchy
+# dump at every scroll — so the assertion below now passes from wherever the
+# tap left the page, with or without this step.
+#
+# WHAT THIS STEP IS FOR NOW is the commands AFTER it: `assertVisible ".*Sport: Baseball.*"` never scrolls, and that line is
+# in the new panel's FIRST field row at document y~460-502. Left where the tap
+# ends the page it is above the fold and pruned; this scroll is what puts it on
+# screen. Removing this step reds the very next command.
+# It is positioning only, and nothing this flow proves changes. `Filter
+# players` is still the right anchor — it is the label of the list this screen
+# is built around and it is on the page whatever the create did, so a create
+# that was genuinely REFUSED still fails on the assertion below with the
+# refusal on screen in the screenshot. Its document position moved 332 -> 293
+# with the page-level line's removal, and the post-create scroll is now
+# 523 (813 - 344 for the button, +54 for the notice inserted above the
+# scroll position), so the travel is two UP swipes of ~313px, landing the page at scroll 0 — the same swipe count as the
+# green measurement this note replaces.
 - scrollUntilVisible:
     element:
       text: "Filter players"

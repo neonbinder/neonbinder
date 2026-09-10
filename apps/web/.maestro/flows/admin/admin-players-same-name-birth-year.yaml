@@ -235,17 +235,23 @@ tags:
 # "Create player".
 - assertVisible: "Samename${output.TOKEN}"
 
-# ⚠️ THIS NEGATIVE WAS VACUOUS, AND THE SAME MEASUREMENT SAYS SO.
-# `PlayerManagement` renders every add-form message — `Added <name>.` and the
-# refusals alike — in the PAGE-LEVEL status line, the FIRST child of the screen
-# container at document y=293-313 (no line rendered here, so y=293 rather than
-# the +39 the line itself inserts). The scroll to "Add a player" above leaves the
-# page at scroll 349 (run 34437403394: that heading was read at viewport y=41,
-# and it is at document y=390), which puts the status area at viewport y=-56 —
-# off the top, pruned from the hierarchy. `assertNotVisible` on an element the
-# driver cannot see passes whether or not the screen said it, so this step was
-# proving nothing. Bringing the line on screen first is what makes the claim
-# real: the target is unchanged, only the page position is.
+# ⚠️ THIS NEGATIVE WAS VACUOUS, AND THE SAME MEASUREMENT SAID SO.
+# When it was written, `PlayerManagement` rendered every add-form message —
+# `Added <name>.` and the refusals alike — in the PAGE-LEVEL status line, the
+# FIRST child of the screen container at document y=293-313. The scroll to
+# "Add a player" above leaves the page at scroll 349 (run 34437403394: that
+# heading was read at viewport y=41 and it is at document y=390), which put the
+# status area at viewport y=-56, off the top and pruned from the hierarchy.
+# `assertNotVisible` on an element the driver cannot see passes whether or not
+# the screen said it, so the step was proving nothing.
+# NEO-260 fixed the underlying reason: `Added <name>.` now renders at the head
+# of the detail column, `sticky` under the binder header, so it CANNOT be off
+# screen when it exists — the negative is real from any page position, and the
+# refusal it is paired against renders in the Create button's own row. This
+# scroll stays because the steps after it need the top of the screen: the very
+# next command taps "Birth year (optional)" in the add form, whose label the
+# green run read at viewport y=559 with the page where this scroll leaves it.
+# Positioning only; the target is unchanged.
 - scrollUntilVisible:
     element:
       text: "Filter players"
@@ -289,38 +295,33 @@ tags:
 # instead, which is exactly the string STEP 5 asserts. So this line is the
 # create, not the adopt.
 
-# GO AND LOOK AT THE STATUS LINE — it is not where "Create player" is.
+# THE CONFIRMATION MOVED. THIS SCROLL STAYED, AND NOT FOR THE ASSERTION.
 #
-# `PlayerManagement` renders `Added <name>.` in the PAGE-LEVEL status line, the
-# FIRST child of the screen container, at document y=293-313. The component says
-# so itself above that `<p>`: "Page-level status — the ADD FORM's messages only
-# … those report on the LIST, which sits directly below this line, so the top of
-# the page is where they belong." The button that produces it, the add form's
-# `Create player`, is at document y=809-841 — 516px BELOW the line that reports
-# on it. (NEO-254 put it there: Birth year and Other names added 212px to the
-# form, which was at y=597-629 in green run 34433476511.)
-# MEASURED from run 34437403394, not assumed. `extendedWaitUntil: visible` never
-# scrolls, so this assertion can only read what is already on screen. The step
-# above leaves the page at scroll 347; the successful create then inserts the
-# status line ABOVE the viewport, Chrome's scroll anchoring compensates by
-# exactly the height that insert added (+39px), and the page settles at scroll
-# 387 — root bounds [0,-387][1009,1052] in the failure dump — with the line at
-# viewport y=-94..-74, 74px above the top of the viewport, where maestro-web
-# prunes it from the hierarchy outright.
-# THE CREATE ITSELF SUCCEEDED, and the dump proves it rather than assuming it:
-# the new player's own detail panel is open with this run's name in its
-# `Player name` box and `Birth year` reading 1960, which only the
-# `onCreated(result.id)` -> `selectPlayer` path reached from the success branch
-# can do; the button is not left reading "Adding…", and no `role="alert"`
-# refusal is on screen. The assertion was reporting where the confirmation
-# renders, not whether the create happened.
-# So re-anchor first. "Filter players" is the label on the very control the
-# status line is about, 36px below it, and it is on the page whatever the create
-# did — so a create that was genuinely REFUSED still fails on the assertion
-# below, with the refusal on screen in the screenshot. Centred it settles the
-# page at scroll ~20-40, putting the line at viewport y~253-273, clear of the
-# 79px sticky binder header that occludes anything above y=79. Positioning only;
-# nothing this flow proves changes.
+# NEO-260 took `Added <name>.` out of `PlayerManagement`'s page-level status
+# line and put it at the head of the DETAIL COLUMN, `sticky` under the binder
+# header. The old line sat at document y=293-313 while the `Create player`
+# button that earns it is at y=809-841: the button is fully visible only from
+# scroll 216 and the line is clear of the 79px header only to scroll 214, so no
+# scroll position on the 1024x629 viewport ever showed both, and the line's own
+# insertion moved the page away from it (+39px of content above the scroll
+# position, +39px of Chrome scroll anchoring). This flow was one of the six that
+# reddened on it in run 34437403394. A stuck element reports its STUCK position
+# to the driver — `binder-header`, `sticky top-0`, reads [64,16][228,61] in
+# every hierarchy dump at every scroll — so the assertion below now passes from
+# wherever the tap left the page, with or without this step.
+#
+# WHAT THIS STEP IS FOR NOW is the commands AFTER it: STEP 4 taps
+# "Filter players" itself and then waits on the counter, both of which live in
+# the filter row at the top of the screen and neither of which scrolls.
+# It is positioning only, and nothing this flow proves changes. `Filter players`
+# is still the right anchor — it is the label of the list this screen is built
+# around and it is on the page whatever the create did, so a create that was
+# genuinely REFUSED still fails on the assertion below with the refusal on
+# screen in the screenshot. Its document position moved 332 -> 293 with the
+# page-level line's removal, and the post-create scroll is now 405 (813 - 462
+# for the button, +54 for the notice inserted above the scroll position), so
+# the travel is one or two UP swipes of ~313px, landing the page at scroll 92
+# or 0 — either of which puts the filter row and the notice on screen together.
 - scrollUntilVisible:
     element:
       text: "Filter players"
@@ -394,6 +395,35 @@ tags:
     timeout: 7000
 - tapOn:
     id: "Create player Samename${output.TOKEN} anyway"
+
+# THE STEP THIS FLOW WAS RED FOR, AND THE ONE SITE THAT HAD NO POSITIONING AT
+# ALL.
+#
+# Run 34442670233 runner 2 died here on `Assertion is false: "That player
+# already exists — opened it." is visible`. The adopt itself SUCCEEDED, and the
+# dump proves it rather than assuming it: root [0,-423][1009,1016] with the
+# adopted player's own detail panel open, its `Player name` box holding this
+# run's name and `Birth year` reading 1960 — only `onCreated` -> `selectPlayer`
+# reaches that. What was not on screen was the message: `PlayerManagement` put
+# it in the page-level status line at document y=293, and "Create anyway" was
+# tapped at viewport y=428 with the page at scroll 390, so the line was at
+# viewport y=-130. `extendedWaitUntil: visible` never scrolls, and the five
+# sibling sites in this suite had each been given a positioning scroll in
+# `1f0aa6b`. This one was missed.
+# NEO-260 fixed the cause instead: the message renders at the head of the
+# detail column and is `sticky` under the binder header, so it is on screen
+# from any scroll position and the assertion below needs no help.
+# THE SCROLL BELOW IS FOR THE TWO ASSERTIONS AFTER IT, which were never
+# exercised post-spacer — the run has died before reaching them twice — and
+# which would fail without it: "1 matches" is the counter in the filter row at
+# document y~293-333, and at the post-create scroll (444) that is ~150px above
+# the fold. Same anchor, same shape and same reasoning as STEP 3's.
+- scrollUntilVisible:
+    element:
+      text: "Filter players"
+    direction: UP
+    centerElement: true
+    timeout: 7000
 - extendedWaitUntil:
     visible: "That player already exists — opened it."
     timeout: 7000
@@ -444,11 +474,14 @@ tags:
 # "Added", not "already exists" — the same string STEP 3 earned and STEP 5 was
 # refused. One line, and it separates a fork from an adopt outright.
 
-# Same page-level status line, same re-anchor as STEP 3 — and this one is NOT
-# red yet only because the run died on STEP 3 before reaching it. If anything it
-# parks DEEPER: `NearMatchPanel` is rendering the row this fork is being made
-# against, so the button row sits below its own height as well, and the scroll
-# above stops as soon as "Create anyway" is merely visible.
+# Same anchor and same reasoning as STEP 3 and STEP 5. Since NEO-260 the
+# confirmation itself needs no help — it renders at the head of the detail
+# column, `sticky` under the binder header — but the two counter assertions
+# below it do: "2 matches" is in the filter row at the top of the screen and
+# `extendedWaitUntil: visible` never scrolls. This site parks DEEPER than STEP
+# 3's: `NearMatchPanel` is rendering the row this fork is being made against,
+# so the button row sits below its own height as well, and the scroll above
+# stops as soon as "Create anyway" is merely visible.
 - scrollUntilVisible:
     element:
       text: "Filter players"

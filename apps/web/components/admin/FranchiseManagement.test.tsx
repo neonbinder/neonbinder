@@ -316,6 +316,35 @@ describe("starting a franchise", () => {
     ).toBeTruthy();
   });
 
+  /**
+   * NEO-260 — WHERE it says so.
+   *
+   * This line was screen-level, above the filter row, while "Start franchise"
+   * is at the bottom of the detail column. Run 34442670233 read it at viewport
+   * y=27 — entirely underneath the 79px sticky header — and the E2E assertion
+   * PASSED on it anyway, because maestro-web reads the accessibility tree and
+   * the accessibility tree does not model occlusion. A human saw nothing.
+   */
+  it("renders the confirmation in the detail column, pinned under the header", async () => {
+    renderAt("/admin/franchises");
+    fireEvent.click(screen.getByRole("button", { name: "Start a franchise" }));
+    fireEvent.change(screen.getByLabelText("Franchise name"), {
+      target: { value: "Ravens" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Start franchise" }));
+
+    const line = await screen.findByText(
+      "Started Ravens. Now go put some teams on it.",
+    );
+    expect(line.closest("div.rounded-lg")).not.toBeNull();
+    expect(line.className).toContain("sticky");
+    expect(line.getAttribute("role")).toBe("status");
+    const filterRow = screen
+      .getByLabelText("Filter franchises")
+      .closest("div")!;
+    expect(filterRow.contains(line)).toBe(false);
+  });
+
   it("opens the existing one instead of failing on a duplicate", async () => {
     mockFindOrCreate.mockResolvedValue({ id: "f-titans", created: false });
     renderAt("/admin/franchises");

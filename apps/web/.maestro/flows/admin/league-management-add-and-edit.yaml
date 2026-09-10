@@ -214,13 +214,19 @@ tags:
 # league already exists — opened it." when it did. So this is the assertion that
 # the hand-entry actually created something.
 #
-# It is reached by scrolling UP because it is not next to the button that earns
-# it: this message is the PAGE-level status line, rendered above the filter row
-# at the top of the screen, while the Create button was just centred near the
-# bottom. No `centerElement` on this one (R8's stated exception, mirrored): the
-# line sits less than half a viewport below the top of the document, so no
-# scroll position centres it and asking for one can never settle. The scroll IS
-# the assertion (R6) — it fails loudly if the line never appears.
+# It used to be reached by scrolling UP because it was not next to the button
+# that earns it: the message was the PAGE-level status line, rendered above the
+# filter row at the top of the screen, while the Create button had just been
+# centred near the bottom. NEO-260 moved it to the head of the DETAIL COLUMN,
+# `sticky` under the binder header, for the reason `PlayerManagement`'s twin
+# was moved: no scroll position on a 1024x629 viewport showed both the line and
+# the button that earns it. This step is kept and unchanged — a stuck element
+# reports its stuck position to the driver, so the scroll now finds the message
+# at try 0 without moving the page, which is what the green run already did
+# (run 34442670233 read it at viewport y=205 and accepted at try 0). Still no
+# `centerElement` (R8's stated exception, mirrored): a pinned line cannot be
+# centred and asking for one can never settle. The scroll IS the assertion
+# (R6) — it fails loudly if the line never appears.
 - scrollUntilVisible:
     element:
       text: ".*Added LG-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
