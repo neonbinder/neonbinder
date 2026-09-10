@@ -2,7 +2,6 @@ appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/admin/players&worker=${WORKER_INDEX || "0"}
 name: "Franchises — two team rows are strung onto one franchise from the team side, and taken off again from the franchise side"
 tags:
-  - regression
   - admin
 ---
 # R1 — ONE FEATURE (NEO-254): **franchise MEMBERSHIP**. A franchise is an
@@ -75,11 +74,26 @@ tags:
 #
 # R4 — the entry URL is the whole setup. No in-body login, no credential step.
 #
-# R5 — every wait is Maestro's 7s default except the cold sign-in (45s) and the
-#   one mid-flow reload (30s, the value both sibling admin flows use for an
-#   identical openLink). No marketplace is touched. Note the sibling flows
-#   still carry 10–15s on their Convex saves; those predate the 7s rule and are
-#   not copied here — a team save that needs longer than 7s is a finding.
+# R5 — EVERY step below states its timeout explicitly, because the defaults are
+#   not 7s: `ScrollUntilVisibleCommand.DEFAULT_TIMEOUT_IN_MILLIS` is "20000" and
+#   `Orchestra.lookupTimeoutMs` (what a bare `extendedWaitUntil` gets) is 17000,
+#   so omitting the key is a violation rather than a way of complying. Every
+#   scroll and every wait here says 7000. The only exceptions are the two R5
+#   sanctions by name: the cold sign-in gate (45s, the post-launchApp heading
+#   gate) and the mid-flow reload gate (30s, openLink re-auth — the README's
+#   "Launching a flow" section rules on it). No marketplace is touched, so
+#   nothing here has any other claim on a longer ceiling.
+#
+#   The figures are measured, not chosen. In green run 34431109073 every in-app
+#   wait in this flow cost 0.33-0.35s and every scroll 0.54-2.70s EXCEPT four,
+#   which paid the full give-up path with frozen bounds: both `Save` steps
+#   (7.63s / 7.61s at y=552), `Loc… A` on the franchise view (9.65s at y=519)
+#   and `Remove Loc… B` (7.59s at y=554). All four are R8 case 1 — a panel
+#   parked against the fold with no headroom — and all four are fixed by
+#   NEO-260's 208px spacer, which is noted at each site. The controlled proof is
+#   the sibling flow admin-franchises-start-and-rename: same signature on the
+#   same shell, 7.73-9.34s frozen in 34431109073, 0.56-2.03s at try 0/1 in
+#   post-spacer run 34437403394.
 #
 # R7 / R7a — no set, checklist, card or variant is touched, so this flow owns no
 #   SET-REGISTRY.md entry and writes to no shared row. It CREATES four
@@ -105,16 +119,24 @@ tags:
 #   Franchise group, Save, and "See the franchise" are each below the fold, and
 #   the master list is above it once Save has been reached.
 #
-#   TWO deliberate exceptions on the player page, both measured in CI run
-#   34071657961 rather than assumed. The add form and the career editor are the
-#   LAST things on that page, so anything in them is locked to the page bottom
-#   and centring can never settle — the run logged six futile swipes against an
-#   already-100%-visible Create button and five more against "+ Add team", ~17s
-#   of scrolling that moved nothing (R10). So the Create button scroll drops
-#   `centerElement`, and "+ Add team" is asserted rather than scrolled to at
-#   all. Which makes the "No stints recorded yet." scroll load-bearing: its
-#   centring is what drives the page to maximum scroll, and every measurement
-#   quoted below is taken from that position. Do not remove it.
+#   TWO deliberate departures on the player page: the `Create player` scroll
+#   drops `centerElement`, and "+ Add team" is asserted rather than scrolled to
+#   at all. This header used to justify both as R8 case 2 ("the add form and the
+#   career editor are the LAST things on that page, so anything in them is
+#   locked to the page bottom", six futile swipes in CI run 34071657961).
+#   ⚠️ THAT JUSTIFICATION IS STALE and must not be repeated: NEO-260's 208px
+#   spacer (src/layouts/binder-layout.tsx) gave every page in the signed-in
+#   shell a full swipe of travel below its last control, and R8 is explicit that
+#   an element which moves on the first swipe is case 1, not case 2. The reasons
+#   that survive are written at the two sites, with the run numbers.
+#
+#   "No stints recorded yet." is still load-bearing, for a different reason than
+#   this header used to give. It does NOT drive the page to maximum scroll — in
+#   run 34431109073 it took two swipes to bring the line on screen and then
+#   ACCEPTED at try 0, centred at y=383. What it does is put the page in one
+#   known position, from which "+ Add team" sits at y=484 and the picker's
+#   popover clears the fold. Every geometry figure quoted below is taken from
+#   that position, so the step stays and stays centred.
 #
 # R10 — no conditional branches, no `notVisible:` guard on a normally-present
 #   element, no settle waits. Every scroll is its own assertion (R6), so none is
@@ -164,45 +186,116 @@ tags:
 - tapOn: "Add player"
 - tapOn: "New player name"
 - inputText: "Frp${output.TOKEN}"
-# NO `centerElement` — R8's own exception, and it is measured rather than
-# assumed. The add form is the last thing on this page, so its button row is
-# LOCKED to the page bottom and centring can never settle: CI run 34071657961
-# logged six consecutive swipes with this button already at 100% visibility and
-# bounds unchanged at y=552, ~10s of scrolling that moved nothing. Stopping at
-# "fully visible" is both the correct target and the cheap one, and the tap
-# below re-reads the settled hierarchy for its coordinates anyway.
+# NO `centerElement` — but NOT because the button row is pinned, which is what
+# this comment used to claim ("the add form is the last thing on this page, so
+# its button row is LOCKED to the page bottom and centring can never settle",
+# citing six futile swipes at y=552 in CI run 34071657961). That was R8 case 2
+# and it no longer holds: NEO-260's 208px spacer (src/layouts/binder-layout.tsx)
+# put a full swipe of travel below this form. The button that sat frozen at
+# y=552 in pre-spacer run 34431109073 was read at y=500 in post-spacer run
+# 34437403394, and the sibling `Start franchise` button in
+# admin-franchises-start-and-rename moved y=594 -> y=344 on ONE swipe in that
+# same run against 42px pre-spacer. R8 is explicit that an element which moves
+# on the first swipe is case 1, not case 2, so do not cite case 2 here.
+#
+# It stays uncentred on cost, stated honestly: uncentred it settles at try 0 in
+# 2.70s (34431109073) / 2.72s (34437403394), stopping the moment the button is
+# 100% visible, and `tapOn` re-reads the settled hierarchy for its coordinates
+# anyway. Turning centring ON here is an untested change — post-spacer the
+# button lands at centre y=516, above the ~464 lowest observed give-up, so it
+# could well pay the full give-up path — and it needs its own measurement
+# before anyone makes it, not this comment's old assumption.
 - scrollUntilVisible:
     element:
       id: "Create player Frp${output.TOKEN}"
+    timeout: 7000
 - tapOn:
     id: "Create player Frp${output.TOKEN}"
 # "Added <name>." is said only for an INSERTED row — an adopted one says "That
 # player already exists — opened it." So the vehicle for the rest of the flow
 # is this run's own player and nobody else's.
+
+# GO AND LOOK AT THE STATUS LINE — it is not where "Create player" is.
+#
+# `PlayerManagement` renders `Added <name>.` in the PAGE-LEVEL status line, the
+# FIRST child of the screen container, at document y=293-313. The component says
+# so itself above that `<p>`: "Page-level status — the ADD FORM's messages only
+# … those report on the LIST, which sits directly below this line, so the top of
+# the page is where they belong." The button that produces it, the add form's
+# `Create player`, is at document y=809-841 — 516px BELOW the line that
+# reports on it. (NEO-254 put it there: Birth year and Other names added 212px
+# to the form, which was at y=597-629 in green run 34433476511.)
+# MEASURED from run 34437403394, not assumed. `extendedWaitUntil: visible` never
+# scrolls, so this assertion can only read what is already on screen. The step
+# above leaves the page at scroll 309; the successful create then inserts the
+# status line ABOVE the viewport, Chrome's scroll anchoring compensates by
+# exactly the height that insert added (+39px), and the page settles at scroll
+# 349 — root bounds [0,-349][1009,1090] in the failure dump — with
+# the line at viewport y=-56..-36, 36px above the top of the viewport,
+# where maestro-web prunes it from the hierarchy outright.
+# THE CREATE ITSELF SUCCEEDED, and the dump proves it rather than assuming it:
+# the new player's own detail panel is open with this run's name in its
+# `Player name` box, which only the `onCreated(result.id)` -> `selectPlayer` path
+# reached from the success branch can do; the button is not left reading
+# "Adding…", and no `role="alert"` refusal is on screen. The assertion was
+# reporting where the confirmation renders, not whether the create happened.
+# So re-anchor first. "Filter players" is the label on the very control the
+# status line is about, 36px below it, and it is on the page whatever the create
+# did — so a create that was genuinely REFUSED still fails on the assertion
+# below, with the refusal on screen in the screenshot. Centred it settles the
+# page at scroll ~20-40, putting the line at viewport y~253-273, clear of the
+# 79px sticky binder header that occludes anything above y=79. Positioning only;
+# nothing this flow proves changes.
+- scrollUntilVisible:
+    element:
+      text: "Filter players"
+    direction: UP
+    centerElement: true
+    timeout: 7000
+
 - extendedWaitUntil:
     visible: ".*Added Frp${output.TOKEN}.*"
+    timeout: 7000
 
 # The career-history section is below the fold the moment the panel opens: at
 # 1024x629 the panel runs out of viewport around the Wikidata box. The scroll IS
 # the check (R6) that we are on a player with no history, so the picker below is
 # starting from nothing.
 #
-# `centerElement` is LOAD-BEARING here rather than habit (see the R8 note): this
-# line cannot be centred either, so the swipes run until the page stops moving,
-# and that maximum-scroll position is what puts "+ Add team" at y=484 and the
-# picker's popover clear of the fold for every step that follows.
+# `centerElement` is LOAD-BEARING here rather than habit — but not for the
+# reason this comment used to give. It said "this line cannot be centred either,
+# so the swipes run until the page stops moving, and that maximum-scroll
+# position is what puts '+ Add team' at y=484". The log disagrees: in run
+# 34431109073 this step logged two ElementNotFound reads with a swipe after
+# each, then ACCEPTED at try count 0 with bounds y=383 — it centred, it did not
+# bottom out, and the whole step cost 4.79s. So what the centring buys is a
+# DETERMINISTIC page position, not a maximum one: the anchor is parked mid-
+# viewport, which is what puts "+ Add team" at y=484 and the picker's popover
+# clear of the fold for every step below. Every geometry figure that follows is
+# taken from that position, so do not remove the centring — and do not repeat
+# the "cannot be centred" claim, which was never true of this step.
+#
+# 7000 against a measured 4.79s is the tightest margin in this file. It is
+# deliberate: 4.79s is two full driver swipes before the line is ever seen, so
+# if this step starts failing the page above it has grown, which is a product
+# finding (R5) and not a number to raise.
 - scrollUntilVisible:
     element:
       text: "No stints recorded yet."
     centerElement: true
+    timeout: 7000
 
 # ── TEAM A ──────────────────────────────────────────────────────────────────
 # NO SCROLL — the step above already did it. Centring "No stints recorded yet."
-# drives the page to its maximum scroll, and CI run 34071657961 measured the
-# trigger at y=484 with 100% visibility from the first check, after which five
-# more swipes moved nothing (the page had no room left). An `assertVisible` says
-# the same thing in 0.3s instead of 7, and it is still a hard assertion that the
-# career editor rendered.
+# parks the page in one known position, and from there the trigger sits at
+# y=484 at 100% visibility (measured in runs 34071657961 and 34431109073, and
+# unchanged by the spacer because the anchor above it is what fixes the page).
+# ⚠️ The old wording here — "drives the page to its maximum scroll … five more
+# swipes moved nothing (the page had no room left)" — described a give-up the
+# anchor step does not actually reach: 34431109073 shows it accepting at try
+# count 0. The position is deterministic, not terminal; that is all this step
+# needs. An `assertVisible` reads it in 0.33s, and it is still a hard assertion
+# that the career editor rendered.
 - assertVisible:
     id: "Add team"
 - tapOn:
@@ -257,6 +350,7 @@ tags:
 - extendedWaitUntil:
     visible:
       id: "Remove team Loc${output.TOKEN} Fr${output.TOKEN}A"
+    timeout: 7000
 
 # ── DROP THE CHIP BEFORE BUILDING TEAM B ────────────────────────────────────
 # Geometry, not tidiness. The popover is positioned under the WHOLE picker —
@@ -306,6 +400,7 @@ tags:
 - extendedWaitUntil:
     visible:
       id: "Remove team Loc${output.TOKEN} Fr${output.TOKEN}B"
+    timeout: 7000
 
 # ============================================================
 # PART 2 — THE THREAD IS STARTED FROM TEAM A AND JOINED BY TEAM B
@@ -327,6 +422,7 @@ tags:
 - inputText: "Fr${output.TOKEN}"
 - extendedWaitUntil:
     visible: "2 of .* teams.*"
+    timeout: 7000
 
 # ── TEAM A: START THE FRANCHISE, THEN SAVE ──────────────────────────────────
 # The master row is targeted by `id:` — NEO-236 made the row's `aria-label` the
@@ -344,6 +440,7 @@ tags:
     element:
       text: ".*Start a new franchise.*"
     centerElement: true
+    timeout: 7000
 - tapOn: ".*Start a new franchise.*"
 
 - tapOn: "New franchise name"
@@ -359,17 +456,28 @@ tags:
 # belongs to it are two decisions, and Save commits the second.
 - extendedWaitUntil:
     visible: "Fran${output.TOKEN}"
+    timeout: 7000
 
+# ⚠️ THIS STEP'S 7000 DEPENDS ON THE 208px SPACER (R8 case 1). In pre-spacer run
+# 34431109073 it cost 7.63s: bounds y=584 on the first read, y=552 after one
+# swipe, then frozen at y=552 for four more — a panel jammed against the fold
+# with 32px of travel left, paying the whole give-up path on every run. The
+# spacer (`src/layouts/binder-layout.tsx`) gives it 208px more, which brings this
+# button's centre from 568 to ~360, well inside the measured acceptance band.
+# If the spacer is shortened this step fails at 7000; that is the signal R5 wants
+# and a product finding, not a number to raise.
 - scrollUntilVisible:
     element:
       text: "Save"
     centerElement: true
+    timeout: 7000
 - tapOn: "Save"
 
 # The mutation confirms by the composed name, which is also the first read-back
 # proving the save took the row this flow means.
 - extendedWaitUntil:
     visible: ".*Saved Loc${output.TOKEN} Fr${output.TOKEN}A.*"
+    timeout: 7000
 
 # ── TEAM B: PICK THE PILL THAT NOW EXISTS, THEN SAVE ────────────────────────
 # `direction: UP` is load-bearing: reaching Save scrolled the panel down, and
@@ -379,6 +487,7 @@ tags:
       id: "Loc${output.TOKEN} Fr${output.TOKEN}B"
     direction: UP
     centerElement: true
+    timeout: 7000
 - tapOn:
     id: "Loc${output.TOKEN} Fr${output.TOKEN}B"
 
@@ -394,15 +503,20 @@ tags:
     element:
       text: "Fran${output.TOKEN}"
     centerElement: true
+    timeout: 7000
 - tapOn: "Fran${output.TOKEN}"
 
+# Same spacer dependency as team A's Save above, same signature: 7.61s with
+# bounds frozen at y=552 across all six tries in pre-spacer run 34431109073.
 - scrollUntilVisible:
     element:
       text: "Save"
     centerElement: true
+    timeout: 7000
 - tapOn: "Save"
 - extendedWaitUntil:
     visible: ".*Saved Loc${output.TOKEN} Fr${output.TOKEN}B.*"
+    timeout: 7000
 
 # ============================================================
 # PART 3 — THE FRANCHISE VIEW: BOTH TEAMS ON ONE THREAD, THEN ONE TAKEN OFF
@@ -418,27 +532,34 @@ tags:
       text: "See the franchise"
     direction: UP
     centerElement: true
+    timeout: 7000
 - tapOn: "See the franchise"
 
 # The followed param selects the row and clears the screen's own filters, so the
 # panel below is this franchise's.
 - extendedWaitUntil:
     visible: ".*of .* franchises.*"
+    timeout: 7000
 
 # R2(d) — THE JOIN, read back by a different query than the one that wrote it.
 # `franchises.get` counts the team rows pointing AT this franchise; two teams
 # that merely each had a franchise could not produce this line.
 - extendedWaitUntil:
     visible: ".*2 teams on this thread.*"
+    timeout: 7000
 
 # Both members, by their composed names. Neither team name appears anywhere else
 # on this screen — the master list on the left prints FRANCHISE names — so these
 # can only be the thread's own rows. They carry no active years, so they sit in
 # the undated group under the rail rather than in it.
+#
+# Spacer-dependent, and the most expensive give-up this flow had: 9.65s in
+# pre-spacer run 34431109073, bounds frozen at y=519 across all six tries.
 - scrollUntilVisible:
     element:
       text: "Loc${output.TOKEN} Fr${output.TOKEN}A"
     centerElement: true
+    timeout: 7000
 - assertVisible: "Loc${output.TOKEN} Fr${output.TOKEN}B"
 
 # ── TAKE TEAM B BACK OFF ────────────────────────────────────────────────────
@@ -446,10 +567,14 @@ tags:
 # sends the same `franchiseId: null` the "No franchise" pill sends. The button's
 # visible text IS its accessible name and it names the team, so this cannot land
 # on team A's.
+#
+# Spacer-dependent: 7.59s with bounds frozen at y=554 across all six tries in
+# pre-spacer run 34431109073.
 - scrollUntilVisible:
     element:
       text: "Remove Loc${output.TOKEN} Fr${output.TOKEN}B"
     centerElement: true
+    timeout: 7000
 - tapOn: "Remove Loc${output.TOKEN} Fr${output.TOKEN}B"
 
 # R2(e). The count is the assertion — it is recomputed from the database, not
@@ -457,6 +582,7 @@ tags:
 # wording for exactly one.
 - extendedWaitUntil:
     visible: ".*1 team on this thread.*"
+    timeout: 7000
 
 # And the removal cut a LINK, not a row, and only team B's: A is still on the
 # thread, B is off it. The negative is paired with a positive so an error

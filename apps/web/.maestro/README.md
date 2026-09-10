@@ -321,7 +321,18 @@ credential setup or re-seed step: flows rely on the Phase-0 worker bootstrap.
 Public `home/*` flows enter signed out (`launchApp: { clearState: true }`);
 `util-*` sub-flows run inside a parent's session and enter directly.
 
-**R5 — Everything reacts within Maestro's 7 s default.** The only longer
+**R5 — Everything reacts fast, and every wait says so explicitly.**
+
+> **There is no 7 s default.** This rule was written believing there was, and
+> both numbers turned out wrong — decompiled from the pinned jars:
+> `ScrollUntilVisibleCommand.DEFAULT_TIMEOUT_IN_MILLIS` is **20000**, and
+> `Orchestra.lookupTimeoutMs` — what a bare `extendedWaitUntil` /
+> `assertVisible` gets — is **17000** (`optionalLookupTimeoutMs`, 7000, applies
+> only to `optional: true`). So omitting a timeout is not "taking the 7 s
+> default", it is taking the loosest setting available. **State the timeout.**
+> The bar is 7000 for anything in-app.
+
+The only longer
 waits: a step that directly drives a live BSC/SportLots round-trip on data
 that is not pre-synced, the setup track's cold sync, and the post-`launchApp`
 heading gate (see "Launching a flow" below). A slow non-marketplace response

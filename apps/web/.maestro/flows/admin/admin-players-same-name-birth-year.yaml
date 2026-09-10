@@ -2,7 +2,6 @@ appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/admin/players&worker=${WORKER_INDEX || "0"}
 name: "Player Management — a birth year is bounded, shows on the row, and is what lets a repeated name become a genuinely second player"
 tags:
-  - regression
   - admin
 ---
 # R1 — ONE FEATURE (NEO-254): the **birth year** on `/admin/players`. It is the
@@ -60,8 +59,18 @@ tags:
 #
 # R4 — the entry URL is the whole setup. No in-body login, no credential step.
 #
-# R5 — every wait is Maestro's 7s default except the cold sign-in (45s). No
-#   marketplace is touched, so nothing here earns a long timeout.
+# R5 — EVERY step below states its timeout explicitly, because the defaults are
+#   not 7s and omitting the key is a violation rather than a way of complying:
+#   `ScrollUntilVisibleCommand.DEFAULT_TIMEOUT_IN_MILLIS` is "20000" and
+#   `Orchestra.lookupTimeoutMs` (what a bare `extendedWaitUntil` gets) is 17000.
+#   Every scroll and every wait here says 7000; the one exception is the cold
+#   sign-in gate (45s), which is R5's post-launchApp heading gate. No
+#   marketplace is touched, so nothing else here earns a long timeout.
+#
+#   Measured, not chosen: in green run 34431109073 every in-app wait in this
+#   flow cost 0.33-0.34s and every scroll 0.55-2.67s, none of them reaching the
+#   centring give-up path, and post-spacer run 34437403394 reproduced the same
+#   figures for every step it got to (0.56-2.72s).
 #
 # R7 / R7a — no set, checklist, card or variant is touched, so this flow owns no
 #   SET-REGISTRY.md entry. It DOES create TWO globally-shared `players` rows and
@@ -87,13 +96,26 @@ tags:
 #   targets is therefore reached by a `scrollUntilVisible`, and the scroll is
 #   left to be its own assertion (R6).
 #
-#   None of those scrolls centers, and that is R8's own stated exception rather
-#   than a shortcut: the add form is the LAST thing on the page, so its button
-#   row is locked to the bottom and centring can never settle — the same run
-#   logged six futile swipes against an already-100%-visible button, ~10s of
-#   scrolling that moved nothing (R10). Where a target sits ABOVE the current
-#   position the scroll says `direction: UP`, because the default is DOWN and a
-#   downward scroll can never find it.
+#   None of those scrolls centers. ⚠️ THE REASON THIS FILE USED TO GIVE IS NO
+#   LONGER TRUE, so do not repeat it: it said "the add form is the LAST thing on
+#   the page, so its button row is locked to the bottom and centring can never
+#   settle", R8 case 2, citing six futile swipes in run 34071657961. NEO-260's
+#   208px spacer (src/layouts/binder-layout.tsx) put a full swipe of travel below
+#   this form. The Create button that sat frozen at y=552 in pre-spacer run
+#   34431109073 was read at y=462 in post-spacer run 34437403394, and the
+#   equivalent button in admin-franchises-start-and-rename moved y=594 -> y=344
+#   on ONE swipe in that run against 42px pre-spacer. R8 says an element that
+#   moves on the first swipe is case 1, not case 2.
+#
+#   What survives is a cost argument, and only that: uncentred these steps stop
+#   the moment the target is 100% visible and settle at try 0 in 0.55-2.72s
+#   across both runs, and `tapOn` re-reads the settled hierarchy for its
+#   coordinates anyway. Switching them to centred is an untested change — the
+#   Create button's post-spacer centre is y=478, above the ~464 lowest observed
+#   give-up — and needs its own measurement, not this comment's old assumption.
+#   Where a target sits ABOVE the current position the scroll says
+#   `direction: UP`, because the default is DOWN and a downward scroll can never
+#   find it.
 #
 # R10 — no conditional branches at all, so there is no poll on a normally-absent
 #   element and no path to the end that skips the feature.
@@ -171,6 +193,7 @@ tags:
 - scrollUntilVisible:
     element:
       text: "Use a whole year between 1850 and 2[0-9]{3}\\."
+    timeout: 7000
 
 # The create button is inert while the year is out of bounds, so this tap must
 # do nothing. Three independent readings of "nothing happened" follow it: the
@@ -178,17 +201,18 @@ tags:
 # sitting in the field a successful create would have taken away with it, and
 # the page never said it added anything.
 #
-# NO `centerElement`, here or on any of the button scrolls below — R8's own
-# exception, measured rather than assumed. The add form is the last thing on
-# this page, so its button row is LOCKED to the page bottom and centring can
-# never settle: CI run 34071657961 logged six consecutive swipes with an
-# identical button already at 100% visibility and bounds unchanged, ~10s of
-# scrolling that moved nothing. Stopping at "fully visible" is both the correct
-# target and the cheap one, and `tapOn` re-reads the settled hierarchy for its
-# coordinates anyway.
+# NO `centerElement`, here or on any of the button scrolls below — see the R8
+# note in the header, which now says WHY. In short: the "LOCKED to the page
+# bottom / centring can never settle" reading of CI run 34071657961 was true
+# then and is false since NEO-260's 208px spacer, so this is NOT R8 case 2 and
+# must not be cited as such. It stays uncentred on cost: 0.56s at try 0 in
+# 34431109073 and 0.57s in 34437403394, stopping the moment the button is fully
+# visible, and `tapOn` re-reads the settled hierarchy for its coordinates
+# anyway.
 - scrollUntilVisible:
     element:
       id: "Create player Samename${output.TOKEN}"
+    timeout: 7000
 - tapOn:
     id: "Create player Samename${output.TOKEN}"
 # Back UP to the top of the form to read the two "nothing happened" facts. The
@@ -198,6 +222,7 @@ tags:
     element:
       text: "Add a player"
     direction: UP
+    timeout: 7000
 # Matched as bare text, NOT as `id: "New player name"`. `primitives/Input`
 # deliberately emits no `id` and no `aria-label` (its header says why: an
 # auto-generated id would clobber the `resource-id` every `tapOn id:` selector
@@ -209,6 +234,24 @@ tags:
 # renders nothing while there are no matches, and the button's visible text is
 # "Create player".
 - assertVisible: "Samename${output.TOKEN}"
+
+# ⚠️ THIS NEGATIVE WAS VACUOUS, AND THE SAME MEASUREMENT SAYS SO.
+# `PlayerManagement` renders every add-form message — `Added <name>.` and the
+# refusals alike — in the PAGE-LEVEL status line, the FIRST child of the screen
+# container at document y=293-313 (no line rendered here, so y=293 rather than
+# the +39 the line itself inserts). The scroll to "Add a player" above leaves the
+# page at scroll 349 (run 34437403394: that heading was read at viewport y=41,
+# and it is at document y=390), which puts the status area at viewport y=-56 —
+# off the top, pruned from the hierarchy. `assertNotVisible` on an element the
+# driver cannot see passes whether or not the screen said it, so this step was
+# proving nothing. Bringing the line on screen first is what makes the claim
+# real: the target is unchanged, only the page position is.
+- scrollUntilVisible:
+    element:
+      text: "Filter players"
+    direction: UP
+    centerElement: true
+    timeout: 7000
 - assertNotVisible:
     text: ".*Added Samename${output.TOKEN}.*"
 
@@ -232,10 +275,12 @@ tags:
 - scrollUntilVisible:
     element:
       text: "Tells this player apart from anyone else with the same name."
+    timeout: 7000
 
 - scrollUntilVisible:
     element:
       id: "Create player Samename${output.TOKEN}"
+    timeout: 7000
 - tapOn:
     id: "Create player Samename${output.TOKEN}"
 
@@ -243,8 +288,48 @@ tags:
 # adopted an existing row says "That player already exists — opened it."
 # instead, which is exactly the string STEP 5 asserts. So this line is the
 # create, not the adopt.
+
+# GO AND LOOK AT THE STATUS LINE — it is not where "Create player" is.
+#
+# `PlayerManagement` renders `Added <name>.` in the PAGE-LEVEL status line, the
+# FIRST child of the screen container, at document y=293-313. The component says
+# so itself above that `<p>`: "Page-level status — the ADD FORM's messages only
+# … those report on the LIST, which sits directly below this line, so the top of
+# the page is where they belong." The button that produces it, the add form's
+# `Create player`, is at document y=809-841 — 516px BELOW the line that reports
+# on it. (NEO-254 put it there: Birth year and Other names added 212px to the
+# form, which was at y=597-629 in green run 34433476511.)
+# MEASURED from run 34437403394, not assumed. `extendedWaitUntil: visible` never
+# scrolls, so this assertion can only read what is already on screen. The step
+# above leaves the page at scroll 347; the successful create then inserts the
+# status line ABOVE the viewport, Chrome's scroll anchoring compensates by
+# exactly the height that insert added (+39px), and the page settles at scroll
+# 387 — root bounds [0,-387][1009,1052] in the failure dump — with the line at
+# viewport y=-94..-74, 74px above the top of the viewport, where maestro-web
+# prunes it from the hierarchy outright.
+# THE CREATE ITSELF SUCCEEDED, and the dump proves it rather than assuming it:
+# the new player's own detail panel is open with this run's name in its
+# `Player name` box and `Birth year` reading 1960, which only the
+# `onCreated(result.id)` -> `selectPlayer` path reached from the success branch
+# can do; the button is not left reading "Adding…", and no `role="alert"`
+# refusal is on screen. The assertion was reporting where the confirmation
+# renders, not whether the create happened.
+# So re-anchor first. "Filter players" is the label on the very control the
+# status line is about, 36px below it, and it is on the page whatever the create
+# did — so a create that was genuinely REFUSED still fails on the assertion
+# below, with the refusal on screen in the screenshot. Centred it settles the
+# page at scroll ~20-40, putting the line at viewport y~253-273, clear of the
+# 79px sticky binder header that occludes anything above y=79. Positioning only;
+# nothing this flow proves changes.
+- scrollUntilVisible:
+    element:
+      text: "Filter players"
+    direction: UP
+    centerElement: true
+    timeout: 7000
 - extendedWaitUntil:
     visible: ".*Added Samename${output.TOKEN}.*"
+    timeout: 7000
 
 # ============================================================
 # STEP 4 — R2(c): THE YEAR IS STORED, AND THE MASTER ROW PRINTS IT
@@ -268,6 +353,7 @@ tags:
 - inputText: "Samename${output.TOKEN}"
 - extendedWaitUntil:
     visible: "1 matches"
+    timeout: 7000
 - assertVisible:
     text: ".*b. 1960.*"
     below:
@@ -293,19 +379,24 @@ tags:
 - inputText: "Samename${output.TOKEN}"
 
 # ONE command, not a wait and then a scroll. A bare `extendedWaitUntil` here
-# would be asserting a control that lives in the same bottom-locked button row
-# as the one above — it can be present and still off the fold, which is exactly
-# how the refusal line failed this flow in CI run 34071657961.
+# would be asserting a control in the same button row as the one above — a row
+# that sits BELOW THE FOLD when the page is where the previous step left it, and
+# `extendedWaitUntil: visible` never scrolls. ("bottom-locked" is how this note
+# used to put it; the spacer retired that word — see the header — but the fold
+# problem it names is unchanged, which is why this step is a scroll.) That is
+# exactly how the refusal line failed this flow in CI run 34071657961.
 # `scrollUntilVisible` polls for it AND brings it on screen, and it still fails
 # loudly if the demoted control never appears — which is the assertion this step
 # is for: it exists only when an exact match came back.
 - scrollUntilVisible:
     element:
       id: "Create player Samename${output.TOKEN} anyway"
+    timeout: 7000
 - tapOn:
     id: "Create player Samename${output.TOKEN} anyway"
 - extendedWaitUntil:
     visible: "That player already exists — opened it."
+    timeout: 7000
 
 # Nothing was added. The list is still the one row, still carrying the year it
 # was created with — so the adopt neither inserted nor overwrote.
@@ -334,22 +425,39 @@ tags:
 - inputText: "1975"
 
 # ONE command, not a wait and then a scroll. A bare `extendedWaitUntil` here
-# would be asserting a control that lives in the same bottom-locked button row
-# as the one above — it can be present and still off the fold, which is exactly
-# how the refusal line failed this flow in CI run 34071657961.
+# would be asserting a control in the same button row as the one above — a row
+# that sits BELOW THE FOLD when the page is where the previous step left it, and
+# `extendedWaitUntil: visible` never scrolls. ("bottom-locked" is how this note
+# used to put it; the spacer retired that word — see the header — but the fold
+# problem it names is unchanged, which is why this step is a scroll.) That is
+# exactly how the refusal line failed this flow in CI run 34071657961.
 # `scrollUntilVisible` polls for it AND brings it on screen, and it still fails
 # loudly if the demoted control never appears — which is the assertion this step
 # is for: it exists only when an exact match came back.
 - scrollUntilVisible:
     element:
       id: "Create player Samename${output.TOKEN} anyway"
+    timeout: 7000
 - tapOn:
     id: "Create player Samename${output.TOKEN} anyway"
 
 # "Added", not "already exists" — the same string STEP 3 earned and STEP 5 was
 # refused. One line, and it separates a fork from an adopt outright.
+
+# Same page-level status line, same re-anchor as STEP 3 — and this one is NOT
+# red yet only because the run died on STEP 3 before reaching it. If anything it
+# parks DEEPER: `NearMatchPanel` is rendering the row this fork is being made
+# against, so the button row sits below its own height as well, and the scroll
+# above stops as soon as "Create anyway" is merely visible.
+- scrollUntilVisible:
+    element:
+      text: "Filter players"
+    direction: UP
+    centerElement: true
+    timeout: 7000
 - extendedWaitUntil:
     visible: ".*Added Samename${output.TOKEN}.*"
+    timeout: 7000
 
 # THE LIST IS THE PROOF, not the message. The filter has held this name since
 # STEP 4 and the search behind it is a live Convex query, so the count moving
@@ -357,6 +465,7 @@ tags:
 # told apart by the one field that can tell them apart.
 - extendedWaitUntil:
     visible: "2 matches"
+    timeout: 7000
 - assertVisible:
     text: ".*b. 1960.*"
     below:

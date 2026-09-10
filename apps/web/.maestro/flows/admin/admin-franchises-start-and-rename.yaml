@@ -2,7 +2,6 @@ appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/admin/franchises&worker=${WORKER_INDEX || "0"}
 name: "Franchise Management — start a franchise under a sport and rename the thread"
 tags:
-  - regression
   - admin
 ---
 # R1 — ONE FEATURE (NEO-254): a **franchise row** on `/admin/franchises`. It is
@@ -50,9 +49,21 @@ tags:
 #
 # R4 — the entry URL is the whole setup. No in-body login, no credential step.
 #
-# R5 — every wait is Maestro's 7s default except the cold sign-in (45s) and the
-#   mid-flow reload (30s, the same value the two sibling admin flows use for an
-#   identical openLink). No marketplace is touched.
+# R5 — EVERY step below states its timeout explicitly, because the defaults are
+#   not 7s and omitting the key is a violation rather than a way of complying:
+#   `ScrollUntilVisibleCommand.DEFAULT_TIMEOUT_IN_MILLIS` is "20000" and
+#   `Orchestra.lookupTimeoutMs` (what a bare `extendedWaitUntil` gets) is 17000.
+#   So every scroll and every wait here says 7000. The only two exceptions are
+#   the ones R5 sanctions by name: the cold sign-in gate (45s, the post-launchApp
+#   heading gate) and the mid-flow reload gate (30s, the same value the two
+#   sibling admin flows use for an identical openLink re-auth — the README's
+#   "Launching a flow" section rules on it). No marketplace is touched.
+#
+#   The 7000 figures are measured, not chosen: run 34437403394 ran this flow
+#   green end to end on the current product and every one of its eleven scrolls
+#   finished between 0.56s and 2.53s at try 0 or 1, and every in-app wait between
+#   0.34s and 1.96s. Three of those scrolls were give-up steps before NEO-260's
+#   208px spacer landed (see the sites); they are noted where they sit.
 #
 # R7 / R7a — no set, checklist, card, variant, team or player is touched, so
 #   this flow owns no SET-REGISTRY.md entry and writes to no shared row. It
@@ -159,9 +170,11 @@ tags:
 - scrollUntilVisible:
     element:
       text: "One name for a team.s whole run.*"
+    timeout: 7000
 - scrollUntilVisible:
     element:
       text: "Franchise name"
+    timeout: 7000
 - tapOn: "Franchise name"
 - inputText: "Fran${output.TOKEN}"
 
@@ -186,12 +199,27 @@ tags:
 # lands) on a number that only ever gets bigger. Nothing in this panel may be
 # assumed above the fold again.
 #
-# No `centerElement`: the add form is the last thing on the page, so its button
-# row is locked to the bottom and centring can never settle — R8's own stated
-# exception. The scroll is also the assertion (R6).
+# No `centerElement` — and NOT for the reason this comment used to give. It said
+# "the add form is the last thing on the page, so its button row is locked to the
+# bottom and centring can never settle", R8 case 2. That was true when it was
+# written and is FALSE NOW: NEO-260's 208px spacer (src/layouts/binder-layout.tsx)
+# gave the page a full swipe of travel below the button. The two runs say it
+# outright, same step, same selector:
+#   34431109073 (pre-spacer): bounds y=594 -> y=552, i.e. one swipe moved the
+#     document only 42px because it had bottomed out. Locked.
+#   34437403394 (post-spacer): bounds y=594 -> y=344, a whole swipe, and the step
+#     finished in 2.03s at try 0. Not locked — it travels.
+# So this is not R8 case 2 and must not be cited as such. It is left uncentred
+# because centring buys nothing HERE: the swipe already parks the button at
+# y=344-376, centre 360, mid-viewport and 250px clear of the fold, which is what
+# R8's centring is for. A second hierarchy read to move it a few pixels is cost
+# without a claim. If the spacer is ever removed or this page grows past it,
+# re-measure rather than restoring the old sentence.
+# The scroll is also the assertion (R6). R5: 7000, measured 2.03s.
 - scrollUntilVisible:
     element:
       text: "Start franchise"
+    timeout: 7000
 - tapOn: "Start franchise"
 
 # "Started <name>." is said ONLY for an INSERTED row — `franchises.findOrCreate`
@@ -206,6 +234,7 @@ tags:
     element:
       text: ".*Started Fran${output.TOKEN}.*"
     direction: UP
+    timeout: 7000
 
 # ============================================================
 # STEP 3 — THE NEW ROW IS A REAL, EMPTY, CORRECTLY-FILED THREAD
@@ -224,16 +253,27 @@ tags:
     element:
       text: ".*0 teams on this thread.*"
     centerElement: true
+    timeout: 7000
 - scrollUntilVisible:
     element:
       text: "Sport: Baseball"
     centerElement: true
+    timeout: 7000
 # The empty state names the ONLY way a team gets onto a thread, which is the
 # screen being honest about the boundary described in the header note above.
+#
+# ⚠️ THIS STEP'S 7000 DEPENDS ON THE 208px SPACER (R8 case 1, and R5's rule that
+# a centred scroll either centres or fails). Pre-spacer, run 34431109073 logged
+# it at 7.78s with bounds frozen at y=544 across all six tries — the full give-up
+# path, every run, on a panel parked against the fold. With the spacer
+# (`src/layouts/binder-layout.tsx`) run 34437403394 logged 2.03s at try 1,
+# y=468 -> y=336. Shorten or remove that spacer and this step goes back to
+# failing at 7000; that is the intended signal, not a reason to raise it.
 - scrollUntilVisible:
     element:
       text: "No teams yet.*"
     centerElement: true
+    timeout: 7000
 
 # ============================================================
 # STEP 4 — RENAME THE THREAD
@@ -252,23 +292,33 @@ tags:
     element:
       text: "Franchise name"
     centerElement: true
+    timeout: 7000
 - tapOn: "Franchise name"
 - eraseText: 40
 - inputText: "Ren${output.TOKEN}"
 
+# Same spacer dependency as "No teams yet." above: 7.73s frozen at y=439 across
+# six tries in pre-spacer run 34431109073, 0.56s at try 0 (y=231) in post-spacer
+# run 34437403394.
 - scrollUntilVisible:
     element:
       text: "Save name"
     centerElement: true
+    timeout: 7000
 - tapOn: "Save name"
 
 # The panel's own status line, which lives BELOW the thread rather than at the
 # top of the page (the page-level line up there belongs to the add form). The
 # scroll is the assertion.
+#
+# The deepest of the three spacer-dependent steps in this file: 9.34s in
+# pre-spacer run 34431109073 (y=604 on the first read, then frozen at y=564 for
+# five more), 0.56s at try 0 (y=396) in post-spacer run 34437403394.
 - scrollUntilVisible:
     element:
       text: ".*Renamed to Ren${output.TOKEN}.*"
     centerElement: true
+    timeout: 7000
 
 # ============================================================
 # STEP 5 — IT PERSISTED, AND IT PERSISTED AS A RENAME
@@ -297,12 +347,14 @@ tags:
 - inputText: "Fran${output.TOKEN}"
 - extendedWaitUntil:
     visible: "No franchises match that filter."
+    timeout: 7000
 
 - tapOn: "Filter franchises"
 - eraseText: 40
 - inputText: "Ren${output.TOKEN}"
 - extendedWaitUntil:
     visible: "1 of .* franchises.*"
+    timeout: 7000
 
 # Open the row. Anchored below the counter because maestro reports an input's
 # current value as its text, so the filter box — which now holds this exact
@@ -321,3 +373,4 @@ tags:
     element:
       text: ".*0 teams on this thread.*"
     centerElement: true
+    timeout: 7000
