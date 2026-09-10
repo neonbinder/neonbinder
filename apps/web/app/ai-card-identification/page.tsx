@@ -287,6 +287,12 @@ export default function AiCardIdentificationPage() {
             </SignUpButton>
           </div>
         </div>
+        {/* Scroll headroom (NEO-260) — 208px of empty space so the CTA above
+            is not pinned to the bottom edge of the viewport when the document
+            bottoms out. Same value as the signed-in shell; the arithmetic
+            behind it is in src/layouts/binder-layout.tsx. Keep them in step,
+            and do not express it in vh. */}
+        <div aria-hidden="true" className="h-[208px]" />
       </main>
     </>
   );

@@ -41,13 +41,18 @@ nothing unknown, the sync commits immediately, and no wizard appears. Do not
 
 ## Two selector facts worth keeping
 
-- **`Confirm & Save (Enter)` carries `id="entity-review-confirm-save"` and it is
-  load-bearing.** maestro-web's `pressKey` re-finds `document.activeElement` by
-  an XPath that falls back to the CLASS string; the footer's `Cancel (Esc)` is a
-  NeonButton with the identical classes, so without the id Selenium returned the
-  first match and Enter aimed at Confirm landed on Cancel (failure screenshot
-  showed "Discard 1 decision?" while the app's own focus was correct). The
-  button also handles Enter in its own `onKeyDown`, because a synthetic
+- **`Confirm & Save (Enter)` is disambiguated by a marker CLASS, not a DOM id
+  (changed in NEO-260).** maestro-web's `pressKey` re-finds
+  `document.activeElement` by an XPath that falls back to the CLASS string; the
+  footer's `Cancel (Esc)` is a NeonButton with the identical classes, so Selenium
+  returned the first match and Enter aimed at Confirm landed on Cancel (failure
+  screenshot showed "Discard 1 decision?" while the app's own focus was
+  correct). NEO-220 fixed that with `id="entity-review-confirm-save"`; NEO-260
+  removed the id — the standing rule is never to target a DOM id — and replaced
+  it with a `useFieldTestClass()` marker (`btn-confirm-save` / `btn-cancel-review`)
+  plus distinct aria-labels. No flow changed, because no flow ever selected on
+  the id. The button also handles Enter in its own `onKeyDown`, because a
+  synthetic
   KeyboardEvent has no default action and cannot activate a `<button>`.
 - **On a REAL fetch the presented row may be a TEAM.** The decide button's
   accessible name is `Add as New {Player|Team}`, so match

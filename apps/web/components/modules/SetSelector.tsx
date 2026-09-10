@@ -242,6 +242,39 @@ export default function SetSelector() {
       ? variantTypeLabel
       : `${variantTypeLabel}s`
     : "Variants";
+  /**
+   * NEO-260 (a11y) — the cascade opening a new column has to be SAID.
+   *
+   * Choosing a sport reveals the Years column and scrolls it into view, and
+   * that is the whole feedback: a sighted operator sees a card slide in, a
+   * screen-reader user gets nothing at all. Their focus has just been parked on
+   * the column they were in (EntitySelector's collapsed-card park), so there is
+   * not even a focus change to infer it from.
+   *
+   * The announcement is DERIVED, never stored. `role="status"` announces on a
+   * content CHANGE, and this string changes only when the deepest revealed
+   * column changes — so a re-render for any other reason writes the identical
+   * text, React skips the DOM write, and nothing is announced. That is the
+   * whole anti-chatter mechanism; no effect, no timer, no dedupe state.
+   *
+   * Only the DEEPEST column is named. Selecting one row can reveal at most one
+   * column, and naming the whole open chain on every step would read the
+   * cascade back to the user from the top each time.
+   *
+   * The labels are the column headings verbatim, because that is what the
+   * operator will hear when they arrow into it.
+   */
+  const revealedColumns: string[] = ["Sports"];
+  if (selectedSportId) revealedColumns.push("Years");
+  if (selectedYearId) revealedColumns.push("Manufacturers");
+  if (selectedManufacturerId) revealedColumns.push("Sets");
+  if (selectedSetId) revealedColumns.push("Variant Types");
+  if (!isBaseVariantTypeSelected && selectedVariantTypeId)
+    revealedColumns.push(variantsColumnLabel);
+  if (!isBaseVariantTypeSelected && selectedVariantId)
+    revealedColumns.push("Parallels");
+  const deepestColumn = revealedColumns[revealedColumns.length - 1];
+
   // Manual trigger; the form also auto-opens on first selection when no
   // platformData exists yet.
   const [baseMappingOpen, setBaseMappingOpen] = useState(false);
@@ -502,12 +535,32 @@ export default function SetSelector() {
     return { bsc: build("bsc"), sportlots: build("sportlots") };
   }, [cardChecklistRow]);
 
-  // No scroll headroom below the last panel, deliberately (NEO-255 tried
-  // pb-[50vh]): dozens of Maestro flows scroll DOWN for an anchor and rely on
-  // the document bottoming out to keep it in view; extra slack let them
-  // scroll past it.
+  // NO SCROLL HEADROOM HERE, deliberately — the shell owns it now (NEO-260).
+  //
+  // This container used to be the one place in the app that had a bottom-pad
+  // question: the collapsed SetAttributesPanel's "Edit attributes" control
+  // parked at y=518 on the 625px headless document, 143px below the driver's
+  // centre band, so every step that centred it burned the full give-up path.
+  // That was never a set-builder problem — every page in the app bottomed out
+  // with its primary action jammed against the fold. It is fixed once, for all
+  // of them, by the 208px spacer in src/layouts/binder-layout.tsx, which this
+  // page renders inside: 518 - 208 = 310, mid-band.
+  //
+  // So do NOT add padding-bottom back here. A second helping stacks on the
+  // shell's and lifts targets ABOVE the band, which fails exactly as hard as
+  // being below it. (NEO-255's pb-[50vh] — 313px, exactly one driver swipe —
+  // is the other way to get this wrong; read the note in binder-layout.tsx.)
   return (
     <div className="max-w-full mx-auto p-6 flex flex-col gap-6">
+      {/* `sr-only` is position:absolute, so this is NOT a flex item and costs
+          the layout nothing — which matters here: every pixel above the
+          cascade pushes fold-sensitive controls down on the 1024x629 headless
+          viewport (NEO-47, NEO-155). The text is a full sentence Maestro's
+          FULL-STRING text matching can never confuse with a bare column
+          heading. */}
+      <p className="sr-only" role="status">
+        {`${deepestColumn} column opened`}
+      </p>
       {/* pb-4 prevents the horizontal scrollbar from overlapping each
           EntityColumn's action-button row (Sync X / + Custom). Without it,
           Maestro web taps at the action-button y-coordinate hit the

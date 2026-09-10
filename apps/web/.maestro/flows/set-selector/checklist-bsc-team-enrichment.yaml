@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Checklist — a synced Base card carries its real BSC-resolved team into the card detail drawer (NEO-90, NEO-195)"
 tags:
   - set-selector
-  - regression
 ---
 # ════════════════════════════════════════════════════════════════════════════
 # R1 — ONE feature: a synced BSC Base card carries its real, marketplace-
@@ -111,12 +110,15 @@ tags:
 # timeout) — vis:50 is enough to bring its Edit control into the tappable band,
 # and it lands at ~y438, inside the fold. waitToSettleTimeoutMs lets
 # Virtuoso finish rendering each windowed row between scroll steps.
+# (R8 exception — bottom of a virtualised list, centering can never settle.)
+# R5 — 7000, the bar (was 30000). MEASURED (CI 34349299679 + 34361627641):
+# settles in 2.68s, 0 centring swipes; nothing here waits on a marketplace.
 - scrollUntilVisible:
     element:
       id: "Edit card 300"
     visibilityPercentage: 50
     waitToSettleTimeoutMs: 1000
-    timeout: 30000
+    timeout: 7000
 - tapOn:
     id: "Edit card 300"
     waitToSettleTimeoutMs: 2000

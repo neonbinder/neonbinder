@@ -15,10 +15,21 @@ tags:
 - assertVisible: "Neon Binder"
 
 # Landing grid → shipping-labels marketing page.
+# R5 EXCEPTION — SIGNED OFF by Jason, 2026-09-09 (NEO-260). The reason is
+# page-length TRAVEL, not centring and not a slow UI: nothing on this page is
+# slower than 7 s to respond, and this step never reaches the centring give-up
+# path. MEASURED over 4 green CI runs (n=3, spread <2%): 4 `ElementNotFound`
+# retries before the target is first seen — 4 screens of a signed-out
+# marketing page at the driver's fixed ~2.2 s per swipe + view-hierarchy read
+# — worst sample 11.16 s end to end. Budget is 1.4x that.
+# WHAT VOIDS THIS SIGN-OFF: shorten the page and the budget comes back down to
+# 7000. Do not raise it further without asking again — a bigger number here is
+# a new decision, not a tuning knob.
 - scrollUntilVisible:
     element:
       text: ".*Shipping Labels.*"
     centerElement: true
+    timeout: 16000
 - tapOn:
     text: ".*Shipping Labels.*"
 - assertVisible: "Print the Label, Ship the Card"
@@ -27,39 +38,74 @@ tags:
 # whole text is the tap target — an inline link inside a wrapped paragraph
 # missed on CI because Linux font metrics wrap the line differently than a
 # dev Mac, moving the link away from the matched element's center.
+# R5 EXCEPTION — SIGNED OFF by Jason, 2026-09-09 (NEO-260). The reason is
+# page-length TRAVEL, not centring and not a slow UI: nothing on this page is
+# slower than 7 s to respond, and this step never reaches the centring give-up
+# path. MEASURED over 4 green CI runs (n=3, spread <2%): 8 `ElementNotFound`
+# retries before the target is first seen — 8 screens of a signed-out
+# marketing page at the driver's fixed ~2.2 s per swipe + view-hierarchy read
+# — worst sample 19.21 s end to end. Budget is 1.4x that.
+# WHAT VOIDS THIS SIGN-OFF: shorten the page and the budget comes back down to
+# 7000. Do not raise it further without asking again — a bigger number here is
+# a new decision, not a tuning knob.
 - scrollUntilVisible:
     element:
       text: ".*Follow the EasyPost setup guide.*"
     centerElement: true
+    timeout: 27000
 - tapOn:
     text: ".*Follow the EasyPost setup guide.*"
 
 # The guide: hero, the four steps in order, and the trust section.
 - assertVisible: "Get Your EasyPost Key"
+# R5: 7000, the bar — MEASURED over 4 green CI runs (n=3), worst sample 0.56 s.
 - scrollUntilVisible:
     element:
       text: "Four Steps, One Time"
+    timeout: 7000
+# R5: 7000, the bar — MEASURED over 4 green CI runs (n=3), worst sample 0.57 s.
 - scrollUntilVisible:
     element:
       text: "Create a free EasyPost account"
+    timeout: 7000
+# R5: 7000, the bar — MEASURED over 4 green CI runs (n=3), worst sample 2.67 s.
 - scrollUntilVisible:
     element:
       text: "Add a payment method"
+    timeout: 7000
+# R5: 7000, the bar — MEASURED over 4 green CI runs (n=3), worst sample 0.56 s.
 - scrollUntilVisible:
     element:
       text: "Copy your Production API key"
+    timeout: 7000
+# R5: 7000, the bar — MEASURED over 4 green CI runs (n=3), worst sample 2.00 s.
 - scrollUntilVisible:
     element:
       text: "Paste it into Neon Binder"
+    timeout: 7000
+# R5: 7000, the bar — MEASURED over 4 green CI runs (n=3), worst sample 0.55 s.
 - scrollUntilVisible:
     element:
       text: "Good To Know"
+    timeout: 7000
 
 # CTA: verify Get Started button opens Clerk dialog
+# R8 case 1, product fix SHIPPED. MEASURED over 4 green CI runs (n=3):
+# `Element bounds` frozen at y=469 through `Scrolling try count: 0`..`5`,
+# completing on the give-up path at 12.0 s every run — the CTA was the last
+# thing on the page, so the document was already at maximum scroll and the five
+# swipes moved it nothing. NEO-260 adds the same 208px spacer the authenticated
+# shell got (`h-[208px]` in app/easypost-setup/page.tsx, the page this flow
+# ends on), which is what gives it more to scroll: 469 - 208 = 261 (centre
+# 291), and across 2,396 centred DOWN scrolls in those runs the lowest give-up
+# sat at a centre of 464.
+# So this now centres on the first swipe (measured 1.38-1.43 s).
+# Delete that spacer and the step goes straight back to the 12.0 s give-up.
 - scrollUntilVisible:
     element:
       text: "Get Started"
     centerElement: true
+    timeout: 7000
 - tapOn: "Get Started"
 - assertVisible: "Create your account"
 - tapOn:

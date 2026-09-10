@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Cross-release — the 'Hide cross-release cards' filter collapses a checklist back to only its own cards, and restores them"
 tags:
   - set-selector
-  - regression
 ---
 # ============================================================================
 # R1 — ONE FEATURE: the show/hide filter for visiting cards.
@@ -101,7 +100,7 @@ tags:
     centerElement: true
     visibilityPercentage: 50
     waitToSettleTimeoutMs: 1000
-    timeout: 15000
+    timeout: 7000
 
 # ============================================================
 # Step 5 — ASSERTION 1: the filter control is now offered
@@ -117,7 +116,7 @@ tags:
     direction: UP
     centerElement: true
     visibilityPercentage: 50
-    timeout: 15000
+    timeout: 7000
 - tapOn:
     id: "Hide cross-release cards"
 
@@ -133,13 +132,18 @@ tags:
 # from the one tapped above — proof the switch actually flipped, not just that
 # a button exists. (The brackets are escaped because names are matched as
 # patterns.)
+# R5 — 7000, the bar (was 15000). NO LOG EVIDENCE: this step did not
+# execute in either green CI run (34349299679, 34361627641), so 7000 is
+# the rule's default rather than a measurement. It is an ordinary in-app
+# scroll — the `notVisible` gate above owns the wait, and this is an UP scroll
+# to a control that is already on the page.
 - scrollUntilVisible:
     element:
       id: "Hide cross-release cards \\(on\\)"
     direction: UP
     centerElement: true
     visibilityPercentage: 50
-    timeout: 15000
+    timeout: 7000
 - tapOn:
     id: "Hide cross-release cards \\(on\\)"
 
@@ -158,7 +162,7 @@ tags:
       id: "Remove card 955-${ATTEMPT_ID} from this set"
     centerElement: true
     visibilityPercentage: 50
-    timeout: 15000
+    timeout: 7000
 - tapOn:
     id: "Remove card 955-${ATTEMPT_ID} from this set"
 - tapOn:

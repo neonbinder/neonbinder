@@ -2,7 +2,6 @@ appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/admin/players&worker=${WORKER_INDEX || "0"}
 name: "Player Management — add a player by hand and record two stints at one team"
 tags:
-  - regression
   - admin
 ---
 # R1 — Single feature: /admin/players (NEO-212) lets an operator ADD a player
@@ -30,7 +29,7 @@ tags:
 # operator would: the career editor's team typeahead offers a "+ New team" row for
 # a name it does not know, and that is `teams.findOrCreate`.
 #
-# The team is named "PMT-<worker>-<attempt>", per-worker AND per-attempt for the
+# The team is named "PMT<token>" — one search token, per-worker AND per-attempt for the
 # same reason the player is: eight runners share one deployment and `teams` is a
 # global table, so a name reused across workers would have them creating and
 # reading each other's row. Per-attempt matters mechanically too — the picker
@@ -71,10 +70,13 @@ tags:
 #
 # R7 / R7a — NOT destructive, and it writes to NO shared row:
 #   * players are global rows, so this flow CREATES its own, named
-#     "PM-<worker>-<attempt>" — unique per worker AND per attempt, so eight
-#     concurrent runners and a retry can never land on the same row. Nothing
-#     pre-existing is edited.
-#   * the same is true of its team, "PMT-<worker>-<attempt>": it is CREATED
+#     "PM<token>" — ONE search token that carries the worker AND the attempt
+#     inside it (see the ATTEMPT_TOKEN note below), so eight concurrent runners
+#     and a retry can never land on the same row. Nothing pre-existing is
+#     edited. The player and the team differ from their third character on
+#     ("PM<token>" vs "PMT<token>"), so neither name is a prefix of the other
+#     and neither picker can be answered by the other's row.
+#   * the same is true of its team, "PMT<token>": it is CREATED
 #     here, never shared, and no pre-existing team row is read or written. The
 #     second stint reuses the row this flow made moments earlier, so even that
 #     is not a read of anything global.
@@ -110,10 +112,30 @@ tags:
     visible: ".*of .* players.*"
     timeout: 45000
 
-# The runner injects ATTEMPT_ID ("w<worker>-a<attempt>-<random>"). This gives a
-# standalone local run a fallback, and only when unset — a runner-injected value
-# is preserved. Same idiom as parallel-grouping-cancel-discards.
-- evalScript: ${output.ATTEMPT_ID = output.ATTEMPT_ID || String(Date.now()).slice(-4)}
+# ── The minted name's single search token (SET-REGISTRY.md, "A name typed into
+# a team picker must be a SINGLE search token") ──────────────────────────────
+# `teams.search` / `players.search` are Convex SEARCH indexes: they match on
+# TOKENS split at non-alphanumerics, so a hyphenated `Prefix-<attempt>` name
+# tokenizes to ["Prefix", "<attempt>"] and every row any flow ever left behind
+# under that prefix comes back as a suggestion — the per-attempt suffix buys
+# nothing. Nothing deletes a team (the app has no delete-team affordance; the
+# picker's "Remove team" only unlinks it from the card), so those rows stand for
+# the whole run and are visible to every concurrent worker. The names below are
+# therefore ONE alphanumeric token with no separator at all.
+#
+# The token is ATTEMPT_ID with its hyphens stripped: "w3-a1-23945" is three
+# search terms, "w3a123945" is one — and it still carries the worker index, so
+# the per-worker distinction the old `${WORKER_INDEX}` prefix gave is folded in
+# rather than separated out.
+#
+# ⚠️ READ `ATTEMPT_ID`, NOT `output.ATTEMPT_ID`. The runner injects it with
+# `-e ATTEMPT_ID=…`, which Maestro exposes as the binding `${ATTEMPT_ID}`; it
+# never populates `output.ATTEMPT_ID`, so the older idiom always fell through to
+# its 4-digit `Date.now()` fallback and two runners collided constantly.
+#
+# Single-quoted: the expression contains double quotes, and quoting the scalar
+# keeps YAML out of it. `Date.now()` is the standalone-run fallback.
+- evalScript: '${output.ATTEMPT_TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'
 
 # ── EMPTY THE LIST FIRST ────────────────────────────────────────────────────
 # Not decoration, and not an assertion about filtering (team-management-filter
@@ -150,24 +172,72 @@ tags:
 - assertVisible: "Add a player"
 
 - tapOn: "New player name"
-- inputText: "PM-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- inputText: "PM${output.ATTEMPT_TOKEN}"
 
 # The green button names the player it is about to create, so this tap cannot
 # land on any other button, and it only appears at all when no player of that
 # name already exists — the screen demotes it to "Create anyway" behind an
 # "Open <name>" button when one does.
+# R8 case 1 -> R5's 7000. MEASURED over 4 green CI runs (n=3): `Element
+# bounds` frozen at y=552 through `Scrolling try count: 0`..`5`, completing on
+# the give-up path at 7.9 s EVERY run — the page is already at maximum
+# scroll, so the target never reaches the centre band (250-375) and the five
+# swipes buy nothing. NEO-260 ships the fix: a 208px spacer at the bottom of
+# the authenticated shell (`h-[208px]`, src/layouts/binder-layout.tsx), which
+# gives the page exactly that much more to scroll. 552 - 208 = 344 (centre
+# 360) — and across 2,396 centred DOWN scrolls in 4 green CI runs the lowest
+# give-up sat at a centre of 464, with clean accepts throughout this range.
+# So it centres on the first swipe (measured 1.38-1.43 s) and the whole step
+# costs ~2.1 s. 7000 DEPENDS on that spacer; delete it and this step reds.
 - scrollUntilVisible:
     element:
-      id: "Create player PM-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+      id: "Create player PM${output.ATTEMPT_TOKEN}"
     centerElement: true
+    timeout: 7000
 - tapOn:
-    id: "Create player PM-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    id: "Create player PM${output.ATTEMPT_TOKEN}"
 
 # "Added <name>." is said ONLY for a row that was inserted. A create that found
 # an existing row instead says "That player already exists — opened it.", so
 # this is the assertion that the hand-entry actually created something.
+
+# THE CONFIRMATION MOVED. THIS SCROLL STAYED, AND NOT FOR THE ASSERTION.
+#
+# NEO-260 took `Added <name>.` out of `PlayerManagement`'s page-level status
+# line and put it at the head of the DETAIL COLUMN, `sticky` under the binder
+# header. The old line sat at document y=293-313 while the `Create player`
+# button that earns it is at y=809-841: the button is fully visible only from
+# scroll 216 and the line is clear of the 79px header only to scroll 214, so no
+# scroll position on the 1024x629 viewport ever showed both, and the line's own
+# insertion moved the page away from it (+39px of content above the scroll
+# position, +39px of Chrome scroll anchoring). That is what reddened six flows
+# in run 34437403394. A stuck element reports its STUCK position to the driver
+# — `binder-header`, `sticky top-0`, reads [64,16][228,61] in every hierarchy
+# dump at every scroll — so the assertion below now passes from wherever the
+# tap left the page, with or without this step.
+#
+# WHAT THIS STEP IS FOR NOW is the commands AFTER it: `assertVisible ".*Sport: Baseball.*"` never scrolls, and that line is
+# in the new panel's FIRST field row at document y~460-502. Left where the tap
+# ends the page it is above the fold and pruned; this scroll is what puts it on
+# screen. Removing this step reds the very next command.
+# It is positioning only, and nothing this flow proves changes. `Filter
+# players` is still the right anchor — it is the label of the list this screen
+# is built around and it is on the page whatever the create did, so a create
+# that was genuinely REFUSED still fails on the assertion below with the
+# refusal on screen in the screenshot. Its document position moved 332 -> 293
+# with the page-level line's removal, and the post-create scroll is now
+# 523 (813 - 344 for the button, +54 for the notice inserted above the
+# scroll position), so the travel is two UP swipes of ~313px, landing the page at scroll 0 — the same swipe count as the
+# green measurement this note replaces.
+- scrollUntilVisible:
+    element:
+      text: "Filter players"
+    direction: UP
+    centerElement: true
+    timeout: 7000
+
 - extendedWaitUntil:
-    visible: ".*Added PM-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
+    visible: ".*Added PM${output.ATTEMPT_TOKEN}.*"
     timeout: 7000
 
 # The new player's own panel is now open — these two lines exist nowhere else on
@@ -184,20 +254,33 @@ tags:
     element:
       text: "No stints recorded yet."
     centerElement: true
+    timeout: 7000
 
 # ── STINT 1 — THE LATER ONE, ADDED FIRST ────────────────────────────────────
 # Deliberately out of chronological order. Adding 2010–2012 before 2001–2005 is
 # what makes the ordering assertion below mean something: if the screen simply
 # listed stints as they were typed, the flow would fail.
+# R8 case 1 -> R5's 7000. MEASURED over 4 green CI runs (n=6): `Element
+# bounds` frozen at y=484 through `Scrolling try count: 0`..`5`, completing on
+# the give-up path at 7.8 s EVERY run — the page is already at maximum
+# scroll, so the target never reaches the centre band (250-375) and the five
+# swipes buy nothing. NEO-260 ships the fix: a 208px spacer at the bottom of
+# the authenticated shell (`h-[208px]`, src/layouts/binder-layout.tsx), which
+# gives the page exactly that much more to scroll. 484 - 208 = 276 (centre
+# 287) — and across 2,396 centred DOWN scrolls in 4 green CI runs the lowest
+# give-up sat at a centre of 464, with clean accepts throughout this range.
+# So it centres on the first swipe (measured 1.38-1.43 s) and the whole step
+# costs ~2.1 s. 7000 DEPENDS on that spacer; delete it and this step reds.
 - scrollUntilVisible:
     element:
       id: "Add team"
     centerElement: true
+    timeout: 7000
 - tapOn:
     id: "Add team"
 - tapOn:
     id: "Search teams"
-- inputText: "PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- inputText: "PMT${output.ATTEMPT_TOKEN}"
 
 # NOTHING MATCHES THAT NAME — which is the precondition for creating it, and the
 # reason the popover is now showing its "+ New team" row. It is also a real
@@ -246,10 +329,10 @@ tags:
 # The NAME BOX and its VALUE is the dialog being correctly SEEDED — maestro-web
 # reports an input by its value, so this says the search text really reached the
 # field the operator is about to submit.
-- assertVisible: "New team: PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- assertVisible: "New team: PMT${output.ATTEMPT_TOKEN}"
 - assertVisible:
     id: "New team name"
-    text: "PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    text: "PMT${output.ATTEMPT_TOKEN}"
 
 # THE WRITE. `Create team <composed full name>` is the SAME accessible name this
 # flow has always used — it moved from the popover row onto the dialog's own
@@ -261,14 +344,14 @@ tags:
 # pressKey re-finds the focused element by an XPath that falls back to that
 # class — so a synthetic Enter aimed at Create can land on Cancel.
 - tapOn:
-    id: "Create team PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    id: "Create team PMT${output.ATTEMPT_TOKEN}"
 
 # The chip is the proof the creation landed. Waiting for it before touching
 # anything else also removes a race: the create is a round-trip, and the chip is
 # what the picker paints when it returns.
 - extendedWaitUntil:
     visible:
-      id: "Remove team PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+      id: "Remove team PMT${output.ATTEMPT_TOKEN}"
     timeout: 7000
 
 # CLOSE THE TEAM TYPEAHEAD FIRST, by tapping the section heading above it.
@@ -310,8 +393,9 @@ tags:
 # stint grows it, so the row this asserts moves. The scroll is the assertion (R6).
 - scrollUntilVisible:
     element:
-      text: ".*PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID} · 2010–2012.*"
+      text: ".*PMT${output.ATTEMPT_TOKEN} · 2010–2012.*"
     centerElement: true
+    timeout: 7000
 
 # ── STINT 2 — THE EARLIER ONE, AT THE SAME TEAM ─────────────────────────────
 # Two stints at one franchise is the case the feature exists for (traded away,
@@ -322,15 +406,28 @@ tags:
 # it a few steps ago — and an exact match suppresses the create row. The
 # difference is the assertion: reaching for "Add" here proves the first stint's
 # creation actually persisted a row the picker can find again.
+# R8 case 1 -> R5's 7000. MEASURED over 4 green CI runs (n=6): `Element
+# bounds` frozen at y=484 through `Scrolling try count: 0`..`5`, completing on
+# the give-up path at 7.8 s EVERY run — the page is already at maximum
+# scroll, so the target never reaches the centre band (250-375) and the five
+# swipes buy nothing. NEO-260 ships the fix: a 208px spacer at the bottom of
+# the authenticated shell (`h-[208px]`, src/layouts/binder-layout.tsx), which
+# gives the page exactly that much more to scroll. 484 - 208 = 276 (centre
+# 287) — and across 2,396 centred DOWN scrolls in 4 green CI runs the lowest
+# give-up sat at a centre of 464, with clean accepts throughout this range.
+# So it centres on the first swipe (measured 1.38-1.43 s) and the whole step
+# costs ~2.1 s. 7000 DEPENDS on that spacer; delete it and this step reds.
+# Same step, same screen, same measurement as the first `Add team` above.
 - scrollUntilVisible:
     element:
       id: "Add team"
     centerElement: true
+    timeout: 7000
 - tapOn:
     id: "Add team"
 - tapOn:
     id: "Search teams"
-- inputText: "PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- inputText: "PMT${output.ATTEMPT_TOKEN}"
 # NEO-254 — the optional `( · <era>)` tail. A TeamPicker option's accessible
 # name is `Add {teamOptionLabel}`, which appends " · 1972–1996" once the row
 # carries a `yearsActive`. This flow's team is created through the dialog with
@@ -338,8 +435,10 @@ tags:
 # is a FULL match, so the day anyone dates that fixture this selector would
 # stop matching with no other symptom. The optional group costs nothing and
 # covers both.
+# NEO-260 kept the separator-free name (teams.search tokenises on
+# non-alphanumerics, so a hyphen makes the per-attempt suffix worthless).
 - tapOn:
-    id: "Add PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}( · .*)?"
+    id: "Add PMT${output.ATTEMPT_TOKEN}( · .*)?"
 # Same popover, same dismissal as above — tap the heading, never a keycode.
 - tapOn: "Career history"
 - tapOn: ".*Stint from year.*"
@@ -356,18 +455,31 @@ tags:
 # which is the point: the same assertion, run twice.
 - scrollUntilVisible:
     element:
-      text: ".*PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID} · 2001–2005.*"
+      text: ".*PMT${output.ATTEMPT_TOKEN} · 2001–2005.*"
     centerElement: true
+    timeout: 7000
 - assertVisible:
-    text: ".*PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID} · 2010–2012.*"
+    text: ".*PMT${output.ATTEMPT_TOKEN} · 2010–2012.*"
     below:
-      text: ".*PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID} · 2001–2005.*"
+      text: ".*PMT${output.ATTEMPT_TOKEN} · 2001–2005.*"
 
 # ── SAVE ────────────────────────────────────────────────────────────────────
+# R8 case 1 -> R5's 7000. MEASURED over 4 green CI runs (n=3): `Element
+# bounds` frozen at y=552 through `Scrolling try count: 0`..`5`, completing on
+# the give-up path at 7.7 s EVERY run — the page is already at maximum
+# scroll, so the target never reaches the centre band (250-375) and the five
+# swipes buy nothing. NEO-260 ships the fix: a 208px spacer at the bottom of
+# the authenticated shell (`h-[208px]`, src/layouts/binder-layout.tsx), which
+# gives the page exactly that much more to scroll. 552 - 208 = 344 (centre
+# 360) — and across 2,396 centred DOWN scrolls in 4 green CI runs the lowest
+# give-up sat at a centre of 464, with clean accepts throughout this range.
+# So it centres on the first swipe (measured 1.38-1.43 s) and the whole step
+# costs ~2.0 s. 7000 DEPENDS on that spacer; delete it and this step reds.
 - scrollUntilVisible:
     element:
       text: "Save"
     centerElement: true
+    timeout: 7000
 - tapOn: "Save"
 
 # SCROLL BACK UP FOR THE CONFIRMATION — it is not next to the button that
@@ -398,7 +510,7 @@ tags:
 # the button, where a sighted user never saw it and this step had to scroll UP
 # to find it). Save was just centred, so the line is on screen — a plain wait.
 - extendedWaitUntil:
-    visible: ".*Saved PM-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
+    visible: ".*Saved PM${output.ATTEMPT_TOKEN}.*"
     timeout: 15000
 
 # ── IT PERSISTED, AND IT PERSISTED IN ORDER ─────────────────────────────────
@@ -411,7 +523,7 @@ tags:
     timeout: 30000
 
 - tapOn: "Filter players"
-- inputText: "PM-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- inputText: "PM${output.ATTEMPT_TOKEN}"
 - extendedWaitUntil:
     visible: ".*matches.*"
     timeout: 7000
@@ -436,7 +548,7 @@ tags:
 # no such hedge — it is unique to this run and cannot be answered by another
 # team. The split itself is proved in admin/team-management-edit-a-team.)
 - assertVisible:
-    text: ".*PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
+    text: ".*PMT${output.ATTEMPT_TOKEN}.*"
     below:
       text: ".*matches.*"
 
@@ -445,7 +557,7 @@ tags:
 # — answers to the same string; the counter renders between the box and the
 # list, so "below the counter" is a list row and only a list row.
 - tapOn:
-    text: "PM-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    text: "PM${output.ATTEMPT_TOKEN}"
     below:
       text: ".*matches.*"
 
@@ -453,12 +565,13 @@ tags:
 # earlier stint came back (R6 — no redundant assertVisible of it here)...
 - scrollUntilVisible:
     element:
-      text: ".*PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID} · 2001–2005.*"
+      text: ".*PMT${output.ATTEMPT_TOKEN} · 2001–2005.*"
     centerElement: true
+    timeout: 7000
 # ...and this asserts the OTHER stint, still below it. Same single assertion as
 # before the reload, which is the whole point: the order is a property of the
 # stored data, not of the draft that was on screen when Save was pressed.
 - assertVisible:
-    text: ".*PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID} · 2010–2012.*"
+    text: ".*PMT${output.ATTEMPT_TOKEN} · 2010–2012.*"
     below:
-      text: ".*PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID} · 2001–2005.*"
+      text: ".*PMT${output.ATTEMPT_TOKEN} · 2001–2005.*"

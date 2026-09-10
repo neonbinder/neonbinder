@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Base-set picker Cancel recovers — message + working Retry, no dead-end (NEO-71-74)"
 tags:
   - set-selector
-  - regression
 ---
 # ════════════════════════════════════════════════════════════════════════════
 # R1 — ONE feature: cancelling the "Select Base Set" picker for a first-time
@@ -35,11 +34,11 @@ tags:
 #   selectorOptions is GLOBAL (no per-user scoping) and this needs a REAL set
 #   with live SportLots base options (a synthetic custom subtree has no SL data,
 #   so the picker would never open — auto-take BSC fallback instead). We use
-#   2024 Topps BIG LEAGUE — a real set that NO other flow touches:
+#   Topps 206 — a real set that NO other flow touches:
 #     - setup.yaml maps 2024 Topps CHROME (mapped → auto-open won't fire)
 #     - sets-base.yaml CONFIRMS 2024 Topps HERITAGE (mapped globally → same)
 #   and we NEVER click Confirm, so platformData.sportlots is never written —
-#   Big League's Base stays unmapped (its natural pre-sync state). Nothing is
+#   Topps 206's Base stays unmapped (its natural pre-sync state). Nothing is
 #   mutated, nothing is left degraded for a concurrent worker or a re-run.
 #
 # R9 — all drilling via util-drill-to-2024-topps-chrome (SET override).
@@ -97,6 +96,7 @@ tags:
     element:
       text: "Base"
     centerElement: true
+    timeout: 7000
 # NEO-85 residual coordinate-staleness (same maestro-web tap-drop class handled
 # across the drill utils): read the "Base" row bounds, the still-settling Variant
 # Types column reflows, the click lands stale → nothing selected. Result-keyed
@@ -140,6 +140,7 @@ tags:
     element:
       text: ".*Base mapping cancelled.*"
     centerElement: true
+    timeout: 7000
 # The picker is truly gone (message panel only renders when !pickerOpen) — this
 # distinguishes the recovery panel from a still-open picker.
 - assertNotVisible: "Confirm Base Set"

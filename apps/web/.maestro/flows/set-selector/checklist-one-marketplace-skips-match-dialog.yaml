@@ -217,7 +217,7 @@ tags:
     element:
       text: ".*Search sets.*"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     text: ".*Search sets.*"
     waitToSettleTimeoutMs: 250
@@ -341,17 +341,24 @@ tags:
 #     reference_maestro_web_frame_stall_kills_scrolling.md
 # ============================================================
 
+# R5 — 7000, the bar (was 30000). MEASURED (CI 34349299679 +
+# 34361627641): worst 2.0s, 1 centring swipe. Nothing here waits on a
+# marketplace — the `extendedWaitUntil`/`assertVisible` pair above already
+# holds this element.
 - scrollUntilVisible:
     element:
       text: "Map Base Set"
     centerElement: true
-    timeout: 30000
+    timeout: 7000
+# R5 — 7000, the bar (was 30000). MEASURED (CI 34349299679 +
+# 34361627641): worst 1.98s, 1 centring swipe. Nothing here waits on a
+# marketplace — same flex row as the Cards header the step above just centred.
 - scrollUntilVisible:
     element:
       text: "Add Card"
     centerElement: true
     visibilityPercentage: 50
-    timeout: 30000
+    timeout: 7000
 
 # The checklist is empty here, so the button reads "Fetch from Marketplaces";
 # its accessible name is stable in both states. Asserting the empty state first
@@ -461,19 +468,34 @@ tags:
 # ============================================================
 # STEP 7 — EVERY FETCHED CARD IS SAVED, AS A SINGLE-MARKETPLACE CARD
 #
-# Measured 1.2s to the "Saved …" banner. 60s is the same ceiling
-# `checklist-wizard-link-commits` gives this commit, for the same reason (one
-# row per card plus its skip records).
+# Measured 1.2s to the "Saved …" banner. The 60s now sits on the GATE below
+# rather than on the scroll — the same ceiling `checklist-wizard-link-commits`
+# gives this commit, for the same reason (one row per card plus its skip
+# records).
 # ============================================================
 
 # ── LINK 3 OF THE CHAIN: fetched == offered == SAVED ────────────────────────
 # `.*`-wrapped because the banner appends the attention count after the
 # sentence as team enrichment lands ("Saved 25 cards. 7 need attention — …").
+# R5 — the commit of a live fetch is the sanctioned wait, so it gets its own
+# GATE and the scroll gets the bar. The banner appears once the server has
+# written every fetched card plus its skip records; that is the R5
+# marketplace exception and it is what the 60000 below is for.
+# checklist-wizard-skip-commits-and-unskip.yaml gates the same commit the
+# same way. The scroll then only has to centre the banner: MEASURED (CI
+# 34349299679 + 34361627641) 7.03s including the wait, 1 centring swipe.
+- extendedWaitUntil:
+    visible:
+      text: ".*Saved ${output.FETCHED} cards.*"
+    timeout: 60000
+
+# The scroll, at the bar — R6 is satisfied because the gate above is a WAIT,
+# not a duplicate assertion of an element this step already proved.
 - scrollUntilVisible:
     element:
       text: ".*Saved ${output.FETCHED} cards.*"
     centerElement: true
-    timeout: 60000
+    timeout: 7000
 
 # The checklist itself now holds exactly that many — asserted on the header's
 # own count. The set was empty before the fetch (STEP 4), so this is an exact
@@ -483,7 +505,7 @@ tags:
     element:
       text: ".*[(]${output.FETCHED}[)].*"
     centerElement: true
-    timeout: 15000
+    timeout: 7000
 
 # ── THE BADGE: these cards came from ONE marketplace, and the row says so ───
 # The commit writes an `unmatched-sl` marker for a card kept from BSC alone

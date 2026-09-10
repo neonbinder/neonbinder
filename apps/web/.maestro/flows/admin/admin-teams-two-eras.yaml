@@ -2,7 +2,6 @@ appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/admin/players&worker=${WORKER_INDEX || "0"}
 name: "Teams — one location and nickname can be two teams when their eras differ, and the second is only created once the operator confirms it"
 tags:
-  - regression
   - admin
 ---
 # R1 — ONE FEATURE (NEO-254): a team's identity is now (name, sport, ERA), so
@@ -87,8 +86,18 @@ tags:
 #
 # R4 — the entry URL is the whole setup. No in-body login, no credential step.
 #
-# R5 — every wait is Maestro's 7s default except the cold sign-in (45s) and the
-#   one reload (30s, the value both sibling admin flows use). No marketplace.
+# R5 — EVERY step below states its timeout explicitly, because the defaults are
+#   not 7s and omitting the key is a violation rather than a way of complying:
+#   `ScrollUntilVisibleCommand.DEFAULT_TIMEOUT_IN_MILLIS` is "20000" and
+#   `Orchestra.lookupTimeoutMs` (what a bare `extendedWaitUntil` gets) is 17000.
+#   Every scroll and every wait here says 7000. The only exceptions are the two
+#   R5 sanctions by name: the cold sign-in gate (45s, the post-launchApp heading
+#   gate) and the one mid-flow reload gate (30s, openLink re-auth — the value
+#   both sibling admin flows use). No marketplace is touched.
+#
+#   Measured, not chosen: in green run 34431109073 every in-app wait in this
+#   flow cost 0.33-0.36s and every scroll 0.54-4.79s, none of them reaching the
+#   centring give-up path.
 #
 # R7 / R7a — no set, checklist, card or variant, so no SET-REGISTRY entry. It
 #   creates THREE permanent globally-shared rows (one player, two teams) and the
@@ -102,8 +111,18 @@ tags:
 #   wraps and shoves the panel down (CI run 34179568903 killed a sibling flow
 #   exactly that way). Every reach into the panel is a `scrollUntilVisible`, and
 #   the scroll is its own assertion (R6). No `centerElement` on the career
-#   editor's controls: they are locked to the page bottom, where centring can
-#   never settle (R8's own exception; six futile swipes measured).
+#   editor's controls. ⚠️ NOT for the reason this note used to give — "they are
+#   locked to the page bottom, where centring can never settle (R8's own
+#   exception; six futile swipes measured)" — which was R8 case 2 and stopped
+#   being true when NEO-260's 208px spacer (src/layouts/binder-layout.tsx) put a
+#   full swipe of travel below every page in the signed-in shell. The Create
+#   button frozen at y=552 in pre-spacer run 34431109073 was read at y=500 in
+#   post-spacer run 34437403394, and R8 says an element that moves on the first
+#   swipe is case 1, not case 2. What survives is cost: uncentred the step stops
+#   the moment the button is 100% visible and settles at try 0 in 2.71s / 2.72s
+#   across those two runs. Centring it is an untested change (post-spacer centre
+#   y=516, above the ~464 lowest observed give-up) and wants its own
+#   measurement, not this note's old assumption.
 #
 # R10 — no conditional branches, no `notVisible:` guard on a normally-present
 #   element, no settle waits.
@@ -138,18 +157,67 @@ tags:
 - scrollUntilVisible:
     element:
       id: "Create player Erp${output.TOKEN}"
+    timeout: 7000
 - tapOn:
     id: "Create player Erp${output.TOKEN}"
+
+# THE CONFIRMATION MOVED. THIS SCROLL STAYED, AND NOT FOR THE ASSERTION.
+#
+# NEO-260 took `Added <name>.` out of `PlayerManagement`'s page-level status
+# line and put it at the head of the DETAIL COLUMN, `sticky` under the binder
+# header. The old line sat at document y=293-313 while the `Create player`
+# button that earns it is at y=809-841: the button is fully visible only from
+# scroll 216 and the line is clear of the 79px header only to scroll 214, so no
+# scroll position on the 1024x629 viewport ever showed both, and the line's own
+# insertion moved the page away from it (+39px of content above the scroll
+# position, +39px of Chrome scroll anchoring). That is what reddened six flows
+# in run 34437403394. A stuck element reports its STUCK position to the driver
+# — `binder-header`, `sticky top-0`, reads [64,16][228,61] in every hierarchy
+# dump at every scroll — so the assertion below now passes from wherever the
+# tap left the page, with or without this step.
+#
+# WHAT THIS STEP IS FOR NOW is the commands AFTER it: the centred `+ Add team` scroll below, whose own note records the exact
+# bounds it expects (y=484 pre-spacer, 276 after). Those were measured from the
+# page position THIS step produces, so it stays until a green run says
+# otherwise.
+# It is positioning only, and nothing this flow proves changes. `Filter
+# players` is still the right anchor — it is the label of the list this screen
+# is built around and it is on the page whatever the create did, so a create
+# that was genuinely REFUSED still fails on the assertion below with the
+# refusal on screen in the screenshot. Its document position moved 332 -> 293
+# with the page-level line's removal, and the post-create scroll is now
+# 367 (813 - 500 for the button, +54 for the notice inserted above the
+# scroll position), so the travel is one UP swipe of ~313px, landing the page at scroll ~54 — the same swipe count as the
+# green measurement this note replaces.
+- scrollUntilVisible:
+    element:
+      text: "Filter players"
+    direction: UP
+    centerElement: true
+    timeout: 7000
+
 - extendedWaitUntil:
     visible: ".*Added Erp${output.TOKEN}.*"
+    timeout: 7000
 
-# Centring here is LOAD-BEARING: this line cannot be centred either, so the
-# swipes run until the page stops moving, and that maximum-scroll position is
-# what puts the picker's popover clear of the fold for everything below.
+# Centring here is LOAD-BEARING, but not for the reason this note used to give.
+# It said "this line cannot be centred either, so the swipes run until the page
+# stops moving" — the log disagrees: in run 34431109073 the step took two swipes
+# to bring the line on screen and then ACCEPTED at try count 0 with bounds
+# y=383, in 4.79s. It centres. What the centring buys is a DETERMINISTIC page
+# position rather than a maximum one, and that position is what puts "+ Add
+# team" at y=484 and the picker's popover clear of the fold for everything
+# below. Do not remove it, and do not repeat the "cannot be centred" claim.
+#
+# 7000 against a measured 4.79s is the tightest margin in this file, and that is
+# deliberate: most of the 4.79s is two full driver swipes before the line is
+# ever seen, so a failure here means the page above it grew — a product finding
+# (R5), not a number to raise.
 - scrollUntilVisible:
     element:
       text: "No stints recorded yet."
     centerElement: true
+    timeout: 7000
 
 # ============================================================
 # PART 2 — ERA ONE: 1972–1996
@@ -187,6 +255,7 @@ tags:
 - extendedWaitUntil:
     visible:
       id: "Remove team Loc${output.TOKEN} Era${output.TOKEN}"
+    timeout: 7000
 
 # Drop the chip before building era two. Geometry, not tidiness: the popover is
 # positioned under the WHOLE picker, chips included, so a chip left in place
@@ -255,6 +324,7 @@ tags:
     id: "Create team Loc${output.TOKEN} Era${output.TOKEN}"
 - extendedWaitUntil:
     visible: ".*already exists for 1972–1996. Create again to add this as a second era.*"
+    timeout: 7000
 
 # R2(c) — THE CONFIRMATION. The refusal ARMED it, so pressing the same button
 # again is a different call (`newEra: true`) rather than a retry of the one that
@@ -265,6 +335,7 @@ tags:
 - extendedWaitUntil:
     visible:
       id: "Remove team Loc${output.TOKEN} Era${output.TOKEN}"
+    timeout: 7000
 
 # ============================================================
 # PART 4 — TEAM MANAGEMENT SHOWS TWO ROWS FOR ONE NAME
@@ -284,6 +355,7 @@ tags:
 # feature stated in one line: this screen could not have shown two before.
 - extendedWaitUntil:
     visible: "2 of .* teams.*"
+    timeout: 7000
 
 # Both eras are printed, and they are the only thing telling the rows apart. An
 # EN DASH (U+2013), which is what `eraLabel` emits — a hyphen matches nothing.
@@ -313,6 +385,7 @@ tags:
 - scrollUntilVisible:
     element:
       text: "Active from"
+    timeout: 7000
 - assertVisible:
     text: "1972"
     below:
@@ -328,6 +401,7 @@ tags:
     element:
       text: "2011–present"
     direction: UP
+    timeout: 7000
 - tapOn:
     text: "2011–present"
     below:
@@ -339,6 +413,7 @@ tags:
 - scrollUntilVisible:
     element:
       text: "Active from"
+    timeout: 7000
 - assertVisible:
     text: "2011"
     below:

@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Set Builder Gate — admin with neither BSC nor SportLots credentials sees the warning banner"
 tags:
   - set-selector
-  - regression
 ---
 # Uses the dedicated never-seeded account (admin-no-credentials / dev+e2e-no-creds@neonbinder.io).
 # No clear / restore / seed / reset — strictly sign-in and assert.
@@ -21,6 +20,7 @@ tags:
     element:
       id: "Configure credentials in Profile"
     centerElement: true
+    timeout: 7000
 - tapOn:
     id: "Configure credentials in Profile"
 - assertVisible: "Profile Settings"

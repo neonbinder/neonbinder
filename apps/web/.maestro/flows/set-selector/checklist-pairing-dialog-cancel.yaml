@@ -93,7 +93,7 @@ tags:
     element:
       text: "Insert"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 - tapOn: "Insert"
 - extendedWaitUntil:
     visible: "Inserts"
@@ -108,7 +108,7 @@ tags:
     element:
       text: ".*Search inserts.*"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 # 250ms settle so the input is focused before inputText fires — a 0ms settle
 # drops the first character on this reactive page.
 - tapOn:
@@ -130,11 +130,15 @@ tags:
 # STEP 1 — SYNC. This must NOT commit; it must open the pairing dialog.
 # ============================================================
 
+# R5 — 7000, the bar (was 10000). MEASURED (CI 34349299679 + 34361627641):
+# 4.8s worst, 0 centring swipes — a slow single hierarchy read on this
+# page, never a give-up. 7000 is the ceiling; the slow read itself is the
+# product finding to raise, not something to settle with a bigger number.
 - scrollUntilVisible:
     element:
       id: "Sync card checklist"
     centerElement: true
-    timeout: 15000
+    timeout: 7000
 - tapOn:
     id: "Sync card checklist"
 
@@ -535,3 +539,4 @@ tags:
       id: "Sync card checklist"
     direction: UP
     centerElement: true
+    timeout: 7000

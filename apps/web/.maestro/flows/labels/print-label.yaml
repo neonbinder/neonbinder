@@ -73,6 +73,7 @@ tags:
     element:
       text: "Name"
     centerElement: true
+    timeout: 7000
 - tapOn: "Name"
 - inputText: "Neon Seller"
 
@@ -80,6 +81,7 @@ tags:
     element:
       text: "Street Address"
     centerElement: true
+    timeout: 7000
 - tapOn: "Street Address"
 - inputText: "100 Binder Way"
 
@@ -87,6 +89,7 @@ tags:
     element:
       text: "City"
     centerElement: true
+    timeout: 7000
 - tapOn: "City"
 - inputText: "Austin"
 
@@ -94,6 +97,7 @@ tags:
     element:
       text: "State"
     centerElement: true
+    timeout: 7000
 - tapOn: "State"
 - inputText: "TX"
 
@@ -101,16 +105,29 @@ tags:
     element:
       text: "ZIP"
     centerElement: true
+    timeout: 7000
 - tapOn: "ZIP"
 - inputText: "78701"
 
 # Step 3: save it. The button stays disabled until name/street/city/state/ZIP are
 # all filled, so a tap that lands and a confirmation that appears together prove
 # the five values above actually reached their fields.
+# R8 case 1 -> R5's 7000. MEASURED over 4 green CI runs (n=3): `Element
+# bounds` frozen at y=528 through `Scrolling try count: 0`..`5`, completing on
+# the give-up path at 7.9 s EVERY run — the page is already at maximum
+# scroll, so the target never reaches the centre band (250-375) and the five
+# swipes buy nothing. NEO-260 ships the fix: a 208px spacer at the bottom of
+# the authenticated shell (`h-[208px]`, src/layouts/binder-layout.tsx), which
+# gives the page exactly that much more to scroll. 528 - 208 = 320 (centre
+# 336) — and across 2,396 centred DOWN scrolls in 4 green CI runs the lowest
+# give-up sat at a centre of 464, with clean accepts throughout this range.
+# So it centres on the first swipe (measured 1.38-1.43 s) and the whole step
+# costs ~2.1 s. 7000 DEPENDS on that spacer; delete it and this step reds.
 - scrollUntilVisible:
     element:
       text: "Save Return Address"
     centerElement: true
+    timeout: 7000
 - tapOn: "Save Return Address"
 - assertVisible: "Return address saved."
 
@@ -137,6 +154,7 @@ tags:
     element:
       text: "Name"
     centerElement: true
+    timeout: 7000
 - tapOn: "Name"
 - inputText: "Jane Buyer"
 
@@ -144,6 +162,7 @@ tags:
     element:
       text: "Street Address"
     centerElement: true
+    timeout: 7000
 - tapOn: "Street Address"
 - inputText: "742 Evergreen Ter"
 
@@ -151,6 +170,7 @@ tags:
     element:
       text: "City"
     centerElement: true
+    timeout: 7000
 - tapOn: "City"
 - inputText: "Springfield"
 
@@ -158,6 +178,7 @@ tags:
     element:
       text: "State"
     centerElement: true
+    timeout: 7000
 - tapOn: "State"
 - inputText: "IL"
 
@@ -165,6 +186,7 @@ tags:
     element:
       text: "ZIP"
     centerElement: true
+    timeout: 7000
 - tapOn: "ZIP"
 - inputText: "62704"
 
@@ -189,7 +211,7 @@ tags:
     element:
       text: "Print Label"
     centerElement: true
-- assertVisible: "Print Label"
+    timeout: 7000
 
 # Step 7: bring the label itself on screen.
 #
@@ -210,11 +232,22 @@ tags:
 # one string. No input holds "SPRINGFIELD IL 62704", so matching it can only mean
 # the formatted label. That makes it both the correct scroll target and the
 # assertion that actually tests the feature.
+#
+# R5: 7000, the bar. The old 30000 carried no recorded reason, and there is no
+# round-trip behind this step — the preview renders from the form state already
+# typed above, so nothing here waits on EasyPost or on Convex.
+# MEASURED in CI (green run, this flow's log): found on scroll try 1, y=572 →
+# y=346, 1.96 s. That is the slowest healthy centred scroll in this area, which
+# is why it is worth writing down: the preview is a heavier subtree than a form
+# label, and 7000 still leaves ~3.5x margin. Note that DROPPING the value would
+# not put this on the bar — `scrollUntilVisible` defaults to 20 s, not 7 s
+# (ScrollUntilVisibleCommand.DEFAULT_TIMEOUT_IN_MILLIS = "20000" in the pinned
+# maestro-orchestra-models.jar) — so the bar has to be written out.
 - scrollUntilVisible:
     element:
       text: "SPRINGFIELD IL 62704"
     centerElement: true
-    timeout: 30000
+    timeout: 7000
 
 # Step 8: the seller's own address is already in the FROM block, carried from
 # Step 3 — the proof that the /profile save persisted and is read back here.

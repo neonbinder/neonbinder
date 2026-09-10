@@ -1,41 +1,37 @@
 #!/bin/bash
-# Runs E2E flows across N parallel workers using a tag-driven scheduler.
+# Runs E2E flows across N parallel workers.
 #
-# Each Maestro flow declares its scheduling profile via tags in its `tags:`
-# block. Three families exist:
+# This is the LOCAL runner. CI drives the suite through run-e2e-queue.sh
+# (NEO-49's work queue) — the one thing CI does use this script for is the
+# pre-matrix `setup` seed (`npm run test:e2e -- setup`).
+#
+# Ordering model: there is none beyond the seed. Run `test:e2e -- setup` to
+# seed the deployment, then run whatever flows you want. Flows are otherwise
+# self-contained and parallel-safe. (NEO-260 deleted the `requires:`/`provides:`
+# dependency graph that used to live here — no flow had carried one since
+# NEO-49 replaced the model with the work queue.)
+#
+# Two serialisation lanes survive, both driven by a tag in a flow's `tags:`
+# block. No flow carries either today; the machinery is kept because it is the
+# only local guard against the conflicts it describes:
 #
 #   - `isolated:true` (or legacy `serial-global`) — flow mutates global Convex
 #     tables (selectorOptions / cardChecklist / players / teams), e.g. it runs
 #     after the scripted Set Builder reset (`e2e-baseline.sh reset` — NEO-214;
 #     no more "Reset Set Builder Data" button) or otherwise touches
-#     cross-user data. These flows must serialize alone and cannot run
-#     concurrently with the cascade (see below).
+#     cross-user data. These flows serialize alone on a dedicated worker.
 #
 #   - `serial-marketplace` — flow hits /login/bsc or /login/sportlots on the
 #     browser service. The browser service returns 503 on concurrent
 #     marketplace logins, so these serialize on a dedicated worker. They CAN
-#     run concurrently with isolated and with the cascade — they only conflict
-#     with each other.
-#
-#   - `requires:<state>` and `provides:<state>` — the dependency graph. A flow
-#     tagged `requires:X` only runs after every flow tagged `provides:X` has
-#     completed. States are author-defined strings (e.g. `setup-done`,
-#     `sets-loaded`, `cards-loaded`). Future feature flows plug into this
-#     graph by declaring their own requires/provides — no runner changes.
+#     run concurrently with isolated — they only conflict with each other.
 #
 # Untagged flows are parallel-safe and distributed round-robin across workers.
 #
-# Execution model:
-#   Phase 1 (concurrent across all workers):
+# Execution model (concurrent across all workers):
 #     - Lane I: isolated flows        (serial on dedicated worker)
 #     - Lane M: marketplace flows     (serial on dedicated worker)
 #     - Lane P: independent flows     (parallel, distributed)
-#     Wait for Lane I (and Lane M) to finish before Phase 2 starts. Lane P
-#     keeps running concurrently with Phase 2 if it's still going.
-#
-#   Phase 2 (cascade levels in order):
-#     For each level 0..N: distribute that level's depgraph flows across all
-#     currently-free workers and wait for the level to finish before the next.
 #
 # Each worker passes WORKER_INDEX through to flows; flows append
 # &worker=${WORKER_INDEX} to their /testing/sign-in URLs so the testing
@@ -46,7 +42,6 @@
 #   ./run-e2e-smoke.sh smoke                     # only flows tagged "smoke"
 #   MAESTRO_PARALLELISM=1 ./run-e2e-smoke.sh     # serial fallback (debugging)
 #   MAESTRO_PARALLELISM=4 ./run-e2e-smoke.sh     # 4 workers
-#   MAESTRO_DISABLE_DEP_GRAPH=1 ./run-e2e-smoke.sh   # rollback to static-lane behavior
 
 set -e
 
@@ -164,9 +159,9 @@ fi
 # Defaults (SHARD_INDEX=0, SHARD_TOTAL=1) reproduce single-runner behavior
 # byte-for-byte — every shard-aware branch below is gated on SHARD_TOTAL > 1.
 #
-#   - The serial backbone (isolated + marketplace + dep-graph cascade) runs ONLY
-#     on shard 0; other shards run a deterministic slice of the parallel-safe
-#     "independent" flows (see the shard partition after categorization).
+#   - The serial backbone (isolated + marketplace) runs ONLY on shard 0; other
+#     shards run a deterministic slice of the parallel-safe "independent" flows
+#     (see the shard partition after categorization).
 #   - Workers carry a GLOBAL index (local worker + WORKER_INDEX_BASE) so two
 #     shards never sign in as the same TEST_EMAIL_${N} Clerk user and clobber
 #     each other. Log / results / maestro-home dirs stay keyed by the LOCAL index.
@@ -179,11 +174,6 @@ if ! [[ "$SHARD_INDEX" =~ ^[0-9]+$ ]] || [ "$SHARD_INDEX" -ge "$SHARD_TOTAL" ]; 
   SHARD_INDEX=0
 fi
 WORKER_INDEX_BASE="${WORKER_INDEX_BASE:-$((SHARD_INDEX * PARALLELISM))}"
-
-# Rollback flag: if anything misbehaves with the dep-graph scheduler, set
-# MAESTRO_DISABLE_DEP_GRAPH=1 to fall back to static-lane behavior. The
-# dep-graph and isolated lanes both collapse into a single "serial" bucket.
-DISABLE_DEP_GRAPH="${MAESTRO_DISABLE_DEP_GRAPH:-}"
 
 # --platform web required so launchApp navigates to each flow's url:
 # (config cannot set platform). WORKER_INDEX is appended per-worker below.
@@ -213,15 +203,9 @@ fi
 # `wip` flows are excluded from broad selection (all / tag / grep) but CAN be
 # hit by an explicit `name:` match so you can iterate on one you're un-wip-ing.
 #
-# Prerequisite closure (default ON): any selected flow tagged `requires:X`
-# automatically pulls in the flows tagged `provides:X`, transitively — e.g. a
-# single `requires:cards-loaded` flow drags in the cards → sets → setup
-# cascade so it actually runs with its data seeded. Controls:
-#   MAESTRO_NO_DEPS=1        don't pull prerequisites; treat each selected
-#                            flow's `requires:` as already-satisfied so it runs
-#                            immediately (use only when data is pre-seeded).
-#   MAESTRO_MINIMAL_DEPS=1   pull only ONE producer per required state (prefer
-#                            a `cascade`-tagged one) instead of every producer.
+# Selection pulls in nothing else: what you name is what runs. Seed the
+# deployment first with `npm run test:e2e -- setup` if the flows you picked
+# need data. Controls:
 #   MAESTRO_SKIP_BOOTSTRAP=1 skip the Phase 0 per-worker credential bootstrap
 #                            (use only when worker creds are already seeded).
 
@@ -241,11 +225,6 @@ flow_tags() {
   ' "$1"
 }
 flow_has_tag()        { flow_tags "$1" | grep -qxF "$2"; }
-flow_provides_states(){ flow_tags "$1" | sed -n 's/^provides://p'; }
-flow_requires_states(){ flow_tags "$1" | sed -n 's/^requires://p'; }
-
-NO_DEPS="${MAESTRO_NO_DEPS:-}"
-MINIMAL_DEPS="${MAESTRO_MINIMAL_DEPS:-}"
 
 SELECTOR="${1:-}"
 TAG=""                 # set only in tag mode (drives summary/comment text)
@@ -325,57 +304,6 @@ if [ ${#SELECTED_FLOWS[@]} -eq 0 ]; then
   exit 0
 fi
 
-# ─── Prerequisite closure ───────────────────────────────────────────────────
-# For each selected flow's `requires:X`, add the universe flows tagged
-# `provides:X`, transitively. Dedup via a sentinel-padded membership string
-# (bash 3.2 on macOS has no associative arrays). No-op when every producer is
-# already selected — so the `""` / `smoke` / `regression` CI invocations are
-# byte-for-byte unchanged.
-SELECTED_PATHS=""
-for f in "${SELECTED_FLOWS[@]}"; do SELECTED_PATHS="$SELECTED_PATHS $f"; done
-in_selected() { case "$SELECTED_PATHS " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
-
-if [ -z "$NO_DEPS" ]; then
-  PRODUCER_UNIVERSE=()
-  while IFS= read -r f; do
-    flow_has_tag "$f" util && continue
-    flow_has_tag "$f" wip && continue
-    PRODUCER_UNIVERSE+=("$f")
-  done < <(find .maestro/flows/ -name "*.yaml" | sort)
-
-  worklist=("${SELECTED_FLOWS[@]}")
-  while [ ${#worklist[@]} -gt 0 ]; do
-    cur="${worklist[0]}"
-    worklist=("${worklist[@]:1}")
-    while IFS= read -r state; do
-      [ -z "$state" ] && continue
-      producers=()
-      for p in "${PRODUCER_UNIVERSE[@]}"; do
-        if flow_provides_states "$p" | grep -qxF "$state"; then producers+=("$p"); fi
-      done
-      if [ ${#producers[@]} -eq 0 ]; then
-        echo "WARNING: a selected flow requires state \"$state\" but no flow provides it." >&2
-        continue
-      fi
-      if [ -n "$MINIMAL_DEPS" ]; then
-        chosen=""
-        for p in "${producers[@]}"; do
-          if flow_has_tag "$p" cascade; then chosen="$p"; break; fi
-        done
-        [ -z "$chosen" ] && chosen="${producers[0]}"
-        producers=("$chosen")
-      fi
-      for p in "${producers[@]}"; do
-        if ! in_selected "$p"; then
-          SELECTED_FLOWS+=("$p")
-          SELECTED_PATHS="$SELECTED_PATHS $p"
-          worklist+=("$p")
-        fi
-      done
-    done < <(flow_requires_states "$cur")
-  done
-fi
-
 # Final SMOKE_FLOWS = sorted-unique selected set — EXCEPT the setup track
 # (NEO-62: now a single setup.yaml), which bypasses sort -u so it stays first.
 SMOKE_FLOWS=()
@@ -390,63 +318,26 @@ fi
 
 # ─── Tag parsing & categorization ───────────────────────────────────────────
 
-# Parallel indexed arrays keyed by SMOKE_FLOWS position. Bash 3.2 compatible
-# (macOS ships 3.2; no associative arrays). Look up via flow_idx_of() if you
-# only have the path.
-FLOW_REQUIRES_LIST=()   # space-separated state names per flow
-FLOW_PROVIDES_LIST=()
-FLOW_CATEGORY_LIST=()   # isolated | marketplace | depgraph | independent
-FLOW_LEVEL_LIST=()      # depgraph: integer level; others: empty
-
-flow_idx_of() {
-  local target=$1
-  local i
-  for i in "${!SMOKE_FLOWS[@]}"; do
-    if [ "${SMOKE_FLOWS[$i]}" = "$target" ]; then
-      echo "$i"
-      return 0
-    fi
-  done
-  echo "-1"
-  return 1
-}
+# Parallel indexed array keyed by SMOKE_FLOWS position. Bash 3.2 compatible
+# (macOS ships 3.2; no associative arrays).
+FLOW_CATEGORY_LIST=()   # isolated | marketplace | independent
 
 for i in "${!SMOKE_FLOWS[@]}"; do
   flow="${SMOKE_FLOWS[$i]}"
-  req=""
-  prov=""
   is_isolated=false
   is_marketplace=false
-  has_dep=false
   while IFS= read -r tag; do
     case "$tag" in
-      # MAESTRO_NO_DEPS asserts prerequisites are already seeded: drop the
-      # `requires:` edges so the flow schedules immediately (as independent /
-      # provides-only) instead of being skipped for an unsatisfiable state.
-      requires:*)         [ -z "$NO_DEPS" ] && { req="$req ${tag#requires:}"; has_dep=true; } ;;
-      provides:*)         prov="$prov ${tag#provides:}"; has_dep=true ;;
       isolated|isolated:true) is_isolated=true ;;
       serial-global)      is_isolated=true ;;   # legacy alias for backwards compat
       serial-marketplace) is_marketplace=true ;;
     esac
   done < <(flow_tags "$flow")
-  FLOW_REQUIRES_LIST[$i]="${req# }"
-  FLOW_PROVIDES_LIST[$i]="${prov# }"
-  FLOW_LEVEL_LIST[$i]=""
 
-  # Categorization. With DISABLE_DEP_GRAPH, depgraph flows fold into isolated
-  # so the runner falls back to today's static-lane behavior (everything that
-  # would be cascade just runs serially in the isolated lane).
-  if [ -n "$DISABLE_DEP_GRAPH" ] && $has_dep; then
-    is_isolated=true
-    has_dep=false
-  fi
   if $is_isolated; then
     FLOW_CATEGORY_LIST[$i]="isolated"
   elif $is_marketplace; then
     FLOW_CATEGORY_LIST[$i]="marketplace"
-  elif $has_dep; then
-    FLOW_CATEGORY_LIST[$i]="depgraph"
   else
     FLOW_CATEGORY_LIST[$i]="independent"
   fi
@@ -456,13 +347,11 @@ done
 # easy iteration in the lane runners.
 ISOLATED_FLOWS=()
 MARKETPLACE_FLOWS=()
-DEPGRAPH_FLOWS=()
 INDEPENDENT_FLOWS=()
 for i in "${!SMOKE_FLOWS[@]}"; do
   case "${FLOW_CATEGORY_LIST[$i]}" in
     isolated)    ISOLATED_FLOWS+=("${SMOKE_FLOWS[$i]}") ;;
     marketplace) MARKETPLACE_FLOWS+=("${SMOKE_FLOWS[$i]}") ;;
-    depgraph)    DEPGRAPH_FLOWS+=("${SMOKE_FLOWS[$i]}") ;;
     independent) INDEPENDENT_FLOWS+=("${SMOKE_FLOWS[$i]}") ;;
   esac
 done
@@ -470,9 +359,8 @@ done
 # ─── Shard partition (NEO-46) ───────────────────────────────────────────────
 # Trim the categorized buckets to this shard's slice. No-op when SHARD_TOTAL=1.
 #
-#   - Serial backbone (isolated / marketplace / dep-graph) is shard-0-only:
-#     non-zero shards empty those buckets so MAX_LEVEL stays -1 and they run no
-#     cascade or serial-lane work.
+#   - Serial backbone (isolated / marketplace) is shard-0-only: non-zero shards
+#     empty those buckets so they run no serial-lane work.
 #   - Independent flows are split across shards. Phase-A conservatism: only
 #     clearly global-free dirs (auth / dashboard / home / profile) are
 #     distributed; set-selector/ independents may implicitly read global
@@ -493,7 +381,6 @@ if [ "$SHARD_TOTAL" -gt 1 ]; then
   if [ "$SHARD_INDEX" -ne 0 ]; then
     ISOLATED_FLOWS=()
     MARKETPLACE_FLOWS=()
-    DEPGRAPH_FLOWS=()
   fi
 
   shard_distributable=()
@@ -524,56 +411,6 @@ if [ "$SHARD_TOTAL" -gt 1 ]; then
   fi
 fi
 
-# ─── Level computation for the dep-graph cascade ────────────────────────────
-# Iterative topological sort. For each pending flow, level = 1 + max(level of
-# every producer of every required state). Flows with no requires are level 0.
-# Cycle / unproducible-state detection: if a round produces no progress, abort.
-MAX_LEVEL=-1
-if [ ${#DEPGRAPH_FLOWS[@]} -gt 0 ]; then
-  pending=("${DEPGRAPH_FLOWS[@]}")
-  current_level=0
-  while [ ${#pending[@]} -gt 0 ]; do
-    promoted=()
-    next_pending=()
-    for flow in "${pending[@]}"; do
-      flow_i=$(flow_idx_of "$flow")
-      satisfied=true
-      for state in ${FLOW_REQUIRES_LIST[$flow_i]}; do
-        # Has every producer of this state been assigned a level already?
-        for producer in "${DEPGRAPH_FLOWS[@]}"; do
-          producer_i=$(flow_idx_of "$producer")
-          if [[ " ${FLOW_PROVIDES_LIST[$producer_i]} " == *" $state "* ]]; then
-            if [ -z "${FLOW_LEVEL_LIST[$producer_i]}" ]; then
-              satisfied=false
-              break 2
-            fi
-          fi
-        done
-      done
-      if $satisfied; then
-        promoted+=("$flow")
-      else
-        next_pending+=("$flow")
-      fi
-    done
-    if [ ${#promoted[@]} -eq 0 ]; then
-      echo "ERROR: dep-graph has a cycle or required state has no producer." >&2
-      for flow in "${pending[@]}"; do
-        flow_i=$(flow_idx_of "$flow")
-        echo "  unscheduled: $flow (requires: ${FLOW_REQUIRES_LIST[$flow_i]})" >&2
-      done
-      exit 2
-    fi
-    for flow in "${promoted[@]}"; do
-      flow_i=$(flow_idx_of "$flow")
-      FLOW_LEVEL_LIST[$flow_i]=$current_level
-    done
-    [ "$current_level" -gt "$MAX_LEVEL" ] && MAX_LEVEL=$current_level
-    pending=("${next_pending[@]}")
-    current_level=$((current_level + 1))
-  done
-fi
-
 # ─── Plan summary ───────────────────────────────────────────────────────────
 case "$SELECT_MODE" in
   all)   sel_label="all flows" ;;
@@ -582,16 +419,12 @@ case "$SELECT_MODE" in
   name)  sel_label="name ~ ${PATTERNS[*]}" ;;
   grep)  sel_label="grep /${PATTERNS[0]}/" ;;
 esac
-if [ -n "$NO_DEPS" ]; then dep_label=" — NO prerequisites (requires: treated as pre-seeded)"
-elif [ -n "$MINIMAL_DEPS" ]; then dep_label=" — minimal prerequisites (1 producer/state)"
-else dep_label=" — full prerequisite closure"; fi
-echo "Selector: ${SELECTOR:-(none)}  →  ${sel_label}${dep_label}"
+echo "Selector: ${SELECTOR:-(none)}  →  ${sel_label}"
 echo "Found ${#SMOKE_FLOWS[@]} flow(s)${TAG:+ tagged \"$TAG\"}"
 echo "  Isolated:    ${#ISOLATED_FLOWS[@]}"
 echo "  Marketplace: ${#MARKETPLACE_FLOWS[@]}"
 echo "  Independent: ${#INDEPENDENT_FLOWS[@]}"
-echo "  Dep-graph:   ${#DEPGRAPH_FLOWS[@]} (levels 0..$MAX_LEVEL)"
-echo "Parallelism: $PARALLELISM worker(s)${DISABLE_DEP_GRAPH:+ — DEP_GRAPH DISABLED}"
+echo "Parallelism: $PARALLELISM worker(s)"
 if [ "$SHARD_TOTAL" -gt 1 ]; then
   echo "Shard: $SHARD_INDEX of $SHARD_TOTAL (global worker base $WORKER_INDEX_BASE → TEST_EMAIL_$WORKER_INDEX_BASE..$((WORKER_INDEX_BASE + PARALLELISM - 1)))"
 fi
@@ -607,23 +440,10 @@ if [ ${#INDEPENDENT_FLOWS[@]} -gt 0 ]; then
   echo "  Independent lane:"
   for f in "${INDEPENDENT_FLOWS[@]}"; do echo "    $f"; done
 fi
-if [ ${#DEPGRAPH_FLOWS[@]} -gt 0 ]; then
-  for ((lvl = 0; lvl <= MAX_LEVEL; lvl++)); do
-    echo "  Cascade level $lvl:"
-    for flow in "${DEPGRAPH_FLOWS[@]}"; do
-      flow_i=$(flow_idx_of "$flow")
-      if [ "${FLOW_LEVEL_LIST[$flow_i]}" = "$lvl" ]; then
-        provs="${FLOW_PROVIDES_LIST[$flow_i]:-(no provides)}"
-        reqs="${FLOW_REQUIRES_LIST[$flow_i]:-(no requires)}"
-        echo "    $flow  [requires: $reqs] [provides: $provs]"
-      fi
-    done
-  done
-fi
 echo ""
 
 # Plan-only: print the schedule and exit without launching Maestro. Lets you
-# verify a selector (and its prerequisite closure) before committing to a run.
+# verify a selector before committing to a run.
 if [ -n "${MAESTRO_PLAN_ONLY:-}" ]; then
   echo "MAESTRO_PLAN_ONLY set — exiting before execution."
   exit 0
@@ -773,33 +593,6 @@ run_serial_lane() {
   done
 }
 
-# run_parallel_batch <flow...>
-# Runs the given flows in parallel, one per worker, capped at PARALLELISM.
-# Worker indices are reused: with PARALLELISM=3 and 5 flows, flows 1..3 run on
-# workers 0..2, then flows 4..5 run on workers 0..1. Per-worker log/results
-# files are appended to (preserving prior runs in the same lane file).
-# Worker 0 is reserved for the SERIAL_WORKER_INDEX during phase 1 — pass a
-# starting index to avoid collisions if needed.
-run_parallel_batch() {
-  local flows=("$@")
-  if [ ${#flows[@]} -eq 0 ]; then return 0; fi
-  local pids=()
-  local worker_index_offset="${WORKER_INDEX_OFFSET:-0}"
-  for i in "${!flows[@]}"; do
-    local w=$(( (i + worker_index_offset) % PARALLELISM ))
-    run_flow_on_worker "$w" "${flows[$i]}" &
-    pids+=($!)
-    # Cap concurrent maestro processes at PARALLELISM
-    if [ "${#pids[@]}" -ge "$PARALLELISM" ]; then
-      wait "${pids[0]}" || true
-      pids=("${pids[@]:1}")
-    fi
-  done
-  for pid in "${pids[@]}"; do
-    wait "$pid" || true
-  done
-}
-
 # ─── Phase 0: per-worker bootstrap ──────────────────────────────────────────
 # Each worker signs in as TEST_EMAIL_${WORKER_INDEX} and saves the shared
 # BSC + SL credentials under that Clerk user in Secret Manager. Idempotent —
@@ -873,11 +666,9 @@ fi
 # Lanes claim workers dynamically based on which lanes have any flows. The
 # isolated lane gets the lowest worker index (or worker 0 alone if it's the
 # only lane); marketplace gets the next; independent uses everything left.
-# The cascade in phase 2 is gated on the isolated lane finishing — marketplace
-# and independent lanes can keep running concurrently with the cascade.
 #
 # Special case PARALLELISM=1: everything serial on worker 0 in order
-# isolated → marketplace → independent → cascade.
+# isolated → marketplace → independent.
 phase1_pids=()
 ISOLATED_PID=""
 MARKETPLACE_PID=""
@@ -957,129 +748,7 @@ else
   fi
 fi
 
-# Wait for the isolated lane specifically (the cascade can't start until it's done).
-if [ -n "$ISOLATED_PID" ]; then
-  wait "$ISOLATED_PID" || true
-fi
-
-# ─── Phase 2: cascade levels ────────────────────────────────────────────────
-# For each level 0..N: run that level's depgraph flows in parallel across all
-# workers and wait before moving to the next level.
-#
-# All PARALLELISM workers are eligible. The marketplace and independent lanes
-# might still be running (they own workers 1 and 2..N-1 respectively); using
-# the same indices is fine because run_flow_on_worker just appends to that
-# worker's log file. Maestro instances per worker remain serialized at the
-# lane level (each lane has at most one maestro process at a time), but across
-# lanes the OS can run multiple concurrently up to its scheduling limits.
-#
-# To keep concurrency bounded by PARALLELISM, we wait for any in-flight
-# phase-1 background lane PIDs whose worker indices the cascade wants to use.
-# Simpler approach: just cap cascade concurrency at PARALLELISM via the batch
-# helper. The phase-1 lanes naturally finish during the cascade because each
-# cascade level forks its own set of maestro processes.
-# ─── Cascade prerequisite tracking ──────────────────────────────────────────
-# Before NEO-23: if a level-N producer flow failed, level-N+1 flows ran anyway
-# with state that didn't match what the test expected. That made local↔CI
-# divergence noisy: a flake at level N changed downstream behavior in subtle
-# ways (e.g. cards-insert "passing" locally only because sets-inserts SIGSEGV'd
-# and didn't write reconciliation rows that would have tripped a validator bug
-# in CI). Now: track which provides-states have at least one PASSing producer.
-# Any flow whose requires can't be satisfied gets SKIPped and recorded as
-# FAIL (the test wasn't run, but the cascade is broken — surface it).
-#
-# Opt out via MAESTRO_CASCADE_PERMISSIVE=true if you want the old run-anyway
-# behavior (e.g. for debugging a single failing flow at level 0).
-CASCADE_PERMISSIVE="${MAESTRO_CASCADE_PERMISSIVE:-}"
-
-# Set of satisfied states, stored as a space-delimited string with sentinel
-# spaces on both ends so simple `case` glob membership tests don't need
-# tricky escaping. (Why not `declare -A`: macOS ships bash 3.2.57 which
-# doesn't support associative arrays, and we want this script to run on
-# dev macOS as well as Linux CI. Tracked as a follow-up to drop the bash
-# wrapper entirely in favor of native Maestro orchestration.)
-STATE_SATISFIED=" "
-
-# state_is_satisfied <state> → exit 0 if at least one producer of <state>
-# has passed, exit 1 otherwise. Membership test on STATE_SATISFIED.
-state_is_satisfied() {
-  case "$STATE_SATISFIED" in
-    *" $1 "*) return 0 ;;
-    *)        return 1 ;;
-  esac
-}
-
-# Check whether a flow appears as PASS in any worker's results.
-flow_passed_in_results() {
-  local flow="$1"
-  for ((w = 0; w < PARALLELISM; w++)); do
-    if grep -qE "^PASS ${flow}\$" "$REPORT_DIR/logs/worker-${w}.results" 2>/dev/null; then
-      return 0
-    fi
-  done
-  return 1
-}
-
-if [ "$MAX_LEVEL" -ge 0 ]; then
-  for ((lvl = 0; lvl <= MAX_LEVEL; lvl++)); do
-    level_flows=()
-    skipped_flows=()
-    for flow in "${DEPGRAPH_FLOWS[@]}"; do
-      flow_i=$(flow_idx_of "$flow")
-      if [ "${FLOW_LEVEL_LIST[$flow_i]}" = "$lvl" ]; then
-        # Check every required state has at least one passed producer.
-        # (Level 0 flows have no requires, so this loop is a no-op for them.)
-        missing_state=""
-        if [ -z "$CASCADE_PERMISSIVE" ]; then
-          for state in ${FLOW_REQUIRES_LIST[$flow_i]}; do
-            if ! state_is_satisfied "$state"; then
-              missing_state="$state"
-              break
-            fi
-          done
-        fi
-        if [ -n "$missing_state" ]; then
-          skipped_flows+=("$flow:$missing_state")
-        else
-          level_flows+=("$flow")
-        fi
-      fi
-    done
-
-    # Record skips before running this level so the worker-0 log shows them
-    # in the right order. Each skip counts as a FAIL in the aggregate so the
-    # cascade-broken state is visible in the sticky PR comment.
-    for entry in "${skipped_flows[@]}"; do
-      flow="${entry%%:*}"
-      state="${entry##*:}"
-      log_file="$REPORT_DIR/logs/worker-0.log"
-      results_file="$REPORT_DIR/logs/worker-0.results"
-      echo "⏭️  [w0] Skipped (missing prerequisite \"$state\"): $flow" >> "$log_file"
-      echo "FAIL $flow (skipped: prerequisite \"$state\" not satisfied)" >> "$results_file"
-    done
-
-    if [ ${#level_flows[@]} -gt 0 ]; then
-      run_parallel_batch "${level_flows[@]}"
-    fi
-
-    # After the level finishes, record any newly-satisfied states. A state is
-    # satisfied iff at least one of its producers PASSed at this level (or
-    # earlier; STATE_SATISFIED is monotonic-add).
-    for flow in "${level_flows[@]}"; do
-      if flow_passed_in_results "$flow"; then
-        flow_i=$(flow_idx_of "$flow")
-        for state in ${FLOW_PROVIDES_LIST[$flow_i]}; do
-          # Skip duplicate-add: monotonic-add semantics, idempotent on repeat.
-          if ! state_is_satisfied "$state"; then
-            STATE_SATISFIED="${STATE_SATISFIED}${state} "
-          fi
-        done
-      fi
-    done
-  done
-fi
-
-# Final wait: any phase-1 background lanes that didn't finish yet.
+# Wait for every background lane to finish.
 for pid in "${phase1_pids[@]}"; do
   wait "$pid" || true
 done

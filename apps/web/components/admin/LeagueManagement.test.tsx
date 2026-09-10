@@ -688,6 +688,51 @@ describe("LeagueManagement — the add form", () => {
     await screen.findByText("Added American League.");
   });
 
+  /**
+   * NEO-260 — WHERE the add form's messages render.
+   *
+   * The same defect PlayerManagement had, and the same shape of fix: this line
+   * was screen-level, above the filter row, while the `Create league` button
+   * that earns it is ~440px below the top of the detail column. Nothing an
+   * operator does on this screen produces a message that belongs at the other
+   * end of the page from the control that produced it.
+   */
+  it("renders the confirmation in the detail column, pinned under the header", async () => {
+    const { container } = render(<LeagueManagement />);
+    openAddForm(container);
+    fireEvent.change(screen.getByLabelText("New league name"), {
+      target: { value: "American League" },
+    });
+    fireEvent.click(screen.getByLabelText("Create league American League"));
+
+    const line = await screen.findByText("Added American League.");
+    const column = screen
+      .getByRole("heading", { level: 3, name: "American League" })
+      .closest("div.rounded-lg")!;
+    expect(column.contains(line)).toBe(true);
+    expect(line.className).toContain("sticky");
+    expect(line.getAttribute("role")).toBe("status");
+    const filterRow = screen.getByLabelText("Filter leagues").closest("div")!;
+    expect(filterRow.contains(line)).toBe(false);
+  });
+
+  it("clears the confirmation when a different league is selected", async () => {
+    const { container } = render(<LeagueManagement />);
+    openAddForm(container);
+    fireEvent.change(screen.getByLabelText("New league name"), {
+      target: { value: "Pacific Coast League" },
+    });
+    fireEvent.click(
+      screen.getByLabelText("Create league Pacific Coast League"),
+    );
+    await screen.findByText("Added Pacific Coast League.");
+
+    fireEvent.click(screen.getByRole("button", { name: /American League/ }));
+    await waitFor(() =>
+      expect(screen.queryByText("Added Pacific Coast League.")).toBeNull(),
+    );
+  });
+
   it("closes on Cancel without creating anything", () => {
     const { container } = render(<LeagueManagement />);
     openAddForm(container);

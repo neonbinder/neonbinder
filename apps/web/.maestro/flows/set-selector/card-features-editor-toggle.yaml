@@ -2,7 +2,6 @@ appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
 name: "Regression — Show/Hide features editor toggle expands then collapses the CardFeaturesEditor, then the card deletes cleanly"
 tags:
-  - regression
   - set-selector
 ---
 # R1 — SINGLE FEATURE: the card edit form's "Show features editor" / "Hide
@@ -141,7 +140,7 @@ tags:
       id: "Delete card 991-${ATTEMPT_ID}"
     centerElement: true
     visibilityPercentage: 50
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     id: "Delete card 991-${ATTEMPT_ID}"
 - assertVisible: "Confirm?"

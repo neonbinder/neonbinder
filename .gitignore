@@ -50,3 +50,9 @@ __pycache__/
 *.log
 .idea/
 .vscode/
+
+# Agent scratchpads. Never commit these — NEO-260 pushed 1.6M insertions of
+# Maestro CI debug artifacts (screenshots, hierarchy dumps, logs) into this
+# PUBLIC repo via `git add -A`. Agents are told to use the session scratchpad
+# outside the worktree; this is the backstop for when one writes here anyway.
+scratchpad/

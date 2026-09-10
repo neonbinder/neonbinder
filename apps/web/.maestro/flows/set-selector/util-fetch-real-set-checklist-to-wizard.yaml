@@ -75,11 +75,15 @@ tags:
 
 # ── FETCH ───────────────────────────────────────────────────────────────────
 # One live BSC + SportLots round-trip. BSC is the side that returns players.
+# R8 exception, MEASURED (CI 34349299679 + 34361627641): `Element bounds`
+# held at y=497 across `Scrolling try count: 0`..`5` — the empty-checklist
+# page has no scrollable overflow to swipe — so a swipe cannot move this
+# target and centring buys only the six-iteration give-up path (>=7.0s).
+# Uncentred it settles well under a second, inside R5's 7000.
 - scrollUntilVisible:
     element:
       id: "Sync card checklist"
-    centerElement: true
-    timeout: 15000
+    timeout: 7000
 - tapOn:
     id: "Sync card checklist"
 - extendedWaitUntil:

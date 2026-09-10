@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Listing length limits — an over-long card title is refused, and an over-long variation is walked to a fix"
 tags:
   - set-selector
-  - regression
 ---
 # ════════════════════════════════════════════════════════════════════════════
 # R1 — ONE feature (NEO-101): a marketplace length cap is something the
@@ -96,7 +95,7 @@ tags:
 #       `teamOnCardIds` argument, so the Submit below is rejected by Convex's
 #       argument validator and no card is created. Everything up to and
 #       including the picker — the form opening, "+ Add team", the popover, the
-#       "+ New team TLF-<attempt>" row, the dialog it opens, the chip, the
+#       "+ New team TLF<token>" row, the dialog it opens, the chip, the
 #       popover closing — is
 #       verified locally; the card's creation and every assertion downstream of
 #       it need the PR's own Convex preview.
@@ -113,6 +112,31 @@ tags:
 - extendedWaitUntil:
     visible: ".*Build set parameters using marketplace APIs.*"
     timeout: 45000
+
+# ── The minted name's single search token (SET-REGISTRY.md, "A name typed into
+# a team picker must be a SINGLE search token") ──────────────────────────────
+# `teams.search` / `players.search` are Convex SEARCH indexes: they match on
+# TOKENS split at non-alphanumerics, so a hyphenated `Prefix-<attempt>` name
+# tokenizes to ["Prefix", "<attempt>"] and every row any flow ever left behind
+# under that prefix comes back as a suggestion — the per-attempt suffix buys
+# nothing. Nothing deletes a team (the app has no delete-team affordance; the
+# picker's "Remove team" only unlinks it from the card), so those rows stand for
+# the whole run and are visible to every concurrent worker. The names below are
+# therefore ONE alphanumeric token with no separator at all.
+#
+# The token is ATTEMPT_ID with its hyphens stripped: "w3-a1-23945" is three
+# search terms, "w3a123945" is one — and it still carries the worker index, so
+# the per-worker distinction the old `${WORKER_INDEX}` prefix gave is folded in
+# rather than separated out.
+#
+# ⚠️ READ `ATTEMPT_ID`, NOT `output.ATTEMPT_ID`. The runner injects it with
+# `-e ATTEMPT_ID=…`, which Maestro exposes as the binding `${ATTEMPT_ID}`; it
+# never populates `output.ATTEMPT_ID`, so the older idiom always fell through to
+# its 4-digit `Date.now()` fallback and two runners collided constantly.
+#
+# Single-quoted: the expression contains double quotes, and quoting the scalar
+# keeps YAML out of it. `Date.now()` is the standalone-run fallback.
+- evalScript: '${output.ATTEMPT_TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'
 
 # R9 — the drill util owns the six-level navigation and its waits.
 # Baseball → 2024 → Topps → tlf-<worker>-<attempt> → Insert → Base.
@@ -150,7 +174,7 @@ tags:
 # FIXTURE SIZING — the generated title must FIT, and the names below are chosen
 # so it does. Titles now fill toward 80: this card generates
 #
-#   "2024 Topps tlf-<w>-<attempt> #101-<attempt> TLF-<attempt> Baseball"
+#   "2024 Topps tlf-<w>-<attempt> #101-<attempt> TLF<token> Baseball"
 #
 # NEO-208 leaves that string BYTE-IDENTICAL, which is why nothing below moved.
 # The generator takes one `teamNames: string[]`; `addCustomCard` now fills it
@@ -162,14 +186,19 @@ tags:
 # creation title and the regenerated one read.
 #
 # NEO-214 replaced the shared "New York Yankees" fixture with the per-attempt
-# "TLF-<attempt>" this flow creates itself, and the arithmetic below SHRANK
-# rather than grew: 16 characters became 11-15 (`TLF-` plus a 7-11 character
-# ATTEMPT_ID), so the tail is never longer than it used to be.
+# name this flow creates itself, and the arithmetic SHRANK rather than grew:
+# 16 characters became 11-15 (`TLF-` plus a 7-11 character ATTEMPT_ID). NEO-260
+# then made the name a single search token — `TLF` + ATTEMPT_ID with its two
+# hyphens stripped — which spends 3 FEWER characters again: 8-12 where the
+# hyphenated form spent 11-15, and 16 before that. The budget below is a
+# ceiling, and every step of this history has moved away from it, so the
+# separator-free rename cannot be what pushes the title over.
 #
-# which measures 58-70 characters across the ATTEMPT_ID lengths the runners
-# produce (`<runner>-a<n>-<RANDOM>`, 7-11 chars; ~72 even if a runner index ever
-# went to two digits). That headroom is not cosmetic. If the CORE overflowed,
-# the generator would cut it at a word boundary and stamp
+# The whole generated string measures 55-67 characters across the ATTEMPT_ID
+# lengths the runners produce (`<runner>-a<n>-<RANDOM>`, 7-11 chars; ~69 even if
+# a runner index ever went to two digits) — was 58-70 before the rename. That
+# headroom is not cosmetic. If the CORE overflowed, the generator would cut it
+# at a word boundary and stamp
 # `listingTitleTruncated`, which adds a SECOND attention item to this card - and
 # the walker's fixer would then state two reasons where every assertion below
 # expects exactly one. Keep the player and card names short if you change them;
@@ -211,14 +240,14 @@ tags:
     element:
       id: "Add team"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     id: "Add team"
 - assertVisible:
     id: "Search teams"
 - tapOn:
     id: "Search teams"
-- inputText: "TLF-${ATTEMPT_ID}"
+- inputText: "TLF${output.ATTEMPT_TOKEN}"
 # "+ New team", not "Add" (NEO-214): the global seeded Yankees/Mets fixture is
 # gone, so `teams` is empty until a flow fills it and this picker's own escape
 # hatch is how a card gets a team. The name is per-worker AND per-attempt —
@@ -228,7 +257,7 @@ tags:
 #
 # NEO-236 — that row now OPENS a dialog instead of writing.
 - tapOn:
-    id: "New team TLF-${ATTEMPT_ID}"
+    id: "New team TLF${output.ATTEMPT_TOKEN}"
 
 # The New Team dialog — portalled to `document.body` at `z-[60]`, `fixed inset-0`
 # and centred, so nothing clips it. It is where the three questions a team row
@@ -246,10 +275,10 @@ tags:
 # The NAME BOX and its VALUE is the dialog being correctly SEEDED — maestro-web
 # reports an input by its value, so this says the search text really reached the
 # field the operator is about to submit.
-- assertVisible: "New team: TLF-${ATTEMPT_ID}"
+- assertVisible: "New team: TLF${output.ATTEMPT_TOKEN}"
 - assertVisible:
     id: "New team name"
-    text: "TLF-${ATTEMPT_ID}"
+    text: "TLF${output.ATTEMPT_TOKEN}"
 
 # THE WRITE. Nothing is typed in the dialog: Team name is pre-filled with what
 # was searched, Location stays blank and no League is picked, so the COMPOSED
@@ -262,11 +291,11 @@ tags:
 # element by an XPath that falls back to that class, so an Enter aimed at Create
 # could land on Cancel.
 - tapOn:
-    id: "Create team TLF-${ATTEMPT_ID}"
+    id: "Create team TLF${output.ATTEMPT_TOKEN}"
 # The chip is the proof the creation landed. Unlike the drawer's picker this one
 # is not a draft — its value goes straight into `addCustomCard` on Submit.
 - assertVisible:
-    id: "Remove team TLF-${ATTEMPT_ID}"
+    id: "Remove team TLF${output.ATTEMPT_TOKEN}"
 
 # Close the popover BEFORE reaching for Submit. It is `absolute top-full`, and
 # in this form the picker sits directly above the Add/Cancel row, so an open
@@ -290,7 +319,7 @@ tags:
     element:
       id: "Submit new card"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     id: "Submit new card"
 
@@ -302,7 +331,7 @@ tags:
     centerElement: true
     visibilityPercentage: 50
     waitToSettleTimeoutMs: 1000
-    timeout: 15000
+    timeout: 7000
 - tapOn:
     id: "Edit card 101-${ATTEMPT_ID}"
     waitToSettleTimeoutMs: 2000
@@ -387,7 +416,7 @@ tags:
 # What is left is the whole rebuilt title, asserted as its exact SHAPE rather
 # than as "contains the card number":
 #
-#   2024 Topps <this attempt's set>  #101-<attempt>  TLF-<attempt>  Baseball
+#   2024 Topps <this attempt's set>  #101-<attempt>  TLF<token>  Baseball
 #   └─────── core ───────────────┘  └── number ──┘  └─── fill tail ───┘
 #
 # The fill tail is the part worth pinning. Titles are built to fill toward 80
@@ -411,7 +440,7 @@ tags:
 # "the padding went away".
 - assertVisible:
     id: "Card title"
-    text: "2024 Topps .*#101-${ATTEMPT_ID} TLF-${ATTEMPT_ID} Baseball"
+    text: "2024 Topps .*#101-${ATTEMPT_ID} TLF${output.ATTEMPT_TOKEN} Baseball"
 # ...and it fits, so the refusal is lifted.
 - assertNotVisible: ".*Shorten it before saving.*"
 
@@ -508,11 +537,27 @@ tags:
 # THIS row and THIS kind. R6: the scroll IS the assertion; nothing repeats it.
 # ════════════════════════════════════════════════════════════════════════════
 
+# WHERE THE PAGE IS, WHERE THE ANCHOR IS, AND WHY *UP*. The drawer above closes
+# with the page at MAXIMUM SCROLL, and this badge is a cell in the checklist ROW
+# — the last block on the page, whose rows have already gone off the TOP of the
+# viewport by the time the document has run out of scroll. A DOWN scroll from
+# there travels away from it, and CardChecklist's react-virtuoso list unmounts a
+# row that is off-screen, so the badge is not merely out of view: it is not in
+# the hierarchy at all, and the step reads as "No visible element found".
+# MEASURED. Green CI 34361627641 found it at y=194 at try 0 with no swipe.
+# NEO-260's 208px spacer (src/layouts/binder-layout.tsx) gives the page exactly
+# that much more travel: 194 - 208 = -14. Run 34429321550 runner 7 failed here
+# with root bounds [0,-1135][1009,625] (document bottom flush with the viewport
+# bottom = maximum scroll) and `virtuoso-item-list` at [72,-93][767,15] holding
+# no rendered rows at all. UP re-anchors instead of relying on the page having
+# run out of scroll first (R5, "must never depend on the document bottoming
+# out"); one swipe puts the row back in the band.
 - scrollUntilVisible:
     element:
       id: "Card 101-${ATTEMPT_ID} needs attention: variation text is over the 65-character limit"
+    direction: UP
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 
 # An EXACT count — this attempt's checklist holds exactly one card, so a rule
 # that over- or under-flags fails here rather than reading as "a badge exists".
@@ -521,7 +566,7 @@ tags:
       text: "1 need attention"
     direction: UP
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 
 # ════════════════════════════════════════════════════════════════════════════
 # THE WALKER — opened by hand from the header (it never opens itself).
@@ -548,7 +593,7 @@ tags:
 # confused with the drawer's own "Card title" field.
 - assertVisible:
     id: "Card title for #101-${ATTEMPT_ID}"
-    text: "2024 Topps .*#101-${ATTEMPT_ID} TLF-${ATTEMPT_ID} Baseball"
+    text: "2024 Topps .*#101-${ATTEMPT_ID} TLF${output.ATTEMPT_TOKEN} Baseball"
 
 # ════════════════════════════════════════════════════════════════════════════
 # THE FIX — shorten the variation until the field stops complaining, then save.

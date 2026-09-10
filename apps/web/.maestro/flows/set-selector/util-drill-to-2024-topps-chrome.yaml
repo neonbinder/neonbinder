@@ -46,6 +46,7 @@ tags:
       text: ${SPORT || "Baseball"}
     centerElement: true
     waitToSettleTimeoutMs: 0
+    timeout: 7000
 # NEO-85 residual coordinate-staleness: even after the write-if-changed churn fix,
 # maestro-web can read a row's bounds then have the still-settling column reflow
 # before the click lands stale → a false "Something changed… Proceed" that didn't
@@ -190,7 +191,7 @@ tags:
             below:
               text: "Sets"
           centerElement: true
-          timeout: 15000
+          timeout: 7000
       - retry:
           maxRetries: 1
           commands:

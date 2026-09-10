@@ -59,10 +59,22 @@ tags:
 # without it the tap fails with "Element not found" even though the page is
 # perfectly fine — assertVisible/tapOn enforce viewport visibility in
 # maestro-web, they are not DOM-only lookups.
+# R8 case 1 -> R5's 7000. MEASURED over 4 green CI runs (n=3): `Element
+# bounds` frozen at y=513 through `Scrolling try count: 0`..`5`, completing on
+# the give-up path at 9.8 s EVERY run — the page is already at maximum
+# scroll, so the target never reaches the centre band (250-375) and the five
+# swipes buy nothing. NEO-260 ships the fix: a 208px spacer at the bottom of
+# the authenticated shell (`h-[208px]`, src/layouts/binder-layout.tsx), which
+# gives the page exactly that much more to scroll. 513 - 208 = 305 (centre
+# 325) — and across 2,396 centred DOWN scrolls in 4 green CI runs the lowest
+# give-up sat at a centre of 464, with clean accepts throughout this range.
+# So it centres on the first swipe (measured 1.38-1.43 s) and the whole step
+# costs ~4.2 s. 7000 DEPENDS on that spacer; delete it and this step reds.
 - scrollUntilVisible:
     element:
       text: "Generate QR Code"
     centerElement: true
+    timeout: 7000
 - tapOn: "Generate QR Code"
 
 # Step 6: the generated content (QR box, encoded-URL <p>, Download/Print) renders
@@ -71,10 +83,26 @@ tags:
 # into view (centerElement) first; it sits just below the URL <p>, so bringing it
 # on-screen also surfaces the URL text. (Different element than the URL we assert
 # next, so this scroll is not a redundant pre-assert of that text — R6 ok.)
+# R8 case 1 -> R5's 7000. MEASURED over 4 green CI runs (n=3): `Element
+# bounds` frozen at y=513 through `Scrolling try count: 0`..`5`, completing on
+# the give-up path at 11.9 s EVERY run — the page is already at maximum
+# scroll, so the target never reaches the centre band (250-375) and the five
+# swipes buy nothing. NEO-260 ships the fix: a 208px spacer at the bottom of
+# the authenticated shell (`h-[208px]`, src/layouts/binder-layout.tsx), which
+# gives the page exactly that much more to scroll. 513 - 208 = 305 (centre
+# 325) — and across 2,396 centred DOWN scrolls in 4 green CI runs the lowest
+# give-up sat at a centre of 464, with clean accepts throughout this range.
+# So it centres on the first swipe (measured 1.38-1.43 s) and the whole step
+# costs ~6.2 s. 7000 DEPENDS on that spacer; delete it and this step reds.
+# This is the TIGHTEST site in the area: 4.74 s of travel (two swipes past the
+# generated QR box) plus ~1.5 s of centring is ~6.2 s against 7000. Centring is
+# kept because it is what also brings the encoded-URL <p> asserted below onto
+# the screen; watch this one first if CI reds after the padding lands.
 - scrollUntilVisible:
     element:
       text: "Download"
     centerElement: true
+    timeout: 7000
 
 # Step 7: the encoded sale URL renders as plain <p> text — assert it carries this
 # user's username and the amount. Integer amounts render bare (8, not 8.00). The

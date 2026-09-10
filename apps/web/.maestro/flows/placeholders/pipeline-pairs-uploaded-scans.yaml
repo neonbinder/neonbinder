@@ -95,7 +95,6 @@ url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/se
 name: Placeholder pipeline (fast path) — six frame-filling scans process fast, no cold start
 tags:
   - placeholders
-  - regression
 ---
 # Step 1: sign in, then the seed page uploads the six full-bleed fixtures and
 # forwards to the run view for the session it just created.
@@ -133,6 +132,7 @@ tags:
     element:
       text: "Your cards"
     centerElement: true
+    timeout: 7000
 
 # ── Step 3: the fast-path completion wait ─────────────────────────────────────
 # All six images process on the FAST classical service and none touches the model.
@@ -190,6 +190,7 @@ tags:
     element:
       text: "Finish the batch"
     centerElement: true
+    timeout: 7000
 - tapOn: "Finish the batch"
 # Finishing is guarded behind an "are you sure". Its focus opens on the cancel
 # choice (so a reflexive Enter does the safe thing), which is why the confirm is
@@ -247,9 +248,11 @@ tags:
     element:
       text: "Check the pairs"
     centerElement: true
+    timeout: 7000
 # The two unpaired backs are surfaced as their own bucket, not swallowed. Also
 # below the fold, and further down than the review heading, so it scrolls too.
 - scrollUntilVisible:
     element:
       text: "Not paired (2)"
     centerElement: true
+    timeout: 7000

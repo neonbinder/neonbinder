@@ -25,8 +25,10 @@ import {
  * Maestro builds `resource-id = node.id || node.ariaLabel || …`, so an
  * auto-generated `id` would clobber the aria-label and break every
  * `tapOn id: "<aria-label>"` selector in `.maestro/flows/`. Uniqueness comes
- * from a **class**; an `id` appears only when the caller passes one (several
- * profile flows target `pub-*` ids deliberately). Label association therefore
+ * from a **class**; an `id` appears only when the caller passes one
+ * (`PublicProfileEditor` passes one per field so its visible `<label>`s can use
+ * `htmlFor` — label wiring, NOT a test handle: NEO-260 moved both profile flows
+ * onto the visible label text, and no flow targets a DOM id anywhere). Label association therefore
  * uses `htmlFor` when the caller supplies an `id`, and a wrapping `<label>`
  * (implicit association) when it does not — accessible either way, without
  * inventing an id.

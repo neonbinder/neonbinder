@@ -224,4 +224,96 @@ describe("EntityColumn — ensureSync new path (NEO-47)", () => {
       expect(queryByText("Syncing Variant Types")).toBeNull();
     });
   });
+
+  /**
+   * NEO-260 (a11y) — pressing "Sync <X>" must not strand the keyboard.
+   *
+   * On this path the click swaps the idle button row for the "Fetching from
+   * marketplaces…" panel, so the button the operator was standing on unmounts
+   * and focus falls to <body>: the next Tab restarts from the top of the
+   * document, a whole page header and several columns away from the cascade.
+   *
+   * The original park keyed on `mode`, which never leaves "idle" here — so it
+   * covered the custom form and missed the column's main action. The park keys
+   * on which BRANCH is rendered now, which is what actually tore the controls
+   * down.
+   */
+  describe("focus park across a branch swap (NEO-260)", () => {
+    async function populated(rerender: (ui: React.ReactElement) => void) {
+      state.items = [{ _id: "vt1", value: "Base", level: "variantType" }];
+      await act(async () => {
+        rerender(<EntityColumn {...vtProps} />);
+      });
+    }
+
+    it("parks focus on the column when Sync replaces the buttons it lived in", async () => {
+      state.items = undefined;
+      state.status = null;
+      const { container, getByText, rerender } = renderVT();
+      await act(async () => {});
+      await populated(rerender);
+
+      const syncBtn = getByText("Sync Variant Types");
+      syncBtn.focus();
+      expect(document.activeElement).toBe(syncBtn);
+      await act(async () => {
+        syncBtn.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+        syncBtn.click();
+      });
+
+      state.status = { status: "syncing" };
+      await act(async () => {
+        rerender(<EntityColumn {...vtProps} />);
+      });
+
+      const column = container.firstElementChild as HTMLElement;
+      expect(getByText("Syncing Variant Types")).toBeTruthy();
+      expect(document.activeElement).toBe(column);
+      // Programmatic target only — it must not become a tab stop.
+      expect(column.getAttribute("tabindex")).toBe("-1");
+    });
+
+    it("does not grab focus on a column nobody has touched", async () => {
+      // A background sync flips a shared status row while the page is still
+      // settling, and on first paint `document.activeElement` IS <body>. Without
+      // the focus-was-inside guard the cascade would seize focus at load and
+      // drag a screen reader's cursor with it.
+      state.items = undefined;
+      state.status = null;
+      const { getByText, rerender } = renderVT();
+      await act(async () => {});
+      await populated(rerender);
+      expect(document.activeElement).toBe(document.body);
+
+      state.status = { status: "syncing" };
+      await act(async () => {
+        rerender(<EntityColumn {...vtProps} />);
+      });
+
+      expect(getByText("Syncing Variant Types")).toBeTruthy();
+      expect(document.activeElement).toBe(document.body);
+    });
+
+    it("never steals focus the operator has already moved elsewhere", async () => {
+      state.items = undefined;
+      state.status = null;
+      const { getByText, rerender } = renderVT();
+      await act(async () => {});
+      await populated(rerender);
+
+      const syncBtn = getByText("Sync Variant Types");
+      syncBtn.focus();
+      const elsewhere = document.createElement("button");
+      document.body.appendChild(elsewhere);
+      elsewhere.focus();
+
+      state.status = { status: "syncing" };
+      await act(async () => {
+        rerender(<EntityColumn {...vtProps} />);
+      });
+
+      expect(document.activeElement).toBe(elsewhere);
+      elsewhere.remove();
+    });
+  });
 });

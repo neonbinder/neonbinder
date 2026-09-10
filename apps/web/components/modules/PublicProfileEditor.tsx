@@ -1,5 +1,3 @@
-"use client";
-
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useQuery, useMutation, useAction } from "convex/react";
 import { api } from "@/convex/_generated/api";
@@ -331,6 +329,28 @@ export default function PublicProfileEditor() {
 
   const canInferUrl = username.length > 0;
 
+  /**
+   * NEO-260 — every `pub-*` id below is LABEL WIRING, not a test handle.
+   *
+   * Each field renders a visible `<label htmlFor="pub-…">` and the shared
+   * `Input` primitive is in `bare` mode, so it emits only the `<input>`: the
+   * explicit id is the only thing associating the two. Delete an id and the
+   * label stops naming its field for a screen reader and stops focusing it on
+   * click — which is also how a person, and the profile Maestro flows, reach
+   * these inputs (tap the visible label, then type).
+   *
+   * The flows deliberately target the LABEL TEXT, never these ids: a DOM id is
+   * invisible to a sighted user and to a screen reader alike, so a flow that
+   * targets one can pass while the real experience is broken. Keeping the id
+   * has a second payoff for those flows — maestro-web re-finds the focused
+   * element by `createXPathFromElement`, which prefers `id("…")`, so every
+   * keystroke lands in the field the label just focused.
+   *
+   * Rule of thumb when editing this file: add a visible `<label htmlFor>` +
+   * matching id for a new field, and use `aria-label` only where the design
+   * has no visible label (the two brand hex boxes above).
+   */
+
   return (
     <div className="space-y-8">
       {/* Basic Info */}
@@ -457,6 +477,7 @@ export default function PublicProfileEditor() {
               onChange={(e) => edit(setBrandColor1)(e.target.value)}
               className="w-28 px-2 py-1 text-sm font-mono text-slate-300"
               placeholder="#00D558"
+              aria-label="Brand hex code 1"
             />
           </div>
           <div className="flex items-center gap-3">
@@ -474,6 +495,7 @@ export default function PublicProfileEditor() {
               onChange={(e) => edit(setBrandColor2)(e.target.value)}
               className="w-28 px-2 py-1 text-sm font-mono text-slate-300"
               placeholder="#A44AFF"
+              aria-label="Brand hex code 2"
             />
           </div>
         </div>

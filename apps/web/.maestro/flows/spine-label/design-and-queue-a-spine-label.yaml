@@ -61,6 +61,7 @@ tags:
     element:
       text: "Name on the label"
     centerElement: true
+    timeout: 7000
 - tapOn: "Name on the label"
 - inputText: "Ken Griffey Jr."
 
@@ -77,6 +78,7 @@ tags:
     element:
       text: ".*Contrast .*:1.*"
     centerElement: true
+    timeout: 7000
 
 # Step 4: choose the typeface. Eleven buttons, each labelled with its own font
 # name and set in that face; "Graduate" is the collegiate slab.
@@ -84,6 +86,7 @@ tags:
     element:
       text: "Graduate"
     centerElement: true
+    timeout: 7000
 - tapOn: "Graduate"
 
 # The one-line character note under the picker follows the SELECTED font, so it
@@ -99,6 +102,7 @@ tags:
     element:
       text: '3"'
     centerElement: true
+    timeout: 7000
 - tapOn: '3"'
 
 # The "labels per sheet" line is computed from the chosen width — two 3" spines
@@ -108,10 +112,25 @@ tags:
 - assertVisible: ".*2 labels per sheet at 3. wide.*"
 
 # Step 6: queue the label.
+# R8 case 1 -> R5's 7000. MEASURED over 4 green CI runs (n=3): `Element
+# bounds` frozen at y=569 through `Scrolling try count: 0`..`5`, completing on
+# the give-up path at 10.0 s EVERY run — the page is already at maximum
+# scroll, so the target never reaches the centre band (250-375) and the five
+# swipes buy nothing. NEO-260 ships the fix: a 208px spacer at the bottom of
+# the authenticated shell (`h-[208px]`, src/layouts/binder-layout.tsx), which
+# gives the page exactly that much more to scroll. 569 - 208 = 361 (centre
+# 377) — and across 2,396 centred DOWN scrolls in 4 green CI runs the lowest
+# give-up sat at a centre of 464, with clean accepts throughout this range.
+# So it centres on the first swipe (measured 1.38-1.43 s) and the whole step
+# costs ~4.2 s. 7000 DEPENDS on that spacer; delete it and this step reds.
+# y=569 is the DEEPEST give-up in the area, so it is the thinnest margin against
+# the 208px spacer: centre 377, still 87px clear of the lowest give-up centre
+# observed anywhere (464). Any future trim of that spacer breaks this site first.
 - scrollUntilVisible:
     element:
       text: "Add to sheet"
     centerElement: true
+    timeout: 7000
 - tapOn: "Add to sheet"
 
 # Step 7: the label is on the sheet.
@@ -130,11 +149,48 @@ tags:
 # target forever, and an off-screen element is pruned from the hierarchy before
 # any selector runs, so it reads as "no visible element found" rather than as a
 # scrolling problem.
+#
+# THE THREE SWIPES BELOW ARE POSITIONING, NOT ASSERTION — and they are what
+# NEO-260's 208px spacer made necessary. This is the only one of the seven
+# post-spacer failures that is a TRAVEL problem rather than a direction problem:
+# the direction was already right.
+# THE ARITHMETIC. This Remove button sits at document y=429; the page is at
+# maximum scroll when "Add to sheet" is pressed, and the spacer moved that
+# maximum from 1044 to 1252. A driver swipe covers a flat 313px, so the UP scroll
+# can only sample the page at P, P-313, P-626 … and the ladder decides
+# everything. Green CI 34361627641 started at 1044 and its rungs were
+# 1044/731/418/105 — it found the button at y=11 on the third read, swiped once
+# more to y=324 and accepted, in 6.29 s. Post-spacer the rungs are
+# 1252/939/626/313/0: an extra rung, five reads instead of four, and run
+# 34429321550 runner 0 was cut off by `timeout: 7000` at 8.47 s having just
+# logged the button at y=116 — the step never got to the read that would have
+# accepted it at y=429 (centre 445; measured across the 64 centred UP scrolls in
+# the green run, UP accepts from centre 206 upward and rejects at 178 and below,
+# so 445 is an accept, not a give-up).
+# So we close the distance first and let the centred scroll do only the last
+# leg. Three swipes at 312px take the page to ~314, from which the scroll needs
+# at most two hierarchy reads (~2.7 s) whatever the page height does: it accepts
+# at the first rung whose centre clears ~200, and the document running out of
+# scroll at the top puts the button at 429, which is itself an accept.
+# R5 is untouched — the ceiling stays 7000 and the step now finishes far inside
+# it. Swiping at x=50% is the driver's own swipe axis on this page (every
+# `swipeFromCenter` in this flow's log moved the window a full 313px from there),
+# so it drives the window and nothing nested.
+- swipe:
+    start: "50%, 25%"
+    end: "50%, 75%"
+- swipe:
+    start: "50%, 25%"
+    end: "50%, 75%"
+- swipe:
+    start: "50%, 25%"
+    end: "50%, 75%"
 - scrollUntilVisible:
     element:
       id: "Remove Ken Griffey Jr., 3 inch spine in Graduate, from the sheet"
     direction: UP
     centerElement: true
+    timeout: 7000
 
 # The Sheet heading counts what will PRINT. One 3" label at the default 10.5"
 # height is one page. (Parens escaped — a Maestro text matcher is a fully
@@ -160,3 +216,4 @@ tags:
     element:
       text: "Pick a player, or type a name, to see the label."
     centerElement: true
+    timeout: 7000

@@ -2,7 +2,6 @@ appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
 name: "Topps Chrome — toggle the Reprint checkbox feature via SetAttributesPanel and verify save toast + re-hydration across reload (sole-writer)"
 tags:
-  - regression
   - set-selector
 ---
 # Toggles the "Reprint" CHECKBOX feature on the REAL 2024 Topps Chrome set and
@@ -31,15 +30,17 @@ tags:
 # reload. What CAN be proven — and what this flow asserts — is that the feature
 # row survives the reload, re-renders from the persisted snapshot, and remains
 # saveable (re-toggle → toast). The write-once copy-down that Reprint used to
-# demonstrate is proven (for its unreadable checkbox value) via Manufacturer
-# (same 1-hop) in new-chain-autopopulates-features.yaml, and the string-sentinel
-# / no-cascade coverage now lives in features-propagation.yaml on "Signed By".
+# demonstrate is proven (for its unreadable checkbox value) via Country of
+# Origin (same 1-hop) in new-chain-autopopulates-features.yaml, and the
+# string-sentinel / no-cascade coverage now lives in features-propagation.yaml
+# on Country of Origin too (NOT "Signed By" — signedBy is hiddenAtLevels:
+# ["set"]).
 #
 # ISOLATION STORY (sole-writer tolerance):
 #   This flow is the SOLE writer of Topps Chrome's Reprint feature. No other flow
 #   writes that datum: topps-chrome-marketplace-read.yaml is read-only and only
 #   checks the row exists; features-propagation.yaml writes a per-worker custom
-#   set's Signed By (never touches the real Topps Chrome Reprint value); card
+#   set's Country of Origin (never touches the real Topps Chrome Reprint); card
 #   checklist flows read Base badges, not Reprint. Because only one instance of
 #   this flow is enqueued per run it never races itself. Each tap flips the value,
 #   and the flow taps exactly twice (once per session) → net self-restoring, so it
@@ -73,9 +74,16 @@ tags:
 # Idempotent expand guard in case a prior isolated flow collapsed it.
 # ============================================================
 
+# R5 — 7000, the bar; R8 keeps the centring. MEASURED (CI 34349299679 +
+# 34361627641): at max scroll this parked at y=518 (band ends ~375) and
+# centring burned all six iterations (~7.6s), which only a 15000/20000
+# ceiling hid. The remedy is the product's: 208px of padding below the last
+# panel (`attributesPanelIsLast`) lifts it into the band so it centres in
+# 1-2 swipes. This step DEPENDS on that padding landing — see R8.
 - scrollUntilVisible:
     element:
       id: "Edit attributes"
+    centerElement: true
     visibilityPercentage: 10
     waitToSettleTimeoutMs: 1000
     timeout: 7000
@@ -130,9 +138,16 @@ tags:
     file: util-drill-to-2024-topps-chrome.yaml
 
 # Open the panel again.
+# R5 — 7000, the bar; R8 keeps the centring. MEASURED (CI 34349299679 +
+# 34361627641): at max scroll this parked at y=518 (band ends ~375) and
+# centring burned all six iterations (~7.6s), which only a 15000/20000
+# ceiling hid. The remedy is the product's: 208px of padding below the last
+# panel (`attributesPanelIsLast`) lifts it into the band so it centres in
+# 1-2 swipes. This step DEPENDS on that padding landing — see R8.
 - scrollUntilVisible:
     element:
       id: "Edit attributes"
+    centerElement: true
     visibilityPercentage: 10
     waitToSettleTimeoutMs: 1000
     timeout: 7000

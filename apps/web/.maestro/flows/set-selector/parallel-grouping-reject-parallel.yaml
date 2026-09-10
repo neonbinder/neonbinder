@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Parallel Grouping — reject (✕) button moves a parallel back to top-level inserts"
 tags:
   - parallel-grouping
-  - regression
 ---
 # PRODUCT-FEATURE test: the per-row ✕ (reject) button inside a "Parallels of X"
 # card. Add <ID> Stars / <ID> Stars Gold / <ID> Champions:
@@ -26,11 +25,6 @@ tags:
 - extendedWaitUntil:
     visible: ".*Build set parameters using marketplace APIs.*"
     timeout: 45000
-
-# Provide a per-run unique prefix for all insert names. The CI runner injects
-# ATTEMPT_ID; for standalone local runs we fall back to the last 4 digits of
-# the current epoch ms (matches move-parallels-of-inserts-custom.yaml pattern).
-- evalScript: ${output.ATTEMPT_ID = output.ATTEMPT_ID || String(Date.now()).slice(-4)}
 
 - runFlow:
     file: util-drill-to-custom-set.yaml
@@ -60,6 +54,7 @@ tags:
     element:
       id: "Add custom Inserts"
     centerElement: true
+    timeout: 7000
 - tapOn:
     id: "Add custom Inserts"
 - assertVisible: "Add Custom Entry"
@@ -75,6 +70,7 @@ tags:
     element:
       id: "Add custom Inserts"
     centerElement: true
+    timeout: 7000
 - tapOn:
     id: "Add custom Inserts"
 - assertVisible: "Add Custom Entry"
@@ -90,6 +86,7 @@ tags:
     element:
       id: "Add custom Inserts"
     centerElement: true
+    timeout: 7000
 - tapOn:
     id: "Add custom Inserts"
 - assertVisible: "Add Custom Entry"
@@ -110,6 +107,7 @@ tags:
     element:
       text: "Group Parallels"
     centerElement: true
+    timeout: 7000
 - tapOn: "Group Parallels"
 - assertVisible: ".*Drag inserts under a parent.*"
 - assertVisible: "Top-level inserts"
@@ -120,6 +118,7 @@ tags:
     element:
       text: ".*Accept all suggestions.*"
     centerElement: true
+    timeout: 7000
 - tapOn: ".*Accept all suggestions.*"
 - assertVisible: ".*[0-9]+ promotion.*"
 # Stars Gold should now be inside the "Parallels of <ID> Stars" zone.

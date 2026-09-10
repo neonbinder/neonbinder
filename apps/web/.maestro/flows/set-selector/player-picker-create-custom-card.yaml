@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Player picker — create a brand-new player and attach it to a CUSTOM card (the gap this closes); it persists across reopen"
 tags:
   - set-selector
-  - regression
 ---
 # R1 — SINGLE FEATURE: the Players section of a card's detail panel is now an
 # editable typeahead chip picker with a "+ Create '<name>'" escape hatch (via
@@ -36,7 +35,7 @@ tags:
 #   acquire playerIds via sync — this flow proves it now can, via manual create.
 #   No other flow exercises PlayerPicker. Drill/add via util-add-custom-card.
 #
-# WHY A UNIQUE NAME ("NBPlayer-${ATTEMPT_ID}"): guarantees no exact match in the
+# WHY A UNIQUE NAME ("NBPlayer${output.ATTEMPT_TOKEN}"): guarantees no exact match in the
 #   players table (per attempt), so the create option is always offered — even
 #   after prior runs seeded players under this synthetic sport. findOrCreate is
 #   idempotent, so a re-run is harmless.
@@ -54,6 +53,31 @@ tags:
 - extendedWaitUntil:
     visible: ".*Build set parameters using marketplace APIs.*"
     timeout: 45000
+
+# ── The minted name's single search token (SET-REGISTRY.md, "A name typed into
+# a team picker must be a SINGLE search token") ──────────────────────────────
+# `teams.search` / `players.search` are Convex SEARCH indexes: they match on
+# TOKENS split at non-alphanumerics, so a hyphenated `Prefix-<attempt>` name
+# tokenizes to ["Prefix", "<attempt>"] and every row any flow ever left behind
+# under that prefix comes back as a suggestion — the per-attempt suffix buys
+# nothing. Nothing deletes a team (the app has no delete-team affordance; the
+# picker's "Remove team" only unlinks it from the card), so those rows stand for
+# the whole run and are visible to every concurrent worker. The names below are
+# therefore ONE alphanumeric token with no separator at all.
+#
+# The token is ATTEMPT_ID with its hyphens stripped: "w3-a1-23945" is three
+# search terms, "w3a123945" is one — and it still carries the worker index, so
+# the per-worker distinction the old `${WORKER_INDEX}` prefix gave is folded in
+# rather than separated out.
+#
+# ⚠️ READ `ATTEMPT_ID`, NOT `output.ATTEMPT_ID`. The runner injects it with
+# `-e ATTEMPT_ID=…`, which Maestro exposes as the binding `${ATTEMPT_ID}`; it
+# never populates `output.ATTEMPT_ID`, so the older idiom always fell through to
+# its 4-digit `Date.now()` fallback and two runners collided constantly.
+#
+# Single-quoted: the expression contains double quotes, and quoting the scalar
+# keeps YAML out of it. `Date.now()` is the standalone-run fallback.
+- evalScript: '${output.ATTEMPT_TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'
 
 # ============================================================
 # DRILL TO PER-WORKER CUSTOM SET + ADD A CUSTOM CARD
@@ -115,17 +139,17 @@ tags:
     id: "Search players"
 - tapOn:
     id: "Search players"
-- inputText: "NBPlayer-${ATTEMPT_ID}"
+- inputText: "NBPlayer${output.ATTEMPT_TOKEN}"
 
 # No existing player matches this unique name, so the "+ Create" row appears.
 - assertVisible:
-    id: "Create player NBPlayer-${ATTEMPT_ID}"
+    id: "Create player NBPlayer${output.ATTEMPT_TOKEN}"
 - tapOn:
-    id: "Create player NBPlayer-${ATTEMPT_ID}"
+    id: "Create player NBPlayer${output.ATTEMPT_TOKEN}"
 
 # The created player is attached as a chip (its remove button proves the chip).
 - assertVisible:
-    id: "Remove player NBPlayer-${ATTEMPT_ID}"
+    id: "Remove player NBPlayer${output.ATTEMPT_TOKEN}"
 
 # ============================================================
 # THE WRITE — NEO-216: choosing "+ Create" both creates the player entity
@@ -150,12 +174,30 @@ tags:
 # REOPEN + VERIFY PERSISTENCE (a custom card now durably holds a player)
 # ============================================================
 
+# WHERE THE PAGE IS, WHERE THE ANCHOR IS, AND WHY *UP*. "Done editing card"
+# closes the drawer and leaves the page at MAXIMUM SCROLL — the three x=80%
+# swipes above drive the drawer's own scroller and chain to the window once it
+# bottoms out. This Edit button is a cell in the checklist row, i.e. in the LAST
+# block on the page, which by then has gone off the TOP of the viewport. A DOWN
+# scroll travels away from it, and CardChecklist's react-virtuoso list unmounts
+# an off-screen row, so the button is not in the hierarchy at all.
+# MEASURED, both halves in the same runs. Green CI 34361627641: the same button
+# at y=272 before the drawer opened and y=156 after it closed, accepted at try 0.
+# Run 34429321550 runner 1 (first run with NEO-260's 208px spacer): y=64 before
+# (272 - 208) and, after the close, 156 - 208 = -52 — five ElementNotFound
+# retries, and the failure dump shows root bounds [0,-1135][1009,625] (document
+# bottom flush with the viewport bottom = maximum scroll) with
+# `virtuoso-item-list` at [72,-93][767,15] holding no rendered rows.
+# UP re-anchors rather than depending on the document bottoming out (R5); one
+# swipe brings the row from -52 to ~261, inside the band, and the tap that
+# follows lands clear of the sticky header.
 - scrollUntilVisible:
     element:
       id: "Edit card 777-${ATTEMPT_ID}"
+    direction: UP
     centerElement: true
     visibilityPercentage: 50
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     id: "Edit card 777-${ATTEMPT_ID}"
     waitToSettleTimeoutMs: 2000
@@ -176,7 +218,7 @@ tags:
     end: "80%, 20%"
 
 - assertVisible:
-    id: "Remove player NBPlayer-${ATTEMPT_ID}"
+    id: "Remove player NBPlayer${output.ATTEMPT_TOKEN}"
 
 # ============================================================
 # CLOSE + CLEANUP — delete this attempt's test card
@@ -187,12 +229,36 @@ tags:
 - assertNotVisible:
     id: "Card name"
 
+# SAME ROW, SAME PROBLEM, SAME DIRECTION as the Edit button above — Del and Edit
+# are two cells of ONE checklist row, so whatever is true of one is true of the
+# other. This step was simply not touched when that one was fixed.
+#
+# WHERE THE PAGE SITS WHEN THIS STEP BEGINS: at maximum scroll. The three
+# x=80% swipes that reached the Players section drive the drawer's own scroller
+# and chain to the window once it bottoms out, and "Done editing card" only
+# closes the drawer — it does not scroll. WHERE THE ANCHOR IS IN DOM ORDER: the
+# checklist row is in `CardChecklist`, the LAST block on the page, which by then
+# is off the TOP of the viewport. A DOWN scroll travels away from it.
+# MEASURED. Green CI 34361627641 (r2) read this exact button at y=156 and
+# accepted it at try 0 without swiping at all. NEO-260's 208px spacer
+# (`h-[208px]`, src/layouts/binder-layout.tsx) puts the same row at 156-208 =
+# -52, and run 34433476511 (r0) failed here after four `ElementNotFound`
+# retries. The dump is the same signature the Edit step above documents: root
+# bounds [0,-1135][1009,625] — document bottom flush with the viewport bottom,
+# i.e. maximum scroll — with `virtuoso-item-list` at [72,-93][767,15] holding
+# ZERO rendered rows. react-virtuoso has UNMOUNTED the row, so the button is not
+# merely off-screen, it is out of the DOM and no DOWN scroll can ever find it.
+# UP re-anchors instead (R5: never depend on the document bottoming out). One
+# swipe brings the row from -52 to ~261 — the Edit step measured exactly that a
+# few commands earlier in this same run — which centres at try 0 and leaves the
+# tap clear of the 64px sticky header.
 - scrollUntilVisible:
     element:
       id: "Delete card 777-${ATTEMPT_ID}"
+    direction: UP
     centerElement: true
     visibilityPercentage: 50
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     id: "Delete card 777-${ATTEMPT_ID}"
 - assertVisible: "Confirm?"

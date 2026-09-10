@@ -1541,58 +1541,24 @@ NeonBinder blends a **90s hobby-shop neon aesthetic** with **modern minimalism**
 - If flow changes while writing code and it breaks a test only update it with permission from the user and an explination of why it broke
 - No code change should be considered finished without running `npm run test:e2e:single` for each test associated with this code change and `npm run test:e2e:smoke` once to validate no regression
 
-## Scheduling tags (`run-e2e-smoke.sh`)
+## Flow ordering: there isn't any
 
-Every Maestro flow declares its scheduling profile via tags in its top-level `tags:` block. The runner reads these to decide when each flow is allowed to start, and which workers it lands on.
+**Write every flow self-contained.** It creates and uses its own per-worker data, or it reads the seeded baseline without mutating it. There is no way to say "run me after that other flow" — CI's work queue (`run-e2e-queue.sh`, NEO-49) hands flows to a homogeneous runner pool in no particular order, and the local runner distributes them across workers. A flow that only passes when some other flow ran first is a broken flow.
+
+The one ordering that exists is the seed: `run-e2e-smoke.sh setup` runs `e2e-baseline.sh reset` then `flows/setup.yaml`, and it is the only entry point that runs a `setup`-tagged flow. CI does it in the pre-matrix `seed` job; locally you run `npm run test:e2e -- setup` yourself.
+
+> NEO-260 deleted the `requires:` / `provides:` dependency graph that used to live in `run-e2e-smoke.sh`. No flow had carried one since NEO-49 replaced the model with the work queue. Don't add those tags to a new flow — nothing reads them.
+
+## Serialisation tags (`run-e2e-smoke.sh`, local only)
+
+Two tags in a flow's top-level `tags:` block still put it on a dedicated serial worker in the **local** runner. No flow carries either today; reach for one only if your flow genuinely has the conflict described.
 
 | Tag | When to use it | Effect |
 |---|---|---|
-| `requires:<state>` | Your flow asserts on a state of the app/DB that another flow produces (sets loaded, cards loaded, hierarchy populated, etc.). | Flow runs only after every flow tagged `provides:<state>` has succeeded. |
-| `provides:<state>` | Your flow leaves the system in a known state that downstream flows can build on (sync sets, sync card checklists, populate hierarchy, etc.). | The named state is considered achieved when ALL providers complete. |
-| `isolated:true` | Your flow runs after a destructive reset (the scripted `e2e-baseline.sh reset` — NEO-214; there is no "Reset Set Builder Data" button anymore) or otherwise wipes global tables, and assumes a fresh DB. | Flow runs alone, serially, on a dedicated worker. The cascade (`provides:`/`requires:`) lane is blocked until all isolated flows finish. |
+| `isolated:true` | Your flow wipes or rewrites global tables (`selectorOptions` / `cardChecklist` / `players` / `teams`) and assumes a fresh DB. | Flow runs alone, serially, on a dedicated worker. |
 | `serial-marketplace` | Your flow saves or tests BSC / SportLots credentials, hitting `/login/bsc` or `/login/sportlots` on the browser service. | Flow serializes with other marketplace flows on a dedicated worker (the browser service 503s under concurrent marketplace logins). Runs concurrently with everything else. |
-| (none of the above) | Your flow is parallel-safe — it touches only the per-worker test user's own state and doesn't depend on global data. | Distributed across workers in parallel. |
+| (neither) | Your flow is parallel-safe — it touches only the per-worker test user's own state and doesn't depend on global data. | Distributed across workers in parallel. This is what you want. |
 
-`<state>` is a free-form string. Pick a name that describes the data state (`setup-done`, `sets-loaded`, `cards-loaded`). The runner doesn't interpret it — same string = same dependency edge.
+`serial-global` is a legacy alias for `isolated:true` and is still recognized for backwards compat. Prefer `isolated:true`.
 
-Examples:
-
-```yaml
-# A new feature that needs card checklists loaded but doesn't itself produce state:
-tags:
-  - smoke
-  - card-pricing
-  - requires:cards-loaded
-```
-
-```yaml
-# A flow that's part of the cascade — depends on setup, contributes to sets-loaded:
-tags:
-  - regression
-  - requires:setup-done
-  - provides:sets-loaded
-```
-
-```yaml
-# An edge-case test that needs a wiped DB:
-tags:
-  - regression
-  - empty-state
-  - isolated:true
-```
-
-Order tags any way you like; the runner only looks at the `requires:` / `provides:` / `isolated:` / `serial-marketplace` prefixes.
-
-## Cascade pattern (set-selector)
-
-The set-selector cascade lives at `.maestro/flows/set-selector/cascade/` and looks like:
-
-- `setup.yaml` → `provides:setup-done` (does global reset, hierarchy drill, credential setup)
-- `sets-*.yaml` → `requires:setup-done`, `provides:sets-loaded`
-- `cards-*.yaml` → `requires:sets-loaded`, `provides:cards-loaded`
-
-When you add a new feature flow that depends on cards being loaded, just tag it `requires:cards-loaded`. The runner schedules it after the cascade completes — no runner changes needed.
-
-## Legacy `serial-global` tag
-
-`serial-global` is a legacy alias for `isolated:true` and is still recognized for backwards compat. Prefer `isolated:true` in new flows.
+Neither tag has any effect in CI: the work queue does not read them. A flow that needs one is a flow CI cannot schedule safely, so treat it as a design problem first.

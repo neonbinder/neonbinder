@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Entity review — a hand-staged career team survives the commit and becomes a real team row"
 tags:
   - set-selector
-  - regression
 ---
 # R1 — ONE FEATURE: what a hand-staged career team is worth once the review is
 # COMMITTED. The sibling read-only flow (checklist-wizard-career-team-entry)
@@ -105,7 +104,7 @@ tags:
 #
 # `MintedTeam<token>` has NO separator at all, so it is a SINGLE token that
 # nothing else can match — not the sibling's "CareerTeam", not its per-attempt
-# token, and not any of the `TMT-`/`PMT-`/`SLA-`/`CNAA-`/`TPT-`/`NBTeam-`/`TLF-`
+# token, and not any of the `TMT`/`PMT`/`SLA`/`CNAA`/`TPT`/`NBTeam`/`TLF`
 # names the other team-creating flows use. The read-only sibling keeps
 # `CareerTeam-…` and never persists it, because it discards its batch.
 #

@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Cross-release — a card printed in another product shows up in this set's checklist, badged with the set it came from"
 tags:
   - set-selector
-  - regression
 ---
 # ============================================================================
 # R1 — ONE FEATURE: cross-release import (NEO-21).
@@ -118,7 +117,7 @@ tags:
     centerElement: true
     visibilityPercentage: 50
     waitToSettleTimeoutMs: 1000
-    timeout: 15000
+    timeout: 7000
 
 # ── ASSERTION 3: the row names the set the card was actually printed in ──────
 # The badge reads "↗ 2026 Topps xsrc-<worker>". Matched on the set name only,
@@ -141,7 +140,7 @@ tags:
       id: "Remove card 951-${ATTEMPT_ID} from this set"
     centerElement: true
     visibilityPercentage: 50
-    timeout: 15000
+    timeout: 7000
 - tapOn:
     id: "Remove card 951-${ATTEMPT_ID} from this set"
 - tapOn:

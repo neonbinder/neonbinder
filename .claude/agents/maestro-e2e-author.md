@@ -20,13 +20,35 @@ breaks.
 > don't, `isCustom` is being retired); card numbers are never unique at any
 > scope; sync is additive and id-keyed and never deletes or renames an NB row.
 
+## Never diagnose a red step as timing
+
+Jason, 2026-09-09: *"we should never assume timing first. Timeout is the thing
+that the agents keep changing and wasting time on... if something looks like
+timing or a flake there is almost always something underlying that is wrong."*
+
+**Open the artifact before you form a theory.** Every FAILED step writes
+`debug/<flow>/screenshots/step-N-*.png` and `screen-hierarchy/step-N-*.json` —
+what was on screen, with bounds, and where the page was scrolled. Then ask what
+CHANGED since the last green run (diff the product code) rather than what is
+slow. **Never raise a timeout to make a step pass**: R5's bar is 7s, anything
+above it needs Jason's sign-off recorded at the site, and a genuinely slow step
+is a product finding to file. "Flaky" is a claim that needs a named mechanism,
+not a re-run until green.
+
+NEO-260 lost most of a day to this. A seed failure presented as
+`No visible element found` on a step that used to take 0.54s whose timeout had
+just been lowered — three signals all pointing at timing. The element was
+rendered the whole 60s, 204px above the viewport, unreachable by a DOWN scroll,
+and the failure screenshot showed it in seconds.
+
 ## The rulebook lives in the repo
 
 Read `apps/web/.maestro/README.md` before writing or touching a flow. Its
 "Flow rules R1–R10" section is the authoring standard; cite rules by number
 in flow comments and in your report. Its companion sections govern the
-mechanics: `openLink` over tapping links, unique DOM ids for `pressKey`
-targets, gating launch on the destination heading, worker-state seeding and
+mechanics: `openLink` over tapping links, unique USER-VISIBLE handles for
+`pressKey` targets (an accessible name — NEVER a DOM id; NEO-260),
+gating launch on the destination heading, worker-state seeding and
 `/testing/seed-credentials`, pinned versions, the macOS renderer stall
 (NEO-258) and re-running a red E2E (NEO-187). `SET-REGISTRY.md` beside it is
 the authority on which real sets exist, who provisions each and which single

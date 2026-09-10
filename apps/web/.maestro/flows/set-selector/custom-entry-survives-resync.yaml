@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: Custom Entry Survives Re-Sync
 tags:
   - set-selector
-  - regression
   # Column inputs now carry unique per-input classes: EntitySelector search
   # inputs have `mb-search-<col>` (NEO-46) and the custom-entry form input
   # has `mb-field-*` via useFieldTestClass() (EntityColumn.tsx). Maestro's
@@ -53,10 +52,18 @@ tags:
 # ..., TestCustomSport-<attempt> rows from prior runs). With a stable
 # (settled) page, CDP scroll succeeds reliably. centerElement: true puts
 # the button at y≈315, fully in view. R8 fix.
+# R5 — 7000, the bar; R8 keeps the centring. MEASURED (CI 34349299679 +
+# 34361627641): at maximum scroll this parked at y=514, 139px below the
+# end of the driver's centre band (~375), so centring ran its full
+# six-iteration give-up path — 10.19s here — on every run. A give-up on every
+# run is centring that never centres, so the remedy is the product's: the
+# 208px scroll spacer in src/layouts/binder-layout.tsx (NEO-260) puts this
+# target at y=306, mid-band, and it now centres in one or two swipes.
+# THIS STEP DEPENDS ON THAT SPACER — see R8.
 - scrollUntilVisible:
     element:
       id: "Add custom Sports"
-    timeout: 15000
+    timeout: 7000
     centerElement: true
 - tapOn:
     id: "Add custom Sports"
@@ -131,10 +138,18 @@ tags:
 - extendedWaitUntil:
     visible: "Baseball"
     timeout: 30000
+# R5 — 7000, the bar; R8 keeps the centring. MEASURED (CI 34349299679 +
+# 34361627641): at maximum scroll this parked at y=514, 139px below the
+# end of the driver's centre band (~375), so centring ran its full
+# six-iteration give-up path — 9.88s here — on every run. A give-up on every
+# run is centring that never centres, so the remedy is the product's: the
+# 208px scroll spacer in src/layouts/binder-layout.tsx (NEO-260) puts this
+# target at y=306, mid-band, and it now centres in one or two swipes.
+# THIS STEP DEPENDS ON THAT SPACER — see R8.
 - scrollUntilVisible:
     element:
       text: "Sync Sports"
-    timeout: 15000
+    timeout: 7000
     centerElement: true
 - tapOn: "Sync Sports"
 
@@ -185,7 +200,7 @@ tags:
                 element:
                   text: "Cancel"
                 centerElement: true
-                timeout: 10000
+                timeout: 7000
             - tapOn: "Cancel"
       - runFlow:
           when:
@@ -195,11 +210,16 @@ tags:
                 when:
                   visible: "Close"
                 commands:
+                  # R5 — 7000, the bar (was 10000). NO LOG EVIDENCE: this step did not
+                  # execute in either green CI run (34349299679, 34361627641), so 7000 is
+                  # the rule's default rather than a measurement. It is an ordinary in-app
+                  # scroll — SportForm renders inline in the column, not in a
+                  # fixed overlay, so the window can move this button.
                   - scrollUntilVisible:
                       element:
                         text: "Close"
                       centerElement: true
-                      timeout: 10000
+                      timeout: 7000
                   - tapOn: "Close"
       - extendedWaitUntil:
           notVisible: "Syncing Sport Options"
@@ -275,11 +295,19 @@ tags:
 # and centre it, because the bin sits on that same header line and is what we
 # press next (R8). The header naming this row is also the proof that the panel
 # is pointed at the row we mean, which everything below depends on.
+# R5 — 7000, the bar; R8 keeps the centring. MEASURED (CI 34349299679 +
+# 34361627641): at maximum scroll this parked at y=520, 145px below the
+# end of the driver's centre band (~375), so centring ran its full
+# six-iteration give-up path — 7.7s here — on every run. A give-up on every
+# run is centring that never centres, so the remedy is the product's: the
+# 208px scroll spacer in src/layouts/binder-layout.tsx (NEO-260) puts this
+# target at y=312, mid-band, and it now centres in one or two swipes.
+# THIS STEP DEPENDS ON THAT SPACER — see R8.
 - scrollUntilVisible:
     element:
       text: ".*Attributes for TestCustomSport-${ATTEMPT_ID}.*"
     centerElement: true
-    timeout: 15000
+    timeout: 7000
 
 # The bin is disabled — and says why — while the app is still counting what is
 # below the row, and a press in that window only reveals the reason instead of

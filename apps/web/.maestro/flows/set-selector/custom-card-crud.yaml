@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Custom card lifecycle — add a card by hand, rename it, delete it"
 tags:
   - set-selector
-  - regression
 ---
 # PRODUCT-FEATURE test: the lifecycle of a manually-added card in a
 # checklist — add via the Add Card form, confirm it renders with #num + player
@@ -105,8 +104,7 @@ tags:
     element:
       text: "Renamed-${ATTEMPT_ID}"
     centerElement: true
-    timeout: 10000
-- assertVisible: "Renamed-${ATTEMPT_ID}"
+    timeout: 7000
 # Old Card name (cardName) is gone after rename.
 - assertNotVisible: "CRUDName-${ATTEMPT_ID}"
 
@@ -117,7 +115,7 @@ tags:
     element:
       id: "Delete card 999-${ATTEMPT_ID}"
     centerElement: true
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     id: "Delete card 999-${ATTEMPT_ID}"
 - assertVisible: "Confirm?"

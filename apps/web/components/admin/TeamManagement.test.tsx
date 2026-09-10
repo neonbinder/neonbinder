@@ -518,6 +518,33 @@ describe("TeamManagement — the Franchise field", () => {
     await waitFor(() => expect(checkedPill()?.textContent).toBe("Giants"));
   });
 
+  /**
+   * NEO-260 — the franchise box reports into the Save row, not the top of the
+   * page.
+   *
+   * "Started the <name> franchise. Save the team to put it on there." is an
+   * instruction to press Save, and it was being hoisted to the screen-level
+   * status line ~570px above the button it names — the third time this screen
+   * made the same mistake, after NEO-236 (the refusal) and NEO-254
+   * (`Saved <name>`) had each already moved one message out of that line.
+   */
+  it("says a new franchise was started in the Save button's own row", async () => {
+    renderAt("/admin/teams?team=t-sf-giants");
+    fireEvent.click(startFranchise());
+    fireEvent.change(screen.getByLabelText("New franchise name"), {
+      target: { value: "Giants" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+
+    const line = await screen.findByText(
+      "Started the Giants franchise. Save the team to put it on there.",
+    );
+    expect(screen.getByRole("button", { name: "Save" }).parentElement).toBe(
+      line.parentElement,
+    );
+    expect(line.getAttribute("role")).toBe("status");
+  });
+
   it("backs out of the name box on Escape without changing the answer", () => {
     renderAt("/admin/teams?team=t-sf-giants");
     fireEvent.click(pill("Giants"));

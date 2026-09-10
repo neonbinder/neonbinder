@@ -3,7 +3,6 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Card detail drawer — every field autosaves as you leave it (no Save button)"
 tags:
   - set-selector
-  - regression
 ---
 # NEO-25 drawer, re-pointed at the NEO-216 behaviour: the card detail drawer is
 # a LIVE per-field editor. There is no Save button, no draft, and no discard
@@ -234,12 +233,17 @@ tags:
 # down to bring the row into view before tapping.
 # ============================================================
 
+# R8 exception, MEASURED (CI 34349299679 + 34361627641): `Element bounds`
+# held at y=479 across `Scrolling try count: 0`..`5` — CardDetailPanel is a
+# createPortal `fixed inset-0` overlay whose body is the only scroller — so
+# a swipe cannot move this target and centring buys only the six-iteration
+# give-up path (>=7.0s). Uncentred it settles well under a second, inside
+# R5's 7000.
 - scrollUntilVisible:
     element:
       id: "Toggle RC"
-    centerElement: true
     visibilityPercentage: 50
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     id: "Toggle RC"
 - extendedWaitUntil:
@@ -294,7 +298,7 @@ tags:
       text: ".*/99.*"
     visibilityPercentage: 50
     waitToSettleTimeoutMs: 1000
-    timeout: 10000
+    timeout: 7000
 
 # ============================================================
 # VERIFY PERSISTENCE — reopen and confirm saved values
@@ -310,9 +314,10 @@ tags:
     # can't scroll further to center it) — it loops until timeout. Scrolling
     # until the row is 50% visible is enough to tap it. waitToSettleTimeoutMs
     # lets Virtuoso render the row after each scroll step.
+    # (R8 exception — bottom of a virtualised list, centering can never settle.)
     visibilityPercentage: 50
     waitToSettleTimeoutMs: 1000
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     id: "Edit card 888-${ATTEMPT_ID}"
     waitToSettleTimeoutMs: 2000
@@ -351,20 +356,25 @@ tags:
 
 # The RC chip should be active (aria-pressed="true"). Attributes are at
 # position 6 — below Card title — so scroll down to bring the row into view.
+#
+# This scroll IS the presence assertion (R6: no separate assertVisible after
+# it). The visual state (green fill vs outline) confirms the toggle is ON, but
+# Maestro web cannot read aria-pressed state reliably (checked: true times out
+# — same CDP bridge limitation as checked: false, confirmed at validation).
+# Presence + the fact that we toggled it in the first session is sufficient
+# evidence; the real persistence assertion is that the save + reopen cycle did
+# NOT reset the chip back to unchecked.
+# R8 exception, MEASURED (CI 34349299679 + 34361627641): `Element bounds`
+# held at y=479 across `Scrolling try count: 0`..`5` — CardDetailPanel is a
+# createPortal `fixed inset-0` overlay whose body is the only scroller — so
+# a swipe cannot move this target and centring buys only the six-iteration
+# give-up path (>=7.0s). Uncentred it settles well under a second, inside
+# R5's 7000.
 - scrollUntilVisible:
     element:
       id: "Toggle RC"
-    centerElement: true
     visibilityPercentage: 50
-    timeout: 10000
-# Assert RC chip is present in the drawer. The visual state (green fill vs
-# outline) confirms the toggle is ON, but Maestro web cannot read aria-pressed
-# state reliably (checked: true times out — same CDP bridge limitation as
-# checked: false, confirmed at validation). Presence + the fact that we toggled
-# it in the first session is sufficient evidence; the real persistence assertion
-# is that the save + reopen cycle did NOT reset the chip back to unchecked.
-- assertVisible:
-    id: "Toggle RC"
+    timeout: 7000
 
 # ============================================================
 # PRINT RUN PERSISTED — and can be CLEARED again (NEO-217)
@@ -419,7 +429,7 @@ tags:
       text: ".*Renamed Detail Player ${ATTEMPT_ID}.*"
     visibilityPercentage: 50
     waitToSettleTimeoutMs: 1000
-    timeout: 10000
+    timeout: 7000
 
 # THE POINT: the row's sub-line lost its "/99". The clear reached the stored
 # row, not just the input it was typed into.
@@ -434,7 +444,7 @@ tags:
       id: "Delete card 888-${ATTEMPT_ID}"
     visibilityPercentage: 50
     waitToSettleTimeoutMs: 1000
-    timeout: 10000
+    timeout: 7000
 - tapOn:
     id: "Delete card 888-${ATTEMPT_ID}"
 - assertVisible: "Confirm?"

@@ -159,3 +159,67 @@ describe("PublicProfileEditor — reactive stomp guard", () => {
     expect(venmo.value).toBe("collector");
   });
 });
+
+/**
+ * NEO-260 — the handles the two profile Maestro flows target.
+ *
+ * `profile/fill-profile-data.yaml` and `profile/util-fill-public-profile.yaml`
+ * used to drive these fields by their DOM ids (`pub-ebay`, `pub-paypal`, …),
+ * which no user can perceive. They now do what a person does: tap the VISIBLE
+ * label, which focuses the input it names, then type. That only works while
+ * every one of these labels is (a) correctly associated with its input and
+ * (b) unambiguous — Maestro resolves a `text:` selector against the whole
+ * route, and a second element answering to the same string sends the keystrokes
+ * somewhere else.
+ *
+ * `getByLabelText` proves both at once: it throws on zero matches (association
+ * broken) and on more than one (ambiguous). The patterns below are the flow
+ * selectors, translated to JS regex — a Maestro `text:` match is full-string
+ * anchored, so `"eBay Store URL"` becomes /^eBay Store URL$/ and
+ * `".*PayPal username.*"` becomes /PayPal username/.
+ */
+describe("PublicProfileEditor — flow-facing labels", () => {
+  const FLOW_SELECTORS: Array<[string, RegExp]> = [
+    ["Username.*", /^Username/],
+    ["Display Name", /^Display Name$/],
+    ["Tagline", /^Tagline$/],
+    ["eBay Store URL", /^eBay Store URL$/],
+    ["BuySportsCards URL", /^BuySportsCards URL$/],
+    ["Sportlots URL", /^Sportlots URL$/],
+    ["MySlabs URL", /^MySlabs URL$/],
+    [".*PayPal username.*", /PayPal username/],
+    [".*PayPal email [(]Goods & Services[)].*", /PayPal email \(Goods & Services\)/],
+    [".*Venmo username.*", /Venmo username/],
+    [".*Cash App username.*", /Cash App username/],
+    ["Twitter / X URL", /^Twitter \/ X URL$/],
+    ["Instagram URL", /^Instagram URL$/],
+    ["TikTok URL", /^TikTok URL$/],
+  ];
+
+  it.each(FLOW_SELECTORS)(
+    "resolves the flow selector %s to exactly one input",
+    (_selector, pattern) => {
+      render(<PublicProfileEditor />);
+      expect(screen.getByLabelText(pattern)).toBeInstanceOf(
+        HTMLInputElement,
+      );
+    },
+  );
+
+  it("names the fields that have no visible label", () => {
+    // The two hex boxes sit beside a colour swatch and carry no visible label,
+    // so aria-label is the only way to name them. Deliberately NOT
+    // "Brand color N hex": a Maestro `id:` selector is an unanchored regex
+    // FIND, so that would make `id: "Brand color 1"` match the swatch AND the
+    // text box.
+    render(<PublicProfileEditor />);
+    for (const name of [
+      "Brand color 1",
+      "Brand color 2",
+      "Brand hex code 1",
+      "Brand hex code 2",
+    ]) {
+      expect(screen.getByLabelText(name)).toBeInstanceOf(HTMLInputElement);
+    }
+  });
+});

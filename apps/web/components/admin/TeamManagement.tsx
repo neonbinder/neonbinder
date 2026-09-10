@@ -216,13 +216,11 @@ function TeamDetail({
   team,
   leagues,
   franchises,
-  onStatus,
   onSelect,
 }: {
   team: Team;
   leagues: League[];
   franchises: Franchise[];
-  onStatus: (status: Status) => void;
   /**
    * NEO-253 — open another team from this panel. Today's only caller is the
    * `NAME_TAKEN` alert below, which has the OTHER row's id and would otherwise
@@ -324,8 +322,17 @@ function TeamDetail({
    * So it renders where its cause is. `role="status"` rather than a plain
    * paragraph: it appears after an async round trip that a screen-reader user
    * has no other way to know finished.
+   *
+   * NEO-260 widened it from `Saved <name>` to EVERY message this panel makes.
+   * Discover, "pick the right source page" and "Started the <name> franchise.
+   * Save the team to put it on there." were all still being hoisted through
+   * `onStatus` to that same screen-level line, for exactly the reason NEO-236
+   * and NEO-254 had already rejected twice. The last one is the clearest case:
+   * its whole content is an instruction to press the Save button it was being
+   * rendered ~570px away from. The screen-level line has no producers left and
+   * is gone; `onStatus` is gone from this panel's props with it.
    */
-  const [saveStatus, setSaveStatus] = useState<string | null>(null);
+  const [panelStatus, setPanelStatus] = useState<Status>(null);
   /**
    * NEO-212 (a11y) — the preview and the refusal are ASSOCIATED with BOTH
    * fields, not merely printed under them.
@@ -565,7 +572,7 @@ function TeamDetail({
       setNamingFranchise(false);
       setNewFranchiseName("");
       setFranchiseFilter("");
-      onStatus({
+      setPanelStatus({
         text: created
           ? `Started the ${name} franchise. Save the team to put it on there.`
           : `${name} was already a franchise. Save the team to put it on there.`,
@@ -585,9 +592,8 @@ function TeamDetail({
   const save = async () => {
     if (!canSave) return;
     setBusy("save");
-    onStatus(null);
     setSaveError(null);
-    setSaveStatus(null);
+    setPanelStatus(null);
     setNameTakenId(null);
     try {
       // The league already exists by the time Save is pressed — the dialog
@@ -622,8 +628,8 @@ function TeamDetail({
             }
           : null,
       });
-      // In the panel, not hoisted — see `saveStatus`.
-      setSaveStatus(`Saved ${draftFullName}.`);
+      // In the panel, not hoisted — see `panelStatus`.
+      setPanelStatus({ text: `Saved ${draftFullName}.`, isError: false });
     } catch (e) {
       // Inline, not the status line: every way this call can fail is a thing
       // about the fields above it — the name is taken, the name is empty, the
@@ -676,7 +682,7 @@ function TeamDetail({
    */
   const discover = async () => {
     setBusy("discover");
-    onStatus(null);
+    setPanelStatus(null);
     try {
       const outcome = await enrichFromWikidata({ id: team._id, force: true });
       const message: Record<
@@ -701,9 +707,9 @@ function TeamDetail({
           isError: false,
         },
       };
-      onStatus(message[outcome]);
+      setPanelStatus(message[outcome]);
     } catch (e) {
-      onStatus({
+      setPanelStatus({
         text: e instanceof Error ? e.message : "Discovery failed",
         isError: true,
       });
@@ -715,13 +721,13 @@ function TeamDetail({
   /** Sends WHICH candidate, never its URL — see the note on chooseColorSource. */
   const choose = async (candidateIndex: number) => {
     setBusy(`candidate-${candidateIndex}`);
-    onStatus(null);
+    setPanelStatus(null);
     try {
       const outcome = await chooseColorSource({
         teamId: team._id,
         candidateIndex,
       });
-      onStatus(
+      setPanelStatus(
         outcome === "unreadable"
           ? {
               text: "That page did not yield colors. Try another, or enter them by hand.",
@@ -730,7 +736,7 @@ function TeamDetail({
           : { text: `Applied colors to ${fullName}.`, isError: false },
       );
     } catch (e) {
-      onStatus({
+      setPanelStatus({
         text: e instanceof Error ? e.message : "Could not apply that source",
         isError: true,
       });
@@ -1149,16 +1155,24 @@ function TeamDetail({
         >
           {busy === "discover" ? "Searching…" : "Discover"}
         </NeonButton>
-        {saveStatus && (
+        {panelStatus && (
           /* IN the button row, not under it. The row already exists and is on
              screen whenever Save is, so the confirmation costs no extra height
              — which matters because the two E2E flows scroll Save to the bottom
              of a page that is already at its maximum scroll, and anything
              appended BELOW the button would land under the fold for the same
              reason the screen-level line did. It wraps to its own line only
-             when the panel is too narrow to hold it beside the buttons. */
-          <p role="status" className="self-center text-sm text-slate-300">
-            {saveStatus}
+             when the panel is too narrow to hold it beside the buttons.
+
+             Both buttons in this row report here (NEO-260), and so does the
+             inline franchise box above — see `panelStatus`. */
+          <p
+            role={panelStatus.isError ? "alert" : "status"}
+            className={`self-center text-sm ${
+              panelStatus.isError ? "text-neon-pink" : "text-slate-300"
+            }`}
+          >
+            {panelStatus.text}
           </p>
         )}
       </div>
@@ -1171,7 +1185,10 @@ function TeamDetail({
         <AddLeagueDialog
           sportId={team.sportId}
           returnFocusTo={leagueSelectRef}
-          onStatus={onStatus}
+          /* NEO-260: no `onStatus`. The dialog renders its own line inside
+             itself, where the operator already is; mirroring it out to a
+             second live region on the page behind announced every message
+             twice and put the copy somewhere nobody could see. */
           onClose={() => setAddingLeague(false)}
           onSelect={(league) => {
             setAddedLeagues((rows) =>
@@ -1201,7 +1218,6 @@ export default function TeamManagement() {
   const [filter, setFilter] = useState("");
   const [leagueFilter, setLeagueFilter] = useState<string>(ALL_LEAGUES);
   const [selectedId, setSelectedId] = useState<Id<"teams"> | null>(null);
-  const [status, setStatus] = useState<Status>(null);
 
   // The filter takes focus on arrival: the reason to open this screen is to
   // work on a particular team, and typing its name is how you find it.
@@ -1424,14 +1440,12 @@ export default function TeamManagement() {
 
   return (
     <div className="space-y-4">
-      {status && (
-        <p
-          className={`text-sm ${status.isError ? "text-neon-pink" : "text-slate-300"}`}
-          role={status.isError ? "alert" : "status"}
-        >
-          {status.text}
-        </p>
-      )}
+      {/* NEO-260 removed the screen-level status line that used to sit here.
+          This screen has no add form — every message it can produce comes from
+          the detail panel, and NEO-236 (the refusal), NEO-254 (`Saved <name>`)
+          and now NEO-260 (Discover, the colour-source picker and the inline
+          franchise box) have moved all of them into the panel, beside the
+          controls that produce them. Nothing was left to render. */}
 
       <div className="flex flex-wrap items-end gap-3">
         <Input
@@ -1687,7 +1701,6 @@ export default function TeamManagement() {
               team={selected}
               leagues={leagueList.filter((l) => l.sportId === selected.sportId)}
               franchises={franchises?.franchises ?? []}
-              onStatus={setStatus}
               onSelect={selectTeam}
             />
           ) : (
