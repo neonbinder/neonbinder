@@ -607,11 +607,16 @@ tags:
 #
 # The drawer's sticky-header trap (see above) does NOT repeat here: the walker's
 # heading sits in a sibling ABOVE its scroll area rather than over it, so nothing
-# overlays this field. What COULD bite is the body's own `max-h-[70vh]` — a
-# fixer taller than ~437px would clip its lower half, and a clipped element
-# still reports layout bounds to Maestro's hit test. So assert the fixer's OWN
-# Save button first: it renders BELOW the variation input, so seeing it is
-# seeing that everything between is inside the visible body.
+# overlays this field. What COULD bite is the body's own scroll box — a fixer
+# taller than it clips its lower half, and a clipped element still reports
+# layout bounds to Maestro's hit test. NEO-271 made that box the whole viewport
+# minus the overlay's `p-4`, the header and the footer (~459px at 1024x629,
+# where it used to be `max-h-[70vh]` = 440px), and widened the dialog to 45rem
+# so this fixer's title and variation fields stop wrapping — both move the
+# clip edge away from this step, never toward it. The assertion stays either
+# way: assert the fixer's OWN Save button first, because it renders BELOW the
+# variation input, so seeing it is seeing that everything between is inside the
+# visible body.
 # ════════════════════════════════════════════════════════════════════════════
 
 - assertVisible:

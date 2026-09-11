@@ -85,6 +85,7 @@ vi.mock("./TeamPicker", () => ({
 }));
 
 import CardAttentionWalker from "./CardAttentionWalker";
+import { LISTING_TITLE_MAX } from "../../convex/features/listingLimits";
 import { deriveCardAttention, needsAttention } from "./card-attention";
 import {
   attentionFixers,
@@ -373,6 +374,146 @@ describe("CardAttentionWalker — presentation", () => {
 
     expect(chip("Detroit Tigers", "Tarik Skubal and Riley Greene")).toBeTruthy();
     expect(screen.getByTestId("picker-value").textContent).toBe("team-tigers");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-271 — the dialog's own geometry
+// ---------------------------------------------------------------------------
+
+/**
+ * What is and is not assertable here.
+ *
+ * happy-dom computes no layout, so there is not a single pixel in this block:
+ * `getBoundingClientRect()` is all zeroes and a test that asserted a rendered
+ * width would be asserting the test environment rather than the product. What
+ * IS assertable is the structure and the classes that CARRY the constraint —
+ * which row is the scroll container, what is deliberately outside it, and the
+ * arithmetic the width was chosen by — so that is what these pin. The pixels
+ * belong to E2E (`checklist-attention-walker-missing-team.yaml` measures the
+ * body's box at 1024×629) and to the operator.
+ */
+describe("CardAttentionWalker — dialog geometry (NEO-271)", () => {
+  /** The panel: the bordered card inside the centring overlay. */
+  const panelOf = (dialog: HTMLElement) => dialog.firstElementChild as HTMLElement;
+  /** Its three rows, in order: header, body, footer. */
+  const rowsOf = (dialog: HTMLElement) =>
+    Array.from(panelOf(dialog).children) as HTMLElement[];
+
+  it("is wide enough for an 80-character title in the widest font this dialog can render in", () => {
+    renderWalker([needsTeamRow()]);
+    const panel = panelOf(screen.getByRole("dialog"));
+
+    // Read the budget OUT of the class rather than restating it, so narrowing
+    // the dialog fails here with the reason attached rather than silently
+    // shrinking the field the meter counts characters against.
+    const rem = /max-w-\[(\d+(?:\.\d+)?)rem\]/.exec(panel.className);
+    expect(rem).not.toBeNull();
+    const panelPx = Number(rem?.[1]) * 16;
+
+    // Measured with fontTools: summed glyph advances at `text-sm` (14px) over
+    // a realistic worst-case title (mixed case, spaces, a `#` and a card
+    // number) come to 8.07px per character in DejaVu Sans — what `system-ui`
+    // resolves to on the Linux CI runner, and the widest of the faces this
+    // dialog can pick up (Lexend 7.80, Arial 7.25, SF Pro Text 6.84). The
+    // body's `p-6` and the input's `p-1.5` plus its 1px borders are the part
+    // the title field never gets.
+    const BODY_PADDING_PX = 24 * 2;
+    const INPUT_CHROME_PX = 6 * 2 + 1 * 2;
+    const WIDEST_PX_PER_CHAR = 8.07;
+    const charsVisible =
+      (panelPx - BODY_PADDING_PX - INPUT_CHROME_PX) / WIDEST_PX_PER_CHAR;
+    expect(charsVisible).toBeGreaterThanOrEqual(LISTING_TITLE_MAX);
+
+    // And it still fits CI's 1024px-wide viewport once the overlay's `p-4` is
+    // paid, with `w-full` doing the reflow below that.
+    expect(panelPx + 16 * 2).toBeLessThanOrEqual(1024);
+    expect(panel.className).toContain("w-full");
+  });
+
+  it("caps its height on the PANEL, so the body can grow into the whole viewport", () => {
+    renderWalker([needsTeamRow()]);
+    const dialog = screen.getByRole("dialog");
+    const panel = panelOf(dialog);
+    const [header, body, footer] = rowsOf(dialog);
+
+    // `max-h-full` resolves against the overlay's content box (`inset-0` minus
+    // its `p-4`) — the idiom EntityReviewWizard documents.
+    expect(panel.className).toContain("max-h-full");
+    expect(panel.className).toContain("flex-col");
+    // The cap is no longer on the body: `max-h-[70vh]` scrolled a data-heavy
+    // fixer while ~140px of viewport went unused above and below the dialog.
+    expect(body.className).not.toContain("max-h-");
+    expect(body.className).toContain("overflow-y-auto");
+    // …and the body is the only elastic row, so all the shrinking lands there.
+    expect(header.className).toContain("shrink-0");
+    expect(footer.className).toContain("shrink-0");
+  });
+
+  it("keeps the reserved minimum height that stops the dialog jumping card to card", () => {
+    renderWalker([needsTeamRow()]);
+    const [, body] = rowsOf(screen.getByRole("dialog"));
+    // NEO-110: the overlay centres the dialog, so a body that changes height
+    // moves the footer by HALF the delta and a click aimed at Skip lands on
+    // whatever rendered into those coordinates. 20rem is the floor that covers
+    // every registered fixer at the width above; the `55vh` clause only bites
+    // on a viewport too short to fit floor + header + footer at all.
+    expect(body.className).toContain("min-h-[min(20rem,55vh)]");
+  });
+
+  it("keeps the heading, the progress line and the Skip/Close footer OUTSIDE the scrolling region", () => {
+    renderWalker([
+      needsTeamRow(),
+      needsTeamRow({ _id: "card-2" as unknown as Id<"cardChecklist">, cardNumber: "2" }),
+    ]);
+    const dialog = screen.getByRole("dialog");
+    const [header, body, footer] = rowsOf(dialog);
+
+    const heading = screen.getByRole("heading", { level: 2 });
+    const progress = screen.getByRole("status");
+    const skip = screen.getByRole("button", { name: /Skip card/ });
+    const close = screen.getByRole("button", { name: /Close/ });
+
+    expect(header.contains(heading)).toBe(true);
+    expect(header.contains(progress)).toBe(true);
+    expect(footer.contains(skip)).toBe(true);
+    expect(footer.contains(close)).toBe(true);
+    // The scroll container holds none of them, so no amount of body scrolling
+    // can take the dialog's chrome out of view.
+    expect(body.contains(heading)).toBe(false);
+    expect(body.contains(progress)).toBe(false);
+    expect(body.contains(skip)).toBe(false);
+    expect(body.contains(close)).toBe(false);
+  });
+
+  it("a fixer's own Save button IS inside the scrolling region — which is what the floor and the cap are for", () => {
+    // Honest about where the limit lies: Save belongs to the fixer, not to the
+    // walker's chrome, so "Save stays visible" is a consequence of the body
+    // being tall enough rather than of it being outside the scroll box.
+    renderWalker([needsTeamRow()]);
+    const [, body] = rowsOf(screen.getByRole("dialog"));
+    expect(
+      body.contains(screen.getByRole("button", { name: "Save & Next (Enter)" })),
+    ).toBe(true);
+  });
+
+  it("leaves the live region and the focus trap exactly as they were", () => {
+    // The resize touched the panel's classes only. `role="status"` with no
+    // `aria-live` override is the documented pattern for this line (it never
+    // switches to `role="alert"`), and Tab still cycles inside the dialog —
+    // pinned here alongside the geometry so a future sizing change cannot
+    // quietly restructure the chrome that carries either.
+    renderWalker([needsTeamRow()]);
+    const dialog = screen.getByRole("dialog");
+    const progress = screen.getByRole("status");
+    expect(progress.getAttribute("aria-live")).toBeNull();
+    expect(dialog.getAttribute("aria-modal")).toBe("true");
+    expect(dialog.getAttribute("aria-labelledby")).toBe("card-attention-walker-title");
+
+    const focusable = dialog.querySelectorAll<HTMLElement>("button:not([disabled])");
+    focusable[focusable.length - 1].focus();
+    fireEvent.keyDown(dialog, { key: "Tab" });
+    expect(document.activeElement).toBe(focusable[0]);
   });
 });
 
