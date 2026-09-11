@@ -94,9 +94,9 @@ tags:
 
 # Open the drawer via the Edit button.
 - assertVisible:
-    id: "Edit card 777-${ATTEMPT_ID}"
+    id: "Edit card 777-${ATTEMPT_ID}(, .*)?"
 - tapOn:
-    id: "Edit card 777-${ATTEMPT_ID}"
+    id: "Edit card 777-${ATTEMPT_ID}(, .*)?"
     waitToSettleTimeoutMs: 2000
 - extendedWaitUntil:
     visible:
@@ -193,13 +193,13 @@ tags:
 # follows lands clear of the sticky header.
 - scrollUntilVisible:
     element:
-      id: "Edit card 777-${ATTEMPT_ID}"
+      id: "Edit card 777-${ATTEMPT_ID}(, .*)?"
     direction: UP
     centerElement: true
     visibilityPercentage: 50
     timeout: 7000
 - tapOn:
-    id: "Edit card 777-${ATTEMPT_ID}"
+    id: "Edit card 777-${ATTEMPT_ID}(, .*)?"
     waitToSettleTimeoutMs: 2000
 - extendedWaitUntil:
     visible:
@@ -254,14 +254,14 @@ tags:
 # tap clear of the 64px sticky header.
 - scrollUntilVisible:
     element:
-      id: "Delete card 777-${ATTEMPT_ID}"
+      id: "Delete card 777-${ATTEMPT_ID}(, .*)?"
     direction: UP
     centerElement: true
     visibilityPercentage: 50
     timeout: 7000
 - tapOn:
-    id: "Delete card 777-${ATTEMPT_ID}"
+    id: "Delete card 777-${ATTEMPT_ID}(, .*)?"
 - assertVisible: "Confirm?"
 - tapOn:
-    id: "Confirm delete card 777-${ATTEMPT_ID}"
+    id: "Confirm delete card 777-${ATTEMPT_ID}(, .*)?"
 - assertNotVisible: "Player Picker Card ${ATTEMPT_ID}"

@@ -232,6 +232,41 @@ export default function CardChecklistItem({
   // place for the row, the header count, the filter and the walker.
   const attention = deriveCardAttention(card);
 
+  // NEO-272 — HOW A ROW NAMES ITSELF TO A SCREEN READER, in one place.
+  //
+  // Every accessible name this row hands out (Edit, Delete/Remove and their
+  // confirm states, the variations disclosure, the attention mark) used to be
+  // built out of `card.cardNumber` alone. Product invariant 7 (CLAUDE.md):
+  // **card numbers are never unique at any scope.** A set whose cards are all
+  // "NNO" — an unnumbered minor-league team set, which is an ordinary shape,
+  // not a curiosity — therefore rendered twenty-five controls all called
+  // "Edit card NNO", and a screen-reader user walking the list heard the same
+  // sentence twenty-five times with nothing to tell the rows apart. The same
+  // ambiguity is what makes an `aria-label` an unusable handle for anything
+  // that has to pick ONE of them (see the Maestro note below).
+  //
+  // The fix is the row's OWN VISIBLE IDENTITY: the number and the name it
+  // already renders side by side (`#NNO` · `Jon Larson`). Nothing invented,
+  // nothing derived — a user hearing "Edit card NNO, Jon Larson" is hearing
+  // exactly what they can see, which is SC 2.5.3's direction of travel and the
+  // only identity that stays correct when the list re-sorts or Virtuoso
+  // recycles the row. The comma is deliberate: screen readers speak it as a
+  // pause and never as a word, unlike a dash or a bullet.
+  //
+  // DEGRADATION. A nameless card keeps today's label exactly — "Edit card
+  // NNO", no trailing separator, no "undefined". That is still the whole of
+  // the row's visible identity (the name cell is empty), so there is nothing
+  // truer to say; `addCustomCard` defaults an empty name to `Card #<number>`,
+  // so this is legacy state rather than a state the product creates.
+  //
+  // MAESTRO. `resource-id` is `node.id || node.ariaLabel` and the pinned CLI
+  // matches an `id:` as a FULL match, so every flow that targets one of these
+  // controls by its card number now spells the optional tail — `Edit card
+  // 999-<attempt>(, .*)?`. See apps/web/.maestro/README.md.
+  const cardIdentity = card.cardName?.trim()
+    ? `${card.cardNumber}, ${card.cardName.trim()}`
+    : card.cardNumber;
+
   return (
     <div
       onClick={() => onEdit(card._id)}
@@ -268,8 +303,8 @@ export default function CardChecklistItem({
             aria-expanded={isExpanded ? true : false}
             aria-label={
               isExpanded
-                ? `Hide ${variationCount} variation${variationCount === 1 ? "" : "s"} of card ${card.cardNumber}`
-                : `Show ${variationCount} variation${variationCount === 1 ? "" : "s"} of card ${card.cardNumber}`
+                ? `Hide ${variationCount} variation${variationCount === 1 ? "" : "s"} of card ${cardIdentity}`
+                : `Show ${variationCount} variation${variationCount === 1 ? "" : "s"} of card ${cardIdentity}`
             }
             className="w-6 h-6 flex items-center justify-center text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] rounded"
           >
@@ -389,7 +424,7 @@ export default function CardChecklistItem({
           without moving anything. */}
       <span className="w-5 h-5 shrink-0 flex items-center justify-center">
         {attention.length > 0 && (
-          <CardAttentionBadge items={attention} cardNumber={card.cardNumber} />
+          <CardAttentionBadge items={attention} cardIdentity={cardIdentity} />
         )}
       </span>
       {/* Actions always rendered. Hiding them behind hover (opacity-0
@@ -405,7 +440,7 @@ export default function CardChecklistItem({
             e.stopPropagation();
             onEdit(card._id);
           }}
-          aria-label={`Edit card ${card.cardNumber}`}
+          aria-label={`Edit card ${cardIdentity}`}
           className="px-1.5 py-0.5 text-xs text-gray-500 hover:text-blue-600 dark:text-gray-400 dark:hover:text-blue-400"
           title="Edit"
         >
@@ -419,8 +454,8 @@ export default function CardChecklistItem({
             }}
             aria-label={
               isCrossListed
-                ? `Confirm remove card ${card.cardNumber} from this set`
-                : `Confirm delete card ${card.cardNumber}`
+                ? `Confirm remove card ${cardIdentity} from this set`
+                : `Confirm delete card ${cardIdentity}`
             }
             className="px-1.5 py-0.5 text-xs text-red-600 dark:text-red-400 font-medium"
           >
@@ -435,8 +470,8 @@ export default function CardChecklistItem({
             onBlur={() => setConfirmDelete(false)}
             aria-label={
               isCrossListed
-                ? `Remove card ${card.cardNumber} from this set`
-                : `Delete card ${card.cardNumber}`
+                ? `Remove card ${cardIdentity} from this set`
+                : `Delete card ${cardIdentity}`
             }
             className="px-1.5 py-0.5 text-xs text-gray-500 hover:text-red-600 dark:text-gray-400 dark:hover:text-red-400"
             title={

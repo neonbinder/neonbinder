@@ -16,8 +16,11 @@ tags:
 #   - Caller does NOT call util-drill-to-custom-set separately.
 #   - Navigation to /set-selector is performed inside util-drill-to-custom-set.
 #   - The same ATTEMPT_ID (or equivalent) embedded in CARD_NUMBER is available
-#     in the calling flow's env so post-add references ("Edit card ${CARD_NUMBER}",
-#     "Delete card ${CARD_NUMBER}") resolve correctly.
+#     in the calling flow's env so post-add references resolve correctly.
+#     NEO-272: those references now spell the label's optional name tail —
+#     `id: "Edit card ${CARD_NUMBER}(, .*)?"`, likewise Delete — because a row
+#     names itself "Edit card <number>, <card name>" and the pinned CLI matches
+#     an `id:` as a FULL match. See .maestro/README.md.
 #
 # INPUTS:
 #   SET_NAME      (required) — per-flow, per-worker custom set basename,
@@ -208,7 +211,7 @@ tags:
 
 - scrollUntilVisible:
     element:
-      id: "Edit card ${CARD_NUMBER}"
+      id: "Edit card ${CARD_NUMBER}(, .*)?"
     centerElement: true
     visibilityPercentage: 50
     waitToSettleTimeoutMs: 1000

@@ -143,7 +143,7 @@ tags:
     id: "Submit new card"
 - scrollUntilVisible:
     element:
-      id: "Edit card 801-${ATTEMPT_ID}"
+      id: "Edit card 801-${ATTEMPT_ID}(, .*)?"
     centerElement: true
     visibilityPercentage: 50
     waitToSettleTimeoutMs: 1000
@@ -179,7 +179,7 @@ tags:
     id: "Submit new card"
 - scrollUntilVisible:
     element:
-      id: "Edit card 802-${ATTEMPT_ID}"
+      id: "Edit card 802-${ATTEMPT_ID}(, .*)?"
     centerElement: true
     visibilityPercentage: 50
     waitToSettleTimeoutMs: 1000
@@ -251,10 +251,10 @@ tags:
 # keeps its badge, and the header count is back to the truth.
 - extendedWaitUntil:
     notVisible:
-      id: "Card 802-${ATTEMPT_ID} needs attention: no team on this card yet"
+      id: "Card 802-${ATTEMPT_ID}(, .*)? needs attention: no team on this card yet"
     timeout: 7000
 - assertVisible:
-    id: "Card 801-${ATTEMPT_ID} needs attention: no team on this card yet"
+    id: "Card 801-${ATTEMPT_ID}(, .*)? needs attention: no team on this card yet"
 - assertVisible: "1 need attention"
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -415,7 +415,7 @@ tags:
 # — count chip and walker link — is gone, and #801 shows the team it was given.
 - extendedWaitUntil:
     notVisible:
-      id: "Card 801-${ATTEMPT_ID} needs attention: no team on this card yet"
+      id: "Card 801-${ATTEMPT_ID}(, .*)? needs attention: no team on this card yet"
     timeout: 7000
 - assertNotVisible: "Fix them one at a time"
 - assertVisible:
@@ -447,7 +447,7 @@ tags:
     timeout: 7000
 - assertVisible: "Walker Alpha ${ATTEMPT_ID}"
 - assertNotVisible:
-    id: "Card 802-${ATTEMPT_ID} needs attention: no team on this card yet"
+    id: "Card 802-${ATTEMPT_ID}(, .*)? needs attention: no team on this card yet"
 - assertNotVisible:
-    id: "Card 801-${ATTEMPT_ID} needs attention: no team on this card yet"
+    id: "Card 801-${ATTEMPT_ID}(, .*)? needs attention: no team on this card yet"
 - assertNotVisible: "Fix them one at a time"

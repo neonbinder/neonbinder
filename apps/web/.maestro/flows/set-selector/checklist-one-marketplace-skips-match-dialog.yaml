@@ -130,9 +130,10 @@ tags:
 #
 # ── R1/R2 — A SECOND FEATURE RIDES THIS FIXTURE, DELIBERATELY (NEO-272) ─────
 #   STEP 8 at the bottom proves something else: that the name of the "All
-#   Brands" row never reaches a committed card's generated listing title. The
-#   `name:` above still names the primary feature, and it stays that way — read
-#   STEP 8's own block before blaming NEO-255 for a red down there.
+#   Brands" row never reaches a card's generated listing title on a set filed
+#   under it. The `name:` above still names the primary feature, and it stays
+#   that way — read STEP 8's own block before blaming NEO-255 for a red down
+#   there.
 #
 #   This is the two-in-one shape `custom-card-row-opens-panel-with-autotitle`
 #   documents in its own R2 block, where one drawer assertion covers both the
@@ -141,7 +142,10 @@ tags:
 #   manufacturer row whose brand NB has not identified, and giving NEO-272 its
 #   own flow would mean a SECOND real set (30-90s of cold marketplace sync) plus
 #   owner approval, for a claim this flow is already standing three lines away
-#   from. STEP 8 adds four commands.
+#   from. STEP 8 adds eight commands: it hand-adds ONE card of its own to read
+#   the title off, because every card the commit wrote is numbered `NNO` and no
+#   selector can pick one of twenty-five identical rows that is also on screen —
+#   the whole argument is in STEP 8's block, along with what that trades away.
 #
 # ── R3 — NO OTHER FLOW TESTS THIS ───────────────────────────────────────────
 #   Every other flow that reaches the pairing dialog is on a TWO-sided set and
@@ -536,7 +540,7 @@ tags:
 - assertNotVisible: "SL only"
 
 # ============================================================
-# STEP 8 — "ALL BRANDS" IS NOT IN WHAT THE COMMIT WROTE (NEO-272)
+# STEP 8 — "ALL BRANDS" NEVER REACHES A LISTING TITLE ON THIS SET (NEO-272)
 #
 # ⚠️ A DIFFERENT FEATURE FROM THE ONE THIS FLOW IS NAMED FOR. See the R1/R2
 # block in the header for why it lives here. A red in this step is NEO-272.
@@ -571,41 +575,141 @@ tags:
 # still in the breadcrumb, still in the manufacturer picker, and STEP 1 selected
 # it by that very name. A page-wide negative would fail on correct behaviour, or
 # pass because a column had scrolled. Both assertions below are scoped to the
-# drawer's `Card title` input, i.e. to the string the SERVER wrote at commit.
+# drawer's `Card title` input, i.e. to the string the SERVER wrote.
 #
-# R7a — READ-ONLY on a registered set. Opening the drawer writes nothing: its
-# fields commit on Enter or on a changed blur and nothing here types, and
-# `previewListingTitle` stays `"skip"` until Regenerate is pressed
-# (useTitlePreview.ts, "Laziness"), so there is no server round-trip either.
+# ── WHY THIS OPENS A CARD IT ADDED, AND NOT ONE THE COMMIT WROTE ────────────
+#
+# The first version of this step tapped `id: "Edit card .*"` on the committed
+# checklist and CI run 34556066366 failed on its drawer gate, twice. The cause
+# is structural and worth writing down, because it is not reachable by any
+# selector:
+#
+#   * This set is 25 cards and EVERY ONE of them is numbered `NNO` (SET-REGISTRY
+#     measurement 5). Product invariant 7 — a card number is never unique at any
+#     scope. NEO-272 fixed the accessible names themselves (a row is now "Edit
+#     card NNO, Jon Larson"), but a flow still cannot name one: the card names
+#     are the marketplace's and unknowable from here.
+#   * `CardChecklist`'s Virtuoso list runs `increaseViewportBy={{top: 200,
+#     bottom: 400}}`, so it always renders ~3 rows ABOVE its own scroll
+#     viewport. They are CSS-clipped, their layout bounds are real, and CDP
+#     reports them 100% visible — the hazard `inserts-1996-score`'s STEP 7a
+#     documents at length. Maestro took the first of those: bounds
+#     `[670,223][705,243]`, tapped at (687,233), which on screen is the
+#     `Cards (25)` header. Nothing opened.
+#   * The usual cure — `below:` an anchor just above the list, which is what
+#     1996-Score uses — does not have the margin here. The list's INTERNAL
+#     scroll offset was 183px in that run, an emergent value nothing in the flow
+#     chose (Virtuoso's `initialTopMostItemIndex` racing 25 rows' arrival), and
+#     maestro-web's only scroll is `window.scroll` (README, R8) so no flow can
+#     move it. The lowest anchor above the list is the ATTENTION filter row at
+#     y=373 against a list viewport starting at y=406: a shift of 19-42px in
+#     that offset silently puts a fully-clipped row on the near side of the
+#     anchor and the tap lands on page chrome again.
+#
+# So this step stops trying to pick one of twenty-five identical rows and adds
+# ONE card of its own, whose number — and therefore whose accessible name — is
+# unique by construction. `addCustomCard` writes `generateListingTitle` at
+# creation (write-once; `custom-card-row-opens-panel-with-autotitle` is built on
+# that), and it composes the title from `findAncestorLabels`, which reads
+# `metadata.isBrandUnknown` off the manufacturer row this set hangs under — the
+# very flag STEP 1 had to stamp. A build that stopped stamping it writes
+# "1995 All Brands Roanoke Express ECHL …" here and fails, exactly as it would
+# have on a committed row.
+#
+# WHAT THAT TRADES AWAY, stated plainly: the assertion no longer rides on the
+# COMMIT path's own read of the flag (`commitCardChecklist`'s prelude resolves
+# `manufacturerBrandUnknown` once per batch and hands it to the chunks). Both
+# reads are NEO-272 code and both feed the same `assessListingTitle`, but only
+# the hand-add one is proven live now. The stamping branch — the half no unit
+# test can reach — is still proven, and that is the half this step exists for.
+#
+# R7a — THIS FLOW IS THIS SET'S SOLE WRITER (see the header), so adding a card
+# to it is sanctioned. The card is added AFTER every count assertion above, so
+# `Cards (25)`, `Saved 25 cards` and `Kept all 25` are all already banked. It
+# carries no marketplace ids, nothing attaches any to it, and the set is
+# single-use per preview deployment — the same reason STEP 4 asserts an empty
+# checklist.
 # ============================================================
 
-# NO SCROLL, and that is R10 rather than an R8 exception: the step above
-# centred the `Cards (N)` header, the rows are the next thing under it, and
-# `assertVisible: "BSC only"` just proved a row is on screen — so a scroll here
-# would synchronise nothing. `Edit card <n>` is this suite's canonical drawer
-# opener (`custom-card-row-opens-panel-with-autotitle`'s R3 note), but the card
-# numbers are the marketplace's and unknowable from here, so the aria-label is
-# matched as a regex FIND — `id:` selectors are regex finds, `text:` is
-# full-node anchored (SET-REGISTRY). First-match across the 25 rows is not an
-# ambiguity that can change the answer: every one of them was written by the
-# same commit, under the same ancestors, with the same manufacturer treatment.
+# NO SCROLL BEFORE THIS TAP, and that is R10 rather than an R8 exception: the
+# STEP 7 scroll left `Cards (25)` and its button row at y=198-230 (measured,
+# run 34556066366) and `assertVisible: "BSC only"` has just proved the list
+# below it is painted. `Add Card` is an ordinary non-virtualised button, fully
+# on screen and well clear of the sticky binder header at y~84, so a scroll
+# here would synchronise nothing — and `centerElement` on a target ABOVE the
+# centre band is the one case R8 has no measurement for.
+- tapOn:
+    id: "Open add card form"
+
+# The card-number input carries `autoFocus`, so the form being up IS the gate
+# and `inputText` goes straight into it — the same two steps as
+# `util-add-custom-card`. `Card number` is the unambiguous handle: the add form
+# and the card drawer both carry a `Card name`, and only one of them a
+# `Card number`.
+- extendedWaitUntil:
+    visible:
+      id: "Card number"
+    timeout: 7000
+- inputText: "NB272-${ATTEMPT_ID}"
+
+# No card NAME typed. `addCustomCard` defaults an empty one to
+# `Card #<number>`, which is unique here for the same reason the number is, and
+# every character typed into a title is a character of the 80-budget this step
+# is asserting the contents of.
 #
-# THE RETRY IS NOT DECORATION. `Saved N cards. <n> need attention` is still
+# centerElement is REQUIRED on this one (util-add-custom-card STEP 9): the form
+# opens above a 437px list box, so Add sits near the fold, and maestro's own
+# scroll-before-tap CDP call crashes on a target it cannot scroll to.
+- scrollUntilVisible:
+    element:
+      id: "Submit new card"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Submit new card"
+
+# THE SCROLL THAT MAKES THE TAP SAFE — and the reason this step is not the
+# failure above wearing a different number. On add, `CardChecklist` itself fires
+# `virtuosoRef.scrollToIndex({align:"center"})` for the new row (CardChecklist
+# .tsx, the `newCardIdRef` effect), so the row settles in the MIDDLE of the
+# list's own viewport, where it cannot be one of the clipped phantoms. This
+# scroll then agrees with that: DOWN, because closing the form shortens the page
+# and leaves the centred row at the window's bottom edge (the list box runs to
+# y~844 in a 625px viewport), and centring drives the two authorities to the
+# same target so the row is still there when its bounds are read.
+# `waitToSettleTimeoutMs: 1000` lets Virtuoso settle between scroll steps.
+#
+# `(, .*)?` is NEO-272's label tail: the row is named "Edit card NB272-<attempt>,
+# Card #NB272-<attempt>" now, and the pinned CLI matches an `id:` as a FULL
+# match (README). The group is anchored by its ", " so it cannot reach a longer
+# card number, and it still matches the bare name if the card name is ever gone.
+- scrollUntilVisible:
+    element:
+      id: "Edit card NB272-${ATTEMPT_ID}(, .*)?"
+    centerElement: true
+    visibilityPercentage: 50
+    waitToSettleTimeoutMs: 1000
+    timeout: 7000
+
+# THE RETRY IS NOT DECORATION. `Saved 25 cards. <n> need attention` is still
 # climbing here as the background team pass lands (SET-REGISTRY: a ~15s tail to
 # 25), and a row whose attention slot flips re-measures the Virtuoso list under
 # the bounds Maestro has already read — CardChecklist.tsx's "bounds-then-tap
 # window races Virtuoso's height recompute", the long-standing dropped-tap
 # flake. Result-keyed and bounded: tap, wait for the drawer, tap once more if
 # the first one was eaten. It costs nothing when the tap lands.
+#
+# The gate is `Card title`, not `Card name`: the add form has a `Card name` too,
+# and a gate that a just-closed form could satisfy is not a gate.
 - retry:
     maxRetries: 1
     commands:
       - tapOn:
-          id: "Edit card .*"
+          id: "Edit card NB272-${ATTEMPT_ID}(, .*)?"
           waitToSettleTimeoutMs: 1000
       - extendedWaitUntil:
           visible:
-            id: "Card name"
+            id: "Card title"
           timeout: 7000
 
 # THE POSITIVE, FIRST — a negative alone is satisfied by a drawer that never

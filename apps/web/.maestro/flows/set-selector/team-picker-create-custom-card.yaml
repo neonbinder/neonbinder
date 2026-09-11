@@ -93,9 +93,9 @@ tags:
 
 # Open the drawer via the Edit button.
 - assertVisible:
-    id: "Edit card 776-${ATTEMPT_ID}"
+    id: "Edit card 776-${ATTEMPT_ID}(, .*)?"
 - tapOn:
-    id: "Edit card 776-${ATTEMPT_ID}"
+    id: "Edit card 776-${ATTEMPT_ID}(, .*)?"
     waitToSettleTimeoutMs: 2000
 - extendedWaitUntil:
     visible:
@@ -192,12 +192,12 @@ tags:
 
 - scrollUntilVisible:
     element:
-      id: "Edit card 776-${ATTEMPT_ID}"
+      id: "Edit card 776-${ATTEMPT_ID}(, .*)?"
     centerElement: true
     visibilityPercentage: 50
     timeout: 7000
 - tapOn:
-    id: "Edit card 776-${ATTEMPT_ID}"
+    id: "Edit card 776-${ATTEMPT_ID}(, .*)?"
     waitToSettleTimeoutMs: 2000
 - extendedWaitUntil:
     visible:
@@ -219,13 +219,13 @@ tags:
 
 - scrollUntilVisible:
     element:
-      id: "Delete card 776-${ATTEMPT_ID}"
+      id: "Delete card 776-${ATTEMPT_ID}(, .*)?"
     centerElement: true
     visibilityPercentage: 50
     timeout: 7000
 - tapOn:
-    id: "Delete card 776-${ATTEMPT_ID}"
+    id: "Delete card 776-${ATTEMPT_ID}(, .*)?"
 - assertVisible: "Confirm?"
 - tapOn:
-    id: "Confirm delete card 776-${ATTEMPT_ID}"
+    id: "Confirm delete card 776-${ATTEMPT_ID}(, .*)?"
 - assertNotVisible: "Team Create Card ${ATTEMPT_ID}"

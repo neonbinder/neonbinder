@@ -165,7 +165,7 @@ tags:
 # stable when read.
 - scrollUntilVisible:
     element:
-      id: "Edit card 701-${ATTEMPT_ID}"
+      id: "Edit card 701-${ATTEMPT_ID}(, .*)?"
     centerElement: true
     visibilityPercentage: 50
     waitToSettleTimeoutMs: 1000
@@ -206,7 +206,7 @@ tags:
     id: "Submit new card"
 - scrollUntilVisible:
     element:
-      id: "Edit card 702-${ATTEMPT_ID}"
+      id: "Edit card 702-${ATTEMPT_ID}(, .*)?"
     centerElement: true
     visibilityPercentage: 50
     waitToSettleTimeoutMs: 1000
@@ -354,7 +354,7 @@ tags:
 # against a row that is really on screen.
 - scrollUntilVisible:
     element:
-      id: "Edit card 703-${ATTEMPT_ID}"
+      id: "Edit card 703-${ATTEMPT_ID}(, .*)?"
     centerElement: true
     visibilityPercentage: 50
     waitToSettleTimeoutMs: 1000
@@ -372,13 +372,14 @@ tags:
 # makes this meaningful: an off-screen element reads as ABSENT to Maestro, so a
 # notVisible on a row nobody scrolled to would pass for free.
 - assertNotVisible:
-    id: "Card 703-${ATTEMPT_ID} needs attention: no team on this card yet"
+    id: "Card 703-${ATTEMPT_ID}(, .*)? needs attention: no team on this card yet"
 
 # ════════════════════════════════════════════════════════════════════════════
 # THE BADGE — both teamless rows carry the attention mark.
 #
 # The mark is a single amber "!" glyph, so its MEANING lives in its accessible
-# name: "Card <number> needs attention: no team on this card yet". That is what
+# name: "Card <number>, <card name> needs attention: no team on this card yet"
+# (NEO-272 — the number alone is never unique). That is what
 # an operator's screen reader says and what Maestro matches on (aria-label →
 # `id:`). Asserting the per-card name rather than a generic marker is what
 # makes this specific to THESE rows.
@@ -396,12 +397,12 @@ tags:
 
 - scrollUntilVisible:
     element:
-      id: "Card 701-${ATTEMPT_ID} needs attention: no team on this card yet"
+      id: "Card 701-${ATTEMPT_ID}(, .*)? needs attention: no team on this card yet"
     direction: UP
     centerElement: true
     timeout: 7000
 - assertVisible:
-    id: "Card 702-${ATTEMPT_ID} needs attention: no team on this card yet"
+    id: "Card 702-${ATTEMPT_ID}(, .*)? needs attention: no team on this card yet"
 
 # ════════════════════════════════════════════════════════════════════════════
 # THE HEADER CHIP — an exact count, plus the walker's entry point.
@@ -437,12 +438,12 @@ tags:
 
 - scrollUntilVisible:
     element:
-      id: "Edit card 702-${ATTEMPT_ID}"
+      id: "Edit card 702-${ATTEMPT_ID}(, .*)?"
     centerElement: true
     visibilityPercentage: 50
     timeout: 7000
 - tapOn:
-    id: "Edit card 702-${ATTEMPT_ID}"
+    id: "Edit card 702-${ATTEMPT_ID}(, .*)?"
     waitToSettleTimeoutMs: 2000
 - extendedWaitUntil:
     visible:
@@ -523,10 +524,10 @@ tags:
 
 - extendedWaitUntil:
     notVisible:
-      id: "Card 702-${ATTEMPT_ID} needs attention: no team on this card yet"
+      id: "Card 702-${ATTEMPT_ID}(, .*)? needs attention: no team on this card yet"
     timeout: 7000
 - assertVisible:
-    id: "Card 701-${ATTEMPT_ID} needs attention: no team on this card yet"
+    id: "Card 701-${ATTEMPT_ID}(, .*)? needs attention: no team on this card yet"
 - assertVisible: "1 need attention"
 # The row now shows the team it was given — the reason its badge went away.
 - assertVisible:

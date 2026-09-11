@@ -78,9 +78,9 @@ tags:
 
 # Open the drawer via the Edit button (the reliable opener).
 - assertVisible:
-    id: "Edit card 778-${ATTEMPT_ID}"
+    id: "Edit card 778-${ATTEMPT_ID}(, .*)?"
 - tapOn:
-    id: "Edit card 778-${ATTEMPT_ID}"
+    id: "Edit card 778-${ATTEMPT_ID}(, .*)?"
     waitToSettleTimeoutMs: 2000
 - extendedWaitUntil:
     visible:
@@ -133,13 +133,13 @@ tags:
 
 - scrollUntilVisible:
     element:
-      id: "Delete card 778-${ATTEMPT_ID}"
+      id: "Delete card 778-${ATTEMPT_ID}(, .*)?"
     centerElement: true
     visibilityPercentage: 50
     timeout: 7000
 - tapOn:
-    id: "Delete card 778-${ATTEMPT_ID}"
+    id: "Delete card 778-${ATTEMPT_ID}(, .*)?"
 - assertVisible: "Confirm?"
 - tapOn:
-    id: "Confirm delete card 778-${ATTEMPT_ID}"
+    id: "Confirm delete card 778-${ATTEMPT_ID}(, .*)?"
 - assertNotVisible: "Autograph Test Player ${ATTEMPT_ID}"

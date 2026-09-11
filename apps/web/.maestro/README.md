@@ -796,6 +796,22 @@ Two corollaries worth knowing before you write the selector:
   anchored (`^…$`), which is a no-op under full-match semantics and correct
   under either. Do not reach for `.*…*` defensively; that genuinely is loose.
 
+* **A checklist row names itself with its number AND its card name (NEO-272).**
+  `CardChecklistItem`'s controls are labelled `Edit card <number>, <name>` —
+  and `Delete card …`, `Confirm delete card …`, `Remove card … from this set`,
+  `Show N variations of card …`, `Card … needs attention: <reason>` the same
+  way. The number alone was never unique (product invariant 7; an unnumbered
+  set gives every row `NNO`), so a screen-reader user heard one sentence
+  repeated down the list. A card with no name keeps the bare
+  `Edit card <number>`.
+
+  Because `id:` is a FULL match, every flow that targets one of these by card
+  number spells the optional tail: `id: "Edit card 999-${ATTEMPT_ID}(, .*)?"`.
+  The group is anchored by its `", "`, so it cannot reach a longer card number
+  the way a bare `.*` would, and it still matches the nameless fallback. This
+  is the one sanctioned use of an optional group in this suite's selectors;
+  everywhere else the bullet above applies.
+
 ## Launching a flow: always gate on the destination heading
 
 Almost every flow's `url:` is **not** the page under test — it's

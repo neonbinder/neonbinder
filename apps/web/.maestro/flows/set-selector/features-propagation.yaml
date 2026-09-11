@@ -333,12 +333,12 @@ tags:
 # Open the edit form for our card.
 - scrollUntilVisible:
     element:
-      id: "Edit card 992-${ATTEMPT_ID}"
+      id: "Edit card 992-${ATTEMPT_ID}(, .*)?"
     centerElement: true
     visibilityPercentage: 50
     timeout: 7000
 - tapOn:
-    id: "Edit card 992-${ATTEMPT_ID}"
+    id: "Edit card 992-${ATTEMPT_ID}(, .*)?"
     waitToSettleTimeoutMs: 2000
 - extendedWaitUntil:
     visible:
@@ -508,12 +508,12 @@ tags:
 # settles in 1.97s, 1 centring swipe; nothing here waits on a marketplace.
 - scrollUntilVisible:
     element:
-      id: "Edit card 992-${ATTEMPT_ID}"
+      id: "Edit card 992-${ATTEMPT_ID}(, .*)?"
     centerElement: true
     visibilityPercentage: 50
     timeout: 7000
 - tapOn:
-    id: "Edit card 992-${ATTEMPT_ID}"
+    id: "Edit card 992-${ATTEMPT_ID}(, .*)?"
     waitToSettleTimeoutMs: 2000
 - extendedWaitUntil:
     visible:
@@ -565,13 +565,13 @@ tags:
 
 - scrollUntilVisible:
     element:
-      id: "Delete card 992-${ATTEMPT_ID}"
+      id: "Delete card 992-${ATTEMPT_ID}(, .*)?"
     centerElement: true
     visibilityPercentage: 50
     timeout: 7000
 - tapOn:
-    id: "Delete card 992-${ATTEMPT_ID}"
+    id: "Delete card 992-${ATTEMPT_ID}(, .*)?"
 - assertVisible: "Confirm?"
 - tapOn:
-    id: "Confirm delete card 992-${ATTEMPT_ID}"
+    id: "Confirm delete card 992-${ATTEMPT_ID}(, .*)?"
 - assertNotVisible: "Propagation Test Player ${ATTEMPT_ID}"

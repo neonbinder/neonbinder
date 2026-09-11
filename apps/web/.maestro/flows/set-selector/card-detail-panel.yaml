@@ -105,7 +105,7 @@ tags:
 # add/delete mutations refetch the per-worker cardChecklist live query, shifting
 # row y-coords between Maestro's lookup and tap dispatch.
 - tapOn:
-    id: "Edit card 888-${ATTEMPT_ID}"
+    id: "Edit card 888-${ATTEMPT_ID}(, .*)?"
     waitToSettleTimeoutMs: 2000
 
 # The drawer opens. The header shows "Card #888-<ATTEMPT_ID}".
@@ -308,7 +308,7 @@ tags:
 # Scroll into view before tapping its Edit button.
 - scrollUntilVisible:
     element:
-      id: "Edit card 888-${ATTEMPT_ID}"
+      id: "Edit card 888-${ATTEMPT_ID}(, .*)?"
     # No centerElement: the new card sorts to the BOTTOM of the virtualized
     # list, and centering a bottom element can't be satisfied locally (the list
     # can't scroll further to center it) — it loops until timeout. Scrolling
@@ -319,7 +319,7 @@ tags:
     waitToSettleTimeoutMs: 1000
     timeout: 7000
 - tapOn:
-    id: "Edit card 888-${ATTEMPT_ID}"
+    id: "Edit card 888-${ATTEMPT_ID}(, .*)?"
     waitToSettleTimeoutMs: 2000
 
 # Drawer reopens — wait for Card name input.
@@ -441,13 +441,13 @@ tags:
 
 - scrollUntilVisible:
     element:
-      id: "Delete card 888-${ATTEMPT_ID}"
+      id: "Delete card 888-${ATTEMPT_ID}(, .*)?"
     visibilityPercentage: 50
     waitToSettleTimeoutMs: 1000
     timeout: 7000
 - tapOn:
-    id: "Delete card 888-${ATTEMPT_ID}"
+    id: "Delete card 888-${ATTEMPT_ID}(, .*)?"
 - assertVisible: "Confirm?"
 - tapOn:
-    id: "Confirm delete card 888-${ATTEMPT_ID}"
+    id: "Confirm delete card 888-${ATTEMPT_ID}(, .*)?"
 - assertNotVisible: "Renamed Detail Player ${ATTEMPT_ID}"

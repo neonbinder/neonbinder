@@ -212,12 +212,12 @@ tags:
 # finding, not a ceiling.
 - scrollUntilVisible:
     element:
-      id: "Edit card 300"
+      id: "Edit card 300(, .*)?"
     centerElement: true
     visibilityPercentage: 50
     timeout: 7000
 - tapOn:
-    id: "Edit card 300"
+    id: "Edit card 300(, .*)?"
     waitToSettleTimeoutMs: 2000
 # NEO-109 class: the scroll above proves card 300 EXISTS, so a failure here is
 # the detail drawer not having opened yet — not a missing card. A bare

@@ -587,6 +587,34 @@ not change; none of them can express the =1 half.
     and in the same band as `checklist-pairing-dialog-cancel` (2m29s, measured
     on the same preview the same evening).
 
+#### What STEP 8 writes, and why it has to write anything (NEO-272)
+
+The flow ends by opening a card's detail drawer and asserting that the server's
+generated `listingTitle` carries the set name and NOT `All Brands` — the live
+half of NEO-272, and the only place in the suite where the sync's legacy
+adoption of a marketplace-supplied brand-unknown row is exercised.
+
+It cannot read that title off one of the 25 committed cards. **Every card in
+this set is numbered `NNO`** (measurement 3's checklist), so all 25 rows offer
+an identically-named `Edit card NNO` control, and `CardChecklist`'s Virtuoso
+list renders ~3 rows above its own scroll viewport whose bounds are real and
+whose pixels are clipped (`increaseViewportBy={{top: 200, bottom: 400}}`). CI
+run 34556066366 tapped the first of those at (687,233) — the `Cards (25)`
+header — and the drawer never opened. NEO-272 made the labels distinguishable
+("Edit card NNO, Jon Larson"), which fixes the screen-reader half, but the card
+NAMES here are the marketplace's and unknowable to a flow.
+
+So STEP 8 hand-adds **one** card, `NB272-${ATTEMPT_ID}`, with no card name (the
+server defaults it to `Card #NB272-<attempt>`), and reads the title off that.
+`addCustomCard` writes `generateListingTitle` at creation and composes it
+through `findAncestorLabels`, which reads `metadata.isBrandUnknown` off the very
+manufacturer row STEP 1's sync had to stamp. The added row carries no
+marketplace ids, nothing attaches any to it, and it lands after every count
+assertion in the flow, so `Kept all 25`, `All reviewed — save 25`,
+`Saved 25 cards` and `Cards (25)` are all already banked. This flow is the set's
+sole writer (table above), and the set is single-use per preview deployment —
+the same reason STEP 4 can assert an empty checklist.
+
 #### The base-mapping panel: Close now dismisses it, and the flow taps it
 
 Since 2026-09-08 (`0411cd8`, `13deac4`) pressing **Close** on the

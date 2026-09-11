@@ -327,13 +327,13 @@ tags:
 # not in the DOM yet — scroll to materialise it rather than waiting on its text.
 - scrollUntilVisible:
     element:
-      id: "Edit card 101-${ATTEMPT_ID}"
+      id: "Edit card 101-${ATTEMPT_ID}(, .*)?"
     centerElement: true
     visibilityPercentage: 50
     waitToSettleTimeoutMs: 1000
     timeout: 7000
 - tapOn:
-    id: "Edit card 101-${ATTEMPT_ID}"
+    id: "Edit card 101-${ATTEMPT_ID}(, .*)?"
     waitToSettleTimeoutMs: 2000
 - extendedWaitUntil:
     visible:
@@ -554,7 +554,7 @@ tags:
 # out"); one swipe puts the row back in the band.
 - scrollUntilVisible:
     element:
-      id: "Card 101-${ATTEMPT_ID} needs attention: variation text is over the 65-character limit"
+      id: "Card 101-${ATTEMPT_ID}(, .*)? needs attention: variation text is over the 65-character limit"
     direction: UP
     centerElement: true
     timeout: 7000
@@ -658,7 +658,7 @@ tags:
 
 - extendedWaitUntil:
     notVisible:
-      id: "Card 101-${ATTEMPT_ID} needs attention: variation text is over the 65-character limit"
+      id: "Card 101-${ATTEMPT_ID}(, .*)? needs attention: variation text is over the 65-character limit"
     timeout: 7000
 - assertNotVisible: "Fix them one at a time"
 - assertVisible: "#101-${ATTEMPT_ID}"

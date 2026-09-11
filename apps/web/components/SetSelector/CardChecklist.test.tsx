@@ -1392,7 +1392,11 @@ describe("CardChecklist — NEO-102 attention count, filter and walker", () => {
       screen.getByRole("button", { name: /Show only cards needing attention/ }).textContent,
     ).toContain("1 need attention");
     expect(screen.getAllByLabelText(/needs attention/)).toHaveLength(1);
-    expect(screen.getByLabelText(/Card 1 needs attention/)).toBeTruthy();
+    // NEO-272: the mark names the row's identity — number AND card name — so
+    // twenty-five same-numbered rows no longer all announce the same sentence.
+    expect(
+      screen.getByLabelText(/Card 1, AL Leaders ERA LL needs attention/),
+    ).toBeTruthy();
   });
 
   it("announces the count in a live region, since the chip's own label changes silently", () => {

@@ -133,11 +133,11 @@ tags:
 # Assert visibility before tapping — surfaces a failed scroll as a clear
 # assertion error rather than the null kotlin.Int bounds crash.
 - assertVisible:
-    id: "Edit card 777-${ATTEMPT_ID}"
+    id: "Edit card 777-${ATTEMPT_ID}(, .*)?"
 # waitToSettleTimeoutMs mitigates the virtualisation race — parallel workers'
 # live-query refetches can shift this row between Maestro's lookup and dispatch.
 - tapOn:
-    id: "Edit card 777-${ATTEMPT_ID}"
+    id: "Edit card 777-${ATTEMPT_ID}(, .*)?"
     waitToSettleTimeoutMs: 2000
 - extendedWaitUntil:
     visible:
@@ -237,13 +237,13 @@ tags:
 # the sticky header/footer before the tap (R8).
 - scrollUntilVisible:
     element:
-      id: "Delete card 777-${ATTEMPT_ID}"
+      id: "Delete card 777-${ATTEMPT_ID}(, .*)?"
     centerElement: true
     visibilityPercentage: 50
     timeout: 7000
 - tapOn:
-    id: "Delete card 777-${ATTEMPT_ID}"
+    id: "Delete card 777-${ATTEMPT_ID}(, .*)?"
 - assertVisible: "Confirm?"
 - tapOn:
-    id: "Confirm delete card 777-${ATTEMPT_ID}"
+    id: "Confirm delete card 777-${ATTEMPT_ID}(, .*)?"
 - assertNotVisible: "Autopop Card Player ${ATTEMPT_ID}"

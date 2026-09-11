@@ -131,7 +131,7 @@ describe("CardChecklistItem", () => {
   it("clicking the Edit button calls onEdit exactly once (stopPropagation prevents a second, bubbled call)", () => {
     const { onEdit } = renderItem();
 
-    fireEvent.click(screen.getByLabelText("Edit card 42"));
+    fireEvent.click(screen.getByLabelText("Edit card 42, Mike Trout"));
 
     expect(onEdit).toHaveBeenCalledTimes(1);
     expect(onEdit).toHaveBeenCalledWith(CARD_ID);
@@ -140,8 +140,8 @@ describe("CardChecklistItem", () => {
   it("clicking Delete then Confirm calls the delete mutation and does NOT also call onEdit", async () => {
     const { onEdit } = renderItem();
 
-    fireEvent.click(screen.getByLabelText("Delete card 42"));
-    fireEvent.click(screen.getByLabelText("Confirm delete card 42"));
+    fireEvent.click(screen.getByLabelText("Delete card 42, Mike Trout"));
+    fireEvent.click(screen.getByLabelText("Confirm delete card 42, Mike Trout"));
 
     expect(mockDeleteCard).toHaveBeenCalledWith({ id: CARD_ID });
     expect(onEdit).not.toHaveBeenCalled();
@@ -150,12 +150,12 @@ describe("CardChecklistItem", () => {
   it("clicking Delete (without confirming) does not call onEdit or the delete mutation", () => {
     const { onEdit } = renderItem();
 
-    fireEvent.click(screen.getByLabelText("Delete card 42"));
+    fireEvent.click(screen.getByLabelText("Delete card 42, Mike Trout"));
 
     expect(onEdit).not.toHaveBeenCalled();
     expect(mockDeleteCard).not.toHaveBeenCalled();
     // The button flips into a "Confirm?" state instead.
-    expect(screen.getByLabelText("Confirm delete card 42")).toBeTruthy();
+    expect(screen.getByLabelText("Confirm delete card 42, Mike Trout")).toBeTruthy();
   });
 });
 
@@ -240,7 +240,7 @@ describe("CardChecklistItem — variation grouping (NEO-189)", () => {
       isExpanded: false,
       onToggleVariations: vi.fn(),
     });
-    const disclosure = screen.getByLabelText("Show 2 variations of card 42");
+    const disclosure = screen.getByLabelText("Show 2 variations of card 42, Mike Trout");
     expect(disclosure.getAttribute("aria-expanded")).toBe("false");
   });
 
@@ -250,7 +250,7 @@ describe("CardChecklistItem — variation grouping (NEO-189)", () => {
       isExpanded: true,
       onToggleVariations: vi.fn(),
     });
-    const disclosure = screen.getByLabelText("Hide 2 variations of card 42");
+    const disclosure = screen.getByLabelText("Hide 2 variations of card 42, Mike Trout");
     expect(disclosure.getAttribute("aria-expanded")).toBe("true");
   });
 
@@ -260,7 +260,7 @@ describe("CardChecklistItem — variation grouping (NEO-189)", () => {
       isExpanded: false,
       onToggleVariations: vi.fn(),
     });
-    expect(screen.getByLabelText("Show 1 variation of card 42")).toBeTruthy();
+    expect(screen.getByLabelText("Show 1 variation of card 42, Mike Trout")).toBeTruthy();
   });
 
   it("clicking the disclosure toggles variations and does NOT also open the card detail panel", () => {
@@ -271,7 +271,7 @@ describe("CardChecklistItem — variation grouping (NEO-189)", () => {
       onToggleVariations,
     });
 
-    fireEvent.click(screen.getByLabelText("Show 2 variations of card 42"));
+    fireEvent.click(screen.getByLabelText("Show 2 variations of card 42, Mike Trout"));
 
     expect(onToggleVariations).toHaveBeenCalledWith(CARD_ID);
     expect(onEdit).not.toHaveBeenCalled();
@@ -300,7 +300,7 @@ describe("CardChecklistItem — NEO-102 attention mark", () => {
       }),
     });
 
-    const mark = screen.getByLabelText("Card 42 needs attention: no team on this card yet");
+    const mark = screen.getByLabelText("Card 42, Mike Trout needs attention: no team on this card yet");
     expect(mark).toBeTruthy();
     // Non-interactive by design: fixing happens in the walker, and a button
     // here would add another tab stop per row to a virtualized list.
@@ -324,7 +324,7 @@ describe("CardChecklistItem — NEO-102 attention mark", () => {
     // missing ref is the whole condition; there is no flag saying "hand-added".
     renderItem({ card: makeCard() });
     expect(
-      screen.getByLabelText("Card 42 needs attention: no team on this card yet"),
+      screen.getByLabelText("Card 42, Mike Trout needs attention: no team on this card yet"),
     ).toBeTruthy();
   });
 
@@ -628,5 +628,91 @@ describe("CardChecklistItem — NEO-236 team names", () => {
     expect(subtitle?.textContent).toBe(
       "San Diego Padres, New York Yankees · /99",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-272 — a row's controls name the row, not just its card number
+//
+// Product invariant 7 (CLAUDE.md): card numbers are never unique at any scope.
+// A set of unnumbered cards gives every row the number "NNO", which used to
+// give every row's Edit, Delete, disclosure and attention mark the SAME
+// accessible name — one sentence repeated down the whole list, and no way for
+// anyone navigating by name to tell two rows apart. The row's visible identity
+// (number + card name) is what distinguishes them.
+// ---------------------------------------------------------------------------
+
+describe("CardChecklistItem — NEO-272 accessible names carry the row's identity", () => {
+  it("gives two same-numbered rows distinct names for every control", () => {
+    render(
+      <>
+        <CardChecklistItem
+          card={makeCard({
+            _id: "card-a" as unknown as Id<"cardChecklist">,
+            cardNumber: "NNO",
+            cardName: "Jon Larson",
+          })}
+          onEdit={vi.fn()}
+        />
+        <CardChecklistItem
+          card={makeCard({
+            _id: "card-b" as unknown as Id<"cardChecklist">,
+            cardNumber: "NNO",
+            cardName: "Craig Herr",
+          })}
+          onEdit={vi.fn()}
+        />
+      </>,
+    );
+
+    // getByLabelText throws on more than one match, so each of these passing
+    // IS the uniqueness assertion.
+    expect(screen.getByLabelText("Edit card NNO, Jon Larson")).toBeTruthy();
+    expect(screen.getByLabelText("Edit card NNO, Craig Herr")).toBeTruthy();
+    expect(screen.getByLabelText("Delete card NNO, Jon Larson")).toBeTruthy();
+    expect(screen.getByLabelText("Delete card NNO, Craig Herr")).toBeTruthy();
+    expect(
+      screen.getByLabelText("Card NNO, Jon Larson needs attention: no team on this card yet"),
+    ).toBeTruthy();
+    expect(
+      screen.getByLabelText("Card NNO, Craig Herr needs attention: no team on this card yet"),
+    ).toBeTruthy();
+  });
+
+  it("names a cross-release row's unlink control by its identity too", () => {
+    render(
+      <CardChecklistItem
+        card={makeCard({
+          cardNumber: "NNO",
+          isCrossListed: true,
+          crossListingId: "xl-1" as unknown as Id<"cardCrossListings">,
+        })}
+        onEdit={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByLabelText("Remove card NNO, Mike Trout from this set"),
+    );
+    expect(
+      screen.getByLabelText("Confirm remove card NNO, Mike Trout from this set"),
+    ).toBeTruthy();
+  });
+
+  it("falls back to the bare card number when the row has no name — no trailing separator, no 'undefined'", () => {
+    render(
+      <CardChecklistItem card={makeCard({ cardName: "" })} onEdit={vi.fn()} />,
+    );
+
+    expect(screen.getByLabelText("Edit card 42")).toBeTruthy();
+    expect(screen.getByLabelText("Delete card 42")).toBeTruthy();
+  });
+
+  it("ignores a whitespace-only card name rather than labelling a row with a space", () => {
+    render(
+      <CardChecklistItem card={makeCard({ cardName: "   " })} onEdit={vi.fn()} />,
+    );
+
+    expect(screen.getByLabelText("Edit card 42")).toBeTruthy();
   });
 });

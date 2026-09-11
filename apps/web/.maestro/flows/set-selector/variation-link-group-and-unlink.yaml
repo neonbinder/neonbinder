@@ -117,7 +117,7 @@ tags:
 # agree and the row's bounds are stable when read.
 - scrollUntilVisible:
     element:
-      id: "Edit card 701-${ATTEMPT_ID}"
+      id: "Edit card 701-${ATTEMPT_ID}(, .*)?"
     centerElement: true
     visibilityPercentage: 50
     waitToSettleTimeoutMs: 1000
@@ -136,7 +136,7 @@ tags:
 # ════════════════════════════════════════════════════════════════════════════
 
 - tapOn:
-    id: "Edit card 701-${ATTEMPT_ID}"
+    id: "Edit card 701-${ATTEMPT_ID}(, .*)?"
     waitToSettleTimeoutMs: 2000
 - extendedWaitUntil:
     visible:
@@ -220,7 +220,7 @@ tags:
 # tap in this section lands on the caret.
 - scrollUntilVisible:
     element:
-      id: "Show 1 variation of card 700-${ATTEMPT_ID}"
+      id: "Show 1 variation of card 700-${ATTEMPT_ID}(, .*)?"
     direction: UP
     centerElement: true
     visibilityPercentage: 50
@@ -235,23 +235,23 @@ tags:
 # ════════════════════════════════════════════════════════════════════════════
 
 - tapOn:
-    id: "Show 1 variation of card 700-${ATTEMPT_ID}"
+    id: "Show 1 variation of card 700-${ATTEMPT_ID}(, .*)?"
 - extendedWaitUntil:
     visible: "#701-${ATTEMPT_ID}"
     timeout: 7000
 # The disclosure flips to its collapse form once open.
 - assertVisible:
-    id: "Hide 1 variation of card 700-${ATTEMPT_ID}"
+    id: "Hide 1 variation of card 700-${ATTEMPT_ID}(, .*)?"
 
 - tapOn:
-    id: "Hide 1 variation of card 700-${ATTEMPT_ID}"
+    id: "Hide 1 variation of card 700-${ATTEMPT_ID}(, .*)?"
 - extendedWaitUntil:
     notVisible: "#701-${ATTEMPT_ID}"
     timeout: 7000
 
 # Re-open it: the child row is how the next step reaches the card.
 - tapOn:
-    id: "Show 1 variation of card 700-${ATTEMPT_ID}"
+    id: "Show 1 variation of card 700-${ATTEMPT_ID}(, .*)?"
 - extendedWaitUntil:
     visible: "#701-${ATTEMPT_ID}"
     timeout: 7000
@@ -264,12 +264,12 @@ tags:
 
 - scrollUntilVisible:
     element:
-      id: "Edit card 701-${ATTEMPT_ID}"
+      id: "Edit card 701-${ATTEMPT_ID}(, .*)?"
     centerElement: true
     visibilityPercentage: 50
     timeout: 7000
 - tapOn:
-    id: "Edit card 701-${ATTEMPT_ID}"
+    id: "Edit card 701-${ATTEMPT_ID}(, .*)?"
     waitToSettleTimeoutMs: 2000
 - extendedWaitUntil:
     visible:
@@ -307,9 +307,9 @@ tags:
     visible: "#701-${ATTEMPT_ID}"
     timeout: 7000
 - assertNotVisible:
-    id: "Show 1 variation of card 700-${ATTEMPT_ID}"
+    id: "Show 1 variation of card 700-${ATTEMPT_ID}(, .*)?"
 - assertNotVisible:
-    id: "Hide 1 variation of card 700-${ATTEMPT_ID}"
+    id: "Hide 1 variation of card 700-${ATTEMPT_ID}(, .*)?"
 
 # ════════════════════════════════════════════════════════════════════════════
 # CLEANUP — delete both of this attempt's cards (R7: leave the worker's set as
@@ -318,32 +318,32 @@ tags:
 
 - scrollUntilVisible:
     element:
-      id: "Delete card 701-${ATTEMPT_ID}"
+      id: "Delete card 701-${ATTEMPT_ID}(, .*)?"
     centerElement: true
     visibilityPercentage: 50
     waitToSettleTimeoutMs: 1000
     timeout: 7000
 - tapOn:
-    id: "Delete card 701-${ATTEMPT_ID}"
+    id: "Delete card 701-${ATTEMPT_ID}(, .*)?"
 - assertVisible: "Confirm?"
 - tapOn:
-    id: "Confirm delete card 701-${ATTEMPT_ID}"
+    id: "Confirm delete card 701-${ATTEMPT_ID}(, .*)?"
 - extendedWaitUntil:
     notVisible: "#701-${ATTEMPT_ID}"
     timeout: 7000
 
 - scrollUntilVisible:
     element:
-      id: "Delete card 700-${ATTEMPT_ID}"
+      id: "Delete card 700-${ATTEMPT_ID}(, .*)?"
     centerElement: true
     visibilityPercentage: 50
     waitToSettleTimeoutMs: 1000
     timeout: 7000
 - tapOn:
-    id: "Delete card 700-${ATTEMPT_ID}"
+    id: "Delete card 700-${ATTEMPT_ID}(, .*)?"
 - assertVisible: "Confirm?"
 - tapOn:
-    id: "Confirm delete card 700-${ATTEMPT_ID}"
+    id: "Confirm delete card 700-${ATTEMPT_ID}(, .*)?"
 - extendedWaitUntil:
     notVisible: "#700-${ATTEMPT_ID}"
     timeout: 7000
