@@ -682,6 +682,42 @@ deployment fails at STEP 4's `No cards in this checklist yet.` assertion,
 correctly; the fix is a fresh `npm run test:e2e -- setup`. **A local validation therefore gets
 exactly one committing attempt per set per deployment.**
 
+#### It also carries NEO-272's only live assertion (STEP 8)
+
+The flow's last four commands open ONE committed card's detail drawer and assert
+that the drawer's `Card title` names the set and **not** `All Brands`. That is a
+second feature riding this fixture, documented as such in the flow's header, and
+it is here because this is the suite's only subtree under a manufacturer row
+whose brand NB has not identified — a flow of its own would need a second real
+set and another owner approval for a claim this one is standing three lines away
+from.
+
+`All Brands` is not a brand: it is the marketplace's no-filter option on its
+brand axis ("show all cards from all brands"), carried as a manufacturer row, and
+the sets under it are the ones whose brand NB has not identified. Its name says
+nothing about any card beneath it, so composing it into a buyer-facing listing
+title is meaningless text — which is what STEP 8 pins.
+
+Why the fixture is the right one, beyond convenience: `All Brands` for Hockey
+1995 is **not** minted by `syncSetsAcrossManufacturers` (measurement 2 above —
+it comes off SportLots' own brand list, which is the normal case: the row is the
+marketplace's filter option, so the marketplace supplies it), so it arrives
+carrying no `metadata.isBrandUnknown`, and the sync's *legacy adoption* branch
+has to recognise the row and stamp the role. That branch is unreachable from
+`convex-test`, and STEP 1's cold Sets sync runs it on every CI run of this flow.
+
+It is **read-only**: nothing is typed, the drawer's fields commit only on Enter
+or a changed blur, and `previewListingTitle` stays `"skip"` until Regenerate is
+pressed, so the drawer costs no server round-trip. **Estimated at ~7-9s and not
+yet measured** — no preview existed when it was written. First green run that
+records a real title on this set should tighten STEP 8's positive assertion into
+one anchored shape and note what it measured.
+
+Note for a fixture swap: STEP 8's negative names the literal `All Brands`, which
+STEP 1 already hard-codes as its `MANUFACTURER`. A year whose filter-option row
+is spelled differently breaks STEP 1 first, loudly, so the two cannot silently
+disagree — but they must be changed together.
+
 #### Spares, if the set ever has to be swapped
 
 Same shape, same ancestors, all verified present in the 134-set column and all

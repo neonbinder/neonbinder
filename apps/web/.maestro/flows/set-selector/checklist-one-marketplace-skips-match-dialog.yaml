@@ -128,6 +128,21 @@ tags:
 #   here, on purpose, and this paragraph is the disclosure. Do not "fix" it by
 #   padding a wait: the line is not slow, it is finished.
 #
+# ── R1/R2 — A SECOND FEATURE RIDES THIS FIXTURE, DELIBERATELY (NEO-272) ─────
+#   STEP 8 at the bottom proves something else: that the name of the "All
+#   Brands" row never reaches a committed card's generated listing title. The
+#   `name:` above still names the primary feature, and it stays that way — read
+#   STEP 8's own block before blaming NEO-255 for a red down there.
+#
+#   This is the two-in-one shape `custom-card-row-opens-panel-with-autotitle`
+#   documents in its own R2 block, where one drawer assertion covers both the
+#   row-click feature and NEO-24's auto-title. Same justification here, plus a
+#   harder one: `Hockey → 1995 → All Brands` is the suite's ONLY subtree under a
+#   manufacturer row whose brand NB has not identified, and giving NEO-272 its
+#   own flow would mean a SECOND real set (30-90s of cold marketplace sync) plus
+#   owner approval, for a claim this flow is already standing three lines away
+#   from. STEP 8 adds four commands.
+#
 # ── R3 — NO OTHER FLOW TESTS THIS ───────────────────────────────────────────
 #   Every other flow that reaches the pairing dialog is on a TWO-sided set and
 #   proves the opposite half of the same rule, unchanged by this ticket:
@@ -519,3 +534,100 @@ tags:
 - assertVisible: "BSC only"
 # And nothing was invented on the side that was never attached.
 - assertNotVisible: "SL only"
+
+# ============================================================
+# STEP 8 — "ALL BRANDS" IS NOT IN WHAT THE COMMIT WROTE (NEO-272)
+#
+# ⚠️ A DIFFERENT FEATURE FROM THE ONE THIS FLOW IS NAMED FOR. See the R1/R2
+# block in the header for why it lives here. A red in this step is NEO-272.
+#
+# THE FEATURE. "All Brands" is not a brand — it is the marketplace's no-filter
+# option on its brand axis, "show all cards from all brands", carried as a
+# manufacturer row — and the sets NB files under it are the ones whose brand NB
+# has not identified. That row carries the NB role `selectorOptions.metadata
+# .isBrandUnknown`, and listing generation drops a flagged manufacturer entirely
+# (`manufacturerAndSetTokens`, generateListing.ts): a name meaning "show
+# everything" tells a buyer nothing about the card in hand, so it is meaningless
+# text in a buyer-facing field — and "All Brands " spends eleven characters of a
+# budget of exactly eighty saying it.
+#
+# WHY IT HAS TO BE ASSERTED LIVE, AND WHAT ONLY A LIVE RUN CAN SEE. The role is
+# stamped inside the REAL `syncSetsAcrossManufacturers`, which convex-test
+# never runs — `generateListing.test.ts` and `listingTitleBrandUnknown.test.ts`
+# cover everything DOWNSTREAM of the flag and nothing that sets it.
+# And this fixture happens to hit the one branch that only real data reaches:
+# Hockey 1995's `All Brands` row is NOT minted by that sync. It arrives from
+# SportLots' own brand list (SET-REGISTRY measurement 2 — the Manufacturers
+# column returns it before any Sets column has mounted), which is the normal
+# case rather than a curiosity: the row is the marketplace's own filter option,
+# so the marketplace supplies it. It therefore carries no flag, and the sync's
+# LEGACY ADOPTION branch has to recognise the row and stamp it via
+# `markBrandUnknownRole`. That branch runs in STEP 1, inside the
+# drill util's cold Sets sync, on every CI run of this flow. Nothing else in
+# the suite exercises it, on any year.
+#
+# ⚠️ WHY THIS IS NOT `assertNotVisible: "All Brands"`. The role deliberately
+# changes NOTHING about the row's visibility — still an ordinary manufacturer,
+# still in the breadcrumb, still in the manufacturer picker, and STEP 1 selected
+# it by that very name. A page-wide negative would fail on correct behaviour, or
+# pass because a column had scrolled. Both assertions below are scoped to the
+# drawer's `Card title` input, i.e. to the string the SERVER wrote at commit.
+#
+# R7a — READ-ONLY on a registered set. Opening the drawer writes nothing: its
+# fields commit on Enter or on a changed blur and nothing here types, and
+# `previewListingTitle` stays `"skip"` until Regenerate is pressed
+# (useTitlePreview.ts, "Laziness"), so there is no server round-trip either.
+# ============================================================
+
+# NO SCROLL, and that is R10 rather than an R8 exception: the step above
+# centred the `Cards (N)` header, the rows are the next thing under it, and
+# `assertVisible: "BSC only"` just proved a row is on screen — so a scroll here
+# would synchronise nothing. `Edit card <n>` is this suite's canonical drawer
+# opener (`custom-card-row-opens-panel-with-autotitle`'s R3 note), but the card
+# numbers are the marketplace's and unknowable from here, so the aria-label is
+# matched as a regex FIND — `id:` selectors are regex finds, `text:` is
+# full-node anchored (SET-REGISTRY). First-match across the 25 rows is not an
+# ambiguity that can change the answer: every one of them was written by the
+# same commit, under the same ancestors, with the same manufacturer treatment.
+#
+# THE RETRY IS NOT DECORATION. `Saved N cards. <n> need attention` is still
+# climbing here as the background team pass lands (SET-REGISTRY: a ~15s tail to
+# 25), and a row whose attention slot flips re-measures the Virtuoso list under
+# the bounds Maestro has already read — CardChecklist.tsx's "bounds-then-tap
+# window races Virtuoso's height recompute", the long-standing dropped-tap
+# flake. Result-keyed and bounded: tap, wait for the drawer, tap once more if
+# the first one was eaten. It costs nothing when the tap lands.
+- retry:
+    maxRetries: 1
+    commands:
+      - tapOn:
+          id: "Edit card .*"
+          waitToSettleTimeoutMs: 1000
+      - extendedWaitUntil:
+          visible:
+            id: "Card name"
+          timeout: 7000
+
+# THE POSITIVE, FIRST — a negative alone is satisfied by a drawer that never
+# opened. For an `<input>` Maestro's getNodeText returns its VALUE, so this
+# reads the stored `listingTitle` rather than a label. The set name is in that
+# title by construction, not by measurement: `assessListingTitle` puts
+# year/manufacturer/set in the CORE, and this core is ~25 characters against a
+# cap of 80, so nothing truncates it.
+- assertVisible:
+    id: "Card title"
+    text: ".*${output.SET}.*"
+
+# THE CLAIM. A build that stopped stamping the role writes
+# "1995 All Brands Roanoke Express ECHL #<n> …" and fails right here.
+#
+# The exact SHAPE of the title is deliberately NOT asserted. No run has ever
+# measured one on this fixture, and a guessed literal ("1995 <set> #<n> Hockey")
+# would be a false red on a correct build the first time a season value, a
+# resolved team or a print run surprised it — expensive here, because the
+# fixture self-drains, so a local re-run to diagnose fails at STEP 4 by design.
+# Once a preview run has recorded a real title on this set, tighten this pair
+# into one anchored positive and record what it measured.
+- assertNotVisible:
+    id: "Card title"
+    text: ".*All Brands.*"

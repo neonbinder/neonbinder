@@ -64,11 +64,15 @@ const FULLY_POPULATED = {
   // every test passed while the query threw in the preview for any chain
   // containing a Base row. A fixture that is not FULLY POPULATED is not a
   // drift guard.
+  // NEO-272 — `isBrandUnknown` added for the same reason: a fixture that
+  // is not FULLY POPULATED is not a drift guard, and this flag rides in the
+  // SAME `metadata` object `isBase` broke `getAncestorChain` from.
   metadata: {
     cardNumberPrefix: "DK-",
     isInsert: true,
     isParallel: false,
     isBase: true,
+    isBrandUnknown: true,
   },
   sportConfig: {
     skuCode: "BB",
@@ -245,6 +249,10 @@ describe("selectorOptions returns-validator drift", () => {
     // sport → setName → variantType → insert, every one of them populated.
     expect(chain).toHaveLength(4);
     expect(chain.every((node) => node.metadata?.isBase === true)).toBe(true);
+    // NEO-272 — the same projection, the same hazard, the next field along.
+    expect(
+      chain.every((node) => node.metadata?.isBrandUnknown === true),
+    ).toBe(true);
     // The projection's other derived fields, so a future re-inlining of THOSE
     // is caught here too rather than in a preview.
     expect(chain[0].platformFacets).toBeUndefined();
