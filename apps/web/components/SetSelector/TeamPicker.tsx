@@ -11,6 +11,7 @@ import {
 } from "../../lib/entities/name-search";
 import { normalizeEntityName } from "../../lib/entities/normalize-name";
 import NewTeamDialog from "./NewTeamDialog";
+import PickerPopover, { popoverFocusables } from "./PickerPopover";
 
 /**
  * NEO-26 — multi-select-capable team picker, defaults to single.
@@ -57,6 +58,10 @@ import NewTeamDialog from "./NewTeamDialog";
  *   ↑/↓ on input — move highlight
  *   Esc on input — close popover without selecting
  *   Backspace on empty input — remove last chip
+ *   Tab off the last popover row — closes and returns to the trigger. NEO-272
+ *     portalled the popover out of its clipping ancestor, so the picker
+ *     carries the two boundary hops itself rather than leaving them to DOM
+ *     order; see `PickerPopover`.
  *
  * Pointer users get an outside-click close as well — see the effect below for
  * why that is not just polish.
@@ -159,6 +164,23 @@ export default function TeamPicker({
   const inputRef = useRef<HTMLInputElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  /**
+   * NEO-272 — the popover's own element, because it is no longer a DOM
+   * descendant of `rootRef`.
+   *
+   * The popover is portalled to `document.body` so a scrolling ancestor
+   * cannot clip it (see `PickerPopover`). React events still bubble through
+   * the REACT tree, so everything below that listens for a key or a blur is
+   * unchanged — but `Node.contains()` is a DOM question, and both dismissal
+   * paths ask it. Without this ref the open-time autofocus alone would look
+   * like "focus left the picker" and close the popover on the spot.
+   */
+  const popoverRef = useRef<HTMLDivElement | null>(null);
+
+  /** Inside the picker as the OPERATOR sees it: the chip row or the popover. */
+  const insidePicker = (node: Node | null) =>
+    !!node &&
+    (!!rootRef.current?.contains(node) || !!popoverRef.current?.contains(node));
 
   // Reset highlight whenever the typed query changes.
   useEffect(() => {
@@ -176,9 +198,11 @@ export default function TeamPicker({
 
   /**
    * Close on a pointerdown outside the picker — ordinary popover behaviour,
-   * and load-bearing in `MissingTeamFixer`. The popover is `absolute top-full
-   * w-64 z-10`, which puts it over that fixer's "Save & Next (Enter)" and "No
-   * team on this card", and Escape is not a way out THERE: Escape inside
+   * and load-bearing in `MissingTeamFixer`. The popover hangs under the
+   * trigger at `w-64` (NEO-272: portalled and `fixed`, previously `absolute
+   * top-full z-10` — same rectangle either way), which puts it over that
+   * fixer's "Save & Next (Enter)" and "No team on this card", and Escape is
+   * not a way out THERE: Escape inside
    * `CardAttentionWalker` means "defer this card". So without this, a walker
    * operator who opened the picker had no way to uncover the two buttons they
    * needed next.
@@ -193,7 +217,10 @@ export default function TeamPicker({
   useEffect(() => {
     if (!popoverOpen) return;
     const onPointerDown = (e: Event) => {
-      if (rootRef.current?.contains(e.target as Node)) return;
+      // NEO-272: the popover counts as inside even though it is portalled —
+      // a press on an option must select it, not dismiss the list under the
+      // pointer before the click resolves.
+      if (insidePicker(e.target as Node)) return;
       // NEO-236: same portal caveat as `handleRootBlur` — a press inside the
       // New Team dialog is outside this root, and must not dismiss the popover
       // that owns the query the dialog is editing.
@@ -330,8 +357,8 @@ export default function TeamPicker({
    * picker's subtree and onto whatever the caller placed next in the DOM —
    * in `CardChecklist`'s quick-add form, the "Add"/"Cancel" buttons
    * immediately following this field. Without closing here, those buttons
-   * receive focus while still visually covered by the open `absolute
-   * ... z-10` popover (WCAG 2.4.11 Focus Not Obscured) — the same overlap
+   * receive focus while still visually covered by the open popover (WCAG
+   * 2.4.11 Focus Not Obscured) — the same overlap
    * the comment above already documents for `MissingTeamFixer`, just reached
    * by Tab instead of by leaving focus where it was.
    *
@@ -355,7 +382,10 @@ export default function TeamPicker({
       // between the blur and this callback, which is exactly the case that
       // used to wipe the query out from under it.
       if (newTeamOpenRef.current) return;
-      if (rootRef.current?.contains(document.activeElement)) return;
+      // NEO-272: the popover is portalled, so "focus is still in the picker"
+      // has to include it — the open-time autofocus moves focus straight
+      // there, and every hop between its rows is ordinary keyboard use.
+      if (insidePicker(document.activeElement)) return;
       setPopoverOpen(false);
       setQuery("");
     }, 0);
@@ -404,6 +434,18 @@ export default function TeamPicker({
           // test (or a real user) re-tapped "+ Add team" expecting
           // it to keep opening.
           onClick={() => setPopoverOpen(true)}
+          // NEO-272: Tab from the trigger lands in the popover, which is what
+          // DOM order did for free until the popover was portalled to the end
+          // of `document.body`. The way back out is `PickerPopover`'s own Tab
+          // handling.
+          onKeyDown={(e) => {
+            if (e.key !== "Tab" || e.shiftKey || !popoverOpen) return;
+            const first = popoverFocusables(popoverRef.current)[0];
+            if (!first) return;
+            e.preventDefault();
+            e.stopPropagation();
+            first.focus();
+          }}
           aria-label="Add team"
           aria-expanded={popoverOpen}
           // a11y (SC 1.4.11 Non-text Contrast): the dashed border IS this
@@ -423,7 +465,19 @@ export default function TeamPicker({
           // only `option` children are allowed there. The listbox is still
           // rendered for the whole life of the popover, so "is the listbox
           // present" remains a valid read of "is the popover open".
-          <div className="absolute left-0 top-full mt-1 z-10 w-64 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-md shadow-lg p-2 space-y-1">
+          //
+          // NEO-272: `PickerPopover` rather than an `absolute` div. The
+          // surface classes below are untouched — only the positioning ones
+          // moved, into the portal that keeps a scrolling host from clipping
+          // this list (`MissingTeamFixer` and `UnreviewedNameFixer` both live
+          // inside the attention walker's `overflow-y-auto` body, and the card
+          // drawer has one of its own).
+          <PickerPopover
+            anchorRef={triggerRef}
+            popoverRef={popoverRef}
+            onTabOut={closePopover}
+            className="w-64 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-md shadow-lg p-2 space-y-1"
+          >
             <Input
               bare
               ref={inputRef}
@@ -601,7 +655,7 @@ export default function TeamPicker({
                 )}
               </button>
             )}
-          </div>
+          </PickerPopover>
         )}
       </div>
 

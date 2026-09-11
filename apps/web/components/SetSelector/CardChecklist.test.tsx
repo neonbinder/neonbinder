@@ -2133,6 +2133,37 @@ describe("CardChecklist — NEO-208 quick-add Team picker", () => {
     ).toBe("false");
   });
 
+  /*
+   * NEO-272 — the popover is portalled to `document.body` now, and the overlap
+   * the test above exists for is DELIBERATE and unchanged: the popover is
+   * anchored under its trigger, the trigger sits directly above Add/Cancel, so
+   * an open list is drawn over them. That is why closing on a Tab-out (and on
+   * a press elsewhere) is the behaviour that matters here, not where the
+   * element lives in the tree.
+   *
+   * What the portal changes is that no scrolling ancestor can CLIP the list —
+   * the reason it was made in the first place, for the hosts that do scroll
+   * (the attention walker's body, the card drawer's). happy-dom computes no
+   * layout, so this asserts the structural property that makes clipping
+   * impossible rather than a pixel nobody here can measure.
+   */
+  it("portals the team popover out of the form it covers (NEO-272)", () => {
+    const { container } = renderChecklist();
+    const form = openAddForm();
+    fireEvent.click(screen.getByLabelText("Add team"));
+
+    const popover = screen.getByRole("listbox").parentElement as HTMLElement;
+    // The trigger is in the form. The list it opens is not — in either the
+    // form or the page subtree around it.
+    expect(form.contains(screen.getByLabelText("Add team"))).toBe(true);
+    expect(form.contains(popover)).toBe(false);
+    expect(container.contains(popover)).toBe(false);
+    expect(popover.parentElement?.parentElement).toBe(document.body);
+    // Same box as ever, and above the page rather than behind it.
+    expect(popover.className).toContain("w-64");
+    expect(popover.className).toContain("z-[55]");
+  });
+
   it("keeps the popover open when focus moves between controls inside it", async () => {
     // Regression guard on the fix above: closing on "focus left the root"
     // must not also fire for focus moving from one in-picker control to
@@ -2502,6 +2533,24 @@ describe("CardChecklist — NEO-220 quick-add Player picker", () => {
     expect(
       screen.getByLabelText(QA_TRIGGER).getAttribute("aria-expanded"),
     ).toBe("false");
+  });
+
+  /* NEO-272 — as for the Team picker above: the popover is portalled so no
+     scrolling host can clip it, and the overlap with the Team row and
+     Add/Cancel is unchanged and deliberate. The listbox role and this
+     instance's own accessible name travel with it, which is what both a
+     screen reader and a Maestro `id:` selector read it by. */
+  it("portals the player popover out of the form it covers (NEO-272)", () => {
+    const { container } = renderChecklist();
+    const form = openAddForm();
+    fireEvent.click(screen.getByLabelText(QA_TRIGGER));
+
+    const popover = screen.getByLabelText("Player results for the new card");
+    expect(form.contains(screen.getByLabelText(QA_TRIGGER))).toBe(true);
+    expect(form.contains(popover)).toBe(false);
+    expect(container.contains(popover)).toBe(false);
+    expect(popover.parentElement?.parentElement).toBe(document.body);
+    expect(popover.getAttribute("role")).toBe("listbox");
   });
 
   it("keeps the popover open when focus moves between controls inside it", async () => {
