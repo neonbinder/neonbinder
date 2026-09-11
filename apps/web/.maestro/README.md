@@ -812,6 +812,28 @@ Two corollaries worth knowing before you write the selector:
   is the one sanctioned use of an optional group in this suite's selectors;
   everywhere else the bullet above applies.
 
+* **The pairing dialog names a row by its SCOPE, not by its card name
+  (NEO-272).** Do not carry the bullet above across to `CardPairingModal`. Its
+  row controls — the open rename field (`Edit name for …`) and every conflict
+  pill (`… — use this name for …`, `… — use these players for …`), alongside
+  the regions and radiogroups NEO-201 already did this to — are qualified by
+  `conflictScopeLabels`' scope: the bare `#<number>`, or `#<number> ·
+  <variation>`, or `#<number> (1 of 2)` when nothing else separates two
+  conflicts on one number. The card NAME cannot be the qualifier here, because
+  it is the value these controls change; a label built from it would be
+  re-announced mid-edit.
+
+  The scope degrades to the bare `#<number>` on any number carrying at most one
+  conflict, which is every row in the Future Stars fixture — so these selectors
+  are written EXACT, with no optional tail, and
+  `checklist-pairing-dialog-cancel.yaml`'s `id: "Name conflict on #FS-1"`
+  full-match is what holds them exact: it is the same scope, so a second
+  conflict on that number fails there first and names the reason. A trailing
+  `.*` you do see on a pairing selector (`Unlink #FS-1 .*`, `Select BSC card
+  #FS-1 .*`, `Edit name for #FS-1 .*`) is covering the live card NAME in
+  `label()`, not hedging a scope — those are the closed row controls, and they
+  still need it.
+
 ## Launching a flow: always gate on the destination heading
 
 Almost every flow's `url:` is **not** the page under test — it's

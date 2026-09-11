@@ -446,12 +446,23 @@ tags:
 # which at this point is SportLots' and is read from live data.
 - tapOn:
     id: "Edit name for #FS-1 .*"
-# The field names itself by NUMBER alone ("Edit name for #FS-1"), never by the
-# card's name: the name is the thing this control changes, and a field that
-# renames itself as you type is re-announced mid-edit. It is also why it is not
-# called "Name for #FS-1" — that is the radiogroup, asserted above, and two
-# controls on one row cannot share an accessible name (this selector would then
-# match both).
+# The field names itself by the row's SCOPE, never by the card's name: the name
+# is the thing this control changes, and a field that renames itself as you type
+# is re-announced mid-edit.
+#
+# NEO-272 — the scope used to be the bare card number, which product invariant 7
+# says is never unique at any scope, and on a pairing screen least of all. The
+# scope is `conflictScopeLabels`' output: the bare "#FS-1" on a number carrying a
+# single conflict, "#FS-1 · <variation>" or "#FS-1 (1 of 2)" when it carries
+# two. So this selector stays EXACT rather than growing an optional tail, and
+# what pins it is the `id: "Name conflict on #FS-1"` assertion above — that is
+# the same scope, full-matched, so a second conflict appearing on #FS-1 fails
+# there first and names the reason, instead of silently widening this match.
+# Same for the "— use this name for #FS-1" pill selectors throughout this step.
+#
+# It is also why the field is not called "Name for #FS-1" — that is the
+# radiogroup, asserted above, and two controls on one row cannot share an
+# accessible name (this selector would then match both).
 - extendedWaitUntil:
     visible:
       id: "Edit name for #FS-1"
