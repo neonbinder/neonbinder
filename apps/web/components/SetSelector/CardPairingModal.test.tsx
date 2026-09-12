@@ -1846,6 +1846,75 @@ describe("CardPairingModal — naming two conflicts on one number (NEO-201)", ()
   });
 
   /**
+   * NEO-272 — and so do the PILLS INSIDE the radiogroup.
+   *
+   * NEO-201 disambiguated the region and the radiogroup and stopped there; the
+   * four radios they contain kept naming themselves `— use this name for
+   * #227`. That is the same defect one level down and it bites harder, because
+   * the pills are the control the operator actually activates and the
+   * marketplaces routinely file ONE name across a card and its variation — so
+   * both rows here offer a radio announced "BSC: Mike Yastrzemski — use this
+   * name for #227", and choosing by name cannot say which card it renames.
+   *
+   * The scope is the only qualifier available: every name-derived candidate is
+   * the value under dispute (see the note above this describe), and the pill's
+   * own visible text already carries that value.
+   */
+  test("the name pills carry the row's scope, not the bare card number", () => {
+    renderModal({
+      unmatchedBsc: [
+        bscOn227("Mike Yastrzemski", "bsc-227-sliding", "Sliding"),
+        bscOn227("Mike Yastrzemski", "bsc-227-dugout", "In Dugout"),
+      ],
+      unmatchedSl: [slOn227("Carl Yastrzemski"), slOn227("Mickey Mantle")],
+    });
+
+    link("#227 Mike Yastrzemski · In Dugout", "#227 Carl Yastrzemski");
+    link("#227 Mike Yastrzemski · Sliding", "#227 Mickey Mantle");
+
+    expect(accessibleNames("radio").sort()).toEqual([
+      "BSC: Mike Yastrzemski — use this name for #227 · In Dugout",
+      "BSC: Mike Yastrzemski — use this name for #227 · Sliding",
+      "SportLots: Carl Yastrzemski — use this name for #227 · In Dugout",
+      "SportLots: Mickey Mantle — use this name for #227 · Sliding",
+    ]);
+  });
+
+  /**
+   * NEO-272 — the open rename field too. It is on every matched row, not only
+   * a conflicted one, and the scope is exactly what the row renders on either
+   * side of it: `#227` in the static span to its left, `· Sliding` in the one
+   * to its right. The name is deliberately absent — it is the field's own
+   * value, and the thing the control changes.
+   */
+  test("the open rename field carries the row's scope", () => {
+    renderModal({
+      unmatchedBsc: [
+        bscOn227("Mike Yastrzemski", "bsc-227-sliding", "Sliding"),
+        bscOn227("Mike Yastrzemski", "bsc-227-dugout", "In Dugout"),
+      ],
+      unmatchedSl: [slOn227("Carl Yastrzemski"), slOn227("Mickey Mantle")],
+    });
+
+    link("#227 Mike Yastrzemski · In Dugout", "#227 Carl Yastrzemski");
+    link("#227 Mike Yastrzemski · Sliding", "#227 Mickey Mantle");
+
+    fireEvent.click(
+      screen.getByLabelText("Edit name for #227 Mike Yastrzemski · Sliding"),
+    );
+
+    expect(screen.getByLabelText("Edit name for #227 · Sliding").tagName).toBe(
+      "INPUT",
+    );
+    // The other row on the same number is untouched and still tells them
+    // apart — the point of the exercise.
+    expect(
+      screen.getByLabelText("Edit name for #227 Mike Yastrzemski · In Dugout")
+        .tagName,
+    ).toBe("BUTTON");
+  });
+
+  /**
    * The motivating row had BSC filing #227c with an EMPTY variation
    * description, so the meaningful disambiguator is exactly the one that can
    * be missing. An ordinal is always available; it is the fallback, not the
@@ -1908,6 +1977,15 @@ describe("CardPairingModal — naming two conflicts on one number (NEO-201)", ()
 
     expect(accessibleNames("group")).toEqual(["Name conflict on #227"]);
     expect(accessibleNames("radiogroup")).toEqual(["Name for #227"]);
+    // NEO-272's degradation, stated where the fallback is: the pills and the
+    // rename field read exactly as they did before the scope reached them —
+    // no suffix, no separator, nothing appended.
+    expect(accessibleNames("radio").sort()).toEqual([
+      "BSC: Mike Yastrzemski — use this name for #227",
+      "SportLots: Carl Yastrzemski — use this name for #227",
+    ]);
+    fireEvent.click(screen.getByLabelText("Edit name for #227 Mike Yastrzemski"));
+    expect(screen.getByLabelText("Edit name for #227").tagName).toBe("INPUT");
   });
 
   /**
@@ -3873,6 +3951,21 @@ describe("CardPairingModal — marketplace player conflicts (NEO-251)", () => {
     expect(names).toEqual([
       "Players conflict on #227 · In Dugout",
       "Players conflict on #227 · Sliding",
+    ]);
+
+    // NEO-272: and so do the pills inside them. The two controls on one row
+    // have to agree about what the row is called, so the roster pills take
+    // the same scope the name pills do.
+    expect(
+      screen
+        .getAllByRole("radio")
+        .map((el) => el.getAttribute("aria-label"))
+        .sort(),
+    ).toEqual([
+      "BSC: Mickey Mantle — use these players for #227 · In Dugout",
+      "BSC: Mike Yastrzemski — use these players for #227 · Sliding",
+      "SportLots: Carl Yastrzemski — use these players for #227 · Sliding",
+      "SportLots: Willie Mays — use these players for #227 · In Dugout",
     ]);
   });
 });

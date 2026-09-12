@@ -168,8 +168,22 @@ tags:
 - assertVisible: "Baseball"
 
 # ── ADD THE PLAYER ──────────────────────────────────────────────────────────
+# Selecting Baseball reflows this toolbar. CI 34706332009 captured Maestro
+# resolving the button at [636,327][736,359], while the failure hierarchy put
+# the current visible button at [526,327][626,359]; the stale tap landed in the
+# empty results panel. Re-read and centre the user-visible control after that
+# reflow (R8), then make exactly one user click.
+- scrollUntilVisible:
+    element:
+      text: "Add player"
+    centerElement: true
+    timeout: 7000
 - tapOn: "Add player"
-- assertVisible: "Add a player"
+# The form heading is the result gate (R2): if that one click did not open the
+# form, fail on the visible state a user expected instead of retrying the click.
+- extendedWaitUntil:
+    visible: "Add a player"
+    timeout: 7000
 
 - tapOn: "New player name"
 - inputText: "PM${output.ATTEMPT_TOKEN}"

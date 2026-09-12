@@ -3594,9 +3594,11 @@ export const renameSelectorOption = mutation({
  * expectations for an appended custom slot.
  */
 /**
- * Walk a selectorOptions node's parent chain ONCE, collecting the two ancestor
- * display values listing generation needs: the setName ("Chrome") and the
- * sport ("Baseball").
+ * Walk a selectorOptions node's parent chain ONCE, collecting everything
+ * listing generation needs from above the card: the setName display value
+ * ("Chrome"), the sport display value ("Baseball"), and — NEO-272 — whether NB
+ * has identified the brand of the set at all (a ROLE off
+ * `metadata.isBrandUnknown` on the manufacturer in between, never its name).
  *
  * NEO-101 widened this from `findSetNameValue`, which returned early at the
  * setName level. The sport node sits ABOVE setName, so a second helper would
@@ -3614,8 +3616,16 @@ export const renameSelectorOption = mutation({
 async function findAncestorLabels(
   ctx: { db: { get: (id: Id<"selectorOptions">) => Promise<any> } },
   node: any,
-): Promise<{ setName?: string; sport?: string }> {
-  const labels: { setName?: string; sport?: string } = {};
+): Promise<{
+  setName?: string;
+  sport?: string;
+  manufacturerBrandUnknown?: boolean;
+}> {
+  const labels: {
+    setName?: string;
+    sport?: string;
+    manufacturerBrandUnknown?: boolean;
+  } = {};
   if (!node) return labels;
   let current = node;
   let depth = 0;
@@ -3623,9 +3633,30 @@ async function findAncestorLabels(
     if (current.level === "setName" && labels.setName === undefined) {
       labels.setName = current.value;
     }
+    // NEO-272 — the manufacturer ROLE, not its name. Picked up on the way past
+    // rather than by a walk of its own: the chain is
+    // sport › year › manufacturer › setName › …, so walking UP from a card's
+    // parent reaches the manufacturer AFTER setName and BEFORE sport, and the
+    // break below waits for sport. Every chain that has a manufacturer level
+    // therefore passes through it before this loop can stop.
+    if (
+      current.level === "manufacturer" &&
+      labels.manufacturerBrandUnknown === undefined
+    ) {
+      labels.manufacturerBrandUnknown =
+        current.metadata?.isBrandUnknown === true;
+    }
     if (current.level === "sport" && labels.sport === undefined) {
       labels.sport = current.value;
     }
+    // Deliberately NOT extended with `manufacturerBrandUnknown`. A chain with
+    // no manufacturer level at all — a setName hung straight off a sport, which
+    // is what most fixtures and some hand-built trees look like — would then
+    // never satisfy the condition and would walk to the depth cap, paying extra
+    // reads on every card previewed or hand-added to buy nothing. The value is
+    // already collected above by the time sport is reached, so stopping here
+    // loses nothing; leaving it absent is the same "no manufacturer role" answer
+    // as `false`, which is exactly how the generator reads it.
     if (labels.setName !== undefined && labels.sport !== undefined) break;
     const parentId: Id<"selectorOptions"> | undefined = current.parentId;
     if (!parentId) break;
@@ -4182,8 +4213,11 @@ export const addCustomCard = mutation({
     // confirmed, via commitCardChecklist), but the operator typed a real name,
     // so it's the right thing to show regardless of reconciliation state.
     // Either way the title says what the operator meant.
-    const { setName: setNameValue, sport: sportValue } =
-      await findAncestorLabels(ctx, parentNode);
+    const {
+      setName: setNameValue,
+      sport: sportValue,
+      manufacturerBrandUnknown,
+    } = await findAncestorLabels(ctx, parentNode);
     const listingInputs: ListingCardInputs = {
       cardNumber: args.cardNumber,
       /*
@@ -4200,6 +4234,13 @@ export const addCustomCard = mutation({
       playerNames: hasLinkedPlayers ? linkedPlayerNames : pendingPlayerNames,
       year: mergedFeatures.season,
       manufacturer: mergedFeatures.manufacturer,
+      // NEO-272: the ancestor manufacturer row's NB ROLE. When NB has not
+      // identified the set's brand — the set hangs off the marketplace's
+      // all-brands filter option — the generator drops the manufacturer
+      // entirely, see `manufacturerAndSetTokens`. The name above is still
+      // passed, and still stored on the row's `features`; only the title and
+      // description skip it.
+      manufacturerBrandUnknown,
       setName: setNameValue,
       parallelName: mergedFeatures.parallelName,
       isRookie: (args.attributes ?? []).includes("RC"),
@@ -4655,6 +4696,11 @@ export const previewListingTitle = query({
       playerNames: v.array(v.string()),
       year: v.optional(v.string()),
       manufacturer: v.optional(v.string()),
+      // NEO-272: reaches the client so the operator-facing "Maker" source chip
+      // can be suppressed for a set whose brand NB has not identified. The
+      // chips exist to show WHICH facts the machine used, so a chip for a token
+      // the generator dropped would be a lie.
+      manufacturerBrandUnknown: v.optional(v.boolean()),
       setName: v.optional(v.string()),
       parallelName: v.optional(v.string()),
       isRookie: v.optional(v.boolean()),
@@ -4727,14 +4773,20 @@ export const previewListingTitle = query({
 
     const features: Record<string, string> = card.features ?? {};
     const parentNode = await ctx.db.get(card.selectorOptionId);
-    const { setName: setNameValue, sport: sportValue } =
-      await findAncestorLabels(ctx, parentNode);
+    const {
+      setName: setNameValue,
+      sport: sportValue,
+      manufacturerBrandUnknown,
+    } = await findAncestorLabels(ctx, parentNode);
 
     const inputs: ListingCardInputs = {
       cardNumber: card.cardNumber,
       playerNames,
       year: features.season,
       manufacturer: features.manufacturer,
+      // NEO-272: same ROLE the insert branches read, from the same walk, so a
+      // regenerated title cannot disagree with the one creation wrote.
+      manufacturerBrandUnknown,
       setName: setNameValue,
       parallelName: features.parallelName,
       isRookie: card.isRookie,
@@ -7923,9 +7975,58 @@ export const fetchAggregatedOptions = action({
 });
 
 /**
+ * NEO-272 — stamp the brand-unknown ROLE onto a `manufacturer` row.
+ *
+ * The row is the marketplace's all-brands filter option ("show all cards from
+ * all brands"), carried on the brand axis as a manufacturer row; the role
+ * records that the sets filed under it are the ones whose brand NB has not
+ * identified.
+ *
+ * INTERNAL, deliberately. The role decides whether a row's name reaches every
+ * listing title generated under it, so it is not something a client may grant:
+ * `addCustomSelectorOption` is the public creation path and takes no `metadata`
+ * argument, and it must not gain one. The only callers are
+ * `syncSetsAcrossManufacturers` — which mints the row, or adopts a
+ * pre-existing / marketplace-supplied one — and the one-time
+ * `backfillBrandUnknownRole`.
+ *
+ * Idempotent and never destructive:
+ *
+ *   • a row that already carries the flag is left exactly as it is, so the
+ *     sync's adoption branch can run on every pass for free;
+ *   • an explicit `false` is an operator saying "this IS a real brand" and is
+ *     not overruled here — only an ABSENT flag is filled in;
+ *   • the `level` is verified, because a role flag on a row that is not a
+ *     manufacturer would be an answer to a question nobody asked;
+ *   • a missing row is a no-op rather than a throw — the caller is a
+ *     best-effort stamp behind a mutation it does not share a transaction
+ *     with, and failing the whole sync over a row deleted in between would be
+ *     a worse outcome than a row that gets adopted again next run.
+ */
+export const markBrandUnknownRole = internalMutation({
+  args: { id: v.id("selectorOptions") },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const row = await ctx.db.get(args.id);
+    if (!row) return null;
+    if (row.level !== "manufacturer") return null;
+    if (row.metadata?.isBrandUnknown !== undefined) return null;
+    await ctx.db.patch(args.id, {
+      metadata: { ...(row.metadata ?? {}), isBrandUnknown: true },
+      lastUpdated: Date.now(),
+    });
+    return null;
+  },
+});
+
+/**
  * Fetch BSC sets for a sport/year and distribute them across existing
- * manufacturer parents by matching the set name prefix. Unmatched sets
- * go under "All Brands".
+ * manufacturer parents by matching the set name prefix. Unmatched sets — the
+ * ones whose brand NB has not identified — are bucketed under the marketplace's
+ * all-brands FILTER OPTION ("show all cards from all brands"), carried on the
+ * brand axis as a `manufacturer` row. NEO-272: that row is found by its NB role
+ * (`metadata.isBrandUnknown`) and never by its name — the name is a marketplace
+ * filter label NB does not own, and an operator can rename it besides.
  *
  * NEO-216 — **BSC-only by design, and SportLots is never reported here.** This
  * is the other half of the manufacturer story: BSC has no manufacturer axis
@@ -8048,25 +8149,70 @@ export const syncSetsAcrossManufacturers = action({
 
       // Build a lookup: normalized manufacturer name → manufacturer doc
       const mfrLookup = new Map<string, { _id: Id<"selectorOptions">; value: string }>();
-      let allBrandsId: Id<"selectorOptions"> | null = null;
+
+      // ── NEO-272: resolve the brand-unknown row by its NB role ─────────────
+      //
+      // This is where a BSC set goes when its name prefix-matches no real
+      // brand. The row is the marketplace's all-brands FILTER OPTION — "show
+      // all cards from all brands" — carried on the brand axis as a
+      // `manufacturer` row, so it names no brand at all and listing generation
+      // drops it from titles and descriptions.
+      //
+      // Which is why it has to be identifiable by a FLAG rather than by the
+      // name it wears. TWO reasons, either one fatal to a name match at
+      // runtime: an operator can rename the row, and the name is a MARKETPLACE
+      // FILTER LABEL NB does not own, so keying on it would be NB behaviour
+      // driven by a marketplace value, exactly the forward dependency product
+      // invariant 4 (CLAUDE.md) forbids. The row commonly arrives FROM the
+      // marketplace rather than being minted here (SportLots' brand list offers
+      // "All Brands" on its hockey years); an adopted row plays exactly the
+      // same part as a minted one, and the path below adopts it.
+      //
+      // Flag first; the name match survives ONLY as the legacy adoption step
+      // for rows written before this ticket, and when it fires it STAMPS the
+      // flag so it never has to fire again for that year.
+      let brandUnknownId: Id<"selectorOptions"> | null = null;
+      let legacyNamedBrandUnknownId: Id<"selectorOptions"> | null = null;
 
       for (const mfr of manufacturers) {
         const norm = mfr.value.toLowerCase().trim();
         mfrLookup.set(norm, { _id: mfr._id, value: mfr.value });
-        if (norm === "all brands") {
-          allBrandsId = mfr._id;
+        if (mfr.metadata?.isBrandUnknown === true) {
+          brandUnknownId ??= mfr._id;
+        } else if (norm === "all brands") {
+          legacyNamedBrandUnknownId ??= mfr._id;
         }
       }
 
-      // Create "All Brands" if it doesn't exist
-      if (!allBrandsId) {
-        allBrandsId = await ctx.runMutation(
+      if (!brandUnknownId && legacyNamedBrandUnknownId) {
+        // Legacy adoption: a row that predates the flag, or one supplied by a
+        // marketplace brand list. Stamping it here is what makes this branch
+        // self-healing — the next run finds it by flag and the name is never
+        // consulted again.
+        brandUnknownId = legacyNamedBrandUnknownId;
+        await ctx.runMutation(
+          internal.selectorOptions.markBrandUnknownRole,
+          { id: brandUnknownId },
+        );
+      }
+
+      if (!brandUnknownId) {
+        // Mint the row. `addCustomSelectorOption` is PUBLIC and carries no
+        // `metadata` arg — a client must not be able to grant this role — so
+        // the flag is stamped immediately afterwards by the internal mutation.
+        // The two are not one transaction; a failure between them leaves an
+        // unflagged row that the legacy branch above adopts on the next run.
+        brandUnknownId = await ctx.runMutation(
           api.selectorOptions.addCustomSelectorOption,
           {
             level: "manufacturer",
             value: "All Brands",
             parentId: args.yearId,
           },
+        );
+        await ctx.runMutation(
+          internal.selectorOptions.markBrandUnknownRole,
+          { id: brandUnknownId },
         );
       }
 
@@ -8084,6 +8230,13 @@ export const syncSetsAcrossManufacturers = action({
         let matchedMfrId: string | null = null;
 
         for (const [mfrName, mfr] of sortedMfrs) {
+          // NEO-272: this row is a filter option, not a brand, so no set name
+          // should ever prefix-match it. Identified by id — the same row the
+          // name guard below used to catch, now recognised by its role instead.
+          // The name guard is kept behind it, unchanged, for the one case the
+          // id cannot cover: a year holding a SECOND row literally named "All
+          // Brands" that is not the one resolved above.
+          if (mfr._id === brandUnknownId) continue;
           if (mfrName === "all brands") continue;
           if (setNameLower.startsWith(mfrName + " ") || setNameLower === mfrName) {
             matchedMfrId = mfr._id;
@@ -8091,7 +8244,7 @@ export const syncSetsAcrossManufacturers = action({
           }
         }
 
-        const parentId = matchedMfrId || allBrandsId!;
+        const parentId = matchedMfrId || brandUnknownId!;
         if (!grouped.has(parentId)) {
           grouped.set(parentId, []);
         }
@@ -8129,6 +8282,11 @@ export const syncSetsAcrossManufacturers = action({
       const summary: string[] = [];
       for (const [parentId, sets] of grouped) {
         const mfr = manufacturers.find((m: { _id: string }) => m._id === parentId);
+        // An internal LOG string, not a card title — NEO-272 changes nothing
+        // here. `manufacturers` was read before the brand-unknown row could be
+        // created, so a row minted by this very run is absent from it and falls
+        // back to the literal value that creation used; an adopted row is in
+        // the list and reports its own name, whatever it is.
         const name = mfr?.value || "All Brands";
         summary.push(`${name}: ${sets.length}`);
       }
@@ -9984,6 +10142,11 @@ export const commitCardChecklistPrelude = internalMutation({
     inheritedFeatures: v.optional(v.record(v.string(), v.string())),
     setNameAncestorId: v.optional(v.id("selectorOptions")),
     setNameValue: v.optional(v.string()),
+    // NEO-272 — has NB identified this set's brand, or does the set hang off
+    // the marketplace's all-brands filter option? Resolved here, once for the
+    // whole commit, and handed to every chunk so the insert branch generates
+    // the same title `previewListingTitle` would regenerate.
+    manufacturerBrandUnknown: v.optional(v.boolean()),
     existingCustomCardNumbers: v.array(v.string()),
     // ── NEO-203: the match maps, all four resolved ONCE against the
     // pre-commit state of the checklist — and built ONLY over this
@@ -11342,9 +11505,26 @@ export const commitCardChecklistPrelude = internalMutation({
     }
     // Fetched once for the whole batch (not per-card) — used only for
     // listing-title/description generation on newly-inserted rows.
-    const setNameValue = setNameAncestorId
-      ? (await ctx.db.get(setNameAncestorId))?.value
-      : undefined;
+    const setNameNode = setNameAncestorId
+      ? await ctx.db.get(setNameAncestorId)
+      : null;
+    const setNameValue = setNameNode?.value;
+    // NEO-272 — the manufacturer's NB ROLE, resolved in the same
+    // once-per-batch spirit as `setNameValue` above: a set's parent IS its
+    // manufacturer row, so this is one extra read for the whole commit rather
+    // than one per card. A brand-unknown row is dropped from every title and
+    // description the chunks generate (see `manufacturerAndSetTokens`).
+    //
+    // `level` is checked rather than assumed: a hand-built or legacy tree can
+    // hang a setName off something else, and reading a role flag off a row that
+    // is not a manufacturer would be inventing an answer.
+    const manufacturerNode = setNameNode?.parentId
+      ? await ctx.db.get(setNameNode.parentId)
+      : null;
+    const manufacturerBrandUnknown =
+      manufacturerNode?.level === "manufacturer"
+        ? manufacturerNode.metadata?.isBrandUnknown === true
+        : undefined;
 
     // ── NEO-203: the match maps ─────────────────────────────────────────────
     //
@@ -11384,6 +11564,7 @@ export const commitCardChecklistPrelude = internalMutation({
       inheritedFeatures: inheritedFeaturesOrUndefined,
       setNameAncestorId,
       setNameValue,
+      manufacturerBrandUnknown,
       // NEO-239 — the numbers that must survive the marketplace upsert:
       // rows with no ref on either side. Field name kept so the action and
       // finalize phases keep agreeing about ordering without a rename ripple.
@@ -11417,6 +11598,8 @@ type CommitPrelude = {
   inheritedFeatures?: Record<string, string>;
   setNameAncestorId?: Id<"selectorOptions">;
   setNameValue?: string;
+  /** NEO-272 — see the returns validator. */
+  manufacturerBrandUnknown?: boolean;
   existingCustomCardNumbers: string[];
   existingIdByBscRef: Array<{ ref: string; id: Id<"cardChecklist"> }>;
   existingIdBySlRef: Array<{ ref: string; id: Id<"cardChecklist"> }>;
@@ -11553,6 +11736,10 @@ export const commitCardChecklistChunk = internalMutation({
     sportSkuCode: v.optional(v.string()),
     sportValue: v.string(),
     setNameValue: v.optional(v.string()),
+    // NEO-272 — the manufacturer ROLE, resolved once by the prelude. Optional
+    // so a caller that predates this is unchanged: absent means "the brand is
+    // known", which is what every row said before the flag existed.
+    manufacturerBrandUnknown: v.optional(v.boolean()),
     inheritedFeatures: v.optional(v.record(v.string(), v.string())),
     // ── NEO-221: names this commit SETTLED, commit-wide ───────────────────
     //
@@ -11951,6 +12138,13 @@ export const commitCardChecklistChunk = internalMutation({
           playerNames,
           year: mergedFeatures.season,
           manufacturer: mergedFeatures.manufacturer,
+          // NEO-272: dropped from the title and the description when NB has
+          // not identified the set's brand. `previewListingTitle` reads the
+          // same role off the same manufacturer row — the two MUST carry it or
+          // a regenerated title disagrees with the one written here, which is
+          // the standing "if you change one, change the other" rule between
+          // this branch and that query.
+          manufacturerBrandUnknown: args.manufacturerBrandUnknown,
           setName: args.setNameValue,
           parallelName: mergedFeatures.parallelName,
           isRookie: card.isRookie,
@@ -14259,6 +14453,8 @@ export const commitCardChecklist = action({
             sportSkuCode: prelude.sportSkuCode,
             sportValue: prelude.sportValue,
             setNameValue: prelude.setNameValue,
+            // NEO-272 — see the prelude's returns validator.
+            manufacturerBrandUnknown: prelude.manufacturerBrandUnknown,
             inheritedFeatures: prelude.inheritedFeatures,
             // NEO-221 — the names this commit settled, so the chunk's update
             // branch retires only what it is entitled to. The same two lists

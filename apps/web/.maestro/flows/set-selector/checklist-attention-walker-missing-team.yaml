@@ -143,7 +143,7 @@ tags:
     id: "Submit new card"
 - scrollUntilVisible:
     element:
-      id: "Edit card 801-${ATTEMPT_ID}"
+      id: "Edit card 801-${ATTEMPT_ID}(, .*)?"
     centerElement: true
     visibilityPercentage: 50
     waitToSettleTimeoutMs: 1000
@@ -179,7 +179,7 @@ tags:
     id: "Submit new card"
 - scrollUntilVisible:
     element:
-      id: "Edit card 802-${ATTEMPT_ID}"
+      id: "Edit card 802-${ATTEMPT_ID}(, .*)?"
     centerElement: true
     visibilityPercentage: 50
     waitToSettleTimeoutMs: 1000
@@ -251,10 +251,10 @@ tags:
 # keeps its badge, and the header count is back to the truth.
 - extendedWaitUntil:
     notVisible:
-      id: "Card 802-${ATTEMPT_ID} needs attention: no team on this card yet"
+      id: "Card 802-${ATTEMPT_ID}(, .*)? needs attention: no team on this card yet"
     timeout: 7000
 - assertVisible:
-    id: "Card 801-${ATTEMPT_ID} needs attention: no team on this card yet"
+    id: "Card 801-${ATTEMPT_ID}(, .*)? needs attention: no team on this card yet"
 - assertVisible: "1 need attention"
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -296,27 +296,32 @@ tags:
 # Location, Team name and League are answered. The write is the dialog's, not
 # the row's.
 #
-# That row is reachable in most hosts, but inside THIS one it is at the mercy of
-# a 320px scroll box, and that is geometry rather than flakiness. The walker's
-# body is `min-h-80 max-h-[70vh] overflow-y-auto` and the popover is `absolute
-# top-full` INSIDE it: measured at 1024x629, the body's visible box is y=162-482
-# and the trigger sits at y=258-280, so anything the popover puts below its
-# search box is one bad row-count away from the clip edge. Maestro reports
-# layout bounds regardless, so a `tapOn` on a clipped row "succeeds" while
-# `document.elementFromPoint` hands the click to the walker's footer: nothing
-# opens, and the next step fails somewhere else entirely.
+# That row used to be at the mercy of a 320px scroll box inside THIS host. The
+# walker's body is `min-h-[min(20rem,55vh)] overflow-y-auto` under the panel's
+# `max-h-full`, and the popover was `absolute top-full` INSIDE it: measured at
+# 1024x629 the body's visible box was y=162-482 and the trigger sat at
+# y=258-280, so anything the popover put below its search box was one bad
+# row-count away from the clip edge — and Maestro reports layout bounds
+# regardless, so a `tapOn` on a clipped row "succeeded" while
+# `document.elementFromPoint` handed the click to the walker's footer.
 #
-# Enter on the search input runs the SAME handler the row does: TeamPicker's
-# keydown takes the highlighted match when there is one and otherwise opens the
-# New Team dialog. "No matches." above is what proves there is none, so Enter
-# here can only mean "open the dialog" — and it needs no coordinates at all.
-# (Identical to the approach carried by team-management-edit-a-team,
-# player-management-add-and-career-history and the spine-label flow.)
+# NEO-272 FIXED THE CLIP: the popover is portalled to `document.body` and
+# positioned `fixed` against its trigger, so no scrolling ancestor can cut it
+# off any more (see components/SetSelector/PickerPopover.tsx). Tapping the row
+# would therefore work now.
 #
-# The dialog itself is immune to all of the above: it is portalled to
-# `document.body` at `z-[60]`, so the scroll box that clips this popover cannot
-# clip it, which is why NEO-236's earlier `scrollIntoView` workaround is gone
-# rather than tuned.
+# THE ENTER STEP STAYS ANYWAY, because it is not a workaround for the clip — it
+# is the cheaper handle. Enter on the search input runs the SAME code the row
+# does: TeamPicker's keydown takes the highlighted match when there is one and
+# otherwise opens the New Team dialog. "No matches." above is what proves there
+# is none, so Enter here can only mean "open the dialog" — and it reads no
+# coordinates at all, which no `tapOn` can beat for reliability. It is also how
+# team-management-edit-a-team, player-management-add-and-career-history and the
+# spine-label flow all reach the same dialog, so the four stay consistent.
+#
+# The dialog itself was never exposed to any of this: it is portalled to
+# `document.body` at `z-[60]` (the popover sits under it at `z-[55]`), which is
+# why NEO-236's earlier `scrollIntoView` workaround is gone rather than tuned.
 - pressKey: Enter
 
 # THE DIALOG IS OPEN. It is portalled to `document.body` at `z-[60]` and
@@ -366,10 +371,13 @@ tags:
 # CLOSE THE POPOVER BEFORE REACHING FOR SAVE — and close it from the WALKER
 # HEADER, which is the one handle in here that the picker cannot move.
 #
-# The popover is `absolute left-0 top-full mt-1 z-10 w-64`, hanging directly
-# over "Save & Next (Enter)" and "No team on this card", and picking a team
-# deliberately leaves it OPEN. So it has to be dismissed before any coordinate
-# below it is read, or the click lands on the popover instead of the button.
+# The popover is a `w-64` box hanging directly under the trigger and therefore
+# directly over "Save & Next (Enter)" and "No team on this card", and picking a
+# team deliberately leaves it OPEN. So it has to be dismissed before any
+# coordinate below it is read, or the click lands on the popover instead of the
+# button. NEO-272 made that MORE necessary rather than less: portalled and
+# `fixed`, the popover is no longer trimmed at the scroll box's edge, so the
+# whole rectangle is now over those buttons.
 #
 # A pointerdown anywhere outside the picker root closes it, and the walker's own
 # `<h2>` is outside the scrolling body altogether — its position cannot move
@@ -380,11 +388,12 @@ tags:
 # NEO-236 removed the `scrollIntoView` the old inline create form needed, which
 # is what used to move this whole panel 63px a second after the create (CI run
 # 33982239886) and made "Save & Next" a moving target. The New Team dialog is
-# portalled, so nothing scrolls the walker's body any more.
+# portalled, so nothing scrolls the walker's body any more — and since NEO-272
+# the popover is portalled too, so it no longer adds to the body's scrollable
+# height either.
 - tapOn:
     id: "card-attention-walker-title"
-# The popover is gone, so the body no longer overflows and its scroll is back
-# at rest. Only now is "Save & Next" read for its coordinates.
+# The popover is gone. Only now is "Save & Next" read for its coordinates.
 - extendedWaitUntil:
     notVisible:
       id: "Search teams"
@@ -406,7 +415,7 @@ tags:
 # — count chip and walker link — is gone, and #801 shows the team it was given.
 - extendedWaitUntil:
     notVisible:
-      id: "Card 801-${ATTEMPT_ID} needs attention: no team on this card yet"
+      id: "Card 801-${ATTEMPT_ID}(, .*)? needs attention: no team on this card yet"
     timeout: 7000
 - assertNotVisible: "Fix them one at a time"
 - assertVisible:
@@ -438,7 +447,7 @@ tags:
     timeout: 7000
 - assertVisible: "Walker Alpha ${ATTEMPT_ID}"
 - assertNotVisible:
-    id: "Card 802-${ATTEMPT_ID} needs attention: no team on this card yet"
+    id: "Card 802-${ATTEMPT_ID}(, .*)? needs attention: no team on this card yet"
 - assertNotVisible:
-    id: "Card 801-${ATTEMPT_ID} needs attention: no team on this card yet"
+    id: "Card 801-${ATTEMPT_ID}(, .*)? needs attention: no team on this card yet"
 - assertNotVisible: "Fix them one at a time"

@@ -16,8 +16,11 @@ tags:
 #   - Caller does NOT call util-drill-to-custom-set separately.
 #   - Navigation to /set-selector is performed inside util-drill-to-custom-set.
 #   - The same ATTEMPT_ID (or equivalent) embedded in CARD_NUMBER is available
-#     in the calling flow's env so post-add references ("Edit card ${CARD_NUMBER}",
-#     "Delete card ${CARD_NUMBER}") resolve correctly.
+#     in the calling flow's env so post-add references resolve correctly.
+#     NEO-272: those references now spell the label's optional name tail —
+#     `id: "Edit card ${CARD_NUMBER}(, .*)?"`, likewise Delete — because a row
+#     names itself "Edit card <number>, <card name>" and the pinned CLI matches
+#     an `id:` as a FULL match. See .maestro/README.md.
 #
 # INPUTS:
 #   SET_NAME      (required) — per-flow, per-worker custom set basename,
@@ -83,9 +86,31 @@ tags:
       - assertVisible: "Add Custom Entry"
       - inputText: ${INSERT_NAME || "Base"}
       - pressKey: Enter
-      # NEO-219: the first Enter raises a "Create <noun> '<value>' under <parent>?"
-      # confirm with the Create button already focused; this second Enter presses it.
-      - pressKey: Enter
+      # NEO-272: press the confirm's Create button by name. The second blind
+      # `pressKey: Enter` that used to stand here was the defect: maestro-web
+      # re-finds the focused element by an XPath built from its CLASS LIST, so it
+      # raced the confirm unmounting the input (CI 34592010317 attempt 2 died here
+      # with "no such element" on the input's own class string). The button's
+      # accessible name is EntityColumn.tsx's `confirmCreateLabel` —
+      # "Create " + LEVEL_SINGULAR[level] lower-cased.
+      #
+      # CONDITIONAL because a confirm is only ONE of two outcomes. If the typed
+      # value already exists in THIS column, `handleCustomSubmit` short-circuits
+      # (`items.find(...)` -> `onSelectExisting`), closing the form and advancing
+      # the cascade with no confirm ever rendered. A `notVisible: <value>` guard
+      # cannot rule that out — the column's max-h-[400px] scroller clips rows
+      # that really are there (team-picker, local run 2026-09-11). MEASURED locally 2026-09-11: the confirm is up in 0.34-0.38s, so
+      # a `when:` that finds it costs nothing; a miss pays the ~7s condition poll
+      # and only on the already-existed path. The hard result gate is the
+      # "Add Custom Entry" check below — the form is gone either way, so this
+      # branch cannot fall through silently (R2).
+      - runFlow:
+          when:
+            visible:
+              id: "Create insert"
+          commands:
+            - tapOn:
+                id: "Create insert"
       - assertNotVisible: "Add Custom Entry"
 
 # ============================================================
@@ -185,6 +210,15 @@ tags:
 - tapOn:
     id: "Submit new card"
 
+# The add form only closes after `addCustomCard` succeeds. Gate on that
+# user-visible outcome before asking the page to find and centre the new row;
+# otherwise a dropped click lets the following scroll move the still-open form
+# out of view and hides the action that failed (R2/R8).
+- extendedWaitUntil:
+    notVisible:
+      id: "Card name"
+    timeout: 7000
+
 # ============================================================
 # STEP 10 — SCROLL TO THE NEW CARD ROW
 # After Submit, CardChecklist re-sorts the list by natural cardNumber order
@@ -208,7 +242,7 @@ tags:
 
 - scrollUntilVisible:
     element:
-      id: "Edit card ${CARD_NUMBER}"
+      id: "Edit card ${CARD_NUMBER}(, .*)?"
     centerElement: true
     visibilityPercentage: 50
     waitToSettleTimeoutMs: 1000

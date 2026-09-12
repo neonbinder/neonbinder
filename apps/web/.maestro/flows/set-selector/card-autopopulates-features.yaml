@@ -85,12 +85,16 @@ tags:
 #   assertion is a COMBINED { id: "Value for <Label>", text: <value> } selector.
 #
 # DRAWER INNER-SCROLL (why NOT scrollUntilVisible here): the drawer is right-
-#   anchored (~480px wide at the 1024px CI viewport, x≈544–1024). Maestro's
-#   scrollUntilVisible swipes from the VIEWPORT centre (x≈512), which lands on the
-#   BACKDROP left of the drawer and does NOT scroll the drawer's inner container —
-#   so a feature row below the drawer fold is unreachable that way. Instead we
-#   drive the drawer with MANUAL swipes INSIDE its x-range (`swipe start:80%…`)
-#   — the proven technique from signed-by-autofills-from-players.yaml — then a
+#   anchored and `sm:w-[45rem]` — 720px at the 1024px CI viewport, x≈304–1024
+#   (NEO-272; it was 480px, x≈544, until an 80-character listing title had to
+#   fit). scrollUntilVisible cannot scroll the drawer's inner container at
+#   either width: maestro-web's only scroll is `window.scroll` and this panel is
+#   a `fixed inset-0` portal the window never moves (README R8 case 2, which
+#   names CardDetailPanel; the canonical note is in card-detail-panel.yaml). So
+#   a feature row below the drawer fold is unreachable that way. Instead we
+#   drive the drawer with MANUAL swipes INSIDE its x-range (`swipe start:80%…`
+#   — 819px, inside the panel at both widths), the proven technique from
+#   signed-by-autofills-from-players.yaml — then a
 #   plain assertVisible of the combined { id, text } (its center is now on-screen).
 #   Season is visible near the top of the expanded editor with no swipe; the
 #   physical block sits below the fold and is lifted in with the swipes below.
@@ -133,11 +137,11 @@ tags:
 # Assert visibility before tapping — surfaces a failed scroll as a clear
 # assertion error rather than the null kotlin.Int bounds crash.
 - assertVisible:
-    id: "Edit card 777-${ATTEMPT_ID}"
+    id: "Edit card 777-${ATTEMPT_ID}(, .*)?"
 # waitToSettleTimeoutMs mitigates the virtualisation race — parallel workers'
 # live-query refetches can shift this row between Maestro's lookup and dispatch.
 - tapOn:
-    id: "Edit card 777-${ATTEMPT_ID}"
+    id: "Edit card 777-${ATTEMPT_ID}(, .*)?"
     waitToSettleTimeoutMs: 2000
 - extendedWaitUntil:
     visible:
@@ -237,13 +241,13 @@ tags:
 # the sticky header/footer before the tap (R8).
 - scrollUntilVisible:
     element:
-      id: "Delete card 777-${ATTEMPT_ID}"
+      id: "Delete card 777-${ATTEMPT_ID}(, .*)?"
     centerElement: true
     visibilityPercentage: 50
     timeout: 7000
 - tapOn:
-    id: "Delete card 777-${ATTEMPT_ID}"
+    id: "Delete card 777-${ATTEMPT_ID}(, .*)?"
 - assertVisible: "Confirm?"
 - tapOn:
-    id: "Confirm delete card 777-${ATTEMPT_ID}"
+    id: "Confirm delete card 777-${ATTEMPT_ID}(, .*)?"
 - assertNotVisible: "Autopop Card Player ${ATTEMPT_ID}"

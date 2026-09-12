@@ -124,12 +124,12 @@ tags:
     visibilityPercentage: 50
     timeout: 7000
 - tapOn:
-    id: "Remove card 957-${ATTEMPT_ID} from this set"
+    id: "Remove card 957-${ATTEMPT_ID}(, .*)? from this set"
 
 # ── ASSERTION 2: it asks before doing anything ──────────────────────────────
 - assertVisible: "Confirm?"
 - tapOn:
-    id: "Confirm remove card 957-${ATTEMPT_ID} from this set"
+    id: "Confirm remove card 957-${ATTEMPT_ID}(, .*)? from this set"
 
 # ── ASSERTION 3: the visiting card has left this checklist ──────────────────
 # It was this checklist's only content, so the set falls back to its empty
@@ -188,14 +188,14 @@ tags:
 # ============================================================
 - scrollUntilVisible:
     element:
-      id: "Delete card 957-${ATTEMPT_ID}"
+      id: "Delete card 957-${ATTEMPT_ID}(, .*)?"
     centerElement: true
     visibilityPercentage: 50
     timeout: 7000
 - tapOn:
-    id: "Delete card 957-${ATTEMPT_ID}"
+    id: "Delete card 957-${ATTEMPT_ID}(, .*)?"
 - tapOn:
-    id: "Confirm delete card 957-${ATTEMPT_ID}"
+    id: "Confirm delete card 957-${ATTEMPT_ID}(, .*)?"
 - extendedWaitUntil:
     notVisible: "#957-${ATTEMPT_ID}"
     timeout: 7000

@@ -57,9 +57,31 @@ tags:
 - assertVisible: "Add Custom Entry"
 - inputText: "${ATTEMPT_ID} Stars"
 - pressKey: Enter
-# NEO-219: the first Enter raises a "Create <noun> '<value>' under <parent>?"
-# confirm with the Create button already focused; this second Enter presses it.
-- pressKey: Enter
+# NEO-272: press the confirm's Create button by name. The second blind
+# `pressKey: Enter` that used to stand here was the defect: maestro-web
+# re-finds the focused element by an XPath built from its CLASS LIST, so it
+# raced the confirm unmounting the input (CI 34592010317 attempt 2 died here
+# with "no such element" on the input's own class string). The button's
+# accessible name is EntityColumn.tsx's `confirmCreateLabel` —
+# "Create " + LEVEL_SINGULAR[level] lower-cased.
+#
+# CONDITIONAL because a confirm is only ONE of two outcomes. If the typed
+# value already exists in THIS column, `handleCustomSubmit` short-circuits
+# (`items.find(...)` -> `onSelectExisting`), closing the form and advancing
+# the cascade with no confirm ever rendered. A `notVisible: <value>` guard
+# cannot rule that out — the column's max-h-[400px] scroller clips rows
+# that really are there (team-picker, local run 2026-09-11). MEASURED locally 2026-09-11: the confirm is up in 0.34-0.38s, so
+# a `when:` that finds it costs nothing; a miss pays the ~7s condition poll
+# and only on the already-existed path. The hard result gate is the
+# "Add Custom Entry" check below — the form is gone either way, so this
+# branch cannot fall through silently (R2).
+- runFlow:
+    when:
+      visible:
+        id: "Create insert"
+    commands:
+      - tapOn:
+          id: "Create insert"
 - assertNotVisible: "Add Custom Entry"
 
 # --- <ID> Stars Gold ---
@@ -73,9 +95,16 @@ tags:
 - assertVisible: "Add Custom Entry"
 - inputText: "${ATTEMPT_ID} Stars Gold"
 - pressKey: Enter
-# NEO-219: the first Enter raises a "Create <noun> '<value>' under <parent>?"
-# confirm with the Create button already focused; this second Enter presses it.
-- pressKey: Enter
+# NEO-272: press the confirm's Create button by name, never a second blind
+# `pressKey: Enter`; conditional because an already-existing value closes the
+# form with no confirm — see the first occurrence in this file for both.
+- runFlow:
+    when:
+      visible:
+        id: "Create insert"
+    commands:
+      - tapOn:
+          id: "Create insert"
 - assertNotVisible: "Add Custom Entry"
 
 # --- <ID> Stars Red (third entry keeps the Group Parallels button layout stable) ---
@@ -89,9 +118,16 @@ tags:
 - assertVisible: "Add Custom Entry"
 - inputText: "${ATTEMPT_ID} Stars Red"
 - pressKey: Enter
-# NEO-219: the first Enter raises a "Create <noun> '<value>' under <parent>?"
-# confirm with the Create button already focused; this second Enter presses it.
-- pressKey: Enter
+# NEO-272: press the confirm's Create button by name, never a second blind
+# `pressKey: Enter`; conditional because an already-existing value closes the
+# form with no confirm — see the first occurrence in this file for both.
+- runFlow:
+    when:
+      visible:
+        id: "Create insert"
+    commands:
+      - tapOn:
+          id: "Create insert"
 - assertNotVisible: "Add Custom Entry"
 
 # ── OPEN MODAL → ACCEPT ALL (places <ID> Stars Gold + <ID> Stars Red under <ID> Stars) ─

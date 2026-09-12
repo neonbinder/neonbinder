@@ -148,7 +148,7 @@ tags:
 # Scroll the just-added card into view before tapping its Edit button.
 - scrollUntilVisible:
     element:
-      id: "Edit card 889-${ATTEMPT_ID}"
+      id: "Edit card 889-${ATTEMPT_ID}(, .*)?"
     centerElement: true
     visibilityPercentage: 50
     timeout: 7000
@@ -158,7 +158,7 @@ tags:
 # ============================================================
 
 - tapOn:
-    id: "Edit card 889-${ATTEMPT_ID}"
+    id: "Edit card 889-${ATTEMPT_ID}(, .*)?"
     waitToSettleTimeoutMs: 2000
 - extendedWaitUntil:
     visible:
@@ -331,7 +331,7 @@ tags:
 
 # Re-open — the chip is still there, unsaved by anything.
 - tapOn:
-    id: "Edit card 889-${ATTEMPT_ID}"
+    id: "Edit card 889-${ATTEMPT_ID}(, .*)?"
     waitToSettleTimeoutMs: 2000
 - extendedWaitUntil:
     visible:
@@ -396,8 +396,8 @@ tags:
 # ============================================================
 
 - tapOn:
-    id: "Delete card 889-${ATTEMPT_ID}"
+    id: "Delete card 889-${ATTEMPT_ID}(, .*)?"
 - assertVisible: "Confirm?"
 - tapOn:
-    id: "Confirm delete card 889-${ATTEMPT_ID}"
+    id: "Confirm delete card 889-${ATTEMPT_ID}(, .*)?"
 - assertNotVisible: "Team Feature Player ${ATTEMPT_ID}"

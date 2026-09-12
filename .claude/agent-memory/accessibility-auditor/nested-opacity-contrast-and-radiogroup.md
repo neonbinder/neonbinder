@@ -80,7 +80,13 @@ Also caught alongside this in the same audit (NEO-189, 2026-08-29):
   Check this explicitly any time a button has BOTH visible text AND an
   `aria-label` that isn't just that same text with a little context appended.
   Fix pattern used here: put the exact visible label first, then append
-  context with an em dash — `` `BSC: ${name} — use this name for #${cardNumber}` ``.
+  context with an em dash — `` `BSC: ${name} — use this name for ${scope}` ``.
+  The appended context must identify the ROW, and a card number cannot
+  (product invariant 7) — NEO-272 replaced the `#${cardNumber}` this example
+  originally carried with `conflictScopeLabels`' scope, the same qualifier
+  naming the enclosing group and radiogroup. On a screen where the visible
+  values are what the control CHANGES, the qualifier has to be something
+  else that is still visible: here the variation description, or an ordinal.
 - **Focus after a state-creating action**: when clicking control A causes
   control A to unmount (moves to a different list) AND simultaneously
   surfaces a brand-new decision UI (the radiogroup) for the first time, don't

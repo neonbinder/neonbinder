@@ -768,3 +768,162 @@ describe("generateListingDescription", () => {
     expect(desc).not.toContain("Autographed");
   });
 });
+
+// ===========================================================================
+// NEO-272 — a set whose brand NB has not identified
+// ===========================================================================
+
+/**
+ * `syncSetsAcrossManufacturers` files a BSC set under the marketplace's
+ * all-brands FILTER OPTION — "show all cards from all brands", carried on the
+ * brand axis as a `manufacturer` row — whenever the set name prefix-matches no
+ * real brand. That row names no brand, so its name says nothing about the card
+ * and must never reach a listing. It is identified by
+ * `manufacturerBrandUnknown`, an NB ROLE resolved from the ancestor row's
+ * `metadata.isBrandUnknown`, NEVER by comparing the name.
+ *
+ * The name comparison is the thing this ticket removes: the name is a
+ * marketplace filter label NB does not own, so keying on it would be NB
+ * behaviour driven by a marketplace value (product invariant 4) — and it would
+ * miss a renamed row besides.
+ *
+ * The fixture below deliberately KEEPS the name in `manufacturer` while
+ * setting the flag. A generator that passed these tests by ignoring the flag
+ * and matching the string would be caught by
+ * `an unflagged manufacturer named "All Brands" is still a brand`.
+ */
+describe("a set whose brand NB has not identified (NEO-272)", () => {
+  const BUCKET = {
+    cardNumber: "12",
+    playerNames: ["Chris Grassie"],
+    year: "1995",
+    manufacturer: "All Brands",
+    setName: "Roanoke Express ECHL",
+  };
+
+  test("a flagged manufacturer is omitted from the title entirely", () => {
+    const title = generateListingTitle({
+      ...BUCKET,
+      manufacturerBrandUnknown: true,
+    });
+    expect(title).toBe("1995 Roanoke Express ECHL Chris Grassie #12");
+    expect(title).not.toContain("All Brands");
+  });
+
+  test("omitting it leaves no dangling separator and no double space", () => {
+    // The failure this guards is an empty token surviving the join — a title
+    // reading "1995  Roanoke ..." or "1995 - Roanoke ...". The generator never
+    // produces a manufacturer token at all for a flagged row, which is what
+    // makes `filter(Boolean).join(" ")` a complete answer.
+    const title = generateListingTitle({
+      ...BUCKET,
+      manufacturerBrandUnknown: true,
+    });
+    expect(title).not.toMatch(/\s{2}/);
+    expect(title.trim()).toBe(title);
+    // Same check with every other core part absent, so nothing else is
+    // covering for the missing token.
+    const bare = generateListingTitle({
+      cardNumber: "12",
+      manufacturer: "All Brands",
+      manufacturerBrandUnknown: true,
+      setName: "Roanoke Express ECHL",
+    });
+    expect(bare).toBe("Roanoke Express ECHL #12");
+    expect(bare).not.toMatch(/\s{2}/);
+  });
+
+  test('an unflagged manufacturer named "All Brands" is still a brand', () => {
+    // The regression guard, and the reason the flag is read instead of the
+    // name. A row that carries no brand-unknown role is an ordinary
+    // manufacturer whatever it happens to be called.
+    const title = generateListingTitle(BUCKET);
+    expect(title).toBe("1995 All Brands Roanoke Express ECHL Chris Grassie #12");
+    // …and an explicit `false` reads the same as absent.
+    expect(
+      generateListingTitle({ ...BUCKET, manufacturerBrandUnknown: false }),
+    ).toBe(title);
+  });
+
+  test("the freed characters are genuinely available to the optional tokens", () => {
+    // "All Brands" plus its separator is 11 characters. The variation below is
+    // 29 characters and costs 30 to append, which does not fit beside that name
+    // and does fit without it — so this is the exact case the ticket is about:
+    // a title the attention walker would flag as having dropped a real search
+    // term now carries it, and the characters it reclaimed were spent on a word
+    // that told a buyer nothing.
+    const variation = "Image Variation Sunglasses On";
+    expect(variation).toHaveLength(29);
+
+    const withBucket = assessListingTitle({ ...BUCKET, cardVariation: variation });
+    expect(withBucket.dropped).toContain(variation);
+    expect(withBucket.title).not.toContain(variation);
+
+    const withoutBucket = assessListingTitle({
+      ...BUCKET,
+      cardVariation: variation,
+      manufacturerBrandUnknown: true,
+    });
+    expect(withoutBucket.dropped).toEqual([]);
+    expect(withoutBucket.title).toBe(
+      "1995 Roanoke Express ECHL Chris Grassie #12 Image Variation Sunglasses On",
+    );
+    expect(withoutBucket.title.length).toBeLessThanOrEqual(LISTING_TITLE_MAX);
+    expect(withoutBucket.coreFits).toBe(true);
+  });
+
+  test("the description omits it too — one helper serves both", () => {
+    const desc = generateListingDescription({
+      ...BUCKET,
+      manufacturerBrandUnknown: true,
+      isRookie: true,
+    });
+    expect(desc.split("\n")).toEqual([
+      "1995 Roanoke Express ECHL card of Chris Grassie, #12.",
+      "This is a Rookie Card.",
+    ]);
+    expect(desc).not.toContain("All Brands");
+    // Unflagged, the same inputs still name it.
+    expect(generateListingDescription({ ...BUCKET, isRookie: true })).toContain(
+      "1995 All Brands Roanoke Express ECHL card of Chris Grassie, #12.",
+    );
+  });
+
+  test("a setName starting with the flagged manufacturer keeps the setName whole", () => {
+    // The `startsWithWord` collapse branch needs a truthy manufacturer, so a
+    // flagged row never reaches it. The result has to be the same either way:
+    // the set name is a display value in its own right and is emitted verbatim,
+    // never stripped of a prefix that happens to match the dropped row's name.
+    const flagged = generateListingTitle({
+      cardNumber: "7",
+      year: "1995",
+      manufacturer: "All Brands",
+      manufacturerBrandUnknown: true,
+      setName: "All Brands Showcase",
+      playerNames: ["Chris Grassie"],
+    });
+    expect(flagged).toBe("1995 All Brands Showcase Chris Grassie #7");
+    expect(flagged).not.toMatch(/\s{2}/);
+    // Unflagged, the collapse still does its job: the word is not doubled.
+    const unflagged = generateListingTitle({
+      cardNumber: "7",
+      year: "1995",
+      manufacturer: "All Brands",
+      setName: "All Brands Showcase",
+      playerNames: ["Chris Grassie"],
+    });
+    expect(unflagged).toBe("1995 All Brands Showcase Chris Grassie #7");
+  });
+
+  test("a flagged manufacturer with no setName leaves only year, players and number", () => {
+    const title = generateListingTitle({
+      cardNumber: "3",
+      year: "1995",
+      manufacturer: "All Brands",
+      manufacturerBrandUnknown: true,
+      playerNames: ["Chris Grassie"],
+    });
+    expect(title).toBe("1995 Chris Grassie #3");
+    expect(title).not.toMatch(/\s{2}/);
+  });
+});

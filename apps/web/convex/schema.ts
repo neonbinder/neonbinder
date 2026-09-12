@@ -171,6 +171,50 @@ export const selectorOptionMetadataFields = {
    * field; `backfillVariantFacetAndBaseRole` sets it on the existing ones.
    */
   isBase: v.optional(v.boolean()),
+  /**
+   * NEO-272 — "NB has not identified the brand of this row's sets", as an NB
+   * ROLE on a `manufacturer` row.
+   *
+   * The row it lands on is the marketplace's ALL-BRANDS FILTER OPTION, carried
+   * as a `manufacturer` row because the brand axis is where a marketplace
+   * offers it. "All Brands" is not a brand and never was one: it means "show
+   * all cards from all brands". NB keeps it as a row because
+   * `syncSetsAcrossManufacturers` needs a parent for a BSC set whose name
+   * prefix-matches no real brand, so what hangs off it is exactly the sets
+   * whose brand NB has not identified. That is a CURRENT DATA STATE, not a
+   * category — those sets are expected to acquire real brands — and this flag
+   * records the part the row plays while they have not.
+   *
+   * Why the name must never reach generated text: a row whose name means "show
+   * everything" carries no information about any card beneath it, so composing
+   * it into a listing title is worse than wasteful, it is meaningless text in a
+   * buyer-facing field. It is not free either — the name spends ten
+   * characters of an 80-character budget, eleven with its separator, which is
+   * routinely the difference between a title that fits and one the Cards
+   * Needing Attention walker flags as cut short.
+   *
+   * A FIELD, never a name comparison, exactly as `isBase` above is not keyed on
+   * the literal "Base". The name here is a MARKETPLACE FILTER LABEL that NB
+   * does not own, so keying NB behaviour on it is precisely the forward
+   * dependency product invariant 4 in CLAUDE.md forbids ("NB behaviour is never
+   * keyed on a marketplace value or name"); and an operator may rename the row
+   * besides. The field is `isBrandUnknown` rather than anything spelled
+   * "placeholder" because this repo already spends that word on the unrelated
+   * placeholder-CARD upload pipeline (`placeholderJobs`, `placeholderImages`,
+   * `convex/placeholderPipeline.ts`).
+   *
+   * The role is decided ONCE — when `syncSetsAcrossManufacturers` mints the
+   * row, or when it first adopts a pre-existing one — and read from here
+   * afterwards. Absent means "the brand is known", including on every row
+   * written before this field existed; the one-time
+   * `backfillBrandUnknownRole` sets it on the existing ones.
+   *
+   * The flag changes NOTHING else about the row: it is still an ordinary
+   * `manufacturer` row, still the parent of its sets, still in the breadcrumb
+   * and the manufacturer picker. The only behaviour it drives is that listing
+   * generation treats the manufacturer as ABSENT.
+   */
+  isBrandUnknown: v.optional(v.boolean()),
 };
 
 export const selectorOptionFields = {

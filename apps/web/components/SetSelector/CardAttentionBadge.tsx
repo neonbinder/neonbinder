@@ -40,12 +40,22 @@ import { attentionItemLabel, type AttentionItem } from "./card-attention";
  */
 export default function CardAttentionBadge({
   items,
-  cardNumber,
+  cardIdentity,
 }: {
   /** Non-empty. The caller decides whether to render this at all. */
   items: AttentionItem[];
-  /** Named in the accessible label so the mark is meaningful out of row context. */
-  cardNumber: string;
+  /**
+   * How the row names itself — its card number, and its card name when it has
+   * one ("NNO, Jon Larson"). Composed by the caller; see the `cardIdentity`
+   * note in CardChecklistItem.
+   *
+   * NEO-272: this was the card NUMBER alone, and product invariant 7 says a
+   * card number is never unique at any scope — on an unnumbered set every mark
+   * in the list announced itself as "Card NNO needs attention: …", which
+   * defeats the whole point of naming the card in a label that exists to be
+   * meaningful out of row context.
+   */
+  cardIdentity: string;
 }) {
   // Every kind, joined — one mark can stand for several reasons once NEO-101
   // adds its title kinds, and the operator should hear all of them.
@@ -53,7 +63,7 @@ export default function CardAttentionBadge({
   return (
     <span
       role="img"
-      aria-label={`Card ${cardNumber} needs attention: ${reasons}`}
+      aria-label={`Card ${cardIdentity} needs attention: ${reasons}`}
       title={`Needs attention — ${reasons}`}
       // a11y (1.4.3 / 1.4.11): the original light-mode pairing — border-
       // amber-400/70 + text-amber-600 over this badge's own translucent

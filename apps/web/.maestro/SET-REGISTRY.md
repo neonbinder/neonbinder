@@ -587,6 +587,34 @@ not change; none of them can express the =1 half.
     and in the same band as `checklist-pairing-dialog-cancel` (2m29s, measured
     on the same preview the same evening).
 
+#### What STEP 8 writes, and why it has to write anything (NEO-272)
+
+The flow ends by opening a card's detail drawer and asserting that the server's
+generated `listingTitle` carries the set name and NOT `All Brands` — the live
+half of NEO-272, and the only place in the suite where the sync's legacy
+adoption of a marketplace-supplied brand-unknown row is exercised.
+
+It cannot read that title off one of the 25 committed cards. **Every card in
+this set is numbered `NNO`** (measurement 3's checklist), so all 25 rows offer
+an identically-named `Edit card NNO` control, and `CardChecklist`'s Virtuoso
+list renders ~3 rows above its own scroll viewport whose bounds are real and
+whose pixels are clipped (`increaseViewportBy={{top: 200, bottom: 400}}`). CI
+run 34556066366 tapped the first of those at (687,233) — the `Cards (25)`
+header — and the drawer never opened. NEO-272 made the labels distinguishable
+("Edit card NNO, Jon Larson"), which fixes the screen-reader half, but the card
+NAMES here are the marketplace's and unknowable to a flow.
+
+So STEP 8 hand-adds **one** card, `NB272-${ATTEMPT_ID}`, with no card name (the
+server defaults it to `Card #NB272-<attempt>`), and reads the title off that.
+`addCustomCard` writes `generateListingTitle` at creation and composes it
+through `findAncestorLabels`, which reads `metadata.isBrandUnknown` off the very
+manufacturer row STEP 1's sync had to stamp. The added row carries no
+marketplace ids, nothing attaches any to it, and it lands after every count
+assertion in the flow, so `Kept all 25`, `All reviewed — save 25`,
+`Saved 25 cards` and `Cards (25)` are all already banked. This flow is the set's
+sole writer (table above), and the set is single-use per preview deployment —
+the same reason STEP 4 can assert an empty checklist.
+
 #### The base-mapping panel: Close now dismisses it, and the flow taps it
 
 Since 2026-09-08 (`0411cd8`, `13deac4`) pressing **Close** on the
@@ -681,6 +709,42 @@ first-fetch path is the CI path; a LOCAL re-run against an already-committed
 deployment fails at STEP 4's `No cards in this checklist yet.` assertion,
 correctly; the fix is a fresh `npm run test:e2e -- setup`. **A local validation therefore gets
 exactly one committing attempt per set per deployment.**
+
+#### It also carries NEO-272's only live assertion (STEP 8)
+
+The flow's last four commands open ONE committed card's detail drawer and assert
+that the drawer's `Card title` names the set and **not** `All Brands`. That is a
+second feature riding this fixture, documented as such in the flow's header, and
+it is here because this is the suite's only subtree under a manufacturer row
+whose brand NB has not identified — a flow of its own would need a second real
+set and another owner approval for a claim this one is standing three lines away
+from.
+
+`All Brands` is not a brand: it is the marketplace's no-filter option on its
+brand axis ("show all cards from all brands"), carried as a manufacturer row, and
+the sets under it are the ones whose brand NB has not identified. Its name says
+nothing about any card beneath it, so composing it into a buyer-facing listing
+title is meaningless text — which is what STEP 8 pins.
+
+Why the fixture is the right one, beyond convenience: `All Brands` for Hockey
+1995 is **not** minted by `syncSetsAcrossManufacturers` (measurement 2 above —
+it comes off SportLots' own brand list, which is the normal case: the row is the
+marketplace's filter option, so the marketplace supplies it), so it arrives
+carrying no `metadata.isBrandUnknown`, and the sync's *legacy adoption* branch
+has to recognise the row and stamp the role. That branch is unreachable from
+`convex-test`, and STEP 1's cold Sets sync runs it on every CI run of this flow.
+
+It is **read-only**: nothing is typed, the drawer's fields commit only on Enter
+or a changed blur, and `previewListingTitle` stays `"skip"` until Regenerate is
+pressed, so the drawer costs no server round-trip. **Estimated at ~7-9s and not
+yet measured** — no preview existed when it was written. First green run that
+records a real title on this set should tighten STEP 8's positive assertion into
+one anchored shape and note what it measured.
+
+Note for a fixture swap: STEP 8's negative names the literal `All Brands`, which
+STEP 1 already hard-codes as its `MANUFACTURER`. A year whose filter-option row
+is spelled differently breaks STEP 1 first, loudly, so the two cannot silently
+disagree — but they must be changed together.
 
 #### Spares, if the set ever has to be swapped
 
