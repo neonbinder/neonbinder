@@ -99,9 +99,12 @@ tags:
 # The Autographed row sits in the main body just below the Attributes chips
 # (grid with Print run). With the features editor collapsed it lands just past
 # the fold, so lift it into view with ONE manual in-drawer swipe. The drawer is
-# right-anchored (~480px, x>=544), so we swipe at x=80% — a viewport-centre
-# (x~512) swipe would land on the backdrop and never scroll the drawer's inner
-# container.
+# right-anchored and `sm:w-[45rem]` — 720px at 1024, x≈304 (NEO-272 widened it
+# from 480px/x≈544 to fit an 80-character listing title) — and we swipe at x=80%
+# (819px), inside the panel at either width. scrollUntilVisible is no use here
+# at any width: maestro-web's only scroll is `window.scroll` and this panel is a
+# `fixed inset-0` portal the window never moves (README R8 case 2; canonical
+# note in card-detail-panel.yaml).
 - swipe:
     start: "80%, 70%"
     end: "80%, 35%"

@@ -448,17 +448,21 @@ tags:
 # THE WARN-ONLY CAP — a variation past 65 characters says so and saves anyway.
 #
 # "Card variation" is position 8 in the drawer body, below the fold. The drawer
-# is right-anchored (~480px wide, x>=544 at 1024), so scrollUntilVisible's
-# viewport-centre swipe lands on the BACKDROP and cannot drive the drawer's
-# inner scroll — the same wall variation-link-group-and-unlink.yaml documents.
-# Manual swipes at x=80% are inside the drawer. R8's centerElement does not
+# is right-anchored and `sm:w-[45rem]` — 720px at 1024, x≈304 (NEO-272 widened
+# it from 480px/x≈544 so a full-budget 80-character listing title fits the Card
+# title field). scrollUntilVisible cannot drive the drawer's inner scroll at
+# either width — maestro-web's only scroll is `window.scroll` and this panel is
+# a `fixed inset-0` portal the window never moves (README R8 case 2; canonical
+# note in card-detail-panel.yaml) — the same wall
+# variation-link-group-and-unlink.yaml documents. Manual swipes at x=80%
+# (819px) are inside the drawer at either width. R8's centerElement does not
 # apply because scrollUntilVisible cannot be used here at all.
 #
 # THE STICKY-HEADER TRAP — why this is a pin-then-correct pair, not a swipe.
 #   CI run 33700877240 (runner 2) failed here, and the failure is worth spelling
 #   out because "assertVisible passed, the tap did nothing" is not a shape most
 #   flows have to think about. Two big swipes leave the drawer at its MAXIMUM
-#   scroll, and at max scroll "Card variation" sits at bounds [546,8][978,42] —
+#   scroll, and at max scroll "Card variation" sat at bounds [546,8][978,42] —
 #   underneath the drawer's own sticky header (the "Card #<n> CUSTOM" bar,
 #   y 0–50, which is INSIDE the drawer, not the app's page header). Maestro's
 #   assertVisible passed, because the input's layout bounds really are on
@@ -476,6 +480,15 @@ tags:
 #   lands the input around y≈165 — well clear of the 50px header and nowhere
 #   near the fold. The wait that follows is a re-assert AFTER the correction,
 #   not before it.
+#
+#   WHY NEO-272's WIDTH CHANGE DOES NOT MOVE THIS. Only the x-bounds shift (left
+#   by the 240px the panel gained); the y arithmetic above is untouched, because
+#   every block below the variation input is height-invariant in width. Variation
+#   of and the pickers are single-line inputs and non-wrapping chip rows, the
+#   Inherited-from-set rows `truncate` rather than wrap, and the image
+#   placeholder is a fixed `h-40 w-28`. Nothing below the anchor got shorter, so
+#   max scroll still parks it in the same place. The header is `px-4 py-3
+#   text-sm` and still ~50px tall, so the trap it describes is the same size.
 #
 # The value is 71 characters — 6 past the aspect cap, and short enough that the
 # fixer can bring it back under by erasing from a mid-string caret (see there).

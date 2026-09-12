@@ -65,9 +65,11 @@ tags:
 #   key==="autographed") to an ALWAYS-VISIBLE grid cell in the CardDetailPanel
 #   body (position 7, next to Print run) — FAR below the fully-expanded editor.
 #   Signed By, by contrast, is still a row INSIDE the editor. The two controls
-#   can never be on-screen together, and Maestro's page-centre swipe can't drive
-#   the right-anchored drawer's inner scroll — only manual x=80% in-drawer swipes
-#   can. So the flow drives layout deterministically with the editor's own
+#   can never be on-screen together, and scrollUntilVisible can't drive the
+#   drawer's inner scroll — maestro-web's only scroll is `window.scroll` and the
+#   panel is a `fixed inset-0` portal the window never moves (README R8 case 2;
+#   canonical note in card-detail-panel.yaml) — only manual x=80% in-drawer
+#   swipes can. So the flow drives layout deterministically with the editor's own
 #   Show/Hide toggle (a button tap, not a fragile long blind swipe): it EXPANDS
 #   the editor to reach Signed By (1 short swipe down), and COLLAPSES it to reach
 #   Autographed at pos 7 (1 short swipe down — the proven pattern from
@@ -88,7 +90,7 @@ tags:
 #   no playerIds, names.length===0 → the mutation's `if (names.length > 0)` guard
 #   skips the write → signedBy stays the sentinel → both (a) and (b) fail loudly.
 #   (The read-only "Players" chips are unlabelled <span>s and sit far down the
-#   drawer's inner scroll — which Maestro's centre-swipe can't drive, see Step 4
+#   drawer's inner scroll — which scrollUntilVisible can't drive, see Step 4
 #   — so they are neither a viable capture source nor a scrollable assertion; the
 #   known-card positive match above is the robust substitute.)
 #
@@ -248,9 +250,11 @@ tags:
 # Signed By is a row INSIDE the CardFeaturesEditor, so expand it first. The editor
 # is collapsed by default (position 3 in the drawer body, near the top).
 # centerElement keeps the toggle fully in view (R8). Then
-# ONE manual in-drawer swipe (x=80% — inside the right-anchored ~480px drawer; a
-# viewport-centre swipe lands on the backdrop and can't drive the drawer's inner
-# scroll) lifts the Signed By row into the tap band. A per-attempt UNIQUE sentinel
+# ONE manual in-drawer swipe (x=80% = 819px — inside the right-anchored drawer,
+# `sm:w-[45rem]` = 720px at 1024 since NEO-272, and inside the 480px box before
+# it; scrollUntilVisible can't drive the drawer's inner scroll at either width,
+# see the LAYOUT NOTE above) lifts the Signed By row into the tap band. A
+# per-attempt UNIQUE sentinel
 # guarantees it differs from the real player name, so Step 6 can prove the flip
 # OVERWROTE it. The card feature inputs carry unique per-field marker classes
 # (useFieldTestClass on CardFeatureRow), so inputText lands in Signed By, not the

@@ -106,9 +106,13 @@ tags:
 # ============================================================
 # REACH THE PLAYERS SECTION (near the bottom of the drawer body)
 # Players is the last editable section, above the read-only "Inherited from set"
-# and the images block. The drawer is right-anchored (~480px, x>=544), so a
-# viewport-centre scroll lands on the backdrop and cannot drive the drawer's
-# inner scroll — we drive it with manual swipes at x=80% (inside the drawer).
+# and the images block. The drawer is right-anchored and `sm:w-[45rem]` — 720px
+# at 1024, x≈304 (NEO-272 widened it from 480px/x≈544 to fit an 80-character
+# listing title). scrollUntilVisible cannot drive the drawer's inner scroll at
+# either width, because maestro-web's only scroll is `window.scroll` and this
+# panel is a `fixed inset-0` portal the window never moves (README R8 case 2;
+# canonical note in card-detail-panel.yaml) — so we drive it with manual swipes
+# at x=80% (819px, inside the drawer at either width).
 # Scrolling to the bottom parks "Add player" in the upper-middle band (the
 # Inherited + Images blocks sit below it), leaving room for the popover that
 # opens BELOW the trigger.

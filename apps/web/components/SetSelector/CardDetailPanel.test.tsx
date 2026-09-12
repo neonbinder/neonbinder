@@ -141,6 +141,9 @@ vi.mock("./PlayerPicker", () => ({
 // ---------------------------------------------------------------------------
 
 import CardDetailPanel from "./CardDetailPanel";
+// NEO-272: the drawer-geometry block below reads the character budget from the
+// server's own constant rather than restating 80.
+import { LISTING_TITLE_MAX } from "../../convex/features/listingLimits";
 import type { Id } from "../../convex/_generated/dataModel";
 
 // ---------------------------------------------------------------------------
@@ -1149,5 +1152,128 @@ describe("CardDetailPanel — As printed", () => {
     });
 
     expect(screen.queryByText(/As printed:/)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-272 — the drawer's own geometry
+// ---------------------------------------------------------------------------
+
+/**
+ * What is and is not assertable here.
+ *
+ * happy-dom computes no layout, so there is not a single rendered pixel in this
+ * block: `getBoundingClientRect()` is all zeroes, and a test that asserted a
+ * measured width would be asserting the test environment rather than the
+ * product. What IS assertable is the ARITHMETIC the width was chosen by, read
+ * back out of the class that carries it — so a future narrowing fails here with
+ * the reason attached rather than silently shrinking the field whose budget the
+ * meter counts in characters. Same approach, and the same measured px/char, as
+ * `CardAttentionWalker.test.tsx`'s "dialog geometry (NEO-271)" block.
+ */
+describe("CardDetailPanel — drawer geometry (NEO-272)", () => {
+  /** The drawer panel itself. */
+  const panel = () => screen.getByRole("dialog");
+  /** Its scrolling body: the middle of the panel's three rows. */
+  const body = () => panel().children[1] as HTMLElement;
+
+  /**
+   * Measured with fontTools: summed glyph advances at `text-sm` (14px) over a
+   * realistic worst-case title come to 8.07px per character in DejaVu Sans —
+   * what `system-ui` resolves to on the Linux CI runner, and the widest of the
+   * faces this portalled, nested-`<Theme>` drawer can pick up (Lexend 7.80,
+   * Arial 7.25, SF Pro Text 6.84).
+   */
+  const WIDEST_PX_PER_CHAR = 8.07;
+  /** The input's own `p-1.5` plus its 1px borders — space the text never gets. */
+  const INPUT_CHROME_PX = 6 * 2 + 1 * 2;
+
+  it("is wide enough for an 80-character title in the widest font this drawer can render in", () => {
+    renderPanel();
+
+    // Read both numbers OUT of the classes rather than restating them, so a
+    // change to either the panel width or the body padding is what fails.
+    const rem = /sm:w-\[(\d+(?:\.\d+)?)rem\]/.exec(panel().className);
+    expect(rem).not.toBeNull();
+    const panelPx = Number(rem?.[1]) * 16;
+
+    // `px-4` on the scroll container that actually holds the title field —
+    // NOT the walker's `p-6`, which is why the arithmetic is re-derived here
+    // rather than inherited.
+    expect(body().className).toContain("px-4");
+    const bodyPaddingPx = 16 * 2;
+
+    const charsVisible =
+      (panelPx - bodyPaddingPx - INPUT_CHROME_PX) / WIDEST_PX_PER_CHAR;
+    expect(charsVisible).toBeGreaterThanOrEqual(LISTING_TITLE_MAX);
+  });
+
+  it("still fits CI's 1024px viewport, and reflows below the sm breakpoint", () => {
+    renderPanel();
+
+    const rem = /sm:w-\[(\d+(?:\.\d+)?)rem\]/.exec(panel().className);
+    const panelPx = Number(rem?.[1]) * 16;
+    expect(panelPx).toBeLessThanOrEqual(1024);
+
+    // The two clauses that carry narrow windows: `w-full` below `sm`, and the
+    // viewport cap above it. Both predate NEO-272 and both are load-bearing —
+    // without them a 45rem drawer would overhang a phone instead of leaving a
+    // sliver of dismissable backdrop.
+    expect(panel().className).toContain("w-full");
+    expect(panel().className).toContain("max-w-[95vw]");
+  });
+
+  it("gives the whole width to the title field, so the reserved space reaches the text", () => {
+    renderPanel();
+    const title = screen.getByLabelText("Card title") as HTMLInputElement;
+
+    // `w-full p-1.5 text-sm` is the exact class list the arithmetic above
+    // assumes, and it is also what the walker's title field carries — which is
+    // what makes the two surfaces' numbers comparable at all.
+    expect(title.className).toContain("w-full");
+    expect(title.className).toContain("p-1.5");
+    expect(title.className).toContain("text-sm");
+    // No `maxLength`, deliberately (see the input's own comment): the field
+    // holds an over-cap value so the operator can SEE and fix it, which is the
+    // whole reason the width has to cover the budget.
+    expect(title.hasAttribute("maxLength")).toBe(false);
+  });
+
+  it("keeps a full-budget 80-character title whole in the field", () => {
+    // The ticket's own case: `80/80 · may clip in search`, whose tail was the
+    // part scrolled out of sight at 30rem.
+    const title = "2026 Topps Chrome Update #USC-250 Jose Ramirez SSP Cleveland Guardians Gold";
+    const padded = `${title}${"!".repeat(LISTING_TITLE_MAX - title.length)}`;
+    expect(padded).toHaveLength(LISTING_TITLE_MAX);
+
+    renderPanel({ card: makeCard({ listingTitle: padded }) });
+    expect((screen.getByLabelText("Card title") as HTMLInputElement).value).toBe(
+      padded,
+    );
+    expect(screen.getByText(`${LISTING_TITLE_MAX}/${LISTING_TITLE_MAX}`)).toBeTruthy();
+  });
+
+  it("leaves the panel's three-row shape and its slide-in intact", () => {
+    renderPanel();
+
+    // The resize touched one class list. Pinned here because the flows that
+    // drive this drawer depend on the shape rather than on the width: the
+    // header is a sibling ABOVE the only scroll container (it is what the
+    // sticky-header trap in checklist-title-length-limits-and-fixer.yaml is
+    // about), and the footer a sibling BELOW it, so no amount of body
+    // scrolling can take "Done" out of reach.
+    expect(panel().children).toHaveLength(3);
+    expect(body().className).toContain("overflow-y-auto");
+    expect(body().className).toContain("flex-1");
+
+    const heading = screen.getByRole("heading", { level: 2 });
+    const done = screen.getByLabelText("Done editing card");
+    expect(body().contains(heading)).toBe(false);
+    expect(body().contains(done)).toBe(false);
+    expect(body().contains(screen.getByLabelText("Card title"))).toBe(true);
+
+    // `translateX(100%)` is a percentage of the element's own width, so the
+    // animation is width-independent — a wider panel still starts off-screen.
+    expect(panel().className).toContain("animate-slide-in-right");
   });
 });
