@@ -210,6 +210,15 @@ tags:
 - tapOn:
     id: "Submit new card"
 
+# The add form only closes after `addCustomCard` succeeds. Gate on that
+# user-visible outcome before asking the page to find and centre the new row;
+# otherwise a dropped click lets the following scroll move the still-open form
+# out of view and hides the action that failed (R2/R8).
+- extendedWaitUntil:
+    notVisible:
+      id: "Card name"
+    timeout: 7000
+
 # ============================================================
 # STEP 10 — SCROLL TO THE NEW CARD ROW
 # After Submit, CardChecklist re-sorts the list by natural cardNumber order

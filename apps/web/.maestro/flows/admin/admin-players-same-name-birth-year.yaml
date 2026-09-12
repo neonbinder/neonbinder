@@ -175,8 +175,15 @@ tags:
 # "(optional)" would be a capture group matching the word without its brackets.
 # ============================================================
 
+- scrollUntilVisible:
+    element:
+      text: "Add player"
+    centerElement: true
+    timeout: 7000
 - tapOn: "Add player"
-- assertVisible: "Add a player"
+- extendedWaitUntil:
+    visible: "Add a player"
+    timeout: 7000
 
 - tapOn: "New player name"
 - inputText: "Samename${output.TOKEN}"
@@ -375,7 +382,15 @@ tags:
 # the feature: a repeated name does not become a second person by accident.
 # ============================================================
 
+- scrollUntilVisible:
+    element:
+      text: "Add player"
+    centerElement: true
+    timeout: 7000
 - tapOn: "Add player"
+- extendedWaitUntil:
+    visible: "Add a player"
+    timeout: 7000
 - tapOn: "New player name"
 - inputText: "Samename${output.TOKEN}"
 
@@ -448,7 +463,15 @@ tags:
 # different people" panel reachable at all outside the terminal-only preload.
 # ============================================================
 
+- scrollUntilVisible:
+    element:
+      text: "Add player"
+    centerElement: true
+    timeout: 7000
 - tapOn: "Add player"
+- extendedWaitUntil:
+    visible: "Add a player"
+    timeout: 7000
 - tapOn: "New player name"
 - inputText: "Samename${output.TOKEN}"
 - tapOn: "Birth year \\(optional\\)"
