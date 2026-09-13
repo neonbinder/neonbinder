@@ -1,7 +1,7 @@
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { TrashIcon } from "@heroicons/react/24/outline";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
-import { useMutation, useQuery } from "convex/react";
+import { useConvex, useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import {
@@ -11,9 +11,12 @@ import {
 import { slotIds, type SlotBearingRow } from "../../convex/platformSlots";
 import { ConfirmDialog } from "../modules/confirm-dialog";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
+import { contrastRatio, normalizeHexColor } from "@/lib/print/contrast";
+import { teamFullName, teamShortName } from "../../lib/teams/team-name";
 import { FeatureValueControl } from "./FeatureValueControl";
 import RenameEntityControl from "./RenameEntityControl";
 import BaseRoleControl from "./BaseRoleControl";
+import TeamPicker, { type TeamPickerLabels } from "./TeamPicker";
 import {
   ALL_SIDES,
   joinLabels,
@@ -66,7 +69,30 @@ import {
  * (never as a stored empty string). The toast then reads "Cleared {label}".
  * Blank is a complete answer for every field here, so being unable to get back
  * to blank was a hole, not a safeguard.
+ *
+ * Team (NEO-277): the ONE attribute here that flows down. A whole set can
+ * belong to one team — a minor league team set, a police set, a college issue
+ * — and typing that team onto every card by hand was the whole cost of
+ * building such a set. `teamIds` is a typed top-level field on the row (not a
+ * `features` key: it is a link to NB's own `teams` rows, not a string), edited
+ * at setName/variantType/insert/parallel through the same `TeamPicker` the
+ * card drawer uses. It is rendered FIRST and outside the features grid because
+ * it behaves differently from everything in the grid: saving a non-empty value
+ * cascades to the rows and cards beneath (server-side, chunked), so the save
+ * goes through a confirm that states the counts; clearing it never touches a
+ * card. See `SetTeamRow`.
  */
+
+/**
+ * NEO-277 — where the Team row is editable. Sport, year and manufacturer are
+ * containers for many teams' sets; a team only makes sense from the set down.
+ */
+const TEAM_LEVELS: ReadonlySet<string> = new Set([
+  "setName",
+  "variantType",
+  "insert",
+  "parallel",
+]);
 
 type Level =
   | "sport"
@@ -133,6 +159,12 @@ export default function SetAttributesPanel({
     if (!chain) return undefined;
     return chain.find((c) => c.level === "sport")?.value;
   }, [chain]);
+  // NEO-277: the sport ROW id, which is what `TeamPicker` scopes its typeahead
+  // to and tags a newly-created team with (NEO-96) — never the display name.
+  const ancestorSportId = useMemo(() => {
+    if (!chain) return undefined;
+    return chain.find((c) => c.level === "sport")?._id;
+  }, [chain]);
 
   const applicable = useMemo(() => {
     return EXPECTED_FEATURES.filter((f) => {
@@ -147,6 +179,8 @@ export default function SetAttributesPanel({
 
   const leafLevel = row.level as Level;
   const features = row.features ?? {};
+  const teamIds: Array<Id<"teams">> = row.teamIds ?? [];
+  const showTeamRow = TEAM_LEVELS.has(leafLevel);
 
   // Toggle-pill features (checkbox + toggleOptions) render together in one
   // wrapping row instead of scattered through the 2-column grid at their
@@ -280,6 +314,15 @@ export default function SetAttributesPanel({
           </div>
           <p className="text-xs text-gray-500 mt-0.5 truncate" title={breadcrumb}>
             {breadcrumb}
+            {/* NEO-277: the set's team, said the way a collector says it —
+                "Bulls", in Durham Bulls blue — on the collapsed summary bar,
+                which is the state this panel spends almost all of its life in.
+                Only while collapsed: expanded, the picker two lines down shows
+                the same fact with the full name and a remove button, and a
+                chip that repeats it is an accessory to take off. */}
+            {!expanded && showTeamRow && teamIds.length > 0 && (
+              <SetTeamLivery teamIds={teamIds} />
+            )}
           </p>
         </div>
         {expanded ? (
@@ -331,6 +374,24 @@ export default function SetAttributesPanel({
               Set attributes
             </span>
           </div>
+
+          {/* NEO-277: FIRST, full width, and outside the grid — the position
+              is the information. Every row below is a fact about THIS node
+              only (write-once snapshots, no cascade); this one flows down to
+              every card. Keyed on the row so a confirm opened for one set can
+              never ask its question about the next one — the same reason
+              `DeleteSelectorRowControl` is keyed. */}
+          {showTeamRow && (
+            <SetTeamRow
+              key={selectorOptionId}
+              selectorOptionId={selectorOptionId}
+              level={leafLevel}
+              teamIds={teamIds}
+              sportId={ancestorSportId}
+              onSaved={showToast}
+              onFailed={(message) => setToast(`Failed: ${message}`)}
+            />
+          )}
 
           {toggleFeatures.length > 0 && (
             <div
@@ -458,6 +519,400 @@ function SetFeatureRow({
         className={`${fieldClass()} w-full p-1 border rounded text-xs dark:bg-gray-900 dark:border-gray-700 focus:border-[#00D558] focus:outline-none`}
       />
     </label>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// NEO-277 — Team: the one attribute that flows down
+// ---------------------------------------------------------------------------
+
+/** What a save of `teamIds` on this node would change beneath it. */
+type TeamCascadePreview = {
+  nodesFollowing: number;
+  cardsFollowing: number;
+  cardsStaying: number;
+  /** Counting stopped early; every count above is a floor, not a total. */
+  truncated: boolean;
+};
+
+const plural = (count: number, one: string, many: string) =>
+  `${count} ${count === 1 ? one : many}`;
+
+/**
+ * "28 cards and 3 variants" — the things beneath this node that will follow.
+ *
+ * "Variants" for the descendant ROWS, whatever their level: under a set they
+ * are a mix of variant types, inserts and parallels, and the Set Builder's own
+ * columns call all of those variants of the set. (The delete control says
+ * "rows" for the same mix, because there it is a count of things to delete
+ * first; here it is a count of things that will change, and a collector reads
+ * "variants".) When the preview stopped counting, the counts are floors and
+ * the sentence says so up front rather than pretending to a total.
+ */
+function followingPhrase(preview: TeamCascadePreview): string {
+  const parts: string[] = [];
+  if (preview.cardsFollowing > 0) {
+    parts.push(plural(preview.cardsFollowing, "card", "cards"));
+  }
+  if (preview.nodesFollowing > 0) {
+    parts.push(plural(preview.nodesFollowing, "variant", "variants"));
+  }
+  const joined = joinLabels(parts);
+  return preview.truncated ? `more than ${joined}` : joined;
+}
+
+/**
+ * The confirm's title and body, pure so the pluralisation and the truncated
+ * floor can be pinned in a test without a picker in the way.
+ *
+ *   title: "Apply Durham Bulls to this set?"
+ *   body:  "28 cards and 3 variants under this set will get Durham Bulls.
+ *           2 cards carry a different team and will not change."
+ *
+ * The second sentence only appears when something is staying, because "0
+ * cards carry a different team" is reassurance nobody asked for. "This set" /
+ * "this insert" / … follows the node's level, so the question is about the
+ * thing the operator has selected, not a generic set.
+ */
+export function teamCascadeConfirmCopy({
+  teamNames,
+  levelLabel,
+  preview,
+}: {
+  teamNames: string;
+  levelLabel: string;
+  preview: TeamCascadePreview;
+}): { title: string; description: string } {
+  const noun = levelLabel.toLowerCase();
+  const following = followingPhrase(preview);
+  const first = `${following.charAt(0).toUpperCase()}${following.slice(1)} under this ${noun} will get ${teamNames}.`;
+  const staying =
+    preview.cardsStaying > 0
+      ? ` ${plural(preview.cardsStaying, "card carries", "cards carry")} a different team and will not change.`
+      : "";
+  return {
+    title: `Apply ${teamNames} to this ${noun}?`,
+    description: `${first}${staying}`,
+  };
+}
+
+/**
+ * The toast after a confirmed save: "Saved Team · applying to 28 cards and 3
+ * variants". "Applying", present tense, because the cascade is scheduled and
+ * chunked server-side and may still be running when this reads — the toast
+ * says what was started, not what has finished.
+ */
+export function teamSavedToast(preview: TeamCascadePreview | null): string {
+  if (!preview || preview.cardsFollowing + preview.nodesFollowing === 0) {
+    return "Saved Team";
+  }
+  return `Saved Team · applying to ${followingPhrase(preview)}`;
+}
+
+/** Order-insensitive equality: the picker appends, the row stores a set. */
+function sameTeamIds(
+  a: ReadonlyArray<Id<"teams">>,
+  b: ReadonlyArray<Id<"teams">>,
+): boolean {
+  if (a.length !== b.length) return false;
+  const sorted = (xs: ReadonlyArray<Id<"teams">>) =>
+    [...(xs as ReadonlyArray<string>)].sort();
+  const sa = sorted(a);
+  const sb = sorted(b);
+  return sa.every((id, i) => id === sb[i]);
+}
+
+/**
+ * NEO-277 — the set row's picker exposes DIFFERENT accessible names from the
+ * card drawer's, the quick-add form's and the attention walker's, because this
+ * panel can be expanded while any of those has a picker open beneath it, and
+ * neither hides the other. Whole-string rewords, never a suffix: Maestro's
+ * `id:` selector is a regex find over the aria-label, so "Add team to set"
+ * would make a flow's `id: "Add team"` match both. Each string shares no
+ * substring with its default in either direction — pinned in
+ * `SetAttributesPanel.test.tsx`, because the failure is silent both ways.
+ * Module scope so the object identity is stable across renders and the E2E
+ * author has one place to read the real strings from.
+ */
+export const SET_TEAM_PICKER_LABELS: TeamPickerLabels = {
+  root: "Whole-set team",
+  trigger: "Choose set team",
+  search: "Find a team for the set",
+  results: "Set team matches",
+};
+
+/** The picker trigger inside the row, for parking focus after the confirm. */
+const PICKER_TRIGGER_SELECTOR = `button[aria-label="${SET_TEAM_PICKER_LABELS.trigger}"]`;
+
+/**
+ * The Team row.
+ *
+ * Save flow, the only one in this panel with a question in it:
+ *   1. A pick in `TeamPicker` calls `onChange(next)` with the full array.
+ *   2. The picker shows `next` at once (`pending`), and two one-shot reads go
+ *      out together: the cascade preview for `next`, and the team rows for
+ *      their names. Imperative `convex.query` rather than `useQuery`, because
+ *      this is a question asked once per pick, not a subscription.
+ *   3. Something follows → `ConfirmDialog` with the counts. Nothing follows
+ *      (an empty set, or every card already carries a different team) → save
+ *      straight away; a question with only one honest answer is not asked.
+ *   4. Confirm → `setSelectorOptionTeams` → "Saved Team · applying to …".
+ *      Cancel → `pending` is dropped and the picker reads the row again.
+ *
+ * Clear flow: the last chip removed sends `[]`, which patches the node only —
+ * the cards beneath keep whatever team they have. No dialog: nothing beneath
+ * is touched, so there is nothing to confirm; the toast says so instead.
+ *
+ * A pick made while an earlier preview is still in flight supersedes it
+ * (`seq`): the later answer is the only one the operator can still be asking
+ * about.
+ *
+ * Focus: `ConfirmDialog` returns focus to whatever had it when it opened —
+ * which, after a pick, is the picker's popover search box. Opening the dialog
+ * blurs the picker, the picker closes its popover, and the box is gone by the
+ * time the dialog closes, so the dialog's own restore finds nothing connected.
+ * This row parks focus on the picker's "+ Add team" trigger itself instead,
+ * on both exits.
+ */
+function SetTeamRow({
+  selectorOptionId,
+  level,
+  teamIds,
+  sportId,
+  onSaved,
+  onFailed,
+}: {
+  selectorOptionId: Id<"selectorOptions">;
+  level: Level;
+  /** The row's stored value; `[]` when the field is absent. */
+  teamIds: Array<Id<"teams">>;
+  sportId: Id<"selectorOptions"> | undefined;
+  onSaved: (message: string) => void;
+  onFailed: (message: string) => void;
+}) {
+  const convex = useConvex();
+  const setSelectorOptionTeams = useMutation(
+    api.selectorOptions.setSelectorOptionTeams,
+  );
+  const labelId = useId();
+  const hintId = useId();
+  const rowRef = useRef<HTMLDivElement | null>(null);
+  const seqRef = useRef(0);
+
+  /** The picker's value while a pick is being previewed or saved. */
+  const [pending, setPending] = useState<Array<Id<"teams">> | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [confirm, setConfirm] = useState<{
+    next: Array<Id<"teams">>;
+    preview: TeamCascadePreview;
+    title: string;
+    description: string;
+  } | null>(null);
+
+  const focusTrigger = () => {
+    setTimeout(() => {
+      rowRef.current
+        ?.querySelector<HTMLElement>(PICKER_TRIGGER_SELECTOR)
+        ?.focus();
+    }, 0);
+  };
+
+  const save = async (
+    next: Array<Id<"teams">>,
+    preview: TeamCascadePreview | null,
+  ) => {
+    setBusy(true);
+    try {
+      await setSelectorOptionTeams({ selectorOptionId, teamIds: next });
+      onSaved(
+        next.length === 0
+          ? "Cleared Team · cards keep theirs"
+          : teamSavedToast(preview),
+      );
+    } catch (e) {
+      // Same rule as the feature rows: only a ConvexError's `data` is text a
+      // backend chose for a person; anything else is the fallback.
+      onFailed(userFacingMessage(e, "Could not save Team"));
+    } finally {
+      setBusy(false);
+      setPending(null);
+    }
+  };
+
+  const handleChange = async (next: Array<Id<"teams">>) => {
+    if (busy) return;
+    if (sameTeamIds(next, teamIds)) {
+      setPending(null);
+      return;
+    }
+    const seq = ++seqRef.current;
+    setPending(next);
+
+    if (next.length === 0) {
+      await save(next, null);
+      return;
+    }
+
+    let preview: TeamCascadePreview;
+    let names: string;
+    try {
+      const [p, rows] = await Promise.all([
+        convex.query(api.selectorOptions.getSelectorOptionTeamCascadePreview, {
+          selectorOptionId,
+          teamIds: next,
+        }),
+        convex.query(api.teams.getManyByIds, { ids: next }),
+      ]);
+      preview = p;
+      names = joinLabels(rows.map((t) => teamFullName(t)));
+    } catch (e) {
+      if (seq !== seqRef.current) return;
+      setPending(null);
+      onFailed(userFacingMessage(e, "Could not save Team"));
+      return;
+    }
+    // A later pick has taken over; this answer is about a value the picker
+    // no longer shows.
+    if (seq !== seqRef.current) return;
+
+    if (preview.cardsFollowing + preview.nodesFollowing === 0) {
+      await save(next, preview);
+      return;
+    }
+    setConfirm({
+      next,
+      preview,
+      ...teamCascadeConfirmCopy({
+        teamNames: names,
+        levelLabel: LEVEL_LABEL[level],
+        preview,
+      }),
+    });
+  };
+
+  return (
+    <div
+      ref={rowRef}
+      role="group"
+      aria-labelledby={labelId}
+      aria-describedby={hintId}
+      className="flex flex-col gap-1 p-2 rounded border text-xs border-gray-700 bg-gray-900/30"
+    >
+      <span
+        id={labelId}
+        className="text-[10px] uppercase tracking-wide text-gray-400"
+      >
+        Team
+      </span>
+      <TeamPicker
+        value={pending ?? teamIds}
+        onChange={(next) => void handleChange(next)}
+        sportId={sportId}
+        disabled={busy}
+        labels={SET_TEAM_PICKER_LABELS}
+      />
+      {/* Visible, not a tooltip like the feature hints: this is the one row
+          whose save reaches beyond the row, and that has to be readable
+          before the pick, not discoverable after it. gray-400 on this
+          ground clears 4.5:1 (the pair every sub-line in this panel uses). */}
+      <p id={hintId} className="text-[10px] text-gray-400">
+        Whole set belongs to one team (minor league team sets, police sets,
+        college issues). New cards under this {LEVEL_LABEL[level].toLowerCase()}{" "}
+        get it automatically.
+      </p>
+      {confirm && (
+        <ConfirmDialog
+          title={confirm.title}
+          description={confirm.description}
+          confirmLabel="Yes, apply"
+          busyLabel="Applying…"
+          busy={busy}
+          onConfirm={() => {
+            if (busy) return;
+            const { next, preview } = confirm;
+            void save(next, preview).finally(() => {
+              setConfirm(null);
+              focusTrigger();
+            });
+          }}
+          onCancel={() => {
+            if (busy) return;
+            setConfirm(null);
+            setPending(null);
+            focusTrigger();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Composited panel ground for the contrast gate below: `bg-gray-900/60`
+ * (#111827 at 60%) over the near-black page (#0a0a0a). Worked out once here
+ * rather than guessed, because a franchise colour can clear 4.5:1 on pure
+ * black and miss it on this slightly lifted surface.
+ */
+const PANEL_GROUND = "#0e121b";
+
+/** WCAG 2.2 SC 1.4.3 for text this size. A gate, not a readout — this is UI. */
+const LIVERY_MIN_CONTRAST = 4.5;
+
+/**
+ * The team's own colour for its name, or null to leave it muted.
+ *
+ * Primary first, secondary as the fallback, muted when neither clears the
+ * floor — the same order the Players page uses, for the same reason: many
+ * franchises are built on a near-black navy or maroon whose secondary is the
+ * pale one they print the dark on, so the fallback is usually the right
+ * colour as well as the readable one. Colour is never the only carrier: the
+ * word reads the same whichever branch is taken (SC 1.4.1).
+ */
+function teamTextColor(
+  colors: { primary?: string; secondary?: string } | undefined,
+): string | null {
+  for (const candidate of [colors?.primary, colors?.secondary]) {
+    if (!candidate) continue;
+    const hex = normalizeHexColor(candidate);
+    if (!hex) continue;
+    const ratio = contrastRatio(hex, PANEL_GROUND);
+    if (ratio !== null && ratio >= LIVERY_MIN_CONTRAST) return hex;
+  }
+  return null;
+}
+
+/**
+ * NEO-277 — the set's team on the collapsed summary bar, in livery.
+ *
+ * The short name ("Bulls"), because that is what a collector says and the
+ * bar is one truncating line; the full name rides on `title` and in the
+ * accessible text. Renders nothing until the rows arrive rather than a
+ * "Loading…" — a summary bar that flickers a placeholder on every selection
+ * change is worse than one that fills in a beat later.
+ */
+function SetTeamLivery({ teamIds }: { teamIds: Array<Id<"teams">> }) {
+  const rows = useQuery(api.teams.getManyByIds, { ids: teamIds });
+  if (!rows || rows.length === 0) return null;
+  return (
+    <span className="ml-1.5 whitespace-nowrap">
+      <span aria-hidden="true">· </span>
+      <span className="sr-only">Team: </span>
+      {rows.map((team, i) => {
+        const color = teamTextColor(team.colors);
+        return (
+          <span key={team._id}>
+            {i > 0 && ", "}
+            <span
+              title={teamFullName(team)}
+              className={color ? "font-semibold" : "font-semibold text-gray-300"}
+              style={color ? { color } : undefined}
+            >
+              {teamShortName(team)}
+            </span>
+          </span>
+        );
+      })}
+    </span>
   );
 }
 

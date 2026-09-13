@@ -1228,3 +1228,57 @@ describe("TeamPicker — the popover escapes its clip box (NEO-272)", () => {
     expect(document.activeElement).toBe(screen.getByLabelText("Add team"));
   });
 });
+
+// ---------------------------------------------------------------------------
+// NEO-277 — per-instance accessible names (`labels`)
+// ---------------------------------------------------------------------------
+
+describe("TeamPicker — labels prop (NEO-277)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    currentSelectedRows = [makeTeam("t1", "New York Yankees")];
+    currentCandidates = [makeTeam("t2", "Boston Red Sox")];
+    currentLeagues = [];
+    queryCalls = [];
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("answers to today's names when no labels are passed — every existing caller is unchanged", () => {
+    renderPicker({ value: [tid("t1")] });
+    expect(screen.getByLabelText("Team picker")).toBeTruthy();
+    expect(screen.getByLabelText("Add team")).toBeTruthy();
+    openPopover();
+    expect(screen.getByLabelText("Search teams")).toBeTruthy();
+    expect(screen.getByLabelText("Team typeahead results")).toBeTruthy();
+  });
+
+  it("renames exactly the four container controls, and never a chip or option", () => {
+    const labels = {
+      root: "Whole-set team",
+      trigger: "Choose set team",
+      search: "Find a team for the set",
+      results: "Set team matches",
+    };
+    renderPicker({ value: [tid("t1")], labels });
+
+    expect(screen.getByLabelText("Whole-set team")).toBeTruthy();
+    expect(screen.queryByLabelText("Team picker")).toBeNull();
+    expect(screen.queryByLabelText("Add team")).toBeNull();
+
+    fireEvent.click(screen.getByLabelText("Choose set team"));
+    expect(screen.getByLabelText("Find a team for the set")).toBeTruthy();
+    expect(screen.queryByLabelText("Search teams")).toBeNull();
+    expect(screen.getByRole("listbox").getAttribute("aria-label")).toBe(
+      "Set team matches",
+    );
+
+    // Chip and option names carry the team's name and are NOT overridable —
+    // the existing flows target them by that shape.
+    expect(screen.getByLabelText("Team: New York Yankees")).toBeTruthy();
+    expect(screen.getByLabelText("Remove team New York Yankees")).toBeTruthy();
+    expect(screen.getByLabelText("Add Boston Red Sox")).toBeTruthy();
+  });
+});

@@ -14,6 +14,45 @@ import NewTeamDialog from "./NewTeamDialog";
 import PickerPopover, { popoverFocusables } from "./PickerPopover";
 
 /**
+ * NEO-277 — the four container-level accessible names, overridable per
+ * instance. Same shape and same reasoning as `PlayerPickerLabels` (NEO-220):
+ * every one of these is present whatever the picker's state and NONE carries a
+ * team's name, so they are exactly the labels that collide when two
+ * TeamPickers are on screen at once. That became reachable with the set-level
+ * Team row in `SetAttributesPanel`, which can be expanded while the quick-add
+ * form or the card drawer has a picker of its own open beneath it.
+ *
+ * Whole strings rather than a prefix/suffix knob, deliberately. Maestro
+ * selects by `resource-id` (= the aria-label) with a REGEX FIND, so a derived
+ * label that contains the base one — "Add team to set" — would make a flow's
+ * `id: "Add team"` match BOTH elements: strictly worse than the collision it
+ * set out to fix. An override must share no substring with its default in
+ * either direction; `SetAttributesPanel.test.tsx` pins that for the set row.
+ *
+ * Chip and option labels ("Team: San Diego Padres", "Add San Diego Padres",
+ * "Remove team …", "New team …") are deliberately NOT overridable: they carry
+ * the team's name, which is the disambiguator, and the existing flows target
+ * them that way.
+ */
+export type TeamPickerLabels = {
+  /** The chip row's own name. Default "Team picker". */
+  root: string;
+  /** The "+ Add team" trigger. Default "Add team". */
+  trigger: string;
+  /** The popover's search input. Default "Search teams". */
+  search: string;
+  /** The popover listbox. Default "Team typeahead results". */
+  results: string;
+};
+
+export const DEFAULT_TEAM_PICKER_LABELS: TeamPickerLabels = {
+  root: "Team picker",
+  trigger: "Add team",
+  search: "Search teams",
+  results: "Team typeahead results",
+};
+
+/**
  * NEO-26 — multi-select-capable team picker, defaults to single.
  *
  * Renders the selected teams as a chip row (one chip per `teams._id`)
@@ -71,6 +110,7 @@ export default function TeamPicker({
   onChange,
   sportId,
   disabled,
+  labels = DEFAULT_TEAM_PICKER_LABELS,
 }: {
   value: Array<Id<"teams">>;
   onChange: (next: Array<Id<"teams">>) => void;
@@ -85,6 +125,14 @@ export default function TeamPicker({
    */
   sportId?: Id<"selectorOptions">;
   disabled?: boolean;
+  /**
+   * NEO-277 — accessible names for this instance's four container controls.
+   * Omit on the one picker a screen can be sure of having only one of; pass
+   * all four when a second picker can be mounted alongside it. All four
+   * together, never a subset — a half-renamed instance is a collision you
+   * then have to find.
+   */
+  labels?: TeamPickerLabels;
 }) {
   // Resolve currently-selected ids → display rows for the chip labels.
   // Convex deduplicates this between sibling pickers on the same page.
@@ -395,7 +443,7 @@ export default function TeamPicker({
     <div
       ref={rootRef}
       className="flex flex-wrap gap-1.5 items-center"
-      aria-label="Team picker"
+      aria-label={labels.root}
       onBlur={handleRootBlur}
     >
       {value.map((id) => (
@@ -446,7 +494,7 @@ export default function TeamPicker({
             e.stopPropagation();
             first.focus();
           }}
-          aria-label="Add team"
+          aria-label={labels.trigger}
           aria-expanded={popoverOpen}
           // a11y (SC 1.4.11 Non-text Contrast): the dashed border IS this
           // control's boundary, and `dark:border-gray-600` measures 2.35:1 on
@@ -484,7 +532,7 @@ export default function TeamPicker({
               type="text"
               value={query}
               placeholder="Search or add a team..."
-              aria-label="Search teams"
+              aria-label={labels.search}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => {
                 const rowCount = matches.length + (showCreateOption ? 1 : 0);
@@ -543,7 +591,7 @@ export default function TeamPicker({
             )}
             <div
               role="listbox"
-              aria-label="Team typeahead results"
+              aria-label={labels.results}
               className="space-y-1"
             >
               {matches.map((m, idx) => {
