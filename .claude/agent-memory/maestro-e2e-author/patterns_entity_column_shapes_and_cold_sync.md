@@ -56,9 +56,10 @@ Maestro cannot print. To find out what a marketplace actually returned, add
 `- assertVisible: "ZZZ-DUMP-<thing>"` (or `extendedWaitUntil` with a long
 timeout when you also need to wait out a sync) and read the failing step's
 `screen-hierarchy/*.json`. That dump is the only way to see a column's rows
-without a running app you can inspect. Note it lists only nodes that are not
-clipped by an inner `overflow-y-auto` container, so filter the column first when
-the list is long.
+without a running app you can inspect. Note it lists only nodes inside the
+1024x629 VIEWPORT — an inner `overflow-y-auto` clip is invisible to the driver
+(see [[inner-scroller-clip-is-invisible-to-maestro]]) — so filter the column
+first when the list is long.
 
 Related: [[cold-real-set-drill-and-hockey-fixture]],
 [[local-validation-needs-a-pr-preview]].

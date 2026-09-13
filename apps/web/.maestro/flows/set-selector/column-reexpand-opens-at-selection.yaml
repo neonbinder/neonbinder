@@ -1,0 +1,173 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Set Builder cascade — re-expanding a collapsed column opens its list scrolled to the selected row, not to the top (NEO-276)"
+tags:
+  - set-selector
+---
+# R1 — ONE FEATURE (NEO-276): tapping a collapsed column's chip
+# ("<Column>: <Name> — change") re-opens that column's list with the SELECTED
+# row centred in the list's own 400px fold, instead of at the top of the list
+# where a selection below the fold is off-screen.
+#
+# THE COLUMN — Sports, read-only.
+#   The Sports column is the one seeded column that is longer than the fold on
+#   every deployment (BSC ∪ SportLots returned 17 sports at authoring time,
+#   well past the 8 that make it render a search box) and needs no drill at
+#   all, which is why R9's drill utils are not used here: there is nothing
+#   to drill, the column under test is the first one on the page. The flow selects a row and re-opens the column; it
+#   writes nothing at the sport level. Selecting a sport does open its Years
+#   column, which auto-syncs cold on a fresh preview — the same additive,
+#   id-keyed year sync every Hockey drill in this suite triggers. The flow
+#   never waits on that sync (only on the "Years" heading, which renders
+#   before it), and leaves it to finish in the background.
+#
+# THE ROW — "Racing". Rows are 50px on an 8px gap (58px pitch), so the fold
+#   shows rows 0–6 and row 7 is the first one clipped. Sorted by localeCompare,
+#   "Racing" is index 13 of those 17 marketplace sports, and every name another
+#   flow mints ("E2E Test Sport <n>" after Cricket, "xp-sport-<n>" after
+#   Wrestling) can only push it further down, never above the fold. It is also
+#   NOT one of the last three rows, so the list has the headroom to centre it
+#   — a row in the last half-fold cannot be centred and would only prove
+#   "scrolled to the bottom". "Baseball" is index 0 on every deployment (no
+#   minted name sorts before it), which makes it the first-fold sentinel.
+#
+# WHAT THE DRIVER CAN AND CANNOT SEE (read before touching an assert here).
+#   maestro-web reports every node's raw getBoundingClientRect and the driver
+#   prunes the hierarchy against the 1024x629 VIEWPORT only (any node <10%
+#   inside it is absent). It knows nothing about an ancestor's
+#   `overflow-y-auto` clip: a row the list has scrolled past is "not visible"
+#   only because its rect left the viewport, and a row inside the list but
+#   clipped by the list's own bottom edge is "visible" if its rect is still
+#   inside the viewport. So the assertions below are framed against PAGE
+#   geometry, and the page is first scrolled so the whole 400px fold sits
+#   inside the viewport:
+#     - at scroll 0 the list runs from y≈419 to 819, i.e. the fold's lower
+#       half is already past the viewport; one driver swipe (innerHeight/2 =
+#       314px) puts it at ≈105–505, with the search box above it at ≈55–93
+#       and "+ Custom" below it at ≈545–577, all on screen at once;
+#     - the FIX puts "Racing" at list-offset 175 → y≈280: on screen;
+#       "Baseball" is scrolled 521px up inside the list → y≈-416: pruned;
+#     - on MAIN the list opens at scrollTop 0: "Baseball" sits at y≈105: on
+#       screen, and "Racing" (index 13 → list-offset 754) is at y≈859: pruned.
+#   The window scroll to "+ Custom" happens AFTER the chip is tapped and moves
+#   the WINDOW only — maestro-web's one scroll primitive is `window.scroll`,
+#   which cannot touch the listbox's own scrollTop — so the list is exactly as
+#   the re-expansion left it when the assertions run. It is placed after the
+#   tap rather than before it because the chip sits at the top of the column
+#   (y≈301–377 at scroll 0): one swipe earlier would leave it at y≈-13–63,
+#   under the sticky header, and R8 wants it centred for the tap anyway.
+#
+# R2 — HARD ASSERTIONS, and why each guard exists:
+#   - "Years" visible after the row tap: the selection took (the chip only
+#     renders for a selected row, so the chip tap is meaningful).
+#   - "Search sports" visible after the chip tap: the list is mounted again,
+#     unfiltered (selecting a row clears the filter), so the row assertions
+#     below are made against the FULL list and not against a filtered one.
+#   - `scrollUntilVisible` "Add custom Sports": brings the fold's bottom edge
+#     on screen (R6: the scroll is the assert) — and "Search sports" visible
+#     again afterwards proves the fold's TOP edge is on screen too. Together
+#     they mean the whole fold is inside the viewport, so a row that is absent
+#     is absent because the LIST scrolled it away, not because the page did.
+#   - "Racing" visible, anchored below the search box and above "+ Custom" so
+#     only a row of THIS column can satisfy it (the attributes panel below the
+#     cascade renders the selected sport's name as its breadcrumb).
+#   - "Baseball" NOT visible, same anchors — this is the assert that FAILS ON
+#     MAIN. Without the fix the list re-opens at its top with Baseball in the
+#     first fold, and Racing 350px below the fold's bottom edge; the positive
+#     assert fails there first, and the negative one is what keeps the flow
+#     honest if a future change put Racing on screen by scrolling the PAGE
+#     rather than the list. It is never asserted alone (negative asserts pass
+#     on a dead page): the three positive asserts before it prove the page is
+#     alive and the column is on screen.
+#   Not asserted: the Years column's contents (cold sync, not this feature),
+#   the horizontal scroll row's position (the fix does not touch it; a
+#   regression there shows up as a dropped chip tap, which fails loudly).
+#
+# R5 — every wait is 7000 except the post-launchApp gate (sanctioned 45s).
+# R7 — no writes at the level under test; nothing to clean up.
+# R8 — the chip is centred before it is tapped (it is mid-band already, so
+#      this costs one hierarchy read); the row tap is a filtered result at
+#      the list's top, mid-band, the same unscrolled tap every drill util
+#      makes on a search result.
+# R10 — no `when:` guards, no settles after actions.
+
+- launchApp
+- extendedWaitUntil:
+    visible: ".*Build set parameters using marketplace APIs.*"
+    timeout: 45000
+
+# ── STEP 1 — the Sports column is loaded and long enough to have a search box
+# (>8 rows). Warm on every run: setup.yaml synced the sports.
+- extendedWaitUntil:
+    visible:
+      id: "Search sports"
+    timeout: 7000
+
+# ── STEP 2 — select the below-fold row through the search box (the way every
+# drill util reaches a row it cannot see). Anchored below the input because the
+# input's own node text becomes "Racing" the moment it is typed into.
+# 250ms settle on the search-box tap: the input needs focus before inputText
+# fires (drill-util convention).
+- tapOn:
+    id: "Search sports"
+    waitToSettleTimeoutMs: 250
+- inputText: "Racing"
+# Result-keyed retry, the drill utils' idiom for the coordinate-staleness
+# dropped-tap class (NEO-85): re-fire ONCE iff the Years column did not appear.
+- retry:
+    maxRetries: 1
+    commands:
+      - tapOn:
+          text: "Racing"
+          below:
+            id: "Search sports"
+          retryTapIfNoChange: true
+      - extendedWaitUntil:
+          visible: "Years"
+          timeout: 7000
+
+# ── STEP 3 — the column collapsed to its chip; re-open it.
+- scrollUntilVisible:
+    element:
+      id: "Sports: Racing — change"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Sports: Racing — change"
+- extendedWaitUntil:
+    visible:
+      id: "Search sports"
+    timeout: 7000
+
+# ── STEP 4 — bring the whole fold into the viewport (window scroll only; see
+# the header for why this cannot disturb the list's own scroll position). No
+# centerElement: nothing is tapped afterwards (R8 — centring is for taps).
+- scrollUntilVisible:
+    element:
+      id: "Add custom Sports"
+    timeout: 7000
+- extendedWaitUntil:
+    visible:
+      id: "Search sports"
+    timeout: 7000
+
+# ── STEP 5 — the selected row is in the fold, the first row is not.
+# `extendedWaitUntil` rather than `assertVisible` so the ceiling is stated
+# (R5): a bare assert fails only after the driver's 17s lookup, and on main
+# this is the step that fails. `assertNotVisible` has no timeout key; it
+# returns at once when the row is absent and only waits (for it to leave)
+# when it is present, i.e. on a broken build.
+- extendedWaitUntil:
+    visible:
+      text: "Racing"
+      below:
+        id: "Search sports"
+      above:
+        id: "Add custom Sports"
+    timeout: 7000
+- assertNotVisible:
+    text: "Baseball"
+    below:
+      id: "Search sports"
+    above:
+      id: "Add custom Sports"
