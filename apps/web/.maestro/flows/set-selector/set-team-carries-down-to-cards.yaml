@@ -1,0 +1,603 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Set-level Team carries down to cards — new cards are born with it, a change cascades to the cards that inherited it and leaves a hand-set card alone (NEO-277)"
+tags:
+  - set-selector
+---
+# R1 — SINGLE FEATURE (NEO-277): Team is a SET-level attribute. Picked once on
+# the set through the Set attributes panel's own TeamPicker, it (a) is copied
+# down to every row created beneath it and to every card added under those
+# rows, and (b) when it changes, cascades to the cards that were inheriting it
+# while a card an operator hand-set to a different team is left alone — and
+# the confirm in front of that cascade states both counts before it runs.
+#
+# R2 — HARD ASSERTIONS, no silent fall-through:
+#   - Step 2: picking the first team on a set with nothing beneath it asks no
+#     question, saves, and the cascade it schedules lands ("Team applied to
+#     cards") with the team chipped on the set.
+#   - Step 3: two cards added under the set's Base with NO team picked on the
+#     way in are born with the set's team — proven on card #1's row sub-line
+#     and in card #2's drawer chip.
+#   - Step 4: card #2 is hand-set to a second team in the drawer.
+#   - Step 5: changing the set's team (× the chip — which saves nothing and
+#     offers "Clear team" / "Keep <team>" — then picking a third team) opens
+#     the confirm whose body counts "1 card" following and "1 card carries a
+#     different team" staying; confirming lands the cascade ("Team applied to
+#     cards"); card #1's sub-line then reads the third team alone and card #2
+#     still reads its own.
+#   - Every dialog/toast string is matched EXACTLY (full-match regex, escaped),
+#     so a count that drifts fails here rather than reading "close enough".
+#
+# R3 — DEDUP: team-picker.yaml and team-picker-create-custom-card.yaml prove
+#   the TeamPicker component itself (create-new, remove, persistence) on a
+#   CARD. features-propagation.yaml proves the set-level FEATURE grid does
+#   NOT cascade. Nothing else touches `selectorOptions.teamIds` or the
+#   cascade preview; this flow owns them.
+#
+# R7a — WRITES go to a per-worker, per-ATTEMPT hand-made set,
+#   `stt-<worker>-<attempt>` under E2E Test Sport <worker> › 2026 › Topps
+#   (SET-REGISTRY.md, prefix `stt-`). Per-attempt because the confirm's body
+#   is an EXACT count of cards, which is only knowable on a checklist this
+#   attempt created from empty (the cna-/cnw-/tlf- precedent). The synthetic
+#   sport rather than Baseball because the New Team dialog's League row
+#   renders every league the sport holds in a `max-h-40` inner scroller
+#   maestro-web cannot drive; under this sport there are none, so the one
+#   pill this flow answers with ("No league") is always in view.
+#
+# R9 — both drills go through util-drill-to-custom.yaml. The two set-level
+#   RE-SELECTIONS in Step 5 are not drills: they re-open the already-mounted
+#   Sets column from its collapsed card (the NEO-276 gesture, owned by
+#   column-reexpand-opens-at-selection.yaml) and tap the row that is already
+#   selected, which SetSelector.handleSetSelect answers by clearing every
+#   deeper selection — that is what puts the SET back under the panel.
+#
+# WHAT STEP 5 DOES NOT EXERCISE (R1): the pending-empty state's other two
+#   answers — "Keep <team>" (drop the ×) and "Clear team" (its "Take <team>
+#   off this set?" confirm and the "Cleared Team · cards unchanged" toast).
+#   Those are the clear path, a separate feature; this flow only proves that
+#   the × on its own writes nothing, which is what makes the replacement a
+#   change rather than a clear followed by an unrelated pick.
+#
+# MINTED NAMES are single search tokens (SET-REGISTRY.md, "A name typed into a
+#   team picker must be a SINGLE search token"): STA/STB/STC + ATTEMPT_TOKEN,
+#   diverging at their third character so no name is a prefix of another. Each
+#   team also gets a Location, `Loc<token>` — typed into the DIALOG, never into
+#   a picker, so it is never queried — which makes the composed full name
+#   ("Loc<token> STA<token>", what card rows and chips print) distinct from the
+#   short name ("STA<token>", what the collapsed panel bar prints in livery).
+
+# ============================================================
+# LAUNCH + SIGN IN
+# ============================================================
+
+- launchApp
+- extendedWaitUntil:
+    visible: ".*Build set parameters using marketplace APIs.*"
+    timeout: 45000
+
+# One alphanumeric token per attempt, hyphens stripped (SET-REGISTRY.md).
+# `${ATTEMPT_ID}` is the runner's binding; `output.ATTEMPT_ID` is never set.
+- evalScript: '${output.ATTEMPT_TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'
+
+# ============================================================
+# STEP 1 — DRILL TO THE SET (four levels; the set is the deepest selection,
+# so SetAttributesPanel scopes itself to the SET row). Returns with the
+# Variant Types column visible and empty — nothing beneath the set yet.
+# ============================================================
+
+- runFlow:
+    file: util-drill-to-custom.yaml
+    env:
+      SPORT: "E2E Test Sport ${WORKER_INDEX || 0}"
+      YEAR: "2026"
+      MANUFACTURER: "Topps"
+      SET_NAME: "stt-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+
+- assertVisible: "Variant Types"
+
+# ============================================================
+# STEP 2 — PICK THE SET'S TEAM (no card beneath it → no question asked)
+# ============================================================
+
+# R5 — 7000; R8 — centred. The panel is the last thing on the page; the
+# NEO-260 208px spacer below it is what lets this centre in 1-2 swipes
+# (features-propagation.yaml, same step, same dependency).
+- scrollUntilVisible:
+    element:
+      id: "Edit attributes"
+    centerElement: true
+    visibilityPercentage: 10
+    waitToSettleTimeoutMs: 1000
+    timeout: 7000
+- tapOn:
+    id: "Edit attributes"
+- assertVisible:
+    id: "Hide attributes"
+
+# The Team row is the FIRST row of the expanded panel, and its picker carries
+# the set-level accessible names (SET_TEAM_PICKER_LABELS in
+# SetAttributesPanel.tsx): trigger "Add set team" (visible "+ Add set team"), search "Find a team for
+# the set". Centred so the popover that opens BELOW the trigger has room for
+# its search box, status line and "+ New team" row (R8).
+- scrollUntilVisible:
+    element:
+      id: "Add set team"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Add set team"
+- assertVisible:
+    id: "Find a team for the set"
+- tapOn:
+    id: "Find a team for the set"
+- inputText: "STA${output.ATTEMPT_TOKEN}"
+
+# No team carries this attempt's name, so the popover's one create affordance
+# is offered (accessible name "New team <typed>"); taking it OPENS the New Team
+# dialog (NEO-236), which is what writes.
+- assertVisible:
+    id: "New team STA${output.ATTEMPT_TOKEN}"
+- tapOn:
+    id: "New team STA${output.ATTEMPT_TOKEN}"
+
+# The dialog is portalled, `fixed inset-0 z-[60]`, centred: nothing clips it.
+# Heading = correctly LABELLED; name box value = correctly SEEDED.
+- assertVisible: "New team: STA${output.ATTEMPT_TOKEN}"
+- assertVisible:
+    id: "New team name"
+    text: "STA${output.ATTEMPT_TOKEN}"
+
+# The three questions a team row needs. Location by its explicit aria-label
+# (NewTeamForm sets one; `primitives/Input` never does), regex brackets
+# escaped. League: the "No league" pill — under this sport it is the only
+# league pill there is, so it is always on the row and never inside the
+# league box's inner scroller.
+- tapOn:
+    id: "New team location \\(optional\\)"
+- inputText: "Loc${output.ATTEMPT_TOKEN}"
+- tapOn: "No league"
+
+# THE WRITE. The Create button's accessible name is the COMPOSED full name,
+# so targeting it is itself the assertion that Location + Name composed in
+# that order. Tapped by id, never a second Enter (Create/Cancel share a class
+# string; see README "pressKey needs a unique handle").
+- tapOn:
+    id: "Create team Loc${output.ATTEMPT_TOKEN} STA${output.ATTEMPT_TOKEN}"
+
+# The dialog's Create both creates the team and hands it to the set row's
+# picker, whose onChange runs the cascade PREVIEW first: no card is beneath
+# this set yet, so no confirm is asked and the save goes straight through.
+# Every non-empty save stamps the row and schedules the cascade, whose last
+# chunk clears the stamp; the panel says "Saved Team" on the save and then
+# "Team applied to cards" when the stamp clears — for an empty subtree that
+# is sub-second, and the second toast REPLACES the first, so the terminal one
+# is the only string a visible-text wait can honestly hold. It is also the
+# stronger fact: the picker is locked ("Applying to cards…") until it lands.
+- extendedWaitUntil:
+    visible:
+      text: "Team applied to cards"
+    timeout: 7000
+- extendedWaitUntil:
+    visible:
+      id: "Remove team Loc${output.ATTEMPT_TOKEN} STA${output.ATTEMPT_TOKEN}"
+    timeout: 7000
+
+# ============================================================
+# STEP 3 — CREATE Insert → Base BENEATH THE TEAM-BEARING SET, ADD TWO CARDS
+#
+# Both rows are created AFTER the set has its team, so each is born with it
+# (copy-down at creation — inheritedTeamIds), and a card added under Base
+# with no team picked on the way in is born with the leaf's team
+# (defaultTeamOnCardIds). R9: the six-level util owns the drill; it reloads
+# /set-selector and re-selects the four rows that already exist.
+# ============================================================
+
+- runFlow:
+    file: util-drill-to-custom.yaml
+    env:
+      SPORT: "E2E Test Sport ${WORKER_INDEX || 0}"
+      YEAR: "2026"
+      MANUFACTURER: "Topps"
+      SET_NAME: "stt-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+      VARIANT_TYPE: "Insert"
+      VARIANT: "Base"
+
+# ── CARD #1 — no team picked; the row must show the set's team ──────────────
+# The util returned with "Open add card form" centred.
+- tapOn:
+    id: "Open add card form"
+- extendedWaitUntil:
+    visible:
+      id: "Card name"
+    timeout: 7000
+# Card number is autofocused; the name box's placeholder is "Player name".
+- inputText: "771-${ATTEMPT_ID}"
+- tapOn: "Player name"
+- inputText: "Set Team Alpha ${ATTEMPT_ID}"
+# Submit sits at the bottom of the form, under the fold at 1024×629; centring
+# gives Maestro's own scroll-before-tap content to scroll to (R8).
+- scrollUntilVisible:
+    element:
+      id: "Submit new card"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Submit new card"
+# The form only closes after addCustomCard succeeds — gate on that outcome
+# before asking the page to find the row (R2), as util-add-custom-card does.
+- extendedWaitUntil:
+    notVisible:
+      id: "Card name"
+    timeout: 7000
+# Virtuoso renders rows near the scroll position; centring matches the
+# component's own scrollToIndex({align:"center"}) so the row's bounds are
+# stable when read.
+- scrollUntilVisible:
+    element:
+      id: "Edit card 771-${ATTEMPT_ID}(, .*)?"
+    centerElement: true
+    visibilityPercentage: 50
+    waitToSettleTimeoutMs: 1000
+    timeout: 7000
+
+# THE INHERITED TEAM IS ON THE ROW. The sub-line is ONE text node — the row's
+# facts joined with " · " — and this hand-added card's only fact is its team,
+# so the full-match string is the composed name and nothing else. It is the
+# only card on the checklist, so this is a single-row assertion. The collapsed
+# panel bar behind it prints the SHORT name ("STA<token>"), which this
+# full-match cannot land on.
+- extendedWaitUntil:
+    visible:
+      text: "Loc${output.ATTEMPT_TOKEN} STA${output.ATTEMPT_TOKEN}"
+    timeout: 7000
+
+# ── CARD #2 — same shape ─────────────────────────────────────────────────────
+# direction: UP — the add-card button sits ABOVE the list, and the scroll
+# above left the page centred on #771's row (checklist-attention-badge-and-
+# filter.yaml, same reasoning).
+- scrollUntilVisible:
+    element:
+      id: "Open add card form"
+    direction: UP
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 7000
+- tapOn:
+    id: "Open add card form"
+- extendedWaitUntil:
+    visible:
+      id: "Card name"
+    timeout: 7000
+- inputText: "772-${ATTEMPT_ID}"
+- tapOn: "Player name"
+- inputText: "Set Team Bravo ${ATTEMPT_ID}"
+- scrollUntilVisible:
+    element:
+      id: "Submit new card"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Submit new card"
+- extendedWaitUntil:
+    notVisible:
+      id: "Card name"
+    timeout: 7000
+- scrollUntilVisible:
+    element:
+      id: "Edit card 772-${ATTEMPT_ID}(, .*)?"
+    centerElement: true
+    visibilityPercentage: 50
+    waitToSettleTimeoutMs: 1000
+    timeout: 7000
+
+# With two rows carrying the same team, a row sub-line assertion can no longer
+# say WHICH row it matched — so card #2's inheritance is proven in its own
+# drawer, where the Teams chip is the card's and nobody else's (the panel
+# behind the drawer is collapsed, so its chips are not on screen).
+- tapOn:
+    id: "Edit card 772-${ATTEMPT_ID}(, .*)?"
+    waitToSettleTimeoutMs: 2000
+- extendedWaitUntil:
+    visible:
+      id: "Card name"
+    timeout: 7000
+- extendedWaitUntil:
+    visible:
+      id: "Remove team Loc${output.ATTEMPT_TOKEN} STA${output.ATTEMPT_TOKEN}"
+    timeout: 7000
+
+# ============================================================
+# STEP 4 — HAND-SET CARD #2 TO A SECOND TEAM (the override the cascade must
+# leave alone). The drawer's picker writes on the tap (NEO-216): the chip
+# removal is one write, the new team another.
+# ============================================================
+
+- tapOn:
+    id: "Remove team Loc${output.ATTEMPT_TOKEN} STA${output.ATTEMPT_TOKEN}"
+- extendedWaitUntil:
+    visible:
+      text: "Saved Teams"
+    timeout: 7000
+- assertNotVisible:
+    id: "Remove team Loc${output.ATTEMPT_TOKEN} STA${output.ATTEMPT_TOKEN}"
+
+# Teams is the second section of the drawer body, near the top: no scroll
+# needed and the popover opens below it with room (team-picker-create-custom-
+# card.yaml). Default picker labels here — the drawer is the only default-
+# labelled TeamPicker on screen.
+- tapOn:
+    id: "Add team"
+- assertVisible:
+    id: "Search teams"
+- tapOn:
+    id: "Search teams"
+- inputText: "STB${output.ATTEMPT_TOKEN}"
+- assertVisible:
+    id: "New team STB${output.ATTEMPT_TOKEN}"
+- tapOn:
+    id: "New team STB${output.ATTEMPT_TOKEN}"
+- assertVisible: "New team: STB${output.ATTEMPT_TOKEN}"
+- assertVisible:
+    id: "New team name"
+    text: "STB${output.ATTEMPT_TOKEN}"
+- tapOn:
+    id: "New team location \\(optional\\)"
+- inputText: "Loc${output.ATTEMPT_TOKEN}"
+- tapOn: "No league"
+- tapOn:
+    id: "Create team Loc${output.ATTEMPT_TOKEN} STB${output.ATTEMPT_TOKEN}"
+# The chip is the pick landing. Its persistence is proven twice further down:
+# by the confirm's "1 card carries a different team" and by the row sub-line
+# after both cascades. (The drawer toast would read "Saved Teams" again — the
+# same string the removal above just raised — so it is not the evidence here.)
+- extendedWaitUntil:
+    visible:
+      id: "Remove team Loc${output.ATTEMPT_TOKEN} STB${output.ATTEMPT_TOKEN}"
+    timeout: 7000
+
+# Close the popover before reaching for the footer: a pointerdown anywhere
+# outside the picker closes it, and the Card name input is inside the drawer
+# and outside the picker (focusing a field commits nothing).
+- tapOn:
+    id: "Card name"
+- extendedWaitUntil:
+    notVisible:
+      id: "Search teams"
+    timeout: 7000
+# "Done" only closes. It lives in the drawer's pinned footer, outside the
+# scroll body, so it needs no scroll (R8 exception).
+- tapOn:
+    id: "Done editing card"
+- assertNotVisible:
+    id: "Card name"
+
+# ============================================================
+# STEP 5 — CHANGE THE SET'S TEAM to a third team; the confirm counts, card #1
+# follows, card #2 stays.
+#
+# The change is one gesture in two taps: × the stored chip, then "+ Add set
+# team" and pick the new one. Taking the last chip off SAVES NOTHING — the
+# row enters a pending-empty state that offers "Clear team" and "Keep <team>"
+# — and the pick that follows is previewed against the still-STORED old team,
+# so card #1 (carrying exactly that) follows and card #2 (an override) stays.
+# ============================================================
+
+# ── Put the SET back under the panel ────────────────────────────────────────
+# The Sets column collapsed to its card when the set was chosen; re-opening it
+# (NEO-276: the list opens with the selected row centred in its own fold) and
+# tapping that same row runs handleSetSelect, which clears every deeper
+# selection — the checklist unmounts and the panel re-scopes to the set.
+# direction: UP — the columns row is at the top of the page and we are down
+# at the card list. The card is short and sits near the top of the document,
+# inside the accept band, so centring settles at try 0.
+- scrollUntilVisible:
+    element:
+      id: "Sets: stt-${WORKER_INDEX || 0}-${ATTEMPT_ID} — change"
+    direction: UP
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Sets: stt-${WORKER_INDEX || 0}-${ATTEMPT_ID} — change"
+# The column's own collapse chevron renders only while the list is open with a
+# selection — the positive proof the card's tap landed (R2).
+- extendedWaitUntil:
+    visible:
+      id: "Collapse sets"
+    timeout: 7000
+# The row prints the bare set name; a full-match cannot land on the panel's
+# "Attributes for …" heading or its breadcrumb. Window-scrolled into view
+# (the list itself already holds the row in its fold).
+- scrollUntilVisible:
+    element:
+      text: "stt-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    text: "stt-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    waitToSettleTimeoutMs: 2000
+
+- scrollUntilVisible:
+    element:
+      id: "Edit attributes"
+    centerElement: true
+    visibilityPercentage: 10
+    waitToSettleTimeoutMs: 1000
+    timeout: 7000
+# The panel is about the SET again — its heading names the level — and, while
+# collapsed, its summary bar prints the set's team by SHORT name in livery
+# ("· STA<token>"). The short name is its own text node, so this full-match is
+# the bar and nothing else (chips print the composed name and are hidden
+# while collapsed; the card rows are unmounted).
+- extendedWaitUntil:
+    visible:
+      text: "Attributes for stt-${WORKER_INDEX || 0}-${ATTEMPT_ID} \\(Set\\)"
+    timeout: 7000
+- extendedWaitUntil:
+    visible:
+      text: "STA${output.ATTEMPT_TOKEN}"
+    timeout: 7000
+- tapOn:
+    id: "Edit attributes"
+- assertVisible:
+    id: "Hide attributes"
+
+# ── × the stored chip: pending-empty, nothing saved ──────────────────────────
+# The chip's remove is the set-level picker's own (the drawer is closed, so
+# "Remove team <name>" is unambiguous). The two buttons under the picker are
+# the state's proof: "Keep <stored full name>" names the team still on the
+# row, so the × did not write. Neither is tapped — the pick below is the
+# third answer, "replace".
+- scrollUntilVisible:
+    element:
+      id: "Remove team Loc${output.ATTEMPT_TOKEN} STA${output.ATTEMPT_TOKEN}"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Remove team Loc${output.ATTEMPT_TOKEN} STA${output.ATTEMPT_TOKEN}"
+- extendedWaitUntil:
+    visible: "Keep Loc${output.ATTEMPT_TOKEN} STA${output.ATTEMPT_TOKEN}"
+    timeout: 7000
+- assertVisible: "Clear team"
+
+# ── "+ Add set team" → create STC in the New Team dialog ─────────────────────
+# Removing a chip closes the popover (the × unmounts the focused element and
+# the picker's blur handler closes it), so the trigger is re-opened; it is
+# `setPopoverOpen(true)`, never a toggle.
+- scrollUntilVisible:
+    element:
+      id: "Add set team"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Add set team"
+- assertVisible:
+    id: "Find a team for the set"
+- tapOn:
+    id: "Find a team for the set"
+- inputText: "STC${output.ATTEMPT_TOKEN}"
+- assertVisible:
+    id: "New team STC${output.ATTEMPT_TOKEN}"
+- tapOn:
+    id: "New team STC${output.ATTEMPT_TOKEN}"
+- assertVisible: "New team: STC${output.ATTEMPT_TOKEN}"
+- assertVisible:
+    id: "New team name"
+    text: "STC${output.ATTEMPT_TOKEN}"
+- tapOn:
+    id: "New team location \\(optional\\)"
+- inputText: "Loc${output.ATTEMPT_TOKEN}"
+- tapOn: "No league"
+- tapOn:
+    id: "Create team Loc${output.ATTEMPT_TOKEN} STC${output.ATTEMPT_TOKEN}"
+
+# THE CONFIRM (teamCascadeConfirmCopy — it speaks in CARDS only; the two rows
+# beneath the set follow too but are not in the sentence). The value under
+# preview is [STC] against the stored [STA]: card #1 carries exactly the
+# stored value and follows; card #2 is an override and stays, said with its
+# reason. Both sentences matched EXACTLY; "?" and "." escaped because a
+# matcher is a regex. ConfirmDialog is `fixed inset-0 z-50`, centred — no
+# scroll can reach or is needed.
+- extendedWaitUntil:
+    visible:
+      text: "Apply Loc${output.ATTEMPT_TOKEN} STC${output.ATTEMPT_TOKEN} to this set\\?"
+    timeout: 7000
+- assertVisible: "1 card under this set will get Loc${output.ATTEMPT_TOKEN} STC${output.ATTEMPT_TOKEN}\\. 1 card carries a different team — these will not change\\."
+- tapOn: "Yes, apply"
+
+# "Saved Team · applying to 1 card" is raised on the save and replaced by
+# "Team applied to cards" the moment the cascade's last chunk clears the
+# row's stamp — sub-second for one card — so the terminal toast is the one a
+# visible-text wait can hold (see Step 2). It is also the fact that matters:
+# the cascade has LANDED and the picker is unlocked ("Applying to cards…" is
+# gone with it).
+- extendedWaitUntil:
+    visible:
+      text: "Team applied to cards"
+    timeout: 7000
+- assertVisible:
+    id: "Remove team Loc${output.ATTEMPT_TOKEN} STC${output.ATTEMPT_TOKEN}"
+- assertNotVisible:
+    id: "Remove team Loc${output.ATTEMPT_TOKEN} STA${output.ATTEMPT_TOKEN}"
+
+# ── Back down to Base: card #1 followed, card #2 stayed ─────────────────────
+# The Variant Types column is ABOVE the panel we just wrote to — UP (features-
+# propagation.yaml STEP D, same anchor, same direction). "Insert" is the row
+# in that column; nothing else on screen carries that exact text.
+- scrollUntilVisible:
+    element:
+      text: "Insert"
+    direction: UP
+    centerElement: true
+    timeout: 7000
+- tapOn: "Insert"
+- extendedWaitUntil:
+    visible: "Inserts"
+    timeout: 7000
+- scrollUntilVisible:
+    element:
+      text: "Base"
+    centerElement: true
+    timeout: 7000
+- tapOn: "Base"
+# Hand-made subtree: no marketplace fetch, "Open add card form" is the
+# checklist's idle signal (util-add-custom-card.yaml STEP 4).
+- scrollUntilVisible:
+    element:
+      id: "Open add card form"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 7000
+- scrollUntilVisible:
+    element:
+      id: "Edit card 771-${ATTEMPT_ID}(, .*)?"
+    centerElement: true
+    visibilityPercentage: 50
+    waitToSettleTimeoutMs: 1000
+    timeout: 7000
+# Card #1: the third team ALONE — a full-match, so a row that kept the first
+# team, or carries both, fails here rather than passing on a substring. A
+# visible-text WAIT, never a sleep: the row is a live subscription.
+- extendedWaitUntil:
+    visible:
+      text: "Loc${output.ATTEMPT_TOKEN} STC${output.ATTEMPT_TOKEN}"
+    timeout: 7000
+# Card #2: its own team, still. Both rows are on screen — two cards, one
+# viewport.
+- assertVisible: "Loc${output.ATTEMPT_TOKEN} STB${output.ATTEMPT_TOKEN}"
+
+# ============================================================
+# CLEANUP — delete this attempt's two cards (R7: leave the worker's state as
+# found; the set, its rows and the three teams are per-attempt and cannot be
+# deleted through the product — SET-REGISTRY.md records them).
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      id: "Delete card 771-${ATTEMPT_ID}(, .*)?"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 7000
+- tapOn:
+    id: "Delete card 771-${ATTEMPT_ID}(, .*)?"
+- assertVisible: "Confirm?"
+- tapOn:
+    id: "Confirm delete card 771-${ATTEMPT_ID}(, .*)?"
+- assertNotVisible: "Set Team Alpha ${ATTEMPT_ID}"
+
+- scrollUntilVisible:
+    element:
+      id: "Delete card 772-${ATTEMPT_ID}(, .*)?"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 7000
+- tapOn:
+    id: "Delete card 772-${ATTEMPT_ID}(, .*)?"
+- assertVisible: "Confirm?"
+- tapOn:
+    id: "Confirm delete card 772-${ATTEMPT_ID}(, .*)?"
+- assertNotVisible: "Set Team Bravo ${ATTEMPT_ID}"
+# A positive after the negatives (a dead page passes every notVisible): the
+# checklist is back to its empty state.
+- extendedWaitUntil:
+    visible: "No cards in this checklist yet."
+    timeout: 7000
