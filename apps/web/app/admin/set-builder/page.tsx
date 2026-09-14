@@ -2,6 +2,7 @@ import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import SetSelector from "@/components/modules/SetSelector";
 import MissingCredentialsBanner from "@/components/SetSelector/MissingCredentialsBanner";
+import ReauthNotice from "@/components/SetSelector/ReauthNotice";
 
 /**
  * /admin/set-builder — was /set-selector until NEO-155 gave the admin tools a
@@ -51,6 +52,13 @@ export default function AdminSetBuilderPage() {
   // columns row's overflow-x-auto handles extra columns via horizontal scroll.
   return (
     <div className="space-y-4">
+      {/* NEO-278: a lapsed marketplace session used to surface ONLY on
+          /profile/credentials while syncs here kept running on the stale
+          token. This is the same server-owned `needsReauth` flag, shown where
+          the syncs are triggered. A warning, not a gate — the cascade below
+          keeps working. Renders nothing unless a platform is flagged. */}
+      <ReauthNotice siteCredentials={profile?.siteCredentials} />
+
       {/* The subtitle is load-bearing beyond decoration: ~47 Maestro flows wait
           on "Build set parameters using marketplace APIs" as the signal that
           THIS panel (not the nav, not the /admin hub card) has mounted. Do not
