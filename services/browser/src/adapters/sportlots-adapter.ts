@@ -4,6 +4,7 @@ import {
   LoginOptions,
   REAUTH_REQUIRED_ERROR,
   isCanaryKey,
+  summarizeFetchError,
 } from "./base-adapter";
 import { Credentials, SecretsManagerService } from "../services/secrets-manager";
 import { buildLoginDiagnostic } from "../services/login-diagnostic";
@@ -314,11 +315,8 @@ export class SportlotsAdapter extends BaseAdapter {
       return true;
     } catch (error) {
       console.log(
-        `[SportLots Adapter] cached-cookie validation threw: ${
-          error instanceof Error
-            ? `${error.name}: ${error.message}`
-            : String(error)
-        }`,
+        // summarizeFetchError: the Cookie header is the session itself.
+        `[SportLots Adapter] cached-cookie validation threw: ${summarizeFetchError(error)}`,
       );
       return false;
     }

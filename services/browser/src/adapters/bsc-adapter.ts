@@ -6,6 +6,7 @@ import {
   LoginOptions,
   REAUTH_REQUIRED_ERROR,
   isCanaryKey,
+  summarizeFetchError,
 } from "./base-adapter";
 import { Credentials, SecretsManagerService } from "../services/secrets-manager";
 import {
@@ -331,7 +332,7 @@ export class BSCAdapter extends BaseAdapter {
     // `prompt=select_account` is what makes B2C serve the sign-in form even
     // when it holds an SSO session for this client. The silent path
     // (silentReauthorize) deliberately omits it.
-    const { codeVerifier, authorizeUrl } = this.buildAuthorizeRequest({
+    const { codeVerifier, state, authorizeUrl } = this.buildAuthorizeRequest({
       prompt: "select_account",
     });
 
@@ -444,7 +445,7 @@ export class BSCAdapter extends BaseAdapter {
     });
     jar.ingest(confirmedResponse);
 
-    const code = this.extractAuthCode(confirmedResponse.headers.get("location"));
+    const code = this.extractAuthCode(confirmedResponse.headers.get("location"), state);
     if (!code) {
       console.warn(
         `[BSC Adapter] B2C /confirmed did not return an auth code (status=${confirmedResponse.status}).`,
@@ -486,6 +487,7 @@ export class BSCAdapter extends BaseAdapter {
    */
   private buildAuthorizeRequest(options: { prompt?: string }): {
     codeVerifier: string;
+    state: string;
     authorizeUrl: URL;
   } {
     const codeVerifier = base64Url(crypto.randomBytes(32));
@@ -510,7 +512,7 @@ export class BSCAdapter extends BaseAdapter {
 
     const authorizeUrl = new URL(BSC_AUTHORIZE_URL);
     authorizeUrl.search = params.toString();
-    return { codeVerifier, authorizeUrl };
+    return { codeVerifier, state, authorizeUrl };
   }
 
   /**
@@ -600,7 +602,7 @@ export class BSCAdapter extends BaseAdapter {
     ssoCookies: Record<string, string>,
   ): Promise<{ tokens: BscTokenSet } | { error: string }> {
     const jar = new B2CCookieJar();
-    const { codeVerifier, authorizeUrl } = this.buildAuthorizeRequest({});
+    const { codeVerifier, state, authorizeUrl } = this.buildAuthorizeRequest({});
 
     console.log(
       `[BSC Adapter] B2C silent re-authorize: GET /authorize ` +
@@ -617,7 +619,7 @@ export class BSCAdapter extends BaseAdapter {
       jar.ingest(authorizeResponse);
 
       const location = authorizeResponse.headers.get("location");
-      const code = this.extractAuthCode(location);
+      const code = this.extractAuthCode(location, state);
       if (!code) {
         // Three shapes, all "B2C did not honour the SSO session": a 200 with
         // the sign-in form (SETTINGS blob present), a 302 carrying `error=`,
@@ -651,9 +653,11 @@ export class BSCAdapter extends BaseAdapter {
       );
       return { tokens };
     } catch (error) {
+      // summarizeFetchError: the Cookie header on this request IS the
+      // stored SSO session; never let a header-validation error echo it.
       console.warn(
         `[BSC Adapter] B2C silent re-authorize threw:`,
-        error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+        summarizeFetchError(error),
       );
       return { error: `Authentication failed` };
     }
@@ -759,7 +763,13 @@ export class BSCAdapter extends BaseAdapter {
       // A 5xx / anything else is BSC being unwell. That must NOT be reported
       // as reauth_required, or a BSC outage would present to every user as
       // "your session expired, sign in again" and never page anyone.
-      const reauthRequired = response.status >= 400 && response.status < 500;
+      //
+      // NEO-278: 429 is carved out of the 4xx bucket even though it is
+      // numerically a 4xx. It says nothing about the grant's validity — it is
+      // B2C throttling us — so it belongs with "BSC being unwell": pageable,
+      // never reported as "sign in again".
+      const reauthRequired =
+        response.status >= 400 && response.status < 500 && response.status !== 429;
       console.warn(
         `[BSC Adapter] B2C refresh grant failed (status=${response.status}, ` +
           `error=${errorCode}, reauth_required=${reauthRequired}).`,
@@ -858,18 +868,27 @@ export class BSCAdapter extends BaseAdapter {
   }
 
   /**
-   * Extract the OAuth authorization `code` from the /confirmed redirect
-   * Location, which carries it in the URL fragment (response_mode=fragment)
-   * or query. Returns undefined if absent or if an `error` is present.
+   * Extract the OAuth authorization `code` from a redirect Location (the
+   * /confirmed 302 on the password path, the /authorize 302 on the silent
+   * path), which carries it in the URL fragment (response_mode=fragment) or
+   * query. Returns undefined if absent, if an `error` is present, if the
+   * Location does not target our registered redirect URI, or if the echoed
+   * `state` is not the one we sent on /authorize. B2C enforces the redirect
+   * URI server-side and echoes `state` on both legs (probed live, NEO-278);
+   * checking them here is defence in depth, not a functional dependency.
    */
-  private extractAuthCode(location: string | null): string | undefined {
-    if (!location) return undefined;
+  private extractAuthCode(
+    location: string | null,
+    expectedState: string,
+  ): string | undefined {
+    if (!location || !location.startsWith(BSC_B2C.redirectUri)) return undefined;
     const hashIndex = location.indexOf("#");
     const queryIndex = location.indexOf("?");
     const splitIndex = hashIndex >= 0 ? hashIndex : queryIndex;
     if (splitIndex < 0) return undefined;
     const params = new URLSearchParams(location.slice(splitIndex + 1));
     if (params.get("error")) return undefined;
+    if (params.get("state") !== expectedState) return undefined;
     return params.get("code") ?? undefined;
   }
 
@@ -960,7 +979,24 @@ export class BSCAdapter extends BaseAdapter {
       credentials.expiresAt > Date.now()
     ) {
       console.log(`[BSC Adapter] Validating cached token for ${this.siteName}...`);
-      const profile = await this.fetchSellerProfile(credentials.token);
+      // NEO-278: a network throw here (DNS, timeout, ECONNRESET) must be
+      // treated the same as a non-OK response — "couldn't validate this
+      // token" — not allowed to propagate out of login() and skip the
+      // refresh/silent/password fallbacks below. Before this guard, a
+      // transient blip on THIS ONE request turned into a hard failure even
+      // though a live refresh token or SSO cookie could satisfy the login a
+      // moment later.
+      let profile: { storeName?: string; sellerId?: string } | null;
+      try {
+        profile = await this.fetchSellerProfile(credentials.token);
+      } catch (error) {
+        // summarizeFetchError: the Authorization header is the cached token.
+        console.warn(
+          `[BSC Adapter] Cached token validation request threw; treating as invalid:`,
+          summarizeFetchError(error),
+        );
+        profile = null;
+      }
       if (profile) {
         // Log a 4-char prefix only — sellerId is a per-user BSC identifier
         // and full values in Cloud Logging would let log-readers correlate
@@ -1227,7 +1263,7 @@ export class BSCAdapter extends BaseAdapter {
       // return a generic message to the caller.
       console.error(
         `[BSC Adapter] Error during login process:`,
-        error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+        summarizeFetchError(error),
       );
       return {
         success: false,

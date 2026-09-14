@@ -66,6 +66,36 @@ function stubFetch(handler) {
   return () => { globalThis.fetch = original; };
 }
 
+
+/**
+ * NEO-278: the adapter now refuses a redirect whose echoed `state` is not the
+ * one it sent on /authorize. Fixtures write the placeholder `state=st`; the
+ * routers remember the real state from the last /authorize URL and rewrite
+ * the placeholder on the way out, so every fixture is a faithful B2C echo
+ * without each test having to plumb the value through.
+ */
+const STATE_PLACEHOLDER = "state=st";
+function rememberState(box, url) {
+  try {
+    const st = new URL(url).searchParams.get("state");
+    if (st) box.state = st;
+  } catch {
+    /* not a URL */
+  }
+}
+function echoState(res, box) {
+  if (!res || !res.headers || typeof res.headers.get !== "function") return res;
+  const get = res.headers.get.bind(res.headers);
+  res.headers.get = (name) => {
+    const v = get(name);
+    if (typeof v === "string" && String(name).toLowerCase() === "location" && box.state) {
+      return v.replace(STATE_PLACEHOLDER, `state=${box.state}`);
+    }
+    return v;
+  };
+  return res;
+}
+
 /** A minimal fetch Response-like with a working getSetCookie(). */
 function makeResponse({ status = 200, ok, body = "", json, location, setCookies = [] } = {}) {
   const headers = {
@@ -98,9 +128,14 @@ const SETTINGS_HTML = (overrides = {}) => {
  */
 function makeB2CRouter(overrides = {}) {
   const calls = [];
+  const box = {};
   const handler = async (url, opts = {}) => {
     const u = String(url);
     calls.push({ url: u, opts });
+    if (u.includes("/oauth2/v2.0/authorize")) rememberState(box, u);
+    return echoState(await route(u, opts), box);
+  };
+  const route = async (u, opts) => {
 
     if (u.includes("/oauth2/v2.0/authorize")) {
       if (overrides.authorize) return overrides.authorize(u, opts);
@@ -339,6 +374,48 @@ describe("BSCAdapter.login — cache-invalid → fresh B2C login", () => {
       "write-back must NOT persist the password for a user key",
     );
   });
+
+  it("NEO-278: a network throw during cached-token validation falls through to the refresh grant instead of failing login()", async () => {
+    // NB: deliberately NOT statefulSecret — its credentials() always forces
+    // expiresAt into the past to drive refresh-path tests, which would skip
+    // the cache-hit branch entirely and defeat the point of this test.
+    const writes = [];
+    const BSCAdapter = loadBSCAdapter({
+      credentials: () => ({
+        username: "seller@example.com",
+        token: "stale-access-token",
+        expiresAt: Date.now() + 60 * 60 * 1000, // still "live" by our own bookkeeping
+        refreshToken: "refresh-token-0",
+        refreshExpiresAt: Date.now() + 24 * 60 * 60 * 1000,
+      }),
+      updateCredentials: (key, creds) => writes.push(creds),
+    });
+    let profileCalls = 0;
+    const restore = stubFetch(async (url, opts) => {
+      const u = String(url);
+      if (u.includes("marketplace/user/profile")) {
+        profileCalls++;
+        if (profileCalls === 1) throw new TypeError("fetch failed");
+        return makeResponse({ status: 200, json: { sellerProfile: { sellerStoreName: "Acme Cards", sellerId: "seller-1" } } });
+      }
+      if (u.includes("/oauth2/v2.0/token")) {
+        const body = new URLSearchParams(String(opts.body ?? ""));
+        assert.equal(body.get("grant_type"), "refresh_token", "must reach the refresh grant, not a password sign-in");
+        return makeResponse({
+          status: 200,
+          json: { access_token: "refreshed-token", expires_in: 3600, refresh_token: "refresh-token-1", refresh_token_expires_in: 86400 },
+        });
+      }
+      throw new Error(`unexpected fetch: ${u}`);
+    });
+
+    const result = await new BSCAdapter(undefined).login("buysportscards-credentials-seller1");
+    restore();
+
+    assert.equal(result.success, true, "the throw must not propagate out of login()");
+    assert.match(result.message, /Refreshed token/);
+    assert.equal(writes[0].token, "refreshed-token");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -565,6 +642,46 @@ describe("BSCAdapter.login — NEO-141 refresh grant", () => {
     assert.equal(result.success, false);
     assert.notEqual(result.reauthRequired, true, "an unreachable token endpoint must stay a 502");
     assert.equal(result.error, "Authentication failed");
+  });
+
+  it("NEO-278: a 429 from the refresh grant is NOT reported as reauthRequired (rate limiting, not a refusal)", async () => {
+    const BSCAdapter = loadBSCAdapter({
+      credentials: () => ({ ...LIVE_REFRESH, expiresAt: Date.now() - 1 }),
+      updateCredentials: null,
+    });
+    const restore = stubFetch(
+      makeRefreshRouter({
+        tokenResponse: () => makeResponse({ status: 429, ok: false, json: { error: "too_many_requests" } }),
+      }),
+    );
+
+    const result = await new BSCAdapter(undefined).login("buysportscards-credentials-seller1");
+    restore();
+
+    assert.equal(result.success, false);
+    assert.notEqual(result.reauthRequired, true, "a 429 must never read as 'sign in again'");
+    assert.equal(result.error, "Authentication failed");
+  });
+
+  it("treats a refreshExpiresAt of exactly `now` as expired, not live", async () => {
+    const now = Date.now();
+    const BSCAdapter = loadBSCAdapter({
+      credentials: () => ({ ...LIVE_REFRESH, expiresAt: Date.now() - 1, refreshExpiresAt: now }),
+      updateCredentials: null,
+    });
+    const restore = stubFetch(
+      makeRefreshRouter({
+        tokenResponse: () => assert.fail("refreshExpiresAt === now must not be treated as live"),
+      }),
+    );
+
+    const result = await new BSCAdapter(undefined).login("buysportscards-credentials-seller1");
+    restore();
+
+    // No password, no live refresh token, no SSO cookie → reauth_required,
+    // and — the point of this test — the refresh grant must never be tried.
+    assert.equal(result.success, false);
+    assert.equal(result.reauthRequired, true);
   });
 
   it("falls back to a password sign-in when the grant is refused BUT a password is still stored", async () => {
@@ -1474,9 +1591,14 @@ const REFRESH_DEAD_SSO_LIVE = {
  */
 function makeSilentRouter({ authorize, token, refreshResponse } = {}) {
   const calls = [];
+  const box = {};
   const handler = async (url, opts = {}) => {
     const u = String(url);
     calls.push({ url: u, opts });
+    if (u.includes("/oauth2/v2.0/authorize")) rememberState(box, u);
+    return echoState(await route(u, opts), box);
+  };
+  const route = async (u, opts) => {
     if (u.includes("/oauth2/v2.0/authorize")) {
       if (authorize) return authorize(u, opts);
       return makeResponse({
@@ -2057,5 +2179,240 @@ describe("BSCAdapter.login — NEO-278 silent SSO re-authorize", () => {
     assert.ok(!logged.includes("silent-access-token") && !logged.includes("silent-refresh-token"), "nor the tokens");
     assert.ok(!logged.includes("silent-code-xyz"), "nor the auth code");
     assert.ok(logged.includes(SSO_COOKIE_NAME), "cookie NAMES are the permitted diagnostic");
+  });
+
+  // -------------------------------------------------------------------------
+  // NEO-278 adversarial pass additions
+  // -------------------------------------------------------------------------
+
+  it("a 302 Location carrying BOTH error= and code= is treated as a failure, not a success", async () => {
+    const BSCAdapter = loadBSCAdapter({
+      credentials: REFRESH_DEAD_SSO_LIVE,
+      updateCredentials: () => assert.fail("must not write on a rejected silent attempt"),
+    });
+    const restore = stubFetch(
+      makeSilentRouter({
+        authorize: () =>
+          makeResponse({
+            status: 302,
+            location:
+              "https://www.buysportscards.com/#error=interaction_required&code=should-be-ignored&state=st",
+          }),
+      }),
+    );
+
+    const result = await new BSCAdapter(undefined).login("buysportscards-credentials-seller1");
+    restore();
+
+    assert.equal(result.success, false);
+    assert.equal(result.reauthRequired, true, "error= wins over a co-present code=");
+  });
+
+  it("refuses a 302 Location on a different origin than the registered redirect URI", async () => {
+    // Defence in depth (NEO-278 security audit). B2C enforces the registered
+    // redirect_uri server-side, so this cannot happen from outside — but the
+    // adapter no longer trusts whatever Location it is handed. A code on a
+    // foreign origin is treated as "SSO session not honoured" and the login
+    // falls through to reauth_required, exchanging nothing.
+    const secret = statefulSecret(REFRESH_DEAD_SSO_LIVE);
+    const BSCAdapter = loadBSCAdapter(secret);
+    const handler = makeSilentRouter({
+      authorize: () =>
+        makeResponse({
+          status: 302,
+          location: "https://evil.example.com/callback#code=silent-code-xyz&state=st",
+          setCookies: [
+            `${SSO_COOKIE_NAME}=${SSO_COOKIE_REISSUED}; domain=identity.buysportscards.com; expires=${SSO_EXPIRES_HTTP}; path=/; secure; httponly`,
+          ],
+        }),
+    });
+    const restore = stubFetch(handler);
+    const calls = handler.calls;
+
+    const result = await new BSCAdapter(undefined).login("buysportscards-credentials-seller1");
+    restore();
+
+    assert.equal(result.success, false);
+    assert.equal(result.reauthRequired, true);
+    assert.ok(
+      !calls.some((c) => c.url.includes("/oauth2/v2.0/token")),
+      "a foreign-origin code must never be exchanged",
+    );
+    assert.equal(secret.state.writes.length, 0, "nothing persisted");
+  });
+
+  it("refuses a 302 whose echoed state is not the one sent on /authorize", async () => {
+    // Same posture for `state`: the router normally echoes the real value
+    // (see echoState); here the fixture pins a stale one.
+    const secret = statefulSecret(REFRESH_DEAD_SSO_LIVE);
+    const BSCAdapter = loadBSCAdapter(secret);
+    const handler = makeSilentRouter({
+      authorize: () =>
+        makeResponse({
+          status: 302,
+          location: "https://www.buysportscards.com/#code=silent-code-xyz&state=someone-elses",
+        }),
+    });
+    const restore = stubFetch(handler);
+    const calls = handler.calls;
+
+    const result = await new BSCAdapter(undefined).login("buysportscards-credentials-seller1");
+    restore();
+
+    assert.equal(result.success, false);
+    assert.equal(result.reauthRequired, true);
+    assert.ok(!calls.some((c) => c.url.includes("/oauth2/v2.0/token")), "no exchange on a state mismatch");
+  });
+
+  it("a 302 with NO Set-Cookie at all carries the stored SSO cookie forward unchanged", async () => {
+    const secret = statefulSecret(REFRESH_DEAD_SSO_LIVE);
+    const BSCAdapter = loadBSCAdapter(secret);
+    const restore = stubFetch(
+      makeSilentRouter({
+        authorize: () =>
+          makeResponse({
+            status: 302,
+            location: "https://www.buysportscards.com/#code=silent-code-xyz&state=st",
+            // No setCookies at all — B2C did not re-issue the SSO cookie this time.
+          }),
+      }),
+    );
+
+    const result = await new BSCAdapter(undefined).login("buysportscards-credentials-seller1");
+    restore();
+
+    assert.equal(result.success, true);
+    assert.equal(secret.state.writes.length, 1);
+    assert.deepEqual(
+      secret.state.writes[0].ssoCookies,
+      { [SSO_COOKIE_NAME]: SSO_COOKIE_VALUE },
+      "the previously-stored cookie survives when this exchange re-issued none",
+    );
+    assert.equal(secret.state.writes[0].ssoExpiresAt, REFRESH_DEAD_SSO_LIVE.ssoExpiresAt);
+  });
+
+  it("a Set-Cookie that explicitly CLEARS the SSO cookie on the silent 302 still carries the stale cookie forward (no distinction from 'not reissued')", async () => {
+    // KNOWN GAP, not fixed here: attachSsoCookies/persistTokens cannot tell
+    // "B2C didn't mention the cookie this time" apart from "B2C explicitly
+    // revoked it" — both leave tokens.ssoCookies undefined, and persistTokens
+    // falls back to `previous.ssoCookies`. If B2C ever answers a successful
+    // silent re-authorize by clearing the SSO cookie (e.g. signalling the
+    // user logged out elsewhere while still handing back a code from a
+    // separate valid session), the adapter would keep re-presenting the dead
+    // cookie value indefinitely instead of forgetting it. Documented via this
+    // test rather than changed, since it requires B2C to behave in a way that
+    // has not been observed live; a real fix would need the jar to report
+    // "cleared" as distinct from "silent".
+    const secret = statefulSecret(REFRESH_DEAD_SSO_LIVE);
+    const BSCAdapter = loadBSCAdapter(secret);
+    const restore = stubFetch(
+      makeSilentRouter({
+        authorize: () =>
+          makeResponse({
+            status: 302,
+            location: "https://www.buysportscards.com/#code=silent-code-xyz&state=st",
+            setCookies: [
+              `${SSO_COOKIE_NAME}=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/`,
+            ],
+          }),
+      }),
+    );
+
+    const result = await new BSCAdapter(undefined).login("buysportscards-credentials-seller1");
+    restore();
+
+    assert.equal(result.success, true);
+    assert.deepEqual(
+      secret.state.writes[0].ssoCookies,
+      { [SSO_COOKIE_NAME]: SSO_COOKIE_VALUE },
+      "current behaviour: the stale, explicitly-cleared cookie is carried forward",
+    );
+  });
+
+  it("an SSO cookie with Max-Age=0 is treated as cleared and not captured", async () => {
+    const secret = statefulSecret({
+      username: "seller@example.com",
+      password: "secret",
+    });
+    const BSCAdapter = loadBSCAdapter(secret);
+    const restore = stubFetch(
+      makeB2CRouter({
+        confirmed: () =>
+          makeResponse({
+            status: 302,
+            location: "https://www.buysportscards.com/#code=auth-code-xyz&state=st",
+            setCookies: [`${SSO_COOKIE_NAME}=${SSO_COOKIE_VALUE}; max-age=0; path=/`],
+          }),
+      }),
+    );
+
+    const result = await new BSCAdapter(undefined).login("buysportscards-credentials-seller1");
+    restore();
+
+    assert.equal(result.success, true);
+    assert.equal(secret.state.writes[0].ssoCookies, undefined, "Max-Age=0 is a clear, not a live cookie");
+  });
+
+  it("two x-ms-cpim-sso:* cookies with different expiries persist BOTH, with expiresAt as the EARLIER one", async () => {
+    const secret = statefulSecret({ username: "seller@example.com", password: "secret" });
+    const BSCAdapter = loadBSCAdapter(secret);
+    const laterExpiry = "Sun, 15 Nov 2026 12:00:00 GMT";
+    const earlierExpiry = "Fri, 16 Oct 2026 12:00:00 GMT";
+    const secondCookieName = "x-ms-cpim-sso:buysportscards.onmicrosoft.com_1";
+    const restore = stubFetch(
+      makeB2CRouter({
+        confirmed: () =>
+          makeResponse({
+            status: 302,
+            location: "https://www.buysportscards.com/#code=auth-code-xyz&state=st",
+            setCookies: [
+              `${SSO_COOKIE_NAME}=${SSO_COOKIE_VALUE}; expires=${laterExpiry}; path=/`,
+              `${secondCookieName}=${SSO_COOKIE_REISSUED}; expires=${earlierExpiry}; path=/`,
+            ],
+          }),
+      }),
+    );
+
+    const result = await new BSCAdapter(undefined).login("buysportscards-credentials-seller1");
+    restore();
+
+    assert.equal(result.success, true);
+    assert.deepEqual(
+      secret.state.writes[0].ssoCookies,
+      { [SSO_COOKIE_NAME]: SSO_COOKIE_VALUE, [secondCookieName]: SSO_COOKIE_REISSUED },
+      "both SSO-prefixed cookies are kept",
+    );
+    assert.equal(
+      secret.state.writes[0].ssoExpiresAt,
+      Date.parse(earlierExpiry),
+      "the reported expiresAt is the EARLIER of the two, so the pair is renewed before either dies",
+    );
+  });
+
+  it("a silent exchange returning 200 with NO refresh_token still persists the access token and the SSO cookie", async () => {
+    const secret = statefulSecret(REFRESH_DEAD_SSO_LIVE);
+    const BSCAdapter = loadBSCAdapter(secret);
+    const restore = stubFetch(
+      makeSilentRouter({
+        token: () =>
+          makeResponse({
+            status: 200,
+            json: { access_token: "silent-access-only", expires_in: 3600 },
+          }),
+      }),
+    );
+
+    const result = await new BSCAdapter(undefined).login("buysportscards-credentials-seller1");
+    restore();
+
+    assert.equal(result.success, true);
+    assert.equal(secret.state.writes.length, 1);
+    assert.equal(secret.state.writes[0].token, "silent-access-only");
+    assert.equal(secret.state.writes[0].refreshToken, undefined, "no refresh token to store");
+    assert.deepEqual(
+      secret.state.writes[0].ssoCookies,
+      { [SSO_COOKIE_NAME]: SSO_COOKIE_REISSUED },
+      "the SSO cookie is still captured even though no refresh token came back",
+    );
   });
 });

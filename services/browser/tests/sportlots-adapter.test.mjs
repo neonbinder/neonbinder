@@ -608,6 +608,91 @@ describe("SportlotsAdapter.login token cache", () => {
     }
   });
 
+  it("NEO-278: an expiresAt EXACTLY 7 days out is renewed (the boundary is inclusive)", async () => {
+    const updates = [];
+    const SportlotsAdapter = loadSportlotsAdapter({
+      credentials: {
+        username: "user@example.com",
+        token: "sl_session=boundary",
+        expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+      },
+      updateCredentials: (key, creds) => updates.push({ key, creds }),
+    });
+    const stub = cacheAwareFetch();
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, true);
+      assert.equal(updates.length, 1, "stored <= now + RENEW_WITHIN_MS is due at exact equality");
+    } finally {
+      restore();
+    }
+  });
+
+  it("NEO-278: a non-number expiresAt in the secret does not throw, and login still succeeds off the validated cookie (KNOWN GAP: it never self-heals)", async () => {
+    // Not reachable via this adapter's own writes today (renewExpiryIfDue and
+    // the fresh-login write-back both always write a number) — this is
+    // defensive coverage for a hand-edited or otherwise corrupted secret.
+    //
+    // `stored <= now + RENEW_WITHIN_MS` coerces a non-numeric string via
+    // ToNumber; the result is NaN, and every NaN comparison is false. So
+    // `due` is false, no renewal write happens, and the corrupt value is
+    // reported back and left in the secret indefinitely — unlike a missing
+    // or past expiresAt, which DO self-heal on the next hit. Documented
+    // rather than fixed: it requires a secret to already be corrupt by some
+    // other means, which is outside this adapter's own write paths.
+    const updates = [];
+    const SportlotsAdapter = loadSportlotsAdapter({
+      credentials: {
+        username: "user@example.com",
+        token: "sl_session=corrupt-expiry",
+        expiresAt: "not-a-number",
+      },
+      updateCredentials: (key, creds) => updates.push({ key, creds }),
+    });
+    const stub = cacheAwareFetch();
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, true, "a corrupt expiresAt must not fail a login SL accepted");
+      assert.equal(updates.length, 0, "current behaviour: NaN comparison means 'due' is false — no self-heal");
+      assert.equal(result.expiresAt, "not-a-number", "the corrupt value is reported back unchanged");
+    } finally {
+      restore();
+    }
+  });
+
+  it("NEO-278: cache validation body containing 'login.tpl' inside an unrelated link is still treated as invalid (existing heuristic; renewal must NOT happen)", async () => {
+    const updates = [];
+    const SportlotsAdapter = loadSportlotsAdapter({
+      credentials: {
+        username: "user@example.com",
+        token: "sl_session=false-positive",
+        expiresAt: Date.now() + 60 * 24 * 60 * 60 * 1000, // far from due
+      },
+      updateCredentials: (key, creds) => updates.push({ key, creds }),
+    });
+    // A real dashboard page that happens to link to the login/logout page —
+    // the substring heuristic cannot tell this apart from an actual bounce
+    // to the login form.
+    const stub = cacheAwareFetch({
+      onValidate: () =>
+        response({
+          status: 200,
+          body: `<html><body><div>My Inventory</div><a href="/cust/custbin/login.tpl?logout=1">Sign out</a></body></html>`,
+        }),
+    });
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.notEqual(result.success, true, "the substring match fires even inside an unrelated link");
+      assert.equal(updates.length, 0, "no renewal write on a validation treated as invalid");
+      assert.equal(stub.validateCalls(), 1);
+    } finally {
+      restore();
+    }
+  });
+
   it("NEO-278: a failed renewal write does NOT fail a login SL just accepted", async () => {
     // Best-effort: nothing was invalidated by validating, so a Secret Manager
     // blip must not turn a working session into a 502. The stored (lapsed)

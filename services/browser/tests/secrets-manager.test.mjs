@@ -766,6 +766,25 @@ describe("SecretsManagerService.getCredentials — NEO-141 payload shape", () =>
     assert.equal(creds.refreshToken, "placeholder-refresh", "and the refresh fields are untouched");
   });
 
+  it("NEO-278: drops an ssoCookies entry carrying a control character", async () => {
+    // RFC 6265 forbids them, and fetch() would reject the Cookie header with
+    // a TypeError whose message quotes the entire header — the session.
+    // Reject at the boundary so such a value never reaches a request.
+    activeClient = makeReadClient({
+      payload: {
+        username: "seller@example.com",
+        ssoCookies: {
+          "x-ms-cpim-sso:ok": "fine",
+          "x-ms-cpim-sso:crlf": "abc\r\nSet-Cookie: evil=1",
+          "x-ms-cpim-sso:nul": "abc\u0000def",
+          "x-ms-cpim-sso:\u0001name": "value",
+        },
+      },
+    });
+    const creds = await new SecretsManagerService().getCredentials(KEY);
+    assert.deepEqual(creds.ssoCookies, { "x-ms-cpim-sso:ok": "fine" });
+  });
+
   it("NEO-278: narrows a malformed ssoCookies blob instead of propagating it", async () => {
     // Non-string values, empty names/values, arrays and scalars are all
     // dropped one level down, exactly as the flat fields are.

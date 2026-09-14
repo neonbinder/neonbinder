@@ -1113,6 +1113,78 @@ describe("getSiteToken — re-auth backoff (NEO-278)", () => {
     expect(logins).toHaveLength(1);
     expect(logins[0]).toContain("/login/sportlots");
   });
+
+  test("a reauthObservedAt in the future (clock skew) still suppresses — but does not suppress past its own window, so it is not forever", async () => {
+    // sinceMs = Date.now() - reauthObservedAt is negative when the stamp is
+    // ahead of "now", which is < REAUTH_RETRY_INTERVAL_MS just like a very
+    // recent stamp — so a skewed-forward stamp reads as "freshly observed"
+    // and backs off. It does not become a permanent suppression: once real
+    // time passes reauthObservedAt + REAUTH_RETRY_INTERVAL_MS, sinceMs is
+    // positive and past the threshold, exactly as for any other stamp.
+    const t = convexTest(schema, modules);
+    const skewedFuture = Date.now() + 5 * 60 * 1000; // 5 minutes ahead
+    await t.run(async (ctx) => {
+      await ctx.db.insert("userProfiles", {
+        userId: USER_A,
+        siteCredentials: [
+          {
+            site: SITE,
+            hasCredentials: true,
+            needsReauth: true,
+            needsReauthSince: skewedFuture,
+            reauthObservedAt: skewedFuture,
+          },
+        ],
+      });
+    });
+    const seen = { loginAttempts: 0 };
+    stubFetch(
+      tokenAndLoginStub(() => jsonResponse(STALE_TOKEN), reauthRequiredResponse, seen),
+    );
+
+    const token = await t
+      .withIdentity({ subject: USER_A })
+      .action(internal.credentials.getSiteToken, { site: SITE });
+
+    expect(token?.token).toBe("tok-stale");
+    expect(seen.loginAttempts).toBe(0);
+
+    // Simulate real time catching up past reauthObservedAt + the interval —
+    // the backoff must lift, proving it is bounded rather than permanent.
+    vi.useFakeTimers();
+    vi.setSystemTime(skewedFuture + FIFTEEN_MINUTES_MS + 1000);
+    try {
+      await t
+        .withIdentity({ subject: USER_A })
+        .action(internal.credentials.getSiteToken, { site: SITE });
+      expect(seen.loginAttempts).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a not_found secret is self-healed even while the site is in active backoff", async () => {
+    // readCachedToken's "not_found" branch runs BEFORE refreshSiteToken (and
+    // therefore before inReauthBackoff is ever consulted), so a genuinely
+    // deleted secret must still clear the stale needsReauth flag rather than
+    // being masked by the backoff meant for doomed re-auth attempts.
+    const t = convexTest(schema, modules);
+    await seedNeedsReauth(t, USER_A, SITE, 60_000); // well inside the backoff window
+    stubFetch((async (url: string | URL | Request) => {
+      if (String(url).includes("/token")) {
+        return jsonResponse({ error: "Credentials not found" }, 404);
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as FetchStub);
+
+    const token = await t
+      .withIdentity({ subject: USER_A })
+      .action(internal.credentials.getSiteToken, { site: SITE });
+
+    expect(token).toBeNull();
+    const entry = await getRawEntry(t, USER_A, SITE);
+    expect(entry).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------

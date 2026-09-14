@@ -83,6 +83,12 @@ export interface Credentials {
  * the field-by-field copy of the top-level fields. Returns undefined when
  * nothing survives, so an empty map never reads back as "has SSO cookies".
  */
+// A cookie name or value carrying a control character can never be a real
+// cookie (RFC 6265 forbids them) and would make fetch() throw a header
+// validation error whose message quotes the whole header — i.e. the session.
+// Reject at the narrowing boundary so such a value never reaches a request.
+const CONTROL_CHARS = /[\x00-\x1f\x7f]/;
+
 function parseCookieMap(value: unknown): Record<string, string> | undefined {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return undefined;
@@ -91,6 +97,9 @@ function parseCookieMap(value: unknown): Record<string, string> | undefined {
   let count = 0;
   for (const [name, cookieValue] of Object.entries(value as Record<string, unknown>)) {
     if (name.length === 0 || typeof cookieValue !== "string" || cookieValue.length === 0) {
+      continue;
+    }
+    if (CONTROL_CHARS.test(name) || CONTROL_CHARS.test(cookieValue)) {
       continue;
     }
     result[name] = cookieValue;
