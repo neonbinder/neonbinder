@@ -729,6 +729,7 @@ describe("reauth_required — flag, never delete (NEO-141)", () => {
             hasCredentials: true,
             needsReauth: true,
             needsReauthSince: 1_700_000_000_000,
+            reauthObservedAt: 1_700_000_500_000,
           },
         ],
       });
@@ -749,6 +750,9 @@ describe("reauth_required — flag, never delete (NEO-141)", () => {
     expect(entry?.needsReauth).toBe(true);
     // First-detected, not last-seen.
     expect(entry?.needsReauthSince).toBe(1_700_000_000_000);
+    // NEO-278: the backoff stamp rides along too (a plain 500 is not a
+    // reauth_required observation, so it must not be refreshed either).
+    expect(entry?.reauthObservedAt).toBe(1_700_000_500_000);
     // Lock fully released.
     expect(entry?.lockToken).toBeUndefined();
     expect(entry?.lockedAt).toBeUndefined();
@@ -791,6 +795,395 @@ describe("self-recovery — a successful auth restores credential status (NEO-14
     expect(entry?.hasCredentials).toBe(true);
     expect(entry?.needsReauth).toBeFalsy();
     expect(entry?.needsReauthSince).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-278 — re-auth backoff in getSiteToken
+//
+// Since NEO-141 the browser service holds no password, so once a session has
+// lapsed every stored-session login answers `reauth_required` in ~100ms until
+// the user signs in again. `getSiteToken` used to re-run that doomed login on
+// EVERY fetch (2026-09-14: ~1,500 pointless logins in a day, NEO-43 alert
+// never clearing). Now, while `needsReauth` is flagged and the last
+// observation is younger than 15 minutes, the refresh is skipped and the
+// cached token (or null on the mint path) is returned directly. After 15
+// minutes one attempt is made again, and any successful login clears it.
+// ---------------------------------------------------------------------------
+const FIFTEEN_MINUTES_MS = 15 * 60 * 1000;
+
+/** Seed a flagged row with a `reauth_required` observation `ageMs` ago. */
+async function seedNeedsReauth(
+  t: ReturnType<typeof convexTest>,
+  userId: string,
+  site: string,
+  ageMs: number,
+  extra: { needsReauthSince?: number } = {},
+) {
+  await t.run(async (ctx) => {
+    await ctx.db.insert("userProfiles", {
+      userId,
+      siteCredentials: [
+        {
+          site,
+          hasCredentials: true,
+          needsReauth: true,
+          needsReauthSince: extra.needsReauthSince ?? Date.now() - ageMs,
+          reauthObservedAt: Date.now() - ageMs,
+        },
+      ],
+    });
+  });
+}
+
+const STALE_TOKEN = { token: "tok-stale", expiresAt: Date.now() - 60_000 };
+
+/** The browser service's answer for a lapsed session it cannot renew. */
+function reauthRequiredResponse() {
+  return jsonResponse(
+    { error: "Authentication failed", error_class: "reauth_required" },
+    422,
+  );
+}
+
+describe("getSiteToken — re-auth backoff (NEO-278)", () => {
+  test("flagged 1 minute ago: returns the cached token with NO login attempt", async () => {
+    const t = convexTest(schema, modules);
+    await seedNeedsReauth(t, USER_A, SITE, 60_000);
+    const seen = { loginAttempts: 0 };
+    stubFetch(
+      tokenAndLoginStub(() => jsonResponse(STALE_TOKEN), reauthRequiredResponse, seen),
+    );
+
+    const token = await t
+      .withIdentity({ subject: USER_A })
+      .action(internal.credentials.getSiteToken, { site: SITE });
+
+    // Same fallback a failed refresh takes: hand back what we have.
+    expect(token?.token).toBe("tok-stale");
+    // The whole point: no authenticate action, no login POST.
+    expect(seen.loginAttempts).toBe(0);
+    // Nothing written — flag, stamps and credentials all as seeded.
+    const entry = await getRawEntry(t, USER_A, SITE);
+    expect(entry?.hasCredentials).toBe(true);
+    expect(entry?.needsReauth).toBe(true);
+    expect(entry?.lockToken).toBeUndefined();
+  });
+
+  test("flagged 1 minute ago on the mint path (204): returns null with NO login attempt", async () => {
+    const t = convexTest(schema, modules);
+    await seedNeedsReauth(t, USER_A, SITE, 60_000);
+    const seen = { loginAttempts: 0 };
+    stubFetch(
+      tokenAndLoginStub(
+        () => new Response(null, { status: 204 }),
+        reauthRequiredResponse,
+        seen,
+      ),
+    );
+
+    const token = await t
+      .withIdentity({ subject: USER_A })
+      .action(internal.credentials.getSiteToken, { site: SITE });
+
+    expect(token).toBeNull();
+    expect(seen.loginAttempts).toBe(0);
+    // NEO-140 invariant holds: nothing deleted.
+    const entry = await getRawEntry(t, USER_A, SITE);
+    expect(entry?.hasCredentials).toBe(true);
+    expect(entry?.needsReauth).toBe(true);
+  });
+
+  test("flagged 20 minutes ago: authenticate runs ONCE, re-stamps the observation, then backs off again", async () => {
+    const t = convexTest(schema, modules);
+    const firstDetected = Date.now() - 3 * 60 * 60 * 1000; // 3h ago
+    await seedNeedsReauth(t, USER_A, SITE, 20 * 60 * 1000, {
+      needsReauthSince: firstDetected,
+    });
+    const seen = { loginAttempts: 0 };
+    stubFetch(
+      tokenAndLoginStub(() => jsonResponse(STALE_TOKEN), reauthRequiredResponse, seen),
+    );
+
+    const before = Date.now();
+    const token = await t
+      .withIdentity({ subject: USER_A })
+      .action(internal.credentials.getSiteToken, { site: SITE });
+
+    // The retry is kept: the service may have grown a silent re-auth by now.
+    expect(seen.loginAttempts).toBe(1);
+    // It failed again, so we fall back to the cached token as before.
+    expect(token?.token).toBe("tok-stale");
+
+    const entry = await getRawEntry(t, USER_A, SITE);
+    expect(entry?.needsReauth).toBe(true);
+    // Still flagged, still not deleted (NEO-140 / NEO-141).
+    expect(entry?.hasCredentials).toBe(true);
+    // "first detected" is preserved; "last observed" moved to now.
+    expect(entry?.needsReauthSince).toBe(firstDetected);
+    expect(entry?.reauthObservedAt).toBeGreaterThanOrEqual(before);
+    // Lock released after the attempt.
+    expect(entry?.lockToken).toBeUndefined();
+
+    // A second fetch straight after is inside the fresh window: no login.
+    const again = await t
+      .withIdentity({ subject: USER_A })
+      .action(internal.credentials.getSiteToken, { site: SITE });
+    expect(again?.token).toBe("tok-stale");
+    expect(seen.loginAttempts).toBe(1);
+  });
+
+  test("flagged exactly at the boundary (15 minutes ago) retries", async () => {
+    const t = convexTest(schema, modules);
+    await seedNeedsReauth(t, USER_A, SITE, FIFTEEN_MINUTES_MS);
+    const seen = { loginAttempts: 0 };
+    stubFetch(
+      tokenAndLoginStub(() => jsonResponse(STALE_TOKEN), reauthRequiredResponse, seen),
+    );
+
+    await t
+      .withIdentity({ subject: USER_A })
+      .action(internal.credentials.getSiteToken, { site: SITE });
+
+    expect(seen.loginAttempts).toBe(1);
+  });
+
+  test("a flag with no observation stamp (pre-NEO-278 row) is not in backoff: retries once and gets stamped", async () => {
+    // Rows flagged before `reauthObservedAt` existed — and rows flagged by
+    // testing.markSiteNeedsReauth — carry only `needsReauthSince`. They must
+    // not be suppressed forever, nor treated as freshly observed.
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("userProfiles", {
+        userId: USER_A,
+        siteCredentials: [
+          {
+            site: SITE,
+            hasCredentials: true,
+            needsReauth: true,
+            needsReauthSince: Date.now() - 30_000,
+          },
+        ],
+      });
+    });
+    const seen = { loginAttempts: 0 };
+    stubFetch(
+      tokenAndLoginStub(() => jsonResponse(STALE_TOKEN), reauthRequiredResponse, seen),
+    );
+
+    await t
+      .withIdentity({ subject: USER_A })
+      .action(internal.credentials.getSiteToken, { site: SITE });
+    expect(seen.loginAttempts).toBe(1);
+    const entry = await getRawEntry(t, USER_A, SITE);
+    expect(typeof entry?.reauthObservedAt).toBe("number");
+
+    // ...and from then on the backoff applies.
+    await t
+      .withIdentity({ subject: USER_A })
+      .action(internal.credentials.getSiteToken, { site: SITE });
+    expect(seen.loginAttempts).toBe(1);
+  });
+
+  test("no flag at all: a stale token still refreshes on every call (unchanged behaviour)", async () => {
+    const t = convexTest(schema, modules);
+    await seedHasCredentials(t, USER_A, SITE);
+    const seen = { loginAttempts: 0 };
+    // A transient failure that is NOT reauth_required must not start a backoff.
+    stubFetch(
+      tokenAndLoginStub(
+        () => jsonResponse(STALE_TOKEN),
+        () => jsonResponse({ error: "marketplace down" }, 500),
+        seen,
+      ),
+    );
+
+    await t
+      .withIdentity({ subject: USER_A })
+      .action(internal.credentials.getSiteToken, { site: SITE });
+    await t
+      .withIdentity({ subject: USER_A })
+      .action(internal.credentials.getSiteToken, { site: SITE });
+
+    expect(seen.loginAttempts).toBe(2);
+    const entry = await getRawEntry(t, USER_A, SITE);
+    expect(entry?.needsReauth).toBeFalsy();
+    expect(entry?.reauthObservedAt).toBeUndefined();
+  });
+
+  test("a successful user-initiated login (Test Credentials) clears the backoff", async () => {
+    const t = convexTest(schema, modules);
+    await seedNeedsReauth(t, USER_A, SITE, 60_000);
+    const seen = { loginAttempts: 0 };
+    stubFetch(
+      tokenAndLoginStub(
+        () => jsonResponse(STALE_TOKEN),
+        () => jsonResponse({ success: true, message: "ok" }),
+        seen,
+      ),
+    );
+
+    // The user clicks "Test" — never subject to the backoff.
+    const result = await t
+      .withIdentity({ subject: USER_A })
+      .action(api.credentials.testSiteCredentials, { site: SITE });
+    expect(result.success).toBe(true);
+    expect(seen.loginAttempts).toBe(1);
+
+    const entry = await getRawEntry(t, USER_A, SITE);
+    expect(entry?.needsReauth).toBeFalsy();
+    expect(entry?.needsReauthSince).toBeUndefined();
+    expect(entry?.reauthObservedAt).toBeUndefined();
+
+    // With the flag gone, the next stale-token fetch refreshes normally.
+    await t
+      .withIdentity({ subject: USER_A })
+      .action(internal.credentials.getSiteToken, { site: SITE });
+    expect(seen.loginAttempts).toBe(2);
+  });
+
+  test("a successful saveCredentials (connect-and-store) clears the backoff", async () => {
+    const t = convexTest(schema, modules);
+    await seedNeedsReauth(t, USER_A, SITE, 60_000);
+    const seen = { loginAttempts: 0 };
+    stubFetch(
+      tokenAndLoginStub(
+        () => jsonResponse(STALE_TOKEN),
+        () => jsonResponse({ success: true, message: "ok" }),
+        seen,
+      ),
+    );
+
+    const result = await t
+      .withIdentity({ subject: USER_A })
+      .action(api.credentials.saveCredentials, {
+        site: SITE,
+        username: "user@example.com",
+        password: "hunter2",
+      });
+    expect(result.success).toBe(true);
+    expect(seen.loginAttempts).toBe(1);
+
+    const entry = await getRawEntry(t, USER_A, SITE);
+    expect(entry?.hasCredentials).toBe(true);
+    expect(entry?.needsReauth).toBeFalsy();
+    expect(entry?.reauthObservedAt).toBeUndefined();
+
+    await t
+      .withIdentity({ subject: USER_A })
+      .action(internal.credentials.getSiteToken, { site: SITE });
+    expect(seen.loginAttempts).toBe(2);
+  });
+
+  test("the backoff is per (user, site): BSC flagged does not suppress a SportLots refresh", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("userProfiles", {
+        userId: USER_A,
+        siteCredentials: [
+          {
+            site: "buysportscards",
+            hasCredentials: true,
+            needsReauth: true,
+            needsReauthSince: Date.now() - 60_000,
+            reauthObservedAt: Date.now() - 60_000,
+          },
+          { site: "sportlots", hasCredentials: true },
+        ],
+      });
+    });
+    const logins: string[] = [];
+    stubFetch((async (url: string | URL | Request) => {
+      const u = String(url);
+      if (u.includes("/token")) return jsonResponse(STALE_TOKEN);
+      if (u.includes("/login/")) {
+        logins.push(u);
+        return jsonResponse({ success: true, message: "ok" });
+      }
+      throw new Error(`unexpected fetch: ${u}`);
+    }) as FetchStub);
+
+    await t
+      .withIdentity({ subject: USER_A })
+      .action(internal.credentials.getSiteToken, { site: "buysportscards" });
+    await t
+      .withIdentity({ subject: USER_A })
+      .action(internal.credentials.getSiteToken, { site: "sportlots" });
+
+    expect(logins).toHaveLength(1);
+    expect(logins[0]).toContain("/login/sportlots");
+  });
+
+  test("a reauthObservedAt in the future (clock skew) still suppresses — but does not suppress past its own window, so it is not forever", async () => {
+    // sinceMs = Date.now() - reauthObservedAt is negative when the stamp is
+    // ahead of "now", which is < REAUTH_RETRY_INTERVAL_MS just like a very
+    // recent stamp — so a skewed-forward stamp reads as "freshly observed"
+    // and backs off. It does not become a permanent suppression: once real
+    // time passes reauthObservedAt + REAUTH_RETRY_INTERVAL_MS, sinceMs is
+    // positive and past the threshold, exactly as for any other stamp.
+    const t = convexTest(schema, modules);
+    const skewedFuture = Date.now() + 5 * 60 * 1000; // 5 minutes ahead
+    await t.run(async (ctx) => {
+      await ctx.db.insert("userProfiles", {
+        userId: USER_A,
+        siteCredentials: [
+          {
+            site: SITE,
+            hasCredentials: true,
+            needsReauth: true,
+            needsReauthSince: skewedFuture,
+            reauthObservedAt: skewedFuture,
+          },
+        ],
+      });
+    });
+    const seen = { loginAttempts: 0 };
+    stubFetch(
+      tokenAndLoginStub(() => jsonResponse(STALE_TOKEN), reauthRequiredResponse, seen),
+    );
+
+    const token = await t
+      .withIdentity({ subject: USER_A })
+      .action(internal.credentials.getSiteToken, { site: SITE });
+
+    expect(token?.token).toBe("tok-stale");
+    expect(seen.loginAttempts).toBe(0);
+
+    // Simulate real time catching up past reauthObservedAt + the interval —
+    // the backoff must lift, proving it is bounded rather than permanent.
+    vi.useFakeTimers();
+    vi.setSystemTime(skewedFuture + FIFTEEN_MINUTES_MS + 1000);
+    try {
+      await t
+        .withIdentity({ subject: USER_A })
+        .action(internal.credentials.getSiteToken, { site: SITE });
+      expect(seen.loginAttempts).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a not_found secret is self-healed even while the site is in active backoff", async () => {
+    // readCachedToken's "not_found" branch runs BEFORE refreshSiteToken (and
+    // therefore before inReauthBackoff is ever consulted), so a genuinely
+    // deleted secret must still clear the stale needsReauth flag rather than
+    // being masked by the backoff meant for doomed re-auth attempts.
+    const t = convexTest(schema, modules);
+    await seedNeedsReauth(t, USER_A, SITE, 60_000); // well inside the backoff window
+    stubFetch((async (url: string | URL | Request) => {
+      if (String(url).includes("/token")) {
+        return jsonResponse({ error: "Credentials not found" }, 404);
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as FetchStub);
+
+    const token = await t
+      .withIdentity({ subject: USER_A })
+      .action(internal.credentials.getSiteToken, { site: SITE });
+
+    expect(token).toBeNull();
+    const entry = await getRawEntry(t, USER_A, SITE);
+    expect(entry).toBeNull();
   });
 });
 

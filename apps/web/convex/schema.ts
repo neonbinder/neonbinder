@@ -611,6 +611,14 @@ export default defineSchema({
       // optional: existing rows read as "no re-auth needed" (no migration).
       needsReauth: v.optional(v.boolean()),
       needsReauthSince: v.optional(v.number()),
+      // NEO-278: epoch-ms of the MOST RECENT `reauth_required` observation
+      // (unlike `needsReauthSince`, refreshed on every repeat detection).
+      // Drives the re-auth backoff in `credentials.getSiteToken`: while
+      // `needsReauth` is set and this is younger than the retry interval, a
+      // fetch-driven refresh is skipped instead of paying a doomed login on
+      // every call. Cleared with the flag. Optional: rows flagged before this
+      // field existed simply retry once, which stamps it.
+      reauthObservedAt: v.optional(v.number()),
     }))),
     // Per-marketplace account identifiers captured at login time so callers
     // (e.g. fetchBscChecklist) don't have to re-derive them on every request.

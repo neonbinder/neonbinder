@@ -246,6 +246,24 @@ describe("Credential CRUD routes", () => {
       );
     });
 
+    it("NEO-278: does not leak the SSO cookie values either", async () => {
+      store.set(validKey, {
+        username: "seller@example.com",
+        token: "placeholder-token-value",
+        expiresAt: 9999999999,
+        ssoCookies: { "x-ms-cpim-sso:tenant_0": "placeholder-sso-cookie-value" },
+        ssoExpiresAt: 9999999999,
+      });
+
+      const res = await fetch(`${baseUrl}/credentials/${validKey}/token`);
+      const raw = await res.text();
+
+      assert.equal(res.status, 200);
+      assert.ok(!raw.includes("placeholder-sso-cookie-value"), "the SSO cookie is the user's BSC session; never served");
+      assert.ok(!raw.includes("ssoCookies"), "not even the field");
+      assert.deepEqual(Object.keys(JSON.parse(raw)).sort(), ["expiresAt", "token"], "the wire shape is unchanged");
+    });
+
     it("returns 400 for an invalid key format", async () => {
       const res = await fetch(`${baseUrl}/credentials/INVALID_FORMAT/token`);
 
@@ -280,6 +298,29 @@ describe("Credential CRUD routes", () => {
       assert.ok(
         !raw.includes("placeholder-token-value") && !raw.includes("placeholder-refresh-value"),
         "no credential VALUE may appear anywhere in the metadata response",
+      );
+    });
+
+    it("NEO-278: metadata neither exposes nor mentions the SSO cookies (wire shape unchanged)", async () => {
+      store.set(validKey, {
+        username: "seller@example.com",
+        token: "placeholder-token-value",
+        expiresAt: 9999999999,
+        refreshToken: "placeholder-refresh-value",
+        refreshExpiresAt: 8888888888,
+        ssoCookies: { "x-ms-cpim-sso:tenant_0": "placeholder-sso-cookie-value" },
+        ssoExpiresAt: 9999999999,
+      });
+
+      const res = await fetch(`${baseUrl}/credentials/${validKey}/metadata`);
+      const raw = await res.text();
+
+      assert.equal(res.status, 200);
+      assert.ok(!raw.includes("placeholder-sso-cookie-value"));
+      assert.deepEqual(
+        Object.keys(JSON.parse(raw)).sort(),
+        ["expiresAt", "hasRefreshToken", "hasToken", "refreshExpiresAt", "username"].sort(),
+        "no new field: the Convex contract is not bumped for NEO-278",
       );
     });
 

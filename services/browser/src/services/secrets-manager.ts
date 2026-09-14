@@ -43,8 +43,69 @@ export interface Credentials {
    * dropping it breaks the chain and forces the user to sign in again.
    */
   refreshToken?: string;
-  /** BSC only. Epoch ms at which `refreshToken` stops being usable. */
+  /**
+   * BSC only. Epoch ms at which `refreshToken` stops being usable.
+   *
+   * NEO-278: this window is ABSOLUTE from the password sign-in, not sliding.
+   * Rotation hands back a new refresh token but never extends the window, so
+   * a user who only ever refreshes is signed out 24h after they typed their
+   * password. The SSO cookies below are what get past that.
+   */
   refreshExpiresAt?: number;
+  /**
+   * BSC only. NEO-278. The Azure AD B2C "Keep me signed in" SSO cookies
+   * (cookie name → value) captured from the sign-in exchange once we send
+   * `rememberMe=true`. Presenting them on a fresh /authorize yields a new auth
+   * code with no password and no sign-in form, which is how a session outlives
+   * the absolute 24h refresh window.
+   *
+   * SECURITY: every VALUE here is a bearer credential for the user's BSC
+   * session. Values are never logged (names only) and never leave the process.
+   * Old secrets simply lack this field; the adapter treats that as "no SSO
+   * session" and falls through to the existing paths.
+   */
+  ssoCookies?: Record<string, string>;
+  /**
+   * BSC only. NEO-278. Epoch ms at which the earliest-expiring cookie in
+   * `ssoCookies` lapses (B2C issues ~62 days and slides it on every silent
+   * re-authorize). Absent when B2C set no expiry attribute; the adapter then
+   * tries the cookie and lets B2C answer.
+   */
+  ssoExpiresAt?: number;
+}
+
+/**
+ * Narrow an untrusted parsed-JSON value to a flat `{name: value}` string map.
+ *
+ * NEO-278: the stored blob is untrusted input (see getCredentials). Anything
+ * that is not a plain object, or any entry whose key or value is not a
+ * non-empty string, is dropped rather than propagated — the same posture as
+ * the field-by-field copy of the top-level fields. Returns undefined when
+ * nothing survives, so an empty map never reads back as "has SSO cookies".
+ */
+// A cookie name or value carrying a control character can never be a real
+// cookie (RFC 6265 forbids them) and would make fetch() throw a header
+// validation error whose message quotes the whole header — i.e. the session.
+// Reject at the narrowing boundary so such a value never reaches a request.
+const CONTROL_CHARS = /[\x00-\x1f\x7f]/;
+
+function parseCookieMap(value: unknown): Record<string, string> | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  const result: Record<string, string> = {};
+  let count = 0;
+  for (const [name, cookieValue] of Object.entries(value as Record<string, unknown>)) {
+    if (name.length === 0 || typeof cookieValue !== "string" || cookieValue.length === 0) {
+      continue;
+    }
+    if (CONTROL_CHARS.test(name) || CONTROL_CHARS.test(cookieValue)) {
+      continue;
+    }
+    result[name] = cookieValue;
+    count++;
+  }
+  return count > 0 ? result : undefined;
 }
 
 const KEY_PATTERN = /^[a-z0-9]+-credentials-[a-zA-Z0-9_-]+$/;
@@ -159,6 +220,13 @@ export class SecretsManagerService {
       if (typeof credentials.refreshToken === "string") result.refreshToken = credentials.refreshToken;
       if (typeof credentials.refreshExpiresAt === "number") {
         result.refreshExpiresAt = credentials.refreshExpiresAt;
+      }
+      // NEO-278: the SSO cookie map is the one nested field. It goes through
+      // the same untrusted-input narrowing as the flat ones, one level down.
+      const ssoCookies = parseCookieMap(credentials.ssoCookies);
+      if (ssoCookies) result.ssoCookies = ssoCookies;
+      if (typeof credentials.ssoExpiresAt === "number") {
+        result.ssoExpiresAt = credentials.ssoExpiresAt;
       }
       return result;
     } catch (error: any) {
