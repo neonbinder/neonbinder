@@ -16,7 +16,10 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { beforeEach, describe, expect, it } from "vitest";
 
-import ReauthNotice, { type ReauthNoticeProps } from "./ReauthNotice";
+import ReauthNotice, {
+  REAUTH_NOTICE_FOCUS_PARK_ID,
+  type ReauthNoticeProps,
+} from "./ReauthNotice";
 import {
   REAUTH_NOTICE_COPY,
   joinSiteLabels,
@@ -115,6 +118,27 @@ describe("ReauthNotice", () => {
     expect(screen.getByRole("status").textContent).toContain(
       "Your BuySportsCards and SportLots sessions ran out.",
     );
+  });
+
+  it("parks focus on the page heading after Dismiss unmounts the button", async () => {
+    const heading = document.createElement("h2");
+    heading.id = REAUTH_NOTICE_FOCUS_PARK_ID;
+    heading.tabIndex = -1;
+    document.body.appendChild(heading);
+    try {
+      renderNotice([{ site: SL, needsReauth: true }]);
+      const dismiss = screen.getByRole("button", {
+        name: REAUTH_NOTICE_COPY.dismissLabel,
+      });
+      dismiss.focus();
+      fireEvent.click(dismiss);
+      expect(screen.queryByRole("status")).toBeNull();
+      // The park is deferred one frame so it runs after the unmount.
+      await new Promise((r) => requestAnimationFrame(() => r(undefined)));
+      expect(document.activeElement).toBe(heading);
+    } finally {
+      heading.remove();
+    }
   });
 
   it("honours a dismissal recorded earlier in the same session on a fresh mount", () => {

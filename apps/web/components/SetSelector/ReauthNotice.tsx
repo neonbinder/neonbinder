@@ -74,6 +74,9 @@ function writeDismissed(key: string) {
   }
 }
 
+/** The set-builder heading `ReauthNotice` parks focus on after Dismiss. */
+export const REAUTH_NOTICE_FOCUS_PARK_ID = "set-builder-heading";
+
 export default function ReauthNotice({ siteCredentials }: ReauthNoticeProps) {
   // Lazy initialiser, the same shape as useSaleTotal's localStorage read: one
   // synchronous read on mount, then React state owns it.
@@ -92,6 +95,14 @@ export default function ReauthNotice({ siteCredentials }: ReauthNoticeProps) {
   const onDismiss = () => {
     writeDismissed(key);
     setDismissedKey(key);
+    // Dismiss unmounts the very button that was clicked, which drops focus to
+    // <body> (WCAG 2.4.3). Park it on the page heading a frame later, once the
+    // unmount has happened, and only if nothing else claimed focus meanwhile.
+    requestAnimationFrame(() => {
+      if (document.activeElement === document.body) {
+        document.getElementById(REAUTH_NOTICE_FOCUS_PARK_ID)?.focus();
+      }
+    });
   };
 
   return (

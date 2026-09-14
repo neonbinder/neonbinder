@@ -65,7 +65,15 @@ export default function AdminSetBuilderPage() {
           reword it without updating them. The h2 is visually small because the
           cascade below needs the vertical room — see the layout's note. */}
       <div>
-        <h2 className="text-lg font-semibold">Set Builder</h2>
+        {/* Focus park for ReauthNotice's Dismiss (its click unmounts the
+            button it lives in; see focus-park-pattern). Never in tab order. */}
+        <h2
+          id="set-builder-heading"
+          tabIndex={-1}
+          className="text-lg font-semibold focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] rounded"
+        >
+          Set Builder
+        </h2>
         <p className="text-sm text-slate-400">
           Build set parameters using marketplace APIs with searchable dropdowns.
         </p>
