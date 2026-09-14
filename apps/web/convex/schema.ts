@@ -427,6 +427,25 @@ export const selectorOptionFields = {
    * treats a card's team as NB content it may only SUGGEST a change to.
    */
   teamIds: v.optional(v.array(v.id("teams"))),
+  /**
+   * NEO-277 — when a `teamIds` edit on THIS row last handed its subtree to
+   * `cascadeSelectorOptionTeams`, and that cascade has not yet reported back.
+   *
+   * The cascade is chunked and self-rescheduling, so for a large set the
+   * cards beneath a row keep changing for a while after the mutation returns.
+   * A second edit scheduled into that window would race the first chunk by
+   * chunk — the mutation's "previous value" is what the row held a moment
+   * ago, not what half the cards still hold — so `setSelectorOptionTeams`
+   * refuses a new value (or a clear) while this is set and younger than
+   * `TEAM_CASCADE_STALE_MS`, and the cascade's final invocation removes it.
+   *
+   * ABSENT means "no cascade in flight", which is what every row written
+   * before this field existed says. A stamp older than the stale window is
+   * treated as a cascade that never finished (a failed chunk, a deploy
+   * mid-run) and is overwritten, so a set can never be locked for good. A
+   * CLEAR never sets it: a clear schedules nothing.
+   */
+  teamCascadeStartedAt: v.optional(v.number()),
   lastUpdated: v.number(),
 };
 

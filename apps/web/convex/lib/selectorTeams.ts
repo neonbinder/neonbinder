@@ -73,18 +73,64 @@ export function teamFollowVerdict(
 }
 
 /**
- * The verdict for one CARD, which has two more reasons to stay than a node:
+ * Why a CARD stays when the set-level team changes — one of three reasons,
+ * checked in this order:
  *
- *  - an operator said this card carries no team (`teamNoneConfirmedAt`) — that
- *    decision outranks every set-level default, always;
- *  - the card carries a typed or synced team NAME nobody has resolved yet
- *    (`pendingTeamNames`) — that is the card's own answer waiting on review,
- *    and writing ids beside it would make the row say its team twice (the
- *    same rule `updateCard` and `addCustomCard` keep by never storing both).
+ *  - `"teamless"`: an operator said this card carries no team
+ *    (`teamNoneConfirmedAt`) — that decision outranks every set-level
+ *    default, always;
+ *  - `"pendingName"`: the card carries a typed or synced team NAME nobody has
+ *    resolved yet (`pendingTeamNames`) — that is the card's own answer
+ *    waiting on review, and writing ids beside it would make the row say its
+ *    team twice (the same rule `updateCard` and `addCustomCard` keep by never
+ *    storing both);
+ *  - `"overridden"`: the card carries a DIFFERENT team — neither empty nor
+ *    what the set carried before this edit — so someone picked it on purpose.
  *
- * Both are checked BEFORE the "already carries `next`" short-circuit on
- * purpose: a card that is confirmed teamless has empty `teamOnCardIds`, and
- * the empty-follows branch below would otherwise fill it in.
+ * The cascade only needs the verdict; the confirm dialog wants the reason as
+ * well, so it can say "3 cards keep their own team, 1 is marked teamless"
+ * rather than one opaque "staying" number. Both read the same function so
+ * the dialog can never attribute a stay the cascade does not make.
+ */
+export type CardTeamStayReason = "teamless" | "pendingName" | "overridden";
+
+export type CardTeamFollowOutcome =
+  | { verdict: "unchanged" | "follow" }
+  | { verdict: "stay"; reason: CardTeamStayReason };
+
+/**
+ * The full outcome for one CARD, which has two more reasons to stay than a
+ * node (see `CardTeamStayReason`).
+ *
+ * The teamless and pending-name checks run BEFORE the "already carries
+ * `next`" short-circuit on purpose: a card that is confirmed teamless has
+ * empty `teamOnCardIds`, and the empty-follows branch of `teamFollowVerdict`
+ * would otherwise fill it in.
+ */
+export function cardTeamFollowOutcome(
+  card: {
+    teamOnCardIds?: ReadonlyArray<Id<"teams">>;
+    teamNoneConfirmedAt?: number;
+    pendingTeamNames?: ReadonlyArray<string>;
+  },
+  previous: ReadonlyArray<Id<"teams">> | undefined,
+  next: ReadonlyArray<Id<"teams">>,
+): CardTeamFollowOutcome {
+  if (card.teamNoneConfirmedAt !== undefined) {
+    return { verdict: "stay", reason: "teamless" };
+  }
+  if ((card.pendingTeamNames?.length ?? 0) > 0) {
+    return { verdict: "stay", reason: "pendingName" };
+  }
+  const verdict = teamFollowVerdict(card.teamOnCardIds, previous, next);
+  return verdict === "stay"
+    ? { verdict, reason: "overridden" }
+    : { verdict };
+}
+
+/**
+ * The verdict for one CARD — `cardTeamFollowOutcome` without the reason, for
+ * the cascade, which only needs to know whether to write.
  */
 export function cardTeamFollowVerdict(
   card: {
@@ -95,9 +141,7 @@ export function cardTeamFollowVerdict(
   previous: ReadonlyArray<Id<"teams">> | undefined,
   next: ReadonlyArray<Id<"teams">>,
 ): TeamFollowVerdict {
-  if (card.teamNoneConfirmedAt !== undefined) return "stay";
-  if ((card.pendingTeamNames?.length ?? 0) > 0) return "stay";
-  return teamFollowVerdict(card.teamOnCardIds, previous, next);
+  return cardTeamFollowOutcome(card, previous, next).verdict;
 }
 
 /**

@@ -6,8 +6,9 @@
  *
  *  - the hand-rolled `_creationTime` cursor in `cascadeSelectorOptionTeams`,
  *    at the exact page boundary;
- *  - two cascades scheduled back to back over the same subtree, and a card
- *    edited by `updateCard` mid-cascade;
+ *  - two edits back to back over the same subtree (the second is refused
+ *    while the first's cascade is in flight, and lands once it is not), and
+ *    a card edited by `updateCard` mid-cascade;
  *  - `storeReconciledOptions` copy-down never touching an EXISTING row's
  *    `teamIds`, even one an operator has cleared;
  *  - the NEO-203 reviewed-content patch path on an EXISTING card never
@@ -215,7 +216,33 @@ describe("NEO-277 adversarial: cascade cursor at the page boundary", () => {
 // ===========================================================================
 
 describe("NEO-277 adversarial: concurrent cascades", () => {
-  test("set A then set B in quick succession leaves every card on B, never on A", async () => {
+  test("set A then set B back to back: B is refused while A's cascade is in flight", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId } = await seedTree(t);
+    const a = await seedTeam(t, sportId, { location: "Durham", name: "Bulls" });
+    const b = await seedTeam(t, sportId, { location: "Toledo", name: "Mud Hens" });
+    const tree = await seedTree(t, {}, sportId);
+    const empty = await seedCard(t, tree.variantTypeId, "1");
+
+    await asAdmin.mutation(api.selectorOptions.setSelectorOptionTeams, {
+      selectorOptionId: tree.setNameId,
+      teamIds: [a],
+    });
+    await expect(
+      asAdmin.mutation(api.selectorOptions.setSelectorOptionTeams, {
+        selectorOptionId: tree.setNameId,
+        teamIds: [b],
+      }),
+    ).rejects.toThrow("Still applying the last team change. Try again in a moment.");
+
+    // A's cascade is the only one that ran, and it finished on A.
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect((await getNode(t, tree.setNameId))!.teamIds).toEqual([a]);
+    expect((await getCard(t, empty))!.teamOnCardIds).toEqual([a]);
+  });
+
+  test("set A, drain, then set B leaves every card on B, never on A", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { sportId } = await seedTree(t);
@@ -230,24 +257,26 @@ describe("NEO-277 adversarial: concurrent cascades", () => {
     });
     const overrideBefore = await getCard(t, override);
 
-    // Two edits, scheduled before either's cascade has run at all.
+    // Two edits: the second is allowed only once the first's cascade has
+    // reported back (the in-flight guard above), so its `previousTeamIds`
+    // is exactly what every inheriting card now carries.
     await asAdmin.mutation(api.selectorOptions.setSelectorOptionTeams, {
       selectorOptionId: tree.setNameId,
       teamIds: [a],
     });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
     await asAdmin.mutation(api.selectorOptions.setSelectorOptionTeams, {
       selectorOptionId: tree.setNameId,
       teamIds: [b],
     });
     await t.finishAllScheduledFunctions(vi.runAllTimers);
 
-    // The node itself: B's mutation ran synchronously after A's, so it is
-    // never in question — the interesting claim is about the SCHEDULED work.
     expect((await getNode(t, tree.setNameId))!.teamIds).toEqual([b]);
     expect((await getNode(t, tree.variantTypeId))!.teamIds).toEqual([b]);
+    expect("teamCascadeStartedAt" in (await getNode(t, tree.setNameId))!).toBe(false);
 
-    // The empty card was inheriting; it must land on B, not get stranded on
-    // A by whichever cascade happens to visit it first.
+    // The empty card was inheriting A after the first edit (equal-to-previous),
+    // so it follows to B.
     expect((await getCard(t, empty))!.teamOnCardIds).toEqual([b]);
     // The card that already carried its own override before either edit is
     // untouched by both.
@@ -570,7 +599,7 @@ describe("NEO-277 adversarial: MAX_CARD_TEAMS bound", () => {
         selectorOptionId: setNameId,
         teamIds,
       }),
-    ).rejects.toThrow(new RegExp(`at most ${MAX_CARD_TEAMS} teams`));
+    ).rejects.toThrow(`A set can carry at most ${MAX_CARD_TEAMS} teams.`);
     expect(await getNode(t, setNameId)).toEqual(before);
   });
 });

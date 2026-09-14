@@ -13,8 +13,12 @@
  *    already carrying the new value is not rewritten, and a subtree larger
  *    than one page is finished by the reschedule loop.
  *  - the PREVIEW (`getSelectorOptionTeamCascadePreview`) counts what the
- *    cascade then does.
+ *    cascade then does, splits "staying" by reason, counts what a clear
+ *    would leave behind, and refuses exactly what the mutation refuses.
  *  - a CLEAR patches the node and touches nothing below it.
+ *  - the IN-FLIGHT guard (`teamCascadeStartedAt`): stamped when a cascade is
+ *    scheduled, removed by the cascade's final chunk, refuses a second edit
+ *    or a clear while fresh, lets one through once stale.
  *  - the refusals: an unknown team, a team from another sport, a row at a
  *    level that is not a set.
  *
@@ -30,6 +34,7 @@ import { api } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
 import { teamRowFields } from "./lib/teamRow";
+import { MAX_CARD_TEAMS } from "./features/cardAttention";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -407,8 +412,95 @@ describe("NEO-277 setSelectorOptionTeams cascade", () => {
       cardsFollowing: 3,
       // override, confirmedNone, pendingName. alreadyNew is neither.
       cardsStaying: 3,
+      cardsOverridden: 1,
+      cardsTeamless: 1,
+      cardsPendingName: 1,
+      // equalPrevious is the one card set-equal to the node's current [A].
+      cardsCarryingCurrent: 1,
       truncated: false,
     });
+  });
+
+  test("preview of a clear: nothing follows or stays, only what carries the current team is counted", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { tree } = await seedCascadeFixture(t);
+
+    const preview = await asAdmin.query(
+      api.selectorOptions.getSelectorOptionTeamCascadePreview,
+      { selectorOptionId: tree.setNameId, teamIds: [] },
+    );
+    expect(preview).toEqual({
+      nodesFollowing: 0,
+      cardsFollowing: 0,
+      cardsStaying: 0,
+      cardsOverridden: 0,
+      cardsTeamless: 0,
+      cardsPendingName: 0,
+      cardsCarryingCurrent: 1,
+      truncated: false,
+    });
+  });
+
+  test("preview on a node with no set-level team: cardsCarryingCurrent is 0, empty cards are not 'carrying'", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId } = await seedTree(t);
+    const c = await seedTeam(t, sportId, { location: "Toledo", name: "Mud Hens" });
+    const tree = await seedTree(t, {}, sportId);
+    await seedCard(t, tree.variantTypeId, "1");
+    await seedCard(t, tree.variantTypeId, "2");
+
+    const preview = await asAdmin.query(
+      api.selectorOptions.getSelectorOptionTeamCascadePreview,
+      { selectorOptionId: tree.setNameId, teamIds: [c] },
+    );
+    expect(preview.cardsFollowing).toBe(2);
+    expect(preview.cardsCarryingCurrent).toBe(0);
+    const clear = await asAdmin.query(
+      api.selectorOptions.getSelectorOptionTeamCascadePreview,
+      { selectorOptionId: tree.setNameId, teamIds: [] },
+    );
+    expect(clear.cardsCarryingCurrent).toBe(0);
+  });
+
+  test("preview refuses a sport row with the mutation's sentence, before walking anything", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const tree = await seedTree(t);
+    const bulls = await seedTeam(t, tree.sportId, { location: "Durham", name: "Bulls" });
+
+    await expect(
+      asAdmin.query(api.selectorOptions.getSelectorOptionTeamCascadePreview, {
+        selectorOptionId: tree.sportId,
+        teamIds: [bulls],
+      }),
+    ).rejects.toThrow("Pick the team on the set, not on the sport, year or manufacturer.");
+  });
+
+  test("preview refuses more than MAX_CARD_TEAMS distinct ids with the mutation's sentence", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const tree = await seedTree(t);
+    const teamIds: Array<Id<"teams">> = [];
+    for (let i = 0; i <= MAX_CARD_TEAMS; i++) {
+      teamIds.push(
+        await seedTeam(t, tree.sportId, { location: `City ${i}`, name: `Team ${i}` }),
+      );
+    }
+
+    await expect(
+      asAdmin.query(api.selectorOptions.getSelectorOptionTeamCascadePreview, {
+        selectorOptionId: tree.setNameId,
+        teamIds,
+      }),
+    ).rejects.toThrow(`A set can carry at most ${MAX_CARD_TEAMS} teams.`);
+    // Duplicates are folded before the bound is checked, as the mutation does.
+    const preview = await asAdmin.query(
+      api.selectorOptions.getSelectorOptionTeamCascadePreview,
+      { selectorOptionId: tree.setNameId, teamIds: [teamIds[0], teamIds[0]] },
+    );
+    expect(preview.truncated).toBe(false);
   });
 
   test("empty and equal-to-previous follow; override, confirmed-none and pending-name stay; descendants follow", async () => {
@@ -573,6 +665,179 @@ describe("NEO-277 setSelectorOptionTeams cascade", () => {
 });
 
 // ===========================================================================
+// The in-flight guard: teamCascadeStartedAt
+// ===========================================================================
+
+describe("NEO-277 teamCascadeStartedAt", () => {
+  const STALE = 10 * 60 * 1000;
+  const IN_FLIGHT = "Still applying the last team change. Try again in a moment.";
+
+  test("stamped when a cascade is scheduled, removed by the final chunk of a multi-chunk run", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId } = await seedTree(t);
+    const c = await seedTeam(t, sportId, { location: "Toledo", name: "Mud Hens" });
+    const tree = await seedTree(t, {}, sportId);
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 250; i++) {
+        await ctx.db.insert("cardChecklist", {
+          selectorOptionId: tree.variantTypeId,
+          cardNumber: String(i + 1),
+          cardName: `Card ${i + 1}`,
+          platformData: {},
+          sortOrder: i,
+          lastUpdated: 1_700_000_000_000,
+        });
+      }
+    });
+
+    await asAdmin.mutation(api.selectorOptions.setSelectorOptionTeams, {
+      selectorOptionId: tree.setNameId,
+      teamIds: [c],
+    });
+    const stamped = await getNode(t, tree.setNameId);
+    expect(stamped!.teamCascadeStartedAt).toBe(Date.now());
+
+    // First chunk only (200 of 250): still in flight.
+    await vi.runOnlyPendingTimersAsync();
+    await t.finishInProgressScheduledFunctions();
+    expect((await getNode(t, tree.setNameId))!.teamCascadeStartedAt).toBe(
+      stamped!.teamCascadeStartedAt,
+    );
+
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    const done = await getNode(t, tree.setNameId);
+    expect("teamCascadeStartedAt" in done!).toBe(false);
+    // And only the root carried it.
+    expect("teamCascadeStartedAt" in (await getNode(t, tree.variantTypeId))!).toBe(false);
+  });
+
+  test("a second edit while the stamp is fresh is refused and writes nothing", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId } = await seedTree(t);
+    const a = await seedTeam(t, sportId, { location: "Durham", name: "Bulls" });
+    const b = await seedTeam(t, sportId, { location: "Toledo", name: "Mud Hens" });
+    const tree = await seedTree(t, {}, sportId);
+
+    await asAdmin.mutation(api.selectorOptions.setSelectorOptionTeams, {
+      selectorOptionId: tree.setNameId,
+      teamIds: [a],
+    });
+    const before = await getNode(t, tree.setNameId);
+    await expect(
+      asAdmin.mutation(api.selectorOptions.setSelectorOptionTeams, {
+        selectorOptionId: tree.setNameId,
+        teamIds: [b],
+      }),
+    ).rejects.toThrow(IN_FLIGHT);
+    expect(await getNode(t, tree.setNameId)).toEqual(before);
+
+    // Once the cascade has reported back, the same edit goes through.
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    await asAdmin.mutation(api.selectorOptions.setSelectorOptionTeams, {
+      selectorOptionId: tree.setNameId,
+      teamIds: [b],
+    });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect((await getNode(t, tree.setNameId))!.teamIds).toEqual([b]);
+  });
+
+  test("a clear while the stamp is fresh is refused the same way", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId } = await seedTree(t);
+    const a = await seedTeam(t, sportId, { location: "Durham", name: "Bulls" });
+    const tree = await seedTree(t, {}, sportId);
+
+    await asAdmin.mutation(api.selectorOptions.setSelectorOptionTeams, {
+      selectorOptionId: tree.setNameId,
+      teamIds: [a],
+    });
+    await expect(
+      asAdmin.mutation(api.selectorOptions.setSelectorOptionTeams, {
+        selectorOptionId: tree.setNameId,
+        teamIds: [],
+      }),
+    ).rejects.toThrow(IN_FLIGHT);
+    expect((await getNode(t, tree.setNameId))!.teamIds).toEqual([a]);
+  });
+
+  test("a stale stamp is overwritten and the edit proceeds", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId } = await seedTree(t);
+    const a = await seedTeam(t, sportId, { location: "Durham", name: "Bulls" });
+    const tree = await seedTree(t, {}, sportId);
+    const card = await seedCard(t, tree.variantTypeId, "1");
+    // A cascade that died eleven minutes ago.
+    const dead = Date.now() - STALE - 60_000;
+    await t.run(async (ctx) =>
+      ctx.db.patch(tree.setNameId, { teamCascadeStartedAt: dead }),
+    );
+
+    await asAdmin.mutation(api.selectorOptions.setSelectorOptionTeams, {
+      selectorOptionId: tree.setNameId,
+      teamIds: [a],
+    });
+    const stamped = await getNode(t, tree.setNameId);
+    expect(stamped!.teamCascadeStartedAt).toBe(Date.now());
+    expect(stamped!.teamCascadeStartedAt).not.toBe(dead);
+
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect((await getCard(t, card))!.teamOnCardIds).toEqual([a]);
+    expect("teamCascadeStartedAt" in (await getNode(t, tree.setNameId))!).toBe(false);
+  });
+
+  test("a clear never stamps, and wipes a stale stamp it was allowed past", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId } = await seedTree(t);
+    const a = await seedTeam(t, sportId, { location: "Durham", name: "Bulls" });
+    const tree = await seedTree(t, { setName: [a] }, sportId);
+
+    await asAdmin.mutation(api.selectorOptions.setSelectorOptionTeams, {
+      selectorOptionId: tree.setNameId,
+      teamIds: [],
+    });
+    expect("teamCascadeStartedAt" in (await getNode(t, tree.setNameId))!).toBe(false);
+
+    await t.run(async (ctx) =>
+      ctx.db.patch(tree.setNameId, {
+        teamIds: [a],
+        teamCascadeStartedAt: Date.now() - STALE - 60_000,
+      }),
+    );
+    await asAdmin.mutation(api.selectorOptions.setSelectorOptionTeams, {
+      selectorOptionId: tree.setNameId,
+      teamIds: [],
+    });
+    const node = await getNode(t, tree.setNameId);
+    expect("teamIds" in node!).toBe(false);
+    expect("teamCascadeStartedAt" in node!).toBe(false);
+  });
+
+  test("the preview is not gated by the stamp", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId } = await seedTree(t);
+    const a = await seedTeam(t, sportId, { location: "Durham", name: "Bulls" });
+    const b = await seedTeam(t, sportId, { location: "Toledo", name: "Mud Hens" });
+    const tree = await seedTree(t, {}, sportId);
+
+    await asAdmin.mutation(api.selectorOptions.setSelectorOptionTeams, {
+      selectorOptionId: tree.setNameId,
+      teamIds: [a],
+    });
+    const preview = await asAdmin.query(
+      api.selectorOptions.getSelectorOptionTeamCascadePreview,
+      { selectorOptionId: tree.setNameId, teamIds: [b] },
+    );
+    expect(preview.truncated).toBe(false);
+  });
+});
+
+// ===========================================================================
 // Refusals
 // ===========================================================================
 
@@ -615,7 +880,7 @@ describe("NEO-277 setSelectorOptionTeams refusals", () => {
         selectorOptionId: tree.setNameId,
         teamIds: [wings],
       }),
-    ).rejects.toThrow(/not a team in this card's sport/);
+    ).rejects.toThrow(/not a team in this set's sport/);
   });
 
   test("a sport, year or brand row is refused", async () => {
@@ -629,7 +894,28 @@ describe("NEO-277 setSelectorOptionTeams refusals", () => {
         selectorOptionId: tree.sportId,
         teamIds: [bulls],
       }),
-    ).rejects.toThrow(/not on a sport, year or brand/);
+    ).rejects.toThrow("Pick the team on the set, not on the sport, year or manufacturer.");
+  });
+
+  test("a row that is gone is refused with a sentence, not an internal error", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const tree = await seedTree(t);
+    const bulls = await seedTeam(t, tree.sportId, { location: "Durham", name: "Bulls" });
+    await t.run(async (ctx) => ctx.db.delete(tree.setNameId));
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.setSelectorOptionTeams, {
+        selectorOptionId: tree.setNameId,
+        teamIds: [bulls],
+      }),
+    ).rejects.toThrow("That row is gone. Refresh and try again.");
+    await expect(
+      asAdmin.query(api.selectorOptions.getSelectorOptionTeamCascadePreview, {
+        selectorOptionId: tree.setNameId,
+        teamIds: [bulls],
+      }),
+    ).rejects.toThrow("That row is gone. Refresh and try again.");
   });
 
   test("duplicate ids are stored once", async () => {

@@ -8,6 +8,7 @@
 import { describe, expect, test } from "vitest";
 import type { Id } from "../_generated/dataModel";
 import {
+  cardTeamFollowOutcome,
   cardTeamFollowVerdict,
   defaultTeamOnCardIds,
   inheritedTeamIds,
@@ -71,6 +72,50 @@ describe("cardTeamFollowVerdict", () => {
     expect(cardTeamFollowVerdict({ teamOnCardIds: [A] }, [A], [C])).toBe("follow");
     expect(cardTeamFollowVerdict({ teamOnCardIds: [B] }, [A], [C])).toBe("stay");
     expect(cardTeamFollowVerdict({ teamOnCardIds: [C] }, [A], [C])).toBe("unchanged");
+  });
+});
+
+describe("cardTeamFollowOutcome", () => {
+  test("names the reason for every stay, in priority order", () => {
+    expect(cardTeamFollowOutcome({ teamNoneConfirmedAt: 1 }, [A], [C])).toEqual({
+      verdict: "stay",
+      reason: "teamless",
+    });
+    // Teamless outranks a pending name; a pending name outranks an override.
+    expect(
+      cardTeamFollowOutcome(
+        { teamNoneConfirmedAt: 1, pendingTeamNames: ["Bulls"], teamOnCardIds: [B] },
+        [A],
+        [C],
+      ),
+    ).toEqual({ verdict: "stay", reason: "teamless" });
+    expect(
+      cardTeamFollowOutcome({ pendingTeamNames: ["Bulls"], teamOnCardIds: [B] }, [A], [C]),
+    ).toEqual({ verdict: "stay", reason: "pendingName" });
+    expect(cardTeamFollowOutcome({ teamOnCardIds: [B] }, [A], [C])).toEqual({
+      verdict: "stay",
+      reason: "overridden",
+    });
+  });
+  test("follow and unchanged carry no reason", () => {
+    expect(cardTeamFollowOutcome({}, [A], [C])).toEqual({ verdict: "follow" });
+    expect(cardTeamFollowOutcome({ teamOnCardIds: [A] }, [A], [C])).toEqual({ verdict: "follow" });
+    expect(cardTeamFollowOutcome({ teamOnCardIds: [C] }, [A], [C])).toEqual({ verdict: "unchanged" });
+  });
+  test("the verdict function is the outcome's verdict, never a second rule", () => {
+    const cards = [
+      {},
+      { teamOnCardIds: [A] },
+      { teamOnCardIds: [B] },
+      { teamOnCardIds: [C] },
+      { teamNoneConfirmedAt: 1 },
+      { pendingTeamNames: ["Bulls"] },
+    ];
+    for (const card of cards) {
+      expect(cardTeamFollowVerdict(card, [A], [C])).toBe(
+        cardTeamFollowOutcome(card, [A], [C]).verdict,
+      );
+    }
   });
 });
 

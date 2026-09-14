@@ -1249,16 +1249,65 @@ describe("TeamPicker — labels prop (NEO-277)", () => {
   it("answers to today's names when no labels are passed — every existing caller is unchanged", () => {
     renderPicker({ value: [tid("t1")] });
     expect(screen.getByLabelText("Team picker")).toBeTruthy();
-    expect(screen.getByLabelText("Add team")).toBeTruthy();
+    const trigger = screen.getByLabelText("Add team");
+    // Byte-identical visible text to what every flow has always seen.
+    expect(trigger.textContent).toBe("+ Add team");
     openPopover();
     expect(screen.getByLabelText("Search teams")).toBeTruthy();
     expect(screen.getByLabelText("Team typeahead results")).toBeTruthy();
   });
 
+  it("renders the trigger's visible text FROM its accessible name, so the label is always in the name (SC 2.5.3)", () => {
+    const labels = {
+      root: "Whole-set team",
+      trigger: "Add set team",
+      search: "Find a team for the set",
+      results: "Set team matches",
+    };
+    renderPicker({ value: [], labels });
+
+    const trigger = screen.getByRole("button", { name: "Add set team" });
+    expect(trigger.textContent).toBe("+ Add set team");
+    const visible = trigger.textContent!.replace(/^\+\s*/, "");
+    expect(trigger.getAttribute("aria-label")!.includes(visible)).toBe(true);
+    // The old visible text is gone: nothing on screen says "Add team" while
+    // the name says something else.
+    expect(screen.queryByText("+ Add team")).toBeNull();
+  });
+
+  it("applies `ariaDescribedBy` to the trigger, and to nothing else", () => {
+    render(
+      <>
+        <p id="team-hint">Every card in this set gets this team.</p>
+        <TeamPicker
+          value={[tid("t1")]}
+          onChange={vi.fn()}
+          sportId={SPORT_ID}
+          ariaDescribedBy="team-hint"
+        />
+      </>,
+    );
+    const trigger = screen.getByLabelText("Add team");
+    expect(trigger.getAttribute("aria-describedby")).toBe("team-hint");
+    expect(
+      screen.getByLabelText("Remove team New York Yankees").getAttribute("aria-describedby"),
+    ).toBeNull();
+    expect(
+      screen.getByLabelText("Team picker").getAttribute("aria-describedby"),
+    ).toBeNull();
+  });
+
+  it("leaves the trigger undescribed when no `ariaDescribedBy` is passed", () => {
+    renderPicker({ value: [] });
+    expect(
+      screen.getByLabelText("Add team").getAttribute("aria-describedby"),
+    ).toBeNull();
+  });
+
   it("renames exactly the four container controls, and never a chip or option", () => {
     const labels = {
       root: "Whole-set team",
-      trigger: "Choose set team",
+      trigger: "Add set team",
       search: "Find a team for the set",
       results: "Set team matches",
     };
@@ -1268,7 +1317,7 @@ describe("TeamPicker — labels prop (NEO-277)", () => {
     expect(screen.queryByLabelText("Team picker")).toBeNull();
     expect(screen.queryByLabelText("Add team")).toBeNull();
 
-    fireEvent.click(screen.getByLabelText("Choose set team"));
+    fireEvent.click(screen.getByLabelText("Add set team"));
     expect(screen.getByLabelText("Find a team for the set")).toBeTruthy();
     expect(screen.queryByLabelText("Search teams")).toBeNull();
     expect(screen.getByRole("listbox").getAttribute("aria-label")).toBe(

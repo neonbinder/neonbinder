@@ -37,7 +37,12 @@ import PickerPopover, { popoverFocusables } from "./PickerPopover";
 export type TeamPickerLabels = {
   /** The chip row's own name. Default "Team picker". */
   root: string;
-  /** The "+ Add team" trigger. Default "Add team". */
+  /**
+   * The trigger's accessible name AND its visible text (rendered as
+   * `+ {trigger}`). One string for both so the visible label is always
+   * contained in the accessible name (WCAG 2.2 SC 2.5.3 Label in Name — a
+   * voice-control user says what they see). Default "Add team" → "+ Add team".
+   */
   trigger: string;
   /** The popover's search input. Default "Search teams". */
   search: string;
@@ -111,6 +116,7 @@ export default function TeamPicker({
   sportId,
   disabled,
   labels = DEFAULT_TEAM_PICKER_LABELS,
+  ariaDescribedBy,
 }: {
   value: Array<Id<"teams">>;
   onChange: (next: Array<Id<"teams">>) => void;
@@ -133,6 +139,13 @@ export default function TeamPicker({
    * then have to find.
    */
   labels?: TeamPickerLabels;
+  /**
+   * NEO-277 — id(s) of the text that explains what a pick here DOES, applied
+   * to the trigger. The set row's picker cascades to every card beneath it,
+   * and a screen-reader user reaches the trigger before the hint under it;
+   * the description is what lets them hear the consequence before the pick.
+   */
+  ariaDescribedBy?: string;
 }) {
   // Resolve currently-selected ids → display rows for the chip labels.
   // Convex deduplicates this between sibling pickers on the same page.
@@ -495,6 +508,7 @@ export default function TeamPicker({
             first.focus();
           }}
           aria-label={labels.trigger}
+          aria-describedby={ariaDescribedBy}
           aria-expanded={popoverOpen}
           // a11y (SC 1.4.11 Non-text Contrast): the dashed border IS this
           // control's boundary, and `dark:border-gray-600` measures 2.35:1 on
@@ -502,7 +516,11 @@ export default function TeamPicker({
           // and the light-theme gray-400 already passes.
           className="px-2 py-0.5 text-xs rounded border border-dashed border-gray-400 dark:border-gray-500 hover:border-[#00D558] focus:border-[#00D558] focus:outline-none text-gray-600 dark:text-gray-300"
         >
-          + Add team
+          {/* The visible text IS the accessible name, plus the "+": an
+              instance that renames the trigger renames what people see, so
+              "Add set team" reads on screen as "+ Add set team" and a voice
+              command of what is shown still lands (SC 2.5.3). */}
+          + {labels.trigger}
         </button>
 
         {popoverOpen && (
