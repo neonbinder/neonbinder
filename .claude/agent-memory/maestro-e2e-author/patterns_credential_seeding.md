@@ -35,3 +35,17 @@ File: `profile/worker-bootstrap.yaml`.
 - Fake-cred path: `".*Credentials were saved.*authentication failed.*"`
 - Real-auth path (BSC): `".*BSC account authenticated successfully.*|.*Credentials saved successfully.*"`
 - Real-auth path (SL): `".*Sportlots account authenticated successfully.*|.*Credentials saved successfully.*"`
+
+## `needsReauth` fixture and its cleanup (Group E, verified 2026-09-14)
+- Flag a worker's OWN row: `openLink /testing/needs-reauth?site=sportlots&redirect=<dest>`
+  (sets only `needsReauth`/`needsReauthSince`; `hasCredentials` untouched, so the
+  Set Builder still renders and `ReauthNotice` shows above its heading).
+- Cheapest restore: `openLink /testing/seed-credentials?sites=sportlots&redirect=/profile/credentials`.
+  On the renewable-session branch `seedMyTestCredentials` writes `needsReauth: false`
+  through `updateSiteCredentialStatus` — ~1s, no login. The sibling flow's old comment
+  claimed re-seeding preserves the flag; it does not (corrected in NEO-278).
+- Prove the restore landed with `.*Connected to SportLots.*` on the SL tab: that card
+  renders only when the row has credentials AND is not flagged.
+- `ReauthNotice` dismissal is `sessionStorage` per tab: tap the link BEFORE Dismiss,
+  because Dismiss hides the whole strip (link included) for the tab session; get
+  back to the Set Builder with a fresh `openLink` (30s document-load budget).
