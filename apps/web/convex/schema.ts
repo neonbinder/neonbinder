@@ -385,6 +385,67 @@ export const selectorOptionFields = {
   // writes the value down to every descendant `cardChecklist` row that
   // has not explicitly overridden the key. See `setSelectorOptionFeature`.
   features: v.optional(v.record(v.string(), v.string())),
+  /**
+   * NEO-277 — the TEAM this row's cards carry by default, picked once at set
+   * level and carried down to every card beneath it.
+   *
+   * A TYPED field, not a `features` key, for the same reason `isBase` above is
+   * a flag and not a name: a team is an ENTITY NB acts on by id — livery on the
+   * row, hall-of-fame and stint lookups, the picker, the missing-team
+   * attention lane — and a string in the feature map is none of those things.
+   * `features` holds attributes that are only ever displayed and compared as
+   * text (League, Era, Release Date); a team has a row of its own and every
+   * reader wants that row.
+   *
+   * An ARRAY, mirroring `cardChecklist.teamOnCardIds`, so the set-level value
+   * and the per-card value have one shape and `TeamPicker` is reused unchanged
+   * for both. A single team is the overwhelming case (a team set, a stadium
+   * giveaway); the array is there for the rare multi-team product, exactly as
+   * it is on cards.
+   *
+   * ABSENT means "no set-level team", which is what every row written before
+   * this field existed says, so there is nothing to backfill. An empty array
+   * is never stored — a clear removes the field (`setSelectorOptionTeams`).
+   *
+   * Reaches rows and cards two ways, both NB-internal:
+   *  - CREATION copy-down, like `features`: a child node minted under a parent
+   *    that carries `teamIds` inherits them (the three node-creation sites),
+   *    and a card inserted under a leaf that carries them is born with them as
+   *    `teamOnCardIds` — unless the card arrived WITH a team of its own (a
+   *    picker value, a reviewed wizard row, a typed name), which always wins.
+   *  - EDIT cascade (`setSelectorOptionTeams` → `cascadeSelectorOptionTeams`,
+   *    the NEO-24 "equal-to-previous follows" rule): a descendant node or card
+   *    whose value is empty, or set-equal to what this row carried BEFORE the
+   *    edit, takes the new value; any other value is an operator override and
+   *    stays. A card an operator marked teamless (`teamNoneConfirmedAt`) never
+   *    moves. CLEARING the set-level team touches nothing below it — a clear
+   *    means "stop defaulting", never "un-team N cards".
+   *
+   * No adapter or sync reads or writes this field. A marketplace never names
+   * a set's team (product invariant: marketplaces are input and linkage, never
+   * truth), and `teamOnCardIds` is already in `NB_CONTENT_FIELDS`, so a re-sync
+   * treats a card's team as NB content it may only SUGGEST a change to.
+   */
+  teamIds: v.optional(v.array(v.id("teams"))),
+  /**
+   * NEO-277 — when a `teamIds` edit on THIS row last handed its subtree to
+   * `cascadeSelectorOptionTeams`, and that cascade has not yet reported back.
+   *
+   * The cascade is chunked and self-rescheduling, so for a large set the
+   * cards beneath a row keep changing for a while after the mutation returns.
+   * A second edit scheduled into that window would race the first chunk by
+   * chunk — the mutation's "previous value" is what the row held a moment
+   * ago, not what half the cards still hold — so `setSelectorOptionTeams`
+   * refuses a new value (or a clear) while this is set and younger than
+   * `TEAM_CASCADE_STALE_MS`, and the cascade's final invocation removes it.
+   *
+   * ABSENT means "no cascade in flight", which is what every row written
+   * before this field existed says. A stamp older than the stale window is
+   * treated as a cascade that never finished (a failed chunk, a deploy
+   * mid-run) and is overwritten, so a set can never be locked for good. A
+   * CLEAR never sets it: a clear schedules nothing.
+   */
+  teamCascadeStartedAt: v.optional(v.number()),
   lastUpdated: v.number(),
 };
 

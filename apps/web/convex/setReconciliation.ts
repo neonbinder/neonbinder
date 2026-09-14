@@ -45,6 +45,8 @@ import {
   syncWrittenBscFacet,
 } from "./bscFacets";
 import { selectorOptionFields } from "./schema";
+// NEO-277: the set-level team a fresh child inherits from its parent.
+import { inheritedTeamIds } from "./lib/selectorTeams";
 // NEO-239 — the per-side "can this marketplace be asked?" rule, shared with
 // selectorOptions.ts so the reconciler and the aggregator cannot disagree.
 import {
@@ -1233,9 +1235,13 @@ export const storeReconciledOptions = mutation({
     // already-complete `features` snapshot once and copy it onto every
     // fresh insert below (write-once feature snapshots: see
     // deriveOwnLevelFeatures in convex/features/deriveCardFeatures.ts).
-    const parentFeatures: Record<string, string> | undefined = parentId
-      ? (await ctx.db.get(parentId))?.features
-      : undefined;
+    const parentRowForCopyDown = parentId ? await ctx.db.get(parentId) : null;
+    const parentFeatures: Record<string, string> | undefined =
+      parentRowForCopyDown?.features;
+    // NEO-277: the parent's set-level team, copied onto every fresh insert
+    // below exactly as `features` is — once, at creation, never onto a row the
+    // reconciler merely re-links (see schema.ts `teamIds`).
+    const parentTeamIds = inheritedTeamIds(parentRowForCopyDown);
 
     const existingOptions = await ctx.db
       .query("selectorOptions")
@@ -1599,6 +1605,7 @@ export const storeReconciledOptions = mutation({
         children: [],
         metadata: insertMetadata,
         ...(Object.keys(features).length > 0 ? { features } : {}),
+        ...(parentTeamIds ? { teamIds: parentTeamIds } : {}),
         lastUpdated: Date.now(),
       });
       linkedIds.push(id);

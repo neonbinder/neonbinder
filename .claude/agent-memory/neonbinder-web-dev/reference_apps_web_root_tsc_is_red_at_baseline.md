@@ -1,6 +1,6 @@
 ---
 name: apps-web-root-tsc-is-red-at-baseline
-description: In apps/web, `npx tsc --noEmit -p .` is red on a clean checkout (pre-existing errors in convex/*.test.ts, app/print/labels/page.test.tsx + vite.config.ts; 39 in Aug, 65 on 2026-09-04, 153 on 2026-09-08 — the count drifts, re-measure before quoting); the real Convex typecheck gate is `npx tsc -p convex/tsconfig.json --noEmit`
+description: In apps/web, `npx tsc --noEmit -p .` is red on a clean checkout (pre-existing errors in convex/*.test.ts, app/print/labels/page.test.tsx + vite.config.ts; 39 in Aug, 65 on 2026-09-04, 153 on 2026-09-08, ~174 on 2026-09-13 — the count drifts, re-measure before quoting); the real Convex typecheck gate is `npx tsc -p convex/tsconfig.json --noEmit` — and NO gate typechecks components/ app/ src/, so grep the root run for your own files
 metadata:
   type: reference
 ---
@@ -21,6 +21,15 @@ against `main` rather than against a remembered number. Three clusters:
 Also expect stale-codegen noise layered on top when another agent is mid-edit
 on `schema.ts` — e.g. `Property 'swapPairSides' does not exist` — see
 [[convex-codegen-only-blocks-types]].
+
+**No gate typechecks `components/`, `app/` or `src/` (found 2026-09-13):**
+`convex/tsconfig.json` includes only `convex/**`, vitest transpiles without
+type errors, and the vite build does not run tsc. A wrong tuple type in a
+component (e.g. `[string, string]` widened to `string[]` through an untyped
+array literal + `.filter`) passed lint, all tests and the build; only the
+root `tsc` showed it. So for any `.tsx` change, run
+`npx tsc --noEmit -p . 2>&1 | grep -E "<your files>"` and expect an EMPTY
+result — the exit code is meaningless, the per-file grep is the gate.
 
 **Why it matters:** it is NOT a CI gate and never has been. The documented
 apps/web gates are `npm run lint`, `npm run test:unit`, `npm run build`, and

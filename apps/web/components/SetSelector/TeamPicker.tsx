@@ -14,6 +14,50 @@ import NewTeamDialog from "./NewTeamDialog";
 import PickerPopover, { popoverFocusables } from "./PickerPopover";
 
 /**
+ * NEO-277 — the four container-level accessible names, overridable per
+ * instance. Same shape and same reasoning as `PlayerPickerLabels` (NEO-220):
+ * every one of these is present whatever the picker's state and NONE carries a
+ * team's name, so they are exactly the labels that collide when two
+ * TeamPickers are on screen at once. That became reachable with the set-level
+ * Team row in `SetAttributesPanel`, which can be expanded while the quick-add
+ * form or the card drawer has a picker of its own open beneath it.
+ *
+ * Whole strings rather than a prefix/suffix knob, deliberately. Maestro
+ * selects by `resource-id` (= the aria-label) with a REGEX FIND, so a derived
+ * label that contains the base one — "Add team to set" — would make a flow's
+ * `id: "Add team"` match BOTH elements: strictly worse than the collision it
+ * set out to fix. An override must share no substring with its default in
+ * either direction; `SetAttributesPanel.test.tsx` pins that for the set row.
+ *
+ * Chip and option labels ("Team: San Diego Padres", "Add San Diego Padres",
+ * "Remove team …", "New team …") are deliberately NOT overridable: they carry
+ * the team's name, which is the disambiguator, and the existing flows target
+ * them that way.
+ */
+export type TeamPickerLabels = {
+  /** The chip row's own name. Default "Team picker". */
+  root: string;
+  /**
+   * The trigger's accessible name AND its visible text (rendered as
+   * `+ {trigger}`). One string for both so the visible label is always
+   * contained in the accessible name (WCAG 2.2 SC 2.5.3 Label in Name — a
+   * voice-control user says what they see). Default "Add team" → "+ Add team".
+   */
+  trigger: string;
+  /** The popover's search input. Default "Search teams". */
+  search: string;
+  /** The popover listbox. Default "Team typeahead results". */
+  results: string;
+};
+
+export const DEFAULT_TEAM_PICKER_LABELS: TeamPickerLabels = {
+  root: "Team picker",
+  trigger: "Add team",
+  search: "Search teams",
+  results: "Team typeahead results",
+};
+
+/**
  * NEO-26 — multi-select-capable team picker, defaults to single.
  *
  * Renders the selected teams as a chip row (one chip per `teams._id`)
@@ -71,6 +115,8 @@ export default function TeamPicker({
   onChange,
   sportId,
   disabled,
+  labels = DEFAULT_TEAM_PICKER_LABELS,
+  ariaDescribedBy,
 }: {
   value: Array<Id<"teams">>;
   onChange: (next: Array<Id<"teams">>) => void;
@@ -85,6 +131,21 @@ export default function TeamPicker({
    */
   sportId?: Id<"selectorOptions">;
   disabled?: boolean;
+  /**
+   * NEO-277 — accessible names for this instance's four container controls.
+   * Omit on the one picker a screen can be sure of having only one of; pass
+   * all four when a second picker can be mounted alongside it. All four
+   * together, never a subset — a half-renamed instance is a collision you
+   * then have to find.
+   */
+  labels?: TeamPickerLabels;
+  /**
+   * NEO-277 — id(s) of the text that explains what a pick here DOES, applied
+   * to the trigger. The set row's picker cascades to every card beneath it,
+   * and a screen-reader user reaches the trigger before the hint under it;
+   * the description is what lets them hear the consequence before the pick.
+   */
+  ariaDescribedBy?: string;
 }) {
   // Resolve currently-selected ids → display rows for the chip labels.
   // Convex deduplicates this between sibling pickers on the same page.
@@ -395,7 +456,7 @@ export default function TeamPicker({
     <div
       ref={rootRef}
       className="flex flex-wrap gap-1.5 items-center"
-      aria-label="Team picker"
+      aria-label={labels.root}
       onBlur={handleRootBlur}
     >
       {value.map((id) => (
@@ -446,7 +507,8 @@ export default function TeamPicker({
             e.stopPropagation();
             first.focus();
           }}
-          aria-label="Add team"
+          aria-label={labels.trigger}
+          aria-describedby={ariaDescribedBy}
           aria-expanded={popoverOpen}
           // a11y (SC 1.4.11 Non-text Contrast): the dashed border IS this
           // control's boundary, and `dark:border-gray-600` measures 2.35:1 on
@@ -454,7 +516,11 @@ export default function TeamPicker({
           // and the light-theme gray-400 already passes.
           className="px-2 py-0.5 text-xs rounded border border-dashed border-gray-400 dark:border-gray-500 hover:border-[#00D558] focus:border-[#00D558] focus:outline-none text-gray-600 dark:text-gray-300"
         >
-          + Add team
+          {/* The visible text IS the accessible name, plus the "+": an
+              instance that renames the trigger renames what people see, so
+              "Add set team" reads on screen as "+ Add set team" and a voice
+              command of what is shown still lands (SC 2.5.3). */}
+          + {labels.trigger}
         </button>
 
         {popoverOpen && (
@@ -484,7 +550,7 @@ export default function TeamPicker({
               type="text"
               value={query}
               placeholder="Search or add a team..."
-              aria-label="Search teams"
+              aria-label={labels.search}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => {
                 const rowCount = matches.length + (showCreateOption ? 1 : 0);
@@ -543,7 +609,7 @@ export default function TeamPicker({
             )}
             <div
               role="listbox"
-              aria-label="Team typeahead results"
+              aria-label={labels.results}
               className="space-y-1"
             >
               {matches.map((m, idx) => {

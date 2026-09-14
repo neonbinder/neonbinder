@@ -77,6 +77,13 @@ vi.mock("../../convex/_generated/api", () => ({
       deleteSelectorOption: "deleteSelectorOption",
       renameSelectorOption: "renameSelectorOption",
       setBaseVariantType: "setBaseVariantType",
+      // NEO-277
+      setSelectorOptionTeams: "setSelectorOptionTeams",
+      getSelectorOptionTeamCascadePreview:
+        "getSelectorOptionTeamCascadePreview",
+    },
+    teams: {
+      getManyByIds: "teams.getManyByIds",
     },
   },
 }));
@@ -84,17 +91,32 @@ vi.mock("../../convex/_generated/api", () => ({
 const mockSetSelectorOptionFeature = vi.fn();
 const mockSetBaseVariantType = vi.fn();
 const mockDeleteSelectorOption = vi.fn();
+/** NEO-277 */
+const mockSetSelectorOptionTeams = vi.fn();
+/**
+ * NEO-277 — the Team row's two one-shot reads go through `useConvex().query`,
+ * not `useQuery`; routed by the same string refs.
+ */
+const mockConvexQuery = vi.fn();
 
 let currentRow: unknown;
 let currentChain: unknown;
 /** `getSelectorOptionHoldings` — undefined means "still counting". */
 let currentHoldings: unknown;
+/**
+ * NEO-277: `teams.getManyByIds` — the collapsed bar's livery and the Team
+ * row's own read of its stored team (for "Keep {team}" and the clear confirm).
+ */
+let currentTeamRows: unknown;
+/** NEO-277: the team the mocked picker's trigger adds on click. */
+let pickNext = "team-bulls";
 
 vi.mock("convex/react", () => ({
   useQuery: (query: string) => {
     if (query === "getSelectorOptionById") return currentRow;
     if (query === "getAncestorChain") return currentChain;
     if (query === "getSelectorOptionHoldings") return currentHoldings;
+    if (query === "teams.getManyByIds") return currentTeamRows;
     return undefined;
   },
   useMutation: (mutation: string) => {
@@ -102,15 +124,84 @@ vi.mock("convex/react", () => ({
       return mockSetSelectorOptionFeature;
     if (mutation === "deleteSelectorOption") return mockDeleteSelectorOption;
     if (mutation === "setBaseVariantType") return mockSetBaseVariantType;
+    if (mutation === "setSelectorOptionTeams") return mockSetSelectorOptionTeams;
     return vi.fn();
   },
+  useConvex: () => ({ query: mockConvexQuery }),
+}));
+
+/**
+ * NEO-277 — a stand-in for the real picker (same shape the card drawer's
+ * tests use): the panel's contract with it is `value` in, the full next array
+ * out. Two buttons stand in for a pick and a chip removal; `disabled` is
+ * forwarded so the busy window can be asserted.
+ */
+vi.mock("./TeamPicker", () => ({
+  // The real defaults, so the no-substring pin below measures against what
+  // every other caller actually renders.
+  DEFAULT_TEAM_PICKER_LABELS: {
+    root: "Team picker",
+    trigger: "Add team",
+    search: "Search teams",
+    results: "Team typeahead results",
+  },
+  default: ({
+    value,
+    onChange,
+    sportId,
+    disabled,
+    labels,
+    ariaDescribedBy,
+  }: {
+    value: string[];
+    onChange: (next: string[]) => void;
+    sportId?: string;
+    disabled?: boolean;
+    labels: { root: string; trigger: string; search: string; results: string };
+    ariaDescribedBy?: string;
+  }) => (
+    <div aria-label={labels.root} data-sport-id={sportId ?? ""}>
+      <span data-testid="team-picker-value">{value.join(",")}</span>
+      {/* Mirrors the real trigger: visible text is `+ {labels.trigger}` and the
+          hint id lands on it. A pick adds whichever team `pickNext` names. */}
+      <button
+        type="button"
+        aria-label={labels.trigger}
+        aria-describedby={ariaDescribedBy}
+        disabled={disabled}
+        onClick={() => onChange([...value, pickNext])}
+      >
+        + {labels.trigger}
+      </button>
+      {value.map((id) => (
+        <button
+          key={id}
+          type="button"
+          aria-label={`Remove team ${id}`}
+          disabled={disabled}
+          onClick={() => onChange(value.filter((v) => v !== id))}
+        >
+          ×
+        </button>
+      ))}
+    </div>
+  ),
 }));
 
 // ---------------------------------------------------------------------------
 // Component under test — imported after mocks
 // ---------------------------------------------------------------------------
 
-import SetAttributesPanel from "./SetAttributesPanel";
+import SetAttributesPanel, {
+  SET_TEAM_PICKER_LABELS,
+  teamCascadeConfirmCopy,
+  teamClearConfirmCopy,
+  teamSavedToast,
+} from "./SetAttributesPanel";
+import { DEFAULT_TEAM_PICKER_LABELS } from "./TeamPicker";
+
+/** The set row's picker trigger — see SET_TEAM_PICKER_LABELS. */
+const PICK = SET_TEAM_PICKER_LABELS.trigger;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -126,6 +217,10 @@ function makeRow(overrides: Partial<{
   features: Record<string, string>;
   metadata: Record<string, unknown>;
   platformData: Record<string, Record<string, string>>;
+  /** NEO-277 */
+  teamIds: string[];
+  /** NEO-277 — present while a cascade is (believed to be) still running. */
+  teamCascadeStartedAt: number;
 }> = {}) {
   return {
     _id: SELECTOR_OPTION_ID,
@@ -1202,5 +1297,902 @@ describe("SetAttributesPanel — marking the base variant type (NEO-239)", () =>
     expect(
       await screen.findByText("Marked Insert as the base set"),
     ).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-277 — Team as a set-level attribute
+// ---------------------------------------------------------------------------
+
+describe("SetAttributesPanel — Team row (NEO-277)", () => {
+  const BULLS = {
+    _id: "team-bulls",
+    name: "Bulls",
+    location: "Durham",
+    colors: { primary: "#4A9EFF", secondary: "#f5a623" },
+  };
+  const MUDCATS = {
+    _id: "team-mudcats",
+    name: "Mudcats",
+    location: "Carolina",
+    colors: { primary: "#c8102e", secondary: "#ffffff" },
+  };
+  const KNIGHTS = {
+    _id: "team-knights",
+    name: "Knights",
+    location: "Charlotte",
+    // A near-black primary that fails the panel's contrast floor, and a pale
+    // secondary that clears it — the fallback order the livery relies on.
+    colors: { primary: "#0b1a33", secondary: "#e8e8e8" },
+  };
+  const NOTHING_FOLLOWS = {
+    nodesFollowing: 0,
+    cardsFollowing: 0,
+    cardsStaying: 0,
+    cardsOverridden: 0,
+    cardsTeamless: 0,
+    cardsPendingName: 0,
+    cardsCarryingCurrent: 0,
+    truncated: false,
+  };
+
+  /**
+   * Route the two one-shot reads by their (string-mocked) refs. `previews`
+   * may answer the non-empty pick and the `[]` clear differently — that is
+   * the whole point of `cardsCarryingCurrent`.
+   */
+  function armConvexQuery(
+    preview: typeof NOTHING_FOLLOWS,
+    rows: unknown[] = [BULLS],
+    clearPreview: typeof NOTHING_FOLLOWS = preview,
+  ) {
+    mockConvexQuery.mockImplementation(
+      async (ref: string, args: { teamIds?: string[] }) => {
+        if (ref === "getSelectorOptionTeamCascadePreview") {
+          return args.teamIds && args.teamIds.length === 0
+            ? clearPreview
+            : preview;
+        }
+        if (ref === "teams.getManyByIds") return rows;
+        throw new Error(`unexpected convex.query(${ref})`);
+      },
+    );
+  }
+
+  /** The Team row's group, for scoping queries to it. */
+  const teamGroup = () => screen.getByRole("group", { name: "Team" });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSetSelectorOptionTeams.mockResolvedValue(null);
+    mockSetSelectorOptionFeature.mockResolvedValue(undefined);
+    currentHoldings = { holds: [], protected: false };
+    currentTeamRows = undefined;
+    currentChain = makeChain("Baseball");
+    pickNext = "team-bulls";
+    armConvexQuery(NOTHING_FOLLOWS);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("renders the row at setName, labelled Team, ahead of every feature row, with the picker scoped to the sport ROW id", () => {
+    currentRow = makeRow({ level: "setName", teamIds: [] });
+    renderPanel();
+
+    const group = teamGroup();
+    expect(group).toBeTruthy();
+    // The hint is the group's description, not a tooltip: it has to be
+    // readable before the pick.
+    expect(group.getAttribute("aria-describedby")).toBeTruthy();
+    expect(
+      within(group).getByText(
+        "Team issues, police sets, college sets, stadium giveaways: pick the team once and every card in this set gets it.",
+      ),
+    ).toBeTruthy();
+
+    // Scoped by the sport row's id from the ancestor chain — never its name.
+    expect(
+      within(group).getByLabelText(SET_TEAM_PICKER_LABELS.root).getAttribute("data-sport-id"),
+    ).toBe("sport-id");
+
+    // First in the attributes area: it precedes the toggles row and the grid.
+    const toggles = screen.getByRole("group", { name: "Set attribute toggles" });
+    expect(
+      group.compareDocumentPosition(toggles) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it.each([
+    ["variantType", "variant"],
+    ["insert", "insert"],
+    ["parallel", "parallel"],
+  ])(
+    "renders the row at %s too, with the shorter hint naming that level",
+    (level, noun) => {
+      currentRow = makeRow({ level, value: `node-${level}`, teamIds: [] });
+      renderPanel();
+      expect(
+        within(teamGroup()).getByText(
+          `Every card in this ${noun} gets this team. Pick it once.`,
+        ),
+      ).toBeTruthy();
+    },
+  );
+
+  it.each(["sport", "year", "manufacturer"])(
+    "does NOT render the row at %s",
+    (level) => {
+      currentRow = makeRow({ level, value: `node-${level}`, teamIds: [] });
+      renderPanel();
+      expect(screen.queryByRole("group", { name: "Team" })).toBeNull();
+      expect(screen.queryByLabelText(SET_TEAM_PICKER_LABELS.root)).toBeNull();
+    },
+  );
+
+  it("names its picker distinctly from every other TeamPicker on the page — no shared substring in either direction", () => {
+    // This panel can be expanded while the quick-add form or the card drawer
+    // has a default-labelled picker open beneath it, and neither hides the
+    // other. Maestro's `id:` selector is a regex find over the aria-label, so
+    // a label that merely CONTAINED the default ("Add team to set") would make
+    // a flow's `id: "Add team"` match both — the check is both ways and is
+    // pinned here because the failure is silent in both.
+    currentRow = makeRow({ level: "setName", teamIds: [] });
+    renderPanel();
+
+    for (const key of ["root", "trigger", "search", "results"] as const) {
+      const distinct = SET_TEAM_PICKER_LABELS[key];
+      const base = DEFAULT_TEAM_PICKER_LABELS[key];
+      expect(distinct).not.toBe(base);
+      expect(distinct.includes(base)).toBe(false);
+      expect(base.includes(distinct)).toBe(false);
+    }
+    // And they are what this row actually renders — not the defaults.
+    expect(screen.getByLabelText(SET_TEAM_PICKER_LABELS.root)).toBeTruthy();
+    expect(screen.getByLabelText(SET_TEAM_PICKER_LABELS.trigger)).toBeTruthy();
+    expect(screen.queryByLabelText(DEFAULT_TEAM_PICKER_LABELS.root)).toBeNull();
+    expect(
+      screen.queryByLabelText(DEFAULT_TEAM_PICKER_LABELS.trigger),
+    ).toBeNull();
+  });
+
+  it("the trigger's visible text is contained in its accessible name (SC 2.5.3), and the hint describes it", () => {
+    currentRow = makeRow({ level: "setName", teamIds: [] });
+    renderPanel();
+
+    const trigger = screen.getByLabelText(PICK);
+    const name = trigger.getAttribute("aria-label") ?? "";
+    const visible = (trigger.textContent ?? "").replace(/^\+\s*/, "").trim();
+    expect(visible).toBe("Add set team");
+    expect(name).toBe("Add set team");
+    expect(name.includes(visible)).toBe(true);
+
+    // The hint reaches the trigger as well as the group: a screen-reader user
+    // arrives at the button before the sentence under it.
+    const describedBy = trigger.getAttribute("aria-describedby");
+    expect(describedBy).toBeTruthy();
+    expect(document.getElementById(describedBy!)?.textContent).toContain(
+      "pick the team once and every card in this set gets it",
+    );
+    expect(teamGroup().getAttribute("aria-describedby")).toBe(describedBy);
+  });
+
+  it("saves straight away, with no dialog, when no card beneath would follow", async () => {
+    currentRow = makeRow({ level: "setName", teamIds: [] });
+    armConvexQuery(NOTHING_FOLLOWS);
+    renderPanel();
+
+    fireEvent.click(screen.getByLabelText(PICK));
+
+    await waitFor(() => {
+      expect(mockSetSelectorOptionTeams).toHaveBeenCalledWith({
+        selectorOptionId: SELECTOR_OPTION_ID,
+        teamIds: ["team-bulls"],
+      });
+    });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(await screen.findByText("Saved Team")).toBeTruthy();
+    // The preview was asked with the value about to be saved.
+    expect(mockConvexQuery).toHaveBeenCalledWith(
+      "getSelectorOptionTeamCascadePreview",
+      { selectorOptionId: SELECTOR_OPTION_ID, teamIds: ["team-bulls"] },
+    );
+  });
+
+  it("saves straight away when only empty rows (no cards) would follow — the confirm counts cards", async () => {
+    currentRow = makeRow({ level: "setName", teamIds: [] });
+    armConvexQuery({ ...NOTHING_FOLLOWS, nodesFollowing: 3 });
+    renderPanel();
+
+    fireEvent.click(screen.getByLabelText(PICK));
+
+    await waitFor(() => {
+      expect(mockSetSelectorOptionTeams).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(await screen.findByText("Saved Team")).toBeTruthy();
+  });
+
+  it("asks first when cards would follow, names the team and the card count only, and saves on confirm", async () => {
+    currentRow = makeRow({ level: "setName", teamIds: [] });
+    armConvexQuery({
+      ...NOTHING_FOLLOWS,
+      nodesFollowing: 3,
+      cardsFollowing: 28,
+      cardsStaying: 2,
+      cardsOverridden: 2,
+    });
+    renderPanel();
+
+    fireEvent.click(screen.getByLabelText(PICK));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      within(dialog).getByText("Apply Durham Bulls to this set?"),
+    ).toBeTruthy();
+    expect(
+      within(dialog).getByText(
+        "28 cards under this set will get Durham Bulls. 2 cards carry a different team — these will not change.",
+      ),
+    ).toBeTruthy();
+    // No "3 variants" anywhere: rows are not a thing a collector counts.
+    expect(dialog.textContent).not.toContain("variant");
+    // Nothing written while the question is open.
+    expect(mockSetSelectorOptionTeams).not.toHaveBeenCalled();
+    // The picker already shows the pick, so the operator sees what the
+    // question is about.
+    expect(screen.getByTestId("team-picker-value").textContent).toBe(
+      "team-bulls",
+    );
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Yes, apply" }));
+
+    await waitFor(() => {
+      expect(mockSetSelectorOptionTeams).toHaveBeenCalledWith({
+        selectorOptionId: SELECTOR_OPTION_ID,
+        teamIds: ["team-bulls"],
+      });
+    });
+    expect(
+      await screen.findByText("Saved Team · applying to 28 cards"),
+    ).toBeTruthy();
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("reverts the picker and writes nothing on cancel, then parks focus on the picker trigger", async () => {
+    currentRow = makeRow({ level: "setName", teamIds: [] });
+    armConvexQuery({ ...NOTHING_FOLLOWS, cardsFollowing: 5 });
+    renderPanel();
+
+    fireEvent.click(screen.getByLabelText(PICK));
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      within(dialog).getByText("5 cards under this set will get Durham Bulls."),
+    ).toBeTruthy();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(mockSetSelectorOptionTeams).not.toHaveBeenCalled();
+    expect(screen.getByTestId("team-picker-value").textContent).toBe("");
+    await waitFor(() => {
+      expect(document.activeElement).toBe(screen.getByLabelText(PICK));
+    });
+  });
+
+  // --- the change-team gesture ------------------------------------------
+
+  describe("removing the last chip", () => {
+    beforeEach(() => {
+      currentRow = makeRow({ level: "setName", teamIds: ["team-bulls"] });
+      currentTeamRows = [BULLS];
+    });
+
+    it("does NOT save: the picker empties, the stored value stands, and two actions appear", async () => {
+      renderPanel();
+
+      fireEvent.click(screen.getByLabelText("Remove team team-bulls"));
+
+      expect(screen.getByTestId("team-picker-value").textContent).toBe("");
+      const group = teamGroup();
+      expect(
+        within(group).getByRole("button", { name: "Clear team" }),
+      ).toBeTruthy();
+      expect(
+        within(group).getByRole("button", { name: "Keep Durham Bulls" }),
+      ).toBeTruthy();
+      // No write, no preview, no dialog — nothing has been decided yet.
+      expect(mockSetSelectorOptionTeams).not.toHaveBeenCalled();
+      expect(mockConvexQuery).not.toHaveBeenCalled();
+      expect(screen.queryByRole("dialog")).toBeNull();
+      // The × that was pressed is gone; focus is on the trigger, not <body>.
+      await waitFor(() => {
+        expect(document.activeElement).toBe(screen.getByLabelText(PICK));
+      });
+    });
+
+    it("'Keep' reverts the picker to the stored value, writes nothing, and parks focus on the trigger", async () => {
+      renderPanel();
+      fireEvent.click(screen.getByLabelText("Remove team team-bulls"));
+
+      fireEvent.click(screen.getByRole("button", { name: "Keep Durham Bulls" }));
+
+      expect(screen.getByTestId("team-picker-value").textContent).toBe(
+        "team-bulls",
+      );
+      expect(screen.queryByRole("button", { name: "Clear team" })).toBeNull();
+      expect(mockSetSelectorOptionTeams).not.toHaveBeenCalled();
+      expect(mockConvexQuery).not.toHaveBeenCalled();
+      await waitFor(() => {
+        expect(document.activeElement).toBe(screen.getByLabelText(PICK));
+      });
+    });
+
+    it("re-adding the stored team from the empty state is a Keep, not a save", () => {
+      renderPanel();
+      fireEvent.click(screen.getByLabelText("Remove team team-bulls"));
+
+      fireEvent.click(screen.getByLabelText(PICK)); // adds team-bulls back
+
+      expect(screen.getByTestId("team-picker-value").textContent).toBe(
+        "team-bulls",
+      );
+      expect(screen.queryByRole("button", { name: "Clear team" })).toBeNull();
+      expect(mockSetSelectorOptionTeams).not.toHaveBeenCalled();
+      expect(mockConvexQuery).not.toHaveBeenCalled();
+    });
+
+    it("'Clear team' with cards carrying the team asks first, then sends [] on confirm", async () => {
+      armConvexQuery(NOTHING_FOLLOWS, [BULLS], {
+        ...NOTHING_FOLLOWS,
+        cardsCarryingCurrent: 28,
+      });
+      renderPanel();
+      fireEvent.click(screen.getByLabelText("Remove team team-bulls"));
+
+      fireEvent.click(screen.getByRole("button", { name: "Clear team" }));
+
+      const dialog = await screen.findByRole("dialog");
+      expect(mockConvexQuery).toHaveBeenCalledWith(
+        "getSelectorOptionTeamCascadePreview",
+        { selectorOptionId: SELECTOR_OPTION_ID, teamIds: [] },
+      );
+      expect(
+        within(dialog).getByText("Take Durham Bulls off this set?"),
+      ).toBeTruthy();
+      expect(
+        within(dialog).getByText(
+          "28 cards keep Durham Bulls. Picked the wrong team? Pick the right one instead and they'll follow.",
+        ),
+      ).toBeTruthy();
+      expect(mockSetSelectorOptionTeams).not.toHaveBeenCalled();
+
+      fireEvent.click(
+        within(dialog).getByRole("button", { name: "Yes, clear" }),
+      );
+
+      await waitFor(() => {
+        expect(mockSetSelectorOptionTeams).toHaveBeenCalledWith({
+          selectorOptionId: SELECTOR_OPTION_ID,
+          teamIds: [],
+        });
+      });
+      expect(
+        await screen.findByText("Cleared Team · cards unchanged"),
+      ).toBeTruthy();
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      expect(screen.queryByRole("button", { name: "Clear team" })).toBeNull();
+      await waitFor(() => {
+        expect(document.activeElement).toBe(screen.getByLabelText(PICK));
+      });
+    });
+
+    it("cancelling the take-off dialog leaves the row pending-empty, nothing written", async () => {
+      armConvexQuery(NOTHING_FOLLOWS, [BULLS], {
+        ...NOTHING_FOLLOWS,
+        cardsCarryingCurrent: 1,
+      });
+      renderPanel();
+      fireEvent.click(screen.getByLabelText("Remove team team-bulls"));
+      fireEvent.click(screen.getByRole("button", { name: "Clear team" }));
+      const dialog = await screen.findByRole("dialog");
+      expect(
+        within(dialog).getByText(/^1 card keeps Durham Bulls\./),
+      ).toBeTruthy();
+
+      fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      expect(mockSetSelectorOptionTeams).not.toHaveBeenCalled();
+      expect(screen.getByTestId("team-picker-value").textContent).toBe("");
+      expect(screen.getByRole("button", { name: "Clear team" })).toBeTruthy();
+      expect(
+        screen.getByRole("button", { name: "Keep Durham Bulls" }),
+      ).toBeTruthy();
+    });
+
+    it("'Clear team' with no card carrying the team clears directly, no dialog, focus on the trigger", async () => {
+      armConvexQuery(NOTHING_FOLLOWS, [BULLS], NOTHING_FOLLOWS);
+      renderPanel();
+      fireEvent.click(screen.getByLabelText("Remove team team-bulls"));
+
+      fireEvent.click(screen.getByRole("button", { name: "Clear team" }));
+
+      await waitFor(() => {
+        expect(mockSetSelectorOptionTeams).toHaveBeenCalledWith({
+          selectorOptionId: SELECTOR_OPTION_ID,
+          teamIds: [],
+        });
+      });
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(
+        await screen.findByText("Cleared Team · cards unchanged"),
+      ).toBeTruthy();
+      await waitFor(() => {
+        expect(document.activeElement).toBe(screen.getByLabelText(PICK));
+      });
+    });
+
+    it("adding a different team from the empty state previews against the STORED team and confirms with the cards that follow", async () => {
+      pickNext = "team-mudcats";
+      armConvexQuery(
+        { ...NOTHING_FOLLOWS, cardsFollowing: 28 },
+        [MUDCATS],
+      );
+      renderPanel();
+      fireEvent.click(screen.getByLabelText("Remove team team-bulls"));
+      expect(screen.getByRole("button", { name: "Clear team" })).toBeTruthy();
+
+      fireEvent.click(screen.getByLabelText(PICK)); // adds team-mudcats
+
+      // The two actions withdraw the moment a replacement is picked.
+      expect(screen.queryByRole("button", { name: "Clear team" })).toBeNull();
+      const dialog = await screen.findByRole("dialog");
+      // The preview was asked for the replacement while the row still stores
+      // Bulls, so the server's `previous` is Bulls and its cards follow.
+      expect(mockConvexQuery).toHaveBeenCalledWith(
+        "getSelectorOptionTeamCascadePreview",
+        { selectorOptionId: SELECTOR_OPTION_ID, teamIds: ["team-mudcats"] },
+      );
+      expect(
+        within(dialog).getByText("Apply Carolina Mudcats to this set?"),
+      ).toBeTruthy();
+      expect(
+        within(dialog).getByText(
+          "28 cards under this set will get Carolina Mudcats.",
+        ),
+      ).toBeTruthy();
+      // Exactly one write, and it never passed through [].
+      expect(mockSetSelectorOptionTeams).not.toHaveBeenCalled();
+      fireEvent.click(
+        within(dialog).getByRole("button", { name: "Yes, apply" }),
+      );
+      await waitFor(() => {
+        expect(mockSetSelectorOptionTeams).toHaveBeenCalledTimes(1);
+      });
+      expect(mockSetSelectorOptionTeams).toHaveBeenCalledWith({
+        selectorOptionId: SELECTOR_OPTION_ID,
+        teamIds: ["team-mudcats"],
+      });
+      expect(
+        await screen.findByText("Saved Team · applying to 28 cards"),
+      ).toBeTruthy();
+    });
+  });
+
+  it("removing ONE chip of a multi-team row is the ordinary non-empty path — no pending actions", async () => {
+    currentRow = makeRow({
+      level: "setName",
+      teamIds: ["team-bulls", "team-knights"],
+    });
+    currentTeamRows = [BULLS, KNIGHTS];
+    armConvexQuery({ ...NOTHING_FOLLOWS, cardsFollowing: 4 }, [BULLS]);
+    renderPanel();
+
+    fireEvent.click(screen.getByLabelText("Remove team team-knights"));
+
+    expect(screen.queryByRole("button", { name: "Clear team" })).toBeNull();
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      within(dialog).getByText("Apply Durham Bulls to this set?"),
+    ).toBeTruthy();
+    expect(mockConvexQuery).toHaveBeenCalledWith(
+      "getSelectorOptionTeamCascadePreview",
+      { selectorOptionId: SELECTOR_OPTION_ID, teamIds: ["team-bulls"] },
+    );
+  });
+
+  // --- cascade in flight --------------------------------------------------
+
+  describe("while a cascade is in flight", () => {
+    it("disables the picker, hides the pending actions, and says so beside the control", () => {
+      currentRow = makeRow({
+        level: "setName",
+        teamIds: ["team-bulls"],
+        teamCascadeStartedAt: Date.now() - 5_000,
+      });
+      currentTeamRows = [BULLS];
+      renderPanel();
+
+      const group = teamGroup();
+      expect(
+        within(group).getByRole("status").textContent,
+      ).toBe("Applying to cards…");
+      expect(
+        (screen.getByLabelText(PICK) as HTMLButtonElement).disabled,
+      ).toBe(true);
+      expect(
+        (screen.getByLabelText("Remove team team-bulls") as HTMLButtonElement)
+          .disabled,
+      ).toBe(true);
+      expect(screen.queryByRole("button", { name: "Clear team" })).toBeNull();
+      expect(
+        screen.queryByRole("button", { name: "Keep Durham Bulls" }),
+      ).toBeNull();
+    });
+
+    it("treats a timestamp older than ten minutes as NOT in flight", () => {
+      currentRow = makeRow({
+        level: "setName",
+        teamIds: ["team-bulls"],
+        teamCascadeStartedAt: Date.now() - 11 * 60 * 1000,
+      });
+      currentTeamRows = [BULLS];
+      renderPanel();
+
+      expect(within(teamGroup()).queryByRole("status")).toBeNull();
+      expect(
+        (screen.getByLabelText(PICK) as HTMLButtonElement).disabled,
+      ).toBe(false);
+    });
+
+    it("toasts 'Team applied to cards' when the row leaves the in-flight state while mounted", async () => {
+      currentRow = makeRow({
+        level: "setName",
+        teamIds: ["team-bulls"],
+        teamCascadeStartedAt: Date.now() - 5_000,
+      });
+      currentTeamRows = [BULLS];
+      const { rerender } = renderPanel();
+      expect(screen.queryByText("Team applied to cards")).toBeNull();
+
+      // The cascade's last chunk clears the field; the subscription delivers
+      // the row again without it.
+      currentRow = makeRow({ level: "setName", teamIds: ["team-bulls"] });
+      rerender(
+        <SetAttributesPanel
+          selectorOptionId={SELECTOR_OPTION_ID}
+          defaultCollapsed={false}
+        />,
+      );
+
+      expect(await screen.findByText("Team applied to cards")).toBeTruthy();
+      expect(within(teamGroup()).queryByRole("status")).toBeNull();
+      expect(
+        (screen.getByLabelText(PICK) as HTMLButtonElement).disabled,
+      ).toBe(false);
+    });
+
+    it("does not toast when it mounts already NOT in flight", () => {
+      currentRow = makeRow({ level: "setName", teamIds: ["team-bulls"] });
+      currentTeamRows = [BULLS];
+      renderPanel();
+      expect(screen.queryByText("Team applied to cards")).toBeNull();
+    });
+
+    it("shows the server's 'still applying' refusal verbatim when a save races the cascade", async () => {
+      currentRow = makeRow({ level: "setName", teamIds: [] });
+      mockSetSelectorOptionTeams.mockRejectedValue(
+        new ConvexError(
+          "Still applying the last team change. Try again in a moment.",
+        ),
+      );
+      renderPanel();
+
+      fireEvent.click(screen.getByLabelText(PICK));
+
+      const toast = await screen.findByRole("status");
+      await waitFor(() =>
+        expect(toast.textContent).toBe(
+          "Failed: Still applying the last team change. Try again in a moment.",
+        ),
+      );
+    });
+  });
+
+  it("routes the PREVIEW's own refusal through the failure toast, verbatim, on both the pick and the clear", async () => {
+    // The preview throws when the row is gone rather than answering zeros —
+    // zeros would read as "nothing follows" and save straight away.
+    currentRow = makeRow({ level: "setName", teamIds: ["team-bulls"] });
+    currentTeamRows = [BULLS];
+    mockConvexQuery.mockImplementation(async (ref: string) => {
+      if (ref === "getSelectorOptionTeamCascadePreview") {
+        throw new ConvexError("That row is gone. Refresh and try again.");
+      }
+      return [MUDCATS];
+    });
+    pickNext = "team-mudcats";
+    renderPanel();
+
+    fireEvent.click(screen.getByLabelText(PICK));
+    let toast = await screen.findByRole("status");
+    await waitFor(() =>
+      expect(toast.textContent).toBe(
+        "Failed: That row is gone. Refresh and try again.",
+      ),
+    );
+    expect(mockSetSelectorOptionTeams).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    // The picker is back on the stored value.
+    await waitFor(() =>
+      expect(screen.getByTestId("team-picker-value").textContent).toBe(
+        "team-bulls",
+      ),
+    );
+
+    fireEvent.click(screen.getByLabelText("Remove team team-bulls"));
+    fireEvent.click(screen.getByRole("button", { name: "Clear team" }));
+    toast = await screen.findByRole("status");
+    await waitFor(() =>
+      expect(toast.textContent).toBe(
+        "Failed: That row is gone. Refresh and try again.",
+      ),
+    );
+    expect(mockSetSelectorOptionTeams).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("does not put a plain Error's text in the toast when the save fails", async () => {
+    currentRow = makeRow({ level: "setName", teamIds: [] });
+    mockSetSelectorOptionTeams.mockRejectedValue(
+      new Error("[CONVEX M(selectorOptions:setSelectorOptionTeams)] [Request ID: abc] Server Error"),
+    );
+    renderPanel();
+
+    fireEvent.click(screen.getByLabelText(PICK));
+
+    const toast = await screen.findByRole("status");
+    await waitFor(() =>
+      expect(toast.textContent).toBe("Failed: Could not save Team"),
+    );
+    expect(toast.textContent).not.toContain("Request ID");
+    // The picker is back on the row's value, not stuck on the failed pick.
+    await waitFor(() =>
+      expect(screen.getByTestId("team-picker-value").textContent).toBe(""),
+    );
+  });
+
+  it("shows a ConvexError's data verbatim when the save fails", async () => {
+    currentRow = makeRow({ level: "setName", teamIds: [] });
+    mockSetSelectorOptionTeams.mockRejectedValue(
+      new ConvexError("That team belongs to another sport."),
+    );
+    renderPanel();
+
+    fireEvent.click(screen.getByLabelText(PICK));
+
+    const toast = await screen.findByRole("status");
+    await waitFor(() =>
+      expect(toast.textContent).toBe(
+        "Failed: That team belongs to another sport.",
+      ),
+    );
+  });
+
+  it("shows the team on the COLLAPSED bar as its short name in livery, and not while expanded", () => {
+    currentRow = makeRow({ level: "setName", teamIds: ["team-bulls"] });
+    currentTeamRows = [BULLS];
+
+    const { unmount } = render(
+      <SetAttributesPanel
+        selectorOptionId={SELECTOR_OPTION_ID}
+        defaultCollapsed
+      />,
+    );
+
+    const chip = screen.getByText("Bulls");
+    expect(chip.getAttribute("title")).toBe("Durham Bulls");
+    // Primary clears 4.5:1 on the panel ground, so it is the colour used —
+    // normalised to lower-case `#rrggbb` on the way through.
+    expect(chip.style.color).toBe("#4a9eff");
+    // Screen readers hear what the word is.
+    expect(chip.parentElement?.parentElement?.textContent).toContain("Team: ");
+
+    unmount();
+
+    // Expanded, the picker says it; the bar does not repeat it.
+    renderPanel();
+    expect(screen.queryByText("Bulls")).toBeNull();
+    expect(screen.getByTestId("team-picker-value").textContent).toBe(
+      "team-bulls",
+    );
+  });
+
+  it("falls back to the secondary colour when the primary fails contrast, and to muted when both do", () => {
+    currentRow = makeRow({
+      level: "setName",
+      teamIds: ["team-knights", "team-muted"],
+    });
+    currentTeamRows = [
+      KNIGHTS,
+      { _id: "team-muted", name: "Shadows", colors: { primary: "#111111" } },
+    ];
+
+    render(
+      <SetAttributesPanel
+        selectorOptionId={SELECTOR_OPTION_ID}
+        defaultCollapsed
+      />,
+    );
+
+    expect(screen.getByText("Knights").style.color).toBe("#e8e8e8");
+    const muted = screen.getByText("Shadows");
+    expect(muted.style.color).toBe("");
+    expect(muted.className).toContain("text-gray-300");
+  });
+
+  it("does not show the bar chip at a level that has no Team row", () => {
+    currentRow = makeRow({ level: "year", value: "2024", teamIds: ["team-bulls"] });
+    currentTeamRows = [BULLS];
+    render(
+      <SetAttributesPanel
+        selectorOptionId={SELECTOR_OPTION_ID}
+        defaultCollapsed
+      />,
+    );
+    expect(screen.queryByText("Bulls")).toBeNull();
+  });
+});
+
+describe("teamCascadeConfirmCopy / teamClearConfirmCopy / teamSavedToast (NEO-277)", () => {
+  const NONE = {
+    nodesFollowing: 0,
+    cardsFollowing: 0,
+    cardsStaying: 0,
+    cardsOverridden: 0,
+    cardsTeamless: 0,
+    cardsPendingName: 0,
+    cardsCarryingCurrent: 0,
+    truncated: false,
+  };
+
+  it("counts cards only, pluralises, and drops the staying sentence when nothing stays", () => {
+    expect(
+      teamCascadeConfirmCopy({
+        teamNames: "Durham Bulls",
+        levelLabel: "Insert",
+        preview: { ...NONE, nodesFollowing: 1, cardsFollowing: 1 },
+      }),
+    ).toEqual({
+      title: "Apply Durham Bulls to this insert?",
+      description: "1 card under this insert will get Durham Bulls.",
+    });
+  });
+
+  it("says 'More than' when the preview stopped counting", () => {
+    const copy = teamCascadeConfirmCopy({
+      teamNames: "Durham Bulls and Charlotte Knights",
+      levelLabel: "Set",
+      preview: { ...NONE, nodesFollowing: 12, cardsFollowing: 500, truncated: true },
+    });
+    expect(copy.description).toBe(
+      "More than 500 cards under this set will get Durham Bulls and Charlotte Knights.",
+    );
+    expect(
+      teamSavedToast({ ...NONE, nodesFollowing: 12, cardsFollowing: 500, truncated: true }),
+    ).toBe("Saved Team · applying to more than 500 cards");
+  });
+
+  describe("the staying sentence, split by reason", () => {
+    const body = (parts: Partial<typeof NONE>) =>
+      teamCascadeConfirmCopy({
+        teamNames: "Durham Bulls",
+        levelLabel: "Set",
+        preview: {
+          ...NONE,
+          cardsFollowing: 10,
+          ...parts,
+          cardsStaying:
+            (parts.cardsOverridden ?? 0) +
+            (parts.cardsTeamless ?? 0) +
+            (parts.cardsPendingName ?? 0),
+        },
+      }).description;
+
+    it("all three reasons, plural", () => {
+      expect(
+        body({ cardsOverridden: 2, cardsTeamless: 3, cardsPendingName: 4 }),
+      ).toBe(
+        "10 cards under this set will get Durham Bulls. 2 cards carry a different team, 3 are marked as having no team, 4 have a team name waiting for review — these will not change.",
+      );
+    });
+
+    it("the example from the brief — mixed singular and plural", () => {
+      expect(
+        body({ cardsOverridden: 2, cardsTeamless: 1, cardsPendingName: 3 }),
+      ).toBe(
+        "10 cards under this set will get Durham Bulls. 2 cards carry a different team, 1 is marked as having no team, 3 have a team name waiting for review — these will not change.",
+      );
+    });
+
+    it("a different team alone, singular and plural", () => {
+      expect(body({ cardsOverridden: 1 })).toBe(
+        "10 cards under this set will get Durham Bulls. 1 card carries a different team — these will not change.",
+      );
+      expect(body({ cardsOverridden: 5 })).toBe(
+        "10 cards under this set will get Durham Bulls. 5 cards carry a different team — these will not change.",
+      );
+    });
+
+    it("no team alone, singular and plural — leads with the noun", () => {
+      expect(body({ cardsTeamless: 1 })).toBe(
+        "10 cards under this set will get Durham Bulls. 1 card is marked as having no team — these will not change.",
+      );
+      expect(body({ cardsTeamless: 2 })).toBe(
+        "10 cards under this set will get Durham Bulls. 2 cards are marked as having no team — these will not change.",
+      );
+    });
+
+    it("a name in review alone, singular and plural — leads with the noun", () => {
+      expect(body({ cardsPendingName: 1 })).toBe(
+        "10 cards under this set will get Durham Bulls. 1 card has a team name waiting for review — these will not change.",
+      );
+      expect(body({ cardsPendingName: 6 })).toBe(
+        "10 cards under this set will get Durham Bulls. 6 cards have a team name waiting for review — these will not change.",
+      );
+    });
+
+    it("two of three, in the fixed order: different team, no team, name in review", () => {
+      expect(body({ cardsTeamless: 1, cardsPendingName: 1 })).toBe(
+        "10 cards under this set will get Durham Bulls. 1 card is marked as having no team, 1 has a team name waiting for review — these will not change.",
+      );
+      expect(body({ cardsOverridden: 1, cardsPendingName: 2 })).toBe(
+        "10 cards under this set will get Durham Bulls. 1 card carries a different team, 2 have a team name waiting for review — these will not change.",
+      );
+      expect(body({ cardsOverridden: 3, cardsTeamless: 1 })).toBe(
+        "10 cards under this set will get Durham Bulls. 3 cards carry a different team, 1 is marked as having no team — these will not change.",
+      );
+    });
+
+    it("says nothing about staying when every reason is zero", () => {
+      expect(body({})).toBe("10 cards under this set will get Durham Bulls.");
+    });
+  });
+
+  it("the clear confirm names the team, the level and the cards that keep it", () => {
+    expect(
+      teamClearConfirmCopy({
+        teamNames: "Durham Bulls",
+        levelLabel: "Set",
+        cardsCarryingCurrent: 28,
+      }),
+    ).toEqual({
+      title: "Take Durham Bulls off this set?",
+      description:
+        "28 cards keep Durham Bulls. Picked the wrong team? Pick the right one instead and they'll follow.",
+    });
+    expect(
+      teamClearConfirmCopy({
+        teamNames: "Durham Bulls",
+        levelLabel: "Parallel",
+        cardsCarryingCurrent: 1,
+      }),
+    ).toEqual({
+      title: "Take Durham Bulls off this parallel?",
+      description:
+        "1 card keeps Durham Bulls. Picked the wrong team? Pick the right one instead and they'll follow.",
+    });
+  });
+
+  it("the toast is plain 'Saved Team' when no card followed — rows alone do not count", () => {
+    expect(teamSavedToast(null)).toBe("Saved Team");
+    expect(teamSavedToast({ ...NONE, cardsStaying: 3, cardsOverridden: 3 })).toBe(
+      "Saved Team",
+    );
+    expect(teamSavedToast({ ...NONE, nodesFollowing: 4 })).toBe("Saved Team");
+    expect(teamSavedToast({ ...NONE, cardsFollowing: 1 })).toBe(
+      "Saved Team · applying to 1 card",
+    );
   });
 });

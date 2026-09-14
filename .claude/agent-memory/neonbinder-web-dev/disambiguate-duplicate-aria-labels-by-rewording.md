@@ -28,7 +28,10 @@ option labels alone — they already carry the row's name, which is the
 disambiguator, and renaming them breaks the existing flows. Then state the
 default↔override pairs in a comment and pin the "neither contains the other"
 property in a unit test, since the failure is silent in both directions. Worked
-example: `QUICK_ADD_PLAYER_LABELS` in `components/SetSelector/CardChecklist.tsx`
-and `PlayerPickerLabels` in `PlayerPicker.tsx`.
+examples: `QUICK_ADD_PLAYER_LABELS` in `components/SetSelector/CardChecklist.tsx`
+with `PlayerPickerLabels` in `PlayerPicker.tsx`, and (NEO-277)
+`SET_TEAM_PICKER_LABELS` in `SetAttributesPanel.tsx` with `TeamPickerLabels` in
+`TeamPicker.tsx`. Note the quick-add form's TeamPicker still uses the defaults
+alongside the card drawer's — a pre-existing collision nobody has rewired yet.
 
 Related: [[e2e-viewport-is-the-ux-constraint]].

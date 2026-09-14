@@ -708,3 +708,55 @@ describe("NEO-214: the Set Builder admin panel and its client-callable functions
     expect(existsSync(join(__dirname, "seedTestTeams.test.ts"))).toBe(false);
   });
 });
+
+describe("NEO-277: the set-level team surface is admin-gated, and its cascade is internal", () => {
+  /**
+   * Two public functions arrived with the set-level team: the preview the
+   * confirm dialog reads and the mutation that writes and schedules the
+   * cascade. Both are admin, the gate every other set-side edit in this file
+   * carries (`setSelectorOptionFeature`, `updateCard`): a set's team is
+   * shared reference data on a globally-shared row, and the mutation can fan
+   * out to every card under a set.
+   *
+   * The cascade itself is `internalMutation`: its arguments name a subtree
+   * and a "previous value" that only the mutation knows, and a client that
+   * could call it directly could point a cascade at any set with any
+   * previous value and rewrite every card beneath it.
+   *
+   * Called with arguments that are valid but inert, so the refusal is the
+   * gate and not argument validation.
+   */
+  test.each([
+    [
+      "selectorOptions.getSelectorOptionTeamCascadePreview",
+      (t: ReturnType<typeof convexTest>, sportId: Id<"selectorOptions">) =>
+        t.query(api.selectorOptions.getSelectorOptionTeamCascadePreview, {
+          selectorOptionId: sportId,
+          teamIds: [],
+        }),
+    ],
+    [
+      "selectorOptions.setSelectorOptionTeams",
+      (t: ReturnType<typeof convexTest>, sportId: Id<"selectorOptions">) =>
+        t.mutation(api.selectorOptions.setSelectorOptionTeams, {
+          selectorOptionId: sportId,
+          teamIds: [],
+        }),
+    ],
+  ] as const)("%s refuses a signed-in non-admin and a signed-out caller", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await expect(call(t.withIdentity(SIGNED_IN), sportId)).rejects.toThrow();
+    await expect(call(t, sportId)).rejects.toThrow();
+    // Refused before any write: the row is exactly as seeded.
+    const row = await t.run(async (ctx) => ctx.db.get(sportId));
+    expect(row!.lastUpdated).toBe(1_700_000_000_000);
+    expect(row!.teamIds).toBeUndefined();
+  });
+
+  test("cascadeSelectorOptionTeams is declared internalMutation, not mutation", () => {
+    const src = readFileSync(join(__dirname, "selectorOptions.ts"), "utf8");
+    expect(src).toContain("export const cascadeSelectorOptionTeams = internalMutation({");
+    expect(src).not.toContain("export const cascadeSelectorOptionTeams = mutation(");
+  });
+});
