@@ -17,9 +17,10 @@ and defeats the SSO path.
 SportLots gives no session expiry at all; any `expiresAt` we store for it is
 our bookkeeping and must never gate validation.
 
-**Why:** NEO-278 (2026-09-14): both prod marketplace sessions "lapsed" for
-reasons that were ours — SL's self-imposed 30-day TTL skipped validation of a
-working cookie, and BSC's refresh-only chain died at the absolute 24h mark.
+**Why:** a self-imposed TTL that skips validation manifests as
+`reauth_required` for a session that still works, and a refresh-only chain
+with no password on file dies at the absolute window regardless of activity
+(NEO-278).
 
 **How to apply:** login order in the BSC adapter is cached token → refresh
 grant → silent SSO re-authorize → password → reauth_required; a 5xx from the
