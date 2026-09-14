@@ -44,12 +44,11 @@ tags:
 #   maestro-web cannot drive; under this sport there are none, so the one
 #   pill this flow answers with ("No league") is always in view.
 #
-# R9 — both drills go through util-drill-to-custom.yaml. The two set-level
-#   RE-SELECTIONS in Step 5 are not drills: they re-open the already-mounted
-#   Sets column from its collapsed card (the NEO-276 gesture, owned by
-#   column-reexpand-opens-at-selection.yaml) and tap the row that is already
-#   selected, which SetSelector.handleSetSelect answers by clearing every
-#   deeper selection — that is what puts the SET back under the panel.
+# R9 — both Sport › Year › Manufacturer › Set drills (Step 1, and the Step 5
+#   return to the set) go through util-drill-to-custom.yaml; see the note at
+#   Step 5 for why the collapsed "Sets: <name> — change" card cannot be used
+#   there. Step 3 creates the two rows BENEATH the selected set inline, the
+#   features-propagation.yaml STEP B shape — see its note for the measurement.
 #
 # WHAT STEP 5 DOES NOT EXERCISE (R1): the pending-empty state's other two
 #   answers — "Keep <team>" (drop the ×) and "Clear team" (its "Take <team>
@@ -183,27 +182,100 @@ tags:
     timeout: 7000
 
 # ============================================================
-# STEP 3 — CREATE Insert → Base BENEATH THE TEAM-BEARING SET, ADD TWO CARDS
+# STEP 3 — CREATE Insert › Base BENEATH THE TEAM-BEARING SET, ADD TWO CARDS
 #
 # Both rows are created AFTER the set has its team, so each is born with it
 # (copy-down at creation — inheritedTeamIds), and a card added under Base
 # with no team picked on the way in is born with the leaf's team
-# (defaultTeamOnCardIds). R9: the six-level util owns the drill; it reloads
-# /set-selector and re-selects the four rows that already exist.
+# (defaultTeamOnCardIds).
+#
+# Created INLINE from the set we are already standing on, the way
+# features-propagation.yaml STEP B does: the set is selected and its Variant
+# Types column is mounted, so this is not a Sport › Year › Manufacturer › Set
+# drill (R9) — it is the two child rows. A six-level util call here reloads
+# the page and re-selects four rows that are already selected, measured at
+# 125s locally (2026-09-14) on a flow that would otherwise be the suite's
+# longest; E2E wall-clock is the gate. The set is per-attempt, so neither
+# row can pre-exist and every step below is unconditional (R2, R10).
 # ============================================================
 
-- runFlow:
-    file: util-drill-to-custom.yaml
-    env:
-      SPORT: "E2E Test Sport ${WORKER_INDEX || 0}"
-      YEAR: "2026"
-      MANUFACTURER: "Topps"
-      SET_NAME: "stt-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
-      VARIANT_TYPE: "Insert"
-      VARIANT: "Base"
+# WHERE THE PAGE IS: Step 2 left it on the expanded panel, BELOW the columns.
+# EntityColumn renders "+ Custom" at the FOOT of its column, below every row
+# — the anchor is above the page's position, so UP (features-propagation.yaml
+# STEP B, same anchor, same direction).
+- scrollUntilVisible:
+    element:
+      id: "Add custom Variant Types"
+    direction: UP
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Add custom Variant Types"
+    waitToSettleTimeoutMs: 2000
+- assertVisible: "Add Custom Entry"
+- inputText: "Insert"
+- pressKey: Enter
+# NEO-272: the confirm's Create button by its accessible name, never a second
+# blind Enter (maestro-web re-finds the focused element by a class XPath and
+# races the confirm unmounting the input). Unconditional: on a per-attempt
+# set the value cannot already exist, so the confirm always renders.
+- assertVisible:
+    id: "Create variant type"
+- tapOn:
+    id: "Create variant type"
+# The form must be GONE before the row is matched: while the confirm is up,
+# its sentence contains the very value the assertion looks for (NEO-219).
+- extendedWaitUntil:
+    notVisible: "Add Custom Entry"
+    timeout: 7000
+# The new row sits ABOVE the column's "+ Custom" the page is centred on.
+- scrollUntilVisible:
+    element:
+      text: "Insert"
+    direction: UP
+    centerElement: true
+    timeout: 7000
+- tapOn: "Insert"
+- extendedWaitUntil:
+    visible: "Inserts"
+    timeout: 7000
+
+- scrollUntilVisible:
+    element:
+      id: "Add custom Inserts"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 7000
+- tapOn:
+    id: "Add custom Inserts"
+    waitToSettleTimeoutMs: 2000
+- assertVisible: "Add Custom Entry"
+- inputText: "Base"
+- pressKey: Enter
+- assertVisible:
+    id: "Create insert"
+- tapOn:
+    id: "Create insert"
+- extendedWaitUntil:
+    notVisible: "Add Custom Entry"
+    timeout: 7000
+- scrollUntilVisible:
+    element:
+      text: "Base"
+    centerElement: true
+    timeout: 7000
+- tapOn: "Base"
+# Hand-made subtree: no marketplace fetch, "Open add card form" is the
+# checklist's idle signal (util-add-custom-card.yaml STEP 4).
+- scrollUntilVisible:
+    element:
+      id: "Open add card form"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 7000
 
 # ── CARD #1 — no team picked; the row must show the set's team ──────────────
-# The util returned with "Open add card form" centred.
+# "Open add card form" is centred from the step above.
 - tapOn:
     id: "Open add card form"
 - extendedWaitUntil:
@@ -382,39 +454,26 @@ tags:
 # so card #1 (carrying exactly that) follows and card #2 (an override) stays.
 # ============================================================
 
-# ── Put the SET back under the panel ────────────────────────────────────────
-# The Sets column collapsed to its card when the set was chosen; re-opening it
-# (NEO-276: the list opens with the selected row centred in its own fold) and
-# tapping that same row runs handleSetSelect, which clears every deeper
-# selection — the checklist unmounts and the panel re-scopes to the set.
-# direction: UP — the columns row is at the top of the page and we are down
-# at the card list. The card is short and sits near the top of the document,
-# inside the accept band, so centring settles at try 0.
-- scrollUntilVisible:
-    element:
-      id: "Sets: stt-${WORKER_INDEX || 0}-${ATTEMPT_ID} — change"
-    direction: UP
-    centerElement: true
-    timeout: 7000
-- tapOn:
-    id: "Sets: stt-${WORKER_INDEX || 0}-${ATTEMPT_ID} — change"
-# The column's own collapse chevron renders only while the list is open with a
-# selection — the positive proof the card's tap landed (R2).
-- extendedWaitUntil:
-    visible:
-      id: "Collapse sets"
-    timeout: 7000
-# The row prints the bare set name; a full-match cannot land on the panel's
-# "Attributes for …" heading or its breadcrumb. Window-scrolled into view
-# (the list itself already holds the row in its fold).
-- scrollUntilVisible:
-    element:
-      text: "stt-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
-    centerElement: true
-    timeout: 7000
-- tapOn:
-    text: "stt-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
-    waitToSettleTimeoutMs: 2000
+# ── Put the SET back under the panel: RE-DRILL, do not re-open the column ──
+# R9: the four-level util reloads /set-selector and re-selects the four rows
+# that already exist, so the deepest selection is the SET and the panel
+# scopes to it. Re-opening the mounted Sets column from its collapsed
+# "Sets: <name> — change" card is NOT reachable here, and CI run 34796320801
+# (runner 6, step 208) shows why: choosing the insert "Base" reveals a SEVENTH
+# column (Parallels), and EntityColumn.scrollColumnIntoView scrolls the
+# columns row horizontally to show it — the hierarchy dump has "Variant
+# Types: Insert — change" at x=-181..79 and the Sets card further left, off
+# the viewport. maestro-web prunes by viewport and its only scroll is the
+# vertical window scroll, so no flow-side scroll can bring that card back.
+# features-propagation.yaml's STEP C re-drills for the same reason.
+- runFlow:
+    file: util-drill-to-custom.yaml
+    env:
+      SPORT: "E2E Test Sport ${WORKER_INDEX || 0}"
+      YEAR: "2026"
+      MANUFACTURER: "Topps"
+      SET_NAME: "stt-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- assertVisible: "Variant Types"
 
 - scrollUntilVisible:
     element:

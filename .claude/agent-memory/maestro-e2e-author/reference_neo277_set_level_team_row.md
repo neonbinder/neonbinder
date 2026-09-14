@@ -51,6 +51,11 @@ as `Saved <feature>` (6 s, each message replaces the last).
   `A, B` for two teams, in set order); the collapsed panel bar prints the
   SHORT name in livery as its own span — full-match the composed string to
   hit a row and not the bar.
-* To re-scope the panel to the set after drilling deeper: tap the collapsed
-  `Sets: <name> — change` card, wait for `Collapse sets`, tap the row (NEO-276
-  opens it centred on the selection) — `handleSetSelect` clears deeper levels.
+* To re-scope the panel to the set after drilling to a card checklist:
+  RE-DRILL with the util (page reload). The collapsed `Sets: <name> — change`
+  card is NOT reachable once an insert/parallel is selected — a seventh
+  column (Parallels) is revealed and `scrollColumnIntoView` scrolls the
+  columns row horizontally, pushing Sets off the LEFT of the viewport (CI
+  34796320801: `Variant Types: Insert — change` at x=-181..79). maestro-web
+  prunes by viewport and scrolls only the window vertically, so no flow-side
+  scroll recovers it. Same lesson as `features-propagation.yaml` STEP C.
