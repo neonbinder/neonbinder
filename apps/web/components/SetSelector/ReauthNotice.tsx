@@ -101,7 +101,7 @@ export default function ReauthNotice({ siteCredentials }: ReauthNoticeProps) {
     >
       <p className="min-w-0 flex-1 basis-64">
         <strong className="font-semibold">
-          {REAUTH_NOTICE_COPY.lead(joinSiteLabels(sites))}
+          {REAUTH_NOTICE_COPY.lead(joinSiteLabels(sites), sites.length)}
         </strong>{" "}
         {REAUTH_NOTICE_COPY.body}
       </p>

@@ -58,7 +58,7 @@ describe("ReauthNotice", () => {
     renderNotice([{ site: BSC }, { site: SL, needsReauth: true }]);
 
     const status = screen.getByRole("status");
-    expect(status.textContent).toContain("SportLots signed you out.");
+    expect(status.textContent).toContain("Your SportLots session ran out.");
     expect(status.textContent).not.toContain("BuySportsCards");
     expect(status.textContent).toContain(REAUTH_NOTICE_COPY.body);
 
@@ -75,14 +75,14 @@ describe("ReauthNotice", () => {
     ]);
     // Sorted by key, so the order is stable regardless of row order.
     expect(screen.getByRole("status").textContent).toContain(
-      "BuySportsCards and SportLots signed you out.",
+      "Your BuySportsCards and SportLots sessions ran out.",
     );
   });
 
   it("falls through to the raw key for a platform the label map has not learned", () => {
     renderNotice([{ site: "mercari", needsReauth: true }]);
     expect(screen.getByRole("status").textContent).toContain(
-      "mercari signed you out.",
+      "Your mercari session ran out.",
     );
   });
 
@@ -113,7 +113,7 @@ describe("ReauthNotice", () => {
       </MemoryRouter>,
     );
     expect(screen.getByRole("status").textContent).toContain(
-      "BuySportsCards and SportLots signed you out.",
+      "Your BuySportsCards and SportLots sessions ran out.",
     );
   });
 

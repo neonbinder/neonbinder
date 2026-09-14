@@ -45,8 +45,13 @@ export function joinSiteLabels(sites: readonly string[]): string {
  * fallback works under the hood.
  */
 export const REAUTH_NOTICE_COPY = {
-  /** Bold lead. `{sites}` is the joined platform list. */
-  lead: (sites: string) => `${sites} signed you out.`,
+  /**
+   * Bold lead. `sites` is the joined platform list, `count` how many, for the
+   * plural. Jason, 2026-09-14: "ran out", not "signed you out" — the
+   * marketplace did nothing; our session lapsed.
+   */
+  lead: (sites: string, count: number) =>
+    `Your ${sites} ${count > 1 ? "sessions" : "session"} ran out.`,
   /** Plain follow-on. */
   body: "Syncs are running on borrowed time. Sign in again to keep them rolling.",
   /** Link text — the accessible name of the link, so it must stay unique on the page. */
