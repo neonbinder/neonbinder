@@ -205,7 +205,7 @@ export interface LoginOptions {
    *   - it is used to drive one marketplace sign-in and nothing else;
    *   - it is NEVER written to Secret Manager for a user key — only the
    *     resulting `{username, token, expiresAt, refreshToken?,
-   *     refreshExpiresAt?}` is persisted;
+   *     refreshExpiresAt?, ssoCookies?, ssoExpiresAt?}` is persisted;
    *   - it must never be logged, echoed in a response, or embedded in an
    *     error. Adapters pass it to buildLoginDiagnostic as a `secrets` value
    *     so it is redacted out of any captured page text.

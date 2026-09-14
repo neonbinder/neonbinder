@@ -52,11 +52,19 @@ const BSC_B2C = {
   // NEO-140: `offline_access` is listed for legibility of intent, NOT because
   // it is required. Probed live against BSC's B2C tenant on 2026-08-11: the
   // token endpoint already returns a `refresh_token` under the base scope
-  // alone, with `refresh_token_expires_in: 86400`. (The comment that used to
-  // sit here claimed the SPA does not request offline_access "so we don't
-  // either — we re-login on expiry rather than refresh". Both halves were
-  // wrong: we were being handed a refresh token on every login and throwing
-  // it away, which is precisely why a user's password had to be kept on disk.)
+  // alone. (The comment that used to sit here claimed the SPA does not
+  // request offline_access "so we don't either — we re-login on expiry rather
+  // than refresh". Both halves were wrong: we were being handed a refresh
+  // token on every login and throwing it away, which is precisely why a
+  // user's password had to be kept on disk.)
+  //
+  // NEO-278: `refresh_token_expires_in` is ABSOLUTE from the password
+  // sign-in, not a sliding window. Probed 2026-09-14: a refresh grant issued
+  // 4s after sign-in came back with 86396, not 86400. Rotation keeps the
+  // access token alive but never extends the window, so a refresh-only chain
+  // dies 24h after the password was typed. The B2C "Keep me signed in" SSO
+  // cookie (see B2CCookieJar.ssoCookies and silentReauthorize) is what carries
+  // a session past that.
   scope:
     "openid profile https://buysportscards.onmicrosoft.com/api/read offline_access",
 } as const;
@@ -80,8 +88,9 @@ const TOKEN_TTL_MS = 60 * 60 * 1000;
  * authorization_code and refresh_token grants.
  *
  * All observed live on 2026-08-11: expires_in=3600 (access token),
- * refresh_token_expires_in=86400 (refresh token), and the refresh grant
- * returning a NEW refresh_token each time.
+ * refresh_token_expires_in=86400 (refresh token, absolute from the password
+ * sign-in — see BSC_B2C.scope), and the refresh grant returning a NEW
+ * refresh_token each time.
  */
 interface BscTokenResponse {
   access_token?: string;
@@ -101,7 +110,27 @@ interface BscTokenSet {
   expiresAt: number;
   refreshToken?: string;
   refreshExpiresAt?: number;
+  /**
+   * NEO-278: the B2C SSO cookies observed on the exchange that minted this
+   * token set (password sign-in or silent re-authorize). Absent on a refresh
+   * grant, which never touches /authorize — persistTokens carries the stored
+   * ones forward in that case.
+   */
+  ssoCookies?: Record<string, string>;
+  ssoExpiresAt?: number;
 }
+
+/**
+ * Prefix of the Azure AD B2C "Keep me signed in" SSO cookie(s). Observed live
+ * 2026-09-14 as `x-ms-cpim-sso:<tenant>_0`, issued on the /confirmed step
+ * when `rememberMe=true`, ~62 days long, and re-issued with a fresh expiry on
+ * every silent /authorize that honours it. Matched by PREFIX because the
+ * tenant suffix is B2C's to change.
+ */
+const BSC_SSO_COOKIE_PREFIX = "x-ms-cpim-sso";
+
+/** Epoch ms for cookies that carry no expiry attribute at all. */
+type CookieExpiry = number | undefined;
 
 /**
  * Minimal in-flight cookie jar for the B2C sign-in exchange.
@@ -109,36 +138,104 @@ interface BscTokenSet {
  * B2C threads its anti-forgery state through `x-ms-cpim-*` cookies that are
  * set on the /authorize response and must be echoed back on the /SelfAsserted
  * POST and /confirmed GET. node's fetch does not persist cookies across calls,
- * so we collect Set-Cookie ourselves. Host/path/expiry are intentionally
- * ignored: the jar lives only for the duration of one login() and only ever
- * talks to the single B2C host.
+ * so we collect Set-Cookie ourselves. Host/path are intentionally ignored: the
+ * jar lives only for the duration of one login() and only ever talks to the
+ * single B2C host.
  *
- * SECURITY: cookie VALUES are anti-forgery tokens. They are never logged; only
- * cookie NAMES may be logged for debugging.
+ * NEO-278: expiry is now tracked per cookie, and a Set-Cookie that CLEARS a
+ * cookie (empty value, or an expiry in the past) removes it — B2C clears
+ * `x-ms-cpim-trans` on the silent-authorize redirect, and the only durable
+ * thing we lift out of the jar (the SSO cookies) must never be persisted with
+ * a cleared value or a dead expiry.
+ *
+ * SECURITY: cookie VALUES are anti-forgery tokens and, for the SSO cookies,
+ * the user's BSC session. They are never logged; only cookie NAMES may be
+ * logged for debugging.
  */
 class B2CCookieJar {
   private cookies = new Map<string, string>();
+  private expiries = new Map<string, CookieExpiry>();
 
   ingest(response: Response): void {
     const setCookies =
       typeof response.headers.getSetCookie === "function"
         ? response.headers.getSetCookie()
         : [];
+    const now = Date.now();
     for (const sc of setCookies) {
-      const nameValue = sc.split(";")[0];
+      const [nameValue, ...attributes] = sc.split(";");
       const eq = nameValue.indexOf("=");
-      if (eq > 0) {
-        this.cookies.set(
-          nameValue.slice(0, eq).trim(),
-          nameValue.slice(eq + 1).trim(),
-        );
+      if (eq <= 0) continue;
+      const name = nameValue.slice(0, eq).trim();
+      const value = nameValue.slice(eq + 1).trim();
+      const expiry = B2CCookieJar.parseExpiry(attributes, now);
+      if (value.length === 0 || (expiry !== undefined && expiry <= now)) {
+        this.cookies.delete(name);
+        this.expiries.delete(name);
+        continue;
+      }
+      this.cookies.set(name, value);
+      this.expiries.set(name, expiry);
+    }
+  }
+
+  /**
+   * Absolute expiry from the cookie's attributes. `Max-Age` wins over
+   * `Expires` (RFC 6265 §5.3 step 5). Undefined when neither is present or
+   * neither parses — a session cookie, which we treat as "no known expiry".
+   */
+  private static parseExpiry(attributes: string[], now: number): CookieExpiry {
+    let expires: CookieExpiry;
+    for (const raw of attributes) {
+      const attribute = raw.trim();
+      const eq = attribute.indexOf("=");
+      if (eq <= 0) continue;
+      const key = attribute.slice(0, eq).trim().toLowerCase();
+      const val = attribute.slice(eq + 1).trim();
+      if (key === "max-age") {
+        const seconds = Number(val);
+        if (Number.isFinite(seconds)) return now + seconds * 1000;
+      } else if (key === "expires") {
+        const parsed = Date.parse(val);
+        if (Number.isFinite(parsed)) expires = parsed;
       }
     }
+    return expires;
   }
 
   header(): string {
     return [...this.cookies.entries()].map(([k, v]) => `${k}=${v}`).join("; ");
   }
+
+  /**
+   * NEO-278: the SSO cookie(s) currently in the jar, ready to persist, or
+   * undefined when B2C issued none. `expiresAt` is the earliest expiry among
+   * them (undefined when none carried one), so a single timestamp answers
+   * "is the whole set still presentable".
+   */
+  ssoCookies(): { cookies: Record<string, string>; expiresAt?: number } | undefined {
+    const cookies: Record<string, string> = {};
+    let expiresAt: CookieExpiry;
+    let count = 0;
+    for (const [name, value] of this.cookies) {
+      if (!name.startsWith(BSC_SSO_COOKIE_PREFIX)) continue;
+      cookies[name] = value;
+      count++;
+      const expiry = this.expiries.get(name);
+      if (expiry !== undefined && (expiresAt === undefined || expiry < expiresAt)) {
+        expiresAt = expiry;
+      }
+    }
+    if (count === 0) return undefined;
+    return expiresAt === undefined ? { cookies } : { cookies, expiresAt };
+  }
+}
+
+/** Serialise a stored cookie map into a Cookie request header. */
+function cookieHeader(cookies: Record<string, string>): string {
+  return Object.entries(cookies)
+    .map(([k, v]) => `${k}=${v}`)
+    .join("; ");
 }
 
 /** base64url-encode a Buffer (no padding) for PKCE/state/nonce values. */
@@ -229,29 +326,14 @@ export class BSCAdapter extends BaseAdapter {
     const secrets: DiagnosticSecrets = { email, password };
     const jar = new B2CCookieJar();
 
-    // PKCE + anti-replay parameters. The verifier never leaves this process;
-    // only its S256 challenge is sent on /authorize.
-    const codeVerifier = base64Url(crypto.randomBytes(32));
-    const codeChallenge = base64Url(
-      crypto.createHash("sha256").update(codeVerifier).digest(),
-    );
-    const state = base64Url(crypto.randomBytes(16));
-    const nonce = base64Url(crypto.randomBytes(16));
-
     // --- Step 1: GET /authorize -------------------------------------------
-    const authorizeUrl = new URL(BSC_AUTHORIZE_URL);
-    authorizeUrl.search = new URLSearchParams({
-      client_id: BSC_B2C.clientId,
-      redirect_uri: BSC_B2C.redirectUri,
-      response_type: "code",
-      scope: BSC_B2C.scope,
-      code_challenge: codeChallenge,
-      code_challenge_method: "S256",
-      state,
-      nonce,
-      response_mode: "fragment",
+    //
+    // `prompt=select_account` is what makes B2C serve the sign-in form even
+    // when it holds an SSO session for this client. The silent path
+    // (silentReauthorize) deliberately omits it.
+    const { codeVerifier, authorizeUrl } = this.buildAuthorizeRequest({
       prompt: "select_account",
-    }).toString();
+    });
 
     console.log(`[BSC Adapter] B2C step 1: GET /authorize`);
     const authorizeResponse = await fetch(authorizeUrl, {
@@ -338,9 +420,14 @@ export class BSCAdapter extends BaseAdapter {
     }
 
     // --- Step 3: GET /api/<api>/confirmed → 302 with #code= ----------------
+    //
+    // NEO-278: `rememberMe=true` is B2C's "Keep me signed in". It makes the
+    // /confirmed response set the long-lived `x-ms-cpim-sso:*` cookie (~62
+    // days, probed 2026-09-14), which silentReauthorize later presents to
+    // mint a new code — and a fresh 24h refresh window — with no password.
     const confirmedUrl = new URL(`${BSC_B2C.authority}/api/${settings.api}/confirmed`);
     confirmedUrl.search = new URLSearchParams({
-      rememberMe: "false",
+      rememberMe: "true",
       csrf_token: settings.csrf,
       tx: settings.transId,
       p: BSC_B2C.policy,
@@ -369,6 +456,76 @@ export class BSCAdapter extends BaseAdapter {
     }
 
     // --- Step 4: POST /token (code + PKCE verifier) ------------------------
+    const tokens = await this.exchangeAuthCode(code, codeVerifier);
+    if (!tokens) {
+      return { error: `Authentication failed` };
+    }
+
+    // NEO-278: lift the "Keep me signed in" cookie(s) out of the jar so they
+    // are persisted with the tokens. Names only in the log.
+    this.attachSsoCookies(tokens, jar);
+
+    // Metadata only: booleans and a count. Never the token or cookie values.
+    console.log(
+      `[BSC Adapter] B2C sign-in complete; access token acquired ` +
+        `(refresh_token_present=${!!tokens.refreshToken}, ` +
+        `sso_cookies=${Object.keys(tokens.ssoCookies ?? {}).length}).`,
+    );
+    return { tokens };
+  }
+
+  /**
+   * Build the /authorize request: fresh PKCE verifier + S256 challenge, state
+   * and nonce, and the URL carrying them. The verifier never leaves this
+   * process; only its challenge is sent.
+   *
+   * `prompt` is optional for a reason: the password sign-in sends
+   * `select_account` to force the form, and the silent SSO re-authorize must
+   * send NO prompt at all so B2C is free to honour the SSO cookie with a
+   * straight 302 (probed 2026-09-14).
+   */
+  private buildAuthorizeRequest(options: { prompt?: string }): {
+    codeVerifier: string;
+    authorizeUrl: URL;
+  } {
+    const codeVerifier = base64Url(crypto.randomBytes(32));
+    const codeChallenge = base64Url(
+      crypto.createHash("sha256").update(codeVerifier).digest(),
+    );
+    const state = base64Url(crypto.randomBytes(16));
+    const nonce = base64Url(crypto.randomBytes(16));
+
+    const params = new URLSearchParams({
+      client_id: BSC_B2C.clientId,
+      redirect_uri: BSC_B2C.redirectUri,
+      response_type: "code",
+      scope: BSC_B2C.scope,
+      code_challenge: codeChallenge,
+      code_challenge_method: "S256",
+      state,
+      nonce,
+      response_mode: "fragment",
+    });
+    if (options.prompt) params.set("prompt", options.prompt);
+
+    const authorizeUrl = new URL(BSC_AUTHORIZE_URL);
+    authorizeUrl.search = params.toString();
+    return { codeVerifier, authorizeUrl };
+  }
+
+  /**
+   * Step 4 of the exchange: trade an auth code (+ the PKCE verifier it was
+   * issued against) for a token set. Shared by the password sign-in and the
+   * silent SSO re-authorize — the body is identical for both.
+   *
+   * Returns undefined on any failure, after logging status + B2C's short
+   * `error` code only. The token endpoint's `error_description` can carry
+   * trace ids but not the user's secret; it is still never surfaced.
+   */
+  private async exchangeAuthCode(
+    code: string,
+    codeVerifier: string,
+  ): Promise<BscTokenSet | undefined> {
     console.log(`[BSC Adapter] B2C step 4: POST /token`);
     const tokenResponse = await fetch(BSC_TOKEN_URL, {
       method: "POST",
@@ -387,9 +544,6 @@ export class BSCAdapter extends BaseAdapter {
     });
 
     if (!tokenResponse.ok) {
-      // The token endpoint returns JSON {error, error_description} on failure.
-      // error_description can contain trace ids but not the user's secret;
-      // still, never return it raw — log the error code only.
       let tokenError = "(unparseable)";
       try {
         tokenError = ((await tokenResponse.json()) as { error?: string }).error ?? "(none)";
@@ -399,21 +553,123 @@ export class BSCAdapter extends BaseAdapter {
       console.warn(
         `[BSC Adapter] B2C token exchange failed (status=${tokenResponse.status}, error=${tokenError}).`,
       );
-      return { error: `Authentication failed` };
+      return undefined;
     }
 
     const tokens = this.toTokenSet((await tokenResponse.json()) as BscTokenResponse);
     if (!tokens) {
       console.warn(`[BSC Adapter] B2C token response had no access_token.`);
+    }
+    return tokens;
+  }
+
+  /**
+   * Copy the SSO cookie(s) B2C issued during an exchange onto the token set
+   * that exchange produced, so persistTokens stores them together.
+   */
+  private attachSsoCookies(tokens: BscTokenSet, jar: B2CCookieJar): void {
+    const sso = jar.ssoCookies();
+    if (!sso) return;
+    tokens.ssoCookies = sso.cookies;
+    if (sso.expiresAt !== undefined) tokens.ssoExpiresAt = sso.expiresAt;
+  }
+
+  /**
+   * NEO-278: silent re-authorize with the stored "Keep me signed in" cookie.
+   *
+   * A bare GET /authorize with a NEW PKCE pair, the same params as the
+   * password path's step 1 but NO `prompt`, and the SSO cookie(s) in the
+   * Cookie header. When B2C still honours the SSO session it answers 302 to
+   * the redirect URI with `#code=` — no password, no SelfAsserted step — and
+   * the ordinary step-4 exchange then yields an access token AND a refresh
+   * token with a fresh 24h window. The 302 also re-issues the SSO cookie with
+   * a new expiry (it slides), which the returned token set carries so the
+   * caller persists the rotated cookie, not the one it presented.
+   *
+   * Outcomes other than a code — the sign-in form served as a 200, an
+   * `error=` in the redirect, or a failed exchange — are reported as a
+   * generic failure after a metadata-only warning; the caller falls through
+   * to the password / reauth_required logic. A network throw is caught here
+   * for the same reason: a silent attempt must never turn a lapsed session
+   * into a 500.
+   *
+   * SECURITY: the cookie values are the user's BSC session. They are sent to
+   * the B2C host and nowhere else; only cookie NAMES and counts are logged.
+   */
+  private async silentReauthorize(
+    ssoCookies: Record<string, string>,
+  ): Promise<{ tokens: BscTokenSet } | { error: string }> {
+    const jar = new B2CCookieJar();
+    const { codeVerifier, authorizeUrl } = this.buildAuthorizeRequest({});
+
+    console.log(
+      `[BSC Adapter] B2C silent re-authorize: GET /authorize ` +
+        `(sso_cookie_names=${Object.keys(ssoCookies).join(",")})`,
+    );
+    try {
+      const authorizeResponse = await fetch(authorizeUrl, {
+        headers: {
+          "User-Agent": BSC_UA,
+          "Cookie": cookieHeader(ssoCookies),
+        },
+        redirect: "manual",
+      });
+      jar.ingest(authorizeResponse);
+
+      const location = authorizeResponse.headers.get("location");
+      const code = this.extractAuthCode(location);
+      if (!code) {
+        // Three shapes, all "B2C did not honour the SSO session": a 200 with
+        // the sign-in form (SETTINGS blob present), a 302 carrying `error=`,
+        // or something else entirely. Log which, and nothing from the body.
+        let outcome = `status=${authorizeResponse.status}`;
+        if (authorizeResponse.status === 200) {
+          const html = await authorizeResponse.text();
+          outcome += this.parseB2CSettings(html)
+            ? ", sign-in form served"
+            : ", no sign-in form";
+        } else {
+          outcome += `, error=${this.extractAuthError(location) ?? "(none)"}`;
+        }
+        console.warn(
+          `[BSC Adapter] B2C silent re-authorize did not yield an auth code (${outcome}); ` +
+            `SSO session not honoured.`,
+        );
+        return { error: `Authentication failed` };
+      }
+
+      const tokens = await this.exchangeAuthCode(code, codeVerifier);
+      if (!tokens) {
+        return { error: `Authentication failed` };
+      }
+      this.attachSsoCookies(tokens, jar);
+
+      console.log(
+        `[BSC Adapter] B2C silent re-authorize succeeded ` +
+          `(refresh_token_present=${!!tokens.refreshToken}, ` +
+          `sso_cookie_reissued=${!!tokens.ssoCookies}).`,
+      );
+      return { tokens };
+    } catch (error) {
+      console.warn(
+        `[BSC Adapter] B2C silent re-authorize threw:`,
+        error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+      );
       return { error: `Authentication failed` };
     }
+  }
 
-    // Metadata only: a boolean and a duration. Never the token values.
-    console.log(
-      `[BSC Adapter] B2C sign-in complete; access token acquired ` +
-        `(refresh_token_present=${!!tokens.refreshToken}).`,
-    );
-    return { tokens };
+  /**
+   * The short OAuth `error` code (e.g. `interaction_required`) from a redirect
+   * Location, for the log line. Never the `error_description`.
+   */
+  private extractAuthError(location: string | null): string | undefined {
+    if (!location) return undefined;
+    const hashIndex = location.indexOf("#");
+    const queryIndex = location.indexOf("?");
+    const splitIndex = hashIndex >= 0 ? hashIndex : queryIndex;
+    if (splitIndex < 0) return undefined;
+    return new URLSearchParams(location.slice(splitIndex + 1)).get("error") ?? undefined;
   }
 
   /**
@@ -537,19 +793,26 @@ export class BSCAdapter extends BaseAdapter {
    *
    * `username` is the only durable field; everything else is session state.
    *
-   * NEO-141 hardening: the canary-KEY guard lives here rather than at the two
+   * NEO-141 hardening: the canary-KEY guard lives here rather than at the
    * call sites so that "a canary secret is never written back" is a property of
    * the write itself. A canary-keyed request that omitted `canary: true` would
-   * otherwise reach this method from either the password path or the refresh
-   * path, persist a payload with no password in it, and — via keep-1 pruning —
+   * otherwise reach this method from the password, refresh or silent-SSO path,
+   * persist a payload with no password in it, and — via keep-1 pruning —
    * destroy the canary's password unrecoverably. See isCanaryKey for why that
    * failure is worse than it sounds (silently dead login alerting).
+   *
+   * NEO-278: `updateCredentials` REPLACES the payload, so a token set that
+   * carries no SSO cookies (the refresh grant never touches /authorize) would
+   * silently drop the stored ones — and with them the only way past the 24h
+   * refresh window. `previous` is the secret as read at the top of login();
+   * its SSO cookies are carried forward whenever the new token set has none.
    */
   private async persistTokens(
     secretsManager: SecretsManagerService,
     key: string,
     username: string,
     tokens: BscTokenSet,
+    previous?: Credentials,
   ): Promise<void> {
     if (isCanaryKey(key)) {
       console.log(
@@ -564,6 +827,10 @@ export class BSCAdapter extends BaseAdapter {
     };
     if (tokens.refreshToken) payload.refreshToken = tokens.refreshToken;
     if (tokens.refreshExpiresAt) payload.refreshExpiresAt = tokens.refreshExpiresAt;
+    const ssoCookies = tokens.ssoCookies ?? previous?.ssoCookies;
+    const ssoExpiresAt = tokens.ssoCookies ? tokens.ssoExpiresAt : previous?.ssoExpiresAt;
+    if (ssoCookies) payload.ssoCookies = ssoCookies;
+    if (ssoCookies && ssoExpiresAt !== undefined) payload.ssoExpiresAt = ssoExpiresAt;
     await secretsManager.updateCredentials(key, payload);
   }
 
@@ -638,13 +905,19 @@ export class BSCAdapter extends BaseAdapter {
    *   1. cached access token that still validates → free.
    *   2. live refresh token → one POST /token. NEO-141: this is what replaced
    *      keeping the user's password on disk.
-   *   3. a stored password → full B2C sign-in. Reachable only by the NEO-43
+   *   3. live "Keep me signed in" SSO cookie → silent GET /authorize + POST
+   *      /token. NEO-278: this is what gets past the ABSOLUTE 24h refresh
+   *      window — it mints a new code, and with it a fresh refresh window,
+   *      with no password. Tried when the refresh token is expired, missing,
+   *      or REFUSED (a 5xx from the token endpoint is BSC being unwell and
+   *      stays a pageable failure without trying further).
+   *   4. a stored password → full B2C sign-in. Reachable only by the NEO-43
    *      canary secrets and by legacy user secrets not yet migrated.
-   *   4. nothing left → `reauthRequired`, the signal Convex turns into "sign
+   *   5. nothing left → `reauthRequired`, the signal Convex turns into "sign
    *      in again".
    *
-   * The canary skips 1 and 2 outright and lands on 3 every time — that is the
-   * entire point of the probe, and both Cloud Scheduler jobs depend on it.
+   * The canary skips 1, 2 and 3 outright and lands on 4 every time — that is
+   * the entire point of the probe, and both Cloud Scheduler jobs depend on it.
    */
   async login(key: string, opts?: LoginOptions): Promise<AdapterResponse> {
     const secretsManager = new SecretsManagerService();
@@ -733,7 +1006,17 @@ export class BSCAdapter extends BaseAdapter {
         // failure therefore fails the login (502, pages) instead of being
         // swallowed.
         try {
-          await this.persistTokens(secretsManager, key, credentials.username, refreshed.tokens);
+          // NEO-278: `credentials` carries the stored SSO cookies forward —
+          // the refresh grant never sees /authorize, so its token set has
+          // none, and a replace-write without them would drop the only way
+          // past the 24h refresh window.
+          await this.persistTokens(
+            secretsManager,
+            key,
+            credentials.username,
+            refreshed.tokens,
+            credentials,
+          );
         } catch (error) {
           console.error(
             `[BSC Adapter] Refresh succeeded but persisting the rotated token FAILED — ` +
@@ -754,29 +1037,79 @@ export class BSCAdapter extends BaseAdapter {
         };
       }
 
-      // Refresh failed. If the secret still carries a password (canary, or a
-      // not-yet-migrated legacy user secret) we can fall through and sign in
-      // properly. Otherwise this is the end of the line.
-      if (!credentials.password) {
+      // Refresh failed. A 5xx / unreachable token endpoint is BSC being
+      // unwell: with no password it stays a pageable 502 right here, and the
+      // silent SSO path (which needs the same token endpoint) is NOT tried —
+      // it would only turn an outage into a misleading "sign in again". A
+      // REFUSED grant (4xx) is the case NEO-278 exists for: fall through to
+      // the SSO re-authorize below, then to a password if one is stored.
+      if (!credentials.password && !refreshed.reauthRequired) {
         return {
           success: false,
           error: refreshed.error,
-          // Only a REFUSED grant means "sign in again". An unreachable token
-          // endpoint leaves reauthRequired false, so it stays a pageable 502.
-          reauthRequired: refreshed.reauthRequired,
+          reauthRequired: false,
         };
       }
-      console.log(`[BSC Adapter] refresh grant failed; falling back to a password sign-in`);
+      console.log(
+        `[BSC Adapter] refresh grant failed (refused=${refreshed.reauthRequired}); ` +
+          `trying the remaining paths`,
+      );
+    }
+
+    // --- Silent SSO re-authorize: NEO-278's way past the 24h refresh window --
+    //
+    // The canary skips this for the same reason it skips the cache and the
+    // refresh grant: a silent re-authorize does not exercise the
+    // SelfAsserted step, which is where a broken password login shows up.
+    // (It also never has an SSO cookie, since it never writes back.)
+    if (!canary && this.ssoSessionIsLive(credentials)) {
+      const silent = await this.silentReauthorize(
+        credentials.ssoCookies as Record<string, string>,
+      );
+
+      if ("tokens" in silent) {
+        // Same posture as the refresh path: the rotated SSO cookie and the
+        // new refresh token are the durable session now, so a write failure
+        // fails the login (502, pages) rather than being swallowed.
+        try {
+          await this.persistTokens(
+            secretsManager,
+            key,
+            credentials.username,
+            silent.tokens,
+            credentials,
+          );
+        } catch (error) {
+          console.error(
+            `[BSC Adapter] Silent re-authorize succeeded but persisting the tokens FAILED:`,
+            error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+          );
+          return { success: false, error: `Authentication failed` };
+        }
+
+        const profile = await this.fetchSellerProfile(silent.tokens.token);
+        this.logProfile("Silent re-authorize", profile);
+        return {
+          success: true,
+          message: `Silently re-authenticated with ${this.siteName}`,
+          expiresAt: silent.tokens.expiresAt,
+          storeName: profile?.storeName,
+          sellerId: profile?.sellerId,
+        };
+      }
+      // silentReauthorize already logged why. Fall through: a password if one
+      // is stored, otherwise the user has to sign in again.
     }
 
     // --- Password sign-in: the canary path, and legacy un-migrated secrets --
     if (!credentials.password) {
-      // NEO-141: no cached token, no usable refresh token, and no password to
-      // sign in with — which is the CORRECT steady state for a user secret
-      // whose session has fully lapsed, not a corrupt one. Say so precisely so
-      // Convex can prompt a re-login instead of guessing from a status code.
+      // NEO-141: no cached token, no usable refresh token, no SSO session,
+      // and no password to sign in with — which is the CORRECT steady state
+      // for a user secret whose session has fully lapsed, not a corrupt one.
+      // Say so precisely so Convex can prompt a re-login instead of guessing
+      // from a status code.
       console.log(
-        `[BSC Adapter] no cached token, no live refresh token, no password — re-auth required`,
+        `[BSC Adapter] no cached token, no live refresh token, no SSO session, no password — re-auth required`,
       );
       return { success: false, error: REAUTH_REQUIRED_ERROR, reauthRequired: true };
     }
@@ -801,6 +1134,19 @@ export class BSCAdapter extends BaseAdapter {
     return (
       credentials.refreshExpiresAt === undefined || credentials.refreshExpiresAt > Date.now()
     );
+  }
+
+  /**
+   * NEO-278: true when the secret holds SSO cookie(s) that have not visibly
+   * expired. Same posture as refreshTokenIsLive: an absent expiry means TRY
+   * it and let B2C answer — a refused silent authorize is one cheap round
+   * trip, and the fall-through is exactly what would have happened anyway.
+   */
+  private ssoSessionIsLive(credentials: Credentials): boolean {
+    if (!credentials.ssoCookies || Object.keys(credentials.ssoCookies).length === 0) {
+      return false;
+    }
+    return credentials.ssoExpiresAt === undefined || credentials.ssoExpiresAt > Date.now();
   }
 
   /**

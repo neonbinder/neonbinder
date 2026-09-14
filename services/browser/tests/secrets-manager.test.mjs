@@ -739,6 +739,54 @@ describe("SecretsManagerService.getCredentials — NEO-141 payload shape", () =>
     assert.equal(creds.username, "seller@example.com");
   });
 
+  it("NEO-278: ROUND-TRIPS ssoCookies and ssoExpiresAt through store → read", async () => {
+    // Same field-stripping trap as the refresh fields: a write that reads
+    // back without its SSO cookie silently loses the way past the 24h
+    // refresh window, and the loss shows up a day later, far from the cause.
+    activeClient = makeReadClient({});
+    const service = new SecretsManagerService();
+
+    await service.updateCredentials(KEY, {
+      username: "seller@example.com",
+      token: "placeholder-token",
+      expiresAt: 1234567890,
+      refreshToken: "placeholder-refresh",
+      refreshExpiresAt: 987654321,
+      ssoCookies: { "x-ms-cpim-sso:tenant_0": "placeholder-sso-cookie" },
+      ssoExpiresAt: 1700000000000,
+    });
+    const creds = await service.getCredentials(KEY);
+
+    assert.deepEqual(
+      creds.ssoCookies,
+      { "x-ms-cpim-sso:tenant_0": "placeholder-sso-cookie" },
+      "ssoCookies must survive the round trip",
+    );
+    assert.equal(creds.ssoExpiresAt, 1700000000000, "ssoExpiresAt must survive the round trip");
+    assert.equal(creds.refreshToken, "placeholder-refresh", "and the refresh fields are untouched");
+  });
+
+  it("NEO-278: narrows a malformed ssoCookies blob instead of propagating it", async () => {
+    // Non-string values, empty names/values, arrays and scalars are all
+    // dropped one level down, exactly as the flat fields are.
+    activeClient = makeReadClient({
+      payload: {
+        username: "seller@example.com",
+        ssoCookies: { "x-ms-cpim-sso:a": "ok", "x-ms-cpim-sso:b": 42, "": "nameless", "x-ms-cpim-sso:c": "" },
+        ssoExpiresAt: "later",
+      },
+    });
+    let creds = await new SecretsManagerService().getCredentials(KEY);
+    assert.deepEqual(creds.ssoCookies, { "x-ms-cpim-sso:a": "ok" });
+    assert.equal(creds.ssoExpiresAt, undefined);
+
+    for (const bad of [["x=y"], "x=y", 7, null, {}]) {
+      activeClient = makeReadClient({ payload: { username: "seller@example.com", ssoCookies: bad } });
+      creds = await new SecretsManagerService().getCredentials(KEY);
+      assert.equal(creds.ssoCookies, undefined, `ssoCookies=${JSON.stringify(bad)} must read as absent`);
+    }
+  });
+
   it("still round-trips a canary payload's password", async () => {
     // The two canary secrets keep theirs; dropping it would break the NEO-43
     // login probes, which must perform a real password sign-in every 30 min.

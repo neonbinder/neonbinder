@@ -28,16 +28,28 @@ const BACKOFFS_MS = [500, 1000, 2000, 4000];
 // attempts tolerates one dropped connection without hiding a pattern.
 const CANARY_MAX_ATTEMPTS = 2;
 
-// Conservative TTL for cached SL session cookies. SL sessions empirically
-// last much longer (~24h), but we'd rather invalidate eagerly than serve
 // SportLots sessions are effectively permanent — once authenticated, the
 // session cookie persists indefinitely until the user explicitly logs
-// out or SL purges the session server-side (rare). We set a long cache
-// TTL (30 days) and lean on the validate-on-cache-hit branch above to
-// catch sessions that turn out to be dead. Previous 4-hour TTL was
-// over-cautious and forced unnecessary Puppeteer-free re-logins on
-// long-running browser sessions.
+// out or SL purges the session server-side (rare). SL gives us no expiry.
+//
+// NEO-278: `expiresAt` is therefore OUR bookkeeping, not SL's verdict, and
+// it must never decide on its own that a session is dead. It used to: the
+// cache-hit branch was gated on `expiresAt > now` and never renewed it, so 30
+// days after a sign-in the adapter stopped asking SL, skipped validation and
+// returned reauth_required — while the cookie still worked (NEO-278: every
+// SportLots fetch failing 422 for no reason of SL's once the TTL lapsed).
+//
+// Now: a stored cookie is ALWAYS validated against SL, and `expiresAt` is
+// only the horizon at which the next successful validation rewrites it
+// (see RENEW_WITHIN_MS). Only a cookie that FAILS validation is dead.
 const CACHED_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+// NEO-278: renew `expiresAt` on a successful validation when it is missing,
+// already past, or within this many ms of now. Not on every hit — each write
+// is a billed, permanently-enabled Secret Manager version, and the user paths
+// validate on every fetch. So a write-back happens at most once per ~23 days
+// in steady state, and once, immediately, for a secret whose TTL has lapsed.
+const RENEW_WITHIN_MS = 7 * 24 * 60 * 60 * 1000;
 
 function sleepWithJitter(baseMs: number): Promise<void> {
   const jitter = baseMs * (Math.random() * 0.6 - 0.3); // ±30%
@@ -56,17 +68,20 @@ export class SportlotsAdapter extends BaseAdapter {
   /**
    * Login to SportLots.
    *
-   * First, if the per-user secret already holds a non-expired cached cookie,
-   * cheaply revalidate it against /inven/dealbin/newinven.tpl. On hit we
-   * short-circuit and skip the full login flow entirely — this is the fix
-   * for SL rate-limiting the shared CI test username when many flows trigger
-   * /login/sportlots in quick succession (mirrors the BSC adapter pattern).
+   * First, if the per-user secret already holds a cached cookie, cheaply
+   * revalidate it against /inven/dealbin/newinven.tpl — regardless of our own
+   * `expiresAt` (NEO-278: SL sets no expiry, so ours is bookkeeping, not a
+   * verdict). On hit we short-circuit and skip the full login flow entirely —
+   * this is the fix for SL rate-limiting the shared CI test username when
+   * many flows trigger /login/sportlots in quick succession (mirrors the BSC
+   * adapter pattern). A hit whose `expiresAt` is missing, past or nearly past
+   * also writes the secret back with a renewed one.
    *
-   * On miss (no token / expired / failed revalidation) we clear the stale
-   * cache and fall through to the existing HTTP login flow, which retries up
-   * to MAX_ATTEMPTS on transient failures (429, 5xx, network error, empty
-   * cookie body) and bails immediately on permanent ones (4xx non-429,
-   * invalid credentials, validation seeing a login page).
+   * On miss (no token / failed revalidation) we fall through to the existing
+   * HTTP login flow, which retries up to MAX_ATTEMPTS on transient failures
+   * (429, 5xx, network error, empty cookie body) and bails immediately on
+   * permanent ones (4xx non-429, invalid credentials, validation seeing a
+   * login page).
    */
   async login(key: string, opts?: LoginOptions): Promise<AdapterResponse> {
     const secretsManager = new SecretsManagerService();
@@ -85,11 +100,16 @@ export class SportlotsAdapter extends BaseAdapter {
 
     // Cache hit path: try the stored cookie before hitting the login form.
     //
-    // NEO-43: the canary skips this. CACHED_TOKEN_TTL_MS is 30 DAYS, so a
-    // canary that honoured the cache would POST the real SportLots signin
-    // form roughly once a month and spend every other run validating a stale
-    // cookie — precisely blind to the multi-minute SL login hang that
-    // prompted this ticket.
+    // NEO-43: the canary skips this. A canary that honoured the cache would
+    // never POST the real SportLots signin form again (SL sessions do not
+    // lapse on their own) and spend every run validating a cookie — precisely
+    // blind to the multi-minute SL login hang that prompted this ticket.
+    //
+    // NEO-278: there is deliberately NO `expiresAt > now` gate here. SL never
+    // tells us when a session ends, so the only authority on whether this
+    // cookie works is SL itself, asked via validateCachedCookie. Gating on our
+    // own TTL is what turned a working session into a month of 422s.
+    //
     // Left undefined when the secret could not be READ at all — see the guard
     // below, which depends on telling "read it, no password" apart from
     // "couldn't read it".
@@ -97,22 +117,17 @@ export class SportlotsAdapter extends BaseAdapter {
     try {
       const credentials = await secretsManager.getCredentials(key);
       stored = credentials;
-      if (
-        !canary &&
-        credentials.token &&
-        credentials.expiresAt &&
-        credentials.expiresAt > Date.now()
-      ) {
+      if (!canary && credentials.token) {
         console.log(
           `[SportLots Adapter] cached token present, validating against ${this.siteName}...`,
         );
         const valid = await this.validateCachedCookie(credentials.token);
         if (valid) {
-          console.log(`[SportLots Adapter] cached token valid; reusing.`);
+          const expiresAt = await this.renewExpiryIfDue(secretsManager, key, credentials);
           return {
             success: true,
             message: `Used cached token for ${this.siteName}`,
-            expiresAt: credentials.expiresAt,
+            expiresAt,
           };
         }
         // Stale or revoked cookie. Fall through to the fresh-login loop.
@@ -194,6 +209,66 @@ export class SportlotsAdapter extends BaseAdapter {
       await sleepWithJitter(BACKOFFS_MS[attempt - 1]);
     }
     return last;
+  }
+
+  /**
+   * NEO-278: after a stored cookie has just validated, renew our bookkeeping
+   * `expiresAt` when it is missing, already past, or within RENEW_WITHIN_MS
+   * of now. Returns the expiresAt the caller should report — the renewed one
+   * when a write-back happened (or was attempted), the stored one otherwise.
+   *
+   * Deliberately NOT on every hit: each write is a billed, permanently
+   * enabled Secret Manager version and user logins validate on every fetch.
+   *
+   * BEST-EFFORT, unlike BSC's rotated-token write. Nothing was invalidated by
+   * the validation — the cookie still works whether or not this write lands —
+   * so a Secret Manager blip must not fail a login SL just accepted. A failed
+   * renewal is logged and retried on the next hit.
+   *
+   * The write-back is `{username, token, expiresAt}` and nothing else: never
+   * a password (NEO-141), and never to a canary key (NEO-43 / isCanaryKey —
+   * the canary never reaches this branch anyway, but the key guard is the
+   * structural one).
+   */
+  private async renewExpiryIfDue(
+    secretsManager: SecretsManagerService,
+    key: string,
+    credentials: Credentials,
+  ): Promise<number | undefined> {
+    const now = Date.now();
+    const stored = credentials.expiresAt;
+    const due = stored === undefined || stored <= now + RENEW_WITHIN_MS;
+    if (!due) {
+      console.log(`[SportLots Adapter] cached token valid; reusing.`);
+      return stored;
+    }
+    if (isCanaryKey(key)) {
+      console.log(
+        `[SportLots Adapter] cached token valid; canary key — skipping expiry renewal`,
+      );
+      return stored;
+    }
+    const renewed = now + CACHED_TOKEN_TTL_MS;
+    try {
+      await secretsManager.updateCredentials(key, {
+        username: credentials.username,
+        token: credentials.token as string,
+        expiresAt: renewed,
+      });
+      console.log(
+        `[SportLots Adapter] cached token valid; expiresAt ` +
+          `${stored === undefined ? "was missing" : stored <= now ? "had lapsed" : "was within the renewal window"}` +
+          `, renewed and stored.`,
+      );
+      return renewed;
+    } catch (error) {
+      console.error(
+        `[SportLots Adapter] cached token valid but expiry renewal write FAILED; ` +
+          `reusing the session anyway:`,
+        error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+      );
+      return stored;
+    }
   }
 
   /**
