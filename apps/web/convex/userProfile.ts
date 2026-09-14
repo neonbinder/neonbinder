@@ -175,21 +175,26 @@ export const updateUserProfile = mutation({
 });
 
 /**
- * NEO-141 — the one place the `needsReauth` / `needsReauthSince` pair is
- * computed, so both writers agree on the shape.
+ * NEO-141 — the one place the `needsReauth` / `needsReauthSince` /
+ * `reauthObservedAt` triple is computed, so every writer agrees on the shape.
  *
  * - `undefined` → `{}` (leave the existing state alone).
  * - `true`      → set the flag and stamp `needsReauthSince`, PRESERVING an
- *                 earlier stamp so it means "first detected", not "last seen".
- * - `false`     → clear BOTH fields (`undefined` removes them from the doc).
+ *                 earlier stamp so it means "first detected", not "last seen";
+ *                 and stamp `reauthObservedAt` to NOW so it means "last seen"
+ *                 (NEO-278 — the backoff clock in `credentials.getSiteToken`).
+ * - `false`     → clear ALL THREE fields (`undefined` removes them from the doc).
  */
 function reauthPatch(
   needsReauth: boolean | undefined,
   existingSince: number | undefined,
-): { needsReauth?: boolean; needsReauthSince?: number } {
+): { needsReauth?: boolean; needsReauthSince?: number; reauthObservedAt?: number } {
   if (needsReauth === undefined) return {};
-  if (!needsReauth) return { needsReauth: undefined, needsReauthSince: undefined };
-  return { needsReauth: true, needsReauthSince: existingSince ?? Date.now() };
+  if (!needsReauth) {
+    return { needsReauth: undefined, needsReauthSince: undefined, reauthObservedAt: undefined };
+  }
+  const now = Date.now();
+  return { needsReauth: true, needsReauthSince: existingSince ?? now, reauthObservedAt: now };
 }
 
 /**
@@ -327,6 +332,44 @@ export const setSiteReauthState = internalMutation({
 });
 
 /**
+ * NEO-278 — read-only re-auth state for `credentials.getSiteToken`'s backoff.
+ *
+ * Since NEO-141 the browser service holds no password, so once a session has
+ * lapsed every stored-session login answers `reauth_required` in ~100ms until
+ * the user signs in again. Without this read, `getSiteToken` re-ran that doomed
+ * login (lock + action + POST + PostHog failure event + flag write + unlock) on
+ * EVERY fetch — on 2026-09-14 that was ~1,500 pointless logins in a day and a
+ * NEO-43 alert that never cleared. `getSiteToken` now reads this first and,
+ * while the flag is set and `reauthObservedAt` is younger than its retry
+ * interval, skips the refresh entirely.
+ *
+ * `reauthObservedAt` is absent on rows flagged before the field existed (or by
+ * `testing.markSiteNeedsReauth`); the caller treats "no stamp" as "not in
+ * backoff" so such a row retries once and gets stamped.
+ */
+export const getSiteReauthState = internalQuery({
+  args: {
+    userId: v.string(),
+    site: v.string(),
+  },
+  returns: v.object({
+    needsReauth: v.boolean(),
+    reauthObservedAt: v.optional(v.number()),
+  }),
+  handler: async (ctx, args) => {
+    const profile = await ctx.db
+      .query("userProfiles")
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .unique();
+    const entry = profile?.siteCredentials?.find((c) => c.site === args.site);
+    return {
+      needsReauth: entry?.needsReauth === true,
+      reauthObservedAt: entry?.reauthObservedAt,
+    };
+  },
+});
+
+/**
  * Remove a site's credential status.
  *
  * NEO-89: internal — same reasoning as `updateSiteCredentialStatus`. Also now
@@ -458,6 +501,7 @@ export const acquireCredentialLock = internalMutation({
       // vanish the moment anything else touched this site.
       needsReauth: existing?.needsReauth,
       needsReauthSince: existing?.needsReauthSince,
+      reauthObservedAt: existing?.reauthObservedAt,
       lockedAt: Date.now(),
       lockedOp: args.op,
       lockToken: args.token,
@@ -514,6 +558,7 @@ export const releaseCredentialLock = internalMutation({
       // re-auth state that the just-finished operation may have SET.
       needsReauth: entry.needsReauth,
       needsReauthSince: entry.needsReauthSince,
+      reauthObservedAt: entry.reauthObservedAt,
       // lockedAt / lockedOp / lockToken dropped — lock released.
     };
     await ctx.db.patch(profile._id, { siteCredentials: updated });

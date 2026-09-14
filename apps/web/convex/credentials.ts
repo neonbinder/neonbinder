@@ -637,6 +637,12 @@ async function readCachedToken(
  *     deletes: the secret and username are still there, only the session
  *     expired, and since NEO-141 we hold no password to renew it silently.
  *
+ * NEO-278 — once `needsReauth` is flagged, the refresh is NOT re-run on every
+ * call: `refreshSiteToken` skips it while the last `reauth_required` outcome
+ * is younger than `REAUTH_RETRY_INTERVAL_MS`, and this function falls back to
+ * the cached token (stale path) or null (mint path) exactly as it does for a
+ * failed refresh. After the interval one attempt is made again.
+ *
  * NEO-20: internalAction (not action). Tokens must never be reachable
  * via Convex RPC from a frontend client — only other Convex backend
  * code (adapters) may call this.
@@ -744,9 +750,10 @@ export const getSiteToken = internalAction({
       // capture) differs per marketplace.
       const refreshed = await refreshSiteToken(ctx, userId, args.site);
       if (!refreshed) {
-        // Refresh failed; fall back to the (likely stale) cached
-        // token rather than null — let the caller's 401 path surface
-        // a clear "please re-login" error if the cache really is dead.
+        // Refresh failed (or was skipped by the NEO-278 re-auth backoff);
+        // fall back to the (likely stale) cached token rather than null —
+        // let the caller's 401 path surface a clear "please re-login" error
+        // if the cache really is dead.
         return cached;
       }
 
@@ -760,21 +767,82 @@ export const getSiteToken = internalAction({
 });
 
 /**
+ * NEO-278: how long `getSiteToken` waits after a `reauth_required` outcome
+ * before letting a fetch-driven refresh try the stored-session login again.
+ *
+ * Since NEO-141 the browser service holds no password, so once a session has
+ * lapsed that login is doomed until the user signs in again — every attempt
+ * answers `reauth_required` in ~100ms. Before this backoff `getSiteToken`
+ * re-ran it on EVERY selector/checklist fetch (token GET + lock + action +
+ * login POST + PostHog failure event + flag write + unlock, ~1s per platform),
+ * which on 2026-09-14 meant ~1,500 pointless logins in a day and a NEO-43
+ * alert that never cleared.
+ *
+ * The retry is deliberately kept, not removed: the browser service may grow a
+ * silent re-auth (the other half of NEO-278), and a user who signs in again
+ * clears the flag anyway. 15 minutes bounds the noise at ~4 attempts an hour
+ * per platform per user while still picking up a recovered session promptly.
+ */
+const REAUTH_RETRY_INTERVAL_MS = 15 * 60 * 1000;
+
+/**
+ * NEO-278: true while a fetch-driven refresh should be skipped because the last
+ * stored-session login for this (user, site) already answered `reauth_required`
+ * less than `REAUTH_RETRY_INTERVAL_MS` ago. A flag with no `reauthObservedAt`
+ * (a row flagged before the field existed, or by `testing.markSiteNeedsReauth`)
+ * is NOT in backoff: it retries once, and that outcome stamps it.
+ *
+ * Read-only: nothing here writes credential status, and a successful login
+ * anywhere (`applyLoginOutcome`, `saveCredentials`) clears the flag and the
+ * stamp together, so the backoff cannot outlive the condition it tracks.
+ */
+async function inReauthBackoff(
+  ctx: { runQuery: (ref: any, args: any) => Promise<any> },
+  userId: string,
+  site: string,
+): Promise<boolean> {
+  const state = (await ctx.runQuery(internal.userProfile.getSiteReauthState, {
+    userId,
+    site,
+  })) as { needsReauth: boolean; reauthObservedAt?: number };
+  if (!state.needsReauth || typeof state.reauthObservedAt !== "number") return false;
+  const sinceMs = Date.now() - state.reauthObservedAt;
+  if (sinceMs >= REAUTH_RETRY_INTERVAL_MS) return false;
+  console.log(
+    `[getSiteToken] platform=${site} op=refresh skipped: re-auth pending, observed ${Math.round(sinceMs / 1000)}s ago (retry after ${REAUTH_RETRY_INTERVAL_MS / 60_000}m)`,
+  );
+  return true;
+}
+
+/**
  * Internal helper — invoke the site's authenticate action to refresh
  * its token. Returns true on success, false on any failure. Does not
  * throw. Site list is intentionally explicit (no dynamic dispatch) so
  * adding a new marketplace requires explicit wiring here — which is
  * the right place to confirm the new site's auth flow handles cached
  * tokens properly.
+ *
+ * Only `getSiteToken` calls this. The user-initiated paths
+ * (`testSiteCredentials`, `saveCredentials`) run their own login directly and
+ * are never subject to the NEO-278 backoff below — a user who clicks "Test" or
+ * signs in again must always get a real attempt.
  */
 async function refreshSiteToken(
   ctx: {
+    runQuery: (ref: any, args: any) => Promise<any>;
     runAction: (ref: any, args: any) => Promise<unknown>;
     runMutation: (ref: any, args: any) => Promise<any>;
   },
   userId: string,
   site: string,
 ): Promise<boolean> {
+  // NEO-278: checked BEFORE contending for the lock, so a suppressed refresh
+  // costs one indexed query rather than a lock round-trip. Returning false
+  // here lands on the same fallbacks a failed refresh does — the cached token
+  // on the stale path, null on the mint path — both of which are safe and
+  // neither of which writes anything.
+  if (await inReauthBackoff(ctx, userId, site)) return false;
+
   // Contend for the per-(user, site) credential lock: a background refresh runs
   // the same login that writes a token to Secret Manager, so without this a
   // fetch-driven re-auth could re-mint a token right after a user Clear (the
