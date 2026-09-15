@@ -905,6 +905,7 @@ would put the wrong question on screen.
 | `clt-` | `custom-card-row-opens-panel-with-autotitle.yaml` |
 | `cvar-` | `variation-link-group-and-unlink.yaml` |
 | `fp-` | `features-propagation.yaml` |
+| `ftl-` | `set-fill-teams-from-teammate-card.yaml` (also `-${ATTEMPT_ID}`) — under `E2E Test Sport <w>` › 2026 › Topps, the `stt-` shape for the same League-row reason. Per-attempt because the Fill teams confirm's title and toast are EXACT card counts. Its two cards are deleted at the end; the set, its `Insert` › `Base` rows, its player `FTP<token>` and its team `FTT<token>` stand. The set is given NO set-level team (NEO-277 would copy it onto every card and leave nothing to fill). |
 | `parallel-feature-` | `cards-parallel-custom.yaml` |
 | `pg-cancel-` | `parallel-grouping-cancel-discards.yaml` (also `-${ATTEMPT_ID}`) |
 | `pg-move-` | `move-parallels-of-inserts-custom.yaml` |
@@ -1166,6 +1167,8 @@ whole thing; never assume which letter the worker half starts with.
 |---|---|---|
 | `CNAA`, `CNAB` | `checklist-attention-badge-and-filter.yaml` | two teams; CNAB is the born-linked card's alone, which is what makes its row assertion single-row |
 | `CNWT` | `checklist-attention-walker-missing-team.yaml` | |
+| `FTP` | `set-selector/set-fill-teams-from-teammate-card.yaml` | a PLAYER — the one both of that flow's cards name; created from the quick-add form's PlayerPicker on card #781 and PICKED from its results on card #782 (the only flow that selects an existing player there). `FTT` below is his team; the two diverge at their third character |
+| `FTT` | `set-selector/set-fill-teams-from-teammate-card.yaml` | the team card #781 is born with and card #782 borrows through Fill teams. Carries the Location `Loc<token>` (typed into the DIALOG, never into a picker) so the composed `Loc<token> FTT<token>` is what rows, chips and the Fill teams ledger print |
 | `NBTeam` | `team-picker-create-custom-card.yaml` | created under `E2E Test Sport <w>`, not Baseball |
 | `NBPlayer` | `player-picker-create-custom-card.yaml` | a PLAYER, not a team — `players.search` tokenises identically, and the row persists the same way |
 | `PM` | `admin/player-management-add-and-career-history.yaml` | the PLAYER this flow adds by hand; `PMT` below is the team it gives him. The two diverge at their THIRD character, so neither name is a prefix of the other and neither picker can be answered by the other's row |
