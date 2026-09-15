@@ -445,6 +445,20 @@ tags:
       SET_NAME: "ftl-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
 - assertVisible: "Variant Types"
 
+# The panel is the last thing on the page and sits BELOW the fold after the
+# re-drill (CI run 34926541719, runner 3, step 204: the hierarchy dump held the
+# six columns and no panel at all — maestro-web prunes by viewport, and a
+# wait does not scroll). Bring its header into view first, exactly as stt-'s
+# STEP 5 does, on the toggle the header always carries; the heading assertion
+# below then reads what is on screen.
+- scrollUntilVisible:
+    element:
+      id: "Edit attributes"
+    centerElement: true
+    visibilityPercentage: 10
+    waitToSettleTimeoutMs: 1000
+    timeout: 7000
+
 # The panel is about the SET again — its heading names the level. Full match
 # on the collapsed bar's own text node.
 - extendedWaitUntil:
