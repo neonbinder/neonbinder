@@ -15,6 +15,7 @@ import {
   splitKey,
   teamKey,
   TEAM_FILL_GROUP_CAP,
+  TEAM_FILL_GROUP_NODE_CAP,
   type TeamFillCard,
   type TeamFillPlayer,
 } from "./teamFill";
@@ -66,6 +67,26 @@ describe("isTeamFillCandidate", () => {
   test("a pending team name counts as having an answer: not a candidate", () => {
     expect(
       isTeamFillCandidate(card({ playerIds: [P1], pendingTeamNames: ["Bulls"] })),
+    ).toBe(false);
+  });
+
+  test("the projected hasPendingTeamNames gates the same way, and wins over the strings", () => {
+    expect(
+      isTeamFillCandidate(card({ playerIds: [P1], hasPendingTeamNames: true })),
+    ).toBe(false);
+    expect(
+      isTeamFillCandidate(card({ playerIds: [P1], hasPendingTeamNames: false })),
+    ).toBe(true);
+    // The projection is the source of truth once present — mirror of hasBscRef.
+    expect(
+      isTeamFillCandidate(
+        card({ playerIds: [P1], hasPendingTeamNames: false, pendingTeamNames: ["Bulls"] }),
+      ),
+    ).toBe(true);
+    expect(
+      isTeamFillCandidate(
+        card({ playerIds: [P1], hasPendingTeamNames: true, pendingTeamNames: [] }),
+      ),
     ).toBe(false);
   });
 
@@ -239,7 +260,7 @@ describe("planTeamFill — empty and degenerate input", () => {
       currentYear: CURRENT_YEAR,
     });
     expect(plan.fills).toEqual([
-      { cardId: target._id, teamIds: [T1], rule: "oneTeamCareer" },
+      { cardId: target._id, teamIds: [T1], rule: "oneTeamCareer", scope: "career" },
     ]);
     expect(playerKey(target.playerIds!)).toBe(playerKey([P1]));
   });
@@ -260,10 +281,80 @@ describe("planTeamFill — rule A (samePlayerInSet)", () => {
       currentYear: CURRENT_YEAR,
     });
     expect(plan.fills).toEqual([
-      { cardId: target._id, teamIds: [T1], rule: "samePlayerInSet" },
+      { cardId: target._id, teamIds: [T1], rule: "samePlayerInSet", scope: "sameNode" },
     ]);
     expect(plan.byRule).toEqual({ samePlayerInSet: 1, oneTeamCareer: 0, oneStintInYear: 0 });
     expect(plan.candidates).toBe(1); // the evidence card is already teamed, not a candidate
+  });
+
+  test("evidence under another node fills with scope acrossSet", () => {
+    const otherNode = "node_2" as Id<"selectorOptions">;
+    const evidence = card({ playerIds: [P1], teamOnCardIds: [T1], selectorOptionId: otherNode });
+    const target = card({ playerIds: [P1] });
+    const plan = planTeamFill({
+      cards: [evidence, target],
+      playersById: new Map(),
+      yearByNodeId: new Map(),
+      currentYear: CURRENT_YEAR,
+    });
+    expect(plan.fills).toEqual([
+      { cardId: target._id, teamIds: [T1], rule: "samePlayerInSet", scope: "acrossSet" },
+    ]);
+    expect(plan.groups[0]).toMatchObject({ scope: "acrossSet", nodeIds: [NODE], nodeCount: 1 });
+  });
+
+  test("same-node evidence wins over disagreeing evidence elsewhere in the set", () => {
+    // The player's cards under the candidate's own node all say T1; another
+    // node of the set says T2 (an update card after a trade). The nearest
+    // evidence decides, and the reach is recorded as sameNode.
+    const otherNode = "node_2" as Id<"selectorOptions">;
+    const nearby = card({ playerIds: [P1], teamOnCardIds: [T1] });
+    const farAway = card({ playerIds: [P1], teamOnCardIds: [T2], selectorOptionId: otherNode });
+    const target = card({ playerIds: [P1] });
+    const plan = planTeamFill({
+      cards: [farAway, nearby, target],
+      playersById: byId([player({ _id: P1, teamYears: [{ teamId: T3, fromYear: 2000 }] })]),
+      yearByNodeId: new Map(),
+      currentYear: CURRENT_YEAR,
+    });
+    expect(plan.fills).toEqual([
+      { cardId: target._id, teamIds: [T1], rule: "samePlayerInSet", scope: "sameNode" },
+    ]);
+  });
+
+  test("same-node evidence that disagrees with itself: A declines at BOTH widths", () => {
+    // Two team sets under the candidate's own node means the whole-set view
+    // has at least two as well — so A cannot rescue it by widening, and B
+    // gets the turn.
+    const evidenceA = card({ playerIds: [P1], teamOnCardIds: [T1] });
+    const evidenceB = card({ playerIds: [P1], teamOnCardIds: [T2] });
+    const target = card({ playerIds: [P1] });
+    const plan = planTeamFill({
+      cards: [evidenceA, evidenceB, target],
+      playersById: byId([player({ _id: P1, teamYears: [{ teamId: T3, fromYear: 2000 }] })]),
+      yearByNodeId: new Map(),
+      currentYear: CURRENT_YEAR,
+    });
+    expect(plan.fills).toEqual([
+      { cardId: target._id, teamIds: [T3], rule: "oneTeamCareer", scope: "career" },
+    ]);
+  });
+
+  test("across-set evidence that disagrees while the own node is silent: A declines, B/C get a turn", () => {
+    const nodeA = "node_a" as Id<"selectorOptions">;
+    const nodeB = "node_b" as Id<"selectorOptions">;
+    const evidenceA = card({ playerIds: [P1], teamOnCardIds: [T1], selectorOptionId: nodeA });
+    const evidenceB = card({ playerIds: [P1], teamOnCardIds: [T2], selectorOptionId: nodeB });
+    const target = card({ playerIds: [P1] }); // under NODE, which has no evidence
+    const plan = planTeamFill({
+      cards: [evidenceA, evidenceB, target],
+      playersById: byId([player({ _id: P1, teamYears: [{ teamId: T3, fromYear: 2000 }] })]),
+      yearByNodeId: new Map(),
+      currentYear: CURRENT_YEAR,
+    });
+    expect(plan.fills).toEqual([
+      { cardId: target._id, teamIds: [T3], rule: "oneTeamCareer", scope: "career" },
+    ]);
   });
 
   test("two distinct team sets for the same players: A declines, B/C get a turn", () => {
@@ -280,7 +371,7 @@ describe("planTeamFill — rule A (samePlayerInSet)", () => {
     });
     // A stays silent (two disagreeing sets); B fills from the one-team career.
     expect(plan.fills).toEqual([
-      { cardId: target._id, teamIds: [T3], rule: "oneTeamCareer" },
+      { cardId: target._id, teamIds: [T3], rule: "oneTeamCareer", scope: "career" },
     ]);
   });
 
@@ -349,7 +440,7 @@ describe("planTeamFill — rule B (oneTeamCareer)", () => {
       currentYear: CURRENT_YEAR,
     });
     expect(plan.fills).toEqual([
-      { cardId: target._id, teamIds: [T1], rule: "oneTeamCareer" },
+      { cardId: target._id, teamIds: [T1], rule: "oneTeamCareer", scope: "career" },
     ]);
   });
 
@@ -365,7 +456,7 @@ describe("planTeamFill — rule B (oneTeamCareer)", () => {
       currentYear: CURRENT_YEAR,
     });
     expect(plan.fills).toEqual([
-      { cardId: target._id, teamIds: [T1], rule: "oneTeamCareer" },
+      { cardId: target._id, teamIds: [T1], rule: "oneTeamCareer", scope: "career" },
     ]);
   });
 
@@ -441,7 +532,7 @@ describe("planTeamFill — rule C (oneStintInYear)", () => {
       currentYear: CURRENT_YEAR,
     });
     expect(plan.fills).toEqual([
-      { cardId: target._id, teamIds: [T1], rule: "oneStintInYear" },
+      { cardId: target._id, teamIds: [T1], rule: "oneStintInYear", scope: "career" },
     ]);
   });
 
@@ -460,7 +551,7 @@ describe("planTeamFill — rule C (oneStintInYear)", () => {
       currentYear: CURRENT_YEAR,
     });
     expect(withYear.fills).toEqual([
-      { cardId: target._id, teamIds: [T1], rule: "oneStintInYear" },
+      { cardId: target._id, teamIds: [T1], rule: "oneStintInYear", scope: "career" },
     ]);
     // The same card at a year the open stint does NOT cover: no C answer,
     // and the two-team career means B cannot answer either.
@@ -519,7 +610,7 @@ describe("planTeamFill — rule C (oneStintInYear)", () => {
       currentYear: CURRENT_YEAR,
     });
     expect(plan.fills).toEqual([
-      { cardId: target._id, teamIds: [T1], rule: "oneStintInYear" },
+      { cardId: target._id, teamIds: [T1], rule: "oneStintInYear", scope: "career" },
     ]);
   });
 
@@ -576,7 +667,7 @@ describe("planTeamFill — rule C (oneStintInYear)", () => {
       currentYear: CURRENT_YEAR,
     });
     expect(withYear.fills).toEqual([
-      { cardId: target._id, teamIds: [T1], rule: "oneStintInYear" },
+      { cardId: target._id, teamIds: [T1], rule: "oneStintInYear", scope: "career" },
     ]);
   });
 
@@ -608,8 +699,8 @@ describe("planTeamFill — rule C (oneStintInYear)", () => {
     });
     expect(plan.fills).toEqual(
       expect.arrayContaining([
-        { cardId: cardOnA._id, teamIds: [T1], rule: "oneStintInYear" },
-        { cardId: cardOnB._id, teamIds: [T2], rule: "oneStintInYear" },
+        { cardId: cardOnA._id, teamIds: [T1], rule: "oneStintInYear", scope: "career" },
+        { cardId: cardOnB._id, teamIds: [T2], rule: "oneStintInYear", scope: "career" },
       ]),
     );
   });
@@ -634,7 +725,7 @@ describe("planTeamFill — rule precedence", () => {
       currentYear: CURRENT_YEAR,
     });
     expect(plan.fills).toEqual([
-      { cardId: target._id, teamIds: [T1], rule: "samePlayerInSet" },
+      { cardId: target._id, teamIds: [T1], rule: "samePlayerInSet", scope: "sameNode" },
     ]);
   });
 
@@ -654,7 +745,7 @@ describe("planTeamFill — rule precedence", () => {
       currentYear: CURRENT_YEAR,
     });
     expect(plan.fills).toEqual([
-      { cardId: target._id, teamIds: [T1], rule: "oneTeamCareer" },
+      { cardId: target._id, teamIds: [T1], rule: "oneTeamCareer", scope: "career" },
     ]);
   });
 });
@@ -696,7 +787,7 @@ describe("planTeamFill — teamIdsThatExist", () => {
       currentYear: CURRENT_YEAR,
     });
     expect(plan.fills).toEqual([
-      { cardId: target._id, teamIds: [T1], rule: "oneTeamCareer" },
+      { cardId: target._id, teamIds: [T1], rule: "oneTeamCareer", scope: "career" },
     ]);
   });
 
@@ -729,12 +820,110 @@ describe("planTeamFill — groups", () => {
       currentYear: CURRENT_YEAR,
     });
     expect(plan.groups).toEqual([
-      { playerKey: playerKey([P1]), teamKey: teamKey([T1]), rule: "samePlayerInSet", cardCount: 3 },
+      {
+        playerKey: playerKey([P1]),
+        teamKey: teamKey([T1]),
+        rule: "samePlayerInSet",
+        scope: "sameNode",
+        nodeIds: [NODE],
+        nodeCount: 1,
+        cardCount: 3,
+      },
     ]);
     expect(plan.groupsTotal).toBe(1);
   });
 
-  test("groups sort by cardCount descending", () => {
+  test("the same (players, teams, rule) at two scopes are two groups", () => {
+    const otherNode = "node_2" as Id<"selectorOptions">;
+    const evidence = card({ playerIds: [P1], teamOnCardIds: [T1] }); // under NODE
+    const nearTarget = card({ playerIds: [P1] }); // under NODE → sameNode
+    const farTarget = card({ playerIds: [P1], selectorOptionId: otherNode }); // → acrossSet
+    const plan = planTeamFill({
+      cards: [evidence, nearTarget, farTarget],
+      playersById: new Map(),
+      yearByNodeId: new Map(),
+      currentYear: CURRENT_YEAR,
+    });
+    expect(plan.groups.map((g) => [g.scope, g.cardCount, g.nodeIds])).toEqual([
+      ["acrossSet", 1, [otherNode]],
+      ["sameNode", 1, [NODE]],
+    ]);
+    expect(plan.groupsTotal).toBe(2);
+  });
+
+  test("a group names its distinct target nodes, capped, with the full count beside", () => {
+    const otherNode = "node_evidence" as Id<"selectorOptions">;
+    const evidence = card({ playerIds: [P1], teamOnCardIds: [T1], selectorOptionId: otherNode });
+    const targetNodes = Array.from(
+      { length: TEAM_FILL_GROUP_NODE_CAP + 2 },
+      (_, i) => `node_t${i}` as Id<"selectorOptions">,
+    );
+    const targets = targetNodes.flatMap((nodeId) => [
+      card({ playerIds: [P1], selectorOptionId: nodeId }),
+      card({ playerIds: [P1], selectorOptionId: nodeId }), // a second card on each node
+    ]);
+    const plan = planTeamFill({
+      cards: [evidence, ...targets],
+      playersById: new Map(),
+      yearByNodeId: new Map(),
+      currentYear: CURRENT_YEAR,
+    });
+    expect(plan.groups).toHaveLength(1);
+    const [group] = plan.groups;
+    expect(group.scope).toBe("acrossSet");
+    expect(group.cardCount).toBe(targets.length);
+    expect(group.nodeIds).toEqual(targetNodes.slice(0, TEAM_FILL_GROUP_NODE_CAP));
+    expect(group.nodeCount).toBe(targetNodes.length);
+  });
+
+  test("groups sort riskiest first: career rules, then A across the set, then A within a node", () => {
+    const otherNode = "node_2" as Id<"selectorOptions">;
+    // Rule A sameNode, the biggest group by far.
+    const evidence1 = card({ playerIds: [P1], teamOnCardIds: [T1] });
+    const sameNodeTargets = [card({ playerIds: [P1] }), card({ playerIds: [P1] }), card({ playerIds: [P1] })];
+    // Rule A acrossSet, two cards.
+    const evidence2 = card({ playerIds: [P2], teamOnCardIds: [T2], selectorOptionId: otherNode });
+    const acrossTargets = [card({ playerIds: [P2] }), card({ playerIds: [P2] })];
+    // Rule B, one card.
+    const careerTarget = card({ playerIds: [P3] });
+    const plan = planTeamFill({
+      cards: [evidence1, evidence2, ...sameNodeTargets, ...acrossTargets, careerTarget],
+      playersById: byId([player({ _id: P3, teamYears: [{ teamId: T3, fromYear: 2000 }] })]),
+      yearByNodeId: new Map(),
+      currentYear: CURRENT_YEAR,
+    });
+    expect(plan.groups.map((g) => [g.rule, g.scope, g.cardCount])).toEqual([
+      ["oneTeamCareer", "career", 1],
+      ["samePlayerInSet", "acrossSet", 2],
+      ["samePlayerInSet", "sameNode", 3],
+    ]);
+  });
+
+  test("rules B and C share the top tier and sort by cardCount within it", () => {
+    const bTargets = [card({ playerIds: [P1] })];
+    const cTargets = [card({ playerIds: [P2] }), card({ playerIds: [P2] })];
+    const plan = planTeamFill({
+      cards: [...bTargets, ...cTargets],
+      playersById: byId([
+        player({ _id: P1, teamYears: [{ teamId: T1, fromYear: 2000 }] }),
+        player({
+          _id: P2,
+          teamYears: [
+            { teamId: T2, fromYear: 1990, toYear: 1995 },
+            { teamId: T3, fromYear: 1996, toYear: 2000 },
+          ],
+        }),
+      ]),
+      yearByNodeId: new Map([[NODE, 1998]]),
+      currentYear: CURRENT_YEAR,
+    });
+    expect(plan.groups.map((g) => [g.rule, g.cardCount])).toEqual([
+      ["oneStintInYear", 2],
+      ["oneTeamCareer", 1],
+    ]);
+  });
+
+  test("within a tier, groups sort by cardCount descending", () => {
     const evidence1 = card({ playerIds: [P1], teamOnCardIds: [T1] });
     const evidence2 = card({ playerIds: [P2], teamOnCardIds: [T2] });
     const bigGroup = [card({ playerIds: [P1] }), card({ playerIds: [P1] })];

@@ -13,22 +13,33 @@
  *
  * ## What this is, and is not
  *
- * A PLAN, computed once from a snapshot of the subtree and applied only after
- * an operator has seen its counts. It is never silent: nothing here runs from
- * a sync, a cron or a creation path. It writes only `teamOnCardIds` on cards
- * that are still empty at apply time, and never `players.teamYears` — a
- * card's printed team and a player's career are different facts (see
- * `suggestedTeamsForCard`), and a set is evidence for its own cards only.
+ * A PLAN, computed once from the rows as read across the page walk (each
+ * page is its own transaction, so the input is not one consistent snapshot —
+ * safe here because the write is additive, empty-only and re-checked per
+ * card) and applied only after an operator has seen its counts. It is never
+ * silent: nothing here runs from a sync, a cron or a creation path. It writes
+ * only `teamOnCardIds` on cards that are still empty at apply time, and never
+ * `players.teamYears` — a card's printed team and a player's career are
+ * different facts (see `suggestedTeamsForCard`), and a set is evidence for
+ * its own cards only.
  *
  * ## Three rules, first answer wins
  *
- *  A. **Same player(s), same set.** Every card in the whole set subtree with
- *     exactly these players and a non-empty `teamOnCardIds` is evidence. One
- *     distinct team set among the evidence → fill with it. Two or more → the
- *     set disagrees with itself (a traded player's base card vs. his update
- *     card) and rule A stays silent rather than pick one; B and C get a turn.
- *     Evidence is the snapshot: a fill made by this run is never evidence for
- *     another card in the same run, so the result does not depend on the
+ *  A. **Same player(s), same set.** Every card in the set subtree with
+ *     exactly these players and a non-empty `teamOnCardIds` is evidence, read
+ *     at two widths, nearest first:
+ *       - `sameNode`  — evidence under the candidate's OWN node (the same
+ *         insert, the same parallel). One distinct team set → fill with it.
+ *       - `acrossSet` — otherwise, evidence anywhere in the subtree. One
+ *         distinct team set → fill with it.
+ *     Two or more distinct sets at a width → the set disagrees with itself
+ *     there (a traded player's base card vs. his update card) and A stays
+ *     silent at that width rather than pick one; ambiguous at both widths and
+ *     B and C get a turn. The width is recorded on the decision because a
+ *     team borrowed from another node is a longer reach, and the preview
+ *     lists those first and names the nodes it would write to.
+ *     Evidence is what was read: a fill made by this run is never evidence
+ *     for another card in the same run, so the result does not depend on the
  *     order cards were read.
  *  B. **One-team career.** Every player on the card has at least one stint
  *     and every stint names the same team, and all players name that one
@@ -60,6 +71,18 @@ import { sameTeamSet } from "./selectorTeams";
 export type TeamFillRule = "samePlayerInSet" | "oneTeamCareer" | "oneStintInYear";
 
 /**
+ * How far a decision reached for its evidence. `sameNode` and `acrossSet`
+ * are rule A's two widths; `career` is rules B and C, whose evidence is the
+ * player row rather than the set. It is on the decision (not derivable from
+ * the rule) so the preview can rank a cross-node borrow as riskier than a
+ * same-node one, and say which nodes it touches.
+ */
+export type TeamFillScope = "sameNode" | "acrossSet" | "career";
+
+/** How many distinct target nodes a group names; `nodeCount` carries the rest. */
+export const TEAM_FILL_GROUP_NODE_CAP = 4;
+
+/**
  * The card shape every function here reads. It is satisfied by a full
  * `Doc<"cardChecklist">` (the apply chunk re-checks a fresh row) AND by the
  * projection `readTeamFillCards` returns, which carries `hasBscRef` instead of
@@ -71,6 +94,8 @@ export type TeamFillCard = {
   playerIds?: ReadonlyArray<Id<"players">>;
   teamOnCardIds?: ReadonlyArray<Id<"teams">>;
   pendingTeamNames?: ReadonlyArray<string>;
+  /** Projected form of `pendingTeamNames.length > 0`. Wins over the strings when set. */
+  hasPendingTeamNames?: boolean;
   teamNoneConfirmedAt?: number;
   teamCheckDoneAt?: number;
   /** Projected form of `!!platformData.bsc?.ref`. Wins over `platformData` when set. */
@@ -87,6 +112,7 @@ export type TeamFillDecision = {
   cardId: Id<"cardChecklist">;
   teamIds: Array<Id<"teams">>;
   rule: TeamFillRule;
+  scope: TeamFillScope;
 };
 
 export type TeamFillGroup = {
@@ -95,6 +121,11 @@ export type TeamFillGroup = {
   /** `teamKey(teamIds)` — same shape, over the fill's teams. */
   teamKey: string;
   rule: TeamFillRule;
+  scope: TeamFillScope;
+  /** Distinct nodes the group's cards sit under, in first-seen order, at most `TEAM_FILL_GROUP_NODE_CAP`. */
+  nodeIds: Array<Id<"selectorOptions">>;
+  /** How many distinct nodes there were before the cap. */
+  nodeCount: number;
   cardCount: number;
 };
 
@@ -103,7 +134,11 @@ export type TeamFillPlan = {
   byRule: Record<TeamFillRule, number>;
   /** Candidates no rule could answer, plus fills dropped by `teamIdsThatExist`. */
   remaining: number;
-  /** Distinct (players, teams, rule) triples, most cards first, capped. */
+  /**
+   * Distinct (players, teams, rule, scope) groups, riskiest first: career
+   * rules (B, C), then A across the set, then A within a node; most cards
+   * first inside a tier. Capped.
+   */
   groups: Array<TeamFillGroup>;
   /** How many groups there were before the cap, so the UI can say "and N more". */
   groupsTotal: number;
@@ -135,7 +170,9 @@ export const TEAM_FILL_GROUP_CAP = 200;
 export function isTeamFillCandidate(card: TeamFillCard): boolean {
   if ((card.playerIds?.length ?? 0) === 0) return false;
   if ((card.teamOnCardIds?.length ?? 0) > 0) return false;
-  if ((card.pendingTeamNames?.length ?? 0) > 0) return false;
+  const hasPendingTeamNames =
+    card.hasPendingTeamNames ?? (card.pendingTeamNames?.length ?? 0) > 0;
+  if (hasPendingTeamNames) return false;
   if (card.teamNoneConfirmedAt !== undefined) return false;
   const hasBscRef = card.hasBscRef ?? !!card.platformData?.bsc?.ref;
   if (hasBscRef && card.teamCheckDoneAt === undefined) return false;
@@ -165,27 +202,62 @@ function distinctTeamIds(player: TeamFillPlayer): Array<Id<"teams">> {
   return [...new Set<Id<"teams">>((player.teamYears ?? []).map((entry) => entry.teamId))];
 }
 
+type Evidence = {
+  /** `playerKey` → distinct team sets seen anywhere in the subtree. */
+  acrossSet: Map<string, Array<Array<Id<"teams">>>>;
+  /** `nodeId + "\n" + playerKey` → distinct team sets seen under that node. */
+  sameNode: Map<string, Array<Array<Id<"teams">>>>;
+};
+
+function sameNodeKey(nodeId: Id<"selectorOptions">, pKey: string): string {
+  return `${nodeId}\n${pKey}`;
+}
+
+function addEvidence(
+  map: Map<string, Array<Array<Id<"teams">>>>,
+  key: string,
+  teams: ReadonlyArray<Id<"teams">>,
+): void {
+  const sets = map.get(key) ?? [];
+  if (!sets.some((seen) => sameTeamSet(seen, teams))) {
+    sets.push([...new Set<Id<"teams">>(teams)]);
+    map.set(key, sets);
+  }
+}
+
 /**
- * Rule A's evidence, built once. Keyed by `playerKey`; the value is the list
- * of DISTINCT team sets seen among teamed cards with those players. Two
- * entries means the set disagrees with itself and A declines.
+ * Rule A's evidence, built once at both widths. Each value is the list of
+ * DISTINCT team sets seen among teamed cards with those players; two entries
+ * means the set disagrees with itself at that width and A declines there.
  */
-function buildSamePlayerEvidence(
-  cards: ReadonlyArray<TeamFillCard>,
-): Map<string, Array<Array<Id<"teams">>>> {
-  const evidence = new Map<string, Array<Array<Id<"teams">>>>();
+function buildSamePlayerEvidence(cards: ReadonlyArray<TeamFillCard>): Evidence {
+  const evidence: Evidence = { acrossSet: new Map(), sameNode: new Map() };
   for (const card of cards) {
     const players = card.playerIds ?? [];
     const teams = card.teamOnCardIds ?? [];
     if (players.length === 0 || teams.length === 0) continue;
     const key = playerKey(players);
-    const sets = evidence.get(key) ?? [];
-    if (!sets.some((seen) => sameTeamSet(seen, teams))) {
-      sets.push([...new Set<Id<"teams">>(teams)]);
-      evidence.set(key, sets);
-    }
+    addEvidence(evidence.acrossSet, key, teams);
+    addEvidence(evidence.sameNode, sameNodeKey(card.selectorOptionId, key), teams);
   }
   return evidence;
+}
+
+/** The single team set at a width, or undefined when none or several. */
+function soleTeamSet(
+  sets: Array<Array<Id<"teams">>> | undefined,
+): Array<Id<"teams">> | undefined {
+  return sets && sets.length === 1 ? [...sets[0]] : undefined;
+}
+
+/**
+ * Sort tier for the preview: the further a decision reached, the earlier it
+ * is listed, so an operator scanning the top of the ledger sees the borrows
+ * most worth a second look.
+ */
+function riskTier(rule: TeamFillRule, scope: TeamFillScope): number {
+  if (rule !== "samePlayerInSet") return 0;
+  return scope === "acrossSet" ? 1 : 2;
 }
 
 /**
@@ -211,7 +283,7 @@ function agreedTeam(
 }
 
 /**
- * Decide every candidate in one pass over a snapshot.
+ * Decide every candidate in one pass over the rows as read.
  *
  * `teamIdsThatExist`, when given, drops any fill naming a team outside it
  * into `remaining` — the caller has read the team rows and knows which are
@@ -238,7 +310,10 @@ export function planTeamFill(input: {
     oneTeamCareer: 0,
     oneStintInYear: 0,
   };
-  const groupCounts = new Map<string, TeamFillGroup>();
+  type GroupAccumulator = Omit<TeamFillGroup, "nodeIds" | "nodeCount"> & {
+    nodes: Set<Id<"selectorOptions">>;
+  };
+  const groupCounts = new Map<string, GroupAccumulator>();
   let candidates = 0;
   let remaining = 0;
 
@@ -246,12 +321,20 @@ export function planTeamFill(input: {
     if (!isTeamFillCandidate(card)) continue;
     candidates += 1;
     const players = card.playerIds ?? [];
+    const pKey = playerKey(players);
 
-    let decision: { teamIds: Array<Id<"teams">>; rule: TeamFillRule } | undefined;
+    let decision:
+      | { teamIds: Array<Id<"teams">>; rule: TeamFillRule; scope: TeamFillScope }
+      | undefined;
 
-    const seenSets = evidence.get(playerKey(players));
-    if (seenSets && seenSets.length === 1) {
-      decision = { teamIds: [...seenSets[0]], rule: "samePlayerInSet" };
+    const nearby = soleTeamSet(evidence.sameNode.get(sameNodeKey(card.selectorOptionId, pKey)));
+    if (nearby) {
+      decision = { teamIds: nearby, rule: "samePlayerInSet", scope: "sameNode" };
+    } else {
+      const anywhere = soleTeamSet(evidence.acrossSet.get(pKey));
+      if (anywhere) {
+        decision = { teamIds: anywhere, rule: "samePlayerInSet", scope: "acrossSet" };
+      }
     }
 
     if (!decision) {
@@ -259,7 +342,7 @@ export function planTeamFill(input: {
         const teams = distinctTeamIds(player);
         return teams.length === 1 ? teams : [];
       });
-      if (team) decision = { teamIds: [team], rule: "oneTeamCareer" };
+      if (team) decision = { teamIds: [team], rule: "oneTeamCareer", scope: "career" };
     }
 
     if (!decision) {
@@ -271,7 +354,7 @@ export function planTeamFill(input: {
           );
           return [...new Set<Id<"teams">>(inYear.map((entry) => entry.teamId))];
         });
-        if (team) decision = { teamIds: [team], rule: "oneStintInYear" };
+        if (team) decision = { teamIds: [team], rule: "oneStintInYear", scope: "career" };
       }
     }
 
@@ -286,20 +369,38 @@ export function planTeamFill(input: {
 
     fills.push({ cardId: card._id, ...decision });
     byRule[decision.rule] += 1;
-    const pKey = playerKey(players);
     const tKey = teamKey(decision.teamIds);
-    const groupId = `${decision.rule}\n${pKey}\n${tKey}`;
+    const groupId = `${decision.rule}\n${decision.scope}\n${pKey}\n${tKey}`;
     const group = groupCounts.get(groupId);
-    if (group) group.cardCount += 1;
-    else groupCounts.set(groupId, { playerKey: pKey, teamKey: tKey, rule: decision.rule, cardCount: 1 });
+    if (group) {
+      group.cardCount += 1;
+      group.nodes.add(card.selectorOptionId);
+    } else {
+      groupCounts.set(groupId, {
+        playerKey: pKey,
+        teamKey: tKey,
+        rule: decision.rule,
+        scope: decision.scope,
+        nodes: new Set([card.selectorOptionId]),
+        cardCount: 1,
+      });
+    }
   }
 
-  const allGroups = [...groupCounts.values()].sort(
-    (a, b) =>
-      b.cardCount - a.cardCount ||
-      a.playerKey.localeCompare(b.playerKey) ||
-      a.teamKey.localeCompare(b.teamKey),
-  );
+  const allGroups: Array<TeamFillGroup> = [...groupCounts.values()]
+    .map(({ nodes, ...group }) => ({
+      ...group,
+      nodeIds: [...nodes].slice(0, TEAM_FILL_GROUP_NODE_CAP),
+      nodeCount: nodes.size,
+    }))
+    .sort(
+      (a, b) =>
+        riskTier(a.rule, a.scope) - riskTier(b.rule, b.scope) ||
+        b.cardCount - a.cardCount ||
+        a.playerKey.localeCompare(b.playerKey) ||
+        a.teamKey.localeCompare(b.teamKey) ||
+        a.rule.localeCompare(b.rule),
+    );
 
   return {
     fills,

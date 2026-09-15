@@ -5,9 +5,9 @@
  *
  * The RULES are pinned in lib/teamFill.test.ts, pure; this file proves the
  * plumbing agrees with them once real rows, a real subtree walk and real
- * chunking are involved — and the two places a snapshot can go stale between
- * preview and apply (a card teamed in another tab, a team that stopped
- * existing) are actually skipped rather than overwritten.
+ * chunking are involved — and the places the rows can move between preview
+ * and apply (a card teamed in another tab, a team that stopped existing, a
+ * re-sync adding cards) are skipped, or refused, rather than overwritten.
  *
  * Fixture shape follows selectorOptions.setSelectorOptionTeams.test.ts
  * (sport → setName → variantType → insert → parallel, raw inserts) and
@@ -21,7 +21,12 @@ import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { normalizeTeamName } from "./teams";
 import { normalizePlayerName } from "./players";
-import { TEAM_FILL_APPLY_CHUNK, TEAM_FILL_ID_CHUNK } from "./teamFill";
+import {
+  TEAM_FILL_APPLY_CHUNK,
+  TEAM_FILL_DRIFT_MESSAGE,
+  TEAM_FILL_ID_CHUNK,
+} from "./teamFill";
+import { TEAM_FILL_GROUP_NODE_CAP } from "./lib/teamFill";
 import { MAX_CARD_TEAMS } from "./features/cardAttention";
 
 const modules = (import.meta as unknown as {
@@ -205,21 +210,92 @@ describe("previewTeamFill", () => {
     expect(result.fillable).toBe(4);
     expect(result.remaining).toBe(0);
     expect(result.byRule).toEqual({ samePlayerInSet: 4, oneTeamCareer: 0, oneStintInYear: 0 });
+    // The evidence sits under the variantType, so its sibling is a same-node
+    // find and the other three are borrows from across the set — two groups,
+    // the borrow first, naming the nodes it writes to by their display value.
     expect(result.groups).toEqual([
       {
         playerNames: ["Fernando Tatis Jr."],
         teamNames: ["San Diego Padres"],
         rule: "samePlayerInSet",
-        cardCount: 4,
+        scope: "acrossSet",
+        nodeNames: ["2024 Topps", "Stars", "Gold"],
+        nodeCount: 3,
+        cardCount: 3,
+      },
+      {
+        playerNames: ["Fernando Tatis Jr."],
+        teamNames: ["San Diego Padres"],
+        rule: "samePlayerInSet",
+        scope: "sameNode",
+        nodeNames: ["Base"],
+        nodeCount: 1,
+        cardCount: 1,
       },
     ]);
-    expect(result.groupsTotal).toBe(1);
+    expect(result.groupsTotal).toBe(2);
 
     // Nothing written by a preview.
     for (const id of [underVariant, underInsert, underParallel, underSet]) {
       const row = await getCard(t, id);
       expect(row!.teamOnCardIds).toBeUndefined();
     }
+  });
+
+  test("career groups come first, and a cross-node group's node names are capped with the count beside", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, setNameId, variantTypeId } = await seedTree(t);
+    const padres = await insertTeam(t, sportId, "San Diego Padres");
+    const reds = await insertTeam(t, sportId, "Cincinnati Reds");
+    const tatis = await insertPlayer(t, sportId, "Fernando Tatis Jr.", []);
+    const bench = await insertPlayer(t, sportId, "Johnny Bench", [
+      { teamId: reds, fromYear: 1967, toYear: 1983 },
+    ]);
+
+    // Rule A evidence under the variantType; candidates under MORE inserts
+    // than the node cap, one card each — a big acrossSet group.
+    await insertCard(t, variantTypeId, { cardNumber: "ev", playerIds: [tatis], teamOnCardIds: [padres] });
+    const insertNames: string[] = [];
+    for (let i = 0; i < TEAM_FILL_GROUP_NODE_CAP + 2; i += 1) {
+      const name = `Insert ${i}`;
+      insertNames.push(name);
+      const insertId = await t.run(async (ctx) =>
+        ctx.db.insert("selectorOptions", {
+          level: "insert",
+          value: name,
+          platformData: {},
+          parentId: variantTypeId,
+          children: [],
+          lastUpdated: Date.now(),
+        }),
+      );
+      await t.run(async (ctx) => {
+        const parent = await ctx.db.get(variantTypeId);
+        await ctx.db.patch(variantTypeId, { children: [...(parent?.children ?? []), insertId] });
+      });
+      await insertCard(t, insertId, { cardNumber: `i${i}`, playerIds: [tatis] });
+    }
+    // One rule B card — a single card, yet it lists first.
+    await insertCard(t, setNameId, { cardNumber: "b", playerIds: [bench] });
+
+    const result = await asAdmin.action(api.teamFill.previewTeamFill, {
+      selectorOptionId: setNameId,
+    });
+    expect(result.groups.map((g) => [g.rule, g.scope, g.cardCount])).toEqual([
+      ["oneTeamCareer", "career", 1],
+      ["samePlayerInSet", "acrossSet", TEAM_FILL_GROUP_NODE_CAP + 2],
+    ]);
+    const borrow = result.groups[1];
+    expect(borrow.nodeNames).toHaveLength(TEAM_FILL_GROUP_NODE_CAP);
+    expect(insertNames).toEqual(expect.arrayContaining(borrow.nodeNames));
+    expect(borrow.nodeCount).toBe(TEAM_FILL_GROUP_NODE_CAP + 2);
+    expect(result.groups[0]).toMatchObject({
+      playerNames: ["Johnny Bench"],
+      teamNames: ["Cincinnati Reds"],
+      nodeNames: ["2024 Topps"],
+      nodeCount: 1,
+    });
   });
 
   test("refuses a non-setName root with the exact message", async () => {
@@ -371,6 +447,7 @@ describe("applyTeamFill", () => {
     const before = Date.now();
     const result = await asAdmin.action(api.teamFill.applyTeamFill, {
       selectorOptionId: setNameId,
+      expectedFillable: 1,
     });
     expect(result.applied).toBe(1);
     expect(result.skipped).toBe(0);
@@ -397,10 +474,10 @@ describe("applyTeamFill", () => {
     await expect(
       t
         .withIdentity(SIGNED_IN_IDENTITY)
-        .action(api.teamFill.applyTeamFill, { selectorOptionId: setNameId }),
+        .action(api.teamFill.applyTeamFill, { selectorOptionId: setNameId, expectedFillable: 1 }),
     ).rejects.toThrow();
     await expect(
-      t.action(api.teamFill.applyTeamFill, { selectorOptionId: setNameId }),
+      t.action(api.teamFill.applyTeamFill, { selectorOptionId: setNameId, expectedFillable: 1 }),
     ).rejects.toThrow();
 
     const row = await getCard(t, cardId);
@@ -412,8 +489,77 @@ describe("applyTeamFill", () => {
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { variantTypeId } = await seedTree(t);
     await expect(
-      asAdmin.action(api.teamFill.applyTeamFill, { selectorOptionId: variantTypeId }),
+      asAdmin.action(api.teamFill.applyTeamFill, {
+        selectorOptionId: variantTypeId,
+        expectedFillable: 0,
+      }),
     ).rejects.toThrow(/Fill teams from the set row, not a variant or parallel\./);
+  });
+
+  test("refuses to fill MORE cards than the preview promised, writing nothing", async () => {
+    // The operator previewed 1 fillable; a re-sync (or a teammate) added a
+    // second teamless card before they pressed Yes. The recomputed plan is
+    // bigger than the number they confirmed, so the apply is refused whole.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, setNameId } = await seedTree(t);
+    const padres = await insertTeam(t, sportId, "San Diego Padres");
+    const tatis = await insertPlayer(t, sportId, "Fernando Tatis Jr.", [
+      { teamId: padres, fromYear: 2019 },
+    ]);
+    await insertCard(t, setNameId, { cardNumber: "ev", playerIds: [tatis], teamOnCardIds: [padres] });
+    const first = await insertCard(t, setNameId, { cardNumber: "1", playerIds: [tatis] });
+
+    const preview = await asAdmin.action(api.teamFill.previewTeamFill, {
+      selectorOptionId: setNameId,
+    });
+    expect(preview.fillable).toBe(1);
+
+    const second = await insertCard(t, setNameId, { cardNumber: "2", playerIds: [tatis] });
+
+    await expect(
+      asAdmin.action(api.teamFill.applyTeamFill, {
+        selectorOptionId: setNameId,
+        expectedFillable: preview.fillable,
+      }),
+    ).rejects.toThrow(TEAM_FILL_DRIFT_MESSAGE);
+
+    for (const id of [first, second]) {
+      const row = await getCard(t, id);
+      expect(row!.teamOnCardIds).toBeUndefined();
+    }
+  });
+
+  test("fills FEWER cards than the preview promised without complaint — the toast carries the real count", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, setNameId } = await seedTree(t);
+    const padres = await insertTeam(t, sportId, "San Diego Padres");
+    const dodgers = await insertTeam(t, sportId, "Los Angeles Dodgers");
+    const tatis = await insertPlayer(t, sportId, "Fernando Tatis Jr.", [
+      { teamId: padres, fromYear: 2019 },
+    ]);
+    await insertCard(t, setNameId, { cardNumber: "ev", playerIds: [tatis], teamOnCardIds: [padres] });
+    const first = await insertCard(t, setNameId, { cardNumber: "1", playerIds: [tatis] });
+    const second = await insertCard(t, setNameId, { cardNumber: "2", playerIds: [tatis] });
+
+    const preview = await asAdmin.action(api.teamFill.previewTeamFill, {
+      selectorOptionId: setNameId,
+    });
+    expect(preview.fillable).toBe(2);
+
+    // Someone teams one of them by hand in between.
+    await t.run(async (ctx) => ctx.db.patch(second, { teamOnCardIds: [dodgers] }));
+
+    const result = await asAdmin.action(api.teamFill.applyTeamFill, {
+      selectorOptionId: setNameId,
+      expectedFillable: preview.fillable,
+    });
+    expect(result.applied).toBe(1);
+    expect(result.skipped).toBe(0); // never entered the recomputed plan at all
+
+    expect((await getCard(t, first))!.teamOnCardIds).toEqual([padres]);
+    expect((await getCard(t, second))!.teamOnCardIds).toEqual([dodgers]); // stands
   });
 
   test("a card teamed after the plan was computed is skipped at the chunk's fresh re-check, not overwritten", async () => {
@@ -463,6 +609,7 @@ describe("applyTeamFill", () => {
 
     const result = await asAdmin.action(api.teamFill.applyTeamFill, {
       selectorOptionId: setNameId,
+      expectedFillable: total,
     });
     expect(result.applied).toBe(total);
     expect(result.skipped).toBe(0);
@@ -518,6 +665,66 @@ describe("readTeamFillCards", () => {
     }
 
     expect(seenIds).toEqual(expectedIds);
+  });
+
+  test("names every node it visits by its display value, once, beside its season", async () => {
+    const t = convexTest(schema, modules);
+    const { setNameId, variantTypeId, insertId, parallelId } = await seedTree(t);
+    const nodeIds = [setNameId, variantTypeId, insertId, parallelId];
+    for (const nodeId of nodeIds) await insertCard(t, nodeId, { cardNumber: `${nodeId}-0` });
+
+    const page = await t.query(internal.teamFill.readTeamFillCards, {
+      nodeIds,
+      nodeIndex: 0,
+      budget: 100,
+    });
+    expect(page.done).toBe(true);
+    expect(page.nameByNodeId).toEqual([
+      { nodeId: setNameId, name: "2024 Topps" },
+      { nodeId: variantTypeId, name: "Base" },
+      { nodeId: insertId, name: "Stars" },
+      { nodeId: parallelId, name: "Gold" },
+    ]);
+    expect(page.yearByNodeId.map((entry) => entry.nodeId)).toEqual(nodeIds);
+    expect(page.yearByNodeId[0].year).toBe(2024);
+  });
+
+  test("a non-finite or sub-one budget is clamped to one card, so the walk still advances", async () => {
+    const t = convexTest(schema, modules);
+    const { setNameId } = await seedTree(t);
+    await insertCard(t, setNameId, { cardNumber: "1" });
+    await insertCard(t, setNameId, { cardNumber: "2" });
+
+    for (const budget of [Number.NaN, Number.POSITIVE_INFINITY, 0, -5, 0.25]) {
+      const page = await t.query(internal.teamFill.readTeamFillCards, {
+        nodeIds: [setNameId],
+        nodeIndex: 0,
+        budget,
+      });
+      expect(page.cards).toHaveLength(1);
+      expect(page.done).toBe(false);
+      expect(page.cursor).not.toBeNull();
+    }
+  });
+
+  test("projects hasPendingTeamNames as a boolean, never the strings themselves", async () => {
+    const t = convexTest(schema, modules);
+    const { setNameId } = await seedTree(t);
+    const pending = await insertCard(t, setNameId, {
+      cardNumber: "p",
+      pendingTeamNames: ["Some Team"],
+    });
+    const bare = await insertCard(t, setNameId, { cardNumber: "b" });
+
+    const page = await t.query(internal.teamFill.readTeamFillCards, {
+      nodeIds: [setNameId],
+      nodeIndex: 0,
+      budget: 10,
+    });
+    const byId = new Map(page.cards.map((card) => [card._id, card]));
+    expect(byId.get(pending)!.hasPendingTeamNames).toBe(true);
+    expect(byId.get(bare)!.hasPendingTeamNames).toBe(false);
+    expect("pendingTeamNames" in byId.get(pending)!).toBe(false);
   });
 });
 

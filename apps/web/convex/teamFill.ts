@@ -26,6 +26,18 @@
  * why no lock is needed between them: whichever reaches a card first wins and
  * the other finds it no longer a candidate.
  *
+ * The page walk is several transactions, not one snapshot: a card can be
+ * teamed, or a row added, between pages. That is safe for the same reason —
+ * every write is additive, empty-only and re-checked — but it means the
+ * recomputed plan can also GROW past what the operator confirmed (a checklist
+ * re-sync added teamless cards, an operator teamed an evidence card and made
+ * a previously ambiguous player fillable). `applyTeamFill` therefore takes
+ * the preview's `fillable` as `expectedFillable` and refuses, writing
+ * nothing, when the recomputed plan would fill MORE cards than that: the
+ * operator said yes to a number, and a bigger number is a different question.
+ * Fewer is fine — those cards were teamed meanwhile, and the toast reports
+ * the actual counts.
+ *
  * ## What a fill writes, and does not
  *
  * `teamOnCardIds` and `lastUpdated`, and it clears the `bscTeamName` hint the
@@ -59,7 +71,11 @@ import {
   type TeamFillCard,
   type TeamFillPlan,
   type TeamFillRule,
+  type TeamFillScope,
 } from "./lib/teamFill";
+
+/** Refusal when the recomputed plan would fill more cards than the operator confirmed. */
+export const TEAM_FILL_DRIFT_MESSAGE = "The set changed since the preview — check again.";
 
 /**
  * Cards examined per `readTeamFillCards` call. A projected card is a few
@@ -81,6 +97,12 @@ const ruleValidator = v.union(
   v.literal("oneStintInYear"),
 );
 
+const scopeValidator = v.union(
+  v.literal("sameNode"),
+  v.literal("acrossSet"),
+  v.literal("career"),
+);
+
 const byRuleValidator = v.object({
   samePlayerInSet: v.number(),
   oneTeamCareer: v.number(),
@@ -92,7 +114,7 @@ const projectedCardValidator = v.object({
   selectorOptionId: v.id("selectorOptions"),
   playerIds: v.array(v.id("players")),
   teamOnCardIds: v.array(v.id("teams")),
-  pendingTeamNames: v.array(v.string()),
+  hasPendingTeamNames: v.boolean(),
   teamNoneConfirmedAt: v.optional(v.number()),
   teamCheckDoneAt: v.optional(v.number()),
   hasBscRef: v.boolean(),
@@ -103,7 +125,7 @@ type ProjectedCard = {
   selectorOptionId: Id<"selectorOptions">;
   playerIds: Array<Id<"players">>;
   teamOnCardIds: Array<Id<"teams">>;
-  pendingTeamNames: Array<string>;
+  hasPendingTeamNames: boolean;
   teamNoneConfirmedAt?: number;
   teamCheckDoneAt?: number;
   hasBscRef: boolean;
@@ -119,6 +141,8 @@ type CardsPage = {
   cards: Array<ProjectedCard>;
   /** node id → its own `features.season` year, for every node this page visited. */
   yearByNodeId: Array<{ nodeId: Id<"selectorOptions">; year: number | null }>;
+  /** node id → its display `value`, for the same nodes — what a preview group names. */
+  nameByNodeId: Array<{ nodeId: Id<"selectorOptions">; name: string }>;
   nodeIndex: number;
   cursor: number | null;
   done: boolean;
@@ -173,11 +197,13 @@ export const listTeamFillSubtree = internalQuery({
  * execution and a page here spans several small nodes. `_creationTime` is the
  * index's implicit last column and unique within a table, so "strictly after
  * it" is an exact resume point — the same walk `cascadeSelectorOptionTeams`
- * does, for the same reason. Each node the page visits is read once for its
- * own `features.season`, which is rule C's year for the cards under it.
+ * does, for the same reason. Each node the page visits is read once, for its
+ * own `features.season` (rule C's year for the cards under it) and its
+ * `value` (the name a preview group shows for it).
  *
  * `budget` is an argument (not a constant read here) so a test can force the
- * multi-page path without seeding a thousand rows.
+ * multi-page path without seeding a thousand rows. A non-finite or sub-one
+ * budget is clamped to one card so the walk always advances.
  */
 export const readTeamFillCards = internalQuery({
   args: {
@@ -191,6 +217,7 @@ export const readTeamFillCards = internalQuery({
     yearByNodeId: v.array(
       v.object({ nodeId: v.id("selectorOptions"), year: v.union(v.number(), v.null()) }),
     ),
+    nameByNodeId: v.array(v.object({ nodeId: v.id("selectorOptions"), name: v.string() })),
     nodeIndex: v.number(),
     cursor: v.union(v.number(), v.null()),
     done: v.boolean(),
@@ -198,16 +225,19 @@ export const readTeamFillCards = internalQuery({
   handler: async (ctx, args): Promise<CardsPage> => {
     const cards: Array<ProjectedCard> = [];
     const yearByNodeId: CardsPage["yearByNodeId"] = [];
+    const nameByNodeId: CardsPage["nameByNodeId"] = [];
     let nodeIndex = args.nodeIndex;
     let cursor: number | undefined = args.cursor;
-    let budget = Math.max(1, Math.floor(args.budget));
+    let budget = Number.isFinite(args.budget) ? Math.max(1, Math.floor(args.budget)) : 1;
 
     while (nodeIndex < args.nodeIds.length && budget > 0) {
       const nodeId = args.nodeIds[nodeIndex];
       if (cursor === undefined) {
-        // First visit to this node in the whole walk: record its season once.
+        // First visit to this node in the whole walk: record its season and
+        // name once.
         const node = await ctx.db.get(nodeId);
         yearByNodeId.push({ nodeId, year: parseYear(node?.features?.season) ?? null });
+        nameByNodeId.push({ nodeId, name: node?.value ?? "" });
       }
       const after = cursor;
       const requested = budget;
@@ -234,6 +264,7 @@ export const readTeamFillCards = internalQuery({
     return {
       cards,
       yearByNodeId,
+      nameByNodeId,
       nodeIndex,
       cursor: cursor ?? null,
       done: nodeIndex >= args.nodeIds.length,
@@ -247,7 +278,7 @@ function projectCard(card: Doc<"cardChecklist">): ProjectedCard {
     selectorOptionId: card.selectorOptionId,
     playerIds: card.playerIds ?? [],
     teamOnCardIds: card.teamOnCardIds ?? [],
-    pendingTeamNames: card.pendingTeamNames ?? [],
+    hasPendingTeamNames: (card.pendingTeamNames?.length ?? 0) > 0,
     ...(card.teamNoneConfirmedAt !== undefined
       ? { teamNoneConfirmedAt: card.teamNoneConfirmedAt }
       : {}),
@@ -331,6 +362,7 @@ type ComputedPlan = {
   sportId: Id<"selectorOptions"> | null;
   playersById: Map<string, PlayerRow>;
   teamsById: Map<string, TeamRow>;
+  nameByNodeId: Map<string, string>;
 };
 
 function chunk<T>(items: ReadonlyArray<T>, size: number): Array<Array<T>> {
@@ -363,6 +395,7 @@ async function computeTeamFillPlan(
 
   const cards: Array<TeamFillCard> = [];
   const seasonByNodeId = new Map<string, number | null>();
+  const nameByNodeId = new Map<string, string>();
   let nodeIndex = 0;
   let cursor: number | undefined;
   for (;;) {
@@ -374,6 +407,7 @@ async function computeTeamFillPlan(
     });
     for (const card of page.cards) cards.push(card);
     for (const entry of page.yearByNodeId) seasonByNodeId.set(entry.nodeId, entry.year);
+    for (const entry of page.nameByNodeId) nameByNodeId.set(entry.nodeId, entry.name);
     if (page.done) break;
     nodeIndex = page.nodeIndex;
     cursor = page.cursor ?? undefined;
@@ -418,13 +452,25 @@ async function computeTeamFillPlan(
   }
 
   const plan = planTeamFill({ cards, playersById, teamIdsThatExist, yearByNodeId, currentYear });
-  return { plan, setYear: subtree.setYear, sportId: subtree.sportId, playersById, teamsById };
+  return {
+    plan,
+    setYear: subtree.setYear,
+    sportId: subtree.sportId,
+    playersById,
+    teamsById,
+    nameByNodeId,
+  };
 }
 
 const previewGroupValidator = v.object({
   playerNames: v.array(v.string()),
   teamNames: v.array(v.string()),
   rule: ruleValidator,
+  scope: scopeValidator,
+  /** Display names of the nodes the group writes to — at most `TEAM_FILL_GROUP_NODE_CAP`. */
+  nodeNames: v.array(v.string()),
+  /** How many distinct nodes the group writes to in total. */
+  nodeCount: v.number(),
   cardCount: v.number(),
 });
 
@@ -438,6 +484,9 @@ type PreviewResult = {
     playerNames: Array<string>;
     teamNames: Array<string>;
     rule: TeamFillRule;
+    scope: TeamFillScope;
+    nodeNames: Array<string>;
+    nodeCount: number;
     cardCount: number;
   }>;
   groupsTotal: number;
@@ -446,7 +495,9 @@ type PreviewResult = {
 /**
  * What "Fill teams" would do to this set, as counts and named groups, so the
  * operator confirms a specific promise ("42 cards, Tony Gwynn → San Diego
- * Padres ×12, …") rather than a button. Writes nothing.
+ * Padres ×12, …") rather than a button. Groups arrive riskiest first (see
+ * `planTeamFill`), and a group that borrows a team from another node names
+ * the nodes it would write to. Writes nothing.
  */
 export const previewTeamFill = action({
   args: { selectorOptionId: v.id("selectorOptions") },
@@ -461,10 +512,8 @@ export const previewTeamFill = action({
   }),
   handler: async (ctx, args): Promise<PreviewResult> => {
     await requireAdmin(ctx);
-    const { plan, setYear, playersById, teamsById } = await computeTeamFillPlan(
-      ctx,
-      args.selectorOptionId,
-    );
+    const { plan, setYear, playersById, teamsById, nameByNodeId } =
+      await computeTeamFillPlan(ctx, args.selectorOptionId);
     return {
       candidates: plan.candidates,
       fillable: plan.fills.length,
@@ -482,6 +531,13 @@ export const previewTeamFill = action({
           .map((id) => teamsById.get(id)?.name)
           .filter((name): name is string => name !== undefined),
         rule: group.rule,
+        scope: group.scope,
+        // A node the walk did not name is one that vanished mid-walk; its
+        // cards will be re-checked at apply, so only the label loses a name.
+        nodeNames: group.nodeIds
+          .map((id) => nameByNodeId.get(id))
+          .filter((name): name is string => name !== undefined && name !== ""),
+        nodeCount: group.nodeCount,
         cardCount: group.cardCount,
       })),
       groupsTotal: plan.groupsTotal,
@@ -574,9 +630,17 @@ type ApplyResult = {
  * `byRule` is the PLAN's attribution (what the rules decided), `applied` and
  * `skipped` are what the chunks found when they re-read each card; the two
  * differ exactly by the cards something else teamed in between.
+ *
+ * `expectedFillable` is the preview's `fillable`, the number the operator
+ * said yes to. A recomputed plan that would fill MORE than that is refused
+ * with `TEAM_FILL_DRIFT_MESSAGE` before any chunk runs (see the header); the
+ * client shows it in the dialog and the operator re-checks.
  */
 export const applyTeamFill = action({
-  args: { selectorOptionId: v.id("selectorOptions") },
+  args: {
+    selectorOptionId: v.id("selectorOptions"),
+    expectedFillable: v.number(),
+  },
   returns: v.object({
     applied: v.number(),
     skipped: v.number(),
@@ -585,6 +649,9 @@ export const applyTeamFill = action({
   handler: async (ctx, args): Promise<ApplyResult> => {
     await requireAdmin(ctx);
     const { plan, sportId } = await computeTeamFillPlan(ctx, args.selectorOptionId);
+    if (plan.fills.length > args.expectedFillable) {
+      throw new ConvexError(TEAM_FILL_DRIFT_MESSAGE);
+    }
     let applied = 0;
     let skipped = 0;
     for (const fills of chunk(plan.fills, TEAM_FILL_APPLY_CHUNK)) {

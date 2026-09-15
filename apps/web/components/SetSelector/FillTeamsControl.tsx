@@ -24,14 +24,26 @@ import type { SelectorLevel } from "./selector-sync-feedback";
  * whole-set fact, and the server refuses any other node with a `ConvexError`
  * whose text is shown as written.
  *
- * Four states, all stated in words on the trigger or in the dialog:
+ * Four states, all stated in words on the trigger or in the dialog. The
+ * trigger's text IS its accessible name — no `aria-label` — so a screen
+ * reader hears the same state change a sighted operator sees:
  *   • idle       — "Fill teams"
- *   • checking   — "Checking…", `aria-disabled` (never native `disabled`: the
- *                  button that was just pressed would blur to <body>)
+ *   • checking   — "Checking…", `aria-busy` + `aria-disabled` (never native
+ *                  `disabled`: the button that was just pressed would blur to
+ *                  <body>)
  *   • asking     — the ConfirmDialog, Cancel-focused per the house contract
  *   • filling    — the dialog's confirm reads "Filling…"; a refusal from the
  *                  server lands INSIDE the dialog (`error`), where the
- *                  question was asked, rather than closing it
+ *                  question was asked, rather than closing it. One refusal is
+ *                  expected by design: the apply sends the preview's
+ *                  `fillable` back as `expectedFillable`, and the server
+ *                  declines to fill MORE cards than the operator said yes to
+ *                  (a re-sync landed in between). They cancel and check again.
+ *
+ * The ledger lists groups riskiest first — the server orders them: teams
+ * taken from the player's career, then teams borrowed from another node of
+ * the set (those rows name the nodes they would write to), then teams found
+ * under the card's own node. The top of the list is where a second look pays.
  *
  * Copy helpers are exported and pure so the pluralisation and the joined
  * sentence can be pinned in a test without a Convex client in the way — the
@@ -40,10 +52,18 @@ import type { SelectorLevel } from "./selector-sync-feedback";
 
 export type TeamFillRule = "samePlayerInSet" | "oneTeamCareer" | "oneStintInYear";
 
+/** `sameNode` / `acrossSet` are rule A's two reaches; `career` is rules B and C. */
+export type TeamFillScope = "sameNode" | "acrossSet" | "career";
+
 export type TeamFillGroup = {
   playerNames: string[];
   teamNames: string[];
   rule: TeamFillRule;
+  scope: TeamFillScope;
+  /** Display names of the nodes this group writes to, at most four. */
+  nodeNames: string[];
+  /** Distinct nodes in total; more than `nodeNames.length` means "+N more". */
+  nodeCount: number;
   cardCount: number;
 };
 
@@ -53,7 +73,7 @@ export type TeamFillPreview = {
   byRule: Record<TeamFillRule, number>;
   remaining: number;
   setYear: number | null;
-  /** At most 200, sorted by `cardCount` descending. */
+  /** At most 200, riskiest first, then `cardCount` descending. */
   groups: TeamFillGroup[];
   groupsTotal: number;
 };
@@ -64,27 +84,50 @@ export type TeamFillResult = {
   byRule: Record<TeamFillRule, number>;
 };
 
-/** The trigger's visible text AND accessible name — one string, so SC 2.5.3 holds. */
+/** The trigger's idle text, which is also its accessible name — one string, so SC 2.5.3 holds. */
 export const FILL_TEAMS_LABEL = "Fill teams";
+
+/** The trigger's text while the preview is in flight. */
+export const FILL_TEAMS_CHECKING_LABEL = "Checking…";
 
 /** Accessible name of the dialog's scrollable list. */
 export const FILL_TEAMS_LIST_LABEL = "Who gets which team";
+
+/** The trigger's tooltip: what pressing it does, and that nothing changes unseen. */
+export const FILL_TEAMS_TOOLTIP =
+  "Cards with no team yet get one from what this set already knows. You see the list before anything changes.";
 
 const plural = (count: number, one: string, many: string) =>
   `${count} ${count === 1 ? one : many}`;
 
 /**
- * "same player in this set" / "one-team career" / "only team in 1991" — the
- * clause at the end of each row. The year is named when the set has one; a
- * set with no year still fills from a single stint, so the clause falls back
- * to the generic form rather than inventing a year.
+ * The clause at the end of each row — where the team came from:
+ *
+ *   "same player in this set"                        rule A, own node
+ *   "same player in this set · Base, Stars +2 more"  rule A, borrowed from
+ *                                                    other nodes, named
+ *   "only team on file"                              rule B
+ *   "only team in 1991" / "only team that year"      rule C, with the set's
+ *                                                    year when it has one
+ *
+ * A set with no year still fills from a single stint, so C falls back to the
+ * generic form rather than inventing a year. Node names are listed only for a
+ * cross-node borrow: that is the reach worth a second look, and naming the
+ * nodes is what makes it checkable.
  */
-export function fillRuleLabel(rule: TeamFillRule, setYear: number | null): string {
-  switch (rule) {
-    case "samePlayerInSet":
-      return "same player in this set";
+export function fillRuleLabel(
+  group: Pick<TeamFillGroup, "rule" | "scope" | "nodeNames" | "nodeCount">,
+  setYear: number | null,
+): string {
+  switch (group.rule) {
+    case "samePlayerInSet": {
+      const base = "same player in this set";
+      if (group.scope !== "acrossSet" || group.nodeNames.length === 0) return base;
+      const more = group.nodeCount - group.nodeNames.length;
+      return `${base} · ${group.nodeNames.join(", ")}${more > 0 ? ` +${more} more` : ""}`;
+    }
     case "oneTeamCareer":
-      return "one-team career";
+      return "only team on file";
     case "oneStintInYear":
       return setYear === null ? "only team that year" : `only team in ${setYear}`;
   }
@@ -105,7 +148,7 @@ export function fillGroupLine(
 ): { players: string; teams: string; meta: string; line: string } {
   const players = group.playerNames.join(" & ");
   const teams = group.teamNames.join(" / ");
-  const meta = `${plural(group.cardCount, "card", "cards")} · ${fillRuleLabel(group.rule, setYear)}`;
+  const meta = `${plural(group.cardCount, "card", "cards")} · ${fillRuleLabel(group, setYear)}`;
   return { players, teams, meta, line: `${players} → ${teams} · ${meta}` };
 }
 
@@ -113,12 +156,12 @@ export function fillGroupLine(
  * The confirm's title and body.
  *
  *   title: "Fill teams on 14 cards?"
- *   body:  "11 from a teammate card in this set, 2 from a one-team career,
- *           1 from the only team that year. 3 stay in the missing-team lane."
+ *   body:  "11 from the same player's other cards here, 2 from the only team
+ *           on file, 1 from the only team that year. 3 still need your call."
  *
  * Only the non-zero rules are said, in the order the server applies them. The
- * last sentence is dropped when nothing stays: "0 stay" is reassurance nobody
- * asked for.
+ * last sentence is dropped when nothing is left: "0 still need your call" is
+ * reassurance nobody asked for.
  */
 export function fillConfirmCopy(preview: TeamFillPreview): {
   title: string;
@@ -126,45 +169,56 @@ export function fillConfirmCopy(preview: TeamFillPreview): {
 } {
   const parts: string[] = [];
   if (preview.byRule.samePlayerInSet > 0) {
-    parts.push(`${preview.byRule.samePlayerInSet} from a teammate card in this set`);
+    parts.push(`${preview.byRule.samePlayerInSet} from the same player's other cards here`);
   }
   if (preview.byRule.oneTeamCareer > 0) {
-    parts.push(`${preview.byRule.oneTeamCareer} from a one-team career`);
+    parts.push(`${preview.byRule.oneTeamCareer} from the only team on file`);
   }
   if (preview.byRule.oneStintInYear > 0) {
     parts.push(`${preview.byRule.oneStintInYear} from the only team that year`);
   }
   const sentences: string[] = [];
   if (parts.length > 0) sentences.push(`${parts.join(", ")}.`);
-  if (preview.remaining > 0) {
-    sentences.push(
-      `${preview.remaining} ${preview.remaining === 1 ? "stays" : "stay"} in the missing-team lane.`,
-    );
-  }
+  if (preview.remaining > 0) sentences.push(stillNeedYourCall(preview.remaining));
   return {
     title: `Fill teams on ${plural(preview.fillable, "card", "cards")}?`,
     description: sentences.join(" "),
   };
 }
 
-/** Said when the preview finds nothing to do; no dialog follows it. */
-export const NOTHING_TO_FILL =
-  "Nothing to fill — every card that could borrow a team already has one.";
+/** "3 still need your call." / "1 still needs your call." */
+function stillNeedYourCall(remaining: number): string {
+  return `${remaining} still ${remaining === 1 ? "needs" : "need"} your call.`;
+}
 
 /**
- * "Filled teams on 14 cards" — and, when a card changed between the preview
- * and the fill, " · 2 changed under you and were skipped". The skip clause is
- * only said when it is true.
+ * Said when the preview finds nothing to do; no dialog follows it. Two
+ * different facts, told apart: every card is teamed (nothing left at all), or
+ * some are not and no rule can honestly answer them (they are the operator's).
+ */
+export function nothingToFillToast(remaining: number): string {
+  if (remaining === 0) return "Nothing to fill — every card here has its team.";
+  return `Nothing to fill — the ${remaining} still without a team ${
+    remaining === 1 ? "needs" : "need"
+  } your call.`;
+}
+
+/**
+ * "Filled teams on 14 cards" — and, when a card was teamed between the
+ * preview and the fill, " · 2 skipped, someone got there first". The skip
+ * clause is only said when it is true.
  */
 export function fillResultToast(result: TeamFillResult): string {
   const base = `Filled teams on ${plural(result.applied, "card", "cards")}`;
-  if (result.skipped > 0) {
-    return `${base} · ${result.skipped} changed under you and ${
-      result.skipped === 1 ? "was" : "were"
-    } skipped`;
-  }
+  if (result.skipped > 0) return `${base} · ${result.skipped} skipped, someone got there first`;
   return base;
 }
+
+/** Toast when the preview itself failed for a reason the server did not word. */
+export const CHECK_FAILED_FALLBACK = "Could not check the cards. Nothing changed.";
+
+/** In-dialog alert when the fill failed for a reason the server did not word. */
+export const FILL_FAILED_FALLBACK = "Could not fill teams. Nothing changed.";
 
 export default function FillTeamsControl({
   id,
@@ -194,7 +248,7 @@ export default function FillTeamsControl({
     try {
       const result = await previewTeamFill({ selectorOptionId: id });
       if (result.fillable === 0) {
-        showToast(NOTHING_TO_FILL);
+        showToast(nothingToFillToast(result.remaining));
         return;
       }
       setError(null);
@@ -202,9 +256,7 @@ export default function FillTeamsControl({
     } catch (e) {
       // Only a ConvexError's text was written for a person (the server's
       // "Fill teams from the set row…" is one); anything else is the fallback.
-      showToast(
-        `Failed: ${userFacingMessage(e, "Couldn't check the cards. Nothing changed.")}`,
-      );
+      showToast(`Failed: ${userFacingMessage(e, CHECK_FAILED_FALLBACK)}`);
     } finally {
       setChecking(false);
     }
@@ -215,14 +267,20 @@ export default function FillTeamsControl({
     setFilling(true);
     setError(null);
     try {
-      const result = await applyTeamFill({ selectorOptionId: id });
+      // The preview's count goes back with the request: the server refuses
+      // to fill MORE cards than this, so the operator never confirms one
+      // number and gets another.
+      const result = await applyTeamFill({
+        selectorOptionId: id,
+        expectedFillable: preview?.fillable ?? 0,
+      });
       setPreview(null);
       showToast(fillResultToast(result));
     } catch (e) {
       // The dialog is open and announced; a message appended to the
       // description would never be read. `error` renders as an alert inside
       // it, and the operator can try again or cancel from where they are.
-      setError(userFacingMessage(e, "Couldn't fill teams. Nothing changed."));
+      setError(userFacingMessage(e, FILL_FAILED_FALLBACK));
     } finally {
       setFilling(false);
     }
@@ -241,15 +299,16 @@ export default function FillTeamsControl({
         onClick={() => void check()}
         // aria-disabled, not `disabled`: this is the button the operator just
         // pressed, and native `disabled` would blur focus to <body> the moment
-        // the request started.
+        // the request started. aria-busy says WHY it is inert. No aria-label:
+        // the text content is the name, so it follows the state.
         aria-disabled={checking || undefined}
-        aria-label={FILL_TEAMS_LABEL}
-        title="Cards missing a team borrow one from this set's own evidence. You see the list first."
+        aria-busy={checking || undefined}
+        title={FILL_TEAMS_TOOLTIP}
         // Same weight, colour and ring as "Mark as base set": it stands in the
         // same header slot at a different level, so it wears the same clothes.
         className="shrink-0 text-xs py-1.5 text-gray-400 hover:text-[#00D558] focus:text-[#00D558] focus-visible:ring-2 focus-visible:ring-[#00D558] focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900 aria-disabled:opacity-50 aria-disabled:cursor-not-allowed aria-disabled:hover:text-gray-400"
       >
-        {checking ? "Checking…" : FILL_TEAMS_LABEL}
+        {checking ? FILL_TEAMS_CHECKING_LABEL : FILL_TEAMS_LABEL}
       </button>
       {preview && copy && (
         <ConfirmDialog
@@ -267,17 +326,22 @@ export default function FillTeamsControl({
             setPreview(null);
           }}
         >
-          {/* The ledger: who gets which team, biggest effect first (the
-              server sorts by card count). Player in the panel's text weight,
-              team in the semibold the livery chip uses, the count and the
-              rule as one muted trailing clause — three weights, no colour,
-              because two hundred rows of anything brighter is noise. */}
-          <ul className="divide-y divide-slate-800 px-3 text-xs">
+          {/* The ledger: who gets which team, riskiest first (the server
+              orders career rules, then cross-node borrows, then same-node
+              finds; most cards first within each). Player in the panel's
+              text weight, team in the semibold the livery chip uses, the
+              count, the rule and — for a cross-node borrow — the nodes it
+              writes to as one muted trailing clause. Three weights, no
+              colour, because two hundred rows of anything brighter is
+              noise; the order does the pointing. Dividers at slate-600: the
+              slate-800 they were on read 1.22:1 against the slate-900 panel,
+              which is to say invisible. */}
+          <ul className="divide-y divide-slate-600 px-3 text-xs">
             {preview.groups.map((group, i) => {
               const row = fillGroupLine(group, preview.setYear);
               return (
                 <li
-                  key={`${row.players}|${row.teams}|${group.rule}|${i}`}
+                  key={`${row.players}|${row.teams}|${group.rule}|${group.scope}|${i}`}
                   className="flex flex-wrap items-baseline gap-x-1.5 py-1.5"
                 >
                   <span className="text-gray-100">{row.players}</span>

@@ -57,6 +57,7 @@ import type * as lib_pairing_types from "../lib/pairing/types.js";
 import type * as lib_placeholderObjects from "../lib/placeholderObjects.js";
 import type * as lib_selectorAncestry from "../lib/selectorAncestry.js";
 import type * as lib_selectorTeams from "../lib/selectorTeams.js";
+import type * as lib_teamFill from "../lib/teamFill.js";
 import type * as lib_teamRow from "../lib/teamRow.js";
 import type * as machineAuth from "../machineAuth.js";
 import type * as marketplaceResolvability from "../marketplaceResolvability.js";
@@ -150,6 +151,7 @@ declare const fullApi: ApiFromModules<{
   "lib/placeholderObjects": typeof lib_placeholderObjects;
   "lib/selectorAncestry": typeof lib_selectorAncestry;
   "lib/selectorTeams": typeof lib_selectorTeams;
+  "lib/teamFill": typeof lib_teamFill;
   "lib/teamRow": typeof lib_teamRow;
   machineAuth: typeof machineAuth;
   marketplaceResolvability: typeof marketplaceResolvability;

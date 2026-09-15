@@ -2207,10 +2207,12 @@ describe("teamCascadeConfirmCopy / teamClearConfirmCopy / teamSavedToast (NEO-27
 });
 
 describe("SetAttributesPanel — Fill teams render gate (NEO-279)", () => {
-  it("renders Fill teams at setName", () => {
+  it("renders Fill teams at setName, named by its text so the name follows its state", () => {
     currentRow = makeRow({ level: "setName" });
     renderPanel();
-    expect(screen.getByRole("button", { name: FILL_TEAMS_LABEL })).toBeTruthy();
+    const button = screen.getByRole("button", { name: FILL_TEAMS_LABEL });
+    expect(button.getAttribute("aria-label")).toBeNull();
+    expect(button.textContent).toBe(FILL_TEAMS_LABEL);
   });
 
   it.each(["variantType", "insert", "parallel"])(

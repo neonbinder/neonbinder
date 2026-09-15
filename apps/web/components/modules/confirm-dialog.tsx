@@ -193,10 +193,15 @@ export function ConfirmDialog({
             // already counts `[tabindex]`, so Tab cycles through it. This puts
             // one stop between Cancel and Confirm going forward — Confirm is
             // still one Shift+Tab from where focus opens.
+            //
+            // The border is this tab stop's boundary, so it is held to SC
+            // 1.4.11's 3:1 like the TeamPicker trigger's: slate-500 measures
+            // ~3.7:1 on the slate-900 panel (slate-800 was 1.22:1, slate-600
+            // only ~2.4:1).
             role="group"
             tabIndex={0}
             aria-label={childrenLabel}
-            className="mb-5 max-h-60 overflow-y-auto rounded border border-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00D558]"
+            className="mb-5 max-h-60 overflow-y-auto rounded border border-slate-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00D558]"
           >
             {children}
           </div>

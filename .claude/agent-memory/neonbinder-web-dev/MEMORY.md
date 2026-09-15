@@ -36,3 +36,4 @@
 - [Workpool oncomplete inline batched](reference_workpool_oncomplete_inline_batched.md) — @convex-dev/workpool runs onComplete callbacks INLINE and batches several into ONE transaction (Promise.all) — so a shared-doc read-modify-write across completions los…
 - [Sport config is copied onto rows](sport-config-is-copied-onto-rows.md) — sportConfig defaults are COPIED onto a selectorOptions sport row at creation; editing the defaults never reaches an existing deployment's rows
 - [Gates in a shared worktree](gates-in-a-shared-worktree.md) — eslint "File ignored" on lib/*.ts is baseline; wait for a sibling's npm ci, never start a second
+- [Slate border contrast on slate-900](reference_slate_border_contrast_on_slate_900.md) — slate-600 still fails 3:1 on the slate-900 dialog panel (2.4:1); slate-500/gray-500 (~3.7:1) is the passing boundary tone

@@ -785,7 +785,7 @@ describe("NEO-279: Fill teams is admin-gated, and its reads/writes are internal"
     [
       "teamFill.applyTeamFill",
       (t: ReturnType<typeof convexTest>, setNameId: Id<"selectorOptions">) =>
-        t.action(api.teamFill.applyTeamFill, { selectorOptionId: setNameId }),
+        t.action(api.teamFill.applyTeamFill, { selectorOptionId: setNameId, expectedFillable: 0 }),
     ],
   ] as const)("%s refuses a signed-in non-admin and a signed-out caller, writing nothing", async (_name, call) => {
     const t = convexTest(schema, modules);
