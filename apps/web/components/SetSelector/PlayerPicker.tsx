@@ -9,6 +9,7 @@ import {
   nameMatchesQuery,
 } from "../../lib/entities/name-search";
 import { normalizeEntityName } from "../../lib/entities/normalize-name";
+import PickerPopover, { popoverFocusables } from "./PickerPopover";
 
 /**
  * NEO-220 — the four container-level accessible names, overridable per
@@ -74,8 +75,8 @@ const DEFAULT_LABELS: PlayerPickerLabels = {
  * NEO-220 — the three dismissal/feedback behaviours `TeamPicker` grew in
  * NEO-208 are ported here verbatim, because this picker now sits in the SAME
  * place that forced them: `CardChecklist`'s quick-add form, immediately ABOVE
- * the Team row and the Add/Cancel buttons. Its popover is `absolute top-full
- * w-64 z-10`, so an open one physically covers all three. See
+ * the Team row and the Add/Cancel buttons. Its popover hangs under the trigger
+ * at `w-64`, so an open one physically covers all three. See
  * `handleRootBlur` (WCAG 2.4.11), the pointerdown-outside effect, and
  * `createError` below.
  */
@@ -134,6 +135,23 @@ export default function PlayerPicker({
   const inputRef = useRef<HTMLInputElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  /**
+   * NEO-272 — the popover's own element, because it is no longer a DOM
+   * descendant of `rootRef`.
+   *
+   * The popover is portalled to `document.body` so a scrolling ancestor cannot
+   * clip it (see `PickerPopover`; `UnreviewedNameFixer` mounts this picker
+   * inside the attention walker's `overflow-y-auto` body, and the card drawer
+   * has a scroll box of its own). React events still bubble through the REACT
+   * tree, so every key and blur handler below is unchanged — but
+   * `Node.contains()` is a DOM question, and both dismissal paths ask it.
+   */
+  const popoverRef = useRef<HTMLDivElement | null>(null);
+
+  /** Inside the picker as the OPERATOR sees it: the chip row or the popover. */
+  const insidePicker = (node: Node | null) =>
+    !!node &&
+    (!!rootRef.current?.contains(node) || !!popoverRef.current?.contains(node));
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- typeahead highlight resets with the query it indexes into
@@ -163,7 +181,9 @@ export default function PlayerPicker({
   useEffect(() => {
     if (!popoverOpen) return;
     const onPointerDown = (e: Event) => {
-      if (rootRef.current?.contains(e.target as Node)) return;
+      // NEO-272: the portalled popover counts as inside — a press on an option
+      // must select it, not dismiss the list out from under the pointer.
+      if (insidePicker(e.target as Node)) return;
       setPopoverOpen(false);
       setQuery("");
       setCreateError(null);
@@ -278,11 +298,12 @@ export default function PlayerPicker({
   /**
    * Close on Tab (or Shift+Tab) out of the picker while the popover is open —
    * the keyboard counterpart to the pointerdown handler above, and WCAG 2.4.11
-   * (Focus Not Obscured) in the quick-add form specifically: the popover has
-   * no focus trap, so Tab from its last row walks focus onto whatever the
-   * caller placed next in the DOM — there, the Team picker's "+ Add team"
-   * trigger and then Add/Cancel, all of which this `absolute … z-10` popover
-   * is drawn over.
+   * (Focus Not Obscured) in the quick-add form specifically: Tab out of the
+   * popover puts focus on whatever the caller placed next — there, the Team
+   * picker's "+ Add team" trigger and then Add/Cancel, all of which this
+   * popover is drawn over. (NEO-272 portalled it and gave `PickerPopover` the
+   * boundary Tab hops; this handler is still what closes on every other way
+   * focus can leave, including a click elsewhere.)
    *
    * Checked via a deferred read of `document.activeElement` rather than the
    * blur event's `relatedTarget`, which is unreliable across environments
@@ -297,7 +318,9 @@ export default function PlayerPicker({
     // silently reopen the race.
     if (!popoverOpen || creating) return;
     setTimeout(() => {
-      if (rootRef.current?.contains(document.activeElement)) return;
+      // NEO-272: "still in the picker" includes the portalled popover — the
+      // open-time autofocus moves focus straight into it.
+      if (insidePicker(document.activeElement)) return;
       setPopoverOpen(false);
       setQuery("");
       setCreateError(null);
@@ -343,6 +366,18 @@ export default function PlayerPicker({
           type="button"
           disabled={disabled}
           onClick={() => setPopoverOpen(true)}
+          // NEO-272: Tab from the trigger lands in the popover, which is what
+          // DOM order did for free until the popover was portalled to the end
+          // of `document.body`. The way back out is `PickerPopover`'s own Tab
+          // handling.
+          onKeyDown={(e) => {
+            if (e.key !== "Tab" || e.shiftKey || !popoverOpen) return;
+            const first = popoverFocusables(popoverRef.current)[0];
+            if (!first) return;
+            e.preventDefault();
+            e.stopPropagation();
+            first.focus();
+          }}
           aria-label={labels.trigger}
           aria-expanded={popoverOpen}
           className="px-2 py-0.5 text-xs rounded border border-dashed border-gray-400 dark:border-gray-600 hover:border-[#00D558] focus:border-[#00D558] focus:outline-none text-gray-600 dark:text-gray-300"
@@ -351,8 +386,15 @@ export default function PlayerPicker({
         </button>
 
         {popoverOpen && (
-          <div
-            className="absolute left-0 top-full mt-1 z-10 w-64 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-md shadow-lg p-2 space-y-1"
+          // NEO-272: `PickerPopover` rather than an `absolute` div. The surface
+          // classes are untouched — only the positioning ones moved, into the
+          // portal that keeps a scrolling host from clipping this list. The
+          // listbox role and its accessible name stay exactly where they were.
+          <PickerPopover
+            anchorRef={triggerRef}
+            popoverRef={popoverRef}
+            onTabOut={closePopover}
+            className="w-64 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-md shadow-lg p-2 space-y-1"
             role="listbox"
             aria-label={labels.results}
           >
@@ -466,7 +508,7 @@ export default function PlayerPicker({
                 {creating ? "Creating…" : `+ Create "${query.trim()}"`}
               </button>
             )}
-          </div>
+          </PickerPopover>
         )}
       </div>
     </div>

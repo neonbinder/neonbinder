@@ -11,11 +11,20 @@
  *     invalid-credentials-format
  *
  * The cache short-circuit (added with the per-user token cache):
- *   - On unexpired token + valid revalidation → reuse, no signin POST
- *   - On unexpired token + failed revalidation → clear cache, full login
- *   - On expired token → skip validation, full login
+ *   - On token + valid revalidation → reuse, no signin POST
+ *   - On token + failed revalidation → full login (or reauth_required when
+ *     there is no password)
  *   - On no token → full login (legacy behavior)
  *   - Fresh login persists token *with* expiresAt
+ *
+ * NEO-278: our `expiresAt` is bookkeeping, not SL's verdict. A stored cookie
+ * is validated against SL regardless of it, and a hit whose expiresAt is
+ * missing / past / within 7 days renews it with a single write-back.
+ *
+ * NEO-281: validation is a three-way verdict. Only SL serving (or redirecting
+ * to) the login form is DEAD → reauth_required. 5xx / 429 / thrown fetch /
+ * timeout / other non-200 is INDETERMINATE → up to 3 attempts, then a
+ * TRANSIENT failure with no reauthRequired (see the last describe block).
  */
 
 import { describe, it } from "node:test";
@@ -403,7 +412,10 @@ describe("SportlotsAdapter.login token cache", () => {
         username: "user@example.com",
         password: "pw",
         token: "sl_session=valid123",
-        expiresAt: Date.now() + 60 * 60 * 1000, // 1h from now
+        // NEO-278: comfortably OUTSIDE the 7-day renewal window, so this
+        // pins "a fresh cookie is a read-only hit". The 1h fixture it used
+        // to carry now sits inside the window and would (correctly) renew.
+        expiresAt: Date.now() + 20 * 24 * 60 * 60 * 1000,
       },
       updateCredentials: (key, creds) => updates.push({ key, creds }),
     });
@@ -486,32 +498,249 @@ describe("SportlotsAdapter.login token cache", () => {
     }
   });
 
-  it("skips validation entirely when cached token is expired", async () => {
+  it("NEO-278: a cookie past OUR TTL is still validated, and a hit renews expiresAt with one write", async () => {
+    // The prod failure: SL sessions never lapse on their own, but the old
+    // cache-hit branch was gated on `expiresAt > now` and never renewed it,
+    // so 30 days after sign-in the adapter stopped asking SL and answered
+    // reauth_required for a cookie that still worked.
     const updates = [];
     const SportlotsAdapter = loadSportlotsAdapter({
       credentials: {
-        username: "user@example.com",
-        password: "pw",
-        token: "sl_session=expired",
-        expiresAt: Date.now() - 60 * 1000, // 1 min in the past
+        username: "user@example.com", // no password: the NEO-141 user steady state
+        token: "sl_session=still-good",
+        expiresAt: Date.now() - 3 * 24 * 60 * 60 * 1000, // lapsed 3 days ago
       },
       updateCredentials: (key, creds) => updates.push({ key, creds }),
     });
 
     const stub = cacheAwareFetch();
     const restore = stubFetch(stub);
+    const beforeMs = Date.now();
     try {
       const adapter = new SportlotsAdapter(null);
       const result = await adapter.login("sportlots-credentials-user_test");
-      assert.equal(result.success, true, "should fresh-login successfully");
-      assert.equal(stub.signinCalls(), 1, "must POST to signin.tpl when token expired");
-      // Only 1 validation: post-fresh-login. The cache check is gated on
-      // unexpired expiresAt and never runs the GET for an expired token.
-      assert.equal(stub.validateCalls(), 1, "must NOT pre-validate an already-expired cookie");
-      // Single update from the fresh login (no clear-cache step needed —
-      // the expired branch falls straight through without clearing).
-      assert.equal(updates.length, 1, "should persist exactly once (the fresh cookie)");
-      assert.ok(updates[0].creds.expiresAt > Date.now(), "should set a future expiresAt");
+      assert.equal(result.success, true, "a cookie SL still accepts is a live session");
+      assert.notEqual(result.reauthRequired, true);
+      assert.match(result.message, /cached token/i);
+      assert.equal(stub.validateCalls(), 1, "must ask SL whether the cookie works");
+      assert.equal(stub.signinCalls(), 0, "must NOT POST signin — there is no password to POST");
+
+      assert.equal(updates.length, 1, "a lapsed expiresAt is renewed with exactly one write");
+      const persisted = updates[0].creds;
+      assert.equal(persisted.username, "user@example.com");
+      assert.equal(persisted.token, "sl_session=still-good", "the validated cookie is kept verbatim");
+      assert.equal(persisted.password, undefined, "never a password");
+      const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
+      assert.ok(
+        persisted.expiresAt >= beforeMs + thirtyDaysMs - 5000 &&
+          persisted.expiresAt <= Date.now() + thirtyDaysMs + 5000,
+        "renewed expiresAt is ~30d out",
+      );
+      assert.equal(result.expiresAt, persisted.expiresAt, "the response carries the RENEWED expiresAt");
+    } finally {
+      restore();
+    }
+  });
+
+  it("NEO-278: a cookie past OUR TTL that FAILS validation with no password is reauth_required, with no write", async () => {
+    const updates = [];
+    const SportlotsAdapter = loadSportlotsAdapter({
+      credentials: {
+        username: "user@example.com",
+        token: "sl_session=dead",
+        expiresAt: Date.now() - 3 * 24 * 60 * 60 * 1000,
+      },
+      updateCredentials: (key, creds) => updates.push({ key, creds }),
+    });
+
+    const stub = cacheAwareFetch({
+      onValidate: () => response({ status: 200, body: "<html>please login.tpl</html>" }),
+    });
+    const restore = stubFetch(stub);
+    try {
+      const adapter = new SportlotsAdapter(null);
+      const result = await adapter.login("sportlots-credentials-user_test");
+      assert.equal(result.success, false);
+      assert.equal(result.reauthRequired, true, "SL said no and there is nothing left to try");
+      assert.equal(result.error, "Re-authentication required");
+      assert.equal(stub.validateCalls(), 1);
+      assert.equal(stub.signinCalls(), 0);
+      assert.equal(updates.length, 0, "nothing to renew — the cookie is dead");
+    } finally {
+      restore();
+    }
+  });
+
+  it("NEO-278: a missing expiresAt is validated and, on a hit, written", async () => {
+    const updates = [];
+    const SportlotsAdapter = loadSportlotsAdapter({
+      credentials: { username: "user@example.com", token: "sl_session=no-expiry" },
+      updateCredentials: (key, creds) => updates.push({ key, creds }),
+    });
+    const stub = cacheAwareFetch();
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, true);
+      assert.equal(stub.validateCalls(), 1);
+      assert.equal(stub.signinCalls(), 0);
+      assert.equal(updates.length, 1);
+      assert.ok(updates[0].creds.expiresAt > Date.now(), "a future expiresAt is now stored");
+    } finally {
+      restore();
+    }
+  });
+
+  it("NEO-278: an expiresAt inside the 7-day renewal window is renewed on a hit", async () => {
+    const updates = [];
+    const SportlotsAdapter = loadSportlotsAdapter({
+      credentials: {
+        username: "user@example.com",
+        token: "sl_session=nearly",
+        expiresAt: Date.now() + 2 * 24 * 60 * 60 * 1000, // 2 days left
+      },
+      updateCredentials: (key, creds) => updates.push({ key, creds }),
+    });
+    const stub = cacheAwareFetch();
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, true);
+      assert.equal(updates.length, 1, "renewed before it lapses, so Convex never sees a stale expiry");
+      assert.ok(updates[0].creds.expiresAt > Date.now() + 20 * 24 * 60 * 60 * 1000);
+    } finally {
+      restore();
+    }
+  });
+
+  it("NEO-278: an expiresAt EXACTLY 7 days out is renewed (the boundary is inclusive)", async () => {
+    const updates = [];
+    const SportlotsAdapter = loadSportlotsAdapter({
+      credentials: {
+        username: "user@example.com",
+        token: "sl_session=boundary",
+        expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+      },
+      updateCredentials: (key, creds) => updates.push({ key, creds }),
+    });
+    const stub = cacheAwareFetch();
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, true);
+      assert.equal(updates.length, 1, "stored <= now + RENEW_WITHIN_MS is due at exact equality");
+    } finally {
+      restore();
+    }
+  });
+
+  it("NEO-278: a non-number expiresAt in the secret does not throw, and login still succeeds off the validated cookie (KNOWN GAP: it never self-heals)", async () => {
+    // Not reachable via this adapter's own writes today (renewExpiryIfDue and
+    // the fresh-login write-back both always write a number) — this is
+    // defensive coverage for a hand-edited or otherwise corrupted secret.
+    //
+    // `stored <= now + RENEW_WITHIN_MS` coerces a non-numeric string via
+    // ToNumber; the result is NaN, and every NaN comparison is false. So
+    // `due` is false, no renewal write happens, and the corrupt value is
+    // reported back and left in the secret indefinitely — unlike a missing
+    // or past expiresAt, which DO self-heal on the next hit. Documented
+    // rather than fixed: it requires a secret to already be corrupt by some
+    // other means, which is outside this adapter's own write paths.
+    const updates = [];
+    const SportlotsAdapter = loadSportlotsAdapter({
+      credentials: {
+        username: "user@example.com",
+        token: "sl_session=corrupt-expiry",
+        expiresAt: "not-a-number",
+      },
+      updateCredentials: (key, creds) => updates.push({ key, creds }),
+    });
+    const stub = cacheAwareFetch();
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, true, "a corrupt expiresAt must not fail a login SL accepted");
+      assert.equal(updates.length, 0, "current behaviour: NaN comparison means 'due' is false — no self-heal");
+      assert.equal(result.expiresAt, "not-a-number", "the corrupt value is reported back unchanged");
+    } finally {
+      restore();
+    }
+  });
+
+  it("NEO-278: cache validation body containing 'login.tpl' inside an unrelated link is still treated as invalid (existing heuristic; renewal must NOT happen)", async () => {
+    const updates = [];
+    const SportlotsAdapter = loadSportlotsAdapter({
+      credentials: {
+        username: "user@example.com",
+        token: "sl_session=false-positive",
+        expiresAt: Date.now() + 60 * 24 * 60 * 60 * 1000, // far from due
+      },
+      updateCredentials: (key, creds) => updates.push({ key, creds }),
+    });
+    // A real dashboard page that happens to link to the login/logout page —
+    // the substring heuristic cannot tell this apart from an actual bounce
+    // to the login form.
+    const stub = cacheAwareFetch({
+      onValidate: () =>
+        response({
+          status: 200,
+          body: `<html><body><div>My Inventory</div><a href="/cust/custbin/login.tpl?logout=1">Sign out</a></body></html>`,
+        }),
+    });
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.notEqual(result.success, true, "the substring match fires even inside an unrelated link");
+      assert.equal(updates.length, 0, "no renewal write on a validation treated as invalid");
+      assert.equal(stub.validateCalls(), 1);
+    } finally {
+      restore();
+    }
+  });
+
+  it("NEO-278: a failed renewal write does NOT fail a login SL just accepted", async () => {
+    // Best-effort: nothing was invalidated by validating, so a Secret Manager
+    // blip must not turn a working session into a 502. The stored (lapsed)
+    // expiresAt is reported honestly; the next hit retries the write.
+    const lapsed = Date.now() - 60 * 1000;
+    const SportlotsAdapter = loadSportlotsAdapter({
+      credentials: { username: "user@example.com", token: "sl_session=ok", expiresAt: lapsed },
+      updateCredentials: () => { throw new Error("RESOURCE_EXHAUSTED: quota"); },
+    });
+    const stub = cacheAwareFetch();
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, true, "the cookie validated; the write is bookkeeping");
+      assert.notEqual(result.reauthRequired, true);
+      assert.equal(result.expiresAt, lapsed, "reports what is actually stored, not the failed renewal");
+      assert.equal(stub.signinCalls(), 0, "must not fall through to a signin it has no password for");
+    } finally {
+      restore();
+    }
+  });
+
+  it("NEO-278: a canary KEY never gets a renewal write-back, even without canary:true", async () => {
+    // The flag makes the canary skip the cache path entirely; the KEY guard
+    // is the structural backstop (isCanaryKey). A renewal write would replace
+    // the canary's password-bearing payload with {username, token, expiresAt}
+    // and keep-1 pruning would destroy the password for good.
+    const updates = [];
+    const SportlotsAdapter = loadSportlotsAdapter({
+      credentials: {
+        username: "canary@example.com",
+        password: "canary-placeholder-value",
+        token: "sl_session=canary",
+        expiresAt: Date.now() - 60 * 1000,
+      },
+      updateCredentials: (key, creds) => updates.push({ key, creds }),
+    });
+    const stub = cacheAwareFetch();
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-canary");
+      assert.equal(result.success, true);
+      assert.deepEqual(updates, [], "canary key: no write-back, ever");
     } finally {
       restore();
     }
@@ -1138,5 +1367,472 @@ describe("SportlotsAdapter — password-less secret after a transient read failu
     } finally {
       restore();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-281 — a SportLots hiccup while validating a stored cookie is NOT a dead
+// session. Validation is a three-way verdict (valid / dead / indeterminate);
+// only DEAD may become reauth_required, and INDETERMINATE retries (3 attempts)
+// and then fails TRANSIENT with no reauthRequired.
+//
+// Background: NEO-278 made every user fetch validate the stored cookie, and
+// validateCachedCookie collapsed "SL didn't answer" into "cookie is dead".
+// With no stored password (NEO-141) that went straight to reauth_required →
+// Convex set needsReauth → "your session expired" for an SL 503. On
+// 2026-09-15 one E2E run flagged all 8 worker accounts within minutes.
+// ---------------------------------------------------------------------------
+
+describe("SportlotsAdapter — NEO-281 stored-cookie validation verdicts", () => {
+  // A password-less user secret with a fresh expiresAt (outside the 7-day
+  // renewal window, so a valid verdict is a read-only hit). This is the
+  // steady state of every real user secret since NEO-141: the ONLY thing
+  // standing between "SL hiccuped" and "reauth_required" is the verdict.
+  const passwordlessSecret = () => ({
+    username: "user@example.com",
+    token: "sl_session=stored",
+    expiresAt: Date.now() + 20 * 24 * 60 * 60 * 1000,
+  });
+
+  const TRANSIENT_ERROR =
+    "SportLots did not respond while validating the stored session; try again";
+
+  /**
+   * A stubbed Response carrying real Headers, for the 3xx branch, plus a
+   * body whose cancel() is counted — the early returns must release the
+   * socket (undici holds it until the body is consumed or cancelled).
+   */
+  function redirect(status, location, cancels = { n: 0 }) {
+    return {
+      status,
+      headers: new Headers(location === undefined ? {} : { location }),
+      body: { cancel: async () => { cancels.n++; } },
+      text: async () => "",
+    };
+  }
+
+  /**
+   * Validation stub that plays `scripted` in order (an Error entry throws)
+   * and repeats the last entry once exhausted. signin is never expected.
+   */
+  function scriptedValidate(scripted) {
+    let idx = 0;
+    return cacheAwareFetch({
+      onValidate: () => {
+        const r = scripted[Math.min(idx, scripted.length - 1)];
+        idx++;
+        if (r instanceof Error) throw r;
+        return r;
+      },
+      onSignin: () => {
+        throw new Error("signin must not be POSTed while validating a stored cookie");
+      },
+    });
+  }
+
+  it("200 with a clean body → valid, exactly one probe, no retry", async () => {
+    const updates = [];
+    const SportlotsAdapter = loadSportlotsAdapter({
+      credentials: passwordlessSecret(),
+      updateCredentials: (key, creds) => updates.push({ key, creds }),
+    });
+    const stub = scriptedValidate([response({ status: 200, body: OK_VALIDATE_BODY })]);
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, true);
+      assert.match(result.message, /cached token/i);
+      assert.equal(stub.validateCalls(), 1, "a valid verdict never retries");
+      assert.equal(stub.signinCalls(), 0);
+      assert.equal(updates.length, 0, "fresh expiresAt → read-only hit");
+    } finally {
+      restore();
+    }
+  });
+
+  it("200 whose body carries login.tpl → dead → reauthRequired, exactly one probe", async () => {
+    const SportlotsAdapter = loadSportlotsAdapter({ credentials: passwordlessSecret() });
+    const stub = scriptedValidate([
+      response({ status: 200, body: "<html>please visit login.tpl</html>" }),
+    ]);
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, false);
+      assert.equal(result.reauthRequired, true, "SL positively served the login form");
+      assert.equal(result.error, "Re-authentication required");
+      assert.equal(stub.validateCalls(), 1, "a dead verdict never retries");
+      assert.equal(stub.signinCalls(), 0);
+    } finally {
+      restore();
+    }
+  });
+
+  it("302 whose Location is the login page → dead → reauthRequired", async () => {
+    const SportlotsAdapter = loadSportlotsAdapter({ credentials: passwordlessSecret() });
+    const stub = scriptedValidate([redirect(302, "/cust/custbin/login.tpl")]);
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, false);
+      assert.equal(result.reauthRequired, true, "a redirect TO login is SL saying no");
+      assert.equal(stub.validateCalls(), 1);
+    } finally {
+      restore();
+    }
+  });
+
+  it("302 → /login.tpl (root-relative) → dead", async () => {
+    const SportlotsAdapter = loadSportlotsAdapter({ credentials: passwordlessSecret() });
+    const stub = scriptedValidate([redirect(302, "/login.tpl")]);
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.reauthRequired, true);
+      assert.equal(stub.validateCalls(), 1);
+    } finally {
+      restore();
+    }
+  });
+
+  it("302 → same page with ?msg=login → indeterminate, NOT dead (substring in the query is not the login page)", async () => {
+    const SportlotsAdapter = loadSportlotsAdapter({ credentials: passwordlessSecret() });
+    const stub = scriptedValidate([redirect(302, "/inven/dealbin/newinven.tpl?msg=login")]);
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, false);
+      assert.notEqual(result.reauthRequired, true, "a query string mentioning login is not SL's login page");
+      assert.equal(result.retryable, true);
+      assert.equal(stub.validateCalls(), 3);
+    } finally {
+      restore();
+    }
+  });
+
+  it("302 → https://evil.example/login.tpl (off-origin) → indeterminate, NOT dead", async () => {
+    const SportlotsAdapter = loadSportlotsAdapter({ credentials: passwordlessSecret() });
+    const stub = scriptedValidate([redirect(302, "https://evil.example/login.tpl")]);
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, false);
+      assert.notEqual(result.reauthRequired, true, "only SportLots' own login page is a verdict");
+      assert.equal(result.retryable, true);
+      assert.equal(stub.validateCalls(), 3);
+    } finally {
+      restore();
+    }
+  });
+
+  it("isSportlotsLoginRedirect: origin-pinned, path-anchored, unparsable → false", () => {
+    const { isSportlotsLoginRedirect } = require("../dist/adapters/sportlots-adapter");
+    // dead
+    assert.equal(isSportlotsLoginRedirect("/login.tpl"), true);
+    assert.equal(isSportlotsLoginRedirect("/cust/custbin/signin.tpl"), true);
+    assert.equal(isSportlotsLoginRedirect("https://www.sportlots.com/cust/custbin/login.tpl?ret=x"), true);
+    assert.equal(isSportlotsLoginRedirect("https://sportlots.com/login.tpl"), true);
+    assert.equal(isSportlotsLoginRedirect("/LOGIN.TPL"), true, "case-insensitive like the body check");
+    // not a verdict
+    assert.equal(isSportlotsLoginRedirect("/inven/dealbin/newinven.tpl?return=login"), false);
+    assert.equal(isSportlotsLoginRedirect("/loginhelp"), false);
+    assert.equal(isSportlotsLoginRedirect("/login.tpl/extra"), false, "path must END at the tpl");
+    assert.equal(isSportlotsLoginRedirect("https://evil.example/login.tpl"), false);
+    assert.equal(isSportlotsLoginRedirect("https://notsportlots.com/login.tpl"), false, "suffix match must be on a dot boundary");
+    assert.equal(isSportlotsLoginRedirect("https://sportlots.com.evil.example/login.tpl"), false);
+    assert.equal(isSportlotsLoginRedirect(""), false);
+    assert.equal(isSportlotsLoginRedirect(null), false);
+    assert.equal(isSportlotsLoginRedirect(undefined), false);
+    assert.equal(isSportlotsLoginRedirect("http://[bad/login.tpl"), false, "unparsable → indeterminate");
+  });
+
+  it("3xx and non-200 early returns cancel the unread body so the socket is released", async () => {
+    const SportlotsAdapter = loadSportlotsAdapter({ credentials: passwordlessSecret() });
+    const cancels = { n: 0 };
+    const stub = scriptedValidate([
+      redirect(302, "/maintenance.tpl", cancels),
+      { status: 503, body: { cancel: async () => { cancels.n++; } }, text: async () => "" },
+      redirect(302, "/login.tpl", cancels),
+    ]);
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.reauthRequired, true, "third probe was a real login redirect");
+      assert.equal(stub.validateCalls(), 3);
+      assert.equal(cancels.n, 3, "every early return must cancel its body");
+    } finally {
+      restore();
+    }
+  });
+
+  it("a body.cancel() that throws (or a missing body) does not change the verdict", async () => {
+    const SportlotsAdapter = loadSportlotsAdapter({ credentials: passwordlessSecret() });
+    const stub = scriptedValidate([
+      { status: 503, body: { cancel: async () => { throw new TypeError("locked"); } }, text: async () => "" },
+      response({ status: 503 }), // no body property at all
+      response({ status: 200, body: OK_VALIDATE_BODY }),
+    ]);
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, true);
+      assert.equal(stub.validateCalls(), 3);
+    } finally {
+      restore();
+    }
+  });
+
+  it("worst-case validation budget stays under Convex's 60s login ceiling", () => {
+    // Convex loginWithRetry aborts /login/sportlots at AbortSignal.timeout(60_000)
+    // (apps/web/convex/credentials.ts). If validation alone could run longer,
+    // Convex would time out first and the transient verdict would never be
+    // delivered. Computed from the exported constants so a bump to either the
+    // timeout or the attempt count has to come back through here.
+    const {
+      VALIDATE_MAX_ATTEMPTS,
+      VALIDATE_BACKOFFS_MS,
+      DEFAULT_VALIDATE_TIMEOUT_MS,
+      JITTER_MAX_FACTOR,
+    } = require("../dist/adapters/sportlots-adapter");
+    assert.equal(VALIDATE_MAX_ATTEMPTS, 3, "2 retries = 3 attempts (NEO-281 spec)");
+    assert.equal(VALIDATE_BACKOFFS_MS.length, VALIDATE_MAX_ATTEMPTS - 1, "one backoff between each pair of attempts");
+    const backoffs = VALIDATE_BACKOFFS_MS.reduce((a, b) => a + b, 0) * JITTER_MAX_FACTOR;
+    const worstCaseMs = VALIDATE_MAX_ATTEMPTS * DEFAULT_VALIDATE_TIMEOUT_MS + backoffs;
+    assert.ok(
+      worstCaseMs < 55_000,
+      `worst case ${worstCaseMs}ms must stay under 55s (Convex aborts at 60s)`,
+    );
+  });
+
+  it("302 to somewhere that is NOT login → indeterminate (retried, then transient)", async () => {
+    // A redirect we cannot read as a verdict must not be read as "dead".
+    const SportlotsAdapter = loadSportlotsAdapter({ credentials: passwordlessSecret() });
+    const stub = scriptedValidate([redirect(302, "/maintenance.tpl")]);
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, false);
+      assert.notEqual(result.reauthRequired, true);
+      assert.equal(result.retryable, true);
+      assert.equal(stub.validateCalls(), 3);
+    } finally {
+      restore();
+    }
+  });
+
+  it("503 then 200 → valid after one retry", async () => {
+    const SportlotsAdapter = loadSportlotsAdapter({ credentials: passwordlessSecret() });
+    const stub = scriptedValidate([
+      response({ status: 503 }),
+      response({ status: 200, body: OK_VALIDATE_BODY }),
+    ]);
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, true, "one SL hiccup must not fail the login");
+      assert.equal(stub.validateCalls(), 2, "503 → one retry → 200");
+      assert.equal(stub.signinCalls(), 0);
+    } finally {
+      restore();
+    }
+  });
+
+  it("429, 429, 200 → valid after two retries", async () => {
+    const SportlotsAdapter = loadSportlotsAdapter({ credentials: passwordlessSecret() });
+    const stub = scriptedValidate([
+      response({ status: 429 }),
+      response({ status: 429 }),
+      response({ status: 200, body: OK_VALIDATE_BODY }),
+    ]);
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, true);
+      assert.equal(stub.validateCalls(), 3, "the budget is 3 attempts; the third one lands");
+      assert.equal(stub.signinCalls(), 0);
+    } finally {
+      restore();
+    }
+  });
+
+  it("503 ×3 → TRANSIENT failure: retryable, NOT reauthRequired, exactly 3 attempts, no write", async () => {
+    // THE bug. Before NEO-281 this returned reauthRequired: true and Convex
+    // flagged the user's session as expired for an SL outage.
+    const updates = [];
+    const SportlotsAdapter = loadSportlotsAdapter({
+      credentials: passwordlessSecret(),
+      updateCredentials: (key, creds) => updates.push({ key, creds }),
+    });
+    const stub = scriptedValidate([response({ status: 503 })]);
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, false);
+      assert.equal(result.reauthRequired, undefined, "an SL outage is not a verdict on the session");
+      assert.notEqual(result.credentialRejected, true, "nothing was submitted, nothing was rejected");
+      assert.equal(result.retryable, true);
+      assert.equal(result.error, TRANSIENT_ERROR);
+      assert.equal(stub.validateCalls(), 3, "2 retries = 3 attempts, then give up");
+      assert.equal(stub.signinCalls(), 0, "no password to sign in with, and SL is down anyway");
+      assert.equal(updates.length, 0, "the stored cookie is left exactly as it was");
+    } finally {
+      restore();
+    }
+  });
+
+  it("a non-429 4xx (403) is conservatively indeterminate, never dead", async () => {
+    // We have never seen SL answer a cookie with 401/403 — its refusal is the
+    // login form at 200. A false "dead" is the expensive error, so an
+    // unexplained 4xx is retried and then fails transient.
+    const SportlotsAdapter = loadSportlotsAdapter({ credentials: passwordlessSecret() });
+    const stub = scriptedValidate([response({ status: 403 })]);
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, false);
+      assert.notEqual(result.reauthRequired, true);
+      assert.equal(result.retryable, true);
+      assert.equal(stub.validateCalls(), 3);
+    } finally {
+      restore();
+    }
+  });
+
+  it("fetch throwing ECONNRESET ×3 → transient, not reauth", async () => {
+    const SportlotsAdapter = loadSportlotsAdapter({ credentials: passwordlessSecret() });
+    const stub = scriptedValidate([new Error("ECONNRESET")]);
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, false);
+      assert.equal(result.reauthRequired, undefined);
+      assert.equal(result.retryable, true);
+      assert.equal(result.error, TRANSIENT_ERROR);
+      assert.equal(stub.validateCalls(), 3);
+    } finally {
+      restore();
+    }
+  });
+
+  it("fetch throwing AbortError ×3 → transient, not reauth", async () => {
+    const SportlotsAdapter = loadSportlotsAdapter({ credentials: passwordlessSecret() });
+    const abortErr = () => {
+      const e = new Error("This operation was aborted");
+      e.name = "AbortError";
+      return e;
+    };
+    const stub = scriptedValidate([abortErr(), abortErr(), abortErr()]);
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, false);
+      assert.equal(result.reauthRequired, undefined);
+      assert.equal(result.retryable, true);
+      assert.equal(stub.validateCalls(), 3);
+    } finally {
+      restore();
+    }
+  });
+
+  it("a fetch that never resolves is aborted by the validation timeout and counted as indeterminate", async () => {
+    // The stub never resolves on its own; it only settles when the adapter's
+    // AbortController fires. If the adapter passed no signal (or never armed
+    // the timer) this test would hang, so a pass proves both. The timeout is
+    // injected small; the suite's setTimeout shim fires it immediately anyway.
+    const SportlotsAdapter = loadSportlotsAdapter({ credentials: passwordlessSecret() });
+    let signals = 0;
+    const stub = cacheAwareFetch({
+      onValidate: (opts) =>
+        new Promise((_resolve, reject) => {
+          assert.ok(opts?.signal, "validation fetch must carry an AbortSignal");
+          signals++;
+          opts.signal.addEventListener("abort", () => {
+            const e = new Error("This operation was aborted");
+            e.name = "AbortError";
+            reject(e);
+          });
+        }),
+      onSignin: () => {
+        throw new Error("signin must not be POSTed");
+      },
+    });
+    const restore = stubFetch(stub);
+    try {
+      const adapter = new SportlotsAdapter(null, { validateTimeoutMs: 20 });
+      const result = await adapter.login("sportlots-credentials-user_test");
+      assert.equal(result.success, false);
+      assert.equal(result.reauthRequired, undefined, "a hang is not a verdict on the session");
+      assert.equal(result.retryable, true);
+      assert.equal(result.error, TRANSIENT_ERROR);
+      assert.equal(stub.validateCalls(), 3, "each hung probe is one indeterminate attempt");
+      assert.equal(signals, 3);
+    } finally {
+      restore();
+    }
+  });
+
+  it("a hang followed by a 200 → valid (the abort is per-attempt, not per-login)", async () => {
+    const SportlotsAdapter = loadSportlotsAdapter({ credentials: passwordlessSecret() });
+    let calls = 0;
+    const stub = cacheAwareFetch({
+      onValidate: (opts) => {
+        calls++;
+        if (calls === 1) {
+          return new Promise((_resolve, reject) => {
+            opts.signal.addEventListener("abort", () => {
+              const e = new Error("aborted");
+              e.name = "AbortError";
+              reject(e);
+            });
+          });
+        }
+        return response({ status: 200, body: OK_VALIDATE_BODY });
+      },
+    });
+    const restore = stubFetch(stub);
+    try {
+      const adapter = new SportlotsAdapter(null, { validateTimeoutMs: 20 });
+      const result = await adapter.login("sportlots-credentials-user_test");
+      assert.equal(result.success, true);
+      assert.equal(stub.validateCalls(), 2);
+    } finally {
+      restore();
+    }
+  });
+
+  it("the transient error maps to 502 / error_class 'other' at the route, never 422", async () => {
+    // loginFailureOutcome is what the /login/sportlots route calls. A
+    // transient validation failure must be an upstream fault (502) with a
+    // class Convex does not read as reauth_required, so applyLoginOutcome —
+    // which acts only on success or reauth_required — writes nothing.
+    const { loginFailureOutcome } = require("../dist/observability");
+    const outcome = loginFailureOutcome({ success: false, retryable: true }, TRANSIENT_ERROR);
+    assert.equal(outcome.status, 502);
+    assert.equal(outcome.errorClass, "other");
+    assert.notEqual(outcome.errorClass, "reauth_required");
+    assert.notEqual(outcome.errorClass, "invalid_credentials");
+  });
+
+  it("the transient path never logs the stored cookie", async () => {
+    const SportlotsAdapter = loadSportlotsAdapter({ credentials: passwordlessSecret() });
+    const stub = scriptedValidate([
+      new Error('request to https://www.sportlots.com failed, reason: cookie "sl_session=stored" rejected'),
+    ]);
+    const restore = stubFetch(stub);
+    const logged = [];
+    const origLog = console.log;
+    const origErr = console.error;
+    console.log = (...a) => logged.push(a.map(String).join(" "));
+    console.error = (...a) => logged.push(a.map(String).join(" "));
+    try {
+      await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+    } finally {
+      console.log = origLog;
+      console.error = origErr;
+      restore();
+    }
+    const joined = logged.join("\n");
+    assert.ok(logged.length > 0, "the path does log");
+    assert.doesNotMatch(joined, /sl_session=stored/, "the cookie value must never reach the log");
   });
 });

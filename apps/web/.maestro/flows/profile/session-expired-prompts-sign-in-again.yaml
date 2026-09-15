@@ -23,14 +23,24 @@ tags:
 # more often, for identical coverage.
 #
 # WHY THE RECOVERY IS A *TEST*, NOT A RE-SEED — READ BEFORE "TIDYING UP":
-# Re-seeding does NOT clear this flag. When the stored session is still
-# renewable, seedMyTestCredentials skips the store and calls
-# updateSiteCredentialStatus WITHOUT a needsReauth argument, which deliberately
-# PRESERVES the flag. Only a successful login clears it (applyLoginOutcome), and
-# the re-auth card deliberately offers no "Test Credentials" button — so the
-# only route to one is the card's own "Sign in again", which opens the form and
-# its "Test Stored Credentials" button. That is the repair path a real user
-# takes, minus typing a password (never available to a flow — no secrets via -e).
+# The recovery below is the feature's second half, not housekeeping. A re-seed
+# WOULD clear the flag — when the stored session is still renewable,
+# seedMyTestCredentials skips the store and calls updateSiteCredentialStatus
+# with `needsReauth: false` (convex/testing.ts calls that load-bearing, and
+# set-selector/reauth-notice-on-set-builder.yaml relies on it for its restore)
+# — but that is a testing hook, not something a user can do. The product's own
+# repair path is the re-auth card's "Sign in again", which opens the form and
+# its "Test Stored Credentials" button; a successful login is what clears the
+# flag in production (applyLoginOutcome). The re-auth card deliberately offers
+# no "Test Credentials" button. That is the path a real user takes, minus
+# typing a password (never available to a flow — no secrets via -e), and it is
+# what this flow proves.
+#
+# NEO-278 (re-auth backoff): "Test Stored Credentials" runs testSiteCredentials
+# → authenticateSportlots directly; only fetch-driven refreshes in getSiteToken
+# are subject to the 15-minute backoff, and the testing hook stamps no
+# `reauthObservedAt` anyway. Nothing this flow asserts waits on a login being
+# re-attempted by a sync.
 #
 # HOUSEKEEPING: this flow flags, then unflags, its OWN worker account. If it
 # fails BEFORE the recovery, the worker's SportLots row is left flagged, and the

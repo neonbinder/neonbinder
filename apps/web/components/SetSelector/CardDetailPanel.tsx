@@ -798,11 +798,75 @@ export default function CardDetailPanel({
           {toast}
         </div>
       )}
+      {/*
+        NEO-272 — THE WIDTH IS MEASURED OFF AN 80-CHARACTER TITLE, not picked
+        off a breakpoint. Same derivation, same field and the same number as
+        `CardAttentionWalker`'s dialog (NEO-271) — read that comment too; this
+        is the second surface that edits `listingTitle`, and the two agreeing is
+        deliberate rather than coincidental.
+
+        WHY. `Card title` is a field whose budget is counted in CHARACTERS:
+        `LISTING_TITLE_MAX` is 80, and `TitleLengthMeter` prints `80/80 · may
+        clip in search` in the label row directly above the input. At the old
+        30rem (480px) the input's content box was 434px, which holds 54
+        characters in the widest face below and 63 in the narrowest — the ~60
+        Jason counted in the screenshot that opened this, with the trailing
+        ` Cleveland Guardians` of an 80/80 title scrolled out of sight. Editing
+        the end of a value you cannot see, against a limit measured in
+        characters, is guesswork.
+
+        WHICH FONT THE NUMBER IS FROM. This drawer is portalled inside a nested
+        Radix `<Theme>` (see the `createPortal` above), whose `.radix-themes`
+        rule sets `font-family: var(--default-font-family)` — the system-UI
+        stack, NOT the app's Lexend — and Tailwind's preflight gives form
+        controls `font: inherit`. So the title input renders in whatever
+        `system-ui` resolves to on the machine looking at it, and this is sized
+        off the WIDEST candidate rather than the local one. Measured with
+        fontTools, summed glyph advances at `text-sm` (14px) over a realistic
+        worst-case title:
+
+          DejaVu Sans  (system-ui on the Linux CI runner)  8.07 px/char
+          Lexend 400   (the app's page font)               7.80 px/char
+          Helvetica / Arial                                7.25 px/char
+          SF Pro Text  (system-ui on macOS)                6.84 px/char
+
+        THE ARITHMETIC. 80 × 8.07 = 646px of text. The input adds `p-1.5` plus
+        1px borders (14px) and the scrolling body below adds `px-4` (32px), so
+        the panel needs 646 + 14 + 32 = 692px. 45rem (720px) clears it by 28px
+        and leaves the input a 674px content box — 83 characters in DejaVu Sans,
+        86 in Lexend, 98 in SF Pro. Note the body here is `px-4`, not the
+        walker's `p-6`, so at the identical 45rem this field is 16px WIDER than
+        the walker's; the shared number is the floor for both, never a squeeze
+        on either. Do NOT tidy this into a `max-w-*` bucket: `max-w-2xl`
+        (672px) is under the measured minimum outright.
+
+        COVERING THE CHECKLIST COSTS NOTHING. 720px is 70% of the 1024px CI
+        viewport, which would matter if the 304px left in view were usable —
+        but this is `aria-modal="true"` over a full-viewport `bg-black/60`
+        backdrop that closes on click, so everything outside the panel was
+        already dimmed and non-interactive at 480px. The strip that remains is
+        backdrop either way.
+
+        NARROW WINDOWS. `max-w-[95vw]` takes over below a ~758px window
+        (720 / 0.95) and `w-full` below the `sm` breakpoint (640px), so a phone
+        still gets exactly what it got before: 95vw, with a 5vw sliver of
+        backdrop beside it. Nothing in here carries a min-width, so it reflows;
+        320px is unaffected because `sm:` never applies there (WCAG 1.4.10).
+        The one window that changes character is 640–758px, where the drawer
+        goes from a partial overlay to 95vw and the click-the-backdrop dismissal
+        narrows to that sliver — still a >=24px target (WCAG 2.5.8), and Escape,
+        the × and Done all close it, which is why this is a trade and not a
+        regression.
+
+        `animate-slide-in-right` is `translateX(100%)` → `0` (app/globals.css),
+        a percentage of the element's OWN width, so a wider panel still starts
+        fully off-screen rather than popping into place.
+      */}
       <div
         role="dialog"
         aria-modal="true"
         aria-labelledby={`card-detail-title-${card._id}`}
-        className="absolute top-0 right-0 h-full w-full sm:w-[30rem] max-w-[95vw] bg-white dark:bg-gray-800 border-l border-gray-200 dark:border-gray-700 shadow-xl flex flex-col animate-slide-in-right"
+        className="absolute top-0 right-0 h-full w-full sm:w-[45rem] max-w-[95vw] bg-white dark:bg-gray-800 border-l border-gray-200 dark:border-gray-700 shadow-xl flex flex-col animate-slide-in-right"
       >
         {/* Header */}
         <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-700 flex items-center gap-2">

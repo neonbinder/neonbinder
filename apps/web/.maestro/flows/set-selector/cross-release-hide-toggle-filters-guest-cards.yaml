@@ -159,14 +159,14 @@ tags:
 # ============================================================
 - scrollUntilVisible:
     element:
-      id: "Remove card 955-${ATTEMPT_ID} from this set"
+      id: "Remove card 955-${ATTEMPT_ID}(, .*)? from this set"
     centerElement: true
     visibilityPercentage: 50
     timeout: 7000
 - tapOn:
-    id: "Remove card 955-${ATTEMPT_ID} from this set"
+    id: "Remove card 955-${ATTEMPT_ID}(, .*)? from this set"
 - tapOn:
-    id: "Confirm remove card 955-${ATTEMPT_ID} from this set"
+    id: "Confirm remove card 955-${ATTEMPT_ID}(, .*)? from this set"
 - extendedWaitUntil:
     notVisible: "#955-${ATTEMPT_ID}"
     timeout: 7000

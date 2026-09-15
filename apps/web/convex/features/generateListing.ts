@@ -54,6 +54,20 @@ export type ListingCardInputs = {
   /** Mirrors the year node's value verbatim — same field `features.season` holds. */
   year?: string;
   manufacturer?: string;
+  /**
+   * NEO-272 — `selectorOptions.metadata.isBrandUnknown` on the ancestor
+   * `manufacturer` row: NB has not identified the brand of this set. The row
+   * above it is the marketplace's all-brands FILTER OPTION ("show all cards
+   * from all brands"), carried as a manufacturer row, so the "brand" here names
+   * no brand at all.
+   *
+   * When true the `manufacturer` above is dropped from both the title and the
+   * description — see `manufacturerAndSetTokens`. Passed as a FLAG rather than
+   * letting this module compare the name, because that name is a marketplace
+   * filter label NB does not own and an operator can rename besides — keying
+   * behaviour on it is the forward dependency product invariant 4 forbids.
+   */
+  manufacturerBrandUnknown?: boolean;
   setName?: string;
   /** features.parallelName — "Base" for a plain base card, a real name otherwise. */
   parallelName?: string;
@@ -130,9 +144,40 @@ export type ListingTitleAssessment = {
  * in either case would duplicate the word ("Topps Topps" / "Topps Topps
  * Heritage"), so collapse them into a single token whenever setName already
  * starts with manufacturer as a whole word.
+ *
+ * ## NEO-272 — a set whose brand NB has not identified has no manufacturer token
+ *
+ * `syncSetsAcrossManufacturers` files a BSC set whose name prefix-matches no
+ * real brand under the marketplace's all-brands FILTER OPTION, carried as a
+ * `manufacturer` row. "All Brands" is not a brand: it means "show all cards
+ * from all brands", so it says nothing whatever about the card in hand.
+ * Composing it into a title is therefore not merely wasteful, it is
+ * meaningless text in a buyer-facing field — and it costs real characters out
+ * of the 80 a title gets ("All Brands " alone is eleven of them), which is
+ * routinely the difference between a title that fits and one the Cards Needing
+ * Attention walker flags as cut short.
+ *
+ * The test is the caller's NB flag, never the row's name. Keying it on the
+ * literal "All Brands" is the same defect NEO-239 removed when it stopped
+ * detecting the base variant by the literal "Base", and here it is the clearer
+ * case: the name is a MARKETPLACE FILTER LABEL that NB does not own, so a
+ * string comparison would be NB behaviour keyed on a marketplace value —
+ * exactly the forward dependency product invariant 4 (CLAUDE.md) forbids. It
+ * would miss a renamed row into the bargain.
+ *
+ * Dropping it here, rather than in each caller, is what makes the title and
+ * the DESCRIPTION agree: `generateListingDescription` builds its set label
+ * from this same helper, so one change covers both.
+ *
+ * A flagged manufacturer produces no token at all — not an empty one — so the
+ * `filter(Boolean).join` below emits no leftover separator and no double
+ * space, and the `startsWithWord` collapse branch is unreachable (it needs a
+ * truthy `manufacturer`), which is right: there is nothing to collapse into.
  */
 function manufacturerAndSetTokens(inputs: ListingCardInputs): string[] {
-  const manufacturer = inputs.manufacturer?.trim();
+  const manufacturer = inputs.manufacturerBrandUnknown
+    ? undefined
+    : inputs.manufacturer?.trim();
   const setName = inputs.setName?.trim();
   if (manufacturer && setName && startsWithWord(setName, manufacturer)) {
     return [setName];

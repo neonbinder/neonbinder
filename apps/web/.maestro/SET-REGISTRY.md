@@ -587,6 +587,34 @@ not change; none of them can express the =1 half.
     and in the same band as `checklist-pairing-dialog-cancel` (2m29s, measured
     on the same preview the same evening).
 
+#### What STEP 8 writes, and why it has to write anything (NEO-272)
+
+The flow ends by opening a card's detail drawer and asserting that the server's
+generated `listingTitle` carries the set name and NOT `All Brands` — the live
+half of NEO-272, and the only place in the suite where the sync's legacy
+adoption of a marketplace-supplied brand-unknown row is exercised.
+
+It cannot read that title off one of the 25 committed cards. **Every card in
+this set is numbered `NNO`** (measurement 3's checklist), so all 25 rows offer
+an identically-named `Edit card NNO` control, and `CardChecklist`'s Virtuoso
+list renders ~3 rows above its own scroll viewport whose bounds are real and
+whose pixels are clipped (`increaseViewportBy={{top: 200, bottom: 400}}`). CI
+run 34556066366 tapped the first of those at (687,233) — the `Cards (25)`
+header — and the drawer never opened. NEO-272 made the labels distinguishable
+("Edit card NNO, Jon Larson"), which fixes the screen-reader half, but the card
+NAMES here are the marketplace's and unknowable to a flow.
+
+So STEP 8 hand-adds **one** card, `NB272-${ATTEMPT_ID}`, with no card name (the
+server defaults it to `Card #NB272-<attempt>`), and reads the title off that.
+`addCustomCard` writes `generateListingTitle` at creation and composes it
+through `findAncestorLabels`, which reads `metadata.isBrandUnknown` off the very
+manufacturer row STEP 1's sync had to stamp. The added row carries no
+marketplace ids, nothing attaches any to it, and it lands after every count
+assertion in the flow, so `Kept all 25`, `All reviewed — save 25`,
+`Saved 25 cards` and `Cards (25)` are all already banked. This flow is the set's
+sole writer (table above), and the set is single-use per preview deployment —
+the same reason STEP 4 can assert an empty checklist.
+
 #### The base-mapping panel: Close now dismisses it, and the flow taps it
 
 Since 2026-09-08 (`0411cd8`, `13deac4`) pressing **Close** on the
@@ -681,6 +709,42 @@ first-fetch path is the CI path; a LOCAL re-run against an already-committed
 deployment fails at STEP 4's `No cards in this checklist yet.` assertion,
 correctly; the fix is a fresh `npm run test:e2e -- setup`. **A local validation therefore gets
 exactly one committing attempt per set per deployment.**
+
+#### It also carries NEO-272's only live assertion (STEP 8)
+
+The flow's last four commands open ONE committed card's detail drawer and assert
+that the drawer's `Card title` names the set and **not** `All Brands`. That is a
+second feature riding this fixture, documented as such in the flow's header, and
+it is here because this is the suite's only subtree under a manufacturer row
+whose brand NB has not identified — a flow of its own would need a second real
+set and another owner approval for a claim this one is standing three lines away
+from.
+
+`All Brands` is not a brand: it is the marketplace's no-filter option on its
+brand axis ("show all cards from all brands"), carried as a manufacturer row, and
+the sets under it are the ones whose brand NB has not identified. Its name says
+nothing about any card beneath it, so composing it into a buyer-facing listing
+title is meaningless text — which is what STEP 8 pins.
+
+Why the fixture is the right one, beyond convenience: `All Brands` for Hockey
+1995 is **not** minted by `syncSetsAcrossManufacturers` (measurement 2 above —
+it comes off SportLots' own brand list, which is the normal case: the row is the
+marketplace's filter option, so the marketplace supplies it), so it arrives
+carrying no `metadata.isBrandUnknown`, and the sync's *legacy adoption* branch
+has to recognise the row and stamp the role. That branch is unreachable from
+`convex-test`, and STEP 1's cold Sets sync runs it on every CI run of this flow.
+
+It is **read-only**: nothing is typed, the drawer's fields commit only on Enter
+or a changed blur, and `previewListingTitle` stays `"skip"` until Regenerate is
+pressed, so the drawer costs no server round-trip. **Estimated at ~7-9s and not
+yet measured** — no preview existed when it was written. First green run that
+records a real title on this set should tighten STEP 8's positive assertion into
+one anchored shape and note what it measured.
+
+Note for a fixture swap: STEP 8's negative names the literal `All Brands`, which
+STEP 1 already hard-codes as its `MANUFACTURER`. A year whose filter-option row
+is spelled differently breaks STEP 1 first, loudly, so the two cannot silently
+disagree — but they must be changed together.
 
 #### Spares, if the set ever has to be swapped
 
@@ -841,12 +905,14 @@ would put the wrong question on screen.
 | `clt-` | `custom-card-row-opens-panel-with-autotitle.yaml` |
 | `cvar-` | `variation-link-group-and-unlink.yaml` |
 | `fp-` | `features-propagation.yaml` |
+| `ftl-` | `set-fill-teams-from-teammate-card.yaml` (also `-${ATTEMPT_ID}`) — under `E2E Test Sport <w>` › 2026 › Topps, the `stt-` shape for the same League-row reason. Per-attempt because the Fill teams confirm's title and toast are EXACT card counts. Its two cards are deleted at the end; the set, its `Insert` › `Base` rows, its player `FTP<token>` and its team `FTT<token>` stand. The set is given NO set-level team (NEO-277 would copy it onto every card and leave nothing to fill). |
 | `parallel-feature-` | `cards-parallel-custom.yaml` |
 | `pg-cancel-` | `parallel-grouping-cancel-discards.yaml` (also `-${ATTEMPT_ID}`) |
 | `pg-move-` | `move-parallels-of-inserts-custom.yaml` |
 | `pg-reject-` | `parallel-grouping-reject-parallel.yaml` (also `-${ATTEMPT_ID}`) |
 | `pp-` | `player-picker-create-custom-card.yaml` |
 | `rnm-` | `rename-selector-option.yaml` (also `-${ATTEMPT_ID}`; renamed in-flow to `rnmx-`) |
+| `stt-` | `set-team-carries-down-to-cards.yaml` (also `-${ATTEMPT_ID}`) — under `E2E Test Sport <w>` › 2026 › Topps, NOT Baseball: the New Team dialog's League row lists every league the sport holds in a `max-h-40` inner scroller maestro-web cannot drive, and under the synthetic sport the only pill is `No league`. Per-attempt because the cascade confirm's body is an EXACT card count. Its two cards are deleted at the end; the set, its `Insert` › `Base` rows and its three teams stand. |
 | `tlf-` | `checklist-title-length-limits-and-fixer.yaml` (also `-${ATTEMPT_ID}`) |
 | `tp-` | `team-picker.yaml` |
 | `tpc-` | `team-picker-create-custom-card.yaml` |
@@ -1101,12 +1167,15 @@ whole thing; never assume which letter the worker half starts with.
 |---|---|---|
 | `CNAA`, `CNAB` | `checklist-attention-badge-and-filter.yaml` | two teams; CNAB is the born-linked card's alone, which is what makes its row assertion single-row |
 | `CNWT` | `checklist-attention-walker-missing-team.yaml` | |
+| `FTP` | `set-selector/set-fill-teams-from-teammate-card.yaml` | a PLAYER — the one both of that flow's cards name; created from the quick-add form's PlayerPicker on card #781 and PICKED from its results on card #782 (the only flow that selects an existing player there). `FTT` below is his team; the two diverge at their third character |
+| `FTT` | `set-selector/set-fill-teams-from-teammate-card.yaml` | the team card #781 is born with and card #782 borrows through Fill teams. Carries the Location `Loc<token>` (typed into the DIALOG, never into a picker) so the composed `Loc<token> FTT<token>` is what rows, chips and the Fill teams ledger print |
 | `NBTeam` | `team-picker-create-custom-card.yaml` | created under `E2E Test Sport <w>`, not Baseball |
 | `NBPlayer` | `player-picker-create-custom-card.yaml` | a PLAYER, not a team — `players.search` tokenises identically, and the row persists the same way |
 | `PM` | `admin/player-management-add-and-career-history.yaml` | the PLAYER this flow adds by hand; `PMT` below is the team it gives him. The two diverge at their THIRD character, so neither name is a prefix of the other and neither picker can be answered by the other's row |
 | `PMT` | `admin/player-management-add-and-career-history.yaml` | |
 | `SLP` | `spine-label/player-team-colors-default-to-longest-tenure.yaml` | the PLAYER; `SLA`/`SLB` are his two teams. This is the one flow that types a strict PREFIX of a minted name — see the prefix note below |
 | `SLA`, `SLB` | `spine-label/player-team-colors-default-to-longest-tenure.yaml` | coloured `#132448` / `#002d72` |
+| `STA`, `STB`, `STC` | `set-selector/set-team-carries-down-to-cards.yaml` | three teams under `E2E Test Sport <w>`, diverging at their THIRD character so none is a prefix of another. Each carries the Location `Loc<token>` (typed into the DIALOG, never into a picker, so the composed `Loc<token> STA<token>` is never queried) — the same shape `admin/admin-franchises-link-teams.yaml` gives its `Fr<token>A`/`Fr<token>B` pair, so `TMT` is no longer the only located team. STA is the set's first team, STB is card #2's hand-set override, STC is the set's replacement |
 | `TLF` | `checklist-title-length-limits-and-fixer.yaml` | kept SHORT on purpose: the name lands in a generated listing title measured against an 80-character cap. `TLF<token>` is 8-12 chars, 3 fewer than the `TLF-${ATTEMPT_ID}` it replaced and 4-8 fewer than the "New York Yankees" before that — the rename spends less of the budget, never more. Read the FIXTURE SIZING block in the flow before changing any name in it |
 | `TME` | `admin/team-management-edit-a-team.yaml` | the throwaway PLAYER that flow creates on the way in, because a career editor is the only place outside the set-builder cascade where a team can be born. `TMT` below is the team it makes there; the two diverge at their third character |
 | `TMT` | `admin/team-management-edit-a-team.yaml` | the ONLY team in the suite with a `location` (`Loc${WORKER_INDEX}`), so once it saves its composed name is `Loc<w> TMT<token>` — see the composed-name note above for why the extra term is inert |

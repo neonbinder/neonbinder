@@ -30,6 +30,12 @@ function isSupportedSite(site: string): boolean {
  *
  * `displayName` is user-visible — it appears verbatim in the messages returned
  * by `saveCredentials`.
+ *
+ * `failureMessage` is for a login the marketplace processed and refused; it
+ * points the user at their credentials. `transientMessage` (NEO-281) is for a
+ * login the marketplace never answered — see `isTransientLoginFailure` for the
+ * exact classes — where Convex writes nothing about the user's session, so the
+ * copy must not blame the user.
  */
 const SITE_LOGIN: Record<
   string,
@@ -39,6 +45,7 @@ const SITE_LOGIN: Record<
     /** PostHog `platform` property (NEO-43). Must stay stable. */
     platform: CredentialTestProperties["platform"];
     failureMessage: string;
+    transientMessage: string;
     successMessage: string;
   }
 > = {
@@ -47,6 +54,7 @@ const SITE_LOGIN: Record<
     displayName: "BuySportsCards",
     platform: "buysportscards",
     failureMessage: "BSC login failed. Please check your credentials and try again.",
+    transientMessage: "BSC didn't answer. Nothing changed — try again in a minute.",
     successMessage: "BSC account authenticated successfully! Token stored.",
   },
   sportlots: {
@@ -54,6 +62,7 @@ const SITE_LOGIN: Record<
     displayName: "SportLots",
     platform: "sportlots",
     failureMessage: "SportLots login failed. Please check your credentials and try again.",
+    transientMessage: "SportLots didn't answer. Nothing changed — try again in a minute.",
     successMessage: "SportLots account authenticated successfully! Session cookie stored.",
   },
 };
@@ -369,9 +378,14 @@ export const saveCredentials = action({
           if (!outcome.success) {
             // Store NOTHING on failure. Leaving `hasCredentials` untouched is
             // the whole point: a half-saved credential is what NEO-140 was.
+            //
+            // NEO-281: only send the user to their password when the
+            // marketplace actually refused it. If it never answered, say so.
             return {
               success: false,
-              message: `Could not sign in to ${siteDisplayName(args.site)}. Nothing was saved — check your username and password and try again.`,
+              message: outcome.transient
+                ? outcome.message
+                : `Could not sign in to ${siteDisplayName(args.site)}. Nothing was saved — check your username and password and try again.`,
             };
           }
 
@@ -637,6 +651,12 @@ async function readCachedToken(
  *     deletes: the secret and username are still there, only the session
  *     expired, and since NEO-141 we hold no password to renew it silently.
  *
+ * NEO-278 — once `needsReauth` is flagged, the refresh is NOT re-run on every
+ * call: `refreshSiteToken` skips it while the last `reauth_required` outcome
+ * is younger than `REAUTH_RETRY_INTERVAL_MS`, and this function falls back to
+ * the cached token (stale path) or null (mint path) exactly as it does for a
+ * failed refresh. After the interval one attempt is made again.
+ *
  * NEO-20: internalAction (not action). Tokens must never be reachable
  * via Convex RPC from a frontend client — only other Convex backend
  * code (adapters) may call this.
@@ -744,9 +764,10 @@ export const getSiteToken = internalAction({
       // capture) differs per marketplace.
       const refreshed = await refreshSiteToken(ctx, userId, args.site);
       if (!refreshed) {
-        // Refresh failed; fall back to the (likely stale) cached
-        // token rather than null — let the caller's 401 path surface
-        // a clear "please re-login" error if the cache really is dead.
+        // Refresh failed (or was skipped by the NEO-278 re-auth backoff);
+        // fall back to the (likely stale) cached token rather than null —
+        // let the caller's 401 path surface a clear "please re-login" error
+        // if the cache really is dead.
         return cached;
       }
 
@@ -760,21 +781,82 @@ export const getSiteToken = internalAction({
 });
 
 /**
+ * NEO-278: how long `getSiteToken` waits after a `reauth_required` outcome
+ * before letting a fetch-driven refresh try the stored-session login again.
+ *
+ * Since NEO-141 the browser service holds no password, so once a session has
+ * lapsed that login is doomed until the user signs in again — every attempt
+ * answers `reauth_required` in ~100ms. Before this backoff `getSiteToken`
+ * re-ran it on EVERY selector/checklist fetch (token GET + lock + action +
+ * login POST + PostHog failure event + flag write + unlock, ~1s per platform),
+ * which on 2026-09-14 meant ~1,500 pointless logins in a day and a NEO-43
+ * alert that never cleared.
+ *
+ * The retry is deliberately kept, not removed: the browser service may grow a
+ * silent re-auth (the other half of NEO-278), and a user who signs in again
+ * clears the flag anyway. 15 minutes bounds the noise at ~4 attempts an hour
+ * per platform per user while still picking up a recovered session promptly.
+ */
+const REAUTH_RETRY_INTERVAL_MS = 15 * 60 * 1000;
+
+/**
+ * NEO-278: true while a fetch-driven refresh should be skipped because the last
+ * stored-session login for this (user, site) already answered `reauth_required`
+ * less than `REAUTH_RETRY_INTERVAL_MS` ago. A flag with no `reauthObservedAt`
+ * (a row flagged before the field existed, or by `testing.markSiteNeedsReauth`)
+ * is NOT in backoff: it retries once, and that outcome stamps it.
+ *
+ * Read-only: nothing here writes credential status, and a successful login
+ * anywhere (`applyLoginOutcome`, `saveCredentials`) clears the flag and the
+ * stamp together, so the backoff cannot outlive the condition it tracks.
+ */
+async function inReauthBackoff(
+  ctx: { runQuery: (ref: any, args: any) => Promise<any> },
+  userId: string,
+  site: string,
+): Promise<boolean> {
+  const state = (await ctx.runQuery(internal.userProfile.getSiteReauthState, {
+    userId,
+    site,
+  })) as { needsReauth: boolean; reauthObservedAt?: number };
+  if (!state.needsReauth || typeof state.reauthObservedAt !== "number") return false;
+  const sinceMs = Date.now() - state.reauthObservedAt;
+  if (sinceMs >= REAUTH_RETRY_INTERVAL_MS) return false;
+  console.log(
+    `[getSiteToken] platform=${site} op=refresh skipped: re-auth pending, observed ${Math.round(sinceMs / 1000)}s ago (retry after ${REAUTH_RETRY_INTERVAL_MS / 60_000}m)`,
+  );
+  return true;
+}
+
+/**
  * Internal helper — invoke the site's authenticate action to refresh
  * its token. Returns true on success, false on any failure. Does not
  * throw. Site list is intentionally explicit (no dynamic dispatch) so
  * adding a new marketplace requires explicit wiring here — which is
  * the right place to confirm the new site's auth flow handles cached
  * tokens properly.
+ *
+ * Only `getSiteToken` calls this. The user-initiated paths
+ * (`testSiteCredentials`, `saveCredentials`) run their own login directly and
+ * are never subject to the NEO-278 backoff below — a user who clicks "Test" or
+ * signs in again must always get a real attempt.
  */
 async function refreshSiteToken(
   ctx: {
+    runQuery: (ref: any, args: any) => Promise<any>;
     runAction: (ref: any, args: any) => Promise<unknown>;
     runMutation: (ref: any, args: any) => Promise<any>;
   },
   userId: string,
   site: string,
 ): Promise<boolean> {
+  // NEO-278: checked BEFORE contending for the lock, so a suppressed refresh
+  // costs one indexed query rather than a lock round-trip. Returning false
+  // here lands on the same fallbacks a failed refresh does — the cached token
+  // on the stale path, null on the mint path — both of which are safe and
+  // neither of which writes anything.
+  if (await inReauthBackoff(ctx, userId, site)) return false;
+
   // Contend for the per-(user, site) credential lock: a background refresh runs
   // the same login that writes a token to Secret Manager, so without this a
   // fetch-driven re-auth could re-mint a token right after a user Clear (the
@@ -1038,12 +1120,48 @@ async function loginWithRetry(
  */
 const REAUTH_REQUIRED = "reauth_required";
 
+/**
+ * NEO-281: "the marketplace didn't answer" — nothing is known about the user's
+ * credentials, so the copy must not send them to their password.
+ *
+ * - `"other"`: the browser service's catch-all. It only ever arrives on a 5xx
+ *   — every 422 is forced to `reauth_required` or `invalid_credentials` and
+ *   every 400 to `bad_key_format` / `missing_key` / `invalid_credentials`
+ *   (`loginFailureOutcome` in services/browser) — so on a login route it means
+ *   "we could not complete the exchange and could not name why": the
+ *   marketplace 5xx'd, rate-limited or timed out on every probe.
+ * - `"timeout"`: the marketplace exchange timed out inside the service.
+ * - `undefined`: the service never classified anything — the request to it
+ *   threw (network, our 60s abort), or it stayed 503-busy through every retry.
+ *
+ * Every other class is a verdict the copy already handles: `reauth_required`
+ * and `invalid_credentials` are about the credentials; `challenge` / `oom` /
+ * `bad_key_format` / `missing_key` keep their existing copy deliberately.
+ * `applyLoginOutcome` writes nothing for any of the transient cases.
+ */
+const TRANSIENT_ERROR_CLASSES: ReadonlySet<string | undefined> = new Set([
+  "other",
+  "timeout",
+  undefined,
+]);
+
+function isTransientLoginFailure(errorClass: string | undefined): boolean {
+  return TRANSIENT_ERROR_CLASSES.has(errorClass);
+}
+
 type SiteLoginOutcome = {
   success: boolean;
   message: string;
   details?: string;
   /** The browser service says only a fresh password can fix this. */
   reauthRequired: boolean;
+  /**
+   * NEO-281: the marketplace never answered; nothing is known about the
+   * credentials and nothing was written. `message` already carries the
+   * per-site `transientMessage`; callers that rewrite the failure copy must
+   * keep it rather than blaming the user's password.
+   */
+  transient: boolean;
 };
 
 /**
@@ -1067,7 +1185,12 @@ async function runSiteLogin(
 ): Promise<SiteLoginOutcome> {
   const cfg = SITE_LOGIN[site];
   if (!cfg) {
-    return { success: false, message: `Unsupported site: ${site}`, reauthRequired: false };
+    return {
+      success: false,
+      message: `Unsupported site: ${site}`,
+      reauthRequired: false,
+      transient: false,
+    };
   }
 
   const key = credKey(site, userId);
@@ -1088,10 +1211,14 @@ async function runSiteLogin(
       duration_ms: durationMs,
       ...sanitizeLoginDiagnostic(result.diagnostic),
     });
+    // NEO-281: a marketplace that did not answer is not a user who typed the
+    // wrong password. Same misattribution the ticket exists to remove.
+    const transientFailure = isTransientLoginFailure(result.errorClass);
     return {
       success: false,
-      message: cfg.failureMessage,
+      message: transientFailure ? cfg.transientMessage : cfg.failureMessage,
       reauthRequired: result.errorClass === REAUTH_REQUIRED,
+      transient: transientFailure,
     };
   }
 
@@ -1122,6 +1249,7 @@ async function runSiteLogin(
     message: cfg.successMessage,
     details: loginResult.storeName ? `Store: ${loginResult.storeName}` : undefined,
     reauthRequired: false,
+    transient: false,
   };
 }
 

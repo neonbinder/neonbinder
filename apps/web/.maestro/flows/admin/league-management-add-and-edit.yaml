@@ -152,8 +152,30 @@ tags:
 - assertVisible: "Baseball"
 
 # ── ADD THE LEAGUE ──────────────────────────────────────────────────────────
+# CI 34697831691 caught the same bounds-then-tap race the checklist documents:
+# selecting Baseball moved this filter row from a wrapped to an inline layout,
+# but Maestro resolved "Add league" from the PREVIOUS hierarchy at
+# [24,371][127,403] and tapped (75,387). The failure screenshot's current
+# hierarchy put the real button at [675,327][778,359], so the tap landed in the
+# empty results panel. Maestro then saw the sport-filter reflow and mistook that
+# unrelated hierarchy change for evidence that its tap had worked.
+#
+# Re-read and centre the VISIBLE button after the sport-driven reflow before
+# asking a user click to land. This is R8's product-facing answer to stale
+# bounds: `scrollUntilVisible` resolves the CURRENT "Add league" node and only
+# completes when its current bounds are in the safe middle band. It does not
+# hide a failed click behind a retry.
+- scrollUntilVisible:
+    element:
+      text: "Add league"
+    centerElement: true
+    timeout: 7000
 - tapOn: "Add league"
-- assertVisible: "Add a league"
+# The visible form heading is the result gate (R2): one click must open the
+# form, or the flow fails on the user-visible state it was trying to produce.
+- extendedWaitUntil:
+    visible: "Add a league"
+    timeout: 7000
 
 - tapOn: "New league name"
 - inputText: "LG-${WORKER_INDEX || 0}-${ATTEMPT_ID}"

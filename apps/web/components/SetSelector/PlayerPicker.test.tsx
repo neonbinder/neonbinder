@@ -570,3 +570,152 @@ describe("PlayerPicker", () => {
     });
   });
 });
+
+/**
+ * NEO-272 — the popover is portalled, so nothing can clip it.
+ *
+ * `overflow: auto` establishes a clip box whether or not a scrollbar is
+ * showing, and two of this picker's hosts are exactly that: the attention
+ * walker's body (`UnreviewedNameFixer`) and the card drawer's. An `absolute`
+ * popover inside one was cut off at its edge.
+ *
+ * These tests say what happy-dom can say. It computes no layout, so "not
+ * clipped" is not assertable and is not asserted — the structural property
+ * that makes clipping impossible is, along with the coordinates the popover is
+ * given, which are ordinary DOM state. `TeamPicker.test.tsx` carries the same
+ * block for its twin.
+ */
+describe("PlayerPicker — the popover escapes its clip box (NEO-272)", () => {
+  /** A host that clips: the shape of the walker's `overflow-y-auto` body. */
+  function renderInScrollBox(
+    props: Partial<Parameters<typeof PlayerPicker>[0]> = {},
+  ) {
+    const onChange = vi.fn();
+    const utils = render(
+      <div data-testid="scroll-box" style={{ overflowY: "auto", height: "120px" }}>
+        <PlayerPicker value={[]} onChange={onChange} sportId={SPORT_ID} {...props} />
+      </div>,
+    );
+    return { ...utils, onChange };
+  }
+
+  /** This picker's popover IS its listbox — the role sits on the container. */
+  const popover = () => screen.getByRole("listbox");
+
+  function anchorAt(bottom: number, left: number) {
+    return vi
+      .spyOn(screen.getByLabelText("Add player"), "getBoundingClientRect")
+      .mockReturnValue({
+        top: bottom - 20,
+        bottom,
+        left,
+        right: left + 96,
+        width: 96,
+        height: 20,
+        x: left,
+        y: bottom - 20,
+        toJSON: () => ({}),
+      } as DOMRect);
+  }
+
+  beforeEach(() => {
+    currentSelectedRows = [];
+    currentCandidates = [makePlayer("p1", "Aaron Judge")];
+  });
+
+  it("renders outside the scrolling ancestor, while the trigger stays inside it", () => {
+    renderInScrollBox();
+    openPopover();
+
+    const box = screen.getByTestId("scroll-box");
+    // The fixture really does clip, so the escape below is the portal rather
+    // than a broken setup.
+    expect(box.contains(screen.getByLabelText("Add player"))).toBe(true);
+
+    expect(box.contains(popover())).toBe(false);
+    expect(document.body.contains(popover())).toBe(true);
+    expect(popover().parentElement?.parentElement).toBe(document.body);
+  });
+
+  it("keeps its listbox role and accessible name on the popover itself", () => {
+    // The portal moved the element, not its semantics: the container is still
+    // the listbox, still named by `labels.results`, which is what both a
+    // screen reader and a Maestro `id:` selector read it by.
+    renderInScrollBox({
+      labels: {
+        root: "Player picker",
+        trigger: "Add player",
+        search: "Search players",
+        results: "Player typeahead results",
+      },
+    });
+    openPopover();
+
+    expect(popover().getAttribute("aria-label")).toBe("Player typeahead results");
+    expect(popover().className).toContain("w-64");
+    expect(popover().className).toContain("dark:bg-gray-800");
+    expect(popover().className).toContain("z-[55]");
+    expect(popover().className).not.toContain("absolute");
+  });
+
+  it("anchors under the trigger and follows it on ancestor scroll and on resize", () => {
+    renderInScrollBox();
+    const rect = anchorAt(120, 40);
+    openPopover();
+
+    expect(popover().style.top).toBe("120px");
+    expect(popover().style.left).toBe("40px");
+
+    // Scroll events do not bubble; this only arrives because the listener is
+    // registered in the capture phase.
+    rect.mockReturnValue({ bottom: 60, left: 40, top: 40 } as DOMRect);
+    fireEvent.scroll(screen.getByTestId("scroll-box"));
+    expect(popover().style.top).toBe("60px");
+
+    rect.mockReturnValue({ bottom: 300, left: 12, top: 280 } as DOMRect);
+    fireEvent.resize(window);
+    expect(popover().style.top).toBe("300px");
+    expect(popover().style.left).toBe("12px");
+  });
+
+  it("Tab from the trigger moves into the popover", () => {
+    renderInScrollBox();
+    openPopover();
+    const trigger = screen.getByLabelText("Add player");
+    trigger.focus();
+
+    fireEvent.keyDown(trigger, { key: "Tab" });
+
+    expect(document.activeElement).toBe(screen.getByLabelText("Search players"));
+  });
+
+  it("Shift+Tab off the search box returns to the trigger, popover still open", () => {
+    renderInScrollBox();
+    openPopover();
+    const search = screen.getByLabelText("Search players");
+    search.focus();
+
+    fireEvent.keyDown(search, { key: "Tab", shiftKey: true });
+
+    expect(document.activeElement).toBe(screen.getByLabelText("Add player"));
+    expect(screen.getByRole("listbox")).toBeTruthy();
+  });
+
+  it("Tab off the last row closes the popover and hands focus back to the trigger", async () => {
+    // WCAG 2.4.11 — in the quick-add form this popover covers the Team row and
+    // Add/Cancel. Returning focus to the trigger also keeps Tab inside a host
+    // dialog whose focus trap cannot see into the portal.
+    renderInScrollBox();
+    openPopover();
+    const lastRow = screen.getByLabelText("Add Aaron Judge");
+    lastRow.focus();
+
+    fireEvent.keyDown(lastRow, { key: "Tab" });
+
+    expect(screen.queryByRole("listbox")).toBeNull();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(document.activeElement).toBe(screen.getByLabelText("Add player"));
+  });
+});

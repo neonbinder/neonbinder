@@ -46,6 +46,23 @@ type PreviewResult = {
     playerNames: string[];
     year?: string;
     manufacturer?: string;
+    /**
+     * NEO-272 — true when NB has not identified this set's brand: the set hangs
+     * off the marketplace's all-brands FILTER OPTION ("show all cards from all
+     * brands"), which the set sync files a set under when it cannot match it to
+     * a real manufacturer. That name says nothing about the card, so the
+     * generator spends no title characters on it — `manufacturer` above is
+     * present but was not used.
+     *
+     * An NB role flag resolved server-side, never a name comparison: the name
+     * is a marketplace filter label NB does not own, and it decides nothing
+     * here or anywhere (CLAUDE.md, product invariant 4). Declared OPTIONAL for
+     * the same reason as `teamNames` below: a browser holding this bundle can
+     * be reading an older deploy that predates the field. `undefined` therefore
+     * has to mean "the brand is known", which is exactly what every preview
+     * from such a deploy is.
+     */
+    manufacturerBrandUnknown?: boolean;
     setName?: string;
     parallelName?: string;
     isRookie?: boolean;
@@ -100,7 +117,22 @@ export function titleSourceChips(inputs: PreviewResult["inputs"]): TitleSourceCh
 
   // Core first, in the order the generator lays it down.
   push("Year", inputs.year);
-  push("Maker", inputs.manufacturer);
+  // NEO-272: a set whose brand NB has not identified gets NO Maker chip. The
+  // generator leaves that manufacturer out of the title, so a chip naming it
+  // states a fact the title does not contain — and this row exists so an
+  // operator who has to shorten a title can see which characters are in play.
+  // A chip for a maker that cost zero characters sends them hunting for
+  // characters nobody spent.
+  //
+  // Suppressed rather than rendered in a visibly-unused state, deliberately:
+  // the row is read left to right BECAUSE that mirrors the title (see above),
+  // and a chip that is not in the title breaks that mapping wherever it sits —
+  // so the honest "unused" rendering would need a second visual language on a
+  // dialog NEO-271 already calls too small, to tell the operator about a fact
+  // whose only useful content is that it is not there.
+  //
+  // Keyed on the flag, never on the manufacturer's name.
+  if (!inputs.manufacturerBrandUnknown) push("Maker", inputs.manufacturer);
   push("Set", inputs.setName);
   // One chip per player, not a joined string: on a multi-player card the names
   // are what an operator weighs against each other when shortening.

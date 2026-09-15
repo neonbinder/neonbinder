@@ -94,9 +94,9 @@ tags:
 
 # Open the drawer via the Edit button.
 - assertVisible:
-    id: "Edit card 777-${ATTEMPT_ID}"
+    id: "Edit card 777-${ATTEMPT_ID}(, .*)?"
 - tapOn:
-    id: "Edit card 777-${ATTEMPT_ID}"
+    id: "Edit card 777-${ATTEMPT_ID}(, .*)?"
     waitToSettleTimeoutMs: 2000
 - extendedWaitUntil:
     visible:
@@ -106,9 +106,13 @@ tags:
 # ============================================================
 # REACH THE PLAYERS SECTION (near the bottom of the drawer body)
 # Players is the last editable section, above the read-only "Inherited from set"
-# and the images block. The drawer is right-anchored (~480px, x>=544), so a
-# viewport-centre scroll lands on the backdrop and cannot drive the drawer's
-# inner scroll — we drive it with manual swipes at x=80% (inside the drawer).
+# and the images block. The drawer is right-anchored and `sm:w-[45rem]` — 720px
+# at 1024, x≈304 (NEO-272 widened it from 480px/x≈544 to fit an 80-character
+# listing title). scrollUntilVisible cannot drive the drawer's inner scroll at
+# either width, because maestro-web's only scroll is `window.scroll` and this
+# panel is a `fixed inset-0` portal the window never moves (README R8 case 2;
+# canonical note in card-detail-panel.yaml) — so we drive it with manual swipes
+# at x=80% (819px, inside the drawer at either width).
 # Scrolling to the bottom parks "Add player" in the upper-middle band (the
 # Inherited + Images blocks sit below it), leaving room for the popover that
 # opens BELOW the trigger.
@@ -193,13 +197,13 @@ tags:
 # follows lands clear of the sticky header.
 - scrollUntilVisible:
     element:
-      id: "Edit card 777-${ATTEMPT_ID}"
+      id: "Edit card 777-${ATTEMPT_ID}(, .*)?"
     direction: UP
     centerElement: true
     visibilityPercentage: 50
     timeout: 7000
 - tapOn:
-    id: "Edit card 777-${ATTEMPT_ID}"
+    id: "Edit card 777-${ATTEMPT_ID}(, .*)?"
     waitToSettleTimeoutMs: 2000
 - extendedWaitUntil:
     visible:
@@ -254,14 +258,14 @@ tags:
 # tap clear of the 64px sticky header.
 - scrollUntilVisible:
     element:
-      id: "Delete card 777-${ATTEMPT_ID}"
+      id: "Delete card 777-${ATTEMPT_ID}(, .*)?"
     direction: UP
     centerElement: true
     visibilityPercentage: 50
     timeout: 7000
 - tapOn:
-    id: "Delete card 777-${ATTEMPT_ID}"
+    id: "Delete card 777-${ATTEMPT_ID}(, .*)?"
 - assertVisible: "Confirm?"
 - tapOn:
-    id: "Confirm delete card 777-${ATTEMPT_ID}"
+    id: "Confirm delete card 777-${ATTEMPT_ID}(, .*)?"
 - assertNotVisible: "Player Picker Card ${ATTEMPT_ID}"

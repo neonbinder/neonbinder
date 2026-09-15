@@ -122,13 +122,13 @@ tags:
 
 - scrollUntilVisible:
     element:
-      id: "Delete card 779-${ATTEMPT_ID}"
+      id: "Delete card 779-${ATTEMPT_ID}(, .*)?"
     centerElement: true
     visibilityPercentage: 50
     timeout: 7000
 - tapOn:
-    id: "Delete card 779-${ATTEMPT_ID}"
+    id: "Delete card 779-${ATTEMPT_ID}(, .*)?"
 - assertVisible: "Confirm?"
 - tapOn:
-    id: "Confirm delete card 779-${ATTEMPT_ID}"
+    id: "Confirm delete card 779-${ATTEMPT_ID}(, .*)?"
 - assertNotVisible: "Row Click Player ${ATTEMPT_ID}"

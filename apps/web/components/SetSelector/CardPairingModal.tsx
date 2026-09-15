@@ -2540,17 +2540,42 @@ export default function CardPairingModal({
                                 type="text"
                                 value={editDraft}
                                 onChange={(e) => setEditDraft(e.target.value)}
-                                // Named by the NUMBER, not by `label(m.card)`:
-                                // the name is what this control changes, and a
-                                // field that renames itself as you type is
-                                // re-announced mid-edit. Same reasoning as
-                                // `conflictScopeLabels`.
+                                // Named by the row's SCOPE, not by
+                                // `label(m.card)`: the name is what this
+                                // control changes, and a field that renames
+                                // itself as you type is re-announced mid-edit.
+                                // Same reasoning as `conflictScopeLabels`.
+                                //
+                                // NEO-272 — the scope, not the bare card
+                                // NUMBER it used to be. Product invariant 7:
+                                // a card number is never unique at any scope,
+                                // and on THIS screen that is not an edge case
+                                // but the premise — a card and its variations
+                                // share one number, which is the whole reason
+                                // the operator is here pairing them by hand.
+                                // `conflictScopeLabels` already computes the
+                                // stable disambiguator, and both of its forms
+                                // (`· <variation>`, or an ordinal when no
+                                // variation separates the group) sit beside
+                                // THIS field on THIS row: the number is the
+                                // static span to the left, the variation the
+                                // static span to the right. So the field now
+                                // names itself with what the operator can
+                                // actually see, and nothing name-derived —
+                                // which is what SC 2.5.3 asks for and what
+                                // keeps the label still mid-edit.
+                                //
+                                // DEGRADATION: `scope` falls back to
+                                // `#<number>` for a number carrying a single
+                                // conflict and for every row carrying none at
+                                // all, so the ordinary row's label is
+                                // byte-identical to what it has always been —
+                                // no trailing separator, nothing appended.
                                 //
                                 // "EDIT name for", not "Name for": the
                                 // radiogroup below is already `Name for
-                                // #<scope>`, and on a single-conflict row that
-                                // scope IS the bare number — so the obvious
-                                // label would put two differently-roled
+                                // <scope>` — now the very same scope — so the
+                                // obvious label would put two differently-roled
                                 // controls with one accessible name on the
                                 // same row, which is the ambiguity
                                 // `conflictScopeLabels` exists to remove. It
@@ -2559,7 +2584,7 @@ export default function CardPairingModal({
                                 // against the radiogroup in
                                 // checklist-pairing-dialog-cancel.yaml) match
                                 // two elements.
-                                aria-label={`Edit name for #${m.card.cardNumber}`}
+                                aria-label={`Edit name for ${scope}`}
                                 aria-invalid={
                                   nameError?.key === rowKey || undefined
                                 }
@@ -2672,16 +2697,32 @@ export default function CardPairingModal({
                           warning="These marketplaces name this card differently — pick the right one before it is listed."
                           radioGroupLabel={`Name for ${scope}`}
                           chosen={m.nameConflict.chosen}
+                          // NEO-272 — each pill's "which card is this
+                          // for" qualifier is the row's SCOPE, the same
+                          // one naming the group and the radiogroup
+                          // above it, and not the bare card number it
+                          // used to be. A number carrying two conflicts
+                          // is precisely the shape `conflictScopeLabels`
+                          // exists for, and the marketplaces routinely
+                          // file one name across a card and its
+                          // variation — so on that row the two BSC pills
+                          // announced one identical sentence, leaving
+                          // the operator no way to hear which card
+                          // either would rename. The scope is also the
+                          // only qualifier that can go here: everything
+                          // name-derived is the value under dispute.
+                          // Unchanged on an unambiguous number, where
+                          // the scope IS `#<number>`.
                           options={[
                             {
                               side: "bsc",
                               label: `BSC: ${m.nameConflict.bsc}`,
-                              ariaLabel: `BSC: ${m.nameConflict.bsc} — use this name for #${m.card.cardNumber}`,
+                              ariaLabel: `BSC: ${m.nameConflict.bsc} — use this name for ${scope}`,
                             },
                             {
                               side: "sportlots",
                               label: `SportLots: ${m.nameConflict.sportlots}`,
-                              ariaLabel: `SportLots: ${m.nameConflict.sportlots} — use this name for #${m.card.cardNumber}`,
+                              ariaLabel: `SportLots: ${m.nameConflict.sportlots} — use this name for ${scope}`,
                             },
                             // The operator's own name, once they have typed one
                             // that is neither marketplace's. Present on the SAME
@@ -2695,7 +2736,7 @@ export default function CardPairingModal({
                                   {
                                     side: "custom" as const,
                                     label: `Custom: ${m.nameConflict.custom}`,
-                                    ariaLabel: `Custom: ${m.nameConflict.custom} — use this name for #${m.card.cardNumber}`,
+                                    ariaLabel: `Custom: ${m.nameConflict.custom} — use this name for ${scope}`,
                                   },
                                 ]
                               : []),
@@ -2726,23 +2767,29 @@ export default function CardPairingModal({
                           warning="These marketplaces list different players on this card — pick the right ones before it is listed."
                           radioGroupLabel={`Players for ${scope}`}
                           chosen={m.playersConflict.chosen}
+                          // Scoped exactly like the name pills above,
+                          // and for the same NEO-272 reason — the two
+                          // controls on one row have to agree about what
+                          // that row is called, or the agreement
+                          // `conflictScopeLabels` bought is spent again
+                          // one level down.
                           options={[
                             {
                               side: "bsc",
                               label: `BSC: ${joinPlayers(m.playersConflict.bsc)}`,
-                              ariaLabel: `BSC: ${joinPlayers(m.playersConflict.bsc)} — use these players for #${m.card.cardNumber}`,
+                              ariaLabel: `BSC: ${joinPlayers(m.playersConflict.bsc)} — use these players for ${scope}`,
                             },
                             {
                               side: "sportlots",
                               label: `SportLots: ${joinPlayers(m.playersConflict.sportlots)}`,
-                              ariaLabel: `SportLots: ${joinPlayers(m.playersConflict.sportlots)} — use these players for #${m.card.cardNumber}`,
+                              ariaLabel: `SportLots: ${joinPlayers(m.playersConflict.sportlots)} — use these players for ${scope}`,
                             },
                             ...(m.playersConflict.custom !== undefined
                               ? [
                                   {
                                     side: "custom" as const,
                                     label: `Custom: ${joinPlayers(m.playersConflict.custom)}`,
-                                    ariaLabel: `Custom: ${joinPlayers(m.playersConflict.custom)} — use these players for #${m.card.cardNumber}`,
+                                    ariaLabel: `Custom: ${joinPlayers(m.playersConflict.custom)} — use these players for ${scope}`,
                                   },
                                 ]
                               : []),

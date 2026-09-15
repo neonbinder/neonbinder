@@ -115,12 +115,12 @@ tags:
 # settles in 2.68s, 0 centring swipes; nothing here waits on a marketplace.
 - scrollUntilVisible:
     element:
-      id: "Edit card 300"
+      id: "Edit card 300(, .*)?"
     visibilityPercentage: 50
     waitToSettleTimeoutMs: 1000
     timeout: 7000
 - tapOn:
-    id: "Edit card 300"
+    id: "Edit card 300(, .*)?"
     waitToSettleTimeoutMs: 2000
 
 # Drawer opened — confirm it's the RIGHT card before asserting the feature.

@@ -708,3 +708,126 @@ describe("NEO-214: the Set Builder admin panel and its client-callable functions
     expect(existsSync(join(__dirname, "seedTestTeams.test.ts"))).toBe(false);
   });
 });
+
+describe("NEO-277: the set-level team surface is admin-gated, and its cascade is internal", () => {
+  /**
+   * Two public functions arrived with the set-level team: the preview the
+   * confirm dialog reads and the mutation that writes and schedules the
+   * cascade. Both are admin, the gate every other set-side edit in this file
+   * carries (`setSelectorOptionFeature`, `updateCard`): a set's team is
+   * shared reference data on a globally-shared row, and the mutation can fan
+   * out to every card under a set.
+   *
+   * The cascade itself is `internalMutation`: its arguments name a subtree
+   * and a "previous value" that only the mutation knows, and a client that
+   * could call it directly could point a cascade at any set with any
+   * previous value and rewrite every card beneath it.
+   *
+   * Called with arguments that are valid but inert, so the refusal is the
+   * gate and not argument validation.
+   */
+  test.each([
+    [
+      "selectorOptions.getSelectorOptionTeamCascadePreview",
+      (t: ReturnType<typeof convexTest>, sportId: Id<"selectorOptions">) =>
+        t.query(api.selectorOptions.getSelectorOptionTeamCascadePreview, {
+          selectorOptionId: sportId,
+          teamIds: [],
+        }),
+    ],
+    [
+      "selectorOptions.setSelectorOptionTeams",
+      (t: ReturnType<typeof convexTest>, sportId: Id<"selectorOptions">) =>
+        t.mutation(api.selectorOptions.setSelectorOptionTeams, {
+          selectorOptionId: sportId,
+          teamIds: [],
+        }),
+    ],
+  ] as const)("%s refuses a signed-in non-admin and a signed-out caller", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await expect(call(t.withIdentity(SIGNED_IN), sportId)).rejects.toThrow();
+    await expect(call(t, sportId)).rejects.toThrow();
+    // Refused before any write: the row is exactly as seeded.
+    const row = await t.run(async (ctx) => ctx.db.get(sportId));
+    expect(row!.lastUpdated).toBe(1_700_000_000_000);
+    expect(row!.teamIds).toBeUndefined();
+  });
+
+  test("cascadeSelectorOptionTeams is declared internalMutation, not mutation", () => {
+    const src = readFileSync(join(__dirname, "selectorOptions.ts"), "utf8");
+    expect(src).toContain("export const cascadeSelectorOptionTeams = internalMutation({");
+    expect(src).not.toContain("export const cascadeSelectorOptionTeams = mutation(");
+  });
+});
+
+describe("NEO-279: Fill teams is admin-gated, and its reads/writes are internal", () => {
+  /**
+   * `previewTeamFill` and `applyTeamFill` are the only client-callable
+   * surface — a set-level bulk write that can touch every teamless card
+   * under a set, so it carries the same admin gate as `setSelectorOptionTeams`
+   * above. The four reads and the apply chunk are `internalQuery` /
+   * `internalMutation`: `applyTeamFillChunk` in particular takes a bare
+   * `(cardId, teamIds)` list with no re-derivation of its own, so a client
+   * that could call it directly could write any team onto any card under the
+   * guise of a fill — the whole reason `applyTeamFill` recomputes server-side
+   * instead of trusting the preview's own fills.
+   *
+   * Called against a real `setName` row with no candidates, so the refusal is
+   * the gate and not a `ConvexError` about the level or an empty plan.
+   */
+  test.each([
+    [
+      "teamFill.previewTeamFill",
+      (t: ReturnType<typeof convexTest>, setNameId: Id<"selectorOptions">) =>
+        t.action(api.teamFill.previewTeamFill, { selectorOptionId: setNameId }),
+    ],
+    [
+      "teamFill.applyTeamFill",
+      (t: ReturnType<typeof convexTest>, setNameId: Id<"selectorOptions">) =>
+        t.action(api.teamFill.applyTeamFill, { selectorOptionId: setNameId, expectedFillable: 0 }),
+    ],
+  ] as const)("%s refuses a signed-in non-admin and a signed-out caller, writing nothing", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const setNameId = await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "setName",
+        value: "2024 Topps",
+        platformData: {},
+        parentId: sportId,
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+      }),
+    );
+    const cardId = await t.run(async (ctx) =>
+      ctx.db.insert("cardChecklist", {
+        selectorOptionId: setNameId,
+        cardNumber: "1",
+        cardName: "Card 1",
+        platformData: {},
+        sortOrder: 0,
+        lastUpdated: 1_700_000_000_000,
+      }),
+    );
+
+    await expect(call(t.withIdentity(SIGNED_IN), setNameId)).rejects.toThrow();
+    await expect(call(t, setNameId)).rejects.toThrow();
+    // Refused before any write.
+    const row = await t.run(async (ctx) => ctx.db.get(cardId));
+    expect(row!.teamOnCardIds).toBeUndefined();
+  });
+
+  test.each([
+    ["listTeamFillSubtree", "internalQuery"],
+    ["readTeamFillCards", "internalQuery"],
+    ["readTeamFillPlayers", "internalQuery"],
+    ["readTeamFillTeams", "internalQuery"],
+    ["applyTeamFillChunk", "internalMutation"],
+  ])("%s is declared %s, not the public form", (fn, keyword) => {
+    const src = readFileSync(join(__dirname, "teamFill.ts"), "utf8");
+    expect(src).toContain(`export const ${fn} = ${keyword}({`);
+    const publicKeyword = keyword === "internalQuery" ? "query" : "mutation";
+    expect(src).not.toContain(`export const ${fn} = ${publicKeyword}(`);
+  });
+});

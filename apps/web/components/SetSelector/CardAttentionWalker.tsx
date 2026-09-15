@@ -293,8 +293,51 @@ export default function CardAttentionWalker({
           }
         }}
       >
-        <div className="flex w-full max-w-md flex-col rounded-lg border border-gray-700 bg-gray-900 shadow-xl">
-          <div className="border-b border-gray-700 px-6 py-4">
+        {/*
+          NEO-271 — THE WIDTH IS MEASURED OFF AN 80-CHARACTER TITLE, not
+          picked off a breakpoint.
+
+          `TitleFixer` edits a field whose budget is counted in CHARACTERS
+          (`LISTING_TITLE_MAX` is 80, and `TitleLengthMeter` prints `72/80`
+          in the label row directly above the input), so the field has to
+          show 80 of them at once. At `max-w-md` it showed about 47, and
+          editing the end of a value you cannot see, against a limit measured
+          in characters, is guesswork.
+
+          WHICH FONT THE NUMBER IS FROM. This dialog is portalled inside a
+          nested Radix `<Theme>`, whose `.radix-themes` rule sets
+          `font-family: var(--default-font-family)` — the system-UI stack,
+          NOT the app's Lexend, and nothing here overrides it. Tailwind's
+          preflight gives form controls `font: inherit`, so the title input
+          renders in whatever `system-ui` resolves to on the machine looking
+          at it. There is therefore no single font to measure, and this is
+          sized off the WIDEST candidate rather than the local one.
+
+          MEASURED with fontTools — summed glyph advances at `text-sm`
+          (14px) over a realistic worst-case title (mixed case, spaces, a `#`
+          and a card number: "2026 Bowman Chrome Prospects #BCP-100 Wyatt
+          Langford Texas Rangers Orange Wave"):
+
+            DejaVu Sans  (system-ui on the Linux CI runner)  8.07 px/char
+            Lexend 400   (the app's page font)               7.80 px/char
+            Helvetica / Arial                                7.25 px/char
+            SF Pro Text  (system-ui on macOS)                6.84 px/char
+
+          Worst case 80 × 8.07 = 646px of text. The input adds `p-1.5` plus
+          1px borders (14px) and this body adds `p-6` (48px), so the panel
+          needs 646 + 14 + 48 = 708px; 45rem (720px) is the round value above
+          it and leaves the input a 658px content box — 81 characters in
+          DejaVu Sans, 84 in Lexend, 96 in SF Pro. Do NOT tidy this into a
+          `max-w-*` bucket: `max-w-2xl` (672px) is five characters short of
+          the budget the meter promises, and `max-w-3xl` overshoots it by
+          nothing anyone can read.
+
+          It fits CI's 1024×629 viewport with 272px to spare, and `w-full`
+          keeps it viewport-width minus the overlay's `p-4` on a narrow
+          window — nothing in here carries a min-width, so it reflows.
+        */}
+        <div className="flex max-h-full w-full max-w-[45rem] flex-col rounded-lg border border-gray-700 bg-gray-900 shadow-xl">
+          <div className="shrink-0 border-b border-gray-700 px-6 py-4">
             <h2
               id="card-attention-walker-title"
               className="text-lg font-semibold text-gray-100"
@@ -317,15 +360,45 @@ export default function CardAttentionWalker({
           </div>
 
           {/*
-            A reserved minimum height, for the reason NEO-110 documents on
-            EntityReviewWizard: the overlay centres this dialog, so a body that
-            changes height moves the footer by HALF the delta, and a click
-            aimed at Skip can land on whatever rendered into those coordinates
-            instead. The body here swaps between a fixer (~250px), the
-            all-clear line (~20px) and the no-fixer notice, so the reservation
-            is what keeps Skip and Close still.
+            NEO-110 / NEO-271 — THE BODY GROWS WITH ITS CONTENT, FROM A FLOOR,
+            UNDER A VIEWPORT CAP.
+
+            The reservation, and why it survives. The overlay CENTRES this
+            dialog, so a body that changes height moves the footer by HALF the
+            delta, and a click aimed at Skip can land on whatever rendered into
+            those coordinates instead (the reason NEO-110 documents on
+            EntityReviewWizard). The body here swaps between a fixer, the
+            all-clear line (~20px) and the no-fixer notice, so a 20rem floor is
+            what keeps Skip and Close still. It is sized as the floor that
+            covers the COMMON kinds: all three registered fixers — TitleFixer
+            (with its variation field), MissingTeamFixer and
+            UnreviewedNameFixer — render under 320px at the width above, since
+            widening the dialog took wrapped lines out of every one of them. So
+            the ordinary card-to-card transition of a 120-card sitting moves
+            nothing at all, and growth past the floor is reserved for a body
+            that genuinely has more to show than the common kinds do.
+
+            What changed in NEO-271: the cap moved from `max-h-[70vh]` here to
+            `max-h-full` on the panel. `70vh` capped this body at 440px on the
+            1024×629 CI viewport while the PANEL had no cap at all — so a
+            data-heavy fixer scrolled inside the body, taking its own Save
+            button below the fold, while ~140px of viewport went spare above
+            and below the dialog. `max-h-full` resolves against the overlay's
+            content box (`inset-0` minus its `p-4`), the same idiom
+            EntityReviewWizard documents, so the body now gets every pixel that
+            is not header or footer and scrolls only when it has nowhere left
+            to go. Those two are `shrink-0`, which is what makes the shrinking
+            land HERE and keeps the header, the fixer's Save and the
+            Skip/Close footer reachable in every state.
+
+            `min(20rem,55vh)` rather than a flat 20rem: below a ~490px-tall
+            viewport the flat floor plus header and footer no longer fit
+            between the overlay's padding and the footer went off-screen.
+            min() is 20rem everywhere it fits (including CI, where 55vh is
+            346px, so the measured geometry there is unchanged) and lets the
+            FLOOR give way on a short window rather than the Close button.
           */}
-          <div className="min-h-80 max-h-[70vh] space-y-4 overflow-y-auto p-6">
+          <div className="min-h-[min(20rem,55vh)] space-y-4 overflow-y-auto p-6">
             {current && Fixer ? (
               <AttentionSportContext.Provider value={sportId}>
                 <Fixer
@@ -355,7 +428,9 @@ export default function CardAttentionWalker({
             )}
           </div>
 
-          <div className="flex items-center justify-between gap-3 border-t border-gray-700 px-6 py-4">
+          {/* `shrink-0` with the header above: the body is the only elastic
+              row, so Skip and Close never compress or leave the viewport. */}
+          <div className="flex shrink-0 items-center justify-between gap-3 border-t border-gray-700 px-6 py-4">
             <div>
               {current && (
                 <button

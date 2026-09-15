@@ -105,7 +105,7 @@ tags:
 # add/delete mutations refetch the per-worker cardChecklist live query, shifting
 # row y-coords between Maestro's lookup and tap dispatch.
 - tapOn:
-    id: "Edit card 888-${ATTEMPT_ID}"
+    id: "Edit card 888-${ATTEMPT_ID}(, .*)?"
     waitToSettleTimeoutMs: 2000
 
 # The drawer opens. The header shows "Card #888-<ATTEMPT_ID}".
@@ -256,14 +256,34 @@ tags:
 # the close below verifies.
 # ============================================================
 
-# NO scrollUntilVisible here, deliberately. The drawer is right-anchored
-# (x>=544 at 1024), so scrollUntilVisible's viewport-centre swipe drives the
-# BACKDROP, not the drawer's own scroll container — it can only ever be a
-# no-op on this panel. Print run is the row directly beneath the attribute
-# chips that were just brought into view, so it is in the same fold; if the
-# drawer's field order ever grows enough to push it out, the fix is the
-# pin-then-correct swipe pair documented in
-# checklist-title-length-limits-and-fixer.yaml, not a longer timeout.
+# NO scrollUntilVisible here, deliberately — and the reason is NOT the x
+# coordinate. THE CANONICAL NOTE FOR THIS DRAWER, which the other flows that
+# drive it point at:
+#
+#   The drawer is right-anchored, `sm:w-[45rem]` — 720px at the 1024×629 CI
+#   viewport, so x≈304–1024. NEO-272 widened it from 30rem (480px, x≈544) so
+#   that a full-budget 80-character listing title fits in the Card title field;
+#   several comments in this suite still described the old box, and this is the
+#   corrected one.
+#
+#   scrollUntilVisible cannot drive this drawer's inner scroll AT EITHER WIDTH,
+#   and the durable reason is the one README R8 case 2 gives (it names
+#   CardDetailPanel by hand): maestro-web's only scroll is `window.scroll`, and
+#   this panel is a createPortal `fixed inset-0` overlay the window never moves.
+#   Earlier comments credited the x coordinate instead — "a viewport-centre
+#   swipe at x≈512 lands on the backdrop left of the drawer" — which was true of
+#   the 480px box and is NOT true of the 720px one, while the conclusion is
+#   unchanged. Do not resurrect that reasoning from the new number.
+#
+#   What DOES drive the drawer is a `swipe` with explicit coordinates, and x=80%
+#   (819px) is inside the panel at both widths — so every in-drawer swipe in
+#   this suite still lands where it always did.
+#
+# Print run is the row directly beneath the attribute chips that were just
+# brought into view, so it is in the same fold; if the drawer's field order ever
+# grows enough to push it out, the fix is the pin-then-correct swipe pair
+# documented in checklist-title-length-limits-and-fixer.yaml, not a longer
+# timeout.
 - extendedWaitUntil:
     visible:
       id: "Print run"
@@ -308,7 +328,7 @@ tags:
 # Scroll into view before tapping its Edit button.
 - scrollUntilVisible:
     element:
-      id: "Edit card 888-${ATTEMPT_ID}"
+      id: "Edit card 888-${ATTEMPT_ID}(, .*)?"
     # No centerElement: the new card sorts to the BOTTOM of the virtualized
     # list, and centering a bottom element can't be satisfied locally (the list
     # can't scroll further to center it) — it loops until timeout. Scrolling
@@ -319,7 +339,7 @@ tags:
     waitToSettleTimeoutMs: 1000
     timeout: 7000
 - tapOn:
-    id: "Edit card 888-${ATTEMPT_ID}"
+    id: "Edit card 888-${ATTEMPT_ID}(, .*)?"
     waitToSettleTimeoutMs: 2000
 
 # Drawer reopens — wait for Card name input.
@@ -441,13 +461,13 @@ tags:
 
 - scrollUntilVisible:
     element:
-      id: "Delete card 888-${ATTEMPT_ID}"
+      id: "Delete card 888-${ATTEMPT_ID}(, .*)?"
     visibilityPercentage: 50
     waitToSettleTimeoutMs: 1000
     timeout: 7000
 - tapOn:
-    id: "Delete card 888-${ATTEMPT_ID}"
+    id: "Delete card 888-${ATTEMPT_ID}(, .*)?"
 - assertVisible: "Confirm?"
 - tapOn:
-    id: "Confirm delete card 888-${ATTEMPT_ID}"
+    id: "Confirm delete card 888-${ATTEMPT_ID}(, .*)?"
 - assertNotVisible: "Renamed Detail Player ${ATTEMPT_ID}"

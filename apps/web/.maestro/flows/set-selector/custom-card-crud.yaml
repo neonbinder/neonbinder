@@ -67,14 +67,14 @@ tags:
 - assertVisible: "#999-${ATTEMPT_ID}"
 - assertVisible: "CRUDName-${ATTEMPT_ID}"
 - assertVisible:
-    id: "Edit card 999-${ATTEMPT_ID}"
+    id: "Edit card 999-${ATTEMPT_ID}(, .*)?"
 
 # ════════════════════════════════════════════════════════════════════════════
 # EDIT: rename the Card name; the new name sticks and the old card name is gone.
 # The Player name ("Test Player ${ATTEMPT_ID}") is unchanged and stays visible.
 # ════════════════════════════════════════════════════════════════════════════
 - tapOn:
-    id: "Edit card 999-${ATTEMPT_ID}"
+    id: "Edit card 999-${ATTEMPT_ID}(, .*)?"
     waitToSettleTimeoutMs: 2000
 - extendedWaitUntil:
     visible:
@@ -113,12 +113,12 @@ tags:
 # ════════════════════════════════════════════════════════════════════════════
 - scrollUntilVisible:
     element:
-      id: "Delete card 999-${ATTEMPT_ID}"
+      id: "Delete card 999-${ATTEMPT_ID}(, .*)?"
     centerElement: true
     timeout: 7000
 - tapOn:
-    id: "Delete card 999-${ATTEMPT_ID}"
+    id: "Delete card 999-${ATTEMPT_ID}(, .*)?"
 - assertVisible: "Confirm?"
 - tapOn:
-    id: "Confirm delete card 999-${ATTEMPT_ID}"
+    id: "Confirm delete card 999-${ATTEMPT_ID}(, .*)?"
 - assertNotVisible: "Renamed-${ATTEMPT_ID}"

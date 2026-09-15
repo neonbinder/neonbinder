@@ -114,6 +114,34 @@ describe("TitleFixer (NEO-101)", () => {
     await waitFor(() => expect(document.activeElement).toBe(titleField()));
   });
 
+  it("holds a whole 72/80 auto-generated title, and fills whatever width the dialog gives it", () => {
+    /**
+     * NEO-271 — the ticket's own case: a 72-character auto-generated title
+     * with the meter reading `72/80`.
+     *
+     * Two things are pinned, and neither of them is a pixel (happy-dom
+     * computes no layout): the field holds the WHOLE value — nothing caps or
+     * clips it on the way in, which is why there is deliberately no
+     * `maxLength` on the input — and it is `w-full`, so the width the walker's
+     * chrome reserves for 80 characters actually reaches the field rather than
+     * stopping at some intrinsic input size. The reserved width itself, and
+     * the font measurement behind it, are pinned in
+     * CardAttentionWalker.test.tsx, where that chrome lives.
+     */
+    const title = "2026 Bowman Chrome Prospects #BCP-100 Wyatt Langford Orange Wave Auto SP";
+    expect(title).toHaveLength(72);
+    renderFixer([truncated()], makeRow({ listingTitle: title }));
+
+    expect(titleField().value).toBe(title);
+    expect(titleField().hasAttribute("maxLength")).toBe(false);
+    expect(titleField().className).toContain("w-full");
+    expect(screen.getByText("72/80")).toBeTruthy();
+    // 72 is past the search-clip band but inside the cap, so it warns and Save
+    // stays live — there is nothing to "fix" except seeing the whole value.
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(saveButton().getAttribute("aria-disabled")).toBeNull();
+  });
+
   it("refuses to save over the cap and keeps the reason reachable", async () => {
     renderFixer([overLimit(84)], makeRow({ listingTitle: "z".repeat(84) }));
 

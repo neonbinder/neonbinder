@@ -119,7 +119,20 @@ import {
 import { findSportForSelectorOption } from "./cardChecklist";
 // NEO-254: the set's year — the evidence that turns "two same-name players"
 // back into one. See convex/lib/selectorAncestry.ts.
-import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
+import {
+  collectDescendantIds,
+  findSetYearForSelectorOption,
+} from "./lib/selectorAncestry";
+// NEO-277: the set-level team rules — copy-down at creation, and the
+// equal-to-previous cascade the edit path and its preview both apply.
+import {
+  cardTeamFollowOutcome,
+  cardTeamFollowVerdict,
+  defaultTeamOnCardIds,
+  inheritedTeamIds,
+  sameTeamSet,
+  teamFollowVerdict,
+} from "./lib/selectorTeams";
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "./features/cardAttention";
 import {
   createCardYearTeamCache,
@@ -862,6 +875,9 @@ export const getAncestorChain = query({
       // inheritance merge, SetFeaturesPanel) can resolve effective values
       // without a second round-trip.
       features: featuresValidator,
+      // NEO-277: the set-level team, so a caller holding the chain can show
+      // where a card's default team comes from. Derived from the schema.
+      teamIds: selectorOptionFields.teamIds,
     }),
   ),
   handler: async (ctx, args) => {
@@ -888,6 +904,7 @@ export const getAncestorChain = query({
         isBase?: boolean;
       };
       features?: Record<string, string>;
+      teamIds?: Array<Id<"teams">>;
     }> = [];
     let currentId: Id<"selectorOptions"> | undefined = args.id;
 
@@ -903,6 +920,7 @@ export const getAncestorChain = query({
         platformFacets: option.platformFacets,
         metadata: option.metadata,
         features: option.features,
+        teamIds: option.teamIds,
       });
       currentId = option.parentId;
     }
@@ -1640,9 +1658,13 @@ export const storeSelectorOptions = mutation({
     // already-complete `features` snapshot once and copy it onto every
     // fresh insert below (write-once feature snapshots: see
     // deriveOwnLevelFeatures in convex/features/deriveCardFeatures.ts).
-    const parentFeatures: Record<string, string> | undefined = parentId
-      ? (await ctx.db.get(parentId))?.features
-      : undefined;
+    const parentRowForCopyDown = parentId ? await ctx.db.get(parentId) : null;
+    const parentFeatures: Record<string, string> | undefined =
+      parentRowForCopyDown?.features;
+    // NEO-277: the parent's set-level team, copied onto every fresh insert
+    // below exactly as `features` is — once, at creation. Never re-applied to
+    // a row that already exists (see schema.ts `teamIds`).
+    const parentTeamIds = inheritedTeamIds(parentRowForCopyDown);
 
     // The sibling snapshot. This is the ONLY set of rows this call may touch —
     // tier 0's client-supplied ids are resolved against it rather than through
@@ -1990,6 +2012,7 @@ export const storeSelectorOptions = mutation({
         children: [],
         ...(insertMetadata ? { metadata: insertMetadata } : {}),
         ...(Object.keys(features).length > 0 ? { features } : {}),
+        ...(parentTeamIds ? { teamIds: parentTeamIds } : {}),
         ...(sportConfig ? { sportConfig } : {}),
         lastUpdated: Date.now(),
       });
@@ -2477,6 +2500,9 @@ export const addCustomSelectorOption = mutation({
     // `base` variant id by the sync, or by an operator through
     // `setBaseVariantType`. Deriving it from the name is exactly the
     // name-keyed behaviour this ticket removes.
+    // NEO-277: the parent's set-level team comes down with the features —
+    // once, here, at creation (see schema.ts `teamIds`).
+    const parentTeamIds = inheritedTeamIds(parent);
     const id = await ctx.db.insert("selectorOptions", {
       level,
       value,
@@ -2485,6 +2511,7 @@ export const addCustomSelectorOption = mutation({
       children: [],
       createdByUserId: userId,
       ...(Object.keys(features).length > 0 ? { features } : {}),
+      ...(parentTeamIds ? { teamIds: parentTeamIds } : {}),
       lastUpdated: Date.now(),
     });
 
@@ -3594,9 +3621,11 @@ export const renameSelectorOption = mutation({
  * expectations for an appended custom slot.
  */
 /**
- * Walk a selectorOptions node's parent chain ONCE, collecting the two ancestor
- * display values listing generation needs: the setName ("Chrome") and the
- * sport ("Baseball").
+ * Walk a selectorOptions node's parent chain ONCE, collecting everything
+ * listing generation needs from above the card: the setName display value
+ * ("Chrome"), the sport display value ("Baseball"), and — NEO-272 — whether NB
+ * has identified the brand of the set at all (a ROLE off
+ * `metadata.isBrandUnknown` on the manufacturer in between, never its name).
  *
  * NEO-101 widened this from `findSetNameValue`, which returned early at the
  * setName level. The sport node sits ABOVE setName, so a second helper would
@@ -3614,8 +3643,16 @@ export const renameSelectorOption = mutation({
 async function findAncestorLabels(
   ctx: { db: { get: (id: Id<"selectorOptions">) => Promise<any> } },
   node: any,
-): Promise<{ setName?: string; sport?: string }> {
-  const labels: { setName?: string; sport?: string } = {};
+): Promise<{
+  setName?: string;
+  sport?: string;
+  manufacturerBrandUnknown?: boolean;
+}> {
+  const labels: {
+    setName?: string;
+    sport?: string;
+    manufacturerBrandUnknown?: boolean;
+  } = {};
   if (!node) return labels;
   let current = node;
   let depth = 0;
@@ -3623,9 +3660,30 @@ async function findAncestorLabels(
     if (current.level === "setName" && labels.setName === undefined) {
       labels.setName = current.value;
     }
+    // NEO-272 — the manufacturer ROLE, not its name. Picked up on the way past
+    // rather than by a walk of its own: the chain is
+    // sport › year › manufacturer › setName › …, so walking UP from a card's
+    // parent reaches the manufacturer AFTER setName and BEFORE sport, and the
+    // break below waits for sport. Every chain that has a manufacturer level
+    // therefore passes through it before this loop can stop.
+    if (
+      current.level === "manufacturer" &&
+      labels.manufacturerBrandUnknown === undefined
+    ) {
+      labels.manufacturerBrandUnknown =
+        current.metadata?.isBrandUnknown === true;
+    }
     if (current.level === "sport" && labels.sport === undefined) {
       labels.sport = current.value;
     }
+    // Deliberately NOT extended with `manufacturerBrandUnknown`. A chain with
+    // no manufacturer level at all — a setName hung straight off a sport, which
+    // is what most fixtures and some hand-built trees look like — would then
+    // never satisfy the condition and would walk to the depth cap, paying extra
+    // reads on every card previewed or hand-added to buy nothing. The value is
+    // already collected above by the time sport is reached, so stopping here
+    // loses nothing; leaving it absent is the same "no manufacturer role" answer
+    // as `false`, which is exactly how the generator reads it.
     if (labels.setName !== undefined && labels.sport !== undefined) break;
     const parentId: Id<"selectorOptions"> | undefined = current.parentId;
     if (!parentId) break;
@@ -3856,11 +3914,26 @@ function boundPendingNames(names: string[], limit: number): string[] {
  * The returned `names` are the rows this function already read, so a caller
  * that needs display names (the listing-title generator) does not read them a
  * second time. Order matches `ids`.
+ *
+ * `noun` is the thing the operator is editing, for the refusal sentences:
+ * `"card"` (the default, every card-level caller) or `"set"` (NEO-277's
+ * set-level team, at every set-side level — a variant, insert or parallel
+ * is still "the set" to the person picking a team on it). Same bound, same
+ * checks; only the sentence names what they were editing.
  */
+type TeamWriteNoun = "card" | "set";
+
+/** The over-the-bound refusal, shared with the NEO-277 preview so the dialog
+ * and the mutation say the same sentence. */
+function tooManyTeamsMessage(noun: TeamWriteNoun): string {
+  return `A ${noun} can carry at most ${MAX_CARD_TEAMS} teams.`;
+}
+
 async function resolveTeamOnCardIdsForWrite(
   ctx: QueryCtx,
   selectorOptionId: Id<"selectorOptions">,
   requested: ReadonlyArray<Id<"teams">>,
+  noun: TeamWriteNoun = "card",
 ): Promise<{ ids: Array<Id<"teams">>; names: string[] }> {
   const ids: Array<Id<"teams">> = [];
   const seen = new Set<string>();
@@ -3870,9 +3943,7 @@ async function resolveTeamOnCardIdsForWrite(
     ids.push(teamId);
   }
   if (ids.length > MAX_CARD_TEAMS) {
-    throw new ConvexError(
-      `A card can carry at most ${MAX_CARD_TEAMS} teams.`,
-    );
+    throw new ConvexError(tooManyTeamsMessage(noun));
   }
   if (ids.length === 0) return { ids, names: [] };
 
@@ -3894,7 +3965,7 @@ async function resolveTeamOnCardIdsForWrite(
     // edit into a hard failure.
     if (sportId && team.sportId !== sportId) {
       throw new ConvexError(
-        `"${teamFullName(team)}" is not a team in this card's sport.`,
+        `"${teamFullName(team)}" is not a team in this ${noun}'s sport.`,
       );
     }
     // NEO-236: the FULL name — "San Diego Padres", not "Padres". These names
@@ -4134,6 +4205,29 @@ export const addCustomCard = mutation({
     // (the current SPA sends ids only, an old bundle names only).
     const pendingPlayerNames = hasLinkedPlayers ? undefined : typedPlayerNames;
 
+    // NEO-71-74: the selectorOption node this card lives under already
+    // carries a complete, self-contained `features` snapshot (copy-down
+    // happens once, at that node's own creation — see storeSelectorOptions/
+    // addCustomSelectorOption/storeReconciledOptions). No ancestor walk
+    // needed: a single read of this one node is the full resolved
+    // inheritance. Read HERE, ahead of the team resolution, because NEO-277
+    // reads the same row for the set-level team.
+    const parentNode = await ctx.db.get(args.selectorOptionId);
+
+    // NEO-277 — a card added with no team of its own is born with the leaf's
+    // set-level team. A picker value, or a typed name from an old bundle, is
+    // the card's own answer and wins; see `defaultTeamOnCardIds`. The default
+    // goes through the SAME validation as a picked team below, so a set-level
+    // id that no longer resolves is refused rather than quietly written.
+    const requestedTeamIds =
+      defaultTeamOnCardIds(
+        {
+          teamOnCardIds: args.teamOnCardIds,
+          pendingTeamNames: typedTeamNames,
+        },
+        parentNode,
+      ).ids ?? [];
+
     // NEO-208 — validated BEFORE anything is written, so a bad id (unknown,
     // wrong sport, over the cap) leaves no half-created card behind. The
     // returned names are the rows this already read; the listing title below
@@ -4142,7 +4236,7 @@ export const addCustomCard = mutation({
       await resolveTeamOnCardIdsForWrite(
         ctx,
         args.selectorOptionId,
-        args.teamOnCardIds ?? [],
+        requestedTeamIds,
       );
     const hasLinkedTeams = teamOnCardIds.length > 0;
 
@@ -4154,14 +4248,9 @@ export const addCustomCard = mutation({
     // future caller from producing a row that says its team twice.
     const pendingTeamNames = hasLinkedTeams ? undefined : typedTeamNames;
 
-    // NEO-71-74: the selectorOption node this card lives under already
-    // carries a complete, self-contained `features` snapshot (copy-down
-    // happens once, at that node's own creation — see storeSelectorOptions/
-    // addCustomSelectorOption/storeReconciledOptions). No ancestor walk
-    // needed: a single read of this one node is the full resolved
+    // NEO-71-74: `parentNode` (read above) is the full resolved feature
     // inheritance. Precedence = that snapshot < card-observed facts (a fact
     // seen on THIS card, e.g. it's a rookie, wins).
-    const parentNode = await ctx.db.get(args.selectorOptionId);
     const inheritedFeatures: Record<string, string> = parentNode?.features ?? {};
     const mergedFeatures: Record<string, string> = {
       ...inheritedFeatures,
@@ -4182,8 +4271,11 @@ export const addCustomCard = mutation({
     // confirmed, via commitCardChecklist), but the operator typed a real name,
     // so it's the right thing to show regardless of reconciliation state.
     // Either way the title says what the operator meant.
-    const { setName: setNameValue, sport: sportValue } =
-      await findAncestorLabels(ctx, parentNode);
+    const {
+      setName: setNameValue,
+      sport: sportValue,
+      manufacturerBrandUnknown,
+    } = await findAncestorLabels(ctx, parentNode);
     const listingInputs: ListingCardInputs = {
       cardNumber: args.cardNumber,
       /*
@@ -4200,6 +4292,13 @@ export const addCustomCard = mutation({
       playerNames: hasLinkedPlayers ? linkedPlayerNames : pendingPlayerNames,
       year: mergedFeatures.season,
       manufacturer: mergedFeatures.manufacturer,
+      // NEO-272: the ancestor manufacturer row's NB ROLE. When NB has not
+      // identified the set's brand — the set hangs off the marketplace's
+      // all-brands filter option — the generator drops the manufacturer
+      // entirely, see `manufacturerAndSetTokens`. The name above is still
+      // passed, and still stored on the row's `features`; only the title and
+      // description skip it.
+      manufacturerBrandUnknown,
       setName: setNameValue,
       parallelName: mergedFeatures.parallelName,
       isRookie: (args.attributes ?? []).includes("RC"),
@@ -4655,6 +4754,11 @@ export const previewListingTitle = query({
       playerNames: v.array(v.string()),
       year: v.optional(v.string()),
       manufacturer: v.optional(v.string()),
+      // NEO-272: reaches the client so the operator-facing "Maker" source chip
+      // can be suppressed for a set whose brand NB has not identified. The
+      // chips exist to show WHICH facts the machine used, so a chip for a token
+      // the generator dropped would be a lie.
+      manufacturerBrandUnknown: v.optional(v.boolean()),
       setName: v.optional(v.string()),
       parallelName: v.optional(v.string()),
       isRookie: v.optional(v.boolean()),
@@ -4727,14 +4831,20 @@ export const previewListingTitle = query({
 
     const features: Record<string, string> = card.features ?? {};
     const parentNode = await ctx.db.get(card.selectorOptionId);
-    const { setName: setNameValue, sport: sportValue } =
-      await findAncestorLabels(ctx, parentNode);
+    const {
+      setName: setNameValue,
+      sport: sportValue,
+      manufacturerBrandUnknown,
+    } = await findAncestorLabels(ctx, parentNode);
 
     const inputs: ListingCardInputs = {
       cardNumber: card.cardNumber,
       playerNames,
       year: features.season,
       manufacturer: features.manufacturer,
+      // NEO-272: same ROLE the insert branches read, from the same walk, so a
+      // regenerated title cannot disagree with the one creation wrote.
+      manufacturerBrandUnknown,
       setName: setNameValue,
       parallelName: features.parallelName,
       isRookie: card.isRookie,
@@ -5107,41 +5217,9 @@ export const getCrossListingsForCard = query({
 //   the existing pattern from `applyParallelGroupings` / reconciliation
 //   code.
 
-/**
- * Walks the children pointer-graph rooted at `rootId` and returns every
- * descendant selectorOption id (NOT including the root). Used by the
- * propagation engine to find every leaf whose cardChecklist rows need to
- * be considered for write-through.
- *
- * Bounded by Convex's 4096-read limit — each node is one ctx.db.get. Real
- * trees max out around (sport=1) * (year≈30) * (manufacturer≈10) *
- * (setName≈5) * (variantType≈3) * (insert≈20) * (parallel≈5) ≈ a few
- * thousand nodes worst case, but most propagation targets a single set or
- * variantType (≪ 100 descendants).
- */
-async function collectDescendantIds(
-  ctx: { db: { get: (id: Id<"selectorOptions">) => Promise<unknown> } },
-  rootId: Id<"selectorOptions">,
-): Promise<Array<Id<"selectorOptions">>> {
-  const out: Array<Id<"selectorOptions">> = [];
-  const stack: Array<Id<"selectorOptions">> = [rootId];
-  const seen = new Set<string>([rootId]);
-  while (stack.length > 0) {
-    const id = stack.pop()!;
-    const row = (await ctx.db.get(id)) as
-      | { children?: Array<Id<"selectorOptions">> }
-      | null;
-    if (!row?.children) continue;
-    for (const childId of row.children) {
-      const key = childId as unknown as string;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push(childId);
-      stack.push(childId);
-    }
-  }
-  return out;
-}
+// `collectDescendantIds` lives in ./lib/selectorAncestry since NEO-279, so the
+// team-fill planner can walk the same subtree the cascade and feature
+// propagation walk without importing this module.
 
 
 /**
@@ -5316,6 +5394,409 @@ export const setSelectorOptionFeature = mutation({
       features: applyFeatureEdit(row.features, args.key, args.value),
       lastUpdated: Date.now(),
     });
+    return null;
+  },
+});
+
+// ===========================================================================
+// NEO-277 — Team as a set-level attribute
+// ===========================================================================
+//
+// `selectorOptions.teamIds` is picked once on a set-side row and carried down
+// to every card beneath it. The rules — copy-down at creation, the NEO-24
+// "equal-to-previous follows" cascade on edit, clear-touches-nothing — are
+// spelled out on the field in schema.ts and decided by the pure functions in
+// convex/lib/selectorTeams.ts. This block is the WRITE path and the preview
+// the confirm dialog shows before it.
+//
+// Why the cascade is scheduled and chunked rather than inline, unlike
+// `materializeSelectorOptionFeature` above: that engine runs in the calling
+// transaction and is bounded only by the tree it happens to be pointed at.
+// A setName with twenty inserts of five parallels is a hundred leaves, and a
+// team set's cards live under most of them; one transaction walking all of
+// that is exactly the read-budget failure `commitCardChecklist` had to be
+// split into chunks to escape. So the mutation patches the ONE row the
+// operator edited and hands the subtree to `cascadeSelectorOptionTeams`,
+// which pages cards through `by_selector_option` a bounded page at a time and
+// reschedules itself until every node in the subtree is done — the same
+// self-rescheduling shape as `processBscTeamEnrichmentQueue`.
+
+/**
+ * The levels a set-level team may be picked at. A sport, a year or a brand
+ * is not a set, and a cascade rooted there would walk every set beneath it;
+ * the panel hides the row at those levels and this is the server's half of
+ * the same decision.
+ */
+const TEAM_EDITABLE_LEVELS: ReadonlySet<Level> = new Set<Level>([
+  "setName",
+  "variantType",
+  "insert",
+  "parallel",
+]);
+
+/**
+ * Cards examined per cascade invocation. Each is one read and at most one
+ * patch, so 200 keeps an invocation an order of magnitude inside the mutation
+ * read budget even after the first invocation's descendant walk.
+ */
+const TEAM_CASCADE_CARD_PAGE = 200;
+
+/**
+ * Cards the preview examines before it gives up counting. A confirm dialog
+ * wants a number, not a walk of the whole catalogue; past this it says
+ * "more than" and the cascade, which pages, does the real work.
+ */
+const TEAM_CASCADE_PREVIEW_CARD_CAP = 2000;
+
+/**
+ * How long a `teamCascadeStartedAt` stamp is believed. A cascade over even a
+ * very large set finishes in seconds — each invocation is one `runAfter(0)`
+ * behind the last — so a stamp this old marks a cascade that died (a failed
+ * chunk, a deploy mid-run), and the next edit overwrites it rather than
+ * leaving the set locked. See the field in schema.ts.
+ */
+const TEAM_CASCADE_STALE_MS = 10 * 60 * 1000;
+
+/**
+ * The server's half of the "is this a set?" decision, shared by the mutation
+ * and its preview so the dialog can never count a cascade the write would
+ * refuse. Throws the operator-facing sentence; returns the row.
+ */
+async function requireTeamEditableRow(
+  ctx: QueryCtx,
+  selectorOptionId: Id<"selectorOptions">,
+): Promise<Doc<"selectorOptions">> {
+  const row = await ctx.db.get(selectorOptionId);
+  if (!row) {
+    throw new ConvexError("That row is gone. Refresh and try again.");
+  }
+  if (!TEAM_EDITABLE_LEVELS.has(row.level)) {
+    throw new ConvexError(
+      "Pick the team on the set, not on the sport, year or manufacturer.",
+    );
+  }
+  return row;
+}
+
+/**
+ * NEO-277 — what `setSelectorOptionTeams` WOULD change, for the confirm
+ * dialog. Applies the same verdicts the cascade applies, against the node's
+ * CURRENT `teamIds` as "previous" and `args.teamIds` as "new", and writes
+ * nothing. Refuses exactly what the mutation refuses — a row above
+ * `TEAM_EDITABLE_LEVELS`, more than `MAX_CARD_TEAMS` distinct ids — with the
+ * same sentence, and before walking anything, so the dialog never shows a
+ * count for a write that would be turned away.
+ *
+ *  - `nodesFollowing`: descendant selectorOptions rows that would take the
+ *    new team.
+ *  - `cardsFollowing`: cards under the node and every descendant that would
+ *    take it.
+ *  - `cardsStaying`: cards that would NOT — the sum of the three below.
+ *  - `cardsOverridden`: cards carrying a DIFFERENT team (neither empty nor
+ *    what the node carries now).
+ *  - `cardsTeamless`: cards an operator confirmed carry no team.
+ *  - `cardsPendingName`: cards carrying a typed or synced team name nobody
+ *    has resolved yet.
+ *  - `cardsCarryingCurrent`: cards set-equal to the node's CURRENT `teamIds`
+ *    — what a clear would leave behind, since a clear touches no card. 0 when
+ *    the node has no set-level team.
+ *  - `truncated`: counting stopped at `TEAM_CASCADE_PREVIEW_CARD_CAP`; the
+ *    counts are a floor.
+ *
+ * A card already carrying the new team counts as neither following nor
+ * staying. An empty `args.teamIds` is a CLEAR, which cascades to nothing:
+ * following and staying are all 0 and only `cardsCarryingCurrent` is
+ * counted, so the dialog can say how many cards keep the team the set is
+ * about to stop defaulting.
+ */
+export const getSelectorOptionTeamCascadePreview = query({
+  args: {
+    selectorOptionId: v.id("selectorOptions"),
+    teamIds: v.array(v.id("teams")),
+  },
+  returns: v.object({
+    nodesFollowing: v.number(),
+    cardsFollowing: v.number(),
+    cardsStaying: v.number(),
+    cardsOverridden: v.number(),
+    cardsTeamless: v.number(),
+    cardsPendingName: v.number(),
+    cardsCarryingCurrent: v.number(),
+    truncated: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    const row = await requireTeamEditableRow(ctx, args.selectorOptionId);
+    // Deduped the way the mutation dedupes, so the preview compares the same
+    // set the write will store; a client that double-submits a chip must not
+    // see a different answer here than it gets there.
+    const next = [...new Set(args.teamIds)];
+    if (next.length > MAX_CARD_TEAMS) {
+      throw new ConvexError(tooManyTeamsMessage("set"));
+    }
+    const isClear = next.length === 0;
+    const current = row.teamIds ?? [];
+    const hasCurrent = current.length > 0;
+
+    const descendantIds = await collectDescendantIds(ctx, row._id);
+    let nodesFollowing = 0;
+    if (!isClear) {
+      for (const id of descendantIds) {
+        const node = await ctx.db.get(id);
+        if (!node) continue;
+        if (teamFollowVerdict(node.teamIds, current, next) === "follow") {
+          nodesFollowing += 1;
+        }
+      }
+    }
+
+    let cardsFollowing = 0;
+    let cardsOverridden = 0;
+    let cardsTeamless = 0;
+    let cardsPendingName = 0;
+    let cardsCarryingCurrent = 0;
+    let truncated = false;
+    let examined = 0;
+    for (const nodeId of [row._id, ...descendantIds]) {
+      const remaining = TEAM_CASCADE_PREVIEW_CARD_CAP - examined;
+      if (remaining <= 0) {
+        truncated = true;
+        break;
+      }
+      // One over the budget, so "exactly at the cap" and "past the cap" are
+      // told apart without a second read.
+      const rows = await ctx.db
+        .query("cardChecklist")
+        .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", nodeId))
+        .take(remaining + 1);
+      const page = rows.length > remaining ? rows.slice(0, remaining) : rows;
+      if (rows.length > remaining) truncated = true;
+      examined += page.length;
+      for (const card of page) {
+        if (hasCurrent && sameTeamSet(card.teamOnCardIds, current)) {
+          cardsCarryingCurrent += 1;
+        }
+        if (isClear) continue;
+        const outcome = cardTeamFollowOutcome(card, current, next);
+        if (outcome.verdict === "follow") cardsFollowing += 1;
+        else if (outcome.verdict === "stay") {
+          if (outcome.reason === "teamless") cardsTeamless += 1;
+          else if (outcome.reason === "pendingName") cardsPendingName += 1;
+          else cardsOverridden += 1;
+        }
+      }
+      if (truncated) break;
+    }
+
+    return {
+      nodesFollowing,
+      cardsFollowing,
+      cardsStaying: cardsOverridden + cardsTeamless + cardsPendingName,
+      cardsOverridden,
+      cardsTeamless,
+      cardsPendingName,
+      cardsCarryingCurrent,
+      truncated,
+    };
+  },
+});
+
+/**
+ * NEO-277 — set (or clear) a row's set-level team.
+ *
+ * Validates the ids through `resolveTeamOnCardIdsForWrite`, the same gate
+ * every card-level team write goes through, so a set-level team is exactly as
+ * bounded, deduped and sport-checked as a card's. Patches THIS row only, then:
+ *
+ *  - a non-empty value stamps `teamCascadeStartedAt` and schedules
+ *    `cascadeSelectorOptionTeams` for the subtree, carrying what the row held
+ *    before (`previousTeamIds`) so descendants that were inheriting keep
+ *    inheriting and overrides stay;
+ *  - an empty value (a clear) removes the field and schedules NOTHING. A clear
+ *    means "stop defaulting"; it never un-teams a card.
+ *
+ * Refused while the LAST edit's cascade is still running (a fresh
+ * `teamCascadeStartedAt`, see schema.ts): a second value, or a clear, landing
+ * between that cascade's chunks would race it card by card. A stamp older
+ * than `TEAM_CASCADE_STALE_MS` is a cascade that died and is overwritten.
+ *
+ * Every refusal is a `ConvexError` carrying a sentence for a person (see
+ * `lib/errors/user-facing-message.ts`).
+ */
+export const setSelectorOptionTeams = mutation({
+  args: {
+    selectorOptionId: v.id("selectorOptions"),
+    teamIds: v.array(v.id("teams")),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    const row = await requireTeamEditableRow(ctx, args.selectorOptionId);
+    const now = Date.now();
+    if (
+      row.teamCascadeStartedAt !== undefined &&
+      now - row.teamCascadeStartedAt < TEAM_CASCADE_STALE_MS
+    ) {
+      throw new ConvexError(
+        "Still applying the last team change. Try again in a moment.",
+      );
+    }
+    const { ids } = await resolveTeamOnCardIdsForWrite(
+      ctx,
+      row._id,
+      args.teamIds,
+      "set",
+    );
+    const previousTeamIds = row.teamIds ?? [];
+
+    await ctx.db.patch(row._id, {
+      // An empty array is never stored — absent IS "no set-level team".
+      teamIds: ids.length > 0 ? ids : undefined,
+      // Stamped only when a cascade is actually scheduled; a clear schedules
+      // nothing, and also wipes a stale stamp it was allowed past.
+      teamCascadeStartedAt: ids.length > 0 ? now : undefined,
+      lastUpdated: now,
+    });
+
+    if (ids.length > 0) {
+      await ctx.scheduler.runAfter(
+        0,
+        internal.selectorOptions.cascadeSelectorOptionTeams,
+        { rootId: row._id, previousTeamIds, teamIds: ids, startedAt: now },
+      );
+    }
+    return null;
+  },
+});
+
+/**
+ * NEO-277 — the chunked, self-rescheduling cascade behind
+ * `setSelectorOptionTeams`. Internal: the only caller is that mutation, and
+ * the arguments name a subtree and a previous value that only it knows.
+ *
+ * First invocation (no `nodeIds`): walks the subtree once, patches every
+ * descendant NODE that follows (same verdict as cards, minus the card-only
+ * reasons to stay), and fixes the node list for the rest of the run — a node
+ * created after this point inherits the new value from its parent at creation
+ * anyway. Every invocation then pages cards node by node through
+ * `by_selector_option`, patching those that follow, until it has examined
+ * `TEAM_CASCADE_CARD_PAGE` cards, and reschedules itself with the cursor if
+ * any node is left. The FINAL invocation — nothing left to reschedule —
+ * removes the root's `teamCascadeStartedAt`, which is what lets the next
+ * edit through.
+ *
+ * Cards are patched with `ctx.db.patch` DIRECTLY, never through `updateCard`:
+ * that mutation clears `teamNoneConfirmedAt` on a non-empty write, and a card
+ * an operator confirmed teamless must not be reached at all (it is `"stay"`
+ * before its ids are even looked at — see `cardTeamFollowVerdict`).
+ * `teamCheckDoneAt` is untouched for the same reason it is everywhere else:
+ * it records that the BSC lookup ran, which is still true.
+ *
+ * Two cascades in flight over one subtree cannot happen through the mutation
+ * any more (the `teamCascadeStartedAt` guard), but the rule that made it safe
+ * still holds and is worth keeping in mind for the stale-stamp case: they
+ * converge on the LATER value whichever visits a card first, because the
+ * later one's `previousTeamIds` is the earlier one's `teamIds`. `startedAt`
+ * is the stamp this run was scheduled under, so a run allowed past a stale
+ * stamp does not have its own stamp removed by the dead run it replaced,
+ * should that one turn out to be merely slow.
+ */
+export const cascadeSelectorOptionTeams = internalMutation({
+  args: {
+    rootId: v.id("selectorOptions"),
+    previousTeamIds: v.array(v.id("teams")),
+    teamIds: v.array(v.id("teams")),
+    // The `teamCascadeStartedAt` this run was scheduled under; the final
+    // invocation removes the root's stamp only if it is still this one.
+    startedAt: v.optional(v.number()),
+    // Walk state, absent on the first invocation.
+    nodeIds: v.optional(v.array(v.id("selectorOptions"))),
+    nodeIndex: v.optional(v.number()),
+    // The `_creationTime` of the last card examined under `nodeIds[nodeIndex]`.
+    // A hand-rolled cursor rather than `.paginate()`, because Convex allows ONE
+    // paginated query per function execution and an invocation walks several
+    // small nodes; `_creationTime` is the index's implicit last column and is
+    // unique within a table, so "strictly after it" is an exact resume point.
+    cursor: v.optional(v.number()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const next = args.teamIds;
+    if (next.length === 0) return null; // a clear never cascades
+    const previous = args.previousTeamIds;
+
+    let nodeIds = args.nodeIds;
+    if (!nodeIds) {
+      const descendantIds = await collectDescendantIds(ctx, args.rootId);
+      for (const id of descendantIds) {
+        const node = await ctx.db.get(id);
+        if (!node) continue;
+        if (teamFollowVerdict(node.teamIds, previous, next) === "follow") {
+          await ctx.db.patch(id, { teamIds: [...next], lastUpdated: Date.now() });
+        }
+      }
+      nodeIds = [args.rootId, ...descendantIds];
+    }
+
+    let nodeIndex = args.nodeIndex ?? 0;
+    let cursor: number | undefined = args.cursor;
+    let budget = TEAM_CASCADE_CARD_PAGE;
+    while (nodeIndex < nodeIds.length && budget > 0) {
+      const nodeId = nodeIds[nodeIndex];
+      const after = cursor;
+      const requested = budget;
+      const rows = await ctx.db
+        .query("cardChecklist")
+        .withIndex("by_selector_option", (q) =>
+          after === undefined
+            ? q.eq("selectorOptionId", nodeId)
+            : q.eq("selectorOptionId", nodeId).gt("_creationTime", after),
+        )
+        .take(requested);
+      for (const card of rows) {
+        budget -= 1;
+        if (cardTeamFollowVerdict(card, previous, next) !== "follow") continue;
+        await ctx.db.patch(card._id, {
+          teamOnCardIds: [...next],
+          lastUpdated: Date.now(),
+        });
+      }
+      if (rows.length < requested) {
+        // This node is exhausted; on to the next with a fresh cursor.
+        nodeIndex += 1;
+        cursor = undefined;
+      } else {
+        cursor = rows[rows.length - 1]._creationTime;
+      }
+    }
+
+    if (nodeIndex < nodeIds.length) {
+      await ctx.scheduler.runAfter(
+        0,
+        internal.selectorOptions.cascadeSelectorOptionTeams,
+        {
+          rootId: args.rootId,
+          previousTeamIds: previous,
+          teamIds: next,
+          ...(args.startedAt !== undefined ? { startedAt: args.startedAt } : {}),
+          nodeIds,
+          nodeIndex,
+          ...(cursor !== undefined ? { cursor } : {}),
+        },
+      );
+      return null;
+    }
+
+    // Done. Hand the row back to the next edit — unless a newer edit has
+    // already stamped it, in which case that edit's cascade owns the stamp.
+    const root = await ctx.db.get(args.rootId);
+    if (
+      root &&
+      root.teamCascadeStartedAt !== undefined &&
+      (args.startedAt === undefined || root.teamCascadeStartedAt === args.startedAt)
+    ) {
+      await ctx.db.patch(args.rootId, { teamCascadeStartedAt: undefined });
+    }
     return null;
   },
 });
@@ -7923,9 +8404,58 @@ export const fetchAggregatedOptions = action({
 });
 
 /**
+ * NEO-272 — stamp the brand-unknown ROLE onto a `manufacturer` row.
+ *
+ * The row is the marketplace's all-brands filter option ("show all cards from
+ * all brands"), carried on the brand axis as a manufacturer row; the role
+ * records that the sets filed under it are the ones whose brand NB has not
+ * identified.
+ *
+ * INTERNAL, deliberately. The role decides whether a row's name reaches every
+ * listing title generated under it, so it is not something a client may grant:
+ * `addCustomSelectorOption` is the public creation path and takes no `metadata`
+ * argument, and it must not gain one. The only callers are
+ * `syncSetsAcrossManufacturers` — which mints the row, or adopts a
+ * pre-existing / marketplace-supplied one — and the one-time
+ * `backfillBrandUnknownRole`.
+ *
+ * Idempotent and never destructive:
+ *
+ *   • a row that already carries the flag is left exactly as it is, so the
+ *     sync's adoption branch can run on every pass for free;
+ *   • an explicit `false` is an operator saying "this IS a real brand" and is
+ *     not overruled here — only an ABSENT flag is filled in;
+ *   • the `level` is verified, because a role flag on a row that is not a
+ *     manufacturer would be an answer to a question nobody asked;
+ *   • a missing row is a no-op rather than a throw — the caller is a
+ *     best-effort stamp behind a mutation it does not share a transaction
+ *     with, and failing the whole sync over a row deleted in between would be
+ *     a worse outcome than a row that gets adopted again next run.
+ */
+export const markBrandUnknownRole = internalMutation({
+  args: { id: v.id("selectorOptions") },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const row = await ctx.db.get(args.id);
+    if (!row) return null;
+    if (row.level !== "manufacturer") return null;
+    if (row.metadata?.isBrandUnknown !== undefined) return null;
+    await ctx.db.patch(args.id, {
+      metadata: { ...(row.metadata ?? {}), isBrandUnknown: true },
+      lastUpdated: Date.now(),
+    });
+    return null;
+  },
+});
+
+/**
  * Fetch BSC sets for a sport/year and distribute them across existing
- * manufacturer parents by matching the set name prefix. Unmatched sets
- * go under "All Brands".
+ * manufacturer parents by matching the set name prefix. Unmatched sets — the
+ * ones whose brand NB has not identified — are bucketed under the marketplace's
+ * all-brands FILTER OPTION ("show all cards from all brands"), carried on the
+ * brand axis as a `manufacturer` row. NEO-272: that row is found by its NB role
+ * (`metadata.isBrandUnknown`) and never by its name — the name is a marketplace
+ * filter label NB does not own, and an operator can rename it besides.
  *
  * NEO-216 — **BSC-only by design, and SportLots is never reported here.** This
  * is the other half of the manufacturer story: BSC has no manufacturer axis
@@ -8048,25 +8578,70 @@ export const syncSetsAcrossManufacturers = action({
 
       // Build a lookup: normalized manufacturer name → manufacturer doc
       const mfrLookup = new Map<string, { _id: Id<"selectorOptions">; value: string }>();
-      let allBrandsId: Id<"selectorOptions"> | null = null;
+
+      // ── NEO-272: resolve the brand-unknown row by its NB role ─────────────
+      //
+      // This is where a BSC set goes when its name prefix-matches no real
+      // brand. The row is the marketplace's all-brands FILTER OPTION — "show
+      // all cards from all brands" — carried on the brand axis as a
+      // `manufacturer` row, so it names no brand at all and listing generation
+      // drops it from titles and descriptions.
+      //
+      // Which is why it has to be identifiable by a FLAG rather than by the
+      // name it wears. TWO reasons, either one fatal to a name match at
+      // runtime: an operator can rename the row, and the name is a MARKETPLACE
+      // FILTER LABEL NB does not own, so keying on it would be NB behaviour
+      // driven by a marketplace value, exactly the forward dependency product
+      // invariant 4 (CLAUDE.md) forbids. The row commonly arrives FROM the
+      // marketplace rather than being minted here (SportLots' brand list offers
+      // "All Brands" on its hockey years); an adopted row plays exactly the
+      // same part as a minted one, and the path below adopts it.
+      //
+      // Flag first; the name match survives ONLY as the legacy adoption step
+      // for rows written before this ticket, and when it fires it STAMPS the
+      // flag so it never has to fire again for that year.
+      let brandUnknownId: Id<"selectorOptions"> | null = null;
+      let legacyNamedBrandUnknownId: Id<"selectorOptions"> | null = null;
 
       for (const mfr of manufacturers) {
         const norm = mfr.value.toLowerCase().trim();
         mfrLookup.set(norm, { _id: mfr._id, value: mfr.value });
-        if (norm === "all brands") {
-          allBrandsId = mfr._id;
+        if (mfr.metadata?.isBrandUnknown === true) {
+          brandUnknownId ??= mfr._id;
+        } else if (norm === "all brands") {
+          legacyNamedBrandUnknownId ??= mfr._id;
         }
       }
 
-      // Create "All Brands" if it doesn't exist
-      if (!allBrandsId) {
-        allBrandsId = await ctx.runMutation(
+      if (!brandUnknownId && legacyNamedBrandUnknownId) {
+        // Legacy adoption: a row that predates the flag, or one supplied by a
+        // marketplace brand list. Stamping it here is what makes this branch
+        // self-healing — the next run finds it by flag and the name is never
+        // consulted again.
+        brandUnknownId = legacyNamedBrandUnknownId;
+        await ctx.runMutation(
+          internal.selectorOptions.markBrandUnknownRole,
+          { id: brandUnknownId },
+        );
+      }
+
+      if (!brandUnknownId) {
+        // Mint the row. `addCustomSelectorOption` is PUBLIC and carries no
+        // `metadata` arg — a client must not be able to grant this role — so
+        // the flag is stamped immediately afterwards by the internal mutation.
+        // The two are not one transaction; a failure between them leaves an
+        // unflagged row that the legacy branch above adopts on the next run.
+        brandUnknownId = await ctx.runMutation(
           api.selectorOptions.addCustomSelectorOption,
           {
             level: "manufacturer",
             value: "All Brands",
             parentId: args.yearId,
           },
+        );
+        await ctx.runMutation(
+          internal.selectorOptions.markBrandUnknownRole,
+          { id: brandUnknownId },
         );
       }
 
@@ -8084,6 +8659,13 @@ export const syncSetsAcrossManufacturers = action({
         let matchedMfrId: string | null = null;
 
         for (const [mfrName, mfr] of sortedMfrs) {
+          // NEO-272: this row is a filter option, not a brand, so no set name
+          // should ever prefix-match it. Identified by id — the same row the
+          // name guard below used to catch, now recognised by its role instead.
+          // The name guard is kept behind it, unchanged, for the one case the
+          // id cannot cover: a year holding a SECOND row literally named "All
+          // Brands" that is not the one resolved above.
+          if (mfr._id === brandUnknownId) continue;
           if (mfrName === "all brands") continue;
           if (setNameLower.startsWith(mfrName + " ") || setNameLower === mfrName) {
             matchedMfrId = mfr._id;
@@ -8091,7 +8673,7 @@ export const syncSetsAcrossManufacturers = action({
           }
         }
 
-        const parentId = matchedMfrId || allBrandsId!;
+        const parentId = matchedMfrId || brandUnknownId!;
         if (!grouped.has(parentId)) {
           grouped.set(parentId, []);
         }
@@ -8129,6 +8711,11 @@ export const syncSetsAcrossManufacturers = action({
       const summary: string[] = [];
       for (const [parentId, sets] of grouped) {
         const mfr = manufacturers.find((m: { _id: string }) => m._id === parentId);
+        // An internal LOG string, not a card title — NEO-272 changes nothing
+        // here. `manufacturers` was read before the brand-unknown row could be
+        // created, so a row minted by this very run is absent from it and falls
+        // back to the literal value that creation used; an adopted row is in
+        // the list and reports its own name, whatever it is.
         const name = mfr?.value || "All Brands";
         summary.push(`${name}: ${sets.length}`);
       }
@@ -9984,6 +10571,11 @@ export const commitCardChecklistPrelude = internalMutation({
     inheritedFeatures: v.optional(v.record(v.string(), v.string())),
     setNameAncestorId: v.optional(v.id("selectorOptions")),
     setNameValue: v.optional(v.string()),
+    // NEO-272 — has NB identified this set's brand, or does the set hang off
+    // the marketplace's all-brands filter option? Resolved here, once for the
+    // whole commit, and handed to every chunk so the insert branch generates
+    // the same title `previewListingTitle` would regenerate.
+    manufacturerBrandUnknown: v.optional(v.boolean()),
     existingCustomCardNumbers: v.array(v.string()),
     // ── NEO-203: the match maps, all four resolved ONCE against the
     // pre-commit state of the checklist — and built ONLY over this
@@ -11342,9 +11934,26 @@ export const commitCardChecklistPrelude = internalMutation({
     }
     // Fetched once for the whole batch (not per-card) — used only for
     // listing-title/description generation on newly-inserted rows.
-    const setNameValue = setNameAncestorId
-      ? (await ctx.db.get(setNameAncestorId))?.value
-      : undefined;
+    const setNameNode = setNameAncestorId
+      ? await ctx.db.get(setNameAncestorId)
+      : null;
+    const setNameValue = setNameNode?.value;
+    // NEO-272 — the manufacturer's NB ROLE, resolved in the same
+    // once-per-batch spirit as `setNameValue` above: a set's parent IS its
+    // manufacturer row, so this is one extra read for the whole commit rather
+    // than one per card. A brand-unknown row is dropped from every title and
+    // description the chunks generate (see `manufacturerAndSetTokens`).
+    //
+    // `level` is checked rather than assumed: a hand-built or legacy tree can
+    // hang a setName off something else, and reading a role flag off a row that
+    // is not a manufacturer would be inventing an answer.
+    const manufacturerNode = setNameNode?.parentId
+      ? await ctx.db.get(setNameNode.parentId)
+      : null;
+    const manufacturerBrandUnknown =
+      manufacturerNode?.level === "manufacturer"
+        ? manufacturerNode.metadata?.isBrandUnknown === true
+        : undefined;
 
     // ── NEO-203: the match maps ─────────────────────────────────────────────
     //
@@ -11384,6 +11993,7 @@ export const commitCardChecklistPrelude = internalMutation({
       inheritedFeatures: inheritedFeaturesOrUndefined,
       setNameAncestorId,
       setNameValue,
+      manufacturerBrandUnknown,
       // NEO-239 — the numbers that must survive the marketplace upsert:
       // rows with no ref on either side. Field name kept so the action and
       // finalize phases keep agreeing about ordering without a rename ripple.
@@ -11417,6 +12027,8 @@ type CommitPrelude = {
   inheritedFeatures?: Record<string, string>;
   setNameAncestorId?: Id<"selectorOptions">;
   setNameValue?: string;
+  /** NEO-272 — see the returns validator. */
+  manufacturerBrandUnknown?: boolean;
   existingCustomCardNumbers: string[];
   existingIdByBscRef: Array<{ ref: string; id: Id<"cardChecklist"> }>;
   existingIdBySlRef: Array<{ ref: string; id: Id<"cardChecklist"> }>;
@@ -11553,6 +12165,10 @@ export const commitCardChecklistChunk = internalMutation({
     sportSkuCode: v.optional(v.string()),
     sportValue: v.string(),
     setNameValue: v.optional(v.string()),
+    // NEO-272 — the manufacturer ROLE, resolved once by the prelude. Optional
+    // so a caller that predates this is unchanged: absent means "the brand is
+    // known", which is what every row said before the flag existed.
+    manufacturerBrandUnknown: v.optional(v.boolean()),
     inheritedFeatures: v.optional(v.record(v.string(), v.string())),
     // ── NEO-221: names this commit SETTLED, commit-wide ───────────────────
     //
@@ -11630,6 +12246,21 @@ export const commitCardChecklistChunk = internalMutation({
       ctx,
       args.selectorOptionId,
     );
+
+    // NEO-277 — the leaf's set-level team, read ONCE per chunk off the row
+    // already loaded above, and its names resolved once for the listing title
+    // of every card born with it. A card that arrives with a team of its own
+    // keeps it (`defaultTeamOnCardIds`); only the insert branch reads this —
+    // an existing card's team is NB content the re-sync may only suggest a
+    // change to, never default over.
+    const leafTeamIds = inheritedTeamIds(parentRow);
+    const leafTeamNames: string[] = [];
+    if (leafTeamIds) {
+      for (const teamId of leafTeamIds) {
+        const team = await ctx.db.get(teamId);
+        if (team) leafTeamNames.push(teamFullName(team));
+      }
+    }
 
     // One indexed read for the whole chunk instead of a `db.get` per card:
     // the rows this chunk patches are looked up by id in this map. Skipped
@@ -11943,42 +12574,6 @@ export const commitCardChecklistChunk = internalMutation({
         const featuresOrUndefined =
           Object.keys(mergedFeatures).length > 0 ? mergedFeatures : undefined;
 
-        // NEO-24/71-74: write-once listing title/description, generated
-        // once here at creation time, then freely editable afterward (same
-        // model as every other default this session).
-        const listingInputs: ListingCardInputs = {
-          cardNumber: card.cardNumber,
-          playerNames,
-          year: mergedFeatures.season,
-          manufacturer: mergedFeatures.manufacturer,
-          setName: args.setNameValue,
-          parallelName: mergedFeatures.parallelName,
-          isRookie: card.isRookie,
-          isRelic: card.isRelic,
-          autographed: mergedFeatures.autographed,
-          // NEO-101: `printRun` was in the generator's token list from the
-          // start but was never actually passed from here, so no synced card
-          // has ever had `/99` in its title while `previewListingTitle`'s
-          // Regenerate would put one there. Passed now, so creation and
-          // regeneration agree.
-          printRun: card.printRun,
-          shortPrint: mergedFeatures.shortPrint,
-          // NEO-101/189: NB's own per-card variation name, used verbatim in
-          // both the title (as an optional token) and the description. Same
-          // value written to the row's `cardVariation` column below.
-          cardVariation: card.cardVariation,
-          // NEO-101: resolved once per commit in the prelude, not per card —
-          // roughly half of sold listings name the team, so this is a real
-          // search term rather than filler.
-          teamNames: card.teamNames,
-          // NEO-101: the sport ancestor's value, already resolved by the
-          // prelude for the SKU prefix. The weakest token in the title and the
-          // last one tried; frequently de-duplicated away by a team name that
-          // already contains the word.
-          sport: args.sportValue,
-        };
-        const listingTitle = assessListingTitle(listingInputs);
-
         // NEO-246 — see the note beside where these are spread below. The
         // payload's lists are already trimmed, deduped and (for every real
         // caller) bounded by the action; this makes the mutation self-
@@ -12001,6 +12596,67 @@ export const commitCardChecklistChunk = internalMutation({
           ((card.pendingTeamNames ?? []).length -
             insertPendingTeamNames.length);
 
+        // NEO-277 — a card born with no team of its own takes the leaf's
+        // set-level team (read once per chunk above). Decided BEFORE the
+        // listing title so the title names the team the row will carry, and
+        // BEFORE the BSC enrichment check so a card that has a team is not
+        // queued to be asked for one.
+        const bornTeams = defaultTeamOnCardIds(
+          {
+            teamOnCardIds: card.teamOnCardIds,
+            pendingTeamNames: insertPendingTeamNames,
+          },
+          leafTeamIds ? { teamIds: leafTeamIds } : null,
+        );
+        const insertTeamOnCardIds = bornTeams.ids ?? card.teamOnCardIds;
+        const insertTeamNames = bornTeams.defaulted
+          ? leafTeamNames
+          : card.teamNames;
+
+        // NEO-24/71-74: write-once listing title/description, generated
+        // once here at creation time, then freely editable afterward (same
+        // model as every other default this session).
+        const listingInputs: ListingCardInputs = {
+          cardNumber: card.cardNumber,
+          playerNames,
+          year: mergedFeatures.season,
+          manufacturer: mergedFeatures.manufacturer,
+          // NEO-272: dropped from the title and the description when NB has
+          // not identified the set's brand. `previewListingTitle` reads the
+          // same role off the same manufacturer row — the two MUST carry it or
+          // a regenerated title disagrees with the one written here, which is
+          // the standing "if you change one, change the other" rule between
+          // this branch and that query.
+          manufacturerBrandUnknown: args.manufacturerBrandUnknown,
+          setName: args.setNameValue,
+          parallelName: mergedFeatures.parallelName,
+          isRookie: card.isRookie,
+          isRelic: card.isRelic,
+          autographed: mergedFeatures.autographed,
+          // NEO-101: `printRun` was in the generator's token list from the
+          // start but was never actually passed from here, so no synced card
+          // has ever had `/99` in its title while `previewListingTitle`'s
+          // Regenerate would put one there. Passed now, so creation and
+          // regeneration agree.
+          printRun: card.printRun,
+          shortPrint: mergedFeatures.shortPrint,
+          // NEO-101/189: NB's own per-card variation name, used verbatim in
+          // both the title (as an optional token) and the description. Same
+          // value written to the row's `cardVariation` column below.
+          cardVariation: card.cardVariation,
+          // NEO-101: resolved once per commit in the prelude, not per card —
+          // roughly half of sold listings name the team, so this is a real
+          // search term rather than filler. NEO-277: the leaf's set-level
+          // team names when the card is born with that default.
+          teamNames: insertTeamNames,
+          // NEO-101: the sport ancestor's value, already resolved by the
+          // prelude for the SKU prefix. The weakest token in the title and the
+          // last one tried; frequently de-duplicated away by a team name that
+          // already contains the word.
+          sport: args.sportValue,
+        };
+        const listingTitle = assessListingTitle(listingInputs);
+
         const newCardId: Id<"cardChecklist"> = await ctx.db.insert("cardChecklist", {
           selectorOptionId: args.selectorOptionId,
           cardNumber: card.cardNumber,
@@ -12010,7 +12666,8 @@ export const commitCardChecklistChunk = internalMutation({
           // NEO-254 — the same list with the printed name attached; see
           // schema.ts. Never written without the ids beside it.
           playerLinks: card.playerLinks,
-          teamOnCardIds: card.teamOnCardIds,
+          // NEO-277: the card's own team, else the leaf's set-level default.
+          teamOnCardIds: insertTeamOnCardIds,
           attributes: card.attributes,
           isRookie: card.isRookie,
           isRelic: card.isRelic,
@@ -12069,7 +12726,7 @@ export const commitCardChecklistChunk = internalMutation({
         });
         if (
           card.platformData?.bsc &&
-          (!card.teamOnCardIds || card.teamOnCardIds.length === 0)
+          (!insertTeamOnCardIds || insertTeamOnCardIds.length === 0)
         ) {
           bscTeamEnrichmentIds.push(newCardId);
         }
@@ -14259,6 +14916,8 @@ export const commitCardChecklist = action({
             sportSkuCode: prelude.sportSkuCode,
             sportValue: prelude.sportValue,
             setNameValue: prelude.setNameValue,
+            // NEO-272 — see the prelude's returns validator.
+            manufacturerBrandUnknown: prelude.manufacturerBrandUnknown,
             inheritedFeatures: prelude.inheritedFeatures,
             // NEO-221 — the names this commit settled, so the chunk's update
             // branch retires only what it is entitled to. The same two lists

@@ -1,4 +1,11 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useQuery } from "convex/react";
 import { Input } from "../primitives/Input";
@@ -212,6 +219,87 @@ function EntitySelector({
       collapsedCardRef.current?.focus({ preventScroll: true });
     }
   }, [showsCollapsedCard]);
+
+  // NEO-276 — open the list AT the selection, not at the top of it.
+  //
+  // ## The defect
+  //
+  // Re-opening a collapsed column mounts its listbox scrolled to the top. On
+  // any column longer than the 400px fold (a synced Sets column runs to ~40
+  // rows) the selected row is below it, so an operator who opened the list to
+  // change their set had to hunt for the row they had already chosen before
+  // they could see what sits next to it. The listbox's `scrollTop` is set so
+  // the selected row is centred in the fold; centred rather than pinned to the
+  // top edge because the neighbours on BOTH sides are what a "change" decision
+  // is made against.
+  //
+  // ## Only the listbox's own scrollTop moves
+  //
+  // NOT `scrollIntoView`. That walks every scrollable ancestor: it would drag
+  // the `[data-set-selector-scroll]` row horizontally, whose position
+  // EntityColumn owns (it scrolls each newly-revealed column into view, and a
+  // browser scroll-into-view here would pull it straight back), and it would
+  // move the page vertically under maestro-web, whose only scroll primitive is
+  // `window.scroll` — a flow that has just scrolled a control to a known y
+  // would find it somewhere else. Writing the listbox's `scrollTop` touches
+  // nothing outside the listbox. Clamped at 0 so a selection already in the
+  // first fold does not move (a browser clamps anyway; happy-dom does not).
+  //
+  // Nor does it freeze the column: EntityColumn's freeze-on-interaction
+  // listener deliberately ignores the generic `scroll` event (it listens for
+  // wheel and touchstart), for exactly this class of programmatic scroll.
+  //
+  // ## Exactly once per "list shown"
+  //
+  // Armed when the list goes from not rendered (the collapsed card, or the
+  // loading placeholder) to rendered, and consumed the first time the selected
+  // row is in the DOM — normally that same commit, else the one where a
+  // still-loading `items` lands. A later `items` re-emit (Convex queries are
+  // reactive), a keystroke in the search box or an arrow-key move never
+  // re-arms it, so a list the operator has scrolled stays where they left it.
+  // A search filter that is hiding the selected row consumes the latch WITHOUT
+  // scrolling: typing the row back into view must not yank the list.
+  //
+  // A layout effect, so the list is already at the selection on its first
+  // paint rather than flashing its top and jumping.
+  const listShown = items !== undefined && !showsCollapsedCard;
+  const wasListShownRef = useRef(false);
+  const centreSelectedRef = useRef(false);
+  useLayoutEffect(() => {
+    if (listShown && !wasListShownRef.current) {
+      centreSelectedRef.current = true;
+    }
+    wasListShownRef.current = listShown;
+    if (!listShown) {
+      centreSelectedRef.current = false;
+      return;
+    }
+    if (!centreSelectedRef.current) return;
+    if (!selectedId) {
+      centreSelectedRef.current = false;
+      return;
+    }
+    const list = listRef.current;
+    const row = list?.querySelector<HTMLElement>(
+      '[role="option"][aria-selected="true"]',
+    );
+    if (!list || !row) {
+      // The row is not rendered. If the selection IS in `items` the search
+      // box is hiding it — consume, typing must not scroll. Otherwise the id
+      // has not arrived in `items` yet; stay armed for the commit it does.
+      if (selected) centreSelectedRef.current = false;
+      return;
+    }
+    centreSelectedRef.current = false;
+    const rowTopInList =
+      row.getBoundingClientRect().top -
+      list.getBoundingClientRect().top +
+      list.scrollTop;
+    list.scrollTop = Math.max(
+      0,
+      rowTopInList - (list.clientHeight - row.offsetHeight) / 2,
+    );
+  });
 
   // NEO-167 — keep the heading on screen while the read is in flight.
   //
