@@ -32,3 +32,10 @@ rationale written into the component's own docstring (citing this exact focus-lo
 and a unit test asserting siblings get `aria-disabled="true"` (not native `disabled`) and fire
 no mutation on click while busy. This is the reference implementation to point to next time
 this pattern comes up in League/Team/Player Management too.
+
+**Prior art on the popover surface:** [[patterns_aria_disabled_focus_park]]
+records the same native-`disabled`-blurs-to-body mechanism in
+`SetSelector/TeamPicker.tsx`, where it additionally trips the popover's
+close-on-blur handler and discards in-flight error state. Same fix, worse
+symptom — cite that one when arguing the convention is repo-wide rather than
+an admin-screen preference.
