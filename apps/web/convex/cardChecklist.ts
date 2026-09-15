@@ -29,7 +29,7 @@ import {
   query,
 } from "./_generated/server";
 import { v } from "convex/values";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { requireAdmin } from "./auth";
 // NEO-236: these two paths LOOK UP a team and link it; neither may create one.
@@ -605,7 +605,7 @@ export const confirmCardNoTeam = mutation({
  * Mickey Mantle on a modern "Legend" insert is printed with the Yankees, which
  * says nothing new about his career).
  *
- * ## The year filter
+ * ## The year filter, and when it lets go
  *
  * `players.teamYears` is a whole career (Wikidata P54 with P580/P582
  * qualifiers). For a 2024 set the useful answer is "who was he playing for in
@@ -613,6 +613,16 @@ export const confirmCardNoTeam = mutation({
  * year)` — an open-ended entry is a current team. With no year resolvable
  * (see `findSetYearForSelectorOption`) the whole career is offered rather than
  * nothing.
+ *
+ * NEO-279: the same fallback applies when the year IS known but the filter
+ * finds nothing. A retired player on a modern card — a 1960s Yankee on a 2026
+ * "Legends" insert, the whole premise of a legends set — has no stint
+ * covering the set year, and the filtered list came back empty, so the fixer
+ * showed zero chips for a card whose answer was one lookup away. The career
+ * is then offered whole, still deduped by team and attributed to the first
+ * player naming it. Still suggestions: a chip the operator judges, never a
+ * fill. The set-level "Fill teams" (`convex/teamFill.ts`) is where a
+ * one-team career becomes a write, and only after a preview.
  *
  * ## Deduped by teamId
  *
@@ -646,49 +656,61 @@ export const suggestedTeamsForCard = query({
 
     const year = await findSetYearForSelectorOption(ctx, row.selectorOptionId);
     const thisYear = new Date().getFullYear();
-    const inYear = (fromYear: number, toYear?: number): boolean =>
-      year === undefined
-        ? true
-        : fromYear <= year && year <= (toYear ?? thisYear);
 
-    const out: Array<{
-      teamId: Id<"teams">;
-      name: string;
-      source: "career";
-      playerName: string;
-    }> = [];
-    const seenTeamIds = new Set<string>();
+    // Players read once, up front, so the career fallback below re-walks the
+    // same rows without a second round of reads. A card can legitimately list
+    // the same player twice (a dual-auto of one player); each distinct id once.
+    const players: Array<Doc<"players">> = [];
     const seenPlayerIds = new Set<string>();
-    const teamNameById = new Map<string, string | null>();
-
     for (const playerId of playerIds) {
-      // A card can legitimately list the same player twice (a dual-auto of one
-      // player); read each distinct id once.
       if (seenPlayerIds.has(playerId)) continue;
       seenPlayerIds.add(playerId);
       const player = await ctx.db.get(playerId);
       if (!player) continue; // dangling link — soft data error, not fatal
-      for (const entry of player.teamYears ?? []) {
-        if (!inYear(entry.fromYear, entry.toYear)) continue;
-        if (seenTeamIds.has(entry.teamId)) continue;
-        if (!teamNameById.has(entry.teamId)) {
-          const team = await ctx.db.get(entry.teamId);
-          // NEO-236: the FULL name. This chip is a suggestion an operator
-          // judges at a glance, and "Padres" does not say which Padres.
-          teamNameById.set(entry.teamId, team ? teamFullName(team) : null);
-        }
-        const name = teamNameById.get(entry.teamId);
-        if (!name) continue; // never suggest a blank chip
-        seenTeamIds.add(entry.teamId);
-        out.push({
-          teamId: entry.teamId,
-          name,
-          source: "career",
-          playerName: player.name,
-        });
-      }
+      players.push(player);
     }
 
-    return out;
+    type Suggestion = {
+      teamId: Id<"teams">;
+      name: string;
+      source: "career";
+      playerName: string;
+    };
+    const teamNameById = new Map<string, string | null>();
+
+    const collect = async (
+      inYear: (fromYear: number, toYear?: number) => boolean,
+    ): Promise<Array<Suggestion>> => {
+      const out: Array<Suggestion> = [];
+      const seenTeamIds = new Set<string>();
+      for (const player of players) {
+        for (const entry of player.teamYears ?? []) {
+          if (!inYear(entry.fromYear, entry.toYear)) continue;
+          if (seenTeamIds.has(entry.teamId)) continue;
+          if (!teamNameById.has(entry.teamId)) {
+            const team = await ctx.db.get(entry.teamId);
+            // NEO-236: the FULL name. This chip is a suggestion an operator
+            // judges at a glance, and "Padres" does not say which Padres.
+            teamNameById.set(entry.teamId, team ? teamFullName(team) : null);
+          }
+          const name = teamNameById.get(entry.teamId);
+          if (!name) continue; // never suggest a blank chip
+          seenTeamIds.add(entry.teamId);
+          out.push({ teamId: entry.teamId, name, source: "career", playerName: player.name });
+        }
+      }
+      return out;
+    };
+
+    const wholeCareer = () => true;
+    if (year === undefined) return collect(wholeCareer);
+
+    const filtered = await collect(
+      (fromYear, toYear) => fromYear <= year && year <= (toYear ?? thisYear),
+    );
+    if (filtered.length > 0) return filtered;
+    // Nothing covers the set year: the retired-player case (see "when it lets
+    // go" above). Offer the career rather than an empty fixer.
+    return collect(wholeCareer);
   },
 });

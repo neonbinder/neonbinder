@@ -760,3 +760,74 @@ describe("NEO-277: the set-level team surface is admin-gated, and its cascade is
     expect(src).not.toContain("export const cascadeSelectorOptionTeams = mutation(");
   });
 });
+
+describe("NEO-279: Fill teams is admin-gated, and its reads/writes are internal", () => {
+  /**
+   * `previewTeamFill` and `applyTeamFill` are the only client-callable
+   * surface — a set-level bulk write that can touch every teamless card
+   * under a set, so it carries the same admin gate as `setSelectorOptionTeams`
+   * above. The four reads and the apply chunk are `internalQuery` /
+   * `internalMutation`: `applyTeamFillChunk` in particular takes a bare
+   * `(cardId, teamIds)` list with no re-derivation of its own, so a client
+   * that could call it directly could write any team onto any card under the
+   * guise of a fill — the whole reason `applyTeamFill` recomputes server-side
+   * instead of trusting the preview's own fills.
+   *
+   * Called against a real `setName` row with no candidates, so the refusal is
+   * the gate and not a `ConvexError` about the level or an empty plan.
+   */
+  test.each([
+    [
+      "teamFill.previewTeamFill",
+      (t: ReturnType<typeof convexTest>, setNameId: Id<"selectorOptions">) =>
+        t.action(api.teamFill.previewTeamFill, { selectorOptionId: setNameId }),
+    ],
+    [
+      "teamFill.applyTeamFill",
+      (t: ReturnType<typeof convexTest>, setNameId: Id<"selectorOptions">) =>
+        t.action(api.teamFill.applyTeamFill, { selectorOptionId: setNameId, expectedFillable: 0 }),
+    ],
+  ] as const)("%s refuses a signed-in non-admin and a signed-out caller, writing nothing", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const setNameId = await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "setName",
+        value: "2024 Topps",
+        platformData: {},
+        parentId: sportId,
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+      }),
+    );
+    const cardId = await t.run(async (ctx) =>
+      ctx.db.insert("cardChecklist", {
+        selectorOptionId: setNameId,
+        cardNumber: "1",
+        cardName: "Card 1",
+        platformData: {},
+        sortOrder: 0,
+        lastUpdated: 1_700_000_000_000,
+      }),
+    );
+
+    await expect(call(t.withIdentity(SIGNED_IN), setNameId)).rejects.toThrow();
+    await expect(call(t, setNameId)).rejects.toThrow();
+    // Refused before any write.
+    const row = await t.run(async (ctx) => ctx.db.get(cardId));
+    expect(row!.teamOnCardIds).toBeUndefined();
+  });
+
+  test.each([
+    ["listTeamFillSubtree", "internalQuery"],
+    ["readTeamFillCards", "internalQuery"],
+    ["readTeamFillPlayers", "internalQuery"],
+    ["readTeamFillTeams", "internalQuery"],
+    ["applyTeamFillChunk", "internalMutation"],
+  ])("%s is declared %s, not the public form", (fn, keyword) => {
+    const src = readFileSync(join(__dirname, "teamFill.ts"), "utf8");
+    expect(src).toContain(`export const ${fn} = ${keyword}({`);
+    const publicKeyword = keyword === "internalQuery" ? "query" : "mutation";
+    expect(src).not.toContain(`export const ${fn} = ${publicKeyword}(`);
+  });
+});

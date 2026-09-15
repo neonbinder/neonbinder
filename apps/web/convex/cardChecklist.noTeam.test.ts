@@ -839,6 +839,63 @@ describe("suggestedTeamsForCard", () => {
       t.query(api.cardChecklist.suggestedTeamsForCard, { cardId }),
     ).rejects.toThrow(/Not authenticated/);
   });
+
+  // NEO-279 — the set year RESOLVES, but nothing in the career covers it: the
+  // retired-player case the year filter used to leave with an empty panel.
+  test("falls back to the whole career when the set year resolves but no stint covers it", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, leafId } = await seedTree(t, { season: "2026" });
+    const dodgers = await insertTeam(t, sportId, "Brooklyn Dodgers");
+    const player = await insertPlayer(t, sportId, "Old Timer", [
+      { teamId: dodgers, fromYear: 1967, toYear: 1983 },
+    ]);
+    const cardId = await insertCard(t, leafId, { playerIds: [player] });
+
+    const suggestions = await asAdmin.query(
+      api.cardChecklist.suggestedTeamsForCard,
+      { cardId },
+    );
+    expect(suggestions).toEqual([
+      {
+        teamId: dodgers,
+        name: "Brooklyn Dodgers",
+        source: "career",
+        playerName: "Old Timer",
+      },
+    ]);
+  });
+
+  // NEO-279 — the year filter still wins whenever it finds SOMETHING: the
+  // fallback only fires on a genuinely empty filtered result, never merely
+  // because the career also holds an older stint.
+  test("the year filter wins over the whole career when it is non-empty", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, leafId } = await seedTree(t, { season: "2026" });
+    const padres = await insertTeam(t, sportId, "San Diego Padres");
+    const mariners = await insertTeam(t, sportId, "Seattle Mariners");
+    const player = await insertPlayer(t, sportId, "Long Career Guy", [
+      // An 1980s stint that does NOT cover 2026 — must not appear.
+      { teamId: padres, fromYear: 1980, toYear: 1989 },
+      // The open, current stint — covers 2026.
+      { teamId: mariners, fromYear: 2020 },
+    ]);
+    const cardId = await insertCard(t, leafId, { playerIds: [player] });
+
+    const suggestions = await asAdmin.query(
+      api.cardChecklist.suggestedTeamsForCard,
+      { cardId },
+    );
+    expect(suggestions).toEqual([
+      {
+        teamId: mariners,
+        name: "Seattle Mariners",
+        source: "career",
+        playerName: "Long Career Guy",
+      },
+    ]);
+  });
 });
 
 // ===========================================================================

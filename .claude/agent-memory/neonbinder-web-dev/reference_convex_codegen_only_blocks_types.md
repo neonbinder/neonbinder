@@ -31,6 +31,13 @@ All three are runtime Proxies that build function-path strings on property acces
   callbacks. All of it clears in one shot when codegen runs.
 - To report typecheck state honestly, separate those from real errors by filtering
   the codegen signatures out of the tsc output rather than eyeballing the count.
+- **Or clear it by hand.** `convex/_generated/api.d.ts` is COMMITTED, and a new
+  module is exactly two lines in it, both alphabetical: `import type * as x from
+  "../x.js";` in the import block and `x: typeof x;` in `fullApi`. That is what
+  codegen would emit, so `npm run typecheck` goes green without touching any
+  deployment (verified NEO-279). A same-file action calling `internal.x.*` also
+  needs its `runQuery` results annotated (`const r: T = await ctx.runQuery(...)`)
+  or TS chases the module type into itself.
 - Component constructors (e.g. `@convex-dev/workpool`'s `Workpool`) just assign
   `this.component`, so a module-level `new Workpool(components.x, …)` is safe to
   import under convex-test even though the component is not mounted. Only an actual
