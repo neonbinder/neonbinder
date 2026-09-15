@@ -207,6 +207,7 @@ import SetAttributesPanel, {
   teamSavedToast,
 } from "./SetAttributesPanel";
 import { DEFAULT_TEAM_PICKER_LABELS } from "./TeamPicker";
+import { FILL_TEAMS_LABEL, FILL_TEAMS_LIST_LABEL } from "./FillTeamsControl";
 
 /** The set row's picker trigger — see SET_TEAM_PICKER_LABELS. */
 const PICK = SET_TEAM_PICKER_LABELS.trigger;
@@ -2202,5 +2203,36 @@ describe("teamCascadeConfirmCopy / teamClearConfirmCopy / teamSavedToast (NEO-27
     expect(teamSavedToast({ ...NONE, cardsFollowing: 1 })).toBe(
       "Saved Team · applying to 1 card",
     );
+  });
+});
+
+describe("SetAttributesPanel — Fill teams render gate (NEO-279)", () => {
+  it("renders Fill teams at setName", () => {
+    currentRow = makeRow({ level: "setName" });
+    renderPanel();
+    expect(screen.getByRole("button", { name: FILL_TEAMS_LABEL })).toBeTruthy();
+  });
+
+  it.each(["variantType", "insert", "parallel"])(
+    "does not render Fill teams at %s",
+    (level) => {
+      currentRow = makeRow({ level });
+      renderPanel();
+      expect(screen.queryByRole("button", { name: FILL_TEAMS_LABEL })).toBeNull();
+    },
+  );
+
+  it("names its trigger and its ledger distinctly from the set team picker — no shared substring in either direction", () => {
+    currentRow = makeRow({ level: "setName", teamIds: [] });
+    renderPanel();
+
+    for (const own of [FILL_TEAMS_LABEL, FILL_TEAMS_LIST_LABEL]) {
+      for (const key of ["root", "trigger", "search", "results"] as const) {
+        const picker = SET_TEAM_PICKER_LABELS[key];
+        expect(own).not.toBe(picker);
+        expect(own.includes(picker)).toBe(false);
+        expect(picker.includes(own)).toBe(false);
+      }
+    }
   });
 });

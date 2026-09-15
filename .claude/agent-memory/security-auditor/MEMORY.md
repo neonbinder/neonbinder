@@ -41,3 +41,4 @@
 - [Patterns wikidata pool abuse surface](patterns_wikidata_pool_abuse_surface.md) — The 5-wide wikidataPool is a shared, uncapped, deployment-wide resource — any signed-in-only write path that enqueues onto it (teams/players findOrCreate) is a DoS/cos…
 - [Patterns neo277 set level team cascade](patterns_neo277_set_level_team_cascade.md) — preview/mutation/internal-walker trio: preview must carry every scope guard the mutation carries; cursor monotonicity is the termination proof
 - [Patterns neo278 session lifetimes](patterns_neo278_session_lifetimes.md) — undici header-validation TypeError embeds the full Cookie/Bearer value in error.message; persistTokens `previous` carries SSO cookies only; SSO cookie is an indefinite sliding bearer
+- [Patterns neo279 team fill recompute](patterns_neo279_team_fill_recompute.md) — shared compute path closes guard parity by construction; traps: unregistered actions, forward drift on recompute, pager no-progress spin
