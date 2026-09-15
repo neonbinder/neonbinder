@@ -11,7 +11,10 @@
  *
  * Fixture shape follows selectorOptions.setSelectorOptionTeams.test.ts
  * (sport → setName → variantType → insert → parallel, raw inserts) and
- * cardChecklist.noTeam.test.ts (insertCard/insertTeam/insertPlayer).
+ * cardChecklist.noTeam.test.ts (insertCard/insertTeam/insertPlayer). The
+ * variantType carries `metadata.isBase` by default — the NB role tier 3
+ * reads — and `seedTree(t, { isBase: false })` is the hand-built shape the
+ * E2E flow makes, where a row NAMED "Base" is not the base.
  */
 
 import { convexTest } from "convex-test";
@@ -44,10 +47,10 @@ const SIGNED_IN_IDENTITY = { subject: "user_team_fill_002" };
 
 type T = ReturnType<typeof convexTest>;
 
-/** sport → setName (season 2024) → variantType → insert → parallel. */
+/** sport → setName (season 2024) → variantType (isBase) → insert → parallel. */
 async function seedTree(
   t: T,
-  opts: { season?: string } = { season: "2024" },
+  opts: { season?: string; isBase?: boolean } = {},
 ): Promise<{
   sportId: Id<"selectorOptions">;
   setNameId: Id<"selectorOptions">;
@@ -55,6 +58,8 @@ async function seedTree(
   insertId: Id<"selectorOptions">;
   parallelId: Id<"selectorOptions">;
 }> {
+  const season = opts.season ?? "2024";
+  const isBase = opts.isBase ?? true;
   return t.run(async (ctx) => {
     const sportId = await ctx.db.insert("selectorOptions", {
       level: "sport",
@@ -68,7 +73,7 @@ async function seedTree(
       level: "setName",
       value: "2024 Topps",
       platformData: {},
-      ...(opts.season ? { features: { season: opts.season } } : {}),
+      ...(season ? { features: { season } } : {}),
       parentId: sportId,
       children: [],
       lastUpdated: Date.now(),
@@ -77,6 +82,7 @@ async function seedTree(
       level: "variantType",
       value: "Base",
       platformData: {},
+      ...(isBase ? { metadata: { isBase: true } } : {}),
       parentId: setNameId,
       children: [],
       lastUpdated: Date.now(),
@@ -180,25 +186,27 @@ async function insertPlayer(
 // ===========================================================================
 
 describe("previewTeamFill", () => {
-  test("counts and groups candidates across a mixed-level tree", async () => {
+  test("counts and groups candidates across a mixed-level tree — same node, the parallel's original, the base card", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { sportId, setNameId, variantTypeId, insertId, parallelId } = await seedTree(t);
     const padres = await insertTeam(t, sportId, "San Diego Padres");
-    const tatis = await insertPlayer(t, sportId, "Fernando Tatis Jr.", [
-      { teamId: padres, fromYear: 2019 },
-    ]);
+    const reds = await insertTeam(t, sportId, "Cincinnati Reds");
+    const tatis = await insertPlayer(t, sportId, "Fernando Tatis Jr.", []);
+    const bench = await insertPlayer(t, sportId, "Johnny Bench", []);
 
-    // Evidence card, teamed, directly under variantType.
+    // Base (isBase): Tatis teamed, and a teamless Tatis beside it → tier 1.
     await insertCard(t, variantTypeId, { cardNumber: "ev", playerIds: [tatis], teamOnCardIds: [padres] });
-    // Candidate under the same variantType — same player, no team: rule A.
-    const underVariant = await insertCard(t, variantTypeId, { cardNumber: "1", playerIds: [tatis] });
-    // Candidate under the insert child — same player, no team: rule A too
-    // (rule A's evidence is whole-set).
-    const underInsert = await insertCard(t, insertId, { cardNumber: "2", playerIds: [tatis] });
-    // Candidate under the parallel grandchild.
-    const underParallel = await insertCard(t, parallelId, { cardNumber: "3", playerIds: [tatis] });
-    // A card directly under setName itself.
+    const underBase = await insertCard(t, variantTypeId, { cardNumber: "1", playerIds: [tatis] });
+    // Stars (insert): Bench teamed on S-1; a teamless Tatis on S-2 → tier 3
+    // (Stars has no Tatis evidence, and Bench's is a different player).
+    await insertCard(t, insertId, { cardNumber: "S-1", playerIds: [bench], teamOnCardIds: [reds] });
+    const starsTatis = await insertCard(t, insertId, { cardNumber: "S-2", playerIds: [tatis] });
+    // Gold (parallel of Stars): S-1 copies Stars' teamed S-1 → tier 2; S-2's
+    // original is teamless, so it falls through to the base card → tier 3.
+    const goldBench = await insertCard(t, parallelId, { cardNumber: "S-1", playerIds: [bench] });
+    const goldTatis = await insertCard(t, parallelId, { cardNumber: "S-2", playerIds: [tatis] });
+    // A card directly under setName → tier 3.
     const underSet = await insertCard(t, setNameId, { cardNumber: "4", playerIds: [tatis] });
 
     const result = await asAdmin.action(api.teamFill.previewTeamFill, {
@@ -206,19 +214,19 @@ describe("previewTeamFill", () => {
     });
 
     expect(result.setYear).toBe(2024);
-    expect(result.candidates).toBe(4);
-    expect(result.fillable).toBe(4);
+    expect(result.candidates).toBe(5);
+    expect(result.fillable).toBe(5);
     expect(result.remaining).toBe(0);
-    expect(result.byRule).toEqual({ samePlayerInSet: 4, oneTeamCareer: 0, oneStintInYear: 0 });
-    // The evidence sits under the variantType, so its sibling is a same-node
-    // find and the other three are borrows from across the set — two groups,
-    // the borrow first, naming the nodes it writes to by their display value.
+    expect(result.byRule).toEqual({ samePlayerInSet: 5, oneTeamCareer: 0, oneStintInYear: 0 });
+    // Riskiest first: the base-card reads (naming the nodes they write to,
+    // in walk order), then the same-node find, then the parallel's original.
     expect(result.groups).toEqual([
       {
         playerNames: ["Fernando Tatis Jr."],
         teamNames: ["San Diego Padres"],
         rule: "samePlayerInSet",
-        scope: "acrossSet",
+        scope: "baseSet",
+        mixed: false,
         nodeNames: ["2024 Topps", "Stars", "Gold"],
         nodeCount: 3,
         cardCount: 3,
@@ -228,21 +236,187 @@ describe("previewTeamFill", () => {
         teamNames: ["San Diego Padres"],
         rule: "samePlayerInSet",
         scope: "sameNode",
+        mixed: false,
         nodeNames: ["Base"],
         nodeCount: 1,
         cardCount: 1,
       },
+      {
+        playerNames: ["Johnny Bench"],
+        teamNames: ["Cincinnati Reds"],
+        rule: "samePlayerInSet",
+        scope: "parallelOf",
+        mixed: false,
+        nodeNames: ["Gold"],
+        nodeCount: 1,
+        cardCount: 1,
+      },
     ]);
-    expect(result.groupsTotal).toBe(2);
+    expect(result.groupsTotal).toBe(3);
 
     // Nothing written by a preview.
-    for (const id of [underVariant, underInsert, underParallel, underSet]) {
+    for (const id of [underBase, starsTatis, goldBench, goldTatis, underSet]) {
       const row = await getCard(t, id);
       expect(row!.teamOnCardIds).toBeUndefined();
     }
   });
 
-  test("career groups come first, and a cross-node group's node names are capped with the count beside", async () => {
+  test("the E2E shape — a hand-built 'Base' with no isBase role, two single-player cards, one teamed — fills by the same node", async () => {
+    // set-fill-teams-from-teammate-card.yaml builds Insert › Base by hand;
+    // its variantType is named "Base" but carries no `metadata.isBase`. The
+    // teamless card fills from its teamed sibling under the same node, and
+    // the ledger clause is the one the flow full-matches.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, setNameId, variantTypeId, insertId } = await seedTree(t, { isBase: false });
+    const team = await insertTeam(t, sportId, "FTT Team");
+    const ftp = await insertPlayer(t, sportId, "FTP Player", []);
+    await insertCard(t, variantTypeId, { cardNumber: "781", playerIds: [ftp], teamOnCardIds: [team] });
+    const teamless = await insertCard(t, variantTypeId, { cardNumber: "782", playerIds: [ftp] });
+    // The same player, teamless, under the insert: with no base flagged there
+    // is no tier that reaches across nodes, so it stays.
+    const onInsert = await insertCard(t, insertId, { cardNumber: "S-1", playerIds: [ftp] });
+
+    const preview = await asAdmin.action(api.teamFill.previewTeamFill, {
+      selectorOptionId: setNameId,
+    });
+    expect(preview.fillable).toBe(1);
+    expect(preview.remaining).toBe(1);
+    expect(preview.byRule).toEqual({ samePlayerInSet: 1, oneTeamCareer: 0, oneStintInYear: 0 });
+    expect(preview.groups).toEqual([
+      {
+        playerNames: ["FTP Player"],
+        teamNames: ["FTT Team"],
+        rule: "samePlayerInSet",
+        scope: "sameNode",
+        mixed: false,
+        nodeNames: ["Base"],
+        nodeCount: 1,
+        cardCount: 1,
+      },
+    ]);
+
+    const result = await asAdmin.action(api.teamFill.applyTeamFill, {
+      selectorOptionId: setNameId,
+      expectedFillable: preview.fillable,
+    });
+    expect(result).toEqual({
+      applied: 1,
+      skipped: 0,
+      byRule: { samePlayerInSet: 1, oneTeamCareer: 0, oneStintInYear: 0 },
+    });
+    expect((await getCard(t, teamless))!.teamOnCardIds).toEqual([team]);
+    expect((await getCard(t, onInsert))!.teamOnCardIds).toBeUndefined();
+  });
+
+  test("a teamed card on ANOTHER insert is never evidence: the base card decides, or nothing does", async () => {
+    // Favre: a Jet on one insert, teamless on another. With the base flagged
+    // and the base card a Packer, the base wins; with the flag gone, the
+    // other insert still counts for nothing and the card remains.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, setNameId, variantTypeId, insertId } = await seedTree(t);
+    const otherInsertId = await t.run(async (ctx) => {
+      const id = await ctx.db.insert("selectorOptions", {
+        level: "insert",
+        value: "Legends",
+        platformData: {},
+        parentId: variantTypeId,
+        children: [],
+        lastUpdated: Date.now(),
+      });
+      const parent = await ctx.db.get(variantTypeId);
+      await ctx.db.patch(variantTypeId, { children: [...(parent?.children ?? []), id] });
+      return id;
+    });
+    const packers = await insertTeam(t, sportId, "Green Bay Packers");
+    const jets = await insertTeam(t, sportId, "New York Jets");
+    const favre = await insertPlayer(t, sportId, "Brett Favre", []);
+    await insertCard(t, otherInsertId, { cardNumber: "L-4", playerIds: [favre], teamOnCardIds: [jets] });
+    await insertCard(t, variantTypeId, { cardNumber: "4", playerIds: [favre], teamOnCardIds: [packers] });
+    const target = await insertCard(t, insertId, { cardNumber: "S-4", playerIds: [favre] });
+
+    const withBase = await asAdmin.action(api.teamFill.previewTeamFill, { selectorOptionId: setNameId });
+    expect(withBase.fillable).toBe(1);
+    expect(withBase.groups[0]).toMatchObject({
+      playerNames: ["Brett Favre"],
+      teamNames: ["Green Bay Packers"],
+      scope: "baseSet",
+      nodeNames: ["Stars"],
+    });
+
+    await t.run(async (ctx) => ctx.db.patch(variantTypeId, { metadata: {} }));
+    const withoutBase = await asAdmin.action(api.teamFill.previewTeamFill, { selectorOptionId: setNameId });
+    expect(withoutBase.fillable).toBe(0);
+    expect(withoutBase.remaining).toBe(1);
+    expect((await getCard(t, target))!.teamOnCardIds).toBeUndefined();
+  });
+
+  test("two variantTypes both flagged isBase: the base is ambiguous and tier 3 is skipped", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, setNameId, variantTypeId, insertId } = await seedTree(t);
+    await t.run(async (ctx) => {
+      const id = await ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Base Too",
+        platformData: {},
+        metadata: { isBase: true },
+        parentId: setNameId,
+        children: [],
+        lastUpdated: Date.now(),
+      });
+      const set = await ctx.db.get(setNameId);
+      await ctx.db.patch(setNameId, { children: [...(set?.children ?? []), id] });
+    });
+    const padres = await insertTeam(t, sportId, "San Diego Padres");
+    const tatis = await insertPlayer(t, sportId, "Fernando Tatis Jr.", []);
+    await insertCard(t, variantTypeId, { cardNumber: "1", playerIds: [tatis], teamOnCardIds: [padres] });
+    await insertCard(t, insertId, { cardNumber: "S-1", playerIds: [tatis] });
+
+    const result = await asAdmin.action(api.teamFill.previewTeamFill, { selectorOptionId: setNameId });
+    expect(result.fillable).toBe(0);
+    expect(result.remaining).toBe(1);
+  });
+
+  test("a combo card takes each player's own team — base for one, career for the other — and is flagged mixed", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, setNameId, variantTypeId, insertId } = await seedTree(t);
+    const padres = await insertTeam(t, sportId, "San Diego Padres");
+    const reds = await insertTeam(t, sportId, "Cincinnati Reds");
+    const tatis = await insertPlayer(t, sportId, "Fernando Tatis Jr.", []);
+    const bench = await insertPlayer(t, sportId, "Johnny Bench", [
+      { teamId: reds, fromYear: 1967, toYear: 1983 },
+    ]);
+    await insertCard(t, variantTypeId, { cardNumber: "1", playerIds: [tatis], teamOnCardIds: [padres] });
+    const combo = await insertCard(t, insertId, { cardNumber: "D-1", playerIds: [tatis, bench] });
+
+    const preview = await asAdmin.action(api.teamFill.previewTeamFill, { selectorOptionId: setNameId });
+    expect(preview.byRule).toEqual({ samePlayerInSet: 0, oneTeamCareer: 1, oneStintInYear: 0 });
+    expect(preview.groups).toEqual([
+      {
+        playerNames: ["Fernando Tatis Jr.", "Johnny Bench"],
+        teamNames: expect.arrayContaining(["San Diego Padres", "Cincinnati Reds"]),
+        rule: "oneTeamCareer",
+        scope: "career",
+        mixed: true,
+        nodeNames: ["Stars"],
+        nodeCount: 1,
+        cardCount: 1,
+      },
+    ]);
+
+    const result = await asAdmin.action(api.teamFill.applyTeamFill, {
+      selectorOptionId: setNameId,
+      expectedFillable: 1,
+    });
+    expect(result.applied).toBe(1);
+    const row = await getCard(t, combo);
+    expect(new Set(row!.teamOnCardIds)).toEqual(new Set([padres, reds]));
+  });
+
+  test("career groups come first, and a base-card group's node names are capped with the count beside", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { sportId, setNameId, variantTypeId } = await seedTree(t);
@@ -253,8 +427,8 @@ describe("previewTeamFill", () => {
       { teamId: reds, fromYear: 1967, toYear: 1983 },
     ]);
 
-    // Rule A evidence under the variantType; candidates under MORE inserts
-    // than the node cap, one card each — a big acrossSet group.
+    // Tatis's base card under the (isBase) variantType; candidates under
+    // MORE inserts than the node cap, one card each — a big baseSet group.
     await insertCard(t, variantTypeId, { cardNumber: "ev", playerIds: [tatis], teamOnCardIds: [padres] });
     const insertNames: string[] = [];
     for (let i = 0; i < TEAM_FILL_GROUP_NODE_CAP + 2; i += 1) {
@@ -284,7 +458,7 @@ describe("previewTeamFill", () => {
     });
     expect(result.groups.map((g) => [g.rule, g.scope, g.cardCount])).toEqual([
       ["oneTeamCareer", "career", 1],
-      ["samePlayerInSet", "acrossSet", TEAM_FILL_GROUP_NODE_CAP + 2],
+      ["samePlayerInSet", "baseSet", TEAM_FILL_GROUP_NODE_CAP + 2],
     ]);
     const borrow = result.groups[1];
     expect(borrow.nodeNames).toHaveLength(TEAM_FILL_GROUP_NODE_CAP);
@@ -592,6 +766,45 @@ describe("applyTeamFill", () => {
     expect(row!.teamOnCardIds).toEqual([dodgers]);
   });
 
+  test("writes a parallel's team from the card it copies, and a base-card read onto an insert", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, setNameId, variantTypeId, insertId, parallelId } = await seedTree(t);
+    const padres = await insertTeam(t, sportId, "San Diego Padres");
+    const reds = await insertTeam(t, sportId, "Cincinnati Reds");
+    const tatis = await insertPlayer(t, sportId, "Fernando Tatis Jr.", []);
+    const bench = await insertPlayer(t, sportId, "Johnny Bench", []);
+    const gwynn = await insertPlayer(t, sportId, "Tony Gwynn", []);
+    await insertCard(t, variantTypeId, { cardNumber: "1", playerIds: [tatis], teamOnCardIds: [padres] });
+    await insertCard(t, insertId, { cardNumber: "S-1", playerIds: [bench], teamOnCardIds: [reds] });
+    const goldBench = await insertCard(t, parallelId, { cardNumber: "S-1", playerIds: [bench] });
+    const starsTatis = await insertCard(t, insertId, { cardNumber: "S-2", playerIds: [tatis] });
+    // Same number as Gold S-1 but a different player: a different card, so
+    // Gold S-1 still has exactly one original.
+    await insertCard(t, insertId, { cardNumber: "S-1", playerIds: [gwynn], teamOnCardIds: [padres] });
+
+    const before = await asAdmin.action(api.teamFill.previewTeamFill, { selectorOptionId: setNameId });
+    expect(before.groups.map((g) => [g.scope, g.playerNames[0]])).toEqual([
+      ["baseSet", "Fernando Tatis Jr."],
+      ["parallelOf", "Johnny Bench"],
+    ]);
+
+    const result = await asAdmin.action(api.teamFill.applyTeamFill, {
+      selectorOptionId: setNameId,
+      expectedFillable: before.fillable,
+    });
+    expect(result).toEqual({
+      applied: 2,
+      skipped: 0,
+      byRule: { samePlayerInSet: 2, oneTeamCareer: 0, oneStintInYear: 0 },
+    });
+    expect((await getCard(t, goldBench))!.teamOnCardIds).toEqual([reds]);
+    expect((await getCard(t, starsTatis))!.teamOnCardIds).toEqual([padres]);
+
+    const preview = await asAdmin.action(api.teamFill.previewTeamFill, { selectorOptionId: setNameId });
+    expect(preview.fillable).toBe(0); // both written; the preview now finds nothing
+  });
+
   test("more fills than one apply chunk: every one is still applied", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
@@ -618,6 +831,43 @@ describe("applyTeamFill", () => {
       const row = await getCard(t, id);
       expect(row!.teamOnCardIds).toEqual([padres]);
     }
+  });
+});
+
+// ===========================================================================
+// listTeamFillSubtree — the nodes and their roles
+// ===========================================================================
+
+describe("listTeamFillSubtree", () => {
+  test("returns the root first, then every descendant with its level, parent and isBase role", async () => {
+    const t = convexTest(schema, modules);
+    const { setNameId, variantTypeId, insertId, parallelId } = await seedTree(t);
+    const result = await t.query(internal.teamFill.listTeamFillSubtree, {
+      selectorOptionId: setNameId,
+    });
+    expect(result.nodes[0]).toEqual({ _id: setNameId, level: "setName", parentId: expect.any(String), isBase: false });
+    expect(result.nodes.slice(1)).toEqual(
+      expect.arrayContaining([
+        { _id: variantTypeId, level: "variantType", parentId: setNameId, isBase: true },
+        { _id: insertId, level: "insert", parentId: variantTypeId, isBase: false },
+        { _id: parallelId, level: "parallel", parentId: insertId, isBase: false },
+      ]),
+    );
+    expect(result.nodes).toHaveLength(4);
+    expect(result.setYear).toBe(2024);
+  });
+
+  test("isBase is the metadata ROLE, never the display value", async () => {
+    const t = convexTest(schema, modules);
+    const { setNameId, variantTypeId } = await seedTree(t, { isBase: false });
+    const result = await t.query(internal.teamFill.listTeamFillSubtree, {
+      selectorOptionId: setNameId,
+    });
+    const base = result.nodes.find((node) => node._id === variantTypeId);
+    expect(base).toMatchObject({ level: "variantType", isBase: false });
+    // The row IS named "Base"; that is exactly what must not count.
+    const row = await t.run(async (ctx) => ctx.db.get(variantTypeId));
+    expect(row!.value).toBe("Base");
   });
 });
 
@@ -705,6 +955,18 @@ describe("readTeamFillCards", () => {
       expect(page.done).toBe(false);
       expect(page.cursor).not.toBeNull();
     }
+  });
+
+  test("projects the card number, which tier 2 matches on", async () => {
+    const t = convexTest(schema, modules);
+    const { setNameId } = await seedTree(t);
+    const id = await insertCard(t, setNameId, { cardNumber: "S-7" });
+    const page = await t.query(internal.teamFill.readTeamFillCards, {
+      nodeIds: [setNameId],
+      nodeIndex: 0,
+      budget: 10,
+    });
+    expect(page.cards.find((card) => card._id === id)!.cardNumber).toBe("S-7");
   });
 
   test("projects hasPendingTeamNames as a boolean, never the strings themselves", async () => {

@@ -61,6 +61,7 @@ import {
   findSetYearForSelectorOption,
   parseYear,
 } from "./lib/selectorAncestry";
+import { selectorOptionLevelValidator } from "./schema";
 import { findSportForSelectorOption } from "./cardChecklist";
 import { MAX_CARD_TEAMS } from "./features/cardAttention";
 import { teamFullName } from "../lib/teams/team-name";
@@ -69,6 +70,7 @@ import {
   planTeamFill,
   splitKey,
   type TeamFillCard,
+  type TeamFillNode,
   type TeamFillPlan,
   type TeamFillRule,
   type TeamFillScope,
@@ -99,7 +101,8 @@ const ruleValidator = v.union(
 
 const scopeValidator = v.union(
   v.literal("sameNode"),
-  v.literal("acrossSet"),
+  v.literal("parallelOf"),
+  v.literal("baseSet"),
   v.literal("career"),
 );
 
@@ -112,6 +115,7 @@ const byRuleValidator = v.object({
 const projectedCardValidator = v.object({
   _id: v.id("cardChecklist"),
   selectorOptionId: v.id("selectorOptions"),
+  cardNumber: v.string(),
   playerIds: v.array(v.id("players")),
   teamOnCardIds: v.array(v.id("teams")),
   hasPendingTeamNames: v.boolean(),
@@ -123,6 +127,7 @@ const projectedCardValidator = v.object({
 type ProjectedCard = {
   _id: Id<"cardChecklist">;
   selectorOptionId: Id<"selectorOptions">;
+  cardNumber: string;
   playerIds: Array<Id<"players">>;
   teamOnCardIds: Array<Id<"teams">>;
   hasPendingTeamNames: boolean;
@@ -131,8 +136,17 @@ type ProjectedCard = {
   hasBscRef: boolean;
 };
 
+type SubtreeNode = {
+  _id: Id<"selectorOptions">;
+  level: Doc<"selectorOptions">["level"];
+  parentId: Id<"selectorOptions"> | null;
+  /** `metadata.isBase === true` — the NB role, never the display value. */
+  isBase: boolean;
+};
+
 type SubtreeResult = {
-  nodeIds: Array<Id<"selectorOptions">>;
+  /** The `setName` root first, then every descendant. */
+  nodes: Array<SubtreeNode>;
   setYear: number | null;
   sportId: Id<"selectorOptions"> | null;
 };
@@ -156,19 +170,35 @@ type PlayerRow = {
 type TeamRow = { _id: Id<"teams">; name: string; sportId: Id<"selectorOptions"> };
 
 /**
- * The set's subtree: the `setName` row and everything beneath it, plus the two
- * set-level facts the rules compare against.
+ * The set's subtree: the `setName` row and everything beneath it — each node
+ * with the three facts the tiers read (its level and parent, so a parallel
+ * knows which node it copies; its `isBase` role, so the base checklist is
+ * found by flag and never by name) — plus the two set-level facts the rules
+ * compare against.
  *
  * Refuses any other level. A variantType or parallel row is a slice of a set,
- * and rule A's evidence is "the same player elsewhere in THIS SET" — asked
- * from a parallel it would see only that parallel's cards and miss the base
- * card carrying the answer. Asked from above the set (a year, a brand) it
- * would treat one set's teams as evidence for another's, which they are not.
+ * and tier 3's evidence is "the base card of THIS SET" — asked from a
+ * parallel it would see only that parallel's cards and miss the base card
+ * carrying the answer. Asked from above the set (a year, a brand) it would
+ * treat one set's teams as evidence for another's, which they are not.
+ *
+ * Each descendant is read twice — once by the shared walk, once here for its
+ * fields. The walk is deliberately the one every subtree writer imports
+ * (`collectDescendantIds`), so the planner sees exactly the rows the NEO-277
+ * cascade would touch; a set's nodes number in the tens, so the second read
+ * is cheap and keeps that guarantee.
  */
 export const listTeamFillSubtree = internalQuery({
   args: { selectorOptionId: v.id("selectorOptions") },
   returns: v.object({
-    nodeIds: v.array(v.id("selectorOptions")),
+    nodes: v.array(
+      v.object({
+        _id: v.id("selectorOptions"),
+        level: selectorOptionLevelValidator,
+        parentId: v.union(v.id("selectorOptions"), v.null()),
+        isBase: v.boolean(),
+      }),
+    ),
     setYear: v.union(v.number(), v.null()),
     sportId: v.union(v.id("selectorOptions"), v.null()),
   }),
@@ -179,15 +209,31 @@ export const listTeamFillSubtree = internalQuery({
       throw new ConvexError("Fill teams from the set row, not a variant or parallel.");
     }
     const descendantIds = await collectDescendantIds(ctx, root._id);
+    const nodes: Array<SubtreeNode> = [projectNode(root)];
+    for (const id of descendantIds) {
+      const row = await ctx.db.get(id);
+      // A child pointer whose row is gone mid-walk: nothing to read cards
+      // from, so nothing to plan for.
+      if (row) nodes.push(projectNode(row));
+    }
     const setYear = await findSetYearForSelectorOption(ctx, root._id);
     const sportId = await findSportForSelectorOption(ctx, root._id);
     return {
-      nodeIds: [root._id, ...descendantIds],
+      nodes,
       setYear: setYear ?? null,
       sportId: sportId ?? null,
     };
   },
 });
+
+function projectNode(row: Doc<"selectorOptions">): SubtreeNode {
+  return {
+    _id: row._id,
+    level: row.level,
+    parentId: row.parentId ?? null,
+    isBase: row.metadata?.isBase === true,
+  };
+}
 
 /**
  * One page of the subtree's cards, projected to the fields the planner reads.
@@ -276,6 +322,7 @@ function projectCard(card: Doc<"cardChecklist">): ProjectedCard {
   return {
     _id: card._id,
     selectorOptionId: card.selectorOptionId,
+    cardNumber: card.cardNumber,
     playerIds: card.playerIds ?? [],
     teamOnCardIds: card.teamOnCardIds ?? [],
     hasPendingTeamNames: (card.pendingTeamNames?.length ?? 0) > 0,
@@ -393,6 +440,22 @@ async function computeTeamFillPlan(
     selectorOptionId,
   });
 
+  const nodeIds = subtree.nodes.map((node) => node._id);
+  const nodesById = new Map<string, TeamFillNode>();
+  for (const node of subtree.nodes) {
+    nodesById.set(node._id, {
+      level: node.level,
+      ...(node.parentId !== null ? { parentId: node.parentId } : {}),
+    });
+  }
+  // The base checklist, by ROLE. Exactly one flagged variantType is the
+  // normal shape (`setBaseVariantType` clears the siblings); none means a set
+  // that has not been told which is its base, and tier 3 is skipped rather
+  // than guessed. More than one is a data fault, and guessing between them
+  // would be a fill from the wrong checklist — skipped the same way.
+  const baseNodes = subtree.nodes.filter((node) => node.level === "variantType" && node.isBase);
+  const baseNodeId = baseNodes.length === 1 ? baseNodes[0]._id : null;
+
   const cards: Array<TeamFillCard> = [];
   const seasonByNodeId = new Map<string, number | null>();
   const nameByNodeId = new Map<string, string>();
@@ -400,7 +463,7 @@ async function computeTeamFillPlan(
   let cursor: number | undefined;
   for (;;) {
     const page: CardsPage = await ctx.runQuery(internal.teamFill.readTeamFillCards, {
-      nodeIds: subtree.nodeIds,
+      nodeIds,
       nodeIndex,
       ...(cursor !== undefined ? { cursor } : {}),
       budget: TEAM_FILL_CARD_PAGE,
@@ -415,7 +478,7 @@ async function computeTeamFillPlan(
 
   // Rule C's year per node: the node's own season, else the set's year.
   const yearByNodeId = new Map<string, number | undefined>();
-  for (const nodeId of subtree.nodeIds) {
+  for (const nodeId of nodeIds) {
     const season = seasonByNodeId.get(nodeId);
     yearByNodeId.set(nodeId, season ?? subtree.setYear ?? undefined);
   }
@@ -434,7 +497,14 @@ async function computeTeamFillPlan(
   }
 
   const currentYear = new Date().getFullYear();
-  const firstPass = planTeamFill({ cards, playersById, yearByNodeId, currentYear });
+  const firstPass = planTeamFill({
+    cards,
+    playersById,
+    yearByNodeId,
+    nodesById,
+    baseNodeId,
+    currentYear,
+  });
 
   const teamIds = new Set<Id<"teams">>();
   for (const fill of firstPass.fills) for (const id of fill.teamIds) teamIds.add(id);
@@ -451,7 +521,15 @@ async function computeTeamFillPlan(
     teamIdsThatExist.add(team._id);
   }
 
-  const plan = planTeamFill({ cards, playersById, teamIdsThatExist, yearByNodeId, currentYear });
+  const plan = planTeamFill({
+    cards,
+    playersById,
+    teamIdsThatExist,
+    yearByNodeId,
+    nodesById,
+    baseNodeId,
+    currentYear,
+  });
   return {
     plan,
     setYear: subtree.setYear,
@@ -467,6 +545,8 @@ const previewGroupValidator = v.object({
   teamNames: v.array(v.string()),
   rule: ruleValidator,
   scope: scopeValidator,
+  /** The card's players resolved through different tiers; `rule`/`scope` name the riskiest. */
+  mixed: v.boolean(),
   /** Display names of the nodes the group writes to — at most `TEAM_FILL_GROUP_NODE_CAP`. */
   nodeNames: v.array(v.string()),
   /** How many distinct nodes the group writes to in total. */
@@ -485,6 +565,7 @@ type PreviewResult = {
     teamNames: Array<string>;
     rule: TeamFillRule;
     scope: TeamFillScope;
+    mixed: boolean;
     nodeNames: Array<string>;
     nodeCount: number;
     cardCount: number;
@@ -496,8 +577,9 @@ type PreviewResult = {
  * What "Fill teams" would do to this set, as counts and named groups, so the
  * operator confirms a specific promise ("42 cards, Tony Gwynn → San Diego
  * Padres ×12, …") rather than a button. Groups arrive riskiest first (see
- * `planTeamFill`), and a group that borrows a team from another node names
- * the nodes it would write to. Writes nothing.
+ * `planTeamFill`), and a group that reaches past the card's own node — the
+ * base card, the player's career — names the nodes it would write to.
+ * Writes nothing.
  */
 export const previewTeamFill = action({
   args: { selectorOptionId: v.id("selectorOptions") },
@@ -532,6 +614,7 @@ export const previewTeamFill = action({
           .filter((name): name is string => name !== undefined),
         rule: group.rule,
         scope: group.scope,
+        mixed: group.mixed,
         // A node the walk did not name is one that vanished mid-walk; its
         // cards will be re-checked at apply, so only the label loses a name.
         nodeNames: group.nodeIds

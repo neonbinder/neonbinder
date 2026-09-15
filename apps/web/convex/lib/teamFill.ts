@@ -20,42 +20,71 @@
  * silent: nothing here runs from a sync, a cron or a creation path. It writes
  * only `teamOnCardIds` on cards that are still empty at apply time, and never
  * `players.teamYears` — a card's printed team and a player's career are
- * different facts (see `suggestedTeamsForCard`), and a set is evidence for
- * its own cards only.
+ * different facts (see `suggestedTeamsForCard`).
  *
- * ## Three rules, first answer wins
+ * ## The tiers, first answer wins
  *
- *  A. **Same player(s), same set.** Every card in the set subtree with
- *     exactly these players and a non-empty `teamOnCardIds` is evidence, read
- *     at two widths, nearest first:
- *       - `sameNode`  — evidence under the candidate's OWN node (the same
- *         insert, the same parallel). One distinct team set → fill with it.
- *       - `acrossSet` — otherwise, evidence anywhere in the subtree. One
- *         distinct team set → fill with it.
- *     Two or more distinct sets at a width → the set disagrees with itself
- *     there (a traded player's base card vs. his update card) and A stays
- *     silent at that width rather than pick one; ambiguous at both widths and
- *     B and C get a turn. The width is recorded on the decision because a
- *     team borrowed from another node is a longer reach, and the preview
- *     lists those first and names the nodes it would write to.
- *     Evidence is what was read: a fill made by this run is never evidence
- *     for another card in the same run, so the result does not depend on the
- *     order cards were read.
- *  B. **One-team career.** Every player on the card has at least one stint
- *     and every stint names the same team, and all players name that one
- *     team. This is what answers the retired-player case: a 1960s Yankee on a
- *     2026 insert has no stint covering 2026, but he only ever had one team.
- *  C. **One stint covering the set year.** For each player, exactly one stint
- *     spans the card's year (`fromYear <= year <= (toYear ?? currentYear)`,
- *     an open stint being a current team), and all players land on the same
- *     team. A node's own `features.season` outranks the set's year — the same
- *     precedence `findSetYearForSelectorOption` applies — and a node with no
- *     resolvable year skips C.
+ * Evidence is the rows AS READ: a fill made by this run is never evidence for
+ * another card in the same run, so the result does not depend on the order
+ * cards were read.
  *
- * Multi-player cards require EVERY player to agree under B and C. A League
- * Leaders card whose three players span three teams gets no fill and stays
- * in the attention lane, which is the right place for it: there is no single
- * team a rule could honestly assert.
+ * Two WHOLE-CARD tiers first — they answer for the card as printed:
+ *
+ *  1. **sameNode.** Cards under the candidate's OWN node (the same insert,
+ *     the same parallel) with the identical player set and a non-empty
+ *     `teamOnCardIds`. Exactly one distinct team set → fill with it. Two or
+ *     more → the node disagrees with itself (a traded player's base card vs.
+ *     the update card) and the tier stays silent rather than pick one.
+ *  2. **parallelOf.** Only when the candidate's node is a `parallel`: a
+ *     parallel is, by definition, the same card printed again, so the card it
+ *     parallels — the one under the parent node with the SAME card number AND
+ *     the identical player set — carries its team. Exactly one such card, and
+ *     it has a team → fill with that team set. Card numbers are never unique
+ *     at any scope (product invariant 7), so the player set is part of the
+ *     match and two matches means no answer; and a number match with
+ *     different players is a different card, never evidence.
+ *
+ * Then PER PLAYER, each player on the card independently, in this order:
+ *
+ *  3. **baseSet.** The base checklist is the cards under the variantType
+ *     node flagged `metadata.isBase` (an NB role, never the literal "Base");
+ *     a set with no flagged node skips this tier. A player's SINGLE-player
+ *     base cards with a team are that player's evidence; exactly one distinct
+ *     team set → that is their team here. A candidate that is itself in the
+ *     base checklist skips this tier — tier 1 already was its base.
+ *  B. **One-team career.** Every stint the player has names the same team.
+ *     This is what answers the retired-player case: a 1960s Yankee on a 2026
+ *     insert has no stint covering 2026, but that career has one team.
+ *  C. **One stint covering the node's year.** Exactly one stint spans the
+ *     card's year (`fromYear <= year <= (toYear ?? currentYear)`, an open
+ *     stint being a current team). A node's own `features.season` outranks
+ *     the set's year — the same precedence `findSetYearForSelectorOption`
+ *     applies — and a node with no resolvable year skips C.
+ *
+ * The card's team set is the UNION of every player's answer, deduped: a
+ * League Leaders card is frequently one team per player, and the honest fill
+ * is all of them. ANY player unresolved or ambiguous → the card stays in the
+ * attention lane, no partial fill; a union past `MAX_CARD_TEAMS` likewise.
+ * A single-player card is the degenerate case and resolves exactly as one
+ * answer would.
+ *
+ * ## What is deliberately NOT evidence
+ *
+ * Another insert's cards. "Brett Favre could be a Jet in one insert and a
+ * Packer in another" — a team borrowed across inserts is a guess dressed as a
+ * fact, so there is no whole-set tier. The base set is the one cross-node
+ * source, because it is the set's statement of who a player is here, and it
+ * is read per player and single-player-card only so a combo card's team list
+ * never leaks onto a solo card.
+ *
+ * ## Attribution
+ *
+ * A decision carries a `rule` (what the preview counts by — tiers 1–3 are
+ * all `samePlayerInSet`, B is `oneTeamCareer`, C is `oneStintInYear`) and a
+ * `scope` (how far it reached). When a card's players resolved through
+ * different tiers the card is attributed to the RISKIEST one and flagged
+ * `mixed`, so the ledger can say "each player's own team" and sort it where a
+ * second look pays.
  *
  * ## Pure by contract
  *
@@ -66,18 +95,24 @@
  */
 
 import type { Id } from "../_generated/dataModel";
+import { MAX_CARD_TEAMS } from "../features/cardAttention";
 import { sameTeamSet } from "./selectorTeams";
 
 export type TeamFillRule = "samePlayerInSet" | "oneTeamCareer" | "oneStintInYear";
 
 /**
- * How far a decision reached for its evidence. `sameNode` and `acrossSet`
- * are rule A's two widths; `career` is rules B and C, whose evidence is the
- * player row rather than the set. It is on the decision (not derivable from
- * the rule) so the preview can rank a cross-node borrow as riskier than a
- * same-node one, and say which nodes it touches.
+ * How far a decision reached for its evidence, riskiest last:
+ *
+ *   - `parallelOf` — the card it parallels: the same card by definition.
+ *   - `sameNode`   — the same player under the same node.
+ *   - `baseSet`    — the player's base card, read across nodes.
+ *   - `career`     — rules B and C, whose evidence is the player row, not
+ *                    the set.
+ *
+ * It is on the decision (not derivable from the rule) so the preview can rank
+ * a reach and say which nodes it touches.
  */
-export type TeamFillScope = "sameNode" | "acrossSet" | "career";
+export type TeamFillScope = "sameNode" | "parallelOf" | "baseSet" | "career";
 
 /** How many distinct target nodes a group names; `nodeCount` carries the rest. */
 export const TEAM_FILL_GROUP_NODE_CAP = 4;
@@ -91,6 +126,8 @@ export const TEAM_FILL_GROUP_NODE_CAP = 4;
 export type TeamFillCard = {
   _id: Id<"cardChecklist">;
   selectorOptionId: Id<"selectorOptions">;
+  /** Tier 2 matches on it; a card without one is never a parallel match. */
+  cardNumber?: string;
   playerIds?: ReadonlyArray<Id<"players">>;
   teamOnCardIds?: ReadonlyArray<Id<"teams">>;
   pendingTeamNames?: ReadonlyArray<string>;
@@ -108,11 +145,19 @@ export type TeamFillPlayer = {
   teamYears?: ReadonlyArray<{ teamId: Id<"teams">; fromYear: number; toYear?: number }>;
 };
 
+/** What the planner needs to know about a node of the subtree. */
+export type TeamFillNode = {
+  level: string;
+  parentId?: Id<"selectorOptions">;
+};
+
 export type TeamFillDecision = {
   cardId: Id<"cardChecklist">;
   teamIds: Array<Id<"teams">>;
   rule: TeamFillRule;
   scope: TeamFillScope;
+  /** The card's players resolved through different tiers; `rule`/`scope` name the riskiest. */
+  mixed: boolean;
 };
 
 export type TeamFillGroup = {
@@ -122,6 +167,7 @@ export type TeamFillGroup = {
   teamKey: string;
   rule: TeamFillRule;
   scope: TeamFillScope;
+  mixed: boolean;
   /** Distinct nodes the group's cards sit under, in first-seen order, at most `TEAM_FILL_GROUP_NODE_CAP`. */
   nodeIds: Array<Id<"selectorOptions">>;
   /** How many distinct nodes there were before the cap. */
@@ -132,12 +178,12 @@ export type TeamFillGroup = {
 export type TeamFillPlan = {
   fills: Array<TeamFillDecision>;
   byRule: Record<TeamFillRule, number>;
-  /** Candidates no rule could answer, plus fills dropped by `teamIdsThatExist`. */
+  /** Candidates no tier could answer, plus fills dropped by `teamIdsThatExist`. */
   remaining: number;
   /**
-   * Distinct (players, teams, rule, scope) groups, riskiest first: career
-   * rules (B, C), then A across the set, then A within a node; most cards
-   * first inside a tier. Capped.
+   * Distinct (rule, scope, mixed, players, teams) groups, riskiest first:
+   * career (B, C), then the base set, then the same node, then the card a
+   * parallel copies; most cards first inside a tier. Capped.
    */
   groups: Array<TeamFillGroup>;
   /** How many groups there were before the cap, so the UI can say "and N more". */
@@ -181,7 +227,7 @@ export function isTeamFillCandidate(card: TeamFillCard): boolean {
 
 /**
  * Order-insensitive, duplicate-insensitive identity for a card's players — a
- * dual-auto of one player twice and a card listing him once are the same
+ * dual-auto of one player twice and a card listing them once are the same
  * evidence. The same key is what a preview group is named by.
  */
 export function playerKey(playerIds: ReadonlyArray<Id<"players">>): string {
@@ -202,22 +248,26 @@ function distinctTeamIds(player: TeamFillPlayer): Array<Id<"teams">> {
   return [...new Set<Id<"teams">>((player.teamYears ?? []).map((entry) => entry.teamId))];
 }
 
+type TeamSets = Array<Array<Id<"teams">>>;
+
 type Evidence = {
-  /** `playerKey` → distinct team sets seen anywhere in the subtree. */
-  acrossSet: Map<string, Array<Array<Id<"teams">>>>;
-  /** `nodeId + "\n" + playerKey` → distinct team sets seen under that node. */
-  sameNode: Map<string, Array<Array<Id<"teams">>>>;
+  /** `nodeId + "\n" + playerKey` → distinct team sets seen under that node (tier 1). */
+  sameNode: Map<string, TeamSets>;
+  /** `nodeId + "\n" + cardNumber + "\n" + playerKey` → EVERY card there, teamed or not (tier 2). */
+  byNumber: Map<string, Array<TeamFillCard>>;
+  /** `playerId` → distinct team sets on that player's SINGLE-player base cards (tier 3). */
+  base: Map<string, TeamSets>;
 };
 
 function sameNodeKey(nodeId: Id<"selectorOptions">, pKey: string): string {
   return `${nodeId}\n${pKey}`;
 }
 
-function addEvidence(
-  map: Map<string, Array<Array<Id<"teams">>>>,
-  key: string,
-  teams: ReadonlyArray<Id<"teams">>,
-): void {
+function byNumberKey(nodeId: Id<"selectorOptions">, cardNumber: string, pKey: string): string {
+  return `${nodeId}\n${cardNumber}\n${pKey}`;
+}
+
+function addTeamSet(map: Map<string, TeamSets>, key: string, teams: ReadonlyArray<Id<"teams">>): void {
   const sets = map.get(key) ?? [];
   if (!sets.some((seen) => sameTeamSet(seen, teams))) {
     sets.push([...new Set<Id<"teams">>(teams)]);
@@ -226,60 +276,185 @@ function addEvidence(
 }
 
 /**
- * Rule A's evidence, built once at both widths. Each value is the list of
- * DISTINCT team sets seen among teamed cards with those players; two entries
- * means the set disagrees with itself at that width and A declines there.
+ * Every tier's evidence, built once from the rows as read. Each team-set
+ * value is the list of DISTINCT sets seen; two entries means the source
+ * disagrees with itself there and the tier declines.
  */
-function buildSamePlayerEvidence(cards: ReadonlyArray<TeamFillCard>): Evidence {
-  const evidence: Evidence = { acrossSet: new Map(), sameNode: new Map() };
+function buildEvidence(
+  cards: ReadonlyArray<TeamFillCard>,
+  baseNodeId: Id<"selectorOptions"> | null,
+): Evidence {
+  const evidence: Evidence = { sameNode: new Map(), byNumber: new Map(), base: new Map() };
   for (const card of cards) {
     const players = card.playerIds ?? [];
-    const teams = card.teamOnCardIds ?? [];
-    if (players.length === 0 || teams.length === 0) continue;
+    if (players.length === 0) continue;
     const key = playerKey(players);
-    addEvidence(evidence.acrossSet, key, teams);
-    addEvidence(evidence.sameNode, sameNodeKey(card.selectorOptionId, key), teams);
+    if (card.cardNumber !== undefined) {
+      const numberKey = byNumberKey(card.selectorOptionId, card.cardNumber, key);
+      const matches = evidence.byNumber.get(numberKey) ?? [];
+      matches.push(card);
+      evidence.byNumber.set(numberKey, matches);
+    }
+    const teams = card.teamOnCardIds ?? [];
+    if (teams.length === 0) continue;
+    addTeamSet(evidence.sameNode, sameNodeKey(card.selectorOptionId, key), teams);
+    if (baseNodeId !== null && card.selectorOptionId === baseNodeId) {
+      const distinct = splitKey<Id<"players">>(key);
+      if (distinct.length === 1) addTeamSet(evidence.base, distinct[0], teams);
+    }
   }
   return evidence;
 }
 
-/** The single team set at a width, or undefined when none or several. */
-function soleTeamSet(
-  sets: Array<Array<Id<"teams">>> | undefined,
-): Array<Id<"teams">> | undefined {
+/** The single team set, or undefined when none or several. */
+function soleTeamSet(sets: TeamSets | undefined): Array<Id<"teams">> | undefined {
   return sets && sets.length === 1 ? [...sets[0]] : undefined;
 }
 
 /**
  * Sort tier for the preview: the further a decision reached, the earlier it
- * is listed, so an operator scanning the top of the ledger sees the borrows
- * most worth a second look.
+ * is listed, so an operator scanning the top of the ledger sees the fills
+ * most worth a second look. The card a parallel copies is the same card by
+ * definition, so it lists last.
  */
-function riskTier(rule: TeamFillRule, scope: TeamFillScope): number {
-  if (rule !== "samePlayerInSet") return 0;
-  return scope === "acrossSet" ? 1 : 2;
+function riskTier(scope: TeamFillScope): number {
+  switch (scope) {
+    case "career":
+      return 0;
+    case "baseSet":
+      return 1;
+    case "sameNode":
+      return 2;
+    case "parallelOf":
+      return 3;
+  }
 }
 
 /**
- * The one team every player on the card agrees on under `pick`, or undefined
- * when any player is unknown, gives no answer, gives more than one, or
- * disagrees with another. Shared by B and C, which differ only in `pick`.
+ * How risky each per-player tier is, for attributing a mixed card: a stint
+ * inferred from a year is the longest reach, a one-team career next, the
+ * base card the shortest. Higher is riskier.
  */
-function agreedTeam(
-  playerIds: ReadonlyArray<Id<"players">>,
-  playersById: ReadonlyMap<string, TeamFillPlayer>,
-  pick: (player: TeamFillPlayer) => Array<Id<"teams">>,
-): Id<"teams"> | undefined {
-  let agreed: Id<"teams"> | undefined;
-  for (const playerId of new Set<Id<"players">>(playerIds)) {
-    const player = playersById.get(playerId);
-    if (!player) return undefined;
-    const picked = pick(player);
-    if (picked.length !== 1) return undefined;
-    if (agreed === undefined) agreed = picked[0];
-    else if (agreed !== picked[0]) return undefined;
+function playerTierRisk(tier: PlayerTier): number {
+  switch (tier) {
+    case "baseSet":
+      return 0;
+    case "oneTeamCareer":
+      return 1;
+    case "oneStintInYear":
+      return 2;
   }
-  return agreed;
+}
+
+type PlayerTier = "baseSet" | "oneTeamCareer" | "oneStintInYear";
+
+type PlayerAnswer = { teamIds: Array<Id<"teams">>; tier: PlayerTier };
+
+/**
+ * One player's answer through tiers 3 → B → C, or undefined when none can
+ * honestly give one. `inBase` is true when the candidate itself sits in the
+ * base checklist, which makes tier 3 a repeat of tier 1 and so skipped.
+ */
+function resolvePlayer(input: {
+  playerId: Id<"players">;
+  player: TeamFillPlayer | undefined;
+  evidence: Evidence;
+  inBase: boolean;
+  year: number | undefined;
+  currentYear: number;
+}): PlayerAnswer | undefined {
+  const { playerId, player, evidence, inBase, year, currentYear } = input;
+
+  if (!inBase) {
+    const fromBase = soleTeamSet(evidence.base.get(playerId));
+    if (fromBase) return { teamIds: fromBase, tier: "baseSet" };
+  }
+
+  if (!player) return undefined;
+
+  const career = distinctTeamIds(player);
+  if (career.length === 1) return { teamIds: career, tier: "oneTeamCareer" };
+
+  if (year !== undefined) {
+    const inYear = new Set<Id<"teams">>();
+    for (const entry of player.teamYears ?? []) {
+      if (entry.fromYear <= year && year <= (entry.toYear ?? currentYear)) inYear.add(entry.teamId);
+    }
+    if (inYear.size === 1) return { teamIds: [...inYear], tier: "oneStintInYear" };
+  }
+
+  return undefined;
+}
+
+type Decision = Omit<TeamFillDecision, "cardId">;
+
+/** Tier 1: the same players teamed under the same node, one way. */
+function decideSameNode(card: TeamFillCard, pKey: string, evidence: Evidence): Decision | undefined {
+  const nearby = soleTeamSet(evidence.sameNode.get(sameNodeKey(card.selectorOptionId, pKey)));
+  if (!nearby) return undefined;
+  return { teamIds: nearby, rule: "samePlayerInSet", scope: "sameNode", mixed: false };
+}
+
+/** Tier 2: the one card under the parent node this parallel is a copy of. */
+function decideParallelOf(
+  card: TeamFillCard,
+  pKey: string,
+  evidence: Evidence,
+  nodesById: ReadonlyMap<string, TeamFillNode>,
+): Decision | undefined {
+  const node = nodesById.get(card.selectorOptionId);
+  if (!node || node.level !== "parallel" || node.parentId === undefined) return undefined;
+  if (card.cardNumber === undefined) return undefined;
+  const matches = evidence.byNumber.get(byNumberKey(node.parentId, card.cardNumber, pKey));
+  if (!matches || matches.length !== 1) return undefined;
+  const teams = matches[0].teamOnCardIds ?? [];
+  if (teams.length === 0) return undefined;
+  return {
+    teamIds: [...new Set<Id<"teams">>(teams)],
+    rule: "samePlayerInSet",
+    scope: "parallelOf",
+    mixed: false,
+  };
+}
+
+/** Tiers 3 → B → C, per player, unioned; undefined when any player has no answer. */
+function decidePerPlayer(input: {
+  card: TeamFillCard;
+  players: ReadonlyArray<Id<"players">>;
+  playersById: ReadonlyMap<string, TeamFillPlayer>;
+  evidence: Evidence;
+  baseNodeId: Id<"selectorOptions"> | null;
+  year: number | undefined;
+  currentYear: number;
+}): Decision | undefined {
+  const { card, players, playersById, evidence, baseNodeId, year, currentYear } = input;
+  const inBase = baseNodeId !== null && card.selectorOptionId === baseNodeId;
+  const union = new Set<Id<"teams">>();
+  const tiers = new Set<PlayerTier>();
+  let riskiest: PlayerTier | undefined;
+  for (const playerId of new Set<Id<"players">>(players)) {
+    const answer = resolvePlayer({
+      playerId,
+      player: playersById.get(playerId),
+      evidence,
+      inBase,
+      year,
+      currentYear,
+    });
+    if (!answer) return undefined;
+    for (const teamId of answer.teamIds) union.add(teamId);
+    tiers.add(answer.tier);
+    if (riskiest === undefined || playerTierRisk(answer.tier) > playerTierRisk(riskiest)) {
+      riskiest = answer.tier;
+    }
+  }
+  if (riskiest === undefined || union.size === 0 || union.size > MAX_CARD_TEAMS) return undefined;
+  return {
+    teamIds: [...union],
+    rule: riskiest === "baseSet" ? "samePlayerInSet" : riskiest,
+    scope: riskiest === "baseSet" ? "baseSet" : "career",
+    mixed: tiers.size > 1,
+  };
 }
 
 /**
@@ -299,10 +474,15 @@ export function planTeamFill(input: {
   teamIdsThatExist?: ReadonlySet<string>;
   /** Per node: its own season year, else the set's year, else undefined. */
   yearByNodeId: ReadonlyMap<string, number | undefined>;
+  /** Per node: level and parent, so tier 2 knows which node a parallel copies. */
+  nodesById: ReadonlyMap<string, TeamFillNode>;
+  /** The variantType node flagged `metadata.isBase`, or null when the set has none. */
+  baseNodeId: Id<"selectorOptions"> | null;
   currentYear: number;
 }): TeamFillPlan {
-  const { cards, playersById, teamIdsThatExist, yearByNodeId, currentYear } = input;
-  const evidence = buildSamePlayerEvidence(cards);
+  const { cards, playersById, teamIdsThatExist, yearByNodeId, nodesById, baseNodeId, currentYear } =
+    input;
+  const evidence = buildEvidence(cards, baseNodeId);
 
   const fills: Array<TeamFillDecision> = [];
   const byRule: Record<TeamFillRule, number> = {
@@ -323,40 +503,18 @@ export function planTeamFill(input: {
     const players = card.playerIds ?? [];
     const pKey = playerKey(players);
 
-    let decision:
-      | { teamIds: Array<Id<"teams">>; rule: TeamFillRule; scope: TeamFillScope }
-      | undefined;
-
-    const nearby = soleTeamSet(evidence.sameNode.get(sameNodeKey(card.selectorOptionId, pKey)));
-    if (nearby) {
-      decision = { teamIds: nearby, rule: "samePlayerInSet", scope: "sameNode" };
-    } else {
-      const anywhere = soleTeamSet(evidence.acrossSet.get(pKey));
-      if (anywhere) {
-        decision = { teamIds: anywhere, rule: "samePlayerInSet", scope: "acrossSet" };
-      }
-    }
-
-    if (!decision) {
-      const team = agreedTeam(players, playersById, (player) => {
-        const teams = distinctTeamIds(player);
-        return teams.length === 1 ? teams : [];
+    const decision =
+      decideSameNode(card, pKey, evidence) ??
+      decideParallelOf(card, pKey, evidence, nodesById) ??
+      decidePerPlayer({
+        card,
+        players,
+        playersById,
+        evidence,
+        baseNodeId,
+        year: yearByNodeId.get(card.selectorOptionId),
+        currentYear,
       });
-      if (team) decision = { teamIds: [team], rule: "oneTeamCareer", scope: "career" };
-    }
-
-    if (!decision) {
-      const year = yearByNodeId.get(card.selectorOptionId);
-      if (year !== undefined) {
-        const team = agreedTeam(players, playersById, (player) => {
-          const inYear = (player.teamYears ?? []).filter(
-            (entry) => entry.fromYear <= year && year <= (entry.toYear ?? currentYear),
-          );
-          return [...new Set<Id<"teams">>(inYear.map((entry) => entry.teamId))];
-        });
-        if (team) decision = { teamIds: [team], rule: "oneStintInYear", scope: "career" };
-      }
-    }
 
     if (!decision) {
       remaining += 1;
@@ -370,7 +528,7 @@ export function planTeamFill(input: {
     fills.push({ cardId: card._id, ...decision });
     byRule[decision.rule] += 1;
     const tKey = teamKey(decision.teamIds);
-    const groupId = `${decision.rule}\n${decision.scope}\n${pKey}\n${tKey}`;
+    const groupId = `${decision.rule}\n${decision.scope}\n${decision.mixed}\n${pKey}\n${tKey}`;
     const group = groupCounts.get(groupId);
     if (group) {
       group.cardCount += 1;
@@ -381,6 +539,7 @@ export function planTeamFill(input: {
         teamKey: tKey,
         rule: decision.rule,
         scope: decision.scope,
+        mixed: decision.mixed,
         nodes: new Set([card.selectorOptionId]),
         cardCount: 1,
       });
@@ -395,11 +554,12 @@ export function planTeamFill(input: {
     }))
     .sort(
       (a, b) =>
-        riskTier(a.rule, a.scope) - riskTier(b.rule, b.scope) ||
+        riskTier(a.scope) - riskTier(b.scope) ||
         b.cardCount - a.cardCount ||
         a.playerKey.localeCompare(b.playerKey) ||
         a.teamKey.localeCompare(b.teamKey) ||
-        a.rule.localeCompare(b.rule),
+        a.rule.localeCompare(b.rule) ||
+        Number(a.mixed) - Number(b.mixed),
     );
 
   return {

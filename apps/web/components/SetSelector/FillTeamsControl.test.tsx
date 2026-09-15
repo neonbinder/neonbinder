@@ -70,6 +70,7 @@ function makePreview(overrides: Partial<TeamFillPreview> = {}): TeamFillPreview 
         teamNames: ["Cincinnati Reds"],
         rule: "samePlayerInSet",
         scope: "sameNode",
+        mixed: false,
         nodeNames: ["Base"],
         nodeCount: 1,
         cardCount: 11,
@@ -86,6 +87,7 @@ function makeGroup(overrides: Partial<TeamFillGroup> = {}): TeamFillGroup {
     teamNames: ["Reds"],
     rule: "samePlayerInSet",
     scope: "sameNode",
+    mixed: false,
     nodeNames: ["Base"],
     nodeCount: 1,
     cardCount: 1,
@@ -108,53 +110,104 @@ function renderControl(showToast: (message: string) => void = vi.fn()) {
 // ===========================================================================
 
 describe("fillRuleLabel", () => {
-  it("names each rule, with the set year in oneStintInYear when known", () => {
+  it("names each scope, with the set year in oneStintInYear when known", () => {
     expect(fillRuleLabel(makeGroup({ rule: "samePlayerInSet", scope: "sameNode" }), 2024)).toBe(
       "same player in this set",
     );
-    expect(fillRuleLabel(makeGroup({ rule: "oneTeamCareer", scope: "career" }), 2024)).toBe(
-      "only team on file",
+    expect(fillRuleLabel(makeGroup({ rule: "samePlayerInSet", scope: "parallelOf" }), 2024)).toBe(
+      "the card it parallels",
     );
-    expect(fillRuleLabel(makeGroup({ rule: "oneStintInYear", scope: "career" }), 2024)).toBe(
-      "only team in 2024",
+    expect(
+      fillRuleLabel(makeGroup({ rule: "samePlayerInSet", scope: "baseSet", nodeNames: [] }), 2024),
+    ).toBe("the base card");
+    expect(
+      fillRuleLabel(makeGroup({ rule: "oneTeamCareer", scope: "career", nodeNames: [] }), 2024),
+    ).toBe("only team on file");
+    expect(
+      fillRuleLabel(makeGroup({ rule: "oneStintInYear", scope: "career", nodeNames: [] }), 2024),
+    ).toBe("only team in 2024");
+  });
+
+  it("keeps the E2E-matched same-node clause byte for byte", () => {
+    // set-fill-teams-from-teammate-card.yaml full-matches this string.
+    expect(fillRuleLabel(makeGroup({ scope: "sameNode", nodeNames: ["Base"] }), 2024)).toBe(
+      "same player in this set",
     );
   });
 
   it("falls back to a generic clause for oneStintInYear when the set has no year", () => {
-    expect(fillRuleLabel(makeGroup({ rule: "oneStintInYear", scope: "career" }), null)).toBe(
-      "only team that year",
-    );
+    expect(
+      fillRuleLabel(makeGroup({ rule: "oneStintInYear", scope: "career", nodeNames: [] }), null),
+    ).toBe("only team that year");
   });
 
-  it("names the target nodes for a cross-node borrow, and only then", () => {
+  it("says each player's own team when the players resolved through different tiers", () => {
     expect(
       fillRuleLabel(
-        makeGroup({ scope: "acrossSet", nodeNames: ["Stars", "Gold"], nodeCount: 2 }),
+        makeGroup({ rule: "oneTeamCareer", scope: "career", mixed: true, nodeNames: [] }),
         2024,
       ),
-    ).toBe("same player in this set · Stars, Gold");
-    // A same-node find never lists its node — that is where the card already is.
+    ).toBe("each player's own team");
+    // The mixed clause replaces the rule clause, whichever rule won.
+    expect(
+      fillRuleLabel(
+        makeGroup({ rule: "oneStintInYear", scope: "career", mixed: true, nodeNames: [] }),
+        2024,
+      ),
+    ).toBe("each player's own team");
+  });
+
+  it("names the target nodes for a base-card or career fill, and only for those", () => {
+    expect(
+      fillRuleLabel(
+        makeGroup({ scope: "baseSet", nodeNames: ["Stars", "Gold"], nodeCount: 2 }),
+        2024,
+      ),
+    ).toBe("the base card · Stars, Gold");
+    expect(
+      fillRuleLabel(
+        makeGroup({ rule: "oneTeamCareer", scope: "career", nodeNames: ["Legends"], nodeCount: 1 }),
+        2024,
+      ),
+    ).toBe("only team on file · Legends");
+    expect(
+      fillRuleLabel(
+        makeGroup({ rule: "oneStintInYear", scope: "career", nodeNames: ["Legends"], nodeCount: 1 }),
+        1991,
+      ),
+    ).toBe("only team in 1991 · Legends");
+    expect(
+      fillRuleLabel(
+        makeGroup({ rule: "oneTeamCareer", scope: "career", mixed: true, nodeNames: ["Leaders"], nodeCount: 1 }),
+        2024,
+      ),
+    ).toBe("each player's own team · Leaders");
+    // A same-node find or a parallel's original never lists its node — that
+    // is where the card already is.
     expect(
       fillRuleLabel(makeGroup({ scope: "sameNode", nodeNames: ["Stars"], nodeCount: 1 }), 2024),
     ).toBe("same player in this set");
+    expect(
+      fillRuleLabel(makeGroup({ scope: "parallelOf", nodeNames: ["Gold"], nodeCount: 1 }), 2024),
+    ).toBe("the card it parallels");
   });
 
   it("says +N more when the server capped the node names", () => {
     expect(
       fillRuleLabel(
         makeGroup({
-          scope: "acrossSet",
+          scope: "baseSet",
           nodeNames: ["Stars", "Gold", "Silver", "Bronze"],
           nodeCount: 6,
         }),
         2024,
       ),
-    ).toBe("same player in this set · Stars, Gold, Silver, Bronze +2 more");
+    ).toBe("the base card · Stars, Gold, Silver, Bronze +2 more");
   });
 
-  it("falls back to the bare clause when a cross-node borrow arrives with no names", () => {
-    expect(fillRuleLabel(makeGroup({ scope: "acrossSet", nodeNames: [], nodeCount: 2 }), 2024)).toBe(
-      "same player in this set",
+  it("falls back to the bare clause when a cross-node fill arrives with no names", () => {
+    expect(fillRuleLabel(makeGroup({ scope: "baseSet", nodeNames: [], nodeCount: 2 }), 2024)).toBe(
+      "the base card",
     );
   });
 });
@@ -166,6 +219,7 @@ describe("fillGroupLine", () => {
       teamNames: ["Angels", "Dodgers"],
       rule: "oneStintInYear",
       scope: "career",
+      nodeNames: [],
       cardCount: 1,
     });
     const row = fillGroupLine(group, 2024);
@@ -181,12 +235,28 @@ describe("fillGroupLine", () => {
     );
   });
 
-  it("carries the node names through into a cross-node row", () => {
+  it("carries the node names through into a base-card row", () => {
     const row = fillGroupLine(
-      makeGroup({ scope: "acrossSet", nodeNames: ["Stars"], nodeCount: 1, cardCount: 2 }),
+      makeGroup({ scope: "baseSet", nodeNames: ["Stars"], nodeCount: 1, cardCount: 2 }),
       null,
     );
-    expect(row.line).toBe("Bench → Reds · 2 cards · same player in this set · Stars");
+    expect(row.line).toBe("Bench → Reds · 2 cards · the base card · Stars");
+  });
+
+  it("reads a combo card filled with each player's own team as one row", () => {
+    const row = fillGroupLine(
+      makeGroup({
+        playerNames: ["Bench", "Rose"],
+        teamNames: ["Reds", "Phillies"],
+        rule: "oneTeamCareer",
+        scope: "career",
+        mixed: true,
+        nodeNames: ["Leaders"],
+        cardCount: 1,
+      }),
+      1983,
+    );
+    expect(row.line).toBe("Bench & Rose → Reds / Phillies · 1 card · each player's own team · Leaders");
   });
 });
 
@@ -409,7 +479,7 @@ describe("FillTeamsControl", () => {
     expect(screen.getByLabelText(FILL_TEAMS_LIST_LABEL)).toBeTruthy();
   });
 
-  it("renders the ledger in the server's order and names the nodes of a cross-node borrow", async () => {
+  it("renders the ledger in the server's order and names the nodes of a base-card or career fill", async () => {
     mockPreview.mockResolvedValue(
       makePreview({
         groups: [
@@ -422,16 +492,32 @@ describe("FillTeamsControl", () => {
             cardCount: 1,
           }),
           makeGroup({
+            playerNames: ["Bench", "Rose"],
+            teamNames: ["Reds", "Phillies"],
+            rule: "oneTeamCareer",
+            scope: "career",
+            mixed: true,
+            nodeNames: ["Leaders"],
+            cardCount: 1,
+          }),
+          makeGroup({
             playerNames: ["Johnny Bench"],
             teamNames: ["Cincinnati Reds"],
-            scope: "acrossSet",
+            scope: "baseSet",
             nodeNames: ["Stars", "Gold"],
             nodeCount: 5,
             cardCount: 4,
           }),
           makeGroup({ playerNames: ["Tony Gwynn"], teamNames: ["San Diego Padres"], cardCount: 9 }),
+          makeGroup({
+            playerNames: ["Tony Gwynn"],
+            teamNames: ["San Diego Padres"],
+            scope: "parallelOf",
+            nodeNames: ["Gold"],
+            cardCount: 2,
+          }),
         ],
-        groupsTotal: 3,
+        groupsTotal: 5,
       }),
     );
     renderControl();
@@ -442,9 +528,11 @@ describe("FillTeamsControl", () => {
       .getByLabelText(FILL_TEAMS_LIST_LABEL)
       .querySelectorAll("li");
     expect(Array.from(rows).map((row) => row.textContent)).toEqual([
-      "Yogi Berra→New York Yankees· 1 card · only team on file",
-      "Johnny Bench→Cincinnati Reds· 4 cards · same player in this set · Stars, Gold +3 more",
+      "Yogi Berra→New York Yankees· 1 card · only team on file · Legends",
+      "Bench & Rose→Reds / Phillies· 1 card · each player's own team · Leaders",
+      "Johnny Bench→Cincinnati Reds· 4 cards · the base card · Stars, Gold +3 more",
       "Tony Gwynn→San Diego Padres· 9 cards · same player in this set",
+      "Tony Gwynn→San Diego Padres· 2 cards · the card it parallels",
     ]);
   });
 
