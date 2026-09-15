@@ -40,4 +40,14 @@ to be kept at rest. Probed live 2026-08-11; the probe script is at
   after a failed write strands the user on a one-hour fuse with no way to
   renew. A write failure must FAIL the login (502).
 
+- **`reauthRequired` may be set ONLY on a marketplace's positive "session is
+  gone" answer (NEO-281, 2026-09-15).** For SportLots that is the login form
+  at 200 or a 3xx to login/signin. A 5xx, 429, thrown fetch, timeout or any
+  other non-200 is INDETERMINATE: retry (3 attempts) then fail TRANSIENT
+  (502, no `reauthRequired`) so Convex's `applyLoginOutcome` writes nothing.
+  Since no user password is stored, a false "dead" goes straight to the user
+  as "your session expired" — the expensive error. Jason: "SL is known for
+  just not responding sometimes." Never collapse "couldn't validate" into
+  "invalid" in an adapter again.
+
 Related: [[secret-version-keep-one]], [[puppeteer-cleanup-invariant]]

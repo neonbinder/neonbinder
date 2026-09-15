@@ -57,9 +57,108 @@ function sleepWithJitter(baseMs: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, Math.max(0, baseMs + jitter)));
 }
 
+// NEO-281: the verdict of one probe of a stored cookie against SL.
+//
+//   valid         — 200 whose body is NOT the login form. The cookie works.
+//   dead          — SL positively said the session is gone: 200 whose body
+//                   carries the login form (login.tpl / signin.tpl), or a 3xx
+//                   whose Location is a login/signin page. The ONLY verdict
+//                   that may become reauth_required.
+//   indeterminate — we could not get an answer out of SL: 5xx, 429, a thrown
+//                   fetch (timeout / ECONNRESET / DNS), a 3xx to somewhere
+//                   other than login, or any other non-200. Says nothing about
+//                   the cookie.
+//
+// Before this, validateCachedCookie collapsed the last two into `false`, and
+// login() read `false` as "the session is dead". Since NEO-141 there is no
+// stored password to fall back on, so a dead verdict goes straight to
+// reauth_required → Convex flags needsReauth → the user is told their session
+// expired. On 2026-09-15 SportLots went slow/non-200 under E2E load and every
+// worker account was flagged within minutes, for a hiccup. SL "is known for
+// just not responding sometimes" — that must be a transient failure, never a
+// verdict about the session.
+type CookieVerdict = "valid" | "dead" | "indeterminate";
+
+// NEO-281: retry budget for an INDETERMINATE stored-cookie probe. Three
+// attempts total (2 retries), backing off between them with the same jittered
+// sleep the fresh-login loop uses. Still indeterminate after that → the login
+// fails as TRANSIENT (no reauthRequired), so the caller can try again later
+// and Convex writes nothing about the user's session.
+//
+// BUDGET — these three constants are pinned to each other and to Convex.
+// Convex's loginWithRetry (apps/web/convex/credentials.ts) aborts the whole
+// /login/sportlots call at 60s. If validation alone can exceed that, Convex
+// gives up first and the user sees a timeout instead of this adapter's
+// answer — and a hung route is what this timeout exists to prevent. So:
+//
+//   VALIDATE_MAX_ATTEMPTS × DEFAULT_VALIDATE_TIMEOUT_MS
+//     + Σ VALIDATE_BACKOFFS_MS × 1.3 (sleepWithJitter's +30% worst case)
+//   must stay comfortably under Convex's 60s login ceiling.
+//
+// Today: 3 × 15s + (0.5s + 1s) × 1.3 ≈ 47s. A unit test computes this from
+// the exported values and asserts < 55s; raise one, lower another.
+export const VALIDATE_MAX_ATTEMPTS = 3;
+export const VALIDATE_BACKOFFS_MS = [500, 1000];
+// sleepWithJitter's jitter band (±30%); exported so the budget test uses the
+// same number the sleep does.
+export const JITTER_MAX_FACTOR = 1.3;
+
+// NEO-281: hard bound on one probe (connect + headers + body). A hung SL
+// request must be an indeterminate attempt, not a route that hangs until
+// Cloud Run kills it. Overridable per instance for tests. Pinned to
+// VALIDATE_MAX_ATTEMPTS by the BUDGET note above.
+export const DEFAULT_VALIDATE_TIMEOUT_MS = 15_000;
+
+// NEO-281: the caller-facing error for a stored session SL never answered
+// about. Deliberately contains none of the words classifyBrowserError maps to
+// a caller-error class (no "credential", "invalid", "re-authentication"), so
+// loginFailureOutcome yields 502 / error_class "other" — an upstream fault the
+// caller may retry — and Convex's applyLoginOutcome, which acts only on
+// success or reauth_required, leaves the user's credential status untouched.
+export const SESSION_VALIDATION_TRANSIENT_ERROR =
+  "SportLots did not respond while validating the stored session; try again";
+
+// NEO-281: is this 3xx Location SportLots' own login/signin page? Mirrors the
+// body heuristic (login.tpl / signin.tpl) and pins the origin, so a
+// `?return=login` query, a `/loginhelp` path or an off-origin
+// `https://evil.example/login.tpl` cannot mark a working session dead.
+// Relative Locations resolve against the SL origin. Unparsable → not a verdict.
+export function isSportlotsLoginRedirect(location: string | null | undefined): boolean {
+  if (!location) return false;
+  let url: URL;
+  try {
+    url = new URL(location, "https://www.sportlots.com");
+  } catch {
+    return false;
+  }
+  const host = url.hostname.toLowerCase();
+  const onSportlots = host === "sportlots.com" || host.endsWith(".sportlots.com");
+  return onSportlots && /\/(login|signin)\.tpl$/i.test(url.pathname);
+}
+
+// NEO-281: release the socket on a response whose body we will not read.
+// undici keeps the connection reserved until the body is consumed or
+// cancelled; on the 3xx / non-200 early returns nothing reads it, and three
+// retries in a row would otherwise pin three connections. Never throws.
+async function discardBody(response: { body?: { cancel: () => Promise<void> } | null }): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch {
+    /* already consumed, locked or absent — nothing to release */
+  }
+}
+
+export interface SportlotsAdapterOptions {
+  /** Per-probe timeout for stored-cookie validation. Default 15s. */
+  validateTimeoutMs?: number;
+}
+
 export class SportlotsAdapter extends BaseAdapter {
-  constructor(page: any) {
+  private readonly validateTimeoutMs: number;
+
+  constructor(page: any, opts: SportlotsAdapterOptions = {}) {
     super(page, "Sportlots");
+    this.validateTimeoutMs = opts.validateTimeoutMs ?? DEFAULT_VALIDATE_TIMEOUT_MS;
   }
 
   getHomeUrl(): string {
@@ -78,8 +177,15 @@ export class SportlotsAdapter extends BaseAdapter {
    * adapter pattern). A hit whose `expiresAt` is missing, past or nearly past
    * also writes the secret back with a renewed one.
    *
-   * On miss (no token / failed revalidation) we fall through to the existing
-   * HTTP login flow, which retries up to MAX_ATTEMPTS on transient failures
+   * NEO-281: revalidation is a three-way verdict, not a boolean. Only a DEAD
+   * verdict (SL served the login form, or redirected to it) falls through to
+   * the fresh-login / reauth_required path below. An INDETERMINATE one (SL
+   * 5xx / 429 / timeout / network error) is retried up to VALIDATE_MAX_ATTEMPTS
+   * and, if SL still has not answered, fails the login as transient — no
+   * reauthRequired, nothing for Convex to flag.
+   *
+   * On miss (no token / dead cookie) we fall through to the existing HTTP
+   * login flow, which retries up to MAX_ATTEMPTS on transient failures
    * (429, 5xx, network error, empty cookie body) and bails immediately on
    * permanent ones (4xx non-429, invalid credentials, validation seeing a
    * login page).
@@ -122,8 +228,8 @@ export class SportlotsAdapter extends BaseAdapter {
         console.log(
           `[SportLots Adapter] cached token present, validating against ${this.siteName}...`,
         );
-        const valid = await this.validateCachedCookie(credentials.token);
-        if (valid) {
+        const verdict = await this.validateCachedCookieWithRetry(credentials.token);
+        if (verdict === "valid") {
           const expiresAt = await this.renewExpiryIfDue(secretsManager, key, credentials);
           return {
             success: true,
@@ -131,7 +237,22 @@ export class SportlotsAdapter extends BaseAdapter {
             expiresAt,
           };
         }
-        // Stale or revoked cookie. Fall through to the fresh-login loop.
+        if (verdict === "indeterminate") {
+          // NEO-281: SL never told us whether this cookie works. That is an
+          // upstream fault, not a verdict about the session, and it must not
+          // reach the reauth_required branch below — which is exactly where a
+          // password-less user secret would otherwise land. Fail transient:
+          // no reauthRequired, no credentialRejected → 502 at the route,
+          // Convex writes nothing, the caller tries again later. The stored
+          // cookie is left exactly as it was.
+          console.log(
+            `[SportLots Adapter] cached token could not be validated after ` +
+              `${VALIDATE_MAX_ATTEMPTS} attempts; failing transient (NOT re-auth)`,
+          );
+          return { success: false, error: SESSION_VALIDATION_TRANSIENT_ERROR, retryable: true };
+        }
+        // Dead cookie: SL served the login form. Fall through to the
+        // fresh-login loop.
         //
         // NEO-115: we deliberately do NOT write a token-cleared version here.
         // That write burned a whole Secret Manager version (billed forever)
@@ -273,20 +394,61 @@ export class SportlotsAdapter extends BaseAdapter {
   }
 
   /**
-   * Cheap GET against a known authenticated page using the stored cookie.
+   * NEO-281: probe the stored cookie up to VALIDATE_MAX_ATTEMPTS times, but
+   * only while SL has not given an answer. `valid` and `dead` return at once;
+   * `indeterminate` backs off with the fresh-login loop's jittered sleep and
+   * asks again. Still indeterminate after the last attempt → indeterminate.
+   */
+  private async validateCachedCookieWithRetry(cookieString: string): Promise<CookieVerdict> {
+    let verdict: CookieVerdict = "indeterminate";
+    for (let attempt = 1; attempt <= VALIDATE_MAX_ATTEMPTS; attempt++) {
+      if (attempt > 1) {
+        console.log(
+          `[SportLots Adapter] cached-cookie validation retry ${attempt}/${VALIDATE_MAX_ATTEMPTS}`,
+        );
+      }
+      verdict = await this.validateCachedCookie(cookieString);
+      if (verdict !== "indeterminate") return verdict;
+      if (attempt < VALIDATE_MAX_ATTEMPTS) {
+        await sleepWithJitter(VALIDATE_BACKOFFS_MS[attempt - 1]);
+      }
+    }
+    return verdict;
+  }
+
+  /**
+   * One cheap GET against a known authenticated page using the stored cookie.
    *
    * SportLots responds 200 even to expired session cookies — the body just
    * contains the public login form instead of the dealer dashboard. So we
    * can't trust status alone; we apply the same login-page detection used
    * by attemptLogin() right after a fresh login.
    *
-   * Any thrown network error (DNS, timeout, ECONNRESET) is treated as
-   * "couldn't validate" rather than "definitely invalid", so the caller
-   * clears the cache and a fresh login retry-loops as normal.
+   * NEO-281 classification (see CookieVerdict):
    *
-   * @returns true if the cookie still authenticates; false otherwise.
+   *   200, body without login form            → valid
+   *   200, body contains login.tpl/signin.tpl → dead
+   *   3xx, Location is SL's login/signin.tpl → dead (isSportlotsLoginRedirect)
+   *   3xx elsewhere / off-origin / no Location → indeterminate
+   *   429, 5xx                                 → indeterminate
+   *   any other 4xx                            → indeterminate (logged)
+   *   fetch threw (abort, reset, DNS)          → indeterminate
+   *
+   * Non-429 4xx is deliberately NOT dead. We have never observed SL answer a
+   * cookie with 401/403 — its refusal is the login form at 200 — and a false
+   * "dead" is the expensive error: it flags the user's session as expired.
+   *
+   * The whole probe (connect, headers, body) is bounded by
+   * `validateTimeoutMs` via AbortController; a hang is an indeterminate
+   * attempt, not a hung route.
+   *
+   * SECURITY: the Cookie header IS the session. Never log it, never log the
+   * body, and summarise thrown errors through summarizeFetchError so a fetch
+   * error that quotes the request cannot echo it.
    */
-  private async validateCachedCookie(cookieString: string): Promise<boolean> {
+  private async validateCachedCookie(cookieString: string): Promise<CookieVerdict> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.validateTimeoutMs);
     try {
       const response = await fetch(
         "https://www.sportlots.com/inven/dealbin/newinven.tpl",
@@ -294,31 +456,55 @@ export class SportlotsAdapter extends BaseAdapter {
           method: "GET",
           headers: { Cookie: cookieString },
           redirect: "manual",
+          signal: controller.signal,
         },
       );
-      // 3xx redirect or non-200 → don't trust this cookie.
-      if (response.status !== 200) {
+      const status = response.status;
+
+      if (status >= 300 && status < 400) {
+        // With redirect: "manual" a bounce to the login page shows up here.
+        // Only a redirect that lands ON SportLots' own login/signin page is a
+        // verdict; anything else SL sends us to says nothing we can act on.
+        const toLogin = isSportlotsLoginRedirect(response.headers.get("location"));
         console.log(
-          `[SportLots Adapter] cached-cookie validation status=${response.status}; treating as invalid`,
+          `[SportLots Adapter] cached-cookie validation status=${status} ` +
+            `redirect_to_login=${toLogin}; treating as ${toLogin ? "dead" : "indeterminate"}`,
         );
-        return false;
+        await discardBody(response);
+        return toLogin ? "dead" : "indeterminate";
       }
+
+      if (status !== 200) {
+        // 429 / 5xx are SL not coping; any other 4xx is unexpected from SL
+        // and, conservatively, also not a verdict about the cookie.
+        console.log(
+          `[SportLots Adapter] cached-cookie validation status=${status}; treating as indeterminate`,
+        );
+        await discardBody(response);
+        return "indeterminate";
+      }
+
       const body = await response.text();
       // Same heuristic as the post-fresh-login validation: SL silently
       // rewrites the body to the login form when the session is gone.
       if (body.includes("login.tpl") || body.includes("signin.tpl")) {
         console.log(
-          `[SportLots Adapter] cached-cookie validation body contained login/signin reference; treating as invalid`,
+          `[SportLots Adapter] cached-cookie validation body contained login/signin reference; treating as dead`,
         );
-        return false;
+        return "dead";
       }
-      return true;
+      return "valid";
     } catch (error) {
+      const aborted = error instanceof Error && error.name === "AbortError";
       console.log(
         // summarizeFetchError: the Cookie header is the session itself.
-        `[SportLots Adapter] cached-cookie validation threw: ${summarizeFetchError(error)}`,
+        `[SportLots Adapter] cached-cookie validation ${
+          aborted ? `timed out after ${this.validateTimeoutMs}ms` : "threw"
+        }: ${summarizeFetchError(error)}; treating as indeterminate`,
       );
-      return false;
+      return "indeterminate";
+    } finally {
+      clearTimeout(timer);
     }
   }
 
