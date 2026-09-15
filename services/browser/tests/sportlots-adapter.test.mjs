@@ -1397,11 +1397,16 @@ describe("SportlotsAdapter — NEO-281 stored-cookie validation verdicts", () =>
   const TRANSIENT_ERROR =
     "SportLots did not respond while validating the stored session; try again";
 
-  /** A stubbed Response carrying real Headers, for the 3xx branch. */
-  function redirect(status, location) {
+  /**
+   * A stubbed Response carrying real Headers, for the 3xx branch, plus a
+   * body whose cancel() is counted — the early returns must release the
+   * socket (undici holds it until the body is consumed or cancelled).
+   */
+  function redirect(status, location, cancels = { n: 0 }) {
     return {
       status,
       headers: new Headers(location === undefined ? {} : { location }),
+      body: { cancel: async () => { cancels.n++; } },
       text: async () => "",
     };
   }
@@ -1475,6 +1480,128 @@ describe("SportlotsAdapter — NEO-281 stored-cookie validation verdicts", () =>
     } finally {
       restore();
     }
+  });
+
+  it("302 → /login.tpl (root-relative) → dead", async () => {
+    const SportlotsAdapter = loadSportlotsAdapter({ credentials: passwordlessSecret() });
+    const stub = scriptedValidate([redirect(302, "/login.tpl")]);
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.reauthRequired, true);
+      assert.equal(stub.validateCalls(), 1);
+    } finally {
+      restore();
+    }
+  });
+
+  it("302 → same page with ?msg=login → indeterminate, NOT dead (substring in the query is not the login page)", async () => {
+    const SportlotsAdapter = loadSportlotsAdapter({ credentials: passwordlessSecret() });
+    const stub = scriptedValidate([redirect(302, "/inven/dealbin/newinven.tpl?msg=login")]);
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, false);
+      assert.notEqual(result.reauthRequired, true, "a query string mentioning login is not SL's login page");
+      assert.equal(result.retryable, true);
+      assert.equal(stub.validateCalls(), 3);
+    } finally {
+      restore();
+    }
+  });
+
+  it("302 → https://evil.example/login.tpl (off-origin) → indeterminate, NOT dead", async () => {
+    const SportlotsAdapter = loadSportlotsAdapter({ credentials: passwordlessSecret() });
+    const stub = scriptedValidate([redirect(302, "https://evil.example/login.tpl")]);
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, false);
+      assert.notEqual(result.reauthRequired, true, "only SportLots' own login page is a verdict");
+      assert.equal(result.retryable, true);
+      assert.equal(stub.validateCalls(), 3);
+    } finally {
+      restore();
+    }
+  });
+
+  it("isSportlotsLoginRedirect: origin-pinned, path-anchored, unparsable → false", () => {
+    const { isSportlotsLoginRedirect } = require("../dist/adapters/sportlots-adapter");
+    // dead
+    assert.equal(isSportlotsLoginRedirect("/login.tpl"), true);
+    assert.equal(isSportlotsLoginRedirect("/cust/custbin/signin.tpl"), true);
+    assert.equal(isSportlotsLoginRedirect("https://www.sportlots.com/cust/custbin/login.tpl?ret=x"), true);
+    assert.equal(isSportlotsLoginRedirect("https://sportlots.com/login.tpl"), true);
+    assert.equal(isSportlotsLoginRedirect("/LOGIN.TPL"), true, "case-insensitive like the body check");
+    // not a verdict
+    assert.equal(isSportlotsLoginRedirect("/inven/dealbin/newinven.tpl?return=login"), false);
+    assert.equal(isSportlotsLoginRedirect("/loginhelp"), false);
+    assert.equal(isSportlotsLoginRedirect("/login.tpl/extra"), false, "path must END at the tpl");
+    assert.equal(isSportlotsLoginRedirect("https://evil.example/login.tpl"), false);
+    assert.equal(isSportlotsLoginRedirect("https://notsportlots.com/login.tpl"), false, "suffix match must be on a dot boundary");
+    assert.equal(isSportlotsLoginRedirect("https://sportlots.com.evil.example/login.tpl"), false);
+    assert.equal(isSportlotsLoginRedirect(""), false);
+    assert.equal(isSportlotsLoginRedirect(null), false);
+    assert.equal(isSportlotsLoginRedirect(undefined), false);
+    assert.equal(isSportlotsLoginRedirect("http://[bad/login.tpl"), false, "unparsable → indeterminate");
+  });
+
+  it("3xx and non-200 early returns cancel the unread body so the socket is released", async () => {
+    const SportlotsAdapter = loadSportlotsAdapter({ credentials: passwordlessSecret() });
+    const cancels = { n: 0 };
+    const stub = scriptedValidate([
+      redirect(302, "/maintenance.tpl", cancels),
+      { status: 503, body: { cancel: async () => { cancels.n++; } }, text: async () => "" },
+      redirect(302, "/login.tpl", cancels),
+    ]);
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.reauthRequired, true, "third probe was a real login redirect");
+      assert.equal(stub.validateCalls(), 3);
+      assert.equal(cancels.n, 3, "every early return must cancel its body");
+    } finally {
+      restore();
+    }
+  });
+
+  it("a body.cancel() that throws (or a missing body) does not change the verdict", async () => {
+    const SportlotsAdapter = loadSportlotsAdapter({ credentials: passwordlessSecret() });
+    const stub = scriptedValidate([
+      { status: 503, body: { cancel: async () => { throw new TypeError("locked"); } }, text: async () => "" },
+      response({ status: 503 }), // no body property at all
+      response({ status: 200, body: OK_VALIDATE_BODY }),
+    ]);
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, true);
+      assert.equal(stub.validateCalls(), 3);
+    } finally {
+      restore();
+    }
+  });
+
+  it("worst-case validation budget stays under Convex's 60s login ceiling", () => {
+    // Convex loginWithRetry aborts /login/sportlots at AbortSignal.timeout(60_000)
+    // (apps/web/convex/credentials.ts). If validation alone could run longer,
+    // Convex would time out first and the transient verdict would never be
+    // delivered. Computed from the exported constants so a bump to either the
+    // timeout or the attempt count has to come back through here.
+    const {
+      VALIDATE_MAX_ATTEMPTS,
+      VALIDATE_BACKOFFS_MS,
+      DEFAULT_VALIDATE_TIMEOUT_MS,
+      JITTER_MAX_FACTOR,
+    } = require("../dist/adapters/sportlots-adapter");
+    assert.equal(VALIDATE_MAX_ATTEMPTS, 3, "2 retries = 3 attempts (NEO-281 spec)");
+    assert.equal(VALIDATE_BACKOFFS_MS.length, VALIDATE_MAX_ATTEMPTS - 1, "one backoff between each pair of attempts");
+    const backoffs = VALIDATE_BACKOFFS_MS.reduce((a, b) => a + b, 0) * JITTER_MAX_FACTOR;
+    const worstCaseMs = VALIDATE_MAX_ATTEMPTS * DEFAULT_VALIDATE_TIMEOUT_MS + backoffs;
+    assert.ok(
+      worstCaseMs < 55_000,
+      `worst case ${worstCaseMs}ms must stay under 55s (Convex aborts at 60s)`,
+    );
   });
 
   it("302 to somewhere that is NOT login → indeterminate (retried, then transient)", async () => {

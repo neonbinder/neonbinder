@@ -84,13 +84,30 @@ type CookieVerdict = "valid" | "dead" | "indeterminate";
 // sleep the fresh-login loop uses. Still indeterminate after that → the login
 // fails as TRANSIENT (no reauthRequired), so the caller can try again later
 // and Convex writes nothing about the user's session.
-const VALIDATE_MAX_ATTEMPTS = 3;
-const VALIDATE_BACKOFFS_MS = [500, 1000];
+//
+// BUDGET — these three constants are pinned to each other and to Convex.
+// Convex's loginWithRetry (apps/web/convex/credentials.ts) aborts the whole
+// /login/sportlots call at 60s. If validation alone can exceed that, Convex
+// gives up first and the user sees a timeout instead of this adapter's
+// answer — and a hung route is what this timeout exists to prevent. So:
+//
+//   VALIDATE_MAX_ATTEMPTS × DEFAULT_VALIDATE_TIMEOUT_MS
+//     + Σ VALIDATE_BACKOFFS_MS × 1.3 (sleepWithJitter's +30% worst case)
+//   must stay comfortably under Convex's 60s login ceiling.
+//
+// Today: 3 × 15s + (0.5s + 1s) × 1.3 ≈ 47s. A unit test computes this from
+// the exported values and asserts < 55s; raise one, lower another.
+export const VALIDATE_MAX_ATTEMPTS = 3;
+export const VALIDATE_BACKOFFS_MS = [500, 1000];
+// sleepWithJitter's jitter band (±30%); exported so the budget test uses the
+// same number the sleep does.
+export const JITTER_MAX_FACTOR = 1.3;
 
 // NEO-281: hard bound on one probe (connect + headers + body). A hung SL
 // request must be an indeterminate attempt, not a route that hangs until
-// Cloud Run kills it. Overridable per instance for tests.
-const DEFAULT_VALIDATE_TIMEOUT_MS = 15_000;
+// Cloud Run kills it. Overridable per instance for tests. Pinned to
+// VALIDATE_MAX_ATTEMPTS by the BUDGET note above.
+export const DEFAULT_VALIDATE_TIMEOUT_MS = 15_000;
 
 // NEO-281: the caller-facing error for a stored session SL never answered
 // about. Deliberately contains none of the words classifyBrowserError maps to
@@ -100,6 +117,36 @@ const DEFAULT_VALIDATE_TIMEOUT_MS = 15_000;
 // success or reauth_required, leaves the user's credential status untouched.
 export const SESSION_VALIDATION_TRANSIENT_ERROR =
   "SportLots did not respond while validating the stored session; try again";
+
+// NEO-281: is this 3xx Location SportLots' own login/signin page? Mirrors the
+// body heuristic (login.tpl / signin.tpl) and pins the origin, so a
+// `?return=login` query, a `/loginhelp` path or an off-origin
+// `https://evil.example/login.tpl` cannot mark a working session dead.
+// Relative Locations resolve against the SL origin. Unparsable → not a verdict.
+export function isSportlotsLoginRedirect(location: string | null | undefined): boolean {
+  if (!location) return false;
+  let url: URL;
+  try {
+    url = new URL(location, "https://www.sportlots.com");
+  } catch {
+    return false;
+  }
+  const host = url.hostname.toLowerCase();
+  const onSportlots = host === "sportlots.com" || host.endsWith(".sportlots.com");
+  return onSportlots && /\/(login|signin)\.tpl$/i.test(url.pathname);
+}
+
+// NEO-281: release the socket on a response whose body we will not read.
+// undici keeps the connection reserved until the body is consumed or
+// cancelled; on the 3xx / non-200 early returns nothing reads it, and three
+// retries in a row would otherwise pin three connections. Never throws.
+async function discardBody(response: { body?: { cancel: () => Promise<void> } | null }): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch {
+    /* already consumed, locked or absent — nothing to release */
+  }
+}
 
 export interface SportlotsAdapterOptions {
   /** Per-probe timeout for stored-cookie validation. Default 15s. */
@@ -381,8 +428,8 @@ export class SportlotsAdapter extends BaseAdapter {
    *
    *   200, body without login form            → valid
    *   200, body contains login.tpl/signin.tpl → dead
-   *   3xx, Location matches login/signin      → dead
-   *   3xx elsewhere / no Location              → indeterminate
+   *   3xx, Location is SL's login/signin.tpl → dead (isSportlotsLoginRedirect)
+   *   3xx elsewhere / off-origin / no Location → indeterminate
    *   429, 5xx                                 → indeterminate
    *   any other 4xx                            → indeterminate (logged)
    *   fetch threw (abort, reset, DNS)          → indeterminate
@@ -416,14 +463,14 @@ export class SportlotsAdapter extends BaseAdapter {
 
       if (status >= 300 && status < 400) {
         // With redirect: "manual" a bounce to the login page shows up here.
-        // Only a redirect that names login/signin is a verdict; SL sending us
-        // somewhere else says nothing we can act on.
-        const location = response.headers.get("location") ?? "";
-        const toLogin = /login|signin/i.test(location);
+        // Only a redirect that lands ON SportLots' own login/signin page is a
+        // verdict; anything else SL sends us to says nothing we can act on.
+        const toLogin = isSportlotsLoginRedirect(response.headers.get("location"));
         console.log(
           `[SportLots Adapter] cached-cookie validation status=${status} ` +
             `redirect_to_login=${toLogin}; treating as ${toLogin ? "dead" : "indeterminate"}`,
         );
+        await discardBody(response);
         return toLogin ? "dead" : "indeterminate";
       }
 
@@ -433,6 +480,7 @@ export class SportlotsAdapter extends BaseAdapter {
         console.log(
           `[SportLots Adapter] cached-cookie validation status=${status}; treating as indeterminate`,
         );
+        await discardBody(response);
         return "indeterminate";
       }
 
