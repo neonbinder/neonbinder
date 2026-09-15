@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import NeonButton from "./NeonButton";
 
 interface ConfirmDialogProps {
@@ -22,6 +22,21 @@ interface ConfirmDialogProps {
    * Optional — most callers close on success and surface nothing here.
    */
   error?: string | null;
+  /**
+   * Detail the operator may want to scroll through before deciding — the
+   * list of what a bulk action will touch (NEO-279's "who gets which team").
+   * Rendered between the description and the buttons in a group capped at
+   * `max-h-60` that scrolls on its own, so a long list can never push the
+   * buttons off-screen at the E2E viewport. The group is a tab stop (a
+   * scroller that is not focusable cannot be scrolled from the keyboard, and
+   * the trap above would walk straight past a browser-native one), which is
+   * why it wants a name: give one in `childrenLabel`. NOT joined onto
+   * `aria-describedby`: the description is the sentence that gets read on
+   * open; the detail is there to be explored, not announced.
+   */
+  children?: ReactNode;
+  /** Accessible name for the scrollable detail group. Set it when `children` is. */
+  childrenLabel?: string;
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -67,6 +82,8 @@ export function ConfirmDialog({
   busyLabel,
   busy,
   error,
+  children,
+  childrenLabel,
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
@@ -167,6 +184,22 @@ export function ConfirmDialog({
           >
             {error}
           </p>
+        )}
+        {children !== undefined && children !== null && (
+          <div
+            // A focusable `role="group"` scroll container — the same pairing
+            // the print/shipping preview uses and the one the lint rule allows
+            // — so a keyboard user can pan the list; the trap's selector
+            // already counts `[tabindex]`, so Tab cycles through it. This puts
+            // one stop between Cancel and Confirm going forward — Confirm is
+            // still one Shift+Tab from where focus opens.
+            role="group"
+            tabIndex={0}
+            aria-label={childrenLabel}
+            className="mb-5 max-h-60 overflow-y-auto rounded border border-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00D558]"
+          >
+            {children}
+          </div>
         )}
         <div className="flex gap-3">
           <NeonButton cancel type="button" onClick={onConfirm} disabled={busy}>

@@ -119,7 +119,10 @@ import {
 import { findSportForSelectorOption } from "./cardChecklist";
 // NEO-254: the set's year — the evidence that turns "two same-name players"
 // back into one. See convex/lib/selectorAncestry.ts.
-import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
+import {
+  collectDescendantIds,
+  findSetYearForSelectorOption,
+} from "./lib/selectorAncestry";
 // NEO-277: the set-level team rules — copy-down at creation, and the
 // equal-to-previous cascade the edit path and its preview both apply.
 import {
@@ -5214,44 +5217,9 @@ export const getCrossListingsForCard = query({
 //   the existing pattern from `applyParallelGroupings` / reconciliation
 //   code.
 
-/**
- * Walks the children pointer-graph rooted at `rootId` and returns every
- * descendant selectorOption id (NOT including the root). Used by the
- * propagation engine to find every leaf whose cardChecklist rows need to
- * be considered for write-through.
- *
- * UNBOUNDED: each node is one ctx.db.get, and the walk does not stop at any
- * count, so a caller pointed at a sport row walks every set beneath it —
- * (year≈30) * (manufacturer≈10) * (setName≈5) * (variantType≈3) *
- * (insert≈20) * (parallel≈5) is a few thousand reads worst case, well
- * inside a function's read budget but not free. Callers scope the root
- * themselves: `setSelectorOptionTeams` and its preview refuse a root above
- * `TEAM_EDITABLE_LEVELS`, and feature propagation targets a single set or
- * variantType (≪ 100 descendants) in practice.
- */
-async function collectDescendantIds(
-  ctx: { db: { get: (id: Id<"selectorOptions">) => Promise<unknown> } },
-  rootId: Id<"selectorOptions">,
-): Promise<Array<Id<"selectorOptions">>> {
-  const out: Array<Id<"selectorOptions">> = [];
-  const stack: Array<Id<"selectorOptions">> = [rootId];
-  const seen = new Set<string>([rootId]);
-  while (stack.length > 0) {
-    const id = stack.pop()!;
-    const row = (await ctx.db.get(id)) as
-      | { children?: Array<Id<"selectorOptions">> }
-      | null;
-    if (!row?.children) continue;
-    for (const childId of row.children) {
-      const key = childId as unknown as string;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push(childId);
-      stack.push(childId);
-    }
-  }
-  return out;
-}
+// `collectDescendantIds` lives in ./lib/selectorAncestry since NEO-279, so the
+// team-fill planner can walk the same subtree the cascade and feature
+// propagation walk without importing this module.
 
 
 /**

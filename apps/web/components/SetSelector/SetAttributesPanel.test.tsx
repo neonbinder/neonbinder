@@ -85,6 +85,11 @@ vi.mock("../../convex/_generated/api", () => ({
     teams: {
       getManyByIds: "teams.getManyByIds",
     },
+    // NEO-279 — the header's Fill teams control reads these at render.
+    teamFill: {
+      previewTeamFill: "teamFill.previewTeamFill",
+      applyTeamFill: "teamFill.applyTeamFill",
+    },
   },
 }));
 
@@ -128,6 +133,9 @@ vi.mock("convex/react", () => ({
     return vi.fn();
   },
   useConvex: () => ({ query: mockConvexQuery }),
+  // NEO-279 — FillTeamsControl mounts on every setName row; its actions are
+  // inert here (its own behaviour is covered in FillTeamsControl's tests).
+  useAction: () => vi.fn(),
 }));
 
 /**

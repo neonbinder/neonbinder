@@ -16,6 +16,7 @@ import { teamFullName, teamShortName } from "../../lib/teams/team-name";
 import { FeatureValueControl } from "./FeatureValueControl";
 import RenameEntityControl from "./RenameEntityControl";
 import BaseRoleControl from "./BaseRoleControl";
+import FillTeamsControl from "./FillTeamsControl";
 import TeamPicker, { type TeamPickerLabels } from "./TeamPicker";
 import {
   ALL_SIDES,
@@ -285,6 +286,24 @@ export default function SetAttributesPanel({
                 value={row.value}
                 metadata={row.metadata}
                 onResult={showToast}
+              />
+            )}
+            {/* NEO-279: fill the teams this set's cards are missing from the
+                set's own evidence. Set level only — "the same player elsewhere
+                in this set" is a whole-set fact — and up here with the name
+                rather than in the grid below because it is an ACTION on the
+                cards, not an attribute of the row, and because it has to be
+                reachable while the panel is collapsed, which is the state an
+                operator reviewing a freshly synced checklist meets it in.
+                Keyed on the row for the same reason the delete is: the panel
+                does not remount when the selection moves, and a preview
+                dialog opened for one set must never ask about the next. */}
+            {leafLevel === "setName" && (
+              <FillTeamsControl
+                key={selectorOptionId}
+                id={selectorOptionId}
+                level={leafLevel}
+                showToast={showToast}
               />
             )}
             {/* NEO-219: the one sanctioned delete, next to the pencil for the

@@ -88,6 +88,7 @@ import type * as sku from "../sku.js";
 import type * as splitTeamLocations from "../splitTeamLocations.js";
 import type * as sportConfig from "../sportConfig.js";
 import type * as teamColorSources from "../teamColorSources.js";
+import type * as teamFill from "../teamFill.js";
 import type * as teams from "../teams.js";
 import type * as testing from "../testing.js";
 import type * as userProfile from "../userProfile.js";
@@ -180,6 +181,7 @@ declare const fullApi: ApiFromModules<{
   splitTeamLocations: typeof splitTeamLocations;
   sportConfig: typeof sportConfig;
   teamColorSources: typeof teamColorSources;
+  teamFill: typeof teamFill;
   teams: typeof teams;
   testing: typeof testing;
   userProfile: typeof userProfile;
