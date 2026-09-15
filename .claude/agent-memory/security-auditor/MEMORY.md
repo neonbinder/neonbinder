@@ -42,3 +42,4 @@
 - [Patterns neo277 set level team cascade](patterns_neo277_set_level_team_cascade.md) — preview/mutation/internal-walker trio: preview must carry every scope guard the mutation carries; cursor monotonicity is the termination proof
 - [Patterns neo278 session lifetimes](patterns_neo278_session_lifetimes.md) — undici header-validation TypeError embeds the full Cookie/Bearer value in error.message; persistTokens `previous` carries SSO cookies only; SSO cookie is an indefinite sliding bearer
 - [Patterns neo279 team fill recompute](patterns_neo279_team_fill_recompute.md) — shared compute path closes guard parity by construction; traps: unregistered actions, forward drift on recompute, pager no-progress spin
+- [Patterns neo281 probe verdicts](patterns_neo281_probe_verdicts.md) — stored-session probes are three-way verdicts; reauthRequired only on a positive upstream answer; checklist for log hygiene, abort timer, redirect regex, Convex 60s budget

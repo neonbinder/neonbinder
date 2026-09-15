@@ -228,7 +228,11 @@ describe("saveCredentials — store branch (connect-and-store, NEO-141)", () => 
 
   test("a failed login stores NOTHING — no credentials, no needsReauth flag", async () => {
     const t = convexTest(schema, modules);
-    const stub: FetchStub = async () => jsonResponse({ error: "bad request" }, 400);
+    // A rejected password as the service actually answers it (NEO-98: 422 +
+    // a forced class). NEO-281 reads an UNclassified failure as "the
+    // marketplace didn't answer", so a bare body here would test the wrong copy.
+    const stub: FetchStub = async () =>
+      jsonResponse({ error: "Invalid credentials", error_class: "invalid_credentials" }, 422);
     stubFetch(stub);
 
     const result = await t
@@ -709,6 +713,10 @@ describe("reauth_required — flag, never delete (NEO-141)", () => {
       .action(api.credentials.testSiteCredentials, { site: SITE });
 
     expect(result.success).toBe(false);
+    // NEO-281 left this copy alone: the marketplace DID answer here.
+    expect(result.message).toBe(
+      "BSC login failed. Please check your credentials and try again.",
+    );
     const entry = await getRawEntry(t, USER_A, SITE);
     expect(entry?.hasCredentials).toBe(true);
     expect(entry?.needsReauth).toBe(true);
@@ -756,6 +764,192 @@ describe("reauth_required — flag, never delete (NEO-141)", () => {
     // Lock fully released.
     expect(entry?.lockToken).toBeUndefined();
     expect(entry?.lockedAt).toBeUndefined();
+  });
+});
+
+// NEO-281: the browser service answers a stored-session validation that
+// SportLots never responded to (5xx / 429 / timeout on every probe) as a 502
+// with `error_class: "other"` and no re-auth signal; a timed-out exchange as
+// `timeout`; and a request that never got a classified answer (fetch threw,
+// 503-busy exhausted) carries no class at all. `applyLoginOutcome` was already
+// right to write nothing for all of them — but the copy still read "check your
+// credentials", telling the user it was their fault when the marketplace
+// simply did not answer. These pin the message per error class.
+describe("transient marketplace failure — never blame the user (NEO-281)", () => {
+  const SL_TRANSIENT_502 = {
+    error: "SportLots did not respond while validating the stored session; try again",
+    error_class: "other",
+  };
+
+  /** Only the login route answers; anything else is a test bug. */
+  function loginOnly(body: unknown, status: number): FetchStub {
+    return (async (url: string | URL | Request) => {
+      if (String(url).includes("/login/")) return jsonResponse(body, status);
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as FetchStub;
+  }
+
+  test("Test credentials on a 502 `other` says SportLots didn't answer and writes nothing", async () => {
+    const t = convexTest(schema, modules);
+    const lastUpdated = "2020-01-01T00:00:00.000Z";
+    await seedHasCredentials(t, USER_A, "sportlots", lastUpdated);
+    stubFetch(loginOnly(SL_TRANSIENT_502, 502));
+
+    const result = await t
+      .withIdentity({ subject: USER_A })
+      .action(api.credentials.testSiteCredentials, { site: "sportlots" });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toBe(
+      "SportLots didn't answer. Nothing changed — try again in a minute.",
+    );
+    // No credential-status write of any kind: not a flag, not a timestamp.
+    const entry = await getRawEntry(t, USER_A, "sportlots");
+    expect(entry?.hasCredentials).toBe(true);
+    expect(entry?.needsReauth).toBeFalsy();
+    expect(entry?.needsReauthSince).toBeUndefined();
+    expect(entry?.lastUpdated).toBe(lastUpdated);
+  });
+
+  test("the transient copy is per site: BSC gets its own", async () => {
+    const t = convexTest(schema, modules);
+    await seedHasCredentials(t, USER_A, SITE);
+    stubFetch(loginOnly({ error: "Authentication failed", error_class: "other" }, 502));
+
+    const result = await t
+      .withIdentity({ subject: USER_A })
+      .action(api.credentials.testSiteCredentials, { site: SITE });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toBe("BSC didn't answer. Nothing changed — try again in a minute.");
+    const entry = await getRawEntry(t, USER_A, SITE);
+    expect(entry?.hasCredentials).toBe(true);
+    expect(entry?.needsReauth).toBeFalsy();
+  });
+
+  test("a 422 reauth_required is unchanged: credentials copy, needsReauth flagged", async () => {
+    const t = convexTest(schema, modules);
+    await seedHasCredentials(t, USER_A, "sportlots");
+    stubFetch(
+      loginOnly({ error: "Re-authentication required", error_class: "reauth_required" }, 422),
+    );
+
+    const result = await t
+      .withIdentity({ subject: USER_A })
+      .action(api.credentials.testSiteCredentials, { site: "sportlots" });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toBe(
+      "SportLots login failed. Please check your credentials and try again.",
+    );
+    const entry = await getRawEntry(t, USER_A, "sportlots");
+    expect(entry?.hasCredentials).toBe(true);
+    expect(entry?.needsReauth).toBe(true);
+    expect(typeof entry?.needsReauthSince).toBe("number");
+  });
+
+  test("a 422 invalid_credentials is unchanged: credentials copy, no flag", async () => {
+    const t = convexTest(schema, modules);
+    await seedHasCredentials(t, USER_A, "sportlots");
+    stubFetch(
+      loginOnly({ error: "Invalid credentials", error_class: "invalid_credentials" }, 422),
+    );
+
+    const result = await t
+      .withIdentity({ subject: USER_A })
+      .action(api.credentials.testSiteCredentials, { site: "sportlots" });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toBe(
+      "SportLots login failed. Please check your credentials and try again.",
+    );
+    const entry = await getRawEntry(t, USER_A, "sportlots");
+    expect(entry?.hasCredentials).toBe(true);
+    expect(entry?.needsReauth).toBeFalsy();
+  });
+
+  test("a 502 `timeout` is transient too: the exchange timed out, the user did nothing wrong", async () => {
+    const t = convexTest(schema, modules);
+    await seedHasCredentials(t, USER_A, "sportlots");
+    stubFetch(loginOnly({ error: "Navigation timed out", error_class: "timeout" }, 502));
+
+    const result = await t
+      .withIdentity({ subject: USER_A })
+      .action(api.credentials.testSiteCredentials, { site: "sportlots" });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toBe(
+      "SportLots didn't answer. Nothing changed — try again in a minute.",
+    );
+    const entry = await getRawEntry(t, USER_A, "sportlots");
+    expect(entry?.hasCredentials).toBe(true);
+    expect(entry?.needsReauth).toBeFalsy();
+  });
+
+  test("no error_class at all (the request to the browser service threw) is transient", async () => {
+    // The Convex-side fetch failing — network, or our 60s abort — never
+    // reaches the marketplace's verdict. Same bucket as the 503-busy
+    // exhaustion: errorClass is undefined because nothing classified it.
+    const t = convexTest(schema, modules);
+    await seedHasCredentials(t, USER_A, "sportlots");
+    stubFetch((async (url: string | URL | Request) => {
+      if (String(url).includes("/login/")) throw new TypeError("fetch failed");
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as FetchStub);
+
+    const result = await t
+      .withIdentity({ subject: USER_A })
+      .action(api.credentials.testSiteCredentials, { site: "sportlots" });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toBe(
+      "SportLots didn't answer. Nothing changed — try again in a minute.",
+    );
+    const entry = await getRawEntry(t, USER_A, "sportlots");
+    expect(entry?.hasCredentials).toBe(true);
+    expect(entry?.needsReauth).toBeFalsy();
+  });
+
+  test("a named non-transient class (challenge) keeps the existing copy", async () => {
+    // Scope guard: transient is exactly `other` / `timeout` / unclassified.
+    // A challenge page is a verdict of its own and keeps the old copy;
+    // widening further is a deliberate decision, not a drift.
+    const t = convexTest(schema, modules);
+    await seedHasCredentials(t, USER_A, "sportlots");
+    stubFetch(loginOnly({ error: "Captcha challenge shown", error_class: "challenge" }, 502));
+
+    const result = await t
+      .withIdentity({ subject: USER_A })
+      .action(api.credentials.testSiteCredentials, { site: "sportlots" });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toBe(
+      "SportLots login failed. Please check your credentials and try again.",
+    );
+  });
+
+  test("saveCredentials on a 502 `other` says the marketplace didn't answer, not 'check your password'", async () => {
+    // Connect-and-store hands the typed password to the login route. If
+    // SportLots 5xx's mid-login, the user's password is unproven, not wrong.
+    const t = convexTest(schema, modules);
+    stubFetch(loginOnly(SL_TRANSIENT_502, 502));
+
+    const result = await t
+      .withIdentity({ subject: USER_A })
+      .action(api.credentials.saveCredentials, {
+        site: "sportlots",
+        username: "real-user",
+        password: "real-pass",
+      });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toBe(
+      "SportLots didn't answer. Nothing changed — try again in a minute.",
+    );
+    expect(result.message).not.toMatch(/password/i);
+    const entry = await getRawEntry(t, USER_A, "sportlots");
+    expect(entry?.hasCredentials).toBeFalsy();
+    expect(entry?.needsReauth).toBeFalsy();
   });
 });
 
