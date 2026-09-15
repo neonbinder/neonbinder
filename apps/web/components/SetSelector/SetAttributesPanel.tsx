@@ -297,10 +297,16 @@ export default function SetAttributesPanel({
                 operator reviewing a freshly synced checklist meets it in.
                 Keyed on the row for the same reason the delete is: the panel
                 does not remount when the selection moves, and a preview
-                dialog opened for one set must never ask about the next. */}
+                dialog opened for one set must never ask about the next. The
+                key carries its own prefix because the delete control beside
+                it is keyed on the same id, and two siblings sharing a key is
+                the one thing React refuses to reconcile — CI run 34930152576
+                rendered this button THREE times after a drill and routed the
+                dialog's state updates to the wrong copy, so "Filling…" never
+                ended. */}
             {leafLevel === "setName" && (
               <FillTeamsControl
-                key={selectorOptionId}
+                key={`fill-teams-${selectorOptionId}`}
                 id={selectorOptionId}
                 level={leafLevel}
                 showToast={showToast}

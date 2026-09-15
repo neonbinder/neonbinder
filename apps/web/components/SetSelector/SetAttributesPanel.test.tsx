@@ -2215,6 +2215,34 @@ describe("SetAttributesPanel — Fill teams render gate (NEO-279)", () => {
     expect(button.textContent).toBe(FILL_TEAMS_LABEL);
   });
 
+  it("renders exactly ONE Fill teams button after the selection moves to another set row", () => {
+    // CI run 34930152576: the control and the delete control beside it were
+    // both keyed on the bare row id. Two siblings with one key is undefined
+    // for React ("children may be duplicated and/or omitted"), and after a
+    // drill the header carried three Fill teams buttons with the dialog's
+    // state landing on the wrong one. The panel does not remount when the
+    // selection moves, so this is the shape that has to stay clean.
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    currentRow = makeRow({ level: "setName" });
+    const { rerender } = renderPanel();
+    expect(screen.getAllByRole("button", { name: FILL_TEAMS_LABEL })).toHaveLength(1);
+
+    currentRow = makeRow({ level: "setName", value: "Another set" });
+    rerender(
+      <SetAttributesPanel
+        selectorOptionId={"selopt_another_set_row" as never}
+        defaultCollapsed={false}
+      />,
+    );
+    expect(screen.getAllByRole("button", { name: FILL_TEAMS_LABEL })).toHaveLength(1);
+    expect(
+      consoleError.mock.calls.some((args) =>
+        args.some((a) => typeof a === "string" && a.includes("same key")),
+      ),
+    ).toBe(false);
+    consoleError.mockRestore();
+  });
+
   it.each(["variantType", "insert", "parallel"])(
     "does not render Fill teams at %s",
     (level) => {
