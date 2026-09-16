@@ -132,6 +132,9 @@ function renderWalker(cards: CardChecklistRow[], props: Record<string, unknown> 
 const chip = (name: string, from: string) =>
   screen.getByRole("button", { name: `${name} (from ${from}'s career)` }) as HTMLButtonElement;
 
+const saveButton = () =>
+  screen.getByRole("button", { name: /Save & Next/ }) as HTMLButtonElement;
+
 beforeEach(() => {
   vi.clearAllMocks();
   mockUpdateCard.mockResolvedValue(null);
@@ -537,8 +540,9 @@ describe("CardAttentionWalker — fixing a card", () => {
     ];
     const { rerender, onClose } = renderWalker(rows);
 
-    // Enter from inside the panel (not on a button — Enter on a focused button
-    // already activates it, and focus starts on a chip).
+    // Enter from inside the panel, on a non-button element: this pins the
+    // wrapper's own Enter-saves path. (Enter on the focused Save button goes
+    // through native activation instead — covered in the keyboard-only block.)
     fireEvent.keyDown(screen.getByRole("heading", { level: 3 }), { key: "Enter" });
 
     await waitFor(() =>
@@ -888,8 +892,10 @@ describe("CardAttentionWalker — deferring", () => {
   });
 
   it("falls through to the all-clear step when the last card is fixed elsewhere, and does not strand focus on <body>", async () => {
-    // The chip that had focus (MissingTeamFixer's own control) unmounts along
-    // with the whole fixer once `current` has nowhere left to point — nothing
+    // The control that had focus (MissingTeamFixer's own — Save & Next when
+    // there are chips, the picker trigger when there are none, as here)
+    // unmounts along with the whole fixer once `current` has nowhere left to
+    // point — nothing
     // else in the all-clear branch is focusable, so without the walker's own
     // advance-time park, focus would blur straight to <body> with the dialog
     // still open. See the audit-fix comment above the effect in
@@ -898,7 +904,7 @@ describe("CardAttentionWalker — deferring", () => {
     const { rerender, onClose } = renderWalker([row]);
     expect(screen.getByRole("heading", { level: 3 })).toBeTruthy();
     // Let the fixer's own mount-time focus (and the walker's one-shot open
-    // fallback) settle onto the chip first — a real animation frame always
+    // fallback) settle onto that control first — a real animation frame always
     // elapses before an operator's next action, and collapsing that gap is
     // what let a STALE, already-scheduled fallback from the open effect win
     // the race against this test's own assertion below.
@@ -924,7 +930,10 @@ describe("CardAttentionWalker — deferring", () => {
 // ---------------------------------------------------------------------------
 
 describe("CardAttentionWalker — keyboard-only", () => {
-  it("lands focus on the first suggestion chip on every advance", async () => {
+  it("lands focus on Save & Next on every advance when there are suggestion chips", async () => {
+    // NEO-282: the panel says "Enter accepts these" and the button says
+    // "Save & Next (Enter)", so the first Enter has to SAVE. It used to land
+    // on the first chip, where Enter toggled the suggestion off instead.
     suggestionsByCard["card-1"] = [
       { teamId: "team-tigers", name: "Detroit Tigers", source: "career", playerName: "Tarik Skubal" },
     ];
@@ -936,31 +945,84 @@ describe("CardAttentionWalker — keyboard-only", () => {
       needsTeamRow({ _id: "card-2" as unknown as Id<"cardChecklist">, cardNumber: "2" }),
     ]);
 
-    await waitFor(() =>
-      expect(document.activeElement).toBe(chip("Detroit Tigers", "Tarik Skubal")),
-    );
+    await waitFor(() => expect(document.activeElement).toBe(saveButton()));
+    // And it is the LIVE Save — the preselection has landed, so Enter here is
+    // a real save, not a keystroke into an aria-disabled control.
+    expect(saveButton().getAttribute("aria-disabled")).toBeNull();
+    expect(chip("Detroit Tigers", "Tarik Skubal").getAttribute("aria-pressed")).toBe("true");
 
     fireEvent.click(screen.getByRole("button", { name: "Skip card 1 for now" }));
 
     // Focus follows the new card rather than staying on a control that
-    // belonged to the one just deferred.
-    await waitFor(() =>
-      expect(document.activeElement).toBe(chip("Boston Red Sox", "Garrett Crochet")),
-    );
+    // belonged to the one just deferred. The walker remounts the fixer per
+    // card, so this is the NEXT card's Save button, and its own chip is
+    // preselected behind it.
+    await waitFor(() => expect(document.activeElement).toBe(saveButton()));
+    expect(chip("Boston Red Sox", "Garrett Crochet").getAttribute("aria-pressed")).toBe("true");
   });
 
-  it("runs the whole fix from the keyboard: toggle with Enter, save with Enter", async () => {
+  it("lands focus on the picker trigger when there is nothing to suggest", async () => {
+    // No linked players with careers → no chips → nothing chosen → Save is
+    // aria-disabled. Parking focus on an inert Save would be worse than the
+    // old behaviour, so focus goes to the first control the operator has to
+    // use: the picker's own trigger (stubbed here as "Stub add team").
+    renderWalker([needsTeamRow()]);
+
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Stub add team" })),
+    );
+    expect(saveButton().getAttribute("aria-disabled")).toBe("true");
+  });
+
+  it("Enter on the focused Save button saves exactly once", async () => {
+    // The wrapper's onKeyDown saves on Enter from anywhere inside the fixer,
+    // and Enter on a focused <button> ALSO fires its click natively. With
+    // focus now starting on Save, that keystroke reaches the fixer twice —
+    // keydown then click — and the write must land once. Two things hold
+    // that line: the BUTTON guard in the wrapper (the keydown path bails),
+    // and the `busy` gate (a second `save` while the first is in flight is
+    // a no-op). This pins the OUTCOME; the guard's own load-bearing case is
+    // the chip test below, where nothing else stops a toggle from saving.
     suggestionsByCard["card-1"] = [
       { teamId: "team-tigers", name: "Detroit Tigers", source: "career", playerName: "Tarik Skubal" },
     ];
     const row = needsTeamRow();
     renderWalker([row]);
 
+    const save = saveButton();
+    await waitFor(() => expect(document.activeElement).toBe(save));
+
+    // What the browser does for Enter on a focused button: keydown bubbles
+    // (through the wrapper's handler), then the button's click fires.
+    fireEvent.keyDown(save, { key: "Enter" });
+    fireEvent.click(save);
+
+    await waitFor(() =>
+      expect(mockUpdateCard).toHaveBeenCalledWith({
+        id: row._id,
+        teamOnCardIds: ["team-tigers"],
+      }),
+    );
+    expect(mockUpdateCard).toHaveBeenCalledTimes(1);
+  });
+
+  it("runs the whole fix from the keyboard: Shift+Tab back to a chip, toggle with Enter, save with Enter", async () => {
+    suggestionsByCard["card-1"] = [
+      { teamId: "team-tigers", name: "Detroit Tigers", source: "career", playerName: "Tarik Skubal" },
+    ];
+    const row = needsTeamRow();
+    renderWalker([row]);
+
+    await waitFor(() => expect(document.activeElement).toBe(saveButton()));
+
+    // The operator moves off Save to the chip (Shift+Tab in a browser; the
+    // test moves focus directly — Tab order is pinned separately below).
     const first = chip("Detroit Tigers", "Tarik Skubal");
-    await waitFor(() => expect(document.activeElement).toBe(first));
+    first.focus();
+    expect(document.activeElement).toBe(first);
 
     // Enter on a focused chip toggles it (native button activation) and must
-    // NOT also save — that is what the BUTTON guard in the fixer is for.
+    // NOT also save — the same BUTTON guard that keeps Save from double-firing.
     fireEvent.keyDown(first, { key: "Enter" });
     fireEvent.click(first);
     expect(mockUpdateCard).not.toHaveBeenCalled();
