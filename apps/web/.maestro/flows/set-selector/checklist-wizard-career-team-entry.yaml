@@ -203,10 +203,31 @@ tags:
 # teams (`waitingOnStagedTeams`) — sends the walk straight to that step. So the
 # chip is NOT assertable here: by the time a Maestro command reads the screen,
 # the New Team step is up. Answering it is the operator's next move anyway.
-# 30s: the step appears only once `stageCareerTeams` has round-tripped.
+#
+# THE STEP APPEARS ONLY ONCE THE STAGED ROW'S WIKIDATA LOOKUP SETTLES — not
+# once `stageCareerTeams` has round-tripped, which is what this note used to
+# say. The row is inserted `pending` and `nextUndecided` presents settled rows
+# only, so between the tap and the step the batch reads "1 still being looked
+# up". That lookup goes through the deployment-wide Wikidata pool
+# (`maxParallelism: 5`, shared by every runner draining the queue), FIFO
+# behind whatever the other runners just fetched. CI run 35140592015 (rerun) /
+# runner 0: the tap landed at 20:56:15 (form cleared, footer "1 still looking
+# up — wait or skip", header "33 of 123 reviewed · 1 still being looked up",
+# screenshot step-144) and 30s of a flat wait ran out with the row still
+# pending. Same class as the batch's own lookups, so the same shape as
+# `util-wizard-walk-to-player-row` and the sibling `checklist-wizard-career-
+# team-commits`: a short wait proves the stage LANDED (the step is either up
+# or visibly pending), the long gate is named for the external work it waits
+# on (R5's marketplace-class exception), and the step itself gets 7000.
+- extendedWaitUntil:
+    visible: "New Team: ProbeTeam${output.ATTEMPT_TOKEN}|.*still looking up.*"
+    timeout: 7000
+- extendedWaitUntil:
+    notVisible: ".*still looking up.*"
+    timeout: 180000
 - extendedWaitUntil:
     visible: "New Team: ProbeTeam${output.ATTEMPT_TOKEN}"
-    timeout: 30000
+    timeout: 7000
 # One tap accepts the pre-filled Location, Name and League. Safe to match by
 # text: the button only relabels itself to "Link to <name>" on an exact
 # hierarchy match, and this name is per-worker unique, so it can have none.
@@ -246,9 +267,17 @@ tags:
 - inputText: "2010"
 - tapOn:
     id: "Add career team"
+# The same three-part gate as STEP 4: this staged row queues on the shared
+# Wikidata pool too.
+- extendedWaitUntil:
+    visible: "New Team: TempTeam${output.ATTEMPT_TOKEN}|.*still looking up.*"
+    timeout: 7000
+- extendedWaitUntil:
+    notVisible: ".*still looking up.*"
+    timeout: 180000
 - extendedWaitUntil:
     visible: "New Team: TempTeam${output.ATTEMPT_TOKEN}"
-    timeout: 30000
+    timeout: 7000
 - tapOn: "Add as New Team"
 - extendedWaitUntil:
     visible:
