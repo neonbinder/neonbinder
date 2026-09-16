@@ -102,6 +102,20 @@ const NO_FRANCHISE = "";
 const FRANCHISE_PILL_CAP = 24;
 
 /**
+ * NEO-284 — how long the "also answers to" note has to hold still before it
+ * is ANNOUNCED.
+ *
+ * The visible note is synchronous: `teams.aliasesInUse` re-runs with new args
+ * on nearly every keystroke in the alias box, and a sighted operator watching
+ * the sentence appear is how they learn a name is shared. A live region
+ * cannot behave that way — `aria-live="polite"` queues every intermediate
+ * value, so typing "Miami Hurricanes" would read a screen-reader user a
+ * sentence per character, none of them current by the time it was spoken.
+ * Same number and same reasoning as League Management's counter.
+ */
+const ALIAS_NOTE_ANNOUNCE_DEBOUNCE_MS = 400;
+
+/**
  * Pill styling, copied deliberately from `SetSelector/NewTeamForm.tsx` and kept
  * in step with it — the two are the same control answering two versions of the
  * same question, and an operator should not have to learn it twice. The
@@ -438,6 +452,22 @@ function TeamDetail({
       ? { sportId: team.sportId, aliases: draftAliases, selfId: team._id }
       : "skip",
   );
+  const aliasNote = (sharedAliases ?? [])
+    .map(
+      (hit) =>
+        `${hit.name} also answers to “${hit.alias}”. Cards will ask which one when the years don't decide.`,
+    )
+    .join(" ");
+  // The announced copy of the note, one debounce behind the visible one. See
+  // ALIAS_NOTE_ANNOUNCE_DEBOUNCE_MS for why the two cannot be the same node.
+  const [announcedAliasNote, setAnnouncedAliasNote] = useState("");
+  useEffect(() => {
+    const timer = setTimeout(
+      () => setAnnouncedAliasNote(aliasNote),
+      ALIAS_NOTE_ANNOUNCE_DEBOUNCE_MS,
+    );
+    return () => clearTimeout(timer);
+  }, [aliasNote]);
 
   /**
    * Every league this dropdown can offer, in the order the parent sorted them,
@@ -970,19 +1000,25 @@ function TeamDetail({
             Separate with commas. Other names this team answers to &mdash; the
             school, an old nickname, how a checklist spells it.
           </p>
-          {(sharedAliases ?? []).length > 0 && (
-            /* `role="status"`, not `alert`: nothing is wrong. A shared alias
-               is the feature working — a checklist carrying that name will
-               offer both teams and the year will usually settle it. */
-            <p role="status" className="mt-1 text-xs text-slate-400">
-              {(sharedAliases ?? [])
-                .map(
-                  (hit) =>
-                    `${hit.name} also answers to “${hit.alias}”. Cards will ask which one when the years don't decide.`,
-                )
-                .join(" ")}
-            </p>
+          {/* Nothing is wrong: a shared alias is the feature working — a
+              checklist carrying that name will offer both teams and the year
+              will usually settle it. So this is a note, not an alert.
+
+              Deliberately NOT a live region itself: it follows the query,
+              which follows the keystrokes, and a polite region would queue a
+              sentence per character. The announcement rides the sr-only
+              channel below instead, one debounce behind, and this node stays
+              synchronous for the eyes. */}
+          {aliasNote && (
+            <p className="mt-1 text-xs text-slate-400">{aliasNote}</p>
           )}
+          {/* The announced note. Mounted unconditionally and from the first
+              render, empty or not: a live region that appears at the same
+              moment its text does is frequently missed entirely — the region
+              has to already exist for the change to be a CHANGE. */}
+          <span role="status" aria-live="polite" className="sr-only">
+            {announcedAliasNote}
+          </span>
         </div>
 
         <div>

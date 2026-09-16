@@ -180,6 +180,12 @@ Run WITHOUT `--identity`: these are internal functions armed by the env flag
 and the confirm literal, the NEO-214 shape, and `--identity` cannot reach an
 internal function.
 
+**Alias-heavy chunks: send at most 10 rows per call.** Every incoming alias
+costs one indexed read plus a `db.get` per hit, so fifty rows carrying the
+dataset's 64-alias maximum would crowd one transaction's read budget. The
+driver already sizes chunks by total alias count rather than row count; a
+hand run should do the same.
+
 Per team row: `key` (the driver uses the Wikidata Q-id), `name`, optional
 `location`, `aliases`, `league`, `yearsActive: {from, to?}`, `wikidataId`,
 `decision: {adopt: id} | {create: true}`. Convex rejects unknown keys and

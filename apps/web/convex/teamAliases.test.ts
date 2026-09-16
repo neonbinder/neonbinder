@@ -372,3 +372,176 @@ describe("NEO-284: aliasesInUse is admin-gated and advisory", () => {
     ).resolves.toEqual([]);
   });
 });
+
+// ===========================================================================
+// S1 (security review): an alias may never be another team's PRIMARY name
+// ===========================================================================
+
+describe("NEO-284 S1: the writers refuse an alias that is another team's own name", () => {
+  test("saveTeamFields refuses, naming the owning team — and writes nothing", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    await asAdmin.mutation(api.teams.findOrCreate, {
+      name: "Tigers",
+      location: "LSU",
+      sportId,
+    });
+    const rival = await asAdmin.mutation(api.teams.findOrCreate, {
+      name: "Tigers",
+      location: "Auburn",
+      sportId,
+    });
+
+    await expect(
+      asAdmin.mutation(api.teams.saveTeamFields, {
+        id: rival,
+        aliases: ["War Eagle", "LSU Tigers"],
+      }),
+    ).rejects.toThrow(/LSU Tigers is already a team in this sport/);
+
+    const row = await t.run((ctx) => ctx.db.get(rival));
+    expect(row!.aliases).toBeUndefined();
+    expect(await aliasRows(t)).toEqual([]);
+  });
+
+  test("the refusal names the team, not an id (NAME_TAKEN's shape is for a different surface)", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const owner = await asAdmin.mutation(api.teams.findOrCreate, {
+      name: "Tigers",
+      location: "LSU",
+      sportId,
+    });
+    const rival = await asAdmin.mutation(api.teams.findOrCreate, {
+      name: "Tigers",
+      location: "Auburn",
+      sportId,
+    });
+    try {
+      await asAdmin.mutation(api.teams.saveTeamFields, { id: rival, aliases: ["LSU Tigers"] });
+      throw new Error("expected throw");
+    } catch (err) {
+      const message = String((err as { data?: unknown; message?: string }).data ?? (err as Error).message);
+      expect(message).not.toContain(owner);
+      expect(message).not.toContain("NAME_TAKEN");
+    }
+  });
+
+  test("findOrCreate refuses on the INSERT branch and inserts nothing", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    await asAdmin.mutation(api.teams.findOrCreate, {
+      name: "Tigers",
+      location: "LSU",
+      sportId,
+    });
+    await expect(
+      asAdmin.mutation(api.teams.findOrCreate, {
+        name: "Tigers",
+        location: "Auburn",
+        sportId,
+        aliases: ["LSU Tigers"],
+      }),
+    ).rejects.toThrow(/LSU Tigers is already a team in this sport/);
+    expect(await t.run((ctx) => ctx.db.query("teams").collect())).toHaveLength(1);
+  });
+
+  test("a disjoint era is not a clash: the 2011- Jets may answer to the 1972-1996 Jets' name", async () => {
+    // Same rule `findCollidingTeams` applies: eras that do not overlap are
+    // two teams, and an alias that only reaches the other era cannot lock it
+    // out — its own saveTeamFields would not collide either.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t, "Hockey");
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    await asAdmin.mutation(api.teams.findOrCreate, {
+      name: "Jets",
+      location: "Winnipeg",
+      sportId,
+      yearsActive: { from: 1972, to: 1996 },
+    });
+    const revived = await asAdmin.mutation(api.teams.findOrCreate, {
+      name: "Thrashers",
+      location: "Atlanta",
+      sportId,
+      yearsActive: { from: 2011 },
+    });
+    await asAdmin.mutation(api.teams.saveTeamFields, {
+      id: revived,
+      aliases: ["Winnipeg Jets"],
+    });
+    expect((await t.run((ctx) => ctx.db.get(revived)))!.aliases).toEqual(["Winnipeg Jets"]);
+  });
+
+  test("the guard checks the era this save LEAVES on the row, not the one it had", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t, "Hockey");
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    await asAdmin.mutation(api.teams.findOrCreate, {
+      name: "Jets",
+      location: "Winnipeg",
+      sportId,
+      yearsActive: { from: 1972, to: 1996 },
+    });
+    const revived = await asAdmin.mutation(api.teams.findOrCreate, {
+      name: "Thrashers",
+      location: "Atlanta",
+      sportId,
+      yearsActive: { from: 2011 },
+    });
+    // Widening the era back over 1972-1996 in the same save as the alias:
+    // the alias would now reach the other Jets, so it is refused.
+    await expect(
+      asAdmin.mutation(api.teams.saveTeamFields, {
+        id: revived,
+        yearsActive: { from: 1990 },
+        aliases: ["Winnipeg Jets"],
+      }),
+    ).rejects.toThrow(/Winnipeg Jets is already a team/);
+  });
+
+  test("alias-vs-alias stays advisory: two teams may share an alias, and aliasesInUse only reports it", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const redhawks = await asAdmin.mutation(api.teams.findOrCreate, {
+      name: "RedHawks",
+      location: "Miami",
+      sportId,
+      aliases: ["Miami"],
+    });
+    const hurricanes = await asAdmin.mutation(api.teams.findOrCreate, {
+      name: "Hurricanes",
+      location: "Miami",
+      sportId,
+    });
+    await asAdmin.mutation(api.teams.saveTeamFields, { id: hurricanes, aliases: ["Miami"] });
+    expect((await t.run((ctx) => ctx.db.get(hurricanes)))!.aliases).toEqual(["Miami"]);
+    expect(
+      await asAdmin.query(api.teams.aliasesInUse, { sportId, aliases: ["Miami"], selfId: hurricanes }),
+    ).toEqual([{ alias: "Miami", name: "Miami RedHawks" }]);
+    expect(redhawks).toBeTruthy();
+  });
+
+  test("aliasesInUse drops an over-long entry before the lookup", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    await asAdmin.mutation(api.teams.findOrCreate, {
+      name: "Padres",
+      location: "San Diego",
+      sportId,
+      aliases: ["Friars"],
+    });
+    // A 121-character string can never equal a stored key; the advisory
+    // query answers without it rather than throwing or scanning for it.
+    expect(
+      await asAdmin.query(api.teams.aliasesInUse, {
+        sportId,
+        aliases: ["x".repeat(121), "Friars"],
+      }),
+    ).toEqual([{ alias: "Friars", name: "San Diego Padres" }]);
+  });
+});

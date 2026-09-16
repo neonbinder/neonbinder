@@ -143,6 +143,9 @@ import {
 import {
   MAX_TEAM_ALIASES,
   MAX_TEAM_ALIAS_LENGTH,
+  // NEO-284 security audit: the warn-and-skip flavour of the primary-name
+  // lock-out check, for the two commit-time alias writers below.
+  dropAliasesThatArePrimaryNames,
   normalizeTeamAliasList,
   normalizeTeamName,
   syncTeamAliases,
@@ -11091,12 +11094,35 @@ export const commitCardChecklistPrelude = internalMutation({
        * decision written by a path that skipped the check must cost the team
        * an alias, never the commit.
        */
-      const aliases = input.aliases?.length
+      let aliases = input.aliases?.length
         ? normalizeTeamAliasList(
             boundedAliasInput(input.aliases),
             teamFullName(fields),
           )
         : [];
+      if (aliases.length) {
+        /*
+         * NEO-284 security audit — an alias that is another team's PRIMARY
+         * name in this sport (same era) is dropped, not written. Such an
+         * alias locks that team out of its own edits (`findCollidingTeams`
+         * would hit it as NAME_TAKEN). The New Team step refuses it where the
+         * operator can see; here there is nobody to tell, so the alias is
+         * skipped and the team is still created. The row's own era is what
+         * the operator typed (or the enrichment's), already on `extra`.
+         */
+        const { aliases: safe, dropped } = await dropAliasesThatArePrimaryNames(ctx, {
+          sportId: args.sportId,
+          aliases,
+          yearsActive: extra.yearsActive,
+        });
+        for (const { teamName } of dropped) {
+          // The owning team's display name only — never the alias string.
+          console.warn(
+            `commitCardChecklistPrelude: a New Team alias is ${teamName}'s own name. Created without it.`,
+          );
+        }
+        aliases = safe;
+      }
       const id = await ctx.db.insert("teams", {
         ...extra,
         ...fields,
@@ -11564,11 +11590,29 @@ export const commitCardChecklistPrelude = internalMutation({
         additions.push(trimmed);
       }
       if (additions.length === 0) continue;
+      // NEO-284 security audit — a string that is another team's PRIMARY name
+      // in this sport (overlapping era) is not remembered: stored as an alias
+      // it would lock that team out of its own edits (NAME_TAKEN on every
+      // save). Warn-and-skip, like the caps above; the link itself still
+      // lands. `selfId` so the linked team's own name is not a clash.
+      const { aliases: safeAdditions, dropped } = await dropAliasesThatArePrimaryNames(ctx, {
+        sportId: args.sportId,
+        aliases: additions,
+        selfId: linked._id,
+        yearsActive: linked.yearsActive,
+      });
+      for (const { teamName } of dropped) {
+        // The owning team's display name only — never the parked string.
+        console.warn(
+          `commitCardChecklistPrelude: a saveAsAlias string is ${teamName}'s own name. Linked, not remembered.`,
+        );
+      }
+      if (safeAdditions.length === 0) continue;
       // Through the same helper every other writer uses, against the team's
       // own composed name, so the stored list obeys the one contract. The
       // inputs are inside the caps by the checks above, so this cannot throw.
       const aliases = normalizeTeamAliasList(
-        [...held, ...additions],
+        [...held, ...safeAdditions],
         teamFullName(linked),
       );
       await ctx.db.patch(linked._id, { aliases, lastUpdated: Date.now() });

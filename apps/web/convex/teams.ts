@@ -24,11 +24,12 @@ import { normalizeEntityName } from "../lib/entities/normalize-name";
 // convex/lib/teamRow.ts for why every writer in this file goes through them.
 import {
   findCollidingTeams,
+  findTeamsByExactName,
   findTeamsByFullName,
   resolveTeamForSetYear,
   teamRowFields,
 } from "./lib/teamRow";
-import { eraLabel, teamOptionLabel } from "../lib/teams/team-era";
+import { eraLabel, erasOverlap, teamOptionLabel, type TeamEra } from "../lib/teams/team-era";
 import { splitTeamName, teamFullName } from "../lib/teams/team-name";
 
 /**
@@ -361,6 +362,102 @@ export async function findTeamAliasCollision(
 }
 
 /**
+ * ── NEO-284 security condition S1: an alias may never be another team's NAME ─
+ *
+ * Aliases join the identity lookup on equal footing with primary names, and
+ * `findCollidingTeams` reads that union. So if row B carries an alias whose
+ * key is row A's PRIMARY full name, with overlapping eras, then A's own
+ * `saveTeamFields` — any edit to its name, location or years — collides with
+ * B and is refused `NAME_TAKEN:<B>`. A is locked out of its own identity, and
+ * nothing tells the operator why. Four routes could write such an alias: Team
+ * Management, the New Team dialog, the commit-time "remember as a name" pass
+ * (default ON, so one mis-link away), and the loader.
+ *
+ * Plan decision 5, option (a): refuse it at the WRITERS. Alias-vs-alias stays
+ * advisory (`aliasesInUse`) — two teams may share "Miami" and the era or the
+ * operator decides — but a team's own name belongs to that team, in its era.
+ * The era matters: "Winnipeg Jets" as an alias on the 2011- row does not lock
+ * out the 1972-1996 row, because `findCollidingTeams` would not collide them
+ * either. `erasOverlap` treats an undated side as overlapping, the safe
+ * direction for a refusal.
+ *
+ * Two flavours over one lookup. `assertAliasesNotPrimaryNames` throws for the
+ * operator surfaces, naming the owning team's DISPLAY name (reference data
+ * the operator can go and look at — never an id, which is `NAME_TAKEN`'s
+ * shape for a different reason). `dropAliasesThatArePrimaryNames` is for the
+ * commit-time pass, which has no operator in front of it and must not abort
+ * a checklist commit over one alias: it returns the safe list and what it
+ * dropped, exactly as that pass already handles its caps (warn and skip). The
+ * loader does NOT call either: its ownership check (`aliasOwnedBy`) reads the
+ * same union and already parks a primary-name owner as `ambiguous`.
+ */
+export async function findAliasPrimaryNameOwners(
+  ctx: QueryCtx | MutationCtx,
+  args: {
+    sportId: Id<"selectorOptions">;
+    aliases: ReadonlyArray<string>;
+    /** The row the aliases are for, which does not collide with itself. */
+    selfId?: Id<"teams">;
+    /** The era the aliases will sit beside; undated overlaps everything. */
+    yearsActive?: TeamEra;
+  },
+): Promise<Array<{ alias: string; owner: Doc<"teams"> }>> {
+  const out: Array<{ alias: string; owner: Doc<"teams"> }> = [];
+  for (const alias of args.aliases) {
+    const named = await findTeamsByExactName(ctx, args.sportId, alias);
+    const owner = named.find(
+      (row) =>
+        row._id !== args.selfId && erasOverlap(row.yearsActive, args.yearsActive),
+    );
+    if (owner) out.push({ alias, owner });
+  }
+  return out;
+}
+
+/** The refusing flavour — operator surfaces. See `findAliasPrimaryNameOwners`. */
+export async function assertAliasesNotPrimaryNames(
+  ctx: QueryCtx | MutationCtx,
+  args: {
+    sportId: Id<"selectorOptions">;
+    aliases: ReadonlyArray<string>;
+    selfId?: Id<"teams">;
+    yearsActive?: TeamEra;
+  },
+): Promise<void> {
+  const [clash] = await findAliasPrimaryNameOwners(ctx, args);
+  if (clash) {
+    // The owning team's display name: reference data, the thing the operator
+    // needs in order to go and look. Not the alias they typed.
+    throw new ConvexError(
+      `${teamFullName(clash.owner)} is already a team in this sport — a team can't wear another team's name as an alias.`,
+    );
+  }
+}
+
+/**
+ * The warn-and-skip flavour — automatic writers with no operator present.
+ * Returns the aliases that are safe to store and the ones dropped, each with
+ * the owning team's full name for the log line.
+ */
+export async function dropAliasesThatArePrimaryNames(
+  ctx: QueryCtx | MutationCtx,
+  args: {
+    sportId: Id<"selectorOptions">;
+    aliases: ReadonlyArray<string>;
+    selfId?: Id<"teams">;
+    yearsActive?: TeamEra;
+  },
+): Promise<{ aliases: string[]; dropped: Array<{ alias: string; teamName: string }> }> {
+  const owners = await findAliasPrimaryNameOwners(ctx, args);
+  if (owners.length === 0) return { aliases: [...args.aliases], dropped: [] };
+  const taken = new Set(owners.map((o) => o.alias));
+  return {
+    aliases: args.aliases.filter((alias) => !taken.has(alias)),
+    dropped: owners.map((o) => ({ alias: o.alias, teamName: teamFullName(o.owner) })),
+  };
+}
+
+/**
  * NEO-284 — the alias that answered a query, or undefined when the primary
  * name did. Mirrors `players.matchedAliasFor`.
  *
@@ -399,8 +496,12 @@ export const aliasesInUse = query({
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
     // Bounded like every other alias read: the caller is a form, and an
-    // unbounded list would be one index read per entry.
-    const aliases = args.aliases.slice(0, MAX_TEAM_ALIASES);
+    // unbounded list would be one index read per entry — and an entry longer
+    // than any storable alias can never match a stored key, so it is dropped
+    // before the lookup rather than normalised and hashed for nothing.
+    const aliases = args.aliases
+      .filter((alias) => alias.trim().length <= MAX_TEAM_ALIAS_LENGTH)
+      .slice(0, MAX_TEAM_ALIASES);
     const out: Array<{ alias: string; name: string }> = [];
     for (const alias of aliases) {
       const other = await findTeamAliasCollision(ctx, {
@@ -618,6 +719,15 @@ export const findOrCreate = mutation({
     const aliases = args.aliases
       ? normalizeTeamAliasList(args.aliases, fullName)
       : [];
+    // S1: …but never another team's own name in an overlapping era — that
+    // would lock the other team out of editing itself. Refused, naming it.
+    if (aliases.length) {
+      await assertAliasesNotPrimaryNames(ctx, {
+        sportId: args.sportId,
+        aliases,
+        yearsActive: args.yearsActive,
+      });
+    }
 
     const id = await ctx.db.insert("teams", {
       ...teamRowFields({ name, location: args.location }),
@@ -1318,6 +1428,15 @@ export const saveTeamFields = mutation({
         args.aliases,
         teamFullName({ name: nextName, location: nextLocation }),
       );
+      // S1: an alias that is another team's own name (overlapping era) would
+      // lock that team out of `saveTeamFields` for good. Refused, naming it.
+      // Against the era this save LEAVES on the row, like everything above.
+      await assertAliasesNotPrimaryNames(ctx, {
+        sportId: existing.sportId,
+        aliases,
+        selfId: args.id,
+        yearsActive: nextYears,
+      });
       // Dropped entirely once empty, so a cleared row is indistinguishable
       // from one that never had an alias — the rule `externalIds` follows.
       patch.aliases = aliases.length > 0 ? aliases : undefined;

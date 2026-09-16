@@ -2027,6 +2027,16 @@ describe("EntityReviewWizard — near matches", () => {
 describe("EntityReviewWizard — save-as-alias checkbox", () => {
   const rememberLabel = (name: string) =>
     `Remember “${name}” as a name for this team`;
+  const wizardEl = () => (
+    <EntityReviewWizard
+      isOpen
+      selectorOptionId={"selopt-1" as unknown as Id<"selectorOptions">}
+      batchId="batch-1"
+      summary={SUMMARY}
+      onConfirm={vi.fn()}
+      onCancel={vi.fn()}
+    />
+  );
 
   it("EXACT alias hit on a team row: the primary Link control names the team's real name, not the alias", () => {
     // `teams.nearMatches` tags an alias hit `confidence: "exact"` but its
@@ -2111,25 +2121,66 @@ describe("EntityReviewWizard — save-as-alias checkbox", () => {
     expect(screen.queryByLabelText(/^Remember /)).toBeNull();
   });
 
-  it("is ABSENT when there is no Link control on screen at all (no candidate, search not open)", () => {
+  /**
+   * The checkbox is MOUNTED for every team row and only SHOWN while a
+   * `Link to …` control exists (a11y audit: an `&&` gate on the async
+   * near-match result would swap elements under a keyboard user). So "absent"
+   * on a team row means collapsed with `hidden` and out of the tab order —
+   * Testing Library's label query does not filter hidden nodes, hence the
+   * explicit checks.
+   */
+  const collapsed = (box: HTMLElement) =>
+    box.closest("[hidden]") !== null && box.tabIndex === -1;
+
+  it("is COLLAPSED (mounted, hidden, out of the tab order) when there is no Link control on screen at all", () => {
     currentNearMatches = [];
     currentRows = [makeRow({ kind: "team", name: "Brand New Squad", status: "ready" })];
     renderWizard();
 
     expect(screen.queryByText("Possible matches")).toBeNull();
-    expect(screen.queryByLabelText(/^Remember /)).toBeNull();
+    const box = screen.getByLabelText(rememberLabel("Brand New Squad"));
+    expect(collapsed(box)).toBe(true);
   });
 
-  it("appears once the link search opens on a team row with no near matches", () => {
+  it("expands once the link search opens on a team row with no near matches", () => {
     currentNearMatches = [];
     currentRows = [makeRow({ kind: "team", name: "Brand New Squad", status: "ready" })];
     renderWizard();
 
-    expect(screen.queryByLabelText(/^Remember /)).toBeNull();
+    const box = screen.getByLabelText(rememberLabel("Brand New Squad"));
+    expect(collapsed(box)).toBe(true);
     fireEvent.click(screen.getByLabelText("Link to existing instead"));
-    expect(
-      screen.getByLabelText(rememberLabel("Brand New Squad")),
-    ).toBeTruthy();
+    expect(collapsed(box)).toBe(false);
+    expect(box.closest("[hidden]")).toBeNull();
+    expect(box.tabIndex).toBe(0);
+  });
+
+  it("is ONE persistent element: the near-match query re-resolving under a focused checkbox keeps focus on the same node", () => {
+    // The exact footer-primary case, then the query lands again with a
+    // different candidate set (a close match joins). A `&&`-gated block would
+    // have re-mounted here and dropped focus to <body>; the always-mounted
+    // block keeps the very same input focused.
+    const row = makeRow({ kind: "team", name: "LSU", status: "ready" });
+    currentNearMatches = [
+      { _id: "team_lsu", name: "LSU Tigers", confidence: "exact", matchedAlias: "LSU" },
+    ];
+    currentRows = [row];
+    const { rerender } = render(wizardEl());
+
+    const box = screen.getByLabelText(rememberLabel("LSU"));
+    expect(collapsed(box)).toBe(false);
+    act(() => box.focus());
+    expect(document.activeElement).toBe(box);
+
+    currentNearMatches = [
+      { _id: "team_lsu", name: "LSU Tigers", confidence: "exact", matchedAlias: "LSU" },
+      { _id: "team_lsu_old", name: "LSU Fighting Tigers", confidence: "close" },
+    ];
+    rerender(wizardEl());
+
+    expect(screen.getByLabelText("Link to LSU Fighting Tigers")).toBeTruthy();
+    expect(screen.getByLabelText(rememberLabel("LSU"))).toBe(box);
+    expect(document.activeElement).toBe(box);
   });
 
   it("the decided-list history names both the link and the remembered alias", () => {

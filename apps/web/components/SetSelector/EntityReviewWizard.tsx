@@ -2137,6 +2137,16 @@ export default function EntityReviewWizard({
     const owned = new Set(sameNameCandidates.map((c) => c.playerId as string));
     return base.filter((m) => !owned.has(m._id));
   })();
+  /**
+   * NEO-284 — is there a `Link to …` control on screen for this row? The
+   * footer primary on a lone exact match, a near-match row in the panel, or
+   * the open link search. Decides whether the "remember this name" checkbox
+   * is SHOWN (never whether it is mounted — see the JSX).
+   */
+  const linkControlOnScreen =
+    linkingOpen ||
+    (showExactHierarchy && exactMatch !== null) ||
+    (panelMatches?.length ?? 0) > 0;
   const remaining = total - decided;
   /**
    * NEO-236 — the two bulk buttons act on DIFFERENT sets, so they count
@@ -2951,13 +2961,25 @@ export default function EntityReviewWizard({
                     {/*
                       ── NEO-284: remember this name ──────────────────────────
 
-                      Team rows only, and only while a `Link to …` control is
-                      on screen — the footer primary on an exact match, a
-                      near-match row, or the open link search. It is a fact
-                      about LINKING ("keep the checklist's spelling as one of
-                      that team's names"), so it appears with the link
+                      Team rows only, and SHOWN only while a `Link to …`
+                      control is on screen — the footer primary on an exact
+                      match, a near-match row, or the open link search. It is
+                      a fact about LINKING ("keep the checklist's spelling as
+                      one of that team's names"), so it appears with the link
                       controls and not above a New Team form, where "this
                       team" would have meant the one being typed.
+
+                      MOUNTED for every team row and collapsed with `hidden`,
+                      never `&&`-gated: the conditions that show it are all
+                      derived from the async `nearMatches` query, and the
+                      footer's own comment on the primary button explains why
+                      a query result must not decide WHICH elements exist —
+                      a swap under a keyboard user drops focus to <body>
+                      (SC 2.4.3 / 3.2.2). One element, one slot, both states;
+                      `hidden` takes it out of the tab order and the
+                      accessibility tree while collapsed, and `tabIndex={-1}`
+                      says so a second way for the driver that reads tab
+                      order off the attribute.
 
                       In the BODY, above the panel, never in the footer: row 1
                       of the footer is reserved (NEO-110) and a control that
@@ -2966,51 +2988,49 @@ export default function EntityReviewWizard({
 
                       Ticked by default — see `saveAsAliasByRow`.
                     */}
-                    {current.kind === "team" &&
-                      (linkingOpen ||
-                        (showExactHierarchy && exactMatch !== null) ||
-                        (panelMatches?.length ?? 0) > 0) && (
-                        <div className="space-y-1">
-                          <label
-                            htmlFor={TEAM_SAVE_AS_ALIAS_FIELD_ID}
-                            className="flex items-center gap-2 text-sm text-gray-200"
-                          >
-                            <input
-                              id={TEAM_SAVE_AS_ALIAS_FIELD_ID}
-                              type="checkbox"
-                              checked={saveAsAlias}
-                              disabled={busy}
-                              aria-describedby={saveAsAliasHelpId}
-                              onChange={(e) =>
-                                setSaveAsAliasByRow((prev) => ({
-                                  ...prev,
-                                  [current._id]: e.target.checked,
-                                }))
-                              }
-                              // The wizard's checkbox grammar (career teams
-                              // below use the same accent), plus a visible
-                              // ring: `accent-*` alone leaves focus to the
-                              // browser default, which on this ground is
-                              // easy to lose (SC 2.4.7).
-                              className="h-4 w-4 rounded accent-[#00D558] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] focus-visible:ring-offset-1 focus-visible:ring-offset-gray-800"
-                            />
-                            {/* The row's RAW name, quoted: it is the string
-                                that will become the alias, spelling, caps and
-                                all — so the operator sees exactly what they
-                                are keeping. */}
-                            <span>
-                              Remember “{current.name}” as a name for this team
-                            </span>
-                          </label>
-                          <p
-                            id={saveAsAliasHelpId}
-                            className="pl-6 text-xs text-gray-400"
-                          >
-                            Kicks in when you link. Next time this name shows
-                            up, it goes straight to that team.
-                          </p>
-                        </div>
-                      )}
+                    {current.kind === "team" && (
+                      <div className="space-y-1" hidden={!linkControlOnScreen}>
+                        <label
+                          htmlFor={TEAM_SAVE_AS_ALIAS_FIELD_ID}
+                          className="flex items-center gap-2 text-sm text-gray-200"
+                        >
+                          <input
+                            id={TEAM_SAVE_AS_ALIAS_FIELD_ID}
+                            type="checkbox"
+                            checked={saveAsAlias}
+                            disabled={busy}
+                            tabIndex={linkControlOnScreen ? undefined : -1}
+                            aria-describedby={saveAsAliasHelpId}
+                            onChange={(e) =>
+                              setSaveAsAliasByRow((prev) => ({
+                                ...prev,
+                                [current._id]: e.target.checked,
+                              }))
+                            }
+                            // The wizard's checkbox grammar (career teams
+                            // below use the same accent), plus a visible
+                            // ring: `accent-*` alone leaves focus to the
+                            // browser default, which on this ground is
+                            // easy to lose (SC 2.4.7).
+                            className="h-4 w-4 rounded accent-[#00D558] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] focus-visible:ring-offset-1 focus-visible:ring-offset-gray-800"
+                          />
+                          {/* The row's RAW name, quoted: it is the string
+                              that will become the alias, spelling, caps and
+                              all — so the operator sees exactly what they
+                              are keeping. */}
+                          <span>
+                            Remember “{current.name}” as a name for this team
+                          </span>
+                        </label>
+                        <p
+                          id={saveAsAliasHelpId}
+                          className="pl-6 text-xs text-gray-400"
+                        >
+                          Kicks in when you link. Next time this name shows
+                          up, it goes straight to that team.
+                        </p>
+                      </div>
+                    )}
 
                     {!linkingOpen && (
                       <NearMatchPanel

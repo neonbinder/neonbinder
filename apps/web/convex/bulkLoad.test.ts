@@ -472,6 +472,28 @@ describe("alias owned by a DIFFERENT row than the matched candidate", () => {
     expect((await t.run(async (ctx) => ctx.db.get(dirtbags)))!.aliases).toEqual(["The Dirtbags"]);
   });
 
+  test("adopt decision pointing at a team in ANOTHER sport is refused as 'not a team in this sport', nothing written", async () => {
+    armed();
+    const t = convexTest(schema, modules);
+    await seedSport(t);
+    const hockeyId = await seedSport(t, "Hockey");
+    // Same name, wrong sport: the id-only check must not be satisfied by the
+    // name matching, because a cross-sport adopt would gap-fill a hockey row
+    // with a baseball program's league and Q-id.
+    const hockeyRow = await seedTeam(t, hockeyId, { location: "LSU", name: "Tigers" });
+
+    await expect(
+      t.mutation(internal.bulkLoad.upsertTeams, {
+        confirm: CONFIRM,
+        sport: "Baseball",
+        teams: [{ key: "x", location: "LSU", name: "Tigers", decision: { adopt: hockeyRow } }],
+      }),
+    ).rejects.toThrow(/not a team in this sport/);
+    const untouched = await t.run(async (ctx) => ctx.db.get(hockeyRow));
+    expect(untouched!.leagueId).toBeUndefined();
+    expect(await t.run(async (ctx) => ctx.db.query("teams").collect())).toHaveLength(1);
+  });
+
   test("wrong-key adopt decision (chosen row answers to none of the incoming names) is refused", async () => {
     armed();
     const t = convexTest(schema, modules);

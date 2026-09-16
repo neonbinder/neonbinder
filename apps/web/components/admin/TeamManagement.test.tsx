@@ -39,10 +39,10 @@
  * mocked and routed by the (string-mocked) function reference.
  */
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { ConvexError } from "convex/values";
 import { MemoryRouter, useLocation } from "react-router";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Module mocks — declared before the component import
@@ -475,6 +475,71 @@ describe("TeamManagement — team aliases (NEO-284)", () => {
     await waitFor(() => expect(mockSaveTeamFields).toHaveBeenCalled());
     expect(mockSaveTeamFields.mock.calls[0][0]).toMatchObject({
       aliases: ["Bronx Bombers"],
+    });
+  });
+
+  /**
+   * The "also answers to" note. Two nodes, deliberately (a11y audit, mirroring
+   * League Management's counter): the VISIBLE sentence follows the query
+   * synchronously, and the ANNOUNCED copy is an always-mounted `role="status"`
+   * region one debounce behind — so a screen reader hears one settled
+   * sentence, never one per keystroke.
+   */
+  describe("the shared-alias note", () => {
+    const status = () =>
+      screen.getByRole("status", { name: "" }) as HTMLElement;
+    const hit = (alias: string, name: string) => ({ alias, name });
+    const sentence = (name: string, alias: string) =>
+      `${name} also answers to “${alias}”. Cards will ask which one when the years don't decide.`;
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("the live region is mounted from the first render, empty, and the visible note is not itself a live region", () => {
+      renderAt("/admin/teams?team=t-yankees");
+      // Exactly one status region in the panel, present before any note.
+      const regions = screen.getAllByRole("status");
+      expect(regions).toHaveLength(1);
+      expect(regions[0].textContent).toBe("");
+
+      sharedAliases = [hit("Miami", "Miami RedHawks")];
+      fireEvent.change(box(), { target: { value: "Miami" } });
+
+      const visible = screen.getByText(sentence("Miami RedHawks", "Miami"));
+      expect(visible.getAttribute("role")).toBeNull();
+      expect(visible.getAttribute("aria-live")).toBeNull();
+      // Synchronous for the eyes, silent for the ear until it settles.
+      expect(screen.getAllByRole("status")).toHaveLength(1);
+      expect(status().textContent).toBe("");
+    });
+
+    it("announces ONCE, after the note holds still — not once per keystroke", () => {
+      renderAt("/admin/teams?team=t-yankees");
+
+      // Three keystrokes, each landing a different query answer, inside one
+      // debounce window.
+      sharedAliases = [hit("M", "Miami RedHawks")];
+      fireEvent.change(box(), { target: { value: "M" } });
+      act(() => vi.advanceTimersByTime(150));
+      sharedAliases = [hit("Mi", "Miami RedHawks")];
+      fireEvent.change(box(), { target: { value: "Mi" } });
+      act(() => vi.advanceTimersByTime(150));
+      sharedAliases = [hit("Miami", "Miami RedHawks")];
+      fireEvent.change(box(), { target: { value: "Miami" } });
+      act(() => vi.advanceTimersByTime(150));
+
+      // 450ms of typing, none of it announced.
+      expect(status().textContent).toBe("");
+
+      act(() => vi.advanceTimersByTime(400));
+      expect(status().textContent).toBe(sentence("Miami RedHawks", "Miami"));
+      // The intermediate sentences never reached the region.
+      expect(status().textContent).not.toContain("“M”");
+      expect(status().textContent).not.toContain("“Mi”");
     });
   });
 });

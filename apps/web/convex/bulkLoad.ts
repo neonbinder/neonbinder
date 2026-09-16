@@ -86,7 +86,10 @@
  *     `ambiguous` with `aliasOwnedBy`, and nothing is written. Stricter than
  *     the player editor (advisory there): an alias the loader would attach
  *     unattended is exactly the shared-string case the dataset already dropped
- *     175 of. With a `decision` present the operator HAS looked, so the owned
+ *     175 of. This also covers security condition S1 — an alias equal to
+ *     another row's PRIMARY name, in any era — so the loader does not call
+ *     `teams.assertAliasesNotPrimaryNames`; applying it here as well would
+ *     turn a reported ambiguity into a thrown chunk. With a `decision` present the operator HAS looked, so the owned
  *     aliases are skipped and reported as `aliasesSkipped` while the rest
  *     land — otherwise an `aliasOwnedBy` row would have no expressible answer
  *     and the run could never converge.
@@ -154,6 +157,7 @@ import {
   findOrCreateLeague,
   normalizeAliasList as normalizeLeagueAliasList,
   normalizeLeagueName,
+  requireValidLeagueAbbreviation,
   resolveDefaultLeagueId,
 } from "./leagues";
 import type { LeagueLevel } from "./leagues";
@@ -545,7 +549,9 @@ export const upsertLeagues = internalMutation({
 
     for (const row of args.leagues) {
       const name = boundedName(row.name, "A league name", row.name);
-      const abbreviation = row.abbreviation?.trim() || undefined;
+      // The admin editor's own bound (16), so the loader cannot store an
+      // abbreviation League Management would refuse to save back.
+      const abbreviation = requireValidLeagueAbbreviation(row.abbreviation);
       if (row.yearsActive) assertYears(row.yearsActive, "A league span", name);
       const wikidataId = row.wikidataId ? boundedQid(row.wikidataId, name) : undefined;
       // Bounded the way League Management bounds them, own name dropped.

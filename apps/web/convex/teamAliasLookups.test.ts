@@ -34,7 +34,7 @@
  */
 
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
@@ -848,5 +848,283 @@ describe("NEO-284: recordDecision normalizes create.aliases and refuses over the
         },
       }),
     ).rejects.toThrow(/65 aliases; the limit is 64/);
+  });
+});
+
+// ===========================================================================
+// 12. S1 (security review): the lock-out the alias union makes possible, and
+//     the guard that closes it at the writers
+// ===========================================================================
+
+describe("NEO-284 S1: an alias equal to another team's PRIMARY name locks that team out", () => {
+  test("REPRODUCTION (guard bypassed): with B holding A's full name as an alias, A's own saveTeamFields hits NAME_TAKEN:<B>", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const a = await insertTeamWithAliases(t, sportId, { location: "LSU", name: "Tigers" });
+    // Seeded RAW — straight into the row and the index — which is exactly
+    // what the writers now refuse. This is the state the union turns into a
+    // lock-out: `findCollidingTeams` reads alias hits, so A collides with B
+    // on its own name.
+    const b = await insertTeamWithAliases(t, sportId, {
+      location: "Auburn",
+      name: "Tigers",
+      aliases: ["LSU Tigers"],
+    });
+
+    // A re-saves its OWN name (the Team Management form sends every field)
+    // and is told it is taken — by a team it cannot see the connection to.
+    await expect(
+      asAdmin.mutation(api.teams.saveTeamFields, { id: a, name: "Tigers", location: "LSU" }),
+    ).rejects.toThrow(`NAME_TAKEN:${b}`);
+    // A cannot touch its years either: a years edit is an identity edit.
+    await expect(
+      asAdmin.mutation(api.teams.saveTeamFields, { id: a, yearsActive: { from: 1893 } }),
+    ).rejects.toThrow(`NAME_TAKEN:${b}`);
+  });
+
+  test("WITH the guard: the alias is refused at the writer, so the state above cannot be reached through Team Management", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const a = await insertTeamWithAliases(t, sportId, { location: "LSU", name: "Tigers" });
+    const b = await insertTeamWithAliases(t, sportId, { location: "Auburn", name: "Tigers" });
+
+    await expect(
+      asAdmin.mutation(api.teams.saveTeamFields, { id: b, aliases: ["LSU Tigers"] }),
+    ).rejects.toThrow(/LSU Tigers is already a team in this sport/);
+
+    // A is still free to edit itself.
+    await asAdmin.mutation(api.teams.saveTeamFields, { id: a, yearsActive: { from: 1893 } });
+    expect((await t.run((ctx) => ctx.db.get(a)))!.yearsActive).toEqual({ from: 1893 });
+    // And nothing was indexed for B.
+    expect(
+      await t.run((ctx) =>
+        ctx.db.query("teamAliases").withIndex("by_team_id", (q) => q.eq("teamId", b)).collect(),
+      ),
+    ).toEqual([]);
+  });
+
+  test("alias-vs-alias is NOT a lock-out and stays allowed: neither team's own name is involved", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const redhawks = await insertTeamWithAliases(t, sportId, {
+      location: "Miami",
+      name: "RedHawks",
+      aliases: ["Miami"],
+    });
+    const hurricanes = await insertTeamWithAliases(t, sportId, { location: "Miami", name: "Hurricanes" });
+
+    await asAdmin.mutation(api.teams.saveTeamFields, { id: hurricanes, aliases: ["Miami"] });
+    // Both still edit themselves freely.
+    await asAdmin.mutation(api.teams.saveTeamFields, { id: redhawks, yearsActive: { from: 1888 } });
+    await asAdmin.mutation(api.teams.saveTeamFields, { id: hurricanes, yearsActive: { from: 1940 } });
+    // The shared string is two candidates for the resolver, as designed.
+    expect(
+      await t.run((ctx) => findTeamsByFullName(ctx, sportId, "Miami")),
+    ).toHaveLength(2);
+  });
+
+  test("the commit-time warn-and-skip flavour returns the safe list and names what it dropped", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await insertTeamWithAliases(t, sportId, { location: "LSU", name: "Tigers" });
+    const b = await insertTeamWithAliases(t, sportId, { location: "Auburn", name: "Tigers" });
+    const { dropAliasesThatArePrimaryNames } = await import("./teams");
+    const result = await t.run((ctx) =>
+      dropAliasesThatArePrimaryNames(ctx, {
+        sportId,
+        aliases: ["War Eagle", "LSU Tigers"],
+        selfId: b,
+      }),
+    );
+    expect(result).toEqual({
+      aliases: ["War Eagle"],
+      dropped: [{ alias: "LSU Tigers", teamName: "LSU Tigers" }],
+    });
+  });
+});
+
+// ===========================================================================
+// 13. N1 (security review): the commit-time saveAsAlias pass re-checks the
+//     linked team's sport before writing
+// ===========================================================================
+
+describe("NEO-284 N1: the commit-time saveAsAlias pass drops a linked team whose sport no longer matches", () => {
+  test("a link decision pointing at a team in ANOTHER sport writes no alias and does not abort the commit", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    const otherSportId = await t.run((ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Hockey",
+        platformData: {},
+        children: [],
+        lastUpdated: Date.now(),
+      }),
+    );
+    // The stale-client case: a decision recorded against a team that is not
+    // in this set's sport.
+    const foreign = await insertTeamWithAliases(t, otherSportId, {
+      location: "Baton Rouge",
+      name: "LSU Tigers",
+    });
+    await t.run((ctx) =>
+      ctx.db.insert("entityReviewQueue", {
+        selectorOptionId: variantTypeId,
+        batchId: "batch-save-alias-foreign",
+        createdByUserId: ADMIN_IDENTITY.subject,
+        kind: "team",
+        name: "LSU",
+        nameNormalized: normalizeTeamName("LSU"),
+        sportId,
+        status: "ready",
+        decision: { action: "link", linkedTeamId: foreign, saveAsAlias: true },
+      }),
+    );
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardNumber: "1", teams: ["LSU"] })],
+      batchId: "batch-save-alias-foreign",
+    });
+
+    const untouched = await t.run((ctx) => ctx.db.get(foreign));
+    expect(untouched!.aliases).toBeUndefined();
+    expect(await t.run((ctx) => ctx.db.query("teamAliases").collect())).toEqual([]);
+  });
+});
+
+// ===========================================================================
+// 14. S1 at COMMIT: both commit-time alias writers drop an alias that is
+//     another team's PRIMARY name, warn naming only the owning team, and
+//     never abort the commit
+// ===========================================================================
+
+describe("NEO-284 S1 at commit: the two commit-time alias writers drop another team's primary name", () => {
+  test("the saveAsAlias pass does not remember a parked string that is another team's own name; the link still lands", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    const lsu = await insertTeamWithAliases(t, sportId, { location: "LSU", name: "Tigers" });
+    const auburn = await insertTeamWithAliases(t, sportId, { location: "Auburn", name: "Tigers" });
+    // The operator linked the checklist's "LSU Tigers" string to AUBURN (a
+    // mis-click the wizard cannot see) with the box left on. Remembering it
+    // would hand LSU's own name to Auburn and lock LSU out of its own edits.
+    for (const [name, batchRow] of [["LSU Tigers", "a"], ["War Eagle", "b"]] as const) {
+      await t.run((ctx) =>
+        ctx.db.insert("entityReviewQueue", {
+          selectorOptionId: variantTypeId,
+          batchId: "batch-s1-commit",
+          createdByUserId: ADMIN_IDENTITY.subject,
+          kind: "team",
+          name,
+          nameNormalized: normalizeTeamName(name),
+          sportId,
+          status: "ready",
+          decision: { action: "link", linkedTeamId: auburn, saveAsAlias: true },
+        }),
+      );
+      expect(batchRow).toBeTruthy();
+    }
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+        selectorOptionId: variantTypeId,
+        sportId,
+        cards: [
+          makeCard({ cardNumber: "1", teams: ["LSU Tigers"] }),
+          makeCard({ cardNumber: "2", teams: ["War Eagle"] }),
+        ],
+        batchId: "batch-s1-commit",
+      });
+      // Named the OWNING team, never the parked string as "the alias".
+      const lines = warn.mock.calls.map((c) => String(c[0]));
+      expect(lines.some((l) => l.includes("LSU Tigers's own name") && l.includes("Linked, not remembered"))).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+
+    // Only the safe string was remembered; the clash was skipped.
+    const patched = await t.run((ctx) => ctx.db.get(auburn));
+    expect(patched!.aliases).toEqual(["War Eagle"]);
+    const indexRows = await t.run((ctx) =>
+      ctx.db.query("teamAliases").withIndex("by_team_id", (q) => q.eq("teamId", auburn)).collect(),
+    );
+    expect(indexRows.map((r) => r.aliasNormalized)).toEqual([normalizeTeamName("War Eagle")]);
+    // LSU is untouched and still answers only to itself.
+    expect((await t.run((ctx) => ctx.db.get(lsu)))!.aliases).toBeUndefined();
+    // Neither card lost its team. "War Eagle" took the operator's link;
+    // "LSU Tigers" is exactly one team's own name, so the prelude's
+    // exactly-one fast path linked it to LSU before the decision was ever
+    // consulted — which is the same fact the alias pass just protected.
+    const cards = await t.run((ctx) =>
+      ctx.db.query("cardChecklist").withIndex("by_selector_option", (q) => q.eq("selectorOptionId", variantTypeId)).collect(),
+    );
+    const byNumber = new Map(cards.map((c) => [c.cardNumber, c.teamOnCardIds]));
+    expect(byNumber.get("1")).toEqual([lsu]);
+    expect(byNumber.get("2")).toEqual([auburn]);
+  });
+
+  test("a New Team create at commit drops the clashing alias and still creates the team with the rest", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    const lsu = await insertTeamWithAliases(t, sportId, { location: "LSU", name: "Tigers" });
+    await t.run((ctx) =>
+      ctx.db.insert("entityReviewQueue", {
+        selectorOptionId: variantTypeId,
+        batchId: "batch-s1-create",
+        createdByUserId: ADMIN_IDENTITY.subject,
+        kind: "team",
+        name: "AU Tigers",
+        nameNormalized: normalizeTeamName("AU Tigers"),
+        sportId,
+        status: "ready",
+        // `recordDecision` refuses this list; a decision that reached the
+        // queue another way (older client, direct write) must still not
+        // hand LSU's name to the new row — and must not cost the commit.
+        decision: {
+          action: "create",
+          create: { location: "Auburn", name: "Tigers", aliases: ["LSU Tigers", "War Eagle", "AU Tigers"] },
+        },
+      }),
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+        selectorOptionId: variantTypeId,
+        sportId,
+        cards: [makeCard({ cardNumber: "1", teams: ["AU Tigers"] })],
+        batchId: "batch-s1-create",
+      });
+      const lines = warn.mock.calls.map((c) => String(c[0]));
+      expect(lines.some((l) => l.includes("LSU Tigers's own name") && l.includes("Created without it"))).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+
+    const teams = await t.run((ctx) =>
+      ctx.db.query("teams").withIndex("by_sport_id", (q) => q.eq("sportId", sportId)).collect(),
+    );
+    expect(teams).toHaveLength(2);
+    const auburn = teams.find((row) => row._id !== lsu)!;
+    expect(auburn.location).toBe("Auburn");
+    expect(auburn.name).toBe("Tigers");
+    expect(auburn.aliases).toEqual(["War Eagle", "AU Tigers"]);
+    const indexRows = await t.run((ctx) =>
+      ctx.db.query("teamAliases").withIndex("by_team_id", (q) => q.eq("teamId", auburn._id)).collect(),
+    );
+    expect(indexRows.map((r) => r.aliasNormalized).sort()).toEqual(
+      [normalizeTeamName("War Eagle"), normalizeTeamName("AU Tigers")].sort(),
+    );
+    // The card links to the new row.
+    const card = await t.run((ctx) =>
+      ctx.db.query("cardChecklist").withIndex("by_selector_option", (q) => q.eq("selectorOptionId", variantTypeId)).first(),
+    );
+    expect(card!.teamOnCardIds).toEqual([auburn._id]);
   });
 });
