@@ -27,7 +27,7 @@ These are provisioned once by `flows/setup.yaml` at the head of every run and ar
 | Baseball → 1996 → Score → Score | `Insert` (reconciled in-flow, NOT pre-synced) | `flows/set-selector/inserts-1996-score-one-nb-set-two-bsc-sources.yaml` — **sole writer** |
 | Hockey → 2024 → Topps → Topps NHL Sticker Collection | none — the flow never goes below `Variant Types` (NOT pre-synced) | `flows/set-selector/set-rename-survives-resync-and-suggests-bsc-name.yaml` — **sole writer** |
 | Hockey → 1995 → All Brands → Roanoke Express ECHL | `Base` — 25 cards, fetched and COMMITTED in-flow, BSC only (NOT pre-synced) | `flows/set-selector/checklist-one-marketplace-skips-match-dialog.yaml` — **sole writer**. ✅ **APPROVED 2026-09-09** (NEO-260) |
-| Baseball → 2024 → Topps → Topps MLB at Rickwood Field Negro Leagues Collection | `Base` — 4 cards, BSC only (the SportLots picker is CANCELLED in-flow; SportLots does not carry the set), fetched and COMMITTED in-flow (NOT pre-synced) | `flows/set-selector/checklist-wizard-link-team-saves-alias.yaml` — **sole writer**. ⚠️ **PROPOSED 2026-09-16** (NEO-284) — needs owner sign-off like every real set |
+| Baseball → 2024 → Topps → Topps MLB at Rickwood Field Negro Leagues Collection | `Base` — 4 cards, BSC only (the SportLots picker is CANCELLED in-flow; SportLots does not carry the set), fetched and COMMITTED in-flow (NOT pre-synced) | `flows/set-selector/checklist-wizard-link-team-saves-alias.yaml` — **sole writer**. Approved by Jason 2026-09-16 (NEO-284) |
 
 ### 2024 Topps NHL Sticker Collection — NEO-211, sole-writer ⚠️ SUBSTITUTED, NEEDS SIGN-OFF
 
@@ -760,7 +760,7 @@ Swapping is a one-line edit to `output.SET` in the flow's STEP 0 plus the two
 name literals in this section. Avoid names carrying regex metacharacters or a
 `/` (`Electrolarm/Z-104 …`, `Kellogg´s …`).
 
-### The TEAM-link alias fixture — Baseball / 2024 / Topps / Topps MLB at Rickwood Field Negro Leagues Collection (NEO-284) ⚠️ PROPOSED
+### The TEAM-link alias fixture — Baseball / 2024 / Topps / Topps MLB at Rickwood Field Negro Leagues Collection (NEO-284) — approved by Jason 2026-09-16
 
 One new real set, touched by exactly one flow,
 `checklist-wizard-link-team-saves-alias.yaml`, which fetches and COMMITS its
