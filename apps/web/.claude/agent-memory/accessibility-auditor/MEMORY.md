@@ -1,3 +1,0 @@
-- [Contrast ratios for the 6 neon tokens](contrast_neon_tokens.md) — exact numbers vs #0a0a0a/slate-950/slate-900; neon-purple is the tight one
-- [aria-disabled pattern for in-flight buttons](pattern_aria_disabled_busy_buttons.md) — native `disabled` on a just-clicked button blurs focus to body; codebase's own documented fix
-- [Cross-check siblings before flagging "novel"](workflow_sibling_crosscheck.md) — admin/*Management.tsx are near-identical siblings; grep them before calling something a new bug

@@ -25,6 +25,19 @@ the python snippet pattern below if these need re-checking after a palette chang
 | slate-500 | #64748b | 4.24 | 3.75 | 3.07 | **No** — this is the recurring bug, see below |
 | slate-600 | #475569 | 2.66 | 2.36 | 1.93 | **No, badly** |
 
+### `text-neon-purple` on `bg-slate-900` is the one neon pairing to grep for
+
+Of the whole neon palette, neon-purple is the only token with essentially no
+margin (4.25:1 vs slate-900, against a 4.5:1 floor — an unambiguous fail, not a
+rounding-error call). What makes it worth a targeted grep rather than a row in
+the table above: `bg-slate-900` is this codebase's *standard input/select
+surface* (the shared `Input` primitive's `BASE_INPUT`), so pairing it with
+`text-neon-purple` is a very plausible copy-paste rather than a deliberate
+choice. Audit for that specific pairing whenever neon-purple text is touched.
+Every other neon token clears the floor with real margin against every dark
+surface actually used here (neon-yellow is >14:1 — don't spend time
+re-computing it).
+
 ## The recurring bug: `text-slate-500` / `text-slate-600` used for secondary text
 
 Found repeatedly in `apps/web/app/print/placeholders/*.tsx` (figcaptions,
