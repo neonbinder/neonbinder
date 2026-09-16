@@ -115,6 +115,16 @@ tags:
 # one. The form then opens with this sport already chosen.
 - tapOn: "All sports"
 - tapOn: "Baseball"
+# Picking a sport re-runs the filtered search, and the counter renders EMPTY
+# until it answers — so "Add player" slides ~110px left for that round-trip
+# and back when the count returns. A tap whose bounds were read inside the
+# window lands on the counter (CI run 35122900214 / runner 5, the sibling
+# `admin-franchises-link-teams`: bounds [526,327] at the read, the button at
+# [636,327] in the failure screenshot). Waiting for the count to be back is
+# waiting for the layout to be still.
+- extendedWaitUntil:
+    visible: "0 matches"
+    timeout: 7000
 
 - tapOn: "Add player"
 # The form's own heading — it gates the two taps below, which would otherwise
@@ -518,8 +528,16 @@ tags:
 
 # 5. And the colour came back too — the field now reports a VALUE where it
 #    reported its placeholder before the save, which is the same field answering
-#    differently for the same team.
-- assertVisible: "#132448"
+#    differently for the same team. A SCROLL, not a bare assert (NEO-284): the
+#    "Also known as" block now sits between the name and the colour row, so
+#    from the Location-centred position the colour box is under the fold
+#    (CI run 35122900214 / runner 1). The scroll asserts it (R6); centring
+#    depends on NEO-260's 208px spacer for its headroom (R8 case 1).
+- scrollUntilVisible:
+    element:
+      text: "#132448"
+    centerElement: true
+    timeout: 7000
 
 # ════════════════════════════════════════════════════════════════════════════
 # THE OTHER SIDE OF THE SPLIT: THE TEAM TYPEAHEAD FINDS THE ROW BY ITS FULL

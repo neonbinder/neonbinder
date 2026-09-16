@@ -182,6 +182,16 @@ tags:
 # maestro reads a <select> as its SELECTED option's text, so this is a direct
 # read of what the picker holds. The list is empty, so nothing else can answer.
 - assertVisible: "Baseball"
+# Picking a sport re-runs the filtered search, and the counter renders EMPTY
+# until it answers — so "Add player" slides ~110px left for that round-trip
+# and back when the count returns. A tap whose bounds were read inside the
+# window lands on the counter instead: CI run 35122900214 / runner 5 read
+# bounds [526,327] for this tap and the failure screenshot shows the button at
+# [636,327], the form never opened. Waiting for the count to be back is
+# waiting for the layout to be still.
+- extendedWaitUntil:
+    visible: "0 matches"
+    timeout: 7000
 
 - tapOn: "Add player"
 - tapOn: "New player name"

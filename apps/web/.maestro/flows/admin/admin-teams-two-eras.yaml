@@ -150,6 +150,16 @@ tags:
 - tapOn: "All sports"
 - tapOn: "Baseball"
 - assertVisible: "Baseball"
+# Picking a sport re-runs the filtered search, and the counter renders EMPTY
+# until it answers — so "Add player" slides ~110px left for that round-trip
+# and back when the count returns. A tap whose bounds were read inside the
+# window lands on the counter (CI run 35122900214 / runner 5, the sibling
+# `admin-franchises-link-teams`: bounds [526,327] at the read, the button at
+# [636,327] in the failure screenshot). Waiting for the count to be back is
+# waiting for the layout to be still.
+- extendedWaitUntil:
+    visible: "0 matches"
+    timeout: 7000
 
 - tapOn: "Add player"
 - tapOn: "New player name"
@@ -382,9 +392,16 @@ tags:
 # by VALUE (maestro reads an <input> as `node.value`) and anchored to the label
 # above them. "1972" cannot be answered by the master row's era span, which is
 # the composed "1972–1996" and a matcher is a FULL match.
+#
+# CENTRED (NEO-284). Uncentred, this stops the moment the LABEL is 100%
+# visible — and since the "Also known as" block above it grew the panel by
+# ~150px, that is with the label at y=607 on the 629px viewport and the year
+# boxes under the fold (CI run 35122900214 / runner 6). Centring depends on
+# NEO-260's 208px spacer for its headroom (R8 case 1).
 - scrollUntilVisible:
     element:
       text: "Active from"
+    centerElement: true
     timeout: 7000
 - assertVisible:
     text: "1972"
@@ -409,10 +426,12 @@ tags:
 
 # The open-ended era: a start year and no end. 2011 is read back, and 1996 —
 # the other row's end year, which was on screen a moment ago — is gone, so this
-# is a different row and not the same panel repainted.
+# is a different row and not the same panel repainted. Centred for the same
+# reason as above.
 - scrollUntilVisible:
     element:
       text: "Active from"
+    centerElement: true
     timeout: 7000
 - assertVisible:
     text: "2011"

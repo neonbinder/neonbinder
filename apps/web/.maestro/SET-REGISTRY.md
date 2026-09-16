@@ -27,6 +27,7 @@ These are provisioned once by `flows/setup.yaml` at the head of every run and ar
 | Baseball → 1996 → Score → Score | `Insert` (reconciled in-flow, NOT pre-synced) | `flows/set-selector/inserts-1996-score-one-nb-set-two-bsc-sources.yaml` — **sole writer** |
 | Hockey → 2024 → Topps → Topps NHL Sticker Collection | none — the flow never goes below `Variant Types` (NOT pre-synced) | `flows/set-selector/set-rename-survives-resync-and-suggests-bsc-name.yaml` — **sole writer** |
 | Hockey → 1995 → All Brands → Roanoke Express ECHL | `Base` — 25 cards, fetched and COMMITTED in-flow, BSC only (NOT pre-synced) | `flows/set-selector/checklist-one-marketplace-skips-match-dialog.yaml` — **sole writer**. ✅ **APPROVED 2026-09-09** (NEO-260) |
+| Baseball → 2024 → Topps → Topps MLB at Rickwood Field Negro Leagues Collection | `Base` — 4 cards, BSC only (the SportLots picker is CANCELLED in-flow; SportLots does not carry the set), fetched and COMMITTED in-flow (NOT pre-synced) | `flows/set-selector/checklist-wizard-link-team-saves-alias.yaml` — **sole writer**. ⚠️ **PROPOSED 2026-09-16** (NEO-284) — needs owner sign-off like every real set |
 
 ### 2024 Topps NHL Sticker Collection — NEO-211, sole-writer ⚠️ SUBSTITUTED, NEEDS SIGN-OFF
 
@@ -312,8 +313,10 @@ anything:
 | `checklist-wizard-skip-commits-and-unskip` | Topps Chicago Cubs |
 | `checklist-wizard-career-team-commits` | Topps Baltimore Orioles |
 | `checklist-wizard-link-commits` | Topps Brooklyn Collection |
+| `checklist-wizard-link-team-saves-alias` | Topps MLB at Rickwood Field Negro Leagues Collection (NEO-284, one-sided — see its own section) |
 
-See "The three COMMITTING entity-review fixtures" below.
+See "The three COMMITTING entity-review fixtures" below, and "The TEAM-link
+alias fixture" after the one-marketplace section.
 
 **They no longer own a custom-set prefix.** `wbr-`, `skp-`, `lce-` and `cte-`
 are retired along with `fcd-` and `kod-`: these flows create nothing. The
@@ -757,6 +760,61 @@ Swapping is a one-line edit to `output.SET` in the flow's STEP 0 plus the two
 name literals in this section. Avoid names carrying regex metacharacters or a
 `/` (`Electrolarm/Z-104 …`, `Kellogg´s …`).
 
+### The TEAM-link alias fixture — Baseball / 2024 / Topps / Topps MLB at Rickwood Field Negro Leagues Collection (NEO-284) ⚠️ PROPOSED
+
+One new real set, touched by exactly one flow,
+`checklist-wizard-link-team-saves-alias.yaml`, which fetches and COMMITS its
+checklist. Rule 1 above applies: this is a proposal for the owner, not an
+approval. Measured live on PR #262's Convex preview on 2026-09-16.
+
+**What the flow proves** (NEO-284): a "Link to Existing…" decision on a TEAM
+row in the entity-review wizard keeps the checklist's raw spelling as an alias
+of the linked team, by default, and the alias is written at COMMIT — so it
+needs a real set whose wizard opens on a TEAM row, and it needs to commit.
+
+**Why this set.** The suite's only teams are the MLB clubs `setup.yaml`'s
+Topps Chrome commit creates, so a team row needs a set whose clubs are not
+MLB clubs — and the three committing fixtures above are team sets of MLB
+clubs (0 unknown teams each) or already spoken for (Brooklyn Collection, 1
+team, sole writer `checklist-wizard-link-commits`). Among the 167 sets BSC
+lists under 2024 Topps this is the smallest with that shape:
+
+| | |
+| -- | -- |
+| BSC cards | **4** — RW-1 Satchel Paige, RW-2 Josh Gibson, RW-3 Jackie Robinson, RW-4 Willie Mays |
+| unknown names | **8** — 4 players, the Negro League clubs (Pittsburgh Crawfords, Homestead Grays, …), and ONE staged league ("Negro league baseball", raised by the first club's Wikidata lookup and asked once for the batch) |
+| first row presented | the staged **League** step; the flow skips it ("Skip — no league") and the first **team** row follows |
+| cost | ~60s to the wizard on a warm Baseball drill, ~3 min end to end |
+
+**It is ONE-SIDED, and the flow keeps it that way.** SportLots does not carry
+this set. The base picker's SportLots column is the year's whole catalogue —
+"Base Set" flagged "likely match" is 2024 Topps flagship (352 cards); the rows
+under it are 1989 Topps inserts — so the honest operator action is to CANCEL
+the picker. The author's first probe attached that "likely match" by taking
+the util's first-candidate path, and it paired 0 of 4 cards (BSC only 4 /
+SportLots only 352). Cancelling leaves exactly one attached side (the BSC slug
+Sync Variant Types wrote on Base), so the fetch takes the NEO-255 solo path —
+no Match Cards dialog, "Kept all 4 cards from BSC", straight to the review.
+That is the Roanoke Express shape above, on a warm drill.
+
+**Not through `util-fetch-real-set-checklist-to-wizard`**, which waits on the
+two-sided Match Cards dialog this set never shows. The flow hand-rolls the
+Base tap → picker cancel → sync, exactly as the one-marketplace flow does.
+
+**Sole writer, self-cleaning on the TEAM side.** The flow links the first
+club to a per-attempt team it created (`Loc<token> Ali<token>`), commits,
+reads the alias back in Team Management, then REMOVES it and saves. So the
+alias never outlives the flow: while it exists, any checklist naming that
+club would resolve to the flow's own team through the alias union, which is
+the feature — and why it is taken out again before the flow ends. The set
+itself drains within a run like the other committing fixtures (a committed
+set's names are known; a re-sync raises no review), and CI reseeds every run.
+A LOCAL re-run needs a fresh seed.
+
+**Concurrency.** No other flow reads this set, and nothing reads
+`Loc<token> Ali<token>`. The four read-only Big League flows and the three
+committing fixtures share no `selectorOptionId` with it.
+
 ### Topps Big League — the entity-review wizard fixture (NEO-248) ✅ APPROVED
 
 `Baseball → 2024 → Topps → Topps Big League → Base` is the fixture for the four
@@ -1179,6 +1237,8 @@ whole thing; never assume which letter the worker half starts with.
 | `TLF` | `checklist-title-length-limits-and-fixer.yaml` | kept SHORT on purpose: the name lands in a generated listing title measured against an 80-character cap. `TLF<token>` is 8-12 chars, 3 fewer than the `TLF-${ATTEMPT_ID}` it replaced and 4-8 fewer than the "New York Yankees" before that — the rename spends less of the budget, never more. Read the FIXTURE SIZING block in the flow before changing any name in it |
 | `TME` | `admin/team-management-edit-a-team.yaml` | the throwaway PLAYER that flow creates on the way in, because a career editor is the only place outside the set-builder cascade where a team can be born. `TMT` below is the team it makes there; the two diverge at their third character |
 | `TMT` | `admin/team-management-edit-a-team.yaml` | the ONLY team in the suite with a `location` (`Loc${WORKER_INDEX}`), so once it saves its composed name is `Loc<w> TMT<token>` — see the composed-name note above for why the extra term is inert |
+| `Alp` | `set-selector/checklist-wizard-link-team-saves-alias.yaml` | the throwaway PLAYER that flow creates to reach a career editor; `Ali` below is the team it makes there. The two diverge at their third character |
+| `Ali` | `set-selector/checklist-wizard-link-team-saves-alias.yaml` | the team a checklist club is LINKED to; carries the Location `Loc<token>` (typed into the DIALOG, never into a picker), so the composed `Loc<token> Ali<token>` is what the link option, the decision line and Team Management print. The link SEARCH types the single token `Ali<token>`. Its alias (the club's marketplace spelling) is removed again before the flow ends |
 | `MintedTeam` | `checklist-wizard-career-team-commits.yaml` | |
 | `TPT` | `team-picker.yaml` | |
 | `ProbeTeam` / `TempTeam` | `checklist-wizard-career-team-entry.yaml` | never persisted — the flow discards its batch |
