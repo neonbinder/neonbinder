@@ -252,6 +252,38 @@ describe("NewTeamDialog — creating", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
+  it("NEO-284: parses the aliases field (comma-separated) and sends it as `aliases`", async () => {
+    renderDialog({ initialName: "Savannah Bananas" });
+
+    fireEvent.change(screen.getByLabelText("New team aliases (optional)"), {
+      target: { value: "Bananas, The Bananas,  Bananas " }, // dupe + whitespace
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Create team Savannah Bananas" }),
+    );
+
+    await waitFor(() => {
+      expect(mockFindOrCreate).toHaveBeenCalledWith({
+        name: "Savannah Bananas",
+        sportId: SPORT_ID,
+        aliases: ["Bananas", "The Bananas"],
+      });
+    });
+  });
+
+  it("omits `aliases` entirely when the field is left empty", async () => {
+    renderDialog({ initialName: "Savannah Bananas" });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Create team Savannah Bananas" }),
+    );
+
+    await waitFor(() => expect(mockFindOrCreate).toHaveBeenCalledTimes(1));
+    expect(Object.keys(mockFindOrCreate.mock.calls[0][0])).not.toContain(
+      "aliases",
+    );
+  });
+
   it("sends Location and Name as separate arguments", async () => {
     renderDialog({ initialName: "San Diego Padres" });
 

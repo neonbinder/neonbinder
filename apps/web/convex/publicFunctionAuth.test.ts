@@ -244,6 +244,11 @@ describe("NEO-212: the entity review + player management surface is admin-gated"
     ["players.findOrCreate", (t, sportId) => t.mutation(api.players.findOrCreate, { name: "Nobody", sportId })],
     ["teams.resolveNames", (t, sportId) => t.query(api.teams.resolveNames, { names: [], sportId })],
     ["teams.nearMatches", (t, sportId) => t.query(api.teams.nearMatches, { name: "Yankees", sportId })],
+    // NEO-284. Advisory as it is, it still reads which OTHER team a proposed
+    // alias would collide with — reference data behind the same admin-only
+    // editors (`findOrCreate`, `saveTeamFields`) that write aliases in the
+    // first place.
+    ["teams.aliasesInUse", (t, sportId) => t.query(api.teams.aliasesInUse, { sportId, aliases: ["Friars"] })],
     [
       "entityReviewQueue.recordAllRemainingAsSkip",
       (t, sportId) =>

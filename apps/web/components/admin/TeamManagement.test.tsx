@@ -54,6 +54,9 @@ vi.mock("../../convex/_generated/api", () => ({
       listForManagement: "teams.listForManagement",
       saveTeamFields: "teams.saveTeamFields",
       enrichFromWikidata: "teams.enrichFromWikidata",
+      // NEO-284 — "who else in this sport already answers to one of these
+      // names", queried live off the draft alias box.
+      aliasesInUse: "teams.aliasesInUse",
     },
     leagues: {
       list: "leagues.list",
@@ -74,6 +77,13 @@ vi.mock("../../convex/_generated/api", () => ({
     teamColorSources: { chooseColorSource: "teamColorSources.chooseColorSource" },
   },
 }));
+
+/**
+ * NEO-284 — who else in this sport already answers to one of the draft's
+ * aliases. `undefined` unless a test sets it; the panel treats that (and an
+ * empty array) the same, rendering nothing.
+ */
+let sharedAliases: unknown;
 
 const SPORTS = [
   { _id: "sport-baseball", _creationTime: 0, level: "sport", value: "Baseball" },
@@ -237,6 +247,7 @@ vi.mock("convex/react", () => ({
     }
     if (ref === "selectorOptions.getSelectorOptions") return SPORTS;
     if (ref === "leagues.nearMatches") return nearMatches;
+    if (ref === "teams.aliasesInUse") return sharedAliases;
     return undefined;
   },
   useMutation: (ref: string) => {
@@ -284,6 +295,7 @@ beforeEach(() => {
     .mockResolvedValue({ id: "f-new", created: true });
   franchiseRows = FRANCHISES;
   currentTeams = TEAMS;
+  sharedAliases = undefined;
 });
 
 /**
@@ -390,6 +402,83 @@ describe("TeamManagement — saving a team confirms in the panel", () => {
  * change and the operator saves the PREVIOUS team's franchise onto this one,
  * silently, with the right-looking value on screen.
  */
+describe("TeamManagement — team aliases (NEO-284)", () => {
+  /** The "also known as" textarea. */
+  const box = () =>
+    screen.getByLabelText("Also known as") as HTMLTextAreaElement;
+  const chips = () =>
+    Array.from(
+      screen.getByRole("list", { name: "Current aliases" }).children,
+    ).map((li) => li.textContent);
+
+  it("round-trips: a team seeded with aliases renders them, editing and saving sends the new list", async () => {
+    currentTeams = [
+      { ...TEAMS[0], aliases: ["Bronx Bombers"] }, // t-yankees
+      ...TEAMS.slice(1),
+    ];
+    renderAt("/admin/teams?team=t-yankees");
+
+    expect(box().value).toBe("Bronx Bombers");
+    expect(chips()).toEqual(["Bronx Bombers"]);
+
+    fireEvent.change(box(), {
+      target: { value: "Bronx Bombers, Yanks" },
+    });
+    expect(chips()).toEqual(["Bronx Bombers", "Yanks"]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(mockSaveTeamFields).toHaveBeenCalled());
+    expect(mockSaveTeamFields.mock.calls[0][0]).toMatchObject({
+      id: "t-yankees",
+      aliases: ["Bronx Bombers", "Yanks"],
+    });
+  });
+
+  it("renders one chip per alias", () => {
+    currentTeams = [
+      { ...TEAMS[0], aliases: ["Bronx Bombers", "Yanks", "NYY"] },
+      ...TEAMS.slice(1),
+    ];
+    renderAt("/admin/teams?team=t-yankees");
+
+    expect(chips()).toEqual(["Bronx Bombers", "Yanks", "NYY"]);
+  });
+
+  it("does NOT send `aliases` when the draft is unchanged from what is stored", async () => {
+    // TeamManagement.tsx's `save()`: `...(aliasesChanged ? { aliases: draftAliases } : {})`
+    // — the field is only added to the payload when the parsed draft differs
+    // from `team.aliases ?? []`. Editing the Name field alone (no alias edit)
+    // must not resend an unchanged alias list.
+    currentTeams = [
+      { ...TEAMS[0], aliases: ["Bronx Bombers"] },
+      ...TEAMS.slice(1),
+    ];
+    renderAt("/admin/teams?team=t-yankees");
+
+    fireEvent.change(screen.getByLabelText("Name"), {
+      target: { value: "Yankees" }, // same value, but exercises the field
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(mockSaveTeamFields).toHaveBeenCalled());
+    expect(mockSaveTeamFields.mock.calls[0][0]).not.toHaveProperty("aliases");
+  });
+
+  it("DOES send `aliases` once the draft differs from the stored list", async () => {
+    currentTeams = [{ ...TEAMS[0], aliases: [] }, ...TEAMS.slice(1)];
+    renderAt("/admin/teams?team=t-yankees");
+
+    fireEvent.change(box(), { target: { value: "Bronx Bombers" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(mockSaveTeamFields).toHaveBeenCalled());
+    expect(mockSaveTeamFields.mock.calls[0][0]).toMatchObject({
+      aliases: ["Bronx Bombers"],
+    });
+  });
+});
+
 describe("TeamManagement — the Franchise field", () => {
   const group = () => document.getElementById("team-franchise")!;
   const pills = () =>

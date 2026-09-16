@@ -294,6 +294,42 @@ describe("players.nearMatches", () => {
     ).toEqual([]);
   });
 
+  // NEO-284 — the same OR-not-overwrite bug fixed in `teams.nearMatches`: the
+  // search leg used to `candidates.set` unconditionally, so a row that had
+  // already landed in the map via the exact/alias leg (carrying
+  // `matchedAlias`) lost that field the moment the search leg ALSO matched
+  // it. A row whose alias is the query AND whose primary name shares tokens
+  // with the query hits both legs, so this seeds exactly that.
+  test("an alias hit keeps its matchedAlias when the search leg also matches the same row", async () => {
+    const t = convexTest(schema, modules);
+    const baseball = await seedSport(t, "Baseball", "BB");
+    const playerId = await t.run(async (ctx) => {
+      const id = await ctx.db.insert("players", {
+        name: "Ron Artest Jr",
+        nameNormalized: normalizePlayerName("Ron Artest Jr"),
+        sportId: baseball,
+        aliases: ["Ron Artest"],
+        lastUpdated: 1_700_000_000_000,
+      });
+      await ctx.db.insert("playerAliases", {
+        playerId: id,
+        sportId: baseball,
+        aliasNormalized: normalizePlayerName("Ron Artest"),
+      });
+      return id;
+    });
+
+    const rows = await t.withIdentity(ADMIN).query(api.players.nearMatches, {
+      name: "Ron Artest",
+      sportId: baseball,
+    });
+
+    const hit = rows.find((r) => r._id === playerId);
+    expect(hit).toBeTruthy();
+    expect(hit!.confidence).toBe("exact");
+    expect(hit!.matchedAlias).toBe("Ron Artest");
+  });
+
   test("is admin-gated", async () => {
     // Stricter than `players.search` next to it, deliberately: this query
     // exists to guard a write to globally-shared reference data, and its only

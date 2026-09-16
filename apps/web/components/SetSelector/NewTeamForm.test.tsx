@@ -397,6 +397,41 @@ describe("NewTeamForm — fields", () => {
 });
 
 // ---------------------------------------------------------------------------
+// NEO-284 — the aliases field
+// ---------------------------------------------------------------------------
+
+describe("NewTeamForm — aliases field", () => {
+  const aliasField = () =>
+    screen.getByLabelText("New team aliases (optional)") as HTMLTextAreaElement;
+
+  it("renders the draft's raw text verbatim, unparsed", () => {
+    renderForm({ initial: { ...EMPTY, aliases: "Bananas, The Bananas" } });
+    openLeagueList();
+
+    expect(aliasField().value).toBe("Bananas, The Bananas");
+  });
+
+  it("reports every keystroke to the host as a raw `aliases` patch, not a parsed list", () => {
+    const onChangeSpy = vi.fn();
+    renderForm({ onChangeSpy });
+    openLeagueList();
+
+    fireEvent.change(aliasField(), { target: { value: "Bananas" } });
+    expect(onChangeSpy).toHaveBeenCalledWith({ aliases: "Bananas" });
+    expect(aliasField().value).toBe("Bananas");
+  });
+
+  it("carries the whole visible label in its accessible name (SC 2.5.3)", () => {
+    renderForm();
+    openLeagueList();
+    expect(aliasField().getAttribute("aria-label")).toBe(
+      "New team aliases (optional)",
+    );
+    expect(screen.getByText("Aliases (optional)")).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Enter — the dialog submits, the wizard step does not
 // ---------------------------------------------------------------------------
 

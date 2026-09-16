@@ -31,6 +31,7 @@ import type * as backfillCardFeatures from "../backfillCardFeatures.js";
 import type * as backfillVariantFacetAndBaseRole from "../backfillVariantFacetAndBaseRole.js";
 import type * as browserAudience from "../browserAudience.js";
 import type * as bscFacets from "../bscFacets.js";
+import type * as bulkLoad from "../bulkLoad.js";
 import type * as cardChecklist from "../cardChecklist.js";
 import type * as checklistCandidates from "../checklistCandidates.js";
 import type * as credentials from "../credentials.js";
@@ -125,6 +126,7 @@ declare const fullApi: ApiFromModules<{
   backfillVariantFacetAndBaseRole: typeof backfillVariantFacetAndBaseRole;
   browserAudience: typeof browserAudience;
   bscFacets: typeof bscFacets;
+  bulkLoad: typeof bulkLoad;
   cardChecklist: typeof cardChecklist;
   checklistCandidates: typeof checklistCandidates;
   credentials: typeof credentials;

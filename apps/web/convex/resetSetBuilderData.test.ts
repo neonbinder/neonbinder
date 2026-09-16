@@ -480,4 +480,51 @@ describe("NEO-254: the alias index is drained with the players it describes", ()
       delete process.env.ALLOW_RESET_SET_BUILDER_DATA;
     }
   });
+
+  test("NEO-284: teamAliases rows do not outlive their teams", async () => {
+    /*
+     * The team twin of the playerAliases test above. `teamAliases` is one
+     * flat row per (team, alias), answering `by_alias_normalized_and_sport_id`
+     * for `findTeamsByAlias`. A reset that wiped teams and left this standing
+     * would leave rows pointing at nothing, growing quietly on every reset.
+     */
+    const t = convexTest(schema, modules);
+    process.env.ALLOW_RESET_SET_BUILDER_DATA = "true";
+    try {
+      const sportId = await t.run(async (ctx) =>
+        ctx.db.insert("selectorOptions", {
+          level: "sport",
+          value: "Baseball",
+          platformData: {},
+          children: [],
+          lastUpdated: Date.now(),
+        }),
+      );
+      await t.run(async (ctx) => {
+        const teamId = await ctx.db.insert("teams", {
+          name: "Padres",
+          location: "San Diego",
+          nameNormalized: "diego padres san",
+          sportId,
+          aliases: ["Friars"],
+          lastUpdated: Date.now(),
+        });
+        await ctx.db.insert("teamAliases", {
+          teamId,
+          sportId,
+          aliasNormalized: "friars",
+        });
+      });
+
+      const result = await runReset(t);
+
+      expect(result.teamsDeleted).toBe(1);
+      expect(result.teamAliasesDeleted).toBe(1);
+      expect(await t.run(async (ctx) => ctx.db.query("teamAliases").collect())).toEqual(
+        [],
+      );
+    } finally {
+      delete process.env.ALLOW_RESET_SET_BUILDER_DATA;
+    }
+  });
 });
