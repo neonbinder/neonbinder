@@ -87,7 +87,7 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
   const [teamIds, setTeamIds] = useState<Array<Id<"teams">> | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const firstChipRef = useRef<HTMLButtonElement>(null);
+  const saveBtnRef = useRef<HTMLButtonElement>(null);
   const pickerRegionRef = useRef<HTMLDivElement>(null);
 
   /**
@@ -129,13 +129,20 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
     setTeamIds(chips.slice(0, MAX_CARD_TEAMS).map((c) => c.teamId));
   }, [suggestions, teamIds, chips]);
 
-  // Focus the first suggestion chip as soon as it exists, else the picker's
-  // own trigger. The walker remounts this component per card, so this IS
-  // "focus on every advance" — focus is never left on a control belonging to
-  // the card just answered (the NEO-189 stranding finding).
+  // Initial focus follows what the copy promises (NEO-282). With suggestion
+  // chips on screen there is something preselected to save, and the panel
+  // says "Enter accepts these" — so focus lands on "Save & Next (Enter)" and
+  // the operator's first Enter saves. It used to land on the first chip,
+  // where Enter is native button activation and TOGGLED the chip OFF: the
+  // opposite of the promise, one keystroke in. With no chips there is nothing
+  // chosen, Save is aria-disabled, and parking focus on an inert control would
+  // be worse — so focus goes to the picker's own trigger, the first thing the
+  // operator has to use. The walker remounts this component per card, so this
+  // IS "focus on every advance" — focus is never left on a control belonging
+  // to the card just answered (the NEO-189 stranding finding).
   useEffect(() => {
     const raf = requestAnimationFrame(() => {
-      if (firstChipRef.current) firstChipRef.current.focus();
+      if (chips.length > 0 && saveBtnRef.current) saveBtnRef.current.focus();
       else pickerRegionRef.current?.querySelector("button")?.focus();
     });
     return () => cancelAnimationFrame(raf);
@@ -233,9 +240,13 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
         // Enter saves from anywhere inside the fixer. INPUT is excluded
         // because TeamPicker's typeahead owns its own Enter (select, or create
         // a team that matched nothing); BUTTON because Enter on a focused
-        // button already activates it, and focus starts on a suggestion chip —
-        // without this guard, toggling a chip with Enter would also save in
-        // the same keystroke.
+        // button already activates it natively. Focus starts on "Save & Next"
+        // itself whenever there are chips (NEO-282), so without this guard
+        // one Enter would reach `save` twice — from here on keydown, then
+        // from the button's own click (the `busy` gate would swallow the
+        // second, but one keystroke should mean one path) — and Enter on a
+        // chip the operator tabbed back to would toggle it AND save in the
+        // same keystroke, which nothing else prevents.
         const tag = (e.target as HTMLElement)?.tagName;
         if (e.key !== "Enter" || tag === "INPUT" || tag === "BUTTON") return;
         e.preventDefault();
@@ -266,14 +277,13 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
             className="flex flex-wrap gap-1.5"
             aria-labelledby="attention-team-suggestions"
           >
-            {chips.map((chip, idx) => {
+            {chips.map((chip) => {
               const on = chosenSet.has(chip.teamId as string);
               const blocked = !on && atCap;
               return (
                 <li key={chip.teamId as string}>
                   <button
                     type="button"
-                    ref={idx === 0 ? firstChipRef : undefined}
                     aria-pressed={on}
                     // aria-disabled, not disabled: at the cap the chip has to
                     // stay reachable, or the notice explaining why it is inert
@@ -350,6 +360,7 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
 
       <div className="flex flex-wrap items-center gap-2">
         <NeonButton
+          ref={saveBtnRef}
           // Not natively disabled: NEO-189's audit found a Confirm that left
           // the tab order the moment it went inert, stranding focus with no
           // route to the reason. aria-disabled keeps it reachable and
