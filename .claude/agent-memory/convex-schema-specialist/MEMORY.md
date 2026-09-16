@@ -8,3 +8,4 @@
 - [Project neo21 cross release home set](project_neo21_cross_release_home_set.md) — NEO-21 cross-release cards — cardChecklist.selectorOptionId is the immutable "home"/printed-in pointer; guest appearances go in the cardCrossListings junction table
 - [Reference typecheck convex changes](reference_typecheck_convex_changes.md) — How to typecheck apps/web/convex changes — which tsconfig matters, the known-failing baseline, and getting deps into a fresh worktree
 - [Staging tables scope per operator](staging-tables-scope-per-operator.md) — Per-selectorOption staging tables must be scoped by operator (createdByUserId), because multiple admins sync the same shared set concurrently
+- [Strict returns drift is invisible to typecheck](strict-returns-drift-is-invisible-to-typecheck.md) — whole-doc `returns` copies (teams.ts, entityReviewQueue.ts) refuse at runtime, not compile; grep `_id: v.id("<table>")` before handing back

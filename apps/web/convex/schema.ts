@@ -1292,6 +1292,53 @@ export default defineSchema({
     // because `normalizeTeamName` token-sorts, splitting a row cannot change
     // its dedup key, which is what lets the split roll out a row at a time.
     location: v.optional(v.string()),
+    /**
+     * ── NEO-284: the other names this team answers to ───────────────────────
+     *
+     * A checklist prints "LSU"; Wikidata's P54 label says "LSU Tigers
+     * baseball"; a dealer types "Louisiana State University". All three are
+     * one program, and until now every spelling but the row's own parked in
+     * the review wizard for a human to link — again, on every set. Players
+     * (NEO-254) and leagues (NEO-240) already carry "also known as" names for
+     * exactly this reason; teams get the same thing, in the same shape, so
+     * the three do not become three ideas.
+     *
+     * Stored RAW, matched NORMALISED — the contract `players.aliases` and
+     * `leagues.aliases` share. The operator's spelling is what an editor shows
+     * back; the key everything matches on is `normalizeTeamName`, the same
+     * token-sorted, diacritic-folded key `nameNormalized` uses, so "Tigers
+     * LSU" and "LSU Tigers" are one alias and "Montréal" answers to
+     * "Montreal".
+     *
+     * A row's own FULL name is never also an alias: `teamFullName(row)`
+     * (Location + Name) is dropped on the way in, because an operator typing
+     * it has expressed a redundancy rather than an error and the row already
+     * answers to it through `nameNormalized`. The nickname ALONE is not the
+     * full name and IS a legitimate alias — "Padres" for "San Diego / Padres"
+     * — precisely because NEO-236 made `nameNormalized` key the whole name.
+     *
+     * Two ways an alias gets here, both operator decisions and both NB's own:
+     * typed into Team Management or the New Team step, or saved at commit
+     * when the operator links a parked checklist string to a team and leaves
+     * "Remember … as a name for this team" on (`decision.saveAsAlias` on
+     * `entityReviewQueue`). A string that ARRIVED from a marketplace is
+     * initial input (product invariant 2a): once stored it is NB vocabulary,
+     * nothing keys on where it came from, and no sync ever adds, removes or
+     * rewrites an entry. The NCAA/ABL preload (`convex/bulkLoad.ts`) unions
+     * aliases onto a row it adopts and never removes one.
+     *
+     * Bounded like every other array written from operator or upstream input
+     * — see MAX_TEAM_ALIASES (64) and MAX_TEAM_ALIAS_LENGTH (120, equal to
+     * MAX_TEAM_NAME_LENGTH, because a team alias is a whole team-name string)
+     * in convex/teams.ts. Deliberately not the players' 32×64: the college
+     * dataset measured 64 aliases on one row and 80 characters on one alias.
+     *
+     * NOT the index. An alias lives inside an array, and Convex indexes fields
+     * rather than array members, so the lookup goes through the `teamAliases`
+     * side table below. This column is what an operator edits and what an
+     * editor renders; that table is how a checklist string finds this row.
+     */
+    aliases: v.optional(v.array(v.string())),
     yearsActive: v.optional(v.object({
       from: v.number(),
       to: v.optional(v.number()),
@@ -1369,6 +1416,78 @@ export default defineSchema({
       filterFields: ["sportId"],
     }),
 
+  /**
+   * ── NEO-284: the alias index `teams.aliases` cannot be ───────────────────
+   *
+   * The twin of `playerAliases` below, for the same reason: an alias lives
+   * inside an array on the team row, and Convex indexes FIELDS, not array
+   * members. `leagues` gets away with a scan because a sport holds a couple
+   * of dozen leagues; `teams` holds thousands once the NCAA D1 preload lands
+   * (1,300+ programs carrying ~12,000 aliases between them), and the alias
+   * leg sits on the hot path — the commit prelude resolves one team name per
+   * card, and the review gate one per unknown. A scan there would turn a
+   * per-name index read into a per-name table read, the shape NEO-189
+   * diagnosed and removed.
+   *
+   * So the aliases are ALSO stored flat, one row per (team, alias), and the
+   * lookup is one indexed read exactly like the primary-name lookup beside
+   * it.
+   *
+   * ## How it is read
+   *
+   * Never directly. `findTeamsByFullName` in convex/lib/teamRow.ts is the one
+   * identity lookup every path shares, and it UNIONS the primary-name leg
+   * (`teams.by_name_normalized_and_sport_id`) with this table's leg, deduped
+   * by `_id`. Alias hits JOIN the candidate set on equal footing; they are
+   * not a fallback. That is what keeps the exactly-one guard honest: a
+   * string that is row A's name and row B's alias is a question for the
+   * operator, not a pick — the same rule `players.sameNamePlayers` applies.
+   * Era narrowing (`resolveTeamForSetYear`) runs over the union unchanged;
+   * an alias row has no era, its team does. The one reader that takes the
+   * two legs separately is the NCAA/ABL loader, because it reports HOW a row
+   * matched.
+   *
+   * ## The cost, and how it is contained
+   *
+   * Two copies of one fact can disagree. Every write goes through
+   * `syncTeamAliases` in convex/teams.ts — the single writer — and
+   * `teams.aliasIndexPin.test.ts` greps every non-test module for anything
+   * else inserting into or deleting from this table, the same guard
+   * `players.aliasIndexPin.test.ts` puts on `playerAliases` and
+   * `teams.dedupPin.test.ts` puts on the team dedup key. `syncTeamAliases`
+   * diffs against `by_team_id` rather than delete-all-and-reinsert, so a
+   * team saved with its alias list unchanged costs no writes here.
+   *
+   * `aliasNormalized` is `normalizeTeamName(alias)` — the token-sorted,
+   * diacritic-folded team key, identical to how `teams.nameNormalized` is
+   * derived — so an alias matches under exactly the rules a name does and a
+   * reader can hand the same normalised string to both legs.
+   *
+   * `sportId` is denormalised onto the row so the lookup is one compound
+   * index read rather than a read plus a `db.get` per hit to check the
+   * sport. A row whose team's `sportId` no longer agrees is stale residue
+   * (nothing supports moving a team between sports) and readers skip it, as
+   * the player lookup does.
+   *
+   * The E2E head-of-run reset drains this table alongside `teams`
+   * (`selectorOptions.resetTeamAliasesBatch`, mirroring
+   * `resetPlayerAliasesBatch`); without that the CI seed would leave alias
+   * rows pointing at deleted teams.
+   */
+  teamAliases: defineTable({
+    teamId: v.id("teams"),
+    sportId: v.id("selectorOptions"),
+    /** `normalizeTeamName(alias)` — never the raw spelling. */
+    aliasNormalized: v.string(),
+  })
+    // The lookup: "which teams in this sport answer to this string?" — read by
+    // `findTeamsByAlias` (`.take(TEAM_ERA_SCAN_LIMIT)`, the same cap as the
+    // primary leg), by `teams.search`'s exact-alias leg, and by
+    // `findTeamAliasCollision` for the "X also answers to that name" note.
+    .index("by_alias_normalized_and_sport_id", ["aliasNormalized", "sportId"])
+    // Every row for one team, for the diff `syncTeamAliases` performs and for
+    // the cleanup a deleted team would need.
+    .index("by_team_id", ["teamId"]),
 
   // NEO-92: per-fetch review queue backing the step-through "new players &
   // teams" wizard (replaces the old single-screen checkbox dialog). One row
@@ -1755,6 +1874,28 @@ export default defineSchema({
           // it dedupes by name-or-alias like every other league writer.
           leagueId: v.optional(v.union(v.id("leagues"), v.null())),
           leagueName: v.optional(v.string()),
+          /**
+           * ── NEO-284: the "Also known as" list typed on the New Team step ──
+           *
+           * RAW spellings, exactly what `teams.aliases` stores — see that
+           * field for the contract (matched normalised, own full name never
+           * an alias, bounds in convex/teams.ts). `recordDecision` runs the
+           * list through `normalizeTeamAliasList` against the composed
+           * Location + Name before storing it, so the queue never holds an
+           * over-bound or self-referential list.
+           *
+           * Written ONLY on the insert branch at commit — the created row
+           * gets `aliases` and `syncTeamAliases` writes the index. When the
+           * prelude finds the name already held and adopts that row instead,
+           * this list is NOT merged onto it: the find branch never widens an
+           * existing row silently (the `findOrCreateLeague` precedent), and
+           * the operator who wants the string remembered links with
+           * `saveAsAlias` below.
+           *
+           * Optional: absent is an empty list, which is what every decision
+           * recorded before this field says.
+           */
+          aliases: v.optional(v.array(v.string())),
         })),
         // NEO-236, player-only: the same Location + Name, once per career team
         // the operator ACCEPTED that matched no existing row.
@@ -1823,6 +1964,40 @@ export default defineSchema({
          * team.
          */
         linkedLeagueId: v.optional(v.id("leagues")),
+        /**
+         * ── NEO-284, team-kind only: remember the parked string as an alias ─
+         *
+         * A link is the operator saying "this checklist string means that
+         * team". Without this the same string parks again on the next set
+         * that prints it, and the operator answers the same question forever.
+         * `true` means: at COMMIT, append this row's raw `name` (the string
+         * the checklist carried — "LSU", "SD Padres") to `linkedTeamId`'s
+         * `teams.aliases` through `normalizeTeamAliasList` + `syncTeamAliases`,
+         * the one writer. A string the team already answers to (its full
+         * name, or an alias it holds) is a no-op, not an error.
+         *
+         * Written at commit, NEVER at decision time: the wizard writes nothing
+         * until Confirm & Save, and Cancel → Discard must leave no trace on
+         * the team. This flag therefore only travels with the decision;
+         * `commitCardChecklist`'s prelude reads it in one pass over every
+         * team-kind link row, so a checklist team and a staged career team
+         * behave the same.
+         *
+         * Team-kind only. `recordDecision` refuses it on a player or league
+         * row — a player's alias has its own field and a league link is not a
+         * spelling — rather than ignoring it, so a client bug cannot record
+         * an intent the commit would silently drop.
+         *
+         * The wizard's checkbox DEFAULTS ON (Jason, 2026-09-16): the goal is
+         * to stop re-parking, and a wrong alias is one chip removal in Team
+         * Management. Absent means `false` — every link decision recorded
+         * before this field existed remembers nothing.
+         *
+         * The saved string may have arrived from a marketplace; that is
+         * initial input (product invariant 2a), and the operator's link is
+         * what makes it NB vocabulary. No sync ever sets this flag.
+         */
+        saveAsAlias: v.optional(v.boolean()),
       }),
       // NEO-212: "this name is not a person / not a team". Carries no payload —
       // nothing is created, nothing is linked, and the card keeps the raw name
