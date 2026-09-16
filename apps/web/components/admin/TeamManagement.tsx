@@ -3,8 +3,9 @@ import { Link, useSearchParams } from "react-router";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
-import { Input } from "@/components/primitives";
+import { Input, Textarea } from "@/components/primitives";
 import NeonButton from "@/components/modules/NeonButton";
+import { parseAliases } from "@/components/SetSelector/NewLeagueForm";
 import { AddLeagueDialog } from "./AddLeagueDialog";
 import { contrastRatio, normalizeHexColor } from "@/lib/print/contrast";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
@@ -286,6 +287,13 @@ function TeamDetail({
   );
   const [primary, setPrimary] = useState(team.colors?.primary ?? "");
   const [secondary, setSecondary] = useState(team.colors?.secondary ?? "");
+  /**
+   * NEO-284 — the other names this team answers to, as the comma list the
+   * operator types. Seeded from the stored list joined the same way League
+   * Management seeds its box, so an untouched draft parses back to exactly
+   * what is stored and Save has nothing to send.
+   */
+  const [aliasText, setAliasText] = useState((team.aliases ?? []).join(", "));
   const [nameTakenId, setNameTakenId] = useState<Id<"teams"> | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   /**
@@ -349,6 +357,8 @@ function TeamDetail({
   // silently beside them — the split is only obvious once you have been told
   // what counts as a location.
   const helpId = useId();
+  // NEO-284: the alias caption. On the paragraph, pointed at by the box.
+  const aliasCaptionId = useId();
 
   // Re-seed on selection change. Keyed on _id so editing a field does not
   // clobber itself; this is React's documented "adjust state when props
@@ -370,8 +380,12 @@ function TeamDetail({
     setToYear(team.yearsActive?.to ? String(team.yearsActive.to) : "");
     setPrimary(team.colors?.primary ?? "");
     setSecondary(team.colors?.secondary ?? "");
+    setAliasText((team.aliases ?? []).join(", "));
     setSaveError(null);
-    setSaveStatus(null);
+    // NEO-284 fixed a dangling `setSaveStatus` here (NEO-260 renamed the
+    // state to `panelStatus` and missed this line). Unreachable in practice —
+    // the parent keys this panel by `_id` — which is why nothing tripped it.
+    setPanelStatus(null);
     setNameTakenId(null);
   }
 
@@ -399,6 +413,31 @@ function TeamDetail({
       : null;
 
   const canSave = name.trim().length > 0 && colorsValid;
+
+  /**
+   * NEO-284 — the box, as the list it stands for. Parsed with the league
+   * form's parser (split on commas, trim, drop empties, dedupe) so the three
+   * alias boxes in this app cannot disagree about what a comma means.
+   */
+  const draftAliases = useMemo(() => parseAliases(aliasText), [aliasText]);
+  const storedAliases = team.aliases ?? [];
+  const aliasesChanged =
+    JSON.stringify(draftAliases) !== JSON.stringify(storedAliases);
+  /**
+   * NEO-284 — who else in this sport already answers to one of these names.
+   *
+   * A shared alias is LEGAL and sometimes deliberate: "Miami" belongs to the
+   * Hurricanes and the RedHawks, and the card year is what decides which one
+   * a checklist means. So this is a note, never a refusal — but an operator
+   * typing one should hear it here rather than from a review queue three sets
+   * later. Skipped while the box is empty; the server bounds the list.
+   */
+  const sharedAliases = useQuery(
+    api.teams.aliasesInUse,
+    draftAliases.length > 0
+      ? { sportId: team.sportId, aliases: draftAliases, selfId: team._id }
+      : "skip",
+  );
 
   /**
    * Every league this dropdown can offer, in the order the parent sorted them,
@@ -627,6 +666,10 @@ function TeamDetail({
                 : {}),
             }
           : null,
+        // NEO-284 — only when the list moved. Unlike the fields above, an
+        // alias write re-syncs the lookup table behind it, so sending an
+        // unchanged list on every Save would be a rewrite nobody asked for.
+        ...(aliasesChanged ? { aliases: draftAliases } : {}),
       });
       // In the panel, not hoisted — see `panelStatus`.
       setPanelStatus({ text: `Saved ${draftFullName}.`, isError: false });
@@ -881,6 +924,66 @@ function TeamDetail({
             )}
           </div>
         )}
+
+        {/* NEO-284 — the other names this team answers to.
+
+            Right under the name it is a name FOR, spanning both columns:
+            a college programme carries dozens ("LSU", "Louisiana State",
+            "LSU Tigers baseball"), and a one-line box would hide all but the
+            first few. A textarea that grows with the list, then the list AS
+            PARSED — a missing comma making one long alias, a trailing one
+            making an empty entry, are invisible in the raw text and obvious
+            in chips.
+
+            Named "Current aliases", not "Also known as": the box above is
+            already called that, and two controls sharing one accessible name
+            is ambiguous to a screen reader and to a Maestro selector alike.
+            Chips are bordered and unlinked — this panel's grammar for a chip
+            that goes nowhere; the franchise pills below are the ones that
+            do something. */}
+        <div className="sm:col-span-2">
+          <Textarea
+            label="Also known as"
+            value={aliasText}
+            placeholder="LSU, Louisiana State, LSU Tigers baseball"
+            rows={2}
+            aria-describedby={aliasCaptionId}
+            onChange={(e) => setAliasText(e.target.value)}
+            className="min-h-[3.5rem] resize-y"
+          />
+          {draftAliases.length > 0 && (
+            <ul
+              aria-label="Current aliases"
+              className="mt-2 flex flex-wrap gap-1.5"
+            >
+              {draftAliases.map((alias) => (
+                <li
+                  key={alias}
+                  className="rounded-full border border-slate-700 bg-slate-900 px-2.5 py-0.5 text-xs text-slate-300"
+                >
+                  {alias}
+                </li>
+              ))}
+            </ul>
+          )}
+          <p id={aliasCaptionId} className="mt-2 text-xs text-slate-400">
+            Separate with commas. Other names this team answers to &mdash; the
+            school, an old nickname, how a checklist spells it.
+          </p>
+          {(sharedAliases ?? []).length > 0 && (
+            /* `role="status"`, not `alert`: nothing is wrong. A shared alias
+               is the feature working — a checklist carrying that name will
+               offer both teams and the year will usually settle it. */
+            <p role="status" className="mt-1 text-xs text-slate-400">
+              {(sharedAliases ?? [])
+                .map(
+                  (hit) =>
+                    `${hit.name} also answers to “${hit.alias}”. Cards will ask which one when the years don't decide.`,
+                )
+                .join(" ")}
+            </p>
+          )}
+        </div>
 
         <div>
           <label
@@ -1391,7 +1494,16 @@ export default function TeamManagement() {
       // the Padres even though `name` alone now holds only "Padres". The row
       // below prints the short name; the filter has to answer to what the
       // operator has in their head, which is the whole thing.
-      if (needle && !teamFullName(team).toLowerCase().includes(needle)) {
+      // NEO-284 — and on the aliases, for the same reason they exist: the
+      // operator folding "LSU" into a row is very likely typing the spelling
+      // they came here about.
+      if (
+        needle &&
+        !teamFullName(team).toLowerCase().includes(needle) &&
+        !(team.aliases ?? []).some((alias) =>
+          alias.toLowerCase().includes(needle),
+        )
+      ) {
         return false;
       }
       if (leagueFilter === ALL_LEAGUES) return true;

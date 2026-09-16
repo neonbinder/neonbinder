@@ -168,6 +168,14 @@ const TEAM_LOCATION_FIELD_ID = "entity-review-team-location";
 const TEAM_NAME_FIELD_ID = "entity-review-team-name";
 /** NEO-236 — the League pill group on the New Team step, same reasoning. */
 const TEAM_LEAGUE_FIELD_ID = "entity-review-team-league";
+/**
+ * NEO-284 — the "remember this name" checkbox on a team row. A stable id for
+ * the same reason as the three above: it wants a visible `<label htmlFor>`,
+ * and maestro-web's `pressKey` re-finds the active element by XPath, which
+ * needs an id when sibling controls share a class. Flows target it by its
+ * visible text, never by this id.
+ */
+const TEAM_SAVE_AS_ALIAS_FIELD_ID = "entity-review-team-save-as-alias";
 // NEO-254 — the New League step's two addressable controls. Same reason the
 // three above carry ids: maestro-web derives `resource-id` from `node.id ||
 // node.ariaLabel`, and a stable id is what a flow can target without depending
@@ -409,6 +417,20 @@ export default function EntityReviewWizard({
     Record<string, NewTeamDraft>
   >({});
   /**
+   * NEO-284 — per team row: keep the row's raw name as an alias of whichever
+   * team it gets linked to. Keyed by row and never reset, like the drafts
+   * above, so an operator who unticked it and went back finds it unticked.
+   *
+   * Absent means ON (Jason, 2026-09-16). A link is the operator saying "this
+   * string means that team", and the whole point of the alias is that the
+   * string never parks in this queue again — so the default is the answer
+   * they nearly always want, and one click turns it off for the odd checklist
+   * typo that should not become a name.
+   */
+  const [saveAsAliasByRow, setSaveAsAliasByRow] = useState<
+    Record<string, boolean>
+  >({});
+  /**
    * NEO-254 — the same, per LEAGUE row, and never reset per row for the same
    * reason: a typed correction must survive NEO-221 back-navigation. Absent
    * means "untouched", which renders the live prefill.
@@ -578,6 +600,9 @@ export default function EntityReviewWizard({
    * `.maestro` flow targets.
    */
   const careerTeamStatusIdBase = useId();
+  /** NEO-284 — the caption under the "remember this name" checkbox, so the
+   *  box announces what ticking it does (SC 3.3.2). */
+  const saveAsAliasHelpId = useId();
 
   const total = rows?.length ?? 0;
   const decided = useMemo(() => rows?.filter((r) => r.decision).length ?? 0, [rows]);
@@ -1445,6 +1470,8 @@ export default function EntityReviewWizard({
         leagueName?: string;
         // NEO-254 — see `teamCreateValidator`.
         yearsActive?: { from: number; to?: number };
+        // NEO-284 — the other names, already parsed. See `NewTeamDraft`.
+        aliases?: string[];
       };
       // NEO-254 — league-kind only. See `NewLeagueForm`.
       createLeague?: {
@@ -1479,6 +1506,14 @@ export default function EntityReviewWizard({
     reviewRowId: Id<"entityReviewQueue">,
     kind: "player" | "team" | "league",
     linkedId: Id<"players"> | Id<"teams"> | Id<"leagues">,
+    /**
+     * NEO-284, team rows only: whether commit should keep this row's raw name
+     * as an alias of the linked team. Read off the checkbox by every team
+     * link path (footer primary, near-match row, link search) so the three
+     * cannot disagree. Omitted entirely for players and leagues — the server
+     * refuses it on any other kind.
+     */
+    options: { saveAsAlias?: boolean } = {},
   ) =>
     decide(reviewRowId, () =>
       recordDecision({
@@ -1489,6 +1524,9 @@ export default function EntityReviewWizard({
         // NEO-254 — every team in the batch that named this league then uses
         // the linked row rather than creating anything.
         linkedLeagueId: kind === "league" ? (linkedId as Id<"leagues">) : undefined,
+        ...(kind === "team" && options.saveAsAlias !== undefined
+          ? { saveAsAlias: options.saveAsAlias }
+          : {}),
       }),
     );
   const handleSkip = async (reviewRowId: Id<"entityReviewQueue">) =>
@@ -1699,7 +1737,25 @@ export default function EntityReviewWizard({
   const teamCreate: NewTeamDraft =
     current && current.kind === "team"
       ? (teamCreateByRow[current._id] ?? teamCreatePrefill(current))
-      : { location: "", name: "", leagueId: undefined, leagueName: undefined };
+      : {
+          location: "",
+          name: "",
+          leagueId: undefined,
+          leagueName: undefined,
+          aliases: "",
+        };
+
+  /**
+   * NEO-284 — the current team row's "remember this name" answer, ON unless
+   * the operator turned it off on this row. `linkOptions` is what every team
+   * link path hands `handleLink`; for a player or league row it is empty, so
+   * `saveAsAlias` never reaches the server on a kind that refuses it.
+   */
+  const saveAsAlias =
+    current && current.kind === "team"
+      ? (saveAsAliasByRow[current._id] ?? true)
+      : false;
+  const linkOptions = current?.kind === "team" ? { saveAsAlias } : {};
 
   const patchTeamCreate = (rowId: string, patch: Partial<NewTeamDraft>) => {
     setTeamCreateByRow((prev) => ({
@@ -1909,6 +1965,9 @@ export default function EntityReviewWizard({
     }
     if (current.kind === "team") {
       const location = teamCreate.location.trim();
+      // NEO-284 — parsed with the league form's parser, so a comma means the
+      // same thing on every form in this wizard. Omitted when empty.
+      const aliases = parseAliases(teamCreate.aliases);
       return {
         create: {
           name: teamCreate.name.trim(),
@@ -1927,6 +1986,7 @@ export default function EntityReviewWizard({
           ...(teamCreate.yearsActive
             ? { yearsActive: teamCreate.yearsActive }
             : {}),
+          ...(aliases.length > 0 ? { aliases } : {}),
         },
       };
     }
@@ -2236,6 +2296,7 @@ export default function EntityReviewWizard({
                 current._id,
                 current.kind,
                 exactMatch._id as Id<"players"> | Id<"teams"> | Id<"leagues">,
+                linkOptions,
               );
               return;
             }
@@ -2848,7 +2909,11 @@ export default function EntityReviewWizard({
                     <p className="text-sm text-gray-400">
                       Already decided:{" "}
                       <span className="text-gray-100">
-                        {describeDecision(current.decision, linkedNameFor(current.decision))}
+                        {describeDecision(
+                          current.decision,
+                          linkedNameFor(current.decision),
+                          current.name,
+                        )}
                       </span>
                     </p>
                     <div className="flex items-center gap-3">
@@ -2883,6 +2948,70 @@ export default function EntityReviewWizard({
                       and two lists of them on screen at once is an ambiguity for
                       a screen reader and for Maestro alike.
                     */}
+                    {/*
+                      ── NEO-284: remember this name ──────────────────────────
+
+                      Team rows only, and only while a `Link to …` control is
+                      on screen — the footer primary on an exact match, a
+                      near-match row, or the open link search. It is a fact
+                      about LINKING ("keep the checklist's spelling as one of
+                      that team's names"), so it appears with the link
+                      controls and not above a New Team form, where "this
+                      team" would have meant the one being typed.
+
+                      In the BODY, above the panel, never in the footer: row 1
+                      of the footer is reserved (NEO-110) and a control that
+                      comes and goes with the near-match query would reflow
+                      it. The body absorbs height changes by design.
+
+                      Ticked by default — see `saveAsAliasByRow`.
+                    */}
+                    {current.kind === "team" &&
+                      (linkingOpen ||
+                        (showExactHierarchy && exactMatch !== null) ||
+                        (panelMatches?.length ?? 0) > 0) && (
+                        <div className="space-y-1">
+                          <label
+                            htmlFor={TEAM_SAVE_AS_ALIAS_FIELD_ID}
+                            className="flex items-center gap-2 text-sm text-gray-200"
+                          >
+                            <input
+                              id={TEAM_SAVE_AS_ALIAS_FIELD_ID}
+                              type="checkbox"
+                              checked={saveAsAlias}
+                              disabled={busy}
+                              aria-describedby={saveAsAliasHelpId}
+                              onChange={(e) =>
+                                setSaveAsAliasByRow((prev) => ({
+                                  ...prev,
+                                  [current._id]: e.target.checked,
+                                }))
+                              }
+                              // The wizard's checkbox grammar (career teams
+                              // below use the same accent), plus a visible
+                              // ring: `accent-*` alone leaves focus to the
+                              // browser default, which on this ground is
+                              // easy to lose (SC 2.4.7).
+                              className="h-4 w-4 rounded accent-[#00D558] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] focus-visible:ring-offset-1 focus-visible:ring-offset-gray-800"
+                            />
+                            {/* The row's RAW name, quoted: it is the string
+                                that will become the alias, spelling, caps and
+                                all — so the operator sees exactly what they
+                                are keeping. */}
+                            <span>
+                              Remember “{current.name}” as a name for this team
+                            </span>
+                          </label>
+                          <p
+                            id={saveAsAliasHelpId}
+                            className="pl-6 text-xs text-gray-400"
+                          >
+                            Kicks in when you link. Next time this name shows
+                            up, it goes straight to that team.
+                          </p>
+                        </div>
+                      )}
+
                     {!linkingOpen && (
                       <NearMatchPanel
                         kind={current.kind}
@@ -2910,6 +3039,7 @@ export default function EntityReviewWizard({
                             current._id,
                             current.kind,
                             id as Id<"players"> | Id<"teams"> | Id<"leagues">,
+                            linkOptions,
                           );
                         }}
                       />
@@ -2920,7 +3050,7 @@ export default function EntityReviewWizard({
                         kind={current.kind}
                         sportId={current.sportId}
                         onSelect={(id) => {
-                          void handleLink(current._id, current.kind, id);
+                          void handleLink(current._id, current.kind, id, linkOptions);
                         }}
                         onCancel={() => setLinkingOpen(false)}
                       />
@@ -3276,7 +3406,11 @@ export default function EntityReviewWizard({
                           batch will DO with the name beside it, so it is
                           content rather than decoration. */}
                       <span className="text-gray-400">
-                        {describeDecision(row.decision, linkedNameFor(row.decision))}
+                        {describeDecision(
+                          row.decision,
+                          linkedNameFor(row.decision),
+                          row.name,
+                        )}
                       </span>
                       <button
                         type="button"

@@ -26,6 +26,8 @@
  * warning only a sighted operator receives is not a warning.
  */
 
+import { useId } from "react";
+
 /** One candidate row. Deliberately structural, not `Doc<"players">`: the panel
  *  is shared by the player and team wizards and must not import either shape. */
 export interface NearMatch {
@@ -53,6 +55,19 @@ export interface NearMatch {
    * `pickLabel`.
    */
   yearsActive?: { from: number; to?: number };
+  /**
+   * NEO-284, team rows — the alias this row answered on, when it did.
+   *
+   * A team hit on one of its aliases arrives as `confidence: "exact"` (the
+   * lookup treats a name and an alias as equals), but calling it "same name"
+   * would be untrue: "LSU" is not the same name as "LSU Tigers", it is one of
+   * the names that team answers to. So a row carrying this renders
+   * `also known as “LSU”` in place of the same-name badge, and says it through
+   * the button's accessible DESCRIPTION rather than its name — the name stays
+   * exactly `Link to {name}`, which is the E2E contract and the one string a
+   * flow taps.
+   */
+  matchedAlias?: string;
 }
 
 export interface NearMatchPanelProps {
@@ -110,6 +125,10 @@ export function NearMatchPanel({
   });
 
   const count = ordered.length;
+  // Prefix for the per-row alias-note ids (`aria-describedby` targets). One
+  // `useId` per panel, suffixed by row id — never one per row, so the hook
+  // count cannot vary with the list.
+  const aliasNoteIdBase = useId();
 
   return (
     // The live region is mounted from the FIRST render, empty, and stays
@@ -131,37 +150,65 @@ export function NearMatchPanel({
         >
           <p className="text-sm font-medium text-neon-blue">Possible matches</p>
           <ul className="space-y-1" aria-label={`Possible ${kind} matches`}>
-            {ordered.map((match) => (
-              <li key={match._id}>
-                <button
-                  type="button"
-                  onClick={() => onPick(match._id, match.name)}
-                  // NEO-212 (a11y): the badge is IN the accessible name. An
-                  // aria-label of just `pickLabel(name)` overrode the button's
-                  // content, so "same name" — the single most decision-relevant
-                  // thing on the row, and the reason this panel exists — was
-                  // visible to sighted operators and invisible to everyone
-                  // else (WCAG 2.2 SC 1.3.1). The badge itself is aria-hidden
-                  // so it is not announced twice.
-                  aria-label={`${pickLabel(match.name, match)}${
-                    match.confidence === "exact" ? " — same name" : ""
-                  }`}
-                  // min-h-6 keeps the row on the WCAG 2.2 SC 2.5.8 24px floor
-                  // even when the name wraps to a single short line.
-                  className="flex min-h-6 w-full items-center gap-2 rounded px-2 py-1 text-left text-sm text-slate-200 transition-colors hover:bg-neon-blue/10 focus:outline-none focus:ring-2 focus:ring-neon-blue"
-                >
-                  <span className="flex-1 truncate">{match.name}</span>
-                  {match.confidence === "exact" && (
-                    <span
-                      aria-hidden="true"
-                      className="shrink-0 rounded bg-neon-blue/20 px-1.5 py-0.5 text-xs text-neon-blue"
-                    >
-                      same name
-                    </span>
-                  )}
-                </button>
-              </li>
-            ))}
+            {ordered.map((match) => {
+              // NEO-284 — an alias hit is exact by confidence but not by
+              // name, so it gets the alias note and NOT the same-name badge.
+              const viaAlias = Boolean(match.matchedAlias);
+              const sameName = match.confidence === "exact" && !viaAlias;
+              const aliasNoteId = viaAlias
+                ? `${aliasNoteIdBase}-${match._id}`
+                : undefined;
+              return (
+                <li key={match._id}>
+                  <button
+                    type="button"
+                    onClick={() => onPick(match._id, match.name)}
+                    // NEO-212 (a11y): the badge is IN the accessible name. An
+                    // aria-label of just `pickLabel(name)` overrode the button's
+                    // content, so "same name" — the single most decision-relevant
+                    // thing on the row, and the reason this panel exists — was
+                    // visible to sighted operators and invisible to everyone
+                    // else (WCAG 2.2 SC 1.3.1). The badge itself is aria-hidden
+                    // so it is not announced twice.
+                    aria-label={`${pickLabel(match.name, match)}${
+                      sameName ? " — same name" : ""
+                    }`}
+                    // NEO-284: the alias note reaches assistive tech as the
+                    // button's DESCRIPTION (announced after the name), which
+                    // keeps the name itself at exactly `Link to {name}`.
+                    aria-describedby={aliasNoteId}
+                    // min-h-6 keeps the row on the WCAG 2.2 SC 2.5.8 24px floor
+                    // even when the name wraps to a single short line.
+                    className="flex min-h-6 w-full items-center gap-2 rounded px-2 py-1 text-left text-sm text-slate-200 transition-colors hover:bg-neon-blue/10 focus:outline-none focus:ring-2 focus:ring-neon-blue"
+                  >
+                    <span className="flex-1 truncate">{match.name}</span>
+                    {sameName && (
+                      <span
+                        aria-hidden="true"
+                        className="shrink-0 rounded bg-neon-blue/20 px-1.5 py-0.5 text-xs text-neon-blue"
+                      >
+                        same name
+                      </span>
+                    )}
+                    {viaAlias && (
+                      /* Secondary text, not a badge: it is the reason this row
+                         is here, stated in the row's own words. slate-400 on
+                         the panel ground clears 4.5:1; the alias is quoted so
+                         a name that happens to be a word ("Beach") still reads
+                         as a name. Capped at half the row and truncated — an
+                         alias can be as long as a team name — so the NAME,
+                         which is what the button is, always keeps the floor. */
+                      <span
+                        id={aliasNoteId}
+                        className="min-w-0 max-w-[50%] truncate text-xs text-slate-400"
+                      >
+                        also known as “{match.matchedAlias}”
+                      </span>
+                    )}
+                  </button>
+                </li>
+              );
+            })}
           </ul>
         </div>
       )}

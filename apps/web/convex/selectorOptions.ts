@@ -140,7 +140,13 @@ import {
   normalizePlayerName,
   sameNamePlayers,
 } from "./players";
-import { normalizeTeamName } from "./teams";
+import {
+  MAX_TEAM_ALIASES,
+  MAX_TEAM_ALIAS_LENGTH,
+  normalizeTeamAliasList,
+  normalizeTeamName,
+  syncTeamAliases,
+} from "./teams";
 // NEO-253: the shared normalisation core, imported rather than transcribed —
 // this file used to carry two separate hand copies of it.
 import { normalizeEntityName } from "../lib/entities/normalize-name";
@@ -6388,6 +6394,7 @@ type SetBuilderResetResult = {
   playersDeleted: number;
   playerAliasesDeleted: number;
   teamsDeleted: number;
+  teamAliasesDeleted: number;
   franchisesDeleted: number;
   leaguesDeleted: number;
   /**
@@ -6438,6 +6445,7 @@ async function runSetBuilderReset(
     playersDeleted: 0,
     playerAliasesDeleted: 0,
     teamsDeleted: 0,
+    teamAliasesDeleted: 0,
     franchisesDeleted: 0,
     leaguesDeleted: 0,
   };
@@ -6472,6 +6480,11 @@ async function runSetBuilderReset(
     // here that outlived its player keeps answering the alias lookup forever.
     ["playerAliasesDeleted", internal.selectorOptions.resetPlayerAliasesBatch],
     ["teamsDeleted", internal.selectorOptions.resetTeamsBatch],
+    // NEO-284 — the team alias index, drained with the teams it describes,
+    // for the reason `playerAliases` is drained with the players: a row here
+    // that outlived its team keeps answering the alias lookup forever, and
+    // the CI seed would otherwise leave residue pointing at deleted teams.
+    ["teamAliasesDeleted", internal.selectorOptions.resetTeamAliasesBatch],
     // NEO-254 — franchises after the teams that reference them, for the same
     // reason leagues go after teams. E2E flows mint franchises under a per-run
     // sport row; without this loop those rows outlive the sport, invisible to
@@ -6610,6 +6623,8 @@ export const resetSetBuilderDataFromCli = internalAction({
     // not the other is visible in the operator's own output.
     playerAliasesDeleted: v.number(),
     teamsDeleted: v.number(),
+    // NEO-284 — same pairing as the players' alias count above.
+    teamAliasesDeleted: v.number(),
     // NEO-254 — franchises are drained after the teams that point at them.
     franchisesDeleted: v.number(),
     leaguesDeleted: v.number(),
@@ -6892,6 +6907,38 @@ export const resetTeamsBatch = internalMutation({
     // point — see assertResetArmed.
     assertResetArmed();
     const rows = await ctx.db.query("teams").take(RESET_BATCH_SIZE);
+    for (const row of rows) {
+      await ctx.db.delete(row._id);
+    }
+    return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
+  },
+});
+
+/**
+ * Internal: drain `teamAliases`, looped by `runSetBuilderReset`.
+ *
+ * NEO-284. The twin of `resetPlayerAliasesBatch` above, for the same table
+ * shape one entity over: `teamAliases` is the index behind `teams.aliases`,
+ * one flat row per (team, alias), so a reset that wipes teams and leaves it
+ * standing leaves rows pointing at nothing — each still answering
+ * `by_alias_normalized_and_sport_id`, quietly, for as long as it exists.
+ * `findTeamsByAlias` skips a hit whose team is gone, so the damage is silent
+ * and cumulative rather than loud.
+ *
+ * Its own chunk rather than a cascade inside the teams batch, for the read
+ * budget reason the players' twin gives. This is the ONE sanctioned reader
+ * and deleter of the table outside `syncTeamAliases`;
+ * `teams.aliasIndexPin.test.ts` checks it by name.
+ */
+export const resetTeamAliasesBatch = internalMutation({
+  args: {},
+  returns: v.object({
+    deleted: v.number(),
+    hasMore: v.boolean(),
+  }),
+  handler: async (ctx) => {
+    assertResetArmed();
+    const rows = await ctx.db.query("teamAliases").take(RESET_BATCH_SIZE);
     for (const row of rows) {
       await ctx.db.delete(row._id);
     }
@@ -10473,6 +10520,27 @@ function buildMatchMaps(
  */
 const UNRESOLVED_TEAM_NAMES_CAP = 200;
 
+/**
+ * NEO-284 — an alias list the commit prelude can hand to
+ * `normalizeTeamAliasList` WITHOUT it throwing.
+ *
+ * That helper refuses an over-bound list with `ConvexError`, which is right
+ * where an operator is standing (`recordDecision`, Team Management) and wrong
+ * inside `commitCardChecklist`, where a throw aborts a whole checklist commit
+ * over one team's spelling. So the prelude trims to the caps first — the
+ * entries past 64 and any entry over 120 characters are dropped — and lets
+ * the helper do the dedupe and the own-name rule. Every list this reaches was
+ * already bounded at decision time, so in practice this drops nothing; it is
+ * the fail-soft boundary the prelude keeps for every other field it writes
+ * from a stored decision (see `reviewedTeamFields`).
+ */
+function boundedAliasInput(raw: ReadonlyArray<string>): string[] {
+  return raw
+    .map((a) => a.trim())
+    .filter((a) => a.length > 0 && a.length <= MAX_TEAM_ALIAS_LENGTH)
+    .slice(0, MAX_TEAM_ALIASES);
+}
+
 export const commitCardChecklistPrelude = internalMutation({
   args: {
     selectorOptionId: v.id("selectorOptions"),
@@ -10914,7 +10982,18 @@ export const commitCardChecklistPrelude = internalMutation({
      * construction.
      */
     const createTeamFromOperatorInput = async (
-      input: { location?: string; name: string },
+      input: {
+        location?: string;
+        name: string;
+        /**
+         * NEO-284 — "Also known as", off the New Team step. Written on the
+         * INSERT branch only: a row this name already resolves to is adopted
+         * as-is, because the find branch never widens an existing row (the
+         * `findOrCreateLeague` precedent), and the operator who wants the
+         * string remembered on a held row links it with `saveAsAlias`.
+         */
+        aliases?: ReadonlyArray<string>;
+      },
       /**
        * Extra stored fields the caller already has in hand.
        *
@@ -11001,13 +11080,38 @@ export const commitCardChecklistPrelude = internalMutation({
         (opts.leagueChosen
           ? undefined
           : await resolveDefaultLeagueId(ctx, args.sportId));
+      /*
+       * NEO-284 — the alias list, re-derived against the row's OWN composed
+       * name and bounded fail-soft.
+       *
+       * `recordDecision` already refused an over-bound list, so on this path
+       * `normalizeTeamAliasList` is a re-derivation (dedupe, drop the own
+       * full name) rather than a gate. `boundedAliasInput` still trims to the
+       * caps first, because this runs with no operator in front of it: a
+       * decision written by a path that skipped the check must cost the team
+       * an alias, never the commit.
+       */
+      const aliases = input.aliases?.length
+        ? normalizeTeamAliasList(
+            boundedAliasInput(input.aliases),
+            teamFullName(fields),
+          )
+        : [];
       const id = await ctx.db.insert("teams", {
         ...extra,
         ...fields,
         sportId: args.sportId,
         ...(leagueId ? { leagueId } : {}),
+        ...(aliases.length ? { aliases } : {}),
         lastUpdated: Date.now(),
       });
+      // The index half of `teams.aliases`, through the ONE writer. Skipped
+      // for an empty list: a fresh id has nothing to diff against, and the
+      // read it would spend is one per created team inside a budgeted
+      // mutation.
+      if (aliases.length) {
+        await syncTeamAliases(ctx, { teamId: id, sportId: args.sportId, aliases });
+      }
       return { id, created: true };
     };
 
@@ -11380,6 +11484,97 @@ export const commitCardChecklistPrelude = internalMutation({
       }
     }
 
+    /**
+     * ── NEO-284: "remember this string as a name for that team" ────────────
+     *
+     * ONE pass, ahead of both team loops, over every team-kind row the
+     * operator answered by LINKING with the box left on. A link is the
+     * operator saying "this checklist string means that team"; without this
+     * the same string parks again on the next set that prints it. The row's
+     * raw `name` — the string the checklist carried, "LSU", "SD Padres" — is
+     * merged into the linked team's `aliases` and the index is rewritten
+     * through `syncTeamAliases`, the table's one writer.
+     *
+     * Written HERE, at commit, and never at decision time: the wizard writes
+     * nothing until Confirm & Save, and Cancel → Discard must leave no trace
+     * on a team that was only ever pointed at. One place rather than one per
+     * loop, so a checklist team and a staged career team behave identically
+     * — both are team-kind rows with a link decision, and the loops below
+     * consume `linkedTeamId` exactly as they did before this existed.
+     *
+     * Grouped by team first: two rows in one batch can link to the same team
+     * ("LSU" and "LSU Tigers baseball"), and merging them one at a time would
+     * re-read and re-patch the row per string. A team is read once, patched
+     * once, and only when the list actually changed — a string the team
+     * already answers to (its full name or an alias it holds) is a no-op, not
+     * an error, because the operator's intent is already satisfied.
+     *
+     * The linked team is re-checked before it is written, for the reason the
+     * league pass above re-checks a stored id: a decision is a durable record
+     * read some time after it was made, and the row can have been deleted or
+     * (via a stale client) belong to another sport. Dropped rather than
+     * thrown on — there is no operator here, and losing one alias must not
+     * abort a checklist commit. Same rule at the caps: a team already holding
+     * `MAX_TEAM_ALIASES` names, or a string over `MAX_TEAM_ALIAS_LENGTH`, is
+     * logged and skipped, and the link itself still lands.
+     *
+     * Read budget: one `db.get` per distinct linked team plus the index diff
+     * `syncTeamAliases` performs — the same shape the players' alias writes
+     * already pay, and only on rows the operator ticked.
+     */
+    const aliasNamesByTeamId = new Map<Id<"teams">, string[]>();
+    for (const row of reviewRows) {
+      if (row.kind !== "team") continue;
+      if (row.decision?.action !== "link") continue;
+      if (!row.decision.linkedTeamId || !row.decision.saveAsAlias) continue;
+      const names = aliasNamesByTeamId.get(row.decision.linkedTeamId) ?? [];
+      names.push(row.name);
+      aliasNamesByTeamId.set(row.decision.linkedTeamId, names);
+    }
+    for (const [teamId, names] of aliasNamesByTeamId) {
+      const linked = await ctx.db.get(teamId);
+      if (!linked || linked.sportId !== args.sportId) continue;
+      const held = linked.aliases ?? [];
+      // Keys the team already answers to: its full name and every alias.
+      // `nameNormalized` IS `normalizeTeamName(teamFullName(row))` by
+      // construction (convex/lib/teamRow.ts), so it stands in for the name.
+      const answersTo = new Set<string>([
+        linked.nameNormalized,
+        ...held.map((a) => normalizeTeamName(a)),
+      ]);
+      const additions: string[] = [];
+      for (const name of names) {
+        const trimmed = name.trim();
+        const key = normalizeTeamName(trimmed);
+        if (!key || answersTo.has(key)) continue;
+        if (trimmed.length > MAX_TEAM_ALIAS_LENGTH) {
+          // Length, never the string: this reaches Sentry and the console.
+          console.warn(
+            `commitCardChecklistPrelude: a saveAsAlias string is ${trimmed.length} characters; the limit is ${MAX_TEAM_ALIAS_LENGTH}. Linked, not remembered.`,
+          );
+          continue;
+        }
+        if (held.length + additions.length >= MAX_TEAM_ALIASES) {
+          console.warn(
+            `commitCardChecklistPrelude: team ${teamId} already holds ${MAX_TEAM_ALIASES} aliases. Linked, not remembered.`,
+          );
+          continue;
+        }
+        answersTo.add(key);
+        additions.push(trimmed);
+      }
+      if (additions.length === 0) continue;
+      // Through the same helper every other writer uses, against the team's
+      // own composed name, so the stored list obeys the one contract. The
+      // inputs are inside the caps by the checks above, so this cannot throw.
+      const aliases = normalizeTeamAliasList(
+        [...held, ...additions],
+        teamFullName(linked),
+      );
+      await ctx.db.patch(linked._id, { aliases, lastUpdated: Date.now() });
+      await syncTeamAliases(ctx, { teamId: linked._id, sportId: args.sportId, aliases });
+    }
+
     const stagedTeamIdByLabel = new Map<string, Id<"teams">>();
 
     for (const row of reviewRows) {
@@ -11398,6 +11593,8 @@ export const commitCardChecklistPrelude = internalMutation({
       // design (Jason, 2026-09-05: "We simply shouldn't allow for full string
       // creation").
       if (!create || !create.name.trim()) continue;
+      // NEO-284: `create.aliases` rides along on the whole decision object and
+      // is written on the insert branch only — see `createTeamFromOperatorInput`.
       const made = await createTeamFromOperatorInput(create, {
         // Already enriched: the staged row's own Wikidata lookup ran while it
         // sat in the wizard, and its result is on `row.enrichment`. Since
@@ -11527,6 +11724,8 @@ export const commitCardChecklistPrelude = internalMutation({
       }
       const teamReviewRow = reviewByKey.get(`team:${normalized}`);
       const enrichment = teamReviewRow?.enrichment;
+      // NEO-284: `create.aliases` rides along on the whole decision object and
+      // is written on the insert branch only — see `createTeamFromOperatorInput`.
       const made = await createTeamFromOperatorInput(create, {
         // The row the operator reviewed arrives complete — the wizard's own
         // Wikidata/ESPN lookup already ran, and since NEO-254 that lookup is

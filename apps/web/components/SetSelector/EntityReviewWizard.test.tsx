@@ -654,6 +654,9 @@ describe("EntityReviewWizard — decision actions", () => {
         action: "link",
         linkedPlayerId: undefined,
         linkedTeamId: "linked-id-123",
+        // NEO-284 — the "remember this name" box is ticked by default on a
+        // team row, so a link carries it unless the operator unticks it.
+        saveAsAlias: true,
       });
     });
   });
@@ -1991,6 +1994,8 @@ describe("EntityReviewWizard — near matches", () => {
         action: "link",
         linkedPlayerId: undefined,
         linkedTeamId: "team_ny",
+        // NEO-284 — ticked by default on a team row.
+        saveAsAlias: true,
       });
     });
   });

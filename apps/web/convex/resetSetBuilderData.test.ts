@@ -241,6 +241,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       playersDeleted: 4,
       playerAliasesDeleted: 0,
       teamsDeleted: 2,
+      teamAliasesDeleted: 0,
       franchisesDeleted: 1,
       leaguesDeleted: 1,
       complete: true,
@@ -312,6 +313,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       playersDeleted: 0,
       playerAliasesDeleted: 0,
       teamsDeleted: 0,
+      teamAliasesDeleted: 0,
       franchisesDeleted: 0,
       leaguesDeleted: 0,
       complete: true,
@@ -356,7 +358,7 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
     const t = convexTest(schema, modules);
     await seedAllSixTables(t);
 
-    // Mirrors the shell loop's cap: eight tables need at most eight passes
+    // Mirrors the shell loop's cap: nine tables need at most nine passes
     // under a zero budget, and a loop that needs more than 20 is stuck.
     const MAX_PASSES = 20;
     let passes = 0;
@@ -368,6 +370,7 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
       playersDeleted: 0,
       playerAliasesDeleted: 0,
       teamsDeleted: 0,
+      teamAliasesDeleted: 0,
       franchisesDeleted: 0,
       leaguesDeleted: 0,
     };
@@ -392,6 +395,7 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
       playersDeleted: 4,
       playerAliasesDeleted: 0,
       teamsDeleted: 2,
+      teamAliasesDeleted: 0,
       franchisesDeleted: 1,
       leaguesDeleted: 1,
     });

@@ -105,6 +105,7 @@ const EMPTY: NewTeamDraft = {
   name: "",
   leagueId: undefined,
   leagueName: undefined,
+  aliases: "",
 };
 
 /**
@@ -200,6 +201,7 @@ describe("newTeamPrefill", () => {
       name: "Padres",
       leagueId: undefined,
       leagueName: undefined,
+      aliases: "",
     });
   });
 
@@ -211,6 +213,7 @@ describe("newTeamPrefill", () => {
       name: "San Diego Padres",
       leagueId: undefined,
       leagueName: undefined,
+      aliases: "",
     });
   });
 

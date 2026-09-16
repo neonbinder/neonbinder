@@ -1,7 +1,8 @@
 import { query, mutation, internalMutation, internalQuery, action } from "./_generated/server";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { ConvexError, v } from "convex/values";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import { getCurrentUserId, requireAdmin, requireSignedIn } from "./auth";
 import {
   findOrCreateLeague,
@@ -76,6 +77,11 @@ const teamDocValidator = v.object({
   // "Orix Buffaloes".
   // `nameNormalized` always keys the WHOLE name; see lib/teams/team-name.ts.
   location: v.optional(v.string()),
+  // NEO-284: the other names this team answers to, stored raw — see the
+  // schema. Listed here for the reason `franchiseId` is: this validator is
+  // STRICT, and a row carrying a field it does not name makes every teams
+  // screen throw the moment the first alias is saved.
+  aliases: v.optional(v.array(v.string())),
   yearsActive: v.optional(v.object({
     from: v.number(),
     to: v.optional(v.number()),
@@ -203,6 +209,212 @@ export const erasByNameAndSport = query({
 const MAX_TEAM_NAME_LENGTH = 120;
 
 /**
+ * NEO-284 — how many "also known as" names one team row may carry, and how
+ * long each may be.
+ *
+ * Deliberately NOT the players'/leagues' 32×64. A team alias is a whole
+ * team-name string ("Louisiana State University Tigers baseball"), so the
+ * length cap is the name cap, and the NCAA D1 dataset measured 64 aliases on
+ * one program and 80 characters on one alias — a 32-entry cap would have
+ * refused twenty real rows. The schema comment on `teams.aliases` carries the
+ * same numbers.
+ */
+export const MAX_TEAM_ALIASES = 64;
+export const MAX_TEAM_ALIAS_LENGTH = 120;
+
+/**
+ * NEO-284 — clean an alias list for storage. Mirrors
+ * `players.normalizePlayerAliasList` and `leagues.normalizeAliasList`.
+ *
+ * Refuses on a bound (the operator can shorten a name), drops silently on a
+ * redundancy. `ownFullName` is the row's FULL name — `teamFullName(row)`,
+ * Location + Name — and an entry that normalises to it is dropped, because the
+ * row already answers to it through `nameNormalized`. The nickname ALONE is
+ * not the full name and is kept: "Padres" is a legitimate alias for
+ * "San Diego / Padres" precisely because NEO-236 keyed the whole name.
+ *
+ * Dedupes on `normalizeTeamName`, the token-sorted key the index stores, so
+ * "Tigers LSU" and "LSU Tigers" are one alias. Counts and lengths are named
+ * in the messages, never the values — an alias is operator input and these
+ * strings reach Sentry and the browser console.
+ */
+export function normalizeTeamAliasList(
+  raw: ReadonlyArray<string>,
+  ownFullName: string,
+): string[] {
+  if (raw.length > MAX_TEAM_ALIASES) {
+    throw new ConvexError(
+      `A team has ${raw.length} aliases; the limit is ${MAX_TEAM_ALIASES}.`,
+    );
+  }
+  const ownNormalized = normalizeTeamName(ownFullName);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const entry of raw) {
+    const trimmed = entry.trim().replace(/\s+/g, " ");
+    if (!trimmed) continue;
+    if (trimmed.length > MAX_TEAM_ALIAS_LENGTH) {
+      throw new ConvexError(
+        `An alias is ${trimmed.length} characters; the limit is ${MAX_TEAM_ALIAS_LENGTH}.`,
+      );
+    }
+    const normalized = normalizeTeamName(trimmed);
+    // Nothing left after normalising ("---") can never match anything.
+    if (!normalized) continue;
+    if (normalized === ownNormalized) continue;
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(trimmed);
+  }
+  return out;
+}
+
+/**
+ * ── NEO-284: the ONE writer of the `teamAliases` index ──────────────────────
+ *
+ * `teams.aliases` is what an operator edits; `teamAliases` is how a checklist
+ * string finds the row. Two copies of one fact can disagree, and the failure
+ * is silent in the worst direction: a row whose index entry was never written
+ * simply stops answering to "LSU", and the next set parks it again. So
+ * exactly one function writes that table — this one — and
+ * `teams.aliasIndexPin.test.ts` greps every non-test module for anything else
+ * inserting into or deleting from it, the same guard `players.aliasIndexPin`
+ * puts on `playerAliases`.
+ *
+ * Diffs against `by_team_id` rather than delete-all-and-reinsert: a team
+ * saved with its alias list unchanged (the common case — the alias box sits
+ * on a form that also edits a name and a league) costs no writes here.
+ *
+ * `aliases` arrives ALREADY normalised by `normalizeTeamAliasList`, so this
+ * only derives the key. Passing raw input here would put an unbounded string
+ * in an index.
+ */
+export async function syncTeamAliases(
+  ctx: MutationCtx,
+  args: {
+    teamId: Id<"teams">;
+    sportId: Id<"selectorOptions">;
+    aliases: ReadonlyArray<string>;
+  },
+): Promise<void> {
+  const wanted = new Set(
+    args.aliases.map((alias) => normalizeTeamName(alias)).filter(Boolean),
+  );
+  const existing = await ctx.db
+    .query("teamAliases")
+    .withIndex("by_team_id", (q) => q.eq("teamId", args.teamId))
+    .collect();
+
+  const held = new Set<string>();
+  for (const row of existing) {
+    // A row whose sport no longer matches is stale as well as wrong — nothing
+    // supports moving a team between sports, so it predates a fix. Either way
+    // it must not keep answering lookups in the old sport.
+    if (wanted.has(row.aliasNormalized) && row.sportId === args.sportId) {
+      held.add(row.aliasNormalized);
+      continue;
+    }
+    await ctx.db.delete(row._id);
+  }
+  for (const aliasNormalized of wanted) {
+    if (held.has(aliasNormalized)) continue;
+    await ctx.db.insert("teamAliases", {
+      teamId: args.teamId,
+      sportId: args.sportId,
+      aliasNormalized,
+    });
+  }
+}
+
+/**
+ * NEO-284 — which OTHER team in this sport already answers to one of these
+ * aliases, by primary name or by alias.
+ *
+ * ADVISORY on the operator surfaces, not a gate. A shared alias is legal and
+ * sometimes deliberate — bare "Miami" may reasonably point at two programs
+ * and let the set year or the operator decide — and that is exactly the
+ * two-candidates case `findTeamsByFullName`'s union already turns into a
+ * question rather than a pick. So the editor is TOLD ("X also answers to that
+ * name") and not stopped. The NCAA/ABL loader is stricter and refuses to
+ * attach a shared alias unattended; that is its choice, made in
+ * `convex/bulkLoad.ts`, not this helper's.
+ *
+ * One shared lookup per alias — the same `findTeamsByFullName` every identity
+ * path reads — so "answers to" here cannot mean something different from what
+ * it means at commit time.
+ */
+export async function findTeamAliasCollision(
+  ctx: QueryCtx | MutationCtx,
+  args: {
+    sportId: Id<"selectorOptions">;
+    aliases: ReadonlyArray<string>;
+    /** The row being edited, which does not collide with itself. */
+    selfId?: Id<"teams">;
+  },
+): Promise<Doc<"teams"> | null> {
+  for (const alias of args.aliases) {
+    const holders = await findTeamsByFullName(ctx, args.sportId, alias);
+    const other = holders.find((row) => row._id !== args.selfId);
+    if (other) return other;
+  }
+  return null;
+}
+
+/**
+ * NEO-284 — the alias that answered a query, or undefined when the primary
+ * name did. Mirrors `players.matchedAliasFor`.
+ *
+ * The wizard's near-match panel says "also known as LSU" beside a candidate
+ * matched that way, because otherwise the operator is shown a row whose name
+ * is nothing like the one on the card and has to guess why it is on the list.
+ */
+export function matchedTeamAliasFor(
+  team: Doc<"teams">,
+  nameNormalized: string,
+): string | undefined {
+  if (!nameNormalized) return undefined;
+  if (team.nameNormalized === nameNormalized) return undefined;
+  return (team.aliases ?? []).find(
+    (alias) => normalizeTeamName(alias) === nameNormalized,
+  );
+}
+
+/**
+ * NEO-284 — who else in this sport already answers to these names.
+ *
+ * Advisory only, for the note the team editor and the New Team step show
+ * beside the alias box. Returns at most one other team per alias — the note
+ * says "X also answers to that name", and a second name would not change what
+ * the operator does. The name is the FULL name, which is what an operator
+ * recognises a team by.
+ */
+export const aliasesInUse = query({
+  args: {
+    sportId: v.id("selectorOptions"),
+    aliases: v.array(v.string()),
+    /** The row being edited, which does not collide with itself. */
+    selfId: v.optional(v.id("teams")),
+  },
+  returns: v.array(v.object({ alias: v.string(), name: v.string() })),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    // Bounded like every other alias read: the caller is a form, and an
+    // unbounded list would be one index read per entry.
+    const aliases = args.aliases.slice(0, MAX_TEAM_ALIASES);
+    const out: Array<{ alias: string; name: string }> = [];
+    for (const alias of aliases) {
+      const other = await findTeamAliasCollision(ctx, {
+        sportId: args.sportId,
+        aliases: [alias],
+        ...(args.selfId ? { selfId: args.selfId } : {}),
+      });
+      if (other) out.push({ alias: alias.trim(), name: teamFullName(other) });
+    }
+    return out;
+  },
+});
+
+/**
  * NEO-236 — Location + Name, never a full string.
  *
  * Jason, 2026-09-05: "We simply shouldn't allow for full string creation.
@@ -259,6 +471,14 @@ export const findOrCreate = mutation({
      * see `components/SetSelector/NewTeamForm.tsx` for the operator's side.
      */
     newEra: v.optional(v.boolean()),
+    /**
+     * NEO-284 — the other names this team answers to, from the New Team
+     * dialog's "Also known as" box. Written on the INSERT branch only: when
+     * the call finds an existing era it returns that row unchanged, because
+     * silently widening what a row answers to is an operator decision made in
+     * Team Management, not a side effect of a lookup (the leagues precedent).
+     */
+    aliases: v.optional(v.array(v.string())),
   },
   returns: v.id("teams"),
   handler: async (ctx, args): Promise<Id<"teams">> => {
@@ -391,16 +611,28 @@ export const findOrCreate = mutation({
         ? await resolveDefaultLeagueId(ctx, args.sportId)
         : (chosenLeagueId ?? undefined);
 
+    // NEO-284 — bounded and de-duplicated against the full name this row is
+    // about to carry. NOT checked for collisions: an alias another team
+    // already answers to is allowed (the union makes it a question at commit
+    // time), and the dialog shows the advisory `aliasesInUse` note instead.
+    const aliases = args.aliases
+      ? normalizeTeamAliasList(args.aliases, fullName)
+      : [];
+
     const id = await ctx.db.insert("teams", {
       ...teamRowFields({ name, location: args.location }),
       sportId: args.sportId,
       ...(args.yearsActive ? { yearsActive: args.yearsActive } : {}),
+      ...(aliases.length ? { aliases } : {}),
       // NEO-156: every creation path attaches a league. Undefined when the
       // sport has no configured one (a custom sport) AND the operator named
       // none — legitimate, and assignable later in Team Management.
       leagueId,
       lastUpdated: Date.now(),
     });
+    if (aliases.length) {
+      await syncTeamAliases(ctx, { teamId: id, sportId: args.sportId, aliases });
+    }
 
     // NEO-208 security condition: an audit trail for a shared-row creation an
     // operator can trigger from a typeahead. Structured JSON, not concatenation
@@ -867,6 +1099,13 @@ export const saveTeamFields = mutation({
         v.null(),
       ),
     ),
+    /**
+     * NEO-284 — the whole "also known as" list, replacing what is there.
+     * Omit to leave it alone; an empty array clears it. Bounded by
+     * `normalizeTeamAliasList` and mirrored into the `teamAliases` index by
+     * `syncTeamAliases`, the one writer.
+     */
+    aliases: v.optional(v.array(v.string())),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -1063,6 +1302,32 @@ export const saveTeamFields = mutation({
         : undefined;
     }
 
+    /*
+     * NEO-284 — aliases LAST, because they are checked against the FULL name
+     * this save is leaving on the row.
+     *
+     * A rename and an alias edit in one save have to agree: renaming a team
+     * to a string that is also in its own alias box should drop the alias, not
+     * store both. `nextName`/`nextLocation` are the parts this save leaves on
+     * the row — the draft's when sent, the row's otherwise — which is exactly
+     * the full name the aliases will sit beside once this patch lands.
+     * (`players.savePlayerFields` makes the same move for the same reason.)
+     */
+    if (args.aliases !== undefined) {
+      const aliases = normalizeTeamAliasList(
+        args.aliases,
+        teamFullName({ name: nextName, location: nextLocation }),
+      );
+      // Dropped entirely once empty, so a cleared row is indistinguishable
+      // from one that never had an alias — the rule `externalIds` follows.
+      patch.aliases = aliases.length > 0 ? aliases : undefined;
+      await syncTeamAliases(ctx, {
+        teamId: args.id,
+        sportId: existing.sportId,
+        aliases,
+      });
+    }
+
     await ctx.db.patch(args.id, patch);
     return null;
   },
@@ -1250,13 +1515,53 @@ export const search = query({
       Math.min(args.limit ?? TEAM_SEARCH_DEFAULT_LIMIT, TEAM_SEARCH_MAX_LIMIT),
     );
 
-    return await ctx.db
+    const hits = await ctx.db
       .query("teams")
       .withSearchIndex("search_name", (q) => {
         const search = q.search("nameNormalized", term);
         return args.sportId ? search.eq("sportId", args.sportId) : search;
       })
       .take(limit);
+
+    /*
+     * NEO-284 — the exact-alias leg. Typing "LSU" into "Link to Existing…"
+     * must find LSU Tigers, and the search index covers `nameNormalized`
+     * only. One indexed read of `teamAliases` on the token-sorted key of the
+     * WHOLE query — an exact alias, not a prefix; a second search index over
+     * aliases is out of scope (plan decision 11). Alias hits go FIRST: an
+     * exact match to what the operator typed outranks a prefix match, which
+     * is the order `nearMatches` already ranks in. Without a sport the read
+     * is on the index's leading field alone, so it stays one read either way.
+     */
+    const aliasKey = normalizeTeamName(args.query);
+    if (!aliasKey) return hits;
+    const aliasRows = await ctx.db
+      .query("teamAliases")
+      .withIndex("by_alias_normalized_and_sport_id", (q) => {
+        const byKey = q.eq("aliasNormalized", aliasKey);
+        return args.sportId ? byKey.eq("sportId", args.sportId) : byKey;
+      })
+      .take(limit);
+    if (aliasRows.length === 0) return hits;
+
+    const seen = new Set<string>();
+    const merged: Doc<"teams">[] = [];
+    for (const row of aliasRows) {
+      if (seen.has(row.teamId)) continue;
+      const team = await ctx.db.get(row.teamId);
+      // A side row whose team is gone or has moved sport is stale residue;
+      // skipped, as `findTeamsByAlias` skips it.
+      if (!team || team.sportId !== row.sportId) continue;
+      seen.add(team._id);
+      merged.push(team);
+    }
+    for (const hit of hits) {
+      if (merged.length >= limit) break;
+      if (seen.has(hit._id)) continue;
+      seen.add(hit._id);
+      merged.push(hit);
+    }
+    return merged.slice(0, limit);
   },
 });
 
@@ -1349,16 +1654,17 @@ export const resolveNames = query({
       }
 
       if (!seen.has(normalized)) {
-        // NEO-254: `.take(2)`, not `.first()`. A name can belong to two eras —
+        // NEO-254: a LIST, not `.first()`. A name can belong to two eras —
         // the 1972-1996 Winnipeg Jets and the 2011- Jets — and `.first()`
-        // reported one of them as THE answer. Two is all this needs: the
-        // branch is none / one / more-than-one.
-        const found = await ctx.db
-          .query("teams")
-          .withIndex("by_name_normalized_and_sport_id", (q) =>
-            q.eq("nameNormalized", normalized).eq("sportId", args.sportId),
-          )
-          .take(2);
+        // reported one of them as THE answer. The branch is none / one /
+        // more-than-one.
+        //
+        // NEO-284: through the shared lookup, so an alias counts. This read
+        // used to hit the name index directly, which meant the wizard's
+        // "M already exist" line and its career-team chips never saw a row
+        // the operator had taught to answer to this string — the commit would
+        // link it and the preview would say "new". One lookup, one answer.
+        const found = await findTeamsByFullName(ctx, args.sportId, raw);
         seen.set(
           normalized,
           found.length > 1
@@ -1435,6 +1741,13 @@ export const nearMatches = query({
       yearsActive: v.optional(
         v.object({ from: v.number(), to: v.optional(v.number()) }),
       ),
+      /**
+       * NEO-284 — the alias that matched, when the primary name did not.
+       * Mirrors `players.nearMatches.matchedAlias`: the panel renders it as
+       * secondary text ("also known as “LSU”") while the accessible name
+       * stays `Link to {name}`.
+       */
+      matchedAlias: v.optional(v.string()),
     }),
   ),
   handler: async (ctx, args) => {
@@ -1466,8 +1779,14 @@ export const nearMatches = query({
     // Keyed by id so the exact hit and a search hit for the same row collapse.
     const candidates = new Map<
       Id<"teams">,
-      { _id: Id<"teams">; name: string; yearsActive?: { from: number; to?: number } }
+      {
+        _id: Id<"teams">;
+        name: string;
+        yearsActive?: { from: number; to?: number };
+        matchedAlias?: string;
+      }
     >();
+    const normalized = normalizeTeamName(name);
 
     // NEO-236: the shared identity lookup, so this cannot disagree with what
     // `findOrCreate` would actually reuse — the whole point of step 1.
@@ -1482,13 +1801,18 @@ export const nearMatches = query({
     // an operator who is about to type it a third time, and `.first()` showed
     // them one of the two at random. Each is labelled with its years, because
     // "Winnipeg Jets" twice in a "did you mean?" list is worse than useless.
+    // NEO-284: the shared lookup unions alias hits in, so a row the operator
+    // taught to answer to "LSU" arrives here as `exact` — and is tagged with
+    // the alias that matched, because its full name is nothing like the query.
     for (const exact of await findTeamsByFullName(ctx, args.sportId, name)) {
+      const matchedAlias = matchedTeamAliasFor(exact, normalized);
       candidates.set(exact._id, {
         _id: exact._id,
         name: teamFullName(exact),
         ...(exact.yearsActive !== undefined
           ? { yearsActive: exact.yearsActive }
           : {}),
+        ...(matchedAlias ? { matchedAlias } : {}),
       });
     }
 
@@ -1513,6 +1837,12 @@ export const nearMatches = query({
       if (fallbackTerm) hits = await searchTeams(fallbackTerm);
     }
     for (const hit of hits) {
+      // NEO-284: never over an exact-leg entry. "LSU" prefix-matches "lsu
+      // tigers" in the search index too, and replacing the entry here would
+      // silently drop the `matchedAlias` the exact leg attached — the row
+      // would then rank `close` on its own name instead of `exact` on the
+      // alias, and the wizard would lose its primary "Link to LSU Tigers".
+      if (candidates.has(hit._id)) continue;
       candidates.set(hit._id, {
         _id: hit._id,
         name: teamFullName(hit),
@@ -1521,7 +1851,22 @@ export const nearMatches = query({
     }
 
     const rows = [...candidates.values()];
-    return rankTeamCandidates(name, rows)
+    /*
+     * NEO-284 — an alias-matched row is ranked on the name that MATCHED.
+     *
+     * `rankTeamCandidates` scores each row's name against the query, and
+     * "LSU Tigers" shares no significant token with "Louisiana State
+     * University" — so a row the exact leg had just found would be discarded
+     * by the ranker and never reach the panel. Scoring the alias is what makes
+     * the two legs agree about whether this row answers. The DISPLAY name is
+     * untouched: the operator links to a team, and a row rendered under its
+     * alias would be a second way to read one program two ways.
+     */
+    const ranked = rows.map((row) => ({
+      ...row,
+      name: row.matchedAlias ?? row.name,
+    }));
+    return rankTeamCandidates(name, ranked)
       .slice(0, limit)
       .map(({ index, confidence }) => ({
         _id: rows[index]._id,
@@ -1529,6 +1874,9 @@ export const nearMatches = query({
         confidence,
         ...(rows[index].yearsActive !== undefined
           ? { yearsActive: rows[index].yearsActive }
+          : {}),
+        ...(rows[index].matchedAlias
+          ? { matchedAlias: rows[index].matchedAlias }
           : {}),
       }));
   },
