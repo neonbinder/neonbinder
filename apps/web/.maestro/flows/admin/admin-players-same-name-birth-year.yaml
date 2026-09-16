@@ -180,10 +180,23 @@ tags:
       text: "Add player"
     centerElement: true
     timeout: 7000
-- tapOn: "Add player"
-- extendedWaitUntil:
-    visible: "Add a player"
-    timeout: 7000
+# ⚠️ MOVING TARGET, CROSS-RUNNER (NEO-283 shape, second trigger). The toolbar
+# is `[filter][Sport <select>][counter][Add player]` and the <select> is
+# content-sized to its LONGEST option — a live, global query. CI run
+# 35134145689: runner 1 read this button at x=626 at 18:49:28.1 while the
+# select still listed runner 0's `TestCustomSport-…`, runner 0 confirmed
+# "Yes, delete" on that sport at 18:49:27.6-29.4, and by the click at
+# 18:49:28.5 the select had shrunk 110px and the button sat at x=526 — the
+# click landed on the counter (hierarchy dump step-042). No wait can see
+# another runner's delete coming, so the tap is retried ONCE against its own
+# result gate: a broken button still fails on the same heading.
+- retry:
+    maxRetries: 1
+    commands:
+      - tapOn: "Add player"
+      - extendedWaitUntil:
+          visible: "Add a player"
+          timeout: 7000
 
 - tapOn: "New player name"
 - inputText: "Samename${output.TOKEN}"
@@ -387,10 +400,15 @@ tags:
       text: "Add player"
     centerElement: true
     timeout: 7000
-- tapOn: "Add player"
-- extendedWaitUntil:
-    visible: "Add a player"
-    timeout: 7000
+# Retried once against its result gate — the cross-runner moving target
+# described at the first "Add player" tap above.
+- retry:
+    maxRetries: 1
+    commands:
+      - tapOn: "Add player"
+      - extendedWaitUntil:
+          visible: "Add a player"
+          timeout: 7000
 - tapOn: "New player name"
 - inputText: "Samename${output.TOKEN}"
 
@@ -468,10 +486,15 @@ tags:
       text: "Add player"
     centerElement: true
     timeout: 7000
-- tapOn: "Add player"
-- extendedWaitUntil:
-    visible: "Add a player"
-    timeout: 7000
+# Retried once against its result gate — the cross-runner moving target
+# described at the first "Add player" tap above.
+- retry:
+    maxRetries: 1
+    commands:
+      - tapOn: "Add player"
+      - extendedWaitUntil:
+          visible: "Add a player"
+          timeout: 7000
 - tapOn: "New player name"
 - inputText: "Samename${output.TOKEN}"
 - tapOn: "Birth year \\(optional\\)"

@@ -26,5 +26,13 @@ and `checklist-wizard-link-team-saves-alias`;
 `spine-label/player-team-colors-default-to-longest-tenure` has the same
 sequence and was NOT changed (not in scope, never red).
 
-Product fix worth asking for: reserve the counter's width (or keep the last
-text while loading) so the button never moves.
+**Second trigger, cross-runner (CI run 35134145689 / runner 1,
+`admin-players-same-name-birth-year`):** the Sport `<select>` is content-sized
+to its LONGEST option and the option list is a live global query, so another
+runner creating or deleting a custom sport (`custom-entry-survives-resync`'s
+"Yes, delete" landed between the bounds read and the click) moves "Add player"
+by ~110px. No wait can see that coming — wrap the tap in `retry: maxRetries: 1`
+against its own result gate (`Add a player`).
+
+Product fix worth asking for: fixed-width Sport select and a reserved-width
+counter (or keep the last text while loading) so the toolbar never reflows.

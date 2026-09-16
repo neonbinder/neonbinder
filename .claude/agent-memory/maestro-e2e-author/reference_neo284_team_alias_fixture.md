@@ -42,6 +42,18 @@ the text; then `Next` (anchored `below: "Already decided:.*"`) resumes.
 "New Team: .*"` + `evalScript` strip — the alias claim is "the checklist's
 spelling, exactly", so no club name is hard-coded.
 
+**The Base-mapping notice's Close straddles the fold** after the warm drill
+(local y=603-635 on 625; CI's 15px horizontal scrollbar → 618-650 on 629 →
+the tap dies `null cannot be cast to non-null type kotlin.Int`). Centre it
+(`scrollUntilVisible "Close" centerElement`, ~2s) before tapping.
+
+**A hand-staged career team's "New Team:" step waits on the deployment-wide
+Wikidata pool** (`maxParallelism: 5`, FIFO across every runner): with two Big
+League batches (88 rows each) just queued by other runners, the staged row
+stayed "1 still being looked up" past 30s. Gate on `.*still looking up.*`
+going away (180000, the external exception) between a 7000 "stage landed"
+wait and the 7000 step wait — `checklist-wizard-career-team-commits`.
+
 **Two "Cancel (Esc)" texts while the link search is open:** the search panel
 has its own (`id: "Cancel linking"`), and `tapOn: text: "Cancel (Esc)"` hits
 it first, closing only the panel. Exit through the footer once the panel is

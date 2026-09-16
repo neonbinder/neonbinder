@@ -226,6 +226,19 @@ tags:
 - tapOn: "Cancel"
 - assertVisible:
     text: ".*Base mapping cancelled.*"
+# CENTRE before the tap (R8). The notice's Close sits at the bottom of the
+# Base-mapping block, which the drill leaves straddling the fold: locally
+# [131,603][193,635] on the 625px viewport (centre 619, six pixels inside),
+# and on CI's Linux Chrome the columns' 15px horizontal scrollbar pushes it to
+# [133,618][195,650] on 629px — centre 634, OFF screen — and the tap dies with
+# `null cannot be cast to non-null type kotlin.Int` (CI run 35134145689 /
+# runner 6, hierarchy dump step-070). One "Close" exists on this page
+# (`BaseMappingForm`), and the page has scroll headroom below the block.
+- scrollUntilVisible:
+    element:
+      text: "Close"
+    centerElement: true
+    timeout: 7000
 - tapOn: "Close"
 - extendedWaitUntil:
     notVisible:
