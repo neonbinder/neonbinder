@@ -104,10 +104,12 @@ import {
   annotateHasCards,
   checkReturnedIds,
   partialSyncMessage,
+  pausedSyncMessage,
   platformNames,
   platformSideValidator,
   returnedIdsValidator,
   skippedSyncMessage,
+  unaskedSidesNotice,
   unionChildren,
   unlinkedEntryValidator,
   type UnlinkedEntry,
@@ -189,13 +191,19 @@ import {
   attachedSidesOf,
   notifiableSkippedSides,
   missingSummary,
+  pausedSideList,
   resolvableSides,
   rowHasBscFacet,
   slotLabelCanNameRow,
   skippedSideList,
+  unscopedResolution,
   type ChainResolution,
   type ResolvableRow,
 } from "./marketplaceResolvability";
+// NEO-287 — the operator switch. Read here (the only kind of module allowed to
+// read it) and threaded into `resolvableSides` as an argument, so a paused
+// marketplace is a side that is never asked and never covered.
+import { pausedSides } from "./marketplacePause";
 import {
   allocateSlots,
   assertValidSlotLabel,
@@ -1763,15 +1771,22 @@ export const storeSelectorOptions = mutation({
     // here would ALSO block a legitimate unlink the caller declared with
     // evidence — a reconciled variantType batch that says "SportLots answered,
     // and this row's id was not in it".
-    const chainResolution = resolvableSides(parentChain);
+    //
+    // NEO-287 — the pause is threaded in here too. A paused side was not asked
+    // this run, so a caller that still declares it covered (an SPA bundle from
+    // before the pause, or one that did not read `pausedSides`) is refused the
+    // same way: nothing is unlinked on a marketplace nobody queried.
+    const chainResolution = resolvableSides(parentChain, { paused: pausedSides() });
     const effectiveCovered = (args.coveredSides ?? [])
       .filter((side) => !truncatedSides.includes(side))
       .filter((side) => {
         if (chainResolution[side].resolvable) return true;
         console.warn(
-          `[storeSelectorOptions] dropping ${side} from coveredSides — the ` +
-            `parent chain carries no ${side} ids — ` +
-            `missing=${missingSummary(chainResolution[side])}. Nothing will ` +
+          `[storeSelectorOptions] dropping ${side} from coveredSides — ` +
+            (chainResolution[side].paused
+              ? `${side} is paused`
+              : `the parent chain carries no ${side} ids`) +
+            ` — missing=${missingSummary(chainResolution[side])}. Nothing will ` +
             `be unlinked on that side.`,
         );
         return false;
@@ -7574,6 +7589,13 @@ export const ensureSelectorOptions = action({
      * `fetchAggregatedOptions` and `fetchRawOptions`.
      */
     skippedSides: v.array(platformSideValidator),
+    /**
+     * NEO-287 — the subset of `skippedSides` the operator PAUSED
+     * (`NEONBINDER_PAUSED_PLATFORMS`). Same shape as `skippedSides`; a paused
+     * side appears in both, because it is a skipped side with a different
+     * reason and coverage subtracts it the same way.
+     */
+    pausedSides: v.array(platformSideValidator),
   }),
   handler: async (
     ctx,
@@ -7582,6 +7604,7 @@ export const ensureSelectorOptions = action({
     ran: boolean;
     reason: string;
     skippedSides: Array<"bsc" | "sportlots">;
+    pausedSides: Array<"bsc" | "sportlots">;
   }> => {
     await requireAdmin(ctx);
     const { level, parentId, force } = args;
@@ -7593,7 +7616,12 @@ export const ensureSelectorOptions = action({
         { level, parentId },
       );
       if (existing.length > 0)
-        return { ran: false, reason: "already_populated", skippedSides: [] };
+        return {
+          ran: false,
+          reason: "already_populated",
+          skippedSides: [],
+          pausedSides: [],
+        };
     }
 
     // Derive the chain once: per-side resolvability + parentFilters + the
@@ -7618,21 +7646,38 @@ export const ensureSelectorOptions = action({
       //
       // Only the both-sides case short-circuits here. One resolvable side is a
       // real sync, and `fetchAggregatedOptions` runs it and reports the skip.
-      const resolution = resolvableSides(chain, { level });
+      //
+      // NEO-287 — a paused side is unresolvable too, so a column whose only
+      // reachable marketplace is paused lands here as well. That case is NOT
+      // silent: the hand-made-subtree silence below is right when the operator
+      // never involved a marketplace, and wrong when they did and we chose not
+      // to ask it. The column gets a "done" notice carrying the paused
+      // sentence (plus the no-ids sentence for the other side, if that side
+      // models this level), exactly what a one-sided sync would have said.
+      const resolution = resolvableSides(chain, { level, paused: pausedSides() });
       if (!resolution.bsc.resolvable && !resolution.sportlots.resolvable) {
+        const paused = pausedSideList(resolution);
         console.log(
           `[ensureSelectorOptions] no marketplace ids on this path — ` +
             `level=${level} bsc_missing=${missingSummary(resolution.bsc)} ` +
             `sl_missing=${missingSummary(resolution.sportlots)}`,
         );
+        const pausedNotice =
+          paused.length > 0
+            ? unaskedSidesNotice(paused, notifiableSkippedSides(resolution))
+            : undefined;
         await ctx.runMutation(internal.selectorOptions.setSelectorSyncStatus, {
           level,
           parentId,
+          ...(pausedNotice
+            ? { status: "done" as const, message: pausedNotice }
+            : {}),
         });
         return {
           ran: false,
-          reason: "no_marketplace_ids",
+          reason: paused.length > 0 ? "paused" : "no_marketplace_ids",
           skippedSides: ["bsc", "sportlots"] as Array<"bsc" | "sportlots">,
+          pausedSides: paused,
         };
       }
       for (const a of chain) {
@@ -7667,6 +7712,7 @@ export const ensureSelectorOptions = action({
         unlinkedTotal: number;
         failedPlatforms: string[];
         skippedSides: Array<"bsc" | "sportlots">;
+        pausedSides: Array<"bsc" | "sportlots">;
       };
       if (level === "setName") {
         if (!yearId) {
@@ -7679,7 +7725,7 @@ export const ensureSelectorOptions = action({
               message: "Cannot sync sets — no year ancestor.",
             },
           );
-          return { ran: true, reason: "error", skippedSides: [] };
+          return { ran: true, reason: "error", skippedSides: [], pausedSides: [] };
         }
         res = await ctx.runAction(
           api.selectorOptions.syncSetsAcrossManufacturers,
@@ -7735,21 +7781,33 @@ export const ensureSelectorOptions = action({
       // no BuySportsCards ids on this path" after every healthy sync — BSC has
       // no manufacturer axis — which is both false and, being a "done" notice,
       // tall enough to push the next column's controls below the fold.
-      const notifiableSkipped = res.skippedSides.filter((side) =>
-        platformServesLevel(side, level),
+      //
+      // NEO-287 — a PAUSED side is described by the paused sentence, never by
+      // the "no ids" one (its ids may well be there), so it is taken out of
+      // the skipped list before the served-level filter and put back in front
+      // as its own sentence. One paused + one skipped reads as two sentences.
+      const notifiableSkipped = res.skippedSides.filter(
+        (side) =>
+          platformServesLevel(side, level) && !res.pausedSides.includes(side),
       );
       const skippedNotice =
         notifiableSkipped.length > 0 && notifiableSkipped.length < 2
           ? skippedSyncMessage(notifiableSkipped)
           : undefined;
+      const pausedNotice =
+        res.pausedSides.length > 0 ? pausedSyncMessage(res.pausedSides) : undefined;
       const failedNotice =
         res.failedPlatforms.length > 0
           ? partialSyncMessage(res.failedPlatforms)
           : undefined;
       // A side cannot be both skipped and failed (a skipped side is never
       // called), so at most one of these is set. Failure wins if that ever
-      // stops being true: it is the one that warrants a Retry.
-      const message = failedNotice ?? skippedNotice;
+      // stops being true: it is the one that warrants a Retry. The paused
+      // sentence is independent of both — it describes the OTHER side — and
+      // leads, so the operator reads the operator's own decision first.
+      const message = [pausedNotice, failedNotice ?? skippedNotice]
+        .filter((part): part is string => part !== undefined)
+        .join(" ") || undefined;
       const hasNotice = res.unlinkedTotal > 0 || message !== undefined;
       await ctx.runMutation(internal.selectorOptions.setSelectorSyncStatus, {
         level,
@@ -7773,6 +7831,7 @@ export const ensureSelectorOptions = action({
         ran: true,
         reason: res.success ? "synced" : "error",
         skippedSides: res.skippedSides,
+        pausedSides: res.pausedSides,
       };
     } catch (e) {
       // Raw exception detail → logs only; reactive `message` stays generic.
@@ -7786,7 +7845,7 @@ export const ensureSelectorOptions = action({
         status: "error",
         message: SYNC_ERROR_MESSAGE,
       });
-      return { ran: true, reason: "error", skippedSides: [] };
+      return { ran: true, reason: "error", skippedSides: [], pausedSides: [] };
     }
   },
 });
@@ -7813,6 +7872,11 @@ type AggregatedSyncResult = {
    * a skipped side detaches every child's primary slot.
    */
   skippedSides: Array<"bsc" | "sportlots">;
+  /**
+   * NEO-287 — the sides in `skippedSides` that were skipped because the
+   * operator paused the marketplace. Always a subset of `skippedSides`.
+   */
+  pausedSides: Array<"bsc" | "sportlots">;
 };
 
 const EMPTY_SYNC_RESULT = {
@@ -7821,6 +7885,7 @@ const EMPTY_SYNC_RESULT = {
   unlinkedTotal: 0,
   failedPlatforms: [] as string[],
   skippedSides: [] as Array<"bsc" | "sportlots">,
+  pausedSides: [] as Array<"bsc" | "sportlots">,
 };
 
 export const fetchAggregatedOptions = action({
@@ -7857,6 +7922,12 @@ export const fetchAggregatedOptions = action({
      * old SPA bundle does not know this field exists.
      */
     skippedSides: v.array(platformSideValidator),
+    /**
+     * NEO-287 — the paused subset of `skippedSides`. The FE renders the
+     * paused sentence from it; coverage needs nothing extra because every
+     * paused side is already in `skippedSides`.
+     */
+    pausedSides: v.array(platformSideValidator),
   }),
   handler: async (ctx, args): Promise<AggregatedSyncResult> => {
     // Admin check is outside the try/catch so authorization errors surface
@@ -7938,11 +8009,10 @@ export const fetchAggregatedOptions = action({
       let bscPlatformFilters: Record<string, string[]> | undefined;
       // NEO-239 — with no parent there is nothing to scope by and nothing to
       // be missing: the top-level sport sync asks both marketplaces for their
-      // whole facet list, which is the query it means to send.
-      let resolution: ChainResolution = {
-        bsc: { served: true, resolvable: true, missing: [] },
-        sportlots: { served: true, resolvable: true, missing: [] },
-      };
+      // whole facet list, which is the query it means to send. NEO-287 — a
+      // paused marketplace is the one exception, at the root as everywhere.
+      const paused = pausedSides();
+      let resolution: ChainResolution = unscopedResolution({ paused });
 
       if (parentId) {
         const chain = await ctx.runQuery(
@@ -7964,7 +8034,9 @@ export const fetchAggregatedOptions = action({
         // has one. A side that cannot be scoped is SKIPPED — not queried by
         // name, not failed — and reported in `skippedSides` so nothing
         // downstream reads its silence as "upstream dropped everything".
-        resolution = resolvableSides(chain, { level });
+        //
+        // NEO-287 — and a paused side is skipped whatever the chain carries.
+        resolution = resolvableSides(chain, { level, paused });
 
         slPlatformFilters = {};
         bscPlatformFilters = {};
@@ -8014,10 +8086,16 @@ export const fetchAggregatedOptions = action({
       }
 
       const skippedSides = skippedSideList(resolution);
+      const pausedList = pausedSideList(resolution);
 
       // Neither side can be asked: this is a level of NB's own taxonomy with no
       // marketplace behind it. Not an error — the column simply has nothing to
       // populate and the operator adds entries by hand.
+      //
+      // NEO-287 — unless a side is PAUSED, in which case that is not what
+      // happened and `NO_MARKETPLACE_IDS_MESSAGE` would send the operator to
+      // attach an id they may already have. The paused sentence leads, and the
+      // other side gets the no-ids sentence only if it models this level.
       if (skippedSides.length === 2) {
         await recordAdapterCall(ctx, {
           requestId,
@@ -8030,13 +8108,21 @@ export const fetchAggregatedOptions = action({
           duration_ms: Date.now() - aggregatorStart,
           success: true,
           result_count: 0,
-          error_class: "skipped_no_marketplace_ids",
+          error_class:
+            pausedList.length > 0 ? "paused" : "skipped_no_marketplace_ids",
         });
         return {
           ...EMPTY_SYNC_RESULT,
           success: true,
-          message: NO_MARKETPLACE_IDS_MESSAGE,
+          message:
+            pausedList.length > 0
+              ? (unaskedSidesNotice(
+                  pausedList,
+                  notifiableSkippedSides(resolution),
+                ) ?? NO_MARKETPLACE_IDS_MESSAGE)
+              : NO_MARKETPLACE_IDS_MESSAGE,
           skippedSides,
+          pausedSides: pausedList,
         };
       }
 
@@ -8295,6 +8381,7 @@ export const fetchAggregatedOptions = action({
             `credentials are configured for ${servingPlatformNames}.`,
           failedPlatforms: Object.keys(platformErrors),
           skippedSides,
+          pausedSides: pausedList,
         };
       }
 
@@ -8411,11 +8498,15 @@ export const fetchAggregatedOptions = action({
       // ONLY sides that could have been asked. A side that does not model this
       // level was never going to be, and saying so on every healthy sync is
       // the false-outage noise NEO-216 removed — see `notifiableSkippedSides`.
-      const notifiableSkipped = notifiableSkippedSides(resolution);
-      const skipSuffix =
-        notifiableSkipped.length > 0
-          ? ` ${skippedSyncMessage(notifiableSkipped)}`
-          : "";
+      //
+      // NEO-287 — a paused side gets the paused sentence instead (it is
+      // excluded from `notifiableSkippedSides`); `unaskedSidesNotice` orders
+      // the two.
+      const unaskedNotice = unaskedSidesNotice(
+        pausedList,
+        notifiableSkippedSides(resolution),
+      );
+      const skipSuffix = unaskedNotice ? ` ${unaskedNotice}` : "";
 
       return {
         success: result.success,
@@ -8425,6 +8516,7 @@ export const fetchAggregatedOptions = action({
         unlinkedTotal: result.unlinkedTotal,
         failedPlatforms: Object.keys(platformErrors),
         skippedSides,
+        pausedSides: pausedList,
       };
     } catch (error) {
       console.error(`[fetchAggregatedOptions] Error:`, error);
@@ -8532,6 +8624,8 @@ export const syncSetsAcrossManufacturers = action({
     failedPlatforms: v.array(v.string()),
     /** NEO-239 — see `fetchAggregatedOptions`. BSC-only action, so at most `["bsc"]`. */
     skippedSides: v.array(platformSideValidator),
+    /** NEO-287 — see `fetchAggregatedOptions`. At most `["bsc"]` here too. */
+    pausedSides: v.array(platformSideValidator),
   }),
   handler: async (
     ctx,
@@ -8562,18 +8656,32 @@ export const syncSetsAcrossManufacturers = action({
       // (`bscPlatformFilters.sport = ["e2e test sport 3"]`) is gone, because a
       // name BSC does not know scopes nothing and BSC reports that as a
       // successful empty answer.
-      const resolution = resolvableSides(chain, { level: "setName" });
+      //
+      // NEO-287 — or the operator has paused BSC, which is the same skip with
+      // the paused sentence instead of the no-ids one.
+      const resolution = resolvableSides(chain, {
+        level: "setName",
+        paused: pausedSides(),
+      });
       if (!resolution.bsc.resolvable) {
         console.log(
-          `[syncSetsAcrossManufacturers] no BSC ids on this path — ` +
-            `missing=${missingSummary(resolution.bsc)}`,
+          `[syncSetsAcrossManufacturers] ` +
+            (resolution.bsc.paused
+              ? "BSC is paused"
+              : "no BSC ids on this path") +
+            ` — missing=${missingSummary(resolution.bsc)}`,
         );
         return {
           ...EMPTY_SYNC_RESULT,
           success: true,
-          message: NO_MARKETPLACE_IDS_MESSAGE,
+          message: resolution.bsc.paused
+            ? pausedSyncMessage(["bsc"])
+            : NO_MARKETPLACE_IDS_MESSAGE,
           totalSets: 0,
           skippedSides: ["bsc"] as Array<"bsc" | "sportlots">,
+          pausedSides: resolution.bsc.paused
+            ? (["bsc"] as Array<"bsc" | "sportlots">)
+            : [],
         };
       }
 
@@ -8779,6 +8887,7 @@ export const syncSetsAcrossManufacturers = action({
         unlinkedTotal: unlinkedAll.length,
         failedPlatforms: [],
         skippedSides: [] as Array<"bsc" | "sportlots">,
+        pausedSides: [] as Array<"bsc" | "sportlots">,
       };
     } catch (error) {
       console.error("[syncSetsAcrossManufacturers] Error:", error);
@@ -9236,12 +9345,21 @@ export const fetchCardChecklist = action({
      * two-marketplace set look one-sided (see `attachedSidesOf`).
      */
     attachedSides: v.array(platformSideValidator),
+    /**
+     * NEO-287 — the sides this run did not fetch because the operator paused
+     * them. `attachedSides` is deliberately NOT narrowed by it (a paused link
+     * is still a link); the client that decides whether there is anything to
+     * line up subtracts this list itself, so a two-marketplace set with one
+     * side paused takes the one-marketplace path for THIS run only.
+     */
+    pausedSides: v.array(platformSideValidator),
   }),
   handler: async (ctx, args): Promise<{
     success: boolean;
     message: string;
     candidateCount: number;
     attachedSides: Array<"bsc" | "sportlots">;
+    pausedSides: Array<"bsc" | "sportlots">;
   }> => {
     // NEO-202: this was the one function in this file with no identity check.
     // It is not merely a read: it performs authenticated fetches against BSC
@@ -9266,6 +9384,9 @@ export const fetchCardChecklist = action({
     // guessing that wrong would be most expensive. `[]` is the honest answer
     // only while the chain itself has not been read yet.
     let attachedSides: Array<"bsc" | "sportlots"> = [];
+    // NEO-287 — same hoisting, same reason: the failure return must say which
+    // sides the pause kept us from asking, and that is known before the chain.
+    const pausedList = pausedSideList(unscopedResolution({ paused: pausedSides() }));
     try {
       // Resolve ancestor chain → filter map + sport + cardNumberPrefix
       const chain = await ctx.runQuery(
@@ -9330,7 +9451,14 @@ export const fetchCardChecklist = action({
       // BSC `setName` id attached to the leaf), and the disagreement always
       // fell the same way — the gate skipped a side the adapter would have
       // answered.
-      const resolution = resolvableSides(chain, { bscScope: "checklist" });
+      //
+      // NEO-287 — and the pause, which makes a side unresolvable for this run
+      // whatever its ids say. A paused side is not fetched, so nothing on it
+      // is compared, paired, or reported missing.
+      const resolution = resolvableSides(chain, {
+        bscScope: "checklist",
+        paused: pausedSides(),
+      });
       if (!resolution.bsc.resolvable && !resolution.sportlots.resolvable) {
         console.log(
           `[fetchCardChecklist] no marketplace ids on this path — ` +
@@ -9341,9 +9469,19 @@ export const fetchCardChecklist = action({
         // unresolved pendingPlayerNames / pendingTeamNames, but resolving those
         // is `resolveChecklistEntities`' job (NEO-137) — it runs on the
         // confirmed set and handles the no-marketplace case identically.
+        //
+        // NEO-287 — when a pause is why, say so: the paused sentence, then the
+        // no-ids sentence for the other side. `NO_MARKETPLACE_IDS_MESSAGE`
+        // alone would tell the operator to attach an id they may already have.
         return {
           success: true,
-          message: NO_MARKETPLACE_IDS_MESSAGE,
+          message:
+            pausedList.length > 0
+              ? (unaskedSidesNotice(
+                  pausedList,
+                  notifiableSkippedSides(resolution),
+                ) ?? NO_MARKETPLACE_IDS_MESSAGE)
+              : NO_MARKETPLACE_IDS_MESSAGE,
           // No candidates written at all — the client reads this as "nothing to
           // pair" and goes straight to entity resolution.
           candidateCount: 0,
@@ -9351,6 +9489,7 @@ export const fetchCardChecklist = action({
           // same claim as "nothing is attached" — an id with no `variant` tag
           // above it lands on this branch with the id still on the row.
           attachedSides,
+          pausedSides: pausedList,
         };
       }
       if (!resolution.bsc.resolvable) {
@@ -10153,12 +10292,19 @@ export const fetchCardChecklist = action({
         ...slCollisions.map((c) => ({ ...c, side: "SL" as const })),
       ]);
 
+      // NEO-287 — the paused sentence rides on the same status line, after
+      // the counts, so "0 SL-only" reads as "SportLots was not asked" rather
+      // than "SportLots had nothing".
+      const pausedNote =
+        pausedList.length > 0 ? ` ${pausedSyncMessage(pausedList)}` : "";
+
       return {
         success: true,
         message:
           `${autoMatchedCards.length} matched, ` +
           `${unmatchedBscCards.length} BSC-only, ${unmatchedSlCards.length} SL-only` +
-          collisionNote,
+          collisionNote +
+          pausedNote,
         // The cards themselves are already in `checklistCandidates` — this is
         // the count of what was published there, not a second copy of it.
         candidateCount:
@@ -10166,6 +10312,7 @@ export const fetchCardChecklist = action({
           unmatchedBscCards.length +
           unmatchedSlCards.length,
         attachedSides,
+        pausedSides: pausedList,
       };
     } catch (error) {
       console.error(`[fetchCardChecklist] Error:`, error);
@@ -10179,6 +10326,7 @@ export const fetchCardChecklist = action({
         // Whatever the chain said before it broke. Empty only if the throw beat
         // `getAncestorChain`.
         attachedSides,
+        pausedSides: pausedList,
       };
     }
   },

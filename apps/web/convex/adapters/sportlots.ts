@@ -32,6 +32,13 @@ import {
 // module from a "use node" one is fine; the reverse is not, which is why the
 // numbers live there rather than here.
 import { SL_SELECTOR_BUDGET } from "./selectorBudgets";
+// NEO-287 — the operator switch. Checked at the top of both public actions,
+// BEFORE the session cookie is asked for: a paused marketplace is contacted
+// for nothing, not even a stored-session check. The sync entry points already
+// skip a paused side via `resolvableSides`; these guards are the adapter's own
+// backstop for any caller that reaches it directly.
+import { isPlatformPaused } from "../marketplacePause";
+import { pausedSyncMessage } from "../selectorSyncStore";
 
 type Level = "sport" | "year" | "manufacturer" | "setName" | "variantType" | "insert" | "parallel";
 
@@ -413,6 +420,33 @@ export const fetchSportLotsSelectorOptions = action({
       };
     }
 
+    // NEO-287 — paused: refuse BEFORE `getSportLotsCookie`, so no token read,
+    // no refresh and no stored-session login happens on this marketplace.
+    // `success: false` on purpose — the same reasoning as the unsupported-level
+    // branch above: an empty SUCCESS would enter `coveredSides` and license the
+    // unlink pass to detach every SportLots id under this parent.
+    if (isPlatformPaused("sportlots")) {
+      await recordAdapterCall(ctx, {
+        requestId,
+        operation: "fetchSportLotsSelectorOptions",
+        platform: "sportlots",
+        level: args.level,
+        parentSport: args.parentFilters.sport,
+        parentYear: args.parentFilters.year,
+        parentSetName: args.parentFilters.setName,
+        duration_ms: Date.now() - start,
+        success: false,
+        result_count: 0,
+        stage: "adapter",
+        error_class: "paused",
+      });
+      return {
+        success: false,
+        options: [],
+        message: pausedSyncMessage(["sportlots"]),
+      };
+    }
+
     try {
       const tokenStart = Date.now();
       let sessionCookie = await getSportLotsCookie(ctx);
@@ -735,6 +769,45 @@ export const fetchSportLotsSelectorOptions = action({
         };
       }
 
+      // NEO-287 (Decision 12) — still empty after every retry, and NOT the
+      // login stub: this is the "challenge page" shape (a 200 that parses to
+      // nothing — a Cloudflare interstitial, an attack banner, a redesigned
+      // form). Per the comment above the retry loop, sport / year /
+      // manufacturer are ALWAYS populated on a valid session, so an empty
+      // answer here is a broken fetch, never an empty marketplace. It used to
+      // return `success: true, options: []`, which is the one dangerous
+      // spelling: an empty successful side enters `coveredSides`, and the
+      // store's unlink pass reads "SportLots returned nothing" as "SportLots
+      // dropped every set" and detaches every SL id under this parent
+      // (invariant 5). A failure is retried by the operator; a lost link is
+      // re-attached by hand, one row at a time.
+      if (parsedOptions.length === 0) {
+        await recordAdapterCall(ctx, {
+          requestId,
+          operation: "fetchSportLotsSelectorOptions",
+          platform: "sportlots",
+          level: args.level,
+          parentSport: args.parentFilters.sport,
+          parentYear: args.parentFilters.year,
+          parentSetName: args.parentFilters.setName,
+          duration_ms: Date.now() - start,
+          token_ms: tokenMs,
+          filters_call_ms: filtersCallMs,
+          status_code: statusCode,
+          success: false,
+          result_count: 0,
+          stage: "marketplace_fetch",
+          attempt: selectorAttempt,
+          error_class: "empty_after_retries",
+        });
+        return {
+          success: false,
+          options: [],
+          message:
+            "SportLots returned no options after retries. Nothing was changed — try again in a minute.",
+        };
+      }
+
       await recordAdapterCall(ctx, {
         requestId,
         operation: "fetchSportLotsSelectorOptions",
@@ -747,7 +820,7 @@ export const fetchSportLotsSelectorOptions = action({
         token_ms: tokenMs,
         filters_call_ms: filtersCallMs,
         status_code: statusCode,
-        success: parsedOptions.length > 0,
+        success: true,
         result_count: parsedOptions.length,
         stage: "marketplace_fetch",
       });
@@ -1383,6 +1456,33 @@ export const fetchSportLotsChecklist = action({
   }),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
+
+    // NEO-287 — paused: refuse BEFORE `getSportLotsCookie`, so no token read,
+    // no refresh and no stored-session login happens. `fetchCardChecklist`
+    // already skips the SportLots side via `resolvableSides`; this is the
+    // adapter's own backstop. `success: false` with no cards — a paused side
+    // was not asked, and the caller must not read its silence as an empty set.
+    if (isPlatformPaused("sportlots")) {
+      await recordAdapterCall(ctx, {
+        requestId: newRequestId(),
+        operation: "fetchSportLotsChecklist",
+        platform: "sportlots",
+        parentSport: args.parentFilters.sport,
+        parentYear: args.parentFilters.year,
+        parentSetName: args.parentFilters.setName,
+        duration_ms: 0,
+        success: false,
+        result_count: 0,
+        stage: "adapter",
+        error_class: "paused",
+      });
+      return {
+        success: false,
+        cards: [],
+        message: pausedSyncMessage(["sportlots"]),
+      };
+    }
+
     try {
       const sessionCookie = await getSportLotsCookie(ctx);
       if (!sessionCookie) {

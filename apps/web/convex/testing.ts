@@ -27,6 +27,9 @@ import { api, internal } from "./_generated/api";
 import { v } from "convex/values";
 import { getCurrentUserId } from "./auth";
 import { CLERK_USER_ID_RE, placeholderJobPrefix } from "./lib/placeholderObjects";
+// NEO-287 — the operator switch. A paused marketplace is seeded as `skipped`,
+// before any read of its stored credentials.
+import { isPlatformPaused } from "./marketplacePause";
 import type { Id } from "./_generated/dataModel";
 
 /**
@@ -284,6 +287,16 @@ export const seedMyTestCredentials = action({
     }
 
     for (const site of sites) {
+      // NEO-287 — a PAUSED marketplace is skipped FIRST, before the
+      // `getSiteCredentials` metadata read below and before any
+      // `saveCredentials` (a real marketplace login). Same shape as the
+      // no-dev-creds skip so the seed flow needs no new branch; the paused
+      // E2E branch asserts the paused UI instead of a stored session.
+      if (isPlatformPaused(site)) {
+        console.log(JSON.stringify({ msg: "seed_credentials_paused", site }));
+        seeded.push({ site, stored: false, skipped: true });
+        continue;
+      }
       const envKeys = SEED_SITE_ENV[site];
       const username = envKeys ? process.env[envKeys.username] : undefined;
       const password = envKeys ? process.env[envKeys.password] : undefined;

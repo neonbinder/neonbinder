@@ -108,12 +108,29 @@ export type SideResolution = {
    * unserved.
    */
   served: boolean;
-  /** True when every ancestor this side needs an id from carries one. */
+  /**
+   * True when every ancestor this side needs an id from carries one — AND the
+   * operator has not paused the marketplace (NEO-287). A paused side is
+   * unresolvable for this run whatever the chain carries.
+   */
   resolvable: boolean;
+  /**
+   * NEO-287 — the operator has paused this marketplace
+   * (`NEONBINDER_PAUSED_PLATFORMS`), so it was not asked. Distinct from the
+   * id-driven skip because the two read completely differently: a skip is
+   * fixed by attaching an id, a pause is lifted by the operator and nothing on
+   * the path is wrong. Always `false` unless the caller threads the pause in
+   * via `resolvableSides(chain, { paused })` — this module is imported by
+   * React components and never reads the environment itself.
+   */
+  paused: boolean;
   /**
    * `${level}=${value}` per ancestor that owes this side an id. LOG ONLY —
    * it names NB rows and must never reach `selectorSyncStatus.message`
    * (NEO-47 security property; see the fixed constants below).
+   *
+   * Carries the fixed sentinel `paused` when the side is paused, so a log line
+   * built from `missingSummary` says why the side went unasked.
    */
   missing: string[];
 };
@@ -415,6 +432,15 @@ function label(row: ResolvableRow): string {
  * would have accepted. Judging the filters instead makes the gate and the
  * request agree by construction, which is what the parity property in
  * `marketplaceResolvability.test.ts` pins.
+ *
+ * `paused` (NEO-287) is the set of slot sides the operator has switched off.
+ * A paused side comes back `resolvable: false, paused: true` with the `paused`
+ * sentinel appended to `missing`, and `served` is judged exactly as before —
+ * the pause says nothing about whether the marketplace models the level. The
+ * id walk still runs for a paused side so `missing` stays a complete account
+ * of what the chain owes; only the verdict is forced. The caller reads the
+ * pause (`pausedSides()` in `convex/marketplacePause.ts`) and passes it in;
+ * this module never reads the environment.
  */
 export function resolvableSides(
   chain: readonly ResolvableRow[],
@@ -422,9 +448,12 @@ export function resolvableSides(
     level?: string;
     slRequired?: ReadonlySet<string>;
     bscScope?: "level" | "checklist";
+    paused?: ReadonlySet<PlatformSide>;
   },
 ): ChainResolution {
   const level = opts?.level;
+  const bscPaused = opts?.paused?.has("bsc") ?? false;
+  const slPaused = opts?.paused?.has("sportlots") ?? false;
   const slRequired =
     opts?.slRequired ??
     (level !== undefined && level in SL_SCOPE_BY_LEVEL
@@ -530,18 +559,47 @@ export function resolvableSides(
     if (!setIsLinked) missingSl.push("unlinked set");
   }
 
+  // NEO-287 — appended LAST so the id account above is untouched, and as a
+  // fixed sentinel so `missingSummary` may log it whole.
+  if (bscPaused) missingBsc.push("paused");
+  if (slPaused) missingSl.push("paused");
+
   return {
     bsc: {
       served: level === undefined || platformServesLevel("bsc", level),
       resolvable: missingBsc.length === 0,
+      paused: bscPaused,
       missing: missingBsc,
     },
     sportlots: {
       served: level === undefined || platformServesLevel("sportlots", level),
       resolvable: missingSl.length === 0,
+      paused: slPaused,
       missing: missingSl,
     },
   };
+}
+
+/**
+ * The resolution of a chain with NO parent: nothing to scope by and nothing
+ * that can be missing, so both sides are asked — unless the operator has
+ * paused one (NEO-287). The top-level sport sync and the reconciler's root
+ * fetch used to spell this literal out themselves; they share it now so the
+ * pause reaches them too.
+ */
+export function unscopedResolution(opts?: {
+  paused?: ReadonlySet<PlatformSide>;
+}): ChainResolution {
+  const side = (name: PlatformSide): SideResolution => {
+    const paused = opts?.paused?.has(name) ?? false;
+    return {
+      served: true,
+      resolvable: !paused,
+      paused,
+      missing: paused ? ["paused"] : [],
+    };
+  };
+  return { bsc: side("bsc"), sportlots: side("sportlots") };
 }
 
 /**
@@ -600,20 +658,41 @@ function missingName(entry: string): string {
 }
 
 /**
- * The skipped sides an operator should be TOLD about: ones this marketplace
- * models at this level, that were skipped only because the chain carries none
- * of the ids they need.
+ * The skipped sides an operator should be TOLD about — in the "no ids on this
+ * path" words: ones this marketplace models at this level, that were skipped
+ * only because the chain carries none of the ids they need.
  *
  * A strict subset of `skippedSideList`, which stays complete — the FE's
  * coverage logic must subtract every skipped side, whatever the reason, or a
  * side nobody asked authorises an unlink. Only the NOTICE narrows.
+ *
+ * NEO-287: a paused side is excluded here too. It IS skipped (and stays in
+ * `skippedSideList`, so coverage subtracts it), but "no ids on this path"
+ * would be false — the ids may well be there — and the operator is told with
+ * the paused sentence instead, built from `pausedSideList`.
  */
 export function notifiableSkippedSides(
   resolution: ChainResolution,
 ): PlatformSide[] {
   return skippedSideList(resolution).filter(
-    (side) => resolution[side].served,
+    (side) => resolution[side].served && !resolution[side].paused,
   );
+}
+
+/**
+ * NEO-287 — the sides this run did not ask because the operator paused them,
+ * in the same stable order as the other lists. Rides back to the client as
+ * `pausedSides`, beside `skippedSides` (which also contains them — a paused
+ * side is a skipped side with a different reason, and coverage must subtract
+ * it the same way).
+ */
+export function pausedSideList(
+  resolution: ChainResolution,
+): PlatformSide[] {
+  const out: PlatformSide[] = [];
+  if (resolution.bsc.paused) out.push("bsc");
+  if (resolution.sportlots.paused) out.push("sportlots");
+  return out;
 }
 
 /** The sides worth calling, in a stable order. */
