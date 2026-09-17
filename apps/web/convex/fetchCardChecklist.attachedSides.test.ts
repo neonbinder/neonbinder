@@ -412,3 +412,55 @@ describe("fetchCardChecklist — attachedSides on the other two returns", () => 
     expect(result.attachedSides).toEqual(["bsc", "sportlots"]);
   });
 });
+
+describe("fetchCardChecklist — a paused marketplace (NEO-287)", () => {
+  afterEach(() => {
+    delete process.env.NEONBINDER_PAUSED_PLATFORMS;
+  });
+
+  test("SportLots is paused: not fetched, but still reported as ATTACHED", async () => {
+    process.env.NEONBINDER_PAUSED_PLATFORMS = "sportlots";
+    const t = convexTest(schema, modules);
+    const rowId = await seedTree(t, { bscSet: true, slSet: true });
+    mockState.bscCards = [bscCard("1")];
+    // If the adapter were ever called despite the pause, this would show up
+    // as extra candidates — nothing here proves it wasn't called on its own,
+    // but the pausedSides field and the candidate count together do: SL's
+    // fixture cards never make it into the count.
+    mockState.slCards = [slCard("2"), slCard("3")];
+
+    const result = await t
+      .withIdentity(ADMIN)
+      .action(api.selectorOptions.fetchCardChecklist, {
+        selectorOptionId: rowId,
+      });
+
+    expect(result.success).toBe(true);
+    // NOT narrowed by the pause — a paused link is still a link.
+    expect(result.attachedSides).toEqual(["bsc", "sportlots"]);
+    expect(result.pausedSides).toEqual(["sportlots"]);
+    // Only the BSC card was fetched; SL's fixture cards never entered.
+    expect(result.candidateCount).toBe(1);
+  });
+
+  test("both marketplaces paused: nothing to pair, message says so, attachment still reported", async () => {
+    process.env.NEONBINDER_PAUSED_PLATFORMS = "sportlots,buysportscards";
+    const t = convexTest(schema, modules);
+    const rowId = await seedTree(t, { bscSet: true, slSet: true });
+    mockState.bscCards = [bscCard("1")];
+    mockState.slCards = [slCard("2")];
+
+    const result = await t
+      .withIdentity(ADMIN)
+      .action(api.selectorOptions.fetchCardChecklist, {
+        selectorOptionId: rowId,
+      });
+
+    expect(result.success).toBe(true);
+    expect(result.candidateCount).toBe(0);
+    expect(result.attachedSides).toEqual(["bsc", "sportlots"]);
+    expect(result.pausedSides.slice().sort()).toEqual(["bsc", "sportlots"]);
+    expect(result.message).toContain("on pause");
+    expect(result.message).not.toBe(NO_MARKETPLACE_IDS_MESSAGE);
+  });
+});

@@ -398,6 +398,49 @@ describe("storeSelectorOptions is additive", () => {
     expect(heritage.platformData.bsc).toEqual({ b0: "th" });
   });
 
+  test("NEO-287 — a paused side is dropped from coveredSides and its ids survive, with a warning naming the pause", async () => {
+    process.env.NEONBINDER_PAUSED_PLATFORMS = "sportlots";
+    const t = convexTest(schema, modules);
+    const asAdmin = admin(t);
+    const parentId = await insertParent(t);
+
+    await asAdmin.mutation(api.selectorOptions.storeSelectorOptions, {
+      level: "setName",
+      parentId,
+      options: [
+        { value: "Topps", platformData: { bsc: "t1", sportlots: "st1" } },
+      ],
+      coveredSides: ["bsc", "sportlots"],
+    });
+    const before = await rowsUnder(t, "setName", parentId);
+    const topps = before.find((r) => r.value === "Topps")!;
+    expect(topps.platformData.sportlots).toEqual({ s0: "st1" });
+
+    // A re-sync that declares BOTH sides covered but no longer carries the SL
+    // id — the shape that would ordinarily unlink SportLots. With SportLots
+    // paused, the row must keep its id: nothing was actually asked this run.
+    const res = await asAdmin.mutation(api.selectorOptions.storeSelectorOptions, {
+      level: "setName",
+      parentId,
+      options: [{ value: "Topps", platformData: { bsc: "t1" } }],
+      coveredSides: ["bsc", "sportlots"],
+    });
+
+    expect(res.unlinked).toEqual([]);
+    expect(res.unlinkedTotal).toBe(0);
+    const after = await rowsUnder(t, "setName", parentId);
+    const toppsAfter = after.find((r) => r._id === topps._id)!;
+    expect(toppsAfter.platformData.sportlots).toEqual({ s0: "st1" });
+    // BSC, unpaused, is untouched by the pause and still behaves normally.
+    expect(toppsAfter.platformData.bsc).toEqual({ b0: "t1" });
+
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining("sportlots is paused"),
+    );
+
+    delete process.env.NEONBINDER_PAUSED_PLATFORMS;
+  });
+
   test("children is a union — a row the sync did not name keeps its place", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = admin(t);

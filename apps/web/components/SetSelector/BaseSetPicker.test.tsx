@@ -406,3 +406,73 @@ describe("BaseSetPicker — keyboard contract (NEO-219)", () => {
     expect(screen.getByText("5 through SportLots, 7 through BSC.")).toBeTruthy();
   });
 });
+
+describe("BaseSetPicker — a paused marketplace pane (NEO-287)", () => {
+  it("SL paused: the pane says so, offers no candidates, and confirming BSC alone still works", async () => {
+    const { onConfirm } = renderPicker({
+      slOptions: [{ value: SET, platformValue: "tc" }],
+      bscOptions: [{ value: "Some Other BSC Set", platformValue: "other" }],
+      pausedSides: ["sportlots"],
+    });
+
+    expect(
+      screen.getByText("SportLots is on pause — no SportLots sets to pick from right now. Your existing SportLots links stay put."),
+    ).toBeTruthy();
+    // No SL candidate rows at all, paused or not.
+    expect(screen.queryByLabelText(`SportLots base candidate: ${SET}`)).toBeNull();
+
+    await act(async () => {
+      fireEvent.click(
+        screen.getByLabelText("BSC base candidate: Some Other BSC Set"),
+      );
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText("Confirm Base Set"));
+    });
+
+    expect(onConfirm).toHaveBeenCalledWith({
+      sl: undefined,
+      bsc: { value: "Some Other BSC Set", platformValue: "other" },
+    });
+  });
+
+  it("BSC paused: the pane says so and offers no candidates, including the set-listing row", async () => {
+    renderPicker({
+      bscOptions: [{ value: "Some Other BSC Set", platformValue: "other" }],
+      setListing: { value: "The Listing Row", platformValue: "listing-slug" },
+      pausedSides: ["bsc"],
+    });
+
+    expect(
+      screen.getByText("BuySportsCards is on pause — no BuySportsCards sets to pick from right now. Your existing BuySportsCards links stay put."),
+    ).toBeTruthy();
+    expect(
+      screen.queryByLabelText("BSC base candidate: Some Other BSC Set"),
+    ).toBeNull();
+    expect(screen.queryByLabelText(/listing/i)).toBeNull();
+  });
+
+  it("both sides paused: neither pane offers anything, and there is nothing to confirm", () => {
+    renderPicker({
+      slOptions: [{ value: SET, platformValue: "tc" }],
+      bscOptions: [{ value: "Some Other BSC Set", platformValue: "other" }],
+      pausedSides: ["bsc", "sportlots"],
+    });
+
+    expect(screen.queryByLabelText(/candidate:/)).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Confirm Base Set" }),
+    ).toHaveProperty("disabled", true);
+  });
+
+  it("no pausedSides prop at all behaves exactly as before (default [])", async () => {
+    renderPicker({
+      slOptions: [{ value: SET, platformValue: "tc" }],
+    });
+    await waitFor(() => {
+      expect(
+        screen.getByLabelText(`SportLots base candidate: ${SET}`),
+      ).toBeTruthy();
+    });
+  });
+});

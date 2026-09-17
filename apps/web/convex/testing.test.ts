@@ -600,6 +600,54 @@ describe("seedMyTestCredentials", () => {
     expect(fetchCalled).toBe(false);
   });
 
+  test("NEO-287 — a paused site is skipped first, before any credential read, and BSC still seeds", async () => {
+    process.env.NEONBINDER_PAUSED_PLATFORMS = "sportlots";
+    const t = convexTest(schema, modules);
+    const puts: Array<{ url: string; method: string; body: unknown }> = [];
+    // Any call for the PAUSED site is a bug; BSC's own metadata+login calls
+    // are expected and answered normally via makeCredentialFetch.
+    stubFetch(makeCredentialFetch({ metadata: 404, puts }));
+
+    const result = await t
+      .withIdentity({ subject: USER_A })
+      .action(api.testing.seedMyTestCredentials, {
+        sites: ["sportlots", "buysportscards"],
+      });
+
+    // The paused site: skipped, no read, no store.
+    expect(result.seeded).toContainEqual({
+      site: "sportlots",
+      stored: false,
+      skipped: true,
+    });
+    // BSC is unaffected by the pause and still seeds normally.
+    expect(result.seeded).toContainEqual({ site: "buysportscards", stored: true });
+    // Every recorded call belongs to BSC — nothing was ever asked FOR
+    // sportlots, the paused site.
+    expect(puts.every((p) => p.body && (p.body as { key: string }).key.includes("buysportscards"))).toBe(true);
+    delete process.env.NEONBINDER_PAUSED_PLATFORMS;
+  });
+
+  test("NEO-287 — a paused site alone makes no browser-service call at all", async () => {
+    process.env.NEONBINDER_PAUSED_PLATFORMS = "sportlots";
+    const t = convexTest(schema, modules);
+    let fetchCalled = false;
+    stubFetch((async () => {
+      fetchCalled = true;
+      throw new Error("must not reach the browser service for a paused site");
+    }) as unknown as typeof fetch);
+
+    const result = await t
+      .withIdentity({ subject: USER_A })
+      .action(api.testing.seedMyTestCredentials, { sites: ["sportlots"] });
+
+    expect(result.seeded).toEqual([
+      { site: "sportlots", stored: false, skipped: true },
+    ]);
+    expect(fetchCalled).toBe(false);
+    delete process.env.NEONBINDER_PAUSED_PLATFORMS;
+  });
+
   test("BSC self-heals identically: skip when correct, re-store when stale", async () => {
     // correct → skip
     const tOk = convexTest(schema, modules);

@@ -43,6 +43,7 @@ type SiteCredential = {
 
 const mocks = vi.hoisted(() => ({
   profile: undefined as { siteCredentials?: unknown[] } | undefined,
+  paused: [] as string[],
   saveCredentials: vi.fn(),
   testSiteCredentials: vi.fn(),
   getSiteCredentials: vi.fn(),
@@ -65,10 +66,10 @@ vi.mock("@/convex/_generated/api", () => ({
 }));
 
 vi.mock("convex/react", () => ({
-  // Routed by ref: the panel now subscribes to the NEO-287 pause query as
-  // well as the profile, and the pause query answers "nothing paused" here.
+  // Routed by ref: the panel subscribes to the NEO-287 pause query as well as
+  // the profile; `mocks.paused` defaults to "nothing paused".
   useQuery: (ref: string) =>
-    ref === "marketplacePause:getPausedPlatforms" ? [] : mocks.profile,
+    ref === "marketplacePause:getPausedPlatforms" ? mocks.paused : mocks.profile,
   useMutation: () => vi.fn(),
   useAction: (ref: string) => {
     if (ref === "credentials:saveCredentials") return mocks.saveCredentials;
@@ -84,6 +85,10 @@ function setProfile(siteCredentials: SiteCredential[]) {
   mocks.profile = { siteCredentials };
 }
 
+function setPaused(sites: string[]) {
+  mocks.paused = sites;
+}
+
 const BSC = "buysportscards";
 
 beforeEach(() => {
@@ -91,6 +96,7 @@ beforeEach(() => {
   mocks.saveCredentials.mockResolvedValue({ success: true, message: "ok" });
   mocks.testSiteCredentials.mockResolvedValue({ success: true, message: "ok" });
   setProfile([]);
+  setPaused([]);
 });
 
 describe("CredentialsPanel — state matrix", () => {
@@ -159,6 +165,76 @@ describe("CredentialsPanel — state matrix", () => {
     expect(
       (document.getElementById("password") as HTMLInputElement | null)?.type,
     ).toBe("password");
+  });
+});
+
+describe("CredentialsPanel — paused (NEO-287)", () => {
+  it("paused and connected: names the platform, disables Sign-in/Test with distinct labels, keeps Clear enabled", () => {
+    setPaused([BSC]);
+    setProfile([{ site: BSC, hasCredentials: true, needsReauth: false }]);
+    render(<CredentialsPanel />);
+
+    expect(screen.getByText("BuySportsCards is on pause")).not.toBeNull();
+    expect(
+      screen.getByText(/Your saved session stays right where it is/),
+    ).not.toBeNull();
+
+    const signIn = screen.getByRole("button", { name: "Sign-in paused" });
+    const test = screen.getByRole("button", { name: "Test paused" });
+    expect(signIn).toHaveProperty("disabled", true);
+    expect(test).toHaveProperty("disabled", true);
+    // Distinct accessible names from the live controls and from each other.
+    expect(screen.queryByRole("button", { name: "Test Credentials" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Connect" })).toBeNull();
+
+    const clear = screen.getByRole("button", { name: /Clear Credentials/ });
+    expect(clear).toHaveProperty("disabled", false);
+  });
+
+  it("paused and connected: no re-auth card even when needsReauth is also true", () => {
+    setPaused([BSC]);
+    setProfile([{ site: BSC, hasCredentials: true, needsReauth: true }]);
+    render(<CredentialsPanel />);
+
+    expect(screen.getByText("BuySportsCards is on pause")).not.toBeNull();
+    expect(screen.queryByText("Sign in to BuySportsCards again")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Sign in again" })).toBeNull();
+  });
+
+  it("paused and NOT connected: the paused card renders, and no sign-in form", () => {
+    setPaused([BSC]);
+    setProfile([]);
+    render(<CredentialsPanel />);
+
+    expect(screen.getByText("BuySportsCards is on pause")).not.toBeNull();
+    expect(
+      screen.getByText(/we can't hook up a new account just yet/),
+    ).not.toBeNull();
+    expect(screen.queryByRole("button", { name: "Connect" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Sign-in paused" })).toBeNull();
+    expect(screen.queryByText("Connected to BuySportsCards")).toBeNull();
+  });
+
+  it("the SportLots tab is untouched by a BSC-only pause", () => {
+    setPaused([BSC]);
+    setProfile([{ site: "sportlots", hasCredentials: true, needsReauth: false }]);
+    render(<CredentialsPanel />);
+
+    fireEvent.click(screen.getByRole("tab", { name: "SportLots" }));
+
+    expect(screen.queryByText("SportLots is on pause")).toBeNull();
+    expect(screen.getByText("Connected to SportLots")).not.toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Test Credentials" }),
+    ).not.toBeNull();
+  });
+
+  it("suppresses the 'Connection not yet verified' nudge while paused", () => {
+    setPaused([BSC]);
+    setProfile([{ site: BSC, hasCredentials: true, needsReauth: false }]);
+    render(<CredentialsPanel />);
+
+    expect(screen.queryByText("Connection not yet verified")).toBeNull();
   });
 });
 

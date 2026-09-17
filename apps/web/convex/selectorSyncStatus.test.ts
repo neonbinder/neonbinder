@@ -23,7 +23,9 @@ import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import {
   partialSyncMessage,
+  pausedSyncMessage,
   skippedSyncMessage,
+  unaskedSidesNotice,
 } from "./selectorSyncStore";
 import type { Id } from "./_generated/dataModel";
 
@@ -96,6 +98,55 @@ describe("skippedSyncMessage", () => {
     expect(out).not.toContain("SUPERSECRET");
     expect(out).not.toContain("http");
     expect(out).toContain("A marketplace");
+  });
+});
+
+describe("pausedSyncMessage (NEO-287)", () => {
+  test("names the platform, says pause, and reassures nothing was touched", () => {
+    const out = pausedSyncMessage(["sportlots"]);
+    expect(out).toContain("SportLots");
+    expect(out).toContain("pause");
+    expect(out).toContain("is on pause");
+    expect(pausedSyncMessage(["bsc"])).toContain("BuySportsCards");
+  });
+
+  test("pluralises the verb across two platforms", () => {
+    const out = pausedSyncMessage(["bsc", "sportlots"]);
+    expect(out).toContain("BuySportsCards and SportLots");
+    expect(out).toContain("are on pause");
+    expect(out).not.toContain("is on pause");
+  });
+
+  test("cannot echo adapter output even if handed some", () => {
+    const hostile =
+      "https://internal.example/api/login?token=SUPERSECRET body=<html>";
+    const out = pausedSyncMessage([hostile]);
+    expect(out).not.toContain("SUPERSECRET");
+    expect(out).not.toContain("http");
+    expect(out).toContain("A marketplace");
+  });
+});
+
+describe("unaskedSidesNotice (NEO-287)", () => {
+  test("undefined when nothing was left unasked", () => {
+    expect(unaskedSidesNotice([], [])).toBeUndefined();
+  });
+
+  test("just the paused sentence when only a side is paused", () => {
+    const out = unaskedSidesNotice(["sportlots"], []);
+    expect(out).toBe(pausedSyncMessage(["sportlots"]));
+  });
+
+  test("just the skipped sentence when only a side lacks ids", () => {
+    const out = unaskedSidesNotice([], ["bsc"]);
+    expect(out).toBe(skippedSyncMessage(["bsc"]));
+  });
+
+  test("paused leads, skipped follows — two sentences, never collapsed", () => {
+    const out = unaskedSidesNotice(["sportlots"], ["bsc"]);
+    expect(out).toBe(
+      `${pausedSyncMessage(["sportlots"])} ${skippedSyncMessage(["bsc"])}`,
+    );
   });
 });
 
@@ -275,6 +326,7 @@ describe("selectorSyncStatus", () => {
       ran: false,
       reason: "already_populated",
       skippedSides: [],
+      pausedSides: [],
     });
     // And the notice survives for the admin to read and dismiss.
     expect(

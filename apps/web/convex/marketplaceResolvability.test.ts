@@ -32,10 +32,13 @@ import {
   SL_ATTACH_REQUIRED_LEVELS,
   SL_REQUIRED_LEVELS,
   missingSummary,
+  notifiableSkippedSides,
+  pausedSideList,
   resolvableSides,
   resolvedSideList,
   rowHasBscFacet,
   skippedSideList,
+  unscopedResolution,
   type ResolvableRow,
 } from "./marketplaceResolvability";
 
@@ -332,6 +335,122 @@ describe("skippedSideList", () => {
   });
 });
 
+describe("resolvableSides — the paused option (NEO-287)", () => {
+  test("a paused side is unresolvable whatever ids the chain carries, and says why", () => {
+    // Every ancestor fully linked — the ordinary "should resolve" chain.
+    const chain = [linkedSport, linkedYear];
+    const resolution = resolvableSides(chain, { paused: new Set(["sportlots"]) });
+
+    expect(resolution.sportlots.resolvable).toBe(false);
+    expect(resolution.sportlots.paused).toBe(true);
+    expect(resolution.sportlots.missing).toContain("paused");
+    // `served` is untouched — a paused side still MODELS the level; it was
+    // simply not asked this run.
+    expect(resolution.sportlots.served).toBe(true);
+
+    // The other side is unaffected.
+    expect(resolution.bsc.resolvable).toBe(true);
+    expect(resolution.bsc.paused).toBe(false);
+  });
+
+  test("no paused option at all reads as not paused, on both sides", () => {
+    const resolution = resolvableSides([linkedSport, linkedYear]);
+    expect(resolution.bsc.paused).toBe(false);
+    expect(resolution.sportlots.paused).toBe(false);
+  });
+
+  test("both sides can be paused at once", () => {
+    const resolution = resolvableSides([linkedSport, linkedYear], {
+      paused: new Set(["bsc", "sportlots"]),
+    });
+    expect(resolution.bsc.resolvable).toBe(false);
+    expect(resolution.bsc.paused).toBe(true);
+    expect(resolution.sportlots.resolvable).toBe(false);
+    expect(resolution.sportlots.paused).toBe(true);
+  });
+
+  test("the missing id account is untouched — 'paused' is appended, not substituted", () => {
+    // A chain that is ALSO missing ids on the paused side: both facts survive
+    // in `missing`, so a log line built from it stays a complete account.
+    const resolution = resolvableSides(
+      [row("sport", { value: "Baseball" })],
+      { level: "year", paused: new Set(["sportlots"]) },
+    );
+    expect(resolution.sportlots.missing).toContain("paused");
+    expect(resolution.sportlots.missing.length).toBeGreaterThan(1);
+  });
+});
+
+describe("pausedSideList", () => {
+  test("lists exactly the paused sides, in stable order", () => {
+    const resolution = resolvableSides([linkedSport, linkedYear], {
+      paused: new Set(["sportlots"]),
+    });
+    expect(pausedSideList(resolution)).toEqual(["sportlots"]);
+  });
+
+  test("empty when nothing is paused", () => {
+    const resolution = resolvableSides([linkedSport, linkedYear]);
+    expect(pausedSideList(resolution)).toEqual([]);
+  });
+});
+
+describe("notifiableSkippedSides excludes a paused side (NEO-287)", () => {
+  test("a paused side never appears in the 'no ids on this path' notice list", () => {
+    // Sport row carries NEITHER marketplace's id — an ordinary "no ids on this
+    // path" skip for BSC, plus SportLots also happening to be paused.
+    const resolution = resolvableSides([row("sport", { value: "Baseball" })], {
+      level: "year",
+      paused: new Set(["sportlots"]),
+    });
+    // Both sides are unresolvable…
+    expect(skippedSideList(resolution).slice().sort()).toEqual([
+      "bsc",
+      "sportlots",
+    ]);
+    // …but only the one skipped for want of ids is "notifiable" as such — the
+    // paused one gets its own sentence elsewhere (pausedSyncMessage).
+    expect(notifiableSkippedSides(resolution)).toEqual(["bsc"]);
+  });
+
+  test("a resolvable-but-paused side is still excluded even though it IS skipped", () => {
+    const resolution = resolvableSides([linkedSport, linkedYear], {
+      paused: new Set(["sportlots"]),
+    });
+    expect(skippedSideList(resolution)).toContain("sportlots");
+    expect(notifiableSkippedSides(resolution)).not.toContain("sportlots");
+  });
+});
+
+describe("unscopedResolution", () => {
+  test("with nothing paused, both sides are served and resolvable", () => {
+    const resolution = unscopedResolution();
+    expect(resolution.bsc).toEqual({
+      served: true,
+      resolvable: true,
+      paused: false,
+      missing: [],
+    });
+    expect(resolution.sportlots).toEqual({
+      served: true,
+      resolvable: true,
+      paused: false,
+      missing: [],
+    });
+  });
+
+  test("a paused side is unresolvable and names itself in missing", () => {
+    const resolution = unscopedResolution({ paused: new Set(["sportlots"]) });
+    expect(resolution.sportlots).toEqual({
+      served: true,
+      resolvable: false,
+      paused: true,
+      missing: ["paused"],
+    });
+    expect(resolution.bsc.resolvable).toBe(true);
+  });
+});
+
 describe("rowHasBscFacet", () => {
   test("an untagged slot does not count, and neither does a differently-tagged one", () => {
     const untagged = row("variantType", { bsc: { b0: "base" } });
@@ -391,6 +510,7 @@ describe("resolvableSides — bscScope: 'checklist' (NEO-252)", () => {
       served: true,
       resolvable: true,
       missing: [],
+      paused: false,
     });
     // …and this is a CHANGE, not a restatement: the per-level rule refuses the
     // very same chain, which is exactly the disagreement the ticket is about.

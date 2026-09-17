@@ -274,6 +274,89 @@ describe("fetchRawOptions — one side resolvable", () => {
   });
 });
 
+describe("fetchRawOptions — the operator has paused a marketplace (NEO-287)", () => {
+  afterEach(() => {
+    delete process.env.NEONBINDER_PAUSED_PLATFORMS;
+  });
+
+  test("SportLots resolves normally; BSC is skipped because it is paused, not because it lacks ids", async () => {
+    process.env.NEONBINDER_PAUSED_PLATFORMS = "buysportscards";
+    vi.stubGlobal(
+      "fetch",
+      (async () => new Response("<html></html>", { status: 200 })) as typeof fetch,
+    );
+    const t = convexTest(schema, modules);
+    const { variantTypeId } = await seedHandMadeSubtree(t, {
+      sportlots: true,
+      bsc: true,
+      variantTag: true,
+    });
+
+    const res = await fetchRaw(t, "insert", variantTypeId);
+
+    expect(res.success).toBe(true);
+    expect(res.skippedSides).toEqual(["bsc"]);
+    expect(res.pausedSides).toEqual(["bsc"]);
+    expect(res.errors.some((e) => e.platform === "bsc")).toBe(false);
+    expect(res.message).toContain("BuySportsCards is on pause");
+  });
+
+  test("both sides paused: a clean skip that says PAUSE, not NO_MARKETPLACE_IDS_MESSAGE", async () => {
+    process.env.NEONBINDER_PAUSED_PLATFORMS = "sportlots,buysportscards";
+    const t = convexTest(schema, modules);
+    // Fully linked chain — the pause, not a lack of ids, is why nothing runs.
+    const { variantTypeId } = await seedHandMadeSubtree(t, {
+      sportlots: true,
+      bsc: true,
+      variantTag: true,
+    });
+
+    const res = await fetchRaw(t, "insert", variantTypeId);
+
+    expect(res.success).toBe(true);
+    expect(res.skippedSides.slice().sort()).toEqual(["bsc", "sportlots"]);
+    expect(res.pausedSides.slice().sort()).toEqual(["bsc", "sportlots"]);
+    expect(res.message).not.toBe(NO_MARKETPLACE_IDS_MESSAGE);
+    expect(res.message).toContain("on pause");
+  });
+
+  test("no marketplace is contacted at all while paused", async () => {
+    process.env.NEONBINDER_PAUSED_PLATFORMS = "sportlots,buysportscards";
+    const outgoing: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      (async (url: string | URL | Request) => {
+        outgoing.push(String(url));
+        return new Response("{}", { status: 200 });
+      }) as unknown as typeof fetch,
+    );
+    const t = convexTest(schema, modules);
+    const { variantTypeId } = await seedHandMadeSubtree(t, {
+      sportlots: true,
+      bsc: true,
+      variantTag: true,
+    });
+
+    await fetchRaw(t, "insert", variantTypeId);
+
+    expect(outgoing).toEqual([]);
+  });
+
+  test("a hand-made subtree with NO ids reports no_marketplace_ids, unaffected by an unrelated pause", async () => {
+    // The pause only changes what happens on a side that WOULD have been
+    // asked. A side with no ids attached is still the ordinary silent skip.
+    process.env.NEONBINDER_PAUSED_PLATFORMS = "sportlots";
+    const t = convexTest(schema, modules);
+    const { variantTypeId } = await seedHandMadeSubtree(t);
+
+    const res = await fetchRaw(t, "insert", variantTypeId);
+
+    expect(res.success).toBe(true);
+    expect(res.skippedSides.slice().sort()).toEqual(["bsc", "sportlots"]);
+    expect(res.pausedSides).toEqual(["sportlots"]);
+  });
+});
+
 describe("ensureSelectorOptions on the same subtree writes NO error status", () => {
   test("the variantType column goes idle instantly, with the status row cleared", async () => {
     // The other message CI showed on this screen was

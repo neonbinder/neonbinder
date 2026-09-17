@@ -939,3 +939,82 @@ describe("AttachSetsDialog — no BSC set on the path (NEO-252)", () => {
     expect(within(bscPane()).queryByText(BSC_NO_LINKED_SET_MESSAGE)).toBeNull();
   });
 });
+
+describe("AttachSetsDialog — a paused marketplace pane (NEO-287)", () => {
+  test("BSC paused: no search box, no candidates, SL pane unaffected", async () => {
+    mockFetchBsc.mockResolvedValue({
+      success: true,
+      options: [],
+      message: "BuySportsCards is on pause: nothing from BuySportsCards was asked for or changed.",
+      pausedSides: ["bsc"],
+    });
+
+    renderDialog();
+
+    await waitFor(() =>
+      expect(
+        within(bscPane()).getByText(/BuySportsCards is on pause/),
+      ).toBeTruthy(),
+    );
+    expect(within(bscPane()).queryByRole("textbox")).toBeNull();
+    expect(within(bscPane()).queryByLabelText(/^Toggle/)).toBeNull();
+    // SL is a separate fetch and separate pane — untouched by BSC's pause.
+    await waitFor(() =>
+      expect(within(slPane()).getByLabelText("Toggle Topps Chrome")).toBeTruthy(),
+    );
+  });
+
+  test("SportLots paused: no search box, no candidates, BSC pane unaffected", async () => {
+    mockFetchSl.mockResolvedValue({
+      success: true,
+      options: [],
+      message: "SportLots is on pause: nothing from SportLots was asked for or changed.",
+      pausedSides: ["sportlots"],
+    });
+
+    renderDialog();
+
+    await waitFor(() =>
+      expect(within(slPane()).getByText(/SportLots is on pause/)).toBeTruthy(),
+    );
+    expect(within(slPane()).queryByRole("textbox")).toBeNull();
+    expect(within(slPane()).queryByLabelText(/^Toggle/)).toBeNull();
+    await waitFor(() =>
+      expect(within(bscPane()).getByLabelText("Toggle Gold Foil")).toBeTruthy(),
+    );
+  });
+
+  test("a pane's pausedSides is checked BEFORE success — it wins even on an old-shaped result", async () => {
+    // A deployment mid-rollout could answer paused without the newer field
+    // shape agreeing on every other property; the check happens first.
+    mockFetchBsc.mockResolvedValue({
+      success: true,
+      options: [{ value: "Should Not Render", platformValue: "nope" }],
+      message: "BuySportsCards is on pause: nothing from BuySportsCards was asked for or changed.",
+      pausedSides: ["bsc"],
+    });
+
+    renderDialog();
+
+    await waitFor(() =>
+      expect(
+        within(bscPane()).getByText(/BuySportsCards is on pause/),
+      ).toBeTruthy(),
+    );
+    expect(within(bscPane()).queryByLabelText(/Should Not Render/)).toBeNull();
+  });
+
+  test("a result with no pausedSides field at all (older deployment) reads as nothing paused", async () => {
+    mockFetchBsc.mockResolvedValue({
+      success: true,
+      options: YEAR_SETS,
+      message: "BSC: 3 set(s)",
+    });
+
+    renderDialog();
+
+    await waitFor(() =>
+      expect(within(bscPane()).getByLabelText("Toggle Topps Chrome")).toBeTruthy(),
+    );
+  });
+});
