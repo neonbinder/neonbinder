@@ -762,3 +762,5 @@ export class SportlotsAdapter extends BaseAdapter {
     }
   }
 }
+
+// NEO-286 control run: this branch is origin/main without login_check. Throwaway.
