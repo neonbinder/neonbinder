@@ -232,3 +232,19 @@ wrong for a college side.
   because an alias-adopted row did not yet answer to the canonical name —
   fixed the same day (adopt now unions the incoming canonical full name,
   subject to the ownership check). Re-verified after the fix.
+
+### Rehearsal #2 — 2026-09-17 (after the canonical-name fix, f8a2850)
+
+Same snapshot re-imported into the PR preview (178,264 docs). Dry run: 0
+ambiguous with the recorded answers. Load: Baseball 318 created / 32 adopted /
+275 aliases (+21 vs #1 = the alias-adopted rows' canonical names), Football
+317, Basketball 366, Hockey 67, Soccer 156 / 58 / 445 aliases (+25), ABL 19 /
+3. `--verify` clean on all six; disarmed and confirmed unset.
+
+Acceptance probes (set-sync driver, three unsynced 2026 › All Brands college
+sets): **0 unknown teams on every set** — ONIT Athlete West Virginia
+Mountaineers (41 players: 38 created by rule, 3 parked), Texas Longhorns (33:
+28 / 5), Wake Forest Demon Deacons (35: 30 / 5). Every remaining park is the
+driver's close-only rule against prod's surname-only player rows from
+19th-century sets ("Williams", "Hill", "Miller"); a driver policy question,
+not a team-data gap.
