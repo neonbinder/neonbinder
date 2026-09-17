@@ -217,9 +217,41 @@ jobs:
           preview-url: ${{ needs.setup.outputs.url }}
           bypass-secret: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
 
+      # NEO-287: mirror the `vars.NEONBINDER_PAUSED_PLATFORMS` repo variable onto
+      # THIS PR's Convex preview before seeding, so the preview env and the
+      # Maestro `-e PAUSED_PLATFORMS` variable agree by construction. Without
+      # this, a branch-reused preview keeps whatever the dashboard default was
+      # last set to (NEO-184) — the exact drift that made per-run wiring
+      # necessary for NEONBINDER_BROWSER_URL too. An empty variable means
+      # nothing is paused: remove the var rather than set it to "", tolerating
+      # "not set" so the very first run (before anyone has ever paused
+      # anything) doesn't fail on a remove of a var that never existed.
+      - name: Mirror NEONBINDER_PAUSED_PLATFORMS onto the Convex preview
+        working-directory: apps/web
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+          PAUSED_PLATFORMS: ${{ vars.NEONBINDER_PAUSED_PLATFORMS }}
+        run: |
+          set -euo pipefail
+          if [ -n "${PAUSED_PLATFORMS:-}" ]; then
+            npx --yes convex@1.39.1 env set NEONBINDER_PAUSED_PLATFORMS "$PAUSED_PLATFORMS" --deployment "$CONVEX_NAME"
+          else
+            npx --yes convex@1.39.1 env remove NEONBINDER_PAUSED_PLATFORMS --deployment "$CONVEX_NAME" \
+              || echo "NEONBINDER_PAUSED_PLATFORMS was not set on this preview — nothing to remove."
+          fi
+          got=$(npx --yes convex@1.39.1 env get NEONBINDER_PAUSED_PLATFORMS --deployment "$CONVEX_NAME" || true)
+          echo "Convex preview NEONBINDER_PAUSED_PLATFORMS = '${got}'"
+          {
+            echo "### SportLots/marketplace pause (NEO-287)";
+            echo "- \`vars.NEONBINDER_PAUSED_PLATFORMS\` = \`${PAUSED_PLATFORMS:-<empty>}\`";
+            echo "- Convex preview \`NEONBINDER_PAUSED_PLATFORMS\` = \`${got:-<unset>}\`";
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Seed global baseline (scripted reset, then setup track worker 0)
         env:
           APP_URL: http://localhost:3000
+          PAUSED_PLATFORMS: ${{ vars.NEONBINDER_PAUSED_PLATFORMS }}
           # NEO-214: `run-e2e-smoke.sh setup` runs the scripted
           # `e2e-baseline.sh reset` itself (single writer, single entry point
           # shared with local use) before launching setup.yaml, which then
@@ -325,6 +357,7 @@ jobs:
           RUNNER_INDEX: ${{ matrix.runner }}
           CONVEX_SITE_URL: ${{ needs.setup.outputs.convex_site }}
           E2E_QUEUE_SECRET: ${{ secrets.E2E_QUEUE_SECRET }}
+          PAUSED_PLATFORMS: ${{ vars.NEONBINDER_PAUSED_PLATFORMS }}
           REPORT_DIR: maestro-report
         # Exits 0 once the queue is drained — a FLOW failure is recorded in the
         # queue (not a job failure), so the single `e2e` gate reads queue status

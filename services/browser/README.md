@@ -156,6 +156,19 @@ single driver of push-to-main deploys and must be able to order this service
 ahead of the web/Convex release. Adding a push trigger back here re-creates the
 outage described below.
 
+**Pausing a marketplace's login probe (NEO-287).** The preview probe
+(`browser.yml`'s `preview-login-probe`) and both prod-lane probes
+(`browser-deploy.yml`'s `dev-login-probe` / `prod-login-probe`) all pass
+`PAUSED_PLATFORMS: ${{ vars.NEONBINDER_PAUSED_PLATFORMS }}` — the same GitHub
+Actions repository variable that mirrors Convex's `NEONBINDER_PAUSED_PLATFORMS`
+env var — into the `test:prod-gate` step. `tests/integration/_helpers.mjs`'s
+`isPaused(slug)` reads it (comma-separated, trimmed, case-insensitive) and
+`sportlots-login.test.mjs` skips both of its cases with an `::error::`-free
+`::notice::` line when SportLots is paused, so a known operator-chosen SL
+outage doesn't turn every PR and every promotion red. There is no `if:`
+gating on the jobs themselves — BSC's half of the suite always runs
+unconditionally, and only the SportLots test cases branch on the variable.
+
 ## Release contract
 
 **Read this before changing any request or response shape on the
