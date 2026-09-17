@@ -106,6 +106,16 @@ export type NewTeamDraft = {
    * when the name is already taken, which is when the form asks for it.
    */
   yearsActive?: { from: number; to?: number };
+  /**
+   * NEO-284 — other names this team answers to, comma-separated exactly as
+   * the League forms take theirs (`parseAliases` in `NewLeagueForm` turns it
+   * into the list). A string rather than a list because it is a box the
+   * operator is typing into; the host parses it once, at create.
+   *
+   * Empty string, not undefined: a controlled input, and "no aliases" is a
+   * real answer.
+   */
+  aliases: string;
 };
 
 /**
@@ -132,6 +142,7 @@ export function newTeamPrefill(input: {
     name: split ? split.name : input.name.trim(),
     leagueId: undefined,
     leagueName: undefined,
+    aliases: "",
   };
 }
 
@@ -314,6 +325,8 @@ export default function NewTeamForm({
    */
   const helpId = useId();
   const previewId = useId();
+  // NEO-284 — the alias caption, on the same footing as `helpId`.
+  const aliasHelpId = useId();
 
   /** `aria-describedby` takes a space-separated id list; drop the absent ones
    *  rather than emitting an empty or dangling reference. */
@@ -755,6 +768,46 @@ export default function NewTeamForm({
           . Give this one its own years if it is a different era of the club.
         </p>
       )}
+
+      {/* NEO-284 — the other names this team answers to.
+
+          Under the years, before the league: it is part of what the team IS,
+          not where it plays. Asked here rather than left to Team Management
+          because the row is usually being created FROM one of those other
+          names — a checklist that says "LSU" — and the moment of creation is
+          when the operator has both spellings in front of them.
+
+          One line, not a textarea: this form lives in a dialog body that has
+          to fit CI's 1024x629 viewport, and a team created here has a handful
+          of aliases, not the sixty a college programme carries. The admin
+          panel is where the long list lives.
+
+          No client-side bound: the server refuses an over-long list with a
+          message the dialog already renders, and printing the limit here
+          would be exposing a rule as copy. */}
+      <FieldLabel text="Aliases (optional)">
+        <Input
+          bare
+          type="text"
+          value={draft.aliases}
+          placeholder="LSU, Louisiana State"
+          // SC 2.5.3, label in name: the visible label is "Aliases (optional)"
+          // and the accessible name has to contain it. "New team" prefixes it
+          // the way every other field on this form is prefixed, so the two
+          // alias boxes a wizard can show (this one and New League's) never
+          // share a name.
+          aria-label="New team aliases (optional)"
+          aria-describedby={aliasHelpId}
+          disabled={disabled}
+          onChange={(e) => onChange({ aliases: e.target.value })}
+          onKeyDown={onFieldKeyDown}
+          className="w-full p-1.5 text-sm"
+        />
+      </FieldLabel>
+      <p id={aliasHelpId} className="text-xs text-gray-400">
+        Separate with commas. Other names this team answers to — the school,
+        an old nickname, how a checklist spells it.
+      </p>
 
       <div className="flex flex-wrap items-center gap-1.5">
       <div

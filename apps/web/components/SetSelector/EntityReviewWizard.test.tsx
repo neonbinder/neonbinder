@@ -262,7 +262,14 @@ type Row = {
         /** NEO-236: the Location + Name the operator gave on the New Team step. */
         create?: { name: string; location?: string };
       }
-    | { action: "link"; linkedPlayerId?: string; linkedTeamId?: string }
+    | {
+        action: "link";
+        linkedPlayerId?: string;
+        linkedTeamId?: string;
+        /** NEO-284 — whether this link also remembered the row's raw name
+         *  as an alias of the linked team. */
+        saveAsAlias?: boolean;
+      }
     | { action: "skip" };
 };
 
@@ -654,6 +661,9 @@ describe("EntityReviewWizard — decision actions", () => {
         action: "link",
         linkedPlayerId: undefined,
         linkedTeamId: "linked-id-123",
+        // NEO-284 — the "remember this name" box is ticked by default on a
+        // team row, so a link carries it unless the operator unticks it.
+        saveAsAlias: true,
       });
     });
   });
@@ -1991,6 +2001,8 @@ describe("EntityReviewWizard — near matches", () => {
         action: "link",
         linkedPlayerId: undefined,
         linkedTeamId: "team_ny",
+        // NEO-284 — ticked by default on a team row.
+        saveAsAlias: true,
       });
     });
   });
@@ -2005,6 +2017,219 @@ describe("EntityReviewWizard — near matches", () => {
     expect(screen.getByText("Possible matches")).toBeTruthy();
     fireEvent.click(screen.getByLabelText("Link to existing instead"));
     expect(screen.queryByText("Possible matches")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-284 — the "remember this name" checkbox on a team row's Link control
+// ---------------------------------------------------------------------------
+
+describe("EntityReviewWizard — save-as-alias checkbox", () => {
+  const rememberLabel = (name: string) =>
+    `Remember “${name}” as a name for this team`;
+  const wizardEl = () => (
+    <EntityReviewWizard
+      isOpen
+      selectorOptionId={"selopt-1" as unknown as Id<"selectorOptions">}
+      batchId="batch-1"
+      summary={SUMMARY}
+      onConfirm={vi.fn()}
+      onCancel={vi.fn()}
+    />
+  );
+
+  it("EXACT alias hit on a team row: the primary Link control names the team's real name, not the alias", () => {
+    // `teams.nearMatches` tags an alias hit `confidence: "exact"` but its
+    // `name` is still the row's real composed name (`teamFullName`) — the
+    // alias only ever travels in `matchedAlias`. The wizard's primary button
+    // reads `exactMatch.name`, so it must read the real name here too.
+    currentNearMatches = [
+      { _id: "team_lsu", name: "LSU Tigers", confidence: "exact", matchedAlias: "LSU" },
+    ];
+    currentRows = [makeRow({ kind: "team", name: "LSU", status: "ready" })];
+    renderWizard();
+
+    const primary = screen.getByLabelText("Link to LSU Tigers");
+    expect(primary.textContent).toBe("Link to LSU Tigers");
+    expect(screen.queryByLabelText("Link to LSU")).toBeNull();
+  });
+
+  it("is checked by default beside the primary Link control on a team row", () => {
+    currentNearMatches = [
+      { _id: "team_lsu", name: "LSU Tigers", confidence: "exact" },
+    ];
+    currentRows = [makeRow({ kind: "team", name: "LSU Tigers", status: "ready" })];
+    renderWizard();
+
+    const box = screen.getByLabelText(
+      rememberLabel("LSU Tigers"),
+    ) as HTMLInputElement;
+    expect(box.checked).toBe(true);
+  });
+
+  it("ticked (the default): the primary Link click sends saveAsAlias: true", async () => {
+    const row = makeRow({ kind: "team", name: "LSU Tigers", status: "ready" });
+    currentNearMatches = [{ _id: "team_lsu", name: "LSU Tigers", confidence: "exact" }];
+    currentRows = [row];
+    renderWizard();
+
+    fireEvent.click(screen.getByLabelText("Link to LSU Tigers"));
+
+    await waitFor(() => {
+      expect(mockRecordDecision).toHaveBeenCalledWith({
+        reviewRowId: row._id,
+        action: "link",
+        linkedPlayerId: undefined,
+        linkedTeamId: "team_lsu",
+        saveAsAlias: true,
+      });
+    });
+  });
+
+  it("unticked: the primary Link click sends saveAsAlias: false", async () => {
+    const row = makeRow({ kind: "team", name: "LSU Tigers", status: "ready" });
+    currentNearMatches = [{ _id: "team_lsu", name: "LSU Tigers", confidence: "exact" }];
+    currentRows = [row];
+    renderWizard();
+
+    fireEvent.click(screen.getByLabelText(rememberLabel("LSU Tigers")));
+    fireEvent.click(screen.getByLabelText("Link to LSU Tigers"));
+
+    await waitFor(() => {
+      expect(mockRecordDecision).toHaveBeenCalledWith({
+        reviewRowId: row._id,
+        action: "link",
+        linkedPlayerId: undefined,
+        linkedTeamId: "team_lsu",
+        saveAsAlias: false,
+      });
+    });
+  });
+
+  it("is ABSENT entirely on a PLAYER row, even with a live Link control on screen", () => {
+    currentNearMatches = [{ _id: "p9", name: "Mike Trout", confidence: "exact" }];
+    currentRows = [makeRow({ kind: "player", name: "Mike Trout", status: "ready" })];
+    renderWizard();
+
+    // The exact-match primary is on screen (same fixture shape as the EXACT
+    // player-row tests above), but the alias checkbox is team-only.
+    expect(screen.getByLabelText("Link to Mike Trout")).toBeTruthy();
+    expect(screen.queryByLabelText(/^Remember /)).toBeNull();
+
+    // Also absent behind "Link to Existing…" for a player row.
+    fireEvent.click(screen.getByLabelText("Link to existing instead"));
+    expect(screen.queryByLabelText(/^Remember /)).toBeNull();
+  });
+
+  /**
+   * The checkbox is MOUNTED for every team row and only SHOWN while a
+   * `Link to …` control exists (a11y audit: an `&&` gate on the async
+   * near-match result would swap elements under a keyboard user). So "absent"
+   * on a team row means collapsed with `hidden` and out of the tab order —
+   * Testing Library's label query does not filter hidden nodes, hence the
+   * explicit checks.
+   */
+  const collapsed = (box: HTMLElement) =>
+    box.closest("[hidden]") !== null && box.tabIndex === -1;
+
+  it("is COLLAPSED (mounted, hidden, out of the tab order) when there is no Link control on screen at all", () => {
+    currentNearMatches = [];
+    currentRows = [makeRow({ kind: "team", name: "Brand New Squad", status: "ready" })];
+    renderWizard();
+
+    expect(screen.queryByText("Possible matches")).toBeNull();
+    const box = screen.getByLabelText(rememberLabel("Brand New Squad"));
+    expect(collapsed(box)).toBe(true);
+  });
+
+  it("expands once the link search opens on a team row with no near matches", () => {
+    currentNearMatches = [];
+    currentRows = [makeRow({ kind: "team", name: "Brand New Squad", status: "ready" })];
+    renderWizard();
+
+    const box = screen.getByLabelText(rememberLabel("Brand New Squad"));
+    expect(collapsed(box)).toBe(true);
+    fireEvent.click(screen.getByLabelText("Link to existing instead"));
+    expect(collapsed(box)).toBe(false);
+    expect(box.closest("[hidden]")).toBeNull();
+    expect(box.tabIndex).toBe(0);
+  });
+
+  it("is ONE persistent element: the near-match query re-resolving under a focused checkbox keeps focus on the same node", () => {
+    // The exact footer-primary case, then the query lands again with a
+    // different candidate set (a close match joins). A `&&`-gated block would
+    // have re-mounted here and dropped focus to <body>; the always-mounted
+    // block keeps the very same input focused.
+    const row = makeRow({ kind: "team", name: "LSU", status: "ready" });
+    currentNearMatches = [
+      { _id: "team_lsu", name: "LSU Tigers", confidence: "exact", matchedAlias: "LSU" },
+    ];
+    currentRows = [row];
+    const { rerender } = render(wizardEl());
+
+    const box = screen.getByLabelText(rememberLabel("LSU"));
+    expect(collapsed(box)).toBe(false);
+    act(() => box.focus());
+    expect(document.activeElement).toBe(box);
+
+    currentNearMatches = [
+      { _id: "team_lsu", name: "LSU Tigers", confidence: "exact", matchedAlias: "LSU" },
+      { _id: "team_lsu_old", name: "LSU Fighting Tigers", confidence: "close" },
+    ];
+    rerender(wizardEl());
+
+    expect(screen.getByLabelText("Link to LSU Fighting Tigers")).toBeTruthy();
+    expect(screen.getByLabelText(rememberLabel("LSU"))).toBe(box);
+    expect(document.activeElement).toBe(box);
+  });
+
+  it("the decided-list history names both the link and the remembered alias", () => {
+    // `describeDecision` only adds the "remembered as" clause when the
+    // decision actually carries `saveAsAlias: true` and a `linkedTeamId` —
+    // asserted against the real component/helper behavior in
+    // entity-review-nav.ts, not invented copy.
+    currentLinkedTeams = [{ _id: "team_lsu", name: "LSU Tigers", location: "" }];
+    currentRows = [
+      makeRow({
+        kind: "team",
+        name: "LSU",
+        status: "ready",
+        decision: {
+          action: "link",
+          linkedTeamId: "team_lsu",
+          saveAsAlias: true,
+        },
+      }),
+      makeRow({ kind: "team", name: "Other Team", status: "ready" }),
+    ];
+    renderWizard();
+
+    const list = screen.getByRole("list", { name: "Decided names" });
+    expect(list.textContent).toContain(
+      "Linked to LSU Tigers · remembered as “LSU”",
+    );
+  });
+
+  it("the decided-list history omits the remembered clause when saveAsAlias was off", () => {
+    currentLinkedTeams = [{ _id: "team_lsu", name: "LSU Tigers", location: "" }];
+    currentRows = [
+      makeRow({
+        kind: "team",
+        name: "LSU",
+        status: "ready",
+        decision: {
+          action: "link",
+          linkedTeamId: "team_lsu",
+          saveAsAlias: false,
+        },
+      }),
+      makeRow({ kind: "team", name: "Other Team", status: "ready" }),
+    ];
+    renderWizard();
+
+    const list = screen.getByRole("list", { name: "Decided names" });
+    expect(list.textContent).toContain("Linked to LSU Tigers");
+    expect(list.textContent).not.toContain("remembered as");
   });
 });
 

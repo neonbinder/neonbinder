@@ -85,7 +85,14 @@ export interface StagingRow {
          */
         create?: { location?: string; name: string };
       }
-    | { action: "link"; linkedPlayerId?: string; linkedTeamId?: string }
+    | {
+        action: "link";
+        linkedPlayerId?: string;
+        linkedTeamId?: string;
+        /** NEO-284 — see `NavDecision`. Read by nothing here; carried so the
+         *  wizard's rows pass through without a cast. */
+        saveAsAlias?: boolean;
+      }
     | { action: "skip" }
     | null;
 }

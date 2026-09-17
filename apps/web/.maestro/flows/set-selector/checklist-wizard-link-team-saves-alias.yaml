@@ -1,0 +1,494 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/admin/players&worker=${WORKER_INDEX || "0"}
+name: "Entity review — linking a checklist TEAM to an existing team remembers the checklist's spelling as one of that team's names"
+tags:
+  - set-selector
+---
+# R1 — ONE FEATURE (NEO-284): a "Link to Existing…" decision on a TEAM row
+# carries the row's raw marketplace string into the linked team's aliases,
+# and it does so by default. The wizard shows the operator a ticked
+# "Remember “<string>” as a name for this team" box the moment a link control
+# is on screen; the decision reads "· remembered as …"; the COMMIT writes the
+# alias; and Team Management then lists it under "Current aliases", where the
+# operator can take it back out again.
+#
+# R2 — HARD ASSERTIONS, none satisfiable by an inert page:
+#     (a) the fixture team exists before the fetch — its chip in the career
+#         editor proves `teams.findOrCreate` returned;
+#     (b) the wizard opens with nothing decided ("0 of N reviewed") and the row
+#         under test is a TEAM row: its skip control says "not a team";
+#     (c) the remember-box is on screen, quoting THIS row's raw name, as soon
+#         as the link search is open;
+#     (d) the search finds the fixture BY ITS NAME and taking it records a
+#         LINK WITH THE ALIAS — the read-back line is
+#         "Linked to <team> · remembered as “<row>”", a string `describeDecision`
+#         composes ONLY when `decision.saveAsAlias` is true on a team link.
+#         That line is how the default-ON state of the checkbox is asserted:
+#         maestro-web's hierarchy carries no `checked` attribute for a checkbox
+#         (read out of the pinned maestro-web.js: `text` is value||placeholder||
+#         ariaLabel, and a checkbox's `value` is "on" whichever way it is set),
+#         so the box is proven by what it DID, in the product's own words;
+#     (e) the commit lands ("Saved N cards") — `commitCardChecklist` is where
+#         the alias is written, never `recordDecision`;
+#     (f) Team Management shows the alias: the "Current aliases" list is
+#         rendered only when the stored list is non-empty, and the checklist's
+#         string is on screen under the "Also known as" box that was seeded
+#         from the stored row;
+#     (g) SELF-CLEANING (R7): clearing the box and saving removes the alias,
+#         and a RELOAD shows the box empty (its placeholder is the text) with no
+#         "Current aliases" list — a negative paired with a positive.
+#
+# ── THE FIXTURE, AND WHY IT IS ONE-SIDED ────────────────────────────────────
+#   `Baseball → 2024 → Topps → Topps MLB at Rickwood Field Negro Leagues
+#   Collection → Base`. Measured on PR #262's preview, 2026-09-16: BSC lists
+#   4 cards (RW-1 Satchel Paige … RW-4 Willie Mays) on Negro League clubs, so
+#   every team on it is unknown to a deployment whose only teams are the MLB
+#   clubs `setup.yaml`'s Topps Chrome commit created. 8 unknown names: 4
+#   players, the clubs, and one staged league ("Negro league baseball", raised
+#   by the first club's Wikidata lookup and asked once for the batch).
+#
+#   SportLots does not carry this set. The base picker's SportLots column is
+#   the year's whole catalogue ("Base Set" flagged "likely match" is 2024
+#   Topps flagship, 352 cards; the next rows are 1989 Topps inserts), so the
+#   honest operator action is CANCEL — attaching any of them would be a lie in
+#   the data, and the one time it was tried (the author's first probe) it
+#   paired 0 of 4 cards. Cancelling leaves exactly ONE side attached (the BSC
+#   slug Sync Variant Types wrote on Base), so the fetch takes the NEO-255
+#   solo path: no Match Cards dialog, "Kept all N cards from BSC", straight
+#   into the review. That is the Roanoke Express shape
+#   (`checklist-one-marketplace-skips-match-dialog`), on a warm Baseball
+#   drill instead of a cold Hockey one. It is why this flow hand-rolls the
+#   fetch rather than calling `util-fetch-real-set-checklist-to-wizard`
+#   (R3): that util waits on the two-sided "Match Cards" dialog, which this
+#   set never shows.
+# maestro-lint: streaming-ok — this flow never DRIVES the pairing dialog; the
+#   dialog is named above only to say why the two-sided fetch util is not used.
+#   The solo path's own settled text ("Kept all N cards from …") is its sync.
+#
+#   THIS FLOW IS THE SOLE WRITER OF THIS SET (R7a). It commits — the alias is
+#   written at commit and nowhere else, so a read-only version could pass with
+#   the feature broken. Nothing else reads the set; it drains its own fixture
+#   within a run (a committed set's names are known and a re-sync raises no
+#   review), and CI reseeds the preview every run. A LOCAL re-run needs a
+#   fresh seed, same contract as the other three committing wizard fixtures.
+#
+#   WHY THE ROW'S NAME IS READ OFF THE SCREEN. The row under test is whichever
+#   club the batch presents first; the flow copies it out of the step's own
+#   `New Team: <name>` heading and asserts every later surface against THAT
+#   string, because the claim is "the checklist's spelling, exactly, becomes
+#   the alias" — not that any particular club is spelled a particular way.
+#
+# ── THE FIXTURE TEAM ────────────────────────────────────────────────────────
+#   Made through the product, never seeded (`admin-teams-two-eras` is the
+#   worked example): one throwaway player `Alp<token>` on /admin/players to
+#   reach a TeamPicker, then the New Team dialog with Location `Loc<token>` and
+#   Name `Ali<token>`, no league. Three permanent, globally-shared rows, inert
+#   by name — single tokens, per worker AND per attempt (see SET-REGISTRY
+#   "Team names"). The composed full name `Loc<token> Ali<token>` is what the
+#   link option, the decision line, the Team Management heading and the Saved
+#   line all print; the link SEARCH types the single token `Ali<token>`.
+#
+# R4 — the entry URL is the whole setup; no in-body login, no credential step.
+#
+# R5 — every wait states its ceiling. 7000 in-app; the sanctioned exceptions,
+#   each named at its step: the post-launchApp gate (45s), the mid-flow
+#   reload gates (30s, the value the admin flows use), and the three live
+#   marketplace round-trips — the base picker's own SportLots fetch, the BSC
+#   checklist fetch, and the batch's Wikidata lookups.
+#
+# R8 — centred scrolls on the Team Management panel depend on NEO-260's 208px
+#   spacer (`src/layouts/binder-layout.tsx`); uncentred where the target sits
+#   in a `fixed` dialog or the set-builder's own no-headroom checklist block,
+#   with the measurement cited at the step.
+#
+# R10 — one guarded loop, keyed on the league step's own skip control, that
+#   costs nothing when the step is absent (the `while` is false at once) and
+#   a fraction of a second per iteration when present. No settle waits.
+
+# ============================================================
+# LAUNCH + SIGN IN
+# ============================================================
+- launchApp
+- extendedWaitUntil:
+    visible: ".*of .* players.*"
+    timeout: 45000
+
+- evalScript: '${output.TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'
+
+# ============================================================
+# PART 1 — THE FIXTURE TEAM, born from a career editor (R2a)
+# ============================================================
+# Empty the list first: every player row prints its sport, so with rows on
+# screen "Baseball" is on the page many times and the sport picker could not
+# be identified by what it says. The sport is picked with the add form CLOSED
+# because maestro resolves an <option> tap by index against the FIRST <select>.
+- tapOn: "Filter players"
+- inputText: "zzzznotaplayer"
+- assertVisible: "No players match that filter."
+- tapOn: "All sports"
+- tapOn: "Baseball"
+- assertVisible: "Baseball"
+# Picking a sport re-runs the filtered search, and PlayerManagement's counter
+# renders EMPTY until it answers — so "Add player" slides ~110px left for the
+# length of that round-trip and back again when the count returns. A tap whose
+# bounds were read inside that window lands on the counter instead (CI run
+# 35122900214 / runner 5, `admin-franchises-link-teams`: bounds [526,327] at
+# the read, the button at [636,327] in the failure screenshot). Waiting for the
+# count to be back is waiting for the layout to be still.
+- extendedWaitUntil:
+    visible: "0 matches"
+    timeout: 7000
+
+- tapOn: "Add player"
+- tapOn: "New player name"
+- inputText: "Alp${output.TOKEN}"
+- scrollUntilVisible:
+    element:
+      id: "Create player Alp${output.TOKEN}"
+    timeout: 7000
+- tapOn:
+    id: "Create player Alp${output.TOKEN}"
+
+# Same positioning pair as admin-teams-two-eras (read its note): the UP swipe
+# to the list label gives the page a deterministic position, and centring the
+# empty-stints line is what puts "+ Add team" and its popover clear of the
+# fold. Both centre — measured there at 0.5-4.8s, inside 7000.
+- scrollUntilVisible:
+    element:
+      text: "Filter players"
+    direction: UP
+    centerElement: true
+    timeout: 7000
+- extendedWaitUntil:
+    visible: ".*Added Alp${output.TOKEN}.*"
+    timeout: 7000
+- scrollUntilVisible:
+    element:
+      text: "No stints recorded yet."
+    centerElement: true
+    timeout: 7000
+
+- assertVisible:
+    id: "Add team"
+- tapOn:
+    id: "Add team"
+- tapOn:
+    id: "Search teams"
+- inputText: "Ali${output.TOKEN}"
+# Nothing answers to this name yet — the precondition for creating it, and a
+# real assertion that this attempt's token is its own.
+- assertVisible: "No matches."
+- pressKey: Enter
+- assertVisible: "New team: Ali${output.TOKEN}"
+- tapOn:
+    id: "New team location \\(optional\\)"
+- inputText: "Loc${output.TOKEN}"
+# The Create button's accessible name is the COMPOSED full name, so targeting
+# it is itself the assertion that Location + Name composed in that order.
+- tapOn:
+    id: "Create team Loc${output.TOKEN} Ali${output.TOKEN}"
+- extendedWaitUntil:
+    visible:
+      id: "Remove team Loc${output.TOKEN} Ali${output.TOKEN}"
+    timeout: 7000
+
+# ============================================================
+# PART 2 — THE SET: drill (R9), decline SportLots, fetch one-sided
+# ============================================================
+# The drill util opens /set-selector itself and gates on the panel subtitle.
+- runFlow:
+    file: util-drill-to-2024-topps-chrome.yaml
+    env:
+      SET: "Topps MLB at Rickwood Field Negro Leagues Collection"
+- scrollUntilVisible:
+    element:
+      text: "Base"
+    centerElement: true
+    timeout: 7000
+- retry:
+    maxRetries: 1
+    commands:
+      - tapOn:
+          text: "Base"
+          retryTapIfNoChange: true
+      - extendedWaitUntil:
+          visible: "Select Base Set"
+          timeout: 7000
+
+# R5 marketplace exception: the picker fetches the year's SportLots catalogue
+# live before it can offer Confirm. Then CANCEL — see the header. The
+# precondition is that BSC really answers for this set.
+- extendedWaitUntil:
+    visible: "Confirm Base Set"
+    timeout: 60000
+- assertVisible:
+    id: "BSC base candidate: .*"
+- tapOn: "Cancel"
+- assertVisible:
+    text: ".*Base mapping cancelled.*"
+# CENTRE before the tap (R8). The notice's Close sits at the bottom of the
+# Base-mapping block, which the drill leaves straddling the fold: locally
+# [131,603][193,635] on the 625px viewport (centre 619, six pixels inside),
+# and on CI's Linux Chrome the columns' 15px horizontal scrollbar pushes it to
+# [133,618][195,650] on 629px — centre 634, OFF screen — and the tap dies with
+# `null cannot be cast to non-null type kotlin.Int` (CI run 35134145689 /
+# runner 6, hierarchy dump step-070). One "Close" exists on this page
+# (`BaseMappingForm`), and the page has scroll headroom below the block.
+- scrollUntilVisible:
+    element:
+      text: "Close"
+    centerElement: true
+    timeout: 7000
+- tapOn: "Close"
+- extendedWaitUntil:
+    notVisible:
+      text: ".*Base mapping cancelled.*"
+    timeout: 7000
+- assertVisible: "Map Base Set"
+
+# The empty-checklist block has no scroll headroom below it, so a centred
+# scroll to the Sync button burns the give-up path (R8 case 2, measured on
+# this page by `util-fetch-real-set-checklist-to-wizard`: bounds held across
+# all six tries). Uncentred it settles well under a second.
+- scrollUntilVisible:
+    element:
+      text: "Add Card"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 7000
+- assertVisible: "No cards in this checklist yet."
+- scrollUntilVisible:
+    element:
+      id: "Sync card checklist"
+    timeout: 7000
+- tapOn:
+    id: "Sync card checklist"
+
+# R5 marketplace exception: one live BSC round-trip. The sentence is produced
+# on the solo path ONLY (NEO-255) — it is the proof that one side was
+# attached and that nothing was silently paired against a wrong SportLots set.
+- extendedWaitUntil:
+    visible:
+      text: ".*Kept all [0-9]+ cards? from .*"
+    timeout: 60000
+# R5 marketplace exception: the wizard opens once the batch is queued, and
+# every name in it is behind a live Wikidata lookup.
+- extendedWaitUntil:
+    visible: "Confirm New Players & Teams"
+    timeout: 60000
+
+# ============================================================
+# PART 3 — THE TEAM ROW (R2b)
+# ============================================================
+- assertVisible:
+    text: "0 of [0-9]+ reviewed.*"
+
+# Wait the batch's lookups out (live Wikidata, R5 exception — the same gate
+# `util-wizard-walk-to-player-row` uses), so the row presented next is settled
+# and nothing that settles later can out-rank it (NEO-236/254 nav rules:
+# leagues before teams before players).
+- extendedWaitUntil:
+    notVisible: ".*still looking up.*"
+    timeout: 180000
+
+# A club's lookup can stage its LEAGUE as its own step, asked ahead of the
+# club (NEO-254; measured on this set: "New League: Negro league baseball",
+# needed by the first club). Answer it as a skip — a skip creates nothing (R7)
+# — until a TEAM row is up. ONE guard, keyed on the league step's own control
+# (SET-REGISTRY, "ONE probe, keyed on the step's BUTTON"): when the batch
+# opens on a team row the `while` is false at once and this costs nothing.
+- repeat:
+    times: 20
+    while:
+      notVisible:
+        id: "Skip .* not a team"
+    commands:
+      - runFlow:
+          when:
+            visible:
+              id: "Skip .* has no league"
+          commands:
+            - tapOn:
+                id: "Skip .* has no league"
+- extendedWaitUntil:
+    visible:
+      id: "Skip .* not a team"
+    timeout: 7000
+
+# The row's RAW name, off its own heading — the string the alias will be.
+- copyTextFrom:
+    text: "New Team: .*"
+- evalScript: '${output.ROW_NAME = maestro.copiedText.replace(/^New Team: /, "")}'
+- assertTrue: ${output.ROW_NAME.length > 0}
+
+# ============================================================
+# PART 4 — LINK, WITH THE REMEMBER-BOX ON (R2c, R2d)
+# ============================================================
+# Retry the open, because the row can grow UNDER the tap: a near-match panel
+# arriving on its own query pushes "Link to Existing…" down between the bounds
+# read and the click (measured on Topps Brooklyn Collection; see
+# checklist-wizard-link-commits). The wait doubles as the R2 precondition —
+# this panel is labelled for TEAMS.
+- retry:
+    maxRetries: 2
+    commands:
+      - tapOn:
+          id: "Link to existing instead"
+          retryTapIfNoChange: true
+      - extendedWaitUntil:
+          visible:
+            id: "Search existing teams"
+          timeout: 7000
+
+# R2(c) — the box is offered, quoting THIS row's raw name (curly quotes are
+# the product's). Its checked state is proven by (d) below, not here.
+- assertVisible:
+    text: "Remember “${output.ROW_NAME}” as a name for this team"
+
+- tapOn:
+    id: "Search existing teams"
+- inputText: "Ali${output.TOKEN}"
+- extendedWaitUntil:
+    visible:
+      id: "Link to Loc${output.TOKEN} Ali${output.TOKEN}"
+    timeout: 7000
+- tapOn:
+    id: "Link to Loc${output.TOKEN} Ali${output.TOKEN}"
+# The decision landing is what moves the wizard OFF this row (an implicit row
+# advances the moment it is settled). Waiting for the heading to go is the
+# only honest "it landed" here — the counter already moved for the league skip
+# — and the positive that pairs with this negative is the read-back below.
+- extendedWaitUntil:
+    notVisible:
+      text: "New Team: ${output.ROW_NAME}"
+    timeout: 7000
+
+# R2(d) — read the decision back. The wizard walked on to the next row, so
+# step BACK to the one just judged (NEO-221 history); its read-only panel
+# states the decision in `describeDecision`'s words, and the "· remembered as"
+# tail exists only for a team link whose `saveAsAlias` is true.
+- tapOn:
+    id: "Back to previous decision"
+- extendedWaitUntil:
+    visible:
+      id: "Decision for ${output.ROW_NAME}"
+    timeout: 7000
+- assertVisible:
+    text: "Linked to Loc${output.TOKEN} Ali${output.TOKEN} · remembered as “${output.ROW_NAME}”"
+# Hand the walk back to the wizard before the bulk skip.
+- tapOn:
+    text: "Next"
+    below:
+      text: "Already decided:.*"
+
+# ============================================================
+# PART 5 — COMMIT (R2e)
+# ============================================================
+# Everything else is a skip: skips create nothing, so the only entity this
+# commit could mint is the one the link deliberately avoided. The batch is
+# settled (PART 3), so the bulk skip is one mutation — in-app, 7000.
+- tapOn:
+    text: ".*Skip remaining names \\([0-9]+\\).*"
+- extendedWaitUntil:
+    visible:
+      text: ".*Confirm & Save.*"
+    timeout: 7000
+- tapOn:
+    text: ".*Confirm & Save.*"
+- extendedWaitUntil:
+    visible:
+      text: ".*Saved [0-9]+ cards.*"
+    timeout: 7000
+
+# ============================================================
+# PART 6 — TEAM MANAGEMENT SHOWS THE ALIAS (R2f)
+# ============================================================
+# A reload separates "the wizard is holding what I did" from "the database
+# holds it", and lands on the screen the alias is FOR.
+- openLink: ${APP_URL || "http://localhost:3000"}/admin/teams
+- extendedWaitUntil:
+    visible: ".*of .* teams.*"
+    timeout: 30000
+- tapOn: "Filter teams"
+- inputText: "Ali${output.TOKEN}"
+- extendedWaitUntil:
+    visible: "1 of .* teams.*"
+    timeout: 7000
+# The master row PRINTS the short name and is anchored below the counter so
+# the filter box — whose VALUE maestro reads as the same text — cannot answer.
+- tapOn:
+    text: "Ali${output.TOKEN}"
+    below:
+      text: "1 of .* teams.*"
+
+# The "Also known as" box is seeded from the stored row and the chip list
+# under it renders only when that parses to at least one alias. Centred on
+# the label (depends on the NEO-260 spacer); the chip list is asserted by its
+# own accessible name, and the alias string beneath the label. Both the box
+# (value) and the chip carry the string, and either is the persisted value —
+# the list's presence is what says it is a chip.
+- scrollUntilVisible:
+    element:
+      text: "Also known as"
+    centerElement: true
+    timeout: 7000
+- assertVisible:
+    id: "Current aliases"
+- assertVisible:
+    text: "${output.ROW_NAME}"
+    below:
+      text: "Also known as"
+
+# ============================================================
+# PART 7 — TAKE IT BACK OUT, AND PROVE THE REMOVAL PERSISTED (R2g, R7)
+# ============================================================
+# Tap the BOX, not its label. `eraseText` sends Backspaces to the active
+# element, and Backspace deletes from the caret: a label tap focuses the
+# textarea with the caret at position 0 and erases nothing (measured — the
+# chip list survived 120 Backspaces), while a tap on the box lands at its
+# centre, past the end of a one-line value, and puts the caret at the end.
+# The box and the chip both carry the alias text; `below` the label picks the
+# nearer one, which is the box. 120 is the alias length ceiling.
+- tapOn:
+    text: "${output.ROW_NAME}"
+    below:
+      text: "Also known as"
+- eraseText: 120
+- assertNotVisible:
+    id: "Current aliases"
+- scrollUntilVisible:
+    element:
+      text: "Save"
+    centerElement: true
+    timeout: 7000
+- tapOn: "Save"
+- extendedWaitUntil:
+    visible: ".*Saved Loc${output.TOKEN} Ali${output.TOKEN}.*"
+    timeout: 7000
+
+- openLink: ${APP_URL || "http://localhost:3000"}/admin/teams
+- extendedWaitUntil:
+    visible: ".*of .* teams.*"
+    timeout: 30000
+- tapOn: "Filter teams"
+- inputText: "Ali${output.TOKEN}"
+- extendedWaitUntil:
+    visible: "1 of .* teams.*"
+    timeout: 7000
+- tapOn:
+    text: "Ali${output.TOKEN}"
+    below:
+      text: "1 of .* teams.*"
+- scrollUntilVisible:
+    element:
+      text: "Also known as"
+    centerElement: true
+    timeout: 7000
+# Negative paired with a positive: an empty textarea reports its PLACEHOLDER
+# as its text, so the placeholder on screen is the box being empty.
+- assertNotVisible:
+    id: "Current aliases"
+- assertVisible:
+    text: "LSU, Louisiana State, LSU Tigers baseball"
+    below:
+      text: "Also known as"

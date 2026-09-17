@@ -19,7 +19,12 @@ import {
 // into the same `players.teamYears` column) and with the wizard's own year
 // fields. The three used to be separate literals and two of them disagreed.
 import { MIN_CAREER_YEAR } from "../lib/players/career-years";
-import { normalizeTeamName } from "./teams";
+// NEO-284 — the team-alias bounds live beside the table's one writer. The New
+// Team step's "Also known as" list is validated HERE, at decision time, so the
+// queue never holds an over-bound or self-referential list for the commit to
+// trip over with no operator in front of it.
+import { normalizeTeamAliasList, normalizeTeamName } from "./teams";
+import { teamFullName } from "../lib/teams/team-name";
 // NEO-254 — the New League step collects everything League Management edits, so
 // it validates against the SAME bounds. Imported rather than restated: two
 // validators guarding one table must not be able to disagree about what it
@@ -211,6 +216,17 @@ const teamCreateValidator = v.object({
     from: v.number(),
     to: v.optional(v.number()),
   })),
+  /**
+   * NEO-284 — the "Also known as" list typed on the New Team step.
+   *
+   * RAW spellings, the contract `teams.aliases` keeps (see schema.ts).
+   * `requireTeamCreate` runs them through `normalizeTeamAliasList` against
+   * the composed Location + Name before they are stored, so the bounds and
+   * the own-name rule are enforced where the operator can still fix the
+   * list. Written on the commit's INSERT branch only; a name the prelude
+   * finds already held adopts that row without widening its aliases.
+   */
+  aliases: v.optional(v.array(v.string())),
 });
 
 /**
@@ -245,6 +261,9 @@ const decisionValidator = v.union(
     linkedTeamId: v.optional(v.id("teams")),
     // NEO-254: league-kind only. Every team naming this league then uses it.
     linkedLeagueId: v.optional(v.id("leagues")),
+    // NEO-284: team-kind only — at COMMIT, remember the parked string as an
+    // alias of `linkedTeamId`. Stored only when true. See schema.ts.
+    saveAsAlias: v.optional(v.boolean()),
   }),
   // NEO-212: "not a person / not a team" — the card keeps the raw name, and
   // nothing is created or linked. See schema.ts.
@@ -511,6 +530,11 @@ type TeamCreate = {
   leagueName?: string;
   /** NEO-254 — the era the operator typed. See `teamCreateValidator`. */
   yearsActive?: { from: number; to?: number };
+  /**
+   * NEO-284 — "Also known as", already through `normalizeTeamAliasList` when
+   * it leaves `requireTeamCreate`; raw on the way in.
+   */
+  aliases?: string[];
 };
 type TeamCreateInput = TeamCreate;
 
@@ -534,7 +558,26 @@ type TeamCreateInput = TeamCreate;
  */
 function requireTeamCreate(input: TeamCreateInput): TeamCreate {
   const normalized = toTeamCreate(input);
-  if (normalized) return normalized;
+  if (normalized) {
+    /*
+     * NEO-284 — the alias list is bounded HERE and nowhere later.
+     *
+     * `normalizeTeamAliasList` throws `ConvexError` over 64 entries or 120
+     * characters, drops blanks and the row's own full name, and dedupes on the
+     * team key — the same helper Team Management's save runs, so the two
+     * routes into `teams.aliases` cannot disagree. Refusing at decision time
+     * is right for the reason the league record is refused above: the
+     * operator is standing at the form. The commit prelude re-derives the
+     * list against the same composed name but never has to gate it.
+     *
+     * Checked against the composed Location + Name `toTeamCreate` produced,
+     * because that is the string the created row will answer to already.
+     */
+    const aliases = input.aliases
+      ? normalizeTeamAliasList(input.aliases, teamFullName(normalized))
+      : [];
+    return aliases.length ? { ...normalized, aliases } : normalized;
+  }
   const name = input.name.trim().replace(/\s+/g, " ");
   if (name.length === 0) {
     throw new ConvexError("Enter a team name before adding it.");
@@ -2124,6 +2167,15 @@ function requireLeagueCreate(input: {
  * to protect — the skip decision never stores them, so they cannot reach
  * commit.
  *
+ * NEO-284 — `saveAsAlias` is the one exception, and it is STRICTER than that
+ * rule: `true` on a player or league row is REFUSED, whatever the action. The
+ * checkbox only exists on a team row's link area, so its arrival on another
+ * kind is a client bug, not a leftover — and unlike the fields above it names
+ * an intent ("remember this string") that the commit would then silently drop,
+ * which is exactly the kind of quiet loss a refusal exists to surface. On a
+ * team row it is stored with a link decision and ignored with a create or a
+ * skip, which is the ordinary leftover case.
+ *
  * Re-deciding a row that already carries a decision OVERWRITES it, for every
  * action — the wizard lets an operator go back and change a call.
  */
@@ -2159,6 +2211,10 @@ export const recordDecision = mutation({
     createLeague: v.optional(leagueCreateValidator),
     // NEO-254, "link"-only and league-kind-only.
     linkedLeagueId: v.optional(v.id("leagues")),
+    // NEO-284, "link"-only and team-kind-only: remember the parked string as
+    // an alias of the linked team when the commit lands. Refused, not
+    // ignored, on any other row kind — see the doc comment.
+    saveAsAlias: v.optional(v.boolean()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -2167,6 +2223,20 @@ export const recordDecision = mutation({
     const row = await ctx.db.get(args.reviewRowId);
     if (!row) throw new Error("Review row not found");
     assertOwnsRow(row, callerId);
+
+    /*
+     * NEO-284 — team-kind only, and refused rather than dropped.
+     *
+     * `false` carries no intent (absent already means "remember nothing"), so
+     * only `true` is a refusal. `ConvexError` so the wizard can render it: the
+     * operator is in front of the row, and a redacted "Server Error" would
+     * tell them nothing about which control misfired.
+     */
+    if (args.saveAsAlias === true && row.kind !== "team") {
+      throw new ConvexError(
+        "Only a team can be remembered by another name.",
+      );
+    }
 
     // NEO-212: "not a person / not a team". Nothing else on the args applies —
     // see the doc comment for why leftovers are ignored rather than rejected.
@@ -2346,7 +2416,15 @@ export const recordDecision = mutation({
         );
       }
       await ctx.db.patch(args.reviewRowId, {
-        decision: { action: "link", linkedTeamId: args.linkedTeamId },
+        decision: {
+          action: "link",
+          linkedTeamId: args.linkedTeamId,
+          // NEO-284: stored only when true, so a link recorded with the box
+          // unticked is byte-identical to one recorded before the flag
+          // existed. Nothing is written to the team here — the commit
+          // prelude reads this flag; Cancel → Discard leaves no trace.
+          ...(args.saveAsAlias ? { saveAsAlias: true } : {}),
+        },
         lastTouchedAt: Date.now(),
       });
     }

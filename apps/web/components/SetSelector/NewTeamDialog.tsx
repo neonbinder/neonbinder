@@ -221,6 +221,7 @@ export default function NewTeamDialog({
     setError(null);
     try {
       const location = draft.location.trim();
+      const aliases = parseAliases(draft.aliases);
       const id = await findOrCreate({
         name: draft.name.trim(),
         sportId,
@@ -239,6 +240,11 @@ export default function NewTeamDialog({
         // omitted rather than sent empty, for the same reason `location` is.
         ...(draft.yearsActive ? { yearsActive: draft.yearsActive } : {}),
         ...(confirmNewEra ? { newEra: true } : {}),
+        // NEO-284 — the other names, parsed the way the league form parses
+        // its own so the two cannot disagree about a comma. Omitted when
+        // empty, for the same reason `location` is; the server bounds the
+        // list and refuses over it with a message rendered below.
+        ...(aliases.length > 0 ? { aliases } : {}),
       });
       onCreated(id);
       onClose();

@@ -241,6 +241,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       playersDeleted: 4,
       playerAliasesDeleted: 0,
       teamsDeleted: 2,
+      teamAliasesDeleted: 0,
       franchisesDeleted: 1,
       leaguesDeleted: 1,
       complete: true,
@@ -312,6 +313,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       playersDeleted: 0,
       playerAliasesDeleted: 0,
       teamsDeleted: 0,
+      teamAliasesDeleted: 0,
       franchisesDeleted: 0,
       leaguesDeleted: 0,
       complete: true,
@@ -356,7 +358,7 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
     const t = convexTest(schema, modules);
     await seedAllSixTables(t);
 
-    // Mirrors the shell loop's cap: eight tables need at most eight passes
+    // Mirrors the shell loop's cap: nine tables need at most nine passes
     // under a zero budget, and a loop that needs more than 20 is stuck.
     const MAX_PASSES = 20;
     let passes = 0;
@@ -368,6 +370,7 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
       playersDeleted: 0,
       playerAliasesDeleted: 0,
       teamsDeleted: 0,
+      teamAliasesDeleted: 0,
       franchisesDeleted: 0,
       leaguesDeleted: 0,
     };
@@ -392,6 +395,7 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
       playersDeleted: 4,
       playerAliasesDeleted: 0,
       teamsDeleted: 2,
+      teamAliasesDeleted: 0,
       franchisesDeleted: 1,
       leaguesDeleted: 1,
     });
@@ -470,6 +474,53 @@ describe("NEO-254: the alias index is drained with the players it describes", ()
       expect(result.playersDeleted).toBe(1);
       expect(result.playerAliasesDeleted).toBe(1);
       expect(await t.run(async (ctx) => ctx.db.query("playerAliases").collect())).toEqual(
+        [],
+      );
+    } finally {
+      delete process.env.ALLOW_RESET_SET_BUILDER_DATA;
+    }
+  });
+
+  test("NEO-284: teamAliases rows do not outlive their teams", async () => {
+    /*
+     * The team twin of the playerAliases test above. `teamAliases` is one
+     * flat row per (team, alias), answering `by_alias_normalized_and_sport_id`
+     * for `findTeamsByAlias`. A reset that wiped teams and left this standing
+     * would leave rows pointing at nothing, growing quietly on every reset.
+     */
+    const t = convexTest(schema, modules);
+    process.env.ALLOW_RESET_SET_BUILDER_DATA = "true";
+    try {
+      const sportId = await t.run(async (ctx) =>
+        ctx.db.insert("selectorOptions", {
+          level: "sport",
+          value: "Baseball",
+          platformData: {},
+          children: [],
+          lastUpdated: Date.now(),
+        }),
+      );
+      await t.run(async (ctx) => {
+        const teamId = await ctx.db.insert("teams", {
+          name: "Padres",
+          location: "San Diego",
+          nameNormalized: "diego padres san",
+          sportId,
+          aliases: ["Friars"],
+          lastUpdated: Date.now(),
+        });
+        await ctx.db.insert("teamAliases", {
+          teamId,
+          sportId,
+          aliasNormalized: "friars",
+        });
+      });
+
+      const result = await runReset(t);
+
+      expect(result.teamsDeleted).toBe(1);
+      expect(result.teamAliasesDeleted).toBe(1);
+      expect(await t.run(async (ctx) => ctx.db.query("teamAliases").collect())).toEqual(
         [],
       );
     } finally {

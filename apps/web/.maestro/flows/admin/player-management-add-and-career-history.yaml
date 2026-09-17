@@ -173,6 +173,15 @@ tags:
 # the current visible button at [526,327][626,359]; the stale tap landed in the
 # empty results panel. Re-read and centre the user-visible control after that
 # reflow (R8), then make exactly one user click.
+#
+# The reflow has a name (NEO-284 forensics, CI run 35122900214 / runner 5 on
+# the sibling `admin-franchises-link-teams`): picking a sport re-runs the
+# filtered search and the counter renders EMPTY until it answers, so the
+# button slides ~110px left and back. The count being back on screen is the
+# layout being still, and it is what the re-read below should follow.
+- extendedWaitUntil:
+    visible: "0 matches"
+    timeout: 7000
 - scrollUntilVisible:
     element:
       text: "Add player"

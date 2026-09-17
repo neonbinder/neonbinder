@@ -1455,6 +1455,11 @@ export const nearMatches = query({
       if (fallbackTerm) hits = await searchPlayers(fallbackTerm);
     }
     for (const hit of hits) {
+      // NEO-284 — do not let the search leg clobber an exact-leg entry for
+      // the same row: it carries no `matchedAlias`, so overwriting here would
+      // silently drop the `matchedAlias` the exact leg attached. Mirrors the
+      // same fix in `teams.nearMatches`.
+      if (candidates.has(hit._id)) continue;
       candidates.set(hit._id, {
         _id: hit._id,
         name: hit.name,

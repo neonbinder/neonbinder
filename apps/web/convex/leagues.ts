@@ -209,6 +209,28 @@ export async function findOrCreateLeague(
     abbreviation?: string;
     sportId: Id<"selectorOptions">;
     level?: LeagueLevel;
+    /**
+     * NEO-254 — insert the row WITHOUT queueing its Wikidata lookup.
+     *
+     * Default false, and it stays false for every interactive caller: a league
+     * an operator creates by hand should be enriched, and that is the whole
+     * point of the creation-only hook below.
+     *
+     * `convex/bulkLoad.ts` passes true (removed with the one-shot loader in
+     * #250, back for the NEO-284 NCAA/ABL preload). It is a scripted admin
+     * task the operator drives from a laptop against a chosen deployment,
+     * minting leagues from a dataset they already curated — queueing pooled
+     * network work as a side effect of a bulk write makes the run's cost
+     * depend on `wikidataPool`'s depth and on Wikidata being up, neither of
+     * which the operator asked for. Anything a preloaded league is missing is
+     * still reachable through League Management's "Re-enrich from Wikidata",
+     * which is the deliberate, human version of the same lookup.
+     *
+     * NOT a way to skip enrichment generally: an automatic caller that wants
+     * this is almost certainly the wrong shape. Adding a second `true` needs
+     * the same argument this one carries.
+     */
+    skipEnrichment?: boolean;
     aliases?: string[];
     /**
      * NEO-254 — the rest of the record, from a New League review step.
@@ -281,8 +303,9 @@ export async function findOrCreateLeague(
   });
 
   // CREATION ONLY. The `return existing._id` above is what makes that true:
-  // a league this helper FOUND leaves without being enqueued.
-  await scheduleLeagueEnrichment(ctx, id);
+  // a league this helper FOUND leaves without being enqueued. `skipEnrichment`
+  // is the one opt-out, and it is documented on the argument.
+  if (!args.skipEnrichment) await scheduleLeagueEnrichment(ctx, id);
 
   return id;
 }
@@ -350,6 +373,35 @@ export async function resolveOperatorLeagueId(
 }
 
 /**
+ * NEO-284 — the sport's configured league NAME, read-only.
+ *
+ * The naming half of `resolveDefaultLeagueId`, split out so a query context
+ * can answer "which league would a bulk-loaded team fall back to" without the
+ * create that the full resolver performs: the NCAA/ABL preload's dry run
+ * (`bulkLoad.previewTeams`) reports the resolution of every league in a
+ * chunk before anything is armed, and a dry run that inserted the sport
+ * default would not be a dry run. `sportConfig` is read from the sport ROW
+ * first, falling back to the bootstrap defaults, because a row's config is
+ * editable and the defaults are only a seed (NEO-96).
+ */
+export async function defaultLeagueNameFor(
+  ctx: QueryCtx,
+  sportId: Id<"selectorOptions">,
+): Promise<{ name: string; abbreviation?: string } | undefined> {
+  const sport = await ctx.db.get(sportId);
+  if (!sport) return undefined;
+
+  const config =
+    sport.sportConfig ?? sportConfigDefaultsFor(sport.value ?? "") ?? undefined;
+  const abbreviation = config?.league;
+  const fullName = config?.espn?.leagueName;
+
+  const name = fullName ?? abbreviation;
+  if (!name) return undefined;
+  return { name, ...(abbreviation ? { abbreviation } : {}) };
+}
+
+/**
  * The league a newly-created team in this sport belongs to, creating the row
  * on first use.
  *
@@ -367,22 +419,22 @@ export async function resolveOperatorLeagueId(
 export async function resolveDefaultLeagueId(
   ctx: MutationCtx,
   sportId: Id<"selectorOptions">,
+  /**
+   * NEO-254 — passed straight through to `findOrCreateLeague`. The sport
+   * default is the league a bulk-loaded team falls back to, so without this the
+   * opt-out would leak on the one path that takes it most often.
+   */
+  options?: { skipEnrichment?: boolean },
 ): Promise<Id<"leagues"> | undefined> {
-  const sport = await ctx.db.get(sportId);
-  if (!sport) return undefined;
-
-  const config =
-    sport.sportConfig ?? sportConfigDefaultsFor(sport.value ?? "") ?? undefined;
-  const abbreviation = config?.league;
-  const fullName = config?.espn?.leagueName;
-
-  const name = fullName ?? abbreviation;
-  if (!name) return undefined;
+  const configured = await defaultLeagueNameFor(ctx, sportId);
+  if (!configured) return undefined;
+  const { name, abbreviation } = configured;
 
   return await findOrCreateLeague(ctx, {
     name,
     abbreviation,
     sportId,
+    ...(options?.skipEnrichment ? { skipEnrichment: true } : {}),
     // NEO-240: the sport's CONFIGURED league is by definition its top flight —
     // `sportConfig.league` is "MLB"/"NFL"/"NBA", never a farm system — so this
     // is the one place a level can be asserted without an operator saying so.

@@ -41,7 +41,17 @@ import { normalizeEntityName } from "../../convex/lib/entityNearMatch";
 
 export type NavDecision =
   | { action: "create" }
-  | { action: "link"; linkedPlayerId?: string; linkedTeamId?: string }
+  | {
+      action: "link";
+      linkedPlayerId?: string;
+      linkedTeamId?: string;
+      /**
+       * NEO-284, team rows: the operator asked commit to keep this row's raw
+       * name as an alias of the linked team, so the same string resolves on
+       * its own next time instead of parking here again.
+       */
+      saveAsAlias?: boolean;
+    }
   | { action: "skip" };
 
 /**
@@ -500,13 +510,25 @@ export function resolveNav<T extends NavRow>(
  * controls own the imperative `Link to {name}` accessible name (it is an E2E
  * matcher and a screen reader's only way to tell two of them apart), so a
  * static history line must not collide with it.
+ *
+ * NEO-284: a team link that also kept the row's raw name as an alias says so
+ * — "Linked to LSU Tigers · remembered as “LSU”" — because that alias is the
+ * one side effect of the decision the operator cannot otherwise see until the
+ * batch commits. `rememberedName` is the ROW's name (the checklist string),
+ * never the target's; a link with the box unticked reads exactly as before.
  */
 export function describeDecision(
   decision: NavDecision | null | undefined,
   linkedName?: string | null,
+  rememberedName?: string | null,
 ): string {
   if (!decision) return "Not yet decided";
   if (decision.action === "create") return "Added as new";
   if (decision.action === "skip") return "Skipped";
-  return linkedName ? `Linked to ${linkedName}` : "Linked to an existing record";
+  const linked = linkedName
+    ? `Linked to ${linkedName}`
+    : "Linked to an existing record";
+  const remembered =
+    decision.saveAsAlias && decision.linkedTeamId && rememberedName?.trim();
+  return remembered ? `${linked} · remembered as “${remembered}”` : linked;
 }

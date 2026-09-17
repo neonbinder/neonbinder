@@ -139,6 +139,135 @@ describe("NearMatchPanel", () => {
     fireEvent.click(screen.getByLabelText("Link to Ken Griffey"));
     expect(onPick).toHaveBeenCalledWith("p1", "Ken Griffey");
   });
+
+  // -------------------------------------------------------------------------
+  // NEO-284 — a team hit on one of its aliases
+  // -------------------------------------------------------------------------
+
+  describe("matchedAlias (NEO-284)", () => {
+    const viaAlias: NearMatch = {
+      _id: "t1",
+      name: "LSU Tigers",
+      confidence: "exact",
+      matchedAlias: "LSU",
+    };
+
+    it("renders a description mentioning the alias", () => {
+      render(
+        <NearMatchPanel kind="team" matches={[viaAlias]} onPick={vi.fn()} />,
+      );
+      expect(screen.getByText("also known as “LSU”")).toBeTruthy();
+    });
+
+    it("does NOT render the 'same name' badge for an alias match, even though confidence is exact", () => {
+      render(
+        <NearMatchPanel kind="team" matches={[viaAlias]} onPick={vi.fn()} />,
+      );
+      expect(screen.queryByText("same name")).toBeNull();
+      // The accessible name carries no "— same name" suffix either.
+      expect(screen.getByLabelText("Link to LSU Tigers")).toBeTruthy();
+    });
+
+    it("keeps the accessible name as 'Link to {name}' (the team's real name, not the alias)", () => {
+      render(
+        <NearMatchPanel kind="team" matches={[viaAlias]} onPick={vi.fn()} />,
+      );
+      // Exactly one control, addressed by the team's real name.
+      expect(screen.getAllByLabelText("Link to LSU Tigers")).toHaveLength(1);
+      expect(screen.queryByLabelText(/LSU Tigers — same name/)).toBeNull();
+      expect(screen.queryByLabelText(/^Link to LSU$/)).toBeNull();
+    });
+
+    it("a genuine same-name match (no matchedAlias) still gets the badge, sitting alongside an alias match", () => {
+      const sameName: NearMatch = {
+        _id: "t2",
+        name: "LSU Tigers",
+        confidence: "exact",
+      };
+      render(
+        <NearMatchPanel
+          kind="team"
+          matches={[viaAlias, sameName]}
+          onPick={vi.fn()}
+        />,
+      );
+      expect(screen.getAllByText("same name")).toHaveLength(1);
+      expect(screen.getByText("also known as “LSU”")).toBeTruthy();
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-284 — an alias-matched row: "exact" by confidence but not by name
+// ---------------------------------------------------------------------------
+
+describe("NearMatchPanel — matchedAlias", () => {
+  const aliasHit: NearMatch = {
+    _id: "t1",
+    name: "LSU Tigers",
+    confidence: "exact",
+    matchedAlias: "LSU",
+  };
+
+  it("surfaces the alias as secondary text, using the row's real copy", () => {
+    render(<NearMatchPanel kind="team" matches={[aliasHit]} onPick={vi.fn()} />);
+
+    // The button's own visible/display name stays the real team name...
+    expect(screen.getByText("LSU Tigers")).toBeTruthy();
+    // ...and the alias that matched is surfaced separately, quoted.
+    expect(screen.getByText("also known as “LSU”")).toBeTruthy();
+  });
+
+  it("does NOT show the same-name badge for an alias match — only a true primary-name exact match gets it", () => {
+    render(<NearMatchPanel kind="team" matches={[aliasHit]} onPick={vi.fn()} />);
+
+    expect(screen.queryByText("same name")).toBeNull();
+    // The alias note stands in its place.
+    expect(screen.getByText("also known as “LSU”")).toBeTruthy();
+  });
+
+  it("the accessible name is the SAME SHAPE whether matched by primary name or by alias — 'Link to {name}'", () => {
+    const primaryExact: NearMatch = {
+      _id: "t2",
+      name: "Duke Blue Devils",
+      confidence: "exact",
+    };
+    render(
+      <NearMatchPanel
+        kind="team"
+        matches={[aliasHit, primaryExact]}
+        onPick={vi.fn()}
+      />,
+    );
+
+    // Alias match: the accessible name is `Link to {name}` — no "— same name"
+    // suffix, because a name that is NOT the same name is not tagged as one.
+    expect(screen.getByLabelText("Link to LSU Tigers")).toBeTruthy();
+    // Primary-name exact match: same shape, plus the "same name" tag.
+    expect(
+      screen.getByLabelText("Link to Duke Blue Devils — same name"),
+    ).toBeTruthy();
+  });
+
+  it("the alias note is the button's accessible DESCRIPTION, not part of its accessible NAME", () => {
+    render(<NearMatchPanel kind="team" matches={[aliasHit]} onPick={vi.fn()} />);
+
+    const button = screen.getByRole("button");
+    expect(button.getAttribute("aria-label")).toBe("Link to LSU Tigers");
+    const describedBy = button.getAttribute("aria-describedby");
+    expect(describedBy).toBeTruthy();
+    expect(document.getElementById(describedBy!)?.textContent).toBe(
+      "also known as “LSU”",
+    );
+  });
+
+  it("hands the picked id and the real (non-alias) name back to onPick", () => {
+    const onPick = vi.fn();
+    render(<NearMatchPanel kind="team" matches={[aliasHit]} onPick={onPick} />);
+
+    fireEvent.click(screen.getByLabelText("Link to LSU Tigers"));
+    expect(onPick).toHaveBeenCalledWith("t1", "LSU Tigers");
+  });
 });
 
 describe("hasExact", () => {

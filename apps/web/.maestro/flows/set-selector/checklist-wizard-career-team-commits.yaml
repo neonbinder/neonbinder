@@ -190,10 +190,31 @@ tags:
 # the New Team step is up. Answering it is the operator's next move anyway,
 # since `createBlocked` holds the player's create until the club is decided.
 #
-# 30s: the step appears only once `stageCareerTeams` has round-tripped.
+# THE STEP APPEARS ONLY ONCE THE STAGED ROW'S WIKIDATA LOOKUP SETTLES — not
+# once `stageCareerTeams` has round-tripped, which is what this note used to
+# say. The row is inserted `pending` and `nextUndecided` presents settled rows
+# only, so between the tap and the step the batch reads "1 still being looked
+# up". That lookup goes through the deployment-wide Wikidata pool
+# (`maxParallelism: 5`, shared by every runner draining the queue), FIFO
+# behind whatever the other runners just fetched. CI run 35134145689 /
+# runner 2: the tap landed at 18:55:52 (form cleared, "Skip remaining names
+# (9)" counted the new row, "1 still looking up — wait or skip" in the footer,
+# hierarchy dump step-086) while runners 1 and 4 had just opened Topps Big
+# League (88 lookups each) — and 30s of a flat wait ran out with the row still
+# pending. Same class as the batch's own lookups, so the same shape as
+# `util-wizard-walk-to-player-row`: a short wait proves the stage LANDED (the
+# row is either already up or visibly pending), the long gate is named for the
+# external work it waits on (R5's marketplace-class exception), and the step
+# itself gets 7000.
+- extendedWaitUntil:
+    visible: "New Team: MintedTeam${output.ATTEMPT_TOKEN}|.*still looking up.*"
+    timeout: 7000
+- extendedWaitUntil:
+    notVisible: ".*still looking up.*"
+    timeout: 180000
 - extendedWaitUntil:
     visible: "New Team: MintedTeam${output.ATTEMPT_TOKEN}"
-    timeout: 30000
+    timeout: 7000
 # One tap accepts the pre-filled Location, Name and League — what setup.yaml
 # and the 1996 Score flow do. Safe to match by text: the button only relabels
 # itself to "Link to <name>" on an exact hierarchy match, and this name is

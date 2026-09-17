@@ -1,1 +1,2 @@
 - [Set subtree shape is not fixed](set-subtree-shape-is-not-fixed.md) — mixed levels under setName, ~300 leaves; walk children generically, page reads
+- [Hand-kept validator copies of schema shapes](hand-kept-validator-copies-of-schema-shapes.md) — a new teams/entityReviewQueue field must also land in teamDocValidator and the decision/enrichment copies or every screen fails at runtime

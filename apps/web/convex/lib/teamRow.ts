@@ -38,6 +38,19 @@
  * own start). Left out on purpose — an existence check that ignores the era is
  * the shape this ticket removed, and having one available invites its return.
  *
+ * ## NEO-284 — a name is answered by the row's name OR one of its aliases
+ *
+ * `findTeamsByFullName` now UNIONS two legs: the primary-name index on
+ * `teams` and the flat `teamAliases` index (see the schema note on that
+ * table). An alias hit joins the candidate set on equal footing — it is not a
+ * fallback and it does not outrank a primary hit — because everything
+ * downstream branches on the SIZE of the set: one row links silently, several
+ * is a question for a human, and the era narrowing runs over whatever is
+ * here. A string that is row A's name and row B's alias is therefore two
+ * candidates, and the wizard asks; the same rule `players.sameNamePlayers`
+ * applies. The two legs are exported separately only for the loader
+ * (`convex/bulkLoad.ts`), which has to report HOW a row matched.
+ *
  * Pure apart from the `ctx.db` reads. Imports the
  * verbatim normaliser copy from `entityNearMatch` (parity with
  * `teams.normalizeTeamName` is asserted in `entityNearMatch.test.ts`) so this
@@ -91,20 +104,19 @@ export function teamRowFields(input: TeamIdentityInput): TeamIdentityFields {
 export const TEAM_ERA_SCAN_LIMIT = 16;
 
 /**
- * Every row this sport holds under `fullName` — the identity lookup all paths
- * share.
- *
- * Returns a LIST, and that is the NEO-254 change. Before it, this took the
- * `.first()` row and handed it back as "the team", which is exactly how a 1985
- * Winnipeg Jets card came to point at the franchise that started in 2011. A
- * caller that wants one row must say which year it is asking about — see
- * `resolveTeamForSetYear`.
+ * The rows whose PRIMARY name is `fullName` — the name leg on its own.
  *
  * Normalises the incoming full string (a marketplace payload, a Wikidata
  * label, an operator's typed text, or a composed Location + Name) and hits the
  * compound index. Never inserts.
+ *
+ * NEO-284: this was the whole of `findTeamsByFullName` before aliases; it is
+ * exported because the NCAA/ABL loader reports whether a row matched on its
+ * name or on an alias and so reads the two legs separately. Every OTHER caller
+ * wants the union below — a lookup that sees only the name leg silently
+ * re-parks every alias the operator has already taught the row.
  */
-export async function findTeamsByFullName(
+export async function findTeamsByExactName(
   ctx: QueryCtx | MutationCtx,
   sportId: Id<"selectorOptions">,
   fullName: string,
@@ -117,6 +129,85 @@ export async function findTeamsByFullName(
       q.eq("nameNormalized", nameNormalized).eq("sportId", sportId),
     )
     .take(TEAM_ERA_SCAN_LIMIT);
+}
+
+/**
+ * NEO-284 — the rows that hold `fullName` as an ALIAS. The alias leg on its own.
+ *
+ * One indexed read of the flat `teamAliases` table under the same
+ * token-sorted key the name leg uses, then a `db.get` per hit. A side row whose
+ * team is gone, or whose team's `sportId` no longer agrees, is stale index
+ * residue rather than a candidate: it cannot be cleaned up from a query
+ * context, and leaving it out is the whole of the correction a reader needs
+ * (the same rule `players.sameNamePlayers` applies to `playerAliases`).
+ *
+ * Capped at `TEAM_ERA_SCAN_LIMIT` like the name leg, and for the same reason:
+ * every consumer branches on none / one / several.
+ */
+export async function findTeamsByAlias(
+  ctx: QueryCtx | MutationCtx,
+  sportId: Id<"selectorOptions">,
+  fullName: string,
+): Promise<Doc<"teams">[]> {
+  const aliasNormalized = normalizeEntityName(fullName);
+  if (aliasNormalized.length === 0) return [];
+  const aliasRows = await ctx.db
+    .query("teamAliases")
+    .withIndex("by_alias_normalized_and_sport_id", (q) =>
+      q.eq("aliasNormalized", aliasNormalized).eq("sportId", sportId),
+    )
+    .take(TEAM_ERA_SCAN_LIMIT);
+  const out: Doc<"teams">[] = [];
+  const seen = new Set<string>();
+  for (const row of aliasRows) {
+    // Two side rows for one team under one key cannot be written by
+    // `syncTeamAliases`, but a reader that trusted that would double-count a
+    // legacy row, and double-counting is exactly what turns "one" into "ask".
+    if (seen.has(row.teamId)) continue;
+    seen.add(row.teamId);
+    const team = await ctx.db.get(row.teamId);
+    if (team && team.sportId === sportId) out.push(team);
+  }
+  return out;
+}
+
+/**
+ * Every row this sport holds under `fullName` — the identity lookup all paths
+ * share.
+ *
+ * Returns a LIST, and that is the NEO-254 change. Before it, this took the
+ * `.first()` row and handed it back as "the team", which is exactly how a 1985
+ * Winnipeg Jets card came to point at the franchise that started in 2011. A
+ * caller that wants one row must say which year it is asking about — see
+ * `resolveTeamForSetYear`.
+ *
+ * NEO-284: the UNION of the name leg and the alias leg, deduped by `_id` (a
+ * row whose alias and primary name both normalise to the query is one
+ * candidate, not two — the writer drops an own-name alias, so this is belt
+ * and braces against a legacy row) and capped at `TEAM_ERA_SCAN_LIMIT`.
+ * Alias hits are not ranked below name hits: the consumers of this list count
+ * it, and an alias that quietly won would skip the exactly-one guard that
+ * keeps a shared string from binding a card to the wrong row. See the module
+ * header. Never inserts.
+ */
+export async function findTeamsByFullName(
+  ctx: QueryCtx | MutationCtx,
+  sportId: Id<"selectorOptions">,
+  fullName: string,
+): Promise<Doc<"teams">[]> {
+  const byName = await findTeamsByExactName(ctx, sportId, fullName);
+  if (byName.length >= TEAM_ERA_SCAN_LIMIT) return byName;
+  const byAlias = await findTeamsByAlias(ctx, sportId, fullName);
+  if (byAlias.length === 0) return byName;
+  const seen = new Set<string>(byName.map((row) => row._id));
+  const merged = [...byName];
+  for (const row of byAlias) {
+    if (merged.length >= TEAM_ERA_SCAN_LIMIT) break;
+    if (seen.has(row._id)) continue;
+    seen.add(row._id);
+    merged.push(row);
+  }
+  return merged;
 }
 
 /** What resolving a card's team name concluded. */
