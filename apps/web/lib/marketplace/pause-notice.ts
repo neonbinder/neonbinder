@@ -59,6 +59,20 @@ export const PAUSE_NOTICE_COPY = {
      */
     signInPaused: "Sign-in paused",
     testPaused: "Test paused",
+    /**
+     * Body of the blue "Connected" card while paused. The live card says "you
+     * can test it or clear it below"; with Test disabled that would name a
+     * dead control, so the paused card says what the session is doing instead.
+     */
+    connectedBody: (name: string) =>
+      `We hold a ${name} session, not your password. It's sitting tight until ${name} is back — you can still clear it below.`,
+    /**
+     * One line under the paused Connected card. Clear is the user's one live
+     * control during a pause and it is one-way — they cannot sign back in
+     * until the pause lifts — so the cost is stated before the button.
+     */
+    clearWarning:
+      "Clearing tosses the session — you'd sign in fresh once the pause lifts.",
   },
 
   /** /admin/set-builder — the amber strip above the heading. */

@@ -804,7 +804,7 @@ export const fetchSportLotsSelectorOptions = action({
           success: false,
           options: [],
           message:
-            "SportLots returned no options after retries. Nothing was changed — try again in a minute.",
+            "SportLots didn't give us a straight answer — that's a hiccup on their end, not an empty set. Nothing changed; try again in a minute.",
         };
       }
 

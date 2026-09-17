@@ -670,7 +670,9 @@ describe("fetchSportLotsSelectorOptions — Decision 12: empty after retries is 
 
     expect(result.success).toBe(false);
     expect(result.options).toEqual([]);
-    expect(result.message).toMatch(/no options after retries/i);
+    // Copy review: the message must read as "SportLots misbehaved", never as
+    // "SportLots has nothing for this set" — the inverse of what happened.
+    expect(result.message).toMatch(/hiccup on their end, not an empty set/i);
   }, 10_000);
 
   test("the SL login stub (isSessionExpired) is unchanged: it still reports session_expired, not empty_after_retries", async () => {

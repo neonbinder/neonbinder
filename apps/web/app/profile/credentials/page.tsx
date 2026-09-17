@@ -368,10 +368,14 @@ export default function CredentialsPanel() {
             <div className="p-4 bg-blue-50 dark:bg-blue-900/20 text-blue-800 dark:text-blue-200 border border-blue-200 dark:border-blue-800 rounded-md">
               <strong>Connected to {siteMeta?.label}</strong>
               <p className="text-sm mt-1">
-                We hold a {siteMeta?.label} session, not your password. You can test
-                it or clear it below.
+                {PAUSE_NOTICE_COPY.profile.connectedBody(siteName)}
               </p>
             </div>
+            {/* Clear is one-way during a pause: say so before the button, in
+                the same muted register as the "not yet verified" nudge. */}
+            <p className="text-sm text-muted-foreground">
+              {PAUSE_NOTICE_COPY.profile.clearWarning}
+            </p>
             {/* The two paused controls are disabled AND relabelled — the same
                 label⇔disabled rule as the busy labels below (NEO-128): a
                 control never reads as actionable when it is not. The labels
