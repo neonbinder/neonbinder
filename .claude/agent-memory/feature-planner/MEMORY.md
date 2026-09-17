@@ -1,2 +1,4 @@
 - [Set subtree shape is not fixed](set-subtree-shape-is-not-fixed.md) — mixed levels under setName, ~300 leaves; walk children generically, page reads
 - [Hand-kept validator copies of schema shapes](hand-kept-validator-copies-of-schema-shapes.md) — a new teams/entityReviewQueue field must also land in teamDocValidator and the decision/enrichment copies or every screen fails at runtime
+- [FE-imported convex modules stay env-free](fe-imported-convex-modules-stay-env-free.md) — marketplaceResolvability/selectorSyncStore are bundled by Vite; thread flags in as options
+- [E2E branches on operator flags via -e, not visibility](e2e-branches-on-operator-flags-via-env-not-visibility.md) — `when: true:` on a runner var; `when: visible:` polls 7 s every run (R10)
