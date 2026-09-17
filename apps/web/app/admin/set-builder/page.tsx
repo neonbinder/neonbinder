@@ -3,6 +3,8 @@ import { api } from "@/convex/_generated/api";
 import SetSelector from "@/components/modules/SetSelector";
 import MissingCredentialsBanner from "@/components/SetSelector/MissingCredentialsBanner";
 import ReauthNotice from "@/components/SetSelector/ReauthNotice";
+import PausedNotice from "@/components/SetSelector/PausedNotice";
+import { usePausedPlatforms } from "@/src/hooks/usePausedPlatforms";
 
 /**
  * /admin/set-builder — was /set-selector until NEO-155 gave the admin tools a
@@ -20,6 +22,11 @@ const REQUIRED_SITES = ["buysportscards", "sportlots"];
 
 export default function AdminSetBuilderPage() {
   const profile = useQuery(api.userProfile.getUserProfile);
+  // NEO-287: a paused marketplace is not REQUIRED. The operator has switched
+  // it off deployment-wide, so asking every admin for its credentials before
+  // the builder opens would gate the tool on a sign-in the server refuses.
+  // Syncs run on the remaining side and the strip below says so.
+  const paused = usePausedPlatforms();
 
   if (profile === undefined) {
     return (
@@ -31,6 +38,7 @@ export default function AdminSetBuilderPage() {
 
   const missing = REQUIRED_SITES.filter(
     (site) =>
+      !paused.has(site) &&
       !profile?.siteCredentials?.some(
         (c) => c.site === site && c.hasCredentials,
       ),
@@ -52,12 +60,22 @@ export default function AdminSetBuilderPage() {
   // columns row's overflow-x-auto handles extra columns via horizontal scroll.
   return (
     <div className="space-y-4">
+      {/* NEO-287: the operator's pause switch, shown where syncs are
+          triggered. A warning, not a gate — the cascade keeps working on the
+          marketplaces that are not paused. Renders nothing unless a platform
+          is paused. Sits ABOVE ReauthNotice because paused beats
+          needs-reauth: a paused platform is filtered out of the strip below. */}
+      <PausedNotice sites={paused} />
+
       {/* NEO-278: a lapsed marketplace session used to surface ONLY on
           /profile/credentials while syncs here kept running on the stale
           token. This is the same server-owned `needsReauth` flag, shown where
           the syncs are triggered. A warning, not a gate — the cascade below
           keeps working. Renders nothing unless a platform is flagged. */}
-      <ReauthNotice siteCredentials={profile?.siteCredentials} />
+      <ReauthNotice
+        siteCredentials={profile?.siteCredentials}
+        pausedSites={paused}
+      />
 
       {/* The subtitle is load-bearing beyond decoration: ~47 Maestro flows wait
           on "Build set parameters using marketplace APIs" as the signal that

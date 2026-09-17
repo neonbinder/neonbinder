@@ -46,6 +46,14 @@ import {
  * flag is the server's, and it clears itself when the operator signs in
  * again. `sessionStorage` can throw (private windows, blocked site data), so
  * every touch is guarded and the notice simply stays visible if it does.
+ *
+ * ## Paused beats needs-reauth (NEO-287)
+ *
+ * A platform the operator has paused is filtered out before anything else
+ * happens. Its `needsReauth` flag is left exactly as it was — the seed's
+ * self-heal clears it once the pause lifts — but "Your SportLots session ran
+ * out. Sign in again" would send the reader to a Profile page whose sign-in
+ * is disabled. `PausedNotice` speaks for that platform instead.
  */
 
 const DISMISS_KEY = "nb.reauthNoticeDismissed";
@@ -56,6 +64,11 @@ export interface ReauthNoticeProps {
     | ReadonlyArray<{ site: string; needsReauth?: boolean }>
     | null
     | undefined;
+  /**
+   * Credential site keys the operator has paused (`usePausedPlatforms`).
+   * Never named here even when flagged — see "Paused beats needs-reauth".
+   */
+  pausedSites?: Iterable<string>;
 }
 
 function readDismissed(): string | null {
@@ -77,13 +90,17 @@ function writeDismissed(key: string) {
 /** The set-builder heading `ReauthNotice` parks focus on after Dismiss. */
 export const REAUTH_NOTICE_FOCUS_PARK_ID = "set-builder-heading";
 
-export default function ReauthNotice({ siteCredentials }: ReauthNoticeProps) {
+export default function ReauthNotice({
+  siteCredentials,
+  pausedSites,
+}: ReauthNoticeProps) {
   // Lazy initialiser, the same shape as useSaleTotal's localStorage read: one
   // synchronous read on mount, then React state owns it.
   const [dismissedKey, setDismissedKey] = useState<string | null>(readDismissed);
 
+  const paused = new Set(pausedSites ?? []);
   const sites = (siteCredentials ?? [])
-    .filter((c) => c.needsReauth === true)
+    .filter((c) => c.needsReauth === true && !paused.has(c.site))
     .map((c) => c.site)
     .sort();
 

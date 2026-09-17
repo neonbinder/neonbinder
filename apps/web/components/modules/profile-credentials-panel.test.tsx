@@ -58,11 +58,17 @@ vi.mock("@/convex/_generated/api", () => ({
       getSiteCredentials: "credentials:getSiteCredentials",
     },
     userProfile: { getUserProfile: "userProfile:getUserProfile" },
+    marketplacePause: {
+      getPausedPlatforms: "marketplacePause:getPausedPlatforms",
+    },
   },
 }));
 
 vi.mock("convex/react", () => ({
-  useQuery: () => mocks.profile,
+  // Routed by ref: the panel now subscribes to the NEO-287 pause query as
+  // well as the profile, and the pause query answers "nothing paused" here.
+  useQuery: (ref: string) =>
+    ref === "marketplacePause:getPausedPlatforms" ? [] : mocks.profile,
   useMutation: () => vi.fn(),
   useAction: (ref: string) => {
     if (ref === "credentials:saveCredentials") return mocks.saveCredentials;

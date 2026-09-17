@@ -11,6 +11,7 @@ import {
   BSC_NO_LINKED_SET_MESSAGE,
   NO_MARKETPLACE_IDS_MESSAGE,
 } from "../../convex/marketplaceResolvability";
+import { PAUSE_NOTICE_COPY, sideLabel } from "@/lib/marketplace/pause-notice";
 
 /**
  * Combined attach dialog (NEO-6 phase 1, reworked in NEO-196). Lists BSC and
@@ -171,6 +172,16 @@ export default function AttachSetsDialog({
    * read as an explanation.
    */
   const [bscNoSetNote, setBscNoSetNote] = useState<string | null>(null);
+  /**
+   * NEO-287 — the side is PAUSED by the operator, so it was never asked.
+   *
+   * Read off the result's `pausedSides`, the same field the sync results
+   * carry next to `skippedSides`, not off the message text and not off a
+   * client-side guess. A paused pane offers nothing — no list, no search, no
+   * browse — and says why; the other pane carries the attach alone.
+   */
+  const [bscPaused, setBscPaused] = useState(false);
+  const [slPaused, setSlPaused] = useState(false);
   const [bscLoading, setBscLoading] = useState(false);
   const [slLoading, setSlLoading] = useState(false);
   // Per-pane, not shared: one marketplace being down must not blank the other,
@@ -241,10 +252,16 @@ export default function AttachSetsDialog({
     setSlLoading(true);
     setSlError(null);
     setSlSkipNote(null);
+    setSlPaused(false);
     (async () => {
       try {
         const result = await fetchSlAttachSets({ selectorOptionId });
         if (cancelled) return;
+        if (pausedSidesOf(result).includes("sportlots")) {
+          setSlPaused(true);
+          setSlCandidates([]);
+          return;
+        }
         if (!result.success) {
           setSlError(result.message || "Failed to load SportLots sets");
           setSlCandidates([]);
@@ -285,6 +302,7 @@ export default function AttachSetsDialog({
     setBscLoading(true);
     setBscError(null);
     setBscSkipNote(null);
+    setBscPaused(false);
     (async () => {
       try {
         const result = await fetchBscAttachOptions({
@@ -293,6 +311,11 @@ export default function AttachSetsDialog({
           ...(bscSetSlug ? { setSlug: bscSetSlug } : {}),
         });
         if (cancelled) return;
+        if (pausedSidesOf(result).includes("bsc")) {
+          setBscPaused(true);
+          setBscCandidates([]);
+          return;
+        }
         if (!result.success) {
           setBscError(result.message || "Failed to load BSC options");
           setBscCandidates([]);
@@ -505,6 +528,7 @@ export default function AttachSetsDialog({
 
         <div className="flex-1 overflow-hidden p-6 grid grid-cols-1 md:grid-cols-2 gap-6">
           <Pane
+            side="bsc"
             paneLabel="BSC candidates"
             title={
               bscView === "sets"
@@ -520,7 +544,9 @@ export default function AttachSetsDialog({
                 : undefined
             }
             breadcrumb={
-              bscView === "sets" ? (
+              // A paused pane has nowhere to browse: every rung is a fetch
+              // the server refuses.
+              bscPaused ? null : bscView === "sets" ? (
                 // a11y/correctness (accessibility audit, NEO-252 follow-up) —
                 // when the hop above fired because there is no linked BSC set
                 // (`bscNoSetNote` set, `bscSetSlug` still undefined),
@@ -557,6 +583,7 @@ export default function AttachSetsDialog({
             error={bscError}
             emptyText={bscEmptyText}
             emptyNote={bscSkipNote}
+            paused={bscPaused}
             isEmpty={filteredBsc.length === 0}
           >
             {bscView === "sets"
@@ -587,6 +614,7 @@ export default function AttachSetsDialog({
           </Pane>
 
           <Pane
+            side="sportlots"
             paneLabel="SportLots candidates"
             title={`SportLots · ${allSlSetsLabel}`}
             subtitle="SportLots files set and variant as one, so every set here is attachable."
@@ -598,6 +626,7 @@ export default function AttachSetsDialog({
             error={slError}
             emptyText="No unattached SportLots sets."
             emptyNote={slSkipNote}
+            paused={slPaused}
             isEmpty={filteredSl.length === 0}
           >
             {filteredSl.map((c) => (
@@ -699,12 +728,28 @@ function isNoLinkedSetMessage(result: {
 }
 
 /**
+ * NEO-287 — the slot sides a result reports as paused.
+ *
+ * A narrow optional read: the attach actions gain `pausedSides` alongside the
+ * sync results' `skippedSides`, and a result from a deployment without it
+ * simply reads as "nothing paused". Checked BEFORE `success`, so the pane
+ * renders the pause whichever way the server shapes a refused side.
+ */
+function pausedSidesOf(result: unknown): readonly string[] {
+  const sides = (result as { pausedSides?: unknown } | null)?.pausedSides;
+  return Array.isArray(sides)
+    ? sides.filter((s): s is string => typeof s === "string")
+    : [];
+}
+
+/**
  * Shared pane chrome — heading, optional breadcrumb, search box, count, and
  * the loading / error / empty states. Both marketplaces render the same shell
  * so the two sides read as one control surface even though only BSC has a
  * second rung to browse.
  */
 function Pane({
+  side,
   paneLabel,
   title,
   subtitle,
@@ -718,9 +763,12 @@ function Pane({
   error,
   emptyText,
   emptyNote,
+  paused = false,
   isEmpty,
   children,
 }: {
+  /** Which marketplace this pane lists — names the paused sentence. */
+  side: Side;
   /**
    * Stable accessible name for the pane. Deliberately NOT the heading, which
    * changes as the BSC pane browses — this is the handle screen readers and
@@ -757,6 +805,12 @@ function Pane({
    * would blame the filter for a pane that was never populated.
    */
   emptyNote?: string | null;
+  /**
+   * NEO-287 — the operator has paused this marketplace. Outranks every state
+   * below it: no search box (nothing to filter), no loading line (nothing in
+   * flight), no empty copy (the marketplace was never asked), no rows.
+   */
+  paused?: boolean;
   isEmpty: boolean;
   children: React.ReactNode;
 }) {
@@ -789,20 +843,31 @@ function Pane({
           {notice}
         </p>
       )}
-      <Input
-        bare
-        type="text"
-        value={search}
-        onChange={(e) => onSearch(e.target.value)}
-        placeholder="Search…"
-        aria-label={searchAriaLabel}
-        className={`${fieldClass("search")} px-3 py-1.5 text-sm mb-2`}
-      />
+      {!paused && (
+        <Input
+          bare
+          type="text"
+          value={search}
+          onChange={(e) => onSearch(e.target.value)}
+          placeholder="Search…"
+          aria-label={searchAriaLabel}
+          className={`${fieldClass("search")} px-3 py-1.5 text-sm mb-2`}
+        />
+      )}
       <ul className="flex-1 overflow-y-auto space-y-1 pr-1">
-        {loading && (
+        {paused && (
+          // Amber, the house "nothing broke" colour: the pane is quiet by the
+          // operator's decision, not because a marketplace failed (pink) or
+          // came back empty (gray). amber-300 on this panel's gray-900 ground
+          // clears WCAG 1.4.3 comfortably.
+          <li className="text-xs text-amber-300 px-2 py-1 leading-snug">
+            {PAUSE_NOTICE_COPY.pane(sideLabel(side))}
+          </li>
+        )}
+        {!paused && loading && (
           <li className="text-xs text-gray-500 italic px-2 py-1">Loading…</li>
         )}
-        {!loading && error && (
+        {!paused && !loading && error && (
           // Surfaced per pane, not merged into one dialog-level message: before
           // NEO-196 an adapter failure was swallowed entirely and read as "this
           // marketplace has nothing", which is the opposite of what it means.
@@ -813,7 +878,7 @@ function Pane({
             {error}
           </li>
         )}
-        {!loading && !error && isEmpty && (
+        {!paused && !loading && !error && isEmpty && (
           <li
             // gray-400, not gray-500: on this panel's ground gray-500 lands at
             // 3.67:1, under the 4.5:1 WCAG 1.4.3 floor for body text — and this
@@ -824,7 +889,7 @@ function Pane({
               (search.trim() ? `No matches for “${search.trim()}”.` : emptyText)}
           </li>
         )}
-        {!loading && !error && children}
+        {!paused && !loading && !error && children}
       </ul>
     </section>
   );
