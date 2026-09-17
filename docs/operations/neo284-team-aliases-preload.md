@@ -204,3 +204,31 @@ wrong for a college side.
   next run.
 - Restoring the whole deployment is a last resort and is NEO-190's
   procedure, not this document's. A bad set is re-synced, never restored.
+
+## Rehearsal of record — 2026-09-16, prod snapshot restored into the PR preview
+
+- Restore: 178,253 documents, ~2 min. Five sport rows present; each carried an
+  `NCAA` league row named exactly that (with conference aliases), so
+  `league: "NCAA"` resolved everywhere and no league was minted.
+- Dry run: 1,336 rows — Baseball 318 create / 28 adopt / 4 ambiguous, Football
+  317 create, Basketball 366 create, Hockey 67 create, Soccer 156 create / 57
+  adopt / 1 ambiguous, ABL 19 create / 3 adopt. Zero `wikidataMismatch`.
+- Every ambiguity was the same shape: prod holds a properly named row AND a
+  second row whose primary name is the raw Wikidata label — `LSU / Tigers`
+  beside `LSU / Tigers baseball` (also Arkansas Razorbacks, Oregon State
+  Beavers, Texas A&M Aggies in Baseball) and `Charlotte / 49ers` beside the pro
+  club `Charlotte` in Soccer. Answered as `adopt` the properly named row; the
+  owned alias is reported in `aliasesSkipped` and never written. **Those
+  label-named duplicates remain on prod after the load** and keep catching
+  Wikidata career entries under their own label until an operator merges them;
+  there is no merge-teams tool yet, so this is a follow-up, not a loader
+  concern.
+- Load: 1,243 created, 93 adopted, 674 aliases appended; `--verify` clean on
+  every sport (0 would-create / 0 ambiguous / 0 aliasesAdded); disarmed and
+  `env get` confirmed unset.
+- Acceptance probe (set-sync driver on 2026 › All Brands › ONIT Athlete West
+  Virginia Mountaineers): 38 of 41 unknown players decided by rule; three
+  parked on close-only surname matches (driver policy); the team parked
+  because an alias-adopted row did not yet answer to the canonical name —
+  fixed the same day (adopt now unions the incoming canonical full name,
+  subject to the ownership check). Re-verified after the fix.

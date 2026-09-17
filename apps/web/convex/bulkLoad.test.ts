@@ -7,16 +7,18 @@
 
 import { convexTest } from "convex-test";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { internal } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { normalizeTeamName } from "./teams";
+import { findTeamsByFullName } from "./lib/teamRow";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
 }).glob("./**/*.*s");
 
 const CONFIRM = "BULK_LOAD" as const;
+const ADMIN = { subject: "admin_bulk_load", role: "admin" };
 type T = ReturnType<typeof convexTest>;
 
 afterEach(() => vi.unstubAllEnvs());
@@ -337,13 +339,118 @@ describe("adopt-by-alias, both directions, always reports a suggestion, never re
       matchedOn: "Washington Huskies baseball",
       suggestion: { location: "Washington", name: "Huskies" },
       filled: expect.arrayContaining(["leagueId", "yearsActive", "wikidataId"]),
-      aliasesAdded: 2,
+      // The two dataset aliases the row did not have, PLUS the incoming
+      // canonical name — see the next test for why that one matters.
+      aliasesAdded: 3,
     });
     const team = await t.run(async (ctx) => ctx.db.get(labelRow));
     // Never renamed.
     expect(team!.name).toBe("Washington Huskies baseball");
     expect(team!.location).toBeUndefined();
-    expect(team!.aliases).toEqual(["UW Huskies", "University of Washington"]);
+    expect(team!.aliases).toEqual([
+      "Washington Huskies",
+      "UW Huskies",
+      "University of Washington",
+    ]);
+  });
+
+  test("(c) rehearsal gap: adopt-by-alias adds the incoming CANONICAL name as an alias, so the checklist string resolves and the wizard offers Link", async () => {
+    armed();
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const labelRow = await seedTeam(t, sportId, {
+      location: "West Virginia",
+      name: "Mountaineers baseball",
+    });
+    const row = {
+      key: "wvu",
+      location: "West Virginia",
+      name: "Mountaineers",
+      // The dataset's alias list never carries the canonical name itself.
+      aliases: ["West Virginia Mountaineers baseball", "WVU", "West Virginia University"],
+    };
+
+    const first = await t.mutation(internal.bulkLoad.upsertTeams, {
+      confirm: CONFIRM,
+      sport: "Baseball",
+      teams: [row],
+    });
+    expect(first.results[0]).toMatchObject({
+      status: "adopted",
+      id: labelRow,
+      matchedBy: "alias",
+      aliasesAdded: 3,
+    });
+    const team = await t.run(async (ctx) => ctx.db.get(labelRow));
+    expect(team!.name).toBe("Mountaineers baseball");
+    expect(team!.aliases).toEqual(["West Virginia Mountaineers", "WVU", "West Virginia University"]);
+
+    // The string a checklist prints now finds the row through the shared
+    // lookup — this is acceptance 3 for a label-named prod row.
+    expect(
+      await t.run((ctx) => findTeamsByFullName(ctx, sportId, "West Virginia Mountaineers")),
+    ).toHaveLength(1);
+    // …and the wizard's near-match panel ranks it exact with the alias, which
+    // is what flips its primary action from New Team to Link.
+    const near = await t
+      .withIdentity(ADMIN)
+      .query(api.teams.nearMatches, { name: "West Virginia Mountaineers", sportId });
+    expect(near).toEqual([
+      {
+        _id: labelRow,
+        name: "West Virginia Mountaineers baseball",
+        confidence: "exact",
+        matchedAlias: "West Virginia Mountaineers",
+      },
+    ]);
+
+    // Idempotent: the second run adopts through the alias it just wrote and
+    // adds nothing.
+    const second = await t.mutation(internal.bulkLoad.upsertTeams, {
+      confirm: CONFIRM,
+      sport: "Baseball",
+      teams: [row],
+    });
+    expect(second.results[0]).toMatchObject({ status: "adopted", id: labelRow, aliasesAdded: 0 });
+    expect(await t.run(async (ctx) => ctx.db.query("teams").collect())).toHaveLength(1);
+  });
+
+  test("(d) the double-row case: when another row's PRIMARY name IS the canonical name, it is skipped, not written", async () => {
+    armed();
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    // Prod holds BOTH a split row and a label-named row for one program. A
+    // replayed decision picks the label row; its canonical name belongs to
+    // the other row and must not become an alias here.
+    const split = await seedTeam(t, sportId, { location: "LSU", name: "Tigers" });
+    const label = await seedTeam(t, sportId, { location: "LSU", name: "Tigers baseball" });
+
+    const res = await t.mutation(internal.bulkLoad.upsertTeams, {
+      confirm: CONFIRM,
+      sport: "Baseball",
+      teams: [
+        {
+          key: "lsu",
+          location: "LSU",
+          name: "Tigers",
+          aliases: ["LSU Tigers baseball", "Louisiana State University"],
+          decision: { adopt: label },
+        },
+      ],
+    });
+    expect(res.results[0]).toMatchObject({
+      status: "adopted",
+      id: label,
+      matchedBy: "decision",
+      aliasesAdded: 1,
+      aliasesSkipped: [{ alias: "LSU Tigers", id: split, name: "LSU Tigers" }],
+    });
+    const team = await t.run(async (ctx) => ctx.db.get(label));
+    expect(team!.aliases).toEqual(["Louisiana State University"]);
+    // The split row still edits itself freely — no lock-out was created.
+    await t
+      .withIdentity(ADMIN)
+      .mutation(api.teams.saveTeamFields, { id: split, yearsActive: { from: 1893 } });
   });
 
   test("(b) a prod row that already carries the incoming NAME as an alias is adopted the other way", async () => {

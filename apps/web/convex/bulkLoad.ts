@@ -831,7 +831,7 @@ async function loadTeams(
     const adopt = async (
       existing: Doc<"teams">,
       how: { matchedBy: "name" | "alias" | "decision"; matchedOn?: string },
-      skipped: AliasOwner[],
+      skippedIn: AliasOwner[],
     ): Promise<TeamResult> => {
       const patch: Record<string, unknown> = {};
       const filled: string[] = [];
@@ -872,11 +872,38 @@ async function loadTeams(
        * "Washington Huskies baseball" is not written as an alias of the row
        * that is named that. Aliases another row owns were removed by the
        * caller before this point.
+       *
+       * The incoming CANONICAL full name joins the union too, when it is not
+       * the adopted row's own name. Rehearsal found the gap: prod's
+       * label-named "West Virginia / Mountaineers baseball" was adopted
+       * through its label, the dataset's aliases were unioned — and "West
+       * Virginia Mountaineers" itself was never among them, because
+       * `normalizeTeamAliasList(row.aliases, fullName)` drops the incoming
+       * full name as "the row's own" and the dataset excludes it by
+       * construction. So the row still did not answer to the one string a
+       * checklist actually prints, and the wizard offered New Team instead of
+       * Link. Plan decision 4 — "the row already answers to the canonical
+       * name via the unioned aliases" — only holds if the canonical name is
+       * in the union. Same ownership rule as every other alias: another
+       * row's primary name or alias owns it (the LSU / Tigers beside LSU /
+       * Tigers baseball case, reachable through a replayed decision) → it is
+       * reported in `aliasesSkipped` and not written.
        */
+      const skipped = [...skippedIn];
+      const canonicalIsNew = existing.nameNormalized !== fields.nameNormalized;
+      if (canonicalIsNew) {
+        const owners = (await findTeamsByFullName(ctx, sportId, fullName)).filter(
+          (holder) => holder._id !== existing._id,
+        );
+        for (const holder of owners) {
+          skipped.push({ alias: fullName, id: holder._id, name: teamFullName(holder) });
+        }
+      }
       const skippedKeys = new Set(skipped.map((s) => normalizeTeamName(s.alias)));
-      const safeAliases = aliases.filter(
-        (alias) => !skippedKeys.has(normalizeTeamName(alias)),
-      );
+      const safeAliases = [
+        ...(canonicalIsNew ? [fullName] : []),
+        ...aliases,
+      ].filter((alias) => !skippedKeys.has(normalizeTeamName(alias)));
       const existingAliases = existing.aliases ?? [];
       const existingKeys = new Set(existingAliases.map((a) => normalizeTeamName(a)));
       const additions = safeAliases.filter(
