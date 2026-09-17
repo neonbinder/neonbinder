@@ -11,6 +11,10 @@ import { buildLoginDiagnostic } from "../services/login-diagnostic";
 
 // SportLots login POST endpoint — recorded as diagnostic.url on failures.
 const SL_LOGIN_URL = "https://www.sportlots.com/cust/custbin/signin.tpl";
+// NEO-286: SportLots added a security check to sign-in on 2026-09-17. A
+// direct POST to signin.tpl is rejected unless it carries this form
+// parameter; the value was supplied by the SportLots owner.
+const SL_LOGIN_CHECK = "SL391X";
 
 // Retry budget for transient SportLots failures.
 // Backoffs apply BETWEEN attempts: 1→2, 2→3, 3→4, 4→5.
@@ -559,6 +563,7 @@ export class SportlotsAdapter extends BaseAdapter {
       const body = new URLSearchParams({
         email_val: credentials.username,
         psswd: credentials.password,
+        login_check: SL_LOGIN_CHECK,
       });
 
       log("POST /cust/custbin/signin.tpl");

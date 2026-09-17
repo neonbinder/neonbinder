@@ -404,6 +404,37 @@ function cacheAwareFetch({ onValidate, onSignin } = {}) {
   return stub;
 }
 
+/**
+ * NEO-286: on 2026-09-17 SportLots added a security check to sign-in. A
+ * direct POST to signin.tpl must carry `login_check=SL391X` or the login is
+ * rejected. Pin the whole form body so a refactor cannot silently drop it.
+ */
+describe("SportlotsAdapter.login — NEO-286 login_check form parameter", () => {
+  it("POSTs login_check=SL391X alongside the credentials", async () => {
+    const SportlotsAdapter = loadSportlotsAdapter();
+    let signinBody = null;
+    const stub = cacheAwareFetch({
+      onSignin: (opts) => {
+        signinBody = new URLSearchParams(opts.body);
+        return response({ status: 200, body: OK_LOGIN_BODY });
+      },
+    });
+    const restore = stubFetch(stub);
+    try {
+      const adapter = new SportlotsAdapter(null);
+      const result = await adapter.login("sportlots-credentials-user_test");
+      assert.equal(result.success, true);
+      assert.equal(stub.signinCalls(), 1, "should POST to signin.tpl exactly once");
+      assert.ok(signinBody, "signin POST body should be captured");
+      assert.equal(signinBody.get("login_check"), "SL391X");
+      assert.equal(signinBody.get("email_val"), "user@example.com");
+      assert.equal(signinBody.get("psswd"), "pw");
+    } finally {
+      restore();
+    }
+  });
+});
+
 describe("SportlotsAdapter.login token cache", () => {
   it("returns success without hitting signin when cached cookie is unexpired and valid", async () => {
     const updates = [];
