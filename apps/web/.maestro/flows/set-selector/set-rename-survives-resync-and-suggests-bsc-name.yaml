@@ -77,6 +77,12 @@ tags:
 # rule for every level it walks.
 # ============================================================
 
+# NEO-287 — no paused branch in this flow: `setName` is a BSC-only level, so
+# the rename, the forced Sync Sets and BSC's suggestion are identical in both
+# modes. The one difference is UPSTREAM of it: under the pause the Hockey →
+# 2024 Manufacturers column is empty (SportLots' brand list is its only
+# source) and the cold util adds `Topps` by hand — this flow is the sole
+# writer of that path (SET-REGISTRY.md).
 - runFlow:
     file: util-drill-to-cold-real-set.yaml
     env:

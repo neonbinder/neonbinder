@@ -223,6 +223,26 @@ tags:
     timeout: 60000
 - assertVisible:
     id: "BSC base candidate: .*"
+# NEO-287 — the SportLots pane, by mode (`-e PAUSED_PLATFORMS`, decided by
+# util-paused-platforms). This set is one-sided in BOTH modes and the picker
+# is cancelled in both; what differs is what the pane SAYS: live, SportLots'
+# catalogue is offered (and declined); paused, the pane says the platform is
+# on pause and offers nothing. Both branches are hard (R2).
+- runFlow:
+    file: ../util/util-paused-platforms.yaml
+- runFlow:
+    when:
+      true: "${!output.SL_PAUSED}"
+    commands:
+      - assertVisible:
+          id: "SportLots base candidate: .*"
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      - assertVisible: "SportLots is on pause — no SportLots sets to pick from right now. Your existing SportLots links stay put."
+      - assertNotVisible:
+          id: "SportLots base candidate: .*"
 - tapOn: "Cancel"
 - assertVisible:
     text: ".*Base mapping cancelled.*"

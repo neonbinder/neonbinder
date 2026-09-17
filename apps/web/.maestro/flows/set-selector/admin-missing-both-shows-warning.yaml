@@ -11,7 +11,30 @@ tags:
 - extendedWaitUntil:
     visible: "Set Builder requires marketplace credentials"
     timeout: 45000
-- assertVisible: ".*BuySportsCards and SportLots.*"
+# NEO-287 — which platforms the banner names depends on the operator's pause
+# switch (`-e PAUSED_PLATFORMS`, decided once by util-paused-platforms, R3): a
+# paused platform is not REQUIRED (plan decision 5), so with SportLots paused
+# this credential-less admin is gated on BuySportsCards ALONE and the banner
+# must name only that. Both branches are hard (R2); the rest of the flow (the
+# panel is absent, the CTA lands on the profile) is shared.
+- runFlow:
+    file: ../util/util-paused-platforms.yaml
+- runFlow:
+    when:
+      true: "${!output.SL_PAUSED}"
+    commands:
+      - assertVisible: ".*BuySportsCards and SportLots.*"
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      # "BuySportsCards" alone, inside the sentence, and SportLots not named
+      # anywhere on the banner (the pause strip lives on the panel this
+      # account cannot open, so it is not here either).
+      - assertVisible: ".*You need to connect.*"
+      - assertVisible: "BuySportsCards"
+      - assertNotVisible: ".*BuySportsCards and SportLots.*"
+      - assertNotVisible: "SportLots"
 - assertNotVisible: ".*Build set parameters using marketplace APIs.*"
 - assertNotVisible: "Sync Sports"
 

@@ -59,6 +59,23 @@ tags:
 # VALUE you pass must not be a full-string match for an ancestor's collapsed
 # chip, or the gate is satisfied before the column has loaded. Hockey / 2024 /
 # Topps is safe (no level's value equals another's).
+#
+# ── NEO-287: THE MANUFACTURER LEVEL WHILE SPORTLOTS IS ON PAUSE ─────────────
+# Manufacturer rows come from SportLots' brand list and from nowhere else (BSC
+# has no manufacturer axis — convex/platformLevels.ts; its sets are filed under
+# whatever manufacturer rows exist, by name prefix). So while the operator has
+# SportLots paused (`-e PAUSED_PLATFORMS`, decided once by
+# util-paused-platforms), a COLD Manufacturers column syncs to NOTHING: it ends
+# "done" carrying the paused notice, and the row this util is asked to select
+# does not exist. The paused branch below adds it through the column's own
+# "+ Custom" form — the product's path for a row without marketplace ids
+# (invariant 6) — and the Sets column then files BSC's sets under it exactly as
+# it does under a marketplace-supplied row. Every caller of this util is the
+# SOLE WRITER of its path (SET-REGISTRY.md), which is what makes a global
+# create safe here; the create is guarded so a local re-run finds the row.
+# When the pause lifts, the next marketplace sync matches SportLots' own row
+# to this one by name (`storeSelectorOptions`: id first, name second) and
+# attaches the id — no second row. The live path is unchanged.
 
 # ── NAVIGATE ─────────────────────────────────────────────────────────────────
 - openLink: ${APP_URL || "http://localhost:3000"}/set-selector
@@ -182,6 +199,66 @@ tags:
       - extendedWaitUntil:
           notVisible: "Syncing Manufacturer Options"
           timeout: 150000
+
+# NEO-287 — under the pause the column is EMPTY and settled; add the row. See
+# the header. Nothing runs here on a live deployment (a pure script decides).
+- runFlow:
+    file: ../util/util-paused-platforms.yaml
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      # Settled = the column's "done" notice is up (the paused sentence with
+      # its own `Dismiss Manufacturers notice`; never tapped — the notice is
+      # per column and shown to every worker). No marketplace is asked on
+      # this path, so this is one Convex action round-trip: the 7000 bar.
+      - extendedWaitUntil:
+          visible:
+            id: "Dismiss Manufacturers notice"
+          timeout: 7000
+      - assertVisible: "SportLots is on pause: nothing from SportLots was asked for or changed."
+      # The `notVisible` guard is the documented R10 exception — it costs a
+      # poll only on a re-run that already minted the row.
+      - runFlow:
+          when:
+            notVisible:
+              text: ${MANUFACTURER || "Topps"}
+              below:
+                text: "Manufacturers"
+          commands:
+            - scrollUntilVisible:
+                element:
+                  id: "Add custom Manufacturers"
+                centerElement: true
+                timeout: 7000
+            - tapOn:
+                id: "Add custom Manufacturers"
+            - extendedWaitUntil:
+                visible: "Add Custom Entry"
+                timeout: 7000
+            - tapOn: "Enter custom value..."
+            - inputText: ${MANUFACTURER || "Topps"}
+            # NEO-219: two Enters — the manufacturer level is parent-scoped,
+            # so the create confirm always follows the first.
+            - pressKey: Enter
+            - extendedWaitUntil:
+                visible:
+                  id: "Create manufacturer"
+                timeout: 7000
+            - tapOn:
+                id: "Create manufacturer"
+            - extendedWaitUntil:
+                notVisible: "Add Custom Entry"
+                timeout: 7000
+      # Written: the row is in the column (short column, no search input —
+      # the `notVisible: "Sets"` branch below taps it by header anchor).
+      - extendedWaitUntil:
+          visible:
+            text: ${MANUFACTURER || "Topps"}
+            below:
+              text: "Manufacturers"
+          timeout: 7000
+
 - extendedWaitUntil:
     visible: ".*Search manufacturers.*|${MANUFACTURER || 'Topps'}"
     timeout: 60000

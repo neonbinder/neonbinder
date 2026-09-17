@@ -175,6 +175,15 @@ tags:
     centerElement: true
 - tapOn: "Sync Sports"
 
+# NEO-287 — the forced sync runs on whatever the operator has not paused
+# (`-e PAUSED_PLATFORMS`, decided by util-paused-platforms). The feature —
+# the hand-made row survives — is the same either way; what differs is the
+# column's "done" notice: under the pause every synced column carries the
+# paused sentence (SyncDoneNotice, stored per column), live it must not. The
+# notice is asserted AFTER the sync settles, below; the flag is decided here.
+- runFlow:
+    file: ../util/util-paused-platforms.yaml
+
 # Wait for "Syncing Sport Options" to appear — confirms the sync form mounted
 # and the action is in-flight. R5 fix: this is a UI form mount (local state
 # machine flip), not a marketplace round-trip — 7s default is sufficient.
@@ -202,6 +211,19 @@ tags:
 - extendedWaitUntil:
     notVisible: "Syncing Sport Options"
     timeout: 55000
+# NEO-287 — see the note at "Sync Sports" above. The negative is cheap on a
+# live run (the sentence is absent at the first read) and paired with the
+# "Baseball" positive further down.
+- runFlow:
+    when:
+      true: "${!output.SL_PAUSED}"
+    commands:
+      - assertNotVisible: "SportLots is on pause: nothing from SportLots was asked for or changed."
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      - assertVisible: "SportLots is on pause: nothing from SportLots was asked for or changed."
 
 # Error-path handler: if the FE backstop fired (38s), the form stays visible
 # with "Cancel" (hasError=true) or "Close" (rare: run()→undefined path).

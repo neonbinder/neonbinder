@@ -39,6 +39,32 @@ tags:
 #     credential env vars need to be passed.
 #   - This util does NOT reset the DB or save credentials — `setup.yaml` and
 #     `worker-bootstrap` do that. Don't rely on this util for either.
+#
+# ── NEO-287: THE PICKER WHILE SPORTLOTS IS ON PAUSE ─────────────────────────
+# With the operator's pause on (`-e PAUSED_PLATFORMS`, decided once by
+# util-paused-platforms), the picker's SportLots pane is never asked: it shows
+# the paused sentence and offers NO candidate, while the BSC pane loads as
+# usual and Confirm works off a BSC pick alone. Two things follow.
+#
+#   1. `baseHasMapping` counts the SPORTLOTS slot only (SetSelector.tsx), so a
+#      Base confirmed BSC-only still reads as UNMAPPED: every visit auto-opens
+#      the picker again (never "Re-map Base"), and after a BSC-only confirm the
+#      mapping block renders neither button. That is pre-existing product
+#      behaviour NEO-219 recorded when it first allowed a BSC-only confirm;
+#      the pause makes it the common case. Reported to the coordinator as a
+#      finding; the flows do not work around it beyond what is written here.
+#   2. Every caller of this util except the seed is READ-ONLY on its set
+#      (R7a, SET-REGISTRY.md). Confirming BSC-only here would be a write to a
+#      registered set from a non-writer on every drill. So the PAUSED branch
+#      proves the pane (the paused sentence, a BSC candidate present, no
+#      SportLots candidate) and then leaves the picker the no-write way —
+#      Cancel → "Base mapping cancelled" → Close → "Map Base Set" — the exact
+#      path checklist-wizard-link-team-saves-alias takes on its one-sided set.
+#      The checklist below still mounts: `cardChecklistId` is the variantType
+#      id the moment Base is selected, regardless of any mapping. The seed,
+#      the one writer, confirms BSC-only in its own flow.
+#
+# The LIVE branch (pick both sides, confirm) is unchanged.
 
 # ============================================================
 # DRILL TO 2024 TOPPS CHROME + SYNC VARIANT TYPES
@@ -148,39 +174,94 @@ tags:
     centerElement: true
     timeout: 7000
 
-# Path A — the picker is open: PICK a set on each side, then confirm.
+# NEO-287 — decide the branch (pure script; idempotent for callers that
+# already ran it).
+- runFlow:
+    file: ../util/util-paused-platforms.yaml
+# LIVE: pick both sides and confirm, verbatim. PAUSED: prove the pane, leave
+# without writing — see the header.
 - runFlow:
     when:
-      visible: "Select Base Set"
+      true: "${!output.SL_PAUSED}"
     commands:
-      # The confirm button reads "Loading…" until the live SportLots + BSC
-      # round-trip lands, then flips to "Confirm Base Set". That flip is the
-      # marketplace wait (R5 exception) and the gate that the candidate rows
-      # tapped below exist at all.
-      - extendedWaitUntil:
-          visible: "Confirm Base Set"
-          timeout: 45000
-      # NEO-219 — PICK BEFORE CONFIRMING. The picker used to select rows on the
-      # operator's behalf and Confirm merely accepted them; now nothing below an
-      # exact set-name match is pre-selected, Confirm is disabled until something
-      # is picked, and only what is picked is linked. Both lists render
-      # best-match-first, so the FIRST row on each side is the best-ranked
-      # candidate — what the old build selected on its own, except where
-      # NEO-219's re-ranking (an exact manufacturer match now scores BELOW the
-      # generic "Base" rows) deliberately promotes a better one.
-      #
-      # The labels are the marketplaces' own words and are deliberately NOT
-      # pinned: SportLots names a set's base row differently from set to set.
-      # `id:` is a full-string regex in Maestro, so "…candidate: .*" reads as
-      # "the first candidate row on this side".
-      - tapOn:
-          id: "BSC base candidate: .*"
-      - tapOn:
-          id: "SportLots base candidate: .*"
-      - tapOn: "Confirm Base Set"
-      - extendedWaitUntil:
-          notVisible: "Select Base Set"
-          timeout: 10000
+      # Path A — the picker is open: PICK a set on each side, then confirm.
+      - runFlow:
+          when:
+            visible: "Select Base Set"
+          commands:
+            # The confirm button reads "Loading…" until the live SportLots + BSC
+            # round-trip lands, then flips to "Confirm Base Set". That flip is the
+            # marketplace wait (R5 exception) and the gate that the candidate rows
+            # tapped below exist at all.
+            - extendedWaitUntil:
+                visible: "Confirm Base Set"
+                timeout: 45000
+            # NEO-219 — PICK BEFORE CONFIRMING. The picker used to select rows on the
+            # operator's behalf and Confirm merely accepted them; now nothing below an
+            # exact set-name match is pre-selected, Confirm is disabled until something
+            # is picked, and only what is picked is linked. Both lists render
+            # best-match-first, so the FIRST row on each side is the best-ranked
+            # candidate — what the old build selected on its own, except where
+            # NEO-219's re-ranking (an exact manufacturer match now scores BELOW the
+            # generic "Base" rows) deliberately promotes a better one.
+            #
+            # The labels are the marketplaces' own words and are deliberately NOT
+            # pinned: SportLots names a set's base row differently from set to set.
+            # `id:` is a full-string regex in Maestro, so "…candidate: .*" reads as
+            # "the first candidate row on this side".
+            - tapOn:
+                id: "BSC base candidate: .*"
+            - tapOn:
+                id: "SportLots base candidate: .*"
+            - tapOn: "Confirm Base Set"
+            - extendedWaitUntil:
+                notVisible: "Select Base Set"
+                timeout: 10000
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      # Path A under the pause — see the header. The picker auto-opens on every
+      # visit here (a BSC-only mapping reads as unmapped), so this is the
+      # common case, not the first-run one.
+      - runFlow:
+          when:
+            visible: "Select Base Set"
+          commands:
+            # "Loading…" → "Confirm Base Set" is the BSC round-trip landing
+            # (R5 marketplace exception) and the gate that the BSC candidate
+            # row below exists at all.
+            - extendedWaitUntil:
+                visible: "Confirm Base Set"
+                timeout: 45000
+            # THE PAUSED PANE (copy: lib/marketplace/pause-notice.ts), and a
+            # BSC candidate really offered — the positive that makes the
+            # SportLots negative meaningful.
+            - assertVisible: "SportLots is on pause — no SportLots sets to pick from right now. Your existing SportLots links stay put."
+            - assertVisible:
+                id: "BSC base candidate: .*"
+            - assertNotVisible:
+                id: "SportLots base candidate: .*"
+            # Leave without writing (header, point 2). The picker is a fixed
+            # portal: its footer cannot be scrolled, so a direct tap (R8
+            # fixed-element case).
+            - tapOn: "Cancel"
+            - assertVisible:
+                text: ".*Base mapping cancelled.*"
+            # The notice's Close straddles the fold after the drill (measured
+            # in checklist-wizard-link-team-saves-alias: y=603-635 locally,
+            # 618-650 on CI's 629px) — centre it before tapping (R8).
+            - scrollUntilVisible:
+                element:
+                  text: "Close"
+                centerElement: true
+                timeout: 7000
+            - tapOn: "Close"
+            - extendedWaitUntil:
+                notVisible:
+                  text: ".*Base mapping cancelled.*"
+                timeout: 7000
+            - assertVisible: "Map Base Set"
 
 # ============================================================
 # VERIFY CARD CHECKLIST PANEL IS VISIBLE

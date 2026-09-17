@@ -35,6 +35,21 @@ tags:
 # The flow URL lands directly on /set-selector. util-drill-to-2024-topps-chrome
 # calls openLink /set-selector itself (same-page reload), so no /profile detour
 # is needed to make it a cross-page mount.
+#
+# NEO-287 — PAUSED BRANCH (`-e PAUSED_PLATFORMS`, decided once by
+# util-paused-platforms). With SportLots on pause the picker's SportLots pane
+# is never asked — it shows the paused sentence and offers no candidate — and
+# Confirm works off the BSC pick alone. This flow is Topps Heritage's sole
+# writer (SET-REGISTRY.md), so its paused branch CONFIRMS BSC-only: the
+# picker structure, the paused pane, a BSC candidate, no SportLots candidate,
+# then Confirm and the checklist beneath. It does NOT assert "Re-map Base"
+# afterwards: `baseHasMapping` counts the SportLots slot only, so a BSC-only
+# mapping renders neither button (pre-existing, reported as a finding); the
+# picker closing on Confirm plus the checklist CTA is the proof the confirm
+# landed. The live branch is unchanged.
+
+- runFlow:
+    file: ../util/util-paused-platforms.yaml
 
 - launchApp
 - extendedWaitUntil:
@@ -85,104 +100,156 @@ tags:
           centerElement: true
           timeout: 7000
 
-# PATH A — picker stays open (no prior mapping):
-#   Validate the picker structure, PICK a set on each side, then confirm. THIS is
-#   where the live SL fetch latency is absorbed: the "likely match" pill only
-#   renders once the scored SL options arrive, and the confirm button reads
-#   "Loading…"/stays disabled until fetchRawOptions resolves — it only flips to
-#   "Confirm Base Set" then, so the scrollUntilVisible below naturally waits out
-#   the real marketplace round-trip. Center before tapping so the button is fully
-#   in view. Rule 8.
+# NEO-287 — LIVE: Path A / Path B and the two checks, verbatim. PAUSED: confirm
+# BSC-only. See the header.
 - runFlow:
     when:
-      visible: "Select Base Set"
+      true: "${!output.SL_PAUSED}"
     commands:
-      # BaseSetPicker modal STRUCTURE — the unique coverage this flow owns.
-      #
-      # The description is the promise NEO-219 makes to the operator, and it is
-      # asserted verbatim-ish because the promise is the feature: only what you
-      # pick gets linked. (Matched on the opening clause only — the sentence
-      # carries a curly apostrophe in "<set>'s base cards", which is a needless
-      # thing to encode in a regex.)
+      # PATH A — picker stays open (no prior mapping):
+      #   Validate the picker structure, PICK a set on each side, then confirm. THIS is
+      #   where the live SL fetch latency is absorbed: the "likely match" pill only
+      #   renders once the scored SL options arrive, and the confirm button reads
+      #   "Loading…"/stays disabled until fetchRawOptions resolves — it only flips to
+      #   "Confirm Base Set" then, so the scrollUntilVisible below naturally waits out
+      #   the real marketplace round-trip. Center before tapping so the button is fully
+      #   in view. Rule 8.
+      - runFlow:
+          when:
+            visible: "Select Base Set"
+          commands:
+            # BaseSetPicker modal STRUCTURE — the unique coverage this flow owns.
+            #
+            # The description is the promise NEO-219 makes to the operator, and it is
+            # asserted verbatim-ish because the promise is the feature: only what you
+            # pick gets linked. (Matched on the opening clause only — the sentence
+            # carries a curly apostrophe in "<set>'s base cards", which is a needless
+            # thing to encode in a regex.)
+            - assertVisible:
+                text: ".*Choose the SportLots and BSC sets.*"
+            - assertVisible:
+                text: ".*SportLots base.*"
+            - assertVisible:
+                text: ".*BSC base.*"
+            # At least one row is close enough to the set name to be flagged. The pill
+            # threshold is unchanged by NEO-219 — what changed is that a flagged row is
+            # no longer SELECTED on the operator's behalf, which is exactly what the
+            # two taps below now have to do by hand.
+            - assertVisible: "likely match"
+            # NEO-219 — PICK BEFORE CONFIRMING.
+            #
+            # (The footer's "Pick a SportLots or BSC set to continue." hint is NOT
+            # asserted here: it is shown only while nothing is selected, and an SL row
+            # whose name matches this set EXACTLY is still pre-selected by design — so
+            # whether the hint is on screen is a property of what SportLots happens to
+            # call this set, not of the feature.)
+            #
+            # Both lists render best-match-first, so the first row on each side is the
+            # best-ranked candidate — what the old build pre-selected on its own,
+            # except where NEO-219's re-ranking (an exact manufacturer match now scores
+            # BELOW the generic "Base" rows) deliberately promotes a better one. The
+            # labels are the marketplaces' own words for this set and are deliberately
+            # not pinned — SportLots names a base row differently from set to set.
+            # `id:` is a full-string regex in Maestro, so "…candidate: .*" is "the
+            # first candidate row on this side".
+            - tapOn:
+                id: "BSC base candidate: .*"
+            - tapOn:
+                id: "SportLots base candidate: .*"
+            # R8 exception, MEASURED (CI 34349299679 + 34361627641): `Element bounds`
+            # held at y=529 across `Scrolling try count: 0`..`5` — BaseSetPicker's
+            # footer sits outside the dialog's only scroller — so a swipe cannot move
+            # this target and centring buys only the six-iteration give-up path
+            # (>=7.0s). Uncentred it settles well under a second, inside R5's 7000.
+            - scrollUntilVisible:
+                element:
+                  text: "Confirm Base Set"
+                timeout: 7000
+            - tapOn: "Confirm Base Set"
+            # Wait for the modal to close; default 7s is enough — no backend
+            # round-trip at this point, the Convex write fires optimistically.
+            - extendedWaitUntil:
+                notVisible: "Select Base Set"
+
+      # PATH B — a prior mapping already exists (a re-run against a deployment where
+      #   this Base row was mapped earlier), so BaseMappingForm never mounts and
+      #   "Re-map Base" is showing instead. No picker structure to validate here, but
+      #   we explicitly assert the Re-map button to confirm the mapping is committed
+      #   and the CardChecklist section rendered. (NEO-219: this is now the ONLY way
+      #   the picker is skipped — it no longer closes itself and writes a fallback.)
+      - runFlow:
+          when:
+            notVisible: "Select Base Set"
+          commands:
+            # Same fold rule as above — scroll rather than assert in place. The scroll
+            # IS the assertion (R6).
+            - scrollUntilVisible:
+                element:
+                  text: "Re-map Base"
+                centerElement: true
+                timeout: 7000
+
+      # ── CardChecklist renders after the mapping is confirmed ────────────────────
+      # Scroll DOWN to the "Fetch from Marketplaces" / "Refresh" button to confirm
+      # the CardChecklist section is mounted and the fetch CTA is present.
+      # scrollUntilVisible already asserts visibility — no trailing assertVisible needed.
+      - scrollUntilVisible:
+          element:
+            text: ".*Fetch from Marketplaces.*|Refresh"
+          visibilityPercentage: 50
+          timeout: 7000
+
+      # Scroll UP to "Re-map Base" to confirm the base-mapping badge is visible.
+      # scrollUntilVisible already asserts visibility — no trailing assertVisible needed.
+      - scrollUntilVisible:
+          element:
+            text: "Re-map Base"
+          direction: UP
+          visibilityPercentage: 50
+          timeout: 7000
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      # Under the pause a BSC-only mapping reads as unmapped, so the picker is
+      # open on every visit — Path A always.
+      - extendedWaitUntil:
+          visible: "Select Base Set"
+          timeout: 7000
       - assertVisible:
           text: ".*Choose the SportLots and BSC sets.*"
       - assertVisible:
           text: ".*SportLots base.*"
       - assertVisible:
           text: ".*BSC base.*"
-      # At least one row is close enough to the set name to be flagged. The pill
-      # threshold is unchanged by NEO-219 — what changed is that a flagged row is
-      # no longer SELECTED on the operator's behalf, which is exactly what the
-      # two taps below now have to do by hand.
-      - assertVisible: "likely match"
-      # NEO-219 — PICK BEFORE CONFIRMING.
-      #
-      # (The footer's "Pick a SportLots or BSC set to continue." hint is NOT
-      # asserted here: it is shown only while nothing is selected, and an SL row
-      # whose name matches this set EXACTLY is still pre-selected by design — so
-      # whether the hint is on screen is a property of what SportLots happens to
-      # call this set, not of the feature.)
-      #
-      # Both lists render best-match-first, so the first row on each side is the
-      # best-ranked candidate — what the old build pre-selected on its own,
-      # except where NEO-219's re-ranking (an exact manufacturer match now scores
-      # BELOW the generic "Base" rows) deliberately promotes a better one. The
-      # labels are the marketplaces' own words for this set and are deliberately
-      # not pinned — SportLots names a base row differently from set to set.
-      # `id:` is a full-string regex in Maestro, so "…candidate: .*" is "the
-      # first candidate row on this side".
+      # "Loading…" → "Confirm Base Set": the BSC round-trip (R5 exception).
+      - extendedWaitUntil:
+          visible: "Confirm Base Set"
+          timeout: 45000
+      # THE PAUSED PANE (copy: lib/marketplace/pause-notice.ts): the sentence,
+      # a BSC candidate really offered, no SportLots candidate at all.
+      - assertVisible: "SportLots is on pause — no SportLots sets to pick from right now. Your existing SportLots links stay put."
+      - assertVisible:
+          id: "BSC base candidate: .*"
+      - assertNotVisible:
+          id: "SportLots base candidate: .*"
       - tapOn:
           id: "BSC base candidate: .*"
-      - tapOn:
-          id: "SportLots base candidate: .*"
-      # R8 exception, MEASURED (CI 34349299679 + 34361627641): `Element bounds`
-      # held at y=529 across `Scrolling try count: 0`..`5` — BaseSetPicker's
-      # footer sits outside the dialog's only scroller — so a swipe cannot move
-      # this target and centring buys only the six-iteration give-up path
-      # (>=7.0s). Uncentred it settles well under a second, inside R5's 7000.
+      # R8 exception, measured on this dialog (see the live branch): the footer
+      # sits outside the picker's only scroller.
       - scrollUntilVisible:
           element:
             text: "Confirm Base Set"
           timeout: 7000
       - tapOn: "Confirm Base Set"
-      # Wait for the modal to close; default 7s is enough — no backend
-      # round-trip at this point, the Convex write fires optimistically.
       - extendedWaitUntil:
           notVisible: "Select Base Set"
-
-# PATH B — a prior mapping already exists (a re-run against a deployment where
-#   this Base row was mapped earlier), so BaseMappingForm never mounts and
-#   "Re-map Base" is showing instead. No picker structure to validate here, but
-#   we explicitly assert the Re-map button to confirm the mapping is committed
-#   and the CardChecklist section rendered. (NEO-219: this is now the ONLY way
-#   the picker is skipped — it no longer closes itself and writes a fallback.)
-- runFlow:
-    when:
-      notVisible: "Select Base Set"
-    commands:
-      # Same fold rule as above — scroll rather than assert in place. The scroll
-      # IS the assertion (R6).
+          timeout: 7000
+      # The checklist rendered beneath (the confirm landed; the mapping block
+      # itself shows no button for a BSC-only mapping — header).
       - scrollUntilVisible:
           element:
-            text: "Re-map Base"
-          centerElement: true
+            text: ".*Fetch from Marketplaces.*|Refresh"
+          visibilityPercentage: 50
           timeout: 7000
-
-# ── CardChecklist renders after the mapping is confirmed ────────────────────
-# Scroll DOWN to the "Fetch from Marketplaces" / "Refresh" button to confirm
-# the CardChecklist section is mounted and the fetch CTA is present.
-# scrollUntilVisible already asserts visibility — no trailing assertVisible needed.
-- scrollUntilVisible:
-    element:
-      text: ".*Fetch from Marketplaces.*|Refresh"
-    visibilityPercentage: 50
-    timeout: 7000
-
-# Scroll UP to "Re-map Base" to confirm the base-mapping badge is visible.
-# scrollUntilVisible already asserts visibility — no trailing assertVisible needed.
-- scrollUntilVisible:
-    element:
-      text: "Re-map Base"
-    direction: UP
-    visibilityPercentage: 50
-    timeout: 7000
+      - assertNotVisible: "Select Base Set"

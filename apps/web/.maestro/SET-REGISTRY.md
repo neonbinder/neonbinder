@@ -15,6 +15,39 @@ Every set the Maestro suite touches is listed here. Two rules govern this file:
 These are provisioned once by `flows/setup.yaml` at the head of every run and are
 **READ-ONLY for all other flows**.
 
+### While SportLots is on pause (NEO-287) every real set is BSC-ONLY
+
+The operator switch `NEONBINDER_PAUSED_PLATFORMS=sportlots` (mirrored to the
+flows as `-e PAUSED_PLATFORMS`; README → "Operator switches") means nothing is
+asked of SportLots, so every row in this table is provisioned from
+BuySportsCards alone for the whole run:
+
+* **2024 Topps Chrome** — `Base` (335 cards), `Insert` → Future Stars,
+  `Parallel` → Gold Wave Refractors, all fetched on the NEO-255
+  one-marketplace path: every BSC card kept, no `Match Cards` dialog, every
+  row a solo-kept "BSC only" card with no `SL` badge and no SportLots id
+  anywhere in the chain. The Base is confirmed **BSC-only** in the picker by
+  the seed. Because `baseHasMapping` counts the SportLots slot only, such a
+  Base still reads as unmapped: every later drill auto-opens the picker
+  again, and `util-drill-to-base-variant` leaves it the no-write way
+  (Cancel → Close → "Map Base Set") on every read-only set.
+* **Manufacturer rows are hand-made.** NeonBinder's Manufacturer rows come
+  from SportLots' brand list and nowhere else (`convex/platformLevels.ts`), so
+  under the pause the Manufacturers column syncs to nothing and the row is
+  added through the column's own "+ Custom" form by the path's **sole
+  writer**: `Topps` under Baseball → 2024 by `setup.yaml`; `Score` under
+  Baseball → 1996 by `inserts-1996-score-…` (via `CREATE_MANUFACTURER: "1"`
+  on the drill); `Topps` under Hockey → 2024 by `set-rename-…` and
+  `All Brands` under Hockey → 1995 by `checklist-one-marketplace-…` (both via
+  `util-drill-to-cold-real-set`, which always adds the row under the pause).
+  A hand-made row carries no ids and is a row like any other (invariant 6);
+  `syncSetsAcrossManufacturers` files BSC's sets under it by name prefix, and
+  when the pause lifts the next manufacturer sync matches SportLots' own row
+  to it by name and attaches the id — no second row.
+* Everything that says "MAPPED on BOTH sides" below is mapped on the BSC side
+  only under the pause, and every `SL only` / `SportLots only` expectation is
+  vacuous. Flows branch on `output.SL_PAUSED`, never on the screen (R10).
+
 | Set | Variant types provisioned | Provisioned by |
 |---|---|---|
 | Baseball → 2024 → Topps → Topps Chrome | `Base` (full checklist), `Insert` → "Future Stars" (~20 cards), `Parallel` → "Gold Wave Refractors" (~300 cards) | `flows/setup.yaml` |

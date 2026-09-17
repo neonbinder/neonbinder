@@ -60,6 +60,28 @@ tags:
 #   - saving produces ONE insert row, not two
 #   - both sources show in the multi-source panel, neither marked "primary"
 # ============================================================
+# NEO-287 — WHILE SPORTLOTS IS ON PAUSE (`-e PAUSED_PLATFORMS`, decided once
+# by util-paused-platforms below), the SportLots half of this feature has no
+# surface: the combined SL set is never fetched, so the two BSC sources are the
+# whole story. What still holds, and is asserted: the NB set maps to TWO BSC
+# sets, both fetches take the NEO-255 one-marketplace path (no Match Cards
+# dialog; every BSC card kept), the re-sync keeps our card name, and the Name
+# Check offers BSC's name only — no SportLots suggestion (STEP 8d's SportLots
+# half is skipped). The manufacturer row `Score` does not exist under the
+# pause (SportLots' brand list is its only source), so the drill is told to
+# add it — this flow is the sole writer of Baseball → 1996 → Score
+# (SET-REGISTRY.md). The live branches are the steps as they were.
+#
+# UNVERIFIED UNTIL THE FIRST PAUSED RUN: that the two BSC sources alone still
+# yield 220 cards (live, all 220 pair one-to-one with the SL set, which is
+# what makes that number likely) and that the solo re-sync still raises the
+# Review Changes dialog. Both are asserted strictly on purpose (R2).
+# ============================================================
+
+- runFlow:
+    file: ../util/util-paused-platforms.yaml
+
+# ============================================================
 # LAUNCH + SIGN IN
 # ============================================================
 
@@ -82,6 +104,8 @@ tags:
       YEAR: "1996"
       MANUFACTURER: "Score"
       SET: "Score"
+      # NEO-287 — under the pause the row must be added by hand; sole writer.
+      CREATE_MANUFACTURER: "1"
 
 # ============================================================
 # STEP 1 — ENTER THE Insert VARIANT TYPE
@@ -233,6 +257,8 @@ tags:
       YEAR: "1996"
       MANUFACTURER: "Score"
       SET: "Score"
+      # NEO-287 — under the pause the row must be added by hand; sole writer.
+      CREATE_MANUFACTURER: "1"
 
 - scrollUntilVisible:
     element:
@@ -325,60 +351,79 @@ tags:
 - tapOn:
     text: ".*Fetch from Marketplaces.*|Refresh"
 
-- extendedWaitUntil:
-    visible:
-      text: "Match Cards.*"
-    timeout: 120000
+# NEO-287 — LIVE: STEPS 4-5, the fully-matched pairing dialog, verbatim.
+# PAUSED: the one-marketplace path. See the header.
+- runFlow:
+    when:
+      true: "${!output.SL_PAUSED}"
+    commands:
+      - extendedWaitUntil:
+          visible:
+            text: "Match Cards.*"
+          timeout: 120000
 
-# NEO-195 — the dialog OPENING is not the fetch FINISHING.
-# Since streaming, "Match Cards" appears on the first reconciled candidates
-# (~6s), not on the action's return. Every assertion below is about the FINAL
-# contents — the matched list being expanded, both columns empty, and the 220
-# count that is the whole point of this flow — so asserting on the streaming
-# dialog reads a half-filled screen and fails on whichever row had not arrived
-# yet. Confirm's own text is the signal: "Loading…" while streaming, "Confirm"
-# once the action resolves.
-- extendedWaitUntil:
-    visible:
-      text: "^Confirm$"
-    timeout: 120000
+      # NEO-195 — the dialog OPENING is not the fetch FINISHING.
+      # Since streaming, "Match Cards" appears on the first reconciled candidates
+      # (~6s), not on the action's return. Every assertion below is about the FINAL
+      # contents — the matched list being expanded, both columns empty, and the 220
+      # count that is the whole point of this flow — so asserting on the streaming
+      # dialog reads a half-filled screen and fails on whichever row had not arrived
+      # yet. Confirm's own text is the signal: "Loading…" while streaming, "Confirm"
+      # once the action resolves.
+      - extendedWaitUntil:
+          visible:
+            text: "^Confirm$"
+          timeout: 120000
 
-# ============================================================
-# STEP 5 — THE PAIRING DIALOG, FULLY MATCHED
-#
-# Every one of the 220 cards pairs across both marketplaces, so there is
-# nothing to reconcile. The dialog must say so rather than showing a collapsed
-# "▶ Matched (220)" above two "(0)" columns and a keep shelf describing cards
-# that do not exist.
-# ============================================================
+      # ============================================================
+      # STEP 5 — THE PAIRING DIALOG, FULLY MATCHED
+      #
+      # Every one of the 220 cards pairs across both marketplaces, so there is
+      # nothing to reconcile. The dialog must say so rather than showing a collapsed
+      # "▶ Matched (220)" above two "(0)" columns and a keep shelf describing cards
+      # that do not exist.
+      # ============================================================
 
-# Named — an operator who steps away must be able to tell which set this is.
-- assertVisible:
-    text: ".*Match Cards — Dugout Collection Artists Proofs.*"
+      # Named — an operator who steps away must be able to tell which set this is.
+      - assertVisible:
+          text: ".*Match Cards — Dugout Collection Artists Proofs.*"
 
-# Expanded, not collapsed: the card rows are on screen without a disclosure tap.
-- assertVisible:
-    text: ".*Unlink.*"
+      # Expanded, not collapsed: the card rows are on screen without a disclosure tap.
+      - assertVisible:
+          text: ".*Unlink.*"
 
-# The empty scaffolding is omitted entirely.
-- assertNotVisible:
-    text: ".*BSC only.*"
-- assertNotVisible:
-    text: ".*SportLots only.*"
-- assertNotVisible:
-    text: ".*Nothing kept.*"
+      # The empty scaffolding is omitted entirely.
+      - assertNotVisible:
+          text: ".*BSC only.*"
+      - assertNotVisible:
+          text: ".*SportLots only.*"
+      - assertNotVisible:
+          text: ".*Nothing kept.*"
 
-# BOTH BSC sources fetched and merged. Strict count — card checklists are
-# immutable once produced, so 220 is a fixed fact, not marketplace drift.
-# Do NOT loosen this to hide a fan-out regression; 110 means one source.
-- assertVisible:
-    text: ".*220 cards will be saved.*"
+      # BOTH BSC sources fetched and merged. Strict count — card checklists are
+      # immutable once produced, so 220 is a fixed fact, not marketplace drift.
+      # Do NOT loosen this to hide a fan-out regression; 110 means one source.
+      - assertVisible:
+          text: ".*220 cards will be saved.*"
 
-- tapOn:
-    id: "Confirm card matches"
-- extendedWaitUntil:
-    notVisible: "Match Cards.*"
-    timeout: 60000
+      - tapOn:
+          id: "Confirm card matches"
+      - extendedWaitUntil:
+          notVisible: "Match Cards.*"
+          timeout: 60000
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      # NEO-255 solo path — one live BSC round-trip (both sources), the
+      # sentence appears only once the action resolved; then the wizard opens
+      # (the names are unknown) with the sentence kept in its notice. Strict
+      # count: two BSC sources merged, and 110 would mean one.
+      - extendedWaitUntil:
+          visible:
+            text: ".*Kept all 220 cards from BSC.*"
+          timeout: 120000
+      - assertNotVisible: "Match Cards.*"
 
 # ============================================================
 # STEP 6 — SAVE THROUGH THE ENTITY WIZARD
@@ -798,23 +843,41 @@ tags:
 - tapOn:
     id: "Sync card checklist"
 
-- extendedWaitUntil:
-    visible:
-      text: "Match Cards.*"
-    timeout: 120000
-# Same NEO-195 rule as STEP 4: the dialog OPENS on the first streamed
-# candidates, Confirm's own label is what says the fetch RESOLVED.
-- extendedWaitUntil:
-    visible:
-      text: "^Confirm$"
-    timeout: 120000
+# NEO-287 — LIVE: the re-sync's pairing dialog, verbatim. PAUSED: solo path.
+- runFlow:
+    when:
+      true: "${!output.SL_PAUSED}"
+    commands:
+      - extendedWaitUntil:
+          visible:
+            text: "Match Cards.*"
+          timeout: 120000
+      # Same NEO-195 rule as STEP 4: the dialog OPENS on the first streamed
+      # candidates, Confirm's own label is what says the fetch RESOLVED.
+      - extendedWaitUntil:
+          visible:
+            text: "^Confirm$"
+          timeout: 120000
 
-# Both BSC sources fetched and merged again — the upstream side of "no rows
-# added or lost". 110 would mean the fan-out regressed on the re-sync path.
-- assertVisible:
-    text: ".*220 cards will be saved.*"
-- tapOn:
-    id: "Confirm card matches"
+      # Both BSC sources fetched and merged again — the upstream side of "no rows
+      # added or lost". 110 would mean the fan-out regressed on the re-sync path.
+      - assertVisible:
+          text: ".*220 cards will be saved.*"
+      - tapOn:
+          id: "Confirm card matches"
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      # Solo path again: the kept-all line, then the commit's diff raises the
+      # review (7c) on its own — no dialog to confirm. The "Kept all" line can
+      # be replaced by the review within the same second, so accept either as
+      # the round-trip's terminal signal; 7c then asserts the review itself.
+      - extendedWaitUntil:
+          visible:
+            text: ".*Kept all 220 cards from BSC.*|.*Review Changes — Dugout Collection Artists Proofs.*"
+          timeout: 120000
+      - assertNotVisible: "Match Cards.*"
 
 # ============================================================
 # 7c. THE REVIEW DIALOG APPEARS, AND SHOWS OUR CARD
@@ -1094,6 +1157,8 @@ tags:
       YEAR: "1996"
       MANUFACTURER: "Score"
       SET: "Score"
+      # NEO-287 — under the pause the row must be added by hand; sole writer.
+      CREATE_MANUFACTURER: "1"
 
 - scrollUntilVisible:
     element:
@@ -1160,10 +1225,24 @@ tags:
 # Both side badges, for OUR row. The SportLots label is a fixed fact of the
 # fixture (one combined set); which of BSC's two series holds the primary slot
 # is not, so that one is matched on its shape.
-- assertVisible:
-    text: '.*SportLots calls it "Dugout Collection Artists Proofs".*'
-- assertVisible:
-    text: '.*BSC calls it "Dugout Collection Artist.s Proofs Series [12]".*'
+# NEO-287 — STEP 8d's SportLots half exists only live. See the header.
+- runFlow:
+    when:
+      true: "${!output.SL_PAUSED}"
+    commands:
+      - assertVisible:
+          text: '.*SportLots calls it "Dugout Collection Artists Proofs".*'
+      - assertVisible:
+          text: '.*BSC calls it "Dugout Collection Artist.s Proofs Series [12]".*'
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      # BSC's name is offered; SportLots' is NOT — it was never asked.
+      - assertVisible:
+          text: '.*BSC calls it "Dugout Collection Artist.s Proofs Series [12]".*'
+      - assertNotVisible:
+          text: '.*SportLots calls it.*'
 
 # The accessible name leads with the VISIBLE word (WCAG 2.5.3 Label in Name),
 # then the per-row context: `Keep mine — keep "X"; stop suggesting BSC's "Y"`
@@ -1175,22 +1254,39 @@ tags:
 # this attempt's marker.
 - tapOn:
     id: "Keep mine — keep \"Dugout Collection Artists Proofs NB211-${ATTEMPT_ID}\"; stop suggesting BSC's \".*\""
-- tapOn:
-    id: "Keep mine — keep \"Dugout Collection Artists Proofs NB211-${ATTEMPT_ID}\"; stop suggesting SportLots's \".*\""
+# NEO-287 — LIVE: decline SportLots' suggestion too, then both tallies read 2.
+# PAUSED: only BSC's was offered, so the tallies read 1.
+- runFlow:
+    when:
+      true: "${!output.SL_PAUSED}"
+    commands:
+      - tapOn:
+          id: "Keep mine — keep \"Dugout Collection Artists Proofs NB211-${ATTEMPT_ID}\"; stop suggesting SportLots's \".*\""
 
-# The running total is the only feedback that the presses registered, and it is
-# exact: two declines, nothing accepted. A stray accept here would rename the
-# row, which is the one outcome this step exists to rule out.
-- assertVisible: "0 to take · 2 to keep"
+      # The running total is the only feedback that the presses registered, and it is
+      # exact: two declines, nothing accepted. A stray accept here would rename the
+      # row, which is the one outcome this step exists to rule out.
+      - assertVisible: "0 to take · 2 to keep"
 
-- tapOn:
-    id: "Apply decisions"
+      - tapOn:
+          id: "Apply decisions"
 
-# The outcome line is the SERVER's own tally, so it proves the declines were
-# written rather than counted as stale or skipped.
-- extendedWaitUntil:
-    visible: "2 declined"
-    timeout: 7000
+      # The outcome line is the SERVER's own tally, so it proves the declines were
+      # written rather than counted as stale or skipped.
+      - extendedWaitUntil:
+          visible: "2 declined"
+          timeout: 7000
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      # One suggestion (BSC's) was on offer, one decline.
+      - assertVisible: "0 to take · 1 to keep"
+      - tapOn:
+          id: "Apply decisions"
+      - extendedWaitUntil:
+          visible: "1 declined"
+          timeout: 7000
 
 # AND THE NAME IS STILL OURS. A decline records the label we refused; it must
 # never touch `value`.

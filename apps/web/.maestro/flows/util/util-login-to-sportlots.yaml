@@ -17,90 +17,149 @@ tags:
 #     credential env vars need to be passed.
 #   - This util leaves the browser on /profile/credentials (same as
 #     util-login-to-bsc).
-
-# ============================================================
-# NAVIGATE STRAIGHT TO THE CREDENTIALS SECTION
-# Each /profile section is its own route (NEO-128), so the credential controls
-# are reachable by URL instead of by scrolling past everything above them.
-# ============================================================
-
-- openLink: ${APP_URL || "http://localhost:3000"}/profile/credentials
-
-# ============================================================
-# FORCE A FRESH SPORTLOTS LOGIN — tap "Test Credentials"
-# ============================================================
-
-# Wait for the stable page heading. The DOM is fully settled once "Profile
-# Settings" is visible; acting mid-reflow widens the CDP empty-response window
-# that causes the NEO-8 flake.
 #
-# (NEO-125 dropped the "Neon Binder" gate that preceded this one: it had NO
-# timeout at all, and it is pure-UI text with no relationship to cred-section
-# readiness — Rule 5, the same reason it was removed from test-credentials.yaml.
-# 10s stays: this is an openLink inside an already-authenticated session, not a
-# cold launchApp + Clerk sign-in, so the 45s post-launchApp allowance does not
-# apply here.)
-- extendedWaitUntil:
-    visible: "Profile Settings"
-    timeout: 10000
-
-# The platform tablist is the first thing in the credentials panel now, so no
-# scroll is needed to reach it — waiting is enough, and a non-scrolling wait
-# cannot park the viewport somewhere the later assert can't see.
-# (Was a native <select>; now role="tab" buttons, so tap the visible label.)
-- extendedWaitUntil:
-    visible: "Sportlots"
-    timeout: 10000
-- tapOn: "Sportlots"
-
-# FAIL FAST IF THIS WORKER IS NOT CONNECTED TO SPORTLOTS (NEO-141).
-# "Test Credentials" is rendered ONLY by the connected card. The two other
-# states the panel can be in — the "Sign in to SportLots again" card after a
-# session died, and the sign-in form when nothing is stored — have no such
-# button, so without this assert the util would sit out the full 30s wait below
-# and then report "Test Credentials never appeared", which says nothing about
-# what actually went wrong. Asserting the connected state names the real
-# problem, and costs nothing when the worker is healthy.
-- extendedWaitUntil:
-    visible: ".*Connected to SportLots.*"
-    timeout: 7000
-
-# Wait in place until the button is genuinely tappable. Its label is keyed off
-# `credsBusy`, so while a credential op holds the server-side lock it reads
-# "Testing..." and this waits rather than tapping a disabled control (NEO-128 —
-# the seed track failed exactly that way once the flows stopped scrolling and
-# reached the button in 0.7s instead of 17s). 30s: the lock is held by a real
-# marketplace login, the same ~22s round trip the banner waits allow for.
-- extendedWaitUntil:
-    visible: "Test Credentials"
-    timeout: 30000
-
-# Then centre it before tapping. The panel is short now, so this is one small
-# in-panel move, not a page traversal — but the button still lands near the
-# 1024x629 fold (measured at y=594-626, 3px of margin), and tapping that close
-# to the edge is what `centerElement` has always existed to avoid.
-- scrollUntilVisible:
-    element:
-      text: "Test Credentials"
-    centerElement: true
-    timeout: 7000
-    waitToSettleTimeoutMs: 1000
-
-- tapOn: "Test Credentials"
-
-# 30s exception: a COLD marketplace login is a real ~22s Puppeteer/SSO round-trip (cached is <1s).
-# This is the ONE sanctioned >10s wait (the standing rule is 10s) — do NOT copy this ceiling elsewhere.
+# NEO-287 — WHEN SPORTLOTS IS ON PAUSE THERE IS NOTHING TO WARM. The operator
+# switch (NEONBINDER_PAUSED_PLATFORMS=sportlots, mirrored to the flows as
+# `-e PAUSED_PLATFORMS`) means the server refuses every SportLots sign-in and
+# the panel offers no "Test Credentials" at all. This util therefore has two
+# branches on `output.SL_PAUSED` (computed by util-paused-platforms, R3): the
+# LIVE branch is the warm-up below, unchanged; the PAUSED branch proves the
+# panel says so — the paused card is up and the live test control is gone —
+# so every consumer (worker-bootstrap, setup.yaml) inherits the right
+# behaviour without a change of its own. Both branches end in hard asserts
+# (R2): a runner told "paused" against a live deployment (or the reverse)
+# fails here, by name, rather than somewhere downstream.
 #
-# extendedWaitUntil (non-scrolling), NOT scrollUntilVisible — NEO-125. A
-# scrollUntilVisible here doubles as the ~22s WAIT, so it keeps swiping down the
-# whole time the login is in flight and parks the viewport wherever the page
-# happens to end — then the banner appears above it and is never seen. Because
-# direction is DOWN, a single missed poll is unrecoverable by construction: the
-# scroll can never walk back up. Waiting in place is safe — the credentials
-# panel is a short route of its own now (NEO-128), so the button and the banner
-# below it are both inside the 1024×629 fold with no scrolling at all.
-# Same conversion PR #127 applied to profile/credentials-lifecycle.yaml.
-- extendedWaitUntil:
-    visible: ".*Sportlots account authenticated successfully.*"
-    timeout: 30000
+# The paused branch does NOT assert the disabled "Test paused" / "Sign-in
+# paused" labels: those render only for a worker whose SportLots row is
+# CONNECTED, and under the pause the seed never connects one (it skips the
+# site before any write), so after the run's reset no worker has that row.
+# The paused card's heading and the "Sign-ins … are benched" body prefix are
+# shared by both card states, and the sign-in form and "Test Credentials"
+# are absent in both — so those are the state-independent facts asserted.
 
+# NEO-287 — decide the branch once (a pure script, no UI; R10: costs nothing).
+- runFlow:
+    file: util-paused-platforms.yaml
+
+# LIVE — the warm-up, verbatim. PAUSED — the panel says so; see the header.
+- runFlow:
+    when:
+      true: "${!output.SL_PAUSED}"
+    commands:
+      # ============================================================
+      # NAVIGATE STRAIGHT TO THE CREDENTIALS SECTION
+      # Each /profile section is its own route (NEO-128), so the credential controls
+      # are reachable by URL instead of by scrolling past everything above them.
+      # ============================================================
+
+      - openLink: ${APP_URL || "http://localhost:3000"}/profile/credentials
+
+      # ============================================================
+      # FORCE A FRESH SPORTLOTS LOGIN — tap "Test Credentials"
+      # ============================================================
+
+      # Wait for the stable page heading. The DOM is fully settled once "Profile
+      # Settings" is visible; acting mid-reflow widens the CDP empty-response window
+      # that causes the NEO-8 flake.
+      #
+      # (NEO-125 dropped the "Neon Binder" gate that preceded this one: it had NO
+      # timeout at all, and it is pure-UI text with no relationship to cred-section
+      # readiness — Rule 5, the same reason it was removed from test-credentials.yaml.
+      # 10s stays: this is an openLink inside an already-authenticated session, not a
+      # cold launchApp + Clerk sign-in, so the 45s post-launchApp allowance does not
+      # apply here.)
+      - extendedWaitUntil:
+          visible: "Profile Settings"
+          timeout: 10000
+
+      # The platform tablist is the first thing in the credentials panel now, so no
+      # scroll is needed to reach it — waiting is enough, and a non-scrolling wait
+      # cannot park the viewport somewhere the later assert can't see.
+      # (Was a native <select>; now role="tab" buttons, so tap the visible label.)
+      - extendedWaitUntil:
+          visible: "Sportlots"
+          timeout: 10000
+      - tapOn: "Sportlots"
+
+      # FAIL FAST IF THIS WORKER IS NOT CONNECTED TO SPORTLOTS (NEO-141).
+      # "Test Credentials" is rendered ONLY by the connected card. The two other
+      # states the panel can be in — the "Sign in to SportLots again" card after a
+      # session died, and the sign-in form when nothing is stored — have no such
+      # button, so without this assert the util would sit out the full 30s wait below
+      # and then report "Test Credentials never appeared", which says nothing about
+      # what actually went wrong. Asserting the connected state names the real
+      # problem, and costs nothing when the worker is healthy.
+      - extendedWaitUntil:
+          visible: ".*Connected to SportLots.*"
+          timeout: 7000
+
+      # Wait in place until the button is genuinely tappable. Its label is keyed off
+      # `credsBusy`, so while a credential op holds the server-side lock it reads
+      # "Testing..." and this waits rather than tapping a disabled control (NEO-128 —
+      # the seed track failed exactly that way once the flows stopped scrolling and
+      # reached the button in 0.7s instead of 17s). 30s: the lock is held by a real
+      # marketplace login, the same ~22s round trip the banner waits allow for.
+      - extendedWaitUntil:
+          visible: "Test Credentials"
+          timeout: 30000
+
+      # Then centre it before tapping. The panel is short now, so this is one small
+      # in-panel move, not a page traversal — but the button still lands near the
+      # 1024x629 fold (measured at y=594-626, 3px of margin), and tapping that close
+      # to the edge is what `centerElement` has always existed to avoid.
+      - scrollUntilVisible:
+          element:
+            text: "Test Credentials"
+          centerElement: true
+          timeout: 7000
+          waitToSettleTimeoutMs: 1000
+
+      - tapOn: "Test Credentials"
+
+      # 30s exception: a COLD marketplace login is a real ~22s Puppeteer/SSO round-trip (cached is <1s).
+      # This is the ONE sanctioned >10s wait (the standing rule is 10s) — do NOT copy this ceiling elsewhere.
+      #
+      # extendedWaitUntil (non-scrolling), NOT scrollUntilVisible — NEO-125. A
+      # scrollUntilVisible here doubles as the ~22s WAIT, so it keeps swiping down the
+      # whole time the login is in flight and parks the viewport wherever the page
+      # happens to end — then the banner appears above it and is never seen. Because
+      # direction is DOWN, a single missed poll is unrecoverable by construction: the
+      # scroll can never walk back up. Waiting in place is safe — the credentials
+      # panel is a short route of its own now (NEO-128), so the button and the banner
+      # below it are both inside the 1024×629 fold with no scrolling at all.
+      # Same conversion PR #127 applied to profile/credentials-lifecycle.yaml.
+      - extendedWaitUntil:
+          visible: ".*Sportlots account authenticated successfully.*"
+          timeout: 30000
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      - openLink: ${APP_URL || "http://localhost:3000"}/profile/credentials
+      # Same gate as the live branch: an openLink inside an authenticated
+      # session, not a cold launchApp, so 10s (see the note there).
+      - extendedWaitUntil:
+          visible: "Profile Settings"
+          timeout: 10000
+      - extendedWaitUntil:
+          visible: "Sportlots"
+          timeout: 10000
+      - tapOn: "Sportlots"
+      # R5: a local tab switch, measured at 0.33s in CI — the 7000 bar.
+      - extendedWaitUntil:
+          visible: ".*SportLots Credentials.*"
+          timeout: 7000
+      # THE PAUSED STATE, by the copy Jason approved (todos/neo-287-plan.md §4,
+      # lib/marketplace/pause-notice.ts). The heading is the card's <strong>;
+      # the body prefix is common to the connected and not-connected bodies.
+      - extendedWaitUntil:
+          visible: "SportLots is on pause"
+          timeout: 7000
+      - assertVisible: "Sign-ins to SportLots are benched for now.*"
+      # …and NOT the live controls. "Test Credentials" is what the live branch
+      # taps; the sign-in form's username field is what a not-connected live
+      # panel shows. Both negatives are paired with the positives above
+      # (README → negative asserts pass on a dead page).
+      - assertNotVisible: "Test Credentials"
+      - assertNotVisible: ".*SportLots Username.*"

@@ -59,6 +59,25 @@ tags:
 # `reauthObservedAt`, so a row it flags is NOT in backoff — but nothing here
 # triggers a marketplace fetch either, so no login is attempted or suppressed
 # on this path. The notice reads the flag; it does not touch the session.
+#
+# NEO-287 — PAUSED BRANCH. While the operator has SportLots on pause
+# (`-e PAUSED_PLATFORMS`, decided once by util-paused-platforms below), the
+# lapsed-session strip cannot show for SportLots: paused beats needs-reauth
+# on this surface too (plan decision 6 — ReauthNotice filters paused sites
+# out, PausedNotice sits above it). The paused branch proves that: the pause
+# strip is up, the re-auth strip is NOT, and after the same
+# /testing/needs-reauth hop it is STILL not. Under the pause the seed never
+# connects a SportLots row after the run's reset, so the hook usually finds
+# no row and is a no-op — the assertions hold either way, and when a row IS
+# there (a deployment connected before the pause) the precedence is what is
+# being proved. No restore step: a flag the hook did set is cleared by the
+# seed's self-heal on the first run after the pause lifts (convex/testing.ts),
+# and nothing reads it while the pause is on. The strip's own Dismiss is
+# proved by profile/sportlots-paused-shows-notice (R3), not here. The live
+# branch is unchanged.
+
+- runFlow:
+    file: ../util/util-paused-platforms.yaml
 
 - launchApp
 
@@ -68,126 +87,159 @@ tags:
     visible: ".*Build set parameters using marketplace APIs.*"
     timeout: 45000
 
-# -----------------------------------------------------------------------
-# Precondition: no lapsed-session notice on a healthy worker
-# -----------------------------------------------------------------------
+# NEO-287 — LIVE: the lapsed-session strip, its link, Dismiss and the restore,
+# verbatim. PAUSED: the pause strip outranks it. See the header.
+- runFlow:
+    when:
+      true: "${!output.SL_PAUSED}"
+    commands:
+      # -----------------------------------------------------------------------
+      # Precondition: no lapsed-session notice on a healthy worker
+      # -----------------------------------------------------------------------
 
-# R2: this is what makes the positive assertion below meaningful — the same
-# strip must be ABSENT before the fixture runs and PRESENT after it, so a
-# notice that rendered unconditionally (or a worker some earlier flow left
-# flagged, on either platform) fails HERE with the cause in the screenshot
-# rather than at a later assertion. `sessions?` covers the two-platform lead
-# ("… BuySportsCards and SportLots sessions ran out."). The subtitle gate just
-# above is the positive pair for this negative (README → negative asserts pass
-# on a dead page).
-- assertNotVisible: ".*sessions? ran out.*"
+      # R2: this is what makes the positive assertion below meaningful — the same
+      # strip must be ABSENT before the fixture runs and PRESENT after it, so a
+      # notice that rendered unconditionally (or a worker some earlier flow left
+      # flagged, on either platform) fails HERE with the cause in the screenshot
+      # rather than at a later assertion. `sessions?` covers the two-platform lead
+      # ("… BuySportsCards and SportLots sessions ran out."). The subtitle gate just
+      # above is the positive pair for this negative (README → negative asserts pass
+      # on a dead page).
+      - assertNotVisible: ".*sessions? ran out.*"
 
-# -----------------------------------------------------------------------
-# The SportLots session lapses
-# -----------------------------------------------------------------------
+      # -----------------------------------------------------------------------
+      # The SportLots session lapses
+      # -----------------------------------------------------------------------
 
-- openLink: ${APP_URL || "http://localhost:3000"}/testing/needs-reauth?site=sportlots&redirect=/admin/set-builder
+      - openLink: ${APP_URL || "http://localhost:3000"}/testing/needs-reauth?site=sportlots&redirect=/admin/set-builder
 
-# 30s: a /testing/* page is a full document load that re-does the Clerk →
-# Convex handshake before it can call anything — the budget every other
-# openLink of a /testing/* page in this suite uses. The mutation is a single
-# patch; there is no marketplace call on this path. Gating on the subtitle
-# also proves the Set Builder still RENDERS with the flag set — a warning, not
-# a gate — before the notice is asserted.
-- extendedWaitUntil:
-    visible: ".*Build set parameters using marketplace APIs.*"
-    timeout: 30000
+      # 30s: a /testing/* page is a full document load that re-does the Clerk →
+      # Convex handshake before it can call anything — the budget every other
+      # openLink of a /testing/* page in this suite uses. The mutation is a single
+      # patch; there is no marketplace call on this path. Gating on the subtitle
+      # also proves the Set Builder still RENDERS with the flag set — a warning, not
+      # a gate — before the notice is asserted.
+      - extendedWaitUntil:
+          visible: ".*Build set parameters using marketplace APIs.*"
+          timeout: 30000
 
-# THE FEATURE, part 1 — the strip. It renders in the same pass as the heading
-# (both wait on the one `getUserProfile` query), so the bar is the plain 7000.
-# The lead is its own <strong>, so this is an exact match on the one-platform
-# wording — "Your BuySportsCards and SportLots sessions ran out." would mean
-# BSC lapsed too, which is a real finding, not a pass.
-- extendedWaitUntil:
-    visible: "Your SportLots session ran out."
-    timeout: 7000
-# The body copy is the <p>'s own text node, separate from the <strong> lead.
-- assertVisible: ".*Syncs are running on borrowed time\\. Sign in again to keep them rolling\\..*"
-# The link and the dismiss control (by its accessible name) are both here.
-- assertVisible: "Sign in again on your Profile →"
-- assertVisible:
-    id: "Dismiss sign-in notice"
+      # THE FEATURE, part 1 — the strip. It renders in the same pass as the heading
+      # (both wait on the one `getUserProfile` query), so the bar is the plain 7000.
+      # The lead is its own <strong>, so this is an exact match on the one-platform
+      # wording — "Your BuySportsCards and SportLots sessions ran out." would mean
+      # BSC lapsed too, which is a real finding, not a pass.
+      - extendedWaitUntil:
+          visible: "Your SportLots session ran out."
+          timeout: 7000
+      # The body copy is the <p>'s own text node, separate from the <strong> lead.
+      - assertVisible: ".*Syncs are running on borrowed time\\. Sign in again to keep them rolling\\..*"
+      # The link and the dismiss control (by its accessible name) are both here.
+      - assertVisible: "Sign in again on your Profile →"
+      - assertVisible:
+          id: "Dismiss sign-in notice"
 
-# THE FEATURE, part 2 — the link leads to the credentials page. This is a
-# real tap, not an `openLink` to the target: the wiring of the link IS what is
-# under test, and maestro-web exposes no href to assert instead. The strip is
-# the first thing under the section header at scroll 0 (centre-x, well inside
-# the 1024x629 fold, nothing re-flows above it), so no scroll precedes the tap
-# and R8 does not apply. `/profile/credentials` is the one profile sub-route
-# that renders a "<Platform> Credentials" heading; "Profile Settings" alone
-# would also pass on /profile/public.
-- tapOn: "Sign in again on your Profile →"
-- extendedWaitUntil:
-    visible: "Profile Settings"
-    timeout: 7000
-- extendedWaitUntil:
-    visible: ".*BuySportsCards Credentials.*"
-    timeout: 7000
+      # THE FEATURE, part 2 — the link leads to the credentials page. This is a
+      # real tap, not an `openLink` to the target: the wiring of the link IS what is
+      # under test, and maestro-web exposes no href to assert instead. The strip is
+      # the first thing under the section header at scroll 0 (centre-x, well inside
+      # the 1024x629 fold, nothing re-flows above it), so no scroll precedes the tap
+      # and R8 does not apply. `/profile/credentials` is the one profile sub-route
+      # that renders a "<Platform> Credentials" heading; "Profile Settings" alone
+      # would also pass on /profile/public.
+      - tapOn: "Sign in again on your Profile →"
+      - extendedWaitUntil:
+          visible: "Profile Settings"
+          timeout: 7000
+      - extendedWaitUntil:
+          visible: ".*BuySportsCards Credentials.*"
+          timeout: 7000
 
-# -----------------------------------------------------------------------
-# Back on the Set Builder the notice is still up — until Dismiss
-# -----------------------------------------------------------------------
+      # -----------------------------------------------------------------------
+      # Back on the Set Builder the notice is still up — until Dismiss
+      # -----------------------------------------------------------------------
 
-# A fresh document load of the Set Builder (30s: full load + Clerk → Convex
-# handshake, the same in-app return budget the sibling uses). The notice must
-# still be there: nothing has been dismissed yet, and the flag is the
-# server's. This is also the only way to get the Dismiss control back on
-# screen after the navigation above — Dismiss has to come AFTER the link tap,
-# because a dismissal hides the whole strip, link included, for the rest of
-# the tab session.
-- openLink: ${APP_URL || "http://localhost:3000"}/admin/set-builder
-- extendedWaitUntil:
-    visible: ".*Build set parameters using marketplace APIs.*"
-    timeout: 30000
-- extendedWaitUntil:
-    visible: "Your SportLots session ran out."
-    timeout: 7000
+      # A fresh document load of the Set Builder (30s: full load + Clerk → Convex
+      # handshake, the same in-app return budget the sibling uses). The notice must
+      # still be there: nothing has been dismissed yet, and the flag is the
+      # server's. This is also the only way to get the Dismiss control back on
+      # screen after the navigation above — Dismiss has to come AFTER the link tap,
+      # because a dismissal hides the whole strip, link included, for the rest of
+      # the tab session.
+      - openLink: ${APP_URL || "http://localhost:3000"}/admin/set-builder
+      - extendedWaitUntil:
+          visible: ".*Build set parameters using marketplace APIs.*"
+          timeout: 30000
+      - extendedWaitUntil:
+          visible: "Your SportLots session ran out."
+          timeout: 7000
 
-# THE FEATURE, part 3 — Dismiss hides the strip. Same geometry note as the
-# link tap: no scroll, so no centring. The button unmounts itself on click;
-# the strip is a leaf of the page, not the page, so the re-render is small.
-- tapOn:
-    id: "Dismiss sign-in notice"
-- extendedWaitUntil:
-    notVisible: "Your SportLots session ran out."
-    timeout: 7000
-# Positive pair for the negative above: the page is still the Set Builder,
-# not an error boundary, and the cascade is still there beneath it.
-- assertVisible: ".*Build set parameters using marketplace APIs.*"
+      # THE FEATURE, part 3 — Dismiss hides the strip. Same geometry note as the
+      # link tap: no scroll, so no centring. The button unmounts itself on click;
+      # the strip is a leaf of the page, not the page, so the re-render is small.
+      - tapOn:
+          id: "Dismiss sign-in notice"
+      - extendedWaitUntil:
+          notVisible: "Your SportLots session ran out."
+          timeout: 7000
+      # Positive pair for the negative above: the page is still the Set Builder,
+      # not an error boundary, and the cascade is still there beneath it.
+      - assertVisible: ".*Build set parameters using marketplace APIs.*"
 
-# -----------------------------------------------------------------------
-# Restore: un-flag this worker's SportLots row and prove it
-# -----------------------------------------------------------------------
+      # -----------------------------------------------------------------------
+      # Restore: un-flag this worker's SportLots row and prove it
+      # -----------------------------------------------------------------------
 
-# See SELF-CLEANING above. 90s exception (live marketplace round-trip): the
-# seed page awaits a REAL sign-in whenever the stored session is not
-# renewable, exactly as the sibling's precondition step does; on the common
-# path it is one status patch and no login.
-- openLink: ${APP_URL || "http://localhost:3000"}/testing/seed-credentials?sites=sportlots&redirect=/profile/credentials
-- extendedWaitUntil:
-    visible: "Profile Settings"
-    timeout: 90000
+      # See SELF-CLEANING above. 90s exception (live marketplace round-trip): the
+      # seed page awaits a REAL sign-in whenever the stored session is not
+      # renewable, exactly as the sibling's precondition step does; on the common
+      # path it is one status patch and no login.
+      - openLink: ${APP_URL || "http://localhost:3000"}/testing/seed-credentials?sites=sportlots&redirect=/profile/credentials
+      - extendedWaitUntil:
+          visible: "Profile Settings"
+          timeout: 90000
 
-# The tablist renders with the panel, once the profile query has resolved
-# after the full document load — an in-app render, so the 7000 bar.
-- extendedWaitUntil:
-    visible: "SportLots"
-    timeout: 7000
-- tapOn: "SportLots"
-# Local tab switch, measured at 0.33s in the sibling (green CI runs).
-- extendedWaitUntil:
-    visible: ".*SportLots Credentials.*"
-    timeout: 7000
+      # The tablist renders with the panel, once the profile query has resolved
+      # after the full document load — an in-app render, so the 7000 bar.
+      - extendedWaitUntil:
+          visible: "SportLots"
+          timeout: 7000
+      - tapOn: "SportLots"
+      # Local tab switch, measured at 0.33s in the sibling (green CI runs).
+      - extendedWaitUntil:
+          visible: ".*SportLots Credentials.*"
+          timeout: 7000
 
-# The proof the restore landed: the CONNECTED card renders only when the row
-# has credentials AND is not flagged for re-auth. The re-auth card ("Sign in to
-# SportLots again") would mean the seed left the flag standing — which the
-# sibling's housekeeping note says makes profile/test-credentials red next.
-- extendedWaitUntil:
-    visible: ".*Connected to SportLots.*"
-    timeout: 7000
+      # The proof the restore landed: the CONNECTED card renders only when the row
+      # has credentials AND is not flagged for re-auth. The re-auth card ("Sign in to
+      # SportLots again") would mean the seed left the flag standing — which the
+      # sibling's housekeeping note says makes profile/test-credentials red next.
+      - extendedWaitUntil:
+          visible: ".*Connected to SportLots.*"
+          timeout: 7000
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      # R2 precondition, same shape as the live branch: the re-auth strip is
+      # ABSENT, and the pause strip is PRESENT (its lead is its own <strong>;
+      # the dot is escaped so this is the exact one-platform wording).
+      - extendedWaitUntil:
+          visible: "SportLots is on pause\\."
+          timeout: 7000
+      - assertNotVisible: ".*sessions? ran out.*"
+
+      # The SportLots session "lapses" (a no-op when there is no row — header).
+      - openLink: ${APP_URL || "http://localhost:3000"}/testing/needs-reauth?site=sportlots&redirect=/admin/set-builder
+      - extendedWaitUntil:
+          visible: ".*Build set parameters using marketplace APIs.*"
+          timeout: 30000
+
+      # THE FEATURE UNDER THE PAUSE: the pause strip, not the re-auth strip.
+      - extendedWaitUntil:
+          visible: "SportLots is on pause\\."
+          timeout: 7000
+      - assertVisible: ".*Syncs roll on with BuySportsCards only\\. Your SportLots links stay put — nothing gets unlinked\\..*"
+      - assertNotVisible: "Your SportLots session ran out."
+      - assertNotVisible: ".*sessions? ran out.*"
+      - assertNotVisible:
+          id: "Dismiss sign-in notice"
