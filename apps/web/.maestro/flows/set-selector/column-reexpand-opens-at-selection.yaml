@@ -99,11 +99,11 @@ tags:
 # before: search box + list + notice + buttons no longer fit inside 625px at
 # the driver's swipe granularity, and "Search sports" left the top edge
 # (PR #265 push 2, runner 0: list at y=-133..267, notice at 320, "+ Custom"
-# at 413). The paused branch therefore brackets the fold with the notice's
-# own Dismiss control instead of "+ Custom": it sits directly under the
-# list, so search box + list + notice is ~470px and fits with margin, and
-# the row asserts keep the same shape with `above:` re-anchored on it. The
-# live branch is unchanged. Both end in the same hard asserts (R2).
+# at 413). The paused branch therefore scrolls to the notice (proof it is
+# there), swipes back UP to the search box, and brackets the rows with the
+# search box above and the LIST CONTAINER's own bounds below — see the
+# measurement at the step. The live branch is unchanged. Both end in the
+# same hard asserts (R2).
 
 - runFlow:
     file: ../util/util-paused-platforms.yaml
@@ -198,27 +198,45 @@ tags:
     when:
       true: "${output.SL_PAUSED}"
     commands:
-      # The notice's Dismiss is the fold's bottom bracket here (header note).
-      # Never tapped: the notice is stored per column, shown to every worker.
+      # MEASURED (PR #265 push 4, runner 3, step-020): the uncentred DOWN
+      # scroll to the notice's Dismiss overshoots to maximum scroll — list at
+      # y=-133..267, notice at 320, "+ Custom" at 413, search box ~50px above
+      # the top edge — because search + list + notice + buttons exceed the
+      # 625px fold, and a swipe is ~313px. So the bracket cannot be "search
+      # box AND notice on screen at once". It does not need to be: the box
+      # whose scroll position is under test is the LIST (a 400px inner
+      # scroller, `id: "Sports"`), and it is the list container being fully
+      # inside the viewport — not the buttons below it — that makes an
+      # absent row absent because the LIST scrolled it away. So: scroll to
+      # the Dismiss first (DOWN; the scroll is the assert that the root
+      # notice IS there — the one paused-specific fact on this page), then
+      # one UP swipe back to the search box, which lands it at ~y=130 with
+      # the whole list container beneath it (180..580) inside the fold. The
+      # Dismiss is never TAPPED: it is a server mutation that deletes the
+      # root Sports "done" row for every worker (dismissSelectorSyncNotice),
+      # not a per-session hide — a shared write this read-only flow may not
+      # make (R7; util-drill-to-base-variant records the same rule).
       - scrollUntilVisible:
           element:
             id: "Dismiss Sports notice"
           timeout: 7000
-      - extendedWaitUntil:
-          visible:
+      - scrollUntilVisible:
+          element:
             id: "Search sports"
+          direction: UP
           timeout: 7000
+      # The list container is wholly on screen (it is what brackets the rows).
+      - assertVisible:
+          id: "Sports"
+      # The same two row asserts as the live branch, anchored on the search
+      # box above; the list container's own bounds are the bottom bracket.
       - extendedWaitUntil:
           visible:
             text: "Racing"
             below:
               id: "Search sports"
-            above:
-              id: "Dismiss Sports notice"
           timeout: 7000
       - assertNotVisible:
           text: "Baseball"
           below:
             id: "Search sports"
-          above:
-            id: "Dismiss Sports notice"
