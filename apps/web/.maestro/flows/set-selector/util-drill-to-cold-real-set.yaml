@@ -251,12 +251,21 @@ tags:
                 notVisible: "Add Custom Entry"
                 timeout: 7000
       # Written: the row is in the column (short column, no search input —
-      # the `notVisible: "Sets"` branch below taps it by header anchor).
-      - extendedWaitUntil:
-          visible:
+      # the `notVisible: "Sets"` branch below taps it by header anchor). A
+      # SCROLL, and UP: centring "+ Custom" above ran the page to maximum
+      # scroll, which left the column HEADER above the top edge while the new
+      # row sat at y≈23 — and a `below:` selector cannot resolve without its
+      # anchor in the hierarchy (PR #265 push 2, runners 3: `Topps` and
+      # `All Brands` both on screen, "Manufacturers" not). Both the header
+      # and the row are ABOVE the current position, so UP is the direction
+      # that reaches them; centring puts the row in the band for the tap.
+      - scrollUntilVisible:
+          element:
             text: ${MANUFACTURER || "Topps"}
             below:
               text: "Manufacturers"
+          direction: UP
+          centerElement: true
           timeout: 7000
 
 - extendedWaitUntil:

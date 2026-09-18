@@ -198,8 +198,30 @@ tags:
                   - extendedWaitUntil:
                       notVisible: "Add Custom Entry"
                       timeout: 7000
+                  # Centring "+ Custom" above ran the page to MAXIMUM scroll
+                  # on this empty column, which leaves the new row at y≈23
+                  # and the column HEADER above the top edge — and a `below:`
+                  # selector cannot resolve without its anchor in the
+                  # hierarchy (the cold util's failure on PR #265 push 2,
+                  # runner 3: `Topps` on screen, "Manufacturers" not). Both
+                  # are above the current position, so UP: one swipe brings
+                  # the header back and the row into the band.
+                  - scrollUntilVisible:
+                      element:
+                        text: ${MANUFACTURER || "Topps"}
+                        below:
+                          text: "Manufacturers"
+                      direction: UP
+                      centerElement: true
+                      timeout: 7000
       # Short column, no search input: tap the row, anchored on the column
       # header (a bare `text:` could match an ancestor's chip). R8: centre.
+      # DOWN, measured on the no-create path (PR #265 push 2, sets-base):
+      # the row sits at y=514 with the header in view, one swipe centres it
+      # at y=201. (The create path above has already centred it from the
+      # other side, so this accepts it at once.) Centring only ever swipes
+      # in the command's direction — decompiled Orchestra.scrollUntilVisible
+      # — so the direction has to match where the row is, not be a default.
       - scrollUntilVisible:
           element:
             text: ${MANUFACTURER || "Topps"}
