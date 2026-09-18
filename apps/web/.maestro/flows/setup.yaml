@@ -425,16 +425,32 @@ tags:
     when:
       true: "${output.SL_PAUSED}"
     commands:
-      # The column SETTLES with no rows: its "done" notice (the paused sentence
-      # with the column's own `Dismiss Manufacturers notice`) is the signal.
-      # Never dismissed — the notice is stored per column and shown to every
-      # worker. Cold-path budget: the first Convex action call on this level.
+      # BELOW THE ROOT THE PAUSE READS AS A BSC-ONLY TREE (PR #265 push 3,
+      # narrowed adapter rule: a side is "paused" only where it is served AND
+      # its ids are complete). The Sports sync never asked SportLots, so
+      # `Baseball` carries no SportLots id, and from here down SportLots is a
+      # plain missing-id skip: the Years column's notice reads "SportLots
+      # skipped: no SportLots ids on this path.", and this column — BSC does
+      # not serve the level, SportLots has no ids — syncs to NOTHING with no
+      # notice at all (both sides unresolvable → silent clear) and shows its
+      # idle empty text. That text renders before the sync too, so settle
+      # the cold-column way first (README → EntityColumn shapes): wait out
+      # the "Syncing" panel if one is up, then gate on the idle text. The
+      # `when:` guard is the documented R10 exception; seed budgets.
+      - runFlow:
+          when:
+            visible: "Syncing Manufacturer Options"
+          commands:
+            - extendedWaitUntil:
+                notVisible: "Syncing Manufacturer Options"
+                timeout: 45000
       - extendedWaitUntil:
-          visible:
-            id: "Dismiss Manufacturers notice"
+          visible: "No manufacturers available. Sync from marketplaces to populate."
           timeout: 45000
-      - assertVisible: "SportLots is on pause: nothing from SportLots was asked for or changed."
-      # STRICT SEED — the paused sentence is not an outage sentence.
+      # The one paused-specific fact reachable here: the level above skipped
+      # SportLots for want of ids (its notice is in view beside this column).
+      - assertVisible: "SportLots skipped: no SportLots ids on this path."
+      # STRICT SEED — a skipped side is not an outage.
       - assertNotVisible: ".*could not be reached, so nothing from .* was changed.*"
       - assertNotVisible: ".*Couldn.t sync options.*"
 
@@ -655,7 +671,7 @@ tags:
           when:
             true: "${output.SL_PAUSED}"
           commands:
-            - assertVisible: "SportLots is on pause — no SportLots sets to pick from right now. Your existing SportLots links stay put."
+            - assertVisible: "SportLots returned no base set for .*"
             - assertNotVisible:
                 id: "SportLots base candidate: .*"
             - tapOn:

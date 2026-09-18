@@ -1008,20 +1008,30 @@ branches end in hard asserts (R2): a runner whose flag disagrees with its
 deployment fails on the first one, by name.
 
 **What the pause changes on screen** (so you recognise it in a failure
-screenshot): the Profile SportLots tab shows the amber "SportLots is on pause"
-card instead of the connected/re-auth card; `/admin/set-builder` opens for a
-BSC-only admin (a paused platform is not a required credential) with the
-amber "SportLots is on pause." strip above its heading; every synced column's
-"done" notice carries "SportLots is on pause: nothing from SportLots was asked
-for or changed." (stored per column, shown to every worker — never dismiss it
-from a shared util); the base picker's SportLots pane says "SportLots is on
-pause — no SportLots sets to pick from right now. Your existing SportLots
-links stay put." and offers no candidate; and every checklist fetch takes the
-one-marketplace path. Two structural consequences matter to drills: the
-**Manufacturers column is empty** on a fresh deployment (SportLots' brand list
-is its only source; see `SET-REGISTRY.md` → "While SportLots is on pause")
-and a **BSC-only Base still reads as unmapped**, so its picker re-opens on
-every visit and the read-only drills leave it with Cancel → Close.
+screenshot). The paused-specific UI exists at exactly three places: the
+Profile SportLots tab shows the amber "SportLots is on pause" card instead of
+the connected/re-auth card; `/admin/set-builder` opens for a BSC-only admin
+(a paused platform is not a required credential) with the amber "SportLots is
+on pause." strip above its heading; and the ROOT Sports column's "done"
+notice carries "SportLots is on pause: nothing from SportLots was asked for
+or changed." (stored per column, shown to every worker — never dismiss it
+from a shared util). **Below the root, on a fresh deployment, the pause is
+indistinguishable from a BSC-only tree**: a side counts as "paused" only
+where it is served AND its ids are complete, and because the Sports sync
+never asked SportLots, `Baseball` is written with no SportLots id — so every
+level beneath skips SportLots for want of ids exactly as a BSC-only-linked
+row would. Years reads "SportLots skipped: no SportLots ids on this path.";
+Manufacturers syncs to nothing with NO notice and its idle text ("No
+manufacturers available. Sync from marketplaces to populate."); the base
+picker's SportLots pane shows the ordinary "SportLots returned no base set
+for <set>"; checklist fetches take the ordinary one-marketplace path ("Kept
+all N cards from BSC. Nothing to match, no other marketplace attached.").
+Paused branches below the root therefore assert THAT state, never the paused
+sentence. Two structural consequences matter to drills: the **Manufacturers
+column is empty** on a fresh deployment (SportLots' brand list is its only
+source; see `SET-REGISTRY.md` → "While SportLots is on pause") and a
+**BSC-only Base still reads as unmapped**, so its picker re-opens on every
+visit and the read-only drills leave it with Cancel → Close.
 
 ## Flow ordering
 

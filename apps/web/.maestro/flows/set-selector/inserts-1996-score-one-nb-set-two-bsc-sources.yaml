@@ -1413,8 +1413,9 @@ tags:
       # With one marketplace there is nothing to RECONCILE: the Inserts column
       # fills straight from BSC — both Series rows, each with a BSC badge —
       # and the reconcile dialog never opens (PR #265 push 2, runner 0:
-      # `Reconcile Inserts` absent, the column populated, the Variant Types
-      # notice carrying the paused sentence). The attach → rename → fetch →
+      # `Reconcile Inserts` absent, the column populated). Below the root the
+      # pause reads as a BSC-only tree, so no paused sentence is asserted
+      # here (PR #265 push 3). The attach → rename → fetch →
       # review → name-check chain below all hangs off that dialog's attach,
       # so under the pause the feature's surface ends here. Hard asserts of
       # what IS true, then stop. R5 marketplace exception: the column's cold
@@ -1423,7 +1424,6 @@ tags:
           visible: ".*Search inserts.*"
           timeout: 240000
       - assertNotVisible: "Reconcile Inserts"
-      - assertVisible: "SportLots is on pause: nothing from SportLots was asked for or changed."
       - tapOn:
           text: ".*Search inserts.*"
           waitToSettleTimeoutMs: 250

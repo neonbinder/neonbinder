@@ -226,9 +226,11 @@ tags:
       - extendedWaitUntil:
           visible: "Confirm Base Set"
           timeout: 45000
-      # THE PAUSED PANE (copy: lib/marketplace/pause-notice.ts): the sentence,
-      # a BSC candidate really offered, no SportLots candidate at all.
-      - assertVisible: "SportLots is on pause — no SportLots sets to pick from right now. Your existing SportLots links stay put."
+      # THE SPORTLOTS PANE: the ordinary empty state, not the paused sentence
+      # — below the root the pause reads as a BSC-only tree (Baseball carries
+      # no SportLots id, so SportLots is skipped for want of ids; PR #265
+      # push 3). A BSC candidate really offered, no SportLots candidate.
+      - assertVisible: "SportLots returned no base set for .*"
       - assertVisible:
           id: "BSC base candidate: .*"
       - assertNotVisible:

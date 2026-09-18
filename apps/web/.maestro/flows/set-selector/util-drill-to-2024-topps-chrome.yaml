@@ -149,17 +149,24 @@ tags:
     when:
       true: "${output.SL_PAUSED}"
     commands:
-      # The column has SETTLED once its "done" notice is up — the paused
-      # sentence with the column's own Dismiss (`Dismiss Manufacturers
-      # notice`, SyncDoneNotice). Not tapped: the notice is stored per column
-      # and dismissing it hides it for every worker. No marketplace is called
-      # on this path (BSC does not serve the level, SportLots is not asked),
-      # so this is one Convex action round-trip — the 7000 bar.
+      # SETTLE. Below the root the pause reads as a BSC-only tree (PR #265
+      # push 3): `Baseball` carries no SportLots id, so this column — BSC does
+      # not serve the level — syncs to nothing, silently (no notice), and
+      # shows its idle empty text; or, on a path the seed provisioned, holds
+      # the hand-made row already. The idle text renders before a sync too,
+      # so wait out a "Syncing" panel if one is up (the `when:` guard is the
+      # documented R10 exception), then gate on EITHER shape. No marketplace
+      # is called on this path — the 7000 bar.
+      - runFlow:
+          when:
+            visible: "Syncing Manufacturer Options"
+          commands:
+            - extendedWaitUntil:
+                notVisible: "Syncing Manufacturer Options"
+                timeout: 7000
       - extendedWaitUntil:
-          visible:
-            id: "Dismiss Manufacturers notice"
+          visible: "No manufacturers available. Sync from marketplaces to populate.|${MANUFACTURER || 'Topps'}"
           timeout: 7000
-      - assertVisible: "SportLots is on pause: nothing from SportLots was asked for or changed."
       # Sole-writer create (see the header). The `notVisible` guard is the
       # documented R10 exception: it costs a poll only on a re-run that
       # already minted the row, never on a first run.

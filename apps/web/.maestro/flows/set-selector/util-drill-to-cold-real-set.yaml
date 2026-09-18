@@ -208,15 +208,15 @@ tags:
     when:
       true: "${output.SL_PAUSED}"
     commands:
-      # Settled = the column's "done" notice is up (the paused sentence with
-      # its own `Dismiss Manufacturers notice`; never tapped — the notice is
-      # per column and shown to every worker). No marketplace is asked on
-      # this path, so this is one Convex action round-trip: the 7000 bar.
+      # SETTLE. Below the root the pause reads as a BSC-only tree (PR #265
+      # push 3): the sport carries no SportLots id, so this column — BSC does
+      # not serve the level — syncs to nothing, silently (no notice), and
+      # shows its idle empty text; on a local re-run the hand-made row is
+      # already there. The "Syncing" guard above already waited a panel out;
+      # this gates on either shape. No marketplace is asked — the 7000 bar.
       - extendedWaitUntil:
-          visible:
-            id: "Dismiss Manufacturers notice"
+          visible: "No manufacturers available. Sync from marketplaces to populate.|${MANUFACTURER || 'Topps'}"
           timeout: 7000
-      - assertVisible: "SportLots is on pause: nothing from SportLots was asked for or changed."
       # The `notVisible` guard is the documented R10 exception — it costs a
       # poll only on a re-run that already minted the row.
       - runFlow:

@@ -47,6 +47,12 @@ BuySportsCards alone for the whole run:
 * Everything that says "MAPPED on BOTH sides" below is mapped on the BSC side
   only under the pause, and every `SL only` / `SportLots only` expectation is
   vacuous. Flows branch on `output.SL_PAUSED`, never on the screen (R10).
+* **Below the root the tree looks BSC-only, not paused** (README → "Operator
+  switches"): `Baseball` carries no SportLots id, so every lower level skips
+  SportLots for want of ids — Years says "SportLots skipped: no SportLots ids
+  on this path.", Manufacturers is silently empty, the base picker's
+  SportLots pane reads "SportLots returned no base set for <set>". Only the
+  root Sports notice carries the paused sentence.
 
 | Set | Variant types provisioned | Provisioned by |
 |---|---|---|

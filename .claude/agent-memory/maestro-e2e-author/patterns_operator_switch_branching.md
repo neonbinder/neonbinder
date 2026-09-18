@@ -28,16 +28,33 @@ timeout on every run the notice is absent — R10). Branch on a script flag:
 
 # What a paused SportLots does to the set builder (drills must know)
 
+0. **Below the root the pause is INDISTINGUISHABLE from a BSC-only tree.** A side
+   is "paused" only where it is served AND its ids are complete; the root Sports
+   sync never asks SportLots, so the sport row is written with no SportLots id and
+   every lower level skips SportLots for want of ids. The paused sentence appears
+   ONLY in the root Sports notice (plus the Profile card and the Set Builder
+   strip). Years: `SportLots skipped: no SportLots ids on this path.`;
+   Manufacturers: silently empty (`No manufacturers available. Sync from
+   marketplaces to populate.`, no notice); base picker SL pane: `SportLots
+   returned no base set for <set>`; checklist: the plain solo line. Paused
+   branches below the root assert THAT, never the paused sentence (PR #265 push 3
+   red).
 1. **The Manufacturers column is EMPTY on a fresh deployment.** Manufacturer rows
    come from SportLots' brand list only (`PLATFORM_LEVEL_SUPPORT` in
    `convex/platformLevels.ts`); BSC sets are filed under existing manufacturer rows
    by name prefix (`syncSetsAcrossManufacturers`, which keys on ALL rows under the
-   year, ids or not). The column ends `done` with the paused notice
-   (`id: "Dismiss Manufacturers notice"` is the settle gate). The seed adds `Topps`
-   with the column's `+ Custom` form (`Add custom Manufacturers` → `Enter custom
-   value...` → Enter → `Create manufacturer`); cold drills add theirs the same way
-   (sole writer of the path). The resulting column is SHORT (≤8 rows → no search
-   input), so tap `text: <mfr>` anchored `below: text: "Manufacturers"`.
+   year, ids or not). Settle the cold-column way (wait out `Syncing Manufacturer
+   Options`, then gate on the idle text OR the row). The seed adds `Topps` with the
+   column's `+ Custom` form (`Add custom Manufacturers` → `Enter custom value...` →
+   Enter → `Create manufacturer`); cold drills add theirs the same way (sole writer
+   of the path). Centring `+ Custom` runs the page to MAXIMUM scroll, leaving the
+   new row at y≈23 and the column HEADER above the top edge — a `below: text:
+   "Manufacturers"` selector cannot resolve without its anchor, so scroll UP
+   (centred) to the row after a create; the no-create row sits at y≈514 and wants
+   DOWN. Centring swipes ONLY in the command's direction and acceptance is
+   direction-aware (decompiled `Orchestra.scrollUntilVisible` /
+   `UiElement.isElementNearScreenCenter`: UP accepts centre < ~437, DOWN accepts
+   centre > ~187), so the direction must match where the target is.
 2. **A BSC-only Base still reads as UNMAPPED** (`baseHasMapping` counts the
    SportLots slot only): the picker auto-opens on EVERY visit and after a BSC-only
    confirm the mapping block renders neither "Re-map Base" nor "Map Base Set".
@@ -48,10 +65,14 @@ timeout on every run the notice is absent — R10). Branch on a script flag:
    no Match Cards dialog). With a wizard the sentence persists in the wizard notice;
    with no wizard the immediate commit replaces it with `Saved N cards` — assert
    the negative (`Match Cards.*` absent) and let the strict `Saved N` gate be the
-   positive pair.
+   positive pair. With ONE marketplace the insert-level sync fills the column
+   directly — there is no `Reconcile Inserts` dialog at all.
 4. Under the pause after the run's reset NO worker has a connected SportLots row
    (the seed skips the site before any write), so the disabled "Test paused" /
    "Sign-in paused" labels are unreachable in CI; assert the card heading
    `SportLots is on pause` and the shared body prefix
    `Sign-ins to SportLots are benched for now.*` instead. maestro-web exposes no
    focus attribute, so "focus parked on the heading" is not E2E-assertable.
+5. A column's `SyncDoneNotice` renders BELOW its fixed-height list and above the
+   idle buttons, ~40px under the fold when a row is centred: SCROLL to it, never
+   bare-assert it, and re-centre the row (UP) before tapping it.

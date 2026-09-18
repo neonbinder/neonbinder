@@ -240,7 +240,7 @@ tags:
     when:
       true: "${output.SL_PAUSED}"
     commands:
-      - assertVisible: "SportLots is on pause — no SportLots sets to pick from right now. Your existing SportLots links stay put."
+      - assertVisible: "SportLots returned no base set for .*"
       - assertNotVisible:
           id: "SportLots base candidate: .*"
 - tapOn: "Cancel"
