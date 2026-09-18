@@ -308,6 +308,17 @@ tags:
 # (SyncDoneNotice, exact §4 copy); live it must not. Asserted right after the
 # first sync, paired with the "Baseball" positive above, so a runner whose
 # flag disagrees with its deployment fails here, by name.
+#
+# WHERE THE NOTICE IS. EntityColumn renders SyncDoneNotice BELOW the column's
+# list (a fixed-height inner scroller), above the idle buttons. With
+# "Baseball" centred the list's bottom edge sits at y=580 and the notice at
+# ~y=620, i.e. UNDER the 625px fold — CI run 1 of PR #265 failed a bare
+# assertVisible here with the notice's amber top edge visible in the failure
+# screenshot and absent from the viewport-bounded hierarchy. So: SCROLL to it
+# (DOWN — it is below the current position), then bring "Baseball" back into
+# the band (UP — the swipe carried it above the top edge) before the tap.
+# Seed budgets; no marketplace is waited on here — the notice is already
+# rendered — these are two short in-app scrolls.
 - runFlow:
     when:
       true: "${!output.SL_PAUSED}"
@@ -317,7 +328,16 @@ tags:
     when:
       true: "${output.SL_PAUSED}"
     commands:
-      - assertVisible: "SportLots is on pause: nothing from SportLots was asked for or changed."
+      - scrollUntilVisible:
+          element:
+            text: "SportLots is on pause: nothing from SportLots was asked for or changed."
+          timeout: 10000
+      - scrollUntilVisible:
+          element:
+            text: "Baseball"
+          direction: UP
+          centerElement: true
+          timeout: 10000
 
 - tapOn: "Baseball"
 

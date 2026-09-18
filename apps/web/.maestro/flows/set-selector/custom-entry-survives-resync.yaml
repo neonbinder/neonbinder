@@ -223,7 +223,17 @@ tags:
     when:
       true: "${output.SL_PAUSED}"
     commands:
-      - assertVisible: "SportLots is on pause: nothing from SportLots was asked for or changed."
+      # The notice renders BELOW the column's fixed-height list, above the
+      # idle buttons (EntityColumn). "Sync Sports" was centred before the tap,
+      # so the notice — just above it — is on screen or a little above the
+      # top edge; a bare assertVisible cannot recover the latter (PR #265 CI
+      # run 1, setup.yaml, same surface). UP is the direction that reaches it;
+      # scrollUntilVisible swipes only if it is not already in view.
+      - scrollUntilVisible:
+          element:
+            text: "SportLots is on pause: nothing from SportLots was asked for or changed."
+          direction: UP
+          timeout: 7000
 
 # Error-path handler: if the FE backstop fired (38s), the form stays visible
 # with "Cancel" (hasError=true) or "Close" (rare: run()→undefined path).
