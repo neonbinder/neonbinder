@@ -517,9 +517,11 @@ export const fetchRawOptions = action({
     pausedSides: Array<"bsc" | "sportlots">;
   }> => {
     await requireAdmin(ctx);
-    // NEO-287 — read once per call, outside the `try`, so the failure return
-    // can report it too.
+    // NEO-287 — read once per call. `pausedList` is derived from the chain's
+    // resolution below (a side is paused only where the pause changed what
+    // happens to it), hoisted so the failure return can carry it too.
     const paused = pausedSides();
+    let pausedList: Array<"bsc" | "sportlots"> = [];
     try {
       const { level, parentId, parentFilters, baseSlPrefix } = args;
 
@@ -602,7 +604,7 @@ export const fetchRawOptions = action({
       }
 
       const skippedSides = skippedSideList(resolution);
-      const pausedList = pausedSideList(resolution);
+      pausedList = pausedSideList(resolution);
       if (skippedSides.length > 0) {
         console.log(
           `[fetchRawOptions] skipping ${skippedSides.join(",")} for ${level} — ` +
@@ -784,7 +786,7 @@ export const fetchRawOptions = action({
         ],
         message: `Failed to fetch options: ${error instanceof Error ? error.message : "Unknown error"}`,
         skippedSides: [] as Array<"bsc" | "sportlots">,
-        pausedSides: pausedSideList(unscopedResolution({ paused })),
+        pausedSides: pausedList,
       };
     }
   },
@@ -849,6 +851,13 @@ type AttachContext = {
    * empty `brd` is not a narrower pool but every brand in the year.
    */
   resolution: ChainResolution;
+  /**
+   * NEO-287 — the raw operator switch, for the BSC pane whose gate is NOT
+   * `resolution.bsc.resolvable` (it browses the YEAR's sets, so it needs only
+   * sport + year ids; see `fetchBscAttachOptions`). The pane applies the pause
+   * after its own scope gate, so a path with no BSC ids stays a plain skip.
+   */
+  paused: ReadonlySet<"bsc" | "sportlots">;
 };
 
 /**
@@ -880,13 +889,16 @@ async function resolveAttachContext(
     );
   }
 
+  // NEO-287 — a paused marketplace has no pool to browse this run; the pane
+  // says so instead of listing candidates. Read once, threaded into the SL
+  // side's resolution here and applied by the BSC pane after its own gate.
+  const paused = pausedSides();
   const out: AttachContext = {
-    // NEO-287 — a paused marketplace has no pool to browse this run; the pane
-    // says so instead of listing candidates.
     resolution: resolvableSides(chain, {
       slRequired: SL_ATTACH_REQUIRED_LEVELS,
-      paused: pausedSides(),
+      paused,
     }),
+    paused,
   };
   for (const ancestor of chain) {
     const slIds = slotIds(ancestor, "sportlots");
@@ -1103,17 +1115,6 @@ export const fetchBscAttachOptions = action({
     await requireAdmin(ctx);
     const cxt = await resolveAttachContext(ctx, args.selectorOptionId);
 
-    // NEO-287 — paused beats unscoped; see `fetchSlAttachSets`.
-    if (cxt.resolution.bsc.paused) {
-      console.log(`[fetchBscAttachOptions] BuySportsCards is paused — not asked`);
-      return {
-        success: true,
-        options: [],
-        message: pausedSyncMessage(["bsc"]),
-        pausedSides: ["bsc"],
-      };
-    }
-
     const platformFilters: Record<string, string[]> = {};
     if (cxt.bscSport) platformFilters.sport = cxt.bscSport;
     if (cxt.bscYear) platformFilters.year = cxt.bscYear;
@@ -1139,6 +1140,21 @@ export const fetchBscAttachOptions = action({
         options: [],
         message: NO_MARKETPLACE_IDS_MESSAGE,
         pausedSides: [],
+      };
+    }
+
+    // NEO-287 — the pause is applied AFTER the scope gate above and BEFORE
+    // the no-linked-set hop below: a path with no BSC ids is a plain skip the
+    // pause never touches (invariant 6), while a scoped path — whichever view,
+    // since the "variants" hop lands on the set list, which WOULD be asked —
+    // is a pool the pause kept us from browsing, and the pane says so.
+    if (cxt.paused.has("bsc")) {
+      console.log(`[fetchBscAttachOptions] BuySportsCards is paused — not asked`);
+      return {
+        success: true,
+        options: [],
+        message: pausedSyncMessage(["bsc"]),
+        pausedSides: ["bsc"],
       };
     }
 

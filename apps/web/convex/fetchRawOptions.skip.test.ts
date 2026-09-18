@@ -342,18 +342,26 @@ describe("fetchRawOptions — the operator has paused a marketplace (NEO-287)", 
     expect(outgoing).toEqual([]);
   });
 
-  test("a hand-made subtree with NO ids reports no_marketplace_ids, unaffected by an unrelated pause", async () => {
+  test("a hand-made subtree with NO ids is byte-for-byte the no-pause result — paused-vs-no-ids are different skips", async () => {
     // The pause only changes what happens on a side that WOULD have been
-    // asked. A side with no ids attached is still the ordinary silent skip.
-    process.env.NEONBINDER_PAUSED_PLATFORMS = "sportlots";
+    // asked. A side with no ids attached is still the ordinary silent skip:
+    // same message, same lists, nothing about the pause at all. Invariant 6 —
+    // a row without marketplace ids behaves identically whatever a marketplace
+    // is doing. (PR #265 push 2: the first cut reported the global pause here
+    // and every column of every hand-made set grew a notice; 29 flows red.)
     const t = convexTest(schema, modules);
     const { variantTypeId } = await seedHandMadeSubtree(t);
 
-    const res = await fetchRaw(t, "insert", variantTypeId);
+    delete process.env.NEONBINDER_PAUSED_PLATFORMS;
+    const withoutPause = await fetchRaw(t, "insert", variantTypeId);
+    process.env.NEONBINDER_PAUSED_PLATFORMS = "sportlots";
+    const withPause = await fetchRaw(t, "insert", variantTypeId);
 
-    expect(res.success).toBe(true);
-    expect(res.skippedSides.slice().sort()).toEqual(["bsc", "sportlots"]);
-    expect(res.pausedSides).toEqual(["sportlots"]);
+    expect(withPause.success).toBe(true);
+    expect(withPause.skippedSides.slice().sort()).toEqual(["bsc", "sportlots"]);
+    expect(withPause.pausedSides).toEqual([]);
+    expect(withPause.message).toBe(NO_MARKETPLACE_IDS_MESSAGE);
+    expect(withPause).toEqual(withoutPause);
   });
 });
 
@@ -393,6 +401,49 @@ describe("ensureSelectorOptions on the same subtree writes NO error status", () 
         parentId: setNameId,
       }),
     ).toBeNull();
+  });
+
+  test("…and IDENTICALLY under an unrelated marketplace pause (NEO-287): no notice, no 'paused' reason", async () => {
+    // PR #265 push 2: the first cut wrote a "done" notice carrying the paused
+    // sentence on this exit whenever any marketplace was paused, so every
+    // column of every hand-made set grew a SyncDoneNotice it never had — 29
+    // flows red on geometry alone, and invariant 6 broken. A no-id path is
+    // the same silent skip whatever a marketplace is doing.
+    process.env.NEONBINDER_PAUSED_PLATFORMS = "sportlots";
+    try {
+      const t = convexTest(schema, modules);
+      const asAdmin = t.withIdentity(ADMIN);
+      const { variantTypeId } = await seedHandMadeSubtree(t);
+      const setNameId = (await t.run(async (ctx) => ctx.db.get(variantTypeId)))!
+        .parentId!;
+
+      await t.mutation(internal.selectorOptions.setSelectorSyncStatus, {
+        level: "variantType",
+        parentId: setNameId,
+        status: "error",
+        message: "left over from a previous run",
+      });
+
+      const res = await asAdmin.action(
+        api.selectorOptions.ensureSelectorOptions,
+        { level: "variantType", parentId: setNameId, force: true },
+      );
+
+      expect(res).toEqual({
+        ran: false,
+        reason: "no_marketplace_ids",
+        skippedSides: ["bsc", "sportlots"],
+        pausedSides: [],
+      });
+      expect(
+        await asAdmin.query(api.selectorOptions.getSelectorSyncStatus, {
+          level: "variantType",
+          parentId: setNameId,
+        }),
+      ).toBeNull();
+    } finally {
+      delete process.env.NEONBINDER_PAUSED_PLATFORMS;
+    }
   });
 });
 

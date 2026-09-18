@@ -7648,12 +7648,15 @@ export const ensureSelectorOptions = action({
       // real sync, and `fetchAggregatedOptions` runs it and reports the skip.
       //
       // NEO-287 — a paused side is unresolvable too, so a column whose only
-      // reachable marketplace is paused lands here as well. That case is NOT
+      // reachable marketplace is paused lands here as well. THAT case is not
       // silent: the hand-made-subtree silence below is right when the operator
-      // never involved a marketplace, and wrong when they did and we chose not
-      // to ask it. The column gets a "done" notice carrying the paused
-      // sentence (plus the no-ids sentence for the other side, if that side
-      // models this level), exactly what a one-sided sync would have said.
+      // never involved a marketplace, and wrong when they did (the side's ids
+      // are all there) and we chose not to ask it. The column gets a "done"
+      // notice carrying the paused sentence, exactly what a one-sided sync
+      // would have said. A path with no ids for the paused side is NOT that
+      // case — `resolvableSides` reports `paused` only where the pause changed
+      // behaviour — so a hand-made subtree stays silent under a pause,
+      // byte-for-byte as without one (invariant 6; PR #265 push 2).
       const resolution = resolvableSides(chain, { level, paused: pausedSides() });
       if (!resolution.bsc.resolvable && !resolution.sportlots.resolvable) {
         const paused = pausedSideList(resolution);
@@ -9384,9 +9387,12 @@ export const fetchCardChecklist = action({
     // guessing that wrong would be most expensive. `[]` is the honest answer
     // only while the chain itself has not been read yet.
     let attachedSides: Array<"bsc" | "sportlots"> = [];
-    // NEO-287 — same hoisting, same reason: the failure return must say which
-    // sides the pause kept us from asking, and that is known before the chain.
-    const pausedList = pausedSideList(unscopedResolution({ paused: pausedSides() }));
+    // NEO-287 — same hoisting, same reason. Derived from the chain's
+    // resolution, never from the global switch: a side is "paused" only where
+    // the pause kept us from asking a side we WOULD have asked (ids complete),
+    // so a set with no SportLots id reports nothing about SportLots, pause or
+    // no pause. `[]` until the chain is read.
+    let pausedList: Array<"bsc" | "sportlots"> = [];
     try {
       // Resolve ancestor chain → filter map + sport + cardNumberPrefix
       const chain = await ctx.runQuery(
@@ -9459,6 +9465,7 @@ export const fetchCardChecklist = action({
         bscScope: "checklist",
         paused: pausedSides(),
       });
+      pausedList = pausedSideList(resolution);
       if (!resolution.bsc.resolvable && !resolution.sportlots.resolvable) {
         console.log(
           `[fetchCardChecklist] no marketplace ids on this path — ` +

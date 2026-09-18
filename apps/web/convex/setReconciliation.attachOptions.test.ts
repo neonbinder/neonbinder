@@ -25,7 +25,10 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
-import { BSC_NO_LINKED_SET_MESSAGE } from "./marketplaceResolvability";
+import {
+  BSC_NO_LINKED_SET_MESSAGE,
+  NO_MARKETPLACE_IDS_MESSAGE,
+} from "./marketplaceResolvability";
 
 const modules = (
   import.meta as unknown as {
@@ -497,5 +500,92 @@ describe("fetchSlAttachSets — SportLots paused (NEO-287)", () => {
     );
     expect(res.pausedSides).toEqual(["sportlots"]);
     expect(fetchCalled).toBe(false);
+  });
+});
+
+describe("attach panes — a path with NO ids is a plain skip under a pause (NEO-287)", () => {
+  afterEach(() => {
+    delete process.env.NEONBINDER_PAUSED_PLATFORMS;
+  });
+
+  /** sport → year → setName → variantType with NO marketplace ids anywhere. */
+  async function seedIdlessChain(
+    t: ReturnType<typeof convexTest>,
+  ): Promise<Id<"selectorOptions">> {
+    return t.run(async (ctx) => {
+      const sportId = await ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: HAND_TYPED_SPORT,
+        sportConfig: { skuCode: "BB", league: "MLB" },
+        platformData: {},
+        children: [],
+        lastUpdated: SENTINEL,
+      });
+      const yearId = await ctx.db.insert("selectorOptions", {
+        level: "year",
+        value: HAND_TYPED_YEAR,
+        platformData: {},
+        parentId: sportId,
+        children: [],
+        lastUpdated: SENTINEL,
+      });
+      const setNameId = await ctx.db.insert("selectorOptions", {
+        level: "setName",
+        value: HAND_TYPED_SET,
+        platformData: {},
+        parentId: yearId,
+        children: [],
+        lastUpdated: SENTINEL,
+      });
+      return ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: HAND_TYPED_VARIANT,
+        platformData: {},
+        parentId: setNameId,
+        children: [],
+        lastUpdated: SENTINEL,
+      });
+    });
+  }
+
+  // Invariant 6: a row without marketplace ids behaves identically whatever a
+  // marketplace is doing. The pause is reported only where it changed what
+  // happened — a pool that WOULD have been browsed. A pane with nothing to
+  // scope it says "no ids", exactly as it does with no pause on, and
+  // `pausedSides` is empty so the dialog renders the ordinary empty pane, not
+  // the paused one.
+  test("BSC pane: no sport/year ids → NO_MARKETPLACE_IDS_MESSAGE, pausedSides empty, even with BSC paused", async () => {
+    process.env.NEONBINDER_PAUSED_PLATFORMS = "buysportscards";
+    const t = convexTest(schema, modules);
+    const rowId = await seedIdlessChain(t);
+
+    const res = await t
+      .withIdentity(ADMIN)
+      .action(api.setReconciliation.fetchBscAttachOptions, {
+        selectorOptionId: rowId,
+        view: "sets",
+      });
+
+    expect(res.success).toBe(true);
+    expect(res.options).toEqual([]);
+    expect(res.message).toBe(NO_MARKETPLACE_IDS_MESSAGE);
+    expect(res.pausedSides).toEqual([]);
+  });
+
+  test("SL pane: no sport/year/manufacturer ids → NO_MARKETPLACE_IDS_MESSAGE, pausedSides empty, even with SportLots paused", async () => {
+    process.env.NEONBINDER_PAUSED_PLATFORMS = "sportlots";
+    const t = convexTest(schema, modules);
+    const rowId = await seedIdlessChain(t);
+
+    const res = await t
+      .withIdentity(ADMIN)
+      .action(api.setReconciliation.fetchSlAttachSets, {
+        selectorOptionId: rowId,
+      });
+
+    expect(res.success).toBe(true);
+    expect(res.options).toEqual([]);
+    expect(res.message).toBe(NO_MARKETPLACE_IDS_MESSAGE);
+    expect(res.pausedSides).toEqual([]);
   });
 });

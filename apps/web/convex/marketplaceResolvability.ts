@@ -110,18 +110,28 @@ export type SideResolution = {
   served: boolean;
   /**
    * True when every ancestor this side needs an id from carries one — AND the
-   * operator has not paused the marketplace (NEO-287). A paused side is
-   * unresolvable for this run whatever the chain carries.
+   * operator has not paused the marketplace (NEO-287). A paused side that
+   * WOULD have been asked is unresolvable for this run.
    */
   resolvable: boolean;
   /**
-   * NEO-287 — the operator has paused this marketplace
-   * (`NEONBINDER_PAUSED_PLATFORMS`), so it was not asked. Distinct from the
-   * id-driven skip because the two read completely differently: a skip is
-   * fixed by attaching an id, a pause is lifted by the operator and nothing on
-   * the path is wrong. Always `false` unless the caller threads the pause in
-   * via `resolvableSides(chain, { paused })` — this module is imported by
-   * React components and never reads the environment itself.
+   * NEO-287 — the pause is the ONLY reason this side was not asked: the
+   * marketplace models this level, the chain carries every id the side needs,
+   * and the operator has paused it (`NEONBINDER_PAUSED_PLATFORMS`).
+   *
+   * Deliberately NOT "the marketplace is paused". A side the chain cannot
+   * scope is a plain skip whether or not a pause is on — the pause changed
+   * nothing about it, so it must not be reported (invariant 6: a row without
+   * marketplace ids behaves identically whatever a marketplace is doing). The
+   * first cut reported the global pause on every result and every column of
+   * every hand-made set grew a notice it never had before.
+   *
+   * Distinct from the id-driven skip because the two read completely
+   * differently: a skip is fixed by attaching an id, a pause is lifted by the
+   * operator and nothing on the path is wrong. Always `false` unless the
+   * caller threads the pause in via `resolvableSides(chain, { paused })` —
+   * this module is imported by React components and never reads the
+   * environment itself.
    */
   paused: boolean;
   /**
@@ -434,13 +444,14 @@ function label(row: ResolvableRow): string {
  * `marketplaceResolvability.test.ts` pins.
  *
  * `paused` (NEO-287) is the set of slot sides the operator has switched off.
- * A paused side comes back `resolvable: false, paused: true` with the `paused`
- * sentinel appended to `missing`, and `served` is judged exactly as before —
- * the pause says nothing about whether the marketplace models the level. The
- * id walk still runs for a paused side so `missing` stays a complete account
- * of what the chain owes; only the verdict is forced. The caller reads the
- * pause (`pausedSides()` in `convex/marketplacePause.ts`) and passes it in;
- * this module never reads the environment.
+ * The id walk runs FIRST, exactly as without a pause; then a side that came
+ * out resolvable (served at this level, every id present) and is in the set
+ * is flipped to `resolvable: false, paused: true` with the `paused` sentinel
+ * as its only `missing` entry. A side the walk already refused is returned
+ * untouched — `paused: false`, no sentinel — because the pause did not
+ * change what happens to it. `served` is judged exactly as before. The caller
+ * reads the pause (`pausedSides()` in `convex/marketplacePause.ts`) and
+ * passes it in; this module never reads the environment.
  */
 export function resolvableSides(
   chain: readonly ResolvableRow[],
@@ -452,8 +463,6 @@ export function resolvableSides(
   },
 ): ChainResolution {
   const level = opts?.level;
-  const bscPaused = opts?.paused?.has("bsc") ?? false;
-  const slPaused = opts?.paused?.has("sportlots") ?? false;
   const slRequired =
     opts?.slRequired ??
     (level !== undefined && level in SL_SCOPE_BY_LEVEL
@@ -559,20 +568,32 @@ export function resolvableSides(
     if (!setIsLinked) missingSl.push("unlinked set");
   }
 
-  // NEO-287 — appended LAST so the id account above is untouched, and as a
-  // fixed sentinel so `missingSummary` may log it whole.
+  // NEO-287 — the pause is applied AFTER the id walk and only to a side the
+  // walk would have asked. A side already refused for want of ids (or an
+  // unserved level) is returned exactly as it would be without a pause, so a
+  // no-id path is indistinguishable under the switch. The sentinel is a fixed
+  // word so `missingSummary` may log it whole.
+  const bscServed = level === undefined || platformServesLevel("bsc", level);
+  const slServed =
+    level === undefined || platformServesLevel("sportlots", level);
+  const bscPaused =
+    bscServed && missingBsc.length === 0 && (opts?.paused?.has("bsc") ?? false);
+  const slPaused =
+    slServed &&
+    missingSl.length === 0 &&
+    (opts?.paused?.has("sportlots") ?? false);
   if (bscPaused) missingBsc.push("paused");
   if (slPaused) missingSl.push("paused");
 
   return {
     bsc: {
-      served: level === undefined || platformServesLevel("bsc", level),
+      served: bscServed,
       resolvable: missingBsc.length === 0,
       paused: bscPaused,
       missing: missingBsc,
     },
     sportlots: {
-      served: level === undefined || platformServesLevel("sportlots", level),
+      served: slServed,
       resolvable: missingSl.length === 0,
       paused: slPaused,
       missing: missingSl,
@@ -583,9 +604,11 @@ export function resolvableSides(
 /**
  * The resolution of a chain with NO parent: nothing to scope by and nothing
  * that can be missing, so both sides are asked — unless the operator has
- * paused one (NEO-287). The top-level sport sync and the reconciler's root
- * fetch used to spell this literal out themselves; they share it now so the
- * pause reaches them too.
+ * paused one (NEO-287), which is the one place a pause is ALWAYS reported:
+ * with no ids to be missing, both sides would have been asked, so a paused
+ * side here is a side the pause genuinely kept us from asking. The top-level
+ * sport sync and the reconciler's root fetch used to spell this literal out
+ * themselves; they share it now so the pause reaches them too.
  */
 export function unscopedResolution(opts?: {
   paused?: ReadonlySet<PlatformSide>;
@@ -668,8 +691,9 @@ function missingName(entry: string): string {
  *
  * NEO-287: a paused side is excluded here too. It IS skipped (and stays in
  * `skippedSideList`, so coverage subtracts it), but "no ids on this path"
- * would be false — the ids may well be there — and the operator is told with
- * the paused sentence instead, built from `pausedSideList`.
+ * would be false — a side is `paused` only when its ids ARE all there — and
+ * the operator is told with the paused sentence instead, built from
+ * `pausedSideList`.
  */
 export function notifiableSkippedSides(
   resolution: ChainResolution,
@@ -680,11 +704,12 @@ export function notifiableSkippedSides(
 }
 
 /**
- * NEO-287 — the sides this run did not ask because the operator paused them,
- * in the same stable order as the other lists. Rides back to the client as
- * `pausedSides`, beside `skippedSides` (which also contains them — a paused
- * side is a skipped side with a different reason, and coverage must subtract
- * it the same way).
+ * NEO-287 — the sides this run did not ask ONLY because the operator paused
+ * them (ids complete, level served), in the same stable order as the other
+ * lists. Rides back to the client as `pausedSides`, beside `skippedSides`
+ * (which also contains them — a paused side is a skipped side with a
+ * different reason, and coverage must subtract it the same way). Empty on a
+ * path with no ids for that side, pause or no pause.
  */
 export function pausedSideList(
   resolution: ChainResolution,
