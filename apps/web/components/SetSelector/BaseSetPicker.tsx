@@ -372,6 +372,15 @@ export default function BaseSetPicker({
   // Initial focus: the search box when it is rendered, otherwise the first
   // SportLots option, otherwise the first BSC option. Re-runs when `loading`
   // flips because the option lists do not exist during the skeleton phase.
+  //
+  // NEO-287 (a11y audit): with BOTH panes empty once loading has finished —
+  // both marketplaces paused, so no option will ever render — focus the
+  // dialog container itself, the same fallback the Tab trap below uses when
+  // it finds nothing focusable. Otherwise focus stays on the trigger BEHIND
+  // the modal and the keyboard operator is trapped outside their own dialog.
+  // Only after loading: during the skeleton phase the lists are empty too,
+  // and parking focus on the dialog then would mark the job done before the
+  // options arrive.
   useEffect(() => {
     if (!isOpen) return;
     const dialog = dialogRef.current;
@@ -381,7 +390,10 @@ export default function BaseSetPicker({
       triggerRef.current = document.activeElement as HTMLElement | null;
     }
     const target =
-      searchRef.current ?? slRefs.current[0] ?? bscRefs.current[0] ?? null;
+      searchRef.current ??
+      slRefs.current[0] ??
+      bscRefs.current[0] ??
+      (loading ? null : dialog);
     if (!target) return;
     target.focus();
     initialFocusDone.current = true;

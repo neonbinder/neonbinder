@@ -74,6 +74,19 @@ export default function CredentialsPanel() {
   const paused = usePausedPlatforms();
   const sitePaused = paused.has(selectedSite);
   const siteName = siteMeta?.label ?? selectedSite;
+  // a11y (NEO-287 audit): which of the mutually exclusive state cards is
+  // showing. Each card is a polite live region keyed on this, so a LIVE flip
+  // (pause set or lifted, session lapsing, connect succeeding) remounts the
+  // card and is announced — the same `role="status"` pattern intake.tsx uses
+  // for its stage line. Without the key, React would patch the text inside
+  // one reused <div> and screen readers would not reliably re-read it.
+  const panelState: "paused" | "reauth" | "connected" | "form" = sitePaused
+    ? "paused"
+    : needsReauth && !editMode
+      ? "reauth"
+      : hasStoredCredentials && !editMode
+        ? "connected"
+        : "form";
 
   // Reactive in-flight guard. A credential op (store / test-login / delete)
   // holds a per-(user, site) lock on the backend, surfaced as `lockedAt` on the
@@ -352,7 +365,12 @@ export default function CredentialsPanel() {
         the pause refuses, so the card would prescribe a dead control. */}
     {sitePaused ? (
       <div className="space-y-4">
-        <div className="p-4 bg-amber-50 dark:bg-amber-900/20 text-amber-900 dark:text-amber-200 border border-amber-300 dark:border-amber-700 rounded-md">
+        <div
+          key={panelState}
+          role="status"
+          aria-live="polite"
+          className="p-4 bg-amber-50 dark:bg-amber-900/20 text-amber-900 dark:text-amber-200 border border-amber-300 dark:border-amber-700 rounded-md"
+        >
           <strong>{PAUSE_NOTICE_COPY.profile.heading(siteName)}</strong>
           <p className="text-sm mt-1">
             {hasStoredCredentials
@@ -409,7 +427,12 @@ export default function CredentialsPanel() {
       </div>
     ) : needsReauth && !editMode ? (
       <div className="space-y-4">
-        <div className="p-4 bg-amber-50 dark:bg-amber-900/20 text-amber-900 dark:text-amber-200 border border-amber-300 dark:border-amber-700 rounded-md">
+        <div
+          key={panelState}
+          role="status"
+          aria-live="polite"
+          className="p-4 bg-amber-50 dark:bg-amber-900/20 text-amber-900 dark:text-amber-200 border border-amber-300 dark:border-amber-700 rounded-md"
+        >
           <strong>Sign in to {siteMeta?.label} again</strong>
           <p className="text-sm mt-1">
             Your {siteMeta?.label} session expired or was revoked, so we can&apos;t
@@ -444,7 +467,12 @@ export default function CredentialsPanel() {
       </div>
     ) : hasStoredCredentials && !editMode ? (
       <div className="space-y-4">
-        <div className="p-4 bg-blue-50 dark:bg-blue-900/20 text-blue-800 dark:text-blue-200 border border-blue-200 dark:border-blue-800 rounded-md">
+        <div
+          key={panelState}
+          role="status"
+          aria-live="polite"
+          className="p-4 bg-blue-50 dark:bg-blue-900/20 text-blue-800 dark:text-blue-200 border border-blue-200 dark:border-blue-800 rounded-md"
+        >
           <strong>Connected to {siteMeta?.label}</strong>
           <p className="text-sm mt-1">
             We hold a {siteMeta?.label} session, not your password. You can test

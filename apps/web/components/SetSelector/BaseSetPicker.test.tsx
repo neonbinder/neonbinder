@@ -465,6 +465,26 @@ describe("BaseSetPicker — a paused marketplace pane (NEO-287)", () => {
     ).toHaveProperty("disabled", true);
   });
 
+  it("both sides paused: initial focus lands on the dialog itself, not behind it", async () => {
+    // a11y: no search box and no option row will ever render, so the usual
+    // targets are all null. The dialog container (tabIndex=-1) is the same
+    // fallback the Tab trap uses when it finds nothing focusable — focus
+    // must not stay on the trigger behind the modal.
+    renderPicker({
+      slOptions: [{ value: SET, platformValue: "tc" }],
+      bscOptions: [{ value: "Some Other BSC Set", platformValue: "other" }],
+      pausedSides: ["bsc", "sportlots"],
+    });
+    await waitFor(() => {
+      expect(document.activeElement).toBe(screen.getByRole("dialog"));
+    });
+  });
+
+  it("does NOT park focus on the dialog while still loading — the options have not arrived yet", () => {
+    renderPicker({ loading: true, pausedSides: ["sportlots"] });
+    expect(document.activeElement).not.toBe(screen.getByRole("dialog"));
+  });
+
   it("no pausedSides prop at all behaves exactly as before (default [])", async () => {
     renderPicker({
       slOptions: [{ value: SET, platformValue: "tc" }],
