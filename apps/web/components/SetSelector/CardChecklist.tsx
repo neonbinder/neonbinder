@@ -34,6 +34,9 @@ import { Input } from "../primitives/Input";
 import TeamPicker from "./TeamPicker";
 import PlayerPicker, { type PlayerPickerLabels } from "./PlayerPicker";
 import { attachedSidesOf } from "../../convex/marketplaceResolvability";
+import { pausedSyncMessage } from "../../convex/selectorSyncStore";
+import { isKnownSite, sidesOfSites } from "../../convex/lib/marketplacePause";
+import { usePausedPlatforms } from "@/src/hooks/usePausedPlatforms";
 import { SIDE_LABEL, type SyncSide } from "./selector-sync-feedback";
 import {
   candidateToPairingCard,
@@ -130,9 +133,20 @@ type PendingReview = {
  * the commit; the marketplace is named with the same `SIDE_LABEL` vocabulary
  * the rest of this UI uses ("BSC", "SportLots").
  */
-export const soloKeptMessage = (side: SyncSide, count: number): string =>
+export const soloKeptMessage = (
+  side: SyncSide,
+  count: number,
+  /**
+   * NEO-287 — attached sides this run did not ask because the operator
+   * paused them. "No other marketplace attached" would be false for them, so
+   * the line carries the sync's own paused sentence instead.
+   */
+  pausedAttached: readonly SyncSide[] = [],
+): string =>
   `Kept all ${count} ${count === 1 ? "card" : "cards"} from ${SIDE_LABEL[side]}. ` +
-  `Nothing to match, no other marketplace attached.`;
+  (pausedAttached.length > 0
+    ? `Nothing to match — ${pausedSyncMessage(pausedAttached)}`
+    : `Nothing to match, no other marketplace attached.`);
 
 /**
  * NEO-255 — the fetch is streaming and no dialog is going to open, so this
@@ -265,6 +279,8 @@ export default function CardChecklist({
   // away, which is why the pickers ended up matching on a display string.
   const ancestorSportId = ancestorChain?.find((c) => c.level === "sport")?._id;
   const fetchChecklist = useAction(api.selectorOptions.fetchCardChecklist);
+  // NEO-287: the operator's pause switch, read at the moment Sync is pressed.
+  const pausedSites = usePausedPlatforms();
   // NEO-195: the fetch publishes candidates as they become reviewable, so the
   // modal fills in live instead of waiting ~80s for the whole thing.
   const liveCandidates = useQuery(api.checklistCandidates.getReadyCandidates, {
@@ -847,8 +863,20 @@ export default function CardChecklist({
      * come from one rule rather than two implementations of it. The guard above
      * has already established the chain has loaded (`ancestorSportId` comes
      * off it), so `?? []` is unreachable rather than a default.
+     *
+     * NEO-287: minus the sides the operator has paused. A paused link is still
+     * a link (it stays in the slots and in the server's `attachedSides`), but
+     * this run will not fetch it, so there is nothing on that side to line up
+     * — a two-marketplace set with one side paused takes the one-marketplace
+     * path for THIS run only. The server subtracts the same list from its own
+     * answer below, so the two still have to agree.
      */
-    const expectedSides = attachedSidesOf(ancestorChain ?? []);
+    const pausedNow = sidesOfSites(
+      new Set([...pausedSites].filter(isKnownSite)),
+    );
+    const expectedSides = attachedSidesOf(ancestorChain ?? []).filter(
+      (side) => !pausedNow.has(side),
+    );
     const expectSolo = expectedSides.length <= 1;
     // Which batch, if any, the subscription is showing right now — the
     // auto-keep path needs to see it MOVE before it trusts a count. Captured
@@ -929,7 +957,15 @@ export default function CardChecklist({
        * no-marketplace set never reaches here; it returns `candidateCount: 0`
        * above.)
        */
-      const serverSides = result.attachedSides;
+      // NEO-287: the same subtraction the client made before the call, on the
+      // server's own report of what it paused for this run.
+      const serverPaused = new Set(result.pausedSides ?? []);
+      const serverSides = result.attachedSides.filter(
+        (side) => !serverPaused.has(side),
+      );
+      const pausedAttached = result.attachedSides.filter((side) =>
+        serverPaused.has(side),
+      );
       const agreed =
         expectedSides.length === serverSides.length &&
         expectedSides.every((side, i) => side === serverSides[i]);
@@ -988,7 +1024,11 @@ export default function CardChecklist({
         // notice can keep this sentence in front of it: with no dialog, this
         // line is the only place the operator (and the E2E flow) learns how
         // many cards the fetch kept, and the wizard opens within a second.
-        soloKeptRef.current = soloKeptMessage(serverSides[0], cards.length);
+        soloKeptRef.current = soloKeptMessage(
+          serverSides[0],
+          cards.length,
+          pausedAttached,
+        );
         setSyncMessage(soloKeptRef.current);
         // Exactly what Confirm hands back for a screen where every row is a
         // kept single: the cards, and no conflicts — a single has no second

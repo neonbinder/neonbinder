@@ -94,6 +94,56 @@ export function skippedSyncMessage(skippedSides: readonly string[]): string {
 }
 
 /**
+ * NEO-287 — what the admin is told when a marketplace was NEVER ASKED because
+ * the operator has paused it (`NEONBINDER_PAUSED_PLATFORMS`).
+ *
+ * A third vocabulary, deliberately distinct from both of the above:
+ * `partialSyncMessage` invites a Retry (the marketplace hiccupped),
+ * `skippedSyncMessage` points at a missing id (attach one and it will run).
+ * Neither is true here — nothing is wrong with the path and a retry changes
+ * nothing until the operator lifts the pause — and the sentence also has to
+ * carry the invariant-5 reassurance that the pause cost no links.
+ *
+ * Callers compose it the same way they compose the skipped sentence: appended
+ * to the result message after a space, one sentence per run regardless of how
+ * many sides are paused (the names are joined by `platformNames`). One paused
+ * side plus one skipped side yields the paused sentence followed by the skipped
+ * sentence — never `NO_MARKETPLACE_IDS_MESSAGE`, which would misreport a
+ * pause as a missing id.
+ *
+ * Pure — this module is imported by React components and must stay free of
+ * `process.env`; the caller reads the pause and passes the sides in.
+ */
+export function pausedSyncMessage(pausedSides: readonly string[]): string {
+  const names = platformNames(pausedSides);
+  const verb = pausedSides.length > 1 ? "are" : "is";
+  return `${names} ${verb} on pause: nothing from ${names} was asked for or changed.`;
+}
+
+/**
+ * NEO-287 — the notice for every side a run did NOT ask, in one string:
+ * the paused sentence first, then the "no ids" sentence for the sides that
+ * were skipped for want of ids. `undefined` when nothing was left unasked.
+ *
+ * Callers pass `pausedSideList(resolution)` and
+ * `notifiableSkippedSides(resolution)` — the latter already excludes paused
+ * sides, so a side is never described twice. This is the ONLY composition
+ * rule: a paused side and a skipped side read as two sentences, and the
+ * two-sided case never collapses into `NO_MARKETPLACE_IDS_MESSAGE` while a
+ * pause is involved (that sentence would misreport the pause as a missing
+ * id and send the operator to attach one).
+ */
+export function unaskedSidesNotice(
+  pausedSides: readonly string[],
+  skippedSides: readonly string[],
+): string | undefined {
+  const parts: string[] = [];
+  if (pausedSides.length > 0) parts.push(pausedSyncMessage(pausedSides));
+  if (skippedSides.length > 0) parts.push(skippedSyncMessage(skippedSides));
+  return parts.length > 0 ? parts.join(" ") : undefined;
+}
+
+/**
  * How many unlink notices are kept.
  *
  * The list is written into `selectorSyncStatus`, which every open SetSelector

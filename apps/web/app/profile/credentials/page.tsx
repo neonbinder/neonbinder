@@ -3,6 +3,8 @@ import { useAction, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import NeonButton from "@/components/modules/NeonButton";
 import { Input } from "@/components/primitives/Input";
+import { usePausedPlatforms } from "@/src/hooks/usePausedPlatforms";
+import { PAUSE_NOTICE_COPY } from "@/lib/marketplace/pause-notice";
 
 const SUPPORTED_SITES = [
   { key: "buysportscards", label: "BuySportsCards" },
@@ -66,6 +68,25 @@ export default function CredentialsPanel() {
   // true — the account is still connected, only the session died. So this must
   // be checked BEFORE the plain connected summary, or the state never renders.
   const needsReauth = !!siteCredential?.needsReauth;
+  // NEO-287: the operator's pause switch. Outranks every state below — a
+  // paused platform refuses sign-ins and tests server-side, so the panel must
+  // not offer them. Loading reads as not paused (see the hook).
+  const paused = usePausedPlatforms();
+  const sitePaused = paused.has(selectedSite);
+  const siteName = siteMeta?.label ?? selectedSite;
+  // a11y (NEO-287 audit): which of the mutually exclusive state cards is
+  // showing. Each card is a polite live region keyed on this, so a LIVE flip
+  // (pause set or lifted, session lapsing, connect succeeding) remounts the
+  // card and is announced — the same `role="status"` pattern intake.tsx uses
+  // for its stage line. Without the key, React would patch the text inside
+  // one reused <div> and screen readers would not reliably re-read it.
+  const panelState: "paused" | "reauth" | "connected" | "form" = sitePaused
+    ? "paused"
+    : needsReauth && !editMode
+      ? "reauth"
+      : hasStoredCredentials && !editMode
+        ? "connected"
+        : "form";
 
   // Reactive in-flight guard. A credential op (store / test-login / delete)
   // holds a per-(user, site) lock on the backend, surfaced as `lockedAt` on the
@@ -333,15 +354,85 @@ export default function CredentialsPanel() {
     </div>
 
     {/* Credentials UI - same for all sites including BSC.
-        Three mutually exclusive states, in this order:
+        Four mutually exclusive states, in this order:
+          0. paused (operator switch)    → amber "on pause" card (NEO-287)
           1. needsReauth (server-owned)  → amber "sign in again" card
           2. connected, not editing      → blue summary card
           3. otherwise                   → the sign-in form
         Order matters: `needsReauth` leaves `hasCredentials` true, so testing it
-        second would make the state unreachable (NEO-141). */}
-    {needsReauth && !editMode ? (
+        second would make the state unreachable (NEO-141). Paused beats
+        needs-reauth: the flag stays set, but "sign in again" is exactly what
+        the pause refuses, so the card would prescribe a dead control. */}
+    {sitePaused ? (
       <div className="space-y-4">
-        <div className="p-4 bg-amber-50 dark:bg-amber-900/20 text-amber-900 dark:text-amber-200 border border-amber-300 dark:border-amber-700 rounded-md">
+        <div
+          key={panelState}
+          role="status"
+          aria-live="polite"
+          className="p-4 bg-amber-50 dark:bg-amber-900/20 text-amber-900 dark:text-amber-200 border border-amber-300 dark:border-amber-700 rounded-md"
+        >
+          <strong>{PAUSE_NOTICE_COPY.profile.heading(siteName)}</strong>
+          <p className="text-sm mt-1">
+            {hasStoredCredentials
+              ? PAUSE_NOTICE_COPY.profile.bodyConnected(siteName)
+              : PAUSE_NOTICE_COPY.profile.bodyNotConnected(siteName)}
+          </p>
+        </div>
+        {/* No sign-in form while paused, connected or not: connecting IS the
+            thing that is switched off, and a form whose Connect is refused
+            server-side would be a control that claims to work. */}
+        {hasStoredCredentials && (
+          <>
+            <div className="p-4 bg-blue-50 dark:bg-blue-900/20 text-blue-800 dark:text-blue-200 border border-blue-200 dark:border-blue-800 rounded-md">
+              <strong>Connected to {siteMeta?.label}</strong>
+              <p className="text-sm mt-1">
+                {PAUSE_NOTICE_COPY.profile.connectedBody(siteName)}
+              </p>
+            </div>
+            {/* Clear is one-way during a pause: say so before the button, in
+                the same muted register as the "not yet verified" nudge. */}
+            <p className="text-sm text-muted-foreground">
+              {PAUSE_NOTICE_COPY.profile.clearWarning}
+            </p>
+            {/* The two paused controls are disabled AND relabelled — the same
+                label⇔disabled rule as the busy labels below (NEO-128): a
+                control never reads as actionable when it is not. The labels
+                differ from each other and from the live ones so no two
+                buttons on this panel share an accessible name, and so a flow
+                waiting on "Test Credentials" can never land here. Clear stays
+                live: it is a Secret Manager delete, not a marketplace call,
+                and it is the user's one exit while the pause is on. */}
+            <div className="flex flex-col sm:flex-row gap-4">
+              <NeonButton type="button" disabled className="flex-1">
+                {PAUSE_NOTICE_COPY.profile.signInPaused}
+              </NeonButton>
+              <NeonButton
+                type="button"
+                disabled
+                className="flex-1 bg-slate-600 hover:bg-slate-700"
+              >
+                {PAUSE_NOTICE_COPY.profile.testPaused}
+              </NeonButton>
+              <NeonButton
+                type="button"
+                onClick={handleClearCredentials}
+                disabled={credsBusy}
+                className="flex-1 bg-red-600 hover:bg-red-700"
+              >
+                {credsBusy ? "Clearing..." : "Clear Credentials"}
+              </NeonButton>
+            </div>
+          </>
+        )}
+      </div>
+    ) : needsReauth && !editMode ? (
+      <div className="space-y-4">
+        <div
+          key={panelState}
+          role="status"
+          aria-live="polite"
+          className="p-4 bg-amber-50 dark:bg-amber-900/20 text-amber-900 dark:text-amber-200 border border-amber-300 dark:border-amber-700 rounded-md"
+        >
           <strong>Sign in to {siteMeta?.label} again</strong>
           <p className="text-sm mt-1">
             Your {siteMeta?.label} session expired or was revoked, so we can&apos;t
@@ -376,7 +467,12 @@ export default function CredentialsPanel() {
       </div>
     ) : hasStoredCredentials && !editMode ? (
       <div className="space-y-4">
-        <div className="p-4 bg-blue-50 dark:bg-blue-900/20 text-blue-800 dark:text-blue-200 border border-blue-200 dark:border-blue-800 rounded-md">
+        <div
+          key={panelState}
+          role="status"
+          aria-live="polite"
+          className="p-4 bg-blue-50 dark:bg-blue-900/20 text-blue-800 dark:text-blue-200 border border-blue-200 dark:border-blue-800 rounded-md"
+        >
           <strong>Connected to {siteMeta?.label}</strong>
           <p className="text-sm mt-1">
             We hold a {siteMeta?.label} session, not your password. You can test
@@ -619,11 +715,15 @@ export default function CredentialsPanel() {
         )}
       </div>
     )}
-    {/* Not a fourth state — a nudge that sits alongside the connected card
+    {/* Not a fifth state — a nudge that sits alongside the connected card
         until something proves the session still works. Suppressed while
         `needsReauth` is set, because then we already know the answer and the
-        amber card says so. */}
-    {hasStoredCredentials && !needsReauth && !verifiedThisSession && (
+        amber card says so — and while paused, because the test it asks for
+        is the disabled control right above it (NEO-287). */}
+    {hasStoredCredentials &&
+      !needsReauth &&
+      !sitePaused &&
+      !verifiedThisSession && (
       <div className="p-4 bg-blue-50 dark:bg-blue-900/20 text-blue-800 dark:text-blue-200 border border-blue-200 dark:border-blue-800 rounded-md">
         <strong>Connection not yet verified</strong>
         <p className="text-sm mt-1">

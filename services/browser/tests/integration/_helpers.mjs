@@ -149,6 +149,24 @@ export async function postLogin(slug, key, { timeoutMs = 90_000, credentials } =
  * each time so adding a new marketplace is a one-line `assertLoginOk`
  * call plus credential envs.
  */
+/**
+ * Whether a marketplace `slug` is currently paused (NEO-287). Reads
+ * `PAUSED_PLATFORMS`, a comma-separated list of site keys (e.g.
+ * "sportlots" or "sportlots,buysportscards") that CI plumbs through from
+ * the `NEONBINDER_PAUSED_PLATFORMS` GitHub Actions repository variable —
+ * the same knob that pauses SportLots in Convex. Trims and lowercases each
+ * entry so "SportLots, buysportscards" matches. Unset/empty means nothing
+ * is paused.
+ */
+export function isPaused(slug) {
+  const raw = process.env.PAUSED_PLATFORMS || "";
+  return raw
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean)
+    .includes(slug.toLowerCase());
+}
+
 export function assertLoginOk({ status, body }) {
   assert.equal(
     status,

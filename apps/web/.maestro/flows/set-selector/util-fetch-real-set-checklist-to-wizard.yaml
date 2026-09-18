@@ -60,6 +60,14 @@ tags:
 #   The entity-review wizard is OPEN, every row undecided ("0 of N reviewed"),
 #   and the card-pairing session is PARKED behind it — so "Back to matching"
 #   is offered. The caller owns the exit.
+#
+#   NEO-287 — WHILE SPORTLOTS IS ON PAUSE (`-e PAUSED_PLATFORMS`, decided by
+#   util-paused-platforms) the fetch is ONE-marketplace: no Match Cards
+#   dialog, the NEO-255 solo path keeps every BSC card and opens the wizard
+#   directly, so there is NO parked session and "Back to matching" is NOT
+#   offered. The unknown names still come from BSC, so the wizard still
+#   opens on the same fixture. A caller whose feature is the parked session
+#   branches on `output.SL_PAUSED` itself.
 # ============================================================================
 
 # ── DRILL + BASE (R9) ───────────────────────────────────────────────────────
@@ -86,9 +94,29 @@ tags:
     timeout: 7000
 - tapOn:
     id: "Sync card checklist"
-- extendedWaitUntil:
-    visible: ".*Match Cards.*"
-    timeout: 120000
+# NEO-287 — LIVE: the pairing dialog opens. PAUSED: the solo path, no dialog.
+- runFlow:
+    file: ../util/util-paused-platforms.yaml
+- runFlow:
+    when:
+      true: "${!output.SL_PAUSED}"
+    commands:
+      - extendedWaitUntil:
+          visible: ".*Match Cards.*"
+          timeout: 120000
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      # The solo path's terminal line (NEO-255): produced only once the BSC
+      # action RESOLVED and the streamed batch arrived in full — the solo
+      # equivalent of waiting on "^Confirm$". One live BSC round-trip (R5
+      # marketplace exception). The paired dialog must NOT have opened.
+      - extendedWaitUntil:
+          visible:
+            text: ".*Kept all [0-9]+ cards? from BSC.*"
+          timeout: 120000
+      - assertNotVisible: "Match Cards.*"
 
 # ── CONFIRM THE PAIRING ─────────────────────────────────────────────────────
 # NOTHING IS KEPT, deliberately. The matched rows are saved regardless of the
@@ -114,12 +142,24 @@ tags:
 # accessible name is "Confirm card matches" in both states, so only the text can
 # express the difference — which is why this is a separate wait from the tap
 # below rather than one combined selector.
-- extendedWaitUntil:
-    visible:
-      text: "^Confirm$"
-    timeout: 120000
-- tapOn:
-    id: "Confirm card matches"
+# NEO-287 — LIVE: confirm the pairing. PAUSED: there is none to confirm.
+- runFlow:
+    when:
+      true: "${!output.SL_PAUSED}"
+    commands:
+      - extendedWaitUntil:
+          visible:
+            text: "^Confirm$"
+          timeout: 120000
+      - tapOn:
+          id: "Confirm card matches"
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      # Nothing to confirm on the solo path: the wizard is already opening.
+      - assertNotVisible:
+          id: "Confirm card matches"
 
 # ── THE WIZARD ──────────────────────────────────────────────────────────────
 # Every name the fetch brought back that `players`/`teams` does not hold is

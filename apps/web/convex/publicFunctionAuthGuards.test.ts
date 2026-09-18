@@ -666,3 +666,27 @@ describe("NEO-240 — a refused write to a league persists nothing", () => {
     expect(doc?.name).toBe("Major League Baseball");
   });
 });
+
+describe("NEO-287 — marketplacePause.getPausedPlatforms requires a signed-in caller", () => {
+  test("rejects an anonymous caller", async () => {
+    const t = convexTest(schema, modules);
+
+    await expect(
+      t.query(api.marketplacePause.getPausedPlatforms, {}),
+    ).rejects.toThrow(/not authenticated/i);
+  });
+
+  test("still answers a signed-in non-admin", async () => {
+    // Signed-in, not admin, on purpose: the Profile → Site Credentials card
+    // renders "on pause" from this query for EVERY user, so a later sweep that
+    // upgrades it to `requireAdmin` would silently hand non-admins a live
+    // "Sign in" button against a marketplace we have stopped talking to. This
+    // test is what says so.
+    const t = convexTest(schema, modules);
+
+    const paused = await t
+      .withIdentity(MEMBER)
+      .query(api.marketplacePause.getPausedPlatforms, {});
+    expect(Array.isArray(paused)).toBe(true);
+  });
+});

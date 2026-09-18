@@ -18,6 +18,24 @@ tags:
 # for that sign-in before it redirects. It is skipped while the account's stored
 # session can still be renewed, so most runs pay nothing; the wait below only has
 # to be big enough for the runs that don't.
+#
+# NEO-287 — PAUSED BRANCH. A paused platform is NOT a required credential
+# (plan decision 5: app/admin/set-builder/page.tsx filters paused sites out of
+# REQUIRED_SITES), so with SportLots on pause this BSC-only admin is NOT gated:
+# the Set Builder opens, with the pause strip above its heading saying syncs
+# are BSC-only. The paused branch proves exactly that — no banner, the panel
+# subtitle, the strip. Both branches are decided by `-e PAUSED_PLATFORMS`
+# (util-paused-platforms, R3), never by what is on screen (R10).
+#
+# The launch gate under the pause accepts EITHER surface, because which one
+# renders before the seed depends on state this flow does not control: the
+# account's BSC row is on `userProfiles`, which a fresh preview does not have
+# yet (banner: BSC missing) and a reused one does (no banner: nothing
+# missing). After the scoped BSC seed the answer is fixed — no banner — and
+# that is what is asserted. The live branch is unchanged.
+
+- runFlow:
+    file: ../util/util-paused-platforms.yaml
 
 # Step 1: open /set-selector as admin-bsc-only (nothing seeded yet — don't assert gate here)
 #
@@ -33,35 +51,67 @@ tags:
 # userProfile.getUserProfile has resolved and the gate has decided, so neither the
 # nav strip nor the "Loading credentials…" placeholder can satisfy it. It names no
 # platform, so it still does not pre-judge Step 3.
-- launchApp
-- extendedWaitUntil:
-    visible: "Set Builder requires marketplace credentials"
-    timeout: 45000
+# NEO-287 — LIVE: the SportLots-only gate banner, verbatim. PAUSED: no gate,
+# the pause strip instead. See the header.
+- runFlow:
+    when:
+      true: "${!output.SL_PAUSED}"
+    commands:
+      - launchApp
+      - extendedWaitUntil:
+          visible: "Set Builder requires marketplace credentials"
+          timeout: 45000
 
-# Step 2: seed ONLY BuySportsCards, then redirect back to /set-selector.
-# 90s exception (live marketplace round-trip) — see the NEO-141 note above.
-- openLink: ${APP_URL || "http://localhost:3000"}/testing/seed-credentials?sites=buysportscards&redirect=/set-selector
-# Same anchor as Step 1 (NEO-260): the banner's h2, not the sub-tab NavLink.
-- extendedWaitUntil:
-    visible: "Set Builder requires marketplace credentials"
-    timeout: 90000
+      # Step 2: seed ONLY BuySportsCards, then redirect back to /set-selector.
+      # 90s exception (live marketplace round-trip) — see the NEO-141 note above.
+      - openLink: ${APP_URL || "http://localhost:3000"}/testing/seed-credentials?sites=buysportscards&redirect=/set-selector
+      # Same anchor as Step 1 (NEO-260): the banner's h2, not the sub-tab NavLink.
+      - extendedWaitUntil:
+          visible: "Set Builder requires marketplace credentials"
+          timeout: 90000
 
-# Step 3: the gate banner must appear naming SportLots only
-- assertVisible: "Set Builder requires marketplace credentials"
-# SportLots must be named in the banner (the missing platform)
-- assertVisible: "SportLots"
-# BuySportsCards must NOT appear — asserting only the SL name is insufficient
-# because the both-missing banner also contains "SportLots"
-- assertNotVisible: "BuySportsCards"
-# The Set Builder UI itself must not be visible
-- assertNotVisible: ".*Build set parameters using marketplace APIs.*"
+      # Step 3: the gate banner must appear naming SportLots only
+      - assertVisible: "Set Builder requires marketplace credentials"
+      # SportLots must be named in the banner (the missing platform)
+      - assertVisible: "SportLots"
+      # BuySportsCards must NOT appear — asserting only the SL name is insufficient
+      # because the both-missing banner also contains "SportLots"
+      - assertNotVisible: "BuySportsCards"
+      # The Set Builder UI itself must not be visible
+      - assertNotVisible: ".*Build set parameters using marketplace APIs.*"
 
-# Step 4: the CTA link leads to /profile
-- scrollUntilVisible:
-    element:
-      id: "Configure credentials in Profile"
-    centerElement: true
-    timeout: 7000
-- tapOn:
-    id: "Configure credentials in Profile"
-- assertVisible: "Profile Settings"
+      # Step 4: the CTA link leads to /profile
+      - scrollUntilVisible:
+          element:
+            id: "Configure credentials in Profile"
+          centerElement: true
+          timeout: 7000
+      - tapOn:
+          id: "Configure credentials in Profile"
+      - assertVisible: "Profile Settings"
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      - launchApp
+      # Either surface clears the [testing] bootstrap — see the header for why
+      # the pre-seed state is not asserted. 45s: the post-launchApp Clerk gate.
+      - extendedWaitUntil:
+          visible: "Set Builder requires marketplace credentials|.*Build set parameters using marketplace APIs.*"
+          timeout: 45000
+
+      # Seed ONLY BuySportsCards (a live BSC round-trip whenever it has to
+      # re-store — the 90s NEO-141 budget), then land on the Set Builder. With
+      # SportLots paused nothing is missing any more, so the PANEL is the gate.
+      - openLink: ${APP_URL || "http://localhost:3000"}/testing/seed-credentials?sites=buysportscards&redirect=/set-selector
+      - extendedWaitUntil:
+          visible: ".*Build set parameters using marketplace APIs.*"
+          timeout: 90000
+
+      # THE FEATURE UNDER THE PAUSE: not gated, and told why. The strip's lead
+      # is its own <strong> (dot escaped: the exact one-platform wording).
+      - assertNotVisible: "Set Builder requires marketplace credentials"
+      - extendedWaitUntil:
+          visible: "SportLots is on pause\\."
+          timeout: 7000
+      - assertVisible: ".*Syncs roll on with BuySportsCards only\\. Your SportLots links stay put — nothing gets unlinked\\..*"

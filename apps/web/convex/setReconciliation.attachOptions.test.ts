@@ -25,7 +25,10 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
-import { BSC_NO_LINKED_SET_MESSAGE } from "./marketplaceResolvability";
+import {
+  BSC_NO_LINKED_SET_MESSAGE,
+  NO_MARKETPLACE_IDS_MESSAGE,
+} from "./marketplaceResolvability";
 
 const modules = (
   import.meta as unknown as {
@@ -359,5 +362,230 @@ describe("fetchBscAttachOptions — the set comes from the facet plan", () => {
     // Scoped by sport + year only; no setName pin, or the year's list would be
     // one set long.
     expect(recorded[0].setName).toBeUndefined();
+  });
+});
+
+describe("fetchBscAttachOptions — BuySportsCards paused (NEO-287)", () => {
+  afterEach(() => {
+    delete process.env.NEONBINDER_PAUSED_PLATFORMS;
+  });
+
+  test("paused beats a real BSC link: no call, a fixed pane sentence, pausedSides reports it", async () => {
+    process.env.NEONBINDER_PAUSED_PLATFORMS = "buysportscards";
+    const recorded: Array<Record<string, string[]>> = [];
+    vi.stubGlobal("fetch", recordingBsc(recorded));
+    const t = convexTest(schema, modules);
+    // A REAL leaf-attached set — proves the pause outranks "there is
+    // something to browse", not merely "there is nothing to browse".
+    const rowId = await seedHandTypedSet(
+      t,
+      { b0: "base", b1: BSC_SET_SLUG },
+      { b0: "variant", b1: "setName" },
+    );
+
+    const res = await t
+      .withIdentity(ADMIN)
+      .action(api.setReconciliation.fetchBscAttachOptions, {
+        selectorOptionId: rowId,
+        view: "variants",
+      });
+
+    expect(res.success).toBe(true);
+    expect(res.options).toEqual([]);
+    expect(res.message).toBe(
+      "BuySportsCards is on pause: nothing from BuySportsCards was asked for or changed.",
+    );
+    expect(res.pausedSides).toEqual(["bsc"]);
+    expect(recorded).toHaveLength(0);
+  });
+
+  test("paused beats the no-linked-set skip too — the pane says pause, not 'no set yet'", async () => {
+    process.env.NEONBINDER_PAUSED_PLATFORMS = "buysportscards";
+    const recorded: Array<Record<string, string[]>> = [];
+    vi.stubGlobal("fetch", recordingBsc(recorded));
+    const t = convexTest(schema, modules);
+    const rowId = await seedHandTypedSet(t, {});
+
+    const res = await t
+      .withIdentity(ADMIN)
+      .action(api.setReconciliation.fetchBscAttachOptions, {
+        selectorOptionId: rowId,
+        view: "variants",
+      });
+
+    expect(res.message).not.toBe(BSC_NO_LINKED_SET_MESSAGE);
+    expect(res.pausedSides).toEqual(["bsc"]);
+    expect(recorded).toHaveLength(0);
+  });
+});
+
+describe("fetchSlAttachSets — SportLots paused (NEO-287)", () => {
+  afterEach(() => {
+    delete process.env.NEONBINDER_PAUSED_PLATFORMS;
+  });
+
+  /** sport → year → manufacturer, every ancestor carrying an SL id. */
+  async function seedSlScopedChain(
+    t: ReturnType<typeof convexTest>,
+  ): Promise<Id<"selectorOptions">> {
+    return t.run(async (ctx) => {
+      const sportId = await ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: HAND_TYPED_SPORT,
+        sportConfig: { skuCode: "BB", league: "MLB" },
+        platformData: { sportlots: { s0: "BB" } },
+        children: [],
+        lastUpdated: SENTINEL,
+      });
+      const yearId = await ctx.db.insert("selectorOptions", {
+        level: "year",
+        value: HAND_TYPED_YEAR,
+        platformData: { sportlots: { s0: "2024" } },
+        parentId: sportId,
+        children: [],
+        lastUpdated: SENTINEL,
+      });
+      const mfrId = await ctx.db.insert("selectorOptions", {
+        level: "manufacturer",
+        value: HAND_TYPED_MFR,
+        platformData: { sportlots: { s0: "TP" } },
+        parentId: yearId,
+        children: [],
+        lastUpdated: SENTINEL,
+      });
+      const setNameId = await ctx.db.insert("selectorOptions", {
+        level: "setName",
+        value: HAND_TYPED_SET,
+        platformData: {},
+        parentId: mfrId,
+        children: [],
+        lastUpdated: SENTINEL,
+      });
+      // `resolveAttachContext` requires a variantType/insert/parallel row —
+      // the attach dialog only ever lives there.
+      return ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: HAND_TYPED_VARIANT,
+        platformData: {},
+        parentId: setNameId,
+        children: [],
+        lastUpdated: SENTINEL,
+      });
+    });
+  }
+
+  test("paused beats a fully-scoped SL request: no call, a fixed pane sentence", async () => {
+    process.env.NEONBINDER_PAUSED_PLATFORMS = "sportlots";
+    const t = convexTest(schema, modules);
+    const variantTypeId = await seedSlScopedChain(t);
+    let fetchCalled = false;
+    vi.stubGlobal(
+      "fetch",
+      (async () => {
+        fetchCalled = true;
+        throw new Error("must not reach SportLots while paused");
+      }) as unknown as typeof fetch,
+    );
+
+    const res = await t
+      .withIdentity(ADMIN)
+      .action(api.setReconciliation.fetchSlAttachSets, {
+        selectorOptionId: variantTypeId,
+      });
+
+    expect(res.success).toBe(true);
+    expect(res.options).toEqual([]);
+    expect(res.message).toBe(
+      "SportLots is on pause: nothing from SportLots was asked for or changed.",
+    );
+    expect(res.pausedSides).toEqual(["sportlots"]);
+    expect(fetchCalled).toBe(false);
+  });
+});
+
+describe("attach panes — a path with NO ids is a plain skip under a pause (NEO-287)", () => {
+  afterEach(() => {
+    delete process.env.NEONBINDER_PAUSED_PLATFORMS;
+  });
+
+  /** sport → year → setName → variantType with NO marketplace ids anywhere. */
+  async function seedIdlessChain(
+    t: ReturnType<typeof convexTest>,
+  ): Promise<Id<"selectorOptions">> {
+    return t.run(async (ctx) => {
+      const sportId = await ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: HAND_TYPED_SPORT,
+        sportConfig: { skuCode: "BB", league: "MLB" },
+        platformData: {},
+        children: [],
+        lastUpdated: SENTINEL,
+      });
+      const yearId = await ctx.db.insert("selectorOptions", {
+        level: "year",
+        value: HAND_TYPED_YEAR,
+        platformData: {},
+        parentId: sportId,
+        children: [],
+        lastUpdated: SENTINEL,
+      });
+      const setNameId = await ctx.db.insert("selectorOptions", {
+        level: "setName",
+        value: HAND_TYPED_SET,
+        platformData: {},
+        parentId: yearId,
+        children: [],
+        lastUpdated: SENTINEL,
+      });
+      return ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: HAND_TYPED_VARIANT,
+        platformData: {},
+        parentId: setNameId,
+        children: [],
+        lastUpdated: SENTINEL,
+      });
+    });
+  }
+
+  // Invariant 6: a row without marketplace ids behaves identically whatever a
+  // marketplace is doing. The pause is reported only where it changed what
+  // happened — a pool that WOULD have been browsed. A pane with nothing to
+  // scope it says "no ids", exactly as it does with no pause on, and
+  // `pausedSides` is empty so the dialog renders the ordinary empty pane, not
+  // the paused one.
+  test("BSC pane: no sport/year ids → NO_MARKETPLACE_IDS_MESSAGE, pausedSides empty, even with BSC paused", async () => {
+    process.env.NEONBINDER_PAUSED_PLATFORMS = "buysportscards";
+    const t = convexTest(schema, modules);
+    const rowId = await seedIdlessChain(t);
+
+    const res = await t
+      .withIdentity(ADMIN)
+      .action(api.setReconciliation.fetchBscAttachOptions, {
+        selectorOptionId: rowId,
+        view: "sets",
+      });
+
+    expect(res.success).toBe(true);
+    expect(res.options).toEqual([]);
+    expect(res.message).toBe(NO_MARKETPLACE_IDS_MESSAGE);
+    expect(res.pausedSides).toEqual([]);
+  });
+
+  test("SL pane: no sport/year/manufacturer ids → NO_MARKETPLACE_IDS_MESSAGE, pausedSides empty, even with SportLots paused", async () => {
+    process.env.NEONBINDER_PAUSED_PLATFORMS = "sportlots";
+    const t = convexTest(schema, modules);
+    const rowId = await seedIdlessChain(t);
+
+    const res = await t
+      .withIdentity(ADMIN)
+      .action(api.setReconciliation.fetchSlAttachSets, {
+        selectorOptionId: rowId,
+      });
+
+    expect(res.success).toBe(true);
+    expect(res.options).toEqual([]);
+    expect(res.message).toBe(NO_MARKETPLACE_IDS_MESSAGE);
+    expect(res.pausedSides).toEqual([]);
   });
 });

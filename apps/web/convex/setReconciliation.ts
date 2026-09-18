@@ -32,10 +32,11 @@ import {
   UNLINK_NOTICE_LIMIT,
   annotateHasCards,
   checkReturnedIds,
+  pausedSyncMessage,
   platformSideValidator,
   returnedIdsValidator,
   unionChildren,
-  skippedSyncMessage,
+  unaskedSidesNotice,
   unlinkedEntryValidator,
   type UnlinkedEntry,
 } from "./selectorSyncStore";
@@ -55,11 +56,16 @@ import {
   missingSummary,
   SL_ATTACH_REQUIRED_LEVELS,
   notifiableSkippedSides,
+  pausedSideList,
   resolvableSides,
   skippedSideList,
+  unscopedResolution,
   type ChainResolution,
   type ResolvableRow,
 } from "./marketplaceResolvability";
+// NEO-287 — the operator switch, read here and threaded into `resolvableSides`
+// as an argument; the resolvability module itself never reads the environment.
+import { pausedSides } from "./marketplacePause";
 import type { Doc } from "./_generated/dataModel";
 
 /**
@@ -477,6 +483,12 @@ export const fetchRawOptions = action({
      * subtracts them again server-side for bundles that predate this field.
      */
     skippedSides: v.array(platformSideValidator),
+    /**
+     * NEO-287 — the paused subset of `skippedSides`. The forms render the
+     * paused sentence from it; coverage needs nothing extra because every
+     * paused side is already in `skippedSides`.
+     */
+    pausedSides: v.array(platformSideValidator),
   }),
   // Explicit return type: without it, adding `slCandidates` pushed the
   // inferred type past TypeScript's inference budget and `fetchRawOptions`
@@ -502,8 +514,14 @@ export const fetchRawOptions = action({
     errors: Array<{ platform: string; message: string }>;
     message: string;
     skippedSides: Array<"bsc" | "sportlots">;
+    pausedSides: Array<"bsc" | "sportlots">;
   }> => {
     await requireAdmin(ctx);
+    // NEO-287 — read once per call. `pausedList` is derived from the chain's
+    // resolution below (a side is paused only where the pause changed what
+    // happens to it), hoisted so the failure return can carry it too.
+    const paused = pausedSides();
+    let pausedList: Array<"bsc" | "sportlots"> = [];
     try {
       const { level, parentId, parentFilters, baseSlPrefix } = args;
 
@@ -531,11 +549,9 @@ export const fetchRawOptions = action({
       // Build platform-specific filters from the ancestor chain
       let slPlatformFilters: Record<string, string> | undefined;
       let bscPlatformFilters: Record<string, string[]> | undefined;
-      // No parent = nothing to scope by and nothing that can be missing.
-      let resolution: ChainResolution = {
-        bsc: { served: true, resolvable: true, missing: [] },
-        sportlots: { served: true, resolvable: true, missing: [] },
-      };
+      // No parent = nothing to scope by and nothing that can be missing —
+      // except a paused marketplace (NEO-287), which is never asked.
+      let resolution: ChainResolution = unscopedResolution({ paused });
 
       if (parentId) {
         const chain = await ctx.runQuery(
@@ -552,8 +568,9 @@ export const fetchRawOptions = action({
         // display-value fallback that turned a missing id into a wrong query
         // for every level not on the required list. Now a side is asked when
         // its ids are there and skipped when they are not, and no NB name ever
-        // reaches a marketplace.
-        resolution = resolvableSides(chain, { level });
+        // reaches a marketplace. NEO-287 — and a paused side is skipped
+        // whatever the chain carries.
+        resolution = resolvableSides(chain, { level, paused });
 
         slPlatformFilters = {};
         bscPlatformFilters = {};
@@ -587,6 +604,7 @@ export const fetchRawOptions = action({
       }
 
       const skippedSides = skippedSideList(resolution);
+      pausedList = pausedSideList(resolution);
       if (skippedSides.length > 0) {
         console.log(
           `[fetchRawOptions] skipping ${skippedSides.join(",")} for ${level} — ` +
@@ -607,8 +625,19 @@ export const fetchRawOptions = action({
           // idle, "+ Custom" — which is exactly right for a level of NB's own
           // taxonomy that no marketplace stands behind.
           errors: [],
-          message: NO_MARKETPLACE_IDS_MESSAGE,
+          // NEO-287 — unless a side is PAUSED: then the paused sentence leads
+          // and the other side gets the no-ids sentence only if it models this
+          // level. `NO_MARKETPLACE_IDS_MESSAGE` alone would misreport the pause
+          // as a missing id.
+          message:
+            pausedList.length > 0
+              ? (unaskedSidesNotice(
+                  pausedList,
+                  notifiableSkippedSides(resolution),
+                ) ?? NO_MARKETPLACE_IDS_MESSAGE)
+              : NO_MARKETPLACE_IDS_MESSAGE,
           skippedSides,
+          pausedSides: pausedList,
         };
       }
 
@@ -718,12 +747,13 @@ export const fetchRawOptions = action({
       }));
 
       // Only sides that MODEL this level — see `notifiableSkippedSides`. A
-      // structural skip is silent.
-      const notifiableSkipped = notifiableSkippedSides(resolution);
-      const skipSuffix =
-        notifiableSkipped.length > 0
-          ? ` ${skippedSyncMessage(notifiableSkipped)}`
-          : "";
+      // structural skip is silent. NEO-287 — a paused side gets the paused
+      // sentence instead; `unaskedSidesNotice` orders the two.
+      const unaskedNotice = unaskedSidesNotice(
+        pausedList,
+        notifiableSkippedSides(resolution),
+      );
+      const skipSuffix = unaskedNotice ? ` ${unaskedNotice}` : "";
 
       return {
         success: true,
@@ -736,6 +766,7 @@ export const fetchRawOptions = action({
         errors,
         message: `BSC: ${bscOptions.length}, SL: ${slOptions.length}, Auto-matched: ${autoMatched.length}${warningSuffix}${skipSuffix}`,
         skippedSides,
+        pausedSides: pausedList,
       };
     } catch (error) {
       console.error(`[fetchRawOptions] Error:`, error);
@@ -755,6 +786,7 @@ export const fetchRawOptions = action({
         ],
         message: `Failed to fetch options: ${error instanceof Error ? error.message : "Unknown error"}`,
         skippedSides: [] as Array<"bsc" | "sportlots">,
+        pausedSides: pausedList,
       };
     }
   },
@@ -819,6 +851,13 @@ type AttachContext = {
    * empty `brd` is not a narrower pool but every brand in the year.
    */
   resolution: ChainResolution;
+  /**
+   * NEO-287 — the raw operator switch, for the BSC pane whose gate is NOT
+   * `resolution.bsc.resolvable` (it browses the YEAR's sets, so it needs only
+   * sport + year ids; see `fetchBscAttachOptions`). The pane applies the pause
+   * after its own scope gate, so a path with no BSC ids stays a plain skip.
+   */
+  paused: ReadonlySet<"bsc" | "sportlots">;
 };
 
 /**
@@ -850,10 +889,16 @@ async function resolveAttachContext(
     );
   }
 
+  // NEO-287 — a paused marketplace has no pool to browse this run; the pane
+  // says so instead of listing candidates. Read once, threaded into the SL
+  // side's resolution here and applied by the BSC pane after its own gate.
+  const paused = pausedSides();
   const out: AttachContext = {
     resolution: resolvableSides(chain, {
       slRequired: SL_ATTACH_REQUIRED_LEVELS,
+      paused,
     }),
+    paused,
   };
   for (const ancestor of chain) {
     const slIds = slotIds(ancestor, "sportlots");
@@ -927,6 +972,12 @@ export const fetchSlAttachSets = action({
     success: v.boolean(),
     options: v.array(attachOptionValidator),
     message: v.string(),
+    /**
+     * NEO-287 — `["sportlots"]` when the operator paused SportLots, so the pane
+     * can render the paused state structurally rather than by matching
+     * `message`. `[]` otherwise.
+     */
+    pausedSides: v.array(platformSideValidator),
   }),
   handler: async (
     ctx,
@@ -935,9 +986,21 @@ export const fetchSlAttachSets = action({
     success: boolean;
     options: PlatformItem[];
     message: string;
+    pausedSides: Array<"bsc" | "sportlots">;
   }> => {
     await requireAdmin(ctx);
     const cxt = await resolveAttachContext(ctx, args.selectorOptionId);
+    // NEO-287 — paused beats unscoped: nothing is asked and the pane says why.
+    // A SKIP with a fixed sentence, exactly like the no-ids branch below.
+    if (cxt.resolution.sportlots.paused) {
+      console.log(`[fetchSlAttachSets] SportLots is paused — not asked`);
+      return {
+        success: true,
+        options: [],
+        message: pausedSyncMessage(["sportlots"]),
+        pausedSides: ["sportlots"],
+      };
+    }
     // NEO-239 — the precondition this action never had. `fetchBscAttachOptions`
     // below has always refused an unscoped BSC pool ("40k rows is not a
     // browsable pool"); the SL side sent `sprt`/`yr`/`brd` as whatever it had,
@@ -952,6 +1015,7 @@ export const fetchSlAttachSets = action({
         success: true,
         options: [],
         message: NO_MARKETPLACE_IDS_MESSAGE,
+        pausedSides: [],
       };
     }
 
@@ -987,17 +1051,19 @@ export const fetchSlAttachSets = action({
           success: false,
           options: [],
           message: result.message || "SportLots fetch failed",
+          pausedSides: [],
         };
       }
       return {
         success: true,
         options: result.options,
         message: `SL: ${result.options.length} set(s)`,
+        pausedSides: [],
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[fetchSlAttachSets] SportLots error:`, error);
-      return { success: false, options: [], message };
+      return { success: false, options: [], message, pausedSides: [] };
     }
   },
 });
@@ -1033,6 +1099,8 @@ export const fetchBscAttachOptions = action({
     // on the default view, where the client never picked one.
     setSlug: v.optional(v.string()),
     message: v.string(),
+    /** NEO-287 — `["bsc"]` when the operator paused BuySportsCards; see `fetchSlAttachSets`. */
+    pausedSides: v.array(platformSideValidator),
   }),
   handler: async (
     ctx,
@@ -1042,6 +1110,7 @@ export const fetchBscAttachOptions = action({
     options: PlatformItem[];
     setSlug?: string;
     message: string;
+    pausedSides: Array<"bsc" | "sportlots">;
   }> => {
     await requireAdmin(ctx);
     const cxt = await resolveAttachContext(ctx, args.selectorOptionId);
@@ -1070,6 +1139,22 @@ export const fetchBscAttachOptions = action({
         success: true,
         options: [],
         message: NO_MARKETPLACE_IDS_MESSAGE,
+        pausedSides: [],
+      };
+    }
+
+    // NEO-287 — the pause is applied AFTER the scope gate above and BEFORE
+    // the no-linked-set hop below: a path with no BSC ids is a plain skip the
+    // pause never touches (invariant 6), while a scoped path — whichever view,
+    // since the "variants" hop lands on the set list, which WOULD be asked —
+    // is a pool the pause kept us from browsing, and the pane says so.
+    if (cxt.paused.has("bsc")) {
+      console.log(`[fetchBscAttachOptions] BuySportsCards is paused — not asked`);
+      return {
+        success: true,
+        options: [],
+        message: pausedSyncMessage(["bsc"]),
+        pausedSides: ["bsc"],
       };
     }
 
@@ -1092,6 +1177,7 @@ export const fetchBscAttachOptions = action({
         success: true,
         options: [],
         message: BSC_NO_LINKED_SET_MESSAGE,
+        pausedSides: [],
       };
     }
     if (setSlug) platformFilters.setName = [setSlug];
@@ -1115,6 +1201,7 @@ export const fetchBscAttachOptions = action({
           options: [],
           ...(setSlug ? { setSlug } : {}),
           message: result.message || "BSC fetch failed",
+          pausedSides: [],
         };
       }
       return {
@@ -1122,11 +1209,12 @@ export const fetchBscAttachOptions = action({
         options: result.options,
         ...(setSlug ? { setSlug } : {}),
         message: `BSC: ${result.options.length} ${args.view === "sets" ? "set" : "variant"}(s)`,
+        pausedSides: [],
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[fetchBscAttachOptions] BSC error:`, error);
-      return { success: false, options: [], message };
+      return { success: false, options: [], message, pausedSides: [] };
     }
   },
 });
@@ -1302,15 +1390,21 @@ export const storeReconciledOptions = mutation({
     // here would ALSO block a legitimate unlink the caller declared with
     // evidence — a reconciled variantType batch that says "SportLots answered,
     // and this row's id was not in it".
-    const chainResolution = resolvableSides(parentChain);
+    //
+    // NEO-287 — the pause is threaded in here too: a paused side was not asked
+    // this run, so a caller that still declares it covered is refused the same
+    // way. Nothing is unlinked on a marketplace nobody queried.
+    const chainResolution = resolvableSides(parentChain, { paused: pausedSides() });
     const effectiveCovered = (args.coveredSides ?? [])
       .filter((side) => !truncatedSides.includes(side))
       .filter((side) => {
         if (chainResolution[side].resolvable) return true;
         console.warn(
-          `[storeReconciledOptions] dropping ${side} from coveredSides — the ` +
-            `parent chain carries no ${side} ids — ` +
-            `missing=${missingSummary(chainResolution[side])}. Nothing will ` +
+          `[storeReconciledOptions] dropping ${side} from coveredSides — ` +
+            (chainResolution[side].paused
+              ? `${side} is paused`
+              : `the parent chain carries no ${side} ids`) +
+            ` — missing=${missingSummary(chainResolution[side])}. Nothing will ` +
             `be unlinked on that side.`,
         );
         return false;

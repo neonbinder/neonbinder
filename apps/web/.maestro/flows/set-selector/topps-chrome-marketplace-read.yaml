@@ -113,6 +113,11 @@ tags:
 # visibility, so a plain scroll is correct for these asserts.
 # ============================================================
 
+# NEO-287 — no paused branch, on purpose: the League row is an EXPECTED
+# feature for Baseball (convex/features/expectedFeatures.ts) and renders
+# whether or not any marketplace filled it, and the metadata labels below
+# always render at set level. Nothing here reads a SportLots-derived value.
+#
 # At least one feature input row — the League feature is the primary
 # marketplace-derived feature on Baseball sets. Its input (aria-label
 # "Value for League") confirms the features list is populated from the BSC/SL

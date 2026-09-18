@@ -14,6 +14,7 @@ import {
   sanitizeLoginDiagnostic,
 } from "./observability";
 import type { CredentialTestProperties } from "./observability";
+import { isPlatformPaused } from "./marketplacePause";
 
 const MAX_INPUT_LENGTH = 256;
 const SUPPORTED_SITES = ["buysportscards", "sportlots"];
@@ -35,7 +36,9 @@ function isSupportedSite(site: string): boolean {
  * points the user at their credentials. `transientMessage` (NEO-281) is for a
  * login the marketplace never answered — see `isTransientLoginFailure` for the
  * exact classes — where Convex writes nothing about the user's session, so the
- * copy must not blame the user.
+ * copy must not blame the user. `pausedMessage` (NEO-287) is for a login the
+ * operator has switched off with `NEONBINDER_PAUSED_PLATFORMS`: the browser
+ * service is never called, nothing is written, and the copy says so.
  */
 const SITE_LOGIN: Record<
   string,
@@ -46,6 +49,7 @@ const SITE_LOGIN: Record<
     platform: CredentialTestProperties["platform"];
     failureMessage: string;
     transientMessage: string;
+    pausedMessage: string;
     successMessage: string;
   }
 > = {
@@ -55,6 +59,8 @@ const SITE_LOGIN: Record<
     platform: "buysportscards",
     failureMessage: "BSC login failed. Please check your credentials and try again.",
     transientMessage: "BSC didn't answer. Nothing changed — try again in a minute.",
+    pausedMessage:
+      "BuySportsCards sign-ins are on pause right now. Nothing was changed — your saved session is safe.",
     successMessage: "BSC account authenticated successfully! Token stored.",
   },
   sportlots: {
@@ -63,6 +69,8 @@ const SITE_LOGIN: Record<
     platform: "sportlots",
     failureMessage: "SportLots login failed. Please check your credentials and try again.",
     transientMessage: "SportLots didn't answer. Nothing changed — try again in a minute.",
+    pausedMessage:
+      "SportLots sign-ins are on pause right now. Nothing was changed — your saved session is safe.",
     successMessage: "SportLots account authenticated successfully! Session cookie stored.",
   },
 };
@@ -381,9 +389,12 @@ export const saveCredentials = action({
             //
             // NEO-281: only send the user to their password when the
             // marketplace actually refused it. If it never answered, say so.
+            // NEO-287: and if the operator paused the marketplace, the login
+            // was never attempted — the paused copy goes out verbatim and is
+            // never rewritten into "check your username and password".
             return {
               success: false,
-              message: outcome.transient
+              message: outcome.paused || outcome.transient
                 ? outcome.message
                 : `Could not sign in to ${siteDisplayName(args.site)}. Nothing was saved — check your username and password and try again.`,
             };
@@ -676,6 +687,21 @@ export const getSiteToken = internalAction({
     const userId = await getCurrentUserId(ctx);
     if (!userId) {
       throw new Error("Not authenticated");
+    }
+
+    // NEO-287: a paused marketplace is not contacted at all — not even to
+    // read the cached token, because a cached-but-stale token would lead
+    // straight into `refreshSiteToken` and a stored-session login. Returning
+    // null here means the adapters take their `no_credentials` exit, which
+    // writes nothing (no `needsReauth`, no NEO-278 stamp, no self-heal), so
+    // the stored session and every flag come out of the pause exactly as they
+    // went in. The adapters guard this earlier still (before asking for the
+    // token); this is the backstop for any caller that does not.
+    if (isPlatformPaused(args.site)) {
+      console.log(
+        JSON.stringify({ msg: "marketplace_token_paused", site: args.site, op: "getSiteToken" }),
+      );
+      return null;
     }
 
     try {
@@ -1162,6 +1188,13 @@ type SiteLoginOutcome = {
    * keep it rather than blaming the user's password.
    */
   transient: boolean;
+  /**
+   * NEO-287: the operator has paused this marketplace. No login was attempted,
+   * the browser service was never called, nothing was written and no PostHog
+   * `credential_test_failed` was recorded — a pause is not a failure. `message`
+   * carries the per-site `pausedMessage`; callers must return it verbatim.
+   */
+  paused: boolean;
 };
 
 /**
@@ -1190,6 +1223,27 @@ async function runSiteLogin(
       message: `Unsupported site: ${site}`,
       reauthRequired: false,
       transient: false,
+      paused: false,
+    };
+  }
+
+  // NEO-287: every login path — `saveCredentials`, `testSiteCredentials` →
+  // authenticate*, `refreshSiteToken` from `getSiteToken`, and the SportLots
+  // adapter's forced re-auth — funnels through here, so this one check is the
+  // whole "no fresh sign-ins while paused" guarantee. Checked before the
+  // browser service is contacted and before any instrumentation: a paused
+  // login is an operator decision, not a credential failure, so it must not
+  // feed the NEO-43 failure rate. `applyLoginOutcome` writes nothing for it
+  // (neither `success` nor `reauthRequired`), so `needsReauth` and the stored
+  // session are untouched.
+  if (isPlatformPaused(site)) {
+    console.log(JSON.stringify({ msg: "marketplace_login_paused", site, op: label }));
+    return {
+      success: false,
+      message: cfg.pausedMessage,
+      reauthRequired: false,
+      transient: false,
+      paused: true,
     };
   }
 
@@ -1219,6 +1273,7 @@ async function runSiteLogin(
       message: transientFailure ? cfg.transientMessage : cfg.failureMessage,
       reauthRequired: result.errorClass === REAUTH_REQUIRED,
       transient: transientFailure,
+      paused: false,
     };
   }
 
@@ -1250,6 +1305,7 @@ async function runSiteLogin(
     details: loginResult.storeName ? `Store: ${loginResult.storeName}` : undefined,
     reauthRequired: false,
     transient: false,
+    paused: false,
   };
 }
 

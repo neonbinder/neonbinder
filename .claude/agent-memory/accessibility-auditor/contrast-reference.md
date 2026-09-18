@@ -221,3 +221,11 @@ near-black `#0a0a0a`, never white, regardless of the user's OS theme — the
 `body`/`:root` light-mode default never actually paints. Every contrast finding
 in this file (computed against slate-950/900/800/black) reflects what really
 renders. No further investigation needed; this is settled.
+
+## `text-amber-300` (#ffd230) on `bg-gray-900` (#101828) — measured (NEO-287)
+
+12.28:1 — a comfortable pass, well clear of the 4.5:1 floor. Verified for
+`BaseSetPicker.tsx` / `AttachSetsDialog.tsx`'s paused-pane sentence
+(`PAUSE_NOTICE_COPY.pane(...)`, amber-300 on the dialog's `bg-gray-900` shell).
+Confirms the in-code comment claiming this clears 1.4.3; no need to
+re-derive it again for this exact pairing.

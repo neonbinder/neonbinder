@@ -208,6 +208,11 @@ jobs:
           BSC_PASSWORD: ${{ secrets.MAESTRO_BSC_PASSWORD }}
           SPORTLOTS_USERNAME: ${{ secrets.MAESTRO_SPORTLOTS_USERNAME }}
           SPORTLOTS_PASSWORD: ${{ secrets.MAESTRO_SPORTLOTS_PASSWORD }}
+          # NEO-287: mirrors the Convex-side NEONBINDER_PAUSED_PLATFORMS switch —
+          # while SportLots is paused this probe can't log in either, so skip
+          # just that half rather than going red for a known, operator-chosen
+          # outage. No `if:` gating: BSC keeps probing unconditionally.
+          PAUSED_PLATFORMS: ${{ vars.NEONBINDER_PAUSED_PLATFORMS }}
         run: npm run test:prod-gate
 
   # Sticky PR comment with the preview URL + probe result, always posted so a

@@ -60,6 +60,26 @@ tags:
 # The Set Builder UI itself must not be visible
 - assertNotVisible: ".*Build set parameters using marketplace APIs.*"
 
+# NEO-287 — the banner reads the SAME in both modes: BuySportsCards is missing
+# and required either way, and a paused SportLots is simply not required (plan
+# decision 5) — so it is not named, exactly as a present-and-unpaused
+# SportLots is not. What differs is the seed hop above: under the pause it
+# reports SportLots skipped and performs no login. The flag is still decided
+# (`-e PAUSED_PLATFORMS` via util-paused-platforms, R3) so the paused mode
+# asserts its one distinguishing fact explicitly: the pause strip belongs to
+# the panel this account cannot open, so it must NOT be on this page — under
+# the pause that is what tells the gate apart from a page that opened the
+# panel by mistake. Paired with the positive banner asserts above.
+- runFlow:
+    file: ../util/util-paused-platforms.yaml
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      - assertNotVisible: "SportLots is on pause\\."
+      - assertNotVisible:
+          id: "Dismiss pause notice"
+
 # Step 4: the CTA link leads to /profile
 - scrollUntilVisible:
     element:

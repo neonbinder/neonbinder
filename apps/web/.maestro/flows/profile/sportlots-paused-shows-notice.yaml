@@ -1,0 +1,138 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/profile/credentials&worker=${WORKER_INDEX || "0"}
+name: "SportLots on pause — the Profile card and the Set Builder strip say so, and the strip dismisses (NEO-287)"
+tags:
+  - profile
+  - credentials
+---
+# R1 — THE ONE FEATURE THIS FLOW PROVES (NEO-287):
+# When the operator pauses a marketplace (the Convex env var
+# NEONBINDER_PAUSED_PLATFORMS, mirrored to the flows as `-e PAUSED_PLATFORMS`),
+# the user is told so on the two surfaces where they would otherwise have
+# connected, tested or synced it — the Profile credentials card and the Set
+# Builder strip — with the copy Jason approved (todos/neo-287-plan.md §4,
+# lib/marketplace/pause-notice.ts); the Set Builder no longer gates on the
+# paused platform's credentials; and the strip can be dismissed for the
+# session. And when nothing is paused, none of that is on screen.
+#
+# TWO BRANCHES, BOTH HARD (R2). The flag comes from util-paused-platforms
+# (R3), never from the visible notice — a `when: visible:` guard would poll
+# the optional-lookup timeout on every live run (R10). LIVE proves the
+# absence: no paused card, the live "Test Credentials" control IS offered, no
+# strip on the Set Builder. PAUSED proves the presence and the dismissal. A
+# runner told the wrong thing about its deployment fails on the first assert
+# of either branch, by name.
+#
+# WHAT IS NOT ASSERTED, AND WHY.
+#   * The disabled "Sign-in paused" / "Test paused" labels: they render only
+#     for a worker whose SportLots row is CONNECTED, and under the pause the
+#     seed skips SportLots before any write, so after the run's reset no worker
+#     has that row. The card's heading and its body prefix are common to the
+#     connected and not-connected states and are what is asserted.
+#   * The focus park after Dismiss (the h2 "Set Builder"): maestro-web's
+#     hierarchy carries no focus attribute (pinned maestro-web.js emits text,
+#     bounds, resource-id, selected only), so it cannot be observed from a
+#     flow. PausedNotice.test.tsx covers it.
+#
+# R5 — every wait is the 7000 bar except the post-launchApp Clerk gate (45s,
+# README → "Launching a flow"), the in-app return to /admin/set-builder (30s:
+# a full document load with the Clerk → Convex handshake, the budget every
+# other such return in this suite uses) and the live branch's "Test
+# Credentials" wait (30s: the label is keyed off the credential lock, which a
+# real marketplace login on another site can hold — see test-credentials).
+# No scroll anywhere: the credentials panel is a single-section route inside
+# the 1024x629 fold, and the strip is the first thing under the section
+# header at scroll 0 (same geometry note as reauth-notice-on-set-builder).
+# R7 — reads only; nothing is cleared, saved or synced.
+
+- runFlow:
+    file: ../util/util-paused-platforms.yaml
+
+- launchApp
+- extendedWaitUntil:
+    visible: "Profile Settings"
+    timeout: 45000
+
+# The platform tablist is the first thing in the credentials panel.
+- extendedWaitUntil:
+    visible: "SportLots"
+    timeout: 10000
+- tapOn: "SportLots"
+# Local tab switch, measured at 0.33s in CI (green runs) — the 7000 bar.
+- extendedWaitUntil:
+    visible: ".*SportLots Credentials.*"
+    timeout: 7000
+
+# ─────────────────────────────── LIVE ────────────────────────────────────────
+- runFlow:
+    when:
+      true: "${!output.SL_PAUSED}"
+    commands:
+      # Positive first, so the negatives below cannot pass on a dead page: the
+      # live control is offered. 30s — see the R5 note in the header.
+      - extendedWaitUntil:
+          visible: "Test Credentials"
+          timeout: 30000
+      - assertNotVisible: "SportLots is on pause"
+      - assertNotVisible: "Sign-in paused"
+      - assertNotVisible: "Test paused"
+
+      # The Set Builder carries no pause strip.
+      - openLink: ${APP_URL || "http://localhost:3000"}/admin/set-builder
+      - extendedWaitUntil:
+          visible: ".*Build set parameters using marketplace APIs.*"
+          timeout: 30000
+      # The strip's lead is its own <strong>; the dot is escaped so this is the
+      # exact one-platform wording and nothing looser.
+      - assertNotVisible: "SportLots is on pause\\."
+      - assertNotVisible:
+          id: "Dismiss pause notice"
+
+# ────────────────────────────── PAUSED ───────────────────────────────────────
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      # THE PROFILE CARD. Heading (the card's <strong>, no trailing period) and
+      # the body prefix shared by both card states.
+      - extendedWaitUntil:
+          visible: "SportLots is on pause"
+          timeout: 7000
+      - assertVisible: "Sign-ins to SportLots are benched for now.*"
+      # …and no live control: not the connected card's test, not the
+      # not-connected sign-in form.
+      - assertNotVisible: "Test Credentials"
+      - assertNotVisible: "Sign in again"
+      - assertNotVisible: ".*SportLots Username.*"
+
+      # THE SET BUILDER. Two things at once: the page OPENS (a paused platform
+      # is not a required credential — the gate banner must not be what
+      # renders), and the strip above its heading says why syncs are BSC-only.
+      - openLink: ${APP_URL || "http://localhost:3000"}/admin/set-builder
+      - extendedWaitUntil:
+          visible: ".*Build set parameters using marketplace APIs.*"
+          timeout: 30000
+      - assertNotVisible: "Set Builder requires marketplace credentials"
+      # The strip renders in the same pass as the heading (both wait on the
+      # one query), so the bar is the plain 7000. Lead = the <strong>, exact;
+      # body = the <p>'s own text node after it, matched loosely on both ends.
+      - extendedWaitUntil:
+          visible: "SportLots is on pause\\."
+          timeout: 7000
+      - assertVisible: ".*Syncs roll on with BuySportsCards only\\. Your SportLots links stay put — nothing gets unlinked\\..*"
+      - assertVisible:
+          id: "Dismiss pause notice"
+
+      # DISMISS hides the strip for the session. No scroll (see the header), so
+      # R8 does not apply; the button unmounts itself on click and the strip is
+      # a leaf of the page, so the re-render is small.
+      - tapOn:
+          id: "Dismiss pause notice"
+      - extendedWaitUntil:
+          notVisible: "SportLots is on pause\\."
+          timeout: 7000
+      - assertNotVisible:
+          id: "Dismiss pause notice"
+      # Positive pair for the negatives above: still the Set Builder, not an
+      # error boundary, and the cascade is still there beneath it.
+      - assertVisible: ".*Build set parameters using marketplace APIs.*"

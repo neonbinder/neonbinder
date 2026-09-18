@@ -836,3 +836,33 @@ describe("NEO-279: Fill teams is admin-gated, and its reads/writes are internal"
     expect(src).not.toContain(`export const ${fn} = ${publicKeyword}(`);
   });
 });
+
+describe("NEO-287: the marketplace pause switch is readable by any signed-in user", () => {
+  /**
+   * `marketplacePause.getPausedPlatforms` is the one client-facing surface of
+   * the operator switch that pauses all contact with a marketplace. It is
+   * signed-in, not admin, on purpose: the Profile card, the Set Builder strip
+   * and the marketplace pickers all render from it, and every user who could
+   * otherwise press "Sign in" or "Test Credentials" has to be told why the
+   * button is benched. It reveals nothing but the operator decision the UI is
+   * about to announce anyway, and it reads no table — the value comes from
+   * the deployment's environment.
+   *
+   * Signed-out is still refused: the deployment URL is public, and which
+   * marketplaces we have stopped talking to is operational state, not landing
+   * page content. `publicProfile` is the only anonymous-by-intent surface.
+   */
+  test("marketplacePause.getPausedPlatforms rejects an anonymous caller", async () => {
+    const t = convexTest(schema, modules);
+    await expect(
+      t.query(api.marketplacePause.getPausedPlatforms, {}),
+    ).rejects.toThrow(/Not authenticated/);
+  });
+
+  test("marketplacePause.getPausedPlatforms answers a signed-in non-admin", async () => {
+    const t = convexTest(schema, modules);
+    expect(
+      await t.withIdentity(SIGNED_IN).query(api.marketplacePause.getPausedPlatforms, {}),
+    ).toEqual([]);
+  });
+});

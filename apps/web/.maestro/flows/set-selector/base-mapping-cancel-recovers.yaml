@@ -49,7 +49,17 @@ tags:
 # R5 — every wait is the 7s default EXCEPT the two live SportLots base-set
 #   round-trips (tap Base, and Retry) which get the marketplace budget, and the
 #   cold variant-type sync absorbed inside the drill util.
+#
+# NEO-287 — the two "SL returned options" asserts branch on the operator's
+# pause switch (`-e PAUSED_PLATFORMS`, decided once by util-paused-platforms).
+# LIVE: the SportLots pane loaded. PAUSED: the pane says SportLots is on
+# pause and offers no candidate, while the BSC pane loaded — a loaded picker
+# is still the proof the Retry recovered. The feature itself (Cancel →
+# message → Retry, nothing written) is identical in both modes.
 # ════════════════════════════════════════════════════════════════════════════
+
+- runFlow:
+    file: ../util/util-paused-platforms.yaml
 
 - launchApp
 - extendedWaitUntil:
@@ -121,8 +131,22 @@ tags:
 - extendedWaitUntil:
     visible: "Confirm Base Set"
     timeout: 60000
-- assertVisible:
-    text: ".*SportLots base.*"
+# NEO-287 — which side proves the picker LOADED (see the header).
+- runFlow:
+    when:
+      true: "${!output.SL_PAUSED}"
+    commands:
+      - assertVisible:
+          text: ".*SportLots base.*"
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      - assertVisible: "SportLots returned no base set for .*"
+      - assertVisible:
+          id: "BSC base candidate: .*"
+      - assertNotVisible:
+          id: "SportLots base candidate: .*"
 
 # ── CANCEL the picker — the exact accidental action from the bug report ──────
 # The picker is a fixed z-50 portal overlay covering the whole viewport (its
@@ -178,8 +202,22 @@ tags:
 - extendedWaitUntil:
     visible: "Confirm Base Set"
     timeout: 60000
-- assertVisible:
-    text: ".*SportLots base.*"
+# NEO-287 — which side proves the picker LOADED (see the header).
+- runFlow:
+    when:
+      true: "${!output.SL_PAUSED}"
+    commands:
+      - assertVisible:
+          text: ".*SportLots base.*"
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      - assertVisible: "SportLots returned no base set for .*"
+      - assertVisible:
+          id: "BSC base candidate: .*"
+      - assertNotVisible:
+          id: "SportLots base candidate: .*"
 
 # We intentionally do NOT Confirm — leaving this set's Base unmapped keeps the
 # flow non-destructive (R7) and collision-free on the GLOBAL selectorOptions.

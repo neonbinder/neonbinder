@@ -4,6 +4,7 @@ import { Theme } from "@radix-ui/themes";
 import NeonButton from "../modules/NeonButton";
 import type { PlatformItem } from "./ReconciliationModal";
 import { Input } from "../primitives/Input";
+import { PAUSE_NOTICE_COPY, sideLabel } from "@/lib/marketplace/pause-notice";
 
 /** Which job this dialog is doing — see `remapNotice`. */
 export type BaseSetPickerMode = "initial" | "remap";
@@ -73,6 +74,13 @@ type BaseSetPickerProps = {
    * stale-mapping refusal). Never marketplace text.
    */
   notice?: string | null;
+  /**
+   * NEO-287 — slot sides (`"bsc"` / `"sportlots"`) the operator has paused,
+   * from the fetch result's `pausedSides`. A paused side was never asked, so
+   * its pane says so in place of the empty state and offers NO candidates —
+   * not even the set listing — and the other side carries the confirm alone.
+   */
+  pausedSides?: readonly string[];
 };
 
 /**
@@ -214,7 +222,10 @@ export default function BaseSetPicker({
   mode = "initial",
   remapNotice,
   notice,
+  pausedSides = [],
 }: BaseSetPickerProps) {
+  const slPaused = pausedSides.includes("sportlots");
+  const bscPaused = pausedSides.includes("bsc");
   const [selectedValue, setSelectedValue] = useState<string | null>(null);
   const [userPicked, setUserPicked] = useState(false);
   const [confirming, setConfirming] = useState(false);
@@ -233,13 +244,14 @@ export default function BaseSetPicker({
   const initialFocusDone = useRef(false);
 
   const sortedSlOptions = useMemo(() => {
+    if (slPaused) return [];
     const scored = slOptions.map((opt) => ({
       ...opt,
       score: scoreBaseSetMatch(opt.value, setName, manufacturer),
     }));
     scored.sort((a, b) => b.score - a.score);
     return scored;
-  }, [slOptions, setName, manufacturer]);
+  }, [slOptions, setName, manufacturer, slPaused]);
 
   /**
    * BSC candidates = the marketplace's own rows, plus the set-listing row.
@@ -250,6 +262,10 @@ export default function BaseSetPicker({
    * substitution NEO-219 removed. Its one pre-selection rule lives below.
    */
   const bscCandidates = useMemo<Candidate[]>(() => {
+    // A paused side offers nothing — the set listing included. It is the
+    // row's own BSC slug, not a fetched row, but confirming it would link a
+    // marketplace the operator has switched off, behind a pane that says so.
+    if (bscPaused) return [];
     const scored: Candidate[] = bscOptions
       .map((opt) => ({
         key: `bsc:${opt.platformValue}:${opt.value}`,
@@ -269,7 +285,7 @@ export default function BaseSetPicker({
       });
     }
     return scored;
-  }, [bscOptions, setListing, setName, manufacturer]);
+  }, [bscOptions, setListing, setName, manufacturer, bscPaused]);
 
   useEffect(() => {
     if (userPicked) return;
@@ -327,7 +343,9 @@ export default function BaseSetPicker({
       });
   }, [sortedSlOptions, searchFilter]);
 
-  const selectedSl = slOptions.find((o) => o.value === selectedValue);
+  const selectedSl = slPaused
+    ? undefined
+    : slOptions.find((o) => o.value === selectedValue);
   const selectedBsc = bscCandidates.find((c) => c.key === selectedBscKey)?.item;
   const hasPick = !!selectedSl || !!selectedBsc;
 
@@ -349,11 +367,20 @@ export default function BaseSetPicker({
     }
   };
 
-  const showSearch = slOptions.length > 8;
+  const showSearch = !slPaused && slOptions.length > 8;
 
   // Initial focus: the search box when it is rendered, otherwise the first
   // SportLots option, otherwise the first BSC option. Re-runs when `loading`
   // flips because the option lists do not exist during the skeleton phase.
+  //
+  // NEO-287 (a11y audit): with BOTH panes empty once loading has finished —
+  // both marketplaces paused, so no option will ever render — focus the
+  // dialog container itself, the same fallback the Tab trap below uses when
+  // it finds nothing focusable. Otherwise focus stays on the trigger BEHIND
+  // the modal and the keyboard operator is trapped outside their own dialog.
+  // Only after loading: during the skeleton phase the lists are empty too,
+  // and parking focus on the dialog then would mark the job done before the
+  // options arrive.
   useEffect(() => {
     if (!isOpen) return;
     const dialog = dialogRef.current;
@@ -363,7 +390,10 @@ export default function BaseSetPicker({
       triggerRef.current = document.activeElement as HTMLElement | null;
     }
     const target =
-      searchRef.current ?? slRefs.current[0] ?? bscRefs.current[0] ?? null;
+      searchRef.current ??
+      slRefs.current[0] ??
+      bscRefs.current[0] ??
+      (loading ? null : dialog);
     if (!target) return;
     target.focus();
     initialFocusDone.current = true;
@@ -588,7 +618,20 @@ export default function BaseSetPicker({
           )}
 
           {/* BSC candidates */}
-          {loading && (
+          {bscPaused && (
+            <div className="px-6 pt-4">
+              <div className="text-xs text-blue-400 font-medium uppercase tracking-wide mb-1.5">
+                BSC base
+              </div>
+              {/* NEO-287: the side was never asked. Not a skeleton (nothing is
+                  loading) and not the empty copy (BSC did not "return" anything).
+                  Amber, the house "nothing broke" colour. */}
+              <p className="text-sm text-amber-300">
+                {PAUSE_NOTICE_COPY.pane(sideLabel("bsc"))}
+              </p>
+            </div>
+          )}
+          {!bscPaused && loading && (
             <div className="px-6 pt-4">
               <div className="text-xs text-blue-400 font-medium uppercase tracking-wide mb-1.5">
                 BSC base
@@ -596,7 +639,7 @@ export default function BaseSetPicker({
               <div className="h-9 rounded-lg bg-gray-800/60 border border-gray-700 animate-pulse" />
             </div>
           )}
-          {!loading && (
+          {!bscPaused && !loading && (
             <div className="px-6 pt-4">
               <div
                 className="text-xs text-blue-400 font-medium uppercase tracking-wide mb-1.5"
@@ -695,7 +738,13 @@ export default function BaseSetPicker({
 
           {/* SL List */}
           <div className="flex-1 overflow-y-auto px-6 py-3 space-y-1.5">
-            {loading ? (
+            {slPaused ? (
+              // NEO-287: see the BSC pane above. The confirm still works off a
+              // BSC pick alone — the one-marketplace flows rely on it.
+              <p className="text-sm text-amber-300 py-4">
+                {PAUSE_NOTICE_COPY.pane(sideLabel("sportlots"))}
+              </p>
+            ) : loading ? (
               <>
                 {Array.from({ length: 6 }).map((_, i) => (
                   <div

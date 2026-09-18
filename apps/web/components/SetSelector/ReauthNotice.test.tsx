@@ -25,10 +25,16 @@ import {
   joinSiteLabels,
 } from "@/lib/marketplace/reauth-notice";
 
-function renderNotice(siteCredentials: ReauthNoticeProps["siteCredentials"]) {
+function renderNotice(
+  siteCredentials: ReauthNoticeProps["siteCredentials"],
+  pausedSites?: ReauthNoticeProps["pausedSites"],
+) {
   return render(
     <MemoryRouter>
-      <ReauthNotice siteCredentials={siteCredentials} />
+      <ReauthNotice
+        siteCredentials={siteCredentials}
+        pausedSites={pausedSites}
+      />
     </MemoryRouter>,
   );
 }
@@ -149,6 +155,52 @@ describe("ReauthNotice", () => {
     // A navigation away and back mounts a fresh component.
     const { container } = renderNotice([{ site: BSC, needsReauth: true }]);
     expect(container.textContent).toBe("");
+  });
+});
+
+describe("ReauthNotice — paused beats needs-reauth (NEO-287)", () => {
+  it("filters a paused-and-flagged site out of the notice entirely", () => {
+    const { container } = renderNotice(
+      [{ site: SL, needsReauth: true }],
+      [SL],
+    );
+    expect(container.textContent).toBe("");
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("still names an UNPAUSED flagged site when only the other one is paused", () => {
+    renderNotice(
+      [
+        { site: BSC, needsReauth: true },
+        { site: SL, needsReauth: true },
+      ],
+      [SL],
+    );
+    const status = screen.getByRole("status");
+    expect(status.textContent).toContain("Your BuySportsCards session ran out.");
+    expect(status.textContent).not.toContain("SportLots");
+  });
+
+  it("does not write or read needsReauth — the flag stays whatever it was", () => {
+    // ReauthNotice only ever READS siteCredentials; filtering a paused site
+    // out of what it displays must not touch the row itself in any way this
+    // component could observe.
+    const creds = [{ site: SL, needsReauth: true }];
+    renderNotice(creds, [SL]);
+    expect(creds[0].needsReauth).toBe(true);
+  });
+
+  it("an empty or undefined pausedSites list changes nothing", () => {
+    const { unmount } = renderNotice([{ site: SL, needsReauth: true }], []);
+    expect(screen.getByRole("status").textContent).toContain("SportLots");
+    unmount();
+
+    const { container } = render(
+      <MemoryRouter>
+        <ReauthNotice siteCredentials={[{ site: SL, needsReauth: true }]} />
+      </MemoryRouter>,
+    );
+    expect(container.textContent).toContain("SportLots");
   });
 });
 

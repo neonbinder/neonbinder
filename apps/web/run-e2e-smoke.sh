@@ -178,7 +178,16 @@ WORKER_INDEX_BASE="${WORKER_INDEX_BASE:-$((SHARD_INDEX * PARALLELISM))}"
 # --platform web required so launchApp navigates to each flow's url:
 # (config cannot set platform). WORKER_INDEX is appended per-worker below.
 # Headless by default. Set MAESTRO_HEADLESS=0 to watch the browser run.
-ARGS_BASE=(--platform web --config "$CONFIG" -e "APP_URL=$APP_URL" -e "TEST_USERNAME=$TEST_USERNAME")
+#
+# PAUSED_PLATFORMS (NEO-287) mirrors the Convex env var
+# NEONBINDER_PAUSED_PLATFORMS onto the flows, ALWAYS passed — empty when unset
+# — so `util-paused-platforms.yaml` can branch on it without a typeof dance.
+# CI exports it from the GitHub repository variable of the same name and
+# writes the same value onto the PR's Convex preview before seeding; locally
+# you set it by hand to match whatever the deployment you point at has
+# (`PAUSED_PLATFORMS=sportlots npm run test:e2e:pick -- name:<flow>`). It is
+# not a secret. See .maestro/README.md "Operator switches".
+ARGS_BASE=(--platform web --config "$CONFIG" -e "APP_URL=$APP_URL" -e "TEST_USERNAME=$TEST_USERNAME" -e "PAUSED_PLATFORMS=${PAUSED_PLATFORMS:-}")
 if [ "${MAESTRO_HEADLESS:-1}" != "0" ]; then
   ARGS_BASE+=(--headless)
 fi

@@ -1538,3 +1538,178 @@ describe("browser-service contract guard (NEO-143)", () => {
     expect(logins).toHaveLength(1);
   });
 });
+
+// ===========================================================================
+// NEO-287 — the operator pause switch
+// ===========================================================================
+//
+// `NEONBINDER_PAUSED_PLATFORMS` is read fresh on every call (see
+// `convex/marketplacePause.ts`), so setting it in a test is enough — no
+// deploy, no cache to reset. Every path below must refuse BEFORE the browser
+// service is contacted: zero fetch calls is the whole guarantee.
+
+describe("marketplace paused (NEO-287)", () => {
+  afterEach(() => {
+    delete process.env.NEONBINDER_PAUSED_PLATFORMS;
+  });
+
+  test("saveCredentials on a paused site returns the paused message verbatim, calls no fetch, writes nothing", async () => {
+    process.env.NEONBINDER_PAUSED_PLATFORMS = "sportlots";
+    const t = convexTest(schema, modules);
+    let fetchCalled = false;
+    stubFetch((async () => {
+      fetchCalled = true;
+      throw new Error("must not reach the browser service while paused");
+    }) as FetchStub);
+
+    const result = await t
+      .withIdentity({ subject: USER_A })
+      .action(api.credentials.saveCredentials, {
+        site: "sportlots",
+        username: "real-user",
+        password: "real-pass",
+      });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toBe(
+      "SportLots sign-ins are on pause right now. Nothing was changed — your saved session is safe.",
+    );
+    expect(fetchCalled).toBe(false);
+    const entry = await getRawEntry(t, USER_A, "sportlots");
+    expect(entry?.hasCredentials).toBeFalsy();
+    expect(entry?.needsReauth).toBeFalsy();
+  });
+
+  test("saveCredentials on a paused site leaves a pre-existing needsReauth flag untouched", async () => {
+    process.env.NEONBINDER_PAUSED_PLATFORMS = "sportlots";
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("userProfiles", {
+        userId: USER_A,
+        siteCredentials: [
+          {
+            site: "sportlots",
+            hasCredentials: true,
+            needsReauth: true,
+            needsReauthSince: 1_700_000_000_000,
+          },
+        ],
+      });
+    });
+    stubFetch((async () => {
+      throw new Error("must not reach the browser service while paused");
+    }) as FetchStub);
+
+    const result = await t
+      .withIdentity({ subject: USER_A })
+      .action(api.credentials.saveCredentials, {
+        site: "sportlots",
+        username: "real-user",
+        password: "real-pass",
+      });
+
+    expect(result.success).toBe(false);
+    const entry = await getRawEntry(t, USER_A, "sportlots");
+    // Neither cleared nor re-flagged — a pause is not a login outcome.
+    expect(entry?.needsReauth).toBe(true);
+    expect(entry?.needsReauthSince).toBe(1_700_000_000_000);
+    expect(entry?.hasCredentials).toBe(true);
+  });
+
+  test("testSiteCredentials on a paused site returns the paused message, calls no fetch, and records no credential test", async () => {
+    process.env.NEONBINDER_PAUSED_PLATFORMS = "sportlots";
+    const t = convexTest(schema, modules);
+    await seedHasCredentials(t, USER_A, "sportlots");
+    let fetchCalled = false;
+    stubFetch((async () => {
+      fetchCalled = true;
+      throw new Error("must not reach the browser service while paused");
+    }) as FetchStub);
+
+    const result = await t
+      .withIdentity({ subject: USER_A })
+      .action(api.credentials.testSiteCredentials, { site: "sportlots" });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toBe(
+      "SportLots sign-ins are on pause right now. Nothing was changed — your saved session is safe.",
+    );
+    expect(fetchCalled).toBe(false);
+    // hasCredentials and needsReauth are exactly as seeded — a pause is not a
+    // credential test outcome, so `recordCredentialTest` never runs and
+    // nothing is written (the only way to observe that from here — PostHog
+    // capture itself is a fire-and-forget best-effort call, see
+    // observability.ts).
+    const entry = await getRawEntry(t, USER_A, "sportlots");
+    expect(entry?.hasCredentials).toBe(true);
+    expect(entry?.needsReauth).toBeFalsy();
+  });
+
+  test("getSiteToken on a paused site returns null without any fetch", async () => {
+    process.env.NEONBINDER_PAUSED_PLATFORMS = "sportlots";
+    const t = convexTest(schema, modules);
+    await seedHasCredentials(t, USER_A, "sportlots");
+    let fetchCalled = false;
+    stubFetch((async () => {
+      fetchCalled = true;
+      throw new Error("must not reach the browser service while paused");
+    }) as FetchStub);
+
+    const token = await t
+      .withIdentity({ subject: USER_A })
+      .action(internal.credentials.getSiteToken, { site: "sportlots" });
+
+    expect(token).toBeNull();
+    expect(fetchCalled).toBe(false);
+  });
+
+  test("pausing SportLots does not stop BSC from logging in with the same env set", async () => {
+    process.env.NEONBINDER_PAUSED_PLATFORMS = "sportlots";
+    const t = convexTest(schema, modules);
+    const calls: string[] = [];
+    stubFetch((async (url: string | URL | Request) => {
+      calls.push(String(url));
+      return jsonResponse({ success: true, message: "ok" });
+    }) as FetchStub);
+
+    const result = await t
+      .withIdentity({ subject: USER_A })
+      .action(api.credentials.saveCredentials, {
+        site: SITE, // buysportscards
+        username: "real-user",
+        password: "real-pass",
+      });
+
+    expect(result.success).toBe(true);
+    expect(calls.some((u) => u.includes("/login/bsc"))).toBe(true);
+  });
+
+  test("pausing BOTH known sites via a comma-separated value refuses both", async () => {
+    process.env.NEONBINDER_PAUSED_PLATFORMS = "sportlots,buysportscards";
+    const t = convexTest(schema, modules);
+    let fetchCalled = false;
+    stubFetch((async () => {
+      fetchCalled = true;
+      throw new Error("must not reach the browser service while paused");
+    }) as FetchStub);
+
+    const sl = await t
+      .withIdentity({ subject: USER_A })
+      .action(api.credentials.saveCredentials, {
+        site: "sportlots",
+        username: "u",
+        password: "p",
+      });
+    const bsc = await t
+      .withIdentity({ subject: USER_A })
+      .action(api.credentials.saveCredentials, {
+        site: SITE,
+        username: "u",
+        password: "p",
+      });
+
+    expect(sl.success).toBe(false);
+    expect(bsc.success).toBe(false);
+    expect(fetchCalled).toBe(false);
+  });
+});

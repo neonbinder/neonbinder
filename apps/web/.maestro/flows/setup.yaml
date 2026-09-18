@@ -143,6 +143,36 @@ tags:
 #   this flow ever goes red on one of them, read it as a real half-sync (or a
 #   regression in that fix) — do NOT delete the assertion.
 #
+# ── NEO-287: THE SEED WHILE SPORTLOTS IS ON PAUSE ────────────────────────────
+#   The operator switch (NEONBINDER_PAUSED_PLATFORMS=sportlots, mirrored to the
+#   flows as `-e PAUSED_PLATFORMS` and decided once below by
+#   util-paused-platforms) means NOTHING is asked of SportLots: the seed's
+#   credential hop skips it, the warm-up util proves the paused card instead
+#   of logging in, every column sync is BSC-only and ends "done" carrying the
+#   paused sentence, the base picker's SportLots pane offers nothing, and
+#   every checklist fetch takes the NEO-255 one-marketplace path (no Match
+#   Cards dialog; every BSC card kept). The fixture this flow provisions is
+#   then BSC-ONLY — no SportLots ids anywhere, no `SL` badges — and
+#   SET-REGISTRY.md says so. Each SportLots-dependent step below has a
+#   `${output.SL_PAUSED}` branch; the live branch is the step as it was.
+#
+#   THE ONE STRUCTURAL DIFFERENCE: MANUFACTURERS. NeonBinder's Manufacturer
+#   rows come from SportLots' brand list and nowhere else — BSC has no
+#   manufacturer axis (convex/platformLevels.ts), and BSC's sets are filed
+#   under whatever manufacturer rows exist by name prefix
+#   (`syncSetsAcrossManufacturers`). So under the pause the Manufacturers
+#   column syncs to NOTHING, and this seed adds `Topps` through the column's
+#   own "+ Custom" form — the product's path for a row without marketplace
+#   ids (invariant 6). The Sets column then files every "Topps …" BSC set
+#   under it exactly as it would under SportLots' row, and when the pause
+#   lifts the next sync matches SportLots' `Topps` to this row by name and
+#   attaches the id (`storeSelectorOptions`: id first, name second). The
+#   drill utils know the short column that results (util-drill-to-2024-topps-
+#   chrome, util-drill-to-cold-real-set).
+#
+#   The strict-seed asserts stay in force in both modes: the paused sentence
+#   is not "could not be reached", and a real outage still fails the seed.
+#
 # TIMEOUT POLICY — READ THIS BEFORE COPYING A WAIT ELSEWHERE:
 #   This is the ONE flow allowed to wait longer than Maestro's default. It pays
 #   the cold-start cost ONCE — Cloud Run spin-up, first marketplace login, the
@@ -181,6 +211,10 @@ tags:
 - extendedWaitUntil:
     visible: ".*Build set parameters from marketplace data.*"
     timeout: 120000
+
+# NEO-287 — decide the mode once (a pure script, no UI). See the header.
+- runFlow:
+    file: util/util-paused-platforms.yaml
 
 # ── THE GLOBAL RESET IS NOT HERE ANY MORE (NEO-214) ─────────────────────────
 # It used to be the block that followed this comment: tap "Reset Set Builder
@@ -269,6 +303,42 @@ tags:
 - assertNotVisible: ".*could not be reached, so nothing from .* was changed.*"
 - assertNotVisible: ".*Couldn.t sync options.*"
 
+# NEO-287 — the sync MESSAGE says which mode the deployment is in: under the
+# pause every synced column's "done" notice carries the paused sentence
+# (SyncDoneNotice, exact §4 copy); live it must not. Asserted right after the
+# first sync, paired with the "Baseball" positive above, so a runner whose
+# flag disagrees with its deployment fails here, by name.
+#
+# WHERE THE NOTICE IS. EntityColumn renders SyncDoneNotice BELOW the column's
+# list (a fixed-height inner scroller), above the idle buttons. With
+# "Baseball" centred the list's bottom edge sits at y=580 and the notice at
+# ~y=620, i.e. UNDER the 625px fold — CI run 1 of PR #265 failed a bare
+# assertVisible here with the notice's amber top edge visible in the failure
+# screenshot and absent from the viewport-bounded hierarchy. So: SCROLL to it
+# (DOWN — it is below the current position), then bring "Baseball" back into
+# the band (UP — the swipe carried it above the top edge) before the tap.
+# Seed budgets; no marketplace is waited on here — the notice is already
+# rendered — these are two short in-app scrolls.
+- runFlow:
+    when:
+      true: "${!output.SL_PAUSED}"
+    commands:
+      - assertNotVisible: "SportLots is on pause: nothing from SportLots was asked for or changed."
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      - scrollUntilVisible:
+          element:
+            text: "SportLots is on pause: nothing from SportLots was asked for or changed."
+          timeout: 10000
+      - scrollUntilVisible:
+          element:
+            text: "Baseball"
+          direction: UP
+          centerElement: true
+          timeout: 10000
+
 - tapOn: "Baseball"
 
 # ── YEAR: 2024 ──────────────────────────────────────────────────────────────
@@ -315,36 +385,116 @@ tags:
 - extendedWaitUntil:
     visible: "Manufacturers"
     timeout: 20000
-- extendedWaitUntil:
-    visible: ".*Search manufacturers.*"
-    timeout: 45000
+# NEO-287 — LIVE: SportLots' brand list, search-select, verbatim. PAUSED: the
+# column is empty; add `Topps` by hand. See the header.
+- runFlow:
+    when:
+      true: "${!output.SL_PAUSED}"
+    commands:
+      - extendedWaitUntil:
+          visible: ".*Search manufacturers.*"
+          timeout: 45000
 
-# STRICT SEED — no marketplace was quietly skipped on this step. See "A SYNC
-# THAT HALF-WORKED IS A FAILED SEED" in the header.
-- assertNotVisible: ".*could not be reached, so nothing from .* was changed.*"
-- assertNotVisible: ".*Couldn.t sync options.*"
+      # STRICT SEED — no marketplace was quietly skipped on this step. See "A SYNC
+      # THAT HALF-WORKED IS A FAILED SEED" in the header.
+      - assertNotVisible: ".*could not be reached, so nothing from .* was changed.*"
+      - assertNotVisible: ".*Couldn.t sync options.*"
 
-# NEO-210: `centerElement` is load-bearing here, not cosmetic. The tap that
-# follows uses a `below:` RELATIVE selector (the filtered row and the search
-# input both read "Topps", so relationship is the only unambiguous handle — see
-# util-drill-to-custom's NEO-46 note). Maestro resolves `below:` from element
-# bounds and throws "null cannot be cast to non-null type kotlin.Int" when the
-# candidate row is clipped by the viewport. A plain scrollUntilVisible stops
-# the moment the INPUT is in view, which on the 1024x629 headless viewport
-# parks the row beneath it under the fold; centering the input puts the row
-# mid-screen instead.
-- scrollUntilVisible:
-    element:
-      text: ".*Search manufacturers.*"
-    centerElement: true
-    timeout: 10000
-- tapOn:
-    text: ".*Search manufacturers.*"
-- inputText: "Topps"
-- tapOn:
-    text: "Topps"
-    below:
-      id: "Search manufacturers"
+      # NEO-210: `centerElement` is load-bearing here, not cosmetic. The tap that
+      # follows uses a `below:` RELATIVE selector (the filtered row and the search
+      # input both read "Topps", so relationship is the only unambiguous handle — see
+      # util-drill-to-custom's NEO-46 note). Maestro resolves `below:` from element
+      # bounds and throws "null cannot be cast to non-null type kotlin.Int" when the
+      # candidate row is clipped by the viewport. A plain scrollUntilVisible stops
+      # the moment the INPUT is in view, which on the 1024x629 headless viewport
+      # parks the row beneath it under the fold; centering the input puts the row
+      # mid-screen instead.
+      - scrollUntilVisible:
+          element:
+            text: ".*Search manufacturers.*"
+          centerElement: true
+          timeout: 10000
+      - tapOn:
+          text: ".*Search manufacturers.*"
+      - inputText: "Topps"
+      - tapOn:
+          text: "Topps"
+          below:
+            id: "Search manufacturers"
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      # BELOW THE ROOT THE PAUSE READS AS A BSC-ONLY TREE (PR #265 push 3,
+      # narrowed adapter rule: a side is "paused" only where it is served AND
+      # its ids are complete). The Sports sync never asked SportLots, so
+      # `Baseball` carries no SportLots id, and from here down SportLots is a
+      # plain missing-id skip: the Years column's notice reads "SportLots
+      # skipped: no SportLots ids on this path.", and this column — BSC does
+      # not serve the level, SportLots has no ids — syncs to NOTHING with no
+      # notice at all (both sides unresolvable → silent clear) and shows its
+      # idle empty text. That text renders before the sync too, so settle
+      # the cold-column way first (README → EntityColumn shapes): wait out
+      # the "Syncing" panel if one is up, then gate on the idle text. The
+      # `when:` guard is the documented R10 exception; seed budgets.
+      - runFlow:
+          when:
+            visible: "Syncing Manufacturer Options"
+          commands:
+            - extendedWaitUntil:
+                notVisible: "Syncing Manufacturer Options"
+                timeout: 45000
+      - extendedWaitUntil:
+          visible: "No manufacturers available. Sync from marketplaces to populate."
+          timeout: 45000
+      # The one paused-specific fact reachable here: the level above skipped
+      # SportLots for want of ids (its notice is in view beside this column).
+      - assertVisible: "SportLots skipped: no SportLots ids on this path."
+      # STRICT SEED — a skipped side is not an outage.
+      - assertNotVisible: ".*could not be reached, so nothing from .* was changed.*"
+      - assertNotVisible: ".*Couldn.t sync options.*"
+
+      # ADD `Topps` THROUGH THE PRODUCT (header: the one structural difference).
+      # This seed is the only writer of this row (SET-REGISTRY.md); the
+      # deployment was reset before this flow, so the row cannot pre-exist.
+      - scrollUntilVisible:
+          element:
+            id: "Add custom Manufacturers"
+          centerElement: true
+          timeout: 10000
+      - tapOn:
+          id: "Add custom Manufacturers"
+      - extendedWaitUntil:
+          visible: "Add Custom Entry"
+          timeout: 7000
+      - tapOn: "Enter custom value..."
+      - inputText: "Topps"
+      # NEO-219: two Enters — the manufacturer level is parent-scoped, so the
+      # create confirm always follows the first.
+      - pressKey: Enter
+      - extendedWaitUntil:
+          visible:
+            id: "Create manufacturer"
+          timeout: 7000
+      - tapOn:
+          id: "Create manufacturer"
+      - extendedWaitUntil:
+          notVisible: "Add Custom Entry"
+          timeout: 10000
+      # Short column, no search input: tap the row anchored on the column
+      # HEADER (a bare "Topps" would also match nothing else yet, but the
+      # anchor is what keeps this pinned to the right column). R8: centre.
+      - scrollUntilVisible:
+          element:
+            text: "Topps"
+            below:
+              text: "Manufacturers"
+          centerElement: true
+          timeout: 10000
+      - tapOn:
+          text: "Topps"
+          below:
+            text: "Manufacturers"
 
 # ── SET: Topps Chrome ───────────────────────────────────────────────────────
 # Opening the Sets column syncs the full set list for Topps / 2024 — this is
@@ -506,10 +656,26 @@ tags:
       # (sometimes the set name, sometimes a generic "Base") and the seed must
       # not depend on marketplace copy. `id:` is a full-string regex in Maestro,
       # so "…candidate: .*" reads as "the first candidate row on this side".
-      - tapOn:
-          id: "BSC base candidate: .*"
-      - tapOn:
-          id: "SportLots base candidate: .*"
+      # NEO-287 — LIVE: pick both sides. PAUSED: the SportLots pane was never
+      # asked (the paused sentence, no candidate); pick BSC alone. This seed
+      # is the writer, so it CONFIRMS BSC-only — the one flow that does.
+      - runFlow:
+          when:
+            true: "${!output.SL_PAUSED}"
+          commands:
+            - tapOn:
+                id: "BSC base candidate: .*"
+            - tapOn:
+                id: "SportLots base candidate: .*"
+      - runFlow:
+          when:
+            true: "${output.SL_PAUSED}"
+          commands:
+            - assertVisible: "SportLots returned no base set for .*"
+            - assertNotVisible:
+                id: "SportLots base candidate: .*"
+            - tapOn:
+                id: "BSC base candidate: .*"
       - tapOn: "Confirm Base Set"
       - extendedWaitUntil:
           notVisible: "Select Base Set"
@@ -539,11 +705,28 @@ tags:
 # The sweep's 'measured worst 0.5-4s' came from runs where the flip had already
 # happened, so it measured the wrong branch. Do NOT lower this to the 7s bar:
 # this flow reseeds from empty and always takes the cold path.
-- scrollUntilVisible:
-    element:
-      text: "Re-map Base"
-    centerElement: true
-    timeout: 30000
+# NEO-287 — LIVE: the mapping landed ("Re-map Base"). PAUSED: no such button.
+- runFlow:
+    when:
+      true: "${!output.SL_PAUSED}"
+    commands:
+      - scrollUntilVisible:
+          element:
+            text: "Re-map Base"
+          centerElement: true
+          timeout: 30000
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      # A BSC-only mapping still reads as UNMAPPED (`baseHasMapping` counts
+      # the SportLots slot only — SetSelector.tsx), so no "Re-map Base" ever
+      # appears; the picker closing on Confirm (above) is the proof the write
+      # landed, and the checklist mounts regardless of any mapping. The
+      # positive pair for these negatives is the "Add Card" scroll right
+      # below, which fails loudly if the checklist did not mount.
+      - assertNotVisible: "Select Base Set"
+      - assertNotVisible: "An error occurred. Please refresh the page."
 # R5 EXCEPTION — the setup track's cold sync, which R5 sanctions by name.
 # RESTORED to 30000 in NEO-260 after the 7000 sweep broke the seed (CI run
 # 34394655674): the tap on `Confirm Base Set` completed at 19:37:50 and the
@@ -575,42 +758,59 @@ tags:
     visible:
       text: "Match Cards.*|.*Confirm New Players.*|.*Saved [0-9]+.*"
     timeout: 60000
+# NEO-287 — LIVE: the two-marketplace pairing dialog, verbatim. PAUSED: the
+# one-marketplace path (SportLots was never asked; nothing to match).
 - runFlow:
     when:
-      visible: "Match Cards.*"
+      true: "${!output.SL_PAUSED}"
     commands:
-      # NEO-195 — WAIT FOR THE FETCH TO FINISH BEFORE TOUCHING CONFIRM.
-      # The dialog now opens on the FIRST streamed candidates (~6s), not on the
-      # action's return (~80s), so "Match Cards" being visible no longer means
-      # the fetch is done. Confirm is gated on `isStreaming` and `handleConfirm`
-      # returns early while it is true, so tapping it without this wait is a
-      # SILENT no-op: the modal stays open and the `notVisible` below times out
-      # blaming the wrong thing. The button's own text is the signal — "Loading…"
-      # while streaming, "Confirm" once the action resolves. Same sync point
-      # checklist-pairing-dialog-cancel.yaml uses.
-      - extendedWaitUntil:
-          visible:
-            text: "^Confirm$"
-          timeout: 120000
       - runFlow:
           when:
-            visible:
-              text: ".*BSC only \\([1-9][0-9]*\\).*"
+            visible: "Match Cards.*"
           commands:
+            # NEO-195 — WAIT FOR THE FETCH TO FINISH BEFORE TOUCHING CONFIRM.
+            # The dialog now opens on the FIRST streamed candidates (~6s), not on the
+            # action's return (~80s), so "Match Cards" being visible no longer means
+            # the fetch is done. Confirm is gated on `isStreaming` and `handleConfirm`
+            # returns early while it is true, so tapping it without this wait is a
+            # SILENT no-op: the modal stays open and the `notVisible` below times out
+            # blaming the wrong thing. The button's own text is the signal — "Loading…"
+            # while streaming, "Confirm" once the action resolves. Same sync point
+            # checklist-pairing-dialog-cancel.yaml uses.
+            - extendedWaitUntil:
+                visible:
+                  text: "^Confirm$"
+                timeout: 120000
+            - runFlow:
+                when:
+                  visible:
+                    text: ".*BSC only \\([1-9][0-9]*\\).*"
+                commands:
+                  - tapOn:
+                      id: "Keep all BSC-only cards"
+            - runFlow:
+                when:
+                  visible:
+                    text: ".*SportLots only \\([1-9][0-9]*\\).*"
+                commands:
+                  - tapOn:
+                      id: "Keep all SportLots-only cards"
             - tapOn:
-                id: "Keep all BSC-only cards"
-      - runFlow:
-          when:
-            visible:
-              text: ".*SportLots only \\([1-9][0-9]*\\).*"
-          commands:
-            - tapOn:
-                id: "Keep all SportLots-only cards"
-      - tapOn:
-          id: "Confirm card matches"
-      - extendedWaitUntil:
-          notVisible: "Match Cards.*"
-          timeout: 60000
+                id: "Confirm card matches"
+            - extendedWaitUntil:
+                notVisible: "Match Cards.*"
+                timeout: 60000
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      # NEO-255 solo path: one marketplace attached, so no dialog — every BSC
+      # card is kept and the sentence below is produced only once the action
+      # RESOLVED. It stays in front of the wizard notice, so it is still on
+      # screen here. The dialog must NOT have opened.
+      - assertVisible:
+          text: ".*Kept all [0-9]+ cards? from BSC.*"
+      - assertNotVisible: "Match Cards.*"
 
 # First fetch: all players/teams are new → EntityReviewWizard opens.
 - extendedWaitUntil:
@@ -945,42 +1145,60 @@ tags:
     visible:
       text: "Match Cards.*|.*Confirm New Players.*|.*Saved [0-9]+.*"
     timeout: 90000
+# NEO-287 — LIVE: the two-marketplace pairing dialog, verbatim. PAUSED: the
+# one-marketplace path (SportLots was never asked; nothing to match).
 - runFlow:
     when:
-      visible: "Match Cards.*"
+      true: "${!output.SL_PAUSED}"
     commands:
-      # NEO-195 — WAIT FOR THE FETCH TO FINISH BEFORE TOUCHING CONFIRM.
-      # The dialog now opens on the FIRST streamed candidates (~6s), not on the
-      # action's return (~80s), so "Match Cards" being visible no longer means
-      # the fetch is done. Confirm is gated on `isStreaming` and `handleConfirm`
-      # returns early while it is true, so tapping it without this wait is a
-      # SILENT no-op: the modal stays open and the `notVisible` below times out
-      # blaming the wrong thing. The button's own text is the signal — "Loading…"
-      # while streaming, "Confirm" once the action resolves. Same sync point
-      # checklist-pairing-dialog-cancel.yaml uses.
-      - extendedWaitUntil:
-          visible:
-            text: "^Confirm$"
-          timeout: 120000
       - runFlow:
           when:
-            visible:
-              text: ".*BSC only \\([1-9][0-9]*\\).*"
+            visible: "Match Cards.*"
           commands:
+            # NEO-195 — WAIT FOR THE FETCH TO FINISH BEFORE TOUCHING CONFIRM.
+            # The dialog now opens on the FIRST streamed candidates (~6s), not on the
+            # action's return (~80s), so "Match Cards" being visible no longer means
+            # the fetch is done. Confirm is gated on `isStreaming` and `handleConfirm`
+            # returns early while it is true, so tapping it without this wait is a
+            # SILENT no-op: the modal stays open and the `notVisible` below times out
+            # blaming the wrong thing. The button's own text is the signal — "Loading…"
+            # while streaming, "Confirm" once the action resolves. Same sync point
+            # checklist-pairing-dialog-cancel.yaml uses.
+            - extendedWaitUntil:
+                visible:
+                  text: "^Confirm$"
+                timeout: 120000
+            - runFlow:
+                when:
+                  visible:
+                    text: ".*BSC only \\([1-9][0-9]*\\).*"
+                commands:
+                  - tapOn:
+                      id: "Keep all BSC-only cards"
+            - runFlow:
+                when:
+                  visible:
+                    text: ".*SportLots only \\([1-9][0-9]*\\).*"
+                commands:
+                  - tapOn:
+                      id: "Keep all SportLots-only cards"
             - tapOn:
-                id: "Keep all BSC-only cards"
-      - runFlow:
-          when:
-            visible:
-              text: ".*SportLots only \\([1-9][0-9]*\\).*"
-          commands:
-            - tapOn:
-                id: "Keep all SportLots-only cards"
-      - tapOn:
-          id: "Confirm card matches"
-      - extendedWaitUntil:
-          notVisible: "Match Cards.*"
-          timeout: 90000
+                id: "Confirm card matches"
+            - extendedWaitUntil:
+                notVisible: "Match Cards.*"
+                timeout: 90000
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      # NEO-255 solo path: one marketplace attached, so no dialog — every BSC
+      # card is kept and committed straight away. The "Kept all N cards from
+      # BSC" line is NOT asserted here: with every name already known (the
+      # Base commit above created the roster) no wizard opens, the commit
+      # runs at once and "Saved N cards" replaces it before this step reads
+      # the screen. The dialog must NOT have opened; the strict "Saved N
+      # cards" gate below is this negative's positive pair.
+      - assertNotVisible: "Match Cards.*"
 - extendedWaitUntil:
     visible:
       text: ".*Confirm New Players.*|.*Saved [0-9]+.*"
@@ -1161,42 +1379,60 @@ tags:
     visible:
       text: "Match Cards.*|.*Confirm New Players.*|.*Saved [0-9]+.*"
     timeout: 90000
+# NEO-287 — LIVE: the two-marketplace pairing dialog, verbatim. PAUSED: the
+# one-marketplace path (SportLots was never asked; nothing to match).
 - runFlow:
     when:
-      visible: "Match Cards.*"
+      true: "${!output.SL_PAUSED}"
     commands:
-      # NEO-195 — WAIT FOR THE FETCH TO FINISH BEFORE TOUCHING CONFIRM.
-      # The dialog now opens on the FIRST streamed candidates (~6s), not on the
-      # action's return (~80s), so "Match Cards" being visible no longer means
-      # the fetch is done. Confirm is gated on `isStreaming` and `handleConfirm`
-      # returns early while it is true, so tapping it without this wait is a
-      # SILENT no-op: the modal stays open and the `notVisible` below times out
-      # blaming the wrong thing. The button's own text is the signal — "Loading…"
-      # while streaming, "Confirm" once the action resolves. Same sync point
-      # checklist-pairing-dialog-cancel.yaml uses.
-      - extendedWaitUntil:
-          visible:
-            text: "^Confirm$"
-          timeout: 120000
       - runFlow:
           when:
-            visible:
-              text: ".*BSC only \\([1-9][0-9]*\\).*"
+            visible: "Match Cards.*"
           commands:
+            # NEO-195 — WAIT FOR THE FETCH TO FINISH BEFORE TOUCHING CONFIRM.
+            # The dialog now opens on the FIRST streamed candidates (~6s), not on the
+            # action's return (~80s), so "Match Cards" being visible no longer means
+            # the fetch is done. Confirm is gated on `isStreaming` and `handleConfirm`
+            # returns early while it is true, so tapping it without this wait is a
+            # SILENT no-op: the modal stays open and the `notVisible` below times out
+            # blaming the wrong thing. The button's own text is the signal — "Loading…"
+            # while streaming, "Confirm" once the action resolves. Same sync point
+            # checklist-pairing-dialog-cancel.yaml uses.
+            - extendedWaitUntil:
+                visible:
+                  text: "^Confirm$"
+                timeout: 120000
+            - runFlow:
+                when:
+                  visible:
+                    text: ".*BSC only \\([1-9][0-9]*\\).*"
+                commands:
+                  - tapOn:
+                      id: "Keep all BSC-only cards"
+            - runFlow:
+                when:
+                  visible:
+                    text: ".*SportLots only \\([1-9][0-9]*\\).*"
+                commands:
+                  - tapOn:
+                      id: "Keep all SportLots-only cards"
             - tapOn:
-                id: "Keep all BSC-only cards"
-      - runFlow:
-          when:
-            visible:
-              text: ".*SportLots only \\([1-9][0-9]*\\).*"
-          commands:
-            - tapOn:
-                id: "Keep all SportLots-only cards"
-      - tapOn:
-          id: "Confirm card matches"
-      - extendedWaitUntil:
-          notVisible: "Match Cards.*"
-          timeout: 90000
+                id: "Confirm card matches"
+            - extendedWaitUntil:
+                notVisible: "Match Cards.*"
+                timeout: 90000
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      # NEO-255 solo path: one marketplace attached, so no dialog — every BSC
+      # card is kept and committed straight away. The "Kept all N cards from
+      # BSC" line is NOT asserted here: with every name already known (the
+      # Base commit above created the roster) no wizard opens, the commit
+      # runs at once and "Saved N cards" replaces it before this step reads
+      # the screen. The dialog must NOT have opened; the strict "Saved N
+      # cards" gate below is this negative's positive pair.
+      - assertNotVisible: "Match Cards.*"
 - extendedWaitUntil:
     visible:
       text: ".*Confirm New Players.*|.*Saved [0-9]+.*"
@@ -1266,12 +1502,34 @@ tags:
 # satisfy the assertion with no card row on screen at all. Its SportLots header
 # reads "SPORTLOTS", which full-matches nothing, so "SL" stays card-specific.
 # Per-card BSC coverage is asserted separately in checklist-renders-rich-fields.
-- scrollUntilVisible:
-    element:
-      text: ".*#[0-9].*"
-    centerElement: true
-    timeout: 15000
-- assertVisible: "SL"
+# NEO-287 — LIVE: the guard, verbatim. PAUSED: the opposite fact — no card
+# carries a SportLots ref because SportLots was never asked, and every row is
+# a solo-kept BSC card ("BSC only"). The sync MESSAGE evidence for the pause
+# is asserted at the Sports column above (the checklist's own line on the
+# solo path is the client's "Kept all N cards from BSC", asserted at each
+# fetch); this is the per-card half.
+- runFlow:
+    when:
+      true: "${!output.SL_PAUSED}"
+    commands:
+      - scrollUntilVisible:
+          element:
+            text: ".*#[0-9].*"
+          centerElement: true
+          timeout: 15000
+      - assertVisible: "SL"
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      - scrollUntilVisible:
+          element:
+            text: ".*#[0-9].*"
+          centerElement: true
+          timeout: 15000
+      - assertVisible: "BSC"
+      - assertVisible: "BSC only"
+      - assertNotVisible: "SL"
 
 # ============================================================================
 # STEP N — PROVISION THE ENTITY-REVIEW FIXTURE: Topps Big League → Base (NEO-248)
@@ -1338,12 +1596,31 @@ tags:
 # query that only settles once the write following a LIVE SportLots confirm has
 # landed. Do NOT lower it to the 7s bar; this flow reseeds from empty and always
 # takes the cold path.
-- scrollUntilVisible:
-    element:
-      text: ".*Re-map Base.*"
-    direction: UP
-    centerElement: true
-    timeout: 60000
+# NEO-287 — LIVE: "Re-map Base", verbatim. PAUSED: the util left the picker
+# the no-write way (Cancel → Close), so the same anchor reads "Map Base Set";
+# same page position, same UP. The four wizard flows re-open the picker on
+# every drill under the pause (a BSC-only row reads as unmapped) and cancel
+# it the same way — no write, so no race to remove here.
+- runFlow:
+    when:
+      true: "${!output.SL_PAUSED}"
+    commands:
+      - scrollUntilVisible:
+          element:
+            text: ".*Re-map Base.*"
+          direction: UP
+          centerElement: true
+          timeout: 60000
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      - scrollUntilVisible:
+          element:
+            text: "Map Base Set"
+          direction: UP
+          centerElement: true
+          timeout: 60000
 
 # The checklist is EMPTY and must stay that way — the assertion is the contract.
 # The step above now leaves the page centred on the base-mapping button, so this

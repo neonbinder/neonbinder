@@ -86,6 +86,14 @@ tags:
 # The "SL" badge is deliberately NOT asserted here — see the header note. The
 # SL-coverage guard lives on the Parallel checklist in setup.yaml instead,
 # where coverage is 100%.
+#
+# NEO-287 — no paused branch, on purpose. Everything this flow reads is
+# BSC-driven: the number, the sub-line, the attribute badges and the "BSC"
+# badge are on the rows in both modes, and the virtuoso lands on the tail of
+# the Base list, whose rows carry no SportLots ref even live (BSC lists more
+# cards than SportLots for this set) — so neither mode has a distinguishing
+# fact here. The paused seed's per-card evidence ("BSC only", no "SL") is
+# asserted in setup.yaml where coverage is total.
 
 # ============================================================
 # VERIFY RC BADGE — scroll through the list to find a rookie card.

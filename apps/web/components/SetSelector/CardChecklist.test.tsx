@@ -111,6 +111,8 @@ vi.mock("../../convex/_generated/api", () => ({
     // the routed `useQuery` mock returns undefined, which the form renders as
     // "Loading leagues…".
     leagues: { list: "leagues.list" },
+    // NEO-287: the pause switch the solo decision subtracts before the fetch.
+    marketplacePause: { getPausedPlatforms: "getPausedPlatforms" },
   },
 }));
 
@@ -241,6 +243,8 @@ const state: {
     name: string;
     skippedAt: number;
   }>;
+  /** NEO-287: paused credential site keys, as `getPausedPlatforms` returns them. */
+  paused: string[];
 } = {
   cards: [],
   variantRow: { value: "Test Set" },
@@ -248,6 +252,7 @@ const state: {
   liveCandidates: null,
   teams: [],
   players: [],
+  paused: [],
   skippedNames: [],
 };
 
@@ -257,6 +262,7 @@ vi.mock("convex/react", () => ({
     if (ref === "getSelectorOptionById") return state.variantRow;
     if (ref === "getAncestorChain") return state.ancestorChain;
     if (ref === "getReadyCandidates") return state.liveCandidates;
+    if (ref === "getPausedPlatforms") return state.paused;
     // NEO-102: the walker's fixer reads suggestions per card; [] keeps it
     // resolved-but-empty, which is the "no career history" shape.
     if (ref === "cardChecklist.suggestedTeamsForCard") return [];
@@ -1153,6 +1159,106 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     expect(mockDiscardCandidates).toHaveBeenCalledWith({
       selectorOptionId: VARIANT_ID,
     });
+    expect(mockCommitChecklist).not.toHaveBeenCalled();
+  });
+
+  it("NEO-287: a paused attached side is subtracted, so a two-marketplace set takes the solo path", async () => {
+    // Both marketplaces are attached — this chain opens the Match Cards
+    // dialog on every other test — but SportLots is paused, so THIS run has
+    // nothing from SportLots to line up. The client subtracts the pause
+    // before the fetch (no dialog, not even during the fetch), the server
+    // reports the same subtraction back (`attachedSides` still lists both,
+    // `pausedSides` names the one it did not ask), and the two agree on one
+    // remaining side: the auto-keep path, with the pause named in the line.
+    state.ancestorChain = twoSidedChain();
+    state.paused = ["sportlots"];
+    const bscCandidates = [
+      {
+        cardNumber: "1",
+        cardName: "Paused One",
+        bucket: "bscOnly" as const,
+        platformData: { bsc: { ref: "bsc-1" } },
+      },
+      {
+        cardNumber: "2",
+        cardName: "Paused Two",
+        bucket: "bscOnly" as const,
+        platformData: { bsc: { ref: "bsc-2" } },
+      },
+    ];
+    // Hold the commit open so the kept line is still standing when it is
+    // read — "Saved N cards." replaces it once the commit lands.
+    let finishCommit: (value: unknown) => void = () => {};
+    mockCommitChecklist.mockImplementation(
+      () => new Promise((resolve) => (finishCommit = resolve)),
+    );
+    try {
+      const { rerender } = renderChecklist();
+      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+
+      expect(screen.queryByText(/Match Cards/)).toBeNull();
+      expect(screen.getByText(/Fetching from BSC/)).toBeTruthy();
+
+      await streamCandidates(rerender, {
+        batchId: "batch-287",
+        ready: 2,
+        total: 2,
+        cards: bscCandidates,
+      });
+      await act(async () => {
+        resolveFetch({
+          success: true,
+          message: "0 matched, 2 BSC-only, 0 SL-only",
+          candidateCount: 2,
+          attachedSides: ["bsc", "sportlots"],
+          pausedSides: ["sportlots"],
+        });
+      });
+
+      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalled());
+      expect(screen.queryByText(/Match Cards/)).toBeNull();
+      expect(
+        screen.getByText(
+          "Kept all 2 cards from BSC. Nothing to match — SportLots is on pause: nothing from SportLots was asked for or changed.",
+        ),
+      ).toBeTruthy();
+      const committed = mockCommitChecklist.mock.calls[0][0];
+      expect(committed.cards).toHaveLength(2);
+      for (const card of committed.cards) expect(card.unmatched).toBe("sl");
+      await act(async () => {
+        finishCommit({ count: 2 });
+      });
+    } finally {
+      state.paused = [];
+    }
+  });
+
+  it("NEO-287: the server's paused list must agree — a pause the client did not see opens the dialog", async () => {
+    // The client read no pause (stale subscription), so it expected both
+    // sides; the server paused one. The two answers differ, and a
+    // disagreement never auto-commits: the ordinary review opens instead.
+    state.ancestorChain = twoSidedChain();
+    state.paused = [];
+    state.liveCandidates = {
+      batchId: "batch-287b",
+      ready: 1,
+      total: 1,
+      cards: [streamedCandidate],
+    };
+    renderChecklist();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+    await act(async () => {
+      resolveFetch({
+        success: true,
+        message: "0 matched, 2 BSC-only, 0 SL-only",
+        candidateCount: 2,
+        attachedSides: ["bsc", "sportlots"],
+        pausedSides: ["sportlots"],
+      });
+    });
+    expect(screen.getByText(/Match Cards/)).toBeTruthy();
+    expect(mockResolveEntities).not.toHaveBeenCalled();
     expect(mockCommitChecklist).not.toHaveBeenCalled();
   });
 });

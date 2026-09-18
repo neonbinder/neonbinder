@@ -66,6 +66,24 @@ tags:
 #   per-worker CUSTOM set and never opens this dialog at all.
 
 # ============================================================
+# NEO-287 — WHILE SPORTLOTS IS ON PAUSE (`-e PAUSED_PLATFORMS`, decided once
+# by util-paused-platforms below) this feature has NO surface: the pairing
+# dialog exists only when two marketplaces are fetched, and a one-marketplace
+# sync takes the NEO-255 solo path, which COMMITS at once with nothing to
+# cancel. That commit is also why the paused branch never taps Sync here:
+# this flow is READ-ONLY on the shared Future Stars checklist (R7a — the
+# seed is its sole writer), and a solo re-sync is a write. So the paused
+# branch stops at the checklist and proves what the pause did to it: the Set
+# Builder strip says syncs are BSC-only, and the rows the seed produced are
+# BSC-only cards with no SportLots ref. The live branch is STEPS 1-7 as they
+# were. checklist-one-marketplace-skips-match-dialog proves the solo path
+# itself (R3).
+# ============================================================
+
+- runFlow:
+    file: ../util/util-paused-platforms.yaml
+
+# ============================================================
 # LAUNCH + SIGN IN
 # ============================================================
 
@@ -139,415 +157,450 @@ tags:
       id: "Sync card checklist"
     centerElement: true
     timeout: 7000
-- tapOn:
-    id: "Sync card checklist"
+# NEO-287 — LIVE: sync, and STEPS 1-7 on the dialog, verbatim. PAUSED: no
+# sync (read-only on this set); prove the pause on the page. See the header.
+- runFlow:
+    when:
+      true: "${!output.SL_PAUSED}"
+    commands:
+      - tapOn:
+          id: "Sync card checklist"
 
-# 90s matches setup.yaml's own ceiling for a real-set Insert fetch (BSC + SL
-# round-trip). The dialog heading proves the fetch returned CANDIDATES rather
-# than committing straight to cards.
-#
-# setup.yaml already populated this checklist, so the previously-committed
-# pairings replay into the matched bucket (sticky re-sync) — which is itself
-# worth seeing exercised against live marketplace data.
-- extendedWaitUntil:
-    visible: "Match Cards.*"
-    timeout: 90000
+      # 90s matches setup.yaml's own ceiling for a real-set Insert fetch (BSC + SL
+      # round-trip). The dialog heading proves the fetch returned CANDIDATES rather
+      # than committing straight to cards.
+      #
+      # setup.yaml already populated this checklist, so the previously-committed
+      # pairings replay into the matched bucket (sticky re-sync) — which is itself
+      # worth seeing exercised against live marketplace data.
+      - extendedWaitUntil:
+          visible: "Match Cards.*"
+          timeout: 90000
 
-# ============================================================
-# STEP 2 — THE DIALOG IDENTIFIES ITSELF AND STATES WHAT IT WILL SAVE
-#
-# The unmatched columns and keep shelf are DELIBERATELY NOT asserted here any
-# more. They render only when there is something unmatched, and "Future Stars"
-# is 20 cards with 20 BSC and 20 SportLots refs — every card pairs, so on this
-# set the dialog correctly shows no columns at all. Asserting "BSC only (0)"
-# would be asserting scaffolding that describes work that does not exist.
-#
-# Where each half is covered instead:
-#   - the fully-matched presentation, against an immutable 220-card count:
-#     inserts-1996-score-one-nb-set-two-bsc-sources
-#   - the columns, keep-all and keep shelf, over every bucket permutation:
-#     CardPairingModal.test.tsx
-# What THIS flow uniquely proves is unchanged: a real marketplace sync opens
-# the dialog instead of writing cards, and cancelling writes nothing.
-# ============================================================
+      # ============================================================
+      # STEP 2 — THE DIALOG IDENTIFIES ITSELF AND STATES WHAT IT WILL SAVE
+      #
+      # The unmatched columns and keep shelf are DELIBERATELY NOT asserted here any
+      # more. They render only when there is something unmatched, and "Future Stars"
+      # is 20 cards with 20 BSC and 20 SportLots refs — every card pairs, so on this
+      # set the dialog correctly shows no columns at all. Asserting "BSC only (0)"
+      # would be asserting scaffolding that describes work that does not exist.
+      #
+      # Where each half is covered instead:
+      #   - the fully-matched presentation, against an immutable 220-card count:
+      #     inserts-1996-score-one-nb-set-two-bsc-sources
+      #   - the columns, keep-all and keep shelf, over every bucket permutation:
+      #     CardPairingModal.test.tsx
+      # What THIS flow uniquely proves is unchanged: a real marketplace sync opens
+      # the dialog instead of writing cards, and cancelling writes nothing.
+      # ============================================================
 
-# The header names the set. This dialog is modal and can run to hundreds of
-# rows; an operator who steps away needs to be able to tell what they are
-# looking at. `setLabel` was a documented prop that the caller never passed,
-# so the heading read a bare "Match Cards" until NEO-137.
-- assertVisible:
-    text: ".*Match Cards — Future Stars.*"
+      # The header names the set. This dialog is modal and can run to hundreds of
+      # rows; an operator who steps away needs to be able to tell what they are
+      # looking at. `setLabel` was a documented prop that the caller never passed,
+      # so the heading read a bare "Match Cards" until NEO-137.
+      - assertVisible:
+          text: ".*Match Cards — Future Stars.*"
 
-# Nothing is unmatched here, so the matched list opens EXPANDED rather than
-# behind a "▶ Matched (20)" disclosure — the rows are the only thing worth
-# reviewing, so hiding them served no one.
-- assertVisible:
-    text: ".*Unlink.*"
+      # Nothing is unmatched here, so the matched list opens EXPANDED rather than
+      # behind a "▶ Matched (20)" disclosure — the rows are the only thing worth
+      # reviewing, so hiding them served no one.
+      - assertVisible:
+          text: ".*Unlink.*"
 
-# NOT ASSERTED: the keep shelf.
-#
-# When it does render (a set with unmatched cards), it is the last section of
-# the dialog's own scrollable body, so at the 1024x629 headless viewport it
-# sits below the fold, and Maestro cannot drive that inner overflow —
-# `scrollUntilVisible` reported "No visible element found" rather than
-# scrolling to it.
-#
-# Rather than contort the flow (or reshape the UI to suit a test), the shelf's
-# behaviour is covered where it belongs: CardPairingModal.test.tsx has 12 unit
-# tests over keep / unkeep / keep-all / discard, including the 1996 Score case
-# where a shared SportLots set's sibling-owned cards must NOT be saved. What
-# E2E uniquely proves is the part unit tests cannot — that a real marketplace
-# sync opens this dialog instead of writing cards, and that cancel writes
-# nothing. That is what the rest of this flow asserts.
-#
-# The footer sits OUTSIDE the scrollable body (flex sibling), so it is on
-# screen regardless of scroll position, and it reports the same count the
-# shelf feeds.
-- assertVisible:
-    text: ".*[0-9]+ cards? will be saved.*"
+      # NOT ASSERTED: the keep shelf.
+      #
+      # When it does render (a set with unmatched cards), it is the last section of
+      # the dialog's own scrollable body, so at the 1024x629 headless viewport it
+      # sits below the fold, and Maestro cannot drive that inner overflow —
+      # `scrollUntilVisible` reported "No visible element found" rather than
+      # scrolling to it.
+      #
+      # Rather than contort the flow (or reshape the UI to suit a test), the shelf's
+      # behaviour is covered where it belongs: CardPairingModal.test.tsx has 12 unit
+      # tests over keep / unkeep / keep-all / discard, including the 1996 Score case
+      # where a shared SportLots set's sibling-owned cards must NOT be saved. What
+      # E2E uniquely proves is the part unit tests cannot — that a real marketplace
+      # sync opens this dialog instead of writing cards, and that cancel writes
+      # nothing. That is what the rest of this flow asserts.
+      #
+      # The footer sits OUTSIDE the scrollable body (flex sibling), so it is on
+      # screen regardless of scroll position, and it reports the same count the
+      # shelf feeds.
+      - assertVisible:
+          text: ".*[0-9]+ cards? will be saved.*"
 
-# ════════════════════════════════════════════════════════════════════════════
-# STEP 3 — NEO-189: A MANUAL LINK WHOSE TWO SIDES NAME THE CARD DIFFERENTLY
-#
-# THE FEATURE: when an operator links a BSC row to a SportLots row and the two
-# marketplaces disagree about who is on the card, the merged row says so and
-# lets the operator pick which name is saved — instead of BSC silently winning.
-# The motivating case is a "Legend" short print: SportLots has
-# "Mike Yastrzemski|Carl Yastrzemski" where BSC has a bare "Mike Yastrzemski",
-# and the card is Carl. The old mergePair did `bsc.cardName || sl.cardName`, so
-# the fact that it is Carl was dropped and the first anyone heard of it was a
-# returned listing.
-#
-# WHY THIS LIVES IN THIS FLOW RATHER THAN A NEW ONE:
-#   The conflict UI is only reachable through CardPairingModal, which is only
-#   reachable from a real marketplace fetch (a hand-made subtree carries no
-#   marketplace ids, so neither BSC nor SportLots is fetched — NEO-239 — and
-#   CardChecklist skips the dialog when all three buckets are empty). A second
-#   flow would therefore have to fetch
-#   THIS SAME shared real set a second time, at ~90s a go. One fetch, one flow.
-#
-#   NOTE (NEO-195 follow-up): the sharper hazard this note used to describe —
-#   startCandidateBatch clearing every checklistCandidates row for the
-#   selectorOption globally, and an unscoped getReadyCandidates, so two runners
-#   streaming Future Stars at once emptied each other's live candidate set and
-#   unmounted the other's dialog mid-review — has been FIXED. Both the clear
-#   and the read are now scoped to the operator (createdByUserId), and each
-#   runner signs in as its own dev+e2e-<N> user, so concurrent runners are
-#   isolated. The ~90s argument for keeping this in one flow still stands.
-#
-# WHY THIS IS STILL READ-ONLY (R7a):
-#   Every step below is modal-local reducer state. Nothing is written until
-#   Confirm, and this flow still ends at Cancel — which is also why the
-#   "does the CHOSEN name reach the saved card" half cannot be asserted here:
-#   Confirm on the shared anchor would commit a deliberately mis-paired
-#   checklist to a set eight runners read. That half is covered where it can be
-#   proven without corrupting shared data — CardPairingModal.test.tsx pins the
-#   onConfirm payload ("choosing SportLots commits Carl's name, not Mike's"),
-#   and commitCardChecklist.variations.test.ts pins that the committed row
-#   carries the name it was handed; resolveChecklistEntities passes `cards`
-#   straight through and never touches cardName.
-#
-# WHY IT DOES NOT DEPEND ON LIVE MARKETPLACE DATA:
-#   The conflict is MANUFACTURED here, not found. Two auto-matched pairs are
-#   unlinked and then CROSS-linked (BSC's #FS-1 to SportLots' #FS-2) — the
-#   mis-click case the feature deliberately covers ("applies to EVERY merged
-#   pair, not only isVariation ones"). Every selector keys on the PRINTED CARD
-#   NUMBER, never on a player name, and the two names are read off the screen
-#   at runtime rather than hardcoded, so nothing here goes red if BSC edits a
-#   card title. #FS-1 and #FS-2 are chosen because NEO-200 fixed
-#   compareCardNumbers to sort prefixed codes naturally, so the matched list
-#   now reads FS-1, FS-2, FS-3 … FS-9, FS-10, FS-11 … FS-20 — #FS-1 and #FS-2
-#   are simply rows 1 and 2 in that order (no comparator quirk to lean on any
-#   more), and stay inside the dialog's inner scroller, which Maestro cannot
-#   drive (see the keep-shelf note above).
-#
-# NOT COVERED HERE — Escape cancelling a rename. Escape must be swallowed by
-#   the name field so it does not reach the dialog root and close the whole
-#   modal, and Maestro's web driver cannot send it at all (see the key-mapping
-#   note below). CardPairingModal.test.tsx asserts both halves — the edit is
-#   abandoned AND onClose is not called.
-#
-# NOT COVERED HERE — arrow-key operation of the radiogroup. Maestro's web
-#   driver maps only ENTER and BACKSPACE (maestro.drivers.WebDriver
-#   .mapToSeleniumKey); every other KeyCode throws "not supported on web", so
-#   there is no way to send ArrowLeft/ArrowRight at all. The APG roving-tabindex
-#   and arrow-key behaviour is covered by CardPairingModal.test.tsx.
-# ════════════════════════════════════════════════════════════════════════════
+      # ════════════════════════════════════════════════════════════════════════════
+      # STEP 3 — NEO-189: A MANUAL LINK WHOSE TWO SIDES NAME THE CARD DIFFERENTLY
+      #
+      # THE FEATURE: when an operator links a BSC row to a SportLots row and the two
+      # marketplaces disagree about who is on the card, the merged row says so and
+      # lets the operator pick which name is saved — instead of BSC silently winning.
+      # The motivating case is a "Legend" short print: SportLots has
+      # "Mike Yastrzemski|Carl Yastrzemski" where BSC has a bare "Mike Yastrzemski",
+      # and the card is Carl. The old mergePair did `bsc.cardName || sl.cardName`, so
+      # the fact that it is Carl was dropped and the first anyone heard of it was a
+      # returned listing.
+      #
+      # WHY THIS LIVES IN THIS FLOW RATHER THAN A NEW ONE:
+      #   The conflict UI is only reachable through CardPairingModal, which is only
+      #   reachable from a real marketplace fetch (a hand-made subtree carries no
+      #   marketplace ids, so neither BSC nor SportLots is fetched — NEO-239 — and
+      #   CardChecklist skips the dialog when all three buckets are empty). A second
+      #   flow would therefore have to fetch
+      #   THIS SAME shared real set a second time, at ~90s a go. One fetch, one flow.
+      #
+      #   NOTE (NEO-195 follow-up): the sharper hazard this note used to describe —
+      #   startCandidateBatch clearing every checklistCandidates row for the
+      #   selectorOption globally, and an unscoped getReadyCandidates, so two runners
+      #   streaming Future Stars at once emptied each other's live candidate set and
+      #   unmounted the other's dialog mid-review — has been FIXED. Both the clear
+      #   and the read are now scoped to the operator (createdByUserId), and each
+      #   runner signs in as its own dev+e2e-<N> user, so concurrent runners are
+      #   isolated. The ~90s argument for keeping this in one flow still stands.
+      #
+      # WHY THIS IS STILL READ-ONLY (R7a):
+      #   Every step below is modal-local reducer state. Nothing is written until
+      #   Confirm, and this flow still ends at Cancel — which is also why the
+      #   "does the CHOSEN name reach the saved card" half cannot be asserted here:
+      #   Confirm on the shared anchor would commit a deliberately mis-paired
+      #   checklist to a set eight runners read. That half is covered where it can be
+      #   proven without corrupting shared data — CardPairingModal.test.tsx pins the
+      #   onConfirm payload ("choosing SportLots commits Carl's name, not Mike's"),
+      #   and commitCardChecklist.variations.test.ts pins that the committed row
+      #   carries the name it was handed; resolveChecklistEntities passes `cards`
+      #   straight through and never touches cardName.
+      #
+      # WHY IT DOES NOT DEPEND ON LIVE MARKETPLACE DATA:
+      #   The conflict is MANUFACTURED here, not found. Two auto-matched pairs are
+      #   unlinked and then CROSS-linked (BSC's #FS-1 to SportLots' #FS-2) — the
+      #   mis-click case the feature deliberately covers ("applies to EVERY merged
+      #   pair, not only isVariation ones"). Every selector keys on the PRINTED CARD
+      #   NUMBER, never on a player name, and the two names are read off the screen
+      #   at runtime rather than hardcoded, so nothing here goes red if BSC edits a
+      #   card title. #FS-1 and #FS-2 are chosen because NEO-200 fixed
+      #   compareCardNumbers to sort prefixed codes naturally, so the matched list
+      #   now reads FS-1, FS-2, FS-3 … FS-9, FS-10, FS-11 … FS-20 — #FS-1 and #FS-2
+      #   are simply rows 1 and 2 in that order (no comparator quirk to lean on any
+      #   more), and stay inside the dialog's inner scroller, which Maestro cannot
+      #   drive (see the keep-shelf note above).
+      #
+      # NOT COVERED HERE — Escape cancelling a rename. Escape must be swallowed by
+      #   the name field so it does not reach the dialog root and close the whole
+      #   modal, and Maestro's web driver cannot send it at all (see the key-mapping
+      #   note below). CardPairingModal.test.tsx asserts both halves — the edit is
+      #   abandoned AND onClose is not called.
+      #
+      # NOT COVERED HERE — arrow-key operation of the radiogroup. Maestro's web
+      #   driver maps only ENTER and BACKSPACE (maestro.drivers.WebDriver
+      #   .mapToSeleniumKey); every other KeyCode throws "not supported on web", so
+      #   there is no way to send ArrowLeft/ArrowRight at all. The APG roving-tabindex
+      #   and arrow-key behaviour is covered by CardPairingModal.test.tsx.
+      # ════════════════════════════════════════════════════════════════════════════
 
-# The dialog opens on the FIRST streamed candidates, so everything above can
-# run mid-fetch. Everything below COUNTS rows, so wait for the fetch to
-# actually finish first: while streaming, Confirm reads "Loading…" and only
-# becomes "Confirm" once the action resolves. This is the one long wait in this
-# section and it is a live BSC/SL round-trip, which is R5's sole exception.
-- extendedWaitUntil:
-    visible:
-      text: "^Confirm$"
-    timeout: 90000
+      # The dialog opens on the FIRST streamed candidates, so everything above can
+      # run mid-fetch. Everything below COUNTS rows, so wait for the fetch to
+      # actually finish first: while streaming, Confirm reads "Loading…" and only
+      # becomes "Confirm" once the action resolves. This is the one long wait in this
+      # section and it is a live BSC/SL round-trip, which is R5's sole exception.
+      - extendedWaitUntil:
+          visible:
+            text: "^Confirm$"
+          timeout: 90000
 
-# Baseline. setup.yaml provisions all 20 Future Stars cards with both a BSC and
-# a SportLots ref, so every one auto-matches and the columns are empty.
-- assertVisible:
-    text: ".*Matched [(]20[)].*"
-#
-# NEO-199: the auto-matched pairs are now name-checked server-side too, so the
-# header may already read "N name conflicts" before this flow touches anything —
-# that would mean BSC and SportLots genuinely disagree about a Future Stars card,
-# which is a fact about live marketplace data and not this flow's business. That
-# is why nothing below asserts an ABSOLUTE conflict count: the flow proves the
-# conflict IT MANUFACTURES is surfaced, by name, on the row it put it on.
+      # Baseline. setup.yaml provisions all 20 Future Stars cards with both a BSC and
+      # a SportLots ref, so every one auto-matches and the columns are empty.
+      - assertVisible:
+          text: ".*Matched [(]20[)].*"
+      #
+      # NEO-199: the auto-matched pairs are now name-checked server-side too, so the
+      # header may already read "N name conflicts" before this flow touches anything —
+      # that would mean BSC and SportLots genuinely disagree about a Future Stars card,
+      # which is a fact about live marketplace data and not this flow's business. That
+      # is why nothing below asserts an ABSOLUTE conflict count: the flow proves the
+      # conflict IT MANUFACTURES is surfaced, by name, on the row it put it on.
 
-# ── UNLINK TWO PAIRS SO THERE IS SOMETHING TO MIS-PAIR ──────────────────────
-# Unlink splits a merged row back into its two halves and returns them to the
-# columns, each with its OWN name back. Re-linking the same two halves would
-# therefore reproduce whatever the pair already said — which for a Future Stars
-# card is agreement — so two pairs are needed: the disagreement comes from
-# CROSSING them, which is the mis-click case the feature covers.
-#
-# The Matched count is the settle signal for each tap — it is the number the
-# next step depends on, so waiting on anything else would be waiting on a
-# proxy.
-- tapOn:
-    id: "Unlink #FS-1 .*"
-- extendedWaitUntil:
-    visible:
-      text: ".*Matched [(]19[)].*"
-    timeout: 7000
-- tapOn:
-    id: "Unlink #FS-2 .*"
-- extendedWaitUntil:
-    visible:
-      text: ".*Matched [(]18[)].*"
-    timeout: 7000
+      # ── UNLINK TWO PAIRS SO THERE IS SOMETHING TO MIS-PAIR ──────────────────────
+      # Unlink splits a merged row back into its two halves and returns them to the
+      # columns, each with its OWN name back. Re-linking the same two halves would
+      # therefore reproduce whatever the pair already said — which for a Future Stars
+      # card is agreement — so two pairs are needed: the disagreement comes from
+      # CROSSING them, which is the mis-click case the feature covers.
+      #
+      # The Matched count is the settle signal for each tap — it is the number the
+      # next step depends on, so waiting on anything else would be waiting on a
+      # proxy.
+      - tapOn:
+          id: "Unlink #FS-1 .*"
+      - extendedWaitUntil:
+          visible:
+            text: ".*Matched [(]19[)].*"
+          timeout: 7000
+      - tapOn:
+          id: "Unlink #FS-2 .*"
+      - extendedWaitUntil:
+          visible:
+            text: ".*Matched [(]18[)].*"
+          timeout: 7000
 
-# ── COLLAPSE MATCHED, SO THE COLUMNS ARE ON SCREEN AND SO THE AUTO-EXPAND
-#    HAS SOMETHING TO PROVE ───────────────────────────────────────────────────
-# Two jobs in one tap. 18 matched rows push the BSC/SportLots columns out of the
-# dialog's inner scroller, which Maestro cannot scroll — collapsing brings them
-# up. And the product behaviour under test ("open the Matched section the
-# moment a link creates a disagreement") can only be observed from a COLLAPSED
-# start, which is also the real-world one: the section collapses by default
-# whenever a column has anything in it, i.e. exactly when manual pairing
-# happens.
-#
-# NEO-199: `.*`-terminated, because the toggle's accessible name grows a
-# ", N with a name conflict" suffix whenever the matched list holds one — and
-# since the server now flags auto-matched disagreements, that can be true here
-# before this flow has linked anything. An exact-match id would then find no
-# element and the flow would fail on a tap, blaming the wrong thing.
-- tapOn:
-    id: "Collapse matched cards.*"
-- extendedWaitUntil:
-    visible:
-      id: "Expand matched cards.*"
-    timeout: 7000
-- assertVisible:
-    text: ".*BSC only [(]2[)].*"
+      # ── COLLAPSE MATCHED, SO THE COLUMNS ARE ON SCREEN AND SO THE AUTO-EXPAND
+      #    HAS SOMETHING TO PROVE ───────────────────────────────────────────────────
+      # Two jobs in one tap. 18 matched rows push the BSC/SportLots columns out of the
+      # dialog's inner scroller, which Maestro cannot scroll — collapsing brings them
+      # up. And the product behaviour under test ("open the Matched section the
+      # moment a link creates a disagreement") can only be observed from a COLLAPSED
+      # start, which is also the real-world one: the section collapses by default
+      # whenever a column has anything in it, i.e. exactly when manual pairing
+      # happens.
+      #
+      # NEO-199: `.*`-terminated, because the toggle's accessible name grows a
+      # ", N with a name conflict" suffix whenever the matched list holds one — and
+      # since the server now flags auto-matched disagreements, that can be true here
+      # before this flow has linked anything. An exact-match id would then find no
+      # element and the flow would fail on a tap, blaming the wrong thing.
+      - tapOn:
+          id: "Collapse matched cards.*"
+      - extendedWaitUntil:
+          visible:
+            id: "Expand matched cards.*"
+          timeout: 7000
+      - assertVisible:
+          text: ".*BSC only [(]2[)].*"
 
-# ── CROSS-LINK: BSC's #FS-1 to SportLots' #FS-2 ─────────────────────────────
-# The SportLots row is not clickable until a BSC row is selected, so the
-# selected-state label is the settle signal before the link.
-- tapOn:
-    id: "Select BSC card #FS-1 .*"
-- extendedWaitUntil:
-    visible:
-      id: "#FS-1 .*, selected. Press to deselect."
-    timeout: 7000
-- tapOn:
-    id: "Link selected BSC card to #FS-2 .*"
+      # ── CROSS-LINK: BSC's #FS-1 to SportLots' #FS-2 ─────────────────────────────
+      # The SportLots row is not clickable until a BSC row is selected, so the
+      # selected-state label is the settle signal before the link.
+      - tapOn:
+          id: "Select BSC card #FS-1 .*"
+      - extendedWaitUntil:
+          visible:
+            id: "#FS-1 .*, selected. Press to deselect."
+          timeout: 7000
+      - tapOn:
+          id: "Link selected BSC card to #FS-2 .*"
 
-# ── THE WARNING IS SURFACED, AND THE SECTION OPENED ITSELF TO SHOW IT ───────
-# This one assertion carries both halves: the toggle's accessible name says
-# "Collapse", which it only does while the section is EXPANDED — so the link
-# re-opened the section the previous step closed — and it states a count.
-# A warning inside a closed section is not a warning.
-#
-# The count itself is matched loosely (NEO-199). It used to be pinned at exactly
-# 1, which was safe only while the modal could not detect an auto-matched
-# disagreement; now that it can, a hardcoded 1 would be an assertion about
-# whether BSC and SportLots happen to agree on all 20 Future Stars cards — live
-# data this flow deliberately does not depend on anywhere else (see the note at
-# the baseline). What the flow actually needs to prove is that ITS conflict was
-# surfaced on the row it made, and the row-scoped assertions immediately below
-# prove exactly that, by card number.
-- extendedWaitUntil:
-    visible:
-      id: "Collapse matched cards, .* with a name conflict"
-    timeout: 7000
-# The same warning, in the words a sighted operator reads on the header.
-- assertVisible:
-    text: ".*name conflict.*"
+      # ── THE WARNING IS SURFACED, AND THE SECTION OPENED ITSELF TO SHOW IT ───────
+      # This one assertion carries both halves: the toggle's accessible name says
+      # "Collapse", which it only does while the section is EXPANDED — so the link
+      # re-opened the section the previous step closed — and it states a count.
+      # A warning inside a closed section is not a warning.
+      #
+      # The count itself is matched loosely (NEO-199). It used to be pinned at exactly
+      # 1, which was safe only while the modal could not detect an auto-matched
+      # disagreement; now that it can, a hardcoded 1 would be an assertion about
+      # whether BSC and SportLots happen to agree on all 20 Future Stars cards — live
+      # data this flow deliberately does not depend on anywhere else (see the note at
+      # the baseline). What the flow actually needs to prove is that ITS conflict was
+      # surfaced on the row it made, and the row-scoped assertions immediately below
+      # prove exactly that, by card number.
+      - extendedWaitUntil:
+          visible:
+            id: "Collapse matched cards, .* with a name conflict"
+          timeout: 7000
+      # The same warning, in the words a sighted operator reads on the header.
+      - assertVisible:
+          text: ".*name conflict.*"
 
-# The row itself: the warning region, the sentence explaining WHY there is a
-# choice, and the two names as a single-select group.
-- assertVisible:
-    id: "Name conflict on #FS-1"
-- assertVisible:
-    text: ".*These marketplaces name this card differently.*"
-- assertVisible:
-    id: "Name for #FS-1"
-- assertVisible:
-    id: "BSC: .* — use this name for #FS-1"
-- assertVisible:
-    id: "SportLots: .* — use this name for #FS-1"
+      # The row itself: the warning region, the sentence explaining WHY there is a
+      # choice, and the two names as a single-select group.
+      - assertVisible:
+          id: "Name conflict on #FS-1"
+      - assertVisible:
+          text: ".*These marketplaces name this card differently.*"
+      - assertVisible:
+          id: "Name for #FS-1"
+      - assertVisible:
+          id: "BSC: .* — use this name for #FS-1"
+      - assertVisible:
+          id: "SportLots: .* — use this name for #FS-1"
 
-# ── BOTH NAMES ARE READ OFF THE SCREEN, SO NO LIVE VALUE IS HARDCODED ───────
-- copyTextFrom:
-    id: "BSC: .* — use this name for #FS-1"
-- evalScript: '${output.bscName = maestro.copiedText.replace("BSC: ", "").trim()}'
-- copyTextFrom:
-    id: "SportLots: .* — use this name for #FS-1"
-- evalScript: '${output.slName = maestro.copiedText.replace("SportLots: ", "").trim()}'
-# States the flow's one data precondition out loud: #FS-1 and #FS-2 have to be
-# different players for there to be a disagreement at all. If a future printing
-# ever put the same player on both, this fails HERE, naming the reason, rather
-# than looking like the feature stopped working.
-- assertTrue: ${output.slName !== output.bscName}
+      # ── BOTH NAMES ARE READ OFF THE SCREEN, SO NO LIVE VALUE IS HARDCODED ───────
+      - copyTextFrom:
+          id: "BSC: .* — use this name for #FS-1"
+      - evalScript: '${output.bscName = maestro.copiedText.replace("BSC: ", "").trim()}'
+      - copyTextFrom:
+          id: "SportLots: .* — use this name for #FS-1"
+      - evalScript: '${output.slName = maestro.copiedText.replace("SportLots: ", "").trim()}'
+      # States the flow's one data precondition out loud: #FS-1 and #FS-2 have to be
+      # different players for there to be a disagreement at all. If a future printing
+      # ever put the same player on both, this fails HERE, naming the reason, rather
+      # than looking like the feature stopped working.
+      - assertTrue: ${output.slName !== output.bscName}
 
-# ── BSC IS THE DEFAULT — asserted on the NAME THE ROW WILL BE SAVED WITH,
-#    not on the pill's styling ────────────────────────────────────────────────
-# The merged row's own label (and so its Unlink control) carries whichever name
-# is currently chosen. It reading BSC's name is what "BSC is checked by
-# default" actually MEANS to an operator.
-- assertVisible:
-    id: "Unlink #FS-1 ${output.bscName}"
+      # ── BSC IS THE DEFAULT — asserted on the NAME THE ROW WILL BE SAVED WITH,
+      #    not on the pill's styling ────────────────────────────────────────────────
+      # The merged row's own label (and so its Unlink control) carries whichever name
+      # is currently chosen. It reading BSC's name is what "BSC is checked by
+      # default" actually MEANS to an operator.
+      - assertVisible:
+          id: "Unlink #FS-1 ${output.bscName}"
 
-# ── CHOOSING SPORTLOTS CHANGES THE NAME THE CARD WOULD BE SAVED WITH ────────
-- tapOn:
-    id: "SportLots: .* — use this name for #FS-1"
-- extendedWaitUntil:
-    visible:
-      id: "Unlink #FS-1 ${output.slName}"
-    timeout: 7000
-# And BSC's name is gone from the row — the choice replaced it rather than
-# adding to it.
-- assertNotVisible:
-    id: "Unlink #FS-1 ${output.bscName}"
+      # ── CHOOSING SPORTLOTS CHANGES THE NAME THE CARD WOULD BE SAVED WITH ────────
+      - tapOn:
+          id: "SportLots: .* — use this name for #FS-1"
+      - extendedWaitUntil:
+          visible:
+            id: "Unlink #FS-1 ${output.slName}"
+          timeout: 7000
+      # And BSC's name is gone from the row — the choice replaced it rather than
+      # adding to it.
+      - assertNotVisible:
+          id: "Unlink #FS-1 ${output.bscName}"
 
-# ── NEITHER MARKETPLACE IS RIGHT: THE OPERATOR TYPES THE NAME ───────────────
-# The conflict control only ever offered a choice BETWEEN two transcriptions,
-# and both can be wrong — the operator is the only party in the loop actually
-# holding the card. Renaming here rather than in CardDetailPanel is the whole
-# point: after Confirm the wrong name is a real NB card that anything reading
-# the checklist reads.
-#
-# The typed name joins the SAME radiogroup as a third option rather than
-# silently overwriting the row, so the group keeps saying which of the names on
-# offer is the one that will be saved.
-#
-# Still read-only (R7a): this is modal-local reducer state like every other
-# step in STEP 3, and the flow still ends at Cancel.
-#
-# Cheap by construction — no extra fetch, no extra dialog, and it reuses the
-# conflict this flow already manufactured. A separate flow would have to re-sync
-# this same shared real set at ~90s a go (see the note at the top of STEP 3).
+      # ── NEITHER MARKETPLACE IS RIGHT: THE OPERATOR TYPES THE NAME ───────────────
+      # The conflict control only ever offered a choice BETWEEN two transcriptions,
+      # and both can be wrong — the operator is the only party in the loop actually
+      # holding the card. Renaming here rather than in CardDetailPanel is the whole
+      # point: after Confirm the wrong name is a real NB card that anything reading
+      # the checklist reads.
+      #
+      # The typed name joins the SAME radiogroup as a third option rather than
+      # silently overwriting the row, so the group keeps saying which of the names on
+      # offer is the one that will be saved.
+      #
+      # Still read-only (R7a): this is modal-local reducer state like every other
+      # step in STEP 3, and the flow still ends at Cancel.
+      #
+      # Cheap by construction — no extra fetch, no extra dialog, and it reuses the
+      # conflict this flow already manufactured. A separate flow would have to re-sync
+      # this same shared real set at ~90s a go (see the note at the top of STEP 3).
 
-# The title of a matched row is a button that swaps in a text field. Matched
-# loosely — the row's visible label carries whichever name is currently chosen,
-# which at this point is SportLots' and is read from live data.
-- tapOn:
-    id: "Edit name for #FS-1 .*"
-# The field names itself by the row's SCOPE, never by the card's name: the name
-# is the thing this control changes, and a field that renames itself as you type
-# is re-announced mid-edit.
-#
-# NEO-272 — the scope used to be the bare card number, which product invariant 7
-# says is never unique at any scope, and on a pairing screen least of all. The
-# scope is `conflictScopeLabels`' output: the bare "#FS-1" on a number carrying a
-# single conflict, "#FS-1 · <variation>" or "#FS-1 (1 of 2)" when it carries
-# two. So this selector stays EXACT rather than growing an optional tail, and
-# what pins it is the `id: "Name conflict on #FS-1"` assertion above — that is
-# the same scope, full-matched, so a second conflict appearing on #FS-1 fails
-# there first and names the reason, instead of silently widening this match.
-# Same for the "— use this name for #FS-1" pill selectors throughout this step.
-#
-# It is also why the field is not called "Name for #FS-1" — that is the
-# radiogroup, asserted above, and two controls on one row cannot share an
-# accessible name (this selector would then match both).
-- extendedWaitUntil:
-    visible:
-      id: "Edit name for #FS-1"
-    timeout: 7000
-# The field opens focused with its text SELECTED, so it is NOT tapped (and a
-# tap would only collapse the selection). eraseText runs anyway: it costs one
-# step and makes the result independent of whether the web driver's sendKeys
-# replaces a selection or types at a caret.
-- eraseText: 60
-- inputText: "NB Operator Name"
-# ENTER commits. Maestro's web driver maps only ENTER and BACKSPACE
-# (maestro.drivers.WebDriver.mapToSeleniumKey throws on anything else), so
-# `pressKey: Escape` cannot be driven from a flow at all — it never reaches a
-# keydown handler. That is exactly why the commit key is Enter here, and why the
-# cancel key (Escape, which MUST be swallowed by the field rather than reaching
-# the dialog root and closing the whole modal) is covered in
-# CardPairingModal.test.tsx instead.
-- pressKey: Enter
+      # The title of a matched row is a button that swaps in a text field. Matched
+      # loosely — the row's visible label carries whichever name is currently chosen,
+      # which at this point is SportLots' and is read from live data.
+      - tapOn:
+          id: "Edit name for #FS-1 .*"
+      # The field names itself by the row's SCOPE, never by the card's name: the name
+      # is the thing this control changes, and a field that renames itself as you type
+      # is re-announced mid-edit.
+      #
+      # NEO-272 — the scope used to be the bare card number, which product invariant 7
+      # says is never unique at any scope, and on a pairing screen least of all. The
+      # scope is `conflictScopeLabels`' output: the bare "#FS-1" on a number carrying a
+      # single conflict, "#FS-1 · <variation>" or "#FS-1 (1 of 2)" when it carries
+      # two. So this selector stays EXACT rather than growing an optional tail, and
+      # what pins it is the `id: "Name conflict on #FS-1"` assertion above — that is
+      # the same scope, full-matched, so a second conflict appearing on #FS-1 fails
+      # there first and names the reason, instead of silently widening this match.
+      # Same for the "— use this name for #FS-1" pill selectors throughout this step.
+      #
+      # It is also why the field is not called "Name for #FS-1" — that is the
+      # radiogroup, asserted above, and two controls on one row cannot share an
+      # accessible name (this selector would then match both).
+      - extendedWaitUntil:
+          visible:
+            id: "Edit name for #FS-1"
+          timeout: 7000
+      # The field opens focused with its text SELECTED, so it is NOT tapped (and a
+      # tap would only collapse the selection). eraseText runs anyway: it costs one
+      # step and makes the result independent of whether the web driver's sendKeys
+      # replaces a selection or types at a caret.
+      - eraseText: 60
+      - inputText: "NB Operator Name"
+      # ENTER commits. Maestro's web driver maps only ENTER and BACKSPACE
+      # (maestro.drivers.WebDriver.mapToSeleniumKey throws on anything else), so
+      # `pressKey: Escape` cannot be driven from a flow at all — it never reaches a
+      # keydown handler. That is exactly why the commit key is Enter here, and why the
+      # cancel key (Escape, which MUST be swallowed by the field rather than reaching
+      # the dialog root and closing the whole modal) is covered in
+      # CardPairingModal.test.tsx instead.
+      - pressKey: Enter
 
-# The typed name is now a THIRD option in the same group…
-#
-# Every assertion on the typed value is PREFIX-matched with a trailing `.*`,
-# for the reason card-detail-panel.yaml documents at its own rename step:
-# Maestro web can place the cursor one position before the end of a React
-# controlled input, so eraseText may leave a single trailing character of the
-# original value behind. "NB Operator Name" is unique enough to prove the
-# rename landed; a residual character is harmless to what is being tested and
-# is not worth a brittle exact match.
-- extendedWaitUntil:
-    visible:
-      id: "Custom: NB Operator Name.* — use this name for #FS-1"
-    timeout: 7000
-# …and it is the CHECKED one. Asserted the way this flow asserts every other
-# choice: on the name the row will actually be saved with, not on the pill's
-# styling. The SportLots name is gone from the row, so the typed name replaced
-# the choice rather than being added alongside it.
-- assertVisible:
-    id: "Unlink #FS-1 NB Operator Name.*"
-- assertNotVisible:
-    id: "Unlink #FS-1 ${output.slName}"
-# Both marketplace names stay on offer, so the rename is as reversible as the
-# original two-way choice was.
-- assertVisible:
-    id: "BSC: .* — use this name for #FS-1"
-- assertVisible:
-    id: "SportLots: .* — use this name for #FS-1"
+      # The typed name is now a THIRD option in the same group…
+      #
+      # Every assertion on the typed value is PREFIX-matched with a trailing `.*`,
+      # for the reason card-detail-panel.yaml documents at its own rename step:
+      # Maestro web can place the cursor one position before the end of a React
+      # controlled input, so eraseText may leave a single trailing character of the
+      # original value behind. "NB Operator Name" is unique enough to prove the
+      # rename landed; a residual character is harmless to what is being tested and
+      # is not worth a brittle exact match.
+      - extendedWaitUntil:
+          visible:
+            id: "Custom: NB Operator Name.* — use this name for #FS-1"
+          timeout: 7000
+      # …and it is the CHECKED one. Asserted the way this flow asserts every other
+      # choice: on the name the row will actually be saved with, not on the pill's
+      # styling. The SportLots name is gone from the row, so the typed name replaced
+      # the choice rather than being added alongside it.
+      - assertVisible:
+          id: "Unlink #FS-1 NB Operator Name.*"
+      - assertNotVisible:
+          id: "Unlink #FS-1 ${output.slName}"
+      # Both marketplace names stay on offer, so the rename is as reversible as the
+      # original two-way choice was.
+      - assertVisible:
+          id: "BSC: .* — use this name for #FS-1"
+      - assertVisible:
+          id: "SportLots: .* — use this name for #FS-1"
 
-# ── A CONFLICT DOES NOT BLOCK CONFIRM ───────────────────────────────────────
-# Deliberately not a gate: blocking would let one flagged row hold a streamed
-# 660-card commit hostage, and the defect was silence, not permissiveness.
-# 20 auto-matched − 2 unlinked + 1 re-linked = 19, so the conflicted row is
-# counted for saving rather than withheld, and Confirm is still offering to
-# save (it reads "Loading…" while blocked and "Saving…" once committing).
-- assertVisible:
-    text: ".*19 cards will be saved.*"
-- assertVisible:
-    text: "^Confirm$"
+      # ── A CONFLICT DOES NOT BLOCK CONFIRM ───────────────────────────────────────
+      # Deliberately not a gate: blocking would let one flagged row hold a streamed
+      # 660-card commit hostage, and the defect was silence, not permissiveness.
+      # 20 auto-matched − 2 unlinked + 1 re-linked = 19, so the conflicted row is
+      # counted for saving rather than withheld, and Confirm is still offering to
+      # save (it reads "Loading…" while blocked and "Saving…" once committing).
+      - assertVisible:
+          text: ".*19 cards will be saved.*"
+      - assertVisible:
+          text: "^Confirm$"
 
-# ============================================================
-# STEP 4 — CANCEL WRITES NOTHING
-# ============================================================
+      # ============================================================
+      # STEP 4 — CANCEL WRITES NOTHING
+      # ============================================================
 
-- tapOn:
-    id: "Cancel card matching"
-    retryTapIfNoChange: true
-# NEO-220 — leaving a matching session with edits on screen now asks first.
-# This flow has unlinked two auto-pairs, cross-linked their halves and renamed a
-# row, so the confirm ALWAYS opens here and this tap is the only way out. The
-# dialog's HEADING also begins "Discard …", so anchor the tap below its
-# explanation to be certain it lands on the button rather than the title.
-- tapOn:
-    text: "Discard .*"
-    below:
-      text: ".*No cards have been saved.*"
-- extendedWaitUntil:
-    notVisible: "Match Cards.*"
-    timeout: 10000
-- assertVisible: "Sync cancelled — no cards saved."
+      - tapOn:
+          id: "Cancel card matching"
+          retryTapIfNoChange: true
+      # NEO-220 — leaving a matching session with edits on screen now asks first.
+      # This flow has unlinked two auto-pairs, cross-linked their halves and renamed a
+      # row, so the confirm ALWAYS opens here and this tap is the only way out. The
+      # dialog's HEADING also begins "Discard …", so anchor the tap below its
+      # explanation to be certain it lands on the button rather than the title.
+      - tapOn:
+          text: "Discard .*"
+          below:
+            text: ".*No cards have been saved.*"
+      - extendedWaitUntil:
+          notVisible: "Match Cards.*"
+          timeout: 10000
+      - assertVisible: "Sync cancelled — no cards saved."
 
-# The set is untouched: the Sync button is still available for a retry, and no
-# entity-review wizard was opened (cancel happens before entity resolution).
-- assertNotVisible: "Confirm New Players & Teams"
-- scrollUntilVisible:
-    element:
-      id: "Sync card checklist"
-    direction: UP
-    centerElement: true
-    timeout: 7000
+      # The set is untouched: the Sync button is still available for a retry, and no
+      # entity-review wizard was opened (cancel happens before entity resolution).
+      - assertNotVisible: "Confirm New Players & Teams"
+      - scrollUntilVisible:
+          element:
+            id: "Sync card checklist"
+          direction: UP
+          centerElement: true
+          timeout: 7000
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      # The rows (a card number is on screen) and their badges: BSC yes,
+      # solo-kept ("BSC only") yes, SportLots no. The list is virtualised and
+      # Maestro reads only the viewport, so this is about the rows on screen.
+      - scrollUntilVisible:
+          element:
+            text: ".*#FS-[0-9].*"
+          centerElement: true
+          timeout: 7000
+      - assertVisible: "BSC"
+      - assertVisible: "BSC only"
+      - assertNotVisible: "SL"
+      # The operator is told why: the strip above the Set Builder heading. It
+      # is ABOVE the current position (the drill left the page down at the
+      # checklist), so UP is the only direction that reaches it. NOT centred
+      # (R8 case 2): it sits at the top of the document, where no swipe can
+      # bring it to the band, and no tap follows — the scroll is the assert.
+      - scrollUntilVisible:
+          element:
+            text: "SportLots is on pause\\."
+          direction: UP
+          timeout: 7000
+      - assertVisible: ".*Syncs roll on with BuySportsCards only\\. Your SportLots links stay put — nothing gets unlinked\\..*"
+      # Nothing was synced: no dialog, no cancel line, no wizard.
+      - assertNotVisible: "Match Cards.*"
+      - assertNotVisible: "Sync cancelled — no cards saved."

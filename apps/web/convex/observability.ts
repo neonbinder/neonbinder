@@ -42,6 +42,20 @@
  *     sl_success?: boolean      // aggregator-only
  *     bsc_success?: boolean     // aggregator-only
  *     error_class?: string      // when success=false, a short stable error tag
+ *                               // (see `classifyAdapterError` for the derived
+ *                               // ones; adapters also set these literal tags:
+ *                               // "unsupported_level", "no_credentials",
+ *                               // "precondition_missing_slot_id",
+ *                               // "session_expired", and — NEO-287 —
+ *                               // "paused" (the operator switched the
+ *                               // marketplace off with
+ *                               // NEONBINDER_PAUSED_PLATFORMS; nothing was
+ *                               // asked of it) and "empty_after_retries"
+ *                               // (a sport/year/manufacturer fetch parsed
+ *                               // zero options on every attempt without a
+ *                               // login stub — the "challenge page" shape,
+ *                               // refused rather than returned as an empty
+ *                               // success). Both are stable dashboard keys.)
  *
  * Second event — used to attribute a child that never came back (NEO-198):
  *

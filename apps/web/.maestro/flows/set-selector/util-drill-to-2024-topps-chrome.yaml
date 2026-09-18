@@ -22,11 +22,38 @@ tags:
 #   set). On the canonical Topps Chrome path the warm data satisfies it in <7s.
 #
 # WHAT THIS IS NOT:
-#   - This util does NOT create custom entries (no "Add custom" branch).
+#   - This util does NOT create custom entries (no "Add custom" branch) — with
+#     the ONE exception below, which exists only while SportLots is paused.
 #   - Use util-drill-to-custom.yaml for flows that need create-or-select logic.
 #
 # PROVEN PATTERN: mirrors setup.yaml lines ~132-209 exactly — select-only,
 # no notVisible guards, no create branches.
+#
+# ── NEO-287: THE MANUFACTURER LEVEL WHILE SPORTLOTS IS ON PAUSE ─────────────
+# NeonBinder's Manufacturer rows come from SportLots' brand list and from
+# nowhere else — BSC has no manufacturer axis (convex/platformLevels.ts), and
+# BSC's sets are filed under whatever manufacturer rows exist by name prefix
+# (`syncSetsAcrossManufacturers`). So while the operator has SportLots paused
+# (`-e PAUSED_PLATFORMS`, decided once by util-paused-platforms), a fresh
+# Manufacturers column syncs to NOTHING: it ends "done" carrying the paused
+# notice and holds only the rows an operator has added by hand. The seed adds
+# `Topps` under Baseball → 2024 that way (setup.yaml), which is the product's
+# own path — a row is a row whether or not it carries marketplace ids
+# (invariant 6) — and the BSC set list then files "Topps …" sets under it.
+#
+# Two consequences for this level, both handled in the PAUSED branch below:
+#   1. The column is SHORT (the hand-made rows plus "All Brands"), so there is
+#      no search input (EntitySelector renders it only above 8 entries) and
+#      the row is tapped directly, anchored on the column HEADER.
+#   2. A caller drilling a path the seed did not provision (1996 Baseball →
+#      Score) finds NO row at all. It says so with `CREATE_MANUFACTURER: "1"`,
+#      and the branch then adds the row through the column's own "+ Custom"
+#      form (`Add custom Manufacturers` → `Create manufacturer`) before
+#      tapping it. Only a path's SOLE WRITER may pass it (SET-REGISTRY.md),
+#      exactly as only setup.yaml adds `Topps`: the row is global, and the
+#      create is guarded so a local re-run finds the row instead of minting a
+#      second one.
+# The LIVE branch is the search-select step, unchanged.
 
 # ── NAVIGATE ─────────────────────────────────────────────────────────────────
 - openLink: ${APP_URL || "http://localhost:3000"}/set-selector
@@ -89,26 +116,137 @@ tags:
 # ── MANUFACTURER ──────────────────────────────────────────────────────────────
 # App auto-scrolls the newly-revealed Manufacturer column fully into view — no
 # test-side right-scroll needed.
-- extendedWaitUntil:
-    visible: ".*Search manufacturers.*"
-- tapOn:
-    text: ".*Search manufacturers.*"
-    waitToSettleTimeoutMs: 250
-- inputText: ${MANUFACTURER || "Topps"}
-# NEO-85 residual coordinate-staleness: result-keyed retry — re-fire the
-# Manufacturer row-select ONCE iff the next column ("Sets") doesn't appear. This
-# is the exact drop proven this sweep (checklist-renders-rich-fields: the "Topps"
-# row-select landed stale, the column stayed expanded, "Sets" never appeared).
-- retry:
-    maxRetries: 1
+# NEO-287 — decide the branch (pure script, no UI). Idempotent: a caller that
+# already ran util-paused-platforms pays nothing for this second call.
+- runFlow:
+    file: ../util/util-paused-platforms.yaml
+# LIVE: search-select, verbatim. PAUSED: the short, hand-made column — header.
+- runFlow:
+    when:
+      true: "${!output.SL_PAUSED}"
     commands:
-      - tapOn:
-          text: ${MANUFACTURER || "Topps"}
-          below:
-            id: "Search manufacturers"
-          retryTapIfNoChange: true
       - extendedWaitUntil:
-          visible: "Sets"
+          visible: ".*Search manufacturers.*"
+      - tapOn:
+          text: ".*Search manufacturers.*"
+          waitToSettleTimeoutMs: 250
+      - inputText: ${MANUFACTURER || "Topps"}
+      # NEO-85 residual coordinate-staleness: result-keyed retry — re-fire the
+      # Manufacturer row-select ONCE iff the next column ("Sets") doesn't appear. This
+      # is the exact drop proven this sweep (checklist-renders-rich-fields: the "Topps"
+      # row-select landed stale, the column stayed expanded, "Sets" never appeared).
+      - retry:
+          maxRetries: 1
+          commands:
+            - tapOn:
+                text: ${MANUFACTURER || "Topps"}
+                below:
+                  id: "Search manufacturers"
+                retryTapIfNoChange: true
+            - extendedWaitUntil:
+                visible: "Sets"
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      # SETTLE. Below the root the pause reads as a BSC-only tree (PR #265
+      # push 3): `Baseball` carries no SportLots id, so this column — BSC does
+      # not serve the level — syncs to nothing, silently (no notice), and
+      # shows its idle empty text; or, on a path the seed provisioned, holds
+      # the hand-made row already. The idle text renders before a sync too,
+      # so wait out a "Syncing" panel if one is up (the `when:` guard is the
+      # documented R10 exception), then gate on EITHER shape. No marketplace
+      # is called on this path — the 7000 bar.
+      - runFlow:
+          when:
+            visible: "Syncing Manufacturer Options"
+          commands:
+            - extendedWaitUntil:
+                notVisible: "Syncing Manufacturer Options"
+                timeout: 7000
+      - extendedWaitUntil:
+          visible: "No manufacturers available. Sync from marketplaces to populate.|${MANUFACTURER || 'Topps'}"
+          timeout: 7000
+      # Sole-writer create (see the header). The `notVisible` guard is the
+      # documented R10 exception: it costs a poll only on a re-run that
+      # already minted the row, never on a first run.
+      - runFlow:
+          when:
+            true: "${CREATE_MANUFACTURER}"
+          commands:
+            - runFlow:
+                when:
+                  notVisible:
+                    text: ${MANUFACTURER || "Topps"}
+                    below:
+                      text: "Manufacturers"
+                commands:
+                  - scrollUntilVisible:
+                      element:
+                        id: "Add custom Manufacturers"
+                      centerElement: true
+                      timeout: 7000
+                  - tapOn:
+                      id: "Add custom Manufacturers"
+                  - extendedWaitUntil:
+                      visible: "Add Custom Entry"
+                      timeout: 7000
+                  - tapOn: "Enter custom value..."
+                  - inputText: ${MANUFACTURER || "Topps"}
+                  # NEO-219: two Enters — the manufacturer level is
+                  # parent-scoped, so the create confirm always follows.
+                  - pressKey: Enter
+                  - extendedWaitUntil:
+                      visible:
+                        id: "Create manufacturer"
+                      timeout: 7000
+                  - tapOn:
+                      id: "Create manufacturer"
+                  - extendedWaitUntil:
+                      notVisible: "Add Custom Entry"
+                      timeout: 7000
+                  # Centring "+ Custom" above ran the page to MAXIMUM scroll
+                  # on this empty column, which leaves the new row at y≈23
+                  # and the column HEADER above the top edge — and a `below:`
+                  # selector cannot resolve without its anchor in the
+                  # hierarchy (the cold util's failure on PR #265 push 2,
+                  # runner 3: `Topps` on screen, "Manufacturers" not). Both
+                  # are above the current position, so UP: one swipe brings
+                  # the header back and the row into the band.
+                  - scrollUntilVisible:
+                      element:
+                        text: ${MANUFACTURER || "Topps"}
+                        below:
+                          text: "Manufacturers"
+                      direction: UP
+                      centerElement: true
+                      timeout: 7000
+      # Short column, no search input: tap the row, anchored on the column
+      # header (a bare `text:` could match an ancestor's chip). R8: centre.
+      # DOWN, measured on the no-create path (PR #265 push 2, sets-base):
+      # the row sits at y=514 with the header in view, one swipe centres it
+      # at y=201. (The create path above has already centred it from the
+      # other side, so this accepts it at once.) Centring only ever swipes
+      # in the command's direction — decompiled Orchestra.scrollUntilVisible
+      # — so the direction has to match where the row is, not be a default.
+      - scrollUntilVisible:
+          element:
+            text: ${MANUFACTURER || "Topps"}
+            below:
+              text: "Manufacturers"
+          centerElement: true
+          timeout: 7000
+      - retry:
+          maxRetries: 1
+          commands:
+            - tapOn:
+                text: ${MANUFACTURER || "Topps"}
+                below:
+                  text: "Manufacturers"
+                retryTapIfNoChange: true
+            - extendedWaitUntil:
+                visible: "Sets"
+                timeout: 7000
 
 # ── SET ───────────────────────────────────────────────────────────────────────
 # App auto-scrolls the newly-revealed Sets column fully into view — no test-side

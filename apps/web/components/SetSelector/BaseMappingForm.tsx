@@ -16,6 +16,12 @@ type RawOptionsResult = {
   /** Per-platform failures. `success` stays true for a PARTIAL outage. */
   errors: Array<{ platform: string; message: string }>;
   message?: string;
+  /**
+   * NEO-287 — slot sides the operator has paused, next to `skippedSides` on
+   * the server. Handed to the picker so a paused pane says so instead of
+   * rendering an empty list. Optional: an older result reads as "none".
+   */
+  pausedSides?: string[];
 };
 
 /**
@@ -446,6 +452,7 @@ export default function BaseMappingForm({
           onConfirm={handlePickerConfirm}
           slOptions={pickerData?.slOptions ?? []}
           bscOptions={pickerData?.bscOptions ?? []}
+          pausedSides={pickerData?.pausedSides ?? []}
           setListing={setListing}
           setName={setNameValue || ""}
           manufacturer={manufacturerValue || ""}

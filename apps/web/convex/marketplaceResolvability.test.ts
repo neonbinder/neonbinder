@@ -32,10 +32,13 @@ import {
   SL_ATTACH_REQUIRED_LEVELS,
   SL_REQUIRED_LEVELS,
   missingSummary,
+  notifiableSkippedSides,
+  pausedSideList,
   resolvableSides,
   resolvedSideList,
   rowHasBscFacet,
   skippedSideList,
+  unscopedResolution,
   type ResolvableRow,
 } from "./marketplaceResolvability";
 
@@ -332,6 +335,170 @@ describe("skippedSideList", () => {
   });
 });
 
+describe("resolvableSides — the paused option (NEO-287)", () => {
+  test("a paused side is unresolvable whatever ids the chain carries, and says why", () => {
+    // Every ancestor fully linked — the ordinary "should resolve" chain.
+    const chain = [linkedSport, linkedYear];
+    const resolution = resolvableSides(chain, { paused: new Set(["sportlots"]) });
+
+    expect(resolution.sportlots.resolvable).toBe(false);
+    expect(resolution.sportlots.paused).toBe(true);
+    expect(resolution.sportlots.missing).toContain("paused");
+    // `served` is untouched — a paused side still MODELS the level; it was
+    // simply not asked this run.
+    expect(resolution.sportlots.served).toBe(true);
+
+    // The other side is unaffected.
+    expect(resolution.bsc.resolvable).toBe(true);
+    expect(resolution.bsc.paused).toBe(false);
+  });
+
+  test("no paused option at all reads as not paused, on both sides", () => {
+    const resolution = resolvableSides([linkedSport, linkedYear]);
+    expect(resolution.bsc.paused).toBe(false);
+    expect(resolution.sportlots.paused).toBe(false);
+  });
+
+  test("both sides can be paused at once", () => {
+    const resolution = resolvableSides([linkedSport, linkedYear], {
+      paused: new Set(["bsc", "sportlots"]),
+    });
+    expect(resolution.bsc.resolvable).toBe(false);
+    expect(resolution.bsc.paused).toBe(true);
+    expect(resolution.sportlots.resolvable).toBe(false);
+    expect(resolution.sportlots.paused).toBe(true);
+  });
+
+  test("a side missing ids is a PLAIN skip under a pause — identical to no pause at all", () => {
+    // Invariant 6: a row without marketplace ids behaves identically whatever
+    // a marketplace is doing. The first cut tagged the global pause onto every
+    // side, and every column of every hand-made set grew a "SportLots is on
+    // pause" notice it never had before (PR #265, 29 flows red). The pause is
+    // reported ONLY where it changed behaviour: a side that would otherwise
+    // have been asked.
+    const chain = [row("sport", { value: "Baseball" })];
+    const withPause = resolvableSides(chain, {
+      level: "year",
+      paused: new Set(["sportlots"]),
+    });
+    const withoutPause = resolvableSides(chain, { level: "year" });
+
+    expect(withPause.sportlots.paused).toBe(false);
+    expect(withPause.sportlots.missing).not.toContain("paused");
+    // Byte-for-byte the same verdict: `missing` names the same rungs, in the
+    // same order, and nothing else.
+    expect(withPause).toEqual(withoutPause);
+  });
+
+  test("a side that does not SERVE the level is a plain structural skip under a pause", () => {
+    // BSC has no manufacturer axis. Pausing BSC changes nothing about a
+    // Manufacturers sync — it was never going to be asked — so it is not
+    // reported as paused there.
+    const chain = [linkedSport, linkedYear];
+    const resolution = resolvableSides(chain, {
+      level: "manufacturer",
+      paused: new Set(["bsc"]),
+    });
+    expect(resolution.bsc.served).toBe(false);
+    expect(resolution.bsc.paused).toBe(false);
+    expect(resolution.bsc.missing).toEqual(["level=manufacturer"]);
+  });
+
+  test("a paused side's only 'missing' entry is the sentinel — its ids were all there", () => {
+    const resolution = resolvableSides([linkedSport, linkedYear], {
+      paused: new Set(["sportlots"]),
+    });
+    expect(resolution.sportlots.missing).toEqual(["paused"]);
+  });
+});
+
+describe("pausedSideList", () => {
+  test("lists exactly the paused sides, in stable order", () => {
+    const resolution = resolvableSides([linkedSport, linkedYear], {
+      paused: new Set(["sportlots"]),
+    });
+    expect(pausedSideList(resolution)).toEqual(["sportlots"]);
+  });
+
+  test("empty when nothing is paused", () => {
+    const resolution = resolvableSides([linkedSport, linkedYear]);
+    expect(pausedSideList(resolution)).toEqual([]);
+  });
+});
+
+describe("notifiableSkippedSides excludes a paused side (NEO-287)", () => {
+  test("a no-id path under an unrelated pause notifies exactly what it would without one", () => {
+    // Sport row carries NEITHER marketplace's id — an ordinary "no ids on this
+    // path" skip for both, with SportLots also happening to be paused. The
+    // pause did not change what happened to SportLots (it had no ids to be
+    // asked with), so it is a plain skip and notifiable as such: the operator
+    // reads the same "no ids" notice they would read with no pause on.
+    const resolution = resolvableSides([row("sport", { value: "Baseball" })], {
+      level: "year",
+      paused: new Set(["sportlots"]),
+    });
+    expect(skippedSideList(resolution).slice().sort()).toEqual([
+      "bsc",
+      "sportlots",
+    ]);
+    expect(pausedSideList(resolution)).toEqual([]);
+    expect(notifiableSkippedSides(resolution).slice().sort()).toEqual([
+      "bsc",
+      "sportlots",
+    ]);
+  });
+
+  test("one side paused (ids complete) + one side missing ids: each gets its own list", () => {
+    // Sport linked on SportLots only. A Years sync under a SportLots pause:
+    // SportLots WOULD have been asked, so it is paused; BSC has no id, so it
+    // is a plain skip. Two lists, no overlap — the two sentences the operator
+    // reads come from these.
+    const resolution = resolvableSides(
+      [row("sport", { value: "Baseball", sportlots: { s0: "BB" } })],
+      { level: "year", paused: new Set(["sportlots"]) },
+    );
+    expect(pausedSideList(resolution)).toEqual(["sportlots"]);
+    expect(notifiableSkippedSides(resolution)).toEqual(["bsc"]);
+  });
+
+  test("a resolvable-but-paused side is still excluded even though it IS skipped", () => {
+    const resolution = resolvableSides([linkedSport, linkedYear], {
+      paused: new Set(["sportlots"]),
+    });
+    expect(skippedSideList(resolution)).toContain("sportlots");
+    expect(notifiableSkippedSides(resolution)).not.toContain("sportlots");
+  });
+});
+
+describe("unscopedResolution", () => {
+  test("with nothing paused, both sides are served and resolvable", () => {
+    const resolution = unscopedResolution();
+    expect(resolution.bsc).toEqual({
+      served: true,
+      resolvable: true,
+      paused: false,
+      missing: [],
+    });
+    expect(resolution.sportlots).toEqual({
+      served: true,
+      resolvable: true,
+      paused: false,
+      missing: [],
+    });
+  });
+
+  test("a paused side is unresolvable and names itself in missing", () => {
+    const resolution = unscopedResolution({ paused: new Set(["sportlots"]) });
+    expect(resolution.sportlots).toEqual({
+      served: true,
+      resolvable: false,
+      paused: true,
+      missing: ["paused"],
+    });
+    expect(resolution.bsc.resolvable).toBe(true);
+  });
+});
+
 describe("rowHasBscFacet", () => {
   test("an untagged slot does not count, and neither does a differently-tagged one", () => {
     const untagged = row("variantType", { bsc: { b0: "base" } });
@@ -391,6 +558,7 @@ describe("resolvableSides — bscScope: 'checklist' (NEO-252)", () => {
       served: true,
       resolvable: true,
       missing: [],
+      paused: false,
     });
     // …and this is a CHANGE, not a restatement: the per-level rule refuses the
     // very same chain, which is exactly the disagreement the ticket is about.

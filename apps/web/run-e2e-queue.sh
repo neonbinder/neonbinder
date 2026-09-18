@@ -166,7 +166,11 @@ RESULTS="$REPORT_DIR/logs/runner-${RUNNER_INDEX}.results"
 : > "$LOG"; : > "$RESULTS"
 export MAESTRO_OPTS="-Duser.home=$PWD/$REPORT_DIR/maestro-home"
 
-ARGS_BASE=(--platform web --config "$CONFIG" -e "APP_URL=$APP_URL" -e "WORKER_INDEX=$WORKER_INDEX")
+# PAUSED_PLATFORMS (NEO-287) mirrors NEONBINDER_PAUSED_PLATFORMS onto the flows
+# — always passed, empty when unset; e2e.yml exports it from the GitHub
+# repository variable and the seed job wrote the same value onto the preview.
+# See .maestro/README.md "Operator switches".
+ARGS_BASE=(--platform web --config "$CONFIG" -e "APP_URL=$APP_URL" -e "WORKER_INDEX=$WORKER_INDEX" -e "PAUSED_PLATFORMS=${PAUSED_PLATFORMS:-}")
 if [ "${MAESTRO_HEADLESS:-1}" != "0" ]; then ARGS_BASE+=(--headless); fi
 
 # run_flow <flow> → echoes PASS|FAIL ; writes per-flow junit + debug.

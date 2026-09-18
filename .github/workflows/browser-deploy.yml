@@ -255,6 +255,11 @@ jobs:
           BSC_PASSWORD: ${{ secrets.MAESTRO_BSC_PASSWORD }}
           SPORTLOTS_USERNAME: ${{ secrets.MAESTRO_SPORTLOTS_USERNAME }}
           SPORTLOTS_PASSWORD: ${{ secrets.MAESTRO_SPORTLOTS_PASSWORD }}
+          # NEO-287: mirrors the Convex-side NEONBINDER_PAUSED_PLATFORMS switch
+          # so this gate (which promotion depends on) skips only the SportLots
+          # half during a known, operator-chosen outage. No `if:` gating: BSC
+          # keeps probing unconditionally.
+          PAUSED_PLATFORMS: ${{ vars.NEONBINDER_PAUSED_PLATFORMS }}
         run: npm run test:prod-gate
 
   # Shift 100% dev traffic to the new revision. Gated (enabled-push only) — never
@@ -405,6 +410,11 @@ jobs:
           BSC_PASSWORD: ${{ secrets.MAESTRO_BSC_PASSWORD }}
           SPORTLOTS_USERNAME: ${{ secrets.MAESTRO_SPORTLOTS_USERNAME }}
           SPORTLOTS_PASSWORD: ${{ secrets.MAESTRO_SPORTLOTS_PASSWORD }}
+          # NEO-287: mirrors the Convex-side NEONBINDER_PAUSED_PLATFORMS switch
+          # so this gate (which promotion depends on) skips only the SportLots
+          # half during a known, operator-chosen outage. No `if:` gating: BSC
+          # keeps probing unconditionally.
+          PAUSED_PLATFORMS: ${{ vars.NEONBINDER_PAUSED_PLATFORMS }}
         run: npm run test:prod-gate
 
   prod-promote:

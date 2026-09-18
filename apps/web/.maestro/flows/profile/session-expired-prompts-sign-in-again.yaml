@@ -49,6 +49,25 @@ tags:
 # on the same runner is profile/test-credentials.yaml (its SportLots half). If
 # you are looking at that pair of failures, this is the cause and the fix is
 # whatever made THIS flow fail.
+#
+# NEO-287 — PAUSED BRANCH. While the operator has SportLots on pause
+# (`-e PAUSED_PLATFORMS`, decided once by util-paused-platforms below), the
+# re-auth state this flow proves is unreachable by design: paused beats
+# needs-reauth on the Profile card (plan decision 6), because "sign in again"
+# is exactly what the pause refuses, so the card would prescribe a dead
+# control. The paused branch proves THAT precedence instead: the seed hop
+# lands (SportLots skipped, no login), the paused card is up, and after the
+# same /testing/needs-reauth hop the panel STILL shows the paused card and NOT
+# the re-auth card. Under the pause the seed never connects a SportLots row
+# after the run's reset, so the hook usually finds no row and is a no-op —
+# the assertions hold either way, and when a row IS there (a deployment that
+# was connected before the pause) the precedence is what is being proved.
+# No restore step: the flag, if set, is cleared by the seed's self-heal on
+# the first run after the pause lifts (convex/testing.ts), and nothing reads
+# it while the pause is on. The live branch is unchanged.
+
+- runFlow:
+    file: ../util/util-paused-platforms.yaml
 
 - launchApp
 
@@ -57,135 +76,190 @@ tags:
     visible: "Profile Settings"
     timeout: 45000
 
-# -----------------------------------------------------------------------
-# Precondition: this worker is CONNECTED to SportLots
-# -----------------------------------------------------------------------
+# NEO-287 — LIVE: the re-auth state and its recovery, verbatim. PAUSED: the
+# paused card outranks the re-auth card. See the header.
+- runFlow:
+    when:
+      true: "${!output.SL_PAUSED}"
+    commands:
+      # -----------------------------------------------------------------------
+      # Precondition: this worker is CONNECTED to SportLots
+      # -----------------------------------------------------------------------
 
-# Phase-0 worker-bootstrap already connected both platforms; this scoped seed
-# just makes the precondition explicit (and keeps the flow runnable on its own
-# with the bootstrap skipped). 90s exception (live marketplace round-trip):
-# since NEO-141 the seed page awaits a REAL sign-in whenever it cannot skip.
-- openLink: ${APP_URL || "http://localhost:3000"}/testing/seed-credentials?sites=sportlots&redirect=/profile/credentials
-- extendedWaitUntil:
-    visible: "Profile Settings"
-    timeout: 90000
+      # Phase-0 worker-bootstrap already connected both platforms; this scoped seed
+      # just makes the precondition explicit (and keeps the flow runnable on its own
+      # with the bootstrap skipped). 90s exception (live marketplace round-trip):
+      # since NEO-141 the seed page awaits a REAL sign-in whenever it cannot skip.
+      - openLink: ${APP_URL || "http://localhost:3000"}/testing/seed-credentials?sites=sportlots&redirect=/profile/credentials
+      - extendedWaitUntil:
+          visible: "Profile Settings"
+          timeout: 90000
 
-# Switch to the SportLots tab — the tablist is at the top of the panel.
-- extendedWaitUntil:
-    visible: "SportLots"
-    timeout: 10000
-- tapOn: "SportLots"
+      # Switch to the SportLots tab — the tablist is at the top of the panel.
+      - extendedWaitUntil:
+          visible: "SportLots"
+          timeout: 10000
+      - tapOn: "SportLots"
 
-# R5: 7000, the bar. This is a local tab switch, not a marketplace round-trip —
-# the tap above is already gated on the tab being present — so it is exactly the
-# kind of interaction the bar exists to hold. MEASURED in CI (green run): the
-# heading resolves 0.33 s after the tap, every time, on both flows. The old
-# 20000 was 60x the measurement and would have hidden a real regression.
-- extendedWaitUntil:
-    visible: ".*SportLots Credentials.*"
-    timeout: 7000
+      # R5: 7000, the bar. This is a local tab switch, not a marketplace round-trip —
+      # the tap above is already gated on the tab being present — so it is exactly the
+      # kind of interaction the bar exists to hold. MEASURED in CI (green run): the
+      # heading resolves 0.33 s after the tap, every time, on both flows. The old
+      # 20000 was 60x the measurement and would have hidden a real regression.
+      - extendedWaitUntil:
+          visible: ".*SportLots Credentials.*"
+          timeout: 7000
 
-- extendedWaitUntil:
-    visible: ".*Connected to SportLots.*"
-    timeout: 7000
+      - extendedWaitUntil:
+          visible: ".*Connected to SportLots.*"
+          timeout: 7000
 
-# Prove the "Test Credentials" button is HERE, now, on this page — because two
-# steps below the whole point is that it is GONE. Asserting its absence is only
-# meaningful once the same selector has matched something in the same run;
-# otherwise a typo'd selector would make that later assertion pass forever.
-- assertVisible: "Test Credentials"
+      # Prove the "Test Credentials" button is HERE, now, on this page — because two
+      # steps below the whole point is that it is GONE. Asserting its absence is only
+      # meaningful once the same selector has matched something in the same run;
+      # otherwise a typo'd selector would make that later assertion pass forever.
+      - assertVisible: "Test Credentials"
 
-# -----------------------------------------------------------------------
-# The SportLots session dies
-# -----------------------------------------------------------------------
+      # -----------------------------------------------------------------------
+      # The SportLots session dies
+      # -----------------------------------------------------------------------
 
-- openLink: ${APP_URL || "http://localhost:3000"}/testing/needs-reauth?site=sportlots&redirect=/profile/credentials
+      - openLink: ${APP_URL || "http://localhost:3000"}/testing/needs-reauth?site=sportlots&redirect=/profile/credentials
 
-# 30s: a /testing/* page is a full document load that has to re-do the
-# Clerk → Convex handshake before it can call anything — the same budget every
-# other openLink of a /testing/* page in this suite uses. The mutation itself is
-# a single patch; there is no marketplace call on this path.
-- extendedWaitUntil:
-    visible: "Profile Settings"
-    timeout: 30000
+      # 30s: a /testing/* page is a full document load that has to re-do the
+      # Clerk → Convex handshake before it can call anything — the same budget every
+      # other openLink of a /testing/* page in this suite uses. The mutation itself is
+      # a single patch; there is no marketplace call on this path.
+      - extendedWaitUntil:
+          visible: "Profile Settings"
+          timeout: 30000
 
-- extendedWaitUntil:
-    visible: "SportLots"
-    timeout: 10000
-- tapOn: "SportLots"
+      - extendedWaitUntil:
+          visible: "SportLots"
+          timeout: 10000
+      - tapOn: "SportLots"
 
-# R5: 7000, the bar. This is a local tab switch, not a marketplace round-trip —
-# the tap above is already gated on the tab being present — so it is exactly the
-# kind of interaction the bar exists to hold. MEASURED in CI (green run): the
-# heading resolves 0.33 s after the tap, every time, on both flows. The old
-# 20000 was 60x the measurement and would have hidden a real regression.
-- extendedWaitUntil:
-    visible: ".*SportLots Credentials.*"
-    timeout: 7000
+      # R5: 7000, the bar. This is a local tab switch, not a marketplace round-trip —
+      # the tap above is already gated on the tab being present — so it is exactly the
+      # kind of interaction the bar exists to hold. MEASURED in CI (green run): the
+      # heading resolves 0.33 s after the tap, every time, on both flows. The old
+      # 20000 was 60x the measurement and would have hidden a real regression.
+      - extendedWaitUntil:
+          visible: ".*SportLots Credentials.*"
+          timeout: 7000
 
-# THE FEATURE. Three assertions, one per state the panel can be in, so this
-# cannot pass unless the panel is in the re-auth state specifically:
-#   1. the re-auth card is shown…
-- extendedWaitUntil:
-    visible: ".*Sign in to SportLots again.*"
-    timeout: 7000
-#   2. …it is NOT the connected card — no "Test Credentials" here, deliberately,
-#      because a session that cannot be renewed would fail that test by
-#      construction (this absence is why the shared util flows have to
-#      assert-fast on the connected state instead of waiting for the button)…
-- assertNotVisible: "Test Credentials"
-#   3. …and it does NOT read as "you have no credentials": the sign-in form is
-#      not showing. The account is still connected; only the session died.
-- assertNotVisible: ".*SportLots Username.*"
+      # THE FEATURE. Three assertions, one per state the panel can be in, so this
+      # cannot pass unless the panel is in the re-auth state specifically:
+      #   1. the re-auth card is shown…
+      - extendedWaitUntil:
+          visible: ".*Sign in to SportLots again.*"
+          timeout: 7000
+      #   2. …it is NOT the connected card — no "Test Credentials" here, deliberately,
+      #      because a session that cannot be renewed would fail that test by
+      #      construction (this absence is why the shared util flows have to
+      #      assert-fast on the connected state instead of waiting for the button)…
+      - assertNotVisible: "Test Credentials"
+      #   3. …and it does NOT read as "you have no credentials": the sign-in form is
+      #      not showing. The account is still connected; only the session died.
+      - assertNotVisible: ".*SportLots Username.*"
 
-# -----------------------------------------------------------------------
-# Recovery: sign in again → the connection proves good → the warning clears
-# -----------------------------------------------------------------------
+      # -----------------------------------------------------------------------
+      # Recovery: sign in again → the connection proves good → the warning clears
+      # -----------------------------------------------------------------------
 
-# Centre before tapping: the card's buttons sit low in the 1024x629 fold.
-- scrollUntilVisible:
-    element:
-      text: "Sign in again"
-    centerElement: true
-    timeout: 7000
-    waitToSettleTimeoutMs: 1000
-- tapOn: "Sign in again"
+      # Centre before tapping: the card's buttons sit low in the 1024x629 fold.
+      - scrollUntilVisible:
+          element:
+            text: "Sign in again"
+          centerElement: true
+          timeout: 7000
+          waitToSettleTimeoutMs: 1000
+      - tapOn: "Sign in again"
 
-# The sign-in form opens. (Same selector asserted absent above — its appearing
-# now is what makes that assertion trustworthy.)
-- extendedWaitUntil:
-    visible: ".*SportLots Username.*"
-    timeout: 7000
+      # The sign-in form opens. (Same selector asserted absent above — its appearing
+      # now is what makes that assertion trustworthy.)
+      - extendedWaitUntil:
+          visible: ".*SportLots Username.*"
+          timeout: 7000
 
-# A flow can never type a real password, so the honest repair available here is
-# the form's other button: re-check the stored session. It is enabled because
-# the account never stopped being connected.
-- scrollUntilVisible:
-    element:
-      text: "Test Stored Credentials"
-    centerElement: true
-    timeout: 7000
-    waitToSettleTimeoutMs: 1000
-- tapOn: "Test Stored Credentials"
+      # A flow can never type a real password, so the honest repair available here is
+      # the form's other button: re-check the stored session. It is enabled because
+      # the account never stopped being connected.
+      - scrollUntilVisible:
+          element:
+            text: "Test Stored Credentials"
+          centerElement: true
+          timeout: 7000
+          waitToSettleTimeoutMs: 1000
+      - tapOn: "Test Stored Credentials"
 
-# 30s sanctioned exception: a live SportLots session check. Non-scrolling so the
-# transient React-state banner is not scrolled past while the call is in flight.
-- extendedWaitUntil:
-    visible: ".*SportLots account authenticated successfully.*"
-    timeout: 30000
+      # 30s sanctioned exception: a live SportLots session check. Non-scrolling so the
+      # transient React-state banner is not scrolled past while the call is in flight.
+      - extendedWaitUntil:
+          visible: ".*SportLots account authenticated successfully.*"
+          timeout: 30000
 
-# Leave the form (a successful test does not close it — only the user does) and
-# assert the panel is back to CONNECTED. That card renders only when the account
-# has credentials AND is not flagged for re-auth, so this single assertion is
-# the proof that a working connection cleared the warning.
-- scrollUntilVisible:
-    element:
-      text: "Cancel"
-    centerElement: true
-    timeout: 7000
-    waitToSettleTimeoutMs: 1000
-- tapOn: "Cancel"
+      # Leave the form (a successful test does not close it — only the user does) and
+      # assert the panel is back to CONNECTED. That card renders only when the account
+      # has credentials AND is not flagged for re-auth, so this single assertion is
+      # the proof that a working connection cleared the warning.
+      - scrollUntilVisible:
+          element:
+            text: "Cancel"
+          centerElement: true
+          timeout: 7000
+          waitToSettleTimeoutMs: 1000
+      - tapOn: "Cancel"
 
-- extendedWaitUntil:
-    visible: ".*Connected to SportLots.*"
-    timeout: 7000
+      - extendedWaitUntil:
+          visible: ".*Connected to SportLots.*"
+          timeout: 7000
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      # The seed hop: under the pause it reports SportLots skipped and performs
+      # no login, so this is one status read and a redirect — but it is still
+      # a /testing/* full document load with the Clerk → Convex handshake, the
+      # same 30s budget every other openLink of a /testing/* page uses.
+      - openLink: ${APP_URL || "http://localhost:3000"}/testing/seed-credentials?sites=sportlots&redirect=/profile/credentials
+      - extendedWaitUntil:
+          visible: "Profile Settings"
+          timeout: 30000
+      - extendedWaitUntil:
+          visible: "SportLots"
+          timeout: 10000
+      - tapOn: "SportLots"
+      - extendedWaitUntil:
+          visible: ".*SportLots Credentials.*"
+          timeout: 7000
+      # Precondition, stated: the paused card, not the connected card.
+      - extendedWaitUntil:
+          visible: "SportLots is on pause"
+          timeout: 7000
+      - assertNotVisible: "Test Credentials"
+
+      # The session "dies" (no-op when there is no row; see the header).
+      - openLink: ${APP_URL || "http://localhost:3000"}/testing/needs-reauth?site=sportlots&redirect=/profile/credentials
+      - extendedWaitUntil:
+          visible: "Profile Settings"
+          timeout: 30000
+      - extendedWaitUntil:
+          visible: "SportLots"
+          timeout: 10000
+      - tapOn: "SportLots"
+      - extendedWaitUntil:
+          visible: ".*SportLots Credentials.*"
+          timeout: 7000
+
+      # THE FEATURE UNDER THE PAUSE: paused beats needs-reauth. The paused card
+      # is (still) up, the re-auth card is NOT, and neither live control is
+      # offered. Positives first, so the negatives cannot pass on a dead page.
+      - extendedWaitUntil:
+          visible: "SportLots is on pause"
+          timeout: 7000
+      - assertVisible: "Sign-ins to SportLots are benched for now.*"
+      - assertNotVisible: ".*Sign in to SportLots again.*"
+      - assertNotVisible: "Sign in again"
+      - assertNotVisible: "Test Credentials"
+      - assertNotVisible: ".*SportLots Username.*"

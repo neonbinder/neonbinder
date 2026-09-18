@@ -66,6 +66,15 @@ vi.mock("./credentials", async (importOriginal) => {
         token: "sl-session-cookie",
       }),
     }),
+    // The empty-result recovery loop in fetchSportLotsSelectorOptions forces a
+    // re-auth between retries — a real login it must not attempt in a unit
+    // test. A no-op success is enough; the retry loop only cares that the
+    // call resolves.
+    authenticateSportlots: internalAction({
+      args: {},
+      returns: v.any(),
+      handler: async () => ({ success: true }),
+    }),
   };
 });
 
@@ -534,5 +543,189 @@ describe("fetchSportLotsChecklist pagination (NEO-137)", () => {
     // checklist silently missing cards.
     expect(result.success).toBe(false);
     expect(result.cards).toHaveLength(0);
+  });
+});
+
+// ===========================================================================
+// NEO-287 — the operator pause switch
+// ===========================================================================
+
+describe("fetchSportLotsSelectorOptions / fetchSportLotsChecklist — paused", () => {
+  afterEach(() => {
+    delete process.env.NEONBINDER_PAUSED_PLATFORMS;
+  });
+
+  test("fetchSportLotsSelectorOptions refuses before the cookie is ever read", async () => {
+    process.env.NEONBINDER_PAUSED_PLATFORMS = "sportlots";
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    let fetchCalled = false;
+    vi.stubGlobal(
+      "fetch",
+      (async () => {
+        fetchCalled = true;
+        throw new Error("must not reach the marketplace while paused");
+      }) as unknown as typeof fetch,
+    );
+
+    const result = await asAdmin.action(
+      api.adapters.sportlots.fetchSportLotsSelectorOptions,
+      { level: "sport", parentFilters: {}, requestId: "req-neo287-sl-paused" },
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.options).toEqual([]);
+    expect(result.message).toBe(
+      "SportLots is on pause: nothing from SportLots was asked for or changed.",
+    );
+    expect(fetchCalled).toBe(false);
+  });
+
+  test("fetchSportLotsChecklist refuses before the cookie is ever read", async () => {
+    process.env.NEONBINDER_PAUSED_PLATFORMS = "sportlots";
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    let fetchCalled = false;
+    vi.stubGlobal(
+      "fetch",
+      (async () => {
+        fetchCalled = true;
+        throw new Error("must not reach the marketplace while paused");
+      }) as unknown as typeof fetch,
+    );
+
+    const result = await asAdmin.action(api.adapters.sportlots.fetchSportLotsChecklist, {
+      parentFilters: { sport: "Baseball", year: "2026", setName: "Topps" },
+      platformFilters: { variantType: "12345" },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.cards).toEqual([]);
+    expect(result.message).toBe(
+      "SportLots is on pause: nothing from SportLots was asked for or changed.",
+    );
+    expect(fetchCalled).toBe(false);
+  });
+
+  test("fetchSportLotsChecklist's paused record is the ONLY adapter call it emits", async () => {
+    process.env.NEONBINDER_PAUSED_PLATFORMS = "sportlots";
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    vi.stubGlobal(
+      "fetch",
+      (async () => {
+        throw new Error("must not reach the marketplace while paused");
+      }) as unknown as typeof fetch,
+    );
+    const lines: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      lines.push(args.map(String).join(" "));
+    });
+
+    await asAdmin.action(api.adapters.sportlots.fetchSportLotsChecklist, {
+      parentFilters: { sport: "Baseball", year: "2026", setName: "Topps" },
+      platformFilters: { variantType: "12345" },
+    });
+
+    const adapterCallLines = lines.filter((l) => l.includes('"adapter_sync_call"'));
+    expect(adapterCallLines).toHaveLength(1);
+    expect(adapterCallLines[0]).toContain('"error_class":"paused"');
+    expect(adapterCallLines[0]).toContain('"platform":"sportlots"');
+  });
+});
+
+describe("fetchSportLotsSelectorOptions — Decision 12: empty after retries is a failure, not an empty success", () => {
+  /**
+   * NEO-287 (Decision 12). Before this ticket, a 200 that parses to zero
+   * options at sport/year/manufacturer — a level that is ALWAYS populated on
+   * a valid session — returned `success: true, options: []`. That is the one
+   * dangerous spelling: an empty successful side enters `coveredSides`, and
+   * the store's unlink pass reads "SportLots returned nothing" as "SportLots
+   * dropped every set" and detaches every SL id under this parent. A
+   * Cloudflare/Turnstile challenge page is exactly this shape — a 200 with no
+   * `<select>` at all, and NOT SL's login.tpl stub (`isSessionExpired` is
+   * false for it), so it used to fall all the way through to the "success"
+   * path at the bottom of the handler.
+   */
+  test("zero parsed options after every retry, and NOT the login stub, is success:false with error_class empty_after_retries", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    // No <select> anywhere, and no "login.tpl"/"signin.tpl" marker — a
+    // Turnstile/attack-page shape, not SL's own session-rejection stub.
+    const CHALLENGE_HTML =
+      "<html><body><h1>Attention Required! | Cloudflare</h1></body></html>";
+    vi.stubGlobal(
+      "fetch",
+      (async () =>
+        new Response(CHALLENGE_HTML, {
+          status: 200,
+          headers: { "Content-Type": "text/html" },
+        })) as unknown as typeof fetch,
+    );
+
+    const result = await asAdmin.action(
+      api.adapters.sportlots.fetchSportLotsSelectorOptions,
+      { level: "sport", parentFilters: {}, requestId: "req-neo287-empty" },
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.options).toEqual([]);
+    // Copy review: the message must read as "SportLots misbehaved", never as
+    // "SportLots has nothing for this set" — the inverse of what happened.
+    expect(result.message).toMatch(/hiccup on their end, not an empty set/i);
+  }, 10_000);
+
+  test("the SL login stub (isSessionExpired) is unchanged: it still reports session_expired, not empty_after_retries", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const LOGIN_STUB_HTML = "<html>redirecting to login.tpl</html>";
+    vi.stubGlobal(
+      "fetch",
+      (async () =>
+        new Response(LOGIN_STUB_HTML, {
+          status: 200,
+          headers: { "Content-Type": "text/html" },
+        })) as unknown as typeof fetch,
+    );
+
+    const result = await asAdmin.action(
+      api.adapters.sportlots.fetchSportLotsSelectorOptions,
+      { level: "sport", parentFilters: {}, requestId: "req-neo287-stub" },
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.message).toBe(
+      "SportLots session expired. Re-authenticate from Profile.",
+    );
+  }, 10_000);
+
+  test("insert level with zero options still succeeds — the hardening is sport/year/manufacturer only", async () => {
+    // `insert` goes through an entirely different function (`fetchSetNames`,
+    // SL's dealsets.tpl set list) that never runs the newinven.tpl retry loop
+    // Decision 12 hardens — a set with no variants genuinely can be an empty
+    // marketplace answer there, so it must be unaffected.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    vi.stubGlobal(
+      "fetch",
+      (async () =>
+        new Response("<html><body>no selects</body></html>", {
+          status: 200,
+          headers: { "Content-Type": "text/html" },
+        })) as unknown as typeof fetch,
+    );
+
+    const result = await asAdmin.action(
+      api.adapters.sportlots.fetchSportLotsSelectorOptions,
+      {
+        level: "insert",
+        parentFilters: { sport: "Baseball", year: "2026", manufacturer: "Topps" },
+        platformFilters: { sport: "BB", year: "2026", manufacturer: "TP" },
+        requestId: "req-neo287-insert",
+      },
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.options).toEqual([]);
   });
 });

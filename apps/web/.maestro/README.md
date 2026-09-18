@@ -962,6 +962,77 @@ worker's MAIN account while `label-history-empty-state` asserts the empty state
 on the isolated `new-profile` account — two accounts, two states, neither flow
 able to disturb the other.
 
+## Operator switches (`-e PAUSED_PLATFORMS`, NEO-287)
+
+The product has one operator switch that changes what the suite can prove:
+the Convex env var `NEONBINDER_PAUSED_PLATFORMS` (comma-separated credential
+site keys, today `sportlots`) stops all contact with that marketplace — no
+sign-ins, no session checks, no selector or checklist fetches on that side —
+while every link and stored session stays put. The flows are **never skipped**
+under it; every flow that needs the paused marketplace has a paused branch
+that asserts the paused behaviour (the exact copy in
+`lib/marketplace/pause-notice.ts`), and the live coverage comes back by
+itself when the variable is unset.
+
+**How a flow knows.** Both runner scripts pass
+`-e "PAUSED_PLATFORMS=${PAUSED_PLATFORMS:-}"` on every `maestro test` — always,
+empty when unset. CI (`e2e.yml`) exports the shell variable from the GitHub
+repository variable of the same name and writes the same value onto the PR's
+Convex preview before seeding, so the flag and the deployment agree by
+construction; locally you set it by hand to match whatever deployment you
+point at (`PAUSED_PLATFORMS=sportlots npm run test:e2e:pick -- name:<flow>`).
+`flows/util/util-paused-platforms.yaml` turns the string into one boolean,
+`output.SL_PAUSED`, with a `typeof` guard so a bare `maestro test` with no
+`-e` at all reads as "not paused". A flow runs it once and branches:
+
+```yaml
+- runFlow:
+    file: ../util/util-paused-platforms.yaml
+- runFlow:
+    when: { true: "${!output.SL_PAUSED}" }   # live — the step as it was
+    commands: [...]
+- runFlow:
+    when: { true: "${output.SL_PAUSED}" }    # paused — asserts the pause
+    commands: [...]
+```
+
+**Why the flag and never the notice (R10).** `runFlow: when: { visible: … }`
+on the paused card or strip would poll the optional-lookup timeout on every
+live run — a dead ~7s wait per site, forever — while a `true:` script
+condition costs nothing. Verified against the pinned CLI (2.8.0): `output` is
+one map per run shared with every `runFlow` child (`GraalJsEngine.outputBinding`),
+and `when: { true: "<s>" }` is false iff the interpolated string is blank,
+`"false"`, `"undefined"` or `"null"` (`Orchestra.evaluateCondition`), so an
+unset `-e` variable interpolates to `undefined` and reads as false. Both
+branches end in hard asserts (R2): a runner whose flag disagrees with its
+deployment fails on the first one, by name.
+
+**What the pause changes on screen** (so you recognise it in a failure
+screenshot). The paused-specific UI exists at exactly three places: the
+Profile SportLots tab shows the amber "SportLots is on pause" card instead of
+the connected/re-auth card; `/admin/set-builder` opens for a BSC-only admin
+(a paused platform is not a required credential) with the amber "SportLots is
+on pause." strip above its heading; and the ROOT Sports column's "done"
+notice carries "SportLots is on pause: nothing from SportLots was asked for
+or changed." (stored per column, shown to every worker — never dismiss it
+from a shared util). **Below the root, on a fresh deployment, the pause is
+indistinguishable from a BSC-only tree**: a side counts as "paused" only
+where it is served AND its ids are complete, and because the Sports sync
+never asked SportLots, `Baseball` is written with no SportLots id — so every
+level beneath skips SportLots for want of ids exactly as a BSC-only-linked
+row would. Years reads "SportLots skipped: no SportLots ids on this path.";
+Manufacturers syncs to nothing with NO notice and its idle text ("No
+manufacturers available. Sync from marketplaces to populate."); the base
+picker's SportLots pane shows the ordinary "SportLots returned no base set
+for <set>"; checklist fetches take the ordinary one-marketplace path ("Kept
+all N cards from BSC. Nothing to match, no other marketplace attached.").
+Paused branches below the root therefore assert THAT state, never the paused
+sentence. Two structural consequences matter to drills: the **Manufacturers
+column is empty** on a fresh deployment (SportLots' brand list is its only
+source; see `SET-REGISTRY.md` → "While SportLots is on pause") and a
+**BSC-only Base still reads as unmapped**, so its picker re-opens on every
+visit and the read-only drills leave it with Cancel → Close.
+
 ## Flow ordering
 
 There isn't any, beyond the seed. In CI, the pre-matrix `seed` job establishes

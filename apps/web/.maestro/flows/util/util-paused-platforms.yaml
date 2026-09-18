@@ -1,0 +1,42 @@
+appId: neonbinder-web
+name: util-paused-platforms
+tags:
+  - util
+---
+# NEO-287 — decide once, per flow, whether SportLots is on pause.
+#
+# The operator switch is the Convex env var NEONBINDER_PAUSED_PLATFORMS
+# (comma-separated credential site keys, e.g. `sportlots`). CI mirrors that
+# value into Maestro as `-e PAUSED_PLATFORMS=<value or empty>` (both runner
+# scripts add the flag; e2e.yml exports the shell variable from the GitHub
+# repository variable of the same name), so the flow and the deployment agree
+# by construction. See README "Operator switches".
+#
+# This util turns the raw string into ONE boolean, `output.SL_PAUSED`, and
+# nothing else. Flows `runFlow` it once near the top and then branch with
+#
+#     - runFlow:
+#         when: { true: "${output.SL_PAUSED}" }     # paused branch
+#         commands: [...]
+#     - runFlow:
+#         when: { true: "${!output.SL_PAUSED}" }    # live branch
+#         commands: [...]
+#
+# Both branches must end in hard asserts (R2): a runner/deployment mismatch
+# (flag says paused, app is live, or the reverse) then fails loudly instead of
+# going green on nothing. Never branch on the visible notice instead — a
+# `when: visible:` guard polls the optional-lookup timeout on every live run
+# (R10 dead wait); this script condition costs nothing.
+#
+# Mechanics, verified against the pinned CLI (2.8.0) on 2026-09-17:
+#   * `output` is ONE HashMap per run (GraalJsEngine.outputBinding), shared by
+#     a flow and every `runFlow` child, so a value set here is readable in the
+#     caller after this util returns.
+#   * `when: { true: "<s>" }` is false iff the interpolated string is blank,
+#     "false", "undefined" or "null" (Orchestra.evaluateCondition); a boolean
+#     interpolates to "true"/"false", and `!output.SL_PAUSED` likewise.
+#   * `typeof` guards the manual-invocation case where no `-e PAUSED_PLATFORMS`
+#     was passed at all: an undeclared global would otherwise throw.
+#
+# Parsing mirrors convex/marketplacePause.ts: split on commas, trim, lowercase.
+- evalScript: '${output.SL_PAUSED = (typeof PAUSED_PLATFORMS === "string" ? PAUSED_PLATFORMS : "").split(",").map(function (s) { return s.trim().toLowerCase(); }).indexOf("sportlots") !== -1}'

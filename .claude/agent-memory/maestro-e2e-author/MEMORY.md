@@ -1,5 +1,6 @@
 # Maestro E2E Author — Agent Memory Index
 
+- [Operator switch branching (PAUSED_PLATFORMS)](patterns_operator_switch_branching.md) — `-e` flag → one evalScript util → `when: true:` pairs (verified 2.8.0); under a paused SportLots the Manufacturers column is EMPTY and a BSC-only Base reads as unmapped
 - [Feedback never diagnose timing first](feedback_never_diagnose_timing_first.md) — HARD RULE: never diagnose a red step as timing/flake or raise a timeout to pass it; open the failure screenshot + hierarchy dump and ask what CHANGED since the last green run
 - [Feedback never push a branch convex to shared dev](feedback_never_push_a_branch_convex_to_shared_dev.md) — Never `convex dev`/`deploy` a branch's functions onto shared dev to unblock a local E2E run — point a spare-port Vite at the PR's own Convex preview instead, and seed…
 - [Feedback never stage when told not to commit](feedback_never_stage_when_told_not_to_commit.md) — When asked to make changes but NOT commit, delete files with plain `rm`, never `git rm` — a sibling agent's concurrent commit sweeps up anything staged
