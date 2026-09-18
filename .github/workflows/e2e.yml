@@ -234,7 +234,29 @@ jobs:
           PAUSED_PLATFORMS: ${{ vars.NEONBINDER_PAUSED_PLATFORMS }}
         run: |
           set -euo pipefail
+          if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
+            echo "::error::CONVEX_PREVIEW_DEPLOY_KEY is not set. Add a Convex *preview* deploy key for the monorepo project as a repo secret."
+            exit 1
+          fi
           if [ -n "${PAUSED_PLATFORMS:-}" ]; then
+            # Validate before writing anything to the preview: a typo'd or
+            # unknown key here must fail loudly, never run the live suite
+            # against SportLots while everyone believes the pause is in
+            # effect (the exact silent-drift failure mode this whole
+            # mechanism exists to avoid).
+            IFS=',' read -ra _keys <<< "$PAUSED_PLATFORMS"
+            for _key in "${_keys[@]}"; do
+              _key="$(echo "$_key" | xargs)"  # trim whitespace
+              [ -z "$_key" ] && continue
+              _key_lower="$(echo "$_key" | tr '[:upper:]' '[:lower:]')"
+              case "$_key_lower" in
+                buysportscards|sportlots) ;;
+                *)
+                  echo "::error::vars.NEONBINDER_PAUSED_PLATFORMS contains an unknown platform key '$_key' (from '$PAUSED_PLATFORMS'). Valid keys: buysportscards, sportlots."
+                  exit 1
+                  ;;
+              esac
+            done
             npx --yes convex@1.39.1 env set NEONBINDER_PAUSED_PLATFORMS "$PAUSED_PLATFORMS" --deployment "$CONVEX_NAME"
           else
             npx --yes convex@1.39.1 env remove NEONBINDER_PAUSED_PLATFORMS --deployment "$CONVEX_NAME" \
