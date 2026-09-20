@@ -1,0 +1,266 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/admin/players&worker=${WORKER_INDEX || "0"}
+name: "Player Management — a player added by hand is enriched from LIVE Wikidata (the lane the seed no longer exercises)"
+tags:
+  - admin
+  - players
+---
+# R1 — ONE FEATURE (NEO-289): the LIVE Wikidata enrichment lane. Adding a
+# player by hand on /admin/players enqueues `enrichPlayer`
+# (`players.createByAdmin` → `wikidataPool.enqueueEnrichment`), whose lookup
+# goes out to query.wikidata.org and writes the entity's QID back onto the
+# row, and the detail header then renders it as the `Wikidata Q…` link
+# (`components/admin/PlayerManagement.tsx`, PlayerDetail header).
+#
+# WHY THIS FLOW EXISTS. NEO-289 answers the seed set's names (2024 Topps
+# Chrome, Baseball) from a committed recording on dev and PR previews
+# (`NEONBINDER_ENRICHMENT_FIXTURES=1`, `convex/adapters/enrichmentFixtures.ts`),
+# so `setup.yaml`'s wizard drain no longer proves that the live lane works —
+# a hit never touches the network. This flow is the ONE live round-trip the
+# suite keeps: a name that is deliberately NOT in the recording, looked up for
+# real. A miss in the fixture falls through to the live adapter, which is the
+# code path under test here.
+#
+# ── A REAL PERSON, ON PURPOSE ────────────────────────────────────────────────
+# Every other minted fixture in this suite is a single-token `${ATTEMPT_ID}`
+# name (README → "Minted names are single tokens"). This flow cannot mint: the
+# whole point is that Wikidata KNOWS the name. So it uses a real, stable
+# baseball Hall of Famer, and the choice is constrained on three sides:
+#   * NOT in the recording — the recording is captured from the seed's
+#     `players` rows (2024 Topps Chrome Base + Future Stars + Gold Wave), so
+#     the player must not be in that set; and `enrichmentFixtureFile.test.ts`
+#     asserts the recording excludes this name so a later re-capture cannot
+#     silently swallow the live proof.
+#   * NOT created by any other flow — `players` is a GLOBAL table and eight
+#     runners drain one queue against one preview (R7a). If another flow put
+#     a row of this name on file first, the add form's near-match panel would
+#     demote `Create player <name>` to `Open <name>` and this flow would be
+#     reaching for a control that is not there. That rules out every name on
+#     a checklist the suite COMMITS: 2024 Topps Chrome (the seed), the 2024
+#     Cubs / Orioles / Brooklyn Collection team sets and Rickwood Field (the
+#     wizard flows), Roanoke Express (hockey) — and 1996 Score Dugout
+#     Collection Artist's Proofs, whose 220 cards
+#     `inserts-1996-score-one-nb-set-two-bsc-sources.yaml` bulk-adds as new
+#     players every run. Tony Gwynn, the plan's first pick, is #A15 in that
+#     set, which is why he is NOT the name here.
+#   * Stable on Wikidata — a single `Q5` human with `P641` = baseball (Q5369),
+#     unambiguous under the adapter's `EntitySearch … LIMIT 1`.
+# "Harmon Killebrew" (Senators/Twins/Royals, retired 1975, HoF 1984) meets
+# all three. Probed 2026-09-20 with the adapter's exact SPARQL shape
+# (`findPlayerQid`, `convex/adapters/wikidata.ts`): resolves to Q1585630.
+# Nothing else in `.maestro/flows` names him (grep before renaming).
+#
+# ── R2 — HARD ASSERTS, AND WHY EACH ONE IS LOAD-BEARING ─────────────────────
+#   (a) `Create player Harmon Killebrew` is the button's own accessible name,
+#       rendered ONLY while no row of that name exists — so the tap cannot
+#       land on an "Open …" button that would merely select a prior row;
+#   (b) `Added Harmon Killebrew.` is said ONLY for an INSERTED row. An adopted
+#       row says "That player already exists — opened it." instead, and
+#       `createByAdmin` enqueues enrichment for the insert branch ONLY
+#       (creation-only contract, `wikidataPool.ts`). So this line is what
+#       ties the QID below to THIS run's lookup rather than to something an
+#       earlier run left on the row — without it the flow could go green on a
+#       stale row without a single packet reaching Wikidata (R2 false positive);
+#   (c) `Sport: Baseball` — the lookup filters on the sport's QID, so the row
+#       being under the sport that was picked is a precondition of (d), not
+#       decoration;
+#   (d) THE FEATURE: `Wikidata Q[0-9]+` appears in the detail header. That
+#       text is the `<a>` the header renders from `player.externalIds.wikidataId`
+#       (its direct text nodes — "Wikidata " + the id; the sr-only "(opens in
+#       new tab)" is a child element and does not join). Maestro reads the
+#       LIVE row through the Convex subscription, so this is the database
+#       holding the id, not a draft. The `Wikidata id` input below the header
+#       reads as its VALUE (`Q…`) and its label (`Wikidata id`), and the master
+#       row dropped its Q-glyph in NEO-235, so nothing else on screen answers
+#       to this pattern.
+# No `when:` branch and no conditional runFlow: there is no path to the end
+# that skips the live lookup (R2/R10).
+#
+# ── THIS FLOW IS FRESH-ONLY, AND A LOCAL RE-RUN NEEDS A RESET ────────────────
+# CI resets `players` before every run (`e2e-baseline.sh reset`), so in CI the
+# name is always new. Locally, `test:e2e:pick` does NOT reset, and a second run
+# against the same preview finds the row from the first: the form then shows
+# `Open Harmon Killebrew` (no `Create player …` button) and step (a) fails by
+# name. That is the correct outcome, not something to branch around — on an
+# existing row `createByAdmin` ADOPTS and never enqueues, so a "re-run lands
+# on the same row" path would pass on a QID the previous run fetched and
+# prove nothing live. Re-seed (`npm run test:e2e -- setup`, which resets)
+# before re-running locally. There is no delete-player affordance in the
+# product (R7 — nothing here deletes anything either).
+#
+# R3 — `player-management-add-and-career-history.yaml` owns the add form and
+# the career editor and never waits for enrichment (it explicitly never taps
+# "Re-enrich from Wikidata"); `admin-players-same-name-birth-year.yaml` owns
+# the adopt/fork hierarchy. Neither asserts a QID. The form steps below are
+# the same handles those flows use, cited rather than re-derived.
+#
+# R4 — the entry URL is the whole setup; no in-body login.
+#
+# R5 — every wait states its timeout. 7000 everywhere in-app, 45000 on the
+# post-launchApp heading gate, and ONE sanctioned exception at step (d): a
+# live external round-trip, recorded at the site with its arithmetic.
+#
+# R7 / R7a — writes ONE global `players` row (permanent; no delete exists),
+# under a name no other flow or product path will ever search for. No set,
+# checklist, card, team or variant is touched, so this flow owns no
+# SET-REGISTRY.md entry. "Re-enrich from Wikidata" is never tapped: the
+# creation-time enqueue IS the feature, and `force` belongs to an operator.
+#
+# R8 — every scroll that precedes a tap centres its target; the geometry
+# notes are the sibling flows' measurements (208px spacer dependency,
+# NEO-260) and are not repeated here.
+#
+# ── EXPECTED RED DURING A GENUINE WIKIDATA OUTAGE ────────────────────────────
+# The adapter maps a timeout, a 429 and any non-OK response to `null`
+# ("a miss is fall-back, not failure") and the pool never retries, so ONE
+# 5xx on either of the two SPARQL calls leaves the row un-enriched and step
+# (d) reds after its full ceiling. That is by design: this flow's job is to
+# say so when the live lane is down. Re-run per README → "Re-running a red
+# E2E (NEO-187)"; a repeat with query.wikidata.org healthy is a product bug.
+# (The probe that picked this name saw one HTTP 502 from Wikidata on its
+# first attempt, 2026-09-20 — the outage class is real, not hypothetical.)
+
+- launchApp
+
+# Wait for the COUNTER, not the heading: the heading paints while the list is
+# still loading and the filter box exists during loading, so the counter is
+# the first thing that proves the query resolved (sibling flows, same gate).
+- extendedWaitUntil:
+    visible: ".*of .* players.*"
+    timeout: 45000
+
+# ── EMPTY THE LIST, THEN PICK THE SPORT ─────────────────────────────────────
+# Precondition, not decoration: every row prints its sport beside the name, so
+# with rows on screen "Baseball" is on the page many times over and the sport
+# picker could not be identified by what it says. And the sport is chosen with
+# the add form CLOSED — maestro-web resolves a native <select>'s option index
+# against the FIRST <select> in the document, so a pick made while the form's
+# own picker is mounted would land in the list's instead. The form then opens
+# with this sport already selected.
+- tapOn: "Filter players"
+- inputText: "zzzznotaplayer"
+- assertVisible: "No players match that filter."
+- assertVisible: "0 matches"
+
+- tapOn: "All sports"
+- tapOn: "Baseball"
+# A <select> reads as its SELECTED option's text; the list is empty, so nothing
+# else on the page can be answering here.
+- assertVisible: "Baseball"
+
+# ── OPEN THE ADD FORM ───────────────────────────────────────────────────────
+# Picking a sport re-runs the filtered search and the counter renders EMPTY
+# until it answers, sliding "Add player" ~110px and back (NEO-284 forensics,
+# CI run 35122900214). The count being back on screen is the layout being
+# still; only then re-read and centre the button (R8).
+- extendedWaitUntil:
+    visible: "0 matches"
+    timeout: 7000
+- scrollUntilVisible:
+    element:
+      text: "Add player"
+    centerElement: true
+    timeout: 7000
+# Retried ONCE against its own result gate — the cross-runner moving target
+# `admin-players-same-name-birth-year.yaml` documents at this exact tap: the
+# Sport <select> is content-sized to its longest option, a live GLOBAL query,
+# so another runner deleting a sport between the hierarchy read and the click
+# shifts this button under the tap (CI run 35134145689). A broken button still
+# fails on the same heading.
+- retry:
+    maxRetries: 1
+    commands:
+      - tapOn: "Add player"
+      - extendedWaitUntil:
+          visible: "Add a player"
+          timeout: 7000
+
+- tapOn: "New player name"
+- inputText: "Harmon Killebrew"
+
+# R2(a). The button carries the name it is about to create as its accessible
+# name, and it carries it ONLY while no player of that name exists — with an
+# exact match on file the same element reads "Open Harmon Killebrew" and has
+# no aria-label at all, so a prior row fails this step by name (see the
+# fresh-only note in the header). No birth year is typed: the name alone is
+# what the lookup is keyed on.
+#
+# R8 case 1 → R5's 7000, on the sibling flows' measurement: this button parks
+# at document y≈809-841, and NEO-260's 208px spacer (src/layouts/
+# binder-layout.tsx) is what gives the page the headroom to centre it on the
+# first swipe (~2.1s per step). 7000 DEPENDS on that spacer.
+- scrollUntilVisible:
+    element:
+      id: "Create player Harmon Killebrew"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Create player Harmon Killebrew"
+
+# POSITIONING for everything after it, not an assertion. The create leaves the
+# page scrolled to where the button was; the detail column that just opened
+# renders from document y≈440 (its header — the h3 name and, once it lands,
+# the QID link — then the `Sport:` field row at y≈460-502), all above the fold
+# from there, and `extendedWaitUntil: visible` never scrolls. `Filter players`
+# is the label of the list this screen is built around and is on the page
+# whatever the create did, so a create that was genuinely REFUSED still fails
+# on the assertion below with the refusal in the screenshot. Two UP swipes,
+# landing at scroll 0 (sibling flows' measurement, post-NEO-260).
+- scrollUntilVisible:
+    element:
+      text: "Filter players"
+    direction: UP
+    centerElement: true
+    timeout: 7000
+
+# R2(b). INSERTED, not adopted — the only branch that enqueues enrichment.
+# Renders at the head of the detail column, sticky under the binder header.
+- extendedWaitUntil:
+    visible: ".*Added Harmon Killebrew.*"
+    timeout: 7000
+
+# R2(c). The row is under the sport that was picked; the lookup's `wdt:P641`
+# filter is that sport's QID.
+- assertVisible: ".*Sport: Baseball.*"
+
+# ── R2(d) — THE FEATURE: THE LIVE LOOKUP LANDS ───────────────────────────────
+#
+# ⚠️ R5 EXCEPTION, RECORDED AT THE SITE (NEO-289, 2026-09-20). This wait
+# exceeds the 7 s in-app bar under R5's named exception for "a step that
+# directly drives a live … round-trip on data that is not pre-synced": it is
+# the ONE deliberate live external round-trip this suite keeps for the
+# Wikidata lane, and by construction the name is NOT in the recording, so no
+# fixture can answer it. Nothing the product could make faster is being
+# waited on — this is Wikidata's latency plus a shared queue in front of it.
+#
+# THE CEILING: 200000, from two measured numbers and nothing else —
+#   * the lookup itself is bounded server-side at 2 × `WIKIDATA_FETCH_TIMEOUT_MS`
+#     (`convex/adapters/wikidata.ts`, 10 000 ms each: the `EntitySearch` QID
+#     probe, then the detail query) = 20 s. Career-team resolution after that
+#     is local Convex queries and the write is one mutation — not network;
+#   * lane contention: `enrichPlayer` is enqueued on the SAME 5-wide
+#     `wikidataPool` every runner's review-wizard drain uses, and the pool
+#     claims in enqueue order. The largest drain any concurrent runner can
+#     put ahead of this item is `inserts-1996-score-one-nb-set-two-bsc-sources`'s
+#     ~200 uncovered 1996 names, which that flow budgets at 180 s ("~3s/item
+#     five-wide"); the seed's own drain is fixture-backed now and no longer
+#     competes. 20 + 180 = 200 s.
+# It is under the 240 s the setup track uses (`setup.yaml`, the cold-sync
+# ceiling) — the previous largest wait in the suite — and it is a CANARY, not
+# a stopwatch: on an idle lane the id lands in seconds (scheduler hop + two
+# SPARQL calls + the subscription push). RE-MEASURE from the first green CI
+# runs and record the typical figure here; a run that needs the ceiling with
+# query.wikidata.org healthy is a product finding (lane starvation), not a
+# bigger number. What VOIDS this figure: a change to `WIKIDATA_FETCH_TIMEOUT_MS`,
+# to `WIKIDATA_MAX_PARALLELISM`, or a new flow that drains a bigger set through
+# the wizard.
+#
+# The matcher is a FULL match of the link's own text (README → pressKey
+# section: `textMatches` is `Regex.matches`), so `Wikidata Q[0-9]+` is exactly
+# the header link and cannot be satisfied by the `Wikidata id` field's label
+# or value. The specific entity is not pinned (Q1585630 at probe time) — a
+# Wikidata merge would move the id without the lane being broken, and which
+# entity the search picks is the adapter's unit-test concern.
+- extendedWaitUntil:
+    visible: "Wikidata Q[0-9]+"
+    timeout: 200000

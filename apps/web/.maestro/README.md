@@ -335,7 +335,10 @@ Public `home/*` flows enter signed out (`launchApp: { clearState: true }`);
 The only longer
 waits: a step that directly drives a live BSC/SportLots round-trip on data
 that is not pre-synced, the setup track's cold sync, and the post-`launchApp`
-heading gate (see "Launching a flow" below). A slow non-marketplace response
+heading gate (see "Launching a flow" below). The same external-round-trip
+exception covers exactly one Wikidata wait in the suite — the live-proof step
+in `admin/player-live-wikidata-enrichment.yaml` (NEO-289, see "Enrichment
+fixtures"), recorded at the site. A slow non-marketplace response
 is a product finding to raise, never a timeout to inflate.
 
 **`flows/setup.yaml` is exempt as a class, and that is not a loophole.** R5
@@ -1032,6 +1035,66 @@ column is empty** on a fresh deployment (SportLots' brand list is its only
 source; see `SET-REGISTRY.md` → "While SportLots is on pause") and a
 **BSC-only Base still reads as unmapped**, so its picker re-opens on every
 visit and the read-only drills leave it with Cancel → Close.
+
+## Enrichment fixtures (NEO-289)
+
+The entity-review wizard enriches players, teams and leagues from Wikidata
+(and ESPN) exactly as before, but on **dev and PR previews** the names the
+seed set surfaces — 2024 Topps Chrome, Baseball — are answered from a
+committed recording (`convex/adapters/__fixtures__/enrichment-lookups.json`)
+instead of a live round-trip. The switch is the Convex env var
+`NEONBINDER_ENRICHMENT_FIXTURES=1`, honoured by the lookup boundary only
+where `TESTING_RESET_SECRET` is also set; `e2e.yml` writes it onto the PR's
+preview before seeding, every run, and production has neither. A name that is
+not in the recording still goes live, so the fixture is a cache in front of
+the adapter, never a stub of it.
+
+What that changes for flows:
+
+- **`setup.yaml` no longer proves the live lane.** Its wizard drain
+  (`.*Confirm & Save.*`, 240 s) is now an upper bound over a fixture-backed
+  hit: it returns in seconds when the recording covers the seed and only pays
+  for the network on the names it does not. The 240 s stays — it is the
+  setup track's sanctioned cold-path ceiling (R5) and the miss path is still
+  live — but a seed that needs it with the recording in place is a coverage
+  gap, not a slow Wikidata. `e2e.yml` prints the coverage report
+  (`enrichmentFixtures:coverageReportFromCli`) to the job summary as a
+  warning after the seed; read it before reading anything into a slow drain.
+- **The live lane is proved by ONE flow:**
+  `flows/admin/player-live-wikidata-enrichment.yaml`. It adds a real Hall
+  of Famer by hand on `/admin/players` — a name deliberately absent from the
+  recording and from every checklist the suite commits — and waits for the
+  `Wikidata Q…` link in the detail header. It carries the suite's one
+  in-flow R5 exception above 7 s, recorded at the site with its arithmetic,
+  and it is **expected to go red during a genuine Wikidata outage**: the
+  adapter never retries, so a single 5xx on either SPARQL call leaves the row
+  un-enriched. Re-run it per "Re-running a red E2E (NEO-187)"; a repeat with
+  `query.wikidata.org` healthy is a product finding.
+- **Do not add the live-proof name to the recording.** The capture reads the
+  deployment's `players` rows, so a capture taken after the suite has run
+  would sweep it in; `convex/adapters/enrichmentFixtureFile.test.ts` refuses
+  a recording that contains it.
+
+Running the live proof locally, against a PR preview (never shared dev — the
+seed resets the target):
+
+```bash
+# once: seed the preview (resets players, so the name is new)
+APP_URL=http://localhost:3001 MAESTRO_PARALLELISM=1 npm run test:e2e -- setup
+# then
+npm run test:e2e:plan -- name:player-live-wikidata-enrichment
+APP_URL=http://localhost:3001 MAESTRO_SKIP_BOOTSTRAP=1 MAESTRO_PARALLELISM=1 \
+  npm run test:e2e:pick -- name:player-live-wikidata-enrichment
+```
+
+The flow is fresh-only by design: a `:pick` re-run against the same preview
+finds the row the first run created, the add form demotes `Create player …`
+to `Open …`, and the flow fails on that button by name. That is correct — an
+existing row is adopted, never re-enqueued, so a "re-run lands on the same
+row" path would pass on the previous run's QID and prove nothing live.
+Re-seed before re-running. The wizard flows on the Cubs / Orioles / Brooklyn
+fixtures get partial hits from the recording and stay live for the rest, so
+they are unchanged in what they prove.
 
 ## Flow ordering
 

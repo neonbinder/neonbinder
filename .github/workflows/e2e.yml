@@ -270,6 +270,40 @@ jobs:
             echo "- Convex preview \`NEONBINDER_PAUSED_PLATFORMS\` = \`${got:-<unset>}\`";
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # NEO-289: unconditionally set the enrichment-fixtures switch on THIS PR's
+      # Convex preview before seeding, for the same NEO-184 reason as the
+      # NEONBINDER_PAUSED_PLATFORMS mirror above — a branch-reused preview keeps
+      # whatever a dashboard default was last set to, so the flag must be written
+      # every run rather than assumed. The switch (`NEONBINDER_ENRICHMENT_FIXTURES`)
+      # is honoured by the lookup boundary only when `TESTING_RESET_SECRET` is also
+      # set (prod has neither, so a stray value there is inert); on a preview it
+      # makes the seed answer Wikidata/ESPN lookups for the 2024 Topps Chrome name
+      # set from the committed recording instead of a live round-trip, so the seed
+      # no longer depends on query.wikidata.org's health. Read back like the
+      # NEONBINDER_BROWSER_URL wiring in pr-pipeline.yml — a silent no-op here would
+      # otherwise pass and just seed slow/flaky instead of failing loudly.
+      - name: Set NEONBINDER_ENRICHMENT_FIXTURES on the Convex preview
+        working-directory: apps/web
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
+            echo "::error::CONVEX_PREVIEW_DEPLOY_KEY is not set. Add a Convex *preview* deploy key for the monorepo project as a repo secret."
+            exit 1
+          fi
+          npx --yes convex@1.39.1 env set NEONBINDER_ENRICHMENT_FIXTURES 1 --deployment "$CONVEX_NAME"
+          got=$(npx --yes convex@1.39.1 env get NEONBINDER_ENRICHMENT_FIXTURES --deployment "$CONVEX_NAME")
+          echo "Convex preview NEONBINDER_ENRICHMENT_FIXTURES = $got"
+          if [ "$got" != "1" ]; then
+            echo "::error::read-back mismatch: expected 1, got '$got'"; exit 1
+          fi
+          {
+            echo "### Enrichment fixtures (NEO-289)";
+            echo "- Convex preview \`NEONBINDER_ENRICHMENT_FIXTURES\` = \`${got}\`";
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Seed global baseline (scripted reset, then setup track worker 0)
         env:
           APP_URL: http://localhost:3000
@@ -313,6 +347,74 @@ jobs:
             exit 1
           fi
           npm run test:e2e -- setup
+
+      # NEO-289: report how much of the seed's name set the fixture recording
+      # actually covered, without blocking the run on it. `continue-on-error`
+      # AND tolerating a missing function are both deliberate: this can run
+      # before the Convex-side change (enrichmentFixtures.ts) has landed on
+      # this preview, and coverage drifting (a fixture set going stale) is an
+      # operator signal, not a CI failure — the seed itself already fell back
+      # to live lookups for anything uncovered, so the suite is correct either
+      # way. `ALLOW_ENRICHMENT_FIXTURE_CAPTURE=true` + the confirm string arm
+      # the action per convex/bulkLoad.ts's existing armed-internal-action
+      # shape; no `--identity` is passed, matching every other `convex run`
+      # this job makes against the preview.
+      - name: Enrichment fixture coverage
+        working-directory: apps/web
+        continue-on-error: true
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+          ALLOW_ENRICHMENT_FIXTURE_CAPTURE: "true"
+        run: |
+          set -uo pipefail
+          if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
+            echo "::warning::CONVEX_PREVIEW_DEPLOY_KEY is not set — skipping enrichment fixture coverage."
+            exit 0
+          fi
+          report=$(npx --yes convex@1.39.1 run enrichmentFixtures:coverageReportFromCli \
+            '{"sportQid":"Q5369","confirm":"CAPTURE_ENRICHMENT_FIXTURES"}' \
+            --deployment "$CONVEX_NAME" 2>&1)
+          status=$?
+          echo "$report"
+          if [ $status -ne 0 ]; then
+            echo "::warning::Enrichment fixture coverage report could not be run (function may not exist on this preview yet). See job log for details."
+            {
+              echo "### Enrichment fixture coverage (NEO-289)";
+              echo "- Could not run \`enrichmentFixtures:coverageReportFromCli\` — see job log.";
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # The report is the LAST line of output (Convex CLI may print log lines
+          # above it); parse defensively and never fail the job on a parse miss.
+          parsed=$(echo "$report" | tail -n 1 | python3 -c '
+          import json, sys
+          try:
+              d = json.load(sys.stdin)
+              covered = d.get("covered", [])
+              missing = d.get("missing", [])
+              covered_n = len(covered) if isinstance(covered, list) else covered
+              missing_joined = ",".join(missing) if isinstance(missing, list) else missing
+              print(str(covered_n) + "|" + str(missing_joined))
+          except Exception:
+              print("?|")
+          ' 2>/dev/null || echo "?|")
+          covered_n="${parsed%%|*}"
+          missing="${parsed#*|}"
+          {
+            echo "### Enrichment fixture coverage (NEO-289)";
+            echo "- covered: \`${covered_n}\`";
+            echo "- missing: \`${missing:-<none>}\`";
+            echo '<details><summary>Raw report</summary>';
+            echo;
+            echo '```json';
+            echo "$report";
+            echo '```';
+            echo '</details>';
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$missing" ]; then
+            echo "::warning::Enrichment fixture coverage gaps for sportQid Q5369: ${missing}"
+          fi
 
       - name: Enqueue flows into the work-queue
         # After the baseline exists, populate the shared queue with the runnable

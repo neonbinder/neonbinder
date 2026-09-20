@@ -936,6 +936,23 @@ tags:
       # rule (R5) and is why only the setup track carries a number this big.
       # 240s matches the cold-sync ceiling already used above. RE-MEASURE from
       # the first CI run and bring it down if the drain is quicker than this.
+      #
+      # NEO-289 — THIS LANE IS FIXTURE-BACKED ON DEV AND PR PREVIEWS, AND THE
+      # 240s IS NOW AN UPPER BOUND, NOT THE EXPECTED COST. With
+      # `NEONBINDER_ENRICHMENT_FIXTURES=1` on the preview (e2e.yml sets it
+      # before this seed runs) the lookup boundary answers every name in the
+      # committed recording (`convex/adapters/__fixtures__/enrichment-lookups.json`)
+      # without touching query.wikidata.org, so a fully-covered drain returns
+      # in seconds; only names the recording does not carry still go live and
+      # pay the ~3s/item five-wide cost above. The ceiling is unchanged on
+      # purpose — the miss path is still a live round-trip and this is the
+      # setup track's sanctioned cold-path exception (R5) — but a seed that
+      # needs anything like 240s WITH the recording in place is a coverage
+      # gap (read the "Enrichment fixture coverage" warning e2e.yml prints to
+      # the job summary after the seed), not a slow Wikidata. This wait
+      # therefore no longer proves the live Wikidata lane works; that proof
+      # is `flows/admin/player-live-wikidata-enrichment.yaml`, the one flow
+      # that looks up a name deliberately absent from the recording.
       - extendedWaitUntil:
           visible:
             text: ".*Confirm & Save.*"

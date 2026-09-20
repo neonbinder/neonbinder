@@ -4,7 +4,7 @@ import { internalAction } from "../_generated/server";
 import { internal } from "../_generated/api";
 import { v } from "convex/values";
 import type { Id } from "../_generated/dataModel";
-import { fetchEspnTeamInfo } from "./espn";
+import { fetchEspnTeamInfo, fetchEspnTeamList } from "./espn";
 // NEO-212: the SINGLE career-timeline ordering, shared with
 // commitCardChecklistPrelude in convex/selectorOptions.ts. Both paths write
 // `players.teamYears`; if they sorted differently the same player would read
@@ -17,6 +17,19 @@ import { isWikidataQid } from "../../lib/players/wikidata-id";
 // NEO-236: every outward-facing lookup (ESPN's displayName, Wikidata's label)
 // is keyed on the COMPOSED full name, never on the stored nickname.
 import { teamFullName } from "../../lib/teams/team-name";
+// NEO-289: recorded lookup answers for dev/preview. The three exported lookup
+// functions consult `readFixture` first and fall through to their `*Live`
+// bodies on a miss; production is inert (see that module's header).
+import {
+  captureItemValidator,
+  captureSkipValidator,
+  captureSportValidator,
+  fixtureEntryValidator,
+  fixtureKey,
+  readFixture,
+  toFixtureEntry,
+  type EnrichmentFixtureEntry,
+} from "./enrichmentFixtures";
 
 /**
  * Wikidata SPARQL adapter — enriches players (HoF, career teams) and
@@ -152,7 +165,7 @@ function sparqlStringLiteral(raw: string): string {
  * 5-parallel-per-IP ceiling so it does not throttle us, and the timeout
  * guarantees termination even if it does. This function does not retry.
  */
-async function runSparql(query: string): Promise<SparqlResults | null> {
+async function runSparql(query: string, trace?: LookupTrace): Promise<SparqlResults | null> {
   const url = `${SPARQL_ENDPOINT}?query=${encodeURIComponent(query)}&format=json`;
   try {
     const response = await fetch(url, {
@@ -167,13 +180,33 @@ async function runSparql(query: string): Promise<SparqlResults | null> {
     });
     if (!response.ok) {
       console.warn(`[wikidata] SPARQL ${response.status}`);
+      if (trace) trace.transportFailed = true;
       return null;
     }
     return (await response.json()) as SparqlResults;
   } catch (error) {
     console.warn(`[wikidata] SPARQL fetch failed:`, error);
+    if (trace) trace.transportFailed = true;
     return null;
   }
+}
+
+/**
+ * NEO-289 — a marker `runSparql` sets when a round trip did not complete:
+ * a non-OK status, a timeout, or a thrown fetch. Every caller maps those to
+ * `null`, which is the right answer for the wizard ("no usable data right
+ * now") and the wrong one for a RECORDING: a fixture capture that wrote a
+ * transport failure down as a no-match would freeze an outage into the repo.
+ * The capture threads one of these through each lookup and drops any entry
+ * whose trace tripped. Optional everywhere; no live caller passes one, and
+ * nothing about a lookup's behaviour changes when it is present.
+ */
+export interface LookupTrace {
+  transportFailed: boolean;
+}
+
+export function newLookupTrace(): LookupTrace {
+  return { transportFailed: false };
 }
 
 /**
@@ -550,6 +583,7 @@ export function membershipIsOutsidePlayerSport(
 async function findPlayerQid(
   name: string,
   sportQid: string | undefined,
+  trace?: LookupTrace,
 ): Promise<string | null> {
   // NEO-96: the QID now arrives from the sport row's `sportConfig.wikidata`
   // instead of being looked up in a display-name-keyed map here. That map's
@@ -582,7 +616,7 @@ async function findPlayerQid(
     LIMIT 1
   `;
 
-  const result = await runSparql(query);
+  const result = await runSparql(query, trace);
   const binding = result?.results.bindings[0];
   // `?? null`: an IRI whose final segment is not a QID is no match at all.
   return binding ? (qidFromIri(binding.player.value) ?? null) : null;
@@ -592,6 +626,7 @@ async function findTeamQid(
   /** The COMPOSED full name — Wikidata labels franchises "San Diego Padres". */
   name: string,
   sportQid: string | undefined,
+  trace?: LookupTrace,
 ): Promise<string | null> {
   // See the NEO-96 note in findPlayerQid above, and the NEO-240 one: the same
   // interpolation, the same validation, and the same refusal on a non-QID —
@@ -619,7 +654,7 @@ async function findTeamQid(
     LIMIT 1
   `;
 
-  const result = await runSparql(query);
+  const result = await runSparql(query, trace);
   const binding = result?.results.bindings[0];
   // See the note in findPlayerQid — a non-QID segment is treated as no match.
   return binding ? (qidFromIri(binding.team.value) ?? null) : null;
@@ -701,6 +736,7 @@ const SPORTS_LEAGUE_QID = "Q623109";
 async function findLeagueQid(
   name: string,
   sportQid: string | undefined,
+  trace?: LookupTrace,
 ): Promise<string | null> {
   const safeName = sparqlStringLiteral(name);
   // NEO-240 security review — see `safeSportQid`. This is the one of the three
@@ -727,7 +763,7 @@ async function findLeagueQid(
     LIMIT 1
   `;
 
-  const result = await runSparql(query);
+  const result = await runSparql(query, trace);
   const binding = result?.results.bindings[0];
   // See the note in findPlayerQid — a non-QID segment is treated as no match.
   return binding ? (qidFromIri(binding.league.value) ?? null) : null;
@@ -847,7 +883,27 @@ export async function lookupPlayerEnrichment(
   name: string,
   sport: SportEnrichmentContext,
 ): Promise<PlayerLookupResult | null> {
-  const qid = await findPlayerQid(name, sport.wikidata?.sportQid);
+  // NEO-289: the recording first. A hit — including a recorded no-match —
+  // makes no request at all; a miss (or fixtures off, which is every
+  // production call) is the live path below, unchanged.
+  const sportQid = sport.wikidata?.sportQid;
+  if (sportQid) {
+    const recorded = readFixture("player", sportQid, name);
+    if (recorded.hit) return recorded.result;
+  }
+  return lookupPlayerEnrichmentLive(name, sport);
+}
+
+/**
+ * The live body of `lookupPlayerEnrichment`. Exported for the fixture
+ * capture, which must bypass the recording it is producing.
+ */
+export async function lookupPlayerEnrichmentLive(
+  name: string,
+  sport: SportEnrichmentContext,
+  trace?: LookupTrace,
+): Promise<PlayerLookupResult | null> {
+  const qid = await findPlayerQid(name, sport.wikidata?.sportQid, trace);
   if (!qid) {
     // NEO-208 security condition: structured, not concatenated. `name` is
     // operator-typed free text (the quick-add form, the review wizard, the
@@ -923,7 +979,7 @@ ${hallOfFameSparqlBlocks(qid, hofQid)}
       ${LABEL_SERVICE}
     }
   `;
-  const result = await runSparql(detailQuery);
+  const result = await runSparql(detailQuery, trace);
   if (!result) return null;
 
   const careerTeams: Array<{
@@ -1422,12 +1478,32 @@ export async function lookupTeamEnrichment(
    */
   knownQid?: string,
 ): Promise<TeamLookupResult | null> {
+  // NEO-289: the recording first — see `lookupPlayerEnrichment`. A hit skips
+  // ESPN as well as Wikidata; every request this lookup makes sits below.
+  const sportQid = sport.wikidata?.sportQid;
+  if (sportQid) {
+    const recorded = readFixture("team", sportQid, name, knownQid);
+    if (recorded.hit) return recorded.result;
+  }
+  return lookupTeamEnrichmentLive(name, sport, knownQid);
+}
+
+/**
+ * The live body of `lookupTeamEnrichment`. Exported for the fixture capture,
+ * which must bypass the recording it is producing.
+ */
+export async function lookupTeamEnrichmentLive(
+  name: string,
+  sport: SportEnrichmentContext,
+  knownQid?: string,
+  trace?: LookupTrace,
+): Promise<TeamLookupResult | null> {
   const espnInfo = await fetchEspnTeamInfo(sport.espn, name);
 
   const qid =
     knownQid && isWikidataQid(knownQid)
       ? knownQid
-      : await findTeamQid(name, sport.wikidata?.sportQid);
+      : await findTeamQid(name, sport.wikidata?.sportQid, trace);
   if (!qid) {
     if (!espnInfo) {
       // NEO-208: structured for the same reason as the player no-match log
@@ -1476,7 +1552,7 @@ export async function lookupTeamEnrichment(
     }
     LIMIT 1
   `;
-  const result = await runSparql(detailQuery);
+  const result = await runSparql(detailQuery, trace);
   const row = result?.results.bindings[0];
 
   const fromYear = yearFromBinding(row?.inception);
@@ -1785,10 +1861,29 @@ export async function lookupLeagueEnrichment(
    */
   knownQid?: string,
 ): Promise<LeagueLookupResult | null> {
+  // NEO-289: the recording first — see `lookupPlayerEnrichment`. A league
+  // with no sport QID (a custom sport) has no fixture key and always goes live.
+  if (sportQid) {
+    const recorded = readFixture("league", sportQid, name, knownQid);
+    if (recorded.hit) return recorded.result;
+  }
+  return lookupLeagueEnrichmentLive(name, sportQid, knownQid);
+}
+
+/**
+ * The live body of `lookupLeagueEnrichment`. Exported for the fixture
+ * capture, which must bypass the recording it is producing.
+ */
+export async function lookupLeagueEnrichmentLive(
+  name: string,
+  sportQid?: string,
+  knownQid?: string,
+  trace?: LookupTrace,
+): Promise<LeagueLookupResult | null> {
   const qid =
     knownQid && isWikidataQid(knownQid)
       ? knownQid
-      : await findLeagueQid(name, sportQid);
+      : await findLeagueQid(name, sportQid, trace);
   if (!qid) {
     // Structured for the same reason as the player/team no-match lines
     // (NEO-208): a league name is operator input and must not be able to shape
@@ -1826,7 +1921,7 @@ export async function lookupLeagueEnrichment(
     ORDER BY ?inception ?countryLabel
     LIMIT 1
   `;
-  const result = await runSparql(detailQuery);
+  const result = await runSparql(detailQuery, trace);
   const row = result?.results.bindings[0];
 
   // Same year parser as the team lookup, and for the same reason: Wikidata
@@ -1952,3 +2047,120 @@ export const enrichLeague = internalAction({
     return null;
   },
 });
+
+// ---------------------------------------------------------------------------
+// NEO-289 — the live lookups, run for the fixture capture
+// ---------------------------------------------------------------------------
+
+/**
+ * How many capture lookups run at once. The same number as
+ * `WIKIDATA_MAX_PARALLELISM` (convex/wikidataPool.ts) and for the same reason
+ * — Wikidata's documented 5-parallel-per-IP ceiling — but a local constant,
+ * because importing the pool module drags the workpool component into this
+ * node bundle for one integer. A capture runs on a deployment whose review
+ * lanes have already drained (it records what the seed just confirmed), so
+ * this is the whole of the deployment's Wikidata traffic while it runs.
+ */
+const CAPTURE_PARALLELISM = 5;
+
+
+/**
+ * Run the LIVE lookups for a batch of names and hand back fixture entries.
+ *
+ * Internal, and the node half of `captureFromCli` (convex/enrichmentFixtures.ts,
+ * which is where the arming check lives): that module runs in the V8 runtime
+ * so it can define the queries that list the deployment's names, and this
+ * file is `"use node"`, so the only way for it to reach the live bodies is an
+ * action call. This action writes nothing and bypasses the recording by
+ * construction — it calls the `*Live` bodies, never the wrappers.
+ *
+ * Two transport guards, because a capture must never freeze an outage into
+ * the repo as a no-match:
+ * - a `LookupTrace` per lookup; an entry whose trace tripped is reported under
+ *   `skippedTransport` instead of recorded;
+ * - ESPN's per-league team list is fetched ONCE up front when the batch holds
+ *   a team. `fetchEspnTeamInfo` cannot tell "ESPN is down" from "ESPN has no
+ *   such team" (both are `null`), so if the list itself is unavailable every
+ *   team in the batch is skipped rather than recorded without its colours.
+ */
+export const runCaptureLookups = internalAction({
+  args: {
+    sport: captureSportValidator,
+    sportQid: v.string(),
+    items: v.array(captureItemValidator),
+  },
+  returns: v.object({
+    entries: v.array(v.object({ key: v.string(), entry: fixtureEntryValidator })),
+    skippedTransport: v.array(captureSkipValidator),
+  }),
+  handler: async (_ctx, args) => {
+    const entries: Array<{ key: string; entry: EnrichmentFixtureEntry }> = [];
+    const skippedTransport: Array<{
+      kind: "player" | "team" | "league";
+      name: string;
+      reason: string;
+    }> = [];
+
+    let espnUnavailable = false;
+    if (args.sport.espn && args.items.some((item) => item.kind === "team")) {
+      const list = await fetchEspnTeamList(args.sport.espn);
+      espnUnavailable = !list || list.length === 0;
+    }
+
+    let next = 0;
+    const worker = async (): Promise<void> => {
+      while (next < args.items.length) {
+        const item = args.items[next++];
+        if (item.kind === "team" && espnUnavailable) {
+          skippedTransport.push({ kind: item.kind, name: item.name, reason: "espn_unavailable" });
+          continue;
+        }
+        const trace = newLookupTrace();
+        const startedAt = Date.now();
+        const entry = await captureOne(item, args.sport, trace);
+        console.log(
+          JSON.stringify({
+            msg: "enrichment_fixture_capture",
+            kind: item.kind,
+            name: item.name,
+            outcome: trace.transportFailed ? "transport" : entry.result ? "match" : "no_match",
+            ms: Date.now() - startedAt,
+          }),
+        );
+        if (trace.transportFailed) {
+          skippedTransport.push({ kind: item.kind, name: item.name, reason: "wikidata_transport" });
+          continue;
+        }
+        entries.push({ key: fixtureKey(item.kind, args.sportQid, item.name), entry });
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(CAPTURE_PARALLELISM, args.items.length) }, worker),
+    );
+
+    return { entries, skippedTransport };
+  },
+});
+
+async function captureOne(
+  item: { kind: "player" | "team" | "league"; name: string; knownQid?: string },
+  sport: SportEnrichmentContext,
+  trace: LookupTrace,
+): Promise<EnrichmentFixtureEntry> {
+  switch (item.kind) {
+    case "player":
+      return toFixtureEntry("player", item.name, await lookupPlayerEnrichmentLive(item.name, sport, trace));
+    case "team":
+      return toFixtureEntry(
+        "team",
+        item.name,
+        await lookupTeamEnrichmentLive(item.name, sport, item.knownQid, trace),
+      );
+    case "league":
+      return toFixtureEntry(
+        "league",
+        item.name,
+        await lookupLeagueEnrichmentLive(item.name, sport.wikidata?.sportQid, item.knownQid, trace),
+      );
+  }
+}
