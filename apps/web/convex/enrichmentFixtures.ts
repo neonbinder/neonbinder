@@ -9,15 +9,26 @@
  *
  * ## Which names
  *
- * After the E2E seed has run, the deployment's `players`, `teams` and
- * `leagues` rows for the sport ARE the names the seed confirmed through the
- * review wizard — there is no separate list to keep, and no new table. A
- * team's name is its COMPOSED full name (`teamFullName`), because that is
- * what the wizard hands `lookupTeamEnrichment` and what ESPN's `displayName`
- * matches. Teams and leagues pass their stored `externalIds.wikidataId` as
- * `knownQid`, exactly as a review row staged off a Wikidata statement does,
- * so the recording reads the record the row is linked to rather than
- * searching for its label.
+ * Two sources, unioned and deduped by `fixtureKey`; no new table.
+ *
+ * (a) The deployment's `players`, `teams` and `leagues` rows for the sport —
+ *     after the seed has committed, these ARE the names the wizard confirmed.
+ *     A team's name is its COMPOSED full name (`teamFullName`), because that
+ *     is what the wizard hands `lookupTeamEnrichment` and what ESPN's
+ *     `displayName` matches. Teams and leagues pass their stored
+ *     `externalIds.wikidataId` as `knownQid`.
+ * (b) The `entityReviewQueue` rows for the sport. The seed's names exist as
+ *     queue rows the moment the wizard opens, whether or not it ever reaches
+ *     "Confirm & Save" — and on a deployment where the seed stalled at
+ *     exactly the lookups this recording is meant to replace, (a) is empty
+ *     while (b) holds every name that stalled it. For a queue row `knownQid`
+ *     is `source.wikidataId` when present (a career team or league staged off
+ *     a Wikidata statement — the id the live path would read), else
+ *     `enrichment.wikidataId` when the lookup already answered.
+ *
+ * In both cases the id is the same linkage the wizard's own lookup uses, so
+ * the recording reads the record the row is linked to rather than searching
+ * for its label.
  *
  * ## Armed, internal, and CLI-only
  *
@@ -70,6 +81,7 @@ import {
   captureSkipValidator,
   captureSportValidator,
   fixtureFileValidator,
+  fixtureKey,
   hasFixtureEntry,
   type EnrichmentFixtureEntry,
 } from "./adapters/enrichmentFixtures";
@@ -162,14 +174,23 @@ type CaptureItem = Infer<typeof captureItemValidator>;
 const KIND_ORDER: Record<CaptureItem["kind"], number> = { player: 0, team: 1, league: 2 };
 
 /**
- * Every name the deployment holds for the sport, as the lookups would be
- * asked for it, in a stable order (kind, then name by code point) so
- * `offset`/`limit` paging is repeatable across calls.
+ * Every name the deployment holds for the sport — entity rows AND review-queue
+ * rows (see the header) — as the lookups would be asked for it, deduped by
+ * `fixtureKey` (an entity row wins over a queue row for the same key), in a
+ * stable order (kind, then name by code point) so `offset`/`limit` paging is
+ * repeatable across calls.
+ *
+ * `entityReviewQueue` has no `sportId` index (its reads are per set and per
+ * batch), so it is a bounded whole-table scan filtered in memory, under the
+ * same 5 000-row refusal as the entity tables. The rows are per-batch
+ * throwaways swept after commit, so the table is small on any deployment a
+ * capture should run against.
  */
 export const listCaptureNames = internalQuery({
   args: { sportId: v.id("selectorOptions") },
   returns: v.object({ items: v.array(captureItemValidator), truncated: v.boolean() }),
   handler: async (ctx, args): Promise<{ items: CaptureItem[]; truncated: boolean }> => {
+    const queueRows = await ctx.db.query("entityReviewQueue").take(MAX_ROWS_PER_TABLE + 1);
     const players = await ctx.db
       .query("players")
       .withIndex("by_sport_id", (q) => q.eq("sportId", args.sportId))
@@ -182,12 +203,14 @@ export const listCaptureNames = internalQuery({
       .query("leagues")
       .withIndex("by_sport_id", (q) => q.eq("sportId", args.sportId))
       .take(MAX_ROWS_PER_TABLE + 1);
-    const truncated = [players, teams, leagues].some((rows) => rows.length > MAX_ROWS_PER_TABLE);
+    const truncated = [players, teams, leagues, queueRows].some(
+      (rows) => rows.length > MAX_ROWS_PER_TABLE,
+    );
 
     const knownQidOf = (id: string | undefined): { knownQid: string } | Record<never, never> =>
       id && isWikidataQid(id) ? { knownQid: id } : {};
 
-    const items: CaptureItem[] = [
+    const fromEntities: CaptureItem[] = [
       ...players.slice(0, MAX_ROWS_PER_TABLE).map((row): CaptureItem => ({ kind: "player", name: row.name })),
       ...teams.slice(0, MAX_ROWS_PER_TABLE).map(
         (row): CaptureItem => ({
@@ -204,6 +227,28 @@ export const listCaptureNames = internalQuery({
         }),
       ),
     ];
+    const fromQueue: CaptureItem[] = queueRows
+      .slice(0, MAX_ROWS_PER_TABLE)
+      .filter((row) => row.sportId === args.sportId)
+      .map(
+        (row): CaptureItem => ({
+          kind: row.kind,
+          name: row.name,
+          // The staged id first: it is the record the live path READS rather
+          // than a search result, so it is the stronger linkage.
+          ...knownQidOf(row.source?.wikidataId ?? row.enrichment?.wikidataId),
+        }),
+      );
+
+    // Union, deduped by fixture key. Entity rows are listed first and win.
+    // Every item here is the same sport, so the key's sport segment is a
+    // constant and an empty one dedupes exactly as the real QID would.
+    const byKey = new Map<string, CaptureItem>();
+    for (const item of [...fromEntities, ...fromQueue]) {
+      const key = fixtureKey(item.kind, "", item.name);
+      if (!byKey.has(key)) byKey.set(key, item);
+    }
+    const items = [...byKey.values()];
     items.sort((a, b) => {
       const byKind = KIND_ORDER[a.kind] - KIND_ORDER[b.kind];
       if (byKind !== 0) return byKind;

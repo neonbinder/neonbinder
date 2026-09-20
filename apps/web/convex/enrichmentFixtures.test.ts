@@ -606,6 +606,109 @@ describe("captureFromCli / coverageReportFromCli — the gate", () => {
   });
 });
 
+async function seedQueueRow(
+  t: T,
+  sportId: Id<"selectorOptions">,
+  row: {
+    kind: "player" | "team" | "league";
+    name: string;
+    sourceQid?: string;
+    enrichmentQid?: string;
+  },
+) {
+  return t.run(async (ctx) => {
+    const base = {
+      selectorOptionId: sportId,
+      batchId: "batch_capture",
+      createdByUserId: "user_capture",
+      sportId,
+      status: "pending" as const,
+    };
+    // A staged row needs a real parent: `source.playerRowId` is a validated id.
+    const parentId = row.sourceQid
+      ? await ctx.db.insert("entityReviewQueue", { ...base, kind: "player", name: `parent of ${row.name}` })
+      : undefined;
+    return ctx.db.insert("entityReviewQueue", {
+      ...base,
+      kind: row.kind,
+      name: row.name,
+      ...(parentId
+        ? { source: { kind: "careerTeamOf" as const, playerRowId: parentId, wikidataId: row.sourceQid } }
+        : {}),
+      ...(row.enrichmentQid ? { enrichment: { wikidataId: row.enrichmentQid } } : {}),
+    });
+  });
+}
+
+describe("listCaptureNames — entity rows ∪ review-queue rows", () => {
+  test("a queue-only deployment (the seed never reached Confirm & Save) still yields its names", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await seedQueueRow(t, sportId, { kind: "player", name: "Tony Gwynn" });
+    await seedQueueRow(t, sportId, { kind: "team", name: "San Diego Padres", enrichmentQid: "Q2000" });
+    await seedQueueRow(t, sportId, { kind: "league", name: "Major League Baseball", sourceQid: "Q3000" });
+    // Another sport's queue row is not this sport's name.
+    const other = await seedSport(t, "Football", "Q41323");
+    await seedQueueRow(t, other, { kind: "player", name: "Jerry Rice" });
+
+    const listed = await t.query(internal.enrichmentFixtures.listCaptureNames, { sportId });
+    expect(listed.truncated).toBe(false);
+    expect(listed.items).toEqual([
+      { kind: "player", name: "Tony Gwynn" },
+      { kind: "player", name: "parent of Major League Baseball" },
+      { kind: "team", name: "San Diego Padres", knownQid: "Q2000" },
+      { kind: "league", name: "Major League Baseball", knownQid: "Q3000" },
+    ]);
+  });
+
+  test("the union dedupes a name present in both, and the entity row wins", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await seedNames(t, sportId);
+    // Same team as the entity row (composed name, different case/spacing),
+    // carrying a DIFFERENT id on the queue side.
+    await seedQueueRow(t, sportId, { kind: "team", name: "san  diego padres", enrichmentQid: "Q9999" });
+    await seedQueueRow(t, sportId, { kind: "player", name: "Tony Gwynn" });
+    await seedQueueRow(t, sportId, { kind: "player", name: "Ken Caminiti" });
+
+    const listed = await t.query(internal.enrichmentFixtures.listCaptureNames, { sportId });
+    expect(listed.items).toEqual([
+      { kind: "player", name: "Ken Caminiti" },
+      { kind: "player", name: "Tony Gwynn" },
+      { kind: "team", name: "San Diego Padres", knownQid: "Q2000" },
+      { kind: "league", name: "Major League Baseball", knownQid: "Q3000" },
+    ]);
+  });
+
+  test("knownQid precedence on a queue row: source.wikidataId over enrichment.wikidataId; a non-QID is dropped", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await seedQueueRow(t, sportId, { kind: "team", name: "Both Ids", sourceQid: "Q1", enrichmentQid: "Q2" });
+    await seedQueueRow(t, sportId, { kind: "team", name: "Enrichment Only", enrichmentQid: "Q3" });
+    await seedQueueRow(t, sportId, { kind: "team", name: "Bad Id", sourceQid: "not-a-qid" });
+
+    const listed = await t.query(internal.enrichmentFixtures.listCaptureNames, { sportId });
+    expect(listed.items.filter((i) => i.kind === "team")).toEqual([
+      { kind: "team", name: "Bad Id" },
+      { kind: "team", name: "Both Ids", knownQid: "Q1" },
+      { kind: "team", name: "Enrichment Only", knownQid: "Q3" },
+    ]);
+  });
+
+  test("captureFromCli records queue-only names", async () => {
+    armed();
+    countingFetch(happyRoute);
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await seedQueueRow(t, sportId, { kind: "player", name: "Tony Gwynn" });
+
+    const out = await t.action(internal.enrichmentFixtures.captureFromCli, { confirm: CONFIRM, sportQid: SPORT_QID });
+    expect(out.total).toBe(1);
+    expect(Object.keys(out.fixture.entries)).toEqual([fixtureKey("player", SPORT_QID, "Tony Gwynn")]);
+    expect(out.fixture.entries[fixtureKey("player", SPORT_QID, "Tony Gwynn")]?.result?.wikidataId).toBe("Q1000");
+  });
+});
+
 describe("captureFromCli", () => {
   test("records every name for the sport under its fixture key, bypassing the switch", async () => {
     armed();
