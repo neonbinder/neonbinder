@@ -339,7 +339,7 @@
         "wikidataId": "Q23899679",
         "careerTeams": [
           {
-            "name": "Ciego de Ávila",
+            "name": "Ciego de \u00c1vila",
             "fromYear": 2011,
             "toYear": 2015,
             "wikidataId": "Q3528357"
@@ -374,7 +374,7 @@
         "isHallOfFame": false,
         "description": "Cuban professional baseball outfielder",
         "birthYear": 1993,
-        "enwikiTitle": "Adolis García"
+        "enwikiTitle": "Adolis Garc\u00eda"
       }
     },
     "player|Q5369|aj smith-shawver": {
@@ -818,7 +818,7 @@
         "isHallOfFame": false,
         "description": "Venezuelan baseball player",
         "birthYear": 1961,
-        "enwikiTitle": "Andrés Galarraga"
+        "enwikiTitle": "Andr\u00e9s Galarraga"
       }
     },
     "player|Q5369|andres gimenez": {
@@ -848,7 +848,7 @@
         "isHallOfFame": false,
         "description": "Venezuelan baseball player (born 1998)",
         "birthYear": 1998,
-        "enwikiTitle": "Andrés Giménez"
+        "enwikiTitle": "Andr\u00e9s Gim\u00e9nez"
       }
     },
     "player|Q5369|andrew abbott": {
@@ -1325,7 +1325,7 @@
           "Boston Braves"
         ],
         "isHallOfFame": true,
-        "description": "American baseball player (1895–1948)",
+        "description": "American baseball player (1895\u20131948)",
         "birthYear": 1895,
         "enwikiTitle": "Babe Ruth"
       }
@@ -2273,7 +2273,7 @@
         "isHallOfFame": false,
         "description": "Dominican Republic baseball pitcher (born 1971)",
         "birthYear": 1971,
-        "enwikiTitle": "Carlos Pérez (pitcher)"
+        "enwikiTitle": "Carlos P\u00e9rez (pitcher)"
       }
     },
     "player|Q5369|carmen mlodzinski": {
@@ -2344,7 +2344,7 @@
           }
         ],
         "isHallOfFame": false,
-        "description": "Curaçaoan baseball player (born 2000)",
+        "description": "Cura\u00e7aoan baseball player (born 2000)",
         "birthYear": 2000,
         "enwikiTitle": "Ceddanne Rafaela"
       }
@@ -3545,7 +3545,7 @@
         "isHallOfFame": false,
         "description": "baseball player",
         "birthYear": 1955,
-        "enwikiTitle": "Dennis Martínez"
+        "enwikiTitle": "Dennis Mart\u00ednez"
       }
     },
     "player|Q5369|derek bell": {
@@ -3852,7 +3852,7 @@
         "isHallOfFame": true,
         "description": "American Hall of Fame baseball player",
         "birthYear": 1963,
-        "enwikiTitle": "Edgar Martínez"
+        "enwikiTitle": "Edgar Mart\u00ednez"
       }
     },
     "player|Q5369|edgardo alfonzo": {
@@ -3949,7 +3949,7 @@
         "isHallOfFame": false,
         "description": "Puerto Rican baseball player (1952-2009)",
         "birthYear": 1952,
-        "enwikiTitle": "Eduardo Rodríguez (right-handed pitcher)"
+        "enwikiTitle": "Eduardo Rodr\u00edguez (right-handed pitcher)"
       }
     },
     "player|Q5369|edwin diaz": {
@@ -3964,7 +3964,7 @@
         "isHallOfFame": false,
         "description": "Puerto Rican baseball second baseman",
         "birthYear": 1975,
-        "enwikiTitle": "Edwin Díaz (second baseman)"
+        "enwikiTitle": "Edwin D\u00edaz (second baseman)"
       }
     },
     "player|Q5369|elias diaz": {
@@ -3988,7 +3988,7 @@
         "isHallOfFame": false,
         "description": "Venezuelan baseball player",
         "birthYear": 1990,
-        "enwikiTitle": "Elías Díaz"
+        "enwikiTitle": "El\u00edas D\u00edaz"
       }
     },
     "player|Q5369|elly de la cruz": {
@@ -4021,7 +4021,7 @@
         "isHallOfFame": false,
         "description": "Dominican professional baseball outfielder",
         "birthYear": 1996,
-        "enwikiTitle": "Eloy Jiménez"
+        "enwikiTitle": "Eloy Jim\u00e9nez"
       }
     },
     "player|Q5369|emerson hancock": {
@@ -4084,7 +4084,7 @@
         "isHallOfFame": false,
         "description": "Dominican baseball player",
         "birthYear": 2000,
-        "enwikiTitle": "Endy Rodríguez"
+        "enwikiTitle": "Endy Rodr\u00edguez"
       }
     },
     "player|Q5369|eric karros": {
@@ -4185,7 +4185,7 @@
         "isHallOfFame": false,
         "description": "baseball player (born 1990)",
         "birthYear": 1990,
-        "enwikiTitle": "Eury Pérez (outfielder)"
+        "enwikiTitle": "Eury P\u00e9rez (outfielder)"
       }
     },
     "player|Q5369|evan carter": {
@@ -4227,7 +4227,7 @@
         "isHallOfFame": false,
         "description": "Dominican baseball player",
         "birthYear": 1999,
-        "enwikiTitle": "Ezequiel Durán"
+        "enwikiTitle": "Ezequiel Dur\u00e1n"
       }
     },
     "player|Q5369|ezequiel tovar": {
@@ -4257,7 +4257,7 @@
         "isHallOfFame": false,
         "description": "Dominican baseball player",
         "birthYear": 1995,
-        "enwikiTitle": "Félix Bautista (baseball)"
+        "enwikiTitle": "F\u00e9lix Bautista (baseball)"
       }
     },
     "player|Q5369|fernando tatis jr.": {
@@ -4305,7 +4305,7 @@
         "isHallOfFame": false,
         "description": "Dominican baseball player (born 1999)",
         "birthYear": 1999,
-        "enwikiTitle": "Fernando Tatís Jr."
+        "enwikiTitle": "Fernando Tat\u00eds Jr."
       }
     },
     "player|Q5369|forrest wall": {
@@ -4356,7 +4356,7 @@
         "isHallOfFame": false,
         "description": "Venezuelan professional baseball player",
         "birthYear": 2001,
-        "enwikiTitle": "Francisco Álvarez (baseball)"
+        "enwikiTitle": "Francisco \u00c1lvarez (baseball)"
       }
     },
     "player|Q5369|francisco lindor": {
@@ -4576,7 +4576,7 @@
           }
         ],
         "isHallOfFame": false,
-        "description": "American baseball player (1972–2026)",
+        "description": "American baseball player (1972\u20132026)",
         "birthYear": 1972,
         "enwikiTitle": "Garret Anderson"
       }
@@ -4630,7 +4630,7 @@
         "isHallOfFame": false,
         "description": "Dominican baseball player (born 1992)",
         "birthYear": 1992,
-        "enwikiTitle": "Gary Sánchez"
+        "enwikiTitle": "Gary S\u00e1nchez"
       }
     },
     "player|Q5369|gary sheffield": {
@@ -5117,21 +5117,6 @@
         "enwikiTitle": "Hal Morris"
       }
     },
-    "player|Q5369|harmon killebrew": {
-      "kind": "player",
-      "name": "Harmon Killebrew",
-      "result": {
-        "wikidataId": "Q1585630",
-        "careerTeams": [],
-        "undatedCareerTeams": [
-          "Minnesota Twins"
-        ],
-        "isHallOfFame": false,
-        "description": "Professional baseball player (1936-2011)",
-        "birthYear": 1936,
-        "enwikiTitle": "Harmon Killebrew"
-      }
-    },
     "player|Q5369|henry davis": {
       "kind": "player",
       "name": "Henry Davis",
@@ -5275,7 +5260,7 @@
         "wikidataId": "Q98454850",
         "careerTeams": [
           {
-            "name": "Yaquis de Obregón",
+            "name": "Yaquis de Obreg\u00f3n",
             "fromYear": 2017,
             "toYear": 2019,
             "wikidataId": "Q1053269"
@@ -5287,7 +5272,7 @@
             "wikidataId": "Q650855"
           },
           {
-            "name": "Venados de Mazatlán",
+            "name": "Venados de Mazatl\u00e1n",
             "fromYear": 2020,
             "toYear": 2022,
             "wikidataId": "Q870420"
@@ -5355,7 +5340,7 @@
         "isHallOfFame": false,
         "description": "Puerto Rican Hall of Fame baseball player",
         "birthYear": 1971,
-        "enwikiTitle": "Iván Rodríguez"
+        "enwikiTitle": "Iv\u00e1n Rodr\u00edguez"
       }
     },
     "player|Q5369|j.d. martinez": {
@@ -5577,7 +5562,7 @@
           "Kansas City Monarchs"
         ],
         "isHallOfFame": true,
-        "description": "American baseball player (1919–1972)",
+        "description": "American baseball player (1919\u20131972)",
         "birthYear": 1919,
         "enwikiTitle": "Jackie Robinson"
       }
@@ -6036,7 +6021,7 @@
         "isHallOfFame": false,
         "description": "Dominican Republic baseball player",
         "birthYear": 2003,
-        "enwikiTitle": "Jasson Domínguez"
+        "enwikiTitle": "Jasson Dom\u00ednguez"
       }
     },
     "player|Q5369|javier baez": {
@@ -6066,7 +6051,7 @@
         "isHallOfFame": false,
         "description": "Puerto Rico professional baseball player (born 1992)",
         "birthYear": 1992,
-        "enwikiTitle": "Javier Báez"
+        "enwikiTitle": "Javier B\u00e1ez"
       }
     },
     "player|Q5369|javier lopez": {
@@ -6126,7 +6111,7 @@
         "isHallOfFame": false,
         "description": "Puerto Rican baseball player",
         "birthYear": 1977,
-        "enwikiTitle": "Javier López (baseball)"
+        "enwikiTitle": "Javier L\u00f3pez (baseball)"
       }
     },
     "player|Q5369|jay bell": {
@@ -6378,7 +6363,7 @@
         "isHallOfFame": false,
         "description": "Dominican Republic baseball player",
         "birthYear": 1997,
-        "enwikiTitle": "Jeremy Peña"
+        "enwikiTitle": "Jeremy Pe\u00f1a"
       }
     },
     "player|Q5369|jim abbott": {
@@ -7235,7 +7220,7 @@
         "isHallOfFame": false,
         "description": "Puerto Rican baseball player (born 1994)",
         "birthYear": 1994,
-        "enwikiTitle": "José Berríos"
+        "enwikiTitle": "Jos\u00e9 Berr\u00edos"
       }
     },
     "player|Q5369|jose canseco": {
@@ -7270,7 +7255,7 @@
         "isHallOfFame": false,
         "description": "Dominican baseball player (born 1999)",
         "birthYear": 1999,
-        "enwikiTitle": "José Fermín"
+        "enwikiTitle": "Jos\u00e9 Ferm\u00edn"
       }
     },
     "player|Q5369|jose mesa": {
@@ -7294,7 +7279,7 @@
         "isHallOfFame": false,
         "description": "Dominican Republic baseball player",
         "birthYear": 1966,
-        "enwikiTitle": "José Mesa"
+        "enwikiTitle": "Jos\u00e9 Mesa"
       }
     },
     "player|Q5369|jose ramirez": {
@@ -7314,7 +7299,7 @@
         "isHallOfFame": false,
         "description": "baseball player",
         "birthYear": 1990,
-        "enwikiTitle": "José Ramírez (pitcher)"
+        "enwikiTitle": "Jos\u00e9 Ram\u00edrez (pitcher)"
       }
     },
     "player|Q5369|jose rodriguez": {
@@ -7327,9 +7312,9 @@
           "San Francisco Giants"
         ],
         "isHallOfFame": false,
-        "description": "Cuban baseball player (1894–1953)",
+        "description": "Cuban baseball player (1894\u20131953)",
         "birthYear": 1894,
-        "enwikiTitle": "José Rodríguez (infielder, born 1894)"
+        "enwikiTitle": "Jos\u00e9 Rodr\u00edguez (infielder, born 1894)"
       }
     },
     "player|Q5369|jose siri": {
@@ -7368,7 +7353,7 @@
         "isHallOfFame": false,
         "description": "Dominican Republic professional baseball player",
         "birthYear": 1998,
-        "enwikiTitle": "José Soriano (baseball)"
+        "enwikiTitle": "Jos\u00e9 Soriano (baseball)"
       }
     },
     "player|Q5369|jose tena": {
@@ -7380,7 +7365,7 @@
         "isHallOfFame": false,
         "description": "Dominican baseball player (born 2001)",
         "birthYear": 2001,
-        "enwikiTitle": "José Tena (baseball)"
+        "enwikiTitle": "Jos\u00e9 Tena (baseball)"
       }
     },
     "player|Q5369|josh gibson": {
@@ -7406,7 +7391,7 @@
           "Habana"
         ],
         "isHallOfFame": true,
-        "description": "American Hall of Fame baseball player (1911–1947)",
+        "description": "American Hall of Fame baseball player (1911\u20131947)",
         "birthYear": 1911,
         "enwikiTitle": "Josh Gibson"
       }
@@ -7468,7 +7453,7 @@
         "isHallOfFame": false,
         "description": "Puerto Rican baseball player",
         "birthYear": 1969,
-        "enwikiTitle": "Juan González (baseball)"
+        "enwikiTitle": "Juan Gonz\u00e1lez (baseball)"
       }
     },
     "player|Q5369|juan soto": {
@@ -7528,7 +7513,7 @@
         "isHallOfFame": false,
         "description": "baseball player",
         "birthYear": 1973,
-        "enwikiTitle": "Julián Tavárez"
+        "enwikiTitle": "Juli\u00e1n Tav\u00e1rez"
       }
     },
     "player|Q5369|julio rodriguez": {
@@ -7546,7 +7531,7 @@
         "isHallOfFame": false,
         "description": "Dominican professional baseball center fielder (born 2000)",
         "birthYear": 2000,
-        "enwikiTitle": "Julio Rodríguez"
+        "enwikiTitle": "Julio Rodr\u00edguez"
       }
     },
     "player|Q5369|jung hoo lee": {
@@ -7624,7 +7609,7 @@
         "isHallOfFame": false,
         "description": "Dominican baseball player",
         "birthYear": 2001,
-        "enwikiTitle": "Justin Martínez (baseball)"
+        "enwikiTitle": "Justin Mart\u00ednez (baseball)"
       }
     },
     "player|Q5369|justin steele": {
@@ -7777,7 +7762,7 @@
         "isHallOfFame": false,
         "description": "Mexican baseball player",
         "birthYear": 1975,
-        "enwikiTitle": "Karim García"
+        "enwikiTitle": "Karim Garc\u00eda"
       }
     },
     "player|Q5369|ke'bryan hayes": {
@@ -7848,7 +7833,7 @@
           "Texas Rangers"
         ],
         "isHallOfFame": false,
-        "description": "American baseball player (1963–2004)",
+        "description": "American baseball player (1963\u20132004)",
         "birthYear": 1963,
         "enwikiTitle": "Ken Caminiti"
       }
@@ -7927,7 +7912,7 @@
           }
         ],
         "isHallOfFame": false,
-        "description": "Curaçaoan professional baseball player (born 1987)",
+        "description": "Cura\u00e7aoan professional baseball player (born 1987)",
         "birthYear": 1987,
         "enwikiTitle": "Kenley Jansen"
       }
@@ -8151,7 +8136,7 @@
           "Toledo Mud Hens"
         ],
         "isHallOfFame": false,
-        "description": "American baseball player (1960–2006)",
+        "description": "American baseball player (1960\u20132006)",
         "birthYear": 1960,
         "enwikiTitle": "Kirby Puckett"
       }
@@ -8679,7 +8664,7 @@
           "New York Yankees"
         ],
         "isHallOfFame": false,
-        "description": "American baseball player (1903–1941)",
+        "description": "American baseball player (1903\u20131941)",
         "birthYear": 1903,
         "enwikiTitle": "Lou Gehrig"
       }
@@ -8696,7 +8681,7 @@
           "Industriales",
           "New Hampshire Fisher Cats",
           "Peoria Javelinas",
-          "Sancti Spíritus",
+          "Sancti Sp\u00edritus",
           "Toronto Blue Jays"
         ],
         "isHallOfFame": false,
@@ -8744,7 +8729,7 @@
         "isHallOfFame": false,
         "description": "Venezuelan baseball player",
         "birthYear": 1997,
-        "enwikiTitle": "Luis Arráez"
+        "enwikiTitle": "Luis Arr\u00e1ez"
       }
     },
     "player|Q5369|luis castillo": {
@@ -8868,7 +8853,7 @@
         "isHallOfFame": false,
         "description": "Venezuelan baseball player (born 2000)",
         "birthYear": 2000,
-        "enwikiTitle": "Maikel García"
+        "enwikiTitle": "Maikel Garc\u00eda"
       }
     },
     "player|Q5369|manny machado": {
@@ -8944,7 +8929,7 @@
             "wikidataId": "Q716155"
           },
           {
-            "name": "Kōchi Fighting Dogs",
+            "name": "K\u014dchi Fighting Dogs",
             "fromYear": 2017,
             "toYear": 2017,
             "wikidataId": "Q6455084"
@@ -9650,7 +9635,7 @@
           }
         ],
         "isHallOfFame": true,
-        "description": "American baseball player (1931–1995)",
+        "description": "American baseball player (1931\u20131995)",
         "birthYear": 1931,
         "enwikiTitle": "Mickey Mantle"
       }
@@ -9966,7 +9951,7 @@
         "isHallOfFame": false,
         "description": "American baseball player",
         "birthYear": 1966,
-        "enwikiTitle": "Moisés Alou"
+        "enwikiTitle": "Mois\u00e9s Alou"
       }
     },
     "player|Q5369|mookie betts": {
@@ -10304,7 +10289,7 @@
         "isHallOfFame": false,
         "description": "baseball player (born 1998)",
         "birthYear": 1998,
-        "enwikiTitle": "Oscar Colás"
+        "enwikiTitle": "Oscar Col\u00e1s"
       }
     },
     "player|Q5369|osleivis basabe": {
@@ -10546,7 +10531,7 @@
         "isHallOfFame": false,
         "description": "Dominican Republic baseball player",
         "birthYear": 1968,
-        "enwikiTitle": "Pedro Martínez (left-handed pitcher)"
+        "enwikiTitle": "Pedro Mart\u00ednez (left-handed pitcher)"
       }
     },
     "player|Q5369|pete alonso": {
@@ -10610,7 +10595,7 @@
           "Toronto Blue Jays"
         ],
         "isHallOfFame": false,
-        "description": "American baseball player (1939–2020)",
+        "description": "American baseball player (1939\u20132020)",
         "birthYear": 1939,
         "enwikiTitle": "Phil Niekro"
       }
@@ -10724,7 +10709,7 @@
         "isHallOfFame": false,
         "description": "American baseball player",
         "birthYear": 1972,
-        "enwikiTitle": "Ramón Martínez (infielder)"
+        "enwikiTitle": "Ram\u00f3n Mart\u00ednez (infielder)"
       }
     },
     "player|Q5369|randy arozarena": {
@@ -10754,7 +10739,7 @@
         "undatedCareerTeams": [
           "Mayos de Navojoa",
           "Palm Beach Cardinals",
-          "Pinar del Río Vegueros",
+          "Pinar del R\u00edo Vegueros",
           "Seattle Mariners",
           "Springfield Cardinals",
           "Toros de Tijuana"
@@ -10876,7 +10861,7 @@
         "isHallOfFame": false,
         "description": "baseball player",
         "birthYear": 1971,
-        "enwikiTitle": "Raúl Mondesí"
+        "enwikiTitle": "Ra\u00fal Mondes\u00ed"
       }
     },
     "player|Q5369|ray durham": {
@@ -11002,7 +10987,7 @@
           "Toronto Blue Jays"
         ],
         "isHallOfFame": false,
-        "description": "American Hall of Fame baseball player (1958–2024)",
+        "description": "American Hall of Fame baseball player (1958\u20132024)",
         "birthYear": 1958,
         "enwikiTitle": "Rickey Henderson"
       }
@@ -11147,7 +11132,7 @@
           "Cangrejeros de Santurce"
         ],
         "isHallOfFame": false,
-        "description": "Puerto Rican baseball player (1934–1972)",
+        "description": "Puerto Rican baseball player (1934\u20131972)",
         "birthYear": 1934,
         "enwikiTitle": "Roberto Clemente"
       }
@@ -11270,7 +11255,7 @@
         "isHallOfFame": false,
         "description": "Venezuelan professional baseball player (born 1997)",
         "birthYear": 1997,
-        "enwikiTitle": "Ronald Acuña Jr."
+        "enwikiTitle": "Ronald Acu\u00f1a Jr."
       }
     },
     "player|Q5369|rondell white": {
@@ -11342,7 +11327,7 @@
         "isHallOfFame": false,
         "description": "baseball player",
         "birthYear": 1973,
-        "enwikiTitle": "Rubén Rivera"
+        "enwikiTitle": "Rub\u00e9n Rivera"
       }
     },
     "player|Q5369|ruben sierra": {
@@ -11403,7 +11388,7 @@
         "isHallOfFame": false,
         "description": "Puerto Rican baseball player",
         "birthYear": 1965,
-        "enwikiTitle": "Rubén Sierra"
+        "enwikiTitle": "Rub\u00e9n Sierra"
       }
     },
     "player|Q5369|russ davis": {
@@ -11625,7 +11610,7 @@
           }
         ],
         "isHallOfFame": true,
-        "description": "American baseball player and manager (1959–2025)",
+        "description": "American baseball player and manager (1959\u20132025)",
         "birthYear": 1959,
         "enwikiTitle": "Ryne Sandberg"
       }
@@ -11705,7 +11690,7 @@
         "isHallOfFame": false,
         "description": "Dominican professional baseball pitcher",
         "birthYear": 1995,
-        "enwikiTitle": "Sandy Alcántara"
+        "enwikiTitle": "Sandy Alc\u00e1ntara"
       }
     },
     "player|Q5369|sandy koufax": {
@@ -12393,7 +12378,7 @@
         "isHallOfFame": false,
         "description": "Dominican baseball player (born 1992)",
         "birthYear": 1992,
-        "enwikiTitle": "Teoscar Hernández"
+        "enwikiTitle": "Teoscar Hern\u00e1ndez"
       }
     },
     "player|Q5369|terry pendleton": {
@@ -12506,7 +12491,7 @@
           }
         ],
         "isHallOfFame": false,
-        "description": "American professional baseball pitcher (1966–2023)",
+        "description": "American professional baseball pitcher (1966\u20132023)",
         "birthYear": 1966,
         "enwikiTitle": "Tim Wakefield"
       }
@@ -12931,7 +12916,7 @@
         "isHallOfFame": false,
         "description": "Cuban baseball player (born 1995)",
         "birthYear": 2001,
-        "enwikiTitle": "Víctor Mederos"
+        "enwikiTitle": "V\u00edctor Mederos"
       }
     },
     "player|Q5369|victor scott": {
@@ -13225,7 +13210,7 @@
           "Cangrejeros de Santurce"
         ],
         "isHallOfFame": true,
-        "description": "American baseball player (1931–2024)",
+        "description": "American baseball player (1931\u20132024)",
         "birthYear": 1931,
         "enwikiTitle": "Willie Mays"
       }
@@ -13242,7 +13227,7 @@
           "San Francisco Giants"
         ],
         "isHallOfFame": false,
-        "description": "American baseball player (1938–2018)",
+        "description": "American baseball player (1938\u20132018)",
         "birthYear": 1938,
         "enwikiTitle": "Willie McCovey"
       }
@@ -13341,7 +13326,7 @@
         "isHallOfFame": false,
         "description": "baseball player",
         "birthYear": 1998,
-        "enwikiTitle": "Yainer Díaz"
+        "enwikiTitle": "Yainer D\u00edaz"
       }
     },
     "player|Q5369|yandy diaz": {
@@ -13365,7 +13350,7 @@
         "isHallOfFame": false,
         "description": "Cuban professional baseball player",
         "birthYear": 1991,
-        "enwikiTitle": "Yandy Díaz"
+        "enwikiTitle": "Yandy D\u00edaz"
       }
     },
     "player|Q5369|yennier cano": {
@@ -13380,7 +13365,7 @@
         "isHallOfFame": false,
         "description": "American baseball player",
         "birthYear": 1994,
-        "enwikiTitle": "Yennier Canó"
+        "enwikiTitle": "Yennier Can\u00f3"
       }
     },
     "player|Q5369|yoendrys gomez": {
@@ -13392,7 +13377,7 @@
         "isHallOfFame": false,
         "description": "Venezuelan baseball player",
         "birthYear": 1999,
-        "enwikiTitle": "Yoendrys Gómez"
+        "enwikiTitle": "Yoendrys G\u00f3mez"
       }
     },
     "player|Q5369|yordan alvarez": {
@@ -13929,9 +13914,9 @@
         "espnId": "4"
       }
     },
-    "team|Q5369|ciego de ávila": {
+    "team|Q5369|ciego de \u00e1vila": {
       "kind": "team",
-      "name": "Ciego de Ávila",
+      "name": "Ciego de \u00c1vila",
       "result": {
         "wikidataId": "Q3528357",
         "league": "Cuban National Series",
