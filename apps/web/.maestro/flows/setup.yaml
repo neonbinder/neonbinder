@@ -860,13 +860,34 @@ tags:
       # still to come. Keyed on the terminal state instead, it cannot exit
       # early.
       #
-      # ⚠️ AN IDLE ITERATION IS NOT FREE. This note used to claim a `runFlow
-      # when` that finds no step "costs one hierarchy read and nothing else".
-      # Measured in CI run 34123557194, that is false: a `when: visible` that
-      # resolves FALSE pays a full settle, ~6.5s median, against well under a
-      # second when it resolves TRUE. That is why the probe below is keyed on a
-      # selector present whenever there is anything to answer, and why there is
-      # exactly ONE of them.
+      # ⚠️ AN IDLE ITERATION IS NOT FREE — AND IT IS NOT CONSTANT EITHER. This
+      # note used to claim a `runFlow when` that finds no step "costs one
+      # hierarchy read and nothing else". Measured in CI run 34123557194, that
+      # was false: a `when: visible` that resolved FALSE paid a full settle,
+      # ~6.5s median, against well under a second when it resolved TRUE. That
+      # is why the probe below is keyed on a selector present whenever there
+      # is anything to answer, and why there is exactly ONE of them.
+      #
+      # NEO-288 re-measured it and the number had moved the OTHER way: an idle
+      # probe now costs ~0.7s in CI (median 0.68s / 0.66s in runs 35484126549
+      # and 35487600584, from `maestro.log` RUNNING→SKIPPED spacing), plus ~1s
+      # of the repeat's own pacing, so an idle iteration is ~1.7s and burns
+      # almost no time — and therefore almost no DRAIN. `times: 250` at that
+      # rate is a 7–10 minute wall-clock cap (the two loops spanned 424s and
+      # 592s), and the 5-wide Wikidata lane takes 8–12 minutes to drain a
+      # 345-name batch, so whether the seed goes green is a coin flip on lookup
+      # pace. Both runs spent the budget polling (80 taps / 170 idle in the
+      # first, 1 tap / 249 idle in the second) and ran out with rows still
+      # undecided, so the `Confirm & Save` gate below failed loudly, as
+      # designed. The loop was counting POLLS against a guard sized for
+      # ANSWERS.
+      #
+      # So the idle path now WAITS instead of polling: each iteration blocks
+      # until either the next answerable step's button or `Confirm & Save` is
+      # on screen, and only then decides whether to tap. An iteration is
+      # consumed per row answered (plus the rare no-op tap on a button that is
+      # `aria-disabled` mid-round-trip), not per poll — which is what makes
+      # `times` a runaway guard again rather than a hidden time budget.
       #
       # `times` is a runaway guard, not a budget: it must exceed the number
       # of distinct new teams a real Base set can surface (~30 checklist teams
@@ -898,12 +919,39 @@ tags:
             # ONE probe per iteration, keyed on the step's own primary BUTTON rather
             # than on two step HEADINGS — measured, not tidied. In CI run 34123557194
             # the two-heading form cost 257.5s across 29 iterations while doing only
-            # 58.0s of actual tapping: a `when: visible` that resolves FALSE pays a
-            # full settle (~6.5s median) where one that resolves TRUE costs well under
-            # a second, and the league heading is absent in most iterations, so the
-            # league probe alone burned ~150s doing nothing. Keying on a selector that
-            # is PRESENT whenever there is anything to answer turns every iteration
-            # into the cheap case.
+            # 58.0s of actual tapping: a `when: visible` that resolved FALSE paid a
+            # full settle (~6.5s median then; ~0.7s in NEO-288's runs, see above)
+            # where one that resolves TRUE costs well under a second, and the league
+            # heading is absent in most iterations, so the league probe alone burned
+            # ~150s doing nothing. Keying on a selector that is PRESENT whenever there
+            # is anything to answer turns every iteration into the cheap case.
+            #
+            # NEO-288 — WAIT, THEN PROBE. The `extendedWaitUntil` ahead of the probe
+            # blocks until there is something to decide: the next step's primary
+            # button OR the terminal `Confirm & Save`. Only after that does the probe
+            # ask which it was. The `while` on the repeat exits on `Confirm & Save`,
+            # so an iteration that wakes on the terminal state does one cheap FALSE
+            # probe and the loop ends. `text:` is used for the wait because the web
+            # driver exposes the button's label as BOTH `text` and `resource-id`
+            # (run 35487600584's final hierarchy: `"text": "Add as New League",
+            # "resource-id": "Add as New League"`) and the terminal button is only
+            # ever matched by text (`.*Confirm & Save.*`, the contract the wizard's
+            # own comment names), so one alternation covers both; the tap below keeps
+            # `id:` — its established contract.
+            #
+            # 240000 — R5 SIGN-OFF, Jason, 2026-09-20 (NEO-288). This wait is the
+            # setup track's sanctioned live-Wikidata exception to R5, the same one
+            # the `Confirm & Save` wait after this loop already carries at the same
+            # ceiling, and it is NOT an in-app response budget: between two
+            # answerable steps the flow is waiting on the 5-wide Wikidata lane to
+            # settle the next name, and nothing the product renders makes that
+            # faster. Measurement behind it: idle iteration ~1.7s in CI (0.7s probe
+            # + ~1s repeat pacing) × 250 iterations = a 7–10 min cap (loops spanned
+            # 424s and 592s), against a lane drain of 8–12 min for a 345-name
+            # batch, so polling could not reliably reach the end of the batch inside
+            # `times`. Voided if a single gap between answerable steps ever exceeds 240s
+            # (then the wait fails by name, which is the report to file) or if the
+            # lookup lane stops being a live external round-trip. Do not raise it.
             #
             # `(Team|League)` AND NOT `(Player|Team|League)`, which is the whole safety
             # of this step. The id is a regex over the button's accessible name, and a
@@ -918,7 +966,14 @@ tags:
             # It also cannot hit the two other buttons that carry a similar name: the
             # demoted `Add as New {kind} anyway` link (an exact-match step promotes
             # `Link to <name>` instead) and the footer bulk. A matcher is a FULL match,
-            # so neither is reachable from this one.
+            # so neither is reachable from this one. The wait's alternation has the
+            # same property: `Add as New (Team|League)` carries no trailing `.*`, so
+            # `Add as New Team anyway`, `Add as New Player` and `Add remaining players
+            # as new (N)` fall outside both branches of the full match.
+            - extendedWaitUntil:
+                visible:
+                  text: "Add as New (Team|League)|.*Confirm & Save.*"
+                timeout: 240000
             - runFlow:
                 when:
                   visible:
