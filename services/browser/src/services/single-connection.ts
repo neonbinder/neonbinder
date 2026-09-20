@@ -86,10 +86,28 @@ export async function withSingleConnection<T>(
     pipelining: 1,
     keepAliveTimeout: SINGLE_CONNECTION_KEEP_ALIVE_MS,
   });
+  // Socket accounting (NEO-288). The whole point of this helper is that every
+  // request inside `fn` rides ONE socket; if the server drops the connection
+  // between them the Client silently reconnects, and on Cloud Run's egress
+  // pool that reconnect may carry a different source IP. So say how many
+  // sockets were opened and why the first one went away — counts and the
+  // disconnect error's name/message only, never a URL, header or body.
+  let sockets = 0;
+  const disconnects: string[] = [];
+  client.on("connect", () => {
+    sockets += 1;
+  });
+  client.on("disconnect", (_origin, _targets, error) => {
+    disconnects.push(error instanceof Error ? `${error.name}: ${error.message}` : String(error));
+  });
   try {
     return await fn(client);
   } finally {
     await closeBounded(client, options.closeTimeoutMs ?? SINGLE_CONNECTION_CLOSE_TIMEOUT_MS);
+    console.log(
+      `[single-connection] ${new URL(origin).host} sockets=${sockets}` +
+        (disconnects.length ? ` disconnects=${JSON.stringify(disconnects)}` : ""),
+    );
   }
 }
 
