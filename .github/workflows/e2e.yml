@@ -355,17 +355,19 @@ jobs:
       # this preview, and coverage drifting (a fixture set going stale) is an
       # operator signal, not a CI failure — the seed itself already fell back
       # to live lookups for anything uncovered, so the suite is correct either
-      # way. `ALLOW_ENRICHMENT_FIXTURE_CAPTURE=true` + the confirm string arm
-      # the action per convex/bulkLoad.ts's existing armed-internal-action
-      # shape; no `--identity` is passed, matching every other `convex run`
-      # this job makes against the preview.
+      # way. The coverage action is read-only and internal (reachable only
+      # with the deploy key), so it takes just the `confirm` literal — NOT the
+      # `ALLOW_ENRICHMENT_FIXTURE_CAPTURE` deployment env var that arms the
+      # capture action: a shell env var on `convex run` never reaches the
+      # Convex runtime, so arming coverage that way would fail every run and
+      # this step's tolerance would hide it forever. No `--identity` is
+      # passed, matching every other `convex run` this job makes.
       - name: Enrichment fixture coverage
         working-directory: apps/web
         continue-on-error: true
         env:
           CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
           CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
-          ALLOW_ENRICHMENT_FIXTURE_CAPTURE: "true"
         run: |
           set -uo pipefail
           if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
@@ -378,10 +380,18 @@ jobs:
           status=$?
           echo "$report"
           if [ $status -ne 0 ]; then
-            echo "::warning::Enrichment fixture coverage report could not be run (function may not exist on this preview yet). See job log for details."
+            # Name the cause: a missing function means the Convex side is not
+            # on this preview yet; anything else is a real error to look at.
+            case "$report" in
+              *"Could not find"*|*"not found"*|*"does not exist"*)
+                why="function not on this preview yet (Convex side not deployed here)";;
+              *)
+                why="coverage action returned an error";;
+            esac
+            echo "::warning::Enrichment fixture coverage report could not be run — ${why}. See job log for details."
             {
               echo "### Enrichment fixture coverage (NEO-289)";
-              echo "- Could not run \`enrichmentFixtures:coverageReportFromCli\` — see job log.";
+              echo "- Could not run \`enrichmentFixtures:coverageReportFromCli\` — ${why}; see job log.";
             } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi

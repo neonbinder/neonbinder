@@ -22,13 +22,17 @@
  * ## Armed, internal, and CLI-only
  *
  * Both actions are `internalAction`s driven by `npx convex run` WITHOUT
- * `--identity` (an internal function is unreachable with one), so there is no
- * `requireAdmin` and the arming is what stands in for it — the
- * `convex/bulkLoad.ts` shape: the literal `confirm` arg AND
- * `ALLOW_ENRICHMENT_FIXTURE_CAPTURE=true` on the deployment, set for the run
- * and removed after. Capture reads Wikidata and ESPN for every name on the
- * deployment; the flag is what stops a stray internal caller doing that on
- * its own.
+ * `--identity` (an internal function is unreachable with one), so neither
+ * carries `requireAdmin`. Both take the literal `confirm` arg as a typo
+ * guard. Only `captureFromCli` is additionally ARMED by
+ * `ALLOW_ENRICHMENT_FIXTURE_CAPTURE=true` on the deployment (the
+ * `convex/bulkLoad.ts` shape, set for the run and removed after): it fans out
+ * to Wikidata and ESPN for every name on the deployment, and the flag is what
+ * stops a stray internal caller doing that on its own. `coverageReportFromCli`
+ * reads the committed file and the deployment's names, writes nothing and
+ * makes no outbound call, and CI runs it after every seed on a preview whose
+ * env it cannot set per invocation — so it is deliberately NOT env-armed
+ * (security audit, 2026-09-20).
  *
  * ## Running it
  *
@@ -36,9 +40,9 @@
  *     npx convex run enrichmentFixtures:captureFromCli \
  *       '{"confirm":"CAPTURE_ENRICHMENT_FIXTURES","sportQid":"Q5369"}' \
  *       | jq .fixture > convex/adapters/__fixtures__/enrichment-lookups.json
+ *     npx convex env remove ALLOW_ENRICHMENT_FIXTURE_CAPTURE
  *     npx convex run enrichmentFixtures:coverageReportFromCli \
  *       '{"confirm":"CAPTURE_ENRICHMENT_FIXTURES","sportQid":"Q5369"}'
- *     npx convex env remove ALLOW_ENRICHMENT_FIXTURE_CAPTURE
  *
  * `offset`/`limit` page the name list when a single run would outlast the
  * CLI's wait; merge the pages' `entries` objects by hand (keys are unique
@@ -78,14 +82,23 @@ const CONFIRM_LITERAL = "CAPTURE_ENRICHMENT_FIXTURES";
 const confirmValidator = v.literal(CONFIRM_LITERAL);
 
 /**
- * Asserted at the top of both actions. `ConvexError` rather than `Error`, as
- * in `bulkLoad.ts`: production redacts a plain `Error` and the whole job of
- * this refusal is to name the flag.
+ * The typo guard both actions share. Re-checked even though the validator
+ * already enforces the literal — belt and braces, as `bulkLoad.ts` does.
  */
-function assertCaptureArmed(confirm: string): void {
+function assertConfirmed(confirm: string): void {
   if (confirm !== CONFIRM_LITERAL) {
     throw new ConvexError(`Fixture capture requires confirm: "${CONFIRM_LITERAL}".`);
   }
+}
+
+/**
+ * Asserted at the top of `captureFromCli` ONLY — see the header for why the
+ * coverage report is not env-armed. `ConvexError` rather than `Error`, as in
+ * `bulkLoad.ts`: production redacts a plain `Error` and the whole job of this
+ * refusal is to name the flag.
+ */
+function assertCaptureArmed(confirm: string): void {
+  assertConfirmed(confirm);
   if (process.env.ALLOW_ENRICHMENT_FIXTURE_CAPTURE !== "true") {
     throw new ConvexError(
       "Fixture capture is not armed on this deployment. Set " +
@@ -308,12 +321,13 @@ type CoverageResult = Infer<typeof coverageResultValidator>;
  * Which of the deployment's names the COMMITTED fixture answers. Reads the
  * file regardless of the fixture switch — the question is about the repo,
  * not about this deployment's configuration — and makes no outbound request.
+ * Internal + the confirm literal, no env arming (see the header).
  */
 export const coverageReportFromCli = internalAction({
   args: { confirm: confirmValidator, sportQid: v.string() },
   returns: coverageResultValidator,
   handler: async (ctx, args): Promise<CoverageResult> => {
-    assertCaptureArmed(args.confirm);
+    assertConfirmed(args.confirm);
     const { sportId } = await ctx.runQuery(internal.enrichmentFixtures.resolveSportByQid, {
       sportQid: args.sportQid,
     });

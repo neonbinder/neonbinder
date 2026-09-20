@@ -80,11 +80,14 @@ is not part of the key.
 After the seed step, `e2e.yml` runs a coverage check:
 
 ```bash
-ALLOW_ENRICHMENT_FIXTURE_CAPTURE=true npx convex run \
+npx convex run \
   enrichmentFixtures:coverageReportFromCli \
   '{"sportQid":"Q5369","confirm":"CAPTURE_ENRICHMENT_FIXTURES"}' \
   --deployment <this PR's preview>
 ```
+
+Coverage is read-only and internal, so it takes only the `confirm` literal —
+no deployment env var to arm.
 
 It writes `covered` / `missing` to the job's step summary and, if `missing`
 is non-empty, emits exactly one `::warning::` listing the missing names. The
@@ -107,16 +110,20 @@ against a PR's own just-seeded preview (never against dev mid-session, and
 never against prod):
 
 ```bash
-ALLOW_ENRICHMENT_FIXTURE_CAPTURE=true npx convex run \
+# Arm on the DEPLOYMENT (a shell env var never reaches the Convex runtime):
+npx convex env set ALLOW_ENRICHMENT_FIXTURE_CAPTURE true --deployment <this PR's preview>
+npx convex run \
   enrichmentFixtures:captureFromCli \
   '{"sportQid":"Q5369","confirm":"CAPTURE_ENRICHMENT_FIXTURES"}' \
-  --deployment <this PR's preview> > fixture.json
+  --deployment <this PR's preview> > capture.json
+npx convex env remove ALLOW_ENRICHMENT_FIXTURE_CAPTURE --deployment <this PR's preview>
 ```
 
-Run **without** `--identity` — these are internal actions armed by the
-`ALLOW_ENRICHMENT_FIXTURE_CAPTURE=true` env var plus the `confirm` literal
-(the `bulkLoad.ts`/NEO-214 shape), and `--identity` cannot reach an internal
-function in the first place.
+Run **without** `--identity` — capture is an internal action armed by the
+deployment env var `ALLOW_ENRICHMENT_FIXTURE_CAPTURE=true` plus the `confirm`
+literal (the `bulkLoad.ts`/NEO-214 shape), and `--identity` cannot reach an
+internal function in the first place. Disarm afterwards; never leave the flag
+set on a deployment.
 
 Then:
 

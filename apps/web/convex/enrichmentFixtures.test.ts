@@ -260,18 +260,33 @@ describe("enrichmentFixturesEnabled", () => {
 // ---------------------------------------------------------------------------
 
 describe("readFixture", () => {
-  test("logs `off` and misses when the switch is off, even with an entry", () => {
+  test("logs `off` ONCE per process and misses when the switch is off, even with an entry", () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
     __setEnrichmentFixtureForTests(
       fixtureWith({ [fixtureKey("player", SPORT_QID, "Tony Gwynn")]: { kind: "player", name: "Tony Gwynn", result: recordedPlayer } }),
     );
     expect(readFixture("player", SPORT_QID, "Tony Gwynn")).toEqual({ hit: false });
-    expect(JSON.parse(String(log.mock.calls[0][0]))).toEqual({
-      msg: "enrichment_fixture",
-      outcome: "off",
-      kind: "player",
-      name: "Tony Gwynn",
-    });
+    expect(readFixture("team", SPORT_QID, "San Diego Padres")).toEqual({ hit: false });
+    const lines = log.mock.calls
+      .map((c) => JSON.parse(String(c[0])) as { msg: string; outcome: string })
+      .filter((l) => l.msg === "enrichment_fixture");
+    expect(lines).toEqual([{ msg: "enrichment_fixture", outcome: "off", kind: "player", name: "Tony Gwynn" }]);
+  });
+
+  test("hit and miss are logged per call", () => {
+    fixtureOn();
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    __setEnrichmentFixtureForTests(
+      fixtureWith({ [fixtureKey("player", SPORT_QID, "Tony Gwynn")]: { kind: "player", name: "Tony Gwynn", result: null } }),
+    );
+    readFixture("player", SPORT_QID, "Tony Gwynn");
+    readFixture("player", SPORT_QID, "Tony Gwynn");
+    readFixture("player", SPORT_QID, "Nobody");
+    const outcomes = log.mock.calls
+      .map((c) => JSON.parse(String(c[0])) as { msg: string; outcome: string })
+      .filter((l) => l.msg === "enrichment_fixture")
+      .map((l) => l.outcome);
+    expect(outcomes).toEqual(["hit", "hit", "miss"]);
   });
 
   test("a recorded null is a HIT that returns null", () => {
@@ -548,12 +563,13 @@ describe("captureFromCli / coverageReportFromCli — the gate", () => {
     ).rejects.toThrow(/not armed/);
   });
 
-  test("coverage unarmed refuses with the right confirm", async () => {
+  test("coverage needs no env arming — it writes and fetches nothing", async () => {
+    forbidFetch();
     const t = convexTest(schema, modules);
     await seedSport(t);
     await expect(
       t.action(internal.enrichmentFixtures.coverageReportFromCli, { confirm: CONFIRM, sportQid: SPORT_QID }),
-    ).rejects.toThrow(/not armed/);
+    ).resolves.toEqual({ covered: 0, missing: [] });
   });
 
   test("armed but wrong confirm literal still throws (the validator)", async () => {
@@ -730,7 +746,6 @@ describe("captureFromCli", () => {
 
 describe("coverageReportFromCli", () => {
   test("counts the deployment's names the fixture in force answers and lists the rest", async () => {
-    armed();
     const fetch = forbidFetch();
     __setEnrichmentFixtureForTests(
       fixtureWith({ [fixtureKey("player", SPORT_QID, "Tony Gwynn")]: { kind: "player", name: "Tony Gwynn", result: null } }),
@@ -748,7 +763,6 @@ describe("coverageReportFromCli", () => {
   });
 
   test("reads the file regardless of the fixture switch", async () => {
-    armed();
     forbidFetch();
     // Switch OFF (no env), the report still consults the fixture.
     __setEnrichmentFixtureForTests(

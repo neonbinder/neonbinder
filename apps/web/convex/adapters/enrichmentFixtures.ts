@@ -301,6 +301,7 @@ let fixtureOverride: EnrichmentFixtureFile | undefined;
 export function __setEnrichmentFixtureForTests(fixture: EnrichmentFixtureFile | undefined): void {
   fixtureOverride = fixture;
   flagWithoutSecretWarned = false;
+  offLogged = false;
 }
 
 /** The fixture in force: the test override when set, else the committed file. */
@@ -313,6 +314,8 @@ export function getEnrichmentFixture(): EnrichmentFixtureFile | null {
 // ---------------------------------------------------------------------------
 
 let flagWithoutSecretWarned = false;
+/** `readFixture` logs `outcome: "off"` once per process, not per lookup. */
+let offLogged = false;
 
 /**
  * True only on a deployment that is BOTH opted in and a test target.
@@ -367,8 +370,11 @@ export type FixtureRead<K extends FixtureKind> =
  *   2026-09-20.) An entry with a result but no `wikidataId` (an ESPN-only
  *   team) is honoured: there is no id to disagree with.
  *
- * Logs exactly one structured line per call. `name` is card data (a player,
- * team or league name), which is fine to log; nothing else is.
+ * Logs one structured `hit`/`miss` line per call when the switch is on;
+ * `off` is logged ONCE per process, because with the switch off this runs on
+ * every production lookup and a line per call would be noise (security
+ * audit, 2026-09-20). `name` is card data (a player, team or league name),
+ * which is fine to log; nothing else is.
  */
 export function readFixture<K extends FixtureKind>(
   kind: K,
@@ -380,7 +386,10 @@ export function readFixture<K extends FixtureKind>(
     console.log(JSON.stringify({ msg: "enrichment_fixture", outcome, kind, name }));
 
   if (!enrichmentFixturesEnabled()) {
-    log("off");
+    if (!offLogged) {
+      offLogged = true;
+      log("off");
+    }
     return { hit: false };
   }
   const fixture = getEnrichmentFixture();

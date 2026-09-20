@@ -895,9 +895,18 @@ describe("NEO-289: the enrichment-fixture capture is internal and armed, never p
     expect(src).not.toContain(`export const ${fn} = query(`);
   });
 
-  test("both CLI actions are gated on the arming flag, not on an identity", () => {
+  test("capture is gated on the arming flag, not on an identity; coverage takes only the confirm literal", () => {
+    // The env flag exists for the Wikidata/ESPN fan-out. The coverage report
+    // reads the committed file and the deployment's names, writes nothing and
+    // fetches nothing, and CI runs it on a preview whose env it cannot set —
+    // so it is internal + confirm literal only (security audit, 2026-09-20).
     const src = readFileSync(join(__dirname, "enrichmentFixtures.ts"), "utf8");
     expect(src).toContain('process.env.ALLOW_ENRICHMENT_FIXTURE_CAPTURE !== "true"');
+    const capture = src.slice(src.indexOf("export const captureFromCli"), src.indexOf("export const coverageReportFromCli"));
+    const coverage = src.slice(src.indexOf("export const coverageReportFromCli"));
+    expect(capture).toContain("assertCaptureArmed(args.confirm)");
+    expect(coverage).toContain("assertConfirmed(args.confirm)");
+    expect(coverage).not.toContain("assertCaptureArmed(");
     // The header mentions the guard by name to say why it is absent; a CALL
     // is what must not appear.
     expect(src).not.toContain("requireAdmin(");
