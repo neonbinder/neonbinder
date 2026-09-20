@@ -661,6 +661,46 @@ describe("getSiteToken — legacy 404 'No token available' is NOT absence (NEO-1
   });
 });
 
+describe("getSiteToken/refreshSiteToken — site-side refusal is neither reauth nor a store (NEO-288)", () => {
+  // getSiteToken's mint path (204 → no cached token → refreshSiteToken →
+  // authenticateBsc/Sportlots → runSiteLogin) is a DIFFERENT code path from
+  // the user-triggered testSiteCredentials/saveCredentials actions already
+  // pinned above. A site-side refusal here must return null (same as any
+  // other failed mint) and must NOT write needsReauth — the marketplace never
+  // evaluated the (absent, in this path) credentials, so there is nothing to
+  // flag, and it must never be confused with reauth_required.
+  for (const errorClass of ["automated_access", "challenge"] as const) {
+    test(`a background mint that fails \`${errorClass}\` returns null and writes no reauth flag`, async () => {
+      const t = convexTest(schema, modules);
+      await seedHasCredentials(t, USER_A, SITE);
+      const seen = { loginAttempts: 0 };
+      stubFetch(
+        tokenAndLoginStub(
+          () => new Response(null, { status: 204 }),
+          () =>
+            jsonResponse(
+              { error: "SportLots refused the sign-in", error_class: errorClass },
+              502,
+            ),
+          seen,
+        ),
+      );
+
+      const token = await t
+        .withIdentity({ subject: USER_A })
+        .action(internal.credentials.getSiteToken, { site: SITE });
+
+      expect(token).toBeNull();
+      expect(seen.loginAttempts).toBeGreaterThanOrEqual(1);
+      const entry = await getRawEntry(t, USER_A, SITE);
+      // Credential status is entirely untouched: not flagged, not cleared.
+      expect(entry?.hasCredentials).toBe(true);
+      expect(entry?.needsReauth).toBeFalsy();
+      expect(entry?.needsReauthSince).toBeUndefined();
+    });
+  }
+});
+
 describe("reauth_required — flag, never delete (NEO-141)", () => {
   test("a reauth_required login failure sets needsReauth and keeps the credentials", async () => {
     const t = convexTest(schema, modules);

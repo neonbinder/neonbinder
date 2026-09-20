@@ -264,6 +264,101 @@ describe("getAutomatedAccessCredential (NEO-288)", () => {
     assert.ok(!logged.includes("SyntaxError"));
   });
 
+  it("concurrent cold reads: neither throws, and the cache ends up holding a non-stale value", async () => {
+    // Two callers both see an empty cache and both kick off a real read — the
+    // documented "acceptable double read". Neither may throw, and the value
+    // left in the cache afterwards must be a value ONE of the two reads
+    // actually returned (never a partial/corrupt merge, never undefined).
+    let listCalls = 0;
+    activeClient = {
+      calls: { list: [], access: [] },
+      async listSecretVersions(req) {
+        listCalls++;
+        const myCall = listCalls;
+        this.calls.list.push(req);
+        if (myCall === 1) await new Promise((r) => setTimeout(r, 20));
+        return [[{ name: V(myCall), state: "ENABLED" }]];
+      },
+      async accessSecretVersion(req) {
+        this.calls.access.push(req);
+        const payload = req.name === V(1)
+          ? JSON.stringify({ keyId: KEY_ID, secret: SECRET })
+          : JSON.stringify({ keyId: "concurrent-key", secret: "concurrent-secret" });
+        return [{ payload: { data: Buffer.from(payload) } }];
+      },
+    };
+    const [a, b] = await Promise.all([
+      getAutomatedAccessCredential(),
+      getAutomatedAccessCredential(),
+    ]);
+    for (const cred of [a, b]) {
+      assert.ok(
+        (cred.keyId === KEY_ID && cred.secret === SECRET) ||
+          (cred.keyId === "concurrent-key" && cred.secret === "concurrent-secret"),
+        "each caller gets a coherent, non-corrupt credential",
+      );
+    }
+    const finalRead = await getAutomatedAccessCredential();
+    assert.ok(
+      (finalRead.keyId === KEY_ID && finalRead.secret === SECRET) ||
+        (finalRead.keyId === "concurrent-key" && finalRead.secret === "concurrent-secret"),
+      "the cache holds a real value from one of the two reads, not a merge or corruption",
+    );
+  });
+
+  it("REGRESSION: a slow read already in flight before invalidate() must not resurrect the discarded value", async () => {
+    // The generation-counter fix. Sequence:
+    //   1. A slow read (A) starts against a cold cache and stalls on
+    //      listSecretVersions.
+    //   2. A fast read (B) starts and completes first, caching its value.
+    //   3. invalidate() runs — e.g. the adapter just had this credential
+    //      REFUSED by SportLots and wants the next read to hit Secret
+    //      Manager again.
+    //   4. A finally resolves and, before the fix, unconditionally wrote its
+    //      (now-superseded) value back into the cache — silently undoing
+    //      step 3 for every caller until another invalidate() happened to
+    //      land. The fixed behaviour: A's write is discarded because the
+    //      generation moved on while it was in flight.
+    let listCalls = 0;
+    activeClient = {
+      async listSecretVersions() {
+        listCalls++;
+        if (listCalls === 1) {
+          await new Promise((r) => setTimeout(r, 30));
+          return [[{ name: "v-old", state: "ENABLED" }]];
+        }
+        return [[{ name: "v-new", state: "ENABLED" }]];
+      },
+      async accessSecretVersion({ name }) {
+        const payload = name === "v-old"
+          ? JSON.stringify({ keyId: "old-key", secret: "old-secret" })
+          : JSON.stringify({ keyId: "new-key", secret: "new-secret" });
+        return [{ payload: { data: Buffer.from(payload) } }];
+      },
+    };
+
+    const callA = getAutomatedAccessCredential(); // slow, will resolve to old-key
+    await new Promise((r) => setTimeout(r, 5)); // let A's listSecretVersions start
+    const callB = await getAutomatedAccessCredential(); // fast, resolves to new-key
+    assert.equal(callB.keyId, "new-key");
+
+    invalidateAutomatedAccessCredential();
+
+    const resultA = await callA;
+    assert.equal(resultA.keyId, "old-key", "A still returns whatever IT fetched");
+
+    const finalRead = await getAutomatedAccessCredential();
+    assert.notEqual(
+      finalRead.keyId,
+      "old-key",
+      "A's late, stale write must not have repopulated the cache after invalidate()",
+    );
+    // A fresh read went back to Secret Manager (cache was empty after
+    // invalidate(), and A's write was discarded) rather than serving A's
+    // stale value or an empty/thrown result.
+    assert.equal(finalRead.keyId, "new-key");
+  });
+
   it("the fixed error contains 'automated access' so the route classifies it as automated_access", () => {
     const { classifyBrowserError, loginFailureOutcome } = require("../dist/observability");
     assert.equal(classifyBrowserError(AUTOMATED_ACCESS_NOT_CONFIGURED_ERROR), "automated_access");

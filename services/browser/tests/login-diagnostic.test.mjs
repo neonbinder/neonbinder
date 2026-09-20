@@ -349,8 +349,6 @@ describe("buildLoginDiagnostic — NEO-288 Turnstile refusals and automated-acce
       "Security verification failed. Please try again.",
       "Invalid login request",
       '<html><body onload=\'window.location = "?message=Invalid login request";\'></body></html>',
-      "Turnstile verification required",
-      "cf-turnstile-response missing",
     ]) {
       const diag = buildLoginDiagnostic({ url: SL_URL, rawText: text }, { email: EMAIL, password: PASSWORD });
       assert.equal(diag.challengeDetected, true, `${text} should be a challenge`);
@@ -403,5 +401,87 @@ describe("buildLoginDiagnostic — NEO-288 Turnstile refusals and automated-acce
       { email: EMAIL, password: PASSWORD },
     );
     for (const v of [AUTH_ID, KEY_ID, SECRET]) assert.ok(unguarded.snippet.includes(v));
+  });
+
+  it("KNOWN LIMITATION: redaction is exact-value only — an HTML- or URL-encoded reflection escapes it", () => {
+    // redactSecrets matches the plaintext value byte-for-byte (see the "exact
+    // known values" pass in src/services/login-diagnostic.ts). It has never
+    // decoded HTML entities or percent-encoding before comparing — `password`
+    // has the same gap today, demonstrated first below for parity. This test
+    // documents rather than "fixes": adding a decode pass is a real change to
+    // a SECURITY-CRITICAL function and needs its own review, not a drive-by
+    // here. If this ever starts passing unexpectedly, decoding was added —
+    // update this test to assert the catch, not the escape.
+    const KEY_ID = "KEYIDPLACEHOLDER0099";
+    const SECRET = "SECRETPLACEHOLDER0098";
+    const AUTH_ID = "AUTHIDPLACEHOLDER0097";
+
+    // Parity baseline: password, HTML-escaped (a literal "&" in a password is
+    // reflected back as "&amp;" by a page that HTML-encodes form values).
+    const escapedPassword = "sup3r&amp;s3cret";
+    const pwDiag = buildLoginDiagnostic(
+      { rawText: `field value was "${escapedPassword}"` },
+      { email: EMAIL, password: "sup3r&s3cret" },
+    );
+    assert.ok(
+      pwDiag.snippet.includes(escapedPassword),
+      "documents existing behaviour: password redaction is exact-value only",
+    );
+
+    // Same gap for the NEO-288 automated-access material. Pick values that
+    // CONTAIN characters percent/HTML-encoding actually changes (`/`, `+`,
+    // `=`), so the encoded form is not just the plaintext with extra
+    // characters appended around an intact substring — it must genuinely
+    // differ from the plaintext everywhere, or this test would (as it did on
+    // a first draft) accidentally exercise the exact-value path instead.
+    const secretWithSpecials = "s3cr3t/va+lue=9";
+    const encodedSecret = encodeURIComponent(secretWithSpecials); // "s3cr3t%2Fva%2Blue%3D9"
+    assert.ok(!encodedSecret.includes(secretWithSpecials), "sanity: encoding must actually change the string");
+
+    const rawText = `keyId=${KEY_ID} secret=${encodedSecret} authId=&lt;${AUTH_ID}&gt;`;
+    const diag = buildLoginDiagnostic(
+      { rawText },
+      { email: EMAIL, password: PASSWORD, keyId: KEY_ID, secret: secretWithSpecials, authId: AUTH_ID },
+    );
+    // keyId is passed verbatim (no encoding applied to it here) so the
+    // exact-value pass DOES catch it — contrast case, proves the pass runs.
+    assert.ok(!diag.snippet.includes(KEY_ID), "an un-encoded reflection is still caught");
+    // The percent-encoded secret is NOT the plaintext, so redactSecrets never
+    // matches it — this is the gap this test documents.
+    assert.ok(
+      diag.snippet.includes(encodedSecret),
+      "the percent-encoded secret rides through unredacted (documents the limitation)",
+    );
+    // The HTML-escaped authId (wrapped in &lt;...&gt;, itself unencoded)
+    // still contains the exact plaintext authId, so it IS caught — encoding
+    // that wraps rather than transforms the secret's own characters is not
+    // the gap; encoding that rewrites the secret's characters is.
+    assert.ok(!diag.snippet.includes(AUTH_ID), "an HTML-wrapped but otherwise verbatim authId is still caught");
+  });
+});
+
+describe("buildLoginDiagnostic — a Turnstile-bearing LOGIN FORM is not a challenge (NEO-288 S2)", () => {
+  it("the login form plus the ?message= rejection envelope is a REJECTION, not a challenge", () => {
+    // The live signin form embeds the Cloudflare widget (`cf-turnstile`,
+    // `turnstile_auth_id`). If SportLots ever answers a wrong password with
+    // that form, a bare /turnstile/ tell would have masked the rejection as a
+    // challenge → five retries of the wrong password → a 502 that pages.
+    const form =
+      '<html><body onload=\'window.location = "?message=Invalid email address supplied";\'>' +
+      '<form id="loginForm" action="signin.tpl" method="post">' +
+      '<input type="hidden" name="turnstile_auth_id" value="">' +
+      '<div class="cf-turnstile" data-response-field-name="turnstile_token"></div>' +
+      '<input name="email_val"><input name="psswd" type="password"></form></body></html>';
+    const diag = buildLoginDiagnostic({ url: SL_URL, rawText: form }, { email: EMAIL, password: PASSWORD });
+    assert.equal(diag.credentialRejectionDetected, true, "the ?message= envelope is the rejection tell");
+    assert.notEqual(diag.challengeDetected, true, "widget markup alone must not read as a challenge");
+  });
+
+  it("the bare widget markup with no refusal sentence is neither a challenge nor a rejection", () => {
+    const form =
+      '<form><input type="hidden" name="turnstile_auth_id"><div class="cf-turnstile"></div></form>';
+    const diag = buildLoginDiagnostic({ url: SL_URL, rawText: form }, { email: EMAIL, password: PASSWORD });
+    assert.notEqual(diag.challengeDetected, true);
+    assert.notEqual(diag.credentialRejectionDetected, true);
   });
 });

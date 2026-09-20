@@ -27,16 +27,20 @@ const SL_LOGIN_URL = "https://www.sportlots.com/cust/custbin/signin.tpl";
 // string, never a header, never a log line.
 export const SL_AUTOMATED_ACCESS_URL = "https://www.sportlots.com/u/node/automated-access";
 
-// NEO-288: hard bound on the handshake (connect + headers + body). Mirrors
-// DEFAULT_VALIDATE_TIMEOUT_MS; a hung handshake is a retryable attempt, not a
-// route that hangs until Cloud Run kills it.
-export const AUTOMATED_ACCESS_TIMEOUT_MS = 15_000;
+// NEO-288: hard bound on the handshake (connect + headers + body). A hung
+// handshake is a retryable attempt, not a route that hangs until Cloud Run
+// kills it. 8s, not the validation path's 15s: a real answer is sub-second,
+// this is a hang bound, and the fresh-login budget has to fit Convex's 60s
+// abort — MAX_ATTEMPTS × this + jittered backoffs = 5×8s + 9.75s = 49.75s,
+// pinned by a unit test. (The signin POST and the post-login validation GET
+// remain unbounded, as before this ticket.)
+export const AUTOMATED_ACCESS_TIMEOUT_MS = 8_000;
 
 // Retry budget for transient SportLots failures.
 // Backoffs apply BETWEEN attempts: 1→2, 2→3, 3→4, 4→5.
 // Total max added sleep ≈ 7.5s; well inside Cloud Run's default timeout.
-const MAX_ATTEMPTS = 5;
-const BACKOFFS_MS = [500, 1000, 2000, 4000];
+export const MAX_ATTEMPTS = 5;
+export const BACKOFFS_MS = [500, 1000, 2000, 4000];
 
 // NEO-43: the synthetic canary runs a reduced retry budget.
 //

@@ -48,6 +48,19 @@ export interface AutomatedAccessCredential {
 let cached: { value: AutomatedAccessCredential; expiresAt: number } | undefined;
 let client: SecretManagerServiceClient | undefined;
 
+// Bumped only by invalidate(). A read captures the generation live when it
+// STARTS; when it resolves it only writes the cache if the generation is
+// still the one it captured. Without this, a slow read already in flight
+// when invalidate() runs can resolve afterwards and silently write back the
+// very value invalidate() was called to discard — undoing the invalidation
+// for every subsequent caller until the next one happens to fire.
+//
+// Two reads that start concurrently with no invalidate() between them share
+// the same generation, so whichever resolves last still wins — that is the
+// "acceptable double read" case (both are equally fresh; there is no
+// correct tiebreak), left as before.
+let generation = 0;
+
 function getClient(): SecretManagerServiceClient {
   // Constructed on first use, not at import: building the client resolves
   // ADC, which must not happen just because the adapter module was loaded.
@@ -105,6 +118,7 @@ async function readFromSecretManager(): Promise<AutomatedAccessCredential | unde
 export async function getAutomatedAccessCredential(): Promise<AutomatedAccessCredential> {
   const now = Date.now();
   if (cached && cached.expiresAt > now) return cached.value;
+  const startedAtGeneration = generation;
   let value: AutomatedAccessCredential | undefined;
   try {
     value = await readFromSecretManager();
@@ -119,7 +133,14 @@ export async function getAutomatedAccessCredential(): Promise<AutomatedAccessCre
   if (!value) {
     throw new Error(AUTOMATED_ACCESS_NOT_CONFIGURED_ERROR);
   }
-  cached = { value, expiresAt: now + AUTOMATED_ACCESS_CACHE_TTL_MS };
+  // Only write the cache if nothing invalidated it while this read was in
+  // flight. A concurrent, equally-fresh read is fine either way (the "double
+  // read" case above); what must never happen is a stale read that was
+  // already in flight BEFORE an invalidate() silently undoing it by writing
+  // the very value invalidate() was called to discard.
+  if (generation === startedAtGeneration) {
+    cached = { value, expiresAt: Date.now() + AUTOMATED_ACCESS_CACHE_TTL_MS };
+  }
   return value;
 }
 
@@ -131,4 +152,7 @@ export async function getAutomatedAccessCredential(): Promise<AutomatedAccessCre
  */
 export function invalidateAutomatedAccessCredential(): void {
   cached = undefined;
+  // Bump so any read already in flight (started before this call) discards
+  // its result instead of writing it back — see `generation` above.
+  generation++;
 }

@@ -589,6 +589,109 @@ describe("SportlotsAdapter.login — NEO-288 automated-access handshake", () => 
     }
   });
 
+  it("a signin NETWORK THROW (not just a status) also mints a fresh authId per retry, never replaying the first", async () => {
+    // Same guarantee as the 5xx case above, but for the OTHER retryable
+    // signin failure shape: a thrown fetch (ECONNRESET-style) rather than an
+    // HTTP status. A reused authId is refused by SportLots, so every retry —
+    // regardless of why the previous attempt failed — must mint its own.
+    let minted = 0;
+    const carried = [];
+    const stub = scriptedLoginFetch(
+      [new Error("ECONNRESET"), new Error("ECONNRESET"), response({ status: 200, body: OK_LOGIN_BODY })],
+      undefined,
+      {
+        onAutomatedAccess: () => {
+          minted++;
+          return response({
+            status: 200,
+            body: JSON.stringify({ success: true, authId: `auth-${minted}` }),
+          });
+        },
+      },
+    );
+    const SportlotsAdapter = loadSportlotsAdapter();
+    const restore = stubFetch(async (url, opts) => {
+      if (String(url).includes("signin.tpl")) {
+        carried.push(new URLSearchParams(opts.body).get("turnstile_auth_id"));
+      }
+      return stub(url, opts);
+    });
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, true);
+      assert.equal(stub.loginCalls(), 3);
+      assert.equal(
+        stub.automatedAccessCalls(),
+        3,
+        "one handshake per attempt, including the two that threw on signin",
+      );
+      assert.deepEqual(
+        new Set(carried).size,
+        3,
+        "all three carried authIds are distinct — none reused across the network-throw retries",
+      );
+      assert.deepEqual(carried, ["auth-1", "auth-2", "auth-3"]);
+    } finally {
+      restore();
+    }
+  });
+
+  it("transient (bootstrap) credentials still run the handshake exactly once per attempt", async () => {
+    // NEO-141 bootstrap path: no stored secret exists yet, so getCredentials
+    // throws and the request-body {username, password} drives the sign-in
+    // directly. NEO-288's handshake must still run on this path — it is not
+    // conditioned on a stored secret existing.
+    const SportlotsAdapter = loadSportlotsAdapter({
+      credentials: () => {
+        throw new Error("Credentials not found for key: sportlots-credentials-new");
+      },
+    });
+    let signinBody = null;
+    const stub = cacheAwareFetch({
+      onSignin: (opts) => {
+        signinBody = new URLSearchParams(opts.body);
+        return response({ status: 200, body: OK_LOGIN_BODY });
+      },
+    });
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-new", {
+        transientCredentials: { username: "new@example.com", password: "placeholder-value" },
+      });
+      assert.equal(result.success, true);
+      assert.equal(stub.automatedAccessCalls(), 1, "the bootstrap path handshakes exactly once");
+      assert.equal(stub.signinCalls(), 1);
+      assert.equal(signinBody.get("turnstile_auth_id"), AA_AUTH_ID);
+    } finally {
+      restore();
+    }
+  });
+
+  it("the canary's handshake failure retries CANARY_MAX_ATTEMPTS (2), not the full MAX_ATTEMPTS (5)", async () => {
+    // The reduced canary budget (NEO-43) must hold even when the failure is
+    // at the NEO-288 handshake stage, not only at signin — a canary run must
+    // still surface a real, repeated marketplace fault quickly rather than
+    // masking it behind five retries.
+    const SportlotsAdapter = loadSportlotsAdapter({
+      credentials: { username: "canary@example.com", password: "canary-placeholder-value" },
+    });
+    const stub = cacheAwareFetch({
+      onAutomatedAccess: () => response({ status: 503, body: "upstream" }),
+    });
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-canary", {
+        canary: true,
+      });
+      assert.equal(result.success, false);
+      assert.equal(result.retryable, true);
+      assert.equal(stub.automatedAccessCalls(), 2, "canary budget (2), not MAX_ATTEMPTS (5)");
+      assert.equal(stub.signinCalls(), 0);
+    } finally {
+      restore();
+    }
+  });
+
   it("a valid cached cookie makes ZERO handshake calls (re-auth path is untouched)", async () => {
     const SportlotsAdapter = loadSportlotsAdapter({
       credentials: {
@@ -2140,6 +2243,31 @@ describe("SportlotsAdapter — NEO-281 stored-cookie validation verdicts", () =>
     assert.equal(VALIDATE_BACKOFFS_MS.length, VALIDATE_MAX_ATTEMPTS - 1, "one backoff between each pair of attempts");
     const backoffs = VALIDATE_BACKOFFS_MS.reduce((a, b) => a + b, 0) * JITTER_MAX_FACTOR;
     const worstCaseMs = VALIDATE_MAX_ATTEMPTS * DEFAULT_VALIDATE_TIMEOUT_MS + backoffs;
+    assert.ok(
+      worstCaseMs < 55_000,
+      `worst case ${worstCaseMs}ms must stay under 55s (Convex aborts at 60s)`,
+    );
+  });
+
+  it("worst-case fresh-login handshake budget stays under Convex's 60s login ceiling (NEO-288)", () => {
+    // Every attempt can spend the full handshake timeout (a hung
+    // /u/node/automated-access is retryable), so the bounded part of the
+    // fresh-login path is MAX_ATTEMPTS × AUTOMATED_ACCESS_TIMEOUT_MS plus the
+    // jittered backoffs: 5 × 8s + 7.5s × 1.3 = 49.75s. At the previous 15s it
+    // was 84.75s — Convex would have aborted first and recorded `timeout`
+    // while the service later logged `automated_access`, two records for one
+    // failure. The signin POST and post-login validation GET are unbounded
+    // (pre-existing) and are outside this arithmetic.
+    const {
+      MAX_ATTEMPTS,
+      BACKOFFS_MS,
+      AUTOMATED_ACCESS_TIMEOUT_MS,
+      JITTER_MAX_FACTOR,
+    } = require("../dist/adapters/sportlots-adapter");
+    assert.equal(MAX_ATTEMPTS, 5);
+    assert.equal(BACKOFFS_MS.length, MAX_ATTEMPTS - 1, "one backoff between each pair of attempts");
+    const backoffs = BACKOFFS_MS.reduce((a, b) => a + b, 0) * JITTER_MAX_FACTOR;
+    const worstCaseMs = MAX_ATTEMPTS * AUTOMATED_ACCESS_TIMEOUT_MS + backoffs;
     assert.ok(
       worstCaseMs < 55_000,
       `worst case ${worstCaseMs}ms must stay under 55s (Convex aborts at 60s)`,

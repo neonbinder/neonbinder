@@ -1199,9 +1199,10 @@ function isTransientLoginFailure(errorClass: string | undefined): boolean {
  * - `"challenge"`: the site interposed a bot check or refused the login as a
  *   non-human request. For SportLots this now includes the refusal bodies it
  *   returns to automated sign-ins (`Invalid login request.`, `Security
- *   verification failed…`), which the browser service classifies as
- *   `challenge` rather than `invalid_credentials` — the password was never
- *   evaluated.
+ *   verification failed…`): the service's login diagnostic detects them as a
+ *   challenge page and `loginFailureOutcome` then FORCES `error_class:
+ *   "challenge"` whatever the adapter's error string was — the password was
+ *   never evaluated.
  * - `"automated_access"`: the browser service's owner-issued automated-access
  *   key was refused or is missing on its side (a 502 on the login route). The
  *   user's credentials never reached the marketplace.

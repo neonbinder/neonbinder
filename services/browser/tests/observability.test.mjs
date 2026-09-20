@@ -418,3 +418,40 @@ describe("automated_access — NEO-288 error_class", () => {
     assert.ok(!("automated_access" in absent), "omitted, not null/false, when the handshake never ran");
   });
 });
+
+describe("loginFailureOutcome — a detected challenge page forces error_class challenge (NEO-288 S1)", () => {
+  it("502 + challenge when the diagnostic detected a challenge, whatever the string says", () => {
+    // SportLots' Turnstile refusals land in the adapter's no-cookies branch
+    // behind "No session cookies received. Check credentials." (→ other).
+    // Convex's site-side branch keys on the class, so the tag is forced here.
+    const out = loginFailureOutcome(
+      { credentialRejected: false, diagnostic: { challengeDetected: true } },
+      "No session cookies received. Check credentials.",
+    );
+    assert.deepEqual(out, { status: 502, errorClass: "challenge" });
+  });
+
+  it("reauth_required still wins over a detected challenge (422)", () => {
+    const out = loginFailureOutcome(
+      { reauthRequired: true, diagnostic: { challengeDetected: true } },
+      "Re-authentication required",
+    );
+    assert.deepEqual(out, { status: 422, errorClass: "reauth_required" });
+  });
+
+  it("a detected challenge wins over credentialRejected (the adapter vetoes that combination anyway)", () => {
+    const out = loginFailureOutcome(
+      { credentialRejected: true, diagnostic: { challengeDetected: true } },
+      "No session cookies received. Check credentials.",
+    );
+    assert.deepEqual(out, { status: 502, errorClass: "challenge" });
+  });
+
+  it("no diagnostic / challengeDetected false → unchanged derivation", () => {
+    assert.deepEqual(
+      loginFailureOutcome({ diagnostic: { challengeDetected: false } }, "No session cookies received. Check credentials."),
+      { status: 502, errorClass: "other" },
+    );
+    assert.deepEqual(loginFailureOutcome({ credentialRejected: true }, "x"), { status: 422, errorClass: "invalid_credentials" });
+  });
+});

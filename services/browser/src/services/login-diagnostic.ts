@@ -108,9 +108,14 @@ const CHALLENGE_PATTERNS: RegExp[] = [
   // turnstile_auth_id with one of these — that is us being blocked, never a
   // verdict on the seller's password, so it must NOT read as a credential
   // rejection (challengeDetected vetoes credentialRejected in the adapter).
+  //
+  // Deliberately NOT a bare /turnstile/ token: the live login FORM embeds the
+  // widget (`cf-turnstile`, `turnstile_auth_id`), so if a bad-password answer
+  // is ever that form, a bare token would mask a genuine rejection as a
+  // challenge — five retries of the wrong password, then a 502 that pages.
+  // Only the two refusal sentences themselves are tells.
   /security verification failed/i,
   /invalid login request/i,
-  /turnstile/i,
 ];
 
 /**

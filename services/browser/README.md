@@ -212,12 +212,17 @@ Keep-one pruning applies as for every other secret here (NEO-115).
 
 **Failure semantics.** The handshake never skips silently. A missing,
 unreadable or malformed secret, a `401`/`403`/other `4xx`, a `2xx` whose body is
-not `{"success": true, "authId": "<non-empty>"}`, or an unparsable body fails
-the login with `error_class: automated_access` → **502, pages** — this is our
-key and our outage, never the seller's password, so `credentialRejected` is
-never set and Convex writes nothing about the user's session. `429`, `5xx`, a
-network error or the 15 s timeout are retryable within the normal
-`MAX_ATTEMPTS` budget and classify the same way. The `browser_login_call` log
+not `{"success": true, "authId": "<non-empty>"}`, a `3xx` (the endpoint is
+fetched with `redirect: "manual"` — a redirect is a refusal, fail closed; if
+every login fails at attempt 1 check for a redirect as well as the key), or an
+unparsable body fails the login with `error_class: automated_access` →
+**502, pages** — this is our key and our outage, never the seller's password,
+so `credentialRejected` is never set and Convex writes nothing about the
+user's session. `429`, `5xx`, a network error or the 8 s timeout are retryable
+within the normal `MAX_ATTEMPTS` budget and classify the same way; the bounded
+worst case (5 × 8 s + jittered backoffs ≈ 50 s) is pinned under Convex's 60 s
+abort by a unit test. The signin POST and the post-login validation GET remain
+unbounded, as they were before this change. The `browser_login_call` log
 line carries `automated_access: true|false` (omitted when the login never
 reached the handshake, e.g. a cached-cookie re-auth).
 

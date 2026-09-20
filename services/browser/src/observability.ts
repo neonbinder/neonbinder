@@ -153,7 +153,11 @@ export function classifyBrowserError(raw: string | undefined): string | undefine
  * which returns a closed set of literals and never echoes it.
  */
 export function loginFailureOutcome(
-  result: { credentialRejected?: boolean; reauthRequired?: boolean },
+  result: {
+    credentialRejected?: boolean;
+    reauthRequired?: boolean;
+    diagnostic?: { challengeDetected?: boolean };
+  },
   raw: string | undefined,
 ): { status: 422 | 502; errorClass: string | undefined } {
   // NEO-141: checked FIRST. This is the authoritative "the stored session is
@@ -173,6 +177,26 @@ export function loginFailureOutcome(
   // them would leave Convex re-deriving the difference from free text.
   if (result.reauthRequired) {
     return { status: 422, errorClass: "reauth_required" };
+  }
+  // NEO-288: force the tag rather than deriving it, same as the two
+  // neighbours. When the adapter's diagnostic positively detected a challenge
+  // page, the failure IS the marketplace blocking us, whatever the
+  // caller-facing string says. SportLots' Turnstile refusal bodies ("Security
+  // verification failed…", "Invalid login request.") land in the adapter's
+  // no-cookies branch behind the generic "No session cookies received. Check
+  // credentials." error, which classifies as "other" — so without this
+  // Convex's site-side `challenge` branch (SITE_SIDE_ERROR_CLASSES in
+  // apps/web/convex/credentials.ts) was unreachable for SportLots and the user
+  // was told to check their password. Still 502: a challenge is our outage
+  // and pages.
+  //
+  // Ordering: below reauthRequired (a dead session is a verdict we hold, and
+  // the user genuinely has to sign in again) but ABOVE credentialRejected —
+  // the adapter's own invariant is that a challenge vetoes a rejection ("it
+  // must page whatever else the page says"), so if both ever arrive here the
+  // block page wins rather than being decided by field order.
+  if (result.diagnostic?.challengeDetected === true) {
+    return { status: 502, errorClass: "challenge" };
   }
   if (result.credentialRejected) {
     // Force the tag rather than deriving it. BSC's caller-facing string is
