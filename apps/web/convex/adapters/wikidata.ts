@@ -80,9 +80,50 @@ const USER_AGENT = "NeonBinder/1.0 (https://neonbinder.io; jburich@neonbinder.io
  * 10s is comfortably above a healthy query — a single direct SPARQL call
  * returns in ~0.4s — while short enough that a genuinely stuck request gives
  * up long before a user would. Each lookup makes at most two of these
- * sequentially (search + detail), so the worst case per entity is ~20s.
+ * sequentially (search + detail); with the one retry below, the worst case
+ * per `runSparql` call is 10 s + 1.5 s + 10 s = 21.5 s, and per entity
+ * 2 × 21.5 = 43 s. See `WIKIDATA_RETRY_BACKOFF_MS` for the budget check.
  */
 const WIKIDATA_FETCH_TIMEOUT_MS = 10_000;
+
+/**
+ * NEO-288 — ONE retry (two attempts total) on a TRANSPORT failure, with a
+ * fixed pause between them.
+ *
+ * Why: query.wikidata.org flaps. On 2026-09-20 the same trivial query
+ * answered in 0.15 s, then 12–30 s, then 0.15 s again, for hours. With a
+ * single attempt, one 5xx / 429 / timed-out probe turned a real player into
+ * "No Wikidata match found" — a permanent, operator-visible answer to a
+ * transient question — and the live-proof E2E flow
+ * (`.maestro/flows/admin/player-live-wikidata-enrichment.yaml`) went red on
+ * one blip. A second attempt after a short pause is enough to ride out the
+ * blip without turning the lane into a retry storm.
+ *
+ * What retries: a status ≥ 500, a 429, a timeout abort, or a thrown fetch
+ * (DNS, reset, TLS). What does NOT: any other 4xx — a 400 is a bad query and
+ * asking it again is the same bad query — and a 200, ever, even one whose
+ * body fails to parse.
+ *
+ * Budget arithmetic, checked against every caller (2026-09-20):
+ *   per `runSparql` call, worst case: 10 s + 1.5 s + 10 s = 21.5 s
+ *   per entity (search + detail):     2 × 21.5 s          = 43 s
+ *   - `wikidataPool` (convex/wikidataPool.ts): the retry runs INSIDE the
+ *     same pooled slot — it is the same call — so parallelism stays ≤ 5 and
+ *     the pool's own no-retry policy is untouched (it never re-enqueues).
+ *   - the wizard's per-row wait: rows stream in one-by-one on the reactive
+ *     `getBatch`; `setup.yaml` gates the SAVE (120 s, fixture-backed now)
+ *     and the stale-row cron ages a pending row only after
+ *     `ENTITY_REVIEW_STALE_MS` (30 min) — 43 s is inside both.
+ *   - the live-proof flow's 200 s ceiling was sized as 20 s (lookup) + 180 s
+ *     (lane contention); the lookup term is now 43 s, so the sum is 223 s.
+ *     The flow's own comment records that; its timeout is a canary, not a
+ *     stopwatch, and stays at 200 s until CI measures otherwise.
+ *   - Convex actions time out at 10 min; 43 s per entity is nowhere near.
+ */
+const WIKIDATA_RETRY_BACKOFF_MS = 1_500;
+
+/** Attempts per `runSparql` call, including the first. Exactly two. */
+const WIKIDATA_MAX_ATTEMPTS = 2;
 
 /**
  * NEO-96: everything this module needs to know about a sport, resolved by the
@@ -152,40 +193,101 @@ function sparqlStringLiteral(raw: string): string {
 }
 
 /**
- * Run a SPARQL query against Wikidata. Returns null on any non-OK
- * response (including 429 rate-limit and 5xx), and null on a timeout or
- * network error — a throttled or slow request aborts after
- * `WIKIDATA_FETCH_TIMEOUT_MS` and is mapped to null like any other failure,
- * so the caller resolves its row to "error" rather than awaiting forever.
- *
- * Concurrency is NOT this function's concern: the `wikidataPool` bounds how
- * many of these run at once across the whole deployment (≤5). The timeout
- * bounds how LONG any single one may run. Together they are what make the
- * "Looking up…" hang impossible — the pool keeps us under Wikidata's
- * 5-parallel-per-IP ceiling so it does not throttle us, and the timeout
- * guarantees termination even if it does. This function does not retry.
+ * The outcome of ONE round trip to the SPARQL endpoint, classified so
+ * `runSparql` can decide whether a second attempt is worth making. `reason`
+ * is the value the retry log line carries: never the query, never the body.
  */
-async function runSparql(query: string, trace?: LookupTrace): Promise<SparqlResults | null> {
-  const url = `${SPARQL_ENDPOINT}?query=${encodeURIComponent(query)}&format=json`;
+type SparqlAttemptOutcome =
+  | { ok: true; results: SparqlResults }
+  | { ok: false; retryable: boolean; reason: string };
+
+/**
+ * One attempt. Never throws: every failure is mapped to `{ ok: false }` with
+ * a retryability verdict, so the loop in `runSparql` is the only place that
+ * decides what to do about it.
+ */
+async function sparqlAttempt(url: string): Promise<SparqlAttemptOutcome> {
+  let response: Response;
   try {
-    const response = await fetch(url, {
+    response = await fetch(url, {
       headers: {
         Accept: "application/sparql-results+json",
         "User-Agent": USER_AGENT,
       },
       // Aborts a throttled/stalled request instead of hanging the action (and
       // with it the review row) indefinitely — see WIKIDATA_FETCH_TIMEOUT_MS.
-      // A fired timeout rejects fetch with a TimeoutError, caught below → null.
+      // A fired timeout rejects fetch with a TimeoutError, classified below.
       signal: AbortSignal.timeout(WIKIDATA_FETCH_TIMEOUT_MS),
     });
-    if (!response.ok) {
-      console.warn(`[wikidata] SPARQL ${response.status}`);
-      if (trace) trace.transportFailed = true;
-      return null;
-    }
-    return (await response.json()) as SparqlResults;
   } catch (error) {
+    // `AbortSignal.timeout` rejects with a DOMException named "TimeoutError"
+    // on Node/undici; "AbortError" is accepted too because some runtimes
+    // spell the same event that way, and the treatment is identical. Anything
+    // else the fetch threw (DNS, connection reset, TLS) is a network failure.
+    const name = error instanceof Error ? error.name : "";
+    const isTimeout = name === "TimeoutError" || name === "AbortError";
     console.warn(`[wikidata] SPARQL fetch failed:`, error);
+    return { ok: false, retryable: true, reason: isTimeout ? "timeout" : "network" };
+  }
+  if (!response.ok) {
+    console.warn(`[wikidata] SPARQL ${response.status}`);
+    // 5xx and 429 are the endpoint's "not right now"; every other 4xx is
+    // "not like that", which a second identical request cannot change.
+    const retryable = response.status >= 500 || response.status === 429;
+    return { ok: false, retryable, reason: `http_${response.status}` };
+  }
+  try {
+    return { ok: true, results: (await response.json()) as SparqlResults };
+  } catch (error) {
+    // A 200 whose body will not parse. Not retried: the rule is "never retry
+    // a 200", and a malformed body from a healthy endpoint is not transient.
+    console.warn(`[wikidata] SPARQL body unreadable:`, error);
+    return { ok: false, retryable: false, reason: "body" };
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Run a SPARQL query against Wikidata. Returns null on any non-OK
+ * response (including 429 rate-limit and 5xx), and null on a timeout or
+ * network error — a throttled or slow request aborts after
+ * `WIKIDATA_FETCH_TIMEOUT_MS` and is mapped to null like any other failure,
+ * so the caller resolves its row to "error" rather than awaiting forever.
+ *
+ * NEO-288: a TRANSPORT failure (5xx, 429, timeout, thrown fetch) on the
+ * first attempt is retried exactly once after `WIKIDATA_RETRY_BACKOFF_MS`;
+ * the arithmetic and the reasoning live on that constant. A 4xx other than
+ * 429 is not retried, and a 200 is never retried. The `LookupTrace` marker
+ * trips only when the LAST attempt also failed on transport — a recovered
+ * retry is a success, not a transport failure, and the fixture capture
+ * (`captureOne`) relies on exactly that reading.
+ *
+ * Concurrency is NOT this function's concern: the `wikidataPool` bounds how
+ * many of these run at once across the whole deployment (≤5). The timeout
+ * bounds how LONG any single one may run. Together they are what make the
+ * "Looking up…" hang impossible — the pool keeps us under Wikidata's
+ * 5-parallel-per-IP ceiling so it does not throttle us, and the timeout
+ * guarantees termination even if it does. The retry happens INSIDE the
+ * caller's pooled slot, so it never adds a parallel request.
+ *
+ * Exported for the retry tests (`wikidata.retry.test.ts`); no caller outside
+ * this module should reach for it — the `lookup*` functions are the surface.
+ */
+export async function runSparql(query: string, trace?: LookupTrace): Promise<SparqlResults | null> {
+  const url = `${SPARQL_ENDPOINT}?query=${encodeURIComponent(query)}&format=json`;
+  for (let attempt = 1; ; attempt++) {
+    const outcome = await sparqlAttempt(url);
+    if (outcome.ok) return outcome.results;
+    if (outcome.retryable && attempt < WIKIDATA_MAX_ATTEMPTS) {
+      // Structured, and deliberately WITHOUT the query: the existing lines
+      // never carry it, and a query embeds operator-typed names.
+      console.warn(JSON.stringify({ msg: "wikidata_sparql_retry", reason: outcome.reason }));
+      await sleep(WIKIDATA_RETRY_BACKOFF_MS);
+      continue;
+    }
     if (trace) trace.transportFailed = true;
     return null;
   }

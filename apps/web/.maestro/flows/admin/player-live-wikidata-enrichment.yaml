@@ -234,17 +234,27 @@ tags:
 # waited on — this is Wikidata's latency plus a shared queue in front of it.
 #
 # THE CEILING: 200000, from two measured numbers and nothing else —
-#   * the lookup itself is bounded server-side at 2 × `WIKIDATA_FETCH_TIMEOUT_MS`
-#     (`convex/adapters/wikidata.ts`, 10 000 ms each: the `EntitySearch` QID
-#     probe, then the detail query) = 20 s. Career-team resolution after that
-#     is local Convex queries and the write is one mutation — not network;
+#   * the lookup itself is bounded server-side by `WIKIDATA_FETCH_TIMEOUT_MS`
+#     (`convex/adapters/wikidata.ts`, 10 000 ms per attempt) across two
+#     sequential SPARQL calls (the `EntitySearch` QID probe, then the detail
+#     query). Since NEO-288 each call gets ONE retry after a fixed 1.5 s
+#     backoff on a transport failure (5xx / 429 / timeout / thrown fetch), so
+#     the worst case per call is 10 + 1.5 + 10 = 21.5 s and per player
+#     2 × 21.5 = 43 s — reached only when all FOUR attempts hit the 10 s
+#     ceiling, i.e. an outage, not a blip. A single blip now costs one
+#     10 s timeout plus 1.5 s, where it used to cost the whole assertion.
+#     Career-team resolution after that is local Convex queries and the
+#     write is one mutation — not network;
 #   * lane contention: `enrichPlayer` is enqueued on the SAME 5-wide
 #     `wikidataPool` every runner's review-wizard drain uses, and the pool
 #     claims in enqueue order. The largest drain any concurrent runner can
 #     put ahead of this item is `inserts-1996-score-one-nb-set-two-bsc-sources`'s
 #     ~200 uncovered 1996 names, which that flow budgets at 180 s ("~3s/item
 #     five-wide"); the seed's own drain is fixture-backed now and no longer
-#     competes. 20 + 180 = 200 s.
+#     competes. Sized at 20 + 180 = 200 s BEFORE the retry; the retry's
+#     43 s worst case would sum to 223 s, but that case is four consecutive
+#     10 s timeouts behind a fully contended lane — an outage this flow
+#     SHOULD report, so the ceiling is deliberately NOT raised for it.
 # It is under the 240 s the setup track uses (`setup.yaml`, the cold-sync
 # ceiling) — the previous largest wait in the suite — and it is a CANARY, not
 # a stopwatch: on an idle lane the id lands in seconds (scheduler hop + two
@@ -252,7 +262,8 @@ tags:
 # runs and record the typical figure here; a run that needs the ceiling with
 # query.wikidata.org healthy is a product finding (lane starvation), not a
 # bigger number. What VOIDS this figure: a change to `WIKIDATA_FETCH_TIMEOUT_MS`,
-# to `WIKIDATA_MAX_PARALLELISM`, or a new flow that drains a bigger set through
+# to `WIKIDATA_RETRY_BACKOFF_MS` or `WIKIDATA_MAX_ATTEMPTS`, to
+# `WIKIDATA_MAX_PARALLELISM`, or a new flow that drains a bigger set through
 # the wizard.
 #
 # The matcher is a FULL match of the link's own text (README → pressKey
