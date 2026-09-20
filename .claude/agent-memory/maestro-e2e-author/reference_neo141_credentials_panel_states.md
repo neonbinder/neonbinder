@@ -31,7 +31,15 @@ failure. Gate first with `extendedWaitUntil: visible: ".*Connected to {label}.*"
 ## Message strings that matter to assertions
 - rejected connect: `Could not sign in to {label}. Nothing was saved — check your
   username and password and try again.` — assert
-  `.*Could not sign in to {label}.*Nothing was saved.*`
+  `.*Could not sign in to {label}.*Nothing was saved.*`. **BSC only.** Since
+  NEO-288 SportLots never evaluates a password for any account but the
+  seed's (account-scoped automated-access key): a fake-account login lands as
+  a challenge and renders the site-side `siteMessage` instead — assert
+  `.*SportLots wouldn't let us in the door.*` + the form still on screen. See
+  README → "SportLots never rejects a password in E2E (NEO-288)".
+- site-side refusal (challenge / automated_access; stores nothing):
+  `{label} wouldn't let us in the door — that's on them, not your password.
+  Nothing changed on your end. Give it another go in a bit.`
 - transport failure (do NOT let this count as a pass): `Could not reach {label}
   to verify your credentials. Nothing was saved — please try again.`
 - successful connect: `Connected to {label} successfully. Your password was not

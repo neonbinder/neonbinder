@@ -1036,6 +1036,27 @@ source; see `SET-REGISTRY.md` → "While SportLots is on pause") and a
 **BSC-only Base still reads as unmapped**, so its picker re-opens on every
 visit and the read-only drills leave it with Cancel → Close.
 
+## SportLots never rejects a password in E2E (NEO-288)
+
+SportLots sign-in goes through an owner-issued automated-access handshake
+(`services/browser/src/adapters/sportlots-adapter.ts`), and the key is scoped
+to ONE SportLots account — the one the seed and the login probes use. For any
+other account, including a deliberately fake one, SportLots never evaluates
+the password: it answers with its refusal body, the browser service's login
+diagnostic classifies that as a challenge (`error_class: challenge`,
+`credentialRejected: false`), and Convex renders the per-site `siteMessage`
+("SportLots wouldn't let us in the door — that's on them, not your
+password…", `SITE_SIDE_ERROR_CLASSES` in `convex/credentials.ts`) and stores
+nothing. So the bad-password copy — "Could not sign in to SportLots. Nothing
+was saved — check your username and password…" — is **unreachable** for
+SportLots from a flow, and a step that asserts it is asserting a state the
+product cannot produce. Assert the site-side copy (a stable, platform-named
+substring such as `.*SportLots wouldn't let us in the door.*`) plus the
+"nothing stored" state, exactly as `profile/credentials-lifecycle.yaml` step
+(b) does; the transient "Could not reach SportLots…" copy still must not
+match, since that is the browser service not answering (R2). BSC is
+unaffected and still produces a genuine credential rejection.
+
 ## Enrichment fixtures (NEO-289)
 
 The entity-review wizard enriches players, teams and leagues from Wikidata
