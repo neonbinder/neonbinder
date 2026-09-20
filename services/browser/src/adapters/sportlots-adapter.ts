@@ -8,9 +8,29 @@ import {
 } from "./base-adapter";
 import { Credentials, SecretsManagerService } from "../services/secrets-manager";
 import { buildLoginDiagnostic } from "../services/login-diagnostic";
+import {
+  AUTOMATED_ACCESS_NOT_CONFIGURED_ERROR,
+  getAutomatedAccessCredential,
+  invalidateAutomatedAccessCredential,
+} from "../services/sportlots-automated-access";
 
 // SportLots login POST endpoint — recorded as diagnostic.url on failures.
 const SL_LOGIN_URL = "https://www.sportlots.com/cust/custbin/signin.tpl";
+
+// NEO-288: SportLots' "Automated Access" handshake. On 2026-09-17 SportLots
+// put Cloudflare Turnstile in front of signin.tpl; the SportLots owner issued
+// us a keyId/secret pair and this endpoint, which trades the pair for a
+// short-lived, SINGLE-USE `authId` that the signin POST then carries as
+// `turnstile_auth_id`. One handshake per signin attempt, never reused.
+//
+// The pair travels ONLY in the HTTPS POST body to this URL. Never a query
+// string, never a header, never a log line.
+export const SL_AUTOMATED_ACCESS_URL = "https://www.sportlots.com/u/node/automated-access";
+
+// NEO-288: hard bound on the handshake (connect + headers + body). Mirrors
+// DEFAULT_VALIDATE_TIMEOUT_MS; a hung handshake is a retryable attempt, not a
+// route that hangs until Cloud Run kills it.
+export const AUTOMATED_ACCESS_TIMEOUT_MS = 15_000;
 
 // Retry budget for transient SportLots failures.
 // Backoffs apply BETWEEN attempts: 1→2, 2→3, 3→4, 4→5.
@@ -147,6 +167,25 @@ async function discardBody(response: { body?: { cancel: () => Promise<void> } | 
     /* already consumed, locked or absent — nothing to release */
   }
 }
+
+// NEO-288: the outcome of one automated-access handshake.
+//
+// Every failure string here contains the phrase "automated access" so it
+// classifies as error_class `automated_access` (see classifyBrowserError) —
+// 502, pages: a missing or revoked key is OUR outage, never the seller's.
+// And like SESSION_VALIDATION_TRANSIENT_ERROR they avoid every substring that
+// would classify as a CALLER error ("invalid" + "credential"/"password",
+// "re-authentication") or as a different fault ("timed out"/"timeout",
+// "captcha"/"challenge"); `automated_access` is checked first but the strings
+// stay clean so a reordering cannot silently reclassify them.
+type AutomatedAccessOutcome =
+  | {
+      ok: true;
+      authId: string;
+      /** The handshake material, for exact-value redaction of any page text. */
+      secrets: { authId: string; keyId: string; secret: string };
+    }
+  | { ok: false; error: string; retryable: boolean };
 
 export interface SportlotsAdapterOptions {
   /** Per-probe timeout for stored-cookie validation. Default 15s. */
@@ -509,6 +548,124 @@ export class SportlotsAdapter extends BaseAdapter {
   }
 
   /**
+   * NEO-288: one automated-access handshake — POST {keyId, secret} and get
+   * back a single-use authId for the signin POST that follows.
+   *
+   * Outcomes:
+   *   2xx, body `{success:true, authId:"…"}`      → ok
+   *   429 / 5xx / thrown fetch / abort (timeout)  → retryable: SportLots
+   *                                                  did not answer
+   *   401 / 403 / any other 4xx, a 2xx whose body is not `success:true` with
+   *   a non-empty string authId, or an unparsable body
+   *                                               → NOT retryable: SportLots
+   *                                                  refused our key. The
+   *                                                  cached credential is
+   *                                                  dropped so a rotated
+   *                                                  value is picked up next
+   *                                                  time.
+   *   credential reader threw                     → NOT retryable, its own
+   *                                                  fixed error
+   *
+   * None of these ever sets credentialRejected: this is OUR key, not the
+   * seller's password, and a refusal is our outage (502, pages).
+   *
+   * SECURITY: only the HTTP status and a boolean are logged. The request
+   * body (keyId, secret), the response body and the authId are never
+   * interpolated into a log line or an error, and the response body is never
+   * handed to buildLoginDiagnostic. The body is read with text() + JSON.parse
+   * inside a try so a non-JSON answer is a refusal, not a throw whose message
+   * quotes the payload.
+   */
+  private async automatedAccessHandshake(
+    log: (msg: string) => void,
+  ): Promise<AutomatedAccessOutcome> {
+    let credential: { keyId: string; secret: string };
+    try {
+      credential = await getAutomatedAccessCredential();
+    } catch (error) {
+      // The reader's only contract is the fixed NOT_CONFIGURED error; report
+      // that constant rather than whatever was thrown, so a client-library
+      // error that quotes its request can never ride into the response.
+      log(`automated access credential unavailable: ${error instanceof Error ? error.name : "Error"}`);
+      return { ok: false, retryable: false, error: AUTOMATED_ACCESS_NOT_CONFIGURED_ERROR };
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), AUTOMATED_ACCESS_TIMEOUT_MS);
+    let status: number;
+    let text: string;
+    try {
+      log("POST /u/node/automated-access");
+      const response = await fetch(SL_AUTOMATED_ACCESS_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ keyId: credential.keyId, secret: credential.secret }),
+        redirect: "manual",
+        signal: controller.signal,
+      });
+      status = response.status;
+      text = await response.text();
+    } catch (error) {
+      const aborted = error instanceof Error && error.name === "AbortError";
+      // summarizeFetchError: a fetch error can quote the request it failed
+      // on, and this request body IS the key.
+      log(
+        `automated access ${aborted ? "did not answer in time" : "threw"}: ${summarizeFetchError(error)}`,
+      );
+      return {
+        ok: false,
+        retryable: true,
+        error: aborted
+          ? "SportLots automated access did not answer in time. Please try again later."
+          : "SportLots automated access did not answer. Please try again later.",
+      };
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (status === 429 || status >= 500) {
+      log(`automated access status=${status} ok=false`);
+      return {
+        ok: false,
+        retryable: true,
+        error: `SportLots automated access did not answer (HTTP ${status}). Please try again later.`,
+      };
+    }
+
+    let authId: string | undefined;
+    if (status >= 200 && status < 300) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        parsed = undefined; // NEVER log the SyntaxError: it quotes the body.
+      }
+      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+        const { success, authId: id } = parsed as Record<string, unknown>;
+        if (success === true && typeof id === "string" && id.length > 0) authId = id;
+      }
+    }
+    log(`automated access status=${status} ok=${authId !== undefined}`);
+    if (authId === undefined) {
+      // 401/403, any other 4xx, a 2xx that is not a grant, or junk: SportLots
+      // refused the key we hold. Drop the cache so a rotated secret version is
+      // read on the next attempt, and stop — replaying a refused key four more
+      // times is four more refusals.
+      invalidateAutomatedAccessCredential();
+      return {
+        ok: false,
+        retryable: false,
+        error: `SportLots automated access was refused (HTTP ${status}).`,
+      };
+    }
+    return {
+      ok: true,
+      authId,
+      secrets: { authId, keyId: credential.keyId, secret: credential.secret },
+    };
+  }
+
+  /**
    * Single login attempt. Sets `retryable: true` on error branches we want the
    * outer loop to retry (transient upstream issues, empty body); leaves it
    * undefined on permanent errors so the caller bails immediately.
@@ -522,6 +679,9 @@ export class SportlotsAdapter extends BaseAdapter {
     const t0 = Date.now();
     const log = (msg: string) =>
       console.log(`[SportLots Adapter] ${msg} (t+${Date.now() - t0}ms, attempt ${attempt}/${MAX_ATTEMPTS})`);
+    // NEO-288: surfaced on the AdapterResponse for the log line. Stays
+    // undefined on paths that never reach the handshake.
+    let automatedAccess: boolean | undefined;
     try {
       log("login start");
       const secretsManager = new SecretsManagerService();
@@ -555,12 +715,36 @@ export class SportlotsAdapter extends BaseAdapter {
         };
       }
 
+      // NEO-288: mint the single-use authId for THIS attempt. Inside the
+      // per-attempt body on purpose — retryLogin re-enters attemptLogin on
+      // every retry, and a reused authId is refused. A failed handshake is
+      // reported on its own terms (automated_access, 502) and never as a
+      // rejection of the seller's password: SportLots was not even asked.
+      const handshake = await this.automatedAccessHandshake(log);
+      automatedAccess = handshake.ok;
+      if (!handshake.ok) {
+        return {
+          success: false,
+          error: handshake.error,
+          retryable: handshake.retryable,
+          automatedAccess,
+        };
+      }
+
       const loginUrl = SL_LOGIN_URL;
       const body = new URLSearchParams({
         email_val: credentials.username,
         psswd: credentials.password,
+        turnstile_auth_id: handshake.authId,
       });
 
+      // Same-IP requirement: SportLots binds the authId to the IP that minted
+      // it. Both POSTs go through Node's default global fetch, whose undici
+      // pool keeps the connection to www.sportlots.com alive between them, so
+      // they share a socket and therefore an egress IP. Cloud Run has no VPC
+      // egress / NAT configured today, so there is no per-request IP hop to
+      // worry about either; if a VPC connector or a proxy is ever added, both
+      // requests must still leave through the same address.
       log("POST /cust/custbin/signin.tpl");
       const response = await fetch(loginUrl, {
         method: "POST",
@@ -577,6 +761,7 @@ export class SportlotsAdapter extends BaseAdapter {
           success: false,
           error: "SportLots rate limit exceeded. Please try again later.",
           retryable: true,
+          automatedAccess: true,
         };
       }
       if (response.status >= 500) {
@@ -585,6 +770,7 @@ export class SportlotsAdapter extends BaseAdapter {
           success: false,
           error: `SportLots is unavailable (HTTP ${response.status}). Please try again later.`,
           retryable: true,
+          automatedAccess: true,
         };
       }
       if (response.status >= 400) {
@@ -592,6 +778,7 @@ export class SportlotsAdapter extends BaseAdapter {
         return {
           success: false,
           error: `SportLots returned an error (HTTP ${response.status}).`,
+          automatedAccess: true,
         };
       }
 
@@ -632,7 +819,14 @@ export class SportlotsAdapter extends BaseAdapter {
         // src/index.ts, which logs challenge_detected and nothing else).
         const diagnostic = buildLoginDiagnostic(
           { url: loginUrl, rawText: responseBody },
-          { email: credentials.username, password: credentials.password },
+          {
+            email: credentials.username,
+            password: credentials.password,
+            // NEO-288: exact-value redaction of the handshake material, in
+            // case SportLots ever reflects the submitted turnstile_auth_id
+            // (or worse) into the page it answers with.
+            ...handshake.secrets,
+          },
         );
         log(
           `no-cookies diagnostic: challengeDetected=${diagnostic.challengeDetected} ` +
@@ -656,6 +850,7 @@ export class SportlotsAdapter extends BaseAdapter {
         return {
           success: false,
           error: "No session cookies received. Check credentials.",
+          automatedAccess: true,
           // NEO-100: only retry when we DON'T know it was a rejection. The
           // retry exists for the blank/slow body case; replaying a login
           // SportLots has already explicitly refused just spends four more
@@ -701,6 +896,7 @@ export class SportlotsAdapter extends BaseAdapter {
             email: credentials.username,
             password: credentials.password,
             token: cookieString,
+            ...handshake.secrets,
           },
         );
         log(`validation-failed diagnostic: challengeDetected=${diagnostic.challengeDetected}`);
@@ -713,6 +909,7 @@ export class SportlotsAdapter extends BaseAdapter {
           error: "SportLots login validation failed. Cookies did not authenticate.",
           diagnostic,
           credentialRejected: diagnostic.challengeDetected !== true,
+          automatedAccess: true,
         };
       }
 
@@ -751,6 +948,7 @@ export class SportlotsAdapter extends BaseAdapter {
         success: true,
         message: `Successfully logged into ${this.siteName}`,
         expiresAt,
+        automatedAccess: true,
       };
     } catch (error) {
       log(`login threw: ${error instanceof Error ? `${error.name}: ${error.message}` : String(error)}`);
@@ -758,6 +956,7 @@ export class SportlotsAdapter extends BaseAdapter {
         success: false,
         error: `Failed to login to ${this.siteName}: ${error}`,
         retryable: true,
+        automatedAccess,
       };
     }
   }

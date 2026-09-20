@@ -334,3 +334,74 @@ describe("buildLoginDiagnostic — token and refreshToken redaction (NEO-141)", 
     assert.equal(diag.challengeDetected, true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// NEO-288 — SportLots' Turnstile-era refusal bodies, and the automated-access
+// material as exact-value redaction inputs.
+// ---------------------------------------------------------------------------
+
+describe("buildLoginDiagnostic — NEO-288 Turnstile refusals and automated-access redaction", () => {
+  it("classifies SportLots' post-2026-09-17 refusal bodies as a CHALLENGE, never a rejection", () => {
+    // Bodies SportLots answers a signin with when the turnstile_auth_id is
+    // missing, stale or already used. Being blocked at the door is our
+    // problem (pages); it must not be filed as the seller mistyping.
+    for (const text of [
+      "Security verification failed. Please try again.",
+      "Invalid login request",
+      '<html><body onload=\'window.location = "?message=Invalid login request";\'></body></html>',
+      "Turnstile verification required",
+      "cf-turnstile-response missing",
+    ]) {
+      const diag = buildLoginDiagnostic({ url: SL_URL, rawText: text }, { email: EMAIL, password: PASSWORD });
+      assert.equal(diag.challengeDetected, true, `${text} should be a challenge`);
+      assert.notEqual(
+        diag.credentialRejectionDetected,
+        true,
+        `${text} must not read as a credential rejection`,
+      );
+    }
+  });
+
+  it("a challenge vetoes the rejection flag even when a rejection pattern also matches", () => {
+    // "Invalid login request" matches the generic /invalid (…|login|…)/
+    // rejection pattern. The adapter already refuses to set credentialRejected
+    // when a challenge is seen; the diagnostic that leaves the service must
+    // agree with it rather than carry two contradictory booleans to PostHog.
+    const diag = buildLoginDiagnostic({ rawText: "Invalid login request" }, {});
+    assert.equal(diag.challengeDetected, true);
+    assert.equal(diag.credentialRejectionDetected, false);
+    // And the veto is only ever in that direction: a plain rejection with no
+    // challenge is still a rejection.
+    const plain = buildLoginDiagnostic({ rawText: "Invalid email address supplied" }, {});
+    assert.equal(plain.challengeDetected, false);
+    assert.equal(plain.credentialRejectionDetected, true);
+  });
+
+  it("redacts authId, keyId and secret by exact value", () => {
+    // Shapeless placeholders on purpose: none of them match a structural
+    // pattern, so only the exact-value path can be what removes them.
+    const AUTH_ID = "AUTHIDPLACEHOLDER0001";
+    const KEY_ID = "KEYIDPLACEHOLDER0002";
+    const SECRET = "SECRETPLACEHOLDER0003";
+    const diag = buildLoginDiagnostic(
+      {
+        url: SL_URL,
+        title: `Rejected ${AUTH_ID}`,
+        rawText: `turnstile_auth_id ${AUTH_ID} for key ${KEY_ID} (${SECRET}) was not accepted`,
+      },
+      { email: EMAIL, password: PASSWORD, authId: AUTH_ID, keyId: KEY_ID, secret: SECRET },
+    );
+    for (const v of [AUTH_ID, KEY_ID, SECRET]) {
+      assert.ok(!diag.snippet.includes(v), `${v} must not survive in the snippet`);
+      assert.ok(!diag.title.includes(v), `${v} must not survive in the title`);
+    }
+    assert.ok(diag.snippet.includes("[REDACTED]"));
+    // Sanity: the same values DO survive when not passed as secrets, so the
+    // assertions above exercise the exact-value path and nothing else.
+    const unguarded = buildLoginDiagnostic(
+      { rawText: `${AUTH_ID} ${KEY_ID} ${SECRET}` },
+      { email: EMAIL, password: PASSWORD },
+    );
+    for (const v of [AUTH_ID, KEY_ID, SECRET]) assert.ok(unguarded.snippet.includes(v));
+  });
+});

@@ -196,6 +196,8 @@ app.post("/login/sportlots", async (req: Request<{}, {}, LoginRequestBody>, res:
         duration_ms: Date.now() - startMs,
         success: true,
         status_code: 200,
+        // NEO-288: boolean only; omitted when the handshake never ran.
+        automated_access: result.automatedAccess,
         canary,
       });
       res.json({ success: true, message: result.message });
@@ -217,6 +219,8 @@ app.post("/login/sportlots", async (req: Request<{}, {}, LoginRequestBody>, res:
         // NEO-43: boolean only. The rest of the diagnostic (url/title/snippet)
         // is page-derived text and must not enter Cloud Logging.
         challenge_detected: challengeFlag(result.diagnostic),
+        // NEO-288: boolean only; omitted when the handshake never ran.
+        automated_access: result.automatedAccess,
         canary,
       });
       // Include the sanitized diagnostic (if the adapter captured one) so

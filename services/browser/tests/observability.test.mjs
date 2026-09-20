@@ -294,6 +294,7 @@ describe("reauth_required — NEO-141 error_class", () => {
       "missing_key",
       "invalid_credentials",
       "reauth_required",
+      "automated_access",
       "timeout",
       "challenge",
       "oom",
@@ -308,6 +309,7 @@ describe("reauth_required — NEO-141 error_class", () => {
       "Out of memory",
       "Invalid credentials supplied",
       "seller@example.com rejected",
+      "SportLots automated access was refused (HTTP 403).",
     ]) {
       assert.ok(CLOSED_SET.has(classifyBrowserError(raw)), `"${raw}" produced an out-of-set tag`);
     }
@@ -338,5 +340,81 @@ describe("canary flag coercion (NEO-43)", () => {
     assert.equal(coerce({ canary: {} }), false);
     assert.equal(coerce({}), false);
     assert.equal(coerce({ canary: false }), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-288 — automated_access error_class
+// ---------------------------------------------------------------------------
+
+describe("automated_access — NEO-288 error_class", () => {
+  const STRINGS = [
+    "SportLots automated access credential is not configured",
+    "SportLots automated access was refused (HTTP 403).",
+    "SportLots automated access did not answer (HTTP 503). Please try again later.",
+    "SportLots automated access did not answer in time. Please try again later.",
+  ];
+
+  it("classifies every handshake failure string", () => {
+    for (const raw of STRINGS) {
+      assert.equal(classifyBrowserError(raw), "automated_access", raw);
+    }
+  });
+
+  it("is checked BEFORE the generic invalid/credential rule", () => {
+    // The not-configured string contains "credential"; if SportLots ever
+    // describes a refusal with "invalid" as well, the phrase "automated
+    // access" must still win — a revoked key is OUR outage and must page,
+    // and invalid_credentials is excluded from paging.
+    assert.equal(
+      classifyBrowserError("SportLots automated access refused: invalid credential"),
+      "automated_access",
+    );
+    assert.equal(
+      classifyBrowserError("automated access timed out"),
+      "automated_access",
+      "and before the timeout rule — a slow handshake is not a wedged marketplace login",
+    );
+  });
+
+  it("maps to 502 and PAGES — never 422", () => {
+    for (const raw of STRINGS) {
+      const outcome = loginFailureOutcome({ retryable: false }, raw);
+      assert.equal(outcome.status, 502, raw);
+      assert.equal(outcome.errorClass, "automated_access", raw);
+    }
+  });
+
+  it("does not fire on ordinary failures", () => {
+    assert.notEqual(classifyBrowserError("Authentication failed"), "automated_access");
+    assert.notEqual(classifyBrowserError("Invalid credentials supplied"), "automated_access");
+    assert.notEqual(classifyBrowserError("Re-authentication required"), "automated_access");
+  });
+
+  it("logBrowserOp emits automated_access as a boolean and omits it when undefined", () => {
+    const base = {
+      msg: "browser_login_call",
+      operation: "login_sportlots",
+      platform: "sportlots",
+      duration_ms: 1,
+      success: false,
+      status_code: 502,
+      error_class: "automated_access",
+      canary: false,
+    };
+    const lines = [];
+    const realLog = console.log;
+    console.log = (line) => lines.push(line);
+    try {
+      logBrowserOp({ ...base, automated_access: false });
+      logBrowserOp({ ...base, automated_access: true, success: true, status_code: 200, error_class: undefined });
+      logBrowserOp({ ...base, automated_access: undefined });
+    } finally {
+      console.log = realLog;
+    }
+    const [failed, ok, absent] = lines.map((l) => JSON.parse(l));
+    assert.equal(failed.automated_access, false);
+    assert.equal(ok.automated_access, true);
+    assert.ok(!("automated_access" in absent), "omitted, not null/false, when the handshake never ran");
   });
 });

@@ -52,6 +52,14 @@ export function logBrowserOp(props: {
    */
   challenge_detected?: boolean;
   /**
+   * NEO-288 (SportLots only): whether the automated-access handshake that
+   * precedes the signin POST succeeded on the final attempt. true = SportLots
+   * granted an authId; false = the handshake failed and no signin was sent;
+   * OMITTED when the login never reached it (cached-cookie re-auth,
+   * reauth_required, BSC). A boolean only — never the authId.
+   */
+  automated_access?: boolean;
+  /**
    * NEO-43: true for the synthetic login canary (Cloud Scheduler), false for
    * real caller traffic. Always emitted so the log-based metric's `canary`
    * label is never an empty string.
@@ -89,9 +97,9 @@ export function logBrowserOp(props: {
  * everything else pages. A new tag added here defaults to paging — which is
  * the safe direction.
  *
- * The closed set, as of NEO-141:
+ * The closed set, as of NEO-288:
  *   bad_key_format | missing_key | invalid_credentials | reauth_required |
- *   timeout | challenge | oom | other
+ *   automated_access | timeout | challenge | oom | other
  */
 export function classifyBrowserError(raw: string | undefined): string | undefined {
   if (!raw) return undefined;
@@ -100,6 +108,13 @@ export function classifyBrowserError(raw: string | undefined): string | undefine
   // NEO-141. Checked BEFORE the invalid_credentials rule below, which would
   // otherwise swallow it and erase the distinction Convex depends on.
   if (s.includes("re-authentication required")) return "reauth_required";
+  // NEO-288: the SportLots automated-access handshake failed — the credential
+  // is missing from Secret Manager, SportLots refused it, or the endpoint did
+  // not answer. OUR key, OUR outage: not in the caller-error exclusion list,
+  // so it pages. Checked before the generic invalid/credential rule so
+  // "...automated access credential is not configured" cannot be filed as a
+  // seller typo.
+  if (s.includes("automated access")) return "automated_access";
   if (s.includes("timed out") || s.includes("timeout")) return "timeout";
   if (s.includes("invalid") && (s.includes("credential") || s.includes("password")))
     return "invalid_credentials";

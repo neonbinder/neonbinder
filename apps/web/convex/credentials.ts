@@ -39,6 +39,10 @@ function isSupportedSite(site: string): boolean {
  * copy must not blame the user. `pausedMessage` (NEO-287) is for a login the
  * operator has switched off with `NEONBINDER_PAUSED_PLATFORMS`: the browser
  * service is never called, nothing is written, and the copy says so.
+ * `siteMessage` (NEO-288) is for a login the marketplace answered by turning
+ * US away — see `isSiteSideLoginFailure` for the exact classes — where, again,
+ * nothing about the user's credentials was learned and nothing is written, so
+ * the copy must say the refusal was the site's, not the password's.
  */
 const SITE_LOGIN: Record<
   string,
@@ -50,6 +54,7 @@ const SITE_LOGIN: Record<
     failureMessage: string;
     transientMessage: string;
     pausedMessage: string;
+    siteMessage: string;
     successMessage: string;
   }
 > = {
@@ -61,6 +66,9 @@ const SITE_LOGIN: Record<
     transientMessage: "BSC didn't answer. Nothing changed — try again in a minute.",
     pausedMessage:
       "BuySportsCards sign-ins are on pause right now. Nothing was changed — your saved session is safe.",
+    // NEO-288 copy: pending Jason sign-off
+    siteMessage:
+      "BSC wouldn't let us in the door — that's on them, not your password. Nothing changed on your end. Give it another go in a bit.",
     successMessage: "BSC account authenticated successfully! Token stored.",
   },
   sportlots: {
@@ -71,6 +79,9 @@ const SITE_LOGIN: Record<
     transientMessage: "SportLots didn't answer. Nothing changed — try again in a minute.",
     pausedMessage:
       "SportLots sign-ins are on pause right now. Nothing was changed — your saved session is safe.",
+    // NEO-288 copy: pending Jason sign-off
+    siteMessage:
+      "SportLots wouldn't let us in the door — that's on them, not your password. Nothing changed on your end. Give it another go in a bit.",
     successMessage: "SportLots account authenticated successfully! Session cookie stored.",
   },
 };
@@ -392,6 +403,9 @@ export const saveCredentials = action({
             // NEO-287: and if the operator paused the marketplace, the login
             // was never attempted — the paused copy goes out verbatim and is
             // never rewritten into "check your username and password".
+            // NEO-288: a site-side refusal (challenge / automated_access)
+            // arrives here as `transient` with the per-site `siteMessage`
+            // already in `message`, so it too goes out verbatim.
             return {
               success: false,
               message: outcome.paused || outcome.transient
@@ -1161,9 +1175,11 @@ const REAUTH_REQUIRED = "reauth_required";
  *   threw (network, our 60s abort), or it stayed 503-busy through every retry.
  *
  * Every other class is a verdict the copy already handles: `reauth_required`
- * and `invalid_credentials` are about the credentials; `challenge` / `oom` /
- * `bad_key_format` / `missing_key` keep their existing copy deliberately.
- * `applyLoginOutcome` writes nothing for any of the transient cases.
+ * and `invalid_credentials` are about the credentials; `challenge` and
+ * `automated_access` are the site turning us away (`SITE_SIDE_ERROR_CLASSES`,
+ * NEO-288); `oom` / `bad_key_format` / `missing_key` keep their existing copy
+ * deliberately. `applyLoginOutcome` writes nothing for any of the transient
+ * cases.
  */
 const TRANSIENT_ERROR_CLASSES: ReadonlySet<string | undefined> = new Set([
   "other",
@@ -1173,6 +1189,38 @@ const TRANSIENT_ERROR_CLASSES: ReadonlySet<string | undefined> = new Set([
 
 function isTransientLoginFailure(errorClass: string | undefined): boolean {
   return TRANSIENT_ERROR_CLASSES.has(errorClass);
+}
+
+/**
+ * NEO-288: "the marketplace turned US away" — it answered, but the refusal is
+ * about NeonBinder's access, not about the user's password, so the copy must
+ * not send them to their credentials either.
+ *
+ * - `"challenge"`: the site interposed a bot check or refused the login as a
+ *   non-human request. For SportLots this now includes the refusal bodies it
+ *   returns to automated sign-ins (`Invalid login request.`, `Security
+ *   verification failed…`), which the browser service classifies as
+ *   `challenge` rather than `invalid_credentials` — the password was never
+ *   evaluated.
+ * - `"automated_access"`: the browser service's owner-issued automated-access
+ *   key was refused or is missing on its side (a 502 on the login route). The
+ *   user's credentials never reached the marketplace.
+ *
+ * Both are the site's decision about us, and both can clear without the user
+ * doing anything. Nothing about the user's stored credentials is changed:
+ * `hasCredentials` and `needsReauth` are left exactly as they were, and the
+ * stored session, if any, stays put. The outcome rides the NEO-281 `transient`
+ * path so every caller takes its existing "nothing changed" branch with the
+ * per-site `siteMessage` in place of `transientMessage`. Additive: the service
+ * already returned `error_class` as a free string, so no contract bump.
+ */
+const SITE_SIDE_ERROR_CLASSES: ReadonlySet<string> = new Set([
+  "challenge",
+  "automated_access",
+]);
+
+function isSiteSideLoginFailure(errorClass: string | undefined): boolean {
+  return errorClass !== undefined && SITE_SIDE_ERROR_CLASSES.has(errorClass);
 }
 
 type SiteLoginOutcome = {
@@ -1186,6 +1234,10 @@ type SiteLoginOutcome = {
    * credentials and nothing was written. `message` already carries the
    * per-site `transientMessage`; callers that rewrite the failure copy must
    * keep it rather than blaming the user's password.
+   *
+   * NEO-288: also set when the marketplace answered by turning US away
+   * (`isSiteSideLoginFailure`) — same "nothing is known, nothing was written"
+   * contract, with `message` carrying the per-site `siteMessage` instead.
    */
   transient: boolean;
   /**
@@ -1267,10 +1319,19 @@ async function runSiteLogin(
     });
     // NEO-281: a marketplace that did not answer is not a user who typed the
     // wrong password. Same misattribution the ticket exists to remove.
-    const transientFailure = isTransientLoginFailure(result.errorClass);
+    // NEO-288: neither is a marketplace that answered by turning US away
+    // (challenge / automated_access). Both ride `transient: true` so callers
+    // keep the copy as-is and write no credential status; only the message
+    // differs — "didn't answer" versus "wouldn't let us in".
+    const siteSideFailure = isSiteSideLoginFailure(result.errorClass);
+    const transientFailure = siteSideFailure || isTransientLoginFailure(result.errorClass);
     return {
       success: false,
-      message: transientFailure ? cfg.transientMessage : cfg.failureMessage,
+      message: siteSideFailure
+        ? cfg.siteMessage
+        : transientFailure
+          ? cfg.transientMessage
+          : cfg.failureMessage,
       reauthRequired: result.errorClass === REAUTH_REQUIRED,
       transient: transientFailure,
       paused: false,
