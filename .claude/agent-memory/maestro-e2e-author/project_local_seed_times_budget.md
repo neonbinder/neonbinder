@@ -1,26 +1,36 @@
 ---
 name: local-seed-times-budget
-description: Seeding a PR preview from the Mac can fail in ways CI never shows — the 600s default per-flow timeout kills setup.yaml mid-drain (CI passes MAESTRO_FLOW_TIMEOUT_SEC=1500), and the drain loop's `times: 250` runaway guard burns ~3x faster locally because a false `runFlow when` guard costs ~2s here vs ~6.6s on Linux CI
+description: setup.yaml's drain loop `times: 250` is a ~10-minute WALL-CLOCK cap, not a row count — an idle (guard-false) iteration costs ~0.7s probe + 1s repeat delay in CI (measured, not the ~6.6s the flow comment claims), so a slow Wikidata lookup drain exhausts it with rows still undecided; seen locally (NEO-284) AND in CI (run 35484126549); also pass MAESTRO_FLOW_TIMEOUT_SEC=1500 locally or the 600s default kills the seed
 metadata:
   type: project
 ---
 
-Observed 2026-09-16 (NEO-284), two consecutive `npm run test:e2e -- setup`
-runs against a PR preview:
+**The signature.** `Assertion is false: ".*Confirm & Save.*" is visible` on
+setup.yaml, with the failure screenshot showing the wizard on a `New Team:`
+step, `Add as New Team` bright green, no `rowError`/`createBlocked` text, and
+`N of M reviewed` where N = 300 bulk players + the loop's tap count. Every tap
+decided a row; the loop simply ran out of `times`.
 
-1. **Killed at 600s.** `run-e2e-smoke.sh` defaults `FLOW_TIMEOUT_SEC` to 600
-   and the seed runs ~14 min in CI; `e2e.yml` sets
-   `MAESTRO_FLOW_TIMEOUT_SEC: "1500"` for the seed job. Pass the same locally.
-2. **`times: 250` exhausted at "343 of 407 reviewed"** with 64 team rows still
-   undecided and `Add as New Team` on screen. The loop had logged 413
-   iterations, 278 of them SKIPPED (guard false, ~34/min), versus 132/9 in the
-   same day's green CI seed. A false `runFlow when` poll costs ~2s on the Mac
-   driver and ~6.6s on CI's, so a lookup stall of a few minutes (the staged
-   career-team Wikidata round) eats the runaway budget locally and barely
-   dents it in CI.
+**Measured (CI run 35484126549, 2026-09-20).** 250 iterations = 80 taps +
+170 SKIPPED. Idle iteration median 0.68s (max 6.57s) + ~1s repeat delay, so
+the whole loop is capped at roughly 250 × (1.7–3.4s) ≈ 7–10 min regardless of
+how many rows there are. Lookups took ~5 min to start landing (bulk taps began
+4m40s after loop start) vs ~1m40s in the green NEO-287 seed (run 35307402573:
+166 iterations = 116 taps + 50 idle). Fewer rows to answer (89 vs 116), still
+red — the variable is lookup pace, which is external.
 
-**Why:** the budget was sized from CI's poll cost; it is not a product
-signal. **How to apply:** for local validation prefer flows that do not need
-the Chrome commit (Ohtani link targets), and say in the report which flows
-were covered by CI instead; do not edit `setup.yaml` to appease the Mac. A
-third local attempt is churn unless something changed.
+**Locally (NEO-284, 2026-09-16).** Same shape at "343 of 407 reviewed";
+plus the 600s default `FLOW_TIMEOUT_SEC` kills the seed mid-drain — pass
+`MAESTRO_FLOW_TIMEOUT_SEC=1500` (what `e2e.yml` gives the seed job).
+
+**Why:** the flow comment sizes `times` as "must exceed the number of distinct
+new teams" and says an idle iteration costs ~6.5s; both are wrong in CI today,
+so the guard silently doubles as a lookup-drain timeout. **How to apply:** this
+red is not the PR's change unless the diff touched the wizard, the lookup
+queue or the flow. Diagnose by counting SKIPPED vs COMPLETED guard lines in
+the loop and checking `N of M reviewed` arithmetic; a full rerun is the
+correct immediate action. The durable fix is a flow change (propose, do not
+slip into an unrelated PR): make the idle path WAIT for the next answerable
+step (`extendedWaitUntil` on a `text:` regex matching either `Add as New
+(Team|League)` or `Confirm & Save`) so an iteration is consumed per row, not
+per poll — its timeout exceeds R5's 7s and needs Jason's sign-off at the site.
