@@ -925,7 +925,14 @@ export class SportlotsAdapter extends BaseAdapter {
           // SportLots has already explicitly refused just spends four more
           // round trips (and four more failed attempts against their account)
           // to arrive at the same answer.
-          retryable: !credentialRejected,
+          //
+          // NEO-288: a CHALLENGE page is not retryable either. It is
+          // SportLots' security gate refusing us (or, under an account-scoped
+          // automated-access key, refusing this account) and it does not
+          // clear in a 1-4s backoff; replaying it spends four more handshakes
+          // of OUR key for the same answer, and under a per-key rate limit
+          // that degrades every seller and the seed together.
+          retryable: !credentialRejected && diagnostic.challengeDetected !== true,
           diagnostic,
           credentialRejected,
         };

@@ -1060,6 +1060,37 @@ describe("SportlotsAdapter.login — NEO-288 automated-access handshake", () => 
 // tests/single-connection.test.mjs; these tests pin the WIRING: same
 // dispatcher on both calls, none on the validation GET, a fresh one per retry,
 // and the client released after the attempt.
+describe("SportlotsAdapter.login — NEO-288 a challenge page is not retried", () => {
+  it("SportLots' security refusal costs ONE handshake and ONE signin, classified challenge", async () => {
+    // "Security verification failed" is SportLots' gate refusing us (or, under
+    // an account-scoped key, refusing this account). It does not clear in a
+    // backoff; replaying it would spend four more uses of OUR key.
+    const SportlotsAdapter = loadSportlotsAdapter();
+    const stub = cacheAwareFetch({
+      onSignin: () =>
+        response({
+          status: 200,
+          body: "Security verification failed. Please return to the login page and try again.",
+        }),
+    });
+    const restore = stubFetch(stub);
+    try {
+      const adapter = new SportlotsAdapter(null);
+      const result = await adapter.login("sportlots-credentials-user_test", {
+        transientCredentials: { username: "someone@example.com", password: "pw" },
+      });
+      assert.equal(result.success, false);
+      assert.equal(stub.automatedAccessCalls(), 1, "one handshake — never replayed");
+      assert.equal(stub.signinCalls(), 1, "one signin — never replayed");
+      assert.equal(result.diagnostic?.challengeDetected, true);
+      assert.notEqual(result.credentialRejected, true, "never the seller's password");
+      assert.equal(result.retryable, false);
+    } finally {
+      restore();
+    }
+  });
+});
+
 describe("SportlotsAdapter.login — NEO-288 single-connection dispatcher", () => {
   /** Record `opts.dispatcher` per request path, in call order. */
   function dispatcherRecorder() {
