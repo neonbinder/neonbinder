@@ -13,9 +13,19 @@ import {
   getAutomatedAccessCredential,
   invalidateAutomatedAccessCredential,
 } from "../services/sportlots-automated-access";
+import {
+  withSingleConnection,
+  type DispatchedRequestInit,
+  type Dispatcher,
+} from "../services/single-connection";
+
+// NEO-288: the origin the single-connection client is opened against. The
+// handshake and the signin POST both live here and MUST share one socket —
+// see withSingleConnection.
+export const SL_ORIGIN = "https://www.sportlots.com";
 
 // SportLots login POST endpoint — recorded as diagnostic.url on failures.
-const SL_LOGIN_URL = "https://www.sportlots.com/cust/custbin/signin.tpl";
+const SL_LOGIN_URL = `${SL_ORIGIN}/cust/custbin/signin.tpl`;
 
 // NEO-288: SportLots' "Automated Access" handshake. On 2026-09-17 SportLots
 // put Cloudflare Turnstile in front of signin.tpl; the SportLots owner issued
@@ -25,7 +35,7 @@ const SL_LOGIN_URL = "https://www.sportlots.com/cust/custbin/signin.tpl";
 //
 // The pair travels ONLY in the HTTPS POST body to this URL. Never a query
 // string, never a header, never a log line.
-export const SL_AUTOMATED_ACCESS_URL = "https://www.sportlots.com/u/node/automated-access";
+export const SL_AUTOMATED_ACCESS_URL = `${SL_ORIGIN}/u/node/automated-access`;
 
 // NEO-288: hard bound on the handshake (connect + headers + body). A hung
 // handshake is a retryable attempt, not a route that hangs until Cloud Run
@@ -190,6 +200,17 @@ type AutomatedAccessOutcome =
       secrets: { authId: string; keyId: string; secret: string };
     }
   | { ok: false; error: string; retryable: boolean };
+
+type AutomatedAccessGrant = Extract<AutomatedAccessOutcome, { ok: true }>;
+
+// NEO-288: what the single-connection stage of attemptLogin hands back to the
+// rest of the attempt. Either the attempt is already decided (a failed
+// handshake, or a signin status that ends it) or the signin answered 2xx and
+// its body is ready for cookie parsing — which happens OUTSIDE the connection
+// scope, so the client is closed before the validation GET runs.
+type SigninStage =
+  | { done: true; response: AdapterResponse }
+  | { done: false; handshake: AutomatedAccessGrant; responseBody: string };
 
 export interface SportlotsAdapterOptions {
   /** Per-probe timeout for stored-cookie validation. Default 15s. */
@@ -579,9 +600,14 @@ export class SportlotsAdapter extends BaseAdapter {
    * handed to buildLoginDiagnostic. The body is read with text() + JSON.parse
    * inside a try so a non-JSON answer is a refusal, not a throw whose message
    * quotes the payload.
+   *
+   * @param dispatcher the attempt's single-connection client — the signin
+   *   POST that consumes this authId MUST go out on the same socket (same
+   *   egress IP), see withSingleConnection.
    */
   private async automatedAccessHandshake(
     log: (msg: string) => void,
+    dispatcher: Dispatcher,
   ): Promise<AutomatedAccessOutcome> {
     let credential: { keyId: string; secret: string };
     try {
@@ -600,13 +626,15 @@ export class SportlotsAdapter extends BaseAdapter {
     let text: string;
     try {
       log("POST /u/node/automated-access");
-      const response = await fetch(SL_AUTOMATED_ACCESS_URL, {
+      const init: DispatchedRequestInit = {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ keyId: credential.keyId, secret: credential.secret }),
         redirect: "manual",
         signal: controller.signal,
-      });
+        dispatcher,
+      };
+      const response = await fetch(SL_AUTOMATED_ACCESS_URL, init);
       status = response.status;
       text = await response.text();
     } catch (error) {
@@ -719,75 +747,112 @@ export class SportlotsAdapter extends BaseAdapter {
         };
       }
 
-      // NEO-288: mint the single-use authId for THIS attempt. Inside the
-      // per-attempt body on purpose — retryLogin re-enters attemptLogin on
-      // every retry, and a reused authId is refused. A failed handshake is
-      // reported on its own terms (automated_access, 502) and never as a
-      // rejection of the seller's password: SportLots was not even asked.
-      const handshake = await this.automatedAccessHandshake(log);
-      automatedAccess = handshake.ok;
-      if (!handshake.ok) {
-        return {
-          success: false,
-          error: handshake.error,
-          retryable: handshake.retryable,
-          automatedAccess,
-        };
-      }
-
       const loginUrl = SL_LOGIN_URL;
-      const body = new URLSearchParams({
-        email_val: credentials.username,
-        psswd: credentials.password,
-        turnstile_auth_id: handshake.authId,
+      // Narrowed by the guard above; captured as consts so the narrowing
+      // survives into the connection-scoped closure below.
+      const { username, password } = credentials;
+
+      // NEO-288: the handshake and the signin POST share ONE TCP connection.
+      // SportLots binds the authId to the IP that minted it, and the global
+      // fetch does not keep those two requests on one socket: dispatched
+      // back-to-back, the signin goes out on a second connection before the
+      // pool has returned the handshake's socket (measured — two sockets
+      // server-side, every time). One public IP on a laptop hides that; Cloud
+      // Run's egress pool does not, and SportLots answers "Security
+      // verification failed". A dedicated single-connection client per
+      // attempt makes the same-socket property structural. Retries re-enter
+      // here, so each gets a fresh client (and a fresh, single-use authId).
+      //
+      // The validation GET below stays on the global fetch on purpose: the
+      // signin answers `Connection: close`, and a session cookie is not
+      // IP-bound (stored-cookie re-auth already works from Cloud Run).
+      const stage = await withSingleConnection(SL_ORIGIN, async (dispatcher): Promise<SigninStage> => {
+        // Mint the single-use authId for THIS attempt. Inside the per-attempt
+        // body on purpose — retryLogin re-enters attemptLogin on every retry,
+        // and a reused authId is refused. A failed handshake is reported on
+        // its own terms (automated_access, 502) and never as a rejection of
+        // the seller's password: SportLots was not even asked.
+        const handshake = await this.automatedAccessHandshake(log, dispatcher);
+        automatedAccess = handshake.ok;
+        if (!handshake.ok) {
+          return {
+            done: true,
+            response: {
+              success: false,
+              error: handshake.error,
+              retryable: handshake.retryable,
+              automatedAccess,
+            },
+          };
+        }
+
+        const body = new URLSearchParams({
+          email_val: username,
+          psswd: password,
+          turnstile_auth_id: handshake.authId,
+        });
+
+        log("POST /cust/custbin/signin.tpl");
+        const init: DispatchedRequestInit = {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: body.toString(),
+          redirect: "manual",
+          dispatcher,
+        };
+        const response = await fetch(loginUrl, init);
+        log(`login response status=${response.status}`);
+
+        // Check for upstream failures before parsing cookies. Each early
+        // return discards the body it will not read: on a single-connection
+        // client an unconsumed body (a Cloudflare 5xx page is well over the
+        // stream's high-water mark) holds the socket under backpressure and
+        // the client's graceful close never completes.
+        if (response.status === 429) {
+          log("login rejected: 429 rate limit");
+          await discardBody(response);
+          return {
+            done: true,
+            response: {
+              success: false,
+              error: "SportLots rate limit exceeded. Please try again later.",
+              retryable: true,
+              automatedAccess: true,
+            },
+          };
+        }
+        if (response.status >= 500) {
+          log(`login rejected: upstream ${response.status}`);
+          await discardBody(response);
+          return {
+            done: true,
+            response: {
+              success: false,
+              error: `SportLots is unavailable (HTTP ${response.status}). Please try again later.`,
+              retryable: true,
+              automatedAccess: true,
+            },
+          };
+        }
+        if (response.status >= 400) {
+          log(`login rejected: upstream ${response.status}`);
+          await discardBody(response);
+          return {
+            done: true,
+            response: {
+              success: false,
+              error: `SportLots returned an error (HTTP ${response.status}).`,
+              automatedAccess: true,
+            },
+          };
+        }
+
+        const responseBody = await response.text();
+        log(`login body received bytes=${responseBody.length}`);
+        return { done: false, handshake, responseBody };
       });
-
-      // Same-IP requirement: SportLots binds the authId to the IP that minted
-      // it. Both POSTs go through Node's default global fetch, whose undici
-      // pool keeps the connection to www.sportlots.com alive between them, so
-      // they share a socket and therefore an egress IP. Cloud Run has no VPC
-      // egress / NAT configured today, so there is no per-request IP hop to
-      // worry about either; if a VPC connector or a proxy is ever added, both
-      // requests must still leave through the same address.
-      log("POST /cust/custbin/signin.tpl");
-      const response = await fetch(loginUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: body.toString(),
-        redirect: "manual",
-      });
-      log(`login response status=${response.status}`);
-
-      // Check for upstream failures before parsing cookies
-      if (response.status === 429) {
-        log("login rejected: 429 rate limit");
-        return {
-          success: false,
-          error: "SportLots rate limit exceeded. Please try again later.",
-          retryable: true,
-          automatedAccess: true,
-        };
-      }
-      if (response.status >= 500) {
-        log(`login rejected: upstream ${response.status}`);
-        return {
-          success: false,
-          error: `SportLots is unavailable (HTTP ${response.status}). Please try again later.`,
-          retryable: true,
-          automatedAccess: true,
-        };
-      }
-      if (response.status >= 400) {
-        log(`login rejected: upstream ${response.status}`);
-        return {
-          success: false,
-          error: `SportLots returned an error (HTTP ${response.status}).`,
-          automatedAccess: true,
-        };
-      }
-
-      const responseBody = await response.text();
-      log(`login body received bytes=${responseBody.length}`);
+      if (stage.done) return stage.response;
+      const { handshake, responseBody } = stage;
 
       // SportLots sets cookies via JavaScript in the response body
       const cookieRegex = /document\.cookie\s*=\s*"([^"]+)"/g;

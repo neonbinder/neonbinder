@@ -226,12 +226,38 @@ unbounded, as they were before this change. The `browser_login_call` log
 line carries `automated_access: true|false` (omitted when the login never
 reached the handshake, e.g. a cached-cookie re-auth).
 
-**Same-IP requirement.** SportLots binds the `authId` to the IP that minted
-it. Both POSTs go through Node's default global `fetch`; undici's keep-alive
-pool reuses the connection to `www.sportlots.com` between them, so they share a
-socket and an egress address. Cloud Run has no VPC egress or NAT configured
-today. If a VPC connector or proxy is ever added, both requests must still
-leave through the same address.
+**Same-IP requirement — one TCP connection per attempt.** SportLots binds the
+`authId` to the client IP that minted it, so the handshake and the signin have
+to leave through the same address. Measured 2026-09-20: the handshake succeeded
+on every attempt from Cloud Run, and every signin was refused with "Security
+verification failed" — while the identical code logged in first try from a
+laptop. The cause is a race in Node's global `fetch`, not the network: after
+`await response.text()` on the handshake, undici has **not yet returned that
+socket to its pool**, so a signin dispatched straight away opens a **second**
+TCP connection even though the first is still open and keep-alive
+(`Keep-Alive: timeout=5`). Reproduced against a local keep-alive server: two
+back-to-back global fetches land on two server-side sockets, every time. On a
+laptop both sockets share one public IP and nobody notices; on Cloud Run's
+shared egress pool the two sockets can carry different addresses. A sleep
+between the calls also "fixes" it, which is how you know it is a race and not
+a delay — do not add one.
+
+The adapter therefore runs each attempt's handshake and signin through
+`withSingleConnection` (`src/services/single-connection.ts`): a dedicated
+`undici.Client` — one connection by construction — passed as `dispatcher` to
+both `fetch` calls, closed in `finally` (bounded: a close blocked by an
+unconsumed body falls back to `destroy()` rather than hanging the route).
+Every retry gets a fresh client with its fresh single-use `authId`. The
+post-login validation GET stays on the global fetch: the signin answers
+`Connection: close`, and a session cookie is not IP-bound (stored-cookie
+re-auth already worked from Cloud Run). `tests/single-connection.test.mjs`
+proves the one-socket property against a real local server and keeps the
+two-socket global-fetch behaviour as the regression control.
+
+**No NAT or static egress is needed for this.** The requirement is that the
+two requests share a socket, which the single-connection client guarantees on
+any egress. If a VPC connector or proxy is ever added, that still holds as long
+as one TCP connection maps to one upstream address.
 
 **Security.** The `secret` is transmitted only in the HTTPS POST body to the
 handshake endpoint — never a query string, header, log line, error message or

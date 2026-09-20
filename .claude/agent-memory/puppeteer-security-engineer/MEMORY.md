@@ -9,3 +9,4 @@
 - [Usps letter tracking behavior](reference_usps_letter_tracking_behavior.md) — How a USPS First-Class letter actually behaves in EasyPost tracking — terminal status, scan count, code length, misleading first message. Ground truth for tracker fixt…
 - [BSC B2C session model](bsc-b2c-session-model.md) — refresh window is absolute 24h; rememberMe SSO cookie + prompt-less /authorize is the way past it; SL has no expiry at all
 - [require.cache fake for a singleton client](reference_require_cache_fake_for_singleton_client.md) — a module-level lazy SDK client captures the first spy; the fake constructor must delegate per call
+- [undici socket reuse and close](reference_undici_socket_reuse_and_close.md) — global fetch does not keep back-to-back requests on one socket (pool race, use withSingleConnection); an unconsumed body >16 KiB hangs Client.close()

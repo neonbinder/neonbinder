@@ -1047,6 +1047,201 @@ describe("SportlotsAdapter.login — NEO-288 automated-access handshake", () => 
   });
 });
 
+// ---------------------------------------------------------------------------
+// NEO-288 — the handshake and the signin share ONE connection.
+//
+// SportLots binds the authId to the IP that minted it. Measured on Cloud Run:
+// the global fetch opened a second socket for the signin (undici had not yet
+// returned the handshake socket to its pool), the two sockets left through
+// different egress addresses, and every signin was refused with "Security
+// verification failed". The adapter now runs both requests through one
+// single-connection undici Client per attempt (withSingleConnection) and
+// passes it as `dispatcher` on both fetches. The socket-level proof lives in
+// tests/single-connection.test.mjs; these tests pin the WIRING: same
+// dispatcher on both calls, none on the validation GET, a fresh one per retry,
+// and the client released after the attempt.
+describe("SportlotsAdapter.login — NEO-288 single-connection dispatcher", () => {
+  /** Record `opts.dispatcher` per request path, in call order. */
+  function dispatcherRecorder() {
+    const calls = []; // [{ path, dispatcher }]
+    const record = (path) => (opts) => {
+      calls.push({ path, dispatcher: opts.dispatcher });
+    };
+    return {
+      calls,
+      onAutomatedAccess: (opts) => {
+        record("handshake")(opts);
+        return automatedAccessGrant();
+      },
+      onSignin: (opts) => {
+        record("signin")(opts);
+        return response({ status: 200, body: OK_LOGIN_BODY });
+      },
+      onValidate: (opts) => {
+        record("validate")(opts);
+        return response({ status: 200, body: OK_VALIDATE_BODY });
+      },
+    };
+  }
+
+  it("the handshake and the signin in one attempt carry the SAME dispatcher; the validation GET carries none", async () => {
+    const SportlotsAdapter = loadSportlotsAdapter();
+    const rec = dispatcherRecorder();
+    const restore = stubFetch(cacheAwareFetch(rec));
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, true);
+      assert.deepEqual(
+        rec.calls.map((c) => c.path),
+        ["handshake", "signin", "validate"],
+        "one attempt: handshake, signin, then validation",
+      );
+      const [handshake, signin, validate] = rec.calls;
+      assert.ok(handshake.dispatcher, "the handshake carries a dispatcher");
+      assert.equal(
+        typeof handshake.dispatcher.dispatch,
+        "function",
+        "and it is a real undici Dispatcher, not a placeholder",
+      );
+      assert.strictEqual(
+        signin.dispatcher,
+        handshake.dispatcher,
+        "the signin goes out on the SAME client (same socket, same egress IP) as the handshake",
+      );
+      assert.equal(
+        validate.dispatcher,
+        undefined,
+        "the validation GET stays on the global fetch — the signin answered Connection: close and cookies are not IP-bound",
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  it("the client is released once the attempt's signin has been read (before the validation GET)", async () => {
+    const SportlotsAdapter = loadSportlotsAdapter();
+    const rec = dispatcherRecorder();
+    let clientStateAtValidate;
+    const onValidate = rec.onValidate;
+    rec.onValidate = (opts) => {
+      const client = rec.calls.find((c) => c.path === "signin").dispatcher;
+      clientStateAtValidate = { closed: client.closed, destroyed: client.destroyed };
+      return onValidate(opts);
+    };
+    const restore = stubFetch(cacheAwareFetch(rec));
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, true);
+      assert.deepEqual(
+        clientStateAtValidate,
+        { closed: true, destroyed: true },
+        "by the time the validation GET runs, the single-connection client is closed",
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  it("across a retry the dispatcher DIFFERS: each attempt gets a fresh client (fresh socket, fresh authId)", async () => {
+    const SportlotsAdapter = loadSportlotsAdapter();
+    const rec = dispatcherRecorder();
+    let signins = 0;
+    rec.onSignin = (opts) => {
+      rec.calls.push({ path: "signin", dispatcher: opts.dispatcher });
+      signins++;
+      // Attempt 1: 503 (retryable). Attempt 2: success.
+      return signins === 1
+        ? response({ status: 503, body: "" })
+        : response({ status: 200, body: OK_LOGIN_BODY });
+    };
+    const restore = stubFetch(cacheAwareFetch(rec));
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, true);
+      assert.deepEqual(
+        rec.calls.map((c) => c.path),
+        ["handshake", "signin", "handshake", "signin", "validate"],
+      );
+      const [h1, s1, h2, s2] = rec.calls;
+      assert.strictEqual(s1.dispatcher, h1.dispatcher, "attempt 1 shares one client");
+      assert.strictEqual(s2.dispatcher, h2.dispatcher, "attempt 2 shares one client");
+      assert.notStrictEqual(h2.dispatcher, h1.dispatcher, "attempt 2's client is a NEW one");
+      assert.equal(h1.dispatcher.destroyed, true, "attempt 1's client was released before attempt 2 began");
+      assert.equal(h2.dispatcher.destroyed, true, "attempt 2's client was released after its signin");
+    } finally {
+      restore();
+    }
+  });
+
+  it("a signin that ends the attempt early (5xx) discards the body it will not read", async () => {
+    // On a single-connection client an unconsumed body holds the socket under
+    // backpressure and the graceful close never completes; the early-return
+    // branches must cancel it (the NEO-281 discardBody pattern).
+    const SportlotsAdapter = loadSportlotsAdapter();
+    let cancelled = 0;
+    const stub = scriptedLoginFetch([
+      { status: 503, text: async () => "", body: { cancel: async () => { cancelled++; } } },
+      { status: 429, text: async () => "", body: { cancel: async () => { cancelled++; } } },
+      { status: 404, text: async () => "", body: { cancel: async () => { cancelled++; } } },
+    ]);
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, false);
+      assert.equal(stub.loginCalls(), 3, "503 → retry, 429 → retry, 404 → stop");
+      assert.equal(cancelled, 3, "every unread signin body was cancelled");
+    } finally {
+      restore();
+    }
+  });
+
+  it("a handshake that fails still releases the attempt's client", async () => {
+    const SportlotsAdapter = loadSportlotsAdapter();
+    const clients = [];
+    const stub = cacheAwareFetch({
+      onAutomatedAccess: (opts) => {
+        clients.push(opts.dispatcher);
+        return response({ status: 403, body: JSON.stringify({ success: false }) });
+      },
+    });
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, false);
+      assert.equal(stub.signinCalls(), 0, "a refused handshake never signs in");
+      assert.equal(clients.length, 1, "refused = not retryable, one client");
+      assert.equal(clients[0].destroyed, true, "and it was closed on the early return");
+    } finally {
+      restore();
+    }
+  });
+
+  it("a signin that THROWS still releases the attempt's client and rethrows into the retry loop", async () => {
+    const SportlotsAdapter = loadSportlotsAdapter();
+    const clients = [];
+    const stub = cacheAwareFetch({
+      onAutomatedAccess: (opts) => {
+        clients.push(opts.dispatcher);
+        return automatedAccessGrant();
+      },
+      onSignin: () => {
+        throw new Error("ECONNRESET");
+      },
+    });
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, false);
+      assert.equal(stub.signinCalls(), 5, "a thrown signin is retryable — MAX_ATTEMPTS");
+      assert.equal(clients.length, 5, "one client per attempt");
+      assert.equal(new Set(clients).size, 5, "all distinct");
+      assert.ok(clients.every((c) => c.destroyed), "every one released, including the ones whose fn threw");
+    } finally {
+      restore();
+    }
+  });
+});
+
 describe("SportlotsAdapter.login token cache", () => {
   it("returns success without hitting signin when cached cookie is unexpired and valid", async () => {
     const updates = [];
