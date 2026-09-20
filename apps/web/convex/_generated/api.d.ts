@@ -11,6 +11,7 @@
 import type * as adapters_base from "../adapters/base.js";
 import type * as adapters_buysportscards from "../adapters/buysportscards.js";
 import type * as adapters_ebay from "../adapters/ebay.js";
+import type * as adapters_enrichmentFixtures from "../adapters/enrichmentFixtures.js";
 import type * as adapters_espn from "../adapters/espn.js";
 import type * as adapters_gcs from "../adapters/gcs.js";
 import type * as adapters_index from "../adapters/index.js";
@@ -37,6 +38,7 @@ import type * as checklistCandidates from "../checklistCandidates.js";
 import type * as credentials from "../credentials.js";
 import type * as crons from "../crons.js";
 import type * as e2eQueue from "../e2eQueue.js";
+import type * as enrichmentFixtures from "../enrichmentFixtures.js";
 import type * as entityReviewQueue from "../entityReviewQueue.js";
 import type * as entityReviewSkips from "../entityReviewSkips.js";
 import type * as features_cardAttention from "../features/cardAttention.js";
@@ -108,6 +110,7 @@ declare const fullApi: ApiFromModules<{
   "adapters/base": typeof adapters_base;
   "adapters/buysportscards": typeof adapters_buysportscards;
   "adapters/ebay": typeof adapters_ebay;
+  "adapters/enrichmentFixtures": typeof adapters_enrichmentFixtures;
   "adapters/espn": typeof adapters_espn;
   "adapters/gcs": typeof adapters_gcs;
   "adapters/index": typeof adapters_index;
@@ -134,6 +137,7 @@ declare const fullApi: ApiFromModules<{
   credentials: typeof credentials;
   crons: typeof crons;
   e2eQueue: typeof e2eQueue;
+  enrichmentFixtures: typeof enrichmentFixtures;
   entityReviewQueue: typeof entityReviewQueue;
   entityReviewSkips: typeof entityReviewSkips;
   "features/cardAttention": typeof features_cardAttention;
