@@ -208,6 +208,13 @@ gcloud secrets versions add sportlots-automated-access \
 
 The read is cached in-process for ~10 minutes; a refused handshake drops the
 cache so a rotated key is picked up on the next attempt without a restart.
+
+**If the key leaks or is suspected compromised:** ask the marketplace owner to
+reissue the credential (only they can revoke it on their side), add the new
+value as a new version, then `gcloud secrets versions disable <old> …` — the
+service re-reads within its cache TTL and every fresh sign-in moves to the new
+key without a deploy. The contact and account details live in the private
+operations notes, not here.
 Keep-one pruning applies as for every other secret here (NEO-115).
 
 **Failure semantics.** The handshake never skips silently. A missing,
