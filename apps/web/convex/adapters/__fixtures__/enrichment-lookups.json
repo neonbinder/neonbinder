@@ -1,8 +1,18 @@
 {
   "version": 1,
-  "capturedAt": "2026-09-20T18:06:21.412Z",
+  "capturedAt": "2026-09-20T18:32:25.586Z",
   "sportQid": "Q5369",
   "entries": {
+    "league|Q5369|american conference": {
+      "kind": "league",
+      "name": "American Conference",
+      "result": {
+        "wikidataId": "Q7312525",
+        "yearsActive": {
+          "from": 1979
+        }
+      }
+    },
     "league|Q5369|arizona complex league": {
       "kind": "league",
       "name": "Arizona Complex League",
@@ -23,6 +33,26 @@
         }
       }
     },
+    "league|Q5369|big west conference": {
+      "kind": "league",
+      "name": "Big West Conference",
+      "result": {
+        "wikidataId": "Q859500",
+        "yearsActive": {
+          "from": 1969
+        }
+      }
+    },
+    "league|Q5369|central league": {
+      "kind": "league",
+      "name": "Central League",
+      "result": {
+        "wikidataId": "Q1053900",
+        "yearsActive": {
+          "from": 1949
+        }
+      }
+    },
     "league|Q5369|chinese professional baseball league": {
       "kind": "league",
       "name": "Chinese Professional Baseball League",
@@ -31,6 +61,16 @@
         "abbreviation": "CPBL",
         "yearsActive": {
           "from": 1989
+        }
+      }
+    },
+    "league|Q5369|cuban national series": {
+      "kind": "league",
+      "name": "Cuban National Series",
+      "result": {
+        "wikidataId": "Q183222",
+        "yearsActive": {
+          "from": 1961
         }
       }
     },
@@ -44,6 +84,30 @@
         }
       }
     },
+    "league|Q5369|high-a central": {
+      "kind": "league",
+      "name": "High-A Central",
+      "result": {
+        "wikidataId": "Q105702200"
+      }
+    },
+    "league|Q5369|international league": {
+      "kind": "league",
+      "name": "International League",
+      "result": {
+        "wikidataId": "Q1351657",
+        "yearsActive": {
+          "from": 1884
+        }
+      }
+    },
+    "league|Q5369|low-a southeast": {
+      "kind": "league",
+      "name": "Low-A Southeast",
+      "result": {
+        "wikidataId": "Q105759891"
+      }
+    },
     "league|Q5369|major league baseball": {
       "kind": "league",
       "name": "Major League Baseball",
@@ -55,6 +119,16 @@
         }
       }
     },
+    "league|Q5369|mexican league": {
+      "kind": "league",
+      "name": "Mexican League",
+      "result": {
+        "wikidataId": "Q1349768",
+        "yearsActive": {
+          "from": 1876
+        }
+      }
+    },
     "league|Q5369|northwest league": {
       "kind": "league",
       "name": "Northwest League",
@@ -62,6 +136,16 @@
         "wikidataId": "Q1186822",
         "yearsActive": {
           "from": 1955
+        }
+      }
+    },
+    "league|Q5369|pacific coast league": {
+      "kind": "league",
+      "name": "Pacific Coast League",
+      "result": {
+        "wikidataId": "Q1353669",
+        "yearsActive": {
+          "from": 1903
         }
       }
     },
@@ -82,6 +166,26 @@
         "wikidataId": "Q925256",
         "yearsActive": {
           "from": 1903
+        }
+      }
+    },
+    "league|Q5369|southeastern conference": {
+      "kind": "league",
+      "name": "Southeastern Conference",
+      "result": {
+        "wikidataId": "Q963227",
+        "yearsActive": {
+          "from": 1932
+        }
+      }
+    },
+    "league|Q5369|tohto university baseball league": {
+      "kind": "league",
+      "name": "Tohto University Baseball League",
+      "result": {
+        "wikidataId": "Q7813315",
+        "yearsActive": {
+          "from": 1930
         }
       }
     },
@@ -6414,6 +6518,18 @@
         "enwikiTitle": "Zack Wheeler"
       }
     },
+    "team|Q5369|adelaide giants": {
+      "kind": "team",
+      "name": "Adelaide Giants",
+      "result": {
+        "wikidataId": "Q1046037",
+        "league": "Australian Baseball League",
+        "leagueWikidataId": "Q1045441",
+        "yearsActive": {
+          "from": 2009
+        }
+      }
+    },
     "team|Q5369|aoyama gakuin university baseball team": {
       "kind": "team",
       "name": "Aoyama Gakuin University Baseball Team",
@@ -6563,11 +6679,30 @@
         "espnId": "2"
       }
     },
+    "team|Q5369|cal state fullerton titans baseball": {
+      "kind": "team",
+      "name": "Cal State Fullerton Titans baseball",
+      "result": {
+        "wikidataId": "Q5018220",
+        "league": "Big West Conference",
+        "leagueWikidataId": "Q859500",
+        "yearsActive": {
+          "from": 1965
+        }
+      }
+    },
     "team|Q5369|campbell fighting camels baseball": {
       "kind": "team",
       "name": "Campbell Fighting Camels baseball",
       "result": {
         "wikidataId": "Q5028062"
+      }
+    },
+    "team|Q5369|centenary gentlemen baseball": {
+      "kind": "team",
+      "name": "Centenary Gentlemen baseball",
+      "result": {
+        "wikidataId": "Q16155372"
       }
     },
     "team|Q5369|charlotte knights": {
@@ -6711,6 +6846,13 @@
         "espnId": "6"
       }
     },
+    "team|Q5369|east carolina pirates baseball": {
+      "kind": "team",
+      "name": "East Carolina Pirates baseball",
+      "result": {
+        "wikidataId": "Q5328012"
+      }
+    },
     "team|Q5369|estrellas orientales": {
       "kind": "team",
       "name": "Estrellas Orientales",
@@ -6747,6 +6889,13 @@
         }
       }
     },
+    "team|Q5369|florida gulf coast eagles baseball": {
+      "kind": "team",
+      "name": "Florida Gulf Coast Eagles baseball",
+      "result": {
+        "wikidataId": "Q85761374"
+      }
+    },
     "team|Q5369|florida state seminoles baseball": {
       "kind": "team",
       "name": "Florida State Seminoles baseball",
@@ -6781,6 +6930,25 @@
         }
       }
     },
+    "team|Q5369|fukuoka softbank hawks": {
+      "kind": "team",
+      "name": "Fukuoka SoftBank Hawks",
+      "result": {
+        "wikidataId": "Q129164",
+        "league": "Pacific League",
+        "leagueWikidataId": "Q745287",
+        "yearsActive": {
+          "from": 1938
+        }
+      }
+    },
+    "team|Q5369|georgia tech yellow jackets baseball": {
+      "kind": "team",
+      "name": "Georgia Tech Yellow Jackets baseball",
+      "result": {
+        "wikidataId": "Q5547837"
+      }
+    },
     "team|Q5369|gigantes del cibao": {
       "kind": "team",
       "name": "Gigantes del Cibao",
@@ -6790,6 +6958,30 @@
         "leagueWikidataId": "Q681711",
         "yearsActive": {
           "from": 1996
+        }
+      }
+    },
+    "team|Q5369|hanshin tigers": {
+      "kind": "team",
+      "name": "Hanshin Tigers",
+      "result": {
+        "wikidataId": "Q127635",
+        "league": "Central League",
+        "leagueWikidataId": "Q1053900",
+        "yearsActive": {
+          "from": 1935
+        }
+      }
+    },
+    "team|Q5369|hiroshima toyo carp": {
+      "kind": "team",
+      "name": "Hiroshima Toyo Carp",
+      "result": {
+        "wikidataId": "Q247577",
+        "league": "Central League",
+        "leagueWikidataId": "Q1053900",
+        "yearsActive": {
+          "from": 1950
         }
       }
     },
@@ -6868,6 +7060,18 @@
           "secondary": "#7ab2dd"
         },
         "espnId": "7"
+      }
+    },
+    "team|Q5369|kiwoom heroes": {
+      "kind": "team",
+      "name": "Kiwoom Heroes",
+      "result": {
+        "wikidataId": "Q490137",
+        "league": "KBO League",
+        "leagueWikidataId": "Q625168",
+        "yearsActive": {
+          "from": 2008
+        }
       }
     },
     "team|Q5369|long beach state dirtbags baseball": {
@@ -6994,6 +7198,27 @@
         "espnId": "9"
       }
     },
+    "team|Q5369|missouri state bears baseball": {
+      "kind": "team",
+      "name": "Missouri State Bears baseball",
+      "result": {
+        "wikidataId": "Q20684830"
+      }
+    },
+    "team|Q5369|missouri tigers baseball": {
+      "kind": "team",
+      "name": "Missouri Tigers baseball",
+      "result": {
+        "wikidataId": "Q6879746"
+      }
+    },
+    "team|Q5369|nc state wolfpack baseball": {
+      "kind": "team",
+      "name": "NC State Wolfpack baseball",
+      "result": {
+        "wikidataId": "Q6953249"
+      }
+    },
     "team|Q5369|new york mets": {
       "kind": "team",
       "name": "New York Mets",
@@ -7038,6 +7263,13 @@
         "yearsActive": {
           "from": 1882
         }
+      }
+    },
+    "team|Q5369|old dominion monarchs baseball": {
+      "kind": "team",
+      "name": "Old Dominion Monarchs baseball",
+      "result": {
+        "wikidataId": "Q16823097"
       }
     },
     "team|Q5369|oregon state beavers baseball": {
@@ -7269,6 +7501,13 @@
         "espnId": "24"
       }
     },
+    "team|Q5369|stanford cardinal baseball": {
+      "kind": "team",
+      "name": "Stanford Cardinal baseball",
+      "result": {
+        "wikidataId": "Q7598724"
+      }
+    },
     "team|Q5369|tampa bay rays": {
       "kind": "team",
       "name": "Tampa Bay Rays",
@@ -7310,6 +7549,18 @@
       "name": "Texas State Bobcats baseball",
       "result": {
         "wikidataId": "Q7708020"
+      }
+    },
+    "team|Q5369|tohoku rakuten golden eagles": {
+      "kind": "team",
+      "name": "Tohoku Rakuten Golden Eagles",
+      "result": {
+        "wikidataId": "Q1375077",
+        "league": "Pacific League",
+        "leagueWikidataId": "Q745287",
+        "yearsActive": {
+          "from": 2005
+        }
       }
     },
     "team|Q5369|toronto blue jays": {
@@ -7354,6 +7605,23 @@
         }
       }
     },
+    "team|Q5369|ucla bruins baseball": {
+      "kind": "team",
+      "name": "UCLA Bruins baseball",
+      "result": {
+        "wikidataId": "Q7864002",
+        "yearsActive": {
+          "from": 1920
+        }
+      }
+    },
+    "team|Q5369|uconn huskies baseball": {
+      "kind": "team",
+      "name": "UConn Huskies baseball",
+      "result": {
+        "wikidataId": "Q5161545"
+      }
+    },
     "team|Q5369|vanderbilt commodores baseball": {
       "kind": "team",
       "name": "Vanderbilt Commodores baseball",
@@ -7361,6 +7629,18 @@
         "wikidataId": "Q7914437",
         "yearsActive": {
           "from": 1886
+        }
+      }
+    },
+    "team|Q5369|virginia cavaliers baseball": {
+      "kind": "team",
+      "name": "Virginia Cavaliers baseball",
+      "result": {
+        "wikidataId": "Q7934170",
+        "league": "Atlantic Coast Conference",
+        "leagueWikidataId": "Q756355",
+        "yearsActive": {
+          "from": 1889
         }
       }
     },
@@ -7413,6 +7693,18 @@
         "wikidataId": "Q3016726",
         "yearsActive": {
           "from": 1945
+        }
+      }
+    },
+    "team|Q5369|yokohama dena baystars": {
+      "kind": "team",
+      "name": "Yokohama DeNA BayStars",
+      "result": {
+        "wikidataId": "Q1194023",
+        "league": "Central League",
+        "leagueWikidataId": "Q1053900",
+        "yearsActive": {
+          "from": 1950
         }
       }
     },
