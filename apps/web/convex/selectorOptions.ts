@@ -188,10 +188,13 @@ import { normalizeCardNumberPrefix } from "./cardNumberPrefix";
 export { MAX_CARD_NUMBER_PREFIX_LENGTH } from "./cardNumberPrefix";
 import {
   BSC_SOURCE_FACETS,
+  PROMOTED_PARALLEL_BSC_FACET,
   bscFacetValidator,
   resolveBscFacetFilters,
   soleBscBaseVariantId,
   syncWrittenBscFacet,
+  untaggedBscSlots,
+  withBscFacetTags,
 } from "./bscFacets";
 // NEO-239 — the per-side "can this marketplace even be asked?" rule that
 // replaced `isCustomSubtree`. One helper, shared with setReconciliation.ts, so
@@ -6072,6 +6075,13 @@ export const applyParallelGroupings = mutation({
       sourceId: Id<"selectorOptions">;
       targetId: Id<"selectorOptions">;
       metadata: Doc<"selectorOptions">["metadata"];
+      /**
+       * NEO-293 — the row's `platformFacets` with every UNTAGGED BSC slot
+       * tagged `variantName`; `undefined` when there is nothing to tag.
+       * Computed here, from the row as it is BEFORE the move, because the
+       * fact being recorded belongs to the insert-level row — see below.
+       */
+      platformFacets: Doc<"selectorOptions">["platformFacets"] | undefined;
     }> = [];
     for (const p of args.promotions) {
       const source = await ctx.db.get(p.insertId);
@@ -6111,10 +6121,41 @@ export const applyParallelGroupings = mutation({
           `Cannot promote insert "${source.value}" to parallel — it already has parallels beneath it.`,
         );
       }
+      // NEO-293 — tag the ids this move would otherwise strand.
+      //
+      // BSC files a parallel of an insert as a `variantName` under
+      // `variant=insert`, so the insert-level sync fetched this row's BSC id
+      // from the variantName facet and stored it UNTAGGED: at `insert` the
+      // level rule (`legacyBscFacetForLevel`) already answers `variantName`,
+      // and only the variantType sync writes tags. At `parallel` that rule is
+      // silent, so the moment this row moves the same id would go inert —
+      // `bscSourceView` buckets it "untagged", the checklist fetch skips BSC.
+      //
+      // The tag is a fact THIS writer holds, not an inference from the level
+      // or the display name: the id sits on an insert-level row, and the only
+      // way an untagged BSC id reaches an insert-level row is the insert-level
+      // variantName fetch (or an operator attach, which the level rule read
+      // as variantName too). Same rule as `syncWrittenBscFacet` at
+      // variantType. Slots already carrying a tag are left alone; SportLots
+      // slots have no facet to tag. Written in the SAME patch as the level
+      // move so the two cannot land apart.
+      //
+      // `legacyBscFacetForLevel("parallel")` is deliberately NOT widened to do
+      // this after the fact: a parallel of the BASE set sits on a different
+      // `variant` axis and its untagged slots must stay inert.
+      const untagged = untaggedBscSlots(source);
       promotionTargets.push({
         sourceId: p.insertId,
         targetId: p.targetInsertId,
         metadata: source.metadata,
+        platformFacets:
+          untagged.length > 0
+            ? withBscFacetTags(
+                source.platformFacets,
+                untagged,
+                PROMOTED_PARALLEL_BSC_FACET,
+              )
+            : undefined,
       });
     }
 
@@ -6190,12 +6231,19 @@ export const applyParallelGroupings = mutation({
     // write-once snapshot taken at creation (NEO-71-74), and an operator may
     // have edited it since; the flags describe the row, the snapshot stays
     // theirs to change through the attributes panel.
+    //
+    // NEO-293 — `platformFacets` rides in the same patch: an untagged BSC id
+    // on the source row is tagged `variantName` as it moves (see the
+    // validation loop above for why the writer may say so). Demotion below
+    // leaves tags alone — `variantName` is what the level rule answers at
+    // `insert` anyway, so the tagged and untagged row resolve identically.
     const variantTypeChildren = await getChildren(args.variantTypeId);
-    for (const { sourceId, targetId, metadata } of promotionTargets) {
+    for (const { sourceId, targetId, metadata, platformFacets } of promotionTargets) {
       await ctx.db.patch(sourceId, {
         level: "parallel",
         parentId: targetId,
         metadata: withVariantFlags(metadata, { isParallel: true }),
+        ...(platformFacets !== undefined ? { platformFacets } : {}),
         lastUpdated: now,
       });
       variantTypeChildren.delete(sourceId);

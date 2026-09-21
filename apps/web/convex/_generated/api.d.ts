@@ -29,6 +29,7 @@ import type * as adminUsers from "../adminUsers.js";
 import type * as auth from "../auth.js";
 import type * as backfillBrandUnknownRole from "../backfillBrandUnknownRole.js";
 import type * as backfillCardFeatures from "../backfillCardFeatures.js";
+import type * as backfillPromotedParallelFacet from "../backfillPromotedParallelFacet.js";
 import type * as backfillVariantFacetAndBaseRole from "../backfillVariantFacetAndBaseRole.js";
 import type * as browserAudience from "../browserAudience.js";
 import type * as bscFacets from "../bscFacets.js";
@@ -130,6 +131,7 @@ declare const fullApi: ApiFromModules<{
   auth: typeof auth;
   backfillBrandUnknownRole: typeof backfillBrandUnknownRole;
   backfillCardFeatures: typeof backfillCardFeatures;
+  backfillPromotedParallelFacet: typeof backfillPromotedParallelFacet;
   backfillVariantFacetAndBaseRole: typeof backfillVariantFacetAndBaseRole;
   browserAudience: typeof browserAudience;
   bscFacets: typeof bscFacets;

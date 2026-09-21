@@ -30,6 +30,7 @@ vi.mock("../../convex/_generated/api", () => ({
       detachPlatformId: "detachPlatformId",
       renamePlatformLabel: "renamePlatformLabel",
       getSlotCardCounts: "getSlotCardCounts",
+      attachPlatformIds: "attachPlatformIds",
     },
     setReconciliation: {
       fetchSlAttachSets: "fetchSlAttachSets",
@@ -41,6 +42,12 @@ vi.mock("../../convex/_generated/api", () => ({
 const queryResults: Record<string, unknown> = {};
 /** One stable spy per mutation reference, so a test can assert its args. */
 const mutationSpies: Record<string, ReturnType<typeof vi.fn>> = {};
+/**
+ * Same for actions. Only the NEO-293 tests below open the attach dialog, so
+ * only they seed these; everywhere else the dialog stays closed and never
+ * calls one.
+ */
+const actionSpies: Record<string, ReturnType<typeof vi.fn>> = {};
 
 vi.mock("convex/react", () => ({
   useQuery: (ref: string) => queryResults[ref],
@@ -48,7 +55,10 @@ vi.mock("convex/react", () => ({
     if (!mutationSpies[ref]) mutationSpies[ref] = vi.fn();
     return mutationSpies[ref];
   },
-  useAction: () => vi.fn(),
+  useAction: (ref: string) => {
+    if (!actionSpies[ref]) actionSpies[ref] = vi.fn();
+    return actionSpies[ref];
+  },
 }));
 
 import MultiSourcePanel from "./MultiSourcePanel";
@@ -650,5 +660,144 @@ describe("MultiSourcePanel — the BSC skip line (NEO-252)", () => {
         "BuySportsCards will be skipped: no variant type on this path.",
       ),
     ).toBeTruthy();
+  });
+});
+
+/**
+ * NEO-293 — the "Needs re-mapping" list tells the operator to re-attach the
+ * slot from "Attach more…", and the dialog has to let them.
+ *
+ * It did not. `alreadyAttached.bsc` was built from EVERY BSC slot id and the
+ * dialog's variants view filters `alreadyAttached.bsc` out, so the one id the
+ * operator was sent to pick was the one id not on offer: the pane read "Every
+ * BSC variant in this set is already attached" and the slot stayed untagged
+ * for good. The backend never needed changing — re-attaching an id already on
+ * the row refreshes the facet on its slot (`allocateSlots`) — so the fix is
+ * entirely in what the panel hands the dialog, and that is what these tests
+ * pin, through the real dialog rather than a spy on its props.
+ */
+describe("MultiSourcePanel — an untagged slot is re-mappable from the dialog (NEO-293)", () => {
+  const GOLD = "gold-foil";
+  const RAINBOW = "rainbow-foil";
+
+  /**
+   * A Base row with one tagged variantName slot (Rainbow) and one untagged
+   * slot (Gold). BSC lists both as variants of the row's own set.
+   */
+  function setMixedRow() {
+    setRow({
+      platformData: { bsc: { b0: RAINBOW, b1: GOLD } },
+      platformLabels: { bsc: { b0: "Rainbow Foil", b1: "Gold Foil" } },
+      platformFacets: { bsc: { b0: "variantName" } },
+      primaryPlatformId: { bsc: "b0" },
+    });
+    actionSpies.fetchBscAttachOptions = vi.fn().mockResolvedValue({
+      success: true,
+      options: [
+        { value: "Rainbow Foil", platformValue: RAINBOW },
+        { value: "Gold Foil", platformValue: GOLD },
+        { value: "Silver Foil", platformValue: "silver-foil" },
+      ],
+      message: "",
+    });
+    actionSpies.fetchSlAttachSets = vi.fn().mockResolvedValue({
+      success: true,
+      options: [],
+      message: "",
+    });
+    mutationSpies.attachPlatformIds = vi
+      .fn()
+      .mockResolvedValue({ success: true, message: "", attachedCount: 0 });
+  }
+
+  const bscPane = () => screen.getByLabelText("BSC candidates");
+
+  test("the untagged id is offered as a candidate; the tagged one is still excluded", async () => {
+    setMixedRow();
+    render(<MultiSourcePanel selectorOptionId={ROW_ID} />);
+
+    // The panel's own account of the row: one source, one to re-map.
+    const bsc = within(bscColumn());
+    expect(bsc.getByLabelText("Rainbow Foil is attached as a BSC variant")).toBeTruthy();
+    expect(bsc.getByText("Needs re-mapping")).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText("Attach more source sets"));
+    await waitFor(() =>
+      expect(within(bscPane()).getByLabelText("Toggle Gold Foil")).toBeTruthy(),
+    );
+    const pane = within(bscPane());
+    // Untagged → excluded from alreadyAttached → a checkbox, marked as a re-map.
+    expect(pane.getByText("Needs re-mapping")).toBeTruthy();
+    // Tagged → still in alreadyAttached → filtered out of the variants view.
+    expect(pane.queryByLabelText("Toggle Rainbow Foil")).toBeNull();
+    // A genuinely new sibling is unaffected.
+    expect(pane.getByLabelText("Toggle Silver Foil")).toBeTruthy();
+    expect(
+      pane.queryByText(/Every BSC variant in this set is already attached/),
+    ).toBeNull();
+  });
+
+  test("re-attaching it sends the rung's facet and the confirm reads as a re-map", async () => {
+    setMixedRow();
+    render(<MultiSourcePanel selectorOptionId={ROW_ID} />);
+
+    fireEvent.click(screen.getByLabelText("Attach more source sets"));
+    await waitFor(() =>
+      expect(within(bscPane()).getByLabelText("Toggle Gold Foil")).toBeTruthy(),
+    );
+    fireEvent.click(within(bscPane()).getByLabelText("Toggle Gold Foil"));
+
+    const confirm = screen.getByLabelText("Confirm attach sets");
+    expect(confirm.textContent).toBe("Re-map 1");
+    fireEvent.click(confirm);
+
+    await waitFor(() =>
+      expect(mutationSpies.attachPlatformIds).toHaveBeenCalledTimes(1),
+    );
+    expect(mutationSpies.attachPlatformIds.mock.calls[0][0]).toEqual({
+      selectorOptionId: ROW_ID,
+      additions: {
+        bsc: [{ id: GOLD, label: "Gold Foil", facet: "variantName" }],
+        sportlots: [],
+      },
+    });
+    // attachedCount: 0 is the server's honest answer for a re-map; the dialog
+    // closes on it like any other success rather than reporting a failure.
+    await waitFor(() =>
+      expect(screen.queryByLabelText("BSC candidates")).toBeNull(),
+    );
+  });
+
+  test("a `variant` SCOPE slot stays excluded — it is not a source, and not a re-map either", async () => {
+    // The row's own scope slug is not in `untagged` and must not become a
+    // candidate: re-attaching it from the variants rung would re-tag the
+    // row's variant axis as a variantName source.
+    setRow({
+      platformData: { bsc: { b0: "base", b1: "topps" } },
+      platformLabels: { bsc: { b0: "Base", b1: "Topps" } },
+      platformFacets: { bsc: { b0: "variant", b1: "setName" } },
+      primaryPlatformId: { bsc: "b1" },
+    });
+    actionSpies.fetchBscAttachOptions = vi.fn().mockResolvedValue({
+      success: true,
+      options: [
+        { value: "Base", platformValue: "base" },
+        { value: "Gold Foil", platformValue: GOLD },
+      ],
+      message: "",
+    });
+    actionSpies.fetchSlAttachSets = vi.fn().mockResolvedValue({
+      success: true,
+      options: [],
+      message: "",
+    });
+    render(<MultiSourcePanel selectorOptionId={ROW_ID} />);
+
+    fireEvent.click(screen.getByLabelText("Attach more source sets"));
+    await waitFor(() =>
+      expect(within(bscPane()).getByLabelText("Toggle Gold Foil")).toBeTruthy(),
+    );
+    expect(within(bscPane()).queryByLabelText("Toggle Base")).toBeNull();
+    expect(within(bscPane()).queryByText("Needs re-mapping")).toBeNull();
   });
 });
