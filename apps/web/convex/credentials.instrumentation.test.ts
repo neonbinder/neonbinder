@@ -177,6 +177,33 @@ describe("credential_test_failed — enriched properties", () => {
     expect(ev.properties.platform).toBe("sportlots");
     expect(ev.properties.error_class).toBe("timeout");
   });
+
+  test("NEO-288: a site-side refusal (automated_access) is still recorded, with the service's class verbatim", async () => {
+    // The user sees "that's on them, not your password" and nothing is written
+    // to their credential row — but the alerting must keep seeing the refusal,
+    // and by its own name, not re-bucketed as `other` or `timeout`.
+    const t = convexTest(schema, modules);
+    const stub: FetchStub = async (url) => {
+      if (String(url).includes("/login/sportlots")) {
+        return jsonResponse(
+          { error: "SportLots refused the automated-access key", error_class: "automated_access" },
+          502,
+        );
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    };
+    stubFetch(stub);
+
+    const result = await t
+      .withIdentity({ subject: USER })
+      .action(internal.credentials.authenticateSportlots, {});
+
+    expect(result.success).toBe(false);
+    const ev = only("credential_test_failed");
+    expect(ev.properties.platform).toBe("sportlots");
+    expect(ev.properties.error_class).toBe("automated_access");
+    expect(captureCalls.filter((c) => c.event === "credential_test_succeeded")).toHaveLength(0);
+  });
 });
 
 describe("credential_test_succeeded — the rate denominator", () => {

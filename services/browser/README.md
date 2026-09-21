@@ -169,6 +169,118 @@ outage doesn't turn every PR and every promotion red. There is no `if:`
 gating on the jobs themselves — BSC's half of the suite always runs
 unconditionally, and only the SportLots test cases branch on the variable.
 
+## SportLots automated access (NEO-288)
+
+On 2026-09-17 SportLots put Cloudflare Turnstile in front of `signin.tpl`. A
+direct form POST is now refused with a body such as "Security verification
+failed" / "Invalid login request" (classified as a *challenge*, never as a
+credential rejection — see `CHALLENGE_PATTERNS`). The SportLots owner issued
+NeonBinder an **Automated Access** credential and a script path around the
+challenge, which the adapter follows on every fresh sign-in:
+
+1. `POST https://www.sportlots.com/u/node/automated-access` with the JSON body
+   `{"keyId": "…", "secret": "…"}` → `{"success": true, "authId": "…"}`. The
+   `authId` is short-lived and **single-use**, so the adapter mints one per
+   signin attempt (the retry loop re-enters `attemptLogin`, so a 5xx retry
+   mints a fresh one).
+2. The ordinary `POST /cust/custbin/signin.tpl` (`email_val`, `psswd`)
+   additionally carries `turnstile_auth_id=<authId>`.
+
+The stored-cookie re-auth path (`validateCachedCookieWithRetry`) and the
+`newinven.tpl` validation GET are unchanged — no handshake there.
+
+**The secret.** `src/services/sportlots-automated-access.ts` reads Secret
+Manager secret `sportlots-automated-access` in the service's project
+(`GOOGLE_CLOUD_PROJECT`, default `neonbinder`). Its payload is a JSON object
+with exactly two non-empty string fields:
+
+```json
+{ "keyId": "…", "secret": "…" }
+```
+
+Seed or rotate it from a `0600` file (never from the shell history — no
+`--data-file=-` with an inline echo):
+
+```bash
+gcloud secrets versions add sportlots-automated-access \
+  --data-file=<0600 file> --project=neonbinder-dev   # or --project=neonbinder
+```
+
+The read is cached in-process for ~10 minutes; a refused handshake drops the
+cache so a rotated key is picked up on the next attempt without a restart.
+
+**If the key leaks or is suspected compromised:** ask the marketplace owner to
+reissue the credential (only they can revoke it on their side), add the new
+value as a new version, then `gcloud secrets versions disable <old> …` — the
+service re-reads within its cache TTL and every fresh sign-in moves to the new
+key without a deploy. The contact and account details live in the private
+operations notes, not here.
+Keep-one pruning applies as for every other secret here (NEO-115).
+
+**Failure semantics.** The handshake never skips silently. A missing,
+unreadable or malformed secret, a `401`/`403`/other `4xx`, a `2xx` whose body is
+not `{"success": true, "authId": "<non-empty>"}`, a `3xx` (the endpoint is
+fetched with `redirect: "manual"` — a redirect is a refusal, fail closed; if
+every login fails at attempt 1 check for a redirect as well as the key), or an
+unparsable body fails the login with `error_class: automated_access` →
+**502, pages** — this is our key and our outage, never the seller's password,
+so `credentialRejected` is never set and Convex writes nothing about the
+user's session. `429`, `5xx`, a network error or the 8 s timeout are retryable
+within the normal `MAX_ATTEMPTS` budget and classify the same way; the bounded
+worst case (5 × 8 s + jittered backoffs ≈ 50 s) is pinned under Convex's 60 s
+abort by a unit test. The signin POST and the post-login validation GET remain
+unbounded, as they were before this change. The `browser_login_call` log
+line carries `automated_access: true|false` (omitted when the login never
+reached the handshake, e.g. a cached-cookie re-auth).
+
+**Same-IP requirement — one TCP connection per attempt.** SportLots binds the
+`authId` to the client IP that minted it, so the handshake and the signin have
+to leave through the same address. Measured 2026-09-20: the handshake succeeded
+on every attempt from Cloud Run, and every signin was refused with "Security
+verification failed" — while the identical code logged in first try from a
+laptop. The cause is a race in Node's global `fetch`, not the network: after
+`await response.text()` on the handshake, undici has **not yet returned that
+socket to its pool**, so a signin dispatched straight away opens a **second**
+TCP connection even though the first is still open and keep-alive
+(`Keep-Alive: timeout=5`). Reproduced against a local keep-alive server: two
+back-to-back global fetches land on two server-side sockets, every time. On a
+laptop both sockets share one public IP and nobody notices; on Cloud Run's
+shared egress pool the two sockets can carry different addresses. A sleep
+between the calls also "fixes" it, which is how you know it is a race and not
+a delay — do not add one.
+
+The adapter therefore runs each attempt's handshake and signin through
+`withSingleConnection` (`src/services/single-connection.ts`): a dedicated
+`undici.Client` — one connection by construction — passed as `dispatcher` to
+both `fetch` calls, closed in `finally` (bounded: a close blocked by an
+unconsumed body falls back to `destroy()` rather than hanging the route).
+Every retry gets a fresh client with its fresh single-use `authId`. The
+post-login validation GET stays on the global fetch: the signin answers
+`Connection: close`, and a session cookie is not IP-bound (stored-cookie
+re-auth already worked from Cloud Run). `tests/single-connection.test.mjs`
+proves the one-socket property against a real local server and keeps the
+two-socket global-fetch behaviour as the regression control.
+
+**No NAT or static egress is needed for this.** The requirement is that the
+two requests share a socket, which the single-connection client guarantees on
+any egress. If a VPC connector or proxy is ever added, that still holds as long
+as one TCP connection maps to one upstream address.
+
+**Security.** The `secret` is transmitted only in the HTTPS POST body to the
+handshake endpoint — never a query string, header, log line, error message or
+commit. Only the HTTP status and a boolean are logged; the request body, the
+response body and the `authId` are never interpolated anywhere, and the
+handshake response is never turned into a login diagnostic. The `authId`,
+`keyId` and `secret` are passed to `buildLoginDiagnostic` as exact-value
+redaction inputs in case SportLots reflects a submitted form field into a page
+body. The JSON parse error is never logged or re-thrown (Node embeds the input
+in `SyntaxError.message`).
+
+**Tests never touch GCP.** `tests/sportlots-automated-access.test.mjs` stubs
+`@google-cloud/secret-manager` in the require cache; the adapter tests
+monkey-patch the reader module the way they patch `SecretsManagerService`, so
+`npm test` needs no ADC and no real key.
+
 ## Release contract
 
 **Read this before changing any request or response shape on the

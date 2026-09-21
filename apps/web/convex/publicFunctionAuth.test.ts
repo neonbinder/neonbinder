@@ -866,3 +866,49 @@ describe("NEO-287: the marketplace pause switch is readable by any signed-in use
     ).toEqual([]);
   });
 });
+
+describe("NEO-289: the enrichment-fixture capture is internal and armed, never public", () => {
+  /**
+   * `captureFromCli` runs the live Wikidata + ESPN lookups for every name on
+   * the deployment and `coverageReportFromCli` lists the deployment's names;
+   * both are `npx convex run` tools in the `resetSetBuilderDataFromCli` /
+   * `bulkLoad` mould — reached WITHOUT `--identity`, so they carry no
+   * `requireAdmin` and the declaration keyword plus the arming flag are the
+   * whole boundary. Same reading-the-source approach as the NEO-154 and
+   * NEO-214 blocks, for the same reason.
+   *
+   * `runCaptureLookups` is the node half the V8 action calls into, and the
+   * two queries are what list the deployment's rows; a public twin of any of
+   * them would be an unauthenticated read of every player, team and league
+   * name, or an unauthenticated Wikidata fan-out.
+   */
+  test.each([
+    ["enrichmentFixtures.ts", "captureFromCli", "internalAction"],
+    ["enrichmentFixtures.ts", "coverageReportFromCli", "internalAction"],
+    ["enrichmentFixtures.ts", "resolveSportByQid", "internalQuery"],
+    ["enrichmentFixtures.ts", "listCaptureNames", "internalQuery"],
+    ["adapters/wikidata.ts", "runCaptureLookups", "internalAction"],
+  ])("%s :: %s is declared %s", (file, fn, keyword) => {
+    const src = readFileSync(join(__dirname, file), "utf8");
+    expect(src).toContain(`export const ${fn} = ${keyword}({`);
+    expect(src).not.toContain(`export const ${fn} = action(`);
+    expect(src).not.toContain(`export const ${fn} = query(`);
+  });
+
+  test("capture is gated on the arming flag, not on an identity; coverage takes only the confirm literal", () => {
+    // The env flag exists for the Wikidata/ESPN fan-out. The coverage report
+    // reads the committed file and the deployment's names, writes nothing and
+    // fetches nothing, and CI runs it on a preview whose env it cannot set —
+    // so it is internal + confirm literal only (security audit, 2026-09-20).
+    const src = readFileSync(join(__dirname, "enrichmentFixtures.ts"), "utf8");
+    expect(src).toContain('process.env.ALLOW_ENRICHMENT_FIXTURE_CAPTURE !== "true"');
+    const capture = src.slice(src.indexOf("export const captureFromCli"), src.indexOf("export const coverageReportFromCli"));
+    const coverage = src.slice(src.indexOf("export const coverageReportFromCli"));
+    expect(capture).toContain("assertCaptureArmed(args.confirm)");
+    expect(coverage).toContain("assertConfirmed(args.confirm)");
+    expect(coverage).not.toContain("assertCaptureArmed(");
+    // The header mentions the guard by name to say why it is absent; a CALL
+    // is what must not appear.
+    expect(src).not.toContain("requireAdmin(");
+  });
+});

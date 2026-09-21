@@ -661,6 +661,46 @@ describe("getSiteToken — legacy 404 'No token available' is NOT absence (NEO-1
   });
 });
 
+describe("getSiteToken/refreshSiteToken — site-side refusal is neither reauth nor a store (NEO-288)", () => {
+  // getSiteToken's mint path (204 → no cached token → refreshSiteToken →
+  // authenticateBsc/Sportlots → runSiteLogin) is a DIFFERENT code path from
+  // the user-triggered testSiteCredentials/saveCredentials actions already
+  // pinned above. A site-side refusal here must return null (same as any
+  // other failed mint) and must NOT write needsReauth — the marketplace never
+  // evaluated the (absent, in this path) credentials, so there is nothing to
+  // flag, and it must never be confused with reauth_required.
+  for (const errorClass of ["automated_access", "challenge"] as const) {
+    test(`a background mint that fails \`${errorClass}\` returns null and writes no reauth flag`, async () => {
+      const t = convexTest(schema, modules);
+      await seedHasCredentials(t, USER_A, SITE);
+      const seen = { loginAttempts: 0 };
+      stubFetch(
+        tokenAndLoginStub(
+          () => new Response(null, { status: 204 }),
+          () =>
+            jsonResponse(
+              { error: "SportLots refused the sign-in", error_class: errorClass },
+              502,
+            ),
+          seen,
+        ),
+      );
+
+      const token = await t
+        .withIdentity({ subject: USER_A })
+        .action(internal.credentials.getSiteToken, { site: SITE });
+
+      expect(token).toBeNull();
+      expect(seen.loginAttempts).toBeGreaterThanOrEqual(1);
+      const entry = await getRawEntry(t, USER_A, SITE);
+      // Credential status is entirely untouched: not flagged, not cleared.
+      expect(entry?.hasCredentials).toBe(true);
+      expect(entry?.needsReauth).toBeFalsy();
+      expect(entry?.needsReauthSince).toBeUndefined();
+    });
+  }
+});
+
 describe("reauth_required — flag, never delete (NEO-141)", () => {
   test("a reauth_required login failure sets needsReauth and keeps the credentials", async () => {
     const t = convexTest(schema, modules);
@@ -910,13 +950,15 @@ describe("transient marketplace failure — never blame the user (NEO-281)", () 
     expect(entry?.needsReauth).toBeFalsy();
   });
 
-  test("a named non-transient class (challenge) keeps the existing copy", async () => {
-    // Scope guard: transient is exactly `other` / `timeout` / unclassified.
-    // A challenge page is a verdict of its own and keeps the old copy;
-    // widening further is a deliberate decision, not a drift.
+  test("a named non-transient class (oom) keeps the existing copy", async () => {
+    // Scope guard: transient is exactly `other` / `timeout` / unclassified,
+    // and site-side (NEO-288) is exactly `challenge` / `automated_access`.
+    // Any other named class is a verdict of its own and keeps the old copy;
+    // widening further is a deliberate decision, not a drift. (This case used
+    // `challenge` until NEO-288 moved it to the site-side bucket below.)
     const t = convexTest(schema, modules);
     await seedHasCredentials(t, USER_A, "sportlots");
-    stubFetch(loginOnly({ error: "Captcha challenge shown", error_class: "challenge" }, 502));
+    stubFetch(loginOnly({ error: "Browser out of memory", error_class: "oom" }, 502));
 
     const result = await t
       .withIdentity({ subject: USER_A })
@@ -950,6 +992,192 @@ describe("transient marketplace failure — never blame the user (NEO-281)", () 
     const entry = await getRawEntry(t, USER_A, "sportlots");
     expect(entry?.hasCredentials).toBeFalsy();
     expect(entry?.needsReauth).toBeFalsy();
+  });
+});
+
+// NEO-288: the browser service is gaining a SportLots automated-access
+// handshake. Two `error_class` values from `/login/sportlots` (and
+// `/login/bsc`) mean "the marketplace turned US away": `challenge` (SportLots'
+// refusal bodies for automated sign-ins now classify here) and the new
+// `automated_access` (our owner-issued key was refused or is missing; 502).
+// Neither says anything about the user's password, yet both used to fall
+// through to "check your credentials". These pin the per-site site-side copy,
+// the untouched credential status, and the `credential_test_failed` record
+// that still carries the class for the NEO-43 alerting.
+describe("site-side refusal — the marketplace turned us away, not the user (NEO-288)", () => {
+  const SL_SITE_MESSAGE =
+    "SportLots wouldn't let us in the door — that's on them, not your password. Nothing changed on your end. Give it another go in a bit.";
+  const BSC_SITE_MESSAGE =
+    "BSC wouldn't let us in the door — that's on them, not your password. Nothing changed on your end. Give it another go in a bit.";
+
+  /** Only the login route answers; anything else is a test bug. */
+  function loginOnly(body: unknown, status: number): FetchStub {
+    return (async (url: string | URL | Request) => {
+      if (String(url).includes("/login/")) return jsonResponse(body, status);
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as FetchStub;
+  }
+
+  /**
+   * `recordCredentialTest` writes one structured `credential_login_call`
+   * console line per outcome before the PostHog capture (which no-ops in this
+   * file — no POSTHOG_API_KEY; the capture itself is pinned in
+   * credentials.instrumentation.test.ts). The line carries the same
+   * `error_class`, so it is the observable record here.
+   */
+  function recordedFailures(spy: ReturnType<typeof vi.spyOn>) {
+    return spy.mock.calls
+      .map((call) => call[0])
+      .filter((line): line is string => typeof line === "string" && line.startsWith("{"))
+      .map((line) => JSON.parse(line) as { msg?: string; success?: boolean; error_class?: string; platform?: string })
+      .filter((rec) => rec.msg === "credential_login_call" && rec.success === false);
+  }
+
+  for (const errorClass of ["challenge", "automated_access"] as const) {
+    test(`Test credentials on a 502 \`${errorClass}\` says SportLots wouldn't let us in and writes nothing`, async () => {
+      const t = convexTest(schema, modules);
+      const lastUpdated = "2020-01-01T00:00:00.000Z";
+      await seedHasCredentials(t, USER_A, "sportlots", lastUpdated);
+      stubFetch(loginOnly({ error: "SportLots refused the sign-in", error_class: errorClass }, 502));
+      const logSpy = vi.spyOn(console, "log");
+
+      const result = await t
+        .withIdentity({ subject: USER_A })
+        .action(api.credentials.testSiteCredentials, { site: "sportlots" });
+
+      expect(result.success).toBe(false);
+      expect(result.message).toBe(SL_SITE_MESSAGE);
+      expect(result.message).not.toMatch(/check your credentials/i);
+      // No credential-status write of any kind: not a flag, not a timestamp.
+      const entry = await getRawEntry(t, USER_A, "sportlots");
+      expect(entry?.hasCredentials).toBe(true);
+      expect(entry?.needsReauth).toBeFalsy();
+      expect(entry?.needsReauthSince).toBeUndefined();
+      expect(entry?.lastUpdated).toBe(lastUpdated);
+      // Exactly one failure record, still tagged with the service's class —
+      // the NEO-43 alerting must keep seeing site-side refusals.
+      const failures = recordedFailures(logSpy);
+      expect(failures).toHaveLength(1);
+      expect(failures[0].platform).toBe("sportlots");
+      expect(failures[0].error_class).toBe(errorClass);
+      logSpy.mockRestore();
+    });
+
+    test(`saveCredentials on a 502 \`${errorClass}\` says SportLots wouldn't let us in, not 'check your password'`, async () => {
+      // Connect-and-store hands the typed password to the login route. If
+      // SportLots refuses the request before evaluating it, the password is
+      // unproven, not wrong — and nothing may be stored either way.
+      const t = convexTest(schema, modules);
+      stubFetch(loginOnly({ error: "SportLots refused the sign-in", error_class: errorClass }, 502));
+      const logSpy = vi.spyOn(console, "log");
+
+      const result = await t
+        .withIdentity({ subject: USER_A })
+        .action(api.credentials.saveCredentials, {
+          site: "sportlots",
+          username: "real-user",
+          password: "real-pass",
+        });
+
+      expect(result.success).toBe(false);
+      // Verbatim: saveCredentials must not rewrite it into its own
+      // "check your username and password" copy.
+      expect(result.message).toBe(SL_SITE_MESSAGE);
+      expect(result.message).not.toMatch(/check your/i);
+      const entry = await getRawEntry(t, USER_A, "sportlots");
+      expect(entry?.hasCredentials).toBeFalsy();
+      expect(entry?.needsReauth).toBeFalsy();
+      const failures = recordedFailures(logSpy);
+      expect(failures).toHaveLength(1);
+      expect(failures[0].error_class).toBe(errorClass);
+      logSpy.mockRestore();
+    });
+  }
+
+  test("a site-side refusal leaves a pre-existing needsReauth flag exactly as it was", async () => {
+    // The flag is the user's to clear by signing in again; a refusal that
+    // never evaluated their password is no evidence either way.
+    const t = convexTest(schema, modules);
+    const since = Date.now() - 60 * 60 * 1000;
+    await t.run(async (ctx) => {
+      await ctx.db.insert("userProfiles", {
+        userId: USER_A,
+        siteCredentials: [
+          { site: "sportlots", hasCredentials: true, needsReauth: true, needsReauthSince: since },
+        ],
+      });
+    });
+    stubFetch(loginOnly({ error: "refused", error_class: "automated_access" }, 502));
+
+    const result = await t
+      .withIdentity({ subject: USER_A })
+      .action(api.credentials.testSiteCredentials, { site: "sportlots" });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toBe(SL_SITE_MESSAGE);
+    const entry = await getRawEntry(t, USER_A, "sportlots");
+    expect(entry?.hasCredentials).toBe(true);
+    expect(entry?.needsReauth).toBe(true);
+    expect(entry?.needsReauthSince).toBe(since);
+  });
+
+  test("the site-side copy is per site: BSC `challenge` gets its own", async () => {
+    const t = convexTest(schema, modules);
+    await seedHasCredentials(t, USER_A, SITE);
+    stubFetch(loginOnly({ error: "Authentication failed", error_class: "challenge" }, 500));
+
+    const result = await t
+      .withIdentity({ subject: USER_A })
+      .action(api.credentials.testSiteCredentials, { site: SITE });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toBe(BSC_SITE_MESSAGE);
+    const entry = await getRawEntry(t, USER_A, SITE);
+    expect(entry?.hasCredentials).toBe(true);
+    expect(entry?.needsReauth).toBeFalsy();
+  });
+
+  test("regression guard: a 422 invalid_credentials still points the user at their credentials", async () => {
+    const t = convexTest(schema, modules);
+    await seedHasCredentials(t, USER_A, "sportlots");
+    stubFetch(
+      loginOnly({ error: "Invalid credentials", error_class: "invalid_credentials" }, 422),
+    );
+
+    const result = await t
+      .withIdentity({ subject: USER_A })
+      .action(api.credentials.testSiteCredentials, { site: "sportlots" });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toBe(
+      "SportLots login failed. Please check your credentials and try again.",
+    );
+    expect(result.message).not.toBe(SL_SITE_MESSAGE);
+    const entry = await getRawEntry(t, USER_A, "sportlots");
+    expect(entry?.hasCredentials).toBe(true);
+    expect(entry?.needsReauth).toBeFalsy();
+  });
+
+  test("regression guard: saveCredentials on invalid_credentials still says 'check your username and password'", async () => {
+    const t = convexTest(schema, modules);
+    stubFetch(
+      loginOnly({ error: "Invalid credentials", error_class: "invalid_credentials" }, 422),
+    );
+
+    const result = await t
+      .withIdentity({ subject: USER_A })
+      .action(api.credentials.saveCredentials, {
+        site: "sportlots",
+        username: "real-user",
+        password: "wrong-pass",
+      });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toBe(
+      "Could not sign in to SportLots. Nothing was saved — check your username and password and try again.",
+    );
+    const entry = await getRawEntry(t, USER_A, "sportlots");
+    expect(entry?.hasCredentials).toBeFalsy();
   });
 });
 

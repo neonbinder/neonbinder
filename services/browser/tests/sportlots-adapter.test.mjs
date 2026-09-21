@@ -38,16 +38,35 @@ const require = createRequire(import.meta.url);
 const realSetTimeout = globalThis.setTimeout;
 globalThis.setTimeout = (fn, _ms) => realSetTimeout(fn, 0);
 
+// NEO-288: the automated-access credential every test hands the adapter
+// unless it overrides it. Placeholders, never real values — and the
+// "never logged" tests grep the captured console for exactly these strings.
+const AA_KEY_ID = "key-test";
+const AA_SECRET = "secret-test";
+const AA_AUTH_ID = "auth-test";
+
 /**
- * Patch SecretsManagerService and load the adapter from dist.
+ * Patch SecretsManagerService and the NEO-288 automated-access reader, then
+ * load the adapter from dist.
  *
  * @param credentials       — initial value returned by getCredentials. May be a
  *                            function (called with key) for tests that need the
  *                            value to evolve across calls (e.g. cache cleared
  *                            after a stale-cookie miss).
  * @param updateCredentials — optional spy invoked on every updateCredentials.
+ * @param automatedAccess   — NEO-288: what getAutomatedAccessCredential
+ *                            resolves to; a function is called per read (throw
+ *                            from it to simulate a missing secret). Defaults
+ *                            to {keyId: AA_KEY_ID, secret: AA_SECRET}.
+ * @param onInvalidate      — NEO-288: spy invoked when the adapter calls
+ *                            invalidateAutomatedAccessCredential.
  */
-function loadSportlotsAdapter({ credentials = null, updateCredentials = null } = {}) {
+function loadSportlotsAdapter({
+  credentials = null,
+  updateCredentials = null,
+  automatedAccess = null,
+  onInvalidate = null,
+} = {}) {
   delete require.cache[require.resolve("../dist/adapters/base-adapter")];
   delete require.cache[require.resolve("../dist/adapters/sportlots-adapter")];
 
@@ -65,8 +84,25 @@ function loadSportlotsAdapter({ credentials = null, updateCredentials = null } =
     async credentialsExist(_key) { return true; }
   };
 
+  // The adapter reaches these through the module's exports object at call
+  // time (CJS `mod.fn()`), so overwriting the properties is enough — the
+  // real reader, and with it Secret Manager, is never invoked here.
+  const aaMod = require("../dist/services/sportlots-automated-access");
+  aaMod.getAutomatedAccessCredential = async () => {
+    if (typeof automatedAccess === "function") return automatedAccess();
+    return automatedAccess ?? { keyId: AA_KEY_ID, secret: AA_SECRET };
+  };
+  aaMod.invalidateAutomatedAccessCredential = () => {
+    if (onInvalidate) onInvalidate();
+  };
+
   const { SportlotsAdapter } = require("../dist/adapters/sportlots-adapter");
   return SportlotsAdapter;
+}
+
+/** The default automated-access grant SportLots answers with in these tests. */
+function automatedAccessGrant() {
+  return response({ status: 200, body: JSON.stringify({ success: true, authId: AA_AUTH_ID }) });
 }
 
 function stubFetch(handler) {
@@ -89,10 +125,19 @@ function response({ status = 200, body = "" }) {
  * Build a fetch stub that returns different responses for the login POST
  * and validation GET, tracking how many login calls were made.
  */
-function scriptedLoginFetch(loginResponses, validateResponse = response({ body: OK_VALIDATE_BODY })) {
+function scriptedLoginFetch(
+  loginResponses,
+  validateResponse = response({ body: OK_VALIDATE_BODY }),
+  { onAutomatedAccess } = {},
+) {
   let loginCalls = 0;
-  const stub = async (url, _opts) => {
+  let automatedAccessCalls = 0;
+  const stub = async (url, opts) => {
     const u = String(url);
+    if (u.includes("/u/node/automated-access")) {
+      automatedAccessCalls++;
+      return onAutomatedAccess ? onAutomatedAccess(opts) : automatedAccessGrant();
+    }
     if (u.includes("/cust/custbin/signin.tpl")) {
       const r = loginResponses[loginCalls] ?? loginResponses[loginResponses.length - 1];
       loginCalls++;
@@ -105,6 +150,7 @@ function scriptedLoginFetch(loginResponses, validateResponse = response({ body: 
     throw new Error(`unexpected fetch url: ${u}`);
   };
   stub.loginCalls = () => loginCalls;
+  stub.automatedAccessCalls = () => automatedAccessCalls;
   return stub;
 }
 
@@ -381,14 +427,21 @@ describe("SportlotsAdapter — NEO-98/NEO-100 rejection vs upstream fault", () =
  * Build a fetch stub that distinguishes the validation GET from the signin
  * POST. Tracks call counts on each so tests can assert the right path ran.
  *
- * @param onValidate — handler for GET /inven/dealbin/newinven.tpl
- * @param onSignin   — handler for POST /cust/custbin/signin.tpl
+ * @param onValidate        — handler for GET /inven/dealbin/newinven.tpl
+ * @param onSignin          — handler for POST /cust/custbin/signin.tpl
+ * @param onAutomatedAccess — NEO-288: handler for POST /u/node/automated-access
+ *                            (defaults to a grant of AA_AUTH_ID)
  */
-function cacheAwareFetch({ onValidate, onSignin } = {}) {
+function cacheAwareFetch({ onValidate, onSignin, onAutomatedAccess } = {}) {
   let validateCalls = 0;
   let signinCalls = 0;
+  let automatedAccessCalls = 0;
   const stub = async (url, opts) => {
     const u = String(url);
+    if (u.includes("/u/node/automated-access")) {
+      automatedAccessCalls++;
+      return onAutomatedAccess ? onAutomatedAccess(opts) : automatedAccessGrant();
+    }
     if (u.includes("/inven/dealbin/newinven.tpl")) {
       validateCalls++;
       return onValidate ? onValidate(opts) : response({ status: 200, body: OK_VALIDATE_BODY });
@@ -401,8 +454,824 @@ function cacheAwareFetch({ onValidate, onSignin } = {}) {
   };
   stub.validateCalls = () => validateCalls;
   stub.signinCalls = () => signinCalls;
+  stub.automatedAccessCalls = () => automatedAccessCalls;
   return stub;
 }
+
+// ---------------------------------------------------------------------------
+// NEO-288 — SportLots "Automated Access" handshake.
+//
+// On 2026-09-17 SportLots put Cloudflare Turnstile in front of signin.tpl.
+// The SportLots owner issued us a keyId/secret pair: POST it to
+// /u/node/automated-access, get a short-lived SINGLE-USE authId, and carry
+// that on the signin POST as `turnstile_auth_id`. (The earlier `login_check`
+// form field from the closed PR #263 / NEO-286 is superseded and must NOT be
+// sent.)
+//
+// The pair is OUR credential, not the seller's: a handshake failure is an
+// `automated_access` fault (502, pages) and never credentialRejected. And the
+// pair, the authId and the handshake response body never reach a log line.
+// ---------------------------------------------------------------------------
+
+describe("SportlotsAdapter.login — NEO-288 automated-access handshake", () => {
+  const { classifyBrowserError, loginFailureOutcome } = require("../dist/observability");
+
+  it("POSTs {keyId, secret} as JSON to the automated-access endpoint, and nothing else", async () => {
+    const SportlotsAdapter = loadSportlotsAdapter();
+    const seen = [];
+    const stub = cacheAwareFetch({
+      onAutomatedAccess: (opts) => {
+        seen.push(opts);
+        return automatedAccessGrant();
+      },
+    });
+    let urls = [];
+    const inner = stub;
+    const restore = stubFetch(async (url, opts) => {
+      urls.push(String(url));
+      return inner(url, opts);
+    });
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, true);
+      assert.equal(seen.length, 1, "exactly one handshake for one signin attempt");
+      const [opts] = seen;
+      assert.equal(
+        urls[0],
+        "https://www.sportlots.com/u/node/automated-access",
+        "the handshake is the FIRST request and hits the exact endpoint",
+      );
+      assert.equal(opts.method, "POST");
+      assert.equal(opts.headers["Content-Type"], "application/json");
+      assert.equal(opts.redirect, "manual");
+      assert.ok(opts.signal, "the handshake carries an AbortSignal (timeout bound)");
+      assert.deepEqual(
+        JSON.parse(opts.body),
+        { keyId: AA_KEY_ID, secret: AA_SECRET },
+        "the body is exactly the pair — no extra keys smuggled from the secret",
+      );
+      // The secret travels ONLY in the POST body: never in the URL.
+      assert.ok(!urls.some((u) => u.includes(AA_SECRET) || u.includes(AA_KEY_ID)));
+    } finally {
+      restore();
+    }
+  });
+
+  it("signin form carries email_val, psswd and turnstile_auth_id — and NO login_check", async () => {
+    const SportlotsAdapter = loadSportlotsAdapter();
+    let signinBody = null;
+    let signinOpts = null;
+    const stub = cacheAwareFetch({
+      onSignin: (opts) => {
+        signinOpts = opts;
+        signinBody = new URLSearchParams(opts.body);
+        return response({ status: 200, body: OK_LOGIN_BODY });
+      },
+    });
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, true);
+      assert.equal(result.automatedAccess, true, "the response reports the handshake succeeded");
+      assert.equal(stub.automatedAccessCalls(), 1);
+      assert.equal(stub.signinCalls(), 1);
+      assert.ok(signinBody, "signin POST body should be captured");
+      assert.equal(signinOpts.headers["Content-Type"], "application/x-www-form-urlencoded");
+      assert.equal(signinBody.get("email_val"), "user@example.com");
+      assert.equal(signinBody.get("psswd"), "pw");
+      assert.equal(signinBody.get("turnstile_auth_id"), AA_AUTH_ID);
+      assert.equal(signinBody.has("login_check"), false, "NEO-286's login_check is superseded");
+      assert.deepEqual(
+        [...signinBody.keys()].sort(),
+        ["email_val", "psswd", "turnstile_auth_id"],
+        "the whole form is pinned so a refactor cannot silently add or drop a field",
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  it("a signin 5xx retry mints a FRESH authId for every attempt (authId is single-use)", async () => {
+    const SportlotsAdapter = loadSportlotsAdapter();
+    let minted = 0;
+    const carried = [];
+    const stub = scriptedLoginFetch(
+      [response({ status: 500 }), response({ status: 503 }), response({ status: 200, body: OK_LOGIN_BODY })],
+      undefined,
+      {
+        onAutomatedAccess: () => {
+          minted++;
+          return response({
+            status: 200,
+            body: JSON.stringify({ success: true, authId: `auth-${minted}` }),
+          });
+        },
+      },
+    );
+    const restore = stubFetch(async (url, opts) => {
+      if (String(url).includes("signin.tpl")) {
+        carried.push(new URLSearchParams(opts.body).get("turnstile_auth_id"));
+      }
+      return stub(url, opts);
+    });
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, true);
+      assert.equal(stub.loginCalls(), 3);
+      assert.equal(
+        stub.automatedAccessCalls(),
+        stub.loginCalls(),
+        "one handshake per signin attempt across the retry loop",
+      );
+      assert.deepEqual(carried, ["auth-1", "auth-2", "auth-3"], "each signin carries its own fresh authId");
+    } finally {
+      restore();
+    }
+  });
+
+  it("a signin NETWORK THROW (not just a status) also mints a fresh authId per retry, never replaying the first", async () => {
+    // Same guarantee as the 5xx case above, but for the OTHER retryable
+    // signin failure shape: a thrown fetch (ECONNRESET-style) rather than an
+    // HTTP status. A reused authId is refused by SportLots, so every retry —
+    // regardless of why the previous attempt failed — must mint its own.
+    let minted = 0;
+    const carried = [];
+    const stub = scriptedLoginFetch(
+      [new Error("ECONNRESET"), new Error("ECONNRESET"), response({ status: 200, body: OK_LOGIN_BODY })],
+      undefined,
+      {
+        onAutomatedAccess: () => {
+          minted++;
+          return response({
+            status: 200,
+            body: JSON.stringify({ success: true, authId: `auth-${minted}` }),
+          });
+        },
+      },
+    );
+    const SportlotsAdapter = loadSportlotsAdapter();
+    const restore = stubFetch(async (url, opts) => {
+      if (String(url).includes("signin.tpl")) {
+        carried.push(new URLSearchParams(opts.body).get("turnstile_auth_id"));
+      }
+      return stub(url, opts);
+    });
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, true);
+      assert.equal(stub.loginCalls(), 3);
+      assert.equal(
+        stub.automatedAccessCalls(),
+        3,
+        "one handshake per attempt, including the two that threw on signin",
+      );
+      assert.deepEqual(
+        new Set(carried).size,
+        3,
+        "all three carried authIds are distinct — none reused across the network-throw retries",
+      );
+      assert.deepEqual(carried, ["auth-1", "auth-2", "auth-3"]);
+    } finally {
+      restore();
+    }
+  });
+
+  it("transient (bootstrap) credentials still run the handshake exactly once per attempt", async () => {
+    // NEO-141 bootstrap path: no stored secret exists yet, so getCredentials
+    // throws and the request-body {username, password} drives the sign-in
+    // directly. NEO-288's handshake must still run on this path — it is not
+    // conditioned on a stored secret existing.
+    const SportlotsAdapter = loadSportlotsAdapter({
+      credentials: () => {
+        throw new Error("Credentials not found for key: sportlots-credentials-new");
+      },
+    });
+    let signinBody = null;
+    const stub = cacheAwareFetch({
+      onSignin: (opts) => {
+        signinBody = new URLSearchParams(opts.body);
+        return response({ status: 200, body: OK_LOGIN_BODY });
+      },
+    });
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-new", {
+        transientCredentials: { username: "new@example.com", password: "placeholder-value" },
+      });
+      assert.equal(result.success, true);
+      assert.equal(stub.automatedAccessCalls(), 1, "the bootstrap path handshakes exactly once");
+      assert.equal(stub.signinCalls(), 1);
+      assert.equal(signinBody.get("turnstile_auth_id"), AA_AUTH_ID);
+    } finally {
+      restore();
+    }
+  });
+
+  it("the canary's handshake failure retries CANARY_MAX_ATTEMPTS (2), not the full MAX_ATTEMPTS (5)", async () => {
+    // The reduced canary budget (NEO-43) must hold even when the failure is
+    // at the NEO-288 handshake stage, not only at signin — a canary run must
+    // still surface a real, repeated marketplace fault quickly rather than
+    // masking it behind five retries.
+    const SportlotsAdapter = loadSportlotsAdapter({
+      credentials: { username: "canary@example.com", password: "canary-placeholder-value" },
+    });
+    const stub = cacheAwareFetch({
+      onAutomatedAccess: () => response({ status: 503, body: "upstream" }),
+    });
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-canary", {
+        canary: true,
+      });
+      assert.equal(result.success, false);
+      assert.equal(result.retryable, true);
+      assert.equal(stub.automatedAccessCalls(), 2, "canary budget (2), not MAX_ATTEMPTS (5)");
+      assert.equal(stub.signinCalls(), 0);
+    } finally {
+      restore();
+    }
+  });
+
+  it("a valid cached cookie makes ZERO handshake calls (re-auth path is untouched)", async () => {
+    const SportlotsAdapter = loadSportlotsAdapter({
+      credentials: {
+        username: "user@example.com",
+        token: "sl_session=cached",
+        expiresAt: Date.now() + 20 * 24 * 60 * 60 * 1000,
+      },
+    });
+    const stub = cacheAwareFetch({
+      onAutomatedAccess: () => {
+        throw new Error("the handshake must not run for a cached-cookie validation");
+      },
+    });
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, true);
+      assert.equal(stub.validateCalls(), 1);
+      assert.equal(stub.signinCalls(), 0);
+      assert.equal(stub.automatedAccessCalls(), 0);
+      assert.equal(
+        result.automatedAccess,
+        undefined,
+        "omitted, not false: the handshake never ran, so the log line must not claim it failed",
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  it("handshake 503 → retryable, exhausts MAX_ATTEMPTS, never signs in, classifies automated_access", async () => {
+    let invalidated = 0;
+    const SportlotsAdapter = loadSportlotsAdapter({ onInvalidate: () => invalidated++ });
+    const stub = cacheAwareFetch({
+      onAutomatedAccess: () => response({ status: 503, body: "upstream" }),
+    });
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, false);
+      assert.equal(result.retryable, true);
+      assert.equal(stub.automatedAccessCalls(), 5, "5 attempts (MAX_ATTEMPTS), all at the handshake");
+      assert.equal(stub.signinCalls(), 0, "no signin without an authId");
+      assert.equal(result.credentialRejected, undefined, "our key, not the seller's password");
+      assert.equal(result.reauthRequired, undefined);
+      assert.equal(result.automatedAccess, false);
+      assert.equal(result.error, "SportLots automated access did not answer (HTTP 503). Please try again later.");
+      assert.equal(classifyBrowserError(result.error), "automated_access");
+      const outcome = loginFailureOutcome(result, result.error);
+      assert.equal(outcome.status, 502, "an unanswered handshake is our outage — pages");
+      assert.equal(outcome.errorClass, "automated_access");
+      assert.equal(invalidated, 0, "a non-answer says nothing about the key; keep the cache");
+    } finally {
+      restore();
+    }
+  });
+
+  it("handshake 429 and a thrown fetch are retryable too", async () => {
+    for (const answer of [
+      () => response({ status: 429, body: "" }),
+      () => { throw new Error("fetch failed: ECONNRESET"); },
+    ]) {
+      const SportlotsAdapter = loadSportlotsAdapter();
+      const stub = cacheAwareFetch({ onAutomatedAccess: answer });
+      const restore = stubFetch(stub);
+      try {
+        const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+        assert.equal(result.success, false);
+        assert.equal(result.retryable, true);
+        assert.equal(stub.automatedAccessCalls(), 5);
+        assert.equal(stub.signinCalls(), 0);
+        assert.equal(result.credentialRejected, undefined);
+        assert.equal(classifyBrowserError(result.error), "automated_access");
+      } finally {
+        restore();
+      }
+    }
+  });
+
+  it("handshake hang → aborted by the timeout, retryable 'did not answer in time'", async () => {
+    // The suite's setTimeout shim fires the abort timer immediately, so a
+    // stub that only settles on the signal proves the AbortController is wired
+    // (without it this test would hang).
+    const SportlotsAdapter = loadSportlotsAdapter();
+    let signals = 0;
+    const stub = cacheAwareFetch({
+      onAutomatedAccess: (opts) =>
+        new Promise((_resolve, reject) => {
+          assert.ok(opts?.signal, "handshake fetch must carry an AbortSignal");
+          signals++;
+          opts.signal.addEventListener("abort", () => {
+            const e = new Error("This operation was aborted");
+            e.name = "AbortError";
+            reject(e);
+          });
+        }),
+    });
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, false);
+      assert.equal(result.retryable, true);
+      assert.equal(signals, 5);
+      assert.equal(stub.signinCalls(), 0);
+      assert.equal(
+        result.error,
+        "SportLots automated access did not answer in time. Please try again later.",
+      );
+      // Deliberately NOT "timeout": that class is the hang detector's signal
+      // for a wedged marketplace login, and this is a distinct failure.
+      assert.equal(classifyBrowserError(result.error), "automated_access");
+    } finally {
+      restore();
+    }
+  });
+
+  it("handshake 403 → NOT retryable, one signin-less attempt, cache invalidated, never credentialRejected", async () => {
+    let invalidated = 0;
+    const SportlotsAdapter = loadSportlotsAdapter({ onInvalidate: () => invalidated++ });
+    const stub = cacheAwareFetch({
+      onAutomatedAccess: () => response({ status: 403, body: JSON.stringify({ success: false }) }),
+    });
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, false);
+      assert.equal(result.retryable, false, "replaying a refused key is four more refusals");
+      assert.equal(stub.automatedAccessCalls(), 1, "exactly one attempt");
+      assert.equal(stub.signinCalls(), 0, "no signin was POSTed");
+      assert.equal(result.credentialRejected, undefined, "NEVER the seller's fault");
+      assert.equal(result.reauthRequired, undefined);
+      assert.equal(result.automatedAccess, false);
+      assert.equal(result.error, "SportLots automated access was refused (HTTP 403).");
+      assert.equal(classifyBrowserError(result.error), "automated_access");
+      assert.equal(loginFailureOutcome(result, result.error).status, 502);
+      assert.equal(invalidated, 1, "a refusal drops the cached credential so a rotated key is re-read");
+    } finally {
+      restore();
+    }
+  });
+
+  it("401 and any other 4xx are refusals too", async () => {
+    for (const status of [401, 400, 404]) {
+      let invalidated = 0;
+      const SportlotsAdapter = loadSportlotsAdapter({ onInvalidate: () => invalidated++ });
+      const stub = cacheAwareFetch({ onAutomatedAccess: () => response({ status, body: "" }) });
+      const restore = stubFetch(stub);
+      try {
+        const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+        assert.equal(result.success, false, `HTTP ${status}`);
+        assert.equal(result.retryable, false, `HTTP ${status}`);
+        assert.equal(stub.automatedAccessCalls(), 1, `HTTP ${status}`);
+        assert.equal(stub.signinCalls(), 0, `HTTP ${status}`);
+        assert.equal(result.credentialRejected, undefined, `HTTP ${status}`);
+        assert.equal(result.error, `SportLots automated access was refused (HTTP ${status}).`);
+        assert.equal(invalidated, 1, `HTTP ${status}`);
+      } finally {
+        restore();
+      }
+    }
+  });
+
+  it("a 200 whose body is not a grant is a refusal: success:false, missing/empty/non-string authId, junk", async () => {
+    for (const body of [
+      JSON.stringify({ success: false, authId: "nope" }),
+      JSON.stringify({ success: "true", authId: "auth-x" }),
+      JSON.stringify({ success: true }),
+      JSON.stringify({ success: true, authId: "" }),
+      JSON.stringify({ success: true, authId: 42 }),
+      JSON.stringify([{ success: true, authId: "auth-x" }]),
+      "null",
+      "<html>Attention Required! | Cloudflare</html>",
+      "",
+    ]) {
+      let invalidated = 0;
+      const SportlotsAdapter = loadSportlotsAdapter({ onInvalidate: () => invalidated++ });
+      const stub = cacheAwareFetch({ onAutomatedAccess: () => response({ status: 200, body }) });
+      const restore = stubFetch(stub);
+      try {
+        const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+        assert.equal(result.success, false, body);
+        assert.equal(result.retryable, false, body);
+        assert.equal(stub.automatedAccessCalls(), 1, body);
+        assert.equal(stub.signinCalls(), 0, body);
+        assert.equal(result.credentialRejected, undefined, body);
+        assert.equal(result.error, "SportLots automated access was refused (HTTP 200).", body);
+        assert.equal(result.diagnostic, undefined, "the handshake body is never turned into a diagnostic");
+        assert.equal(invalidated, 1, body);
+      } finally {
+        restore();
+      }
+    }
+  });
+
+  it("credential reader throws → the fixed error, no handshake POST, no signin, not retryable", async () => {
+    const SportlotsAdapter = loadSportlotsAdapter({
+      automatedAccess: () => {
+        throw new Error("SportLots automated access credential is not configured");
+      },
+    });
+    const stub = cacheAwareFetch({
+      onAutomatedAccess: () => {
+        throw new Error("the endpoint must not be POSTed without a credential");
+      },
+    });
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, false);
+      assert.equal(result.retryable, false, "a missing secret does not fix itself in 7.5s");
+      assert.equal(result.error, "SportLots automated access credential is not configured");
+      assert.equal(stub.automatedAccessCalls(), 0);
+      assert.equal(stub.signinCalls(), 0);
+      assert.equal(result.credentialRejected, undefined);
+      assert.equal(result.reauthRequired, undefined);
+      assert.equal(result.automatedAccess, false);
+      assert.equal(classifyBrowserError(result.error), "automated_access");
+      assert.equal(loginFailureOutcome(result, result.error).status, 502, "fails LOUDLY — never skips the handshake");
+    } finally {
+      restore();
+    }
+  });
+
+  it("a reader that throws something else still reports only the fixed error", async () => {
+    // The reader's contract is the one constant. If a client-library error
+    // ever escaped it, its message could quote the request — so the adapter
+    // reports the constant regardless of what was thrown.
+    const SportlotsAdapter = loadSportlotsAdapter({
+      automatedAccess: () => {
+        throw new Error(`PERMISSION_DENIED on projects/x/secrets/sportlots-automated-access payload ${AA_SECRET}`);
+      },
+    });
+    const restore = stubFetch(cacheAwareFetch());
+    try {
+      let result;
+      const logged = await captureConsole(async () => {
+        result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      });
+      assert.equal(result.error, "SportLots automated access credential is not configured");
+      assert.ok(!logged.includes(AA_SECRET));
+      assert.ok(!JSON.stringify(result).includes(AA_SECRET));
+    } finally {
+      restore();
+    }
+  });
+
+  it("the canary runs the handshake too (it performs a real signin)", async () => {
+    const SportlotsAdapter = loadSportlotsAdapter({
+      credentials: { username: "canary@example.com", password: "canary-placeholder-value" },
+    });
+    const stub = cacheAwareFetch();
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-canary", { canary: true });
+      assert.equal(result.success, true);
+      assert.equal(stub.automatedAccessCalls(), 1);
+      assert.equal(stub.signinCalls(), 1);
+    } finally {
+      restore();
+    }
+  });
+
+  it("SECURITY: keyId, secret and authId never reach the console or the response on ANY path", async () => {
+    const scenarios = {
+      success: { onAutomatedAccess: undefined },
+      "handshake 503": { onAutomatedAccess: () => response({ status: 503, body: `denied ${AA_KEY_ID}` }) },
+      "handshake 403 echoing the request": {
+        onAutomatedAccess: () =>
+          response({
+            status: 403,
+            body: JSON.stringify({ success: false, keyId: AA_KEY_ID, secret: AA_SECRET }),
+          }),
+      },
+      "junk 200 echoing everything": {
+        onAutomatedAccess: () =>
+          response({ status: 200, body: `keyId=${AA_KEY_ID} secret=${AA_SECRET} authId=${AA_AUTH_ID} <html>` }),
+      },
+      "fetch throws quoting the body": {
+        onAutomatedAccess: () => {
+          throw new TypeError(`Headers.append: "${AA_SECRET}" is an invalid header value`);
+        },
+      },
+      "signin reflects the authId (no cookies)": {
+        onSignin: () => response({ status: 200, body: `<html>turnstile_auth_id=${AA_AUTH_ID} rejected</html>` }),
+      },
+      "validation reflects the authId": {
+        onValidate: () =>
+          response({ status: 200, body: `<html>${AA_AUTH_ID} not accepted, <a href="signin.tpl">sign in</a></html>` }),
+      },
+    };
+    for (const [name, handlers] of Object.entries(scenarios)) {
+      const SportlotsAdapter = loadSportlotsAdapter();
+      const restore = stubFetch(cacheAwareFetch(handlers));
+      try {
+        let result;
+        const logged = await captureConsole(async () => {
+          result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test", {
+            transientCredentials: { username: "probe@example.com", password: "placeholder-value" },
+          });
+        });
+        assert.ok(logged.length > 0, `${name}: the path does log`);
+        for (const needle of [AA_KEY_ID, AA_SECRET, AA_AUTH_ID]) {
+          assert.ok(!logged.includes(needle), `${name}: "${needle}" must never appear in console output`);
+          assert.ok(
+            !JSON.stringify(result).includes(needle),
+            `${name}: "${needle}" must never appear in the adapter response (incl. diagnostic)`,
+          );
+        }
+      } finally {
+        restore();
+      }
+    }
+  });
+
+  it("the reader-throws path never logs the secret either", async () => {
+    // Belt and braces for the one path the scenario table above cannot reach
+    // through fetch: the reader's own failure.
+    const SportlotsAdapter = loadSportlotsAdapter({
+      automatedAccess: () => {
+        throw new Error("SportLots automated access credential is not configured");
+      },
+    });
+    const restore = stubFetch(cacheAwareFetch());
+    try {
+      const logged = await captureConsole(async () => {
+        await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      });
+      assert.ok(logged.includes("automated access credential unavailable"));
+      assert.ok(!logged.includes(AA_KEY_ID) && !logged.includes(AA_SECRET) && !logged.includes(AA_AUTH_ID));
+    } finally {
+      restore();
+    }
+  });
+
+  it("handshake failure strings carry no substring that would classify as a caller error", () => {
+    // classifyBrowserError checks "automated access" first, but the strings
+    // must stay clean so a reordering cannot silently turn our outage into
+    // a seller typo (invalid_credentials, excluded from paging) or a hang.
+    const strings = [
+      "SportLots automated access did not answer (HTTP 503). Please try again later.",
+      "SportLots automated access did not answer in time. Please try again later.",
+      "SportLots automated access did not answer. Please try again later.",
+      "SportLots automated access was refused (HTTP 403).",
+      "SportLots automated access credential is not configured",
+    ];
+    for (const s of strings) {
+      const lower = s.toLowerCase();
+      for (const banned of ["invalid", "password", "re-authentication", "timed out", "timeout", "captcha", "challenge"]) {
+        assert.ok(!lower.includes(banned), `"${s}" must not contain "${banned}"`);
+      }
+      assert.ok(lower.includes("automated access"));
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-288 — the handshake and the signin share ONE connection.
+//
+// SportLots binds the authId to the IP that minted it. Measured on Cloud Run:
+// the global fetch opened a second socket for the signin (undici had not yet
+// returned the handshake socket to its pool), the two sockets left through
+// different egress addresses, and every signin was refused with "Security
+// verification failed". The adapter now runs both requests through one
+// single-connection undici Client per attempt (withSingleConnection) and
+// passes it as `dispatcher` on both fetches. The socket-level proof lives in
+// tests/single-connection.test.mjs; these tests pin the WIRING: same
+// dispatcher on both calls, none on the validation GET, a fresh one per retry,
+// and the client released after the attempt.
+describe("SportlotsAdapter.login — NEO-288 a challenge page is not retried", () => {
+  it("SportLots' security refusal costs ONE handshake and ONE signin, classified challenge", async () => {
+    // "Security verification failed" is SportLots' gate refusing us (or, under
+    // an account-scoped key, refusing this account). It does not clear in a
+    // backoff; replaying it would spend four more uses of OUR key.
+    const SportlotsAdapter = loadSportlotsAdapter();
+    const stub = cacheAwareFetch({
+      onSignin: () =>
+        response({
+          status: 200,
+          body: "Security verification failed. Please return to the login page and try again.",
+        }),
+    });
+    const restore = stubFetch(stub);
+    try {
+      const adapter = new SportlotsAdapter(null);
+      const result = await adapter.login("sportlots-credentials-user_test", {
+        transientCredentials: { username: "someone@example.com", password: "pw" },
+      });
+      assert.equal(result.success, false);
+      assert.equal(stub.automatedAccessCalls(), 1, "one handshake — never replayed");
+      assert.equal(stub.signinCalls(), 1, "one signin — never replayed");
+      assert.equal(result.diagnostic?.challengeDetected, true);
+      assert.notEqual(result.credentialRejected, true, "never the seller's password");
+      assert.equal(result.retryable, false);
+    } finally {
+      restore();
+    }
+  });
+});
+
+describe("SportlotsAdapter.login — NEO-288 single-connection dispatcher", () => {
+  /** Record `opts.dispatcher` per request path, in call order. */
+  function dispatcherRecorder() {
+    const calls = []; // [{ path, dispatcher }]
+    const record = (path) => (opts) => {
+      calls.push({ path, dispatcher: opts.dispatcher });
+    };
+    return {
+      calls,
+      onAutomatedAccess: (opts) => {
+        record("handshake")(opts);
+        return automatedAccessGrant();
+      },
+      onSignin: (opts) => {
+        record("signin")(opts);
+        return response({ status: 200, body: OK_LOGIN_BODY });
+      },
+      onValidate: (opts) => {
+        record("validate")(opts);
+        return response({ status: 200, body: OK_VALIDATE_BODY });
+      },
+    };
+  }
+
+  it("the handshake and the signin in one attempt carry the SAME dispatcher; the validation GET carries none", async () => {
+    const SportlotsAdapter = loadSportlotsAdapter();
+    const rec = dispatcherRecorder();
+    const restore = stubFetch(cacheAwareFetch(rec));
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, true);
+      assert.deepEqual(
+        rec.calls.map((c) => c.path),
+        ["handshake", "signin", "validate"],
+        "one attempt: handshake, signin, then validation",
+      );
+      const [handshake, signin, validate] = rec.calls;
+      assert.ok(handshake.dispatcher, "the handshake carries a dispatcher");
+      assert.equal(
+        typeof handshake.dispatcher.dispatch,
+        "function",
+        "and it is a real undici Dispatcher, not a placeholder",
+      );
+      assert.strictEqual(
+        signin.dispatcher,
+        handshake.dispatcher,
+        "the signin goes out on the SAME client (same socket, same egress IP) as the handshake",
+      );
+      assert.equal(
+        validate.dispatcher,
+        undefined,
+        "the validation GET stays on the global fetch — the signin answered Connection: close and cookies are not IP-bound",
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  it("the client is released once the attempt's signin has been read (before the validation GET)", async () => {
+    const SportlotsAdapter = loadSportlotsAdapter();
+    const rec = dispatcherRecorder();
+    let clientStateAtValidate;
+    const onValidate = rec.onValidate;
+    rec.onValidate = (opts) => {
+      const client = rec.calls.find((c) => c.path === "signin").dispatcher;
+      clientStateAtValidate = { closed: client.closed, destroyed: client.destroyed };
+      return onValidate(opts);
+    };
+    const restore = stubFetch(cacheAwareFetch(rec));
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, true);
+      assert.deepEqual(
+        clientStateAtValidate,
+        { closed: true, destroyed: true },
+        "by the time the validation GET runs, the single-connection client is closed",
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  it("across a retry the dispatcher DIFFERS: each attempt gets a fresh client (fresh socket, fresh authId)", async () => {
+    const SportlotsAdapter = loadSportlotsAdapter();
+    const rec = dispatcherRecorder();
+    let signins = 0;
+    rec.onSignin = (opts) => {
+      rec.calls.push({ path: "signin", dispatcher: opts.dispatcher });
+      signins++;
+      // Attempt 1: 503 (retryable). Attempt 2: success.
+      return signins === 1
+        ? response({ status: 503, body: "" })
+        : response({ status: 200, body: OK_LOGIN_BODY });
+    };
+    const restore = stubFetch(cacheAwareFetch(rec));
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, true);
+      assert.deepEqual(
+        rec.calls.map((c) => c.path),
+        ["handshake", "signin", "handshake", "signin", "validate"],
+      );
+      const [h1, s1, h2, s2] = rec.calls;
+      assert.strictEqual(s1.dispatcher, h1.dispatcher, "attempt 1 shares one client");
+      assert.strictEqual(s2.dispatcher, h2.dispatcher, "attempt 2 shares one client");
+      assert.notStrictEqual(h2.dispatcher, h1.dispatcher, "attempt 2's client is a NEW one");
+      assert.equal(h1.dispatcher.destroyed, true, "attempt 1's client was released before attempt 2 began");
+      assert.equal(h2.dispatcher.destroyed, true, "attempt 2's client was released after its signin");
+    } finally {
+      restore();
+    }
+  });
+
+  it("a signin that ends the attempt early (5xx) discards the body it will not read", async () => {
+    // On a single-connection client an unconsumed body holds the socket under
+    // backpressure and the graceful close never completes; the early-return
+    // branches must cancel it (the NEO-281 discardBody pattern).
+    const SportlotsAdapter = loadSportlotsAdapter();
+    let cancelled = 0;
+    const stub = scriptedLoginFetch([
+      { status: 503, text: async () => "", body: { cancel: async () => { cancelled++; } } },
+      { status: 429, text: async () => "", body: { cancel: async () => { cancelled++; } } },
+      { status: 404, text: async () => "", body: { cancel: async () => { cancelled++; } } },
+    ]);
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, false);
+      assert.equal(stub.loginCalls(), 3, "503 → retry, 429 → retry, 404 → stop");
+      assert.equal(cancelled, 3, "every unread signin body was cancelled");
+    } finally {
+      restore();
+    }
+  });
+
+  it("a handshake that fails still releases the attempt's client", async () => {
+    const SportlotsAdapter = loadSportlotsAdapter();
+    const clients = [];
+    const stub = cacheAwareFetch({
+      onAutomatedAccess: (opts) => {
+        clients.push(opts.dispatcher);
+        return response({ status: 403, body: JSON.stringify({ success: false }) });
+      },
+    });
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, false);
+      assert.equal(stub.signinCalls(), 0, "a refused handshake never signs in");
+      assert.equal(clients.length, 1, "refused = not retryable, one client");
+      assert.equal(clients[0].destroyed, true, "and it was closed on the early return");
+    } finally {
+      restore();
+    }
+  });
+
+  it("a signin that THROWS still releases the attempt's client and rethrows into the retry loop", async () => {
+    const SportlotsAdapter = loadSportlotsAdapter();
+    const clients = [];
+    const stub = cacheAwareFetch({
+      onAutomatedAccess: (opts) => {
+        clients.push(opts.dispatcher);
+        return automatedAccessGrant();
+      },
+      onSignin: () => {
+        throw new Error("ECONNRESET");
+      },
+    });
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(result.success, false);
+      assert.equal(stub.signinCalls(), 5, "a thrown signin is retryable — MAX_ATTEMPTS");
+      assert.equal(clients.length, 5, "one client per attempt");
+      assert.equal(new Set(clients).size, 5, "all distinct");
+      assert.ok(clients.every((c) => c.destroyed), "every one released, including the ones whose fn threw");
+    } finally {
+      restore();
+    }
+  });
+});
 
 describe("SportlotsAdapter.login token cache", () => {
   it("returns success without hitting signin when cached cookie is unexpired and valid", async () => {
@@ -826,10 +1695,12 @@ describe("SportlotsAdapter.cleanup — pure-HTTP no-op safety", () => {
     });
 
     // Stub fetch to drive a successful login flow. Order of the calls in
-    // attemptLogin: signin POST, then validation GET. Both must succeed.
+    // attemptLogin: automated-access POST (NEO-288), signin POST, then
+    // validation GET. All must succeed.
     const original = globalThis.fetch;
     globalThis.fetch = async (url, _opts) => {
       const u = String(url);
+      if (u.includes("/u/node/automated-access")) return automatedAccessGrant();
       if (u.includes("signin.tpl")) {
         return {
           status: 200,
@@ -1598,6 +2469,31 @@ describe("SportlotsAdapter — NEO-281 stored-cookie validation verdicts", () =>
     assert.equal(VALIDATE_BACKOFFS_MS.length, VALIDATE_MAX_ATTEMPTS - 1, "one backoff between each pair of attempts");
     const backoffs = VALIDATE_BACKOFFS_MS.reduce((a, b) => a + b, 0) * JITTER_MAX_FACTOR;
     const worstCaseMs = VALIDATE_MAX_ATTEMPTS * DEFAULT_VALIDATE_TIMEOUT_MS + backoffs;
+    assert.ok(
+      worstCaseMs < 55_000,
+      `worst case ${worstCaseMs}ms must stay under 55s (Convex aborts at 60s)`,
+    );
+  });
+
+  it("worst-case fresh-login handshake budget stays under Convex's 60s login ceiling (NEO-288)", () => {
+    // Every attempt can spend the full handshake timeout (a hung
+    // /u/node/automated-access is retryable), so the bounded part of the
+    // fresh-login path is MAX_ATTEMPTS × AUTOMATED_ACCESS_TIMEOUT_MS plus the
+    // jittered backoffs: 5 × 8s + 7.5s × 1.3 = 49.75s. At the previous 15s it
+    // was 84.75s — Convex would have aborted first and recorded `timeout`
+    // while the service later logged `automated_access`, two records for one
+    // failure. The signin POST and post-login validation GET are unbounded
+    // (pre-existing) and are outside this arithmetic.
+    const {
+      MAX_ATTEMPTS,
+      BACKOFFS_MS,
+      AUTOMATED_ACCESS_TIMEOUT_MS,
+      JITTER_MAX_FACTOR,
+    } = require("../dist/adapters/sportlots-adapter");
+    assert.equal(MAX_ATTEMPTS, 5);
+    assert.equal(BACKOFFS_MS.length, MAX_ATTEMPTS - 1, "one backoff between each pair of attempts");
+    const backoffs = BACKOFFS_MS.reduce((a, b) => a + b, 0) * JITTER_MAX_FACTOR;
+    const worstCaseMs = MAX_ATTEMPTS * AUTOMATED_ACCESS_TIMEOUT_MS + backoffs;
     assert.ok(
       worstCaseMs < 55_000,
       `worst case ${worstCaseMs}ms must stay under 55s (Convex aborts at 60s)`,

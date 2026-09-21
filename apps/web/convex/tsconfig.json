@@ -11,6 +11,10 @@
     "jsx": "react-jsx",
     "skipLibCheck": true,
     "allowSyntheticDefaultImports": true,
+    /* NEO-289: adapters/enrichmentFixtures.ts imports the committed recording
+     * under adapters/__fixtures__/enrichment-lookups.json. esbuild bundles JSON
+     * natively; this only lets tsc see the import. */
+    "resolveJsonModule": true,
 
     /* These compiler options are required by Convex */
     "target": "ESNext",

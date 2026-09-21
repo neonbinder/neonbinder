@@ -4,7 +4,7 @@ import { internalAction } from "../_generated/server";
 import { internal } from "../_generated/api";
 import { v } from "convex/values";
 import type { Id } from "../_generated/dataModel";
-import { fetchEspnTeamInfo } from "./espn";
+import { fetchEspnTeamInfo, fetchEspnTeamList } from "./espn";
 // NEO-212: the SINGLE career-timeline ordering, shared with
 // commitCardChecklistPrelude in convex/selectorOptions.ts. Both paths write
 // `players.teamYears`; if they sorted differently the same player would read
@@ -17,6 +17,19 @@ import { isWikidataQid } from "../../lib/players/wikidata-id";
 // NEO-236: every outward-facing lookup (ESPN's displayName, Wikidata's label)
 // is keyed on the COMPOSED full name, never on the stored nickname.
 import { teamFullName } from "../../lib/teams/team-name";
+// NEO-289: recorded lookup answers for dev/preview. The three exported lookup
+// functions consult `readFixture` first and fall through to their `*Live`
+// bodies on a miss; production is inert (see that module's header).
+import {
+  captureItemValidator,
+  captureSkipValidator,
+  captureSportValidator,
+  fixtureEntryValidator,
+  fixtureKey,
+  readFixture,
+  toFixtureEntry,
+  type EnrichmentFixtureEntry,
+} from "./enrichmentFixtures";
 
 /**
  * Wikidata SPARQL adapter — enriches players (HoF, career teams) and
@@ -67,9 +80,50 @@ const USER_AGENT = "NeonBinder/1.0 (https://neonbinder.io; jburich@neonbinder.io
  * 10s is comfortably above a healthy query — a single direct SPARQL call
  * returns in ~0.4s — while short enough that a genuinely stuck request gives
  * up long before a user would. Each lookup makes at most two of these
- * sequentially (search + detail), so the worst case per entity is ~20s.
+ * sequentially (search + detail); with the one retry below, the worst case
+ * per `runSparql` call is 10 s + 1.5 s + 10 s = 21.5 s, and per entity
+ * 2 × 21.5 = 43 s. See `WIKIDATA_RETRY_BACKOFF_MS` for the budget check.
  */
 const WIKIDATA_FETCH_TIMEOUT_MS = 10_000;
+
+/**
+ * NEO-288 — ONE retry (two attempts total) on a TRANSPORT failure, with a
+ * fixed pause between them.
+ *
+ * Why: query.wikidata.org flaps. On 2026-09-20 the same trivial query
+ * answered in 0.15 s, then 12–30 s, then 0.15 s again, for hours. With a
+ * single attempt, one 5xx / 429 / timed-out probe turned a real player into
+ * "No Wikidata match found" — a permanent, operator-visible answer to a
+ * transient question — and the live-proof E2E flow
+ * (`.maestro/flows/admin/player-live-wikidata-enrichment.yaml`) went red on
+ * one blip. A second attempt after a short pause is enough to ride out the
+ * blip without turning the lane into a retry storm.
+ *
+ * What retries: a status ≥ 500, a 429, a timeout abort, or a thrown fetch
+ * (DNS, reset, TLS). What does NOT: any other 4xx — a 400 is a bad query and
+ * asking it again is the same bad query — and a 200, ever, even one whose
+ * body fails to parse.
+ *
+ * Budget arithmetic, checked against every caller (2026-09-20):
+ *   per `runSparql` call, worst case: 10 s + 1.5 s + 10 s = 21.5 s
+ *   per entity (search + detail):     2 × 21.5 s          = 43 s
+ *   - `wikidataPool` (convex/wikidataPool.ts): the retry runs INSIDE the
+ *     same pooled slot — it is the same call — so parallelism stays ≤ 5 and
+ *     the pool's own no-retry policy is untouched (it never re-enqueues).
+ *   - the wizard's per-row wait: rows stream in one-by-one on the reactive
+ *     `getBatch`; `setup.yaml` gates the SAVE (120 s, fixture-backed now)
+ *     and the stale-row cron ages a pending row only after
+ *     `ENTITY_REVIEW_STALE_MS` (30 min) — 43 s is inside both.
+ *   - the live-proof flow's 200 s ceiling was sized as 20 s (lookup) + 180 s
+ *     (lane contention); the lookup term is now 43 s, so the sum is 223 s.
+ *     The flow's own comment records that; its timeout is a canary, not a
+ *     stopwatch, and stays at 200 s until CI measures otherwise.
+ *   - Convex actions time out at 10 min; 43 s per entity is nowhere near.
+ */
+const WIKIDATA_RETRY_BACKOFF_MS = 1_500;
+
+/** Attempts per `runSparql` call, including the first. Exactly two. */
+const WIKIDATA_MAX_ATTEMPTS = 2;
 
 /**
  * NEO-96: everything this module needs to know about a sport, resolved by the
@@ -139,41 +193,122 @@ function sparqlStringLiteral(raw: string): string {
 }
 
 /**
- * Run a SPARQL query against Wikidata. Returns null on any non-OK
- * response (including 429 rate-limit and 5xx), and null on a timeout or
- * network error — a throttled or slow request aborts after
- * `WIKIDATA_FETCH_TIMEOUT_MS` and is mapped to null like any other failure,
- * so the caller resolves its row to "error" rather than awaiting forever.
- *
- * Concurrency is NOT this function's concern: the `wikidataPool` bounds how
- * many of these run at once across the whole deployment (≤5). The timeout
- * bounds how LONG any single one may run. Together they are what make the
- * "Looking up…" hang impossible — the pool keeps us under Wikidata's
- * 5-parallel-per-IP ceiling so it does not throttle us, and the timeout
- * guarantees termination even if it does. This function does not retry.
+ * The outcome of ONE round trip to the SPARQL endpoint, classified so
+ * `runSparql` can decide whether a second attempt is worth making. `reason`
+ * is the value the retry log line carries: never the query, never the body.
  */
-async function runSparql(query: string): Promise<SparqlResults | null> {
-  const url = `${SPARQL_ENDPOINT}?query=${encodeURIComponent(query)}&format=json`;
+type SparqlAttemptOutcome =
+  | { ok: true; results: SparqlResults }
+  | { ok: false; retryable: boolean; reason: string };
+
+/**
+ * One attempt. Never throws: every failure is mapped to `{ ok: false }` with
+ * a retryability verdict, so the loop in `runSparql` is the only place that
+ * decides what to do about it.
+ */
+async function sparqlAttempt(url: string): Promise<SparqlAttemptOutcome> {
+  let response: Response;
   try {
-    const response = await fetch(url, {
+    response = await fetch(url, {
       headers: {
         Accept: "application/sparql-results+json",
         "User-Agent": USER_AGENT,
       },
       // Aborts a throttled/stalled request instead of hanging the action (and
       // with it the review row) indefinitely — see WIKIDATA_FETCH_TIMEOUT_MS.
-      // A fired timeout rejects fetch with a TimeoutError, caught below → null.
+      // A fired timeout rejects fetch with a TimeoutError, classified below.
       signal: AbortSignal.timeout(WIKIDATA_FETCH_TIMEOUT_MS),
     });
-    if (!response.ok) {
-      console.warn(`[wikidata] SPARQL ${response.status}`);
-      return null;
-    }
-    return (await response.json()) as SparqlResults;
   } catch (error) {
+    // `AbortSignal.timeout` rejects with a DOMException named "TimeoutError"
+    // on Node/undici; "AbortError" is accepted too because some runtimes
+    // spell the same event that way, and the treatment is identical. Anything
+    // else the fetch threw (DNS, connection reset, TLS) is a network failure.
+    const name = error instanceof Error ? error.name : "";
+    const isTimeout = name === "TimeoutError" || name === "AbortError";
     console.warn(`[wikidata] SPARQL fetch failed:`, error);
+    return { ok: false, retryable: true, reason: isTimeout ? "timeout" : "network" };
+  }
+  if (!response.ok) {
+    console.warn(`[wikidata] SPARQL ${response.status}`);
+    // 5xx and 429 are the endpoint's "not right now"; every other 4xx is
+    // "not like that", which a second identical request cannot change.
+    const retryable = response.status >= 500 || response.status === 429;
+    return { ok: false, retryable, reason: `http_${response.status}` };
+  }
+  try {
+    return { ok: true, results: (await response.json()) as SparqlResults };
+  } catch (error) {
+    // A 200 whose body will not parse. Not retried: the rule is "never retry
+    // a 200", and a malformed body from a healthy endpoint is not transient.
+    console.warn(`[wikidata] SPARQL body unreadable:`, error);
+    return { ok: false, retryable: false, reason: "body" };
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Run a SPARQL query against Wikidata. Returns null on any non-OK
+ * response (including 429 rate-limit and 5xx), and null on a timeout or
+ * network error — a throttled or slow request aborts after
+ * `WIKIDATA_FETCH_TIMEOUT_MS` and is mapped to null like any other failure,
+ * so the caller resolves its row to "error" rather than awaiting forever.
+ *
+ * NEO-288: a TRANSPORT failure (5xx, 429, timeout, thrown fetch) on the
+ * first attempt is retried exactly once after `WIKIDATA_RETRY_BACKOFF_MS`;
+ * the arithmetic and the reasoning live on that constant. A 4xx other than
+ * 429 is not retried, and a 200 is never retried. The `LookupTrace` marker
+ * trips only when the LAST attempt also failed on transport — a recovered
+ * retry is a success, not a transport failure, and the fixture capture
+ * (`captureOne`) relies on exactly that reading.
+ *
+ * Concurrency is NOT this function's concern: the `wikidataPool` bounds how
+ * many of these run at once across the whole deployment (≤5). The timeout
+ * bounds how LONG any single one may run. Together they are what make the
+ * "Looking up…" hang impossible — the pool keeps us under Wikidata's
+ * 5-parallel-per-IP ceiling so it does not throttle us, and the timeout
+ * guarantees termination even if it does. The retry happens INSIDE the
+ * caller's pooled slot, so it never adds a parallel request.
+ *
+ * Exported for the retry tests (`wikidata.retry.test.ts`); no caller outside
+ * this module should reach for it — the `lookup*` functions are the surface.
+ */
+export async function runSparql(query: string, trace?: LookupTrace): Promise<SparqlResults | null> {
+  const url = `${SPARQL_ENDPOINT}?query=${encodeURIComponent(query)}&format=json`;
+  for (let attempt = 1; ; attempt++) {
+    const outcome = await sparqlAttempt(url);
+    if (outcome.ok) return outcome.results;
+    if (outcome.retryable && attempt < WIKIDATA_MAX_ATTEMPTS) {
+      // Structured, and deliberately WITHOUT the query: the existing lines
+      // never carry it, and a query embeds operator-typed names.
+      console.warn(JSON.stringify({ msg: "wikidata_sparql_retry", reason: outcome.reason }));
+      await sleep(WIKIDATA_RETRY_BACKOFF_MS);
+      continue;
+    }
+    if (trace) trace.transportFailed = true;
     return null;
   }
+}
+
+/**
+ * NEO-289 — a marker `runSparql` sets when a round trip did not complete:
+ * a non-OK status, a timeout, or a thrown fetch. Every caller maps those to
+ * `null`, which is the right answer for the wizard ("no usable data right
+ * now") and the wrong one for a RECORDING: a fixture capture that wrote a
+ * transport failure down as a no-match would freeze an outage into the repo.
+ * The capture threads one of these through each lookup and drops any entry
+ * whose trace tripped. Optional everywhere; no live caller passes one, and
+ * nothing about a lookup's behaviour changes when it is present.
+ */
+export interface LookupTrace {
+  transportFailed: boolean;
+}
+
+export function newLookupTrace(): LookupTrace {
+  return { transportFailed: false };
 }
 
 /**
@@ -550,6 +685,7 @@ export function membershipIsOutsidePlayerSport(
 async function findPlayerQid(
   name: string,
   sportQid: string | undefined,
+  trace?: LookupTrace,
 ): Promise<string | null> {
   // NEO-96: the QID now arrives from the sport row's `sportConfig.wikidata`
   // instead of being looked up in a display-name-keyed map here. That map's
@@ -582,7 +718,7 @@ async function findPlayerQid(
     LIMIT 1
   `;
 
-  const result = await runSparql(query);
+  const result = await runSparql(query, trace);
   const binding = result?.results.bindings[0];
   // `?? null`: an IRI whose final segment is not a QID is no match at all.
   return binding ? (qidFromIri(binding.player.value) ?? null) : null;
@@ -592,6 +728,7 @@ async function findTeamQid(
   /** The COMPOSED full name — Wikidata labels franchises "San Diego Padres". */
   name: string,
   sportQid: string | undefined,
+  trace?: LookupTrace,
 ): Promise<string | null> {
   // See the NEO-96 note in findPlayerQid above, and the NEO-240 one: the same
   // interpolation, the same validation, and the same refusal on a non-QID —
@@ -619,7 +756,7 @@ async function findTeamQid(
     LIMIT 1
   `;
 
-  const result = await runSparql(query);
+  const result = await runSparql(query, trace);
   const binding = result?.results.bindings[0];
   // See the note in findPlayerQid — a non-QID segment is treated as no match.
   return binding ? (qidFromIri(binding.team.value) ?? null) : null;
@@ -701,6 +838,7 @@ const SPORTS_LEAGUE_QID = "Q623109";
 async function findLeagueQid(
   name: string,
   sportQid: string | undefined,
+  trace?: LookupTrace,
 ): Promise<string | null> {
   const safeName = sparqlStringLiteral(name);
   // NEO-240 security review — see `safeSportQid`. This is the one of the three
@@ -727,7 +865,7 @@ async function findLeagueQid(
     LIMIT 1
   `;
 
-  const result = await runSparql(query);
+  const result = await runSparql(query, trace);
   const binding = result?.results.bindings[0];
   // See the note in findPlayerQid — a non-QID segment is treated as no match.
   return binding ? (qidFromIri(binding.league.value) ?? null) : null;
@@ -847,7 +985,27 @@ export async function lookupPlayerEnrichment(
   name: string,
   sport: SportEnrichmentContext,
 ): Promise<PlayerLookupResult | null> {
-  const qid = await findPlayerQid(name, sport.wikidata?.sportQid);
+  // NEO-289: the recording first. A hit — including a recorded no-match —
+  // makes no request at all; a miss (or fixtures off, which is every
+  // production call) is the live path below, unchanged.
+  const sportQid = sport.wikidata?.sportQid;
+  if (sportQid) {
+    const recorded = readFixture("player", sportQid, name);
+    if (recorded.hit) return recorded.result;
+  }
+  return lookupPlayerEnrichmentLive(name, sport);
+}
+
+/**
+ * The live body of `lookupPlayerEnrichment`. Exported for the fixture
+ * capture, which must bypass the recording it is producing.
+ */
+export async function lookupPlayerEnrichmentLive(
+  name: string,
+  sport: SportEnrichmentContext,
+  trace?: LookupTrace,
+): Promise<PlayerLookupResult | null> {
+  const qid = await findPlayerQid(name, sport.wikidata?.sportQid, trace);
   if (!qid) {
     // NEO-208 security condition: structured, not concatenated. `name` is
     // operator-typed free text (the quick-add form, the review wizard, the
@@ -923,7 +1081,7 @@ ${hallOfFameSparqlBlocks(qid, hofQid)}
       ${LABEL_SERVICE}
     }
   `;
-  const result = await runSparql(detailQuery);
+  const result = await runSparql(detailQuery, trace);
   if (!result) return null;
 
   const careerTeams: Array<{
@@ -1422,12 +1580,32 @@ export async function lookupTeamEnrichment(
    */
   knownQid?: string,
 ): Promise<TeamLookupResult | null> {
+  // NEO-289: the recording first — see `lookupPlayerEnrichment`. A hit skips
+  // ESPN as well as Wikidata; every request this lookup makes sits below.
+  const sportQid = sport.wikidata?.sportQid;
+  if (sportQid) {
+    const recorded = readFixture("team", sportQid, name, knownQid);
+    if (recorded.hit) return recorded.result;
+  }
+  return lookupTeamEnrichmentLive(name, sport, knownQid);
+}
+
+/**
+ * The live body of `lookupTeamEnrichment`. Exported for the fixture capture,
+ * which must bypass the recording it is producing.
+ */
+export async function lookupTeamEnrichmentLive(
+  name: string,
+  sport: SportEnrichmentContext,
+  knownQid?: string,
+  trace?: LookupTrace,
+): Promise<TeamLookupResult | null> {
   const espnInfo = await fetchEspnTeamInfo(sport.espn, name);
 
   const qid =
     knownQid && isWikidataQid(knownQid)
       ? knownQid
-      : await findTeamQid(name, sport.wikidata?.sportQid);
+      : await findTeamQid(name, sport.wikidata?.sportQid, trace);
   if (!qid) {
     if (!espnInfo) {
       // NEO-208: structured for the same reason as the player no-match log
@@ -1476,7 +1654,7 @@ export async function lookupTeamEnrichment(
     }
     LIMIT 1
   `;
-  const result = await runSparql(detailQuery);
+  const result = await runSparql(detailQuery, trace);
   const row = result?.results.bindings[0];
 
   const fromYear = yearFromBinding(row?.inception);
@@ -1785,10 +1963,29 @@ export async function lookupLeagueEnrichment(
    */
   knownQid?: string,
 ): Promise<LeagueLookupResult | null> {
+  // NEO-289: the recording first — see `lookupPlayerEnrichment`. A league
+  // with no sport QID (a custom sport) has no fixture key and always goes live.
+  if (sportQid) {
+    const recorded = readFixture("league", sportQid, name, knownQid);
+    if (recorded.hit) return recorded.result;
+  }
+  return lookupLeagueEnrichmentLive(name, sportQid, knownQid);
+}
+
+/**
+ * The live body of `lookupLeagueEnrichment`. Exported for the fixture
+ * capture, which must bypass the recording it is producing.
+ */
+export async function lookupLeagueEnrichmentLive(
+  name: string,
+  sportQid?: string,
+  knownQid?: string,
+  trace?: LookupTrace,
+): Promise<LeagueLookupResult | null> {
   const qid =
     knownQid && isWikidataQid(knownQid)
       ? knownQid
-      : await findLeagueQid(name, sportQid);
+      : await findLeagueQid(name, sportQid, trace);
   if (!qid) {
     // Structured for the same reason as the player/team no-match lines
     // (NEO-208): a league name is operator input and must not be able to shape
@@ -1826,7 +2023,7 @@ export async function lookupLeagueEnrichment(
     ORDER BY ?inception ?countryLabel
     LIMIT 1
   `;
-  const result = await runSparql(detailQuery);
+  const result = await runSparql(detailQuery, trace);
   const row = result?.results.bindings[0];
 
   // Same year parser as the team lookup, and for the same reason: Wikidata
@@ -1952,3 +2149,120 @@ export const enrichLeague = internalAction({
     return null;
   },
 });
+
+// ---------------------------------------------------------------------------
+// NEO-289 — the live lookups, run for the fixture capture
+// ---------------------------------------------------------------------------
+
+/**
+ * How many capture lookups run at once. The same number as
+ * `WIKIDATA_MAX_PARALLELISM` (convex/wikidataPool.ts) and for the same reason
+ * — Wikidata's documented 5-parallel-per-IP ceiling — but a local constant,
+ * because importing the pool module drags the workpool component into this
+ * node bundle for one integer. A capture runs on a deployment whose review
+ * lanes have already drained (it records what the seed just confirmed), so
+ * this is the whole of the deployment's Wikidata traffic while it runs.
+ */
+const CAPTURE_PARALLELISM = 5;
+
+
+/**
+ * Run the LIVE lookups for a batch of names and hand back fixture entries.
+ *
+ * Internal, and the node half of `captureFromCli` (convex/enrichmentFixtures.ts,
+ * which is where the arming check lives): that module runs in the V8 runtime
+ * so it can define the queries that list the deployment's names, and this
+ * file is `"use node"`, so the only way for it to reach the live bodies is an
+ * action call. This action writes nothing and bypasses the recording by
+ * construction — it calls the `*Live` bodies, never the wrappers.
+ *
+ * Two transport guards, because a capture must never freeze an outage into
+ * the repo as a no-match:
+ * - a `LookupTrace` per lookup; an entry whose trace tripped is reported under
+ *   `skippedTransport` instead of recorded;
+ * - ESPN's per-league team list is fetched ONCE up front when the batch holds
+ *   a team. `fetchEspnTeamInfo` cannot tell "ESPN is down" from "ESPN has no
+ *   such team" (both are `null`), so if the list itself is unavailable every
+ *   team in the batch is skipped rather than recorded without its colours.
+ */
+export const runCaptureLookups = internalAction({
+  args: {
+    sport: captureSportValidator,
+    sportQid: v.string(),
+    items: v.array(captureItemValidator),
+  },
+  returns: v.object({
+    entries: v.array(v.object({ key: v.string(), entry: fixtureEntryValidator })),
+    skippedTransport: v.array(captureSkipValidator),
+  }),
+  handler: async (_ctx, args) => {
+    const entries: Array<{ key: string; entry: EnrichmentFixtureEntry }> = [];
+    const skippedTransport: Array<{
+      kind: "player" | "team" | "league";
+      name: string;
+      reason: string;
+    }> = [];
+
+    let espnUnavailable = false;
+    if (args.sport.espn && args.items.some((item) => item.kind === "team")) {
+      const list = await fetchEspnTeamList(args.sport.espn);
+      espnUnavailable = !list || list.length === 0;
+    }
+
+    let next = 0;
+    const worker = async (): Promise<void> => {
+      while (next < args.items.length) {
+        const item = args.items[next++];
+        if (item.kind === "team" && espnUnavailable) {
+          skippedTransport.push({ kind: item.kind, name: item.name, reason: "espn_unavailable" });
+          continue;
+        }
+        const trace = newLookupTrace();
+        const startedAt = Date.now();
+        const entry = await captureOne(item, args.sport, trace);
+        console.log(
+          JSON.stringify({
+            msg: "enrichment_fixture_capture",
+            kind: item.kind,
+            name: item.name,
+            outcome: trace.transportFailed ? "transport" : entry.result ? "match" : "no_match",
+            ms: Date.now() - startedAt,
+          }),
+        );
+        if (trace.transportFailed) {
+          skippedTransport.push({ kind: item.kind, name: item.name, reason: "wikidata_transport" });
+          continue;
+        }
+        entries.push({ key: fixtureKey(item.kind, args.sportQid, item.name), entry });
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(CAPTURE_PARALLELISM, args.items.length) }, worker),
+    );
+
+    return { entries, skippedTransport };
+  },
+});
+
+async function captureOne(
+  item: { kind: "player" | "team" | "league"; name: string; knownQid?: string },
+  sport: SportEnrichmentContext,
+  trace: LookupTrace,
+): Promise<EnrichmentFixtureEntry> {
+  switch (item.kind) {
+    case "player":
+      return toFixtureEntry("player", item.name, await lookupPlayerEnrichmentLive(item.name, sport, trace));
+    case "team":
+      return toFixtureEntry(
+        "team",
+        item.name,
+        await lookupTeamEnrichmentLive(item.name, sport, item.knownQid, trace),
+      );
+    case "league":
+      return toFixtureEntry(
+        "league",
+        item.name,
+        await lookupLeagueEnrichmentLive(item.name, sport.wikidata?.sportQid, item.knownQid, trace),
+      );
+  }
+}

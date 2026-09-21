@@ -52,6 +52,14 @@ export function logBrowserOp(props: {
    */
   challenge_detected?: boolean;
   /**
+   * NEO-288 (SportLots only): whether the automated-access handshake that
+   * precedes the signin POST succeeded on the final attempt. true = SportLots
+   * granted an authId; false = the handshake failed and no signin was sent;
+   * OMITTED when the login never reached it (cached-cookie re-auth,
+   * reauth_required, BSC). A boolean only — never the authId.
+   */
+  automated_access?: boolean;
+  /**
    * NEO-43: true for the synthetic login canary (Cloud Scheduler), false for
    * real caller traffic. Always emitted so the log-based metric's `canary`
    * label is never an empty string.
@@ -89,9 +97,9 @@ export function logBrowserOp(props: {
  * everything else pages. A new tag added here defaults to paging — which is
  * the safe direction.
  *
- * The closed set, as of NEO-141:
+ * The closed set, as of NEO-288:
  *   bad_key_format | missing_key | invalid_credentials | reauth_required |
- *   timeout | challenge | oom | other
+ *   automated_access | timeout | challenge | oom | other
  */
 export function classifyBrowserError(raw: string | undefined): string | undefined {
   if (!raw) return undefined;
@@ -100,6 +108,13 @@ export function classifyBrowserError(raw: string | undefined): string | undefine
   // NEO-141. Checked BEFORE the invalid_credentials rule below, which would
   // otherwise swallow it and erase the distinction Convex depends on.
   if (s.includes("re-authentication required")) return "reauth_required";
+  // NEO-288: the SportLots automated-access handshake failed — the credential
+  // is missing from Secret Manager, SportLots refused it, or the endpoint did
+  // not answer. OUR key, OUR outage: not in the caller-error exclusion list,
+  // so it pages. Checked before the generic invalid/credential rule so
+  // "...automated access credential is not configured" cannot be filed as a
+  // seller typo.
+  if (s.includes("automated access")) return "automated_access";
   if (s.includes("timed out") || s.includes("timeout")) return "timeout";
   if (s.includes("invalid") && (s.includes("credential") || s.includes("password")))
     return "invalid_credentials";
@@ -138,7 +153,11 @@ export function classifyBrowserError(raw: string | undefined): string | undefine
  * which returns a closed set of literals and never echoes it.
  */
 export function loginFailureOutcome(
-  result: { credentialRejected?: boolean; reauthRequired?: boolean },
+  result: {
+    credentialRejected?: boolean;
+    reauthRequired?: boolean;
+    diagnostic?: { challengeDetected?: boolean };
+  },
   raw: string | undefined,
 ): { status: 422 | 502; errorClass: string | undefined } {
   // NEO-141: checked FIRST. This is the authoritative "the stored session is
@@ -158,6 +177,26 @@ export function loginFailureOutcome(
   // them would leave Convex re-deriving the difference from free text.
   if (result.reauthRequired) {
     return { status: 422, errorClass: "reauth_required" };
+  }
+  // NEO-288: force the tag rather than deriving it, same as the two
+  // neighbours. When the adapter's diagnostic positively detected a challenge
+  // page, the failure IS the marketplace blocking us, whatever the
+  // caller-facing string says. SportLots' Turnstile refusal bodies ("Security
+  // verification failed…", "Invalid login request.") land in the adapter's
+  // no-cookies branch behind the generic "No session cookies received. Check
+  // credentials." error, which classifies as "other" — so without this
+  // Convex's site-side `challenge` branch (SITE_SIDE_ERROR_CLASSES in
+  // apps/web/convex/credentials.ts) was unreachable for SportLots and the user
+  // was told to check their password. Still 502: a challenge is our outage
+  // and pages.
+  //
+  // Ordering: below reauthRequired (a dead session is a verdict we hold, and
+  // the user genuinely has to sign in again) but ABOVE credentialRejected —
+  // the adapter's own invariant is that a challenge vetoes a rejection ("it
+  // must page whatever else the page says"), so if both ever arrive here the
+  // block page wins rather than being decided by field order.
+  if (result.diagnostic?.challengeDetected === true) {
+    return { status: 502, errorClass: "challenge" };
   }
   if (result.credentialRejected) {
     // Force the tag rather than deriving it. BSC's caller-facing string is

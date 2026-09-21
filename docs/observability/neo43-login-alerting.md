@@ -113,8 +113,17 @@ field, so never filter on it).
 | `canary` | boolean | Always present |
 
 `error_class`, from `classifyBrowserError`: `bad_key_format`, `timeout`,
-`invalid_credentials`, `challenge`, `oom`, `other`, plus `missing_key` set
-inline. A closed set — it never interpolates the raw error.
+`invalid_credentials`, `reauth_required`, `automated_access` (NEO-288),
+`challenge`, `oom`, `other`, plus `missing_key` set inline. A closed set — it
+never interpolates the raw error.
+
+`automated_access` (SportLots only) means the NEO-288 automated-access
+handshake that precedes the signin POST failed: the `sportlots-automated-access`
+secret is missing or malformed, SportLots refused our key, or the handshake
+endpoint did not answer. It is 502 and **pages** — a revoked or missing key is
+our outage, not a seller typo. The companion boolean `automated_access` on the
+same line says whether the handshake succeeded on the final attempt (omitted
+when the login never reached it, e.g. a cached-cookie re-auth).
 
 **`challenge_detected` is the highest-value field here.** It separates "the
 marketplace is blocking us" (act now) from "the seller mistyped their
@@ -472,7 +481,13 @@ falling through to the app router. Do not "fix" it.
 1. **Read `error_class` on the failing lines first.** `challenge` → the
    marketplace is blocking us; **pause the canary before debugging** or you
    dig the hole deeper. `timeout` → marketplace slow or wedged. `oom` →
-   container memory. `other` → read the raw message.
+   container memory. `automated_access` (SportLots) → the handshake was
+   refused or the credential is missing: check that the
+   `sportlots-automated-access` secret in the project has one ENABLED version
+   whose payload is `{"keyId","secret"}` (see `services/browser/README.md`
+   → "SportLots automated access"); if it does and SportLots still refuses
+   it (`…was refused (HTTP 401/403)`), the key was revoked or rotated on their
+   side — contact the SportLots owner. `other` → read the raw message.
 
 2. **Alert fired but there is no `browser_login_call` line?** That absence
    *is* the finding — it's a hang. Go to the request log.

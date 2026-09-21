@@ -128,6 +128,16 @@ export interface AdapterResponse {
    */
   reauthRequired?: boolean;
   /**
+   * NEO-288 (SportLots only). Whether the automated-access handshake that
+   * precedes the signin POST succeeded on the attempt this response came
+   * from: true when SportLots granted an authId, false when the handshake
+   * failed (and therefore no signin was POSTed), undefined on paths that
+   * never reach it — the cached-cookie re-auth, reauth_required, a malformed
+   * stored secret. A boolean only; the authId itself never leaves the
+   * adapter. Surfaced as `automated_access` on the browser_login_call line.
+   */
+  automatedAccess?: boolean;
+  /**
    * Sanitized login-failure diagnostic. Set by adapters on `success: false`
    * when they could capture context from the stuck/challenge page. SAFE to
    * return to the caller: it is redacted of credentials and tokens by

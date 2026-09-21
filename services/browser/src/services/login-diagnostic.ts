@@ -56,6 +56,17 @@ export interface DiagnosticSecrets {
   token?: string;
   /** BSC refresh token (rotating). */
   refreshToken?: string;
+  /**
+   * NEO-288, SportLots only: the single-use automated-access `authId` carried
+   * on the signin POST as `turnstile_auth_id`. Short-lived, but a page that
+   * reflects the submitted form would reflect it, and it is a bearer for
+   * that one sign-in.
+   */
+  authId?: string;
+  /** NEO-288: the automated-access key id. Ours, not the seller's — still never leaves. */
+  keyId?: string;
+  /** NEO-288: the automated-access secret. Transmitted only in the handshake POST body. */
+  secret?: string;
 }
 
 const MAX_SNIPPET_CHARS = 1500;
@@ -92,6 +103,19 @@ const CHALLENGE_PATTERNS: RegExp[] = [
   /temporarily blocked/i,
   /too many (attempts|requests)/i,
   /rate limit/i,
+  // NEO-288: SportLots' post-2026-09-17 refusal bodies. signin.tpl now sits
+  // behind Cloudflare Turnstile and answers a sign-in without a valid
+  // turnstile_auth_id with one of these — that is us being blocked, never a
+  // verdict on the seller's password, so it must NOT read as a credential
+  // rejection (challengeDetected vetoes credentialRejected in the adapter).
+  //
+  // Deliberately NOT a bare /turnstile/ token: the live login FORM embeds the
+  // widget (`cf-turnstile`, `turnstile_auth_id`), so if a bad-password answer
+  // is ever that form, a bare token would mask a genuine rejection as a
+  // challenge — five retries of the wrong password, then a 502 that pages.
+  // Only the two refusal sentences themselves are tells.
+  /security verification failed/i,
+  /invalid login request/i,
 ];
 
 /**
@@ -199,8 +223,16 @@ function redactSecrets(input: string, secrets: DiagnosticSecrets): string {
   //    SportLots' rejection page can echo exactly that. `cookieParts` therefore
   //    decomposes the cookie so each pair and each bare value is redacted in its
   //    own right.
-  const known = [secrets.email, secrets.password, secrets.token, secrets.refreshToken]
-    .filter((v): v is string => typeof v === "string" && v.length > 0);
+  const known = [
+    secrets.email,
+    secrets.password,
+    secrets.token,
+    secrets.refreshToken,
+    // NEO-288: the automated-access material, same exact-value treatment.
+    secrets.authId,
+    secrets.keyId,
+    secrets.secret,
+  ].filter((v): v is string => typeof v === "string" && v.length > 0);
   const exact = Array.from(new Set([...known, ...known.flatMap(cookieParts)]))
     .sort((a, b) => b.length - a.length);
   for (const value of exact) {
@@ -314,9 +346,16 @@ export function buildLoginDiagnostic(
     ? truncate(redactSecrets(rawText, secrets))
     : undefined;
 
+  // NEO-288: a challenge VETOES a rejection here, not only in the adapter.
+  // SportLots' Turnstile refusal ("Invalid login request") also matches the
+  // generic /invalid (…|login|…)/ rejection pattern, and the two flags are
+  // opposite findings — one pages, the other must never page. The adapter
+  // already refuses to set credentialRejected when a challenge is seen; the
+  // diagnostic that leaves the service (→ Convex → PostHog) must not say
+  // otherwise.
   const diagnostic: LoginDiagnostic = {
     challengeDetected,
-    credentialRejectionDetected: detectCredentialRejection(rawText),
+    credentialRejectionDetected: !challengeDetected && detectCredentialRejection(rawText),
   };
   if (input.url) diagnostic.url = input.url;
   if (input.title) diagnostic.title = redactSecrets(input.title, secrets);
