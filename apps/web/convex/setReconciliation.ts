@@ -48,6 +48,9 @@ import {
 // NEO-291 — the insert/parallel flags are derived from where a row sits, not
 // taken from the client. See convex/variantRole.ts.
 import { derivedVariantFlags } from "./variantRole";
+// NEO-291 — the one rule for a card number prefix, shared with
+// `setSelectorOptionCardNumberPrefix` so the modal and the panel agree.
+import { normalizeCardNumberPrefix } from "./cardNumberPrefix";
 // NEO-277: the set-level team a fresh child inherits from its parent.
 import { inheritedTeamIds } from "./lib/selectorTeams";
 // NEO-239 — the per-side "can this marketplace be asked?" rule, shared with
@@ -1613,9 +1616,14 @@ export const storeReconciledOptions = mutation({
           Object.keys(nextPrimary).length > 0 ? nextPrimary : undefined;
 
         // NEO-291 — the modal may carry a prefix for a row it is re-linking.
-        // Only a non-empty one is written: `""` is not a value, and clearing
-        // is `setSelectorOptionCardNumberPrefix`'s job (NEO-217 spelling).
-        const incomingPrefix = item.metadata?.cardNumberPrefix?.trim();
+        // Same rule as the panel (`normalizeCardNumberPrefix`: an invalid one
+        // throws the operator's sentence). Only a non-empty one is written:
+        // `""` is not a value, and clearing is
+        // `setSelectorOptionCardNumberPrefix`'s job (NEO-217 spelling).
+        const incomingPrefix =
+          item.metadata?.cardNumberPrefix === undefined
+            ? undefined
+            : normalizeCardNumberPrefix(item.metadata.cardNumberPrefix);
         if (incomingPrefix) {
           w.metadata = { ...(w.metadata ?? {}), cardNumberPrefix: incomingPrefix };
         }
@@ -1697,7 +1705,10 @@ export const storeReconciledOptions = mutation({
       // NEO-291 — the insert/parallel flags come from the derivation, never
       // from `item.metadata`, whose validator no longer admits them. The
       // prefix is the one thing the modal may still say about a new row.
-      const insertPrefix = item.metadata?.cardNumberPrefix?.trim();
+      const insertPrefix =
+        item.metadata?.cardNumberPrefix === undefined
+          ? undefined
+          : normalizeCardNumberPrefix(item.metadata.cardNumberPrefix);
       const insertMetadata = {
         ...(insertPrefix ? { cardNumberPrefix: insertPrefix } : {}),
         ...(confersBaseRole(parsed.ids) ? { isBase: true } : {}),

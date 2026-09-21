@@ -180,6 +180,12 @@ import {
 // BSC slot), once, at creation and on a level move. Never from a name, never
 // from the client.
 import { derivedVariantFlags, withVariantFlags } from "./variantRole";
+// NEO-291 — the one rule for a card number prefix, shared with the
+// reconciler's write path in setReconciliation.ts.
+import { normalizeCardNumberPrefix } from "./cardNumberPrefix";
+// Re-exported for callers that reached the ceiling through this module before
+// the rule moved; convex/cardNumberPrefix.ts is its home.
+export { MAX_CARD_NUMBER_PREFIX_LENGTH } from "./cardNumberPrefix";
 import {
   BSC_SOURCE_FACETS,
   bscFacetValidator,
@@ -5461,14 +5467,6 @@ export const setSelectorOptionFeature = mutation({
 });
 
 /**
- * NEO-291 — the ceiling on `metadata.cardNumberPrefix`. A prefix is the few
- * characters a marketplace puts in front of a card number ("DK-", "SP-",
- * "T-"); nothing legitimate approaches this, and a longer string is a paste
- * of the wrong field.
- */
-export const MAX_CARD_NUMBER_PREFIX_LENGTH = 32;
-
-/**
  * NEO-291 — set or clear a row's `metadata.cardNumberPrefix`, the one
  * metadata field an operator still types (the insert/parallel flags are
  * derived, see convex/variantRole.ts, and `isBase` has `setBaseVariantType`).
@@ -5477,14 +5475,12 @@ export const MAX_CARD_NUMBER_PREFIX_LENGTH = 32;
  * which merged whatever object the client sent. This mutation touches ONE
  * key and nothing else in `metadata`, so it can never clear a role.
  *
- * `""` DELETES the key — never stored, the NEO-217 spelling
- * `setSelectorOptionFeature` uses for `features`. The value is trimmed, and a
- * prefix carrying a line break, a control character or an invisible
- * character is refused with the sentence the operator reads (a string
- * `ConvexError`, which `userFacingMessage` shows verbatim): the prefix is
- * matched against marketplace card numbers by `startsWith`, and a character
- * nothing renders would make a prefix that never matches and cannot be seen
- * to be wrong.
+ * The rule — trim, `""` DELETES the key (never stored, the NEO-217 spelling
+ * `setSelectorOptionFeature` uses for `features`), refuse control /
+ * zero-width characters and over-length with a string `ConvexError` that
+ * `userFacingMessage` shows verbatim — is `normalizeCardNumberPrefix` in
+ * convex/cardNumberPrefix.ts, shared with the reconciler so the two doors
+ * cannot disagree.
  */
 export const setSelectorOptionCardNumberPrefix = mutation({
   args: {
@@ -5498,25 +5494,9 @@ export const setSelectorOptionCardNumberPrefix = mutation({
     if (!row) {
       throw new ConvexError("That row is gone. Refresh and try again.");
     }
-    const trimmed = args.cardNumberPrefix.trim();
-    // eslint-disable-next-line no-control-regex
-    if (/[\u0000-\u001F\u007F]/.test(trimmed)) {
-      throw new ConvexError(
-        "A card prefix cannot contain line breaks or control characters.",
-      );
-    }
-    if (/[\u200B-\u200D\u2060\uFEFF]/.test(trimmed)) {
-      throw new ConvexError(
-        "A card prefix cannot contain zero-width or invisible characters.",
-      );
-    }
-    if (trimmed.length > MAX_CARD_NUMBER_PREFIX_LENGTH) {
-      throw new ConvexError(
-        `A card prefix is at most ${MAX_CARD_NUMBER_PREFIX_LENGTH} characters.`,
-      );
-    }
+    const prefix = normalizeCardNumberPrefix(args.cardNumberPrefix);
     const next = { ...(row.metadata ?? {}) };
-    if (trimmed) next.cardNumberPrefix = trimmed;
+    if (prefix) next.cardNumberPrefix = prefix;
     else delete next.cardNumberPrefix;
     await ctx.db.patch(args.id, {
       // Every other key rides along untouched; an emptied object is dropped
@@ -6298,9 +6278,11 @@ export const setVariantTypePlatformData = mutation({
      * label left over from the set this row used to be mapped to.
      */
     bscLabel: v.optional(v.string()),
-    // Derived from the table (NEO-239). A hand-typed copy here is how the
-    // `isBase` drift happened one validator over.
-    metadata: selectorOptionFields.metadata,
+    // NEO-291 — there is no `metadata` arg. There was one (the whole table
+    // object, merged over the row's), and no caller ever sent it; what it did
+    // was let an admin client strip `isBase` or write a role this mutation
+    // has no business deciding. Roles have their own doors: `isBase` via
+    // `setBaseVariantType`, the prefix via `setSelectorOptionCardNumberPrefix`.
     // NEO-219: the row's `lastUpdated` as the picker read it.
     //
     // OPTIONAL — absent means "do not check", which is what every existing
@@ -6472,9 +6454,6 @@ export const setVariantTypePlatformData = mutation({
       Object.keys(working.platformSlotSeq).length > 0
     ) {
       merged.platformSlotSeq = working.platformSlotSeq;
-    }
-    if (args.metadata) {
-      merged.metadata = { ...(row.metadata || {}), ...args.metadata };
     }
     await ctx.db.patch(args.variantTypeId, merged);
     return { success: true, message: "Stored Base mapping" };
