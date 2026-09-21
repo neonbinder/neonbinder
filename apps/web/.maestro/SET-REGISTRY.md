@@ -81,7 +81,7 @@ BuySportsCards alone for the whole run:
 | Baseball → 1996 → Score → Score | `Insert` (reconciled in-flow, NOT pre-synced) | `flows/set-selector/inserts-1996-score-one-nb-set-two-bsc-sources.yaml` — **sole writer** |
 | Hockey → 2024 → Topps → Topps NHL Sticker Collection | none — the flow never goes below `Variant Types` (NOT pre-synced) | `flows/set-selector/set-rename-survives-resync-and-suggests-bsc-name.yaml` — **sole writer** |
 | Hockey → 1995 → Unknown (reached through the All Brands view) → Roanoke Express ECHL | `Base` — 25 cards, fetched and COMMITTED in-flow, BSC only (NOT pre-synced) | `flows/set-selector/checklist-one-marketplace-skips-match-dialog.yaml` — **sole writer**. ✅ **APPROVED 2026-09-09** (NEO-260); manufacturer row renamed by NEO-237 (the marketplace's "All Brands" option is routed onto the year's `Unknown` row, never stored under its label) |
-| Hockey → 1997 (the whole year) | a manufacturer row `SPx` linked through SportLots' All Brands option; ONE set created from a "new on SportLots" root (name read at run time) with its `Base` carrying the SportLots id; the year's BSC sets filed under the brands / `Unknown` and the prefix-matching ones re-homed to `SPx`. No checklist is fetched. | `flows/set-selector/brand-via-all-brands-narrows-sportlots.yaml` — **sole writer** of the year. ✅ Claimed by Jason 2026-09-21 (NEO-237 §0.1); the prefix `SPx` is the author's pick and is **NOT YET MEASURED** — see the Hockey 1997 section |
+| Hockey → 1997 (the whole year) | a manufacturer row `SPx` linked through SportLots' All Brands option; ONE set created from a "new on SportLots" root (name read at run time) with its `Base` carrying the SportLots id; the year's BSC sets filed under the brands / `Unknown` and the prefix-matching ones re-homed to `SPx`. No checklist is fetched. | `flows/set-selector/brand-via-all-brands-narrows-sportlots.yaml` — **sole writer** of the year. ✅ Claimed by Jason 2026-09-21 (NEO-237 §0.1); the prefix `SPx` **measured** on PR #272's preview 2026-09-21 — see the Hockey 1997 section |
 | Baseball → 2024 → Topps → Topps MLB at Rickwood Field Negro Leagues Collection | `Base` — 4 cards, BSC only (the SportLots picker is CANCELLED in-flow; SportLots does not carry the set), fetched and COMMITTED in-flow (NOT pre-synced) | `flows/set-selector/checklist-wizard-link-team-saves-alias.yaml` — **sole writer**. Approved by Jason 2026-09-16 (NEO-284) |
 | Baseball → 2026 → Bowman → Bowman | `Insert` — reconciled in-flow (NOT pre-synced); the BSC insert `Anime Kanji` is promoted to a parallel of `Anime` by Group Parallels and its checklist is fetched and COMMITTED in-flow | `flows/set-selector/parallel-grouping-promoted-insert-fetches-from-bsc.yaml` — **sole writer**. Requested by the owner 2026-09-21 (NEO-293), replacing a rejected hand-made-parent fixture |
 
@@ -911,9 +911,10 @@ every CI run; the flow pays its own syncs on its own runner.
 | pre-synced by `setup.yaml` | **no** |
 | re-runs | **fresh-only per deployment** (same contract as the 1995 fixture): a second run finds `SPx` already there, the "+ Custom" form SELECTS it with no confirm, and STEP 3 fails on the confirm sentence by name. Re-seed before re-running locally |
 
-**The prefix is `SPx`, and it is NOT YET MEASURED.** No PR preview existed
-when the flow was written (2026-09-21), so the prefix was chosen from the
-product's constraints rather than from a reading of the lists:
+**The prefix is `SPx`, MEASURED 2026-09-21** on PR #272's Convex preview
+(local Vite pointed at the preview after CI run 35658444013's seed; the
+flow passed end to end in 4m24s). It was chosen from the product's
+constraints first and the reading confirmed them:
 
 * SportLots' hockey brand list has no `SPx` entry, so the product can only be
   reached through All Brands — the case the feature exists for;
@@ -921,28 +922,30 @@ product's constraints rather than from a reading of the lists:
   from the real `SP` brand in both directions ("SPx" does not start with
   "SP" at a boundary; "SP Authentic" does not start with "SPx");
 * the 1997-98 product is small: a base set and a handful of parallels, so the
-  narrowed SportLots list should sit at 1–8 entries.
+  narrowed SportLots list sits at 1–8 entries.
 
-What the flow needs true of the lists, and which step reads each:
+What the flow needs true of the lists, which step reads each, and what was
+read:
 
-1. BSC lists ≥1 set whose name starts with `SPx` for 1997 hockey — STEP 4
-   picks it in the view and STEP 5 reads "N sets moved out of Unknown";
+1. BSC lists ≥1 set whose name starts with `SPx` for 1997 hockey — **read:
+   a set named exactly `SPx`**, filed under `Unknown` by the year-wide sync
+   and re-homed by the create; STEP 4 picks it in the view and reads
+   `Manufacturers: SPx — change`, STEP 5 reads "N sets moved out of Unknown";
 2. SportLots' all-brands list for 1997 holds 1–8 entries starting with
-   `SPx` — STEP 4 asserts the picker's SportLots pane has candidates and NO
-   search box (`BaseSetPicker` renders the box above 8);
+   `SPx` — **read: ≥1 `SportLots base candidate: …` and no search box** in
+   STEP 4's picker pane (`BaseSetPicker` renders the box above 8);
 3. the year-wide sync leaves ≥1 "new on SportLots" root under SOME brand —
-   STEP 2 creates a set from the first one. Near-certain on a full year now
-   that a flagship named after its brand hides only itself (`routeSlSets`,
-   94cb12b).
+   **read: 74** on the first run (73 on a re-run, one having become a set);
+   the first root sat under Donruss ("Between the Pipes /3500", then "Line 2
+   Line"). STEP 2 creates a set from the first one.
 
-**First run on the preview: read the counts and record them here.** If (1) or
-(2) fails, swap STEP 0's `BRAND` for another 1997-98 product SportLots has no
-brand for — candidates considered, none measured: `Zenith` (Pinnacle's;
-fails if SportLots spells it "Pinnacle Zenith"), `Be A Player` (ditto),
-`Black Diamond` (Upper Deck's; fails if spelled "Upper Deck Black Diamond"),
-`Leaf` (real brand, but ~10+ SportLots entries, so (2) needs the search-box
-assertion rethought). Avoid names with apostrophes or regex metacharacters
-(`Collector's Choice`, `McDonald's`).
+If a replacement is ever needed, swap STEP 0's `BRAND` for another 1997-98
+product SportLots has no brand for and re-measure — candidates considered,
+none measured: `Zenith` (Pinnacle's; fails if SportLots spells it "Pinnacle
+Zenith"), `Be A Player` (ditto), `Black Diamond` (Upper Deck's; fails if
+spelled "Upper Deck Black Diamond"), `Leaf` (real brand, but ~10+ SportLots
+entries, so (2) needs the search-box assertion rethought). Avoid names with
+apostrophes or regex metacharacters (`Collector's Choice`, `McDonald's`).
 
 The view's "new on SportLots" pill is year-wide, so STEP 2's created set lands
 under whichever brand owns the first root — that brand is not asserted, only

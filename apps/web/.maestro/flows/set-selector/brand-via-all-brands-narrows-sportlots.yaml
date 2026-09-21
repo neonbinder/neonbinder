@@ -40,23 +40,24 @@ tags:
 #   brand in both directions ("SPx" does not start with "SP" at a boundary,
 #   and "SP Authentic" does not start with "SPx").
 #
-#   ⚠️ NOT YET MEASURED. No PR preview existed when this was written, and the
-#   counts below are the product's contract on a real year, not a reading:
-#     (a) BSC lists at least one 1997 hockey set whose name starts with
-#         "SPx" (the STEP 4 pick and the STEP 5 notice need one);
-#     (b) SportLots' all-brands list for 1997 holds between 1 and 8 entries
-#         starting with "SPx" (STEP 4's picker assertion is "no search box",
-#         which BaseSetPicker renders above 8);
-#     (c) the year-wide sync leaves at least ONE "new on SportLots" root
-#         under SOME brand of the year — the pill is year-wide in the view,
-#         so this does not depend on the SPx prefix at all. On a full hockey
-#         year this is near-certain: SportLots lists every insert as a set
-#         of its own, and a flagship named after its brand ("Topps" under
-#         Topps) hides only itself, never the brand's other entries
-#         (`routeSlSets`, 94cb12b).
-#   Run this flow once on the preview, read the failure artifact if any, and
-#   swap STEP 0's `BRAND` for a product that satisfies (a) and (b) — the
-#   registry lists the alternatives considered. Record the counts here.
+#   MEASURED 2026-09-21 on PR #272's Convex preview (local Vite → preview,
+#   after CI run 35658444013's seed; the flow passed end to end in 4m24s,
+#   no step on the give-up path). What the marketplaces answered:
+#     (a) BSC lists a 1997 hockey set named exactly `SPx`: STEP 1's sync
+#         filed it under `Unknown` (no brand's prefix claimed it), STEP 3's
+#         create re-homed it, and STEP 4 picked it in the view and read
+#         `Manufacturers: SPx — change` back.
+#     (b) SportLots' all-brands list for 1997, narrowed to "SPx", holds
+#         between 1 and 8 entries: STEP 4's pane rendered at least one
+#         `SportLots base candidate: …` and NO "Search SportLots sets..."
+#         box (BaseSetPicker renders the box above 8).
+#     (c) the year-wide sync left 74 "new on SportLots" roots on the first
+#         run (73 on a re-run, after STEP 2 had turned one into a set); the
+#         first root was under Donruss ("Between the Pipes /3500", then
+#         "Line 2 Line"). The pill is year-wide in the view, so this never
+#         depended on the SPx prefix.
+#   If a replacement is ever needed, it must satisfy (a) and (b) again —
+#   the registry lists the alternatives considered. Re-measure and record.
 #
 # ── WHY A REAL YEAR, AND WHY THIS FLOW IS A SOLE WRITER (R7a) ───────────────
 #   Every claim above is about what a marketplace ANSWERS: which sets BSC
@@ -251,9 +252,19 @@ tags:
       # it and pick it. `below:` the input rather than `index:` (NEO-46). The
       # row's brand line beneath it can match the same regex when the name
       # IS the brand, and that is fine: both are inside the one row button.
+      #
+      # UP, not DOWN (R5 — "say where the previous step leaves the page"):
+      # centring the pill above drove the page to MAXIMUM scroll (the pill
+      # sits in the action row under the column's 400px list), and the
+      # search input is at the HEAD of that column — above the viewport
+      # from here. CI run 35658444013 r2 measured it: root y=-677, Sets
+      # column top y=-258, and the DOWN scroll that stood here burned its
+      # whole budget on an element rendered the entire time. R8 — centred,
+      # a tap follows.
       - scrollUntilVisible:
           element:
             text: ".*Search sets.*"
+          direction: UP
           centerElement: true
           timeout: 7000
       - tapOn:
@@ -292,32 +303,31 @@ tags:
 # ============================================================
 # STEP 3 — CREATE THE BRAND, LINKED THROUGH ALL BRANDS
 #
-# Re-open the Manufacturers column from its collapsed card. After STEP 2 the
-# card names whatever brand the created set lives under (live) or the view
-# (paused); one regex covers both, and there is exactly one such card. The
-# "+ Custom" button sits below the column's list — a `max-h-[400px]` inner
-# scroller on a real year (eighteen brands plus Unknown) — so it is under
-# the fold and reached by a window scroll, DOWN, centred for the tap (R8).
+# R9 — reach the Manufacturers column EXPANDED through util-drill-to-custom,
+# which stops at the deepest level it is given: Hockey › 1997 and nothing
+# below, a fresh navigation with every level warm (the Years and
+# Manufacturers rows were synced in STEP 1, so the util selects rows and
+# creates nothing). NOT by tapping the collapsed `Manufacturers: … — change`
+# card from where STEP 2 left the page: selecting a set mounts the Variant
+# Types column and `scrollColumnIntoView` scrolls the columns ROW sideways,
+# which pushes the leading cards off the LEFT edge — measured locally
+# 2026-09-21 at x=-88..172 (viewport 1024) — and maestro-web scrolls only
+# the window, vertically, so no flow-side scroll recovers it (the same wall
+# `set-team-carries-down-to-cards` and `features-propagation` document).
+# The "+ Custom" button sits below the column's list — a `max-h-[400px]`
+# inner scroller on a real year (eighteen brands plus Unknown) — so it is
+# under the fold and reached by a window scroll, DOWN, centred for the tap
+# (R8).
 # ============================================================
 
-# The card is in the columns row at the TOP of the document. STEP 2 left the
-# page either there (live: the row tap) or scrolled to a notice below the
-# Sets list (paused), so the card is at or above the current position: UP.
-# No centring — a target this close to the top of the document has no
-# headroom above it to be centred with, and a centred scroll that cannot
-# centre only spends the give-up path (R8 case 2); uncentred, this settles
-# at once when the card is already on screen. Near-top elements are
-# tappable: the binder header is pointer-events-none except its own links.
-- scrollUntilVisible:
-    element:
-      id: "Manufacturers: .* — change"
-    direction: UP
-    timeout: 7000
-- tapOn:
-    id: "Manufacturers: .* — change"
+- runFlow:
+    file: util-drill-to-custom.yaml
+    env:
+      SPORT: "Hockey"
+      YEAR: ${output.YEAR}
 # The expanded column's first row is the pinned entry in both modes (the
 # real brands live under a search box live; under the pause the list is
-# `Unknown` alone) — a non-scrolling gate that the column re-opened, before
+# `Unknown` alone) — a non-scrolling gate that the column is open, before
 # the swipe below: the hierarchy is viewport-bounded, so the button itself
 # cannot be waited on unscrolled from here.
 - extendedWaitUntil:

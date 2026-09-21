@@ -59,6 +59,18 @@ metadata:
    name; a brand created with the same name as its flagship set ("SPx") makes
    `text: "SPx" below: "Manufacturers"` ambiguous on the no-search shape.
    Re-drill through the util (fresh navigation, nothing selected) instead of
-   re-opening a column from its card. Card taps that are safe: the card at
-   the top of the document with a `direction: UP`, UNCENTRED scroll (no
-   headroom above it to centre with — R8 case 2).
+   re-opening a column from its card.
+3. **Once a SET is selected the leading cards are off the LEFT edge.** The
+   Variant Types column mounting runs `scrollColumnIntoView` on the columns
+   ROW (horizontal); measured 2026-09-21 the `Manufacturers: … — change`
+   card sat at x=-88..172 and no vertical scroll moves it (maestro-web
+   scrolls only the window). To get the Manufacturers column EXPANDED again
+   (for its "+ Custom"), `runFlow util-drill-to-custom.yaml` with only
+   `SPORT` + `YEAR` — it stops at the deepest level given and selects
+   existing rows on a warm path. A card tap is safe only while nothing
+   deeper than the year is selected.
+4. **Centring the `N new on SportLots` pill parks the page at MAXIMUM
+   scroll** (the pill is in the action row under the 400px list). The
+   `Search sets` input at the column head is then ABOVE the viewport — the
+   next scroll to it is `direction: UP` (CI 35658444013 r2 burned 7 s on
+   DOWN with the input rendered the whole time, root y=-677).
