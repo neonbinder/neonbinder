@@ -234,6 +234,56 @@ describe("applyParallelGroupings — promotion tags untagged BSC slots `variantN
     });
   });
 
+  test("the same marketplace id in two slots — one tagged, one not — tags only the untagged slot key", async () => {
+    // Slots are keyed by slot key, never by id (an id is never unique at any
+    // scope). A promoted row that happens to carry a duplicate id across a
+    // tagged and an untagged slot must not have the tagged one's facet
+    // mistakenly read as covering the untagged key too.
+    const t = convexTest(schema, modules);
+    const { variantType } = await seedChainToInsertVariantType(t);
+    const anime = await seedInsert(t, variantType, "Anime", {
+      platformData: { bsc: { b0: "anime" } },
+    });
+    const kanji = await seedInsert(t, variantType, "Anime Kanji", {
+      platformData: { bsc: { b0: "anime-kanji", b1: "anime-kanji" } },
+      platformFacets: { bsc: { b0: "setName" } },
+    });
+
+    await promote(t, variantType, kanji, anime);
+
+    const row = await getRow(t, kanji);
+    expect(row.platformFacets).toEqual({
+      bsc: { b0: "setName", b1: "variantName" },
+    });
+    expect(row.platformData).toEqual({
+      bsc: { b0: "anime-kanji", b1: "anime-kanji" },
+    });
+  });
+
+  test("an untagged slot whose id happens to be a bare variant-role token (e.g. 'insert') is still tagged variantName — structural evidence, not the id's content", async () => {
+    // PROMOTED_PARALLEL_BSC_FACET tags on WHERE the id sits (an insert-level
+    // row's BSC slot moving to parallel), never on what the id looks like.
+    // `bscVariantIdTokens`/`isBscInsertVariantId` exist for a completely
+    // different question (which `variant` facet id names the base/insert/
+    // parallel role at variantType sync) and this path must not borrow it —
+    // doing so would make the tag depend on marketplace vocabulary instead of
+    // the structural fact the promotion holds.
+    const t = convexTest(schema, modules);
+    const { variantType } = await seedChainToInsertVariantType(t);
+    const anime = await seedInsert(t, variantType, "Anime", {
+      platformData: { bsc: { b0: "anime" } },
+    });
+    const oddlyNamed = await seedInsert(t, variantType, "Anime Kanji", {
+      platformData: { bsc: { b0: "insert" } },
+    });
+
+    await promote(t, variantType, oddlyNamed, anime);
+
+    const row = await getRow(t, oddlyNamed);
+    expect(row.platformFacets).toEqual({ bsc: { b0: "variantName" } });
+    expect(row.platformData).toEqual({ bsc: { b0: "insert" } });
+  });
+
   test("SportLots slots are not tagged, and a row with no BSC side gains no `platformFacets` at all", async () => {
     const t = convexTest(schema, modules);
     const { variantType } = await seedChainToInsertVariantType(t);
@@ -296,6 +346,78 @@ describe("applyParallelGroupings — promotion tags untagged BSC slots `variantN
     const plan = resolveBscFacetFilters(await chainTo(t, kanji));
     expect(plan.filters.variantName).toEqual(["anime-kanji"]);
     expect(plan.sourceFacet).toBe("variantName");
+  });
+
+  test("a batch that promotes one insert and demotes another parallel in the same call tags only the promoted row", async () => {
+    // Real UI shape: the grouping modal submits every drag in the batch as one
+    // mutation. Promotion and demotion share the same patch loop but must not
+    // cross-contaminate — demoting B must not tag it, promoting A must.
+    const t = convexTest(schema, modules);
+    const { variantType } = await seedChainToInsertVariantType(t);
+    const anime = await seedInsert(t, variantType, "Anime", {
+      platformData: { bsc: { b0: "anime" } },
+    });
+    const kanji = await seedInsert(t, variantType, "Anime Kanji", {
+      platformData: { bsc: { b0: "anime-kanji" } },
+    });
+    const stranded = await seedParallel(t, anime, "Stray Foil", {
+      platformData: { bsc: { b0: "stray-foil" } },
+    });
+
+    const result = await t
+      .withIdentity(ADMIN_IDENTITY)
+      .mutation(api.selectorOptions.applyParallelGroupings, {
+        variantTypeId: variantType,
+        promotions: [{ insertId: kanji, targetInsertId: anime }],
+        demotions: [{ parallelId: stranded }],
+      });
+    expect(result).toEqual({ success: true, promoted: 1, demoted: 1, reparented: 0 });
+
+    const promoted = await getRow(t, kanji);
+    expect(promoted.level).toBe("parallel");
+    expect(promoted.platformFacets).toEqual({ bsc: { b0: "variantName" } });
+
+    const demoted = await getRow(t, stranded);
+    expect(demoted.level).toBe("insert");
+    expect(demoted.platformFacets).toBeUndefined();
+  });
+
+  test("promote then reparent the same row in two separate calls: the tag written at promotion survives untouched", async () => {
+    const t = convexTest(schema, modules);
+    const { variantType } = await seedChainToInsertVariantType(t);
+    const anime = await seedInsert(t, variantType, "Anime", {
+      platformData: { bsc: { b0: "anime" } },
+    });
+    const glow = await seedInsert(t, variantType, "Glow", {
+      platformData: { bsc: { b0: "glow" } },
+    });
+    const kanji = await seedInsert(t, variantType, "Anime Kanji", {
+      platformData: { bsc: { b0: "anime-kanji" } },
+    });
+
+    await promote(t, variantType, kanji, anime);
+    expect((await getRow(t, kanji)).platformFacets).toEqual({
+      bsc: { b0: "variantName" },
+    });
+
+    // Second call: reparent the now-parallel row from `anime` to `glow`. The
+    // tag was written once, at promotion; a reparent must not re-derive or
+    // duplicate it.
+    const result = await t
+      .withIdentity(ADMIN_IDENTITY)
+      .mutation(api.selectorOptions.applyParallelGroupings, {
+        variantTypeId: variantType,
+        promotions: [],
+        demotions: [],
+        reparentings: [{ parallelId: kanji, newInsertId: glow }],
+      });
+    expect(result).toEqual({ success: true, promoted: 0, demoted: 0, reparented: 1 });
+
+    const row = await getRow(t, kanji);
+    expect(row.parentId).toBe(glow);
+    expect(row.platformFacets).toEqual({ bsc: { b0: "variantName" } });
+    // Not duplicated onto a second slot key either.
+    expect(Object.keys(row.platformFacets?.bsc ?? {})).toEqual(["b0"]);
   });
 
   test("demotion of a parallel that was never tagged does not tag it either", async () => {

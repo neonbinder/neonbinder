@@ -768,6 +768,52 @@ describe("MultiSourcePanel — an untagged slot is re-mappable from the dialog (
     );
   });
 
+  test("the SAME marketplace id in a tagged slot AND an untagged slot counts as attached, not as a re-map", async () => {
+    // Code comment on `alreadyAttached` in MultiSourcePanel.tsx: "If one id
+    // sits in both a tagged and an untagged slot it counts as attached — the
+    // panel shows it as a source, and the dialog must agree with the panel."
+    // Two DIFFERENT slot keys can legitimately hold the same marketplace id
+    // (ids are never unique at any scope; NEO-137), so this is a real, if
+    // rare, shape rather than a contrived one.
+    setRow({
+      platformData: { bsc: { b0: GOLD, b1: GOLD } },
+      platformLabels: { bsc: { b0: "Gold Foil", b1: "Gold Foil (dup)" } },
+      platformFacets: { bsc: { b0: "variantName" } },
+      primaryPlatformId: { bsc: "b0" },
+    });
+    actionSpies.fetchBscAttachOptions = vi.fn().mockResolvedValue({
+      success: true,
+      options: [{ value: "Gold Foil", platformValue: GOLD }],
+      message: "",
+    });
+    actionSpies.fetchSlAttachSets = vi.fn().mockResolvedValue({
+      success: true,
+      options: [],
+      message: "",
+    });
+    render(<MultiSourcePanel selectorOptionId={ROW_ID} />);
+
+    // b0 renders as a source chip; b1 has no facet, so it is untagged on the
+    // row — but its id is already covered by b0's source, so the "Needs
+    // re-mapping" list must not also mention it as re-mappable via the dialog.
+    const bsc = within(bscColumn());
+    expect(bsc.getByLabelText("Gold Foil is attached as a BSC variant")).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText("Attach more source sets"));
+    // The dialog's own view: gold-foil is already attached (via b0), so its
+    // only candidate is filtered out of the variants list rather than offered
+    // again as a re-map — even though a second, untagged slot (b1) also holds
+    // the same id.
+    await waitFor(() =>
+      expect(
+        within(bscPane()).getByText(
+          /Every BSC variant in this set is already attached/,
+        ),
+      ).toBeTruthy(),
+    );
+    expect(within(bscPane()).queryByLabelText("Toggle Gold Foil")).toBeNull();
+  });
+
   test("a `variant` SCOPE slot stays excluded — it is not a source, and not a re-map either", async () => {
     // The row's own scope slug is not in `untagged` and must not become a
     // candidate: re-attaching it from the variants rung would re-tag the

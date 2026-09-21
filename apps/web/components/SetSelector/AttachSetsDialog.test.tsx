@@ -1116,6 +1116,58 @@ describe("AttachSetsDialog — re-mapping an untagged id (NEO-293)", () => {
     expect(within(bscPane()).queryByText("Needs re-mapping")).toBeNull();
   });
 
+  test("deselecting a re-map candidate reverts the confirm to 'Attach 0' and disables it", async () => {
+    // The confirm label is computed from the live selection maps, not latched
+    // once a re-map is toggled on — un-checking it must fall all the way back
+    // to the ordinary empty-selection state, not get stuck reading "Re-map 1".
+    renderDialog({
+      needsRemap: { bsc: new Set(["gold-foil"]) },
+    });
+    await waitFor(() =>
+      expect(within(bscPane()).getByLabelText("Toggle Gold Foil")).toBeTruthy(),
+    );
+    const toggle = within(bscPane()).getByLabelText("Toggle Gold Foil");
+
+    fireEvent.click(toggle);
+    expect(screen.getByLabelText("Confirm attach sets").textContent).toBe(
+      "Re-map 1",
+    );
+
+    fireEvent.click(toggle);
+    const confirm = screen.getByLabelText(
+      "Confirm attach sets",
+    ) as HTMLButtonElement;
+    expect(confirm.textContent).toBe("Attach 0");
+    expect(confirm.disabled).toBe(true);
+  });
+
+  test("an id in BOTH alreadyAttached and needsRemap (a caller contract violation) renders as attached, never as a re-map candidate", async () => {
+    // MultiSourcePanel builds `needsRemap` by construction as disjoint from
+    // `alreadyAttached` (it explicitly filters out anything already
+    // attached), so this id shape should never reach the dialog in practice.
+    // But the dialog does not itself enforce that disjointness — it is handed
+    // two independent props — so pin which one wins if it ever does: "already
+    // attached" must win, because offering a checkbox on an id the dialog
+    // also believes is attached would let the operator "attach" it a second
+    // time.
+    renderDialog({
+      alreadyAttached: {
+        bsc: new Set(["topps-heritage"]),
+        sportlots: new Set<string>(),
+      },
+      needsRemap: { bsc: new Set(["topps-heritage"]) },
+    });
+    fireEvent.click(screen.getByLabelText("Browse all BSC sets"));
+    await waitFor(() =>
+      expect(
+        within(bscPane()).getByLabelText("Topps Heritage is already attached"),
+      ).toBeTruthy(),
+    );
+    const bsc = within(bscPane());
+    expect(bsc.queryByLabelText("Toggle Topps Heritage")).toBeNull();
+    expect(bsc.queryByText("Needs re-mapping")).toBeNull();
+  });
+
   test("an untagged SET slug is re-mappable from the set list too, as a setName", async () => {
     // The NEO-189 corruption class: a setName slug mis-saved into a
     // variantType row's slot. From the set list it is a candidate with a

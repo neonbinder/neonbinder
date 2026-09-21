@@ -60,11 +60,21 @@
  * A row is a candidate when ALL of:
  *
  *   - `level === "parallel"`;
- *   - its parent is `level === "insert"` — the shape only
- *     `applyParallelGroupings`' insert→parallel promotion produces;
+ *   - its parent is `level === "insert"` — the shape `applyParallelGroupings`'
+ *     insert→parallel promotion produces, and also the shape of a parallel an
+ *     operator created by hand under an insert (ParallelForm);
  *   - it has at least one BSC slot with no facet tag.
  *
  * Those slots are tagged `variantName`, and nothing else on the row moves.
+ *
+ * The second origin is why the dry run is not a formality. A promoted row's
+ * untagged id came from the insert-level variantName fetch and IS a
+ * variantName. A hand-made parallel's untagged slot came from a pre-NEO-189
+ * `attachPlatformIds`, and its facet is whatever the operator pasted at the
+ * time — usually a variantName, occasionally a setName slug. **Before arming,
+ * read `rows[].path` and `rows[].slots` in the dry run for any parallel you
+ * created by hand rather than through Group Parallels, and re-map that slot
+ * through the attach dialog instead if its id is not a variantName.**
  *
  * The evidence is the same fact the promotion now records live (NEO-293,
  * `applyParallelGroupings`): BSC files a parallel of an insert as a
@@ -148,14 +158,15 @@ const DRY_RUN_MESSAGE =
 const MAX_REPORTED = 50;
 
 /**
- * The per-mutation read budget in this repo's notes is ~4096 documents
- * (`backfillCardFeatures.ts`), and blowing it fails the whole transaction —
- * strictly worse than reporting a short read. Every candidate additionally
- * costs one parent read (memoised per insert, so a dozen parallels under one
- * insert cost one), and each REPORTED row costs an ancestor walk for its
- * path (memoised too, and capped by MAX_REPORTED). `parallel` rows exist only
- * where an operator has grouped them, so this is comfortably above a real
- * deployment today.
+ * Convex caps the documents one transaction may read (16,384 at the time of
+ * writing), and blowing the cap fails the whole transaction — strictly worse
+ * than reporting a short read. The scan is held well under it because it is
+ * not the only read: every candidate additionally costs one parent read
+ * (memoised per insert, so a dozen parallels under one insert cost one), and
+ * each REPORTED row costs an ancestor walk for its path (memoised too, and
+ * capped by MAX_REPORTED). `parallel` rows exist only where an operator has
+ * grouped or hand-built them, so this is comfortably above a real deployment
+ * today.
  *
  * ⚠️ Truncation is NOT self-healing: a re-run reads the same prefix of the same
  * index. If `truncated` comes back true, drain the deployment one variant type
@@ -344,6 +355,14 @@ export const run = internalMutation({
         .withIndex("by_level", (q) => q.eq("level", "parallel"))
         .take(SCAN_LIMIT + 1);
     } else {
+      // Validate the scope BEFORE any read of children or any write. The arg
+      // is an unchecked `v.id("selectorOptions")`; a mistyped or wrong-level
+      // id would otherwise walk an index that finds no children and return
+      // `scanned: 0`, which reads exactly like a clean steady state.
+      const scope = await getCached(variantTypeId);
+      if (!scope || scope.level !== "variantType") {
+        throw new Error("variantTypeId is not a variantType row");
+      }
       // The parallels an insert→parallel promotion can produce under this
       // variant type are exactly the `parallel` children of its `insert`
       // children. A parallel filed directly under the variant type is the

@@ -308,6 +308,124 @@ describe("backfillPromotedParallelFacet — selection", () => {
     });
     expect((await getRow(t, second.kanji)).platformFacets).toBeUndefined();
   });
+
+  test("`variantTypeId` pointed at a row that is not a variantType THROWS — dry and armed — instead of reporting an empty scope", async () => {
+    // The arg is an unchecked `v.id("selectorOptions")`; nothing stops an
+    // operator pasting the wrong kind of id. Walking the index under it would
+    // find no children and report `scanned: 0, truncated: false`, which reads
+    // exactly like a clean steady state. So the scope is validated first, and
+    // a wrong id is an error the operator sees, on both paths.
+    const t = convexTest(schema, modules);
+    const { kanji, anime } = await seedPromotedCase(t);
+
+    await expect(dry(t, anime)).rejects.toThrow(
+      "variantTypeId is not a variantType row",
+    );
+    await expect(dry(t, kanji)).rejects.toThrow(
+      "variantTypeId is not a variantType row",
+    );
+    await expect(armed(t, anime)).rejects.toThrow(
+      "variantTypeId is not a variantType row",
+    );
+
+    // And a deleted id is the same error, not an empty report.
+    const gone = await t.run(async (ctx) => {
+      const id = await ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Ghost",
+        platformData: {},
+        children: [],
+        lastUpdated: SENTINEL,
+      });
+      await ctx.db.delete(id);
+      return id;
+    });
+    await expect(dry(t, gone)).rejects.toThrow(
+      "variantTypeId is not a variantType row",
+    );
+
+    // Nothing was written by the armed attempt.
+    expect((await getRow(t, kanji)).platformFacets).toBeUndefined();
+    expect((await getRow(t, kanji)).lastUpdated).toBe(SENTINEL);
+  });
+
+  test("a parallel with no parent at all is skipped as parent_not_insert, not thrown on", async () => {
+    const t = convexTest(schema, modules);
+    const orphan = await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "parallel",
+        value: "Orphan Foil",
+        platformData: { bsc: { b0: "orphan-foil" } },
+        children: [],
+        lastUpdated: SENTINEL,
+      }),
+    );
+
+    const report = await dry(t);
+
+    expect(report.scanned).toBe(1);
+    expect(report.rowsTagged).toBe(0);
+    expect(report.skippedCounts.parentNotInsert).toBe(1);
+    await armed(t);
+    expect((await getRow(t, orphan)).platformFacets).toBeUndefined();
+  });
+
+  test("a parallel-of-a-parallel (grandparent variantType, legacy/malformed shape) is skipped — its parent is not level=insert", async () => {
+    // applyParallelGroupings refuses to promote an insert that already has
+    // parallel children, so this nesting cannot arise through the product
+    // path — but the backfill's selection is a level+parent read, not a
+    // guarantee the shape is impossible, and a legacy or hand-edited row
+    // could still have it. The evidence rule ("parent is level=insert") must
+    // hold even here: a parallel whose parent is ITSELF a parallel is not the
+    // insert→parallel promotion shape, and its untagged slot must stay inert.
+    const t = convexTest(schema, modules);
+    const { insertVt } = await seedSet(t);
+    const anime = await seedChild(t, insertVt, "insert", "Anime", {
+      platformData: { bsc: { b0: "anime" } },
+    });
+    const kanji = await seedChild(t, anime, "parallel", "Anime Kanji", {
+      platformData: { bsc: { b0: "anime-kanji" } },
+    });
+    const grandchild = await seedChild(t, kanji, "parallel", "Anime Kanji Gold", {
+      platformData: { bsc: { b0: "anime-kanji-gold" } },
+    });
+
+    const report = await dry(t);
+
+    expect(report.scanned).toBe(2);
+    expect(report.rowsTagged).toBe(1);
+    expect(report.rows.map((r) => r.id)).toEqual([kanji]);
+    expect(
+      report.skippedCounts.parentNotInsert,
+    ).toBe(1);
+
+    await armed(t);
+    expect((await getRow(t, kanji)).platformFacets).toEqual({
+      bsc: { b0: "variantName" },
+    });
+    expect((await getRow(t, grandchild)).platformFacets).toBeUndefined();
+  });
+
+  test("the unscoped scan reports truncated past SCAN_LIMIT, and scans exactly the cap", async () => {
+    const t = convexTest(schema, modules);
+    const total = 2001; // SCAN_LIMIT (2000) + 1
+    await t.run(async (ctx) => {
+      for (let i = 0; i < total; i += 1) {
+        await ctx.db.insert("selectorOptions", {
+          level: "parallel",
+          value: `Filler ${i}`,
+          platformData: {},
+          children: [],
+          lastUpdated: SENTINEL,
+        });
+      }
+    });
+
+    const report = await dry(t);
+
+    expect(report.truncated).toBe(true);
+    expect(report.scanned).toBe(2000);
+  });
 });
 
 describe("backfillPromotedParallelFacet — the dry run", () => {
