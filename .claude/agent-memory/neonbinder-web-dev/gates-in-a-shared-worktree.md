@@ -1,6 +1,6 @@
 ---
 name: gates-in-a-shared-worktree
-description: apps/web gate quirks — eslint "File ignored" on lib/*.ts is baseline; a sibling's npm ci may be mid-flight (wait, never start a second); `npm run test:unit -- <filter>` does NOT filter (use npx vitest run); link-deps.sh checks the wrong dir and main's node_modules can be stale
+description: apps/web gate quirks — eslint "File ignored" on lib/*.ts is baseline; a sibling's npm ci may be mid-flight (wait, never start a second); `npm run test:unit -- <filter>` does NOT filter (use npx vitest run); link-deps.sh checks the wrong dir and main's node_modules can be stale — replace the symlink with the worktree's own npm ci, never an overlay
 metadata:
   type: feedback
 ---
@@ -29,6 +29,13 @@ Things that look like failures during the apps/web fast gates but are not.
    stale against its own lockfile (a missing eslint plugin made `npm run lint`
    crash with ERR_MODULE_NOT_FOUND on NEO-281). `node_modules` is gitignored,
    so the symlink never reaches a commit.
+5. When `node_modules` is a symlink into a stale install and `npm run lint`
+   dies with `ERR_MODULE_NOT_FOUND` for a plugin, the fix is the worktree's
+   own install, not an overlay: report it to the coordinator, who removes
+   the symlink (`rm apps/web/node_modules` — no `-r`, no trailing slash, or
+   the shared install's contents go with it) and runs `npm ci` in the
+   worktree's `apps/web`. Never install into or around the shared
+   `main/` tree, and never leave a scratch symlink for a gate run (NEO-291).
 
 **Why:** items 1-2 cost a round of head-scratching on NEO-278, items 3-4 on
 NEO-281, before the gates went green; none is a bug in the change.
