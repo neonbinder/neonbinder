@@ -22,9 +22,20 @@ import { userFacingMessage } from "@/lib/errors/user-facing-message";
  * 3). So when SportLots lists a set under a brand and nothing under that
  * brand holds its id, the sync does not mint it — it records the entry as a
  * CANDIDATE and this dialog is the only thing that ever turns one into a
- * set. The operator names it (the marketplace label is only the default),
- * and the set that results is NB's own row with the SportLots id on its Base,
- * exactly where the Base picker would have put it.
+ * set. The operator names it, and the set that results is NB's own row with
+ * the SportLots id on its Base, exactly where the Base picker would have put
+ * it.
+ *
+ * ## The name field starts as the brand's prefix + the label
+ *
+ * A BSC-synced set under Topps is called "Topps Heritage"; SportLots' label
+ * for the same product, brand-stripped, is "Heritage". The server hands each
+ * root a `defaultName` ("Topps Heritage") so the set lands beside its BSC
+ * siblings, and `brandPrefix` when it prepended one. The row shows the label
+ * with the prefix as a muted lead-in ("Topps · Heritage") so the operator
+ * sees why the field reads longer than the root; under Unknown there is no
+ * prefix and the field starts as the label. The field is editable and the
+ * client sends what it holds — nothing is prepended on create.
  *
  * ## Per ROOT, written immediately
  *
@@ -57,7 +68,12 @@ export type SetCandidate = {
   manufacturerId: GenericId<"selectorOptions">;
   side: "bsc" | "sportlots";
   marketplaceId: string;
+  /** The marketplace's brand-stripped label — the root's visible name. */
   label: string;
+  /** What the name field starts as: `<brandPrefix> <label>`, or `label`. */
+  defaultName: string;
+  /** The prefix `defaultName` leads with; absent when nothing was prepended. */
+  brandPrefix?: string;
   members: SetCandidateMember[];
   /** Present on rows from the All Brands view. */
   brand?: string;
@@ -82,9 +98,30 @@ export function memberSummary(members: readonly SetCandidateMember[]): string {
   return `+ ${members.length} variant${members.length === 1 ? "" : "s"}`;
 }
 
-/** What the name field starts as: the marketplace label, exactly. */
-export function defaultSetName(candidate: SetCandidate): string {
-  return candidate.label;
+/**
+ * What the name field starts as: the server's `defaultName` — the brand's
+ * prefix in front of the label when the brand carries one the label does not
+ * already lead with, the label as-is otherwise.
+ */
+export function defaultSetName(
+  candidate: Pick<SetCandidate, "defaultName">,
+): string {
+  return candidate.defaultName;
+}
+
+/**
+ * The muted lead-in the root line shows before the label — the prefix the
+ * default name gained — or `null` when the default IS the label (no prefix
+ * on the brand, or the label already leads with it). Keyed on the server's
+ * `brandPrefix`, and double-checked against `defaultName !== label` so a
+ * row can never show a lead-in its field does not carry.
+ */
+export function prependedPrefix(
+  candidate: Pick<SetCandidate, "label" | "defaultName" | "brandPrefix">,
+): string | null {
+  if (!candidate.brandPrefix) return null;
+  if (candidate.defaultName === candidate.label) return null;
+  return candidate.brandPrefix;
 }
 
 /**
@@ -192,13 +229,21 @@ function CandidateRow({
   };
 
   const summary = memberSummary(candidate.members);
+  const leadIn = prependedPrefix(candidate);
 
   return (
     <div className="border border-gray-700 rounded-md p-3 space-y-2">
       <div className="min-w-0">
-        {/* The marketplace's label, as the root. Its own text node so a flow
-            can find the row by the name SportLots uses. */}
+        {/* The marketplace's label, as the root. The label stays the <p>'s
+            own direct text node so a flow can find the row by the name
+            SportLots uses; the brand prefix the name field gained sits in
+            front as a muted lead-in (its own span — a middle dot, not a
+            chevron, because it is a name part, not a parent). text-gray-400
+            on bg-gray-900: 6.8:1. */}
         <p className="text-sm font-semibold text-gray-100 break-words">
+          {leadIn && (
+            <span className="font-normal text-gray-400">{`${leadIn} · `}</span>
+          )}
           {candidate.label}
         </p>
         {summary && (
@@ -484,7 +529,11 @@ export function SetCandidatesPill({
   // this dialog cannot act on is not one it should count either.
   const candidates: SetCandidate[] | undefined = Array.isArray(raw)
     ? (raw as SetCandidate[]).filter(
-        (c) => c && typeof c._id === "string" && typeof c.label === "string",
+        (c) =>
+          c &&
+          typeof c._id === "string" &&
+          typeof c.label === "string" &&
+          typeof c.defaultName === "string",
       )
     : undefined;
 

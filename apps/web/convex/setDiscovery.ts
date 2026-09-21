@@ -9,6 +9,7 @@ import { inheritedTeamIds } from "./lib/selectorTeams";
 import { initialSlots } from "./platformSlots";
 import {
   checkCustomSelectorValue,
+  matchesBrandPrefix,
   selectorValueKey,
 } from "./selectorSyncMatch";
 import { unionChildren } from "./selectorSyncStore";
@@ -45,7 +46,22 @@ import { unionChildren } from "./selectorSyncStore";
  *
  * It never deletes or renames an NB row, never touches a candidate the
  * operator did not act on, and never reads a candidate's label as an NB
- * value: the operator names the set (the label is only the default).
+ * value: the operator names the set (`defaultName` is only the default).
+ *
+ * ## The default name carries the brand's prefix
+ *
+ * A BSC-synced set under a brand keeps the brand in its name — Topps holds
+ * "Topps Heritage", "Topps Chrome", "Topps Living" — while a candidate's
+ * `label` is the brand-STRIPPED SportLots label ("Heritage"). So the reads
+ * hand the modal a `defaultName` of `<setNamePrefix> <label>` ("Topps
+ * Heritage") whenever the brand carries a prefix the label does not already
+ * lead with (`matchesBrandPrefix`, the same word-boundary rule the routing
+ * uses), and `label` as-is otherwise — under Unknown there is no prefix, so
+ * "Carddass" stays "Carddass". The prefix comes off the brand row's
+ * `metadata`, never off its display value (schema.ts `setNamePrefix`). The
+ * client sends the FINAL name to `createSetFromCandidate`; nothing is
+ * prepended on the server at create time, so what the operator sees in the
+ * field is exactly what the set is called.
  *
  * Every function is admin-gated, like every other set-builder door.
  */
@@ -65,6 +81,27 @@ const candidateMemberValidator = v.object({
 });
 
 /**
+ * What the modal's name field starts as, for one root under one brand: the
+ * brand's `setNamePrefix` in front of the label, unless there is no prefix
+ * or the label already leads with it (whole-word, case-insensitive — the
+ * `matchesBrandPrefix` rule). `brandPrefix` is present ONLY when it was
+ * prepended, so `brandPrefix !== undefined` ⇔ `defaultName !== label`, and
+ * the modal can show the lead-in without re-deriving the rule.
+ *
+ * Pure and exported so a test can pin the rule without a database.
+ */
+export function candidateDefaultName(
+  label: string,
+  setNamePrefix: string | undefined,
+): { defaultName: string; brandPrefix?: string } {
+  const prefix = setNamePrefix?.trim() ?? "";
+  if (!prefix || matchesBrandPrefix(label, prefix)) {
+    return { defaultName: label };
+  }
+  return { defaultName: `${prefix} ${label.trim()}`, brandPrefix: prefix };
+}
+
+/**
  * The client's view of a candidate. Built by hand rather than from the table
  * so `skippedByUserId` and `skippedAt` can never leak through a `returns`
  * validator by accident — the audit fields are the reason this is not
@@ -76,7 +113,12 @@ const candidateViewFields = {
   manufacturerId: v.id("selectorOptions"),
   side: v.union(v.literal("bsc"), v.literal("sportlots")),
   marketplaceId: v.string(),
+  /** The marketplace's own (brand-stripped) label — the row's display name. */
   label: v.string(),
+  /** What the name field starts as — see `candidateDefaultName`. */
+  defaultName: v.string(),
+  /** The brand prefix `defaultName` leads with; absent when nothing was prepended. */
+  brandPrefix: v.optional(v.string()),
   members: v.array(candidateMemberValidator),
 };
 
@@ -96,10 +138,20 @@ export type SetCandidateView = {
   side: "bsc" | "sportlots";
   marketplaceId: string;
   label: string;
+  defaultName: string;
+  brandPrefix?: string;
   members: Array<{ id: string; label: string }>;
 };
 
-function toView(row: Doc<"setCandidates">): SetCandidateView {
+/**
+ * `brand` is the manufacturer row the candidate is filed under; `undefined`
+ * (the brand is gone under the reader's feet) means no prefix, never a
+ * fallback to a display value.
+ */
+function toView(
+  row: Doc<"setCandidates">,
+  brand: Doc<"selectorOptions"> | null,
+): SetCandidateView {
   return {
     _id: row._id,
     _creationTime: row._creationTime,
@@ -107,6 +159,7 @@ function toView(row: Doc<"setCandidates">): SetCandidateView {
     side: row.side,
     marketplaceId: row.marketplaceId,
     label: row.label,
+    ...candidateDefaultName(row.label, brand?.metadata?.setNamePrefix),
     members: row.members,
   };
 }
@@ -136,8 +189,9 @@ export const getSetCandidates = query({
   returns: v.array(candidateViewValidator),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
+    const brand = await ctx.db.get(args.manufacturerId);
     const rows = await pendingFor(ctx, args.manufacturerId);
-    return rows.map(toView);
+    return rows.map((row) => toView(row, brand));
   },
 });
 
@@ -173,7 +227,7 @@ export const getSetCandidatesForYear = query({
       const rows = await pendingFor(ctx, brand._id);
       for (const row of rows) {
         if (out.length >= MAX_SET_CANDIDATES_PER_VIEW) break;
-        out.push({ ...toView(row), brand: brand.value });
+        out.push({ ...toView(row, brand), brand: brand.value });
       }
     }
     return out;
