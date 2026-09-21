@@ -132,11 +132,42 @@ tags:
           visible:
             id: "NeonBinder set name for Anime|Make Anime its own NeonBinder set"
           timeout: 7000
+      # BRING THE LINK INTO THE DIALOG'S OWN VIEWPORT BEFORE TAPPING — the
+      # dialog body is a `flex-1 overflow-y-auto` box under a pinned footer,
+      # and Maestro's hierarchy does not see that clip (README → "Asserting
+      # inside a dialog"): CI run 35597625721 reported this link visible at
+      # bounds [41,534][154,551] while the body's viewport ended at ~y=525 and
+      # `Save 155 sets` sat at y=545-577, so the tap at (97,542) landed in the
+      # footer band and "Anime" stayed Pending. `scrollUntilVisible` cannot
+      # help — its swipe is `window.scrollTo` and this is a fixed portal (R8
+      # case 2) — so, as player-picker-create-custom-card.yaml does inside the
+      # card drawer, the body is scrolled with a real touch swipe. Two swipes
+      # DOWN first pin the body to its top (a swipe past the top is a no-op),
+      # so the one measured swipe UP (~314px, 75%→25% of a 629px window)
+      # lands the same wherever an earlier step left the body. Started at
+      # x=3% (~31px): inside the modal (its left edge is ~20px) and inside the
+      # body's own 24px padding, so the touch never begins on a pending item —
+      # those are dnd-kit draggables and a drag on one would start a drag, not
+      # a scroll. Geometry from that run's hierarchy: pending BSC items are
+      # 70px apart with the first link at y=534, so after the swipe the first
+      # link sits near y=220 and the third near y=360 — inside the body's
+      # 118-525 band whether or not the Ready list above holds a row.
+      # The gate above cannot protect the tap (it passed on the clipped link);
+      # the hard assert AFTER the tap is what proves it landed.
       - runFlow:
           when:
             visible:
               id: "Make Anime its own NeonBinder set"
           commands:
+            - swipe:
+                start: "3%, 30%"
+                end: "3%, 80%"
+            - swipe:
+                start: "3%, 30%"
+                end: "3%, 80%"
+            - swipe:
+                start: "3%, 75%"
+                end: "3%, 25%"
             - tapOn:
                 id: "Make Anime its own NeonBinder set"
       - extendedWaitUntil:
@@ -152,11 +183,26 @@ tags:
           visible:
             id: "NeonBinder set name for Anime Kanji|Make Anime Kanji its own NeonBinder set"
           timeout: 7000
+      # Same in-body scroll as above, re-pinned to the top first so it does not
+      # stack on the previous block's swipe. "Anime Kanji" sorts third among
+      # the Anime pending items (after "Anime Black Refractors"), and a
+      # promoted "Anime" row above adds one Ready row while removing one
+      # pending item — every arrangement leaves its link inside the body's
+      # band after one swipe (measured positions in the note above).
       - runFlow:
           when:
             visible:
               id: "Make Anime Kanji its own NeonBinder set"
           commands:
+            - swipe:
+                start: "3%, 30%"
+                end: "3%, 80%"
+            - swipe:
+                start: "3%, 30%"
+                end: "3%, 80%"
+            - swipe:
+                start: "3%, 75%"
+                end: "3%, 25%"
             - tapOn:
                 id: "Make Anime Kanji its own NeonBinder set"
       - extendedWaitUntil:
