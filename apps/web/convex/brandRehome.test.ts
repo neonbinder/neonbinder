@@ -10,6 +10,7 @@
 
 import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
+import { internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import {
@@ -312,6 +313,159 @@ describe("rehomeSetsFromBrandUnknown", () => {
       brandId: unknown,
       prefix: "Topps",
     }));
+    expect(result).toEqual({ rehomed: 0, clashes: 0 });
+  });
+});
+
+describe("rehomeSetRowsForSync (NEO-237 D8/D9, the internal mutation the sync calls)", () => {
+  test("moves a row that is still under the flagged Unknown parent", async () => {
+    const t = convexTest(schema, modules);
+    const year = await seedYear(t);
+    const unknown = await seedManufacturer(t, year, "Unknown", {
+      isBrandUnknown: true,
+    });
+    const topps = await seedManufacturer(t, year, "Topps");
+    const rowId = await seedSet(t, unknown, "Topps Chrome");
+    await linkChild(t, unknown, rowId);
+
+    const result = await t.mutation(
+      internal.selectorOptions.rehomeSetRowsForSync,
+      { moves: [{ rowId, toId: topps }] },
+    );
+    expect(result).toEqual({ rehomed: 1, clashes: 0 });
+
+    const row = await t.run(async (ctx) => ctx.db.get(rowId));
+    expect(row?.parentId).toBe(topps);
+  });
+
+  test("re-checks: a row an operator already moved elsewhere in the meantime does not move", async () => {
+    const t = convexTest(schema, modules);
+    const year = await seedYear(t);
+    const unknown = await seedManufacturer(t, year, "Unknown", {
+      isBrandUnknown: true,
+    });
+    const topps = await seedManufacturer(t, year, "Topps");
+    const panini = await seedManufacturer(t, year, "Panini");
+    const rowId = await seedSet(t, unknown, "Topps Chrome");
+    await linkChild(t, unknown, rowId);
+
+    // The plan was computed a moment ago against Unknown; the operator (or a
+    // concurrent request) has since moved the row under a REAL brand by hand.
+    await t.run(async (ctx) =>
+      ctx.db.patch(rowId, { parentId: panini }),
+    );
+
+    const result = await t.mutation(
+      internal.selectorOptions.rehomeSetRowsForSync,
+      { moves: [{ rowId, toId: topps }] },
+    );
+    expect(result).toEqual({ rehomed: 0, clashes: 0 });
+
+    const row = await t.run(async (ctx) => ctx.db.get(rowId));
+    expect(row?.parentId).toBe(panini); // theirs, untouched
+  });
+
+  test("a row whose current parent is not flagged (even if it happens to be named Unknown) does not move", async () => {
+    const t = convexTest(schema, modules);
+    const year = await seedYear(t);
+    // An operator's OWN row named "Unknown", never flagged.
+    const operatorUnknown = await seedManufacturer(t, year, "Unknown");
+    const topps = await seedManufacturer(t, year, "Topps");
+    const rowId = await seedSet(t, operatorUnknown, "Topps Chrome");
+    await linkChild(t, operatorUnknown, rowId);
+
+    const result = await t.mutation(
+      internal.selectorOptions.rehomeSetRowsForSync,
+      { moves: [{ rowId, toId: topps }] },
+    );
+    expect(result).toEqual({ rehomed: 0, clashes: 0 });
+
+    const row = await t.run(async (ctx) => ctx.db.get(rowId));
+    expect(row?.parentId).toBe(operatorUnknown);
+  });
+
+  test("a row deleted since the plan was computed is skipped, not thrown", async () => {
+    const t = convexTest(schema, modules);
+    const year = await seedYear(t);
+    const unknown = await seedManufacturer(t, year, "Unknown", {
+      isBrandUnknown: true,
+    });
+    const topps = await seedManufacturer(t, year, "Topps");
+    const rowId = await seedSet(t, unknown, "Topps Chrome");
+    await t.run(async (ctx) => ctx.db.delete(rowId));
+
+    const result = await t.mutation(
+      internal.selectorOptions.rehomeSetRowsForSync,
+      { moves: [{ rowId, toId: topps }] },
+    );
+    expect(result).toEqual({ rehomed: 0, clashes: 0 });
+  });
+
+  test("groups multiple moves by target brand into one rehomeSetRowsToBrand call each", async () => {
+    const t = convexTest(schema, modules);
+    const year = await seedYear(t);
+    const unknown = await seedManufacturer(t, year, "Unknown", {
+      isBrandUnknown: true,
+    });
+    const topps = await seedManufacturer(t, year, "Topps");
+    const panini = await seedManufacturer(t, year, "Panini");
+    const row1 = await seedSet(t, unknown, "Topps Chrome");
+    const row2 = await seedSet(t, unknown, "Topps Finest");
+    const row3 = await seedSet(t, unknown, "Panini Prizm");
+    await linkChild(t, unknown, row1);
+    await linkChild(t, unknown, row2);
+    await linkChild(t, unknown, row3);
+
+    const result = await t.mutation(
+      internal.selectorOptions.rehomeSetRowsForSync,
+      {
+        moves: [
+          { rowId: row1, toId: topps },
+          { rowId: row2, toId: topps },
+          { rowId: row3, toId: panini },
+        ],
+      },
+    );
+    expect(result).toEqual({ rehomed: 3, clashes: 0 });
+
+    const [r1, r2, r3] = await t.run(async (ctx) => [
+      await ctx.db.get(row1),
+      await ctx.db.get(row2),
+      await ctx.db.get(row3),
+    ]);
+    expect(r1?.parentId).toBe(topps);
+    expect(r2?.parentId).toBe(topps);
+    expect(r3?.parentId).toBe(panini);
+  });
+
+  test("a sibling clash under the target brand is counted, and the row stays put", async () => {
+    const t = convexTest(schema, modules);
+    const year = await seedYear(t);
+    const unknown = await seedManufacturer(t, year, "Unknown", {
+      isBrandUnknown: true,
+    });
+    const topps = await seedManufacturer(t, year, "Topps");
+    const existing = await seedSet(t, topps, "Topps Chrome");
+    await linkChild(t, topps, existing);
+    const rowId = await seedSet(t, unknown, "Topps Chrome");
+    await linkChild(t, unknown, rowId);
+
+    const result = await t.mutation(
+      internal.selectorOptions.rehomeSetRowsForSync,
+      { moves: [{ rowId, toId: topps }] },
+    );
+    expect(result).toEqual({ rehomed: 0, clashes: 1 });
+
+    const row = await t.run(async (ctx) => ctx.db.get(rowId));
+    expect(row?.parentId).toBe(unknown);
+  });
+
+  test("an empty moves array is a no-op", async () => {
+    const t = convexTest(schema, modules);
+    const result = await t.mutation(
+      internal.selectorOptions.rehomeSetRowsForSync,
+      { moves: [] },
+    );
     expect(result).toEqual({ rehomed: 0, clashes: 0 });
   });
 });
