@@ -91,6 +91,16 @@ import {
  * `metadata.cardNumberPrefix`, not a `features` key, and saves through its own
  * mutation; otherwise it behaves exactly like the text rows around it. See
  * `CardPrefixRow`.
+ *
+ * Brand (NEO-237): the first cell of the grid on a MANUFACTURER row — the
+ * set-name prefix that says which sets are this brand's ("Choice" files
+ * "Choice Biloxi Shuckers" here) and, for a brand linked to SportLots through
+ * its All Brands option, what SportLots is asked for. `metadata.setNamePrefix`,
+ * its own mutation, and a save that can MOVE sets: prefix-matching sets sit
+ * under the year's Unknown row until a brand claims them, so the toast says
+ * how many it moved. Hidden on the Unknown row itself, which has no prefix by
+ * definition. The label is "Brand" (Jason 2026-09-21, provisional). See
+ * `BrandPrefixRow`.
  */
 
 /**
@@ -168,6 +178,9 @@ export default function SetAttributesPanel({
   const setSelectorOptionCardNumberPrefix = useMutation(
     api.selectorOptions.setSelectorOptionCardNumberPrefix,
   );
+  const setSelectorOptionSetNamePrefix = useMutation(
+    api.brandView.setSelectorOptionSetNamePrefix,
+  );
 
   const [expanded, setExpanded] = useState(!defaultCollapsed);
   const [toast, setToast] = useState<string | null>(null);
@@ -211,6 +224,12 @@ export default function SetAttributesPanel({
   const showTeamRow = TEAM_LEVELS.has(leafLevel);
   const showCardPrefixRow = showsCardPrefix(leafLevel, row.metadata);
   const cardNumberPrefix = row.metadata?.cardNumberPrefix;
+  // NEO-237: manufacturer rows only, and never the year's Unknown row — that
+  // row holds the sets whose brand is NOT known, so a prefix on it is a
+  // contradiction, and the server refuses one.
+  const showBrandPrefixRow =
+    leafLevel === "manufacturer" && !row.metadata?.isBrandUnknown;
+  const setNamePrefix = row.metadata?.setNamePrefix;
 
   // Toggle-pill features (checkbox + toggleOptions) render together in one
   // wrapping row instead of scattered through the 2-column grid at their
@@ -303,6 +322,37 @@ export default function SetAttributesPanel({
         id: selectorOptionId,
         cardNumberPrefix: trimmed,
       });
+    } catch (e) {
+      setToast(`Failed: ${userFacingMessage(e, `Could not save ${label}`)}`);
+    }
+  };
+
+  /**
+   * NEO-237 — the Brand row's save. Unlike the other rows the toast waits for
+   * the server: a non-empty save can MOVE prefix-matching sets out of the
+   * year's Unknown row, and the count is the one thing worth saying about
+   * it ("Saved Brand · 3 sets moved out of Unknown"). A save that moved
+   * nothing, and a clear, read like every other row's.
+   */
+  const handleSaveSetNamePrefix = async (value: string) => {
+    const label = "Brand";
+    const trimmed = value.trim();
+    const clearing = trimmed.length === 0;
+    if (clearing ? setNamePrefix === undefined : setNamePrefix === trimmed) {
+      return;
+    }
+    try {
+      const { rehomed } = await setSelectorOptionSetNamePrefix({
+        id: selectorOptionId,
+        setNamePrefix: trimmed,
+      });
+      showToast(
+        clearing
+          ? `Cleared ${label}`
+          : rehomed > 0
+            ? `Saved ${label} · ${rehomed} ${rehomed === 1 ? "set" : "sets"} moved out of Unknown`
+            : `Saved ${label}`,
+      );
     } catch (e) {
       setToast(`Failed: ${userFacingMessage(e, `Could not save ${label}`)}`);
     }
@@ -494,6 +544,15 @@ export default function SetAttributesPanel({
           )}
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {/* NEO-237: first cell on a brand row, for the same reason the
+                card prefix is first on a variant row — it is the one fact
+                here that decides which SETS are this brand's. */}
+            {showBrandPrefixRow && (
+              <BrandPrefixRow
+                value={setNamePrefix}
+                onSave={handleSaveSetNamePrefix}
+              />
+            )}
             {/* NEO-291: first cell, because it is the one fact here that
                 changes how the cards beneath are NUMBERED — every card in an
                 insert wears it — and an operator building a Diamond Kings
@@ -517,6 +576,73 @@ export default function SetAttributesPanel({
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * NEO-237 — the brand's set-name prefix, as a row in the Attributes panel.
+ *
+ * `CardPrefixRow`'s shape exactly: a synthetic `ExpectedFeature` carries the
+ * label and hint into `FeatureValueControl`, hydration is
+ * `useReactiveField`'s (never resync over an unsaved edit), and the save goes
+ * through its own mutation. Maestro targets the input as `Value for Brand`;
+ * the wrapper is `Set feature Brand`, the same shape as every other row.
+ *
+ * The label is "Brand", not "Set prefix" (Jason 2026-09-21, decision 4,
+ * provisional pending the preview): to an operator the value IS the brand as
+ * it appears at the front of a set name, and "prefix" is the mechanism.
+ */
+const BRAND_PREFIX_FEATURE: ExpectedFeature = {
+  key: "setNamePrefix",
+  label: "Brand",
+  inputType: "text",
+  hint: "Sets whose names start with this are this brand's — Choice claims Choice Biloxi Shuckers. Usually the brand name, spelled the way set names spell it.",
+};
+
+function BrandPrefixRow({
+  value,
+  onSave,
+}: {
+  /** The row's stored `metadata.setNamePrefix`; `undefined` when absent. */
+  value: string | undefined;
+  /** `""` clears. Trimming and validation are the server's. */
+  onSave: (value: string) => Promise<unknown>;
+}) {
+  const label = BRAND_PREFIX_FEATURE.label;
+  const fieldClass = useFieldTestClass();
+  const hintId = useId();
+
+  return (
+    <label
+      className="flex flex-col gap-0.5 p-2 rounded border text-xs border-gray-700 bg-gray-900/30"
+      aria-label={`Set feature ${label}`}
+    >
+      <span className="flex items-center justify-between text-[10px] uppercase tracking-wide text-gray-400">
+        <span
+          title={BRAND_PREFIX_FEATURE.hint}
+          className="cursor-help underline decoration-dotted decoration-gray-500"
+        >
+          {label}
+        </span>
+      </span>
+      <span id={hintId} className="sr-only">
+        {BRAND_PREFIX_FEATURE.hint}
+      </span>
+      <FeatureValueControl
+        feat={BRAND_PREFIX_FEATURE}
+        value={value ?? ""}
+        onSave={onSave}
+        // Same as the feature rows (NEO-217): without this an emptied field
+        // snaps back to the stored prefix on blur. Routing it to `onSave("")`
+        // is what makes the prefix clearable.
+        onEmptyCommit={() => onSave("")}
+        ariaLabel={`Value for ${label}`}
+        ariaDescribedBy={hintId}
+        placeholder="e.g. Upper Deck"
+        dataFeatKey={BRAND_PREFIX_FEATURE.key}
+        className={`${fieldClass("brand-prefix")} w-full p-1 border rounded text-xs dark:bg-gray-900 dark:border-gray-700 focus:border-[#00D558] focus:outline-none`}
+      />
+    </label>
   );
 }
 

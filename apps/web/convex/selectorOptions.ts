@@ -97,7 +97,28 @@ import {
   selectorValueKey,
   unlinkStalePrimary,
   type IncomingItem,
+  // NEO-237 — the one brand-prefix matcher and the two pure routers behind
+  // Sync Sets. The BSC phase files by id first and prefix second; the
+  // SportLots phase classifies a brand's list as covered / variant / new.
+  knownSetNameKeys,
+  matchesBrandPrefix,
+  routeBscSets,
+  routeSlSets,
+  stripMatchedBrandPrefix,
+  MAX_SET_CANDIDATE_MEMBERS,
+  MAX_SET_CANDIDATE_ROOTS,
+  type BscSetHolder,
+  type MarketplaceSetEntry,
 } from "./selectorSyncMatch";
+// NEO-237 — SportLots' all-brands option, recognised by its marketplace id
+// inside this boundary and nowhere user-facing (see the module header).
+import { SL_ALL_BRANDS_BRAND_ID, isSlAllBrandsBrandId } from "./slBrandAxis";
+// NEO-237 — the pure NB re-home, Unknown → brand, shared by the three doors.
+import {
+  rehomedNotice,
+  rehomeSetRowsToBrand,
+  rehomeSetsFromBrandUnknown,
+} from "./brandRehome";
 import {
   MAX_SYNC_ITEMS,
   UNLINK_NOTICE_LIMIT,
@@ -201,6 +222,7 @@ import {
 // the seven old gates cannot drift into seven different answers.
 import {
   NO_MARKETPLACE_IDS_MESSAGE,
+  SL_ATTACH_REQUIRED_LEVELS,
   attachedSidesOf,
   notifiableSkippedSides,
   missingSummary,
@@ -927,12 +949,10 @@ export const getAncestorChain = query({
       platformFacets?: {
         bsc?: Record<string, "setName" | "variantName" | "variant">;
       };
-      metadata?: {
-        cardNumberPrefix?: string;
-        isInsert?: boolean;
-        isParallel?: boolean;
-        isBase?: boolean;
-      };
+      // NEO-237 — derived from the table, not re-listed: the hand-typed
+      // four-key object that stood here was the same drift the `returns`
+      // validator above was rebuilt to prevent, one layer down.
+      metadata?: Doc<"selectorOptions">["metadata"];
       features?: Record<string, string>;
       teamIds?: Array<Id<"teams">>;
     }> = [];
@@ -2056,9 +2076,14 @@ export const storeSelectorOptions = mutation({
       //
       // NEO-291 — and the insert/parallel flags beside it, from the same
       // derivation that just fed `features`. Absent means false.
+      //
+      // NEO-237 — and a manufacturer row's `setNamePrefix`, defaulted from
+      // the value it is born with. Once, here: from now on the prefix is the
+      // row's own fact and the value is the operator's to rename.
       const insertMetadata = {
         ...(confersBaseRole(item) ? { isBase: true } : {}),
         ...(variantFlags ?? {}),
+        ...(level === "manufacturer" ? { setNamePrefix: insertValue } : {}),
       };
       const id = await ctx.db.insert("selectorOptions", {
         level,
@@ -2479,7 +2504,24 @@ export const addCustomSelectorOption = mutation({
     // and creating a knowing duplicate is an explicit, auditable act rather
     // than something a client gets by not knowing about the flag.
     allowDuplicateElsewhere: v.optional(v.boolean()),
+    /**
+     * NEO-237 — link this new MANUFACTURER row to SportLots THROUGH its
+     * all-brands option: SportLots has no brand entry for Bandai or Choice,
+     * so the row's SL slot takes the all-brands id and every SportLots fetch
+     * under it is narrowed to the sets starting with the row's
+     * `setNamePrefix` (adapters/sportlots.ts `fetchSetNames`). Manufacturer
+     * level only, default false, and refused when the year's chain cannot
+     * scope SportLots at all — the control that sets it is shown only then.
+     *
+     * The id written is marketplace vocabulary (`SL_ALL_BRANDS_BRAND_ID`),
+     * compared only ever through `isSlAllBrandsBrandId` inside the sync and
+     * adapter boundary. Nothing user-facing reads it.
+     */
+    slViaAllBrands: v.optional(v.boolean()),
   },
+  // Unchanged shape (old SPA bundles). The re-home count a new brand produces
+  // is surfaced as a `selectorSyncStatus` "done" notice on the brand's Sets
+  // column instead — see the end of the handler.
   returns: v.id("selectorOptions"),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
@@ -2573,14 +2615,58 @@ export const addCustomSelectorOption = mutation({
     // NEO-277: the parent's set-level team comes down with the features —
     // once, here, at creation (see schema.ts `teamIds`).
     const parentTeamIds = inheritedTeamIds(parent);
+
+    // NEO-237 — a manufacturer row is born with its set-name prefix, equal to
+    // its value. The one default; edited afterwards only through
+    // `setSelectorOptionSetNamePrefix`. Never written on a flagged row —
+    // and this path never mints one (`ensureBrandUnknownRow` does).
+    const isManufacturer = level === "manufacturer";
+    const metadata = {
+      ...(variantFlags ?? {}),
+      ...(isManufacturer ? { setNamePrefix: value } : {}),
+    };
+
+    // NEO-237 — "via All Brands": the SportLots slot takes the all-brands
+    // option id, with the row's own value as the slot label so the label
+    // never suggests a rename (the suggestion doors skip it besides, D7).
+    // Refused rather than ignored when the chain cannot scope SportLots,
+    // because a slot id on a path SportLots cannot be asked about is a link
+    // that can never be fetched — invariant 5 wants links that work.
+    let slots: ReturnType<typeof initialSlots> | undefined;
+    if (args.slViaAllBrands) {
+      if (!isManufacturer) {
+        throw new ConvexError({
+          code: "CUSTOM_VALUE_INVALID",
+          reason: "Only a manufacturer can be linked through All Brands",
+        });
+      }
+      const chain = await loadResolvabilityChain(ctx, parentId);
+      const resolution = resolvableSides(chain, {
+        level: "manufacturer",
+        paused: pausedSides(),
+      });
+      if (!resolution.sportlots.resolvable) {
+        throw new ConvexError({
+          code: "SL_NOT_RESOLVABLE",
+          reason:
+            "This year has no SportLots ids to link a brand through All Brands with",
+        });
+      }
+      slots = initialSlots({
+        sportlots: [{ id: SL_ALL_BRANDS_BRAND_ID, label: value }],
+      });
+    }
+
     const id = await ctx.db.insert("selectorOptions", {
       level,
       value,
-      platformData: {},
+      platformData: slots?.platformData ?? {},
+      ...(slots ? { platformLabels: slots.platformLabels } : {}),
+      ...(slots ? { platformSlotSeq: slots.platformSlotSeq } : {}),
       parentId,
       children: [],
       createdByUserId: userId,
-      ...(variantFlags ? { metadata: variantFlags } : {}),
+      ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
       ...(Object.keys(features).length > 0 ? { features } : {}),
       ...(parentTeamIds ? { teamIds: parentTeamIds } : {}),
       lastUpdated: Date.now(),
@@ -2594,6 +2680,27 @@ export const addCustomSelectorOption = mutation({
       // guard keeps the no-op-patch discipline uniform across both paths.
       if (!valuesDeepEqual(parent.children ?? [], newChildren)) {
         await ctx.db.patch(parentId, { children: newChildren });
+      }
+    }
+
+    // NEO-237 — a new brand claims the sets under the year's Unknown row
+    // whose names start with its prefix (D9). Told through the brand's own
+    // Sets column: that column subscribes to `(setName, brandId)` already, and
+    // a fresh brand has no status row there, so this insert is the notice.
+    if (isManufacturer && parentId && parent?.level === "year") {
+      const moved = await rehomeSetsFromBrandUnknown(ctx, {
+        yearId: parentId,
+        brandId: id,
+        prefix: value,
+      });
+      if (moved.rehomed > 0) {
+        await ctx.db.insert("selectorSyncStatus", {
+          level: "setName",
+          parentId: id,
+          status: "done",
+          message: rehomedNotice(moved.rehomed),
+          updatedAt: Date.now(),
+        });
       }
     }
 
@@ -3323,9 +3430,11 @@ const ALL_SELECTOR_LEVELS = [
  * commit can land between the two.
  *
  * `entityReviewQueue` / `checklistCandidates` / `entityReviewSkips` /
- * `selectorSyncStatus` are NOT holdings. They are transient per-batch or
- * per-column state whose only meaning is "a fetch is/was in flight here";
- * nothing an operator would mourn, and they go with the row.
+ * `selectorSyncStatus` / `setCandidates` are NOT holdings. They are transient
+ * per-batch or per-column state whose only meaning is "a fetch is/was in
+ * flight here" (NEO-237: or "the marketplace listed these under this brand
+ * last time we asked"); nothing an operator would mourn, and they go with
+ * the row.
  */
 async function collectSelectorOptionHoldings(
   ctx: { db: QueryCtx["db"] },
@@ -3587,6 +3696,18 @@ export const deleteSelectorOption = mutation({
         .take(TRANSIENT_DELETE_CAP);
       for (const doc of statuses) await ctx.db.delete(doc._id);
     }
+
+    // NEO-237 — a brand's "new on SportLots" candidates and Skips are keyed
+    // on the brand and mean nothing without it. Bounded at the writer
+    // (`MAX_SET_CANDIDATE_ROOTS` per brand), so the cap here is the same belt
+    // as above.
+    const candidates = await ctx.db
+      .query("setCandidates")
+      .withIndex("by_manufacturer_and_status", (q) =>
+        q.eq("manufacturerId", row._id),
+      )
+      .take(TRANSIENT_DELETE_CAP);
+    for (const doc of candidates) await ctx.db.delete(doc._id);
 
     await ctx.db.delete(row._id);
 
@@ -6539,6 +6660,8 @@ function resetTimeBudgetMs(): number {
 
 /** The per-table reset counts, plus whether the run got through every table. */
 type SetBuilderResetResult = {
+  /** NEO-237 — drained FIRST; every row points at a manufacturer row. */
+  setCandidatesDeleted: number;
   selectorOptionsDeleted: number;
   cardChecklistDeleted: number;
   crossListingsDeleted: number;
@@ -6590,6 +6713,7 @@ async function runSetBuilderReset(
   const budgetMs = resetTimeBudgetMs();
 
   const counts = {
+    setCandidatesDeleted: 0,
     selectorOptionsDeleted: 0,
     cardChecklistDeleted: 0,
     crossListingsDeleted: 0,
@@ -6604,6 +6728,11 @@ async function runSetBuilderReset(
   // Table order is load-bearing — do not reorder. Each entry is the count it
   // feeds and the batch mutation that drains it.
   const steps: Array<[keyof typeof counts, ResetBatchRef]> = [
+    // NEO-237 — the "new on SportLots" candidates BEFORE the manufacturer
+    // rows they point at, for the reason leagues go after teams: an
+    // interrupted reset must never leave a referencing table pointing at
+    // rows that are already gone.
+    ["setCandidatesDeleted", internal.selectorOptions.resetSetCandidatesBatch],
     // Well inside MAX_RETURNED_IDS: this list is one LEVEL's options for one
     // parent, de-duplicated — the biggest real case is a year's set list,
     // which SportLots tops out at a few thousand for. The store degrades
@@ -6766,6 +6895,8 @@ export const resetSetBuilderDataFromCli = internalAction({
     confirm: v.literal("RESET"),
   },
   returns: v.object({
+    // NEO-237 — the per-brand marketplace candidates, drained first.
+    setCandidatesDeleted: v.number(),
     selectorOptionsDeleted: v.number(),
     cardChecklistDeleted: v.number(),
     crossListingsDeleted: v.number(),
@@ -6790,6 +6921,27 @@ export const resetSetBuilderDataFromCli = internalAction({
     // No identity check here or in the batch mutations below — reaching an
     // internalAction at all required the deployment's admin credential.
     return await runSetBuilderReset(ctx);
+  },
+});
+
+/**
+ * NEO-237 — Internal: delete up to RESET_BATCH_SIZE rows from
+ * `setCandidates`, looped by `runSetBuilderReset` until no rows remain. First
+ * in the table order: every row here points at a manufacturer row.
+ */
+export const resetSetCandidatesBatch = internalMutation({
+  args: {},
+  returns: v.object({
+    deleted: v.number(),
+    hasMore: v.boolean(),
+  }),
+  handler: async (ctx) => {
+    assertResetArmed();
+    const rows = await ctx.db.query("setCandidates").take(RESET_BATCH_SIZE);
+    for (const row of rows) {
+      await ctx.db.delete(row._id);
+    }
+    return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
   },
 });
 
@@ -7379,6 +7531,22 @@ const MAX_SUGGESTIONS = 200;
 /** Bound on one apply call. Matches the review modal's page size. */
 const MAX_SUGGESTION_DECISIONS = 200;
 
+/**
+ * NEO-237 — is this slot a MANUFACTURER row's SportLots all-brands link?
+ * The one predicate both suggestion doors share, so a via-All-Brands brand
+ * (or the Unknown row) is never told "SportLots calls this 'All Brands'".
+ * Level-checked: the same id on any other level would be a different bug,
+ * and one worth seeing.
+ */
+function slotIsSlAllBrands(
+  row: Doc<"selectorOptions">,
+  side: "bsc" | "sportlots",
+  slot: string,
+): boolean {
+  if (side !== "sportlots" || row.level !== "manufacturer") return false;
+  return isSlAllBrandsBrandId(idForSlot(row, side, slot));
+}
+
 export const getSelectorSyncSuggestions = query({
   args: {
     level: levelValidator,
@@ -7448,6 +7616,10 @@ export const getSelectorSyncSuggestions = query({
         // that is how "rename Base to Chrome" reached the modal on 2024 Topps
         // Chrome. See `slotLabelCanNameRow`.
         if (!slotLabelCanNameRow(row, side, slot)) continue;
+        // NEO-237 — a manufacturer linked THROUGH SportLots' all-brands
+        // option holds that option's id, not a brand of its own; whatever
+        // label sits on the slot, it is not what SportLots calls this row.
+        if (slotIsSlAllBrands(row, side, slot)) continue;
         const label = row.platformLabels?.[side]?.[slot];
         if (!label) continue;
         const labelKey = selectorValueKey(label);
@@ -7588,7 +7760,10 @@ export const applySelectorSyncSuggestions = mutation({
       // guard.
       const slot = primarySlot(row, decision.side);
       const label =
-        slot && slotLabelCanNameRow(row, decision.side, slot)
+        slot &&
+        slotLabelCanNameRow(row, decision.side, slot) &&
+        // NEO-237 — see the query door: the all-brands id names no brand.
+        !slotIsSlAllBrands(row, decision.side, slot)
           ? row.platformLabels?.[decision.side]?.[slot]
           : undefined;
       if (!label) {
@@ -7742,13 +7917,31 @@ export const ensureSelectorOptions = action({
     await requireAdmin(ctx);
     const { level, parentId, force } = args;
 
+    // NEO-237 — the Sets column may be opened from the All Brands VIEW, in
+    // which case its parent is the YEAR, not a manufacturer. Read once; it
+    // decides the populated check and which scope the set sync runs at.
+    const parentRow = parentId
+      ? await ctx.runQuery(api.selectorOptions.getSelectorOptionById, {
+          id: parentId,
+        })
+      : null;
+    const setsUnderYear = level === "setName" && parentRow?.level === "year";
+
     // Already populated? (skip unless a forced refresh)
     if (!force) {
-      const existing = await ctx.runQuery(
-        api.selectorOptions.getSelectorOptions,
-        { level, parentId },
-      );
-      if (existing.length > 0)
+      // From the view, "populated" means "some manufacturer under the year
+      // has a set" — no setName row is ever parented by a year.
+      const populated = setsUnderYear
+        ? await ctx.runQuery(internal.selectorOptions.yearHasAnySet, {
+            yearId: parentId!,
+          })
+        : (
+            await ctx.runQuery(api.selectorOptions.getSelectorOptions, {
+              level,
+              parentId,
+            })
+          ).length > 0;
+      if (populated)
         return {
           ran: false,
           reason: "already_populated",
@@ -7790,7 +7983,23 @@ export const ensureSelectorOptions = action({
       // case — `resolvableSides` reports `paused` only where the pause changed
       // behaviour — so a hand-made subtree stays silent under a pause,
       // byte-for-byte as without one (invariant 6; PR #265 push 2).
-      const resolution = resolvableSides(chain, { level, paused: pausedSides() });
+      let resolution = resolvableSides(chain, { level, paused: pausedSides() });
+      if (level === "setName") {
+        // NEO-237 (D14a) — `level: "setName"` judges SportLots by a level it
+        // does not serve, so a year with SportLots ids and no BSC id never
+        // reached the action and its SportLots-only sets were never found.
+        // Sync Sets is two-sided now: its SportLots phase runs the ATTACH
+        // rule per brand (sport + year + brand), or sport + year when the
+        // column is opened from the view and the brands are enumerated
+        // inside the action. Short-circuit only when BOTH are false.
+        const slResolution = resolvableSides(chain, {
+          slRequired: setsUnderYear
+            ? new Set(["sport", "year"])
+            : SL_ATTACH_REQUIRED_LEVELS,
+          paused: pausedSides(),
+        });
+        resolution = { bsc: resolution.bsc, sportlots: slResolution.sportlots };
+      }
       if (!resolution.bsc.resolvable && !resolution.sportlots.resolvable) {
         const paused = pausedSideList(resolution);
         console.log(
@@ -7863,9 +8072,16 @@ export const ensureSelectorOptions = action({
           );
           return { ran: true, reason: "error", skippedSides: [], pausedSides: [] };
         }
+        // NEO-237 — scoped to the brand whose column fired it; from the
+        // view (year parent) the action enumerates the year's brands itself.
         res = await ctx.runAction(
           api.selectorOptions.syncSetsAcrossManufacturers,
-          { yearId },
+          {
+            yearId,
+            ...(parentRow?.level === "manufacturer"
+              ? { manufacturerId: parentRow._id }
+              : {}),
+          },
         );
       } else {
         res = await ctx.runAction(
@@ -7922,9 +8138,15 @@ export const ensureSelectorOptions = action({
       // the "no ids" one (its ids may well be there), so it is taken out of
       // the skipped list before the served-level filter and put back in front
       // as its own sentence. One paused + one skipped reads as two sentences.
+      //
+      // NEO-237 (D14b) — at `setName` the served-level table would file a
+      // SportLots skip as structural (SportLots has no setName level), but
+      // the set sync's SportLots phase is real and its own `skippedSides` is
+      // the authority: "this brand has no SportLots id" is worth the notice.
       const notifiableSkipped = res.skippedSides.filter(
         (side) =>
-          platformServesLevel(side, level) && !res.pausedSides.includes(side),
+          (level === "setName" || platformServesLevel(side, level)) &&
+          !res.pausedSides.includes(side),
       );
       const skippedNotice =
         notifiableSkipped.length > 0 && notifiableSkipped.length < 2
@@ -8143,6 +8365,7 @@ export const fetchAggregatedOptions = action({
       // own DB lookup / has no setName-level concept (see fetchCardChecklist).
       let slPlatformFilters: Record<string, string> | undefined;
       let bscPlatformFilters: Record<string, string[]> | undefined;
+      let slBrandScope: { setNamePrefix: string } | undefined;
       // NEO-239 — with no parent there is nothing to scope by and nothing to
       // be missing: the top-level sport sync asks both marketplaces for their
       // whole facet list, which is the query it means to send. NEO-287 — a
@@ -8191,6 +8414,12 @@ export const fetchAggregatedOptions = action({
           const bscIdsForLevel = slotIds(ancestor, "bsc");
           if (slIds.length > 0) {
             slPlatformFilters[lvl] = slIds[0];
+          }
+          // NEO-237 — the brand's own set-name prefix, for the SportLots
+          // all-brands narrowing at the insert level. Off `metadata`, never
+          // off `value`; a row without one narrows nothing.
+          if (lvl === "manufacturer" && ancestor.metadata?.setNamePrefix) {
+            slBrandScope = { setNamePrefix: ancestor.metadata.setNamePrefix };
           }
           if (bscIdsForLevel.length > 0) {
             bscPlatformFilters[lvl] = bscIdsForLevel;
@@ -8322,6 +8551,9 @@ export const fetchAggregatedOptions = action({
                   ...(parentFilters?.manufacturer
                     ? { labelContext: { manufacturer: parentFilters.manufacturer } }
                     : {}),
+                  // NEO-237 — RESPONSE narrowing for a brand linked through
+                  // SportLots' all-brands option; inert for a real brand id.
+                  ...(slBrandScope ? { brandScope: slBrandScope } : {}),
                   requestId,
                 },
               ),
@@ -8430,6 +8662,44 @@ export const fetchAggregatedOptions = action({
         console.error(`[fetchAggregatedOptions] Platform errors for ${level}:`, JSON.stringify(platformErrors));
       }
 
+      // NEO-237 (D6) — SportLots' ALL-BRANDS option is ROUTED, not stored.
+      //
+      // SportLots' brand list carries its no-filter option ("show every set
+      // from every brand") as an ordinary `<option>`, and until this ticket
+      // the store inserted it as a manufacturer row named after it. It is
+      // not a brand: the year's brand-unknown row (`isBrandUnknown`) is where
+      // it belongs, so the option goes to `ensureBrandUnknownRow` — which
+      // mints that row as "Unknown" or adopts the flagged one, and attaches
+      // this id to it if it holds none — and never enters `planSelectorSync`.
+      // Tier 2 can therefore never insert a row wearing the view's name, and
+      // the "id held by N siblings → withheld" tier never sees it.
+      //
+      // Its id STAYS in the fetch's returned ids: the NEO-211 unlink pass
+      // below keeps every holder of an id upstream still returns, and this
+      // one is held by the Unknown row AND every brand linked through it
+      // (NEO-137 M:1). If SportLots ever stops listing the option for a year,
+      // every holder is unlinked and reported — invariant 5, not an accident.
+      let slAllBrandsOption: { id: string; label: string } | undefined;
+      if (level === "manufacturer") {
+        const kept: typeof allOptions = [];
+        for (const option of allOptions) {
+          const slId = option.platformData.sportlots;
+          if (slId && isSlAllBrandsBrandId(slId) && !option.platformData.bsc) {
+            slAllBrandsOption ??= { id: slId, label: option.value };
+            continue;
+          }
+          kept.push(option);
+        }
+        allOptions.length = 0;
+        allOptions.push(...kept);
+        if (slAllBrandsOption && parentId) {
+          await ctx.runMutation(internal.selectorOptions.ensureBrandUnknownRow, {
+            yearId: parentId,
+            sl: slAllBrandsOption,
+          });
+        }
+      }
+
       // 3. Deduplicate by normalized value
       const valueMap = new Map<
         string,
@@ -8483,8 +8753,10 @@ export const fetchAggregatedOptions = action({
         });
       }
 
-      // 5. If no options were fetched from any platform, report failure
-      if (deduped.length === 0) {
+      // 5. If no options were fetched from any platform, report failure.
+      // NEO-237 — a routed all-brands option counts as something fetched: a
+      // year whose SportLots brand list is ONLY that option has still synced.
+      if (deduped.length === 0 && !slAllBrandsOption) {
         await recordAdapterCall(ctx, {
           requestId,
           operation: "fetchAggregatedOptions",
@@ -8566,6 +8838,9 @@ export const fetchAggregatedOptions = action({
           fetchedIds.sportlots.push(option.platformData.sportlots);
         }
       }
+      // NEO-237 — the routed all-brands option was returned by the fetch,
+      // so its id is part of the unlink universe (see D6 above).
+      if (slAllBrandsOption) fetchedIds.sportlots.push(slAllBrandsOption.id);
 
       const result = await ctx.runMutation(
         api.selectorOptions.storeSelectorOptions,
@@ -8726,27 +9001,522 @@ export const markBrandUnknownRole = internalMutation({
   },
 });
 
+// ─── NEO-237: the brand-unknown row, the year-wide reads, and Sync Sets ─────
+
+/** What NB calls the brand-unknown row when it mints one. NB's own word. */
+const BRAND_UNKNOWN_VALUE = "Unknown";
+
 /**
- * Fetch BSC sets for a sport/year and distribute them across existing
- * manufacturer parents by matching the set name prefix. Unmatched sets — the
- * ones whose brand NB has not identified — are bucketed under the marketplace's
- * all-brands FILTER OPTION ("show all cards from all brands"), carried on the
- * brand axis as a `manufacturer` row. NEO-272: that row is found by its NB role
- * (`metadata.isBrandUnknown`) and never by its name — the name is a marketplace
- * filter label NB does not own, and an operator can rename it besides.
+ * NEO-237 (D5) — the ONE mutation that mints or adopts a year's brand-unknown
+ * row. Replaces the two-step `addCustomSelectorOption("All Brands")` +
+ * `markBrandUnknownRole` the set sync used to run, and the legacy adopt-by-
+ * name branch beside it.
  *
- * NEO-216 — **BSC-only by design, and SportLots is never reported here.** This
- * is the other half of the manufacturer story: BSC has no manufacturer axis
- * (see convex/platformLevels.ts), so NB's Manufacturer rows come from
- * SportLots and BSC's flat set list is bucketed under them by name prefix
- * afterwards. SportLots, for its part, does not model `setName` at all — so
- * there is no SL call to make and no SL side to report on. `failedPlatforms`
- * out of here is `["bsc"]` or `[]`, never anything about SportLots, and
- * `platformLevelSupport.test.ts` pins that.
+ *   • FOUND by the flag (`metadata.isBrandUnknown`) under the year, never by
+ *     name. Adopted as it is: NEVER renamed — "Unknown" is what NB mints, and
+ *     what the row is called afterwards is the operator's.
+ *   • MINTED otherwise, as "Unknown", with the flag set in the SAME
+ *     transaction — the public creation path takes no `metadata` and must not
+ *     gain one, so the role can only be granted here. A sibling already
+ *     called "Unknown" (an operator's own row) is a refusal, not a second
+ *     row: two rows folding to one name under one parent is the NEO-219
+ *     invariant every picker relies on, and this is not the place to rename
+ *     either of them.
+ *   • The SportLots ALL-BRANDS id (routed here by `fetchAggregatedOptions`,
+ *     D6) is attached only if the row holds NOTHING on that side. A row that
+ *     already carries a SportLots id keeps it; the caller's id is upstream's
+ *     current answer, and the NEO-211 unlink pass is what reconciles the two.
+ *   • `features.manufacturer` is DELETED on the row, minted or adopted: the
+ *     manufacturer is ABSENT for it (NEO-272 already treats it so in titles),
+ *     and the snapshot on the row should say the same. Row-level only;
+ *     committed cards are not rewritten. Never `setNamePrefix`: a prefix on
+ *     the row that holds the sets whose brand NB has NOT identified is a
+ *     contradiction (schema.ts).
+ *
+ * Idempotent: a second call with the same id patches nothing.
+ */
+export const ensureBrandUnknownRow = internalMutation({
+  args: {
+    yearId: v.id("selectorOptions"),
+    /** SportLots' all-brands option as the brand-list fetch returned it. */
+    sl: v.optional(v.object({ id: v.string(), label: v.string() })),
+  },
+  returns: v.object({ id: v.id("selectorOptions"), created: v.boolean() }),
+  handler: async (ctx, args) => {
+    const year = await ctx.db.get(args.yearId);
+    if (!year || year.level !== "year") {
+      throw new Error("ensureBrandUnknownRow: parent is not a year row");
+    }
+    if (args.sl) assertValidSlotLabel(args.sl.label, "ensureBrandUnknownRow");
+
+    const siblings = await ctx.db
+      .query("selectorOptions")
+      .withIndex("by_level_and_parent", (q) =>
+        q.eq("level", "manufacturer").eq("parentId", args.yearId),
+      )
+      .collect();
+    const now = Date.now();
+
+    const existing = siblings.find((m) => m.metadata?.isBrandUnknown === true);
+    if (existing) {
+      const patch: Partial<Doc<"selectorOptions">> = {};
+      if (args.sl && slotIds(existing, "sportlots").length === 0) {
+        const alloc = allocateSlots(existing, {
+          sportlots: [{ id: args.sl.id, label: args.sl.label }],
+        });
+        patch.platformData = alloc.platformData;
+        patch.platformLabels = alloc.platformLabels;
+        patch.platformSlotSeq = alloc.platformSlotSeq;
+      }
+      if (existing.features && "manufacturer" in existing.features) {
+        const features = { ...existing.features };
+        delete features.manufacturer;
+        patch.features = features;
+      }
+      if (Object.keys(patch).length > 0) {
+        await ctx.db.patch(existing._id, { ...patch, lastUpdated: now });
+      }
+      return { id: existing._id, created: false };
+    }
+
+    const unknownKey = selectorValueKey(BRAND_UNKNOWN_VALUE);
+    if (siblings.some((m) => selectorValueKey(m.value) === unknownKey)) {
+      throw new Error(
+        `ensureBrandUnknownRow: a manufacturer under this year is already ` +
+          `called "${BRAND_UNKNOWN_VALUE}" and is not the brand-unknown row; ` +
+          `rename it before syncing sets`,
+      );
+    }
+
+    const features = {
+      ...(year.features ?? {}),
+      ...deriveOwnLevelFeatures("manufacturer", BRAND_UNKNOWN_VALUE),
+    };
+    delete features.manufacturer;
+    const alloc = args.sl
+      ? initialSlots({ sportlots: [{ id: args.sl.id, label: args.sl.label }] })
+      : undefined;
+    const parentTeamIds = inheritedTeamIds(year);
+    const id = await ctx.db.insert("selectorOptions", {
+      level: "manufacturer",
+      value: BRAND_UNKNOWN_VALUE,
+      platformData: alloc?.platformData ?? {},
+      ...(alloc ? { platformLabels: alloc.platformLabels } : {}),
+      ...(alloc ? { platformSlotSeq: alloc.platformSlotSeq } : {}),
+      parentId: args.yearId,
+      children: [],
+      metadata: { isBrandUnknown: true },
+      ...(Object.keys(features).length > 0 ? { features } : {}),
+      ...(parentTeamIds ? { teamIds: parentTeamIds } : {}),
+      lastUpdated: now,
+    });
+    const nextChildren = unionChildren(year.children, [id]);
+    if (!valuesDeepEqual(year.children ?? [], nextChildren)) {
+      await ctx.db.patch(args.yearId, { children: nextChildren });
+    }
+    return { id, created: true };
+  },
+});
+
+/**
+ * NEO-237 — does ANY manufacturer under the year hold a set? The "already
+ * populated" test for a Sets column opened from the All Brands view, where
+ * the column's parent is the year and no setName row is ever parented by one.
+ * One `.first()` per manufacturer; stops at the first hit.
+ */
+export const yearHasAnySet = internalQuery({
+  args: { yearId: v.id("selectorOptions") },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const manufacturers = await ctx.db
+      .query("selectorOptions")
+      .withIndex("by_level_and_parent", (q) =>
+        q.eq("level", "manufacturer").eq("parentId", args.yearId),
+      )
+      .collect();
+    for (const mfr of manufacturers) {
+      const set = await ctx.db
+        .query("selectorOptions")
+        .withIndex("by_level_and_parent", (q) =>
+          q.eq("level", "setName").eq("parentId", mfr._id),
+        )
+        .first();
+      if (set) return true;
+    }
+    return false;
+  },
+});
+
+/**
+ * NEO-237 — the read budget for the year-wide set index below. A full
+ * baseball year is a few hundred BSC sets plus whatever SportLots-only sets
+ * operators created; this is well above that and well inside one function's
+ * document budget. Truncation is REPORTED, never papered over: a holder index
+ * missing rows would let the BSC phase insert a copy of a set another
+ * manufacturer already holds, so re-homes are skipped when it fires.
+ */
+const MAX_YEAR_SET_ROWS = 3000;
+
+/**
+ * NEO-237 — every `setName` row under every manufacturer of the year, in one
+ * lightweight shape, plus the manufacturers themselves. Read by the set sync
+ * twice: before the BSC phase (the id-first holder index, D8) and before the
+ * SportLots phase (the year-wide name index the variant test reads, D11).
+ * Internal, deliberately: it enumerates marketplace ids, which nothing
+ * user-facing reads.
+ */
+export const listYearSetRows = internalQuery({
+  args: { yearId: v.id("selectorOptions") },
+  returns: v.object({
+    manufacturers: v.array(
+      v.object({
+        _id: v.id("selectorOptions"),
+        value: v.string(),
+        setNamePrefix: v.optional(v.string()),
+        isBrandUnknown: v.optional(v.boolean()),
+      }),
+    ),
+    sets: v.array(
+      v.object({
+        _id: v.id("selectorOptions"),
+        parentId: v.id("selectorOptions"),
+        value: v.string(),
+        bscIds: v.array(v.string()),
+      }),
+    ),
+    truncated: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    const manufacturers = await ctx.db
+      .query("selectorOptions")
+      .withIndex("by_level_and_parent", (q) =>
+        q.eq("level", "manufacturer").eq("parentId", args.yearId),
+      )
+      .collect();
+    const sets: Array<{
+      _id: Id<"selectorOptions">;
+      parentId: Id<"selectorOptions">;
+      value: string;
+      bscIds: string[];
+    }> = [];
+    let truncated = false;
+    for (const mfr of manufacturers) {
+      const remaining = MAX_YEAR_SET_ROWS - sets.length;
+      if (remaining <= 0) {
+        truncated = true;
+        break;
+      }
+      const rows = await ctx.db
+        .query("selectorOptions")
+        .withIndex("by_level_and_parent", (q) =>
+          q.eq("level", "setName").eq("parentId", mfr._id),
+        )
+        .take(remaining + 1);
+      if (rows.length > remaining) truncated = true;
+      for (const row of rows.slice(0, remaining)) {
+        sets.push({
+          _id: row._id,
+          parentId: mfr._id,
+          value: row.value,
+          bscIds: slotIds(row, "bsc"),
+        });
+      }
+    }
+    return {
+      manufacturers: manufacturers.map((m) => ({
+        _id: m._id,
+        value: m.value,
+        ...(m.metadata?.setNamePrefix !== undefined
+          ? { setNamePrefix: m.metadata.setNamePrefix }
+          : {}),
+        ...(m.metadata?.isBrandUnknown !== undefined
+          ? { isBrandUnknown: m.metadata.isBrandUnknown }
+          : {}),
+      })),
+      sets,
+      truncated,
+    };
+  },
+});
+
+/**
+ * NEO-237 — every SportLots id attached anywhere under a brand's sets
+ * (setName → variantType → insert → parallel), for the "covered" test of the
+ * SportLots phase. Bounded by `MAX_SYNC_ITEMS` rows read; a truncated walk
+ * means the classification for that brand is SKIPPED and reported, because
+ * an incomplete covered-set would offer an operator a set they already link.
+ */
+export const listBrandSubtreeSlIds = internalQuery({
+  args: { manufacturerId: v.id("selectorOptions") },
+  returns: v.object({ ids: v.array(v.string()), truncated: v.boolean() }),
+  handler: async (ctx, args) => {
+    const ids = new Set<string>();
+    let frontier: Id<"selectorOptions">[] = [args.manufacturerId];
+    let read = 0;
+    while (frontier.length > 0) {
+      const next: Id<"selectorOptions">[] = [];
+      for (const parentId of frontier) {
+        const rows = await ctx.db
+          .query("selectorOptions")
+          .withIndex("by_parent", (q) => q.eq("parentId", parentId))
+          .take(MAX_SYNC_ITEMS - read + 1);
+        read += rows.length;
+        if (read > MAX_SYNC_ITEMS) return { ids: [...ids], truncated: true };
+        for (const row of rows) {
+          for (const id of slotIds(row, "sportlots")) ids.add(id);
+          if (row.level !== "parallel") next.push(row._id);
+        }
+      }
+      frontier = next;
+    }
+    return { ids: [...ids], truncated: false };
+  },
+});
+
+/**
+ * NEO-237 (D8/D9) — the set sync's re-homes, by row id, grouped per target
+ * brand. The rows are the ones `routeBscSets` found under Unknown holding a
+ * BSC id whose upstream name now matches a brand's prefix; the move itself is
+ * the shared pure NB op in brandRehome.ts.
+ */
+export const rehomeSetRowsForSync = internalMutation({
+  args: {
+    moves: v.array(
+      v.object({
+        rowId: v.id("selectorOptions"),
+        toId: v.id("selectorOptions"),
+      }),
+    ),
+  },
+  returns: v.object({ rehomed: v.number(), clashes: v.number() }),
+  handler: async (ctx, args) => {
+    if (args.moves.length > MAX_SYNC_ITEMS) {
+      throw new Error(
+        `rehomeSetRowsForSync: ${args.moves.length} moves exceeds the ` +
+          `${MAX_SYNC_ITEMS}-per-call limit`,
+      );
+    }
+    const byTarget = new Map<Id<"selectorOptions">, Id<"selectorOptions">[]>();
+    for (const move of args.moves) {
+      const list = byTarget.get(move.toId);
+      if (list) list.push(move.rowId);
+      else byTarget.set(move.toId, [move.rowId]);
+    }
+    let rehomed = 0;
+    let clashes = 0;
+    for (const [brandId, rowIds] of byTarget) {
+      const rows: Doc<"selectorOptions">[] = [];
+      for (const rowId of rowIds) {
+        const row = await ctx.db.get(rowId);
+        // Only a row that is STILL under a brand-unknown parent moves: the
+        // plan was computed a moment ago, and a row an operator moved in
+        // between is theirs.
+        if (!row || row.level !== "setName" || !row.parentId) continue;
+        const parent = await ctx.db.get(row.parentId);
+        if (parent?.metadata?.isBrandUnknown !== true) continue;
+        rows.push(row);
+      }
+      if (rows.length === 0) continue;
+      const result = await rehomeSetRowsToBrand(ctx, { rows, brandId });
+      rehomed += result.rehomed;
+      clashes += result.clashes;
+    }
+    return { rehomed, clashes };
+  },
+});
+
+/**
+ * NEO-237 (D12) — the SOLE writer of `setCandidates`, one call per BRAND
+ * SCOPE after a SUCCESSFUL fetch of that brand's SportLots list.
+ *
+ *   seen   → upserted: status KEPT (a Skip survives every re-sync), label and
+ *            members refreshed only when they changed (NEO-85: a no-op patch
+ *            still invalidates the pill's query on every open column);
+ *   unseen → deleted: upstream dropped it, or a set NB now has covers it.
+ *
+ * Never called for a failed or skipped side, so an outage cannot erase an
+ * operator's Skips. The bounds are asserted here as well as applied in
+ * `routeSlSets`, because a guard on one of two doors is not a guard.
+ */
+export const reconcileSetCandidates = internalMutation({
+  args: {
+    manufacturerId: v.id("selectorOptions"),
+    side: platformSideValidator,
+    roots: v.array(
+      v.object({
+        id: v.string(),
+        label: v.string(),
+        members: v.array(v.object({ id: v.string(), label: v.string() })),
+      }),
+    ),
+  },
+  returns: v.object({
+    inserted: v.number(),
+    updated: v.number(),
+    deleted: v.number(),
+    unchanged: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    if (args.roots.length > MAX_SET_CANDIDATE_ROOTS) {
+      throw new Error(
+        `reconcileSetCandidates: ${args.roots.length} roots exceeds ` +
+          `${MAX_SET_CANDIDATE_ROOTS}`,
+      );
+    }
+    for (const root of args.roots) {
+      assertValidSlotLabel(root.label, "reconcileSetCandidates");
+      if (root.members.length > MAX_SET_CANDIDATE_MEMBERS) {
+        throw new Error(
+          `reconcileSetCandidates: a root carries ${root.members.length} ` +
+            `members, over ${MAX_SET_CANDIDATE_MEMBERS}`,
+        );
+      }
+      for (const member of root.members) {
+        assertValidSlotLabel(member.label, "reconcileSetCandidates");
+      }
+    }
+    const brand = await ctx.db.get(args.manufacturerId);
+    if (!brand || brand.level !== "manufacturer") {
+      throw new Error("reconcileSetCandidates: not a manufacturer row");
+    }
+
+    // Both statuses: the index is prefixed on the brand.
+    const existing = await ctx.db
+      .query("setCandidates")
+      .withIndex("by_manufacturer_and_status", (q) =>
+        q.eq("manufacturerId", args.manufacturerId),
+      )
+      .collect();
+    const byMarketplaceId = new Map<string, Doc<"setCandidates">>();
+    for (const row of existing) {
+      if (row.side !== args.side) continue;
+      byMarketplaceId.set(row.marketplaceId, row);
+    }
+
+    let inserted = 0;
+    let updated = 0;
+    let deleted = 0;
+    let unchanged = 0;
+    const seen = new Set<string>();
+    for (const root of args.roots) {
+      if (seen.has(root.id)) continue;
+      seen.add(root.id);
+      const current = byMarketplaceId.get(root.id);
+      if (!current) {
+        await ctx.db.insert("setCandidates", {
+          manufacturerId: args.manufacturerId,
+          side: args.side,
+          marketplaceId: root.id,
+          label: root.label,
+          members: root.members,
+          status: "pending",
+        });
+        inserted++;
+        continue;
+      }
+      if (
+        current.label === root.label &&
+        valuesDeepEqual(current.members, root.members)
+      ) {
+        unchanged++;
+        continue;
+      }
+      await ctx.db.patch(current._id, {
+        label: root.label,
+        members: root.members,
+      });
+      updated++;
+    }
+    for (const [marketplaceId, row] of byMarketplaceId) {
+      if (seen.has(marketplaceId)) continue;
+      await ctx.db.delete(row._id);
+      deleted++;
+    }
+    return { inserted, updated, deleted, unchanged };
+  },
+});
+
+/**
+ * NEO-237 (D10) — how many REAL-brand SportLots lists one Sync Sets from the
+ * All Brands view will fetch. Each is a full dealsets.tpl POST behind the
+ * browser-service cookie; a year with more brands than this gets the first
+ * N by column order and a notice, not an unbounded fan-out. Via-All-Brands
+ * brands and Unknown share ONE fetch and do not count.
+ */
+const MAX_SL_BRANDS_PER_SYNC = 25;
+
+/** NEO-237 — concurrent real-brand SportLots fetches from the view. */
+const SL_BRAND_FETCH_CONCURRENCY = 3;
+
+/** Run `fn` over `items` with at most `limit` in flight, results in order. */
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i], i);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+type SlSetListOutcome =
+  | { kind: "ok"; entries: Array<{ id: string; label: string }> }
+  | { kind: "failed"; message: string };
+
+/**
+ * Sync the sets of one year, two-sided.
+ *
+ * **BSC phase — year-wide, as it always was.** BSC has no manufacturer axis
+ * (convex/platformLevels.ts), so its flat set list is fetched once for the
+ * year and FILED under NB's manufacturer rows: by the BSC id a set row
+ * anywhere under the year already holds, then by the brand's
+ * `metadata.setNamePrefix`, then under the year's brand-unknown row
+ * (`routeBscSets`, D8). A set held under Unknown whose upstream name now
+ * matches a brand is re-homed to it first (`rehomeSetRowsForSync`, D9) so
+ * the brand's store finds it by id rather than inserting a copy. The
+ * brand-unknown row is found by its NB ROLE (`metadata.isBrandUnknown`),
+ * minted as "Unknown" when the year needs one (`ensureBrandUnknownRow`) —
+ * never by its name, which is a filter label NB does not own and an
+ * operator's to rename. BSC unresolvable (no ids, or paused) is a PHASE skip
+ * recorded in `skippedSides`; the SportLots phase still runs.
+ *
+ * **SportLots phase — per brand scope (NEO-237).** SportLots does not model
+ * `setName` (its flat list lands at NB's `insert` level), so this is not a
+ * setName fetch: it is the question "which sets does SportLots list under
+ * this brand that NB has no row for?". Scoped to the brand whose column
+ * fired it (`manufacturerId`), or to every brand of the year from the All
+ * Brands view. Per brand, the gate is the ATTACH rule — sport, year AND the
+ * brand's own SportLots id — and an unresolvable brand is skipped, never
+ * queried by name. The list SportLots returns is classified by `routeSlSets`
+ * (D11): covered (its id is already attached under the brand), a variant of
+ * a set NB already has year-wide, or NEW — and the new ones are reconciled
+ * into `setCandidates` for that brand (D12), where the operator creates or
+ * skips them. Brands linked THROUGH SportLots' all-brands option, and the
+ * Unknown row, share ONE fetch of that list, narrowed per brand in this
+ * action by the same matcher the adapter uses. Nothing here inserts a
+ * `selectorOptions` row from SportLots: creation is the operator's
+ * (`createSetFromSlCandidate`).
+ *
+ * Nothing deletes, nothing renames. `failedPlatforms` may now carry
+ * `"sportlots"`; `skippedSides` / `pausedSides` report both sides.
+ * `platformLevelSupport.test.ts` pins the shape.
  */
 export const syncSetsAcrossManufacturers = action({
   args: {
     yearId: v.id("selectorOptions"),
+    /**
+     * NEO-237 — the brand whose Sets column fired the sync. Scopes the
+     * SportLots phase to that brand; absent (the All Brands view) means
+     * every brand of the year. The BSC phase is year-wide either way.
+     */
+    manufacturerId: v.optional(v.id("selectorOptions")),
   },
   returns: v.object({
     success: v.boolean(),
@@ -8758,9 +9528,9 @@ export const syncSetsAcrossManufacturers = action({
     unlinked: v.array(unlinkedEntryValidator),
     unlinkedTotal: v.number(),
     failedPlatforms: v.array(v.string()),
-    /** NEO-239 — see `fetchAggregatedOptions`. BSC-only action, so at most `["bsc"]`. */
+    /** NEO-239 / NEO-237 — see `fetchAggregatedOptions`. Either side may appear. */
     skippedSides: v.array(platformSideValidator),
-    /** NEO-287 — see `fetchAggregatedOptions`. At most `["bsc"]` here too. */
+    /** NEO-287 — see `fetchAggregatedOptions`. Either side may appear. */
     pausedSides: v.array(platformSideValidator),
   }),
   handler: async (
@@ -8768,62 +9538,15 @@ export const syncSetsAcrossManufacturers = action({
     args,
   ): Promise<AggregatedSyncResult & { totalSets: number }> => {
     await requireAdmin(ctx);
+    const requestId = newRequestId();
     try {
-      // 1. Build ancestor chain from yearId to get sport/year values + BSC slugs
-      const chain: Array<{
-        _id: Id<"selectorOptions">;
-        level: Level;
-        value: string;
-        platformData: {
-          bsc?: Record<string, string>;
-          sportlots?: Record<string, string>;
-        };
-        platformFacets?: {
-          bsc?: Record<string, "setName" | "variantName" | "variant">;
-        };
-      }> = await ctx.runQuery(
-        api.selectorOptions.getAncestorChain,
-        { id: args.yearId },
-      );
-
-      // NEO-239 — this action is BSC-only, so BSC resolvability decides it.
-      // A sport or year with no BSC id has no BSC analogue to fetch sets from;
-      // the display-value fallback that used to stand in for the missing id
-      // (`bscPlatformFilters.sport = ["e2e test sport 3"]`) is gone, because a
-      // name BSC does not know scopes nothing and BSC reports that as a
-      // successful empty answer.
-      //
-      // NEO-287 — or the operator has paused BSC, which is the same skip with
-      // the paused sentence instead of the no-ids one.
-      const resolution = resolvableSides(chain, {
-        level: "setName",
-        paused: pausedSides(),
+      // 1. Build ancestor chain from yearId to get sport/year values + slugs
+      const chain = await ctx.runQuery(api.selectorOptions.getAncestorChain, {
+        id: args.yearId,
       });
-      if (!resolution.bsc.resolvable) {
-        console.log(
-          `[syncSetsAcrossManufacturers] ` +
-            (resolution.bsc.paused
-              ? "BSC is paused"
-              : "no BSC ids on this path") +
-            ` — missing=${missingSummary(resolution.bsc)}`,
-        );
-        return {
-          ...EMPTY_SYNC_RESULT,
-          success: true,
-          message: resolution.bsc.paused
-            ? pausedSyncMessage(["bsc"])
-            : NO_MARKETPLACE_IDS_MESSAGE,
-          totalSets: 0,
-          skippedSides: ["bsc"] as Array<"bsc" | "sportlots">,
-          pausedSides: resolution.bsc.paused
-            ? (["bsc"] as Array<"bsc" | "sportlots">)
-            : [],
-        };
-      }
-
-      const sportAncestor = chain.find((a: { level: string }) => a.level === "sport");
-      const yearAncestor = chain.find((a: { level: string }) => a.level === "year");
-      if (!sportAncestor || !yearAncestor) {
+      const sportAncestor = chain.find((a) => a.level === "sport");
+      const yearAncestor = chain.find((a) => a.level === "year");
+      if (!sportAncestor || !yearAncestor || yearAncestor._id !== args.yearId) {
         return {
           ...EMPTY_SYNC_RESULT,
           success: false,
@@ -8832,198 +9555,437 @@ export const syncSetsAcrossManufacturers = action({
         };
       }
 
-      // Build BSC filters (sport + year only). Slot ids only — resolvability
-      // above already guaranteed both are present.
-      const bscPlatformFilters: Record<string, string[]> = {
-        sport: slotIds(sportAncestor, "bsc"),
-        year: slotIds(yearAncestor, "bsc"),
-      };
+      const paused = pausedSides();
+      const skippedSides: Array<"bsc" | "sportlots"> = [];
+      const pausedList: Array<"bsc" | "sportlots"> = [];
+      const failedPlatforms: string[] = [];
+      const summary: string[] = [];
+      const unlinkedAll: UnlinkedEntry[] = [];
+      let totalStored = 0;
 
-      // 2. Fetch sets from BSC
-      const bscResult: { success: boolean; options: Array<{ value: string; platformValue: string }>; message?: string } = await ctx.runAction(
-        api.adapters.buysportscards.fetchBscSelectorOptions,
-        {
-          level: "setName",
-          parentFilters: {
-            sport: sportAncestor.value,
-            year: yearAncestor.value,
+      // ── BSC phase ─────────────────────────────────────────────────────
+      //
+      // NEO-239 — BSC resolvability decides THIS PHASE. A sport or year with
+      // no BSC id has no BSC analogue to fetch sets from; the display-value
+      // fallback that used to stand in for the missing id is gone, because a
+      // name BSC does not know scopes nothing and BSC reports that as a
+      // successful empty answer. NEO-287 — or the operator has paused BSC.
+      // NEO-237 — a skip, not a return: the SportLots phase still runs.
+      const bscResolution = resolvableSides(chain, { level: "setName", paused });
+      if (!bscResolution.bsc.resolvable) {
+        console.log(
+          `[syncSetsAcrossManufacturers] ` +
+            (bscResolution.bsc.paused
+              ? "BSC is paused"
+              : "no BSC ids on this path") +
+            ` — missing=${missingSummary(bscResolution.bsc)}`,
+        );
+        skippedSides.push("bsc");
+        if (bscResolution.bsc.paused) pausedList.push("bsc");
+      } else {
+        // Slot ids only — resolvability above already guaranteed both.
+        const bscResult: {
+          success: boolean;
+          options: MarketplaceSetEntry[];
+          message?: string;
+        } = await ctx.runAction(
+          api.adapters.buysportscards.fetchBscSelectorOptions,
+          {
+            level: "setName",
+            parentFilters: {
+              sport: sportAncestor.value,
+              year: yearAncestor.value,
+            },
+            platformFilters: {
+              sport: slotIds(sportAncestor, "bsc"),
+              year: slotIds(yearAncestor, "bsc"),
+            },
+            requestId,
           },
-          platformFilters: bscPlatformFilters,
-        },
-      );
+        );
 
-      if (!bscResult.success || bscResult.options.length === 0) {
-        return {
-          ...EMPTY_SYNC_RESULT,
-          success: false,
-          message: bscResult.message || "No sets returned from BSC",
-          totalSets: 0,
-          failedPlatforms: ["bsc"],
-        };
+        if (!bscResult.success || bscResult.options.length === 0) {
+          console.error(
+            `[syncSetsAcrossManufacturers] BSC phase failed: ` +
+              `${bscResult.message || "No sets returned from BSC"}`,
+          );
+          failedPlatforms.push("bsc");
+        } else {
+          console.log(
+            `[syncSetsAcrossManufacturers] BSC returned ${bscResult.options.length} sets`,
+          );
+
+          // 2. The year-wide holder index: every set row under every
+          // manufacturer, keyed by the BSC ids it holds (D8, id first).
+          const index = await ctx.runQuery(
+            internal.selectorOptions.listYearSetRows,
+            { yearId: args.yearId },
+          );
+          const holdersByBscId = new Map<
+            string,
+            Array<BscSetHolder<Id<"selectorOptions">>>
+          >();
+          for (const row of index.sets) {
+            for (const bscId of row.bscIds) {
+              const list = holdersByBscId.get(bscId);
+              const holder = { rowId: row._id, parentId: row.parentId };
+              if (list) list.push(holder);
+              else holdersByBscId.set(bscId, [holder]);
+            }
+          }
+          const plan = routeBscSets<Id<"selectorOptions">>({
+            sets: bscResult.options,
+            manufacturers: index.manufacturers,
+            holdersByBscId,
+          });
+
+          // 3. Re-home Unknown → brand BEFORE storing, so the brand's bucket
+          // matches the moved row by id (D9). Not on a truncated index: a
+          // holder the read did not reach is a placement this run cannot see.
+          if (plan.moves.length > 0) {
+            if (index.truncated) {
+              console.warn(
+                `[syncSetsAcrossManufacturers] year set index truncated at ` +
+                  `${MAX_YEAR_SET_ROWS} rows — ${plan.moves.length} re-home(s) skipped`,
+              );
+              summary.push("re-homes skipped: year too large to index");
+            } else {
+              const moved = await ctx.runMutation(
+                internal.selectorOptions.rehomeSetRowsForSync,
+                { moves: plan.moves.map((m) => ({ rowId: m.rowId, toId: m.toId })) },
+              );
+              if (moved.rehomed > 0) summary.push(rehomedNotice(moved.rehomed));
+              if (moved.clashes > 0) {
+                summary.push(`${moved.clashes} stayed under Unknown (name clash)`);
+              }
+            }
+          }
+
+          // 4. The brand-unknown bucket — minted only when something needs it.
+          const buckets = new Map<Id<"selectorOptions">, MarketplaceSetEntry[]>(
+            plan.buckets,
+          );
+          if (plan.unknown.length > 0) {
+            let unknownId = index.manufacturers.find(
+              (m) => m.isBrandUnknown === true,
+            )?._id;
+            if (!unknownId) {
+              const ensured = await ctx.runMutation(
+                internal.selectorOptions.ensureBrandUnknownRow,
+                { yearId: args.yearId },
+              );
+              unknownId = ensured.id;
+            }
+            buckets.set(unknownId, [
+              ...(buckets.get(unknownId) ?? []),
+              ...plan.unknown,
+            ]);
+          }
+
+          // 5. Store sets under each manufacturer.
+          //
+          // NEO-211 condition 6: NO `coveredSides` here, deliberately. BSC
+          // returns one flat set list which this action then BUCKETS by
+          // manufacturer, so each per-bucket store call sees only a slice of
+          // what the fetch returned. Declaring BSC covered on a slice would
+          // make every set filed under a different manufacturer look delisted
+          // and strip its slug. The whole-year unlink belongs to a store call
+          // that sees the whole year, which this is not.
+          for (const [parentId, sets] of buckets) {
+            for (let i = 0; i < sets.length; i += MAX_SYNC_ITEMS) {
+              const result = await ctx.runMutation(
+                api.selectorOptions.storeSelectorOptions,
+                {
+                  level: "setName",
+                  parentId,
+                  options: sets.slice(i, i + MAX_SYNC_ITEMS).map((s) => ({
+                    value: s.value,
+                    platformData: { bsc: s.platformValue },
+                  })),
+                },
+              );
+              totalStored += result.optionsCount;
+              unlinkedAll.push(...result.unlinked);
+            }
+            // An internal LOG string, not a card title. Counts per bucket.
+            const name =
+              index.manufacturers.find((m) => m._id === parentId)?.value ??
+              BRAND_UNKNOWN_VALUE;
+            summary.push(`${name}: ${sets.length}`);
+          }
+        }
       }
 
-      console.log(`[syncSetsAcrossManufacturers] BSC returned ${bscResult.options.length} sets`);
-
-      // 3. Get all manufacturers for this year
+      // ── SportLots phase ───────────────────────────────────────────────
+      //
+      // Re-read after the BSC phase: it may have minted the Unknown row and
+      // has stored sets the variant test must know about.
       const manufacturers = await ctx.runQuery(
         api.selectorOptions.getSelectorOptions,
         { level: "manufacturer", parentId: args.yearId },
       );
+      const scopes = args.manufacturerId
+        ? manufacturers.filter((m) => m._id === args.manufacturerId)
+        : manufacturers;
+      if (args.manufacturerId && scopes.length === 0) {
+        return {
+          ...EMPTY_SYNC_RESULT,
+          success: false,
+          message: "The manufacturer is not under this year",
+          totalSets: totalStored,
+          failedPlatforms,
+          skippedSides,
+          pausedSides: pausedList,
+        };
+      }
 
-      // Build a lookup: normalized manufacturer name → manufacturer doc
-      const mfrLookup = new Map<string, { _id: Id<"selectorOptions">; value: string }>();
-
-      // ── NEO-272: resolve the brand-unknown row by its NB role ─────────────
-      //
-      // This is where a BSC set goes when its name prefix-matches no real
-      // brand. The row is the marketplace's all-brands FILTER OPTION — "show
-      // all cards from all brands" — carried on the brand axis as a
-      // `manufacturer` row, so it names no brand at all and listing generation
-      // drops it from titles and descriptions.
-      //
-      // Which is why it has to be identifiable by a FLAG rather than by the
-      // name it wears. TWO reasons, either one fatal to a name match at
-      // runtime: an operator can rename the row, and the name is a MARKETPLACE
-      // FILTER LABEL NB does not own, so keying on it would be NB behaviour
-      // driven by a marketplace value, exactly the forward dependency product
-      // invariant 4 (CLAUDE.md) forbids. The row commonly arrives FROM the
-      // marketplace rather than being minted here (SportLots' brand list offers
-      // "All Brands" on its hockey years); an adopted row plays exactly the
-      // same part as a minted one, and the path below adopts it.
-      //
-      // Flag first; the name match survives ONLY as the legacy adoption step
-      // for rows written before this ticket, and when it fires it STAMPS the
-      // flag so it never has to fire again for that year.
-      let brandUnknownId: Id<"selectorOptions"> | null = null;
-      let legacyNamedBrandUnknownId: Id<"selectorOptions"> | null = null;
-
-      for (const mfr of manufacturers) {
-        const norm = mfr.value.toLowerCase().trim();
-        mfrLookup.set(norm, { _id: mfr._id, value: mfr.value });
-        if (mfr.metadata?.isBrandUnknown === true) {
-          brandUnknownId ??= mfr._id;
-        } else if (norm === "all brands") {
-          legacyNamedBrandUnknownId ??= mfr._id;
+      // Per-brand gate: the ATTACH rule (sport + year + the brand's own
+      // SportLots id). Unresolvable → skipped, never a name query.
+      const allBrandsScopes: typeof scopes = [];
+      const realScopes: typeof scopes = [];
+      let slUnresolvable = 0;
+      let slPaused = 0;
+      for (const scope of scopes) {
+        const resolution = resolvableSides([...chain, scope], {
+          slRequired: SL_ATTACH_REQUIRED_LEVELS,
+          paused,
+        });
+        if (!resolution.sportlots.resolvable) {
+          slUnresolvable++;
+          if (resolution.sportlots.paused) slPaused++;
+          continue;
+        }
+        const slId = primaryId(scope, "sportlots");
+        if (slId !== undefined && isSlAllBrandsBrandId(slId)) {
+          allBrandsScopes.push(scope);
+        } else {
+          realScopes.push(scope);
         }
       }
 
-      if (!brandUnknownId && legacyNamedBrandUnknownId) {
-        // Legacy adoption: a row that predates the flag, or one supplied by a
-        // marketplace brand list. Stamping it here is what makes this branch
-        // self-healing — the next run finds it by flag and the name is never
-        // consulted again.
-        brandUnknownId = legacyNamedBrandUnknownId;
-        await ctx.runMutation(
-          internal.selectorOptions.markBrandUnknownRole,
-          { id: brandUnknownId },
+      if (allBrandsScopes.length === 0 && realScopes.length === 0) {
+        console.log(
+          `[syncSetsAcrossManufacturers] SportLots phase skipped — ` +
+            `${slPaused > 0 ? "SportLots is paused" : "no brand on this path carries the SportLots ids to scope it"} ` +
+            `(scopes=${scopes.length})`,
         );
-      }
-
-      if (!brandUnknownId) {
-        // Mint the row. `addCustomSelectorOption` is PUBLIC and carries no
-        // `metadata` arg — a client must not be able to grant this role — so
-        // the flag is stamped immediately afterwards by the internal mutation.
-        // The two are not one transaction; a failure between them leaves an
-        // unflagged row that the legacy branch above adopts on the next run.
-        brandUnknownId = await ctx.runMutation(
-          api.selectorOptions.addCustomSelectorOption,
-          {
-            level: "manufacturer",
-            value: "All Brands",
-            parentId: args.yearId,
-          },
+        skippedSides.push("sportlots");
+        if (slPaused > 0) pausedList.push("sportlots");
+      } else {
+        // Year-wide name index for the variant test (D11), read AFTER the BSC
+        // phase stored this run's sets.
+        const index = await ctx.runQuery(
+          internal.selectorOptions.listYearSetRows,
+          { yearId: args.yearId },
         );
-        await ctx.runMutation(
-          internal.selectorOptions.markBrandUnknownRole,
-          { id: brandUnknownId },
+        const prefixByMfr = new Map(
+          index.manufacturers.map((m) => [m._id, m.setNamePrefix] as const),
         );
-      }
+        const known = knownSetNameKeys(
+          index.sets.map((row) => ({
+            value: row.value,
+            brandPrefix: prefixByMfr.get(row.parentId),
+          })),
+        );
+        if (index.truncated) {
+          summary.push("SportLots variant test incomplete: year too large to index");
+        }
 
-      // 4. Match each BSC set to a manufacturer by prefix
-      // Sort manufacturers by name length descending so "Upper Deck" matches
-      // before "Upper" and more specific names win.
-      const sortedMfrs = [...mfrLookup.entries()].sort(
-        (a, b) => b[0].length - a[0].length,
-      );
-
-      const grouped = new Map<string, Array<{ value: string; platformValue: string }>>();
-
-      for (const set of bscResult.options) {
-        const setNameLower = set.value.toLowerCase().trim();
-        let matchedMfrId: string | null = null;
-
-        for (const [mfrName, mfr] of sortedMfrs) {
-          // NEO-272: this row is a filter option, not a brand, so no set name
-          // should ever prefix-match it. Identified by id — the same row the
-          // name guard below used to catch, now recognised by its role instead.
-          // The name guard is kept behind it, unchanged, for the one case the
-          // id cannot cover: a year holding a SECOND row literally named "All
-          // Brands" that is not the one resolved above.
-          if (mfr._id === brandUnknownId) continue;
-          if (mfrName === "all brands") continue;
-          if (setNameLower.startsWith(mfrName + " ") || setNameLower === mfrName) {
-            matchedMfrId = mfr._id;
-            break;
+        const slSport = slotIds(sportAncestor, "sportlots")[0];
+        const slYear = slotIds(yearAncestor, "sportlots")[0];
+        const fetchSlList = async (
+          scope: (typeof scopes)[number],
+          opts: { labelContext: boolean },
+        ): Promise<SlSetListOutcome> => {
+          const brd = primaryId(scope, "sportlots");
+          const outcome = await withChildDeadline(
+            ctx.runAction(api.adapters.sportlots.fetchSportLotsSelectorOptions, {
+              // SL's flat set list lives at NB level "insert" — fetchSetNames.
+              level: "insert",
+              parentFilters: {
+                sport: sportAncestor.value,
+                year: yearAncestor.value,
+                manufacturer: scope.value,
+              },
+              platformFilters: {
+                ...(slSport ? { sport: slSport } : {}),
+                ...(slYear ? { year: slYear } : {}),
+                ...(brd ? { manufacturer: brd } : {}),
+              },
+              // NEO-239 — label cleanup only, for a REAL brand's own list.
+              // The all-brands list is fetched raw and narrowed per brand
+              // below; nothing is stripped that a brand did not claim.
+              ...(opts.labelContext
+                ? { labelContext: { manufacturer: scope.value } }
+                : {}),
+              requestId,
+            }),
+            SL_CHILD_DEADLINE_MS,
+          );
+          if (outcome.kind === "settled") {
+            if (outcome.value.success) {
+              return {
+                kind: "ok",
+                entries: outcome.value.options.map((o) => ({
+                  id: o.platformValue,
+                  label: o.value,
+                })),
+              };
+            }
+            return { kind: "failed", message: outcome.value.message ?? "Unknown error" };
           }
-        }
+          if (outcome.kind === "timeout") {
+            return {
+              kind: "failed",
+              message: childDeadlineMessage("SportLots", outcome.ms, requestId),
+            };
+          }
+          if (outcome.kind === "rejected") {
+            return {
+              kind: "failed",
+              message:
+                outcome.reason instanceof Error
+                  ? outcome.reason.message
+                  : "Unknown error",
+            };
+          }
+          return { kind: "failed", message: "SportLots was not asked" };
+        };
 
-        const parentId = matchedMfrId || brandUnknownId!;
-        if (!grouped.has(parentId)) {
-          grouped.set(parentId, []);
+        // ONE fetch of the all-brands list, shared by every brand linked
+        // through it and by Unknown (D10) — N identical POSTs otherwise.
+        let allBrandsList: SlSetListOutcome | undefined;
+        if (allBrandsScopes.length > 0) {
+          allBrandsList = await fetchSlList(allBrandsScopes[0], {
+            labelContext: false,
+          });
         }
-        grouped.get(parentId)!.push(set);
-      }
-
-      // 5. Store sets under each manufacturer.
-      //
-      // NEO-211 condition 6: NO `coveredSides` here, deliberately. BSC returns
-      // one flat set list which this action then BUCKETS by manufacturer-name
-      // prefix, so each per-bucket store call sees only a slice of what the
-      // fetch returned. Declaring BSC covered on a slice would make every set
-      // filed under a different manufacturer look delisted and strip its slug.
-      // The whole-year unlink belongs to a store call that sees the whole year,
-      // which this is not.
-      let totalStored = 0;
-      const unlinkedAll: UnlinkedEntry[] = [];
-      for (const [parentId, sets] of grouped) {
-        const result = await ctx.runMutation(
-          api.selectorOptions.storeSelectorOptions,
-          {
-            level: "setName",
-            parentId: parentId as Id<"selectorOptions">,
-            options: sets.map((s) => ({
-              value: s.value,
-              platformData: { bsc: s.platformValue },
-            })),
-          },
+        // Real brands: one POST each, bounded.
+        const realToFetch = realScopes.slice(0, MAX_SL_BRANDS_PER_SYNC);
+        if (realScopes.length > realToFetch.length) {
+          summary.push(
+            `${realScopes.length - realToFetch.length} SportLots brand list(s) ` +
+              `not fetched (cap ${MAX_SL_BRANDS_PER_SYNC})`,
+          );
+        }
+        const realLists = await mapWithConcurrency(
+          realToFetch,
+          SL_BRAND_FETCH_CONCURRENCY,
+          (scope) => fetchSlList(scope, { labelContext: true }),
         );
-        totalStored += result.optionsCount;
-        unlinkedAll.push(...result.unlinked);
+
+        let slFailed = 0;
+        let slNew = 0;
+        const classify = async (
+          scope: (typeof scopes)[number],
+          entries: Array<{ id: string; label: string }>,
+        ) => {
+          const covered = await ctx.runQuery(
+            internal.selectorOptions.listBrandSubtreeSlIds,
+            { manufacturerId: scope._id },
+          );
+          if (covered.truncated) {
+            console.warn(
+              `[syncSetsAcrossManufacturers] SportLots classification skipped ` +
+                `for one brand — its subtree exceeds ${MAX_SYNC_ITEMS} rows`,
+            );
+            summary.push("one brand too large to classify");
+            return;
+          }
+          const routed = routeSlSets({
+            entries,
+            coveredSlIds: new Set(covered.ids),
+            knownSetNameKeys: known,
+            scopePrefix: scope.metadata?.setNamePrefix,
+          });
+          await ctx.runMutation(internal.selectorOptions.reconcileSetCandidates, {
+            manufacturerId: scope._id,
+            side: "sportlots",
+            roots: routed.roots,
+          });
+          slNew += routed.roots.length;
+          if (routed.rootsTruncated > 0 || routed.membersTruncated > 0) {
+            summary.push(
+              `SportLots list truncated for one brand ` +
+                `(roots +${routed.rootsTruncated}, members +${routed.membersTruncated})`,
+            );
+          }
+        };
+
+        // Every brand's prefix, for the Unknown scope: Unknown holds what
+        // matches NO brand, on this side exactly as on the BSC side (D8).
+        const brandPrefixes = index.manufacturers
+          .filter((m) => m.isBrandUnknown !== true)
+          .map((m) => m.setNamePrefix?.trim())
+          .filter((p): p is string => !!p);
+        for (const scope of allBrandsScopes) {
+          if (!allBrandsList || allBrandsList.kind !== "ok") {
+            slFailed++;
+            continue;
+          }
+          const prefix = scope.metadata?.setNamePrefix?.trim();
+          const isUnknown = scope.metadata?.isBrandUnknown === true;
+          // The Unknown row gets the year list MINUS every set a brand's
+          // prefix claims, unstripped; a brand linked through All Brands
+          // gets the sets that start with ITS prefix, stripped — the same
+          // narrowing the adapter applies when that brand's Inserts column
+          // asks (`fetchSetNames`). A via-All-Brands brand with no prefix
+          // claims nothing (schema.ts).
+          let entries = allBrandsList.entries;
+          if (isUnknown) {
+            entries = entries.filter(
+              (e) => !brandPrefixes.some((p) => matchesBrandPrefix(e.label, p)),
+            );
+          } else {
+            if (!prefix) continue;
+            entries = entries
+              .filter((e) => matchesBrandPrefix(e.label, prefix))
+              .map((e) => ({ id: e.id, label: stripMatchedBrandPrefix(e.label, prefix) }));
+          }
+          await classify(scope, entries);
+        }
+        for (let i = 0; i < realToFetch.length; i++) {
+          const list = realLists[i];
+          if (list.kind !== "ok") {
+            slFailed++;
+            console.error(
+              `[syncSetsAcrossManufacturers] SportLots list failed for one brand: ${list.message}`,
+            );
+            continue;
+          }
+          await classify(realToFetch[i], list.entries);
+        }
+
+        if (slFailed > 0) failedPlatforms.push("sportlots");
+        if (slUnresolvable > 0 && !args.manufacturerId) {
+          summary.push(`${slUnresolvable} brand(s) without SportLots ids skipped`);
+        }
+        summary.push(`${slNew} new on SportLots`);
       }
 
-      // Build summary
-      const summary: string[] = [];
-      for (const [parentId, sets] of grouped) {
-        const mfr = manufacturers.find((m: { _id: string }) => m._id === parentId);
-        // An internal LOG string, not a card title — NEO-272 changes nothing
-        // here. `manufacturers` was read before the brand-unknown row could be
-        // created, so a row minted by this very run is absent from it and falls
-        // back to the literal value that creation used; an adopted row is in
-        // the list and reports its own name, whatever it is.
-        const name = mfr?.value || "All Brands";
-        summary.push(`${name}: ${sets.length}`);
-      }
-
+      // Success means "something was asked and answered": the same rule
+      // `fetchAggregatedOptions` applies. One failed side beside one that
+      // stored fine is a partial (NEO-211 B notice, data kept); every asked
+      // side failing is the error the column offers Retry for; nothing asked
+      // at all is a quiet success, exactly as the two-sided skip is upstream.
+      const askedSides = 2 - skippedSides.length;
+      const success = askedSides === 0 || failedPlatforms.length < askedSides;
+      const message = success
+        ? askedSides === 0
+          ? NO_MARKETPLACE_IDS_MESSAGE
+          : `Synced sets (${summary.join(", ")})`
+        : `${platformNames(failedPlatforms)} could not be reached` +
+          (summary.length > 0 ? ` (${summary.join(", ")})` : "");
       return {
-        success: true,
-        message: `Distributed ${totalStored} sets across manufacturers (${summary.join(", ")})`,
+        success,
+        message,
         totalSets: totalStored,
         optionsCount: totalStored,
         unlinked: unlinkedAll.slice(0, UNLINK_NOTICE_LIMIT),
         unlinkedTotal: unlinkedAll.length,
-        failedPlatforms: [],
-        skippedSides: [] as Array<"bsc" | "sportlots">,
-        pausedSides: [] as Array<"bsc" | "sportlots">,
+        failedPlatforms,
+        skippedSides,
+        pausedSides: pausedList,
       };
     } catch (error) {
       console.error("[syncSetsAcrossManufacturers] Error:", error);

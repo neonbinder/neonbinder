@@ -25,6 +25,7 @@ now**, by hand, like any other taxonomy row.
 
 | Table | What goes with it |
 |---|---|
+| `setCandidates` | every "new on SportLots" candidate and every operator Skip, per brand (NEO-237) — drained first, because each row points at a manufacturer row |
 | `selectorOptions` | the whole sport → manufacturer → year → set → variant cascade, and every platform mapping attached to it |
 | `cardChecklist` | every card row, including hand-entered and hand-edited ones |
 | `cardCrossListings` | the junction rows linking a card to other sets it appears under (NEO-21) |
@@ -72,6 +73,7 @@ On success it prints the per-table counts:
 
 ```json
 {
+  "setCandidatesDeleted": 41,
   "cardChecklistDeleted": 412,
   "crossListingsDeleted": 5,
   "leaguesDeleted": 3,

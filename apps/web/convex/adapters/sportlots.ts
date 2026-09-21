@@ -3,6 +3,14 @@
 import { action, ActionCtx } from "../_generated/server";
 import { v } from "convex/values";
 import { primaryId } from "../platformSlots";
+// NEO-237 — the all-brands predicate and the one brand-prefix matcher. Both
+// pure; the adapter compares a marketplace id to marketplace vocabulary and
+// applies an NB-owned prefix to the PARSED response, never to the request.
+import { isSlAllBrandsBrandId } from "../slBrandAxis";
+import {
+  matchesBrandPrefix,
+  stripMatchedBrandPrefix,
+} from "../selectorSyncMatch";
 import {
   platformServesLevel,
   unsupportedLevelMessage,
@@ -338,6 +346,23 @@ export function stripBrandPrefixForLabel(
 export type SlLabelContext = { manufacturer?: string };
 
 /**
+ * NEO-237 — what `brandScope` carries: the manufacturer row's OWN
+ * `metadata.setNamePrefix`, an NB fact about the row (never its display
+ * value). A RESPONSE filter, applied in `fetchSetNames` after the parse and
+ * only when the request's `brd` is SportLots' all-brands option
+ * (`isSlAllBrandsBrandId`): that list is every set in the year, and a brand
+ * linked THROUGH the all-brands option (Bandai, Choice — SportLots has no
+ * entry for them) sees only the sets that start with its prefix. A row with
+ * its own SportLots brand id is untouched by construction, so callers pass
+ * the ancestor's prefix unconditionally.
+ *
+ * Separate from `labelContext` (labels only, every request) and from
+ * `platformFilters` (the request body) so that neither the strip nor the
+ * scope can drift into the other's job.
+ */
+export type SlBrandScope = { setNamePrefix: string };
+
+/**
  * Fetch selector options from SportLots via HTTP
  */
 export const fetchSportLotsSelectorOptions = action({
@@ -364,6 +389,12 @@ export const fetchSportLotsSelectorOptions = action({
      * request body is built entirely from `platformFilters` slot ids.
      */
     labelContext: v.optional(v.object({ manufacturer: v.optional(v.string()) })),
+    /**
+     * NEO-237 — the manufacturer row's `metadata.setNamePrefix`, for the
+     * all-brands narrowing at the `insert` level. See `SlBrandScope`. Ignored
+     * at every other level and whenever `brd` is a real SportLots brand id.
+     */
+    brandScope: v.optional(v.object({ setNamePrefix: v.string() })),
     // Optional correlation id from a parent aggregator call. When absent we
     // mint a fresh one so standalone calls are still self-correlatable.
     requestId: v.optional(v.string()),
@@ -503,6 +534,7 @@ export const fetchSportLotsSelectorOptions = action({
           args.parentFilters,
           args.platformFilters,
           args.labelContext,
+          args.brandScope,
         );
         await recordAdapterCall(ctx, {
           requestId,
@@ -883,6 +915,12 @@ async function fetchSetNames(
    * not given it at all. See `stripBrandPrefixForLabel`.
    */
   labelContext?: SlLabelContext,
+  /**
+   * NEO-237 — the brand's own set-name prefix. Read only AFTER the parse, and
+   * only when `scope.fields.brd` is the all-brands option; see `SlBrandScope`.
+   * `resolveSlScope` is not given it, so it cannot reach the request body.
+   */
+  brandScope?: SlBrandScope,
 ): Promise<{ success: boolean; options: Array<{ value: string; platformValue: string }>; message?: string }> {
   // NEO-239 — every scope field is a SportLots id or the request is refused.
   // `brd: ""` is not a narrower request, it is a request for every brand in
@@ -937,6 +975,28 @@ async function fetchSetNames(
     };
   }
 
+  // NEO-237 — is this the ALL-BRANDS list? Decided from the id the request
+  // actually carried (`scope.fields.brd`, a slot id), never from a row's name.
+  // Only then does `brandScope` do anything: the list is every set in the
+  // year, and the brand that asked owns the ones starting with its prefix.
+  // A real brand id got its own list from SportLots and is never narrowed —
+  // and keeps today's case-sensitive `labelContext` strip, so no NEO-211
+  // rename suggestion churns on a re-sync of rows named before this.
+  const narrowTo =
+    brandScope && isSlAllBrandsBrandId(scope.fields.brd)
+      ? brandScope.setNamePrefix.trim()
+      : undefined;
+  if (narrowTo === "") {
+    // A brand linked via All Brands with an EMPTY prefix would receive every
+    // set in the year as its own. That is not a wider version of its list; it
+    // is a different list, and the unlink pass would act on it.
+    console.warn(
+      `[fetchSetNames] refusing to narrow the all-brands list by an empty ` +
+        `prefix — nothing returned`,
+    );
+    return { success: false, options: [], message: SL_UNSCOPED_MESSAGE };
+  }
+
   // Parse radio buttons: <input type="radio" Name="selset" Value="12345"> </td> <td>123  Set Name Here</td>
   const radioRegex = /<input\s+type="radio"\s+Name="selset"\s+Value="(\d+)"[^>]*>\s*<\/td>\s*<td>\d+\s+([^<]+)<\/td>/gi;
   const options: Array<{ value: string; platformValue: string }> = [];
@@ -944,12 +1004,16 @@ async function fetchSetNames(
 
   while ((match = radioRegex.exec(html)) !== null) {
     const radioId = match[1].trim();
+    const rawLabel = match[2].trim();
     // Applied HERE, to the parsed response, and nowhere else. The request has
     // already gone out, built from slot ids only.
-    const setName = stripBrandPrefixForLabel(
-      match[2].trim(),
-      labelContext?.manufacturer,
-    );
+    let setName: string;
+    if (narrowTo !== undefined) {
+      if (!matchesBrandPrefix(rawLabel, narrowTo)) continue;
+      setName = stripMatchedBrandPrefix(rawLabel, narrowTo);
+    } else {
+      setName = stripBrandPrefixForLabel(rawLabel, labelContext?.manufacturer);
+    }
 
     if (radioId && setName) {
       options.push({ value: setName, platformValue: radioId });

@@ -92,6 +92,10 @@ vi.mock("../../convex/_generated/api", () => ({
       previewTeamFill: "teamFill.previewTeamFill",
       applyTeamFill: "teamFill.applyTeamFill",
     },
+    // NEO-237 — the Brand row's save, bound at render on every level.
+    brandView: {
+      setSelectorOptionSetNamePrefix: "brandView.setSelectorOptionSetNamePrefix",
+    },
   },
 }));
 

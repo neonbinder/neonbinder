@@ -9,3 +9,4 @@
 - [Reference typecheck convex changes](reference_typecheck_convex_changes.md) — How to typecheck apps/web/convex changes — which tsconfig matters, the known-failing baseline, and getting deps into a fresh worktree
 - [Staging tables scope per operator](staging-tables-scope-per-operator.md) — Per-selectorOption staging tables must be scoped by operator (createdByUserId), because multiple admins sync the same shared set concurrently
 - [Strict returns drift is invisible to typecheck](strict-returns-drift-is-invisible-to-typecheck.md) — whole-doc `returns` copies (teams.ts, entityReviewQueue.ts) refuse at runtime, not compile; grep `_id: v.id("<table>")` before handing back
+- [Transient side-table checklist](transient-side-table-checklist.md) — a table keyed on a selectorOptions id must join the reset steps (4 toEqual blocks), the deleteSelectorOption sweep, the holdings note and the ops doc

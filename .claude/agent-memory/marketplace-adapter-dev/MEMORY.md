@@ -4,3 +4,4 @@
 - [Worktree node_modules linking](reference_worktree_node_modules_linking.md) — link-deps.sh checks the repo root, not apps/web; symlink main/apps/web/node_modules by hand after cmp on the lockfile
 - [Generated api.d.ts needs a hand edit in worktrees](reference_generated_api_needs_hand_edit_in_worktrees.md) — new convex module → add its two lines to `_generated/api.d.ts` when `npx convex codegen` has no CONVEX_DEPLOYMENT; V8 files cannot import "use node" files
 - [Narrowing a Convex validator is a runtime break](reference_narrowing_convex_validator_is_a_runtime_break.md) — tsc stays green; grep FE forwards of stored sub-objects (modal `metadata: r.metadata`) before narrowing
+- [Swept log markers are pinned](reference_swept_log_markers_are_pinned.md) — resolvabilityLogSafety.test.ts asserts exact skip/coverage log prefixes exist; keep the marker text, append detail after it

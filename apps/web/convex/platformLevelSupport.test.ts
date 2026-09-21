@@ -450,23 +450,98 @@ describe("setReconciliation.fetchRawOptions honours the same table (NEO-216)", (
 });
 
 // ===========================================================================
-// syncSetsAcrossManufacturers: BSC-only by design
+// syncSetsAcrossManufacturers: two-sided since NEO-237
 // ===========================================================================
 
-describe("syncSetsAcrossManufacturers never reports SportLots (NEO-216)", () => {
-  test("BSC failing is reported as bsc alone, and SportLots is never contacted", async () => {
-    // This action is the other half of the manufacturer story: because BSC has
-    // no manufacturer axis, its flat set list is fetched here and bucketed
-    // under NB's SportLots-derived Manufacturer rows by name prefix. SportLots
-    // does not model `setName` at all, so there is no SL call to make — and an
-    // SL name must never appear in what this returns.
+/** SportLots' dealsets.tpl body: one radio per set. */
+function slSetListHtml(sets: Array<[string, string]>): string {
+  return sets
+    .map(
+      ([id, label], i) =>
+        `<input type="radio" Name="selset" Value="${id}"></td> <td>${i + 1}  ${label}</td>`,
+    )
+    .join("");
+}
+
+/** BSC's setName aggregation body. */
+function bscSetListJson(sets: Array<[string, string]>) {
+  return {
+    aggregations: {
+      setName: sets.map(([slug, label]) => ({
+        label,
+        slug,
+        count: 400,
+        active: true,
+      })),
+    },
+  };
+}
+
+async function insertManufacturer(
+  t: ReturnType<typeof convexTest>,
+  yearId: Id<"selectorOptions">,
+  value: string,
+  opts: { slId?: string; prefix?: string; isBrandUnknown?: boolean } = {},
+) {
+  return t.run(async (ctx) =>
+    ctx.db.insert("selectorOptions", {
+      level: "manufacturer",
+      value,
+      platformData: opts.slId ? { sportlots: { s0: opts.slId } } : {},
+      ...(opts.slId ? { platformSlotSeq: { sportlots: 1 } } : {}),
+      parentId: yearId,
+      children: [],
+      metadata: {
+        ...(opts.prefix !== undefined ? { setNamePrefix: opts.prefix } : {}),
+        ...(opts.isBrandUnknown ? { isBrandUnknown: true } : {}),
+      },
+      lastUpdated: Date.now(),
+    }),
+  );
+}
+
+async function setsUnder(
+  t: ReturnType<typeof convexTest>,
+  parentId: Id<"selectorOptions">,
+) {
+  return t.run(async (ctx) =>
+    ctx.db
+      .query("selectorOptions")
+      .withIndex("by_level_and_parent", (q) =>
+        q.eq("level", "setName").eq("parentId", parentId),
+      )
+      .collect(),
+  );
+}
+
+async function candidatesUnder(
+  t: ReturnType<typeof convexTest>,
+  manufacturerId: Id<"selectorOptions">,
+) {
+  return t.run(async (ctx) =>
+    ctx.db
+      .query("setCandidates")
+      .withIndex("by_manufacturer_and_status", (q) =>
+        q.eq("manufacturerId", manufacturerId),
+      )
+      .collect(),
+  );
+}
+
+describe("syncSetsAcrossManufacturers reports each side for what it was (NEO-216, NEO-237)", () => {
+  test("BSC failing is reported as bsc alone; with no brand to scope SportLots, SportLots is skipped, not failed", async () => {
+    // BSC has no manufacturer axis, so its flat set list is fetched year-wide
+    // and filed under NB's manufacturer rows. The SportLots phase is scoped
+    // PER BRAND (sport + year + the brand's own SportLots id) — a year with
+    // no manufacturer rows has nothing to scope it with, so SportLots is not
+    // asked, not failed, and reported as skipped.
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN);
     const { yearId } = await seedSportAndYear(t);
 
     stubFetch(async (url) => {
       const href = String(url);
-      if (href.includes("newinven.tpl") || isTokenUrl(href, "sportlots")) {
+      if (href.includes("sportlots.com") || isTokenUrl(href, "sportlots")) {
         throw new Error(`SportLots must not be contacted: ${href}`);
       }
       if (isTokenUrl(href, "buysportscards")) {
@@ -483,49 +558,49 @@ describe("syncSetsAcrossManufacturers never reports SportLots (NEO-216)", () => 
       { yearId },
     );
 
+    expect(result.success).toBe(false);
     expect(result.failedPlatforms).toEqual(["bsc"]);
-    expect(result.failedPlatforms).not.toContain("sportlots");
+    expect(result.skippedSides).toEqual(["sportlots"]);
+    expect(result.pausedSides).toEqual([]);
     expect(fetched.some((u) => u.includes("sportlots"))).toBe(false);
   });
 
-  test("a successful run reports no failed platform at all", async () => {
+  test("a brand with its own SportLots id runs the SportLots phase: BSC sets filed by prefix, SportLots-only sets become candidates, nothing is inserted from SportLots", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN);
     const { yearId } = await seedSportAndYear(t);
-
-    await t.run(async (ctx) => {
-      await ctx.db.insert("selectorOptions", {
-        level: "manufacturer",
-        value: "Topps",
-        platformData: { sportlots: { s0: "1" } },
-        platformSlotSeq: { sportlots: 1 },
-        parentId: yearId,
-        children: [],
-        lastUpdated: Date.now(),
-      });
+    const topps = await insertManufacturer(t, yearId, "Topps", {
+      slId: "1",
+      prefix: "Topps",
     });
 
     stubFetch(async (url) => {
       const href = String(url);
-      if (href.includes("newinven.tpl") || isTokenUrl(href, "sportlots")) {
-        throw new Error(`SportLots must not be contacted: ${href}`);
+      if (isTokenUrl(href, "sportlots")) {
+        return jsonResponse({
+          token: "SLSESSION=stub",
+          expiresAt: Date.now() + 86_400_000,
+        });
+      }
+      if (href.includes("dealsets.tpl")) {
+        // "Topps Series 1" is the set BSC just filed under Topps (its
+        // stripped label re-prefixed with Topps' own prefix equals the NB
+        // name, so it is a variant of a known set, not a new one). "Topps
+        // Heritage" is SportLots-only: a candidate. "Topps Heritage Minors"
+        // shares its stem and joins it as a member, not a second root.
+        return htmlResponse(
+          slSetListHtml([
+            ["501", "Topps Series 1"],
+            ["502", "Topps Heritage"],
+            ["503", "Topps Heritage Minors"],
+          ]),
+        );
       }
       if (isTokenUrl(href, "buysportscards")) {
         return jsonResponse({ token: "bsc-stub" });
       }
       if (href.includes("api-prod.buysportscards.com")) {
-        return jsonResponse({
-          aggregations: {
-            setName: [
-              {
-                label: "Topps Series 1",
-                slug: "topps-series-1",
-                count: 400,
-                active: true,
-              },
-            ],
-          },
-        });
+        return jsonResponse(bscSetListJson([["topps-series-1", "Topps Series 1"]]));
       }
       throw new Error(`unexpected fetch: ${href}`);
     });
@@ -537,6 +612,175 @@ describe("syncSetsAcrossManufacturers never reports SportLots (NEO-216)", () => 
 
     expect(result.success).toBe(true);
     expect(result.failedPlatforms).toEqual([]);
-    expect(fetched.some((u) => u.includes("sportlots"))).toBe(false);
+    expect(result.skippedSides).toEqual([]);
+    // Both marketplaces were asked — the SportLots list through its own
+    // brand id, never by name.
+    expect(fetched.some((u) => u.includes("dealsets.tpl"))).toBe(true);
+
+    // BSC's set is filed under Topps by prefix, and it is the ONLY set row:
+    // the SportLots phase classifies, it does not insert.
+    const toppsSets = await setsUnder(t, topps);
+    expect(toppsSets.map((r) => r.value)).toEqual(["Topps Series 1"]);
+    expect(toppsSets[0].platformData.bsc).toEqual({ b0: "topps-series-1" });
+    expect(toppsSets[0].platformData.sportlots).toBeUndefined();
+
+    // The SportLots-only set is offered as ONE root with its longer sibling
+    // as a member; the covered/variant entry is not offered at all.
+    const candidates = await candidatesUnder(t, topps);
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].side).toBe("sportlots");
+    expect(candidates[0].marketplaceId).toBe("502");
+    expect(candidates[0].label).toBe("Heritage");
+    expect(candidates[0].status).toBe("pending");
+    expect(candidates[0].members).toEqual([{ id: "503", label: "Heritage Minors" }]);
+
+    // No row was minted for a brand NB has not identified: every BSC set
+    // matched a brand, so the year has no Unknown row.
+    const manufacturers = await t.run(async (ctx) =>
+      ctx.db
+        .query("selectorOptions")
+        .withIndex("by_level_and_parent", (q) =>
+          q.eq("level", "manufacturer").eq("parentId", yearId),
+        )
+        .collect(),
+    );
+    expect(manufacturers.map((m) => m.value)).toEqual(["Topps"]);
+  });
+
+  test("a year with no BSC id still runs the SportLots phase; the BSC skip is a phase skip, not a return", async () => {
+    // Before NEO-237 this action returned at the BSC gate, so a year that
+    // SportLots serves and BSC does not never had its SportLots-only sets
+    // found at all.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN);
+    const yearId = await t.run(async (ctx) => {
+      const sportId = await ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Hockey",
+        platformData: { sportlots: { s0: "HK" } },
+        platformSlotSeq: { sportlots: 1 },
+        children: [],
+        lastUpdated: Date.now(),
+      });
+      return ctx.db.insert("selectorOptions", {
+        level: "year",
+        value: "1997",
+        platformData: { sportlots: { s0: "1997" } },
+        platformSlotSeq: { sportlots: 1 },
+        parentId: sportId,
+        children: [],
+        lastUpdated: Date.now(),
+      });
+    });
+    const score = await insertManufacturer(t, yearId, "Score", {
+      slId: "7",
+      prefix: "Score",
+    });
+
+    stubFetch(async (url) => {
+      const href = String(url);
+      if (href.includes("buysportscards")) {
+        throw new Error(`BSC must not be contacted on a path with no BSC ids: ${href}`);
+      }
+      if (isTokenUrl(href, "sportlots")) {
+        return jsonResponse({
+          token: "SLSESSION=stub",
+          expiresAt: Date.now() + 86_400_000,
+        });
+      }
+      if (href.includes("dealsets.tpl")) {
+        return htmlResponse(slSetListHtml([["701", "Score Board"]]));
+      }
+      throw new Error(`unexpected fetch: ${href}`);
+    });
+
+    const result = await asAdmin.action(
+      api.selectorOptions.syncSetsAcrossManufacturers,
+      { yearId, manufacturerId: score },
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.failedPlatforms).toEqual([]);
+    expect(result.skippedSides).toEqual(["bsc"]);
+    expect(result.pausedSides).toEqual([]);
+    expect(fetched.some((u) => u.includes("buysportscards"))).toBe(false);
+    expect(fetched.some((u) => u.includes("dealsets.tpl"))).toBe(true);
+
+    const candidates = await candidatesUnder(t, score);
+    expect(candidates.map((c) => [c.marketplaceId, c.label])).toEqual([
+      ["701", "Board"],
+    ]);
+    // Still nothing inserted from SportLots.
+    expect(await setsUnder(t, score)).toEqual([]);
+  });
+
+  test("brands linked through All Brands share one fetch of the all-brands list, narrowed per brand; Unknown gets the whole list", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN);
+    const { yearId } = await seedSportAndYear(t);
+    // The Unknown row and a via-All-Brands brand both hold SportLots'
+    // all-brands option id in their SportLots slot (NEO-137 M:1).
+    const unknown = await insertManufacturer(t, yearId, "Unknown", {
+      slId: "All Brands",
+      isBrandUnknown: true,
+    });
+    const bandai = await insertManufacturer(t, yearId, "Bandai", {
+      slId: "All Brands",
+      prefix: "Bandai",
+    });
+
+    stubFetch(async (url) => {
+      const href = String(url);
+      if (isTokenUrl(href, "sportlots")) {
+        return jsonResponse({
+          token: "SLSESSION=stub",
+          expiresAt: Date.now() + 86_400_000,
+        });
+      }
+      if (href.includes("dealsets.tpl")) {
+        return htmlResponse(
+          slSetListHtml([
+            ["801", "Bandai Carddass"],
+            ["802", "Bandaids Promo"],
+            ["803", "Roanoke Express ECHL"],
+          ]),
+        );
+      }
+      if (isTokenUrl(href, "buysportscards")) {
+        return jsonResponse({ token: "bsc-stub" });
+      }
+      if (href.includes("api-prod.buysportscards.com")) {
+        return jsonResponse(bscSetListJson([]));
+      }
+      throw new Error(`unexpected fetch: ${href}`);
+    });
+
+    const result = await asAdmin.action(
+      api.selectorOptions.syncSetsAcrossManufacturers,
+      { yearId },
+    );
+
+    // BSC returned nothing, which this action has always read as a BSC
+    // failure; the SportLots phase ran regardless and stored fine.
+    expect(result.failedPlatforms).toEqual(["bsc"]);
+    expect(result.success).toBe(true);
+    // ONE all-brands POST for both holders — not one per brand.
+    expect(fetched.filter((u) => u.includes("dealsets.tpl"))).toHaveLength(1);
+
+    // Bandai sees only its prefix's sets, stripped, by whole word: "Bandaids"
+    // is not "Bandai " and stays out.
+    const bandaiCandidates = await candidatesUnder(t, bandai);
+    expect(bandaiCandidates.map((c) => [c.marketplaceId, c.label])).toEqual([
+      ["801", "Carddass"],
+    ]);
+    // Unknown sees the rest of the list, unstripped: what no brand's prefix
+    // claims — the same rule the BSC phase files by.
+    const unknownCandidates = await candidatesUnder(t, unknown);
+    expect(
+      unknownCandidates.map((c) => [c.marketplaceId, c.label]).sort(),
+    ).toEqual([
+      ["802", "Bandaids Promo"],
+      ["803", "Roanoke Express ECHL"],
+    ]);
   });
 });

@@ -21,6 +21,10 @@ import {
   type UnlinkedEntry,
 } from "./selector-sync-feedback";
 import { checkCustomSelectorValue } from "../../convex/selectorSyncMatch";
+// NEO-237: the same gate the manufacturer sync applies, asked of the parent
+// chain the confirm already holds — "could SportLots be asked at this level
+// from here?" — decides whether the via-All-Brands control is offered at all.
+import { resolvableSides } from "../../convex/marketplaceResolvability";
 
 type Level =
   | "sport"
@@ -182,6 +186,20 @@ export type EntityColumnProps = {
   // stalled column. Left undefined when this column is used bare (e.g. in
   // tests) — the backstop is opt-in via the wrapper.
   onLoadingChange?: (loading: boolean) => void;
+  /**
+   * NEO-237 (D17) — the column is a VIEW over several parents, so there is no
+   * one parent to create a row under. "+ Custom" is replaced by `reason`, a
+   * line that says what to do instead ("Pick a brand to add a set").
+   */
+  hideCustom?: { reason: string };
+  /**
+   * NEO-237 — pills that belong to this column's domain (the Sets column's
+   * "N new on SportLots"), rendered right after the name-check pill so the
+   * two questions sit together. Like `extraActions`, this keeps the column
+   * from learning a domain it does not own; unlike it, these are pills, not
+   * buttons, and sit BEFORE "+ Custom".
+   */
+  extraPills?: ReactNode;
 };
 
 // Gap left between a newly-revealed column's edge and the scroll row's true
@@ -226,10 +244,18 @@ export default function EntityColumn({
   useEnsureSync,
   syncingLabel,
   onLoadingChange,
+  hideCustom,
+  extraPills,
 }: EntityColumnProps) {
   const [mode, setMode] = useState<"idle" | "sync" | "custom">("idle");
   const [customValue, setCustomValue] = useState("");
   const [customError, setCustomError] = useState<string | null>(null);
+  // NEO-237 — the confirm step's "Link to SportLots through All Brands"
+  // decision, manufacturer level only. Off by default (Jason 2026-09-21,
+  // decision 4): a brand SportLots lists under its own name needs nothing,
+  // and a wrong yes narrows every SportLots fetch under the brand to sets
+  // that start with its name. Reset with the rest of the form.
+  const [viaAllBrands, setViaAllBrands] = useState(false);
   // NEO-219: where the custom-entry form is in its type -> confirm -> write
   // sequence. See CustomStage.
   const [customStage, setCustomStage] = useState<CustomStage>({ kind: "input" });
@@ -467,6 +493,7 @@ export default function EntityColumn({
     setCustomValue("");
     setCustomError(null);
     setCustomStage({ kind: "input" });
+    setViaAllBrands(false);
     pendingCreateEnterRef.current = false;
   }, [parentId]);
 
@@ -792,9 +819,15 @@ export default function EntityColumn({
         value,
         parentId,
         ...(allowDuplicateElsewhere ? { allowDuplicateElsewhere: true } : {}),
+        // NEO-237: only a manufacturer-level confirm can set this, and only
+        // when the control was offered (see `offersViaAllBrands`).
+        ...(viaAllBrands && level === "manufacturer"
+          ? { slViaAllBrands: true }
+          : {}),
       });
       setCustomValue("");
       setCustomStage({ kind: "input" });
+      setViaAllBrands(false);
       setMode("idle");
     } catch (error) {
       // The server re-runs both checks this form ran, so its refusal is the
@@ -905,6 +938,7 @@ export default function EntityColumn({
 
   const backToInput = () => {
     pendingCreateEnterRef.current = false;
+    setViaAllBrands(false);
     setCustomStage((stage) =>
       stage.kind === "confirm-create" || stage.kind === "confirm-exists"
         ? { kind: "input" }
@@ -917,6 +951,7 @@ export default function EntityColumn({
     setCustomValue("");
     setCustomError(null);
     setCustomStage({ kind: "input" });
+    setViaAllBrands(false);
     setMode("idle");
   };
 
@@ -986,6 +1021,27 @@ export default function EntityColumn({
     : `'${confirmValue}' already exists elsewhere`;
   const otherMatchCount =
     customStage.kind === "confirm-exists" ? customStage.matches.length - 1 : 0;
+
+  /**
+   * NEO-237 — whether the manufacturer confirm offers "Link to SportLots
+   * through All Brands".
+   *
+   * Only when SportLots could be ASKED at this level from this chain: the
+   * year carries a SportLots id (and the sport above it), judged by the same
+   * `resolvableSides` the sync itself uses. A year with no SportLots link has
+   * no All Brands list to narrow, so the control would be a promise the
+   * adapter cannot keep; it is not rendered rather than rendered disabled,
+   * because a disabled control asks the operator to work out why.
+   *
+   * Nothing here reads a marketplace NAME. The predicate is "does the chain
+   * carry the ids", which is the one question a component may ask.
+   */
+  const offersViaAllBrands =
+    level === "manufacturer" &&
+    !!parentChain &&
+    resolvableSides(parentChain, { level: "manufacturer" }).sportlots
+      .resolvable;
+  const viaAllBrandsLabel = `Link to SportLots through All Brands (only sets starting with '${confirmValue}')`;
 
   // Extracted so both the legacy mode-machine path and the new ensureSync path
   // render byte-identical custom-entry + idle-button UI (keeps NEO-39 field-class
@@ -1087,6 +1143,44 @@ export default function EntityColumn({
       {customStage.kind === "confirm-create" && (
         <>
           <p className="text-sm mb-3">{createSentence}</p>
+          {offersViaAllBrands && (
+            // NEO-237 — an opt-in, drawn as one: a box that fills when it is
+            // on, with the whole sentence as the control, so the target is
+            // the width of the column and not a 14px square. A toggle button
+            // (`aria-pressed`) rather than a checkbox input: the house
+            // Checkbox primitive is the light-surface one, and this column's
+            // other yes/no decisions (the Attributes toggles, the name-check
+            // pills) are pressed buttons too. Keyboard: Space is native,
+            // Enter is explicit — the confirm's own Create holds focus, so an
+            // operator reaches this with Tab and never by accident.
+            <button
+              type="button"
+              className={`${fieldClass("btn-via-all-brands")} w-full text-left flex items-start gap-2 p-2 mb-3 rounded-md border text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] ${
+                viaAllBrands
+                  ? "border-[#00D558] bg-[#00D558]/10 text-gray-900 dark:text-gray-100"
+                  : // gray-500, not -600: -600 measures ~2.0:1 against this
+                    // column's dark:bg-gray-800 — under WCAG 1.4.11's 3:1 for a
+                    // control's boundary; -500 clears it.
+                    "border-gray-400 dark:border-gray-500 text-gray-700 dark:text-gray-300 hover:border-[#00D558]"
+              }`}
+              aria-pressed={viaAllBrands}
+              onClick={() => setViaAllBrands((on) => !on)}
+              onKeyDown={(e) =>
+                activateOnEnter(e, () => setViaAllBrands((on) => !on), creating)
+              }
+              disabled={creating}
+            >
+              <span
+                aria-hidden="true"
+                className={`mt-0.5 h-3.5 w-3.5 shrink-0 rounded-sm border ${
+                  viaAllBrands
+                    ? "border-[#00D558] bg-[#00D558]"
+                    : "border-gray-400 dark:border-gray-500"
+                }`}
+              />
+              <span>{viaAllBrandsLabel}</span>
+            </button>
+          )}
           {customError && (
             <div
               role="alert"
@@ -1255,7 +1349,8 @@ export default function EntityColumn({
         {/* After Sync, before "+ Custom", so `extraActions` ("Group Parallels")
             still sits last. */}
         {suggestionsPill}
-        {level && (
+        {extraPills}
+        {level && !hideCustom && (
           <NeonButton
             secondary
             className={fieldClass("btn-open-custom")}
@@ -1265,6 +1360,14 @@ export default function EntityColumn({
           >
             + Custom
           </NeonButton>
+        )}
+        {level && hideCustom && (
+          // NEO-237: in the place "+ Custom" would be, the line that says why
+          // it is not — and what to do instead. Plain text, not a disabled
+          // button: there is nothing here to press.
+          <span className="text-xs text-gray-600 dark:text-gray-400">
+            {hideCustom.reason}
+          </span>
         )}
         {extraActions}
       </div>

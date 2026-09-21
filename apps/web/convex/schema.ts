@@ -165,7 +165,13 @@ export const selectorOptionLevelValidator = v.union(
  *                     parent's role, at creation and on a level move
  *                     (convex/variantRole.ts); never client-sent
  *   isBase            BSC's base id at sync, or `setBaseVariantType`
- *   isUnknownBrand    `syncSetsAcrossManufacturers` / its backfill
+ *   isBrandUnknown    `ensureBrandUnknownRow` (minted or adopted by the
+ *                     manufacturer and set syncs) / `backfillBrandUnknownRole`
+ *   setNamePrefix     the manufacturer row's value at creation
+ *                     (`storeSelectorOptions`, `addCustomSelectorOption`),
+ *                     then `setSelectorOptionSetNamePrefix` (operator-typed)
+ *                     and the one-shot `backfillBrandPrefixAndUnknownName`;
+ *                     never on a row carrying `isBrandUnknown`
  */
 export const selectorOptionMetadataFields = {
   cardNumberPrefix: v.optional(v.string()),   // e.g. "DK-" for Diamond Kings
@@ -237,8 +243,46 @@ export const selectorOptionMetadataFields = {
    * `manufacturer` row, still the parent of its sets, still in the breadcrumb
    * and the manufacturer picker. The only behaviour it drives is that listing
    * generation treats the manufacturer as ABSENT.
+   *
+   * NEO-237 — the row is now named "Unknown" when NB mints it, and the
+   * marketplace's own all-brands option is ROUTED to it rather than stored
+   * as a row (see `ensureBrandUnknownRow`). The flag is unchanged: it is
+   * still the only thing anything reads.
    */
   isBrandUnknown: v.optional(v.boolean()),
+  /**
+   * NEO-237 — the SET-NAME PREFIX this manufacturer row owns: "a set whose
+   * name starts with this word belongs to this brand", as an NB fact about
+   * the row, the same kind of fact as `cardNumberPrefix`.
+   *
+   * Two things read it, both inside the sync/adapter boundary. The Sync Sets
+   * BSC phase files a set that no NB row already holds by id under the brand
+   * whose prefix matches its name (`routeBscSets`); and the SportLots adapter
+   * narrows the ALL-BRANDS set list — the list SportLots returns when a
+   * brand row's SL id is SportLots' own all-brands option — to the sets that
+   * start with it (`fetchSetNames`, only when the request's `brd` IS that
+   * option; a row with a real SL brand id is never narrowed). Creating a
+   * brand, or editing this value, re-homes the prefix-matching sets out of
+   * the year's Unknown row (`brandRehome.ts`).
+   *
+   * A FIELD, never derived from `value` at read time: the row's display
+   * value is an operator's to rename and is seeded from a marketplace label,
+   * so keying either behaviour on it would be the forward dependency product
+   * invariant 4 forbids. It is DEFAULTED from the value ONCE, at creation
+   * (`storeSelectorOptions`' manufacturer insert, `addCustomSelectorOption`),
+   * exactly as `isBase` is decided once — and edited afterwards through
+   * `setSelectorOptionSetNamePrefix` only. ABSENT means "buckets nothing":
+   * a row lacking it (written before this field; the one-shot
+   * `backfillBrandPrefixAndUnknownName` fills those) neither claims BSC sets
+   * nor narrows anything, and nothing falls back to `value`.
+   *
+   * Never written on a row carrying `isBrandUnknown`: that row holds the
+   * sets whose brand NB has NOT identified, so a prefix on it is a
+   * contradiction. Writers trim, drop the key on `""`, and cap at
+   * `MAX_SELECTOR_VALUE_LENGTH`. No index — it is read off rows already in
+   * hand (a year's manufacturers, an ancestor chain).
+   */
+  setNamePrefix: v.optional(v.string()),
 };
 
 export const selectorOptionFields = {
@@ -729,6 +773,59 @@ export default defineSchema({
     unlinkedTotal: v.optional(v.number()),
     updatedAt: v.number(),
   }).index("by_level_and_parent", ["level", "parentId"]),
+
+  /**
+   * NEO-237 — sets a marketplace lists under a brand that NB has no row for
+   * yet, offered to the operator per brand as "new on SportLots" with
+   * Create set / Skip. One row per ROOT: the shortest of a family of
+   * marketplace entries that share a name stem ("Chrome", with "Chrome
+   * Sepia" and "Chrome Refractor" as its `members`), because a root is what
+   * becomes an NB set and its members are what the next sync classifies as
+   * that set's variants.
+   *
+   * A SEPARATE table, not `selectorSyncStatus` (rewritten on every write and
+   * deleted on dismiss, so a Skip would not survive the next sync) and not
+   * `selectorOptions` (these are not NB rows — they are the marketplace's
+   * side of a comparison, and an operator's Skip is the only NB fact here).
+   * Named neutrally with a `side` because BSC could offer the same thing
+   * tomorrow; every row today is `"sportlots"`.
+   *
+   * Reconciled per BRAND SCOPE by `reconcileSetCandidates`, the sole writer,
+   * after a SUCCESSFUL fetch of that brand's list: seen → upserted (status
+   * kept, label and members refreshed only when they changed), unseen →
+   * deleted (upstream dropped it, or a set now covers it). A failed or
+   * skipped side touches nothing, so a marketplace outage cannot erase an
+   * operator's Skips. Bounded by the writer: `MAX_SET_CANDIDATE_ROOTS` per
+   * brand, `MAX_SET_CANDIDATE_MEMBERS` per root, labels at
+   * `MAX_SLOT_LABEL_LENGTH`, and the roots are SORTED by folded label before
+   * the cap so a re-sync cannot rotate a skipped root out of the window and
+   * lose the Skip.
+   *
+   * No `yearId` (the manufacturer row carries it), no timestamps
+   * (`_creationTime` is enough for "first seen", and "last seen" is the
+   * reconcile itself: an unseen row is deleted, not aged). `skippedByUserId`
+   * is an audit field, never returned to a client.
+   *
+   * Transient like `selectorSyncStatus`: `deleteSelectorOption` sweeps a
+   * brand's rows with the brand, and `resetSetCandidatesBatch` drains the
+   * table first in the NEO-214 reset.
+   */
+  setCandidates: defineTable({
+    manufacturerId: v.id("selectorOptions"),
+    side: v.union(v.literal("bsc"), v.literal("sportlots")),
+    /** The root entry's marketplace set id — what the created Base is linked to. */
+    marketplaceId: v.string(),
+    /** The root's label as the adapter returned it (brand prefix already stripped). */
+    label: v.string(),
+    /** Longer entries sharing the root's stem; NOT written on Create. */
+    members: v.array(v.object({ id: v.string(), label: v.string() })),
+    status: v.union(v.literal("pending"), v.literal("skipped")),
+    skippedAt: v.optional(v.number()),
+    skippedByUserId: v.optional(v.string()),
+  })
+    // The pill counts pending roots for one brand; the reconcile reads both
+    // statuses for one brand. Both are prefix reads of this one index.
+    .index("by_manufacturer_and_status", ["manufacturerId", "status"]),
 
   // Card Checklist - stores individual cards within a set variant.
   // Carries enough metadata to drive an eBay Sell Inventory API listing

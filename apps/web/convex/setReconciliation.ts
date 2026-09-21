@@ -562,6 +562,9 @@ export const fetchRawOptions = action({
       // Build platform-specific filters from the ancestor chain
       let slPlatformFilters: Record<string, string> | undefined;
       let bscPlatformFilters: Record<string, string[]> | undefined;
+      // NEO-237 — the manufacturer ancestor's `metadata.setNamePrefix`, for
+      // the SportLots all-brands narrowing. Response filter only.
+      let slBrandScope: { setNamePrefix: string } | undefined;
       // No parent = nothing to scope by and nothing that can be missing —
       // except a paused marketplace (NEO-287), which is never asked.
       let resolution: ChainResolution = unscopedResolution({ paused });
@@ -596,6 +599,9 @@ export const fetchRawOptions = action({
           const ancestorSlIds = slotIds(ancestor, "sportlots");
           if (ancestorSlIds.length > 0) {
             slPlatformFilters[lvl] = ancestorSlIds[0];
+          }
+          if (lvl === "manufacturer" && ancestor.metadata?.setNamePrefix) {
+            slBrandScope = { setNamePrefix: ancestor.metadata.setNamePrefix };
           }
           const ancestorBscIds = slotIds(ancestor, "bsc");
           if (ancestorBscIds.length > 0) {
@@ -671,6 +677,9 @@ export const fetchRawOptions = action({
             ...(parentFilters?.manufacturer
               ? { labelContext: { manufacturer: parentFilters.manufacturer } }
               : {}),
+            // NEO-237 — narrows the all-brands list to this brand's sets;
+            // inert when the brand has its own SportLots id.
+            ...(slBrandScope ? { brandScope: slBrandScope } : {}),
           },
         );
         if (result.success && result.options) {
@@ -847,6 +856,12 @@ type AttachContext = {
   slSport?: string;
   slYear?: string;
   slManufacturer?: string;
+  /**
+   * NEO-237 — the manufacturer ancestor's `metadata.setNamePrefix`. Passed to
+   * the SportLots adapter as `brandScope`, which narrows the all-brands list
+   * to this brand's sets and leaves a real brand's own list alone.
+   */
+  slSetNamePrefix?: string;
   bscSport?: string[];
   bscYear?: string[];
   /**
@@ -930,6 +945,7 @@ async function resolveAttachContext(
       case "manufacturer":
         out.manufacturer = ancestor.value;
         out.slManufacturer = slIds[0];
+        out.slSetNamePrefix = ancestor.metadata?.setNamePrefix;
         // manufacturer has no BSC facet — SL only (LEVEL_TO_BSC_FACET).
         break;
       case "setName":
@@ -1056,6 +1072,11 @@ export const fetchSlAttachSets = action({
           // ("Topps Topps Series 1" against the brand heading) applies here.
           ...(cxt.manufacturer
             ? { labelContext: { manufacturer: cxt.manufacturer } }
+            : {}),
+          // NEO-237 — a brand linked through All Brands browses only the
+          // sets that start with its prefix; a real brand is unaffected.
+          ...(cxt.slSetNamePrefix
+            ? { brandScope: { setNamePrefix: cxt.slSetNamePrefix } }
             : {}),
         },
       );
