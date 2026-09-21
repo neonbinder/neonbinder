@@ -2,12 +2,25 @@
  * NEO-237 — moving a set out of the year's Unknown row and under a brand.
  *
  * A PURE NB OPERATION. The set row keeps its `_id`, its subtree, its
- * marketplace slots and its cards; the only writes are `parentId` on the row
- * and the `children` caches of the two parents (filtered off the old one,
- * unioned into the new one — `unionChildren`, the precedent being
- * `applyParallelGroupings`' reparenting). Nothing here reads a marketplace
- * value: the prefix comes from the brand row's `metadata.setNamePrefix`, and
- * the only name compared is the set row's own NB display value.
+ * marketplace slots and its cards; the writes are `parentId` on the row, its
+ * `features.manufacturer` snapshot (below), and the `children` caches of the
+ * two parents (filtered off the old one, unioned into the new one —
+ * `unionChildren`, the precedent being `applyParallelGroupings`' reparenting).
+ * Nothing here reads a marketplace value: the prefix comes from the brand
+ * row's `metadata.setNamePrefix`, and the only name compared is the set row's
+ * own NB display value.
+ *
+ * THE MANUFACTURER SNAPSHOT MOVES WITH THE ROW. `features` on a set row is a
+ * copy of its parent's features taken at creation (`storeSelectorOptions`'
+ * insert branch), and a row born under Unknown carries no `manufacturer` key
+ * because Unknown has none (`ensureBrandUnknownRow`). Once the row is that
+ * brand's set, a snapshot still pointing at Unknown's absence would be a lie
+ * about its own parent, so `features.manufacturer` is set to the target
+ * brand's — which makes the moved row indistinguishable from a sibling the
+ * sync would have inserted under that brand. The row's other features are
+ * kept; the key is removed when the brand carries none. ROW-LEVEL ONLY:
+ * cards already committed under the row are not rewritten, the same rule the
+ * Unknown rename applies (§2a).
  *
  * ONE DIRECTION ONLY: Unknown → brand. Three doors call it —
  *
@@ -79,6 +92,23 @@ export async function findBrandUnknownRow(
 }
 
 /**
+ * The moved row's `features` once it is `brandManufacturer`'s set: the row's
+ * own features with `manufacturer` replaced by the brand's snapshot, or
+ * removed when the brand has none. `undefined` when nothing would be left —
+ * the caller removes the field rather than storing `{}`, matching how the
+ * insert branch stores a row with no features.
+ */
+export function rehomedFeatures(
+  rowFeatures: Record<string, string> | undefined,
+  brandManufacturer: string | undefined,
+): Record<string, string> | undefined {
+  const next: Record<string, string> = { ...(rowFeatures ?? {}) };
+  if (brandManufacturer !== undefined) next.manufacturer = brandManufacturer;
+  else delete next.manufacturer;
+  return Object.keys(next).length > 0 ? next : undefined;
+}
+
+/**
  * Move specific setName rows under `brandId`. The shared core: the two
  * name-driven doors above filter Unknown's sets by prefix and hand the
  * survivors here; the sync hands over the rows `routeBscSets` named by id.
@@ -122,7 +152,17 @@ export async function rehomeSetRowsToBrand(
       continue;
     }
     takenKeys.add(key);
-    await ctx.db.patch(row._id, { parentId: args.brandId, lastUpdated: now });
+    // NEO-85: write-if-changed on `features` — a row that already carries the
+    // brand's manufacturer (a hand-edited snapshot) is not rewritten.
+    const nextFeatures = rehomedFeatures(row.features, brand.features?.manufacturer);
+    const featuresChanged = !valuesDeepEqual(row.features ?? {}, nextFeatures ?? {});
+    await ctx.db.patch(row._id, {
+      parentId: args.brandId,
+      lastUpdated: now,
+      // `undefined` removes the field: a row with no features left is stored
+      // the way the insert branch stores one, with no `features` key at all.
+      ...(featuresChanged ? { features: nextFeatures } : {}),
+    });
     movedIds.push(row._id);
     if (row.parentId) {
       const set = removedFrom.get(row.parentId) ?? new Set<Id<"selectorOptions">>();
