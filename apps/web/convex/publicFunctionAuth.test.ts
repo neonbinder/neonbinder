@@ -951,10 +951,13 @@ describe("NEO-291: the card-prefix write is admin-gated, and the whole-metadata 
 
 describe("NEO-237: the All Brands view and set-discovery doors are admin-gated", () => {
   /**
-   * Six new public functions on the set builder. Two are reads that enumerate
-   * a year's sets and its marketplace candidates; four are writes — a set and
-   * its Base minted from a candidate, a candidate skipped, and a brand's
-   * set-name prefix, which MOVES sets between manufacturers. Every one is
+   * Eight new public functions on the set builder. Two are reads that
+   * enumerate a year's sets and its marketplace candidates (pending by
+   * default, `status: "skipped"` for the way-back list — pinned in both
+   * shapes); six are writes — a set and its Base minted from a candidate, a
+   * candidate skipped and brought back, a brand's set-name prefix, which
+   * MOVES sets between manufacturers, and a brand's link through SportLots'
+   * All Brands option, which writes a marketplace slot. Every one is
    * `requireAdmin`, like every other set-builder door, and every one refuses
    * before its first read or write.
    *
@@ -995,7 +998,17 @@ describe("NEO-237: the All Brands view and set-discovery doors are admin-gated",
         members: [],
         status: "pending",
       });
-      return { yearId, brandId, candidateId };
+      const skippedId = await ctx.db.insert("setCandidates", {
+        manufacturerId: brandId,
+        side: "sportlots",
+        marketplaceId: "sl-choice-gulf-coast",
+        label: "Gulf Coast",
+        members: [],
+        status: "skipped",
+        skippedAt: 1_700_000_000_000,
+        skippedByUserId: "admin",
+      });
+      return { yearId, brandId, candidateId, skippedId };
     });
   }
 
@@ -1006,9 +1019,25 @@ describe("NEO-237: the All Brands view and set-discovery doors are admin-gated",
         tt.query(api.setDiscovery.getSetCandidates, { manufacturerId: ids.brandId }),
     ],
     [
+      "setDiscovery.getSetCandidates (status: skipped)",
+      (tt: ReturnType<typeof convexTest>, ids: { brandId: Id<"selectorOptions"> }) =>
+        tt.query(api.setDiscovery.getSetCandidates, {
+          manufacturerId: ids.brandId,
+          status: "skipped",
+        }),
+    ],
+    [
       "setDiscovery.getSetCandidatesForYear",
       (tt: ReturnType<typeof convexTest>, ids: { yearId: Id<"selectorOptions"> }) =>
         tt.query(api.setDiscovery.getSetCandidatesForYear, { yearId: ids.yearId }),
+    ],
+    [
+      "setDiscovery.getSetCandidatesForYear (status: skipped)",
+      (tt: ReturnType<typeof convexTest>, ids: { yearId: Id<"selectorOptions"> }) =>
+        tt.query(api.setDiscovery.getSetCandidatesForYear, {
+          yearId: ids.yearId,
+          status: "skipped",
+        }),
     ],
     [
       "setDiscovery.createSetFromCandidate",
@@ -1024,6 +1053,11 @@ describe("NEO-237: the All Brands view and set-discovery doors are admin-gated",
         tt.mutation(api.setDiscovery.skipSetCandidate, { candidateId: ids.candidateId }),
     ],
     [
+      "setDiscovery.unskipSetCandidate",
+      (tt: ReturnType<typeof convexTest>, ids: { skippedId: Id<"setCandidates"> }) =>
+        tt.mutation(api.setDiscovery.unskipSetCandidate, { candidateId: ids.skippedId }),
+    ],
+    [
       "brandView.getSetsUnderYear",
       (tt: ReturnType<typeof convexTest>, ids: { yearId: Id<"selectorOptions"> }) =>
         tt.query(api.brandView.getSetsUnderYear, { yearId: ids.yearId }),
@@ -1036,25 +1070,46 @@ describe("NEO-237: the All Brands view and set-discovery doors are admin-gated",
           setNamePrefix: "Choice Biloxi",
         }),
     ],
+    [
+      "brandView.setManufacturerSlViaAllBrands (on)",
+      (tt: ReturnType<typeof convexTest>, ids: { brandId: Id<"selectorOptions"> }) =>
+        tt.mutation(api.brandView.setManufacturerSlViaAllBrands, {
+          id: ids.brandId,
+          enabled: true,
+        }),
+    ],
+    [
+      "brandView.setManufacturerSlViaAllBrands (off)",
+      (tt: ReturnType<typeof convexTest>, ids: { brandId: Id<"selectorOptions"> }) =>
+        tt.mutation(api.brandView.setManufacturerSlViaAllBrands, {
+          id: ids.brandId,
+          enabled: false,
+        }),
+    ],
   ])("%s refuses a signed-in non-admin and a signed-out caller", async (_name, call) => {
     const t = convexTest(schema, modules);
     const ids = await seedYearBrandCandidate(t);
     await expect(call(t.withIdentity(SIGNED_IN), ids)).rejects.toThrow();
     await expect(call(t, ids)).rejects.toThrow();
-    // Refused before any write: the brand and the candidate are as seeded.
-    const { brand, candidate, setsUnderBrand } = await t.run(async (ctx) => ({
-      brand: await ctx.db.get(ids.brandId),
-      candidate: await ctx.db.get(ids.candidateId),
-      setsUnderBrand: await ctx.db
-        .query("selectorOptions")
-        .withIndex("by_level_and_parent", (q) =>
-          q.eq("level", "setName").eq("parentId", ids.brandId),
-        )
-        .collect(),
-    }));
+    // Refused before any write: the brand and both candidates are as seeded.
+    const { brand, candidate, skipped, setsUnderBrand } = await t.run(
+      async (ctx) => ({
+        brand: await ctx.db.get(ids.brandId),
+        candidate: await ctx.db.get(ids.candidateId),
+        skipped: await ctx.db.get(ids.skippedId),
+        setsUnderBrand: await ctx.db
+          .query("selectorOptions")
+          .withIndex("by_level_and_parent", (q) =>
+            q.eq("level", "setName").eq("parentId", ids.brandId),
+          )
+          .collect(),
+      }),
+    );
     expect(brand!.metadata).toEqual({ setNamePrefix: "Choice" });
+    expect(brand!.platformData).toEqual({});
     expect(brand!.lastUpdated).toBe(1_700_000_000_000);
     expect(candidate!.status).toBe("pending");
+    expect(skipped!.status).toBe("skipped");
     expect(setsUnderBrand).toHaveLength(0);
   });
 });

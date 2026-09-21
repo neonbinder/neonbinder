@@ -611,6 +611,22 @@ export default function EntityColumn({
     }
   }, [noticeVisible]);
 
+  // a11y (NEO-237): `hideCustom` swaps "+ Custom" for a plain line, and it is
+  // driven by ANOTHER column's selection (the Manufacturers column picking
+  // the All Brands view), so a focused "+ Custom" can unmount under the
+  // operator with nothing positioned to inherit focus. Same guarded shape as
+  // the notice park above: keyed on the swap itself, and only when focus has
+  // actually landed on <body>.
+  const customHidden = hideCustom !== undefined;
+  const wasCustomHiddenRef = useRef(customHidden);
+  useEffect(() => {
+    const was = wasCustomHiddenRef.current;
+    wasCustomHiddenRef.current = customHidden;
+    if (!was && customHidden && document.activeElement === document.body) {
+      containerRef.current?.focus();
+    }
+  }, [customHidden]);
+
   // Which of this column's mutually-exclusive branches is on screen right now.
   //
   // Named once here rather than re-derived inside `newPathContent`, because two
@@ -1041,7 +1057,16 @@ export default function EntityColumn({
     !!parentChain &&
     resolvableSides(parentChain, { level: "manufacturer" }).sportlots
       .resolvable;
-  const viaAllBrandsLabel = `Link to SportLots through All Brands (only sets starting with '${confirmValue}')`;
+  const viaAllBrandsLabel = `SportLots has no brand for this — match its sets by name (starting with '${confirmValue}')`;
+  // NEO-237 — what creating a brand DOES to the year's sets, said once, under
+  // the create sentence: the brand's prefix defaults to its name, and the
+  // Unknown row's prefix-matching sets move under it on create (D9). The
+  // operator learns the model at the moment it applies, not from the toast
+  // after the fact.
+  const rehomeSentence =
+    level === "manufacturer"
+      ? `Sets in Unknown whose names start with '${confirmValue}' move here.`
+      : null;
 
   // Extracted so both the legacy mode-machine path and the new ensureSync path
   // render byte-identical custom-entry + idle-button UI (keeps NEO-39 field-class
@@ -1142,7 +1167,15 @@ export default function EntityColumn({
 
       {customStage.kind === "confirm-create" && (
         <>
-          <p className="text-sm mb-3">{createSentence}</p>
+          <p className={`text-sm ${rehomeSentence ? "mb-1" : "mb-3"}`}>
+            {createSentence}
+          </p>
+          {rehomeSentence && (
+            // Same dual-mode contrast as the other explanatory lines here.
+            <p className="text-xs text-gray-600 dark:text-gray-400 mb-3">
+              {rehomeSentence}
+            </p>
+          )}
           {offersViaAllBrands && (
             // NEO-237 — an opt-in, drawn as one: a box that fills when it is
             // on, with the whole sentence as the control, so the target is
@@ -1158,10 +1191,11 @@ export default function EntityColumn({
               className={`${fieldClass("btn-via-all-brands")} w-full text-left flex items-start gap-2 p-2 mb-3 rounded-md border text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] ${
                 viaAllBrands
                   ? "border-[#00D558] bg-[#00D558]/10 text-gray-900 dark:text-gray-100"
-                  : // gray-500, not -600: -600 measures ~2.0:1 against this
-                    // column's dark:bg-gray-800 — under WCAG 1.4.11's 3:1 for a
-                    // control's boundary; -500 clears it.
-                    "border-gray-400 dark:border-gray-500 text-gray-700 dark:text-gray-300 hover:border-[#00D558]"
+                  : // gray-500 in BOTH modes: -600 measures ~2.0:1 against
+                    // this column's dark:bg-gray-800 and -400 ~2.6:1 against
+                    // its light bg-white — both under WCAG 1.4.11's 3:1 for a
+                    // control's boundary; -500 clears it on each.
+                    "border-gray-500 text-gray-700 dark:text-gray-300 hover:border-[#00D558]"
               }`}
               aria-pressed={viaAllBrands}
               onClick={() => setViaAllBrands((on) => !on)}
@@ -1175,7 +1209,7 @@ export default function EntityColumn({
                 className={`mt-0.5 h-3.5 w-3.5 shrink-0 rounded-sm border ${
                   viaAllBrands
                     ? "border-[#00D558] bg-[#00D558]"
-                    : "border-gray-400 dark:border-gray-500"
+                    : "border-gray-500"
                 }`}
               />
               <span>{viaAllBrandsLabel}</span>

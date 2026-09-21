@@ -42,7 +42,10 @@ import { unionChildren } from "./selectorSyncStore";
  *    concept. Members are NOT written: the next sync classifies them as
  *    variants of the set that now exists.
  *  - It SKIPS a root: `status: "skipped"`, which the reconcile preserves so
- *    the root stays hidden until upstream drops it.
+ *    the root stays hidden until upstream drops it — and BRINGS one BACK
+ *    (`unskipSetCandidate`), because a skip pressed one row too far had no
+ *    way back before the collector review asked for one. The skipped list
+ *    is the same two reads with `status: "skipped"`.
  *
  * It never deletes or renames an NB row, never touches a candidate the
  * operator did not act on, and never reads a candidate's label as an NB
@@ -75,8 +78,12 @@ import { unionChildren } from "./selectorSyncStore";
  */
 export const MAX_SET_CANDIDATES_PER_VIEW = 1000;
 
-const candidateMemberValidator = v.object({
-  id: v.string(),
+/**
+ * A member as the client sees it: the label only. The marketplace id rides
+ * on the row for the reconcile and never reaches the modal (security review
+ * S5 — an id the client cannot act on is an id it should not be handed).
+ */
+const candidateMemberViewValidator = v.object({
   label: v.string(),
 });
 
@@ -112,14 +119,14 @@ const candidateViewFields = {
   _creationTime: v.number(),
   manufacturerId: v.id("selectorOptions"),
   side: v.union(v.literal("bsc"), v.literal("sportlots")),
-  marketplaceId: v.string(),
   /** The marketplace's own (brand-stripped) label — the row's display name. */
   label: v.string(),
   /** What the name field starts as — see `candidateDefaultName`. */
   defaultName: v.string(),
   /** The brand prefix `defaultName` leads with; absent when nothing was prepended. */
   brandPrefix: v.optional(v.string()),
-  members: v.array(candidateMemberValidator),
+  /** Labels only — the root's marketplace id and its members' stay server-side. */
+  members: v.array(candidateMemberViewValidator),
 };
 
 const candidateViewValidator = v.object(candidateViewFields);
@@ -136,12 +143,18 @@ export type SetCandidateView = {
   _creationTime: number;
   manufacturerId: Id<"selectorOptions">;
   side: "bsc" | "sportlots";
-  marketplaceId: string;
   label: string;
   defaultName: string;
   brandPrefix?: string;
-  members: Array<{ id: string; label: string }>;
+  members: Array<{ label: string }>;
 };
+
+/** The statuses a read may ask for. `pending` is the pill's; `skipped` the "Show skipped" list's. */
+const candidateStatusValidator = v.union(
+  v.literal("pending"),
+  v.literal("skipped"),
+);
+type CandidateStatus = "pending" | "skipped";
 
 /**
  * `brand` is the manufacturer row the candidate is filed under; `undefined`
@@ -157,40 +170,52 @@ function toView(
     _creationTime: row._creationTime,
     manufacturerId: row.manufacturerId,
     side: row.side,
-    marketplaceId: row.marketplaceId,
     label: row.label,
     ...candidateDefaultName(row.label, brand?.metadata?.setNamePrefix),
-    members: row.members,
+    members: row.members.map((m) => ({ label: m.label })),
   };
 }
 
 /**
- * Pending roots for one brand, in the order the writer stored them (sorted by
- * folded label — see the table comment). Bounded by the writer's
+ * Roots of one status for one brand, in the order the writer stored them
+ * (sorted by folded label — see the table comment). Bounded by the writer's
  * `MAX_SET_CANDIDATE_ROOTS`.
  */
-async function pendingFor(
+async function candidatesFor(
   ctx: QueryCtx,
   manufacturerId: Id<"selectorOptions">,
+  status: CandidateStatus,
 ): Promise<Doc<"setCandidates">[]> {
   return await ctx.db
     .query("setCandidates")
     .withIndex("by_manufacturer_and_status", (q) =>
-      q.eq("manufacturerId", manufacturerId).eq("status", "pending"),
+      q.eq("manufacturerId", manufacturerId).eq("status", status),
     )
     .collect();
 }
 
 /**
  * The "N new on SportLots" pill's read for a brand's Sets column.
+ *
+ * `status` defaults to `pending` (the pill's list). `skipped` is the same
+ * read for the modal's "Show skipped (N)" list — the way back for a root
+ * skipped by mistake, which otherwise stays hidden until upstream drops it.
+ * One query, one arg, rather than a second door to gate and pin.
  */
 export const getSetCandidates = query({
-  args: { manufacturerId: v.id("selectorOptions") },
+  args: {
+    manufacturerId: v.id("selectorOptions"),
+    status: v.optional(candidateStatusValidator),
+  },
   returns: v.array(candidateViewValidator),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
     const brand = await ctx.db.get(args.manufacturerId);
-    const rows = await pendingFor(ctx, args.manufacturerId);
+    const rows = await candidatesFor(
+      ctx,
+      args.manufacturerId,
+      args.status ?? "pending",
+    );
     return rows.map((row) => toView(row, brand));
   },
 });
@@ -204,12 +229,17 @@ export const getSetCandidates = query({
  * Returns `[]` for an id that is not a year: the view only exists under one.
  */
 export const getSetCandidatesForYear = query({
-  args: { yearId: v.id("selectorOptions") },
+  args: {
+    yearId: v.id("selectorOptions"),
+    /** As on `getSetCandidates`: `pending` by default, `skipped` for the way-back list. */
+    status: v.optional(candidateStatusValidator),
+  },
   returns: v.array(yearCandidateViewValidator),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
     const year = await ctx.db.get(args.yearId);
     if (!year || year.level !== "year") return [];
+    const status = args.status ?? "pending";
 
     const manufacturers = await ctx.db
       .query("selectorOptions")
@@ -224,7 +254,7 @@ export const getSetCandidatesForYear = query({
     const out: Array<SetCandidateView & { brand: string }> = [];
     for (const brand of manufacturers) {
       if (out.length >= MAX_SET_CANDIDATES_PER_VIEW) break;
-      const rows = await pendingFor(ctx, brand._id);
+      const rows = await candidatesFor(ctx, brand._id, status);
       for (const row of rows) {
         if (out.length >= MAX_SET_CANDIDATES_PER_VIEW) break;
         out.push({ ...toView(row, brand), brand: brand.value });
@@ -283,13 +313,22 @@ export const createSetFromCandidate = mutation({
     const candidate = await ctx.db.get(args.candidateId);
     if (!candidate) {
       throw new ConvexError(
-        "That entry is gone — a sync has already filed it. Refresh and look again.",
+        "That entry is gone — it's already been filed. Refresh and look again.",
       );
     }
     const brand = await ctx.db.get(candidate.manufacturerId);
     if (!brand || brand.level !== "manufacturer") {
       throw new ConvexError(
         "The brand this entry was listed under is gone. Refresh and look again.",
+      );
+    }
+    // Security review S1: the Base's slot below is keyed on the SportLots
+    // side by name. A candidate from any other side has no create path yet
+    // (BSC discovery does not exist), so it is refused here rather than
+    // silently filed under the wrong marketplace.
+    if (candidate.side !== "sportlots") {
+      throw new ConvexError(
+        "This entry isn't from SportLots — nothing creates a set from it yet.",
       );
     }
 
@@ -398,13 +437,40 @@ export const skipSetCandidate = mutation({
     const candidate = await ctx.db.get(args.candidateId);
     if (!candidate) {
       throw new ConvexError(
-        "That entry is gone — a sync has already filed it. Refresh and look again.",
+        "That entry is gone — it's already been filed. Refresh and look again.",
       );
     }
     await ctx.db.patch(candidate._id, {
       status: "skipped",
       skippedAt: Date.now(),
       skippedByUserId: userId,
+    });
+    return null;
+  },
+});
+
+/**
+ * The way back from Skip: `skipped` → `pending`, audit stamps cleared, so the
+ * root is back on the pill's list on the next read. Idempotent — bringing
+ * back a pending row touches nothing. Never invents a row: a root upstream
+ * has since dropped was deleted by the reconcile and is simply gone.
+ */
+export const unskipSetCandidate = mutation({
+  args: { candidateId: v.id("setCandidates") },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    const candidate = await ctx.db.get(args.candidateId);
+    if (!candidate) {
+      throw new ConvexError(
+        "That entry is gone — it's already been filed. Refresh and look again.",
+      );
+    }
+    if (candidate.status === "pending") return null;
+    await ctx.db.patch(candidate._id, {
+      status: "pending",
+      skippedAt: undefined,
+      skippedByUserId: undefined,
     });
     return null;
   },

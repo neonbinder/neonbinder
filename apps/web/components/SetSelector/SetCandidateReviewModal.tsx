@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { RefObject } from "react";
 import { createPortal } from "react-dom";
 import { Theme } from "@radix-ui/themes";
@@ -54,6 +54,28 @@ import { userFacingMessage } from "@/lib/errors/user-facing-message";
  * Same rule as the name-check dialog: nothing is staged, so closing loses
  * nothing. Every root not acted on is still listed next time.
  *
+ * ## Skip has a way back
+ *
+ * A skipped root leaves the list but not the table (the reconcile keeps it
+ * as long as upstream still lists it). "Show skipped (N)" at the bottom of
+ * the list unfolds them as dimmed, dashed cards — set aside, not gone —
+ * each with one "Bring back" button that returns it to the pending list.
+ * Nothing else is offered on a skipped row: bringing it back is the way to
+ * create it, so the two lists never carry two create paths.
+ *
+ * ## Focus never leaves the dialog
+ *
+ * Create, Skip and Bring back each remove their own row on success, and the
+ * name field is the control Enter fires Create from. None of them is ever
+ * natively `disabled` (that blurs the activated control to <body> before
+ * the await starts — the house rule in `NeonButton`); they are
+ * `aria-disabled` with the handlers guarding re-entry. When a row leaves
+ * either list and focus has ACTUALLY dropped to <body>, it is parked on the
+ * dialog container. On close, the pill this opened from may itself be gone
+ * (the list drained to zero while the dialog stayed up on "All caught up"),
+ * so the restore checks `isConnected` and falls back to the column the
+ * pill sat in.
+ *
  * ## Grouped by brand in the All Brands view
  *
  * From a brand's own column the list is that brand's. From the view it is
@@ -61,13 +83,13 @@ import { userFacingMessage } from "@/lib/errors/user-facing-message";
  * "Finest" is new under Topps and not under Unknown.
  */
 
-export type SetCandidateMember = { id: string; label: string };
+/** A member as the server hands it over: the label only (its id stays server-side). */
+export type SetCandidateMember = { label: string };
 
 export type SetCandidate = {
   _id: GenericId<"setCandidates">;
   manufacturerId: GenericId<"selectorOptions">;
   side: "bsc" | "sportlots";
-  marketplaceId: string;
   /** The marketplace's brand-stripped label — the root's visible name. */
   label: string;
   /** What the name field starts as: `<brandPrefix> <label>`, or `label`. */
@@ -92,10 +114,21 @@ export function candidatePillText(count: number): string {
   return `${count} new on SportLots`;
 }
 
-/** The "+ N variants" line under a root. `""` for a root with no members. */
+/**
+ * The "+ N more starting with it" line under a root. `""` for a root with no
+ * members. Says what a member IS — an entry whose label starts with the
+ * root's — rather than "variants", which the operator reads as a promise
+ * about what the next sync will make of them.
+ */
 export function memberSummary(members: readonly SetCandidateMember[]): string {
   if (members.length === 0) return "";
-  return `+ ${members.length} variant${members.length === 1 ? "" : "s"}`;
+  return `+ ${members.length} more starting with it`;
+}
+
+/** The disclosure's visible text. `""` when nothing is skipped (the control is not rendered). */
+export function skippedToggleText(count: number, open: boolean): string {
+  if (count === 0) return "";
+  return `${open ? "Hide" : "Show"} skipped (${count})`;
 }
 
 /**
@@ -204,7 +237,7 @@ function CandidateRow({
   const fieldClass = useFieldTestClass();
 
   const create = async () => {
-    if (busy) return;
+    if (busy || name.trim().length === 0) return;
     setBusy("create");
     setError(null);
     try {
@@ -272,7 +305,10 @@ function CandidateRow({
         }}
         className={`${fieldClass("name")} w-full p-2 text-sm`}
         aria-label={`Name for "${candidate.label}"`}
-        disabled={busy !== null}
+        // Enter in this field fires Create, so this IS the activated control
+        // for the keyboard path: read-only while busy, never `disabled`.
+        readOnly={busy !== null}
+        aria-disabled={busy !== null || undefined}
       />
       {error && (
         <p
@@ -290,7 +326,7 @@ function CandidateRow({
         <NeonButton
           size="2"
           className={fieldClass("btn-create")}
-          disabled={busy !== null || name.trim().length === 0}
+          aria-disabled={busy !== null || name.trim().length === 0 || undefined}
           onClick={() => void create()}
           onKeyDown={(e) => activateOnEnter(e, () => void create(), busy !== null)}
           aria-label={`Create set from "${candidate.label}"`}
@@ -301,7 +337,7 @@ function CandidateRow({
           secondary
           size="2"
           className={fieldClass("btn-skip")}
-          disabled={busy !== null}
+          aria-disabled={busy !== null || undefined}
           onClick={() => void skip()}
           onKeyDown={(e) => activateOnEnter(e, () => void skip(), busy !== null)}
           aria-label={`Skip "${candidate.label}"`}
@@ -313,28 +349,113 @@ function CandidateRow({
   );
 }
 
+/**
+ * A skipped root: the same card, dimmed and dashed so it reads as set aside,
+ * with the one thing to do about it. No name field, no Create — bringing it
+ * back is how it gets created.
+ */
+function SkippedCandidateRow({
+  candidate,
+  onUnskip,
+}: {
+  candidate: SetCandidate;
+  onUnskip: (candidateId: GenericId<"setCandidates">) => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const fieldClass = useFieldTestClass();
+
+  const bringBack = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await onUnskip(candidate._id);
+    } catch (e) {
+      setError(userFacingMessage(e, "Couldn't bring it back."));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const summary = memberSummary(candidate.members);
+
+  return (
+    <div className="border border-dashed border-gray-600 rounded-md p-3 flex items-start justify-between gap-3">
+      <div className="min-w-0">
+        {/* text-gray-300 on bg-gray-900: 9.6:1 — dimmer than a pending
+            root's gray-100, still a name. The label stays the <p>'s direct
+            text node for the same reason as on a pending row. */}
+        <p className="text-sm text-gray-300 break-words">{candidate.label}</p>
+        {summary && (
+          <p
+            className="text-xs text-gray-400"
+            title={candidate.members.map((m) => m.label).join(", ")}
+          >
+            {summary}
+            <span className="sr-only">
+              {`: ${candidate.members.map((m) => m.label).join(", ")}`}
+            </span>
+          </p>
+        )}
+        {error && (
+          <p
+            role="alert"
+            className="mt-2 text-xs p-2 bg-red-900/30 border border-red-700 rounded-md text-red-200"
+          >
+            {error}
+          </p>
+        )}
+      </div>
+      <NeonButton
+        secondary
+        size="2"
+        className={`${fieldClass("btn-bring-back")} shrink-0`}
+        aria-disabled={busy || undefined}
+        onClick={() => void bringBack()}
+        onKeyDown={(e) => activateOnEnter(e, () => void bringBack(), busy)}
+        aria-label={`Bring back "${candidate.label}"`}
+      >
+        {busy ? "Bringing back…" : "Bring back"}
+      </NeonButton>
+    </div>
+  );
+}
+
 export default function SetCandidateReviewModal({
   isOpen,
   candidates,
+  skipped = [],
   viewMode,
   scopeLabel,
   restoreFocusRef,
+  fallbackFocusRef,
   onClose,
   onCreate,
   onSkip,
+  onUnskip,
 }: {
   isOpen: boolean;
   candidates: SetCandidate[];
+  /** The scope's skipped roots — the "Show skipped (N)" list. */
+  skipped?: SetCandidate[];
   /** All Brands view: group by brand. */
   viewMode: boolean;
   /** e.g. "1997" (view) or "Topps" (brand) — names the scope in the subline. */
   scopeLabel?: string;
   /** a11y: where focus goes on close — the pill this was opened from. */
   restoreFocusRef?: RefObject<HTMLElement | null>;
+  /**
+   * a11y: where focus goes on close when the pill is no longer in the
+   * document — it unmounts when the list drains to zero while this dialog
+   * stays up. A stable ancestor (the column the pill sat in).
+   */
+  fallbackFocusRef?: RefObject<HTMLElement | null>;
   /** Escape, or the footer's Close. Writes nothing. */
   onClose: () => void;
   onCreate: (candidateId: GenericId<"setCandidates">, name: string) => Promise<void>;
   onSkip: (candidateId: GenericId<"setCandidates">) => Promise<void>;
+  onUnskip?: (candidateId: GenericId<"setCandidates">) => Promise<void>;
 }) {
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const closeBtnRef = useRef<HTMLButtonElement | null>(null);
@@ -342,6 +463,7 @@ export default function SetCandidateReviewModal({
   // The footer's running account of what just landed. Content-keyed by
   // `role="status"`: each write changes the text, so each one is announced.
   const [outcome, setOutcome] = useState<string | null>(null);
+  const [showSkipped, setShowSkipped] = useState(false);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -352,9 +474,47 @@ export default function SetCandidateReviewModal({
     const id = requestAnimationFrame(() => closeBtnRef.current?.focus());
     return () => {
       cancelAnimationFrame(id);
-      triggerRef.current?.focus?.();
+      // The pill may have unmounted while this stayed open (list drained to
+      // zero); focusing a detached node is a silent no-op that strands focus
+      // on <body>. Fall back to the stable anchor the opener supplied.
+      const trigger = triggerRef.current;
+      if (trigger?.isConnected) {
+        trigger.focus();
+        return;
+      }
+      // Read at CLOSE time on purpose: the opener keeps this ref pointing at
+      // the column it currently sits in, and the value at mount is exactly
+      // the stale one the rule warns about.
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- the latest anchor is the one wanted
+      const fallback = fallbackFocusRef?.current;
+      if (fallback?.isConnected) fallback.focus();
     };
-  }, [isOpen, restoreFocusRef]);
+  }, [isOpen, restoreFocusRef, fallbackFocusRef]);
+
+  // A row leaving either list unmounts the control that was just pressed
+  // (Create, Skip, Bring back, or the name field Enter fired from). Park on
+  // the dialog container — only when focus has ACTUALLY dropped to <body>,
+  // never on a same-shape update where a still-mounted control holds it.
+  const rowSignature = useMemo(
+    () =>
+      `${candidates.map((c) => c._id as string).join(",")}|${skipped
+        .map((c) => c._id as string)
+        .join(",")}`,
+    [candidates, skipped],
+  );
+  const prevSignatureRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!isOpen) {
+      prevSignatureRef.current = null;
+      return;
+    }
+    const prev = prevSignatureRef.current;
+    prevSignatureRef.current = rowSignature;
+    if (prev === null || prev === rowSignature) return;
+    if (document.activeElement === document.body) {
+      dialogRef.current?.focus();
+    }
+  }, [isOpen, rowSignature]);
 
   if (!isOpen) return null;
 
@@ -374,6 +534,13 @@ export default function SetCandidateReviewModal({
     await onSkip(candidateId);
     setOutcome(label ? `Skipped '${label}'` : "Skipped");
   };
+  const handleUnskip = async (candidateId: GenericId<"setCandidates">) => {
+    if (!onUnskip) return;
+    const label = skipped.find((c) => c._id === candidateId)?.label;
+    await onUnskip(candidateId);
+    setOutcome(label ? `Brought back '${label}'` : "Brought back");
+  };
+  const skippedToggle = skippedToggleText(skipped.length, showSkipped);
 
   return createPortal(
     <Theme>
@@ -415,7 +582,7 @@ export default function SetCandidateReviewModal({
               id="set-candidates-heading"
               className="text-lg font-semibold text-gray-100"
             >
-              New on SportLots — Sets
+              New on SportLots
             </h2>
             <p className="text-xs text-gray-400 mt-1">
               {scopeLabel
@@ -460,6 +627,48 @@ export default function SetCandidateReviewModal({
                   ))}
                 </section>
               ))
+            )}
+            {skippedToggle && onUnskip && (
+              // The way back, below the pending list and quieter than it: a
+              // disclosure, not a tab, because the skipped roots are the
+              // same list set aside rather than a second thing to review.
+              <section aria-label="Skipped" className="space-y-2 pt-2 border-t border-gray-800">
+                <button
+                  type="button"
+                  aria-expanded={showSkipped}
+                  onClick={() => setShowSkipped((on) => !on)}
+                  className="text-xs text-gray-400 hover:text-gray-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] rounded px-1 -mx-1"
+                >
+                  <span aria-hidden="true">{showSkipped ? "▾ " : "▸ "}</span>
+                  {skippedToggle}
+                </button>
+                {showSkipped && (
+                  <div className="space-y-2">
+                    {(viewMode
+                      ? groupCandidatesByBrand(skipped)
+                      : [{ brand: undefined, brandId: undefined, items: skipped }]
+                    ).map((group) => (
+                      <div
+                        key={`skipped-${(group.brandId as string | undefined) ?? "all"}`}
+                        className="space-y-2"
+                      >
+                        {group.brand && (
+                          <h3 className="text-[11px] uppercase tracking-wide text-gray-400">
+                            {group.brand}
+                          </h3>
+                        )}
+                        {group.items.map((candidate) => (
+                          <SkippedCandidateRow
+                            key={candidate._id as string}
+                            candidate={candidate}
+                            onUnskip={handleUnskip}
+                          />
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
             )}
           </div>
 
@@ -514,6 +723,16 @@ export function SetCandidatesPill({
     api.setDiscovery.getSetCandidatesForYear,
     viewMode ? { yearId: parentId } : "skip",
   );
+  // The skipped roots, read only while the dialog is up: the pill needs the
+  // pending count and nothing else, and the way-back list is a dialog thing.
+  const skippedForBrand = useQuery(
+    api.setDiscovery.getSetCandidates,
+    viewMode ? "skip" : { manufacturerId: parentId, status: "skipped" },
+  );
+  const skippedForYear = useQuery(
+    api.setDiscovery.getSetCandidatesForYear,
+    viewMode ? { yearId: parentId, status: "skipped" } : "skip",
+  );
   // The scope's own value for the subline — deduped against the column's
   // identical read.
   const scope = useQuery(api.selectorOptions.getSelectorOptionById, {
@@ -521,21 +740,31 @@ export function SetCandidatesPill({
   });
   const createFromCandidate = useMutation(api.setDiscovery.createSetFromCandidate);
   const skipCandidate = useMutation(api.setDiscovery.skipSetCandidate);
+  const unskipCandidate = useMutation(api.setDiscovery.unskipSetCandidate);
   const [open, setOpen] = useState(false);
   const pillRef = useRef<HTMLButtonElement | null>(null);
+  // a11y: the pill unmounts when the list drains to zero while the dialog is
+  // up, so the dialog's close needs somewhere stable to land. The column
+  // this pill sits in is the nearest programmatic focus target
+  // (`tabIndex={-1}` on `EntityColumn`'s container); its element is captured
+  // into a ref the dialog's cleanup can still read after this has unmounted.
+  const anchorRef = useRef<HTMLSpanElement | null>(null);
+  const fallbackFocusRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    fallbackFocusRef.current =
+      anchorRef.current?.closest<HTMLElement>('[tabindex="-1"]') ?? null;
+  });
 
   const raw = viewMode ? forYear : forBrand;
   // Shape-guarded rather than trusted, like the column's other pills: a row
   // this dialog cannot act on is not one it should count either.
   const candidates: SetCandidate[] | undefined = Array.isArray(raw)
-    ? (raw as SetCandidate[]).filter(
-        (c) =>
-          c &&
-          typeof c._id === "string" &&
-          typeof c.label === "string" &&
-          typeof c.defaultName === "string",
-      )
+    ? shapeGuard(raw)
     : undefined;
+  const rawSkipped = viewMode ? skippedForYear : skippedForBrand;
+  const skipped: SetCandidate[] = Array.isArray(rawSkipped)
+    ? shapeGuard(rawSkipped)
+    : [];
 
   if (!candidates) return null;
   // The pill goes when the last root is filed; the dialog does NOT — it stays
@@ -544,7 +773,7 @@ export function SetCandidatesPill({
   if (candidates.length === 0 && !open) return null;
 
   return (
-    <>
+    <span ref={anchorRef} className="contents">
       {candidates.length > 0 && (
         <button
           type="button"
@@ -560,9 +789,11 @@ export function SetCandidatesPill({
         <SetCandidateReviewModal
           isOpen
           candidates={candidates}
+          skipped={skipped}
           viewMode={viewMode}
           scopeLabel={scope?.value}
           restoreFocusRef={pillRef}
+          fallbackFocusRef={fallbackFocusRef}
           onClose={() => setOpen(false)}
           onCreate={async (candidateId, name) => {
             await createFromCandidate({ candidateId, name });
@@ -570,8 +801,21 @@ export function SetCandidatesPill({
           onSkip={async (candidateId) => {
             await skipCandidate({ candidateId });
           }}
+          onUnskip={async (candidateId) => {
+            await unskipCandidate({ candidateId });
+          }}
         />
       )}
-    </>
+    </span>
+  );
+}
+
+function shapeGuard(rows: unknown[]): SetCandidate[] {
+  return (rows as SetCandidate[]).filter(
+    (c) =>
+      c &&
+      typeof c._id === "string" &&
+      typeof c.label === "string" &&
+      typeof c.defaultName === "string",
   );
 }
