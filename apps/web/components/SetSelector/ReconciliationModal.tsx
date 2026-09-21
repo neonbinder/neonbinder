@@ -37,10 +37,14 @@ export type MatchedPair = {
   confidence: number;
 };
 
+/**
+ * What the modal lets an operator say about a set beyond its title and its
+ * marketplace mappings. NEO-291: only the card prefix. Insert/Parallel used to
+ * be here as checkboxes, but which of those a row IS is a fact of where it sits
+ * in the hierarchy (its level and its variant type), not a box to tick.
+ */
 export type ItemMetadata = {
   cardNumberPrefix?: string;
-  isInsert?: boolean;
-  isParallel?: boolean;
 };
 
 /**
@@ -658,32 +662,17 @@ function MetadataEditor({
   metadata: ItemMetadata;
   onChange: (metadata: ItemMetadata) => void;
 }) {
-  // Unique per-instance class so Maestro inputText targets THIS row's Prefix
+  // Unique per-instance class so Maestro inputText targets THIS row's prefix
   // input rather than the first one (MetadataEditor renders once per item;
   // see useFieldTestClass).
   const fieldClass = useFieldTestClass();
   return (
     <div className="mt-2 pt-2 border-t border-gray-700 flex flex-wrap gap-3 items-center">
+      {/* NEO-291: the Insert/Parallel checkboxes that sat before this field
+          are gone — a row's kind comes from the hierarchy, never from a tick.
+          The same words the Attributes panel uses for the same fact. */}
       <label className="flex items-center gap-1.5 text-xs text-gray-400">
-        <input
-          type="checkbox"
-          checked={metadata.isInsert || false}
-          onChange={(e) => onChange({ isInsert: e.target.checked })}
-          className="rounded border-gray-600 bg-gray-700"
-        />
-        Insert
-      </label>
-      <label className="flex items-center gap-1.5 text-xs text-gray-400">
-        <input
-          type="checkbox"
-          checked={metadata.isParallel || false}
-          onChange={(e) => onChange({ isParallel: e.target.checked })}
-          className="rounded border-gray-600 bg-gray-700"
-        />
-        Parallel
-      </label>
-      <label className="flex items-center gap-1.5 text-xs text-gray-400">
-        Prefix:
+        Card prefix
         <Input
           bare
           type="text"
@@ -762,7 +751,13 @@ export default function ReconciliationModal({
           (id) => slByPv.get(id) ?? { value: row.value, platformValue: id },
         ),
         confidence: 0,
-        metadata: row.metadata,
+        // NEO-291: project to the one field the modal edits. Callers hand
+        // over the row's whole stored metadata (`isBase`, retired
+        // `isInsert`/`isParallel`), which tsc accepts structurally but
+        // `storeReconciledOptions`' `v.object` rejects at runtime.
+        metadata: row.metadata?.cardNumberPrefix
+          ? { cardNumberPrefix: row.metadata.cardNumberPrefix }
+          : undefined,
       });
       for (const id of bscIds) usedBsc.add(id);
       for (const id of slIds) usedSl.add(id);

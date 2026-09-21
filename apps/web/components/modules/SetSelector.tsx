@@ -72,7 +72,6 @@ import ParallelForm from "../SetSelector/ParallelForm";
 import ResilientEntityColumn from "../SetSelector/ResilientEntityColumn";
 import CardChecklist from "../SetSelector/CardChecklist";
 import BaseMappingForm from "../SetSelector/BaseMappingForm";
-import VariantMetadataEditor from "../SetSelector/VariantMetadataEditor";
 import ParallelGroupingModal from "../SetSelector/ParallelGroupingModal";
 import MultiSourcePanel from "../SetSelector/MultiSourcePanel";
 import SetAttributesPanel from "../SetSelector/SetAttributesPanel";
@@ -703,19 +702,18 @@ export default function SetSelector() {
         {!isBaseVariantTypeSelected && (
           <ResilientEntityColumn
             selector={
-              <>
-                <VariantSelector
-                  variantTypeId={selectedVariantTypeId!}
-                  selectedVariantId={selectedVariantId}
-                  onVariantSelect={handleVariantSelect}
-                  expanded={variantExpanded}
-                  setExpanded={setVariantExpanded}
-                  title={variantsColumnLabel}
-                />
-                {selectedVariantId && (
-                  <VariantMetadataEditor optionId={selectedVariantId} />
-                )}
-              </>
+              // NEO-291: the "Metadata" box that used to sit under this
+              // column is gone. Insert/Parallel were hierarchy facts shown
+              // as disabled checkboxes, and the card prefix now lives in the
+              // Attributes panel beside every other per-row fact.
+              <VariantSelector
+                variantTypeId={selectedVariantTypeId!}
+                selectedVariantId={selectedVariantId}
+                onVariantSelect={handleVariantSelect}
+                expanded={variantExpanded}
+                setExpanded={setVariantExpanded}
+                title={variantsColumnLabel}
+              />
             }
             renderForm={(onDone) => (
               <VariantForm
@@ -743,20 +741,13 @@ export default function SetSelector() {
         {!isBaseVariantTypeSelected && selectedVariantId && (
           <ResilientEntityColumn
             selector={
-              <>
-                <ParallelSelector
-                  insertId={selectedVariantId!}
-                  selectedParallelId={selectedVariantOfVariantId}
-                  onParallelSelect={handleVariantOfVariantSelect}
-                  expanded={variantOfVariantExpanded}
-                  setExpanded={setVariantOfVariantExpanded}
-                />
-                {selectedVariantOfVariantId && (
-                  <VariantMetadataEditor
-                    optionId={selectedVariantOfVariantId}
-                  />
-                )}
-              </>
+              <ParallelSelector
+                insertId={selectedVariantId!}
+                selectedParallelId={selectedVariantOfVariantId}
+                onParallelSelect={handleVariantOfVariantSelect}
+                expanded={variantOfVariantExpanded}
+                setExpanded={setVariantOfVariantExpanded}
+              />
             }
             renderForm={(onDone) => (
               <ParallelForm insertId={selectedVariantId!} onDone={onDone} />

@@ -98,6 +98,7 @@ import type * as teamFill from "../teamFill.js";
 import type * as teams from "../teams.js";
 import type * as testing from "../testing.js";
 import type * as userProfile from "../userProfile.js";
+import type * as variantRole from "../variantRole.js";
 import type * as wikidataPool from "../wikidataPool.js";
 
 import type {
@@ -197,6 +198,7 @@ declare const fullApi: ApiFromModules<{
   teams: typeof teams;
   testing: typeof testing;
   userProfile: typeof userProfile;
+  variantRole: typeof variantRole;
   wikidataPool: typeof wikidataPool;
 }>;
 

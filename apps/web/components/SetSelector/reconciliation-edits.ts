@@ -48,10 +48,10 @@ export type ReconciliationEditState = {
 /**
  * Order- and undefined-insensitive metadata identity.
  *
- * `{ isInsert: true }` and `{ isInsert: true, isParallel: undefined }` are the
- * same statement; the editor produces both depending on which control was
- * touched last, and a naive compare would report an edit for a checkbox that
- * was ticked and unticked again.
+ * `{ cardNumberPrefix: "DK-" }` and `{ cardNumberPrefix: "DK-", isBase:
+ * undefined }` are the same statement; a set's metadata arrives from the
+ * stored row on one path and from the editor on another, and a naive compare
+ * would report an edit where nothing was typed.
  */
 function metadataFingerprint(metadata?: Record<string, unknown>): string {
   if (!metadata) return "";

@@ -143,19 +143,43 @@ export const selectorOptionLevelValidator = v.union(
  * Same lesson as `selectorOptionFields` above, learned the same way. Four
  * places re-typed this three-field object by hand — `getAncestorChain`'s
  * `returns`, `storeReconciledOptions`' args, `setVariantTypePlatformData`'s
- * args and `updateSelectorOptionMetadata`'s args — and when NEO-239 added
- * `isBase` to the table, `getAncestorChain` started throwing
- * `Object contains extra field 'isBase'` for every chain containing a Base
- * row. Server-side, so the SetSelector page error-boundaried the moment the
- * flag existed: the seed flow synced variant types, the flag was written
- * correctly, and the NEXT query to walk that chain took the page down.
+ * args and the since-deleted `updateSelectorOptionMetadata`'s args — and
+ * when NEO-239 added `isBase` to the table, `getAncestorChain` started
+ * throwing `Object contains extra field 'isBase'` for every chain containing
+ * a Base row. Server-side, so the SetSelector page error-boundaried the
+ * moment the flag existed: the seed flow synced variant types, the flag was
+ * written correctly, and the NEXT query to walk that chain took the page
+ * down.
  *
  * A required-object caller writes `v.object(selectorOptionMetadataFields)`;
  * an optional one uses `selectorOptionFields.metadata`. Neither re-lists a
- * field, so the next addition here reaches all four for free.
+ * field, so the next addition here reaches every READER for free.
+ *
+ * NEO-291 — WRITERS are a different matter. No public mutation takes this
+ * whole object from a client any more: `updateSelectorOptionMetadata` is
+ * gone, `storeReconciledOptions` admits only `cardNumberPrefix` on the wire
+ * (deliberately a hand-narrowed validator, so a client cannot send a role),
+ * and each remaining key has its own owner —
+ *   cardNumberPrefix  `setSelectorOptionCardNumberPrefix` (operator-typed)
+ *   isInsert/isParallel  derived from the row's level and its variant-type
+ *                     parent's role, at creation and on a level move
+ *                     (convex/variantRole.ts); never client-sent
+ *   isBase            BSC's base id at sync, or `setBaseVariantType`
+ *   isUnknownBrand    `syncSetsAcrossManufacturers` / its backfill
  */
 export const selectorOptionMetadataFields = {
   cardNumberPrefix: v.optional(v.string()),   // e.g. "DK-" for Diamond Kings
+  /**
+   * NEO-291 — "the cards under this row are inserts" / "are parallels", as
+   * NB ROLES on an `insert`- or `parallel`-level row. Every parallel-level
+   * row is a parallel; an insert-level row is whatever its variant-type
+   * parent says (that parent's role comes from `isBase` or from the id in
+   * its `variant`-tagged BSC slot — never from its name). Derived ONCE at
+   * creation and replaced on a level move; absent means false, exactly as
+   * `isBase` below. Rows written before this ticket keep whatever the old
+   * checkboxes set; a sync that re-links one lacking BOTH flags adds the
+   * derived pair, and never flips a flag that is there.
+   */
   isInsert: v.optional(v.boolean()),
   isParallel: v.optional(v.boolean()),
   /**
