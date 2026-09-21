@@ -536,6 +536,12 @@ function SetFeatureRow({
   // Unique per-field marker class so Maestro's inputText targets THIS field
   // rather than the first input sharing the className (see useFieldTestClass).
   const fieldClass = useFieldTestClass();
+  // NEO-291 (a11y): the hint used to ride only on the label's `title`, which
+  // is hover-only — a keyboard or screen-reader user never met it. It is now
+  // also in the DOM, visually hidden, as the control's `aria-describedby`
+  // target; `title` + the dotted underline stay for sighted hover. The id is
+  // on the hint span, never the input (see useFieldTestClass on resource-id).
+  const hintId = useId();
 
   // "checkbox" features store "true"/"false" strings in the `features` map
   // (unlike "boolean", which is bound to a real schema column and isn't
@@ -574,8 +580,18 @@ function SetFeatureRow({
         aria-label={`Set feature ${label}`}
       >
         <span className="text-[10px] uppercase tracking-wide text-gray-400">
-          {label}
+          <span
+            title={feat.hint}
+            className={
+              feat.hint
+                ? "cursor-help underline decoration-dotted decoration-gray-500"
+                : undefined
+            }
+          >
+            {label}
+          </span>
         </span>
+        {feat.hint && <span className="sr-only">{feat.hint}</span>}
         <span className="text-gray-300">{value ?? "—"}</span>
       </div>
     );
@@ -598,6 +614,11 @@ function SetFeatureRow({
           {label}
         </span>
       </span>
+      {feat.hint && (
+        <span id={hintId} className="sr-only">
+          {feat.hint}
+        </span>
+      )}
       <FeatureValueControl
         feat={feat}
         value={value ?? ""}
@@ -608,6 +629,7 @@ function SetFeatureRow({
         // it to `onSave("")` is what makes a set attribute clearable.
         onEmptyCommit={() => onSave("")}
         ariaLabel={`Value for ${label}`}
+        ariaDescribedBy={feat.hint ? hintId : undefined}
         placeholder="—"
         dataFeatKey={feat.key}
         className={`${fieldClass()} w-full p-1 border rounded text-xs dark:bg-gray-900 dark:border-gray-700 focus:border-[#00D558] focus:outline-none`}

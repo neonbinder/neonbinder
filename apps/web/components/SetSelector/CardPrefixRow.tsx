@@ -1,3 +1,4 @@
+import { useId } from "react";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import type { ExpectedFeature } from "../../convex/features/expectedFeatures";
 import { FeatureValueControl } from "./FeatureValueControl";
@@ -25,7 +26,8 @@ import { FeatureValueControl } from "./FeatureValueControl";
  * saving, which is the NEO-111 "never resync over an unsaved edit" guarantee
  * the old box carried by hand. Nothing here re-implements it.
  *
- * Maestro targets the input as `Value for Card prefix` — DO NOT rename.
+ * Maestro targets the input as `Value for Card prefix` — DO NOT rename. The
+ * wrapper is `Set feature Card prefix`, the same shape as every other row.
  */
 
 export const CARD_PREFIX_FEATURE: ExpectedFeature = {
@@ -48,11 +50,14 @@ export default function CardPrefixRow({
   // Unique per-field marker class so Maestro's inputText targets THIS field
   // rather than the first input sharing the className (see useFieldTestClass).
   const fieldClass = useFieldTestClass();
+  // Same as `SetFeatureRow`: the hint is in the DOM, visually hidden, as the
+  // input's `aria-describedby` target — `title` alone is hover-only.
+  const hintId = useId();
 
   return (
     <label
       className="flex flex-col gap-0.5 p-2 rounded border text-xs border-gray-700 bg-gray-900/30"
-      aria-label={label}
+      aria-label={`Set feature ${label}`}
     >
       <span className="flex items-center justify-between text-[10px] uppercase tracking-wide text-gray-400">
         <span
@@ -61,6 +66,9 @@ export default function CardPrefixRow({
         >
           {label}
         </span>
+      </span>
+      <span id={hintId} className="sr-only">
+        {CARD_PREFIX_FEATURE.hint}
       </span>
       <FeatureValueControl
         feat={CARD_PREFIX_FEATURE}
@@ -71,6 +79,7 @@ export default function CardPrefixRow({
         // is what makes the prefix clearable.
         onEmptyCommit={() => onSave("")}
         ariaLabel={`Value for ${label}`}
+        ariaDescribedBy={hintId}
         placeholder="e.g. DK-"
         dataFeatKey={CARD_PREFIX_FEATURE.key}
         className={`${fieldClass("prefix")} w-full p-1 border rounded text-xs dark:bg-gray-900 dark:border-gray-700 focus:border-[#00D558] focus:outline-none`}

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { useReactiveField } from "../forms/useReactiveField";
 import type { ExpectedFeature } from "../../convex/features/expectedFeatures";
 import { Input } from "../primitives/Input";
@@ -29,6 +29,7 @@ export function FeatureValueControl({
   className,
   dataFeatKey,
   label,
+  ariaDescribedBy,
 }: {
   feat: ExpectedFeature;
   /** Resolved value to display/edit — caller has already merged own vs. inherited. */
@@ -49,6 +50,14 @@ export function FeatureValueControl({
   dataFeatKey?: string;
   /** Checkbox-only: rendered inside the toggle pill itself. Ignored by other input types. */
   label?: string;
+  /**
+   * NEO-291 (a11y) — text/select only: the id of the host row's hint, so the
+   * control announces it on focus. A `title` on the label is hover-only and
+   * unreliable for AT; the host renders the hint visually hidden and points
+   * here. Combined with the control's own error id while an error is up, so
+   * neither description hides the other.
+   */
+  ariaDescribedBy?: string;
 }) {
   if (feat.inputType === "select") {
     return (
@@ -59,6 +68,7 @@ export function FeatureValueControl({
         ariaLabel={ariaLabel}
         className={className}
         dataFeatKey={dataFeatKey}
+        ariaDescribedBy={ariaDescribedBy}
       />
     );
   }
@@ -99,8 +109,22 @@ export function FeatureValueControl({
       className={className}
       dataFeatKey={dataFeatKey}
       numeric={feat.numeric}
+      ariaDescribedBy={ariaDescribedBy}
     />
   );
+}
+
+/**
+ * The `aria-describedby` for a control: the host's hint id plus this
+ * control's own error id while an error is showing. Empty → undefined, so an
+ * undescribed control emits no attribute.
+ */
+function describedBy(
+  hintId: string | undefined,
+  errorId: string,
+  error: string | null,
+): string | undefined {
+  return [hintId, error ? errorId : null].filter(Boolean).join(" ") || undefined;
 }
 
 function TextValueControl({
@@ -113,6 +137,7 @@ function TextValueControl({
   className,
   dataFeatKey,
   numeric,
+  ariaDescribedBy,
 }: {
   value: string;
   compareBaseline?: string;
@@ -123,6 +148,7 @@ function TextValueControl({
   className: string;
   dataFeatKey?: string;
   numeric?: boolean;
+  ariaDescribedBy?: string;
 }) {
   const { inputProps, busy, error } = useReactiveField({
     value,
@@ -130,6 +156,9 @@ function TextValueControl({
     onSave: (trimmed) => onSave(trimmed),
     onEmptyCommit,
   });
+  // On the error span, never on the input: an id on the field would replace
+  // its aria-label as Maestro's resource-id (see useFieldTestClass).
+  const errorId = useId();
 
   return (
     <>
@@ -141,11 +170,12 @@ function TextValueControl({
         data-feat-key={dataFeatKey}
         disabled={busy}
         aria-label={ariaLabel}
+        aria-describedby={describedBy(ariaDescribedBy, errorId, error)}
         placeholder={placeholder ?? "—"}
         className={className}
       />
       {error && (
-        <span className="text-[10px] text-[#FF2EB3]" role="alert">
+        <span id={errorId} className="text-[10px] text-[#FF2EB3]" role="alert">
           {error}
         </span>
       )}
@@ -304,6 +334,7 @@ function SelectValueControl({
   ariaLabel,
   className,
   dataFeatKey,
+  ariaDescribedBy,
 }: {
   options: ReadonlyArray<string>;
   value: string;
@@ -311,7 +342,9 @@ function SelectValueControl({
   ariaLabel: string;
   className: string;
   dataFeatKey?: string;
+  ariaDescribedBy?: string;
 }) {
+  const errorId = useId();
   // No focus-guard/uncontrolled dance needed here: a <select> only commits on
   // an explicit user pick (onChange), never merely on focus/blur, so there's
   // no risk of a reactive re-render racing an in-flight keystroke the way
@@ -346,6 +379,7 @@ function SelectValueControl({
         data-feat-key={dataFeatKey}
         disabled={busy}
         aria-label={ariaLabel}
+        aria-describedby={describedBy(ariaDescribedBy, errorId, error)}
         onChange={(e) => void handleChange(e.target.value)}
         className={className}
       >
@@ -377,7 +411,7 @@ function SelectValueControl({
         ))}
       </select>
       {error && (
-        <span className="text-[10px] text-[#FF2EB3]" role="alert">
+        <span id={errorId} className="text-[10px] text-[#FF2EB3]" role="alert">
           {error}
         </span>
       )}
