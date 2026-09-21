@@ -170,6 +170,20 @@ tags:
                 end: "3%, 25%"
             - tapOn:
                 id: "Make Anime its own NeonBinder set"
+            # PIN THE BODY BACK TO THE TOP BEFORE THE HARD ASSERT. CI run
+            # 35603675951 proved the tap lands (header went 155→156 ready,
+            # "Anime" left Pending) and then failed this assert: the body was
+            # still ~300px down, so the Ready section — and the new row — sat
+            # ABOVE the window's top edge, where Maestro's hierarchy prunes it
+            # (an element clipped BELOW the body but still inside the window
+            # is reported; one above y=0 is not). Same two swipes as the
+            # reset above; a swipe past the top is a no-op.
+            - swipe:
+                start: "3%, 30%"
+                end: "3%, 80%"
+            - swipe:
+                start: "3%, 30%"
+                end: "3%, 80%"
       - extendedWaitUntil:
           visible:
             id: "NeonBinder set name for Anime"
@@ -205,6 +219,20 @@ tags:
                 end: "3%, 25%"
             - tapOn:
                 id: "Make Anime Kanji its own NeonBinder set"
+            # PIN THE BODY BACK TO THE TOP BEFORE THE HARD ASSERT. CI run
+            # 35603675951 proved the tap lands (header went 155→156 ready,
+            # "Anime Kanji" left Pending) and then failed this assert: the body was
+            # still ~300px down, so the Ready section — and the new row — sat
+            # ABOVE the window's top edge, where Maestro's hierarchy prunes it
+            # (an element clipped BELOW the body but still inside the window
+            # is reported; one above y=0 is not). Same two swipes as the
+            # reset above; a swipe past the top is a no-op.
+            - swipe:
+                start: "3%, 30%"
+                end: "3%, 80%"
+            - swipe:
+                start: "3%, 30%"
+                end: "3%, 80%"
       - extendedWaitUntil:
           visible:
             id: "NeonBinder set name for Anime Kanji"
