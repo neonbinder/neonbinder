@@ -283,7 +283,17 @@ describe("full copy-down from parent to child", () => {
     expect(await getFeatures(t, sportId)).toEqual({ league: "CUSTOM_LEAGUE" });
   });
 
-  test("storeReconciledOptions: fresh insert copies the parent's snapshot down and applies item.metadata for cardType", async () => {
+  /**
+   * NEO-291 — `item.metadata` on the wire no longer admits `isInsert` /
+   * `isParallel` (the reconciliation modal's validator narrowed to
+   * `{ cardNumberPrefix? }`); a client that still sends one gets an
+   * argument-validation error, not a silent write. The flag instead comes
+   * from `derivedVariantFlags`, read off the row's variant-type PARENT — so
+   * the parent here carries a `variant`-tagged BSC slot whose id contains the
+   * `insert` token (see `isBscInsertVariantId` in bscFacets.ts), exactly what
+   * a real variantType sync would have written.
+   */
+  test("storeReconciledOptions: fresh insert under an insert-role variant type derives isInsert and cardType Insert", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
 
@@ -295,15 +305,26 @@ describe("full copy-down from parent to child", () => {
       api.selectorOptions.addCustomSelectorOption,
       { level: "setName", value: "2024 Topps", parentId: sportId },
     );
+    const variantTypeId = await asAdmin.mutation(
+      api.selectorOptions.addCustomSelectorOption,
+      { level: "variantType", value: "Inserts", parentId: setNameId },
+    );
+    // A `variant`-tagged BSC slot whose id carries the `insert` token — the
+    // shape a real variantType sync writes (`syncWrittenBscFacet`).
+    await t.run(async (ctx) =>
+      ctx.db.patch(variantTypeId, {
+        platformData: { bsc: { b0: "insert" } },
+        platformFacets: { bsc: { b0: "variant" } },
+      }),
+    );
 
     await asAdmin.mutation(api.setReconciliation.storeReconciledOptions, {
       level: "insert",
-      parentId: setNameId,
+      parentId: variantTypeId,
       reconciledItems: [
         {
           value: "Chrome Update",
           platformData: { bsc: "bsc-insert-1" },
-          metadata: { isInsert: true },
         },
       ],
     });
@@ -312,12 +333,13 @@ describe("full copy-down from parent to child", () => {
       ctx.db
         .query("selectorOptions")
         .withIndex("by_level_and_parent", (q) =>
-          q.eq("level", "insert").eq("parentId", setNameId),
+          q.eq("level", "insert").eq("parentId", variantTypeId),
         )
         .collect(),
     );
     expect(insertRow).toHaveLength(1);
-    expect(insertRow[0].features).toEqual({
+    expect(insertRow[0].metadata).toEqual({ isInsert: true });
+    expect(insertRow[0].features).toMatchObject({
       league: "MLB", // copied down from sport
       isReprint: "false", // copied down from setName
       autographed: "None", // copied down from setName
@@ -326,7 +348,65 @@ describe("full copy-down from parent to child", () => {
       cardThickness: "20pt", // copied down from setName
       language: "English", // copied down from setName
       countryOfOrigin: "USA", // copied down from setName
-      cardType: "Insert", // own-level heuristic (level="insert")
+      cardType: "Insert", // derived flag (level="insert", parent role="insert")
     });
+  });
+
+  /**
+   * NEO-291 — the "parallel of the base set" shape: an `insert`-level row
+   * sitting under a variantType whose tagged slot says `parallel`, not
+   * `insert`. Before this ticket that row got no flag unless an operator
+   * remembered to tick a checkbox, and `features.cardType` came back "Insert"
+   * regardless. Now the role is read off the parent, so the row is born a
+   * parallel.
+   */
+  test("storeReconciledOptions: fresh insert under a parallel-role variant type derives isParallel and cardType Parallel", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+
+    const sportId = await asAdmin.mutation(
+      api.selectorOptions.addCustomSelectorOption,
+      { level: "sport", value: "Baseball" },
+    );
+    const setNameId = await asAdmin.mutation(
+      api.selectorOptions.addCustomSelectorOption,
+      { level: "setName", value: "2024 Topps", parentId: sportId },
+    );
+    const variantTypeId = await asAdmin.mutation(
+      api.selectorOptions.addCustomSelectorOption,
+      { level: "variantType", value: "Base", parentId: setNameId },
+    );
+    // A `variant`-tagged BSC slot whose id carries the `parallel` token — the
+    // "parallel of the base set" shape: the row's cards live at `insert`
+    // level, but the parent's role is parallel, not insert.
+    await t.run(async (ctx) =>
+      ctx.db.patch(variantTypeId, {
+        platformData: { bsc: { b0: "parallel" } },
+        platformFacets: { bsc: { b0: "variant" } },
+      }),
+    );
+
+    await asAdmin.mutation(api.setReconciliation.storeReconciledOptions, {
+      level: "insert",
+      parentId: variantTypeId,
+      reconciledItems: [
+        {
+          value: "Gold Refractor",
+          platformData: { bsc: "bsc-parallel-1" },
+        },
+      ],
+    });
+
+    const insertRow = await t.run(async (ctx) =>
+      ctx.db
+        .query("selectorOptions")
+        .withIndex("by_level_and_parent", (q) =>
+          q.eq("level", "insert").eq("parentId", variantTypeId),
+        )
+        .collect(),
+    );
+    expect(insertRow).toHaveLength(1);
+    expect(insertRow[0].metadata).toEqual({ isParallel: true });
+    expect(insertRow[0].features?.cardType).toBe("Parallel");
   });
 });

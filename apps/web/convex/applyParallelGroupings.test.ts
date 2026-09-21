@@ -1,0 +1,215 @@
+/**
+ * NEO-291 — `applyParallelGroupings`' flag rewrite on a level move.
+ *
+ * A promotion or demotion changes what a row IS, so its `isInsert`/
+ * `isParallel` flags must change with it — not merge, REPLACE (see
+ * `withVariantFlags` in convex/variantRole.ts). This file was previously
+ * untested altogether; these cases are the ones the ticket's derivation
+ * touches directly.
+ */
+
+import { convexTest } from "convex-test";
+import { describe, expect, test } from "vitest";
+import { api } from "./_generated/api";
+import schema from "./schema";
+import type { Id } from "./_generated/dataModel";
+
+const modules = (
+  import.meta as unknown as {
+    glob: (pattern: string) => Record<string, () => Promise<unknown>>;
+  }
+).glob("./**/*.*s");
+
+const ADMIN_IDENTITY = {
+  subject: "admin_user_apg_001",
+  issuer: "https://clerk.example.com",
+  tokenIdentifier: "clerk|admin_user_apg_001",
+  name: "Admin User",
+  role: "admin",
+};
+
+const SENTINEL = 1_000_000;
+
+/** A variant type whose `variant`-tagged BSC slot carries `role`'s token. */
+async function insertVariantType(
+  t: ReturnType<typeof convexTest>,
+  role: "insert" | "parallel",
+): Promise<Id<"selectorOptions">> {
+  return t.run(async (ctx) =>
+    ctx.db.insert("selectorOptions", {
+      level: "variantType",
+      value: role === "insert" ? "Inserts" : "Base",
+      platformData: { bsc: { b0: role } },
+      platformFacets: { bsc: { b0: "variant" } },
+      children: [],
+      lastUpdated: SENTINEL,
+    }),
+  );
+}
+
+async function insertInsert(
+  t: ReturnType<typeof convexTest>,
+  variantTypeId: Id<"selectorOptions">,
+  value: string,
+  metadata?: Record<string, unknown>,
+): Promise<Id<"selectorOptions">> {
+  return t.run(async (ctx) => {
+    const id = await ctx.db.insert("selectorOptions", {
+      level: "insert",
+      value,
+      parentId: variantTypeId,
+      platformData: {},
+      children: [],
+      ...(metadata ? { metadata } : {}),
+      lastUpdated: SENTINEL,
+    });
+    const parent = (await ctx.db.get(variantTypeId))!;
+    await ctx.db.patch(variantTypeId, { children: [...parent.children, id] });
+    return id;
+  });
+}
+
+async function insertParallel(
+  t: ReturnType<typeof convexTest>,
+  insertId: Id<"selectorOptions">,
+  value: string,
+  metadata?: Record<string, unknown>,
+): Promise<Id<"selectorOptions">> {
+  return t.run(async (ctx) => {
+    const id = await ctx.db.insert("selectorOptions", {
+      level: "parallel",
+      value,
+      parentId: insertId,
+      platformData: {},
+      children: [],
+      ...(metadata ? { metadata } : {}),
+      lastUpdated: SENTINEL,
+    });
+    const parent = (await ctx.db.get(insertId))!;
+    await ctx.db.patch(insertId, { children: [...parent.children, id] });
+    return id;
+  });
+}
+
+async function getRow(t: ReturnType<typeof convexTest>, id: Id<"selectorOptions">) {
+  return t.run(async (ctx) => ctx.db.get(id));
+}
+
+describe("applyParallelGroupings — promotion replaces the flags with isParallel (NEO-291)", () => {
+  test("promoting an insert to a parallel sets isParallel and clears isInsert, keeping other metadata", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const variantTypeId = await insertVariantType(t, "insert");
+    const source = await insertInsert(t, variantTypeId, "Refractor", {
+      isInsert: true,
+      cardNumberPrefix: "DK-",
+    });
+    const target = await insertInsert(t, variantTypeId, "Base Refractor");
+
+    const result = await asAdmin.mutation(api.selectorOptions.applyParallelGroupings, {
+      variantTypeId,
+      promotions: [{ insertId: source, targetInsertId: target }],
+      demotions: [],
+    });
+
+    expect(result).toEqual({ success: true, promoted: 1, demoted: 0, reparented: 0 });
+
+    const row = await getRow(t, source);
+    expect(row?.level).toBe("parallel");
+    expect(row?.parentId).toBe(target);
+    // isInsert is GONE (replaced, not merged) and the unrelated key survives.
+    expect(row?.metadata).toEqual({ isParallel: true, cardNumberPrefix: "DK-" });
+  });
+
+  test("promoting a row with no prior metadata gets exactly isParallel", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const variantTypeId = await insertVariantType(t, "insert");
+    const source = await insertInsert(t, variantTypeId, "Refractor");
+    const target = await insertInsert(t, variantTypeId, "Base Refractor");
+
+    await asAdmin.mutation(api.selectorOptions.applyParallelGroupings, {
+      variantTypeId,
+      promotions: [{ insertId: source, targetInsertId: target }],
+      demotions: [],
+    });
+
+    const row = await getRow(t, source);
+    expect(row?.metadata).toEqual({ isParallel: true });
+  });
+});
+
+describe("applyParallelGroupings — demotion replaces the flags with the variant type's role (NEO-291)", () => {
+  test("demoting under an insert-role variant type sets isInsert, keeping other metadata", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const variantTypeId = await insertVariantType(t, "insert");
+    const insertRow = await insertInsert(t, variantTypeId, "Refractor");
+    const parallelRow = await insertParallel(t, insertRow, "Gold /99", {
+      isParallel: true,
+      cardNumberPrefix: "GR-",
+    });
+
+    const result = await asAdmin.mutation(api.selectorOptions.applyParallelGroupings, {
+      variantTypeId,
+      promotions: [],
+      demotions: [{ parallelId: parallelRow }],
+    });
+
+    expect(result).toEqual({ success: true, promoted: 0, demoted: 1, reparented: 0 });
+
+    const row = await getRow(t, parallelRow);
+    expect(row?.level).toBe("insert");
+    expect(row?.parentId).toBe(variantTypeId);
+    // isParallel is GONE (replaced) and the unrelated key survives.
+    expect(row?.metadata).toEqual({ isInsert: true, cardNumberPrefix: "GR-" });
+  });
+
+  test("demoting under a parallel-role variant type sets isParallel — the base-set-parallel shape", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const variantTypeId = await insertVariantType(t, "parallel");
+    const insertRow = await insertInsert(t, variantTypeId, "Refractor");
+    const parallelRow = await insertParallel(t, insertRow, "Gold /99", {
+      isParallel: true,
+    });
+
+    await asAdmin.mutation(api.selectorOptions.applyParallelGroupings, {
+      variantTypeId,
+      promotions: [],
+      demotions: [{ parallelId: parallelRow }],
+    });
+
+    const row = await getRow(t, parallelRow);
+    expect(row?.level).toBe("insert");
+    expect(row?.metadata).toEqual({ isParallel: true });
+  });
+
+  test("demoting under a role-less variant type clears both flags", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const variantTypeId = await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Mystery",
+        platformData: {},
+        children: [],
+        lastUpdated: SENTINEL,
+      }),
+    );
+    const insertRow = await insertInsert(t, variantTypeId, "Refractor");
+    const parallelRow = await insertParallel(t, insertRow, "Gold /99", {
+      isParallel: true,
+      cardNumberPrefix: "GR-",
+    });
+
+    await asAdmin.mutation(api.selectorOptions.applyParallelGroupings, {
+      variantTypeId,
+      promotions: [],
+      demotions: [{ parallelId: parallelRow }],
+    });
+
+    const row = await getRow(t, parallelRow);
+    expect(row?.metadata).toEqual({ cardNumberPrefix: "GR-" });
+  });
+});

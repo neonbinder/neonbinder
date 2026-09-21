@@ -912,3 +912,39 @@ describe("NEO-289: the enrichment-fixture capture is internal and armed, never p
     expect(src).not.toContain("requireAdmin(");
   });
 });
+
+describe("NEO-291: the card-prefix write is admin-gated, and the whole-metadata door is gone", () => {
+  /**
+   * The Metadata box's `updateSelectorOptionMetadata` took the whole
+   * `metadata` object from any admin client and spread-merged it, which made
+   * `isBase` / `isInsert` / `isParallel` client-writable roles. It is deleted;
+   * the one field an operator still edits by hand has its own narrow mutation,
+   * gated like every other set-side edit here (`setSelectorOptionFeature`).
+   * `setVariantTypePlatformData` lost its `metadata` arg in the same change —
+   * asserted by the type of its args, not here.
+   *
+   * Called with a valid, inert value so the refusal is the gate and not
+   * argument validation.
+   */
+  test("selectorOptions.setSelectorOptionCardNumberPrefix refuses a signed-in non-admin and a signed-out caller", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const call = (tt: ReturnType<typeof convexTest>) =>
+      tt.mutation(api.selectorOptions.setSelectorOptionCardNumberPrefix, {
+        id: sportId,
+        cardNumberPrefix: "DK-",
+      });
+    await expect(call(t.withIdentity(SIGNED_IN))).rejects.toThrow();
+    await expect(call(t)).rejects.toThrow();
+    // Refused before any write: the row is exactly as seeded.
+    const row = await t.run(async (ctx) => ctx.db.get(sportId));
+    expect(row!.lastUpdated).toBe(1_700_000_000_000);
+    expect(row!.metadata).toBeUndefined();
+  });
+
+  test("the whole-metadata mutation stays deleted", () => {
+    // `api` is a proxy that resolves any name, so the source is the proof.
+    const src = readFileSync(join(__dirname, "selectorOptions.ts"), "utf8");
+    expect(src).not.toContain("export const updateSelectorOptionMetadata");
+  });
+});
