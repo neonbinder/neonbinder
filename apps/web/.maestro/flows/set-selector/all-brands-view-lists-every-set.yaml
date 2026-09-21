@@ -1,0 +1,333 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "All Brands is a pinned view — every set in the year with its brand, no + Custom, the brand back-filled on pick, and the name refused as a brand"
+tags:
+  - set-selector
+---
+# ════════════════════════════════════════════════════════════════════════════
+# R1 — ONE FEATURE (NEO-237, D15/D17): "All Brands" is no longer a
+# manufacturer row. It is an entry PINNED to the top of the Manufacturers
+# column that is a VIEW of the year — pick it and the Sets column lists every
+# set under every brand of the year with the brand as a muted second line —
+# and it behaves like a view everywhere a row would have behaved otherwise:
+#
+#   1. it is there whether the column holds zero rows or eighteen (asserted
+#      on a fresh deployment, where the year has just been minted and holds
+#      no brand yet — that is the CI path);
+#   2. the Sets column under it offers NO "+ Custom": a view spans several
+#      parents, so there is no one parent to create a set under, and the
+#      column says what to do instead ("Pick a brand to add a set");
+#   3. every set of the year is listed, each with its own brand beneath it;
+#   4. picking a set there BACK-FILLS the Manufacturers column from the set's
+#      own parent, so the cascade below (Variant Types, the attributes
+#      breadcrumb, every fetch that reads the manufacturer ancestor) sees the
+#      row the set actually lives under — the collapsed card reads the brand,
+#      never "All Brands";
+#   5. the name is REFUSED as a manufacturer by the "+ Custom" form, inline,
+#      before anything is written: a row wearing the view's label would be a
+#      second thing called All Brands in the same column;
+#   6. a brand row's attributes carry its set-name prefix as "Brand",
+#      defaulted to the brand's own name at creation — the NB fact that
+#      decides which of the year's sets are this brand's (D1).
+#
+# MARKETPLACE-FREE, PER WORKER (R7/R7a). Everything is created under a sport
+# this flow owns outright — `xb-sport-<worker>` — inside year 2026, through the
+# product's own "+ Custom" forms via the drill util (R9). No ancestor carries
+# a marketplace id, so neither side is ever resolvable, nothing is fetched,
+# the view's year-wide read is "already populated" the moment two sets exist,
+# and every in-app wait is the 7000 bar (R5). The brand rows (`Topps`,
+# `Panini`) and the two sets (`xb-a-<worker>`, `xb-b-<worker>`) are stable
+# per worker so a re-run finds them instead of minting more; nothing here
+# depends on a count, so no ATTEMPT_ID is needed. Prefix `xb-` and the sport
+# are registered in .maestro/SET-REGISTRY.md.
+#
+# WHY ITS OWN SPORT, AND NOT THE SUITE'S SHARED "E2E Test Sport <worker>".
+# This flow ADDS A ROW ABOVE SET LEVEL (`Panini`) — and the pinned view is
+# itself one more row in EVERY Manufacturers column now. Twenty-odd flows
+# drill `E2E Test Sport <worker> › 2026 › Topps` through
+# `util-drill-to-custom-set.yaml`, whose Level-3 fallback waits for
+# `Add custom Manufacturers` WITHOUT scrolling; rows this flow put in that
+# column would push that button toward the fold for every one of them
+# (SET-REGISTRY.md → "Adding ROWS to a shared column"). A private sport costs
+# nothing: the Sports column is long enough to render a search input, every
+# drill filters it first, and its list is capped by its own scroller.
+# `custom-set-exists-elsewhere-offers-drill.yaml` (`xp-sport-<worker>`) is the
+# precedent and the shape this flow copies.
+#
+# HANDLES (accessible names and visible text only — README "unique,
+# user-visible handle"; never a DOM id):
+#   the pinned entry        text `All Brands`, aria-label
+#                           `All Brands — every set in 2026`
+#   the collapsed cards     `Manufacturers: Panini — change`,
+#                           `Sets: xb-b-<worker> — change` (EntitySelector)
+#   the hidden-Custom line  `Pick a brand to add a set` (EntityColumn)
+#   the refusal             `All Brands is the view at the top of this
+#                           column, not a brand.` (selectorSyncMatch.ts —
+#                           fixed text, shared by the form and the mutation)
+#   the Brand row           input `Value for Brand`, wrapper
+#                           `Set feature Brand` (SetAttributesPanel)
+#   the form's buttons      `Add custom Manufacturers`,
+#                           `Cancel new manufacturer`, `Create manufacturer`
+#
+# R2 — every negative below is paired with a positive on the same surface:
+# `assertNotVisible` alone is satisfied by a page that has fallen to its
+# error boundary.
+# R3 — no other flow drives the pinned view marketplace-free.
+#   `checklist-one-marketplace-skips-match-dialog` reaches it on real Hockey
+#   1995 data (its STEP 2 proves the back-fill resolves to the year's
+#   `Unknown` row); `brand-via-all-brands-narrows-sportlots` proves the
+#   SportLots half. Neither can say what THIS flow says about the view on a
+#   year with no marketplace behind it, and neither exercises the refusal.
+# R4 — enters through the sign-in redirect; no in-body login.
+# R9 — all drilling goes through util-drill-to-custom.yaml.
+# ════════════════════════════════════════════════════════════════════════════
+
+- launchApp
+- extendedWaitUntil:
+    visible: ".*Build set parameters using marketplace APIs.*"
+    timeout: 45000
+
+# ============================================================
+# PART 1 — THE PINNED ENTRY IS THERE BEFORE THE YEAR HAS A SINGLE BRAND, AND
+#          ITS NAME IS REFUSED AS A BRAND
+#
+# Drill only as far as this worker's own year. The util leaves the
+# Manufacturers column open and EMPTY on a fresh deployment (it minted the
+# sport and the year just now), which is exactly the state claim 1 is about.
+# ============================================================
+
+- runFlow:
+    file: util-drill-to-custom.yaml
+    env:
+      SPORT: "xb-sport-${WORKER_INDEX || 0}"
+      YEAR: "2026"
+
+# CLAIM 1. The view is listed with zero data rows (fresh deployment) or with
+# the two this flow's earlier run left (local re-run) — either way, first,
+# by its full accessible name. The manufacturer level under a hand-made sport
+# never syncs (no ids on either side → the two-sided skip goes idle silently),
+# so this is an ordinary in-app wait.
+- extendedWaitUntil:
+    visible:
+      id: "All Brands — every set in 2026"
+    timeout: 7000
+
+# CLAIM 5. Open the column's own "+ Custom" form and type the view's name.
+# R8 — centred before the tap. The button sits below every row in the
+# column (EntityColumn puts the action row under the list), DOWN from where
+# the drill left the page.
+- scrollUntilVisible:
+    element:
+      id: "Add custom Manufacturers"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Add custom Manufacturers"
+- extendedWaitUntil:
+    visible: "Add Custom Entry"
+    timeout: 7000
+- tapOn: "Enter custom value..."
+- inputText: "All Brands"
+# ONE Enter. The form validates BEFORE it looks anywhere: the refusal is the
+# input stage's own `role="alert"`, so no "Checking where this name is
+# already used…" round-trip and no confirm ever renders.
+- pressKey: Enter
+
+# THE ACCEPTANCE CRITERION for this part: the refusal, in the operator's own
+# words, and NOTHING written — the form is still standing (a created row
+# would have closed it; that is the signal ten other flows use to know a
+# custom entry landed), and no confirm was offered.
+- extendedWaitUntil:
+    visible: "All Brands is the view at the top of this column, not a brand."
+    timeout: 7000
+- assertVisible: "Add Custom Entry"
+- assertNotVisible:
+    id: "Create manufacturer"
+
+# Leave the form the operator's way. The idle action row coming back is the
+# positive that pairs with the `notVisible` below (R2).
+- tapOn:
+    id: "Cancel new manufacturer"
+- extendedWaitUntil:
+    notVisible: "Add Custom Entry"
+    timeout: 7000
+- assertVisible:
+    id: "Add custom Manufacturers"
+
+# ============================================================
+# PART 2 — TWO BRANDS, ONE SET EACH
+#
+# Each drill re-navigates to /set-selector and creates whatever is missing
+# (idempotent on a re-run). `Topps` and `Panini` are ordinary hand-made rows
+# here: names SportLots also uses, but this sport carries no SportLots id, so
+# no marketplace ever links them and nothing is fetched. Landing at the
+# Variant Types column is the util's return contract when SET_NAME is given.
+# ============================================================
+
+- runFlow:
+    file: util-drill-to-custom.yaml
+    env:
+      SPORT: "xb-sport-${WORKER_INDEX || 0}"
+      YEAR: "2026"
+      MANUFACTURER: "Topps"
+      SET_NAME: "xb-a-${WORKER_INDEX || 0}"
+- assertVisible: "Variant Types"
+
+- runFlow:
+    file: util-drill-to-custom.yaml
+    env:
+      SPORT: "xb-sport-${WORKER_INDEX || 0}"
+      YEAR: "2026"
+      MANUFACTURER: "Panini"
+      SET_NAME: "xb-b-${WORKER_INDEX || 0}"
+- assertVisible: "Variant Types"
+
+# ============================================================
+# PART 3 — THE VIEW LISTS BOTH SETS, EACH WITH ITS BRAND, AND OFFERS NO CUSTOM
+#
+# Re-drill to the year rather than re-opening the Manufacturers column from
+# its collapsed card: the util reloads the page and leaves the column
+# EXPANDED with nothing selected, which is where the pinned entry is tapped.
+# (A collapsed card can sit at a negative x once enough columns are open —
+# set-team-carries-down-to-cards.yaml's Step 5 has the measurement — and
+# maestro-web has no horizontal scroll to bring it back.)
+# ============================================================
+
+- runFlow:
+    file: util-drill-to-custom.yaml
+    env:
+      SPORT: "xb-sport-${WORKER_INDEX || 0}"
+      YEAR: "2026"
+
+# The column holds the pinned entry plus two rows — under the search
+# threshold, so there is no input to filter; the entry is tapped by its
+# accessible name, which no row and no card shares. R8 — centred before the
+# tap. Result-keyed retry: the same coordinate-staleness class the drill
+# utils handle on every row tap (NEO-85); the Sets header is the result.
+- scrollUntilVisible:
+    element:
+      id: "All Brands — every set in 2026"
+    centerElement: true
+    timeout: 7000
+- retry:
+    maxRetries: 1
+    commands:
+      - tapOn:
+          id: "All Brands — every set in 2026"
+          retryTapIfNoChange: true
+      - extendedWaitUntil:
+          visible: "Sets"
+          timeout: 7000
+
+# CLAIM 2. No "+ Custom" — and the line that stands in its place is the
+# positive half of that pair. The view's read is "already populated" (two
+# sets exist under the year), so nothing syncs and the idle row renders at
+# once. The line sits in the column's action row, below its two rows; it is
+# a scroll target rather than a bare assert because the pinned tap above was
+# centred on the Manufacturers column, one column to the left and level with
+# this one's top, not its bottom.
+- scrollUntilVisible:
+    element:
+      text: "Pick a brand to add a set"
+    timeout: 7000
+- assertNotVisible:
+    id: "Add custom Sets"
+
+# CLAIM 3. Both sets, and under each one its brand. The set name is the row's
+# own text node; the brand is a sibling node beneath it (maestro-web's `text`
+# is direct text nodes only, so neither string leaks into the other). The
+# brand line is anchored `below:` its set so the assertion is about THIS
+# row's brand, not about the word appearing somewhere in the column. Rows
+# sort by name, so `xb-a-…` (Topps) is above `xb-b-…` (Panini) and each
+# brand line is the nearest match below its own set. The Manufacturers
+# column is collapsed to the view's card at this point, so neither brand
+# name is on screen for any other reason.
+- assertVisible:
+    text: "xb-a-${WORKER_INDEX || 0}"
+- assertVisible:
+    text: "Topps"
+    below:
+      text: "xb-a-${WORKER_INDEX || 0}"
+- assertVisible:
+    text: "xb-b-${WORKER_INDEX || 0}"
+- assertVisible:
+    text: "Panini"
+    below:
+      text: "xb-b-${WORKER_INDEX || 0}"
+
+# ============================================================
+# PART 4 — PICKING A SET IN THE VIEW BACK-FILLS ITS BRAND
+# ============================================================
+
+# R8 — centred before the tap (the assertions above only proved presence).
+# The Variant Types header is the result the retry keys on.
+- scrollUntilVisible:
+    element:
+      text: "xb-b-${WORKER_INDEX || 0}"
+    centerElement: true
+    timeout: 7000
+- retry:
+    maxRetries: 1
+    commands:
+      - tapOn:
+          text: "xb-b-${WORKER_INDEX || 0}"
+          retryTapIfNoChange: true
+      - extendedWaitUntil:
+          visible: "Variant Types"
+          timeout: 7000
+
+# CLAIM 4. The Manufacturers column collapsed to the SET'S OWN BRAND, not to
+# the view, in the same render the set was picked. Both cards are in the
+# columns row the pick just re-laid out (four collapsed cards plus the open
+# Variant Types column fit the 1024px viewport with the row scrolled to the
+# newest column — the Sports card is the one that leaves, on the left); a
+# horizontal offset is nothing a flow can correct, so these are bare asserts.
+- assertVisible:
+    id: "Manufacturers: Panini — change"
+- assertVisible:
+    id: "Sets: xb-b-${WORKER_INDEX || 0} — change"
+
+# ============================================================
+# PART 5 — A BRAND ROW'S "Brand" ATTRIBUTE IS ITS OWN NAME
+#
+# Drill to the brand and stop there, so the attributes panel scopes to the
+# MANUFACTURER row (it follows the deepest selection). The panel always
+# renders collapsed; `Edit attributes` opens it. DOWN from where the drill
+# left the page — the panel renders below the selector columns — and
+# centred, because a tap follows. This step DEPENDS on the NEO-260 208px
+# spacer in src/layouts/binder-layout.tsx for its scroll headroom (R8 case
+# 1), exactly as set-attributes-card-prefix.yaml's `Edit attributes` does.
+# ============================================================
+
+- runFlow:
+    file: util-drill-to-custom.yaml
+    env:
+      SPORT: "xb-sport-${WORKER_INDEX || 0}"
+      YEAR: "2026"
+      MANUFACTURER: "Panini"
+- assertVisible: "Sets"
+
+- scrollUntilVisible:
+    element:
+      id: "Edit attributes"
+    centerElement: true
+    visibilityPercentage: 10
+    waitToSettleTimeoutMs: 1000
+    timeout: 7000
+- tapOn:
+    id: "Edit attributes"
+- assertVisible:
+    id: "Hide attributes"
+
+# CLAIM 6. The Brand row is the first cell of the grid on a manufacturer row
+# and reads the brand's own name: `addCustomSelectorOption` writes
+# `metadata.setNamePrefix = value` at creation, once, and the panel hydrates
+# the input from the row. For an <input> maestro-web's `text` is its VALUE,
+# so `id` + `text` on one node is the field AND its contents (README R5 →
+# "Maestro web getnodetext form values"). No tap follows, so no centring;
+# the scroll is the assertion (R6).
+- scrollUntilVisible:
+    element:
+      id: "Value for Brand"
+      text: "Panini"
+    timeout: 7000

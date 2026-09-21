@@ -57,6 +57,12 @@ tags:
 # drill filters it before touching it, and its list is capped by its own
 # `max-h-[400px]` scroller — so one more sport row is invisible to everyone.
 #
+# NEO-237 spends one of those rows everywhere: every Manufacturers column now
+# opens with the pinned "All Brands" VIEW entry above its data rows, so this
+# sport's column is three rows tall (the view, A, B) where it used to be two.
+# Nothing here targets the view — the drill util taps `xp-<w>-A` / `-B` by
+# name under the column header, and neither name full-matches "All Brands".
+#
 # R4 — enters through the sign-in redirect; no in-body login.
 # R5 — every wait is the 7s default. Nothing here touches a marketplace: a
 #   custom sport makes the whole subtree custom (NEO-22), so every column

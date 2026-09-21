@@ -593,7 +593,10 @@ behave identically to `1`.
 `util-drill-to-cold-real-set` via `runFlow`; never hand-roll a
 Sport → Year → Manufacturer → Set → Variant drill inline. A flow targeting a
 genuinely different set with unique picker asserts may diverge and must say
-why.
+why. The pinned "All Brands" VIEW at the top of the Manufacturers column
+(NEO-237) is selected through `util-drill-to-cold-real-set` with
+`MANUFACTURER: "All Brands"`, which taps the entry in both modes; it is never
+typed into "+ Custom" (the form refuses the name) and never searched for.
 
 **R10 — No waits that synchronise nothing.** A `when: { notVisible: X }`
 guard on an element that is normally present polls the full 7 s every run; a
@@ -1030,10 +1033,14 @@ picker's SportLots pane shows the ordinary "SportLots returned no base set
 for <set>"; checklist fetches take the ordinary one-marketplace path ("Kept
 all N cards from BSC. Nothing to match, no other marketplace attached.").
 Paused branches below the root therefore assert THAT state, never the paused
-sentence. Two structural consequences matter to drills: the **Manufacturers
-column is empty** on a fresh deployment (SportLots' brand list is its only
-source; see `SET-REGISTRY.md` → "While SportLots is on pause") and a
-**BSC-only Base still reads as unmapped**, so its picker re-opens on every
+sentence. Three structural consequences matter to drills: the **Manufacturers
+column holds only the pinned "All Brands" view entry** on a fresh deployment
+(SportLots' brand list is its only source of rows; the view is not a row and
+is rendered in every mode — NEO-237; see `SET-REGISTRY.md` → "While SportLots
+is on pause"), a **brand's Sets column ends "done" with "SportLots skipped:
+no SportLots ids on this path."** now that Sync Sets asks SportLots per brand
+(a notice, not an error — the seed's strict asserts key on failure copy), and
+a **BSC-only Base still reads as unmapped**, so its picker re-opens on every
 visit and the read-only drills leave it with Cancel → Close.
 
 ## SportLots never rejects a password in E2E (NEO-288)
