@@ -60,7 +60,16 @@ import { unionChildren } from "./selectorSyncStore";
  * is operator content and the status message is reactive state (NEO-47).
  */
 export function rehomedNotice(count: number): string {
-  return `${count} ${count === 1 ? "set" : "sets"} moved out of Unknown`;
+  return `${countNoun(count, "set")} moved out of Unknown`;
+}
+
+/**
+ * "1 set" / "3 sets" / "0 brands" — the one pluraliser behind every count the
+ * Sync Sets summary shows the operator. Never "(s)": the summary is read by a
+ * collector, not a developer. `plural` defaults to `singular + "s"`.
+ */
+export function countNoun(count: number, singular: string, plural?: string): string {
+  return `${count} ${count === 1 ? singular : (plural ?? `${singular}s`)}`;
 }
 
 export type RehomeResult = {

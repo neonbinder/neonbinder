@@ -97,6 +97,8 @@ import {
   selectorValueKey,
   unlinkStalePrimary,
   type IncomingItem,
+  // NEO-237 — the reserved view name, refused at the sync insert door too.
+  isAllBrandsViewName,
   // NEO-237 — the one brand-prefix matcher and the two pure routers behind
   // Sync Sets. The BSC phase files by id first and prefix second; the
   // SportLots phase classifies a brand's list as covered / variant / new.
@@ -115,6 +117,7 @@ import {
 import { SL_ALL_BRANDS_BRAND_ID, isSlAllBrandsBrandId } from "./slBrandAxis";
 // NEO-237 — the pure NB re-home, Unknown → brand, shared by the three doors.
 import {
+  countNoun,
   rehomedNotice,
   rehomeSetRowsToBrand,
   rehomeSetsFromBrandUnknown,
@@ -1692,6 +1695,12 @@ export const storeSelectorOptions = mutation({
      * nothing was unlinked on them. Empty on every normal sync.
      */
     returnedIdsTruncatedSides: v.array(platformSideValidator),
+    /**
+     * NEO-237 — manufacturer-level options whose value folds to the reserved
+     * All Brands view name and so were NOT inserted (matched rows are still
+     * linked). Reported, never renamed. Zero on every normal sync.
+     */
+    reservedNamesSkipped: v.number(),
   }),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
@@ -1918,6 +1927,7 @@ export const storeSelectorOptions = mutation({
 
     const linkedIds: Id<"selectorOptions">[] = [];
     const relinkedAll: UnlinkedEntry[] = [];
+    let reservedNamesSkipped = 0;
 
     for (let i = 0; i < options.length; i++) {
       const option = options[i];
@@ -2032,6 +2042,26 @@ export const storeSelectorOptions = mutation({
         continue;
       }
       const insertValue = valueCheck.value;
+      // NEO-237 — the fourth door for the reserved view name. The operator's
+      // two doors refuse it (`checkCustomSelectorValue`, `planValueRename`)
+      // and `fetchAggregatedOptions` routes SportLots' all-brands option to
+      // the Unknown row by its ID before it reaches here (D6) — but that
+      // routing keys on the id SportLots serves today, and a marketplace is
+      // free to change it. If it does, the option falls through to this
+      // insert and becomes a manufacturer row named "All Brands" with
+      // `setNamePrefix: "All Brands"`, and every by-text drill on the
+      // Manufacturers column is ambiguous against the pinned view. So the
+      // name is refused HERE too, by NB's own fold, whatever id carried it:
+      // counted into the result, logged, never renamed, never inserted. A
+      // direct admin call reaches the same guard.
+      if (level === "manufacturer" && isAllBrandsViewName(insertValue)) {
+        reservedNamesSkipped++;
+        console.warn(
+          `[storeSelectorOptions] skipped a manufacturer option named after ` +
+            `the All Brands view (parentId=${parentId ?? "none"})`,
+        );
+        continue;
+      }
       const incomingBsc = item.ids.bsc;
       const incomingSl = item.ids.sportlots;
       warnIfIncomplete("new", insertValue, incomingBsc);
@@ -2245,6 +2275,7 @@ export const storeSelectorOptions = mutation({
       relinked: relinkedAll.slice(0, UNLINK_NOTICE_LIMIT),
       relinkedTotal: relinkedAll.length,
       returnedIdsTruncatedSides: truncatedSides,
+      reservedNamesSkipped,
     };
   },
 });
@@ -9648,7 +9679,7 @@ export const syncSetsAcrossManufacturers = action({
                 `[syncSetsAcrossManufacturers] year set index truncated at ` +
                   `${MAX_YEAR_SET_ROWS} rows — ${plan.moves.length} re-home(s) skipped`,
               );
-              summary.push("re-homes skipped: year too large to index");
+              summary.push("too many sets this year to move any out of Unknown");
             } else {
               const moved = await ctx.runMutation(
                 internal.selectorOptions.rehomeSetRowsForSync,
@@ -9656,7 +9687,10 @@ export const syncSetsAcrossManufacturers = action({
               );
               if (moved.rehomed > 0) summary.push(rehomedNotice(moved.rehomed));
               if (moved.clashes > 0) {
-                summary.push(`${moved.clashes} stayed under Unknown (name clash)`);
+                summary.push(
+                  `${countNoun(moved.clashes, "set")} stayed under Unknown — ` +
+                    `the brand already has a set by that name`,
+                );
               }
             }
           }
@@ -9788,7 +9822,7 @@ export const syncSetsAcrossManufacturers = action({
           })),
         );
         if (index.truncated) {
-          summary.push("SportLots variant test incomplete: year too large to index");
+          summary.push("too many sets this year to sort SportLots' list");
         }
 
         const slSport = slotIds(sportAncestor, "sportlots")[0];
@@ -9864,8 +9898,8 @@ export const syncSetsAcrossManufacturers = action({
         const realToFetch = realScopes.slice(0, MAX_SL_BRANDS_PER_SYNC);
         if (realScopes.length > realToFetch.length) {
           summary.push(
-            `${realScopes.length - realToFetch.length} SportLots brand list(s) ` +
-              `not fetched (cap ${MAX_SL_BRANDS_PER_SYNC})`,
+            `${countNoun(realScopes.length - realToFetch.length, "brand")} not ` +
+              `asked on SportLots this time — sync again`,
           );
         }
         const realLists = await mapWithConcurrency(
@@ -9876,6 +9910,10 @@ export const syncSetsAcrossManufacturers = action({
 
         let slFailed = 0;
         let slNew = 0;
+        // Entries hidden as a variant of a set NB already has. Not offered,
+        // but not invisible either: the operator reaches them from that set's
+        // Base picker / attach pane, and the summary says how many there are.
+        let slVariantsOfKnown = 0;
         const classify = async (
           scope: (typeof scopes)[number],
           entries: Array<{ id: string; label: string }>,
@@ -9889,7 +9927,7 @@ export const syncSetsAcrossManufacturers = action({
               `[syncSetsAcrossManufacturers] SportLots classification skipped ` +
                 `for one brand — its subtree exceeds ${MAX_SYNC_ITEMS} rows`,
             );
-            summary.push("one brand too large to classify");
+            summary.push("one brand's SportLots list was too long to sort");
             return;
           }
           const routed = routeSlSets({
@@ -9904,11 +9942,13 @@ export const syncSetsAcrossManufacturers = action({
             roots: routed.roots,
           });
           slNew += routed.roots.length;
+          slVariantsOfKnown += routed.variants;
           if (routed.rootsTruncated > 0 || routed.membersTruncated > 0) {
-            summary.push(
-              `SportLots list truncated for one brand ` +
-                `(roots +${routed.rootsTruncated}, members +${routed.membersTruncated})`,
+            console.warn(
+              `[syncSetsAcrossManufacturers] SportLots list truncated for one ` +
+                `brand (roots +${routed.rootsTruncated}, members +${routed.membersTruncated})`,
             );
+            summary.push("one brand's SportLots list was cut short");
           }
         };
 
@@ -9958,9 +9998,18 @@ export const syncSetsAcrossManufacturers = action({
 
         if (slFailed > 0) failedPlatforms.push("sportlots");
         if (slUnresolvable > 0 && !args.manufacturerId) {
-          summary.push(`${slUnresolvable} brand(s) without SportLots ids skipped`);
+          summary.push(
+            `${countNoun(slUnresolvable, "brand")} ` +
+              `${slUnresolvable === 1 ? "has" : "have"} no SportLots link`,
+          );
         }
         summary.push(`${slNew} new on SportLots`);
+        if (slVariantsOfKnown > 0) {
+          summary.push(
+            `${slVariantsOfKnown} more ${slVariantsOfKnown === 1 ? "matches" : "match"} ` +
+              `sets you already have`,
+          );
+        }
       }
 
       // Success means "something was asked and answered": the same rule

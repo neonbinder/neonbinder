@@ -330,12 +330,33 @@ function foldedPrefixMatches(foldedLabel: string, foldedPrefix: string): boolean
  * becoming "" and being dropped by the caller's `if (setName)` guard — the
  * second correction `stripBrandPrefixForLabel` carries, for the same reason.
  * Returns the label unchanged when the prefix does not match.
+ *
+ * The boundary the matcher accepts is any non-alphanumeric character, so the
+ * remainder may start with the separator that ended the brand: "Choice-
+ * Biloxi" → "-Biloxi". A dash-like separator (hyphen, en/em dash, colon,
+ * slash, pipe) is dropped along with the whitespace around it, because it
+ * joined the brand to the name and means nothing on its own. Anything else
+ * stays — a leading "#", "(" or quote may well be part of the set's name,
+ * and guessing is what `stripBrandPrefixForLabel` declined to do. That
+ * adapter strip keeps its whitespace-only trim (rows named by it before
+ * NEO-237 must not churn a rename suggestion); this one names only rows a
+ * via-All-Brands brand narrows, all of them born under this rule.
  */
 export function stripMatchedBrandPrefix(label: string, prefix: string): string {
   if (!matchesBrandPrefix(label, prefix)) return label;
   const trimmedLabel = label.trim();
-  const stripped = trimmedLabel.slice(prefix.trim().length).trim();
+  const stripped = trimLeadingSeparators(trimmedLabel.slice(prefix.trim().length));
   return stripped.length > 0 ? stripped : trimmedLabel;
+}
+
+/**
+ * What is left of a label after its brand prefix, with the joining
+ * separator gone: whitespace and dash-like punctuation only. Shared by
+ * `stripMatchedBrandPrefix` and `routeSlSets`' folded re-strip so the label
+ * the adapter displays and the label the classifier judges are one string.
+ */
+function trimLeadingSeparators(rest: string): string {
+  return rest.replace(/^[\s\-–—:/|]+/u, "").trim();
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -1061,12 +1082,28 @@ export function knownSetNameKeys(
  *              no offer, however it is named.
  *   variant  — a set NB already has, year-wide, EQUALS or word-boundary-
  *              PREFIXES the entry's label (`knownSetNameKeys`), so the entry
- *              is that set's variant, not a new set. Tested on the label as
- *              the adapter returned it AND re-prefixed with the scope's own
- *              prefix: under a real brand the adapter strips "Topps " off
- *              "Topps Chrome Sepia Refractor", and NB's set is called "Topps
- *              Chrome". Not surfaced — the Inserts sync under that set finds
- *              it.
+ *              is that set's variant, not a new set. Not surfaced — the
+ *              Inserts sync under that set finds it. Two tests:
+ *
+ *              EQUALS is tested on the label as the adapter returned it AND
+ *              re-prefixed with the scope's own prefix: under a real brand
+ *              the adapter strips "Topps " off "Topps Chrome", and NB's set
+ *              may be called either "Chrome" or "Topps Chrome".
+ *
+ *              PREFIXES is tested with the SCOPE PREFIX STRIPPED FROM BOTH
+ *              SIDES: the entry's label minus the prefix (a no-op when the
+ *              adapter already stripped it) against each known name minus the
+ *              same prefix. A known set contributes a prefix-hider only from
+ *              what remains after the brand prefix, and a known set that IS
+ *              the brand prefix (a flagship filed under its brand's own name:
+ *              "Topps" under Topps, "Bowman" under Bowman) leaves nothing —
+ *              it hides an exact match and nothing by prefix. Without this
+ *              the flagship hid the whole brand: "Topps" prefixed the
+ *              re-prefixed form of every entry ("Topps Heritage", "Topps
+ *              Finest", …) the moment the Topps row existed. Now "Heritage"
+ *              under Topps is tested as "heritage" against "" (skipped) and
+ *              is NEW; "Chrome Sepia Refractor" is tested as "chrome sepia
+ *              refractor" against "Topps Chrome" → "chrome" and is a VARIANT.
  *   new      — everything else, grouped by ROOT: an entry is a root when no
  *              other new entry's label word-boundary-prefixes it; every other
  *              entry joins the LONGEST root that prefixes it. Two entries with
@@ -1074,7 +1111,13 @@ export function knownSetNameKeys(
  *              sorted by folded label BEFORE the cap so a skipped root cannot
  *              rotate out of the window between two syncs and lose its Skip.
  *
- * Pure. `entries` are the adapter's (already prefix-stripped) labels.
+ * Pure. `entries` are the adapter's (already prefix-stripped) labels: the
+ * whole-word, case-insensitive strip of `stripMatchedBrandPrefix` for a
+ * via-All-Brands scope, `stripBrandPrefixForLabel`'s case-sensitive one for a
+ * real brand's own list, and no strip at all for Unknown (no `scopePrefix`).
+ * The strip repeated here is the folded form of the first, so a label that
+ * arrives stripped is unchanged and one the case-sensitive strip missed is
+ * still judged on what follows the brand.
  */
 export function routeSlSets(args: {
   entries: readonly SlSetEntry[];
@@ -1084,18 +1127,31 @@ export function routeSlSets(args: {
   scopePrefix?: string;
 }): SlSetRoutePlan {
   const prefix = args.scopePrefix?.trim();
+  const foldedPrefix = prefix ? selectorValueKey(prefix) : "";
+  // The folded key minus the scope prefix as a whole word; "" when the key
+  // IS the prefix. Unlike `stripMatchedBrandPrefix` this DOES strip to
+  // nothing, because "nothing remains" is the signal the prefix test needs.
+  const stripScopePrefix = (foldedKey: string): string => {
+    if (!foldedPrefixMatches(foldedKey, foldedPrefix)) return foldedKey;
+    return trimLeadingSeparators(foldedKey.slice(foldedPrefix.length));
+  };
   // Keys come folded from `knownSetNameKeys`; folded again here so a caller
   // that built the set by hand cannot make the pairwise test case-sensitive.
   const known = [...args.knownSetNameKeys].map(selectorValueKey).filter(Boolean);
   const knownSet = new Set(known);
+  // The prefix-hiders: what remains of each known name after the scope
+  // prefix. The flagship named after its brand contributes nothing here.
+  const knownHiders = [...new Set(known.map(stripScopePrefix))].filter(Boolean);
   const isVariantOfKnown = (label: string): boolean => {
-    const forms = prefix ? [label, `${prefix} ${label}`] : [label];
-    for (const form of forms) {
-      const key = selectorValueKey(form);
-      if (knownSet.has(key)) return true;
-      for (const name of known) {
-        if (foldedPrefixMatches(key, name)) return true;
-      }
+    const key = selectorValueKey(label);
+    if (knownSet.has(key)) return true;
+    if (prefix && knownSet.has(selectorValueKey(`${prefix} ${label}`))) return true;
+    // A label that IS the brand name (kept whole by the adapter's strip) has
+    // nothing after the prefix to test; it is only ever an exact match.
+    const stripped = stripScopePrefix(key);
+    if (!stripped) return false;
+    for (const hider of knownHiders) {
+      if (foldedPrefixMatches(stripped, hider)) return true;
     }
     return false;
   };
