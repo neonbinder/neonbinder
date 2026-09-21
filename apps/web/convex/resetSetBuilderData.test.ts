@@ -158,6 +158,23 @@ async function seedAllSixTables(
       lastUpdated: NOW,
     });
 
+    // setCandidates: 2 — a brand's pending "new on SportLots" roots (NEO-237).
+    // Transient like selectorSyncStatus; drained FIRST in step order so a
+    // table added to the schema but not to the reset loop shows up
+    // immediately. `manufacturerId` just needs to be a valid selectorOptions
+    // id for storage purposes — `sportId` is reused rather than minting a
+    // fourth selectorOptions row, which would perturb every count below.
+    for (let i = 1; i <= 2; i += 1) {
+      await ctx.db.insert("setCandidates", {
+        manufacturerId: sportId,
+        side: "sportlots",
+        marketplaceId: `sl-${i}`,
+        label: `New Set ${i}`,
+        members: [],
+        status: "pending",
+      });
+    }
+
     return { sportId };
   });
 }
@@ -170,6 +187,7 @@ const runReset = (t: ReturnType<typeof convexTest>) =>
 
 async function tableCounts(t: ReturnType<typeof convexTest>) {
   return t.run(async (ctx) => ({
+    setCandidates: (await ctx.db.query("setCandidates").collect()).length,
     selectorOptions: (await ctx.db.query("selectorOptions").collect()).length,
     cardChecklist: (await ctx.db.query("cardChecklist").collect()).length,
     cardCrossListings: (await ctx.db.query("cardCrossListings").collect())
@@ -196,6 +214,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
     // A refusal that had already drained a table or two would be worse than no
     // guard at all, so assert the data is still there rather than just the throw.
     expect(await tableCounts(t)).toEqual({
+      setCandidates: 2,
       selectorOptions: 3,
       cardChecklist: 5,
       cardCrossListings: 6,
@@ -217,6 +236,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
     await expect(runReset(t)).rejects.toThrow(/ALLOW_RESET_SET_BUILDER_DATA/);
 
     expect(await tableCounts(t)).toEqual({
+      setCandidates: 2,
       selectorOptions: 3,
       cardChecklist: 5,
       cardCrossListings: 6,
@@ -235,6 +255,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
     const result = await runReset(t);
 
     expect(result).toEqual({
+      setCandidatesDeleted: 2,
       selectorOptionsDeleted: 3,
       cardChecklistDeleted: 5,
       crossListingsDeleted: 6,
@@ -248,6 +269,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
     });
 
     expect(await tableCounts(t)).toEqual({
+      setCandidates: 0,
       selectorOptions: 0,
       cardChecklist: 0,
       cardCrossListings: 0,
@@ -289,6 +311,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       ).rejects.toThrow(/ALLOW_RESET_SET_BUILDER_DATA/);
 
       expect(await tableCounts(t)).toEqual({
+        setCandidates: 2,
         selectorOptions: 3,
         cardChecklist: 5,
         cardCrossListings: 6,
@@ -307,6 +330,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
     const t = convexTest(schema, modules);
 
     expect(await runReset(t)).toEqual({
+      setCandidatesDeleted: 0,
       selectorOptionsDeleted: 0,
       cardChecklistDeleted: 0,
       crossListingsDeleted: 0,
@@ -342,11 +366,11 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
     const result = await runReset(t);
 
     expect(result.complete).toBe(false);
-    // The first table in the order is selectorOptions; that batch ran and
-    // finished before the budget check could stop anything.
-    expect(result.selectorOptionsDeleted).toBe(3);
+    // The first table in the order is setCandidates (NEO-237); that batch ran
+    // and finished before the budget check could stop anything.
+    expect(result.setCandidatesDeleted).toBe(2);
     const counts = await tableCounts(t);
-    expect(counts.selectorOptions).toBe(0);
+    expect(counts.setCandidates).toBe(0);
     // Not everything: at least one later table still has its rows. Which ones
     // is not pinned — only that a single zero-budget pass is partial.
     expect(counts.leagues).toBe(1);
@@ -364,6 +388,7 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
     let passes = 0;
     let complete = false;
     const totals = {
+      setCandidatesDeleted: 0,
       selectorOptionsDeleted: 0,
       cardChecklistDeleted: 0,
       crossListingsDeleted: 0,
@@ -389,6 +414,7 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
     // Every row was deleted exactly once across the passes — resuming never
     // double-counts or skips a table.
     expect(totals).toEqual({
+      setCandidatesDeleted: 2,
       selectorOptionsDeleted: 3,
       cardChecklistDeleted: 5,
       crossListingsDeleted: 6,
@@ -400,6 +426,7 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
       leaguesDeleted: 1,
     });
     expect(await tableCounts(t)).toEqual({
+      setCandidates: 0,
       selectorOptions: 0,
       cardChecklist: 0,
       cardCrossListings: 0,
@@ -421,6 +448,7 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
     await expect(runReset(t)).rejects.toThrow(/ALLOW_RESET_SET_BUILDER_DATA/);
 
     expect(await tableCounts(t)).toEqual({
+      setCandidates: 2,
       selectorOptions: 3,
       cardChecklist: 5,
       cardCrossListings: 6,

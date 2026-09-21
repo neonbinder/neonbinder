@@ -92,9 +92,11 @@ vi.mock("../../convex/_generated/api", () => ({
       previewTeamFill: "teamFill.previewTeamFill",
       applyTeamFill: "teamFill.applyTeamFill",
     },
-    // NEO-237 — the Brand row's save, bound at render on every level.
+    // NEO-237 — the Brand row's save and the via-All-Brands toggle's write,
+    // bound at render on every level.
     brandView: {
       setSelectorOptionSetNamePrefix: "brandView.setSelectorOptionSetNamePrefix",
+      setManufacturerSlViaAllBrands: "brandView.setManufacturerSlViaAllBrands",
     },
   },
 }));
@@ -104,6 +106,9 @@ const mockSetBaseVariantType = vi.fn();
 const mockDeleteSelectorOption = vi.fn();
 /** NEO-291 */
 const mockSetSelectorOptionCardNumberPrefix = vi.fn();
+/** NEO-237 */
+const mockSetSelectorOptionSetNamePrefix = vi.fn();
+const mockSetManufacturerSlViaAllBrands = vi.fn();
 /** NEO-277 */
 const mockSetSelectorOptionTeams = vi.fn();
 /**
@@ -140,6 +145,10 @@ vi.mock("convex/react", () => ({
     if (mutation === "setSelectorOptionCardNumberPrefix")
       return mockSetSelectorOptionCardNumberPrefix;
     if (mutation === "setSelectorOptionTeams") return mockSetSelectorOptionTeams;
+    if (mutation === "brandView.setSelectorOptionSetNamePrefix")
+      return mockSetSelectorOptionSetNamePrefix;
+    if (mutation === "brandView.setManufacturerSlViaAllBrands")
+      return mockSetManufacturerSlViaAllBrands;
     return vi.fn();
   },
   useConvex: () => ({ query: mockConvexQuery }),
@@ -1493,6 +1502,254 @@ describe("SetAttributesPanel — Card prefix row (NEO-291)", () => {
         screen.getByText("Failed: A card prefix is at most 32 characters."),
       ).toBeTruthy();
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-237 — Brand row (BrandPrefixRow) and the via-All-Brands toggle
+// ---------------------------------------------------------------------------
+
+describe("SetAttributesPanel — Brand row (NEO-237)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSetSelectorOptionSetNamePrefix.mockResolvedValue({ rehomed: 0 });
+    mockSetManufacturerSlViaAllBrands.mockResolvedValue(null);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const brandField = () =>
+    screen.getByLabelText("Value for Brand") as HTMLInputElement;
+
+  /** sport → year, both carrying a SportLots id — the toggle's happy path. */
+  function makeSlResolvableChain() {
+    return [
+      { _id: "sport-id", value: "Baseball", level: "sport", platformData: { sportlots: { s0: "BB" } } },
+      { _id: "year-id", value: "2024", level: "year", platformData: { sportlots: { s0: "2024" } } },
+      { _id: "mfr-id", value: "Topps", level: "manufacturer" },
+    ];
+  }
+
+  it("renders on a manufacturer row", () => {
+    currentRow = makeRow({ level: "manufacturer", value: "Topps" });
+    currentChain = makeChain("Baseball");
+    renderPanel();
+    expect(screen.getByLabelText("Set feature Brand")).toBeTruthy();
+    expect(screen.getByLabelText("Set feature SportLots link")).toBeTruthy();
+  });
+
+  it("is hidden on the flagged Unknown row — it has no Brand of its own", () => {
+    currentRow = makeRow({
+      level: "manufacturer",
+      value: "Unknown",
+      metadata: { isBrandUnknown: true },
+    });
+    currentChain = makeChain("Baseball");
+    renderPanel();
+    expect(screen.queryByLabelText("Set feature Brand")).toBeNull();
+    expect(screen.queryByLabelText("Set feature SportLots link")).toBeNull();
+  });
+
+  it.each(["sport", "year", "setName", "variantType", "insert", "parallel"])(
+    "is absent at level %s",
+    (level) => {
+      currentRow = makeRow({ level, value: "Whatever" });
+      currentChain = makeChain("Baseball");
+      renderPanel();
+      expect(screen.queryByLabelText("Set feature Brand")).toBeNull();
+    },
+  );
+
+  it("is the first cell of the attributes grid on a manufacturer row", () => {
+    currentRow = makeRow({ level: "manufacturer", value: "Topps" });
+    currentChain = makeChain("Baseball");
+    const { container } = renderPanel();
+    const grid = container.querySelector(".grid.grid-cols-1");
+    expect(grid!.firstElementChild?.getAttribute("aria-label")).toBe(
+      "Set feature Brand",
+    );
+  });
+
+  it("saving a new value calls setSelectorOptionSetNamePrefix and shows the rehomed count", async () => {
+    currentRow = makeRow({ level: "manufacturer", value: "Topps" });
+    currentChain = makeChain("Baseball");
+    mockSetSelectorOptionSetNamePrefix.mockResolvedValue({ rehomed: 3 });
+    renderPanel();
+
+    const input = brandField();
+    await act(async () => {
+      input.focus();
+      fireEvent.focus(input);
+      fireEvent.change(input, { target: { value: "Topps" } });
+      input.blur();
+      fireEvent.blur(input);
+    });
+
+    await waitFor(() => {
+      expect(mockSetSelectorOptionSetNamePrefix).toHaveBeenCalledWith({
+        id: SELECTOR_OPTION_ID,
+        setNamePrefix: "Topps",
+      });
+    });
+    await waitFor(() => {
+      expect(
+        screen.getByText("Saved Brand · 3 sets moved out of Unknown"),
+      ).toBeTruthy();
+    });
+  });
+
+  it("saving a value that moves nothing shows the plain 'Saved Brand' toast", async () => {
+    currentRow = makeRow({ level: "manufacturer", value: "Topps" });
+    currentChain = makeChain("Baseball");
+    mockSetSelectorOptionSetNamePrefix.mockResolvedValue({ rehomed: 0 });
+    renderPanel();
+
+    const input = brandField();
+    await act(async () => {
+      input.focus();
+      fireEvent.focus(input);
+      fireEvent.change(input, { target: { value: "TCG" } });
+      input.blur();
+      fireEvent.blur(input);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Saved Brand")).toBeTruthy();
+    });
+  });
+
+  it("clearing the value reads 'Cleared — this brand claims no sets by name now', not 'Cleared Brand'", async () => {
+    currentRow = makeRow({
+      level: "manufacturer",
+      value: "Topps",
+      metadata: { setNamePrefix: "Topps" },
+    });
+    currentChain = makeChain("Baseball");
+    renderPanel();
+
+    const input = brandField();
+    await act(async () => {
+      input.focus();
+      fireEvent.focus(input);
+      fireEvent.change(input, { target: { value: "" } });
+      input.blur();
+      fireEvent.blur(input);
+    });
+
+    await waitFor(() => {
+      expect(mockSetSelectorOptionSetNamePrefix).toHaveBeenCalledWith({
+        id: SELECTOR_OPTION_ID,
+        setNamePrefix: "",
+      });
+    });
+    await waitFor(() => {
+      expect(
+        screen.getByText("Cleared — this brand claims no sets by name now"),
+      ).toBeTruthy();
+    });
+  });
+
+  it("a PREFIX_TAKEN refusal names the brand that already holds it", async () => {
+    currentRow = makeRow({ level: "manufacturer", value: "Choice Cards" });
+    currentChain = makeChain("Baseball");
+    mockSetSelectorOptionSetNamePrefix.mockRejectedValue(
+      new ConvexError({ code: "PREFIX_TAKEN", existingId: "mfr-2", value: "Bowman" }),
+    );
+    renderPanel();
+
+    const input = brandField();
+    await act(async () => {
+      input.focus();
+      fireEvent.focus(input);
+      fireEvent.change(input, { target: { value: "Choice" } });
+      input.blur();
+      fireEvent.blur(input);
+    });
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          "Failed: 'Choice' is already Bowman's Brand — two brands can't claim the same sets. Change it there first.",
+        ),
+      ).toBeTruthy();
+    });
+  });
+
+  it("the SportLots toggle is disabled with a reason when the year has no SportLots link to go through", () => {
+    currentRow = makeRow({ level: "manufacturer", value: "Topps" });
+    currentChain = makeChain("Baseball"); // no sportlots ids anywhere in the chain
+    renderPanel();
+
+    const toggle = screen.getByRole("button", {
+      name: /match its sets by name/i,
+    });
+    expect(toggle.getAttribute("aria-disabled")).toBe("true");
+    expect(
+      screen.getByText("This year has no SportLots link to go through"),
+    ).toBeTruthy();
+  });
+
+  it("the SportLots toggle is disabled when the row already holds a real SportLots brand of its own", () => {
+    currentRow = makeRow({
+      level: "manufacturer",
+      value: "Topps",
+      platformData: { sportlots: { s0: "17" } },
+    });
+    currentChain = makeSlResolvableChain();
+    renderPanel();
+
+    const toggle = screen.getByRole("button", {
+      name: /match its sets by name/i,
+    });
+    expect(toggle.getAttribute("aria-disabled")).toBe("true");
+    expect(
+      screen.getByText("Linked to a SportLots brand of its own"),
+    ).toBeTruthy();
+  });
+
+  it("toggling on, when reachable, calls setManufacturerSlViaAllBrands({ enabled: true })", async () => {
+    currentRow = makeRow({ level: "manufacturer", value: "Bandai" });
+    currentChain = makeSlResolvableChain();
+    renderPanel();
+
+    const toggle = screen.getByRole("button", {
+      name: /match its sets by name/i,
+    });
+    expect(toggle.getAttribute("aria-disabled")).toBeNull();
+
+    await act(async () => {
+      fireEvent.click(toggle);
+    });
+
+    await waitFor(() => {
+      expect(mockSetManufacturerSlViaAllBrands).toHaveBeenCalledWith({
+        id: SELECTOR_OPTION_ID,
+        enabled: true,
+      });
+    });
+    await waitFor(() => {
+      expect(
+        screen.getByText("Linked — SportLots sets match this brand by name now"),
+      ).toBeTruthy();
+    });
+  });
+
+  it("shows the toggle already ON when the row's SportLots slot is the all-brands sentinel", () => {
+    currentRow = makeRow({
+      level: "manufacturer",
+      value: "Bandai",
+      platformData: { sportlots: { s0: "All Brands" } },
+    });
+    currentChain = makeSlResolvableChain();
+    renderPanel();
+
+    const toggle = screen.getByRole("button", {
+      name: /match its sets by name/i,
+    });
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
+    expect(toggle.getAttribute("aria-disabled")).toBeNull();
   });
 });
 

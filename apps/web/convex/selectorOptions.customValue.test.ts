@@ -847,38 +847,77 @@ describe("addCustomSelectorOption validation", () => {
     expect(id).toBe(hereAlready);
   });
 
-  test("the internal All Brands creation path is unaffected", async () => {
+  test("NEO-237 D15 — 'All Brands' is refused at manufacturer level, not adopted", async () => {
+    // Before NEO-237, `addCustomSelectorOption` at the manufacturer level was
+    // the internal creation path `syncSetsAcrossManufacturers` used to mint or
+    // adopt the brand-unknown bucket named "All Brands". That row is now
+    // "Unknown" (`ensureBrandUnknownRow`), and "All Brands" is the VIEW pinned
+    // at the top of the column — a manufacturer row of that name would be a
+    // second thing wearing the view's label. Both the operator-facing form and
+    // this mutation refuse it through the same `checkCustomSelectorValue`.
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
 
     const sportId = await insertRow(t, "sport", "Baseball");
     const year2021 = await insertRow(t, "year", "2021", sportId);
-    const year2024 = await insertRow(t, "year", "2024", sportId);
-    // A prior year already carries an "All Brands" manufacturer — the exact
-    // shape that would trip a global duplicate check.
-    await insertRow(t, "manufacturer", "All Brands", year2024, true);
 
-    // Verbatim what syncSetsAcrossManufacturers sends.
-    const id = await asAdmin.mutation(
-      api.selectorOptions.addCustomSelectorOption,
-      { level: "manufacturer", value: "All Brands", parentId: year2021 },
+    let thrown: unknown;
+    try {
+      await asAdmin.mutation(api.selectorOptions.addCustomSelectorOption, {
+        level: "manufacturer",
+        value: "All Brands",
+        parentId: year2021,
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(ConvexError);
+    expect(
+      (thrown as ConvexError<{ code: string; reason: string }>).data,
+    ).toEqual({
+      code: "CUSTOM_VALUE_INVALID",
+      reason: "All Brands is the view at the top of this column, not a brand.",
+    });
+
+    // Case/whitespace fold the same way the rest of the sibling-clash check
+    // does — "ALL BRANDS " is refused as the same word.
+    let thrownAgain: unknown;
+    try {
+      await asAdmin.mutation(api.selectorOptions.addCustomSelectorOption, {
+        level: "manufacturer",
+        value: "  ALL BRANDS ",
+        parentId: year2021,
+      });
+    } catch (error) {
+      thrownAgain = error;
+    }
+    expect(
+      (thrownAgain as ConvexError<{ code: string; reason: string }>).data
+        ?.code,
+    ).toBe("CUSTOM_VALUE_INVALID");
+
+    // Nothing was written.
+    const rows = await t.run(async (ctx) =>
+      ctx.db
+        .query("selectorOptions")
+        .withIndex("by_level_and_parent", (q) =>
+          q.eq("level", "manufacturer").eq("parentId", year2021),
+        )
+        .collect(),
     );
+    expect(rows).toEqual([]);
 
-    const row = await t.run(async (ctx) => ctx.db.get(id));
-    expect(row!.value).toBe("All Brands");
-    expect(row!.parentId).toBe(year2021);
-    // NEO-239 — `addCustomSelectorOption` no longer writes `isCustom`. What a
-    // hand-added row IS, is a row with no marketplace ids; that is the only
-    // fact anything downstream reads.
-    expect(row!.isCustom).toBeUndefined();
-    expect(row!.platformData).toEqual({});
-
-    // And it is still idempotent on a second call.
+    // "Unknown" is NOT reserved — it selects the existing row like any other
+    // name, through the ordinary per-parent duplicate return.
+    const unknownId = await asAdmin.mutation(
+      api.selectorOptions.addCustomSelectorOption,
+      { level: "manufacturer", value: "Unknown", parentId: year2021 },
+    );
     const again = await asAdmin.mutation(
       api.selectorOptions.addCustomSelectorOption,
-      { level: "manufacturer", value: "All Brands", parentId: year2021 },
+      { level: "manufacturer", value: "Unknown", parentId: year2021 },
     );
-    expect(again).toBe(id);
+    expect(again).toBe(unknownId);
   });
 
   test("rejects a non-admin caller before validating anything", async () => {

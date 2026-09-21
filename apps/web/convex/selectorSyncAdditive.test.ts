@@ -1324,6 +1324,60 @@ describe("marketplace strings are validated before they become row names", () =>
 });
 
 // ===========================================================================
+// NEO-237 / security review S3 — the reserved view name is refused at insert
+// ===========================================================================
+
+describe("storeSelectorOptions never inserts a manufacturer row named after the All Brands view", () => {
+  test("a manufacturer option folding to 'all brands' is skipped, counted, and never inserted", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = admin(t);
+
+    const res = await asAdmin.mutation(api.selectorOptions.storeSelectorOptions, {
+      level: "manufacturer",
+      options: [
+        { value: "Topps", platformData: { bsc: "topps-2024" } },
+        { value: "  ALL brands ", platformData: { bsc: "ab-1" } },
+      ],
+      coveredSides: ["bsc"],
+    });
+
+    const rows = await t.run((ctx) => ctx.db.query("selectorOptions").collect());
+    expect(rows.map((r) => r.value)).toEqual(["Topps"]);
+    expect(res.reservedNamesSkipped).toBe(1);
+    expect(res.optionsCount).toBe(1);
+  });
+
+  test("`reservedNamesSkipped` is zero on every normal sync", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = admin(t);
+
+    const res = await asAdmin.mutation(api.selectorOptions.storeSelectorOptions, {
+      level: "manufacturer",
+      options: [{ value: "Topps", platformData: { bsc: "topps-2024" } }],
+      coveredSides: ["bsc"],
+    });
+    expect(res.reservedNamesSkipped).toBe(0);
+  });
+
+  test("does not apply at other levels — a setName can be named anything (folding rule is manufacturer-only)", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = admin(t);
+    const parentId = await insertParent(t);
+
+    const res = await asAdmin.mutation(api.selectorOptions.storeSelectorOptions, {
+      level: "setName",
+      parentId,
+      options: [{ value: "All Brands", platformData: { bsc: "ab-1" } }],
+      coveredSides: ["bsc"],
+    });
+
+    const rows = await rowsUnder(t, "setName", parentId);
+    expect(rows.map((r) => r.value)).toEqual(["All Brands"]);
+    expect(res.reservedNamesSkipped).toBe(0);
+  });
+});
+
+// ===========================================================================
 // NEO-211 — a re-slug rebinding is reported
 // ===========================================================================
 
