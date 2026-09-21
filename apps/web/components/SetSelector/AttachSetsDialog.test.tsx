@@ -36,6 +36,8 @@
  *      so an outage and an empty marketplace both read "No unattached
  *      candidates."
  *   9. Enter on a browse button browses; it does not attach.
+ *  10. An id in an UNTAGGED slot (`needsRemap`) is offered as a candidate and
+ *      the confirm calls it a re-map, not an attach (NEO-293).
  *
  * --- Mocking strategy (mirrors BaseMappingForm.test.tsx) ---
  * convex/react's useAction/useMutation are module-mocked and routed by the
@@ -154,6 +156,7 @@ function bscResponder() {
 function renderDialog(
   overrides: {
     alreadyAttached?: { bsc: Set<string>; sportlots: Set<string> };
+    needsRemap?: { bsc: Set<string> };
   } = {},
 ) {
   const onClose = vi.fn();
@@ -168,6 +171,7 @@ function renderDialog(
           sportlots: new Set<string>(),
         }
       }
+      {...(overrides.needsRemap ? { needsRemap: overrides.needsRemap } : {})}
       onClose={onClose}
     />,
   );
@@ -1016,5 +1020,180 @@ describe("AttachSetsDialog — a paused marketplace pane (NEO-287)", () => {
     await waitFor(() =>
       expect(within(bscPane()).getByLabelText("Toggle Topps Chrome")).toBeTruthy(),
     );
+  });
+});
+
+/**
+ * NEO-293 — an id in an UNTAGGED slot is re-mappable from here.
+ *
+ * The panel lists such a slot under "Needs re-mapping" and tells the operator
+ * to re-attach it from this dialog so its facet gets chosen. That only works
+ * if the dialog OFFERS it: the panel keeps it out of `alreadyAttached` and
+ * hands it over in `needsRemap` instead. What is pinned here is the dialog's
+ * half of that contract — the id gets a checkbox, is marked as a re-map, goes
+ * over the wire with the facet of the rung it was picked from, and the confirm
+ * calls the result a re-map rather than "Attach 0".
+ */
+describe("AttachSetsDialog — re-mapping an untagged id (NEO-293)", () => {
+  test("an untagged id is offered with a checkbox in the variants view, marked as a re-map", async () => {
+    renderDialog({
+      alreadyAttached: {
+        bsc: new Set(["rainbow-foil"]),
+        sportlots: new Set<string>(),
+      },
+      needsRemap: { bsc: new Set(["gold-foil"]) },
+    });
+
+    await waitFor(() =>
+      expect(within(bscPane()).getByLabelText("Toggle Gold Foil")).toBeTruthy(),
+    );
+    const bsc = within(bscPane());
+    // The tagged one is still excluded; the untagged one is a candidate.
+    expect(bsc.queryByLabelText("Toggle Rainbow Foil")).toBeNull();
+    expect(bsc.queryByLabelText("Gold Foil is already attached")).toBeNull();
+    // Named for what picking it does, in the panel's own words.
+    expect(bsc.getByText("Needs re-mapping")).toBeTruthy();
+  });
+
+  test("a re-map-only selection confirms as 'Re-map N' and sends the rung's facet", async () => {
+    const { onClose } = renderDialog({
+      needsRemap: { bsc: new Set(["gold-foil"]) },
+    });
+    await waitFor(() =>
+      expect(within(bscPane()).getByLabelText("Toggle Gold Foil")).toBeTruthy(),
+    );
+
+    fireEvent.click(within(bscPane()).getByLabelText("Toggle Gold Foil"));
+
+    const confirm = screen.getByLabelText("Confirm attach sets");
+    expect(confirm.textContent).toBe("Re-map 1");
+    expect(screen.queryByText("Attach 1")).toBeNull();
+
+    // The server answers attachedCount: 0 for a re-map — the slot already
+    // existed — and that must not read as a failure to the operator.
+    mockAttach.mockResolvedValue({
+      success: true,
+      message: "Attached 0 new platform ID(s)",
+      attachedCount: 0,
+    });
+    fireEvent.click(confirm);
+
+    await waitFor(() => expect(mockAttach).toHaveBeenCalledTimes(1));
+    expect(mockAttach.mock.calls[0][0].additions.bsc).toEqual([
+      { id: "gold-foil", label: "Gold Foil", facet: "variantName" },
+    ]);
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  test("a mixed selection says both counts", async () => {
+    renderDialog({
+      needsRemap: { bsc: new Set(["gold-foil"]) },
+    });
+    await waitFor(() =>
+      expect(within(bscPane()).getByLabelText("Toggle Gold Foil")).toBeTruthy(),
+    );
+
+    fireEvent.click(within(bscPane()).getByLabelText("Toggle Gold Foil"));
+    fireEvent.click(within(bscPane()).getByLabelText("Toggle Rainbow Foil"));
+    fireEvent.click(within(slPane()).getByLabelText("Toggle Series 1"));
+
+    expect(screen.getByLabelText("Confirm attach sets").textContent).toBe(
+      "Attach 2, re-map 1",
+    );
+    expect(screen.getByText("3 sets selected")).toBeTruthy();
+  });
+
+  test("with nothing to re-map the confirm still reads 'Attach N'", async () => {
+    renderDialog();
+    await waitFor(() =>
+      expect(within(bscPane()).getByLabelText("Toggle Gold Foil")).toBeTruthy(),
+    );
+    fireEvent.click(within(bscPane()).getByLabelText("Toggle Gold Foil"));
+    expect(screen.getByLabelText("Confirm attach sets").textContent).toBe(
+      "Attach 1",
+    );
+    expect(within(bscPane()).queryByText("Needs re-mapping")).toBeNull();
+  });
+
+  test("deselecting a re-map candidate reverts the confirm to 'Attach 0' and disables it", async () => {
+    // The confirm label is computed from the live selection maps, not latched
+    // once a re-map is toggled on — un-checking it must fall all the way back
+    // to the ordinary empty-selection state, not get stuck reading "Re-map 1".
+    renderDialog({
+      needsRemap: { bsc: new Set(["gold-foil"]) },
+    });
+    await waitFor(() =>
+      expect(within(bscPane()).getByLabelText("Toggle Gold Foil")).toBeTruthy(),
+    );
+    const toggle = within(bscPane()).getByLabelText("Toggle Gold Foil");
+
+    fireEvent.click(toggle);
+    expect(screen.getByLabelText("Confirm attach sets").textContent).toBe(
+      "Re-map 1",
+    );
+
+    fireEvent.click(toggle);
+    const confirm = screen.getByLabelText(
+      "Confirm attach sets",
+    ) as HTMLButtonElement;
+    expect(confirm.textContent).toBe("Attach 0");
+    expect(confirm.disabled).toBe(true);
+  });
+
+  test("an id in BOTH alreadyAttached and needsRemap (a caller contract violation) renders as attached, never as a re-map candidate", async () => {
+    // MultiSourcePanel builds `needsRemap` by construction as disjoint from
+    // `alreadyAttached` (it explicitly filters out anything already
+    // attached), so this id shape should never reach the dialog in practice.
+    // But the dialog does not itself enforce that disjointness — it is handed
+    // two independent props — so pin which one wins if it ever does: "already
+    // attached" must win, because offering a checkbox on an id the dialog
+    // also believes is attached would let the operator "attach" it a second
+    // time.
+    renderDialog({
+      alreadyAttached: {
+        bsc: new Set(["topps-heritage"]),
+        sportlots: new Set<string>(),
+      },
+      needsRemap: { bsc: new Set(["topps-heritage"]) },
+    });
+    fireEvent.click(screen.getByLabelText("Browse all BSC sets"));
+    await waitFor(() =>
+      expect(
+        within(bscPane()).getByLabelText("Topps Heritage is already attached"),
+      ).toBeTruthy(),
+    );
+    const bsc = within(bscPane());
+    expect(bsc.queryByLabelText("Toggle Topps Heritage")).toBeNull();
+    expect(bsc.queryByText("Needs re-mapping")).toBeNull();
+  });
+
+  test("an untagged SET slug is re-mappable from the set list too, as a setName", async () => {
+    // The NEO-189 corruption class: a setName slug mis-saved into a
+    // variantType row's slot. From the set list it is a candidate with a
+    // checkbox — not the inert "attached" marker — and picking it there tags
+    // it setName.
+    renderDialog({
+      needsRemap: { bsc: new Set(["topps-heritage"]) },
+    });
+    await waitFor(() =>
+      expect(within(bscPane()).getByLabelText("Toggle Gold Foil")).toBeTruthy(),
+    );
+    fireEvent.click(screen.getByLabelText("Browse all BSC sets"));
+    await waitFor(() =>
+      expect(
+        within(bscPane()).getByLabelText("Toggle Topps Heritage"),
+      ).toBeTruthy(),
+    );
+    const bsc = within(bscPane());
+    expect(bsc.queryByLabelText("Topps Heritage is already attached")).toBeNull();
+    expect(bsc.getByText("Needs re-mapping")).toBeTruthy();
+
+    fireEvent.click(bsc.getByLabelText("Toggle Topps Heritage"));
+    fireEvent.click(screen.getByLabelText("Confirm attach sets"));
+    await waitFor(() => expect(mockAttach).toHaveBeenCalledTimes(1));
+    expect(mockAttach.mock.calls[0][0].additions.bsc).toEqual([
+      { id: "topps-heritage", label: "Topps Heritage", facet: "setName" },
+    ]);
   });
 });

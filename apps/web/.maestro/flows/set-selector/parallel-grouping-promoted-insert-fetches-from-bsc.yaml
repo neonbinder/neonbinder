@@ -1,0 +1,600 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Group Parallels — a BSC-synced insert promoted under the insert it parallels keeps its BSC source and fetches its cards from BSC (2026 Bowman Anime Kanji, NEO-293)"
+tags:
+  - set-selector
+  - parallel-grouping
+---
+# R1 — ONE FEATURE (NEO-293): BSC files a parallel of an insert as a
+# `variantName` under `variant=insert`, so "Sync Inserts" lists it in the
+# Inserts column as an insert of its own. When Group Parallels promotes that
+# row under the insert it parallels, the row's BSC id must stay a working
+# source: the Multi-source panel shows it as an ordinary chip (no "Needs
+# re-mapping"), and Fetch from Marketplaces on the promoted parallel returns
+# its cards FROM BSC — the chip's own per-slot card count is the proof that
+# BSC answered `variant=insert` + `variantName=<parallel>`. Before NEO-293 the
+# promotion left the slot untagged: the panel filed it under "Needs
+# re-mapping", the fetch skipped BSC, and the Attach dialog would not offer
+# the id back.
+#
+# WHY A NEW REAL SET (see .maestro/SET-REGISTRY.md → "2026 Bowman"). The bug
+# needs an insert row that CARRIES a BSC id and MAY be moved, whose BSC
+# parallel word-prefixes it so Group Parallels suggests the nesting on its
+# own (`parallelDetection.ts`; maestro-web cannot drive the modal's drag). The
+# three parallel-grouping flows run on hand-made rows with no ids; 2024 Topps
+# Chrome's inserts are read-only for every flow (R7a); 1996 Score's are the
+# sole property of `inserts-1996-score-…` and carry no such pair. Nothing is
+# hand-made here below the manufacturer (and that row only under the
+# SportLots pause, exactly as 1996 Score's `Score` is): every row this flow
+# leaves behind carries the marketplace ids the sync gave it.
+#
+# THE PAIR — observed on production by the owner, 2026-09-21: under
+# Baseball → 2026 → Bowman → Bowman › Insert, BSC lists "Anime" and its
+# parallels "Anime Kanji", "Anime Black Refractors", "Anime Red Refractors"
+# and "Anime SuperFractors" as insert-level variantNames; SportLots carries
+# "Chrome Anime Kanji" (id 378117) among ~479 sets for the year. Which of
+# those SportLots pairs with in the reconcile's auto-match is the matcher's
+# business, not this flow's claim — STEP 1 makes both NB rows exist whatever
+# it decided, and STEP 6 handles a one- or two-source fetch on the parallel.
+#
+# SOLE WRITER, FRESH-ONLY. Exactly one flow may touch 2026 Bowman — this one.
+# `setup.yaml`'s reset removes the set at the head of every run; a re-run
+# against the same deployment finds the rows already reconciled and promoted
+# and fails at "Reconcile Inserts" (live) or "Accept all suggestions" — by
+# name, as `inserts-1996-score-…` does.
+#
+# NEO-287 — WHILE SPORTLOTS IS ON PAUSE (`-e PAUSED_PLATFORMS`, decided once
+# by util-paused-platforms below) there is no reconcile: the Inserts column
+# fills straight from BSC, every Anime row included, and the rest of the flow
+# is the same steps on BSC-only rows. The fetch then takes the NEO-255
+# one-marketplace path ("Kept all N cards from BSC"), which STEP 6 accepts
+# beside the two-source pairing dialog. Both branches end on the same hard
+# asserts (R2).
+
+- runFlow:
+    file: ../util/util-paused-platforms.yaml
+
+# ============================================================
+# LAUNCH + SIGN IN
+# ============================================================
+
+- launchApp
+- extendedWaitUntil:
+    visible: ".*Build set parameters using marketplace APIs.*"
+    timeout: 45000
+
+# ============================================================
+# DRILL TO Baseball / 2026 / Bowman / Bowman (R9)
+# 2026 Bowman is NOT pre-synced, so the util's 60s ceiling on the variant-type
+# reveal covers the cold BSC + SL fetch for this hierarchy. CREATE_MANUFACTURER
+# applies only under the pause (the util's paused branch), where SportLots'
+# brand list — the only source of Manufacturer rows — is not asked; this flow
+# is the sole writer of Baseball → 2026 → Bowman (SET-REGISTRY.md).
+# ============================================================
+
+- runFlow:
+    file: util-drill-to-2024-topps-chrome.yaml
+    env:
+      SPORT: "Baseball"
+      YEAR: "2026"
+      MANUFACTURER: "Bowman"
+      SET: "Bowman"
+      CREATE_MANUFACTURER: "1"
+
+# ============================================================
+# STEP 1 — ENTER THE Insert VARIANT TYPE AND MAKE THE TWO ROWS EXIST
+# Selecting it kicks the cross-platform auto-sync. 240s is the ceiling
+# `inserts-1996-score-…` and setup.yaml use for a COLD insert-level BSC + SL
+# fetch (R5 marketplace exception); this set has never been synced.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      text: "Insert"
+    centerElement: true
+    timeout: 7000
+- tapOn: "Insert"
+
+# LIVE — the reconcile dialog. REQUIRED, not optional (see inserts-1996-score
+# for the history): the reset guarantees the set is absent, so selecting Insert
+# always opens it. If it does not, the set is dirty and the flow fails here.
+- runFlow:
+    when:
+      true: "${!output.SL_PAUSED}"
+    commands:
+      - extendedWaitUntil:
+          visible: "Reconcile Inserts"
+          timeout: 240000
+
+      # NARROW BOTH LISTS TO "Anime" FIRST. Bowman reconciles dozens of inserts
+      # against hundreds of SportLots sets, and the dialog body is its own
+      # overflow-y-auto scroller that Maestro cannot drive — the filters are
+      # what put Pending and the two Anime rows on screen at all, and they are
+      # what an operator does to find the set they came for. The Save writes
+      # EVERY Ready set (the auto-matches too), exactly as 1996 Score's does;
+      # the filter narrows the view, not the write.
+      - tapOn:
+          id: "Filter NeonBinder sets"
+          waitToSettleTimeoutMs: 250
+      - inputText: "Anime"
+      - tapOn:
+          id: "Filter BSC items"
+          waitToSettleTimeoutMs: 250
+      - inputText: "Anime"
+
+      # THE ROW "Anime" — Ready already (the matcher paired it with a SportLots
+      # set) or Pending (BSC only). Either is a legitimate outcome of the
+      # marketplaces' lists; a Pending row is made its own NeonBinder set,
+      # BSC-only, which is a row like any other. The gate below names the two
+      # shapes so the conditional after it can only ever choose between them
+      # (R2), and the hard assert that follows is the one state both reach.
+      - extendedWaitUntil:
+          visible:
+            id: "NeonBinder set name for Anime|Make Anime its own NeonBinder set"
+          timeout: 7000
+      # BRING THE LINK INTO THE DIALOG'S OWN VIEWPORT BEFORE TAPPING — the
+      # dialog body is a `flex-1 overflow-y-auto` box under a pinned footer,
+      # and Maestro's hierarchy does not see that clip (README → "Asserting
+      # inside a dialog"): CI run 35597625721 reported this link visible at
+      # bounds [41,534][154,551] while the body's viewport ended at ~y=525 and
+      # `Save 155 sets` sat at y=545-577, so the tap at (97,542) landed in the
+      # footer band and "Anime" stayed Pending. `scrollUntilVisible` cannot
+      # help — its swipe is `window.scrollTo` and this is a fixed portal (R8
+      # case 2) — so, as player-picker-create-custom-card.yaml does inside the
+      # card drawer, the body is scrolled with a real touch swipe. Two swipes
+      # DOWN first pin the body to its top (a swipe past the top is a no-op),
+      # so the one measured swipe UP (~314px, 75%→25% of a 629px window)
+      # lands the same wherever an earlier step left the body. Started at
+      # x=3% (~31px): inside the modal (its left edge is ~20px) and inside the
+      # body's own 24px padding, so the touch never begins on a pending item —
+      # those are dnd-kit draggables and a drag on one would start a drag, not
+      # a scroll. Geometry from that run's hierarchy: pending BSC items are
+      # 70px apart with the first link at y=534, so after the swipe the first
+      # link sits near y=220 and the third near y=360 — inside the body's
+      # 118-525 band whether or not the Ready list above holds a row.
+      # The gate above cannot protect the tap (it passed on the clipped link);
+      # the hard assert AFTER the tap is what proves it landed.
+      - runFlow:
+          when:
+            visible:
+              id: "Make Anime its own NeonBinder set"
+          commands:
+            - swipe:
+                start: "3%, 30%"
+                end: "3%, 80%"
+            - swipe:
+                start: "3%, 30%"
+                end: "3%, 80%"
+            - swipe:
+                start: "3%, 75%"
+                end: "3%, 25%"
+            - tapOn:
+                id: "Make Anime its own NeonBinder set"
+            # PIN THE BODY BACK TO THE TOP BEFORE THE HARD ASSERT. CI run
+            # 35603675951 proved the tap lands (header went 155→156 ready,
+            # "Anime" left Pending) and then failed this assert: the body was
+            # still ~300px down, so the Ready section — and the new row — sat
+            # ABOVE the window's top edge, where Maestro's hierarchy prunes it
+            # (an element clipped BELOW the body but still inside the window
+            # is reported; one above y=0 is not). Same two swipes as the
+            # reset above; a swipe past the top is a no-op.
+            - swipe:
+                start: "3%, 30%"
+                end: "3%, 80%"
+            - swipe:
+                start: "3%, 30%"
+                end: "3%, 80%"
+      - extendedWaitUntil:
+          visible:
+            id: "NeonBinder set name for Anime"
+          timeout: 7000
+
+      # THE ROW "Anime Kanji" — same two shapes. When SportLots' "Chrome Anime
+      # Kanji" was paired with it, the promoted parallel has TWO sources and
+      # STEP 6 meets the pairing dialog; when it was not, one source and the
+      # one-marketplace path. Both are handled there.
+      - extendedWaitUntil:
+          visible:
+            id: "NeonBinder set name for Anime Kanji|Make Anime Kanji its own NeonBinder set"
+          timeout: 7000
+      # Same in-body scroll as above, re-pinned to the top first so it does not
+      # stack on the previous block's swipe. "Anime Kanji" sorts third among
+      # the Anime pending items (after "Anime Black Refractors"), and a
+      # promoted "Anime" row above adds one Ready row while removing one
+      # pending item — every arrangement leaves its link inside the body's
+      # band after one swipe (measured positions in the note above).
+      - runFlow:
+          when:
+            visible:
+              id: "Make Anime Kanji its own NeonBinder set"
+          commands:
+            - swipe:
+                start: "3%, 30%"
+                end: "3%, 80%"
+            - swipe:
+                start: "3%, 30%"
+                end: "3%, 80%"
+            - swipe:
+                start: "3%, 75%"
+                end: "3%, 25%"
+            - tapOn:
+                id: "Make Anime Kanji its own NeonBinder set"
+            # PIN THE BODY BACK TO THE TOP BEFORE THE HARD ASSERT. CI run
+            # 35603675951 proved the tap lands (header went 155→156 ready,
+            # "Anime Kanji" left Pending) and then failed this assert: the body was
+            # still ~300px down, so the Ready section — and the new row — sat
+            # ABOVE the window's top edge, where Maestro's hierarchy prunes it
+            # (an element clipped BELOW the body but still inside the window
+            # is reported; one above y=0 is not). Same two swipes as the
+            # reset above; a swipe past the top is a no-op.
+            - swipe:
+                start: "3%, 30%"
+                end: "3%, 80%"
+            - swipe:
+                start: "3%, 30%"
+                end: "3%, 80%"
+      - extendedWaitUntil:
+          visible:
+            id: "NeonBinder set name for Anime Kanji"
+          timeout: 7000
+      # Both rows are Ready, under the BSC names the prefix rule needs.
+      - assertVisible:
+          id: "NeonBinder set name for Anime"
+
+      # ── SAVE ──────────────────────────────────────────────────────────
+      # R8 case 2, MEASURED on this footer by inserts-1996-score (CI
+      # 34349299679 + 34361627641): `Element bounds` held at y=545 across
+      # `Scrolling try count: 0`..`5` — ReconciliationModal's footer sits
+      # outside the modal's only scroller — so centring buys only the give-up
+      # path. Uncentred it settles well under a second.
+      - scrollUntilVisible:
+          element:
+            text: ".*Save [0-9]+ sets.*"
+          timeout: 7000
+      - tapOn:
+          text: ".*Save [0-9]+ sets.*"
+      # The save writes every Ready set — dozens here. 60000 is the ceiling
+      # inserts-1996-score gives the same write; it returns when the dialog
+      # unmounts.
+      - extendedWaitUntil:
+          notVisible: "Reconcile Inserts"
+          timeout: 60000
+
+      # RE-DRILL — saving leaves the columns row at the horizontal offset the
+      # dialog was opened from, and Maestro has no horizontal scroll to recover
+      # it (inserts-1996-score STEP 2). The rows are saved, so re-entering
+      # "Insert" renders the column directly.
+      - runFlow:
+          file: util-drill-to-2024-topps-chrome.yaml
+          env:
+            SPORT: "Baseball"
+            YEAR: "2026"
+            MANUFACTURER: "Bowman"
+            SET: "Bowman"
+            CREATE_MANUFACTURER: "1"
+      - scrollUntilVisible:
+          element:
+            text: "Insert"
+          centerElement: true
+          timeout: 7000
+      - tapOn: "Insert"
+
+# PAUSED — with one marketplace there is nothing to reconcile: the column
+# fills straight from BSC, every Anime row a BSC-badged insert, and the
+# dialog never opens (inserts-1996-score's paused tail, PR #265). R5
+# marketplace exception: the column's cold BSC fetch, the same 240s ceiling.
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      - extendedWaitUntil:
+          visible: ".*Search inserts.*"
+          timeout: 240000
+      - assertNotVisible: "Reconcile Inserts"
+
+# ============================================================
+# STEP 2 — BOTH ROWS ARE INSERTS BEFORE ANYTHING IS MOVED (R2 precondition)
+# The column is populated (live: just re-drilled onto saved rows; paused:
+# gated above), so the search box is a Convex read away — the 7000 bar.
+# ============================================================
+
+- extendedWaitUntil:
+    visible: ".*Search inserts.*"
+    timeout: 7000
+- scrollUntilVisible:
+    element:
+      text: ".*Search inserts.*"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    text: ".*Search inserts.*"
+    waitToSettleTimeoutMs: 250
+- inputText: "Anime"
+# `below:` because the search box's own text is its VALUE once typed, which
+# the exact "^Anime$" would also match (README → getNodeText).
+- extendedWaitUntil:
+    visible:
+      text: "^Anime$"
+      below:
+        id: "Search inserts"
+    timeout: 7000
+- assertVisible:
+    text: "^Anime Kanji$"
+    below:
+      id: "Search inserts"
+
+# ============================================================
+# STEP 3 — GROUP PARALLELS: ACCEPT THE SUGGESTED NESTING, SAVE
+# Nothing is selected, so the column is expanded and its action row (Sync /
+# + Custom / Group Parallels) sits under the "Anime"-filtered list — a short
+# DOWN centring scroll, as in the other parallel-grouping flows.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      text: "Group Parallels"
+    centerElement: true
+    timeout: 7000
+- tapOn: "Group Parallels"
+- extendedWaitUntil:
+    visible: ".*Drag inserts under a parent.*"
+    timeout: 7000
+
+# PRECONDITION (R2): the modal found something to suggest. The button exists
+# only while there are pending suggestions, so its absence means detection did
+# not pair "Anime Kanji" with "Anime" and the flow fails here, by name. Accept
+# All takes every suggestion the set's names produce — the operator's real
+# bulk action, and none of the other nestings is read again.
+#
+# R8 case 2, both footer buttons: ParallelGroupingModal's footer sits outside
+# the modal's only scroller (README R8 names this modal; MEASURED on its Save
+# button in move-parallels-of-inserts-custom.yaml — bounds held at y=521
+# across `Scrolling try count: 0`..`5` in CI 34349299679 + 34361627641).
+# Uncentred they settle well under a second.
+- scrollUntilVisible:
+    element:
+      text: ".*Accept all suggestions.*"
+    timeout: 7000
+- tapOn: ".*Accept all suggestions.*"
+- assertVisible: ".*[0-9]+ promotion.*"
+- scrollUntilVisible:
+    element:
+      text: ".*Save [0-9]+ change.*"
+    timeout: 7000
+- tapOn: ".*Save [0-9]+ change.*"
+# applyParallelGroupings patches the moved rows (and, NEO-293, tags their BSC
+# slots in the same patch) and the modal closes on success — a Convex
+# mutation, the 7000 bar. Negative; the re-drill's positive gate follows.
+- extendedWaitUntil:
+    notVisible: ".*Drag inserts under a parent.*"
+    timeout: 7000
+
+# ============================================================
+# STEP 4 — OPEN THE PROMOTED ROW AS A PARALLEL
+# Re-drill first, for the same horizontal-offset reason as STEP 1's.
+# ============================================================
+
+- runFlow:
+    file: util-drill-to-2024-topps-chrome.yaml
+    env:
+      SPORT: "Baseball"
+      YEAR: "2026"
+      MANUFACTURER: "Bowman"
+      SET: "Bowman"
+      CREATE_MANUFACTURER: "1"
+- scrollUntilVisible:
+    element:
+      text: "Insert"
+    centerElement: true
+    timeout: 7000
+- tapOn: "Insert"
+# 7000, not 240000: the column was synced above, `ensureSelectorOptions`
+# answers `already_populated` without a marketplace call.
+- extendedWaitUntil:
+    visible: ".*Search inserts.*"
+    timeout: 7000
+- scrollUntilVisible:
+    element:
+      text: ".*Search inserts.*"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    text: ".*Search inserts.*"
+    waitToSettleTimeoutMs: 250
+- inputText: "Anime"
+# "Anime" is the only insert left under that filter — "Anime Kanji" (and,
+# under the pause, the other three Anime parallels) are parallels now.
+- extendedWaitUntil:
+    visible:
+      text: "^Anime$"
+      below:
+        id: "Search inserts"
+    timeout: 7000
+- assertNotVisible:
+    text: "^Anime Kanji$"
+    below:
+      id: "Search inserts"
+- tapOn:
+    text: "^Anime$"
+    below:
+      id: "Search inserts"
+
+# The Parallels column mounts for "Anime" (whole-text "Parallels" is the
+# column title; the "Group Parallels" button does not match it) and lists the
+# promoted row(s): a Convex read, the existing rows make the column's
+# ensure-sync a no-op.
+- extendedWaitUntil:
+    visible: "Parallels"
+    timeout: 7000
+- extendedWaitUntil:
+    visible:
+      text: "^Anime Kanji$"
+    timeout: 7000
+- tapOn:
+    text: "^Anime Kanji$"
+
+# ============================================================
+# STEP 5 — ASSERTION 1: THE BSC ID IS A SOURCE, NOT A "NEEDS RE-MAPPING" LINE
+# The panel was already mounted for "Anime" and re-renders in place for the
+# child, so the heading is centred first and the CHILD's chip is waited for
+# underneath it — that wait is what proves the panel on screen is the promoted
+# row's, and it is the positive assertion the negative rides on. DOWN, as in
+# inserts-1996-score STEP 9 (MEASURED there at 1.97s, one centring swipe):
+# the row was just tapped near the top of the page and the panel sits below
+# the columns.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      text: "Multi-source sets"
+    centerElement: true
+    timeout: 7000
+# A CHIP: only a chip carries the × — the untagged "Needs re-mapping" list has
+# neither × nor rename, by design. Under the pause the slot label is BSC's
+# name too, so the handle is the same in both branches.
+- extendedWaitUntil:
+    visible:
+      id: "Remove Anime Kanji"
+    timeout: 7000
+# And tagged as a VARIANT, specifically: the facet note's accessible name says
+# which BSC facet the slot filters on. `setName` here would pull the whole
+# set on the fetch below; `variantName` is what the promotion recorded.
+- assertVisible:
+    id: "Anime Kanji is attached as a BSC variant"
+- assertNotVisible: "Needs re-mapping"
+
+# ============================================================
+# STEP 6 — FETCH FROM MARKETPLACES ON THE PROMOTED PARALLEL
+# The checklist is empty (asserted, so the saved count below is a claim about
+# THIS fetch); the button's accessible name is stable in both states.
+# R8: centred — this target depends on the NEO-260 scroll spacer
+# (src/layouts/binder-layout.tsx), see inserts-1996-score STEP 4.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      id: "Sync card checklist"
+    centerElement: true
+    timeout: 7000
+- assertVisible: "No cards in this checklist yet."
+- tapOn:
+    id: "Sync card checklist"
+
+# THE FETCH RESOLVES ONE OF TWO WAYS, and a third is the bug. Two sources
+# (BSC "Anime Kanji" + a SportLots set the reconcile paired with it) open the
+# "Match Cards" dialog; one source takes the NEO-255 one-marketplace path and
+# says "Kept all N cards from BSC". A build that dropped the BSC source would
+# say "Kept all N cards from SportLots" or nothing at all — neither matches,
+# so it fails here, on the sentence that names the missing marketplace. Live
+# BSC (+ SportLots) round-trip: the 120000 inserts-1996-score gives its fetch.
+- extendedWaitUntil:
+    visible:
+      text: "Match Cards.*|.*Kept all [0-9]+ cards? from BSC.*"
+    timeout: 120000
+
+# TWO SOURCES — the pairing dialog, handled as inserts-1996-score STEP 5 does.
+# The dialog OPENING is not the fetch FINISHING (NEO-195, streaming): Confirm
+# reads "Loading…" until the action resolves and is inert until then, so the
+# sync point is its settled text. Whether every card pairs is the
+# marketplaces' business; Confirm takes the dialog's own defaults for
+# whatever did not.
+- runFlow:
+    when:
+      visible: "Match Cards.*"
+    commands:
+      - extendedWaitUntil:
+          visible:
+            text: "^Confirm$"
+          timeout: 120000
+      # Named for the promoted row — the fetch was run on the parallel, not on
+      # its parent.
+      - assertVisible:
+          text: ".*Match Cards — Anime Kanji.*"
+      - tapOn:
+          id: "Confirm card matches"
+      - extendedWaitUntil:
+          notVisible: "Match Cards.*"
+          timeout: 60000
+
+# ============================================================
+# STEP 7 — COMMIT. Fresh cards normally surface unknown prospects and the
+# entity-review wizard; a fetch whose every name is already known commits
+# straight to "Saved N cards". The names are not what this flow is about, so
+# the wizard is drained the cheapest way — "Skip remaining names" decides
+# every row in one press, lookups included, creates no players and raises no
+# New Team steps (checklist-one-marketplace-skips-match-dialog STEP 6). The
+# either/or gate is legitimate here because the hard result is the SAME in
+# both shapes and is asserted below: cards saved, and BSC's count on the chip.
+# 60000 on the gate: the review opens behind the live Wikidata lookup each
+# unknown name queues, and the direct commit behind the card write (R5
+# marketplace-class exceptions, the same ceilings the flows cited use).
+# ============================================================
+
+- extendedWaitUntil:
+    visible:
+      text: "Confirm New Players & Teams|.*Saved [0-9]+ cards.*"
+    timeout: 60000
+- runFlow:
+    when:
+      visible: "Confirm New Players & Teams"
+    commands:
+      # THE RETRY IS NOT DECORATION: the batch can still grow after the wizard
+      # opens (a settled lookup stages a player's teams as further rows), and
+      # one press then leaves one row undecided. Press, wait for the terminal
+      # state, press once more if a late row turned up — measured on the
+      # Roanoke fixture, where the happy path pays nothing for it.
+      - retry:
+          maxRetries: 1
+          commands:
+            - tapOn:
+                text: ".*Skip remaining names \\([0-9]+\\).*"
+            - extendedWaitUntil:
+                visible:
+                  text: ".*Confirm & Save.*"
+                timeout: 60000
+      - tapOn:
+          text: ".*Confirm & Save.*"
+
+# ASSERTION 2a: the checklist HAS cards — at least one saved. The commit of a
+# live fetch is the sanctioned wait (60000, as checklist-one-marketplace-…
+# STEP 7 gives the same commit).
+- extendedWaitUntil:
+    visible:
+      text: ".*Saved [1-9][0-9]* cards?.*"
+    timeout: 60000
+
+# ============================================================
+# STEP 8 — ASSERTION 2b: BSC'S OWN PER-SLOT COUNT IS > 0 (NEO-219 pattern,
+# inserts-1996-score STEP 9)
+# Pressing the chip's × turns it into a question that names the number of
+# cards NeonBinder fetched THROUGH THAT SLOT — per source, not per set. A
+# positive count on the "Anime Kanji" BSC chip is the end-to-end proof that
+# BSC answered `variant=insert` + `variantName=Anime Kanji` for the promoted
+# row; a SportLots-only checklist would read "No cards were fetched from it."
+# and fail here. NON-DESTRUCTIVE (R7): it ends on the confirm's own Cancel,
+# nothing is detached. UP: the fetch button was the last thing centred and
+# the panel sits above the checklist; centred on the × itself (R8).
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      id: "Remove Anime Kanji"
+    direction: UP
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Remove Anime Kanji"
+# The panel subscribed to the counts as it mounted; a Convex read, the bar.
+- extendedWaitUntil:
+    visible:
+      text: ".*(1 card was|[1-9][0-9]* cards were) fetched from it; (its|their) BSC link will be dropped.*"
+    timeout: 7000
+- tapOn:
+    id: "Cancel detach Anime Kanji"
+- extendedWaitUntil:
+    notVisible: ".*fetched from it.*"
+    timeout: 7000
+# Still attached — the positive check that makes the step non-destructive
+# rather than merely intended to be, and the one an error page cannot satisfy.
+- assertVisible:
+    id: "Remove Anime Kanji"

@@ -40,6 +40,7 @@ import {
   slotFacet,
   slotLabel,
   type PlatformDataShape,
+  type PlatformFacetShape,
   type SlotBearingRow,
 } from "./platformSlots";
 
@@ -212,6 +213,82 @@ export const LEVEL_TO_BSC_FACET: Record<string, string> = {
 export function legacyBscFacetForLevel(level: string): string | undefined {
   if (level === "variantType") return undefined;
   return LEVEL_TO_BSC_FACET[level];
+}
+
+/**
+ * NEO-293 — the facet a row's UNTAGGED BSC ids acquire when the row is
+ * promoted from `insert` to `parallel` by `applyParallelGroupings`.
+ *
+ * ## Why the promotion may tag, when the level rule may not
+ *
+ * BSC files a parallel of an insert as a `variantName` under `variant=insert`
+ * — "Anime Kanji" is a variantName beside "Anime", not beneath it. The insert
+ * level sync therefore fetches it as an insert-level row whose BSC slot holds
+ * that variantName id, untagged: only the variantType sync tags what it
+ * writes (`syncWrittenBscFacet`), and at `insert` the level rule already
+ * answers `variantName`, so nothing needed to be written. The operator then
+ * groups it under the insert it parallels, the row moves to `parallel`, and
+ * `legacyBscFacetForLevel("parallel")` is silent — the same id that resolved
+ * a moment ago goes inert, the checklist fetch skips BSC, and the panel shows
+ * "needs re-mapping" for a slot nothing was wrong with.
+ *
+ * The tag is written at the moment of promotion, and NOT recovered from the
+ * level afterwards, because the promotion is the last point at which the
+ * writer HOLDS the fact: the id sitting on an insert-level row that was
+ * fetched by the insert-level variantName sync is a variantName id. That is
+ * the same rule `syncWrittenBscFacet` applies at variantType — a tag is a
+ * fact the writer holds, never an inference from where the row sits or what
+ * it is called. Slots that already carry a tag (an operator's `setName`
+ * split, say) are left exactly as they are.
+ *
+ * `legacyBscFacetForLevel("parallel")` stays `undefined` on purpose. A
+ * parallel of the BASE set sits under a `variant=parallel` variant type on a
+ * different axis entirely, and an untagged slot there must stay inert; only
+ * the insert→parallel promotion knows its ids came from the insert-level
+ * fetch, so only it may tag.
+ *
+ * Demotion (parallel→insert) leaves the tag in place: `variantName` is what
+ * the level rule would have answered at `insert` anyway, so the tagged and
+ * untagged row resolve identically there.
+ *
+ * The resolved chain is then exactly what the facet model produces for any
+ * variantName leaf: setName ← ancestor, `variant` ← the insert variant type,
+ * and `variantName` ← the parallel (deepest wins, overriding the insert
+ * ancestor's own variantName). The `variant` axis stays `insert`; the
+ * parallel narrows `variantName`.
+ */
+export const PROMOTED_PARALLEL_BSC_FACET: BscFacet = "variantName";
+
+/**
+ * The BSC slots on `row` that carry no facet tag, in slot order. `[]` when
+ * every slot is tagged or the row has no BSC side.
+ */
+export function untaggedBscSlots(
+  row: Pick<SlotBearingRow, "platformData" | "platformFacets">,
+): string[] {
+  return slotEntries(row, "bsc")
+    .filter(({ slot }) => slotFacet(row, "bsc", slot) === undefined)
+    .map(({ slot }) => slot);
+}
+
+/**
+ * `platformFacets` with each of `slots` tagged `facet`, every existing tag
+ * carried forward untouched. Returned rather than applied so the caller folds
+ * it into the SAME patch as whatever else it is writing — a level move and
+ * the tag that keeps its ids resolvable must land together or not at all.
+ */
+export function withBscFacetTags(
+  platformFacets: PlatformFacetShape | undefined,
+  slots: readonly string[],
+  facet: BscFacet,
+): PlatformFacetShape {
+  return {
+    ...(platformFacets ?? {}),
+    bsc: {
+      ...(platformFacets?.bsc ?? {}),
+      ...Object.fromEntries(slots.map((slot) => [slot, facet])),
+    },
+  };
 }
 
 /** The minimum a chain node must expose to be bucketed. */

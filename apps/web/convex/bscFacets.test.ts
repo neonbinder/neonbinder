@@ -36,6 +36,8 @@ import {
   syncWrittenBscFacet,
   bscSourceView,
   bscScopeQualifier,
+  untaggedBscSlots,
+  withBscFacetTags,
   type BscFacet,
   type FacetBearingRow,
 } from "./bscFacets";
@@ -757,5 +759,53 @@ describe("missingBscChecklistScope", () => {
         entry,
       );
     }
+  });
+});
+
+describe("untaggedBscSlots / withBscFacetTags — the promotion tagger's raw material (NEO-293)", () => {
+  test("`platformFacets.bsc: {}` (present but empty) is the same as absent — every slot is untagged", () => {
+    const row = {
+      platformData: { bsc: { b0: "anime-kanji" } },
+      platformFacets: { bsc: {} },
+    };
+    expect(untaggedBscSlots(row)).toEqual(["b0"]);
+  });
+
+  test("a stale facet entry for a slot key no longer in platformData is ignored, and survives a tag write untouched", () => {
+    // A slot can be detached (its key retired for good, per platformSlots.ts)
+    // while an old `platformFacets.bsc` entry for that key lingers. Neither
+    // helper walks platformFacets on its own — both are driven off
+    // platformData — so the stale entry is neither read as "already tagged"
+    // nor overwritten; it just rides along in the object.
+    const row = {
+      platformData: { bsc: { b1: "anime-kanji" } },
+      platformFacets: { bsc: { b0: "setName" as const } },
+    };
+    expect(untaggedBscSlots(row)).toEqual(["b1"]);
+    expect(withBscFacetTags(row.platformFacets, ["b1"], "variantName")).toEqual({
+      bsc: { b0: "setName", b1: "variantName" },
+    });
+  });
+
+  test("the same marketplace id in two slots — one tagged, one not — tags only the untagged slot key", () => {
+    // Slots are keyed by slot key, never by id (platformSlots.ts: two sibling
+    // rows can legitimately hold the same id, and nothing here enforces id
+    // uniqueness). A duplicate id across an operator's tagged split and a
+    // sync's untagged write must not confuse "same value" with "same slot".
+    const row = {
+      platformData: { bsc: { b0: "anime-kanji", b1: "anime-kanji" } },
+      platformFacets: { bsc: { b0: "setName" as const } },
+    };
+    expect(untaggedBscSlots(row)).toEqual(["b1"]);
+    expect(withBscFacetTags(row.platformFacets, ["b1"], "variantName")).toEqual({
+      bsc: { b0: "setName", b1: "variantName" },
+    });
+  });
+
+  test("a row with no BSC side at all has no untagged slots", () => {
+    expect(untaggedBscSlots({ platformData: {} })).toEqual([]);
+    expect(untaggedBscSlots({ platformData: { sportlots: { s0: "1" } } })).toEqual(
+      [],
+    );
   });
 });

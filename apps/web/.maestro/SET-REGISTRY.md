@@ -67,6 +67,7 @@ BuySportsCards alone for the whole run:
 | Hockey → 2024 → Topps → Topps NHL Sticker Collection | none — the flow never goes below `Variant Types` (NOT pre-synced) | `flows/set-selector/set-rename-survives-resync-and-suggests-bsc-name.yaml` — **sole writer** |
 | Hockey → 1995 → All Brands → Roanoke Express ECHL | `Base` — 25 cards, fetched and COMMITTED in-flow, BSC only (NOT pre-synced) | `flows/set-selector/checklist-one-marketplace-skips-match-dialog.yaml` — **sole writer**. ✅ **APPROVED 2026-09-09** (NEO-260) |
 | Baseball → 2024 → Topps → Topps MLB at Rickwood Field Negro Leagues Collection | `Base` — 4 cards, BSC only (the SportLots picker is CANCELLED in-flow; SportLots does not carry the set), fetched and COMMITTED in-flow (NOT pre-synced) | `flows/set-selector/checklist-wizard-link-team-saves-alias.yaml` — **sole writer**. Approved by Jason 2026-09-16 (NEO-284) |
+| Baseball → 2026 → Bowman → Bowman | `Insert` — reconciled in-flow (NOT pre-synced); the BSC insert `Anime Kanji` is promoted to a parallel of `Anime` by Group Parallels and its checklist is fetched and COMMITTED in-flow | `flows/set-selector/parallel-grouping-promoted-insert-fetches-from-bsc.yaml` — **sole writer**. Requested by the owner 2026-09-21 (NEO-293), replacing a rejected hand-made-parent fixture |
 
 ### 2024 Topps NHL Sticker Collection — NEO-211, sole-writer ⚠️ SUBSTITUTED, NEEDS SIGN-OFF
 
@@ -242,6 +243,51 @@ flow rather than added to every run's seed.
 data that isn't in the table above, it must either sync it itself (and accept the
 30–90s cost, with owner approval) or — far more often the right answer — use a
 per-worker custom set (see below).
+
+### 2026 Bowman — NEO-293, sole-writer (requested by the owner 2026-09-21)
+
+`parallel-grouping-promoted-insert-fetches-from-bsc.yaml` proves that a
+BSC-synced insert row promoted under the insert it parallels keeps a working
+BSC source: BSC files a parallel of an insert as a `variantName` under
+`variant=insert`, so "Sync Inserts" lists it as an insert; after Group
+Parallels moves it, its Multi-source panel must show the BSC id as an ordinary
+chip and Fetch from Marketplaces must bring its cards back FROM BSC.
+
+**Why this set.** The feature needs a REAL BSC insert whose REAL BSC parallel
+word-prefixes it, so the Group Parallels modal suggests the nesting on its own
+(maestro-web cannot drive the modal's drag). Observed on production by the
+owner, 2026-09-21: under Baseball → 2026 → Bowman → Bowman › Insert, BSC lists
+`Anime` and its parallels `Anime Kanji`, `Anime Black Refractors`, `Anime Red
+Refractors` and `Anime SuperFractors` as insert-level variantNames; SportLots
+carries `Chrome Anime Kanji` (id 378117) among ~479 sets for the year. No
+smaller real pair was verifiable from a workstation (BSC's API needs a bearer
+token; production reads are gated), so the observed one is used. The
+alternative — nesting BSC-synced rows under a hand-made parent on 1996 Score —
+was rejected by the owner: a hand-made row must never anchor marketplace data,
+and the harness must never dictate the data shape.
+
+| | |
+| -- | -- |
+| drills | Baseball → 2026 → Bowman → Bowman, all four levels COLD; under the pause the manufacturer row `Bowman` is hand-made by the drill (`CREATE_MANUFACTURER`), exactly as `Score` is for 1996 |
+| reconcile (live) | filters Ready and BSC to "Anime"; makes `Anime` / `Anime Kanji` their own NeonBinder set only when the auto-matcher left either Pending; **saves every Ready set** — the filter narrows the view, not the write, as on 1996 Score |
+| paused | no reconcile — the column fills straight from BSC |
+| grouping | Group Parallels → Accept all suggestions → Save; every prefix pair in the set nests, `Anime Kanji` (and under the pause the other three Anime parallels) under `Anime` |
+| fetch | on the promoted `Anime Kanji`: the pairing dialog when SportLots paired a set with it, the one-marketplace path otherwise; the review is drained with "Skip remaining names" (no players created) |
+| asserts | `Remove Anime Kanji` chip + "attached as a BSC variant", no "Needs re-mapping"; `Saved N cards` with N ≥ 1; the chip's detach confirm reads a BSC per-slot count ≥ 1, then Cancel |
+
+**What the flow leaves behind** (fresh-only; `setup.yaml`'s reset removes it
+all at the head of every run):
+
+| | |
+| -- | -- |
+| insert rows | every set the reconcile's auto-match put in Ready (live) or every BSC insert (paused), each with the ids the sync gave it — nothing hand-made below the manufacturer |
+| nesting | every word-prefix pair among them nested by Accept All; `Anime Kanji` is a `parallel` under `Anime`, its BSC slot tagged `variantName` |
+| `Anime Kanji` checklist | COMMITTED, every card from BSC (plus SportLots' when paired); its unknown names SKIPPED, so no players or teams are minted |
+| everything else | untouched — Base is never selected, no card is edited |
+
+**Sole writer.** No other flow may drill into 2026 Bowman. A re-run against the
+same deployment finds the rows already reconciled and promoted and fails at
+"Reconcile Inserts" (live) or "Accept all suggestions" — by name.
 
 ### The one sanctioned read-only visitor
 

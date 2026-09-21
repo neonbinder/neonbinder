@@ -203,13 +203,6 @@ export default function MultiSourcePanel({
     }
     return filters;
   }, [chain, row]);
-  const alreadyAttached = useMemo(
-    () => ({
-      bsc: new Set(bscEntries.map((e) => e.id)),
-      sportlots: new Set(slEntries.map((e) => e.id)),
-    }),
-    [bscEntries, slEntries],
-  );
   // NEO-239 — the BSC column's whole content, decided by the same function the
   // checklist fetch uses. The panel deliberately has no opinion of its own
   // about what counts as a source: if it showed one the fetch would not query,
@@ -217,6 +210,46 @@ export default function MultiSourcePanel({
   const bscView = useMemo(
     () => (row && chain ? bscSourceView(row, chain) : null),
     [row, chain],
+  );
+  // NEO-293 — what the dialog must NOT offer again: the BSC ids this panel
+  // renders as sources (or as the row's own scope), and every SportLots id.
+  //
+  // Built from `bscView`, not from every BSC slot on the row. The difference
+  // is the `untagged` bucket: a slot the fetch ignores, listed below under
+  // "Needs re-mapping" with the instruction to re-attach it from the dialog so
+  // its facet gets chosen. Handing the dialog EVERY slot id, as this once did,
+  // filtered that very id out of the variants list and left the operator at
+  // "Every BSC variant in this set is already attached" — told to do the one
+  // thing the dialog would not let them do. Re-attaching an id already on the
+  // row refreshes the facet on its existing slot (`allocateSlots`), which is
+  // the whole remedy, so an untagged id is an ordinary candidate here.
+  //
+  // Same principle as `bscView` itself: the bucketing is the fetch's, reused,
+  // never re-decided. If one id sits in both a tagged and an untagged slot it
+  // counts as attached — the panel shows it as a source, and the dialog must
+  // agree with the panel.
+  const alreadyAttached = useMemo(
+    () => ({
+      bsc: new Set(
+        bscView
+          ? [...bscView.sources, ...bscView.scope.own].map((s) => s.id)
+          : [],
+      ),
+      sportlots: new Set(slEntries.map((e) => e.id)),
+    }),
+    [bscView, slEntries],
+  );
+  // The ids the dialog will be re-mapping rather than attaching, so it can say
+  // so: the untagged bucket, minus any id a tagged slot already vouches for.
+  const needsRemap = useMemo(
+    () => ({
+      bsc: new Set(
+        (bscView?.untagged ?? [])
+          .map((u) => u.id)
+          .filter((id) => !alreadyAttached.bsc.has(id)),
+      ),
+    }),
+    [bscView, alreadyAttached],
   );
 
   if (!row || !chain) return null;
@@ -370,6 +403,7 @@ export default function MultiSourcePanel({
         parentFilters={parentFilters}
         selectorOptionId={selectorOptionId}
         alreadyAttached={alreadyAttached}
+        needsRemap={needsRemap}
         onClose={() => setDialogOpen(false)}
       />
     </div>

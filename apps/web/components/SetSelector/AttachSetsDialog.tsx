@@ -108,6 +108,7 @@ export default function AttachSetsDialog({
   parentFilters,
   selectorOptionId,
   alreadyAttached,
+  needsRemap,
   onClose,
 }: {
   isOpen: boolean;
@@ -119,6 +120,18 @@ export default function AttachSetsDialog({
   parentFilters: Record<string, string>;
   selectorOptionId: Id<"selectorOptions">;
   alreadyAttached: { bsc: Set<string>; sportlots: Set<string> };
+  /**
+   * NEO-293 — BSC ids already on the row in a slot the checklist fetch
+   * ignores (no facet; the panel lists them under "Needs re-mapping").
+   *
+   * They are deliberately NOT in `alreadyAttached`: the remedy is to pick
+   * them again from the rung that names their facet, and
+   * `attachPlatformIds` refreshes the facet on the slot they already hold.
+   * So they are listed as ordinary candidates, and this set only tells the
+   * dialog to call the result what it is — a re-map, not a new attachment.
+   * Optional so a caller with nothing to re-map passes nothing.
+   */
+  needsRemap?: { bsc: ReadonlySet<string> };
   onClose: () => void;
 }) {
   const fetchSlAttachSets = useAction(api.setReconciliation.fetchSlAttachSets);
@@ -336,6 +349,10 @@ export default function AttachSetsDialog({
         // the list would make its variants unreachable the moment the operator
         // attached the set itself. Attached sets render with their checkbox
         // replaced by an "attached" marker instead (see `CandidateRow`).
+        //
+        // NEO-293 — an id in an UNTAGGED slot is not in `alreadyAttached`
+        // (the panel keeps it in `needsRemap` instead), so it survives this
+        // filter on purpose: picking it again is how its facet gets set.
         const options =
           bscView === "variants"
             ? result.options.filter(
@@ -368,6 +385,23 @@ export default function AttachSetsDialog({
   }, [isOpen]);
 
   const totalSelected = bscSelected.size + slSelected.size;
+  // How many of the selected ids are re-maps of a slot the row already holds
+  // (NEO-293). The mutation reports these as `attachedCount: 0` — true, and
+  // useless to an operator who was just told to do exactly this — so the
+  // confirm button counts them itself.
+  const remapCount = Array.from(bscSelected.keys()).filter((id) =>
+    needsRemap?.bsc.has(id),
+  ).length;
+  const attachCount = totalSelected - remapCount;
+  const confirmLabel = submitting
+    ? attachCount === 0 && remapCount > 0
+      ? "Re-mapping…"
+      : "Attaching…"
+    : attachCount === 0 && remapCount > 0
+      ? `Re-map ${remapCount}`
+      : remapCount > 0
+        ? `Attach ${attachCount}, re-map ${remapCount}`
+        : `Attach ${totalSelected}`;
 
   // Latched separately from the `submitting` state: the document-level Enter
   // handler and the button's own onClick can both fire inside one event, and
@@ -595,6 +629,7 @@ export default function AttachSetsDialog({
                     candidate={c}
                     selection={bscSelected.get(c.platformValue)}
                     attached={alreadyAttached.bsc.has(c.platformValue)}
+                    remap={needsRemap?.bsc.has(c.platformValue)}
                     onToggle={toggle}
                     onLabel={updateLabel}
                     onBrowse={browseSet}
@@ -607,6 +642,7 @@ export default function AttachSetsDialog({
                     facet="variantName"
                     candidate={c}
                     selection={bscSelected.get(c.platformValue)}
+                    remap={needsRemap?.bsc.has(c.platformValue)}
                     onToggle={toggle}
                     onLabel={updateLabel}
                   />
@@ -666,7 +702,7 @@ export default function AttachSetsDialog({
               disabled={submitting || totalSelected === 0}
               aria-label="Confirm attach sets"
             >
-              {submitting ? "Attaching…" : `Attach ${totalSelected}`}
+              {confirmLabel}
             </NeonButton>
           </div>
         </div>
@@ -950,6 +986,7 @@ function CandidateRow({
   candidate,
   selection,
   attached,
+  remap,
   onToggle,
   onLabel,
   onBrowse,
@@ -965,6 +1002,12 @@ function CandidateRow({
    * be attached twice.
    */
   attached?: boolean;
+  /**
+   * NEO-293 — on the row already, in a slot with no facet. Fully attachable
+   * (that IS the fix), and marked so the operator can match it to the panel's
+   * "Needs re-mapping" list rather than wonder why an attached id is offered.
+   */
+  remap?: boolean;
   onToggle: (side: Side, candidate: Candidate, facet?: BscFacet) => void;
   onLabel: (side: Side, id: string, label: string) => void;
   onBrowse?: (c: Candidate) => void;
@@ -1005,6 +1048,15 @@ function CandidateRow({
           <div className="text-[10px] text-gray-500 truncate">
             id: {candidate.platformValue}
           </div>
+          {remap && !attached && (
+            // Same words, same weight as the panel's own heading for these
+            // slots, so the operator reads one thing in two places rather
+            // than two things. gray-400, not gray-500: this line is the only
+            // thing that says picking this row re-maps instead of adding.
+            <div className="text-[10px] uppercase tracking-wide text-gray-400">
+              Needs re-mapping
+            </div>
+          )}
           {selection && (
             <Input
               bare
