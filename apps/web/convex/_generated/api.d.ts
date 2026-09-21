@@ -34,6 +34,7 @@ import type * as browserAudience from "../browserAudience.js";
 import type * as bscFacets from "../bscFacets.js";
 import type * as bulkLoad from "../bulkLoad.js";
 import type * as cardChecklist from "../cardChecklist.js";
+import type * as cardNumberPrefix from "../cardNumberPrefix.js";
 import type * as checklistCandidates from "../checklistCandidates.js";
 import type * as credentials from "../credentials.js";
 import type * as crons from "../crons.js";
@@ -98,6 +99,7 @@ import type * as teamFill from "../teamFill.js";
 import type * as teams from "../teams.js";
 import type * as testing from "../testing.js";
 import type * as userProfile from "../userProfile.js";
+import type * as variantRole from "../variantRole.js";
 import type * as wikidataPool from "../wikidataPool.js";
 
 import type {
@@ -133,6 +135,7 @@ declare const fullApi: ApiFromModules<{
   bscFacets: typeof bscFacets;
   bulkLoad: typeof bulkLoad;
   cardChecklist: typeof cardChecklist;
+  cardNumberPrefix: typeof cardNumberPrefix;
   checklistCandidates: typeof checklistCandidates;
   credentials: typeof credentials;
   crons: typeof crons;
@@ -197,6 +200,7 @@ declare const fullApi: ApiFromModules<{
   teams: typeof teams;
   testing: typeof testing;
   userProfile: typeof userProfile;
+  variantRole: typeof variantRole;
   wikidataPool: typeof wikidataPool;
 }>;
 

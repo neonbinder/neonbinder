@@ -27,6 +27,8 @@ import {
   MAX_BSC_FAN_OUT,
   missingBscChecklistScope,
   isBscBaseVariantId,
+  isBscInsertVariantId,
+  isBscParallelVariantId,
   soleBscBaseVariantId,
   legacyBscFacetForLevel,
   planBscFanOut,
@@ -391,6 +393,44 @@ describe("isBscBaseVariantId", () => {
     expect(isBscBaseVariantId("baseball")).toBe(false);
     expect(isBscBaseVariantId("database")).toBe(false);
     expect(isBscBaseVariantId("rebase")).toBe(false);
+  });
+});
+
+// ===========================================================================
+// NEO-291 — recognising BSC's insert/parallel variant ids, same token rule
+// ===========================================================================
+
+describe("isBscInsertVariantId", () => {
+  test.each(["insert", "Insert", "INSERT", " insert ", "insert-cards", "Insert-Cards"])(
+    "%s is an insert variant",
+    (id) => {
+      expect(isBscInsertVariantId(id)).toBe(true);
+    },
+  );
+
+  test.each(["base", "parallel", "promo"])("%s is not", (id) => {
+    expect(isBscInsertVariantId(id)).toBe(false);
+  });
+
+  test("`insertion` is NOT an insert variant — one token, not two", () => {
+    expect(isBscInsertVariantId("insertion")).toBe(false);
+  });
+});
+
+describe("isBscParallelVariantId", () => {
+  test.each(["parallel", "Parallel", "PARALLEL", " parallel ", "parallel-set", "2024-topps-chrome-parallel"])(
+    "%s is a parallel variant",
+    (id) => {
+      expect(isBscParallelVariantId(id)).toBe(true);
+    },
+  );
+
+  test.each(["base", "insert", "promo"])("%s is not", (id) => {
+    expect(isBscParallelVariantId(id)).toBe(false);
+  });
+
+  test("`parallels` is NOT a parallel variant — one token, not two", () => {
+    expect(isBscParallelVariantId("parallels")).toBe(false);
   });
 });
 

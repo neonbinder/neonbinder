@@ -1000,6 +1000,7 @@ would put the wrong question on screen.
 | `cna-` | `checklist-attention-badge-and-filter.yaml` (also `-${ATTEMPT_ID}`) |
 | `cnw-` | `checklist-attention-walker-missing-team.yaml` (also `-${ATTEMPT_ID}`) |
 | `clt-` | `custom-card-row-opens-panel-with-autotitle.yaml` |
+| `cpx-` | `set-attributes-card-prefix.yaml` — an Insert row `CPXROW` under it carries the Card prefix under test; the flow clears the prefix before it ends. |
 | `cvar-` | `variation-link-group-and-unlink.yaml` |
 | `fp-` | `features-propagation.yaml` |
 | `ftl-` | `set-fill-teams-from-teammate-card.yaml` (also `-${ATTEMPT_ID}`) — under `E2E Test Sport <w>` › 2026 › Topps, the `stt-` shape for the same League-row reason. Per-attempt because the Fill teams confirm's title and toast are EXACT card counts. Its two cards are deleted at the end; the set, its `Insert` › `Base` rows, its player `FTP<token>` and its team `FTT<token>` stand. The set is given NO set-level team (NEO-277 would copy it onto every card and leave nothing to fill). |
@@ -1013,7 +1014,6 @@ would put the wrong question on screen.
 | `tlf-` | `checklist-title-length-limits-and-fixer.yaml` (also `-${ATTEMPT_ID}`) |
 | `tp-` | `team-picker.yaml` |
 | `tpc-` | `team-picker-create-custom-card.yaml` |
-| `vme-insert-` | `variant-metadata-editor-insert.yaml` |
 | `WOSet3-` | `new-chain-autopopulates-features.yaml` (under synthetic `E2E Test Sport N`) |
 | `xag-`, `xsrc-` | `cross-release-card-appears-in-guest-checklist.yaml` |
 | `xbg-`, `xbs-` | `cross-release-import-reports-missing-numbers.yaml` |

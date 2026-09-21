@@ -14,8 +14,10 @@ import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import { contrastRatio, normalizeHexColor } from "@/lib/print/contrast";
 import { teamFullName, teamShortName } from "../../lib/teams/team-name";
 import { FeatureValueControl } from "./FeatureValueControl";
+import CardPrefixRow from "./CardPrefixRow";
 import RenameEntityControl from "./RenameEntityControl";
 import BaseRoleControl from "./BaseRoleControl";
+import { isBaseRole } from "./baseRole";
 import FillTeamsControl from "./FillTeamsControl";
 import TeamPicker, { type TeamPickerLabels } from "./TeamPicker";
 import {
@@ -83,7 +85,28 @@ import {
  * goes through a confirm that states the card count; clearing it never touches
  * a card, and says so before it happens when cards would be left carrying the
  * team. See `SetTeamRow`.
+ *
+ * Card prefix (NEO-291): the first cell of the grid, at the levels whose cards
+ * carry one — an insert, a parallel, or the base variant type. It is
+ * `metadata.cardNumberPrefix`, not a `features` key, and saves through its own
+ * mutation; otherwise it behaves exactly like the text rows around it. See
+ * `CardPrefixRow`.
  */
+
+/**
+ * NEO-291 — where the Card prefix row is editable.
+ *
+ * The checklist sync reads the prefix off the ancestor chain of the row the
+ * cards hang from, so it is edited where cards hang: inserts and parallels
+ * always, and a variant type only when it is the base set (Base's cards hang
+ * directly from it; any other variant type's cards hang from its inserts).
+ * Sport, year, manufacturer and set are containers — a prefix there would
+ * apply to every checklist beneath, which no set does.
+ */
+function showsCardPrefix(level: Level, metadata: unknown): boolean {
+  if (level === "insert" || level === "parallel") return true;
+  return level === "variantType" && isBaseRole(metadata);
+}
 
 /**
  * NEO-277 — where the Team row is editable. Sport, year and manufacturer are
@@ -142,6 +165,9 @@ export default function SetAttributesPanel({
   const setSelectorOptionFeature = useMutation(
     api.selectorOptions.setSelectorOptionFeature,
   );
+  const setSelectorOptionCardNumberPrefix = useMutation(
+    api.selectorOptions.setSelectorOptionCardNumberPrefix,
+  );
 
   const [expanded, setExpanded] = useState(!defaultCollapsed);
   const [toast, setToast] = useState<string | null>(null);
@@ -183,6 +209,8 @@ export default function SetAttributesPanel({
   const features = row.features ?? {};
   const teamIds: Array<Id<"teams">> = row.teamIds ?? [];
   const showTeamRow = TEAM_LEVELS.has(leafLevel);
+  const showCardPrefixRow = showsCardPrefix(leafLevel, row.metadata);
+  const cardNumberPrefix = row.metadata?.cardNumberPrefix;
 
   // Toggle-pill features (checkbox + toggleOptions) render together in one
   // wrapping row instead of scattered through the 2-column grid at their
@@ -248,6 +276,34 @@ export default function SetAttributesPanel({
       // nothing useful or a request id. Only a ConvexError's `data` is text a
       // backend deliberately chose for a person, and `userFacingMessage` is
       // the one place that rule lives.
+      setToast(`Failed: ${userFacingMessage(e, `Could not save ${label}`)}`);
+    }
+  };
+
+  /**
+   * NEO-291 — the Card prefix row's save. Same shape as `handleSaveFeature`
+   * (no-op on an unchanged value, optimistic toast, `userFacingMessage` on
+   * failure) with its own mutation, because the prefix is
+   * `metadata.cardNumberPrefix` rather than a `features` key. The server
+   * trims and treats `""` as "remove the key", so the clear/save split here
+   * is only for the toast's sake.
+   */
+  const handleSaveCardNumberPrefix = async (value: string) => {
+    const label = "Card prefix";
+    const trimmed = value.trim();
+    const clearing = trimmed.length === 0;
+    if (
+      clearing ? cardNumberPrefix === undefined : cardNumberPrefix === trimmed
+    ) {
+      return;
+    }
+    showToast(clearing ? `Cleared ${label}` : `Saved ${label}`);
+    try {
+      await setSelectorOptionCardNumberPrefix({
+        id: selectorOptionId,
+        cardNumberPrefix: trimmed,
+      });
+    } catch (e) {
       setToast(`Failed: ${userFacingMessage(e, `Could not save ${label}`)}`);
     }
   };
@@ -438,6 +494,17 @@ export default function SetAttributesPanel({
           )}
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {/* NEO-291: first cell, because it is the one fact here that
+                changes how the cards beneath are NUMBERED — every card in an
+                insert wears it — and an operator building a Diamond Kings
+                insert meets it before League or Era. Only at the levels
+                cards hang from; see `showsCardPrefix`. */}
+            {showCardPrefixRow && (
+              <CardPrefixRow
+                value={cardNumberPrefix}
+                onSave={handleSaveCardNumberPrefix}
+              />
+            )}
             {otherFeatures.map((feat) => (
               <SetFeatureRow
                 key={feat.key}
@@ -469,6 +536,12 @@ function SetFeatureRow({
   // Unique per-field marker class so Maestro's inputText targets THIS field
   // rather than the first input sharing the className (see useFieldTestClass).
   const fieldClass = useFieldTestClass();
+  // NEO-291 (a11y): the hint used to ride only on the label's `title`, which
+  // is hover-only — a keyboard or screen-reader user never met it. It is now
+  // also in the DOM, visually hidden, as the control's `aria-describedby`
+  // target; `title` + the dotted underline stay for sighted hover. The id is
+  // on the hint span, never the input (see useFieldTestClass on resource-id).
+  const hintId = useId();
 
   // "checkbox" features store "true"/"false" strings in the `features` map
   // (unlike "boolean", which is bound to a real schema column and isn't
@@ -507,8 +580,18 @@ function SetFeatureRow({
         aria-label={`Set feature ${label}`}
       >
         <span className="text-[10px] uppercase tracking-wide text-gray-400">
-          {label}
+          <span
+            title={feat.hint}
+            className={
+              feat.hint
+                ? "cursor-help underline decoration-dotted decoration-gray-500"
+                : undefined
+            }
+          >
+            {label}
+          </span>
         </span>
+        {feat.hint && <span className="sr-only">{feat.hint}</span>}
         <span className="text-gray-300">{value ?? "—"}</span>
       </div>
     );
@@ -531,6 +614,11 @@ function SetFeatureRow({
           {label}
         </span>
       </span>
+      {feat.hint && (
+        <span id={hintId} className="sr-only">
+          {feat.hint}
+        </span>
+      )}
       <FeatureValueControl
         feat={feat}
         value={value ?? ""}
@@ -541,6 +629,7 @@ function SetFeatureRow({
         // it to `onSave("")` is what makes a set attribute clearable.
         onEmptyCommit={() => onSave("")}
         ariaLabel={`Value for ${label}`}
+        ariaDescribedBy={feat.hint ? hintId : undefined}
         placeholder="—"
         dataFeatKey={feat.key}
         className={`${fieldClass()} w-full p-1 border rounded text-xs dark:bg-gray-900 dark:border-gray-700 focus:border-[#00D558] focus:outline-none`}

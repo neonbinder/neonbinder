@@ -24,7 +24,7 @@
 188	.maestro/flows/set-selector/custom-card-crud.yaml
 163	.maestro/flows/set-selector/card-features-missing.yaml
 158	.maestro/flows/set-selector/parallel-grouping-reject-parallel.yaml
-155	.maestro/flows/set-selector/variant-metadata-editor-insert.yaml
+155	.maestro/flows/set-selector/set-attributes-card-prefix.yaml
 139	.maestro/flows/set-selector/cards-parallel-custom.yaml
 125	.maestro/flows/profile/fill-profile-data.yaml
 95	.maestro/flows/set-selector/checklist-fetch-unknown-entities-link-existing.yaml

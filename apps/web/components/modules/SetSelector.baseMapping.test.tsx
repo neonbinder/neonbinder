@@ -174,9 +174,6 @@ vi.mock("../SetSelector/SetVariantForm", () => ({ default: () => null }));
 vi.mock("../SetSelector/VariantForm", () => ({ default: () => null }));
 vi.mock("../SetSelector/ParallelForm", () => ({ default: () => null }));
 vi.mock("../SetSelector/CardChecklist", () => ({ default: () => null }));
-vi.mock("../SetSelector/VariantMetadataEditor", () => ({
-  default: () => null,
-}));
 vi.mock("../SetSelector/ParallelGroupingModal", () => ({
   default: () => null,
 }));

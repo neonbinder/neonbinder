@@ -9,7 +9,7 @@ tags:
 #
 # This is the ONLY flow that exercises adding a parallel via the "Add custom
 # Parallels" column. (Adding a custom INSERT is covered by
-# variant-metadata-editor-insert; NESTING parallels under an insert is covered
+# set-attributes-card-prefix; NESTING parallels under an insert is covered
 # by move-parallels-of-inserts-custom.)
 #
 # It asserts the ADD outcome — deliberately NOT "Fetch from Marketplaces". That

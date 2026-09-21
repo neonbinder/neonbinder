@@ -174,8 +174,18 @@ import {
   cardPlatformWireDataValidator,
   selectorOptionFields,
   selectorOptionLevelValidator,
-  selectorOptionMetadataFields,
 } from "./schema";
+// NEO-291 — `isInsert` / `isParallel` are derived from where a row sits (its
+// level, and its variant-type parent's role read from that parent's tagged
+// BSC slot), once, at creation and on a level move. Never from a name, never
+// from the client.
+import { derivedVariantFlags, withVariantFlags } from "./variantRole";
+// NEO-291 — the one rule for a card number prefix, shared with the
+// reconciler's write path in setReconciliation.ts.
+import { normalizeCardNumberPrefix } from "./cardNumberPrefix";
+// Re-exported for callers that reached the ceiling through this module before
+// the rule moved; convex/cardNumberPrefix.ts is its home.
+export { MAX_CARD_NUMBER_PREFIX_LENGTH } from "./cardNumberPrefix";
 import {
   BSC_SOURCE_FACETS,
   bscFacetValidator,
@@ -1878,6 +1888,11 @@ export const storeSelectorOptions = mutation({
       );
     }
 
+    // NEO-291 — the flags every insert/parallel-level row in this batch is
+    // born with, from its level and the parent's role. One answer per call:
+    // the batch shares one parent, so the derivation cannot differ per item.
+    const variantFlags = derivedVariantFlags(level, parentRowForCopyDown);
+
     const linkedIds: Id<"selectorOptions">[] = [];
     const relinkedAll: UnlinkedEntry[] = [];
 
@@ -1953,6 +1968,18 @@ export const storeSelectorOptions = mutation({
           w.metadata = { ...(w.metadata ?? {}), isBase: true };
         }
 
+        // NEO-291 — same ADDS-ONLY rule for the insert/parallel flags: a row
+        // that carries neither gets the derived pair; a row that carries
+        // either keeps what it has. Never flipped here, whatever the parent
+        // says now — a level move is the only thing that rewrites them.
+        if (
+          variantFlags &&
+          w.metadata?.isInsert === undefined &&
+          w.metadata?.isParallel === undefined
+        ) {
+          w.metadata = { ...(w.metadata ?? {}), ...variantFlags };
+        }
+
         // NEO-96: backfill sportConfig onto a sport row that predates it (or
         // whose earlier sync ran before defaults existed). Only ever ADDS —
         // never overwrites a config already on the row, so an operator edit
@@ -1985,9 +2012,12 @@ export const storeSelectorOptions = mutation({
       const incomingBsc = item.ids.bsc;
       const incomingSl = item.ids.sportlots;
       warnIfIncomplete("new", insertValue, incomingBsc);
+      // NEO-291 — the derived flags reach `deriveOwnLevelFeatures` so the
+      // write-once `features.cardType` snapshot is right at birth: a parallel
+      // of the base set is "Parallel", not "Insert".
       const features = {
         ...(parentFeatures ?? {}),
-        ...deriveOwnLevelFeatures(level, insertValue),
+        ...deriveOwnLevelFeatures(level, insertValue, variantFlags),
       };
       // NEO-96: a sport row carries its own config from creation, so nothing
       // downstream ever looks up SKU codes / QIDs / ESPN paths by display
@@ -2020,7 +2050,13 @@ export const storeSelectorOptions = mutation({
       // everywhere by comparing the DISPLAY VALUE to the literal "base", which
       // made NB behaviour depend on a marketplace's word for the thing and
       // broke on rename. `metadata.isBase` is read from now on.
-      const insertMetadata = confersBaseRole(item) ? { isBase: true } : undefined;
+      //
+      // NEO-291 — and the insert/parallel flags beside it, from the same
+      // derivation that just fed `features`. Absent means false.
+      const insertMetadata = {
+        ...(confersBaseRole(item) ? { isBase: true } : {}),
+        ...(variantFlags ?? {}),
+      };
       const id = await ctx.db.insert("selectorOptions", {
         level,
         value: insertValue,
@@ -2034,7 +2070,9 @@ export const storeSelectorOptions = mutation({
           : {}),
         parentId,
         children: [],
-        ...(insertMetadata ? { metadata: insertMetadata } : {}),
+        ...(Object.keys(insertMetadata).length > 0
+          ? { metadata: insertMetadata }
+          : {}),
         ...(Object.keys(features).length > 0 ? { features } : {}),
         ...(parentTeamIds ? { teamIds: parentTeamIds } : {}),
         ...(sportConfig ? { sportConfig } : {}),
@@ -2509,9 +2547,14 @@ export const addCustomSelectorOption = mutation({
       }
     }
 
+    // NEO-291 — which of insert/parallel this row IS is a fact of where it
+    // sits, decided once here from its level and the parent's role (read from
+    // the parent's tagged BSC slot, never from the parent's name), and fed to
+    // the write-once `features.cardType` snapshot at the same time.
+    const variantFlags = derivedVariantFlags(level, parent);
     const features = {
       ...(parent?.features ?? {}),
-      ...deriveOwnLevelFeatures(level, value),
+      ...deriveOwnLevelFeatures(level, value, variantFlags),
     };
 
     // NEO-239 — `isCustom: true` is no longer written. A row added by hand is
@@ -2534,6 +2577,7 @@ export const addCustomSelectorOption = mutation({
       parentId,
       children: [],
       createdByUserId: userId,
+      ...(variantFlags ? { metadata: variantFlags } : {}),
       ...(Object.keys(features).length > 0 ? { features } : {}),
       ...(parentTeamIds ? { teamIds: parentTeamIds } : {}),
       lastUpdated: Date.now(),
@@ -5422,6 +5466,48 @@ export const setSelectorOptionFeature = mutation({
   },
 });
 
+/**
+ * NEO-291 — set or clear a row's `metadata.cardNumberPrefix`, the one
+ * metadata field an operator still types (the insert/parallel flags are
+ * derived, see convex/variantRole.ts, and `isBase` has `setBaseVariantType`).
+ *
+ * Replaces the metadata-box path through `updateSelectorOptionMetadata`,
+ * which merged whatever object the client sent. This mutation touches ONE
+ * key and nothing else in `metadata`, so it can never clear a role.
+ *
+ * The rule — trim, `""` DELETES the key (never stored, the NEO-217 spelling
+ * `setSelectorOptionFeature` uses for `features`), refuse control /
+ * zero-width characters and over-length with a string `ConvexError` that
+ * `userFacingMessage` shows verbatim — is `normalizeCardNumberPrefix` in
+ * convex/cardNumberPrefix.ts, shared with the reconciler so the two doors
+ * cannot disagree.
+ */
+export const setSelectorOptionCardNumberPrefix = mutation({
+  args: {
+    id: v.id("selectorOptions"),
+    cardNumberPrefix: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    const row = await ctx.db.get(args.id);
+    if (!row) {
+      throw new ConvexError("That row is gone. Refresh and try again.");
+    }
+    const prefix = normalizeCardNumberPrefix(args.cardNumberPrefix);
+    const next = { ...(row.metadata ?? {}) };
+    if (prefix) next.cardNumberPrefix = prefix;
+    else delete next.cardNumberPrefix;
+    await ctx.db.patch(args.id, {
+      // Every other key rides along untouched; an emptied object is dropped
+      // rather than stored as `{}`.
+      metadata: Object.keys(next).length > 0 ? next : undefined,
+      lastUpdated: Date.now(),
+    });
+    return null;
+  },
+});
+
 // ===========================================================================
 // NEO-277 — Team as a set-level attribute
 // ===========================================================================
@@ -5985,6 +6071,7 @@ export const applyParallelGroupings = mutation({
     const promotionTargets: Array<{
       sourceId: Id<"selectorOptions">;
       targetId: Id<"selectorOptions">;
+      metadata: Doc<"selectorOptions">["metadata"];
     }> = [];
     for (const p of args.promotions) {
       const source = await ctx.db.get(p.insertId);
@@ -6024,12 +6111,17 @@ export const applyParallelGroupings = mutation({
           `Cannot promote insert "${source.value}" to parallel — it already has parallels beneath it.`,
         );
       }
-      promotionTargets.push({ sourceId: p.insertId, targetId: p.targetInsertId });
+      promotionTargets.push({
+        sourceId: p.insertId,
+        targetId: p.targetInsertId,
+        metadata: source.metadata,
+      });
     }
 
     const demotionTargets: Array<{
       parallelId: Id<"selectorOptions">;
       oldParentId: Id<"selectorOptions">;
+      metadata: Doc<"selectorOptions">["metadata"];
     }> = [];
     for (const d of args.demotions) {
       const row = await ctx.db.get(d.parallelId);
@@ -6042,7 +6134,11 @@ export const applyParallelGroupings = mutation({
       if (!row.parentId) {
         throw new Error(`Parallel ${d.parallelId} has no parent`);
       }
-      demotionTargets.push({ parallelId: d.parallelId, oldParentId: row.parentId });
+      demotionTargets.push({
+        parallelId: d.parallelId,
+        oldParentId: row.parentId,
+        metadata: row.metadata,
+      });
     }
 
     const reparentingTargets: Array<{
@@ -6085,11 +6181,21 @@ export const applyParallelGroupings = mutation({
     }
 
     // ---- Apply promotions ----
+    //
+    // NEO-291 — a level move REPLACES the row's insert/parallel flags: what
+    // the row is follows where it now sits. Promotion makes it a parallel
+    // (of an insert), full stop; demotion makes it whatever an insert-level
+    // row under this variant type is, from the variant type's own role.
+    // `features.cardType` is deliberately NOT re-derived here — features are a
+    // write-once snapshot taken at creation (NEO-71-74), and an operator may
+    // have edited it since; the flags describe the row, the snapshot stays
+    // theirs to change through the attributes panel.
     const variantTypeChildren = await getChildren(args.variantTypeId);
-    for (const { sourceId, targetId } of promotionTargets) {
+    for (const { sourceId, targetId, metadata } of promotionTargets) {
       await ctx.db.patch(sourceId, {
         level: "parallel",
         parentId: targetId,
+        metadata: withVariantFlags(metadata, { isParallel: true }),
         lastUpdated: now,
       });
       variantTypeChildren.delete(sourceId);
@@ -6098,10 +6204,12 @@ export const applyParallelGroupings = mutation({
     }
 
     // ---- Apply demotions ----
-    for (const { parallelId, oldParentId } of demotionTargets) {
+    const demotedFlags = derivedVariantFlags("insert", variantType);
+    for (const { parallelId, oldParentId, metadata } of demotionTargets) {
       await ctx.db.patch(parallelId, {
         level: "insert",
         parentId: args.variantTypeId,
+        metadata: withVariantFlags(metadata, demotedFlags),
         lastUpdated: now,
       });
       const oldParentChildren = await getChildren(oldParentId);
@@ -6170,9 +6278,11 @@ export const setVariantTypePlatformData = mutation({
      * label left over from the set this row used to be mapped to.
      */
     bscLabel: v.optional(v.string()),
-    // Derived from the table (NEO-239). A hand-typed copy here is how the
-    // `isBase` drift happened one validator over.
-    metadata: selectorOptionFields.metadata,
+    // NEO-291 — there is no `metadata` arg. There was one (the whole table
+    // object, merged over the row's), and no caller ever sent it; what it did
+    // was let an admin client strip `isBase` or write a role this mutation
+    // has no business deciding. Roles have their own doors: `isBase` via
+    // `setBaseVariantType`, the prefix via `setSelectorOptionCardNumberPrefix`.
     // NEO-219: the row's `lastUpdated` as the picker read it.
     //
     // OPTIONAL — absent means "do not check", which is what every existing
@@ -6345,33 +6455,8 @@ export const setVariantTypePlatformData = mutation({
     ) {
       merged.platformSlotSeq = working.platformSlotSeq;
     }
-    if (args.metadata) {
-      merged.metadata = { ...(row.metadata || {}), ...args.metadata };
-    }
     await ctx.db.patch(args.variantTypeId, merged);
     return { success: true, message: "Stored Base mapping" };
-  },
-});
-
-export const updateSelectorOptionMetadata = mutation({
-  args: {
-    id: v.id("selectorOptions"),
-    // Required here (an update must name what it is setting), but the FIELDS
-    // still come from the table — see `selectorOptionMetadataFields`.
-    metadata: v.object(selectorOptionMetadataFields),
-  },
-  returns: v.null(),
-  handler: async (ctx, args) => {
-    await requireAdmin(ctx);
-    const existing = await ctx.db.get(args.id);
-    if (!existing) {
-      throw new Error("Selector option not found");
-    }
-    await ctx.db.patch(args.id, {
-      metadata: { ...(existing.metadata || {}), ...args.metadata },
-      lastUpdated: Date.now(),
-    });
-    return null;
   },
 });
 

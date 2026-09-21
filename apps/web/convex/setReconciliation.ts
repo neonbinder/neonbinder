@@ -45,7 +45,12 @@ import {
   soleBscBaseVariantId,
   syncWrittenBscFacet,
 } from "./bscFacets";
-import { selectorOptionFields } from "./schema";
+// NEO-291 — the insert/parallel flags are derived from where a row sits, not
+// taken from the client. See convex/variantRole.ts.
+import { derivedVariantFlags } from "./variantRole";
+// NEO-291 — the one rule for a card number prefix, shared with
+// `setSelectorOptionCardNumberPrefix` so the modal and the panel agree.
+import { normalizeCardNumberPrefix } from "./cardNumberPrefix";
 // NEO-277: the set-level team a fresh child inherits from its parent.
 import { inheritedTeamIds } from "./lib/selectorTeams";
 // NEO-239 — the per-side "can this marketplace be asked?" rule, shared with
@@ -117,12 +122,20 @@ const levelValidator = v.union(
 );
 
 /**
- * NEO-239 — DERIVED, never re-listed. `storeReconciledOptions` takes operator
- * metadata on the wire, and a hand-typed copy of the table's shape here would
- * silently reject a field the table gained. See the twin in selectorOptions.ts
- * for the drift that made this structural.
+ * NEO-291 — the ONLY metadata the reconciliation modal may send: the card
+ * number prefix. Deliberately NOT `selectorOptionFields.metadata` any more
+ * (NEO-239 derived it from the table so a new field reached the wire for
+ * free): the insert/parallel flags are now DERIVED from where a row sits
+ * (convex/variantRole.ts) and `isBase` from BSC's base id, and a client-sent
+ * value for any of them must be refused at the validator, not merged. A
+ * bundle deployed before this ticket that still sends `isInsert` /
+ * `isParallel` / `isBase` gets an argument-validation error rather than a
+ * silent write, which is the right failure for a role a client no longer
+ * owns.
  */
-const metadataValidator = selectorOptionFields.metadata;
+const metadataValidator = v.optional(
+  v.object({ cardNumberPrefix: v.optional(v.string()) }),
+);
 
 // ===== MATCHING HELPERS =====
 
@@ -1484,6 +1497,11 @@ export const storeReconciledOptions = mutation({
       !siblingHoldsBaseRole &&
       ids.bsc === baseVariantId;
 
+    // NEO-291 — the flags every insert/parallel-level row in this batch is
+    // born with, from its level and the parent's role (the parent's tagged
+    // BSC slot, never its name). One parent per call, so one answer.
+    const variantFlags = derivedVariantFlags(level, parentRowForCopyDown);
+
     const linkedIds: Id<"selectorOptions">[] = [];
     const relinkedAll: UnlinkedEntry[] = [];
 
@@ -1597,8 +1615,17 @@ export const storeReconciledOptions = mutation({
         w.primaryPlatformId =
           Object.keys(nextPrimary).length > 0 ? nextPrimary : undefined;
 
-        if (item.metadata) {
-          w.metadata = { ...(w.metadata || {}), ...item.metadata };
+        // NEO-291 — the modal may carry a prefix for a row it is re-linking.
+        // Same rule as the panel (`normalizeCardNumberPrefix`: an invalid one
+        // throws the operator's sentence). Only a non-empty one is written:
+        // `""` is not a value, and clearing is
+        // `setSelectorOptionCardNumberPrefix`'s job (NEO-217 spelling).
+        const incomingPrefix =
+          item.metadata?.cardNumberPrefix === undefined
+            ? undefined
+            : normalizeCardNumberPrefix(item.metadata.cardNumberPrefix);
+        if (incomingPrefix) {
+          w.metadata = { ...(w.metadata ?? {}), cardNumberPrefix: incomingPrefix };
         }
 
         // NEO-239 — the base ROLE, from BSC's own base variant id, never from
@@ -1607,6 +1634,18 @@ export const storeReconciledOptions = mutation({
         // every later sync.
         if (w.metadata?.isBase === undefined && confersBaseRole(parsed.ids)) {
           w.metadata = { ...(w.metadata ?? {}), isBase: true };
+        }
+
+        // NEO-291 — same ADDS-ONLY rule for the insert/parallel flags: a row
+        // carrying neither gets the derived pair, a row carrying either keeps
+        // what it has. Never flipped here; a level move
+        // (`applyParallelGroupings`) is the only thing that rewrites them.
+        if (
+          variantFlags &&
+          w.metadata?.isInsert === undefined &&
+          w.metadata?.isParallel === undefined
+        ) {
+          w.metadata = { ...(w.metadata ?? {}), ...variantFlags };
         }
 
         linkedIds.push(row._id);
@@ -1662,9 +1701,19 @@ export const storeReconciledOptions = mutation({
               },
             }
           : alloc.platformFacets;
-      const insertMetadata = confersBaseRole(parsed.ids)
-        ? { ...(item.metadata ?? {}), isBase: true }
-        : item.metadata;
+      //
+      // NEO-291 — the insert/parallel flags come from the derivation, never
+      // from `item.metadata`, whose validator no longer admits them. The
+      // prefix is the one thing the modal may still say about a new row.
+      const insertPrefix =
+        item.metadata?.cardNumberPrefix === undefined
+          ? undefined
+          : normalizeCardNumberPrefix(item.metadata.cardNumberPrefix);
+      const insertMetadata = {
+        ...(insertPrefix ? { cardNumberPrefix: insertPrefix } : {}),
+        ...(confersBaseRole(parsed.ids) ? { isBase: true } : {}),
+        ...(variantFlags ?? {}),
+      };
 
       const newPrimary: { bsc?: string; sportlots?: string } = {};
       if (bscIds[0]) newPrimary.bsc = alloc.slotByIdBySide.bsc[bscIds[0]];
@@ -1672,9 +1721,11 @@ export const storeReconciledOptions = mutation({
         newPrimary.sportlots = alloc.slotByIdBySide.sportlots[slIds[0]];
       }
 
+      // NEO-291 — the derived flags reach `deriveOwnLevelFeatures` so the
+      // write-once `features.cardType` snapshot is right at birth.
       const features = {
         ...(parentFeatures ?? {}),
-        ...deriveOwnLevelFeatures(level, insertValue, item.metadata),
+        ...deriveOwnLevelFeatures(level, insertValue, variantFlags),
       };
 
       const hasLabels =
@@ -1697,7 +1748,9 @@ export const storeReconciledOptions = mutation({
           : {}),
         parentId,
         children: [],
-        metadata: insertMetadata,
+        ...(Object.keys(insertMetadata).length > 0
+          ? { metadata: insertMetadata }
+          : {}),
         ...(Object.keys(features).length > 0 ? { features } : {}),
         ...(parentTeamIds ? { teamIds: parentTeamIds } : {}),
         lastUpdated: Date.now(),

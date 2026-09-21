@@ -77,16 +77,16 @@ describe("countReconciliationEdits", () => {
   });
 
   test("counts a metadata change", () => {
-    const before = st(set("k1", "Refractors", [], [], { isInsert: false }));
-    const after = st(set("k1", "Refractors", [], [], { isInsert: true }));
+    const before = st(set("k1", "Refractors", [], [], { cardNumberPrefix: "DK-" }));
+    const after = st(set("k1", "Refractors", [], [], { cardNumberPrefix: "ZX-" }));
     expect(countReconciliationEdits(before, after)).toBe(1);
   });
 
   test("an undefined metadata field is not a change", () => {
-    const before = st(set("k1", "Refractors", [], [], { isInsert: true }));
+    const before = st(set("k1", "Refractors", [], [], { cardNumberPrefix: "DK-" }));
     const after = st(set("k1", "Refractors", [], [], {
-      isInsert: true,
-      isParallel: undefined,
+      cardNumberPrefix: "DK-",
+      isBase: undefined,
     }));
     expect(countReconciliationEdits(before, after)).toBe(0);
   });

@@ -3,3 +3,4 @@
 - [FE-imported convex modules stay env-free](fe-imported-convex-modules-stay-env-free.md) — marketplaceResolvability/selectorSyncStore are bundled by Vite; thread flags in as options
 - [E2E branches on operator flags via -e, not visibility](e2e-branches-on-operator-flags-via-env-not-visibility.md) — `when: true:` on a runner var; `when: visible:` polls 7 s every run (R10)
 - [External lookup determinism for E2E](external-lookup-determinism-for-e2e.md) — record at the lookup-input boundary, double-gated; never bulk-decide no-match rows (NEO-289)
+- [Per-row editable facts live in SetAttributesPanel](per-row-editable-facts-live-in-set-attributes-panel.md) — "Value for {label}" row + narrow mutation; role flags derive at creation, never checkboxes

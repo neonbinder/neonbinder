@@ -77,6 +77,8 @@ vi.mock("../../convex/_generated/api", () => ({
       deleteSelectorOption: "deleteSelectorOption",
       renameSelectorOption: "renameSelectorOption",
       setBaseVariantType: "setBaseVariantType",
+      // NEO-291
+      setSelectorOptionCardNumberPrefix: "setSelectorOptionCardNumberPrefix",
       // NEO-277
       setSelectorOptionTeams: "setSelectorOptionTeams",
       getSelectorOptionTeamCascadePreview:
@@ -96,6 +98,8 @@ vi.mock("../../convex/_generated/api", () => ({
 const mockSetSelectorOptionFeature = vi.fn();
 const mockSetBaseVariantType = vi.fn();
 const mockDeleteSelectorOption = vi.fn();
+/** NEO-291 */
+const mockSetSelectorOptionCardNumberPrefix = vi.fn();
 /** NEO-277 */
 const mockSetSelectorOptionTeams = vi.fn();
 /**
@@ -129,6 +133,8 @@ vi.mock("convex/react", () => ({
       return mockSetSelectorOptionFeature;
     if (mutation === "deleteSelectorOption") return mockDeleteSelectorOption;
     if (mutation === "setBaseVariantType") return mockSetBaseVariantType;
+    if (mutation === "setSelectorOptionCardNumberPrefix")
+      return mockSetSelectorOptionCardNumberPrefix;
     if (mutation === "setSelectorOptionTeams") return mockSetSelectorOptionTeams;
     return vi.fn();
   },
@@ -1306,6 +1312,183 @@ describe("SetAttributesPanel — marking the base variant type (NEO-239)", () =>
     expect(
       await screen.findByText("Marked Insert as the base set"),
     ).toBeTruthy();
+  });
+});
+
+/**
+ * NEO-291 — the Card prefix row, now that the Metadata box is gone.
+ *
+ * `showsCardPrefix` gates it to the levels cards actually hang from: an
+ * insert, a parallel, or the base variant type (cards hang directly off
+ * Base; any other variant type's cards hang from ITS inserts). Every other
+ * level is a container, and a prefix there would apply to every checklist
+ * beneath it, which no set does.
+ */
+describe("SetAttributesPanel — Card prefix row (NEO-291)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSetSelectorOptionCardNumberPrefix.mockResolvedValue(null);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const prefixField = () =>
+    screen.getByLabelText("Value for Card prefix") as HTMLInputElement;
+
+  it.each(["insert", "parallel"])(
+    "renders at level %s",
+    (level) => {
+      currentRow = makeRow({ level, value: "Refractor" });
+      currentChain = makeChain("Baseball");
+      renderPanel();
+      expect(screen.getByLabelText("Set feature Card prefix")).toBeTruthy();
+    },
+  );
+
+  it("renders at variantType when the row is the base set", () => {
+    currentRow = makeRow({
+      level: "variantType",
+      value: "Base",
+      metadata: { isBase: true },
+    });
+    currentChain = makeChain("Baseball");
+    renderPanel();
+    expect(screen.getByLabelText("Set feature Card prefix")).toBeTruthy();
+  });
+
+  it("is absent at a variantType row that is NOT the base set", () => {
+    currentRow = makeRow({
+      level: "variantType",
+      value: "Insert",
+      metadata: { isInsert: true },
+    });
+    currentChain = makeChain("Baseball");
+    renderPanel();
+    expect(screen.queryByLabelText("Set feature Card prefix")).toBeNull();
+  });
+
+  it.each(["sport", "year", "manufacturer", "setName"])(
+    "is absent at level %s",
+    (level) => {
+      currentRow = makeRow({ level, value: "Topps" });
+      currentChain = makeChain("Baseball");
+      renderPanel();
+      expect(screen.queryByLabelText("Set feature Card prefix")).toBeNull();
+    },
+  );
+
+  it("is the first cell of the attributes grid", () => {
+    currentRow = makeRow({ level: "insert", value: "Refractor" });
+    currentChain = makeChain("Baseball");
+    const { container } = renderPanel();
+    const grid = container.querySelector(".grid.grid-cols-1");
+    expect(grid).toBeTruthy();
+    expect(
+      grid!.firstElementChild?.getAttribute("aria-label"),
+    ).toBe("Set feature Card prefix");
+  });
+
+  it("saving a new value shows \"Saved Card prefix\"", async () => {
+    currentRow = makeRow({ level: "insert", value: "Refractor" });
+    currentChain = makeChain("Baseball");
+    renderPanel();
+
+    const input = prefixField();
+    await act(async () => {
+      input.focus();
+      fireEvent.focus(input);
+      fireEvent.change(input, { target: { value: "DK-" } });
+      input.blur();
+      fireEvent.blur(input);
+    });
+
+    await waitFor(() => {
+      expect(mockSetSelectorOptionCardNumberPrefix).toHaveBeenCalledWith({
+        id: SELECTOR_OPTION_ID,
+        cardNumberPrefix: "DK-",
+      });
+    });
+    await waitFor(() => {
+      expect(screen.getByText("Saved Card prefix")).toBeTruthy();
+    });
+  });
+
+  it("clearing the value shows \"Cleared Card prefix\"", async () => {
+    currentRow = makeRow({
+      level: "insert",
+      value: "Refractor",
+      metadata: { cardNumberPrefix: "DK-" },
+    });
+    currentChain = makeChain("Baseball");
+    renderPanel();
+
+    const input = prefixField();
+    expect(input.value).toBe("DK-");
+    await act(async () => {
+      input.focus();
+      fireEvent.focus(input);
+      fireEvent.change(input, { target: { value: "" } });
+      input.blur();
+      fireEvent.blur(input);
+    });
+
+    await waitFor(() => {
+      expect(mockSetSelectorOptionCardNumberPrefix).toHaveBeenCalledWith({
+        id: SELECTOR_OPTION_ID,
+        cardNumberPrefix: "",
+      });
+    });
+    await waitFor(() => {
+      expect(screen.getByText("Cleared Card prefix")).toBeTruthy();
+    });
+  });
+
+  it("an unchanged value is a silent no-op — no mutation, no toast", async () => {
+    currentRow = makeRow({
+      level: "insert",
+      value: "Refractor",
+      metadata: { cardNumberPrefix: "DK-" },
+    });
+    currentChain = makeChain("Baseball");
+    renderPanel();
+
+    const input = prefixField();
+    await act(async () => {
+      input.focus();
+      fireEvent.focus(input);
+      input.blur();
+      fireEvent.blur(input);
+    });
+
+    expect(mockSetSelectorOptionCardNumberPrefix).not.toHaveBeenCalled();
+    expect(screen.queryByText("Saved Card prefix")).toBeNull();
+    expect(screen.queryByText("Cleared Card prefix")).toBeNull();
+  });
+
+  it("shows the ConvexError's data verbatim on failure, via userFacingMessage", async () => {
+    mockSetSelectorOptionCardNumberPrefix.mockRejectedValueOnce(
+      new ConvexError("A card prefix is at most 32 characters."),
+    );
+    currentRow = makeRow({ level: "insert", value: "Refractor" });
+    currentChain = makeChain("Baseball");
+    renderPanel();
+
+    const input = prefixField();
+    await act(async () => {
+      input.focus();
+      fireEvent.focus(input);
+      fireEvent.change(input, { target: { value: "WAY-TOO-LONG" } });
+      input.blur();
+      fireEvent.blur(input);
+    });
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("Failed: A card prefix is at most 32 characters."),
+      ).toBeTruthy();
+    });
   });
 });
 

@@ -81,48 +81,66 @@ export const bscFacetValidator = v.union(
 );
 
 /**
- * NEO-239 — which of BSC's `variant` facet ids means "the base set"?
+ * NEO-239 / NEO-291 — which of BSC's `variant` facet ids means "the base
+ * set", "an insert" or "a parallel"?
  *
  * ## Why this is a marketplace-id question and not a name one
  *
- * NB's base ROLE (`metadata.isBase`) has to come from somewhere at creation,
- * and the invariant is explicit about which direction is allowed: a row may be
- * DERIVED from marketplace data when it is created. So this compares a
- * marketplace id to marketplace vocabulary, once, on the sync that inserts the
- * row. It never reads the NB display value, and nothing re-derives afterwards —
- * a rename cannot move the role, and `setBaseVariantType` overrides it.
+ * NB's variant ROLES (`metadata.isBase`, and since NEO-291 the `isInsert` /
+ * `isParallel` flags on the rows beneath a variant type) have to come from
+ * somewhere at creation, and the invariant is explicit about which direction
+ * is allowed: a row may be DERIVED from marketplace data when it is created.
+ * So these compare a marketplace id to marketplace vocabulary, once, on the
+ * sync that inserts the row (or, for `variantTypeRole`, on the creation of a
+ * child that asks what its parent is). They never read the NB display value,
+ * and nothing re-derives afterwards — a rename cannot move the role, and
+ * `setBaseVariantType` overrides it.
  *
- * ## Why it is not `id === "base"`
+ * ## What the ids actually are
  *
- * That is what shipped first, and CI caught it: `setup.yaml` synced 2024 Topps
- * Chrome's variant types against real BSC, the rows appeared, and the Base row
- * got no role — so BSC's actual slug for its base variant is not the bare
- * literal. We have no recorded sample of what it IS (the only prior evidence in
- * this repo was `parentFilters.variantType.toLowerCase()`, an assumption
- * NEO-239 deleted for being one), and the failure is silent two screens later:
- * the operator taps "Base" and no mapping form appears.
+ * BSC's `variant` facet slugs are the bare literals: `base`, `insert`,
+ * `parallel`, `promo` (observed on a live variant-type sync, 2026-09-05,
+ * where the Base row came back as `b0: "base"` tagged `variant`). An earlier
+ * version of this comment claimed CI had shown the base slug was NOT the bare
+ * literal; that CI failure was a different bug — a mis-saved Base mapping had
+ * overwritten the row's slot with the parent's setName slug, so the id under
+ * test was never a variant id at all (see `backfillVariantFacetAndBaseRole`).
  *
- * So the match is on TOKENS rather than a literal. The id is folded to
- * lowercase and split on every non-alphanumeric run, and the base variant is
- * the one carrying a whole `base` token. That recognises `base`, `Base`,
- * `base-set`, `base_cards` and `2024-topps-chrome-base` alike, while
- * `baseball` — one token, not two — is correctly NOT a match, which a
- * substring test would have got wrong.
+ * ## Why it is still a token test and not `id === "base"`
+ *
+ * Because the token rule costs nothing and fails closed on the only shapes a
+ * marketplace slug could plausibly take. The id is folded to lowercase and
+ * split on every non-alphanumeric run, and a role is recognised by a WHOLE
+ * token: `base`, `Base`, `base-set`, `base_cards` and `2024-topps-chrome-base`
+ * all read as the base variant, while `baseball` — one token, not two — does
+ * not, which a substring test would have got wrong. The same rule, with the
+ * tokens `insert` and `parallel`, answers the other two roles.
  *
  * ## Ambiguity is not resolved here
  *
- * A token test cannot rank `base` against a hypothetical `base-parallel`.
- * Callers therefore confer the role only when EXACTLY ONE id in the batch
- * matches (see `storeSelectorOptions`); more than one is reported and left to
- * `setBaseVariantType`. Fail-closed: no role is recoverable in one click, two
- * rival base rows make `getBaseVariantBySet` answer by document order.
+ * A token test cannot rank `base` against a hypothetical `base-parallel`, and
+ * `insert-parallel` would match BOTH insert and parallel. Callers therefore
+ * confer the base role only when EXACTLY ONE id in the batch matches (see
+ * `storeSelectorOptions`), and `variantTypeRole` answers `undefined` for an id
+ * that matches two roles. Fail-closed: no role is recoverable in one click,
+ * two rival base rows make `getBaseVariantBySet` answer by document order.
  */
+function bscVariantIdTokens(id: string): string[] {
+  return id.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+}
+
 export function isBscBaseVariantId(id: string): boolean {
-  return id
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter(Boolean)
-    .includes("base");
+  return bscVariantIdTokens(id).includes("base");
+}
+
+/** NEO-291 — BSC's `variant` facet id for "the inserts of this set". */
+export function isBscInsertVariantId(id: string): boolean {
+  return bscVariantIdTokens(id).includes("insert");
+}
+
+/** NEO-291 — BSC's `variant` facet id for "the parallels of this set". */
+export function isBscParallelVariantId(id: string): boolean {
+  return bscVariantIdTokens(id).includes("parallel");
 }
 
 /**

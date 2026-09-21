@@ -1,0 +1,288 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "SetAttributesPanel — Card prefix edits, persists across collapse/expand, and clears (per-worker custom set)"
+tags:
+  - set-selector
+---
+# NEO-291 PRODUCT-FEATURE test (R1): the card-number prefix is a row in the
+# "Attributes for … / Edit attributes" panel (`SetAttributesPanel`), the first
+# cell of its attributes grid, and it behaves like every other text row there:
+# type + Enter saves ("Saved Card prefix"), the value survives a collapse +
+# re-expand of the panel (the body unmounts on collapse and re-hydrates from
+# the row on expand — real persistence, not a re-read of what was typed), and
+# an empty commit CLEARS it ("Cleared Card prefix", never "Saved …"), after
+# which the remounted field shows only its placeholder.
+#
+# This REPLACES variant-metadata-editor-insert.yaml (R3 — replacement coverage
+# first). The "Metadata" box that flow drove — Insert/Parallel checkboxes and a
+# "Prefix:" field with its own Save button under the Variants column — no
+# longer exists. Which of insert/parallel a row IS is a fact of where it sits
+# in the hierarchy, so nothing here asserts a checkbox; the prefix is the only
+# thing the box held that a user could change, and this flow proves it where
+# it now lives.
+#
+# WHERE THE ROW SHOWS. `showsCardPrefix` in SetAttributesPanel.tsx: an insert
+# row, a parallel row, or the Base variant type — the levels cards hang from.
+# An Insert row on a hand-made set is the cheapest of those to reach (R9's
+# util lands on the Inserts column), so that is the fixture.
+#
+# ISOLATION (R7/R7a): per-worker hand-made set `cpx-${WORKER_INDEX}` under
+# E2E Test Sport ${WORKER_INDEX} → 2026 → Topps (prefix registered in
+# SET-REGISTRY.md). No ancestor carries a marketplace id, so no live BSC/SL
+# call fires anywhere in this flow and every in-app wait is 7000 (R5). The
+# flow is self-cleaning: it ends by CLEARING the prefix, so a clean re-run
+# starts from an empty field. The row name CPXROW is a fixed single token —
+# it is never searched by a Convex search index and the flow selects it
+# whether it was just created or already existed (see the NEO-272 block).
+#
+# HANDLES (accessible names, never DOM ids — README "unique, user-visible
+# handle"): the input is `Value for Card prefix` (the same `Value for {label}`
+# construction as every other row in the panel; set-attributes-edit.yaml
+# targets `Value for Release Date` the same way), its placeholder is
+# `e.g. DK-`, the toasts are `Saved Card prefix` / `Cleared Card prefix`, and
+# the panel toggles are `Edit attributes` / `Hide attributes`.
+
+- launchApp
+- extendedWaitUntil:
+    visible: ".*Build set parameters using marketplace APIs.*"
+    timeout: 45000
+
+# R9 — drill to the per-worker hand-made set; returns on the Inserts column
+# (idle), with "Add custom Inserts" in the viewport.
+- runFlow:
+    file: util-drill-to-custom-set.yaml
+    env:
+      SET_NAME: "cpx-${WORKER_INDEX || 0}"
+      VARIANT_TYPE: "Insert"
+
+# ── ADD A CUSTOM INSERT ROW "CPXROW" ────────────────────────────────────────
+# aria-label "Add custom Inserts" is unique to the Inserts column.
+# R8 — centred before the tap.
+- scrollUntilVisible:
+    element:
+      id: "Add custom Inserts"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Add custom Inserts"
+- assertVisible: "Add Custom Entry"
+# Type into the autofocused input and press Enter — EntityColumn.tsx:129's
+# onKeyDown calls handleCustomSubmit, so we skip the ambiguous "Add" button.
+- tapOn: "Enter custom value..."
+- inputText: "CPXROW"
+- pressKey: Enter
+# NEO-272: press the confirm's Create button by name. The second blind
+# `pressKey: Enter` that used to stand here was the defect: maestro-web
+# re-finds the focused element by an XPath built from its CLASS LIST, so it
+# raced the confirm unmounting the input (CI 34592010317 attempt 2 died here
+# with "no such element" on the input's own class string). The button's
+# accessible name is EntityColumn.tsx's `confirmCreateLabel` —
+# "Create " + LEVEL_SINGULAR[level] lower-cased.
+#
+# CONDITIONAL because a confirm is only ONE of two outcomes. If the typed
+# value already exists in THIS column, `handleCustomSubmit` short-circuits
+# (`items.find(...)` -> `onSelectExisting`), closing the form and advancing
+# the cascade with no confirm ever rendered. A `notVisible: <value>` guard
+# cannot rule that out — the column's max-h-[400px] scroller clips rows
+# that really are there (team-picker, local run 2026-09-11). MEASURED locally 2026-09-11: the confirm is up in 0.34-0.38s, so
+# a `when:` that finds it costs nothing; a miss pays the ~7s condition poll
+# and only on the already-existed path. The hard result gate is the
+# "Add Custom Entry" check below — the form is gone either way, so this
+# branch cannot fall through silently (R2).
+- runFlow:
+    when:
+      visible:
+        id: "Create insert"
+    commands:
+      - tapOn:
+          id: "Create insert"
+- assertNotVisible: "Add Custom Entry"
+
+# ── SELECT "CPXROW" → the panel's scope becomes the insert row ─────────────
+# R8 — centred before the tap. R6 — the scroll is the assertion that the row
+# exists; no trailing assertVisible. Re-tapping an already-selected row keeps
+# it selected (`handleVariantSelect` only ever sets the id), so this is the
+# same step on a re-run where `onSelectExisting` already picked it.
+- scrollUntilVisible:
+    element:
+      text: "CPXROW"
+    centerElement: true
+    timeout: 7000
+- tapOn: "CPXROW"
+
+# ── EXPAND THE ATTRIBUTES PANEL ─────────────────────────────────────────────
+# The panel renders collapsed at every level (`defaultCollapsed={true}` in
+# SetSelector.tsx, re-applied whenever the selected row changes), so its
+# summary bar with `Edit attributes` is what is on screen here. It sits below
+# the selector columns in DOM order — DOWN from where the CPXROW tap left the
+# page. R8 — centred before the tap; R5 — 7000. This step DEPENDS on the
+# NEO-260 208px spacer in `src/layouts/binder-layout.tsx` for its scroll
+# headroom, exactly as set-attributes-edit.yaml's `Edit attributes` scrolls do
+# (see R8 case 1): without it the bar parks at the fold and the centring
+# burns the give-up path on every run.
+#
+# The scroll is also the hard assertion of the collapsed state, so the tap is
+# unconditional: a `when: visible: Edit attributes` guard here could never be
+# false and would only be dead weight (R10).
+- scrollUntilVisible:
+    element:
+      id: "Edit attributes"
+    centerElement: true
+    visibilityPercentage: 10
+    waitToSettleTimeoutMs: 1000
+    timeout: 7000
+- tapOn:
+    id: "Edit attributes"
+- assertVisible:
+    id: "Hide attributes"
+
+# ── WRITE THE SENTINEL "ZZ-" ────────────────────────────────────────────────
+# The save handler is a no-op (no toast) when the typed value equals the
+# stored one, so a two-step write guarantees the value under test below is a
+# real CHANGE on every run — including a run after one that aborted with the
+# test value still stored. (A run that aborted between this write and the
+# next leaves "ZZ-" stored; that is the one leftover this sentinel does not
+# cover, and it reads as this step's toast never arriving.)
+#
+# R8 — centred before the tap. The input is the first cell of the attributes
+# grid, below the panel header, the Team row and the toggle pills — DOWN from
+# the header that was just centred. Tapping the INPUT itself (not its label)
+# lands the click past the end of a short value, so the caret is at the end
+# and `eraseText` has something to erase; a label tap would focus with the
+# caret at 0 and erase nothing.
+- scrollUntilVisible:
+    element:
+      id: "Value for Card prefix"
+    centerElement: true
+    visibilityPercentage: 10
+    waitToSettleTimeoutMs: 1000
+    timeout: 7000
+- tapOn:
+    id: "Value for Card prefix"
+- eraseText: 30
+- inputText: "ZZ-"
+- pressKey: Enter
+- extendedWaitUntil:
+    visible:
+      text: ".*Saved Card prefix.*"
+    timeout: 7000
+
+# ── WRITE THE VALUE UNDER TEST "CPX-" ───────────────────────────────────────
+# "CPX-" rather than the placeholder's own example "DK-": an empty <input>
+# reads back its PLACEHOLDER as its text in maestro-web, and "e.g. DK-"
+# contains "DK-" — so a stored "DK-" and an empty field would be told apart
+# only by the matcher's full-match semantics. A value that shares no
+# substring with the placeholder makes every read-back below decisive under
+# either reading.
+#
+# The toast wait here is satisfied by the sentinel's toast if that is still
+# up (same string, 6s lifetime) — it proves the confirmation surface, not
+# this write. The decisive proof of THIS write is the remount read-back in
+# the next section.
+- tapOn:
+    id: "Value for Card prefix"
+- eraseText: 30
+- inputText: "CPX-"
+- pressKey: Enter
+- extendedWaitUntil:
+    visible:
+      text: ".*Saved Card prefix.*"
+    timeout: 7000
+
+# ── PERSISTENCE: COLLAPSE, RE-EXPAND, READ THE VALUE BACK ───────────────────
+# Enter does not blur, and `useReactiveField` never mirrors the stored value
+# into a focused input — so a read made now would only see what was typed.
+# Collapsing the panel UNMOUNTS its body; expanding it mounts a fresh input
+# whose value comes from the row query, i.e. from the database.
+#
+# `Hide attributes` is in the panel header, ABOVE the input that was just
+# centred — direction: UP (README R5: an anchor above the current position
+# takes UP; it is not a style choice). R8 — centred before the tap.
+- scrollUntilVisible:
+    element:
+      id: "Hide attributes"
+    direction: UP
+    centerElement: true
+    visibilityPercentage: 10
+    waitToSettleTimeoutMs: 1000
+    timeout: 7000
+- tapOn:
+    id: "Hide attributes"
+- assertVisible:
+    id: "Edit attributes"
+- tapOn:
+    id: "Edit attributes"
+- assertVisible:
+    id: "Hide attributes"
+
+# The remounted input carries the stored value. `id` + `text` on the same
+# node is the robust form-field value assertion (README: maestro-web reads an
+# input's VALUE as its text). The scroll IS the assertion (R6) and, because a
+# tap follows, it centres (R8). The input is below the header — DOWN.
+- scrollUntilVisible:
+    element:
+      id: "Value for Card prefix"
+      text: "CPX-"
+    centerElement: true
+    visibilityPercentage: 10
+    waitToSettleTimeoutMs: 1000
+    timeout: 7000
+
+# ── CLEAR: EMPTY COMMIT REMOVES THE PREFIX ─────────────────────────────────
+- tapOn:
+    id: "Value for Card prefix"
+- eraseText: 30
+# Prove the field really is EMPTY before committing: an <input> with no value
+# reads back its placeholder, and this control's placeholder is "e.g. DK-" —
+# so that IS the empty state. A stray surviving character fails here, saying
+# so, instead of committing a different prefix and failing on the toast below
+# for a reason that reads like a product bug.
+- assertVisible:
+    id: "Value for Card prefix"
+    text: "e.g. DK-"
+- pressKey: Enter
+# A different sentence on purpose — "Cleared", never "Saved" — so the toast
+# can never claim a value was stored when the key was removed.
+- extendedWaitUntil:
+    visible:
+      text: ".*Cleared Card prefix.*"
+    timeout: 7000
+
+# Collapse + re-expand again: the remounted input must come back EMPTY from
+# the database, not merely blanked on screen.
+- scrollUntilVisible:
+    element:
+      id: "Hide attributes"
+    direction: UP
+    centerElement: true
+    visibilityPercentage: 10
+    waitToSettleTimeoutMs: 1000
+    timeout: 7000
+- tapOn:
+    id: "Hide attributes"
+- assertVisible:
+    id: "Edit attributes"
+- tapOn:
+    id: "Edit attributes"
+- assertVisible:
+    id: "Hide attributes"
+
+# Positive first: the remounted field shows only its placeholder. No tap
+# follows, so this scroll does not centre; it only brings the row on screen
+# and asserts it (R6 — no trailing assertVisible of the same element).
+- scrollUntilVisible:
+    element:
+      id: "Value for Card prefix"
+      text: "e.g. DK-"
+    visibilityPercentage: 10
+    timeout: 7000
+# The negative is guarded by the positive above — a page that has fallen
+# over satisfies every notVisible, but it could not have satisfied that.
+- assertNotVisible:
+    id: "Value for Card prefix"
+    text: ".*CPX-.*"
+# Never end on a negative. The row's own visible label sits in the same
+# on-screen slice as the input the scroll above just placed, so it is a
+# positive that cannot be satisfied by a dead page (a different element from
+# that scroll's target — R6).
+- assertVisible: "Card prefix"
