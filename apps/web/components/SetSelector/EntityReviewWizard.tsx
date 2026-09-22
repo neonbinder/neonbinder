@@ -697,22 +697,32 @@ export default function EntityReviewWizard({
 
   /** Rows already decided "link" — their TARGET's canonical name is what the
    *  batch will actually use, so both the staging list and the decided list
-   *  need it, not the raw checklist string on the review row. */
+   *  need it, not the raw checklist string on the review row.
+   *
+   *  NEO-296: DISTINCT ids, sorted. One entry per decided row was one
+   *  `db.get` per decided row inside a live subscription — a 754-row batch
+   *  where the operator links them all asked for 754 reads on every re-run,
+   *  and a batch of that size links the same handful of teams over and over.
+   *  Sorted for the same reason `PlayerManagement` sorts its row-team ids:
+   *  Convex keys a subscription on the SERIALIZED args, so a stable order
+   *  stops a reorder that changes nothing from re-subscribing. The server
+   *  dedups and bounds this too (`convex/lib/batchIdReads.ts`); it is not
+   *  relying on this, and this is not relying on it. */
   const linkedTeamIds = useMemo(() => {
-    const ids: Id<"teams">[] = [];
+    const ids = new Set<Id<"teams">>();
     for (const row of rows ?? []) {
       if (row.decision?.action !== "link") continue;
-      if (row.decision.linkedTeamId) ids.push(row.decision.linkedTeamId);
+      if (row.decision.linkedTeamId) ids.add(row.decision.linkedTeamId);
     }
-    return ids;
+    return [...ids].sort();
   }, [rows]);
   const linkedPlayerIds = useMemo(() => {
-    const ids: Id<"players">[] = [];
+    const ids = new Set<Id<"players">>();
     for (const row of rows ?? []) {
       if (row.decision?.action !== "link") continue;
-      if (row.decision.linkedPlayerId) ids.push(row.decision.linkedPlayerId);
+      if (row.decision.linkedPlayerId) ids.add(row.decision.linkedPlayerId);
     }
-    return ids;
+    return [...ids].sort();
   }, [rows]);
   const linkedTeams = useQuery(
     api.teams.getManyByIds,
@@ -3473,11 +3483,49 @@ export default function EntityReviewWizard({
                     className="rounded-md border border-[#FF2EB3]/40 bg-[#FF2EB3]/10 p-3 space-y-2"
                   >
                     <p className="text-sm text-[#FF2EB3]">{commitError}</p>
+                    {/*
+                      NEO-294 — this line used to read "Nothing was saved.
+                      Every decision you made is still here." and the first
+                      half of it was FALSE. A commit has not been one
+                      transaction since NEO-189: the chunk phase writes cards
+                      before the finalize phase runs, so a finalize failure —
+                      the one this ticket exists for — leaves every card on
+                      disk and only the bookkeeping undone. Telling the
+                      operator nothing was saved invites them to go looking
+                      for work that is already there, or to undo it.
+
+                      What IS true is the thing that makes the error
+                      recoverable, and it is worth more than the false
+                      reassurance was: the commit is idempotent end to end.
+                      Cards re-match on their marketplace refs rather than
+                      their numbers (NEO-203), and every finalize page
+                      converges — so pressing the button again finishes the
+                      job instead of doubling it.
+                    */}
                     <p className="text-xs text-gray-400">
-                      Nothing was saved. Every decision you made is still here.
+                      Some of this commit may already be saved. Retry commit
+                      finishes it — nothing is written twice and no decision is
+                      lost.
                     </p>
                     <div className="flex items-center gap-3">
-                      <NeonButton onClick={onConfirm} disabled={saving}>
+                      {/*
+                        NEO-294 — `aria-disabled`, never native `disabled`, for
+                        the reason the decision controls have used it since
+                        NEO-221 and more so here: a paged finalize means a
+                        commit is in flight for SECONDS, and a native
+                        `disabled` drops the button out of the tab order for
+                        all of it, throwing a keyboard operator out of the
+                        alert they are reading. NeonButton already paints
+                        aria-disabled the same way, and the handler refuses
+                        rather than relying on the attribute.
+                      */}
+                      <NeonButton
+                        aria-disabled={saving || undefined}
+                        onClick={() => {
+                          if (saving) return;
+                          onConfirm();
+                        }}
+                      >
                         {saving ? "Saving..." : "Retry commit"}
                       </NeonButton>
                       {onDismissCommitError && (
@@ -3687,8 +3735,29 @@ export default function EntityReviewWizard({
                        */
                       className={footerFieldClass("btn-confirm-save")}
                       aria-label={saving ? CONFIRM_SAVING_LABEL : CONFIRM_SAVE_LABEL}
-                      onClick={onConfirm}
-                      disabled={saving}
+                      /*
+                       * NEO-294 — `aria-disabled`, not native `disabled`.
+                       *
+                       * A commit runs a bounded, resumable finalize walk now
+                       * (`commitCardChecklistFinalize`), so `saving` is true
+                       * for seconds on a real set rather than for one round
+                       * trip. Native `disabled` removes the button from the
+                       * tab order for that whole time and focus falls to
+                       * <body>, which is the same WCAG 2.4.3 problem the
+                       * decision controls above solved with aria-disabled.
+                       * The button is autofocused when this step opens, so it
+                       * is precisely the control a keyboard operator is
+                       * standing on when they press it.
+                       *
+                       * The refusal lives in the handlers, not in the
+                       * attribute: `onClick` returns early while saving, and
+                       * `onKeyDown` already did.
+                       */
+                      aria-disabled={saving || undefined}
+                      onClick={() => {
+                        if (saving) return;
+                        onConfirm();
+                      }}
                       /*
                        * THE BUTTON HANDLES ITS OWN ENTER, and this is not
                        * belt-and-braces around native activation — it is the

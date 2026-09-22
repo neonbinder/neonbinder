@@ -23,12 +23,15 @@ import { normalizeEntityName } from "../lib/entities/normalize-name";
 // identity fields and `findTeamByFullName` the ONE lookup — see
 // convex/lib/teamRow.ts for why every writer in this file goes through them.
 import {
+  TEAM_ERA_SCAN_LIMIT,
   findCollidingTeams,
   findTeamsByExactName,
   findTeamsByFullName,
   resolveTeamForSetYear,
   teamRowFields,
 } from "./lib/teamRow";
+// NEO-296: the bound on the batch id -> row read, with the op arithmetic.
+import { readManyByIds } from "./lib/batchIdReads";
 import { eraLabel, erasOverlap, teamOptionLabel, type TeamEra } from "../lib/teams/team-era";
 import { splitTeamName, teamFullName } from "../lib/teams/team-name";
 
@@ -328,6 +331,90 @@ export async function syncTeamAliases(
 }
 
 /**
+ * ── NEO-296: the read budget a name-keyed FAN-OUT spends ─────────────────────
+ *
+ * The two queries that loop `findTeamsByFullName` over a list — `aliasesInUse`
+ * and `resolveNames` — each cap the number of NAMES at 64, and neither capped
+ * what one name costs. Convex charges one system op per CALL, and one
+ * `findTeamsByFullName` is:
+ *
+ *   1 index read on `teams.by_name_normalized_and_sport_id` (`.take(16)`),
+ *     whatever it returns — and if that filled the window it stops there;
+ * + 1 index read on `teamAliases.by_alias_normalized_and_sport_id` (`.take(16)`)
+ * + 1 `db.get` per alias row it has to resolve (<= TEAM_ERA_SCAN_LIMIT)
+ *
+ * So 1 op for a name a crowd of ERA rows answers to, 2 for a name nothing
+ * answers to, and up to 18 for one a crowd of ALIAS rows answers to — 64 names
+ * was ~1,152 ops at worst, in a query that re-runs reactively as the operator
+ * types. Comfortable is ~900 and straining is ~1,800
+ * (`CARDS_PER_COMMIT_CHUNK` in `convex/selectorOptions.ts`). The worst case is
+ * not hypothetical: it is the preloaded college teams, where one alias key
+ * ("Miami", "Wisconsin") is genuinely held by several programs.
+ *
+ * `TEAM_NAME_LOOKUP_READ_BUDGET` bounds the TOTAL, not the name count. Each
+ * lookup is charged the two index reads plus one get per candidate it returned,
+ * and the loop abandons once the budget is gone. With the <= 16-op overshoot of
+ * the lookup that spends the last of it, the ceiling is ~784 ops plus the
+ * identity read: inside the comfortable band, against ~1,152 before.
+ *
+ * That charge is an estimate, not a count, and it is wrong in both directions
+ * by a bounded amount:
+ *
+ *  - It OVERCHARGES a name held by many era rows, which came back in a single
+ *    indexed read and cost 1 op rather than one each. Conservative in the
+ *    direction that matters — the scan gives up early rather than late — and
+ *    it takes 16 rows under one name to be off by much.
+ *  - It UNDERCHARGES an alias row pointing at a team that is gone or has moved
+ *    sport: that costs a `db.get` and returns no candidate, so nothing is
+ *    charged for it. The residue is bounded by TEAM_ERA_SCAN_LIMIT per lookup
+ *    and by the 64-name cap overall, which is why the hard ceiling stays where
+ *    it was — the budget cuts the REALISTIC worst case, and the name cap still
+ *    backstops the pathological one.
+ *
+ * Charging exactly would mean reading the two legs here instead of through the
+ * shared lookup, and a second copy of the identity union is precisely what
+ * NEO-284 removed: "answers to" must not be able to mean two things.
+ *
+ * What "abandoned" means is the CALLER's to decide, and the two disagree on
+ * purpose: `aliasesInUse` is advisory and stops looking, `resolveNames` feeds a
+ * count the operator acts on and refuses. See each.
+ */
+export const TEAM_NAME_LOOKUP_READ_BUDGET = 768;
+
+/** The most one `findTeamsByFullName` can cost: both index reads, then a get
+ *  per row in the window. Used to state the overshoot, not to charge with. */
+export const TEAM_NAME_LOOKUP_MAX_OPS = 2 + TEAM_ERA_SCAN_LIMIT;
+
+/** Mutable and passed by reference, like `CardYearTeamCache` in `players.ts`:
+ *  the point is that every lookup in one query spends the same purse. */
+export type TeamNameLookupBudget = { spent: number };
+
+export function createTeamNameLookupBudget(): TeamNameLookupBudget {
+  return { spent: 0 };
+}
+
+/** True once the purse is empty — the caller stops or refuses on it. */
+export function lookupBudgetSpent(budget: TeamNameLookupBudget): boolean {
+  return budget.spent >= TEAM_NAME_LOOKUP_READ_BUDGET;
+}
+
+/**
+ * One `findTeamsByFullName`, charged to `budget`. `null` means the budget was
+ * already gone and NO read happened — never "no such team", which is `[]`.
+ */
+export async function findTeamsByFullNameWithinBudget(
+  ctx: QueryCtx | MutationCtx,
+  sportId: Id<"selectorOptions">,
+  fullName: string,
+  budget: TeamNameLookupBudget,
+): Promise<Doc<"teams">[] | null> {
+  if (lookupBudgetSpent(budget)) return null;
+  const rows = await findTeamsByFullName(ctx, sportId, fullName);
+  budget.spent += 2 + rows.length;
+  return rows;
+}
+
+/**
  * NEO-284 — which OTHER team in this sport already answers to one of these
  * aliases, by primary name or by alias.
  *
@@ -343,6 +430,11 @@ export async function syncTeamAliases(
  * One shared lookup per alias — the same `findTeamsByFullName` every identity
  * path reads — so "answers to" here cannot mean something different from what
  * it means at commit time.
+ *
+ * NEO-296: `budget` is optional and only the advisory query passes one. With
+ * it, a list whose lookups have already spent the purse reports NO collision
+ * for the aliases it never reached — see `TEAM_NAME_LOOKUP_READ_BUDGET` and
+ * `aliasesInUse`, which is the caller that decides that is acceptable.
  */
 export async function findTeamAliasCollision(
   ctx: QueryCtx | MutationCtx,
@@ -351,10 +443,20 @@ export async function findTeamAliasCollision(
     aliases: ReadonlyArray<string>;
     /** The row being edited, which does not collide with itself. */
     selfId?: Id<"teams">;
+    /** NEO-296 — the purse this scan's lookups are charged to, if any. */
+    budget?: TeamNameLookupBudget;
   },
 ): Promise<Doc<"teams"> | null> {
   for (const alias of args.aliases) {
-    const holders = await findTeamsByFullName(ctx, args.sportId, alias);
+    const holders = args.budget
+      ? await findTeamsByFullNameWithinBudget(
+          ctx,
+          args.sportId,
+          alias,
+          args.budget,
+        )
+      : await findTeamsByFullName(ctx, args.sportId, alias);
+    if (holders === null) return null;
     const other = holders.find((row) => row._id !== args.selfId);
     if (other) return other;
   }
@@ -484,6 +586,16 @@ export function matchedTeamAliasFor(
  * says "X also answers to that name", and a second name would not change what
  * the operator does. The name is the FULL name, which is what an operator
  * recognises a team by.
+ *
+ * NEO-296 — two bounds, because the 64-alias cap bounded the number of LOOKUPS
+ * and not what one costs: 64 x 18 ops was ~1,152 in a query that re-runs as
+ * the operator types. The second bound is `TEAM_NAME_LOOKUP_READ_BUDGET`,
+ * shared across the whole call, and blowing it STOPS the scan rather than
+ * throwing: this is a note beside a text box, and a form that goes blank
+ * because an advisory read got expensive is a worse answer than a note that
+ * covers the first aliases only. The notes it does show are all real; the
+ * absence of one past the budget is not a claim that the alias is unshared,
+ * which is the same thing absence already meant for an alias nobody holds.
  */
 export const aliasesInUse = query({
   args: {
@@ -503,10 +615,15 @@ export const aliasesInUse = query({
       .filter((alias) => alias.trim().length <= MAX_TEAM_ALIAS_LENGTH)
       .slice(0, MAX_TEAM_ALIASES);
     const out: Array<{ alias: string; name: string }> = [];
+    const budget = createTeamNameLookupBudget();
     for (const alias of aliases) {
+      // Checked before the call as well as inside it, so the loop ends where
+      // the reads do rather than spinning through the tail for nothing.
+      if (lookupBudgetSpent(budget)) break;
       const other = await findTeamAliasCollision(ctx, {
         sportId: args.sportId,
         aliases: [alias],
+        budget,
         ...(args.selfId ? { selfId: args.selfId } : {}),
       });
       if (other) out.push({ alias: alias.trim(), name: teamFullName(other) });
@@ -814,14 +931,22 @@ export const get = query({
  * Used by the CardChecklistItem display row + TeamPicker chip view to
  * render the names without N round-trips. Missing IDs are silently
  * dropped (an orphaned link is a soft data error, not a fatal one).
+ *
+ * NEO-296 — bounded, and the bound lives in `lib/batchIdReads.ts` with the
+ * arithmetic. One `db.get` per DISTINCT id, at most `GET_MANY_BY_IDS_MAX`
+ * (512) of them, so one execution costs at most ~514 system ops whatever the
+ * caller sends. Before it the cost was exactly the length of the array the
+ * caller built — the review wizard built one entry per link-decided row,
+ * duplicates included, and a 754-row batch spent ~754 ops per re-run of a live
+ * subscription. Over-length is TRUNCATED here and REFUSED in `resolveNames`;
+ * the module comment says why the two differ.
  */
 export const getManyByIds = query({
   args: { ids: v.array(v.id("teams")) },
   returns: v.array(teamDocValidator),
   handler: async (ctx, args) => {
     await requireSignedIn(ctx);
-    const rows = await Promise.all(args.ids.map((id) => ctx.db.get(id)));
-    return rows.filter((r): r is NonNullable<typeof r> => r !== null);
+    return await readManyByIds(ctx, "teams.getManyByIds", args.ids);
   },
 });
 
@@ -1711,6 +1836,14 @@ const RESOLVE_NAMES_MAX = 64;
  * zips the result against its own list. Names normalising to the same key are
  * looked up once.
  *
+ * NEO-296 — `RESOLVE_NAMES_MAX` bounded the number of lookups and not what one
+ * costs, so 64 names could fan out to ~1,152 system ops. The second bound is
+ * `TEAM_NAME_LOOKUP_READ_BUDGET`, and blowing it REFUSES the whole answer, for
+ * the same reason the name cap refuses: the wizard turns this into "will create
+ * N new teams", and a count computed from a partial read is a wrong number the
+ * operator commits on. The refusal names the budget so the next person can tell
+ * it apart from the name cap, and says what to do about it.
+ *
  * Admin-gated like every other operator-facing function in this file: the only
  * caller is the review wizard, which lives behind admin tooling.
  */
@@ -1762,6 +1895,7 @@ export const resolveNames = query({
       existingName?: string;
       ambiguous?: boolean;
     }> = [];
+    const budget = createTeamNameLookupBudget();
 
     for (const raw of args.names) {
       const normalized = normalizeTeamName(raw);
@@ -1783,7 +1917,22 @@ export const resolveNames = query({
         // "M already exist" line and its career-team chips never saw a row
         // the operator had taught to answer to this string — the commit would
         // link it and the preview would say "new". One lookup, one answer.
-        const found = await findTeamsByFullName(ctx, args.sportId, raw);
+        const found = await findTeamsByFullNameWithinBudget(
+          ctx,
+          args.sportId,
+          raw,
+          budget,
+        );
+        if (found === null) {
+          // The COUNTS, never the names: this string reaches Sentry and the
+          // browser console through Convex's error path.
+          throw new ConvexError(
+            `These names take too many reads to resolve at once ` +
+              `(${results.length} of ${args.names.length} answered before the ` +
+              `${TEAM_NAME_LOOKUP_READ_BUDGET}-read budget ran out). ` +
+              `Review them in smaller batches.`,
+          );
+        }
         seen.set(
           normalized,
           found.length > 1

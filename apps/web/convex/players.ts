@@ -56,6 +56,8 @@ import {
 // NEO-253: the one normalisation of an entity name, shared with teams,
 // leagues, the commit prelude and the browser-side review wizard.
 import { normalizeEntityName } from "../lib/entities/normalize-name";
+// NEO-296: the bound on the batch id -> row read, with the op arithmetic.
+import { readManyByIds } from "./lib/batchIdReads";
 
 /**
  * The dedup key on `players.nameNormalized`.
@@ -434,6 +436,32 @@ export async function syncPlayerAliases(
  * So this only reports. The admin form renders it as a note ("… also answers
  * to that name") so an operator knows the alias is shared rather than
  * discovering it later; nothing anywhere acts on it.
+ *
+ * NEO-296 — what one alias costs, now that it is bounded. Convex charges one
+ * system op per CALL, so per alias this is:
+ *
+ *   1 index read on `players.by_name_normalized_and_sport_id` (`.first()`)
+ * + 1 index read on `playerAliases.by_alias_normalized_and_sport_id`
+ * + 1 `db.get` per alias row it resolves (<= PLAYER_AMBIGUITY_SCAN_LIMIT)
+ * = 2 ops for a name nobody answers to, up to 10 for one a crowd answers to.
+ *
+ * The alias leg used to `.collect()`, which is one op but an unbounded number
+ * of `db.get`s behind it: one shared key held by a thousand rows was a thousand
+ * ops from a single alias. It now reads a bounded WINDOW, like the team side's
+ * `findTeamsByAlias` and like `sameNamePlayers` one screen up in this file —
+ * `PLAYER_AMBIGUITY_SCAN_LIMIT` rather than the team side's 16, because that is
+ * the window every other `playerAliases` read in this module already uses and
+ * two windows for one idea is one more number to look up.
+ *
+ * That is what makes the callers' own caps bind: `aliasesInUse` loops at most
+ * `MAX_PLAYER_ALIASES` (32) entries, so 32 x 10 = 320 ops at worst, inside the
+ * ~900-op comfortable band without a separate read budget. The team side needs
+ * one (`TEAM_NAME_LOOKUP_READ_BUDGET`) because its list is twice as long and
+ * its window twice as wide.
+ *
+ * A holder past the window is not reported, exactly as a holder whose row is
+ * gone is not. Both are the same shape of answer this note has always given:
+ * it names ONE other holder, and it was never a census.
  */
 export async function findAliasCollision(
   ctx: QueryCtx | MutationCtx,
@@ -463,7 +491,9 @@ export async function findAliasCollision(
       .withIndex("by_alias_normalized_and_sport_id", (q) =>
         q.eq("aliasNormalized", key).eq("sportId", args.sportId),
       )
-      .collect();
+      // NEO-296: a WINDOW, not a collect — the reads behind it are one
+      // `db.get` each. See the header for the arithmetic.
+      .take(PLAYER_AMBIGUITY_SCAN_LIMIT);
     for (const row of byAlias) {
       if (row.playerId === args.selfId) continue;
       const other = await ctx.db.get(row.playerId);
@@ -1571,16 +1601,22 @@ export const getByIdParam = query({
  * signed-in-readable reference data — `get`, `search` and `findByNameAndSport`
  * all settle for signed-in — and the only callers (PlayerPicker, the card
  * detail chips) sit behind `ProtectedLayout` anyway.
+ *
+ * NEO-296: bounded, and still mirroring its twin — `lib/batchIdReads.ts` holds
+ * the arithmetic for both. One `db.get` per DISTINCT id, at most
+ * `GET_MANY_BY_IDS_MAX` (512) of them, so one execution costs ~514 system ops
+ * at worst whatever the caller sends. Before it the cost was the length of the
+ * array the caller built: the entity-review wizard pushed one id per
+ * link-decided row with no dedup, and a 754-row batch spent ~754 ops on every
+ * re-run of a live subscription.
  */
 export const getManyByIds = query({
   args: { ids: v.array(v.id("players")) },
   returns: v.array(playerDocPublicValidator),
   handler: async (ctx, args) => {
     await requireSignedIn(ctx);
-    const rows = await Promise.all(args.ids.map((id) => ctx.db.get(id)));
-    return rows
-      .filter((r): r is NonNullable<typeof r> => r !== null)
-      .map(toPublicPlayer);
+    const rows = await readManyByIds(ctx, "players.getManyByIds", args.ids);
+    return rows.map(toPublicPlayer);
   },
 });
 

@@ -49,3 +49,6 @@
 - [Undefined error_class is transient](reference_undefined_error_class_is_transient.md) — an untagged login failure gets the "didn't answer" copy; a test stub must set error_class to reach the refused-credentials wording
 - [Convex system-op budget and bounded walks](reference_convex_system_op_budget_and_bounded_walks.md) — ~900 ops/transaction is comfortable, ~1800 strains, ~4000 fails; bound a whole-batch mutation as a cursor walk with SEPARATE scan and work bounds
 - [Convex typecheck excludes test files](reference_convex_typecheck_excludes_test_files.md) — convex/tsconfig excludes *.test.ts, so a changed args/returns shape is green at the gate while every test call site is stale
+- [Never stash in a shared ticket worktree](reference_never_stash_in_a_shared_ticket_worktree.md) — parallel builders share one working tree; stashing reverts their in-flight edits
+- [Component test at a real cap times out](reference_component_test_at_a_real_cap_times_out.md) — a 1,000-row happy-dom fixture passes alone and times out in the suite; inject the cap as a prop
+- [Refuse vs truncate a bounded read](reference_refuse_vs_truncate_a_bounded_read.md) — throw when the answer is a count the operator acts on; truncate a name map; stop a scan that only feeds an advisory note

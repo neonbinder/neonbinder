@@ -48,7 +48,11 @@ import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
-import { normalizeTeamName } from "./teams";
+import {
+  TEAM_NAME_LOOKUP_MAX_OPS,
+  TEAM_NAME_LOOKUP_READ_BUDGET,
+  normalizeTeamName,
+} from "./teams";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -286,6 +290,70 @@ describe("teams.resolveNames", () => {
         sportId: baseball,
       }),
     ).rejects.toThrow(/max 64/);
+  });
+
+  test("refuses when the FAN-OUT blows the read budget, not just when the name count does (NEO-296)", async () => {
+    /*
+     * The 64-name cap bounded the number of LOOKUPS and not what one costs.
+     * Each `findTeamsByFullName` is 2 index reads plus one `db.get` per holder
+     * — up to 18 system ops — so 64 names could fan out to ~1,152 in a query
+     * that re-runs reactively. The fixture is the shape that makes it real:
+     * a window of teams that ALL answer to every one of the names asked about,
+     * which is what the preloaded college rows look like.
+     *
+     * It throws rather than answering short, for the same reason the name cap
+     * throws: the wizard turns this into "will create N new teams", and a count
+     * computed from a partial read is a wrong number the operator commits on.
+     */
+    const t = convexTest(schema, modules);
+    const baseball = await seedSport(t, "Baseball", "BB");
+    const asAdmin = t.withIdentity(ADMIN);
+    const aliases = Array.from({ length: 64 }, (_, i) => `Shared Name ${i}`);
+
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 16; i += 1) {
+        const teamId = await ctx.db.insert("teams", {
+          name: `Program ${i}`,
+          nameNormalized: normalizeTeamName(`Program ${i}`),
+          sportId: baseball,
+          aliases,
+          lastUpdated: 1_700_000_000_000,
+        });
+        for (const alias of aliases) {
+          await ctx.db.insert("teamAliases", {
+            teamId,
+            sportId: baseball,
+            aliasNormalized: normalizeTeamName(alias),
+          });
+        }
+      }
+    });
+
+    const affordable = Math.ceil(
+      TEAM_NAME_LOOKUP_READ_BUDGET / TEAM_NAME_LOOKUP_MAX_OPS,
+    );
+    expect(affordable).toBeLessThan(aliases.length);
+
+    // Everything it can pay for is answered in full — and "several teams hold
+    // this name" is still the answer, never an arbitrary pick.
+    const answered = await asAdmin.query(api.teams.resolveNames, {
+      names: aliases.slice(0, affordable),
+      sportId: baseball,
+    });
+    expect(answered).toHaveLength(affordable);
+    expect(answered.every((row) => row.ambiguous === true)).toBe(true);
+    expect(answered.every((row) => row.existingTeamId === undefined)).toBe(true);
+
+    // One more than it can pay for is refused, naming the budget rather than
+    // the name cap so the two are tellable apart, and no name.
+    const refusal = asAdmin.query(api.teams.resolveNames, {
+      names: aliases,
+      sportId: baseball,
+    });
+    await expect(refusal).rejects.toThrow(
+      new RegExp(`${TEAM_NAME_LOOKUP_READ_BUDGET}-read budget`),
+    );
+    await expect(refusal).rejects.not.toThrow(/Shared Name/);
   });
 
   test("is admin-gated", async () => {
