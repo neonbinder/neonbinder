@@ -438,6 +438,7 @@ describe("restampCardChecklistSortOrders pages (NEO-296)", () => {
     );
 
     expect(res.done).toBe(true);
+    expect(res.converged).toBe(true);
     expect(res.nextFrom).toBeUndefined();
     expect(res.patched).toBe(12);
     expect(await sortOrdersAreCanonical(t, variantTypeId)).toBe(true);
@@ -483,11 +484,47 @@ describe("restampCardChecklistSortOrders pages (NEO-296)", () => {
         internal.selectorOptions.restampCardChecklistSortOrdersBatch,
         { selectorOptionId: variantTypeId, from: 0, pagesLeft: 12 },
       );
-      expect(replay).toEqual({ patched: 0, done: true });
+      expect(replay).toEqual({ patched: 0, done: true, converged: true });
     },
     // ~840 card rows are seeded in ONE transaction and then walked twice.
     // Comfortable in isolation, but this file runs under 8-way parallelism
     // where the default 5s can be tight; the ceiling is not a symptom.
+    20_000,
+  );
+
+  test(
+    "the runaway stop says the chain is over and that it did NOT converge",
+    async () => {
+      /*
+       * NEO-296 — `done` means "nothing further is scheduled", not "the order
+       * is right". A chain that spends `RESTAMP_MAX_PAGES` stops and reports
+       * `done` with the pass unfinished, which is the safe end of the trade —
+       * every page is committed and the next `addCustomCard` restamps from the
+       * start. `converged` is what tells the two apart, and a caller reading
+       * `done` as a convergence claim would be wrong. Pinned so that stays
+       * explicit rather than something the next reader has to infer.
+       *
+       * `pagesLeft: 1` is the last page of any chain, so this reaches the stop
+       * without seeding twelve pages' worth of cards.
+       */
+      const t = convexTest(schema, modules);
+      const total = RESTAMP_SORT_ORDER_PAGE + 20;
+      const { variantTypeId } = await seedChecklist(t, total);
+
+      const stopped = await t.mutation(
+        internal.selectorOptions.restampCardChecklistSortOrdersBatch,
+        { selectorOptionId: variantTypeId, from: 0, pagesLeft: 1 },
+      );
+
+      expect(stopped.done).toBe(true);
+      expect(stopped.converged).toBe(false);
+      // Where a later run would have to pick up — which is what makes the
+      // stop diagnosable rather than merely silent.
+      expect(stopped.nextFrom).toBeGreaterThan(0);
+      // And the checklist really is only part-way there, so `converged: false`
+      // is a fact about the data and not just a flag.
+      expect(await sortOrdersAreCanonical(t, variantTypeId)).toBe(false);
+    },
     20_000,
   );
 
