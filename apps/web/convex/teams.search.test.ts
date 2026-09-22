@@ -48,11 +48,7 @@ import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
-import {
-  TEAM_NAME_LOOKUP_MAX_OPS,
-  TEAM_NAME_LOOKUP_READ_BUDGET,
-  normalizeTeamName,
-} from "./teams";
+import { normalizeTeamName } from "./teams";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -292,18 +288,19 @@ describe("teams.resolveNames", () => {
     ).rejects.toThrow(/max 64/);
   });
 
-  test("refuses when the FAN-OUT blows the read budget, not just when the name count does (NEO-296)", async () => {
+  test("a contested 64-name list resolves without refusing or abandoning (NEO-296)", async () => {
     /*
-     * The 64-name cap bounded the number of LOOKUPS and not what one costs.
-     * Each `findTeamsByFullName` is 2 index reads plus one `db.get` per holder
-     * — up to 18 system ops — so 64 names could fan out to ~1,152 in a query
-     * that re-runs reactively. The fixture is the shape that makes it real:
-     * a window of teams that ALL answer to every one of the names asked about,
-     * which is what the preloaded college rows look like.
+     * The 64-name cap bounded the number of LOOKUPS and not what one costs:
+     * each `findTeamsByFullName` was up to 18 system ops, so one player's
+     * career teams could fan out to ~1,152 in a query that re-runs as the
+     * operator moves through the wizard.
      *
-     * It throws rather than answering short, for the same reason the name cap
-     * throws: the wizard turns this into "will create N new teams", and a count
-     * computed from a partial read is a wrong number the operator commits on.
+     * The fixture is the shape that made it real — a window of teams that ALL
+     * answer to every name asked about, which is what the preloaded college
+     * rows look like. The fix is not a budget: this query only ever branches on
+     * none / one / several, so it reads a two-row window and pays at most 4 ops
+     * a name. What it concludes is unchanged, which is what these assertions
+     * are for.
      */
     const t = convexTest(schema, modules);
     const baseball = await seedSport(t, "Baseball", "BB");
@@ -329,31 +326,46 @@ describe("teams.resolveNames", () => {
       }
     });
 
-    const affordable = Math.ceil(
-      TEAM_NAME_LOOKUP_READ_BUDGET / TEAM_NAME_LOOKUP_MAX_OPS,
-    );
-    expect(affordable).toBeLessThan(aliases.length);
-
-    // Everything it can pay for is answered in full — and "several teams hold
-    // this name" is still the answer, never an arbitrary pick.
+    // The whole list is answered — no refusal, and no entry left unread.
     const answered = await asAdmin.query(api.teams.resolveNames, {
-      names: aliases.slice(0, affordable),
-      sportId: baseball,
-    });
-    expect(answered).toHaveLength(affordable);
-    expect(answered.every((row) => row.ambiguous === true)).toBe(true);
-    expect(answered.every((row) => row.existingTeamId === undefined)).toBe(true);
-
-    // One more than it can pay for is refused, naming the budget rather than
-    // the name cap so the two are tellable apart, and no name.
-    const refusal = asAdmin.query(api.teams.resolveNames, {
       names: aliases,
       sportId: baseball,
     });
-    await expect(refusal).rejects.toThrow(
-      new RegExp(`${TEAM_NAME_LOOKUP_READ_BUDGET}-read budget`),
-    );
-    await expect(refusal).rejects.not.toThrow(/Shared Name/);
+    expect(answered).toHaveLength(aliases.length);
+    expect(answered.map((row) => row.name)).toEqual(aliases);
+    // Sixteen holders still reads as "a human decides", never as one of them.
+    expect(answered.every((row) => row.ambiguous === true)).toBe(true);
+    expect(answered.every((row) => row.existingTeamId === undefined)).toBe(true);
+  });
+
+  test("the narrowed window does not change the one-row or no-row answers (NEO-296)", async () => {
+    // The window is two because two settles "several". One row must still come
+    // back AS the row, and a row reachable only by its alias must still count.
+    const t = convexTest(schema, modules);
+    const baseball = await seedSport(t, "Baseball", "BB");
+    const asAdmin = t.withIdentity(ADMIN);
+
+    const padres = await asAdmin.mutation(api.teams.findOrCreate, {
+      name: "Padres",
+      location: "San Diego",
+      sportId: baseball,
+      aliases: ["Friars"],
+    });
+
+    expect(
+      await asAdmin.query(api.teams.resolveNames, {
+        names: ["San Diego Padres", "Friars", "Nobody At All"],
+        sportId: baseball,
+      }),
+    ).toEqual([
+      {
+        name: "San Diego Padres",
+        existingTeamId: padres,
+        existingName: "San Diego Padres",
+      },
+      { name: "Friars", existingTeamId: padres, existingName: "San Diego Padres" },
+      { name: "Nobody At All" },
+    ]);
   });
 
   test("is admin-gated", async () => {

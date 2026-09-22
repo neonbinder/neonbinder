@@ -1604,11 +1604,12 @@ export const getByIdParam = query({
  *
  * NEO-296: bounded, and still mirroring its twin — `lib/batchIdReads.ts` holds
  * the arithmetic for both. One `db.get` per DISTINCT id, at most
- * `GET_MANY_BY_IDS_MAX` (512) of them, so one execution costs ~514 system ops
+ * `GET_MANY_BY_IDS_MAX` (768) of them, so one execution costs ~770 system ops
  * at worst whatever the caller sends. Before it the cost was the length of the
  * array the caller built: the entity-review wizard pushed one id per
- * link-decided row with no dedup, and a 754-row batch spent ~754 ops on every
- * re-run of a live subscription.
+ * link-decided row with no dedup, and the 754-row 2024 Topps Chrome batch
+ * spent ~754 ops on every re-run of a live subscription — which is the batch
+ * the bound is sized to clear.
  */
 export const getManyByIds = query({
   args: { ids: v.array(v.id("players")) },

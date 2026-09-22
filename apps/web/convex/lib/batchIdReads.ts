@@ -9,8 +9,10 @@
  * Convex charges one system op per CALL, so the cost of one execution was
  * exactly the length of the array the caller happened to build — and the
  * entity-review wizard built one entry per link-decided review row with no
- * dedup, so a 754-row batch spent ~754 ops inside a live `useQuery`
- * subscription that re-runs for the whole wizard session. Calibration (see
+ * dedup, so the 754-row 2024 Topps Chrome batch spent ~754 ops inside a live
+ * `useQuery` subscription that re-runs for the whole wizard session. The cost
+ * was the caller's list length and nothing else — one more decided row was one
+ * more op, for as long as the wizard stayed open. Calibration (see
  * `CARDS_PER_COMMIT_CHUNK` in `convex/selectorOptions.ts`): ~900 ops in one
  * transaction is comfortable, ~1,800 strains, ~4,000 fails. That call sat one
  * operator decision short of the straining band, and a failing QUERY blanks
@@ -47,17 +49,33 @@ import type { Doc, Id, TableNames } from "../_generated/dataModel";
 /**
  * The most rows one batch id → row query answers for.
  *
- * 512 is the smallest power of two above the longest list any caller can build
- * in one go — `PlayerManagement`'s master list is capped at 500 rows, and a
- * page that size cannot name more distinct teams than it has rows. With the
- * identity read that is ~514 system ops, comfortably inside the ~900 band with
- * room for whatever else the caller's transaction is doing.
+ * Derived from the largest list a caller can actually build, not from a round
+ * number. Two of them set the floor:
+ *
+ *   - The entity-review batch for **2024 Topps Chrome is 754 rows** — the seed
+ *     set this bound was found on, and the one an operator is most likely to
+ *     link right through. A fully link-decided batch of that size asks for one
+ *     id per decided row, so anything under 754 would truncate the wizard's
+ *     decided list on exactly the set that is hardest to review: ~242 rows
+ *     reading "Linked to an existing record" where the name was available.
+ *   - `PlayerManagement`'s master list is capped at 500 rows, and a page that
+ *     size cannot name more distinct teams than it has rows.
+ *
+ * 768 clears both with room. With the identity read that is ~770 system ops,
+ * still inside the ~900 comfortable band — and the two queries are separate
+ * executions, so the teams read and the players read each get that budget
+ * rather than sharing it.
  *
  * A caller that must name MORE than this chunks its list across calls; one
  * query cannot page itself, because `useQuery` subscribes to a single argument
  * set.
+ *
+ * It lands on the same number as `TEAM_NAME_LOOKUP_READ_BUDGET` in
+ * `convex/teams.ts` by coincidence, from different arithmetic about a
+ * different read. They are not one fact: moving one says nothing about the
+ * other.
  */
-export const GET_MANY_BY_IDS_MAX = 512;
+export const GET_MANY_BY_IDS_MAX = 768;
 
 /**
  * Read `ids` back as rows: deduped, bounded, and with ids that resolve to

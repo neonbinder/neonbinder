@@ -333,10 +333,9 @@ export async function syncTeamAliases(
 /**
  * ── NEO-296: the read budget a name-keyed FAN-OUT spends ─────────────────────
  *
- * The two queries that loop `findTeamsByFullName` over a list — `aliasesInUse`
- * and `resolveNames` — each cap the number of NAMES at 64, and neither capped
- * what one name costs. Convex charges one system op per CALL, and one
- * `findTeamsByFullName` is:
+ * `aliasesInUse` loops `findTeamsByFullName` over a list and caps the number of
+ * ALIASES at 64, which never capped what one alias costs. Convex charges one
+ * system op per CALL, and one `findTeamsByFullName` is:
  *
  *   1 index read on `teams.by_name_normalized_and_sport_id` (`.take(16)`),
  *     whatever it returns — and if that filled the window it stops there;
@@ -344,12 +343,19 @@ export async function syncTeamAliases(
  * + 1 `db.get` per alias row it has to resolve (<= TEAM_ERA_SCAN_LIMIT)
  *
  * So 1 op for a name a crowd of ERA rows answers to, 2 for a name nothing
- * answers to, and up to 18 for one a crowd of ALIAS rows answers to — 64 names
- * was ~1,152 ops at worst, in a query that re-runs reactively as the operator
- * types. Comfortable is ~900 and straining is ~1,800
+ * answers to, and up to 18 for one a crowd of ALIAS rows answers to — 64
+ * aliases was ~1,152 ops at worst, in a query that re-runs reactively as the
+ * operator types. Comfortable is ~900 and straining is ~1,800
  * (`CARDS_PER_COMMIT_CHUNK` in `convex/selectorOptions.ts`). The worst case is
  * not hypothetical: it is the preloaded college teams, where one alias key
  * ("Miami", "Wisconsin") is genuinely held by several programs.
+ *
+ * Why a budget here and NOT in `teams.resolveNames`, which had the same shape:
+ * that query only counts to two, so it narrows the lookup window instead and
+ * cannot run up a bill worth bounding (see `RESOLVE_NAMES_CANDIDATE_LIMIT`).
+ * This one cannot narrow the same way — it wants the first holder that is not
+ * the row being edited, so a window of one can be spent on the row itself —
+ * and it is advisory, so stopping costs nothing but a note.
  *
  * `TEAM_NAME_LOOKUP_READ_BUDGET` bounds the TOTAL, not the name count. Each
  * lookup is charged the two index reads plus one get per candidate it returned,
@@ -375,9 +381,9 @@ export async function syncTeamAliases(
  * shared lookup, and a second copy of the identity union is precisely what
  * NEO-284 removed: "answers to" must not be able to mean two things.
  *
- * What "abandoned" means is the CALLER's to decide, and the two disagree on
- * purpose: `aliasesInUse` is advisory and stops looking, `resolveNames` feeds a
- * count the operator acts on and refuses. See each.
+ * Abandoning STOPS the scan and returns what it has. Nothing here throws: a
+ * query that throws blanks the panel it feeds, and this one feeds a note
+ * beside a text box. See `aliasesInUse`.
  */
 export const TEAM_NAME_LOOKUP_READ_BUDGET = 768;
 
@@ -934,12 +940,13 @@ export const get = query({
  *
  * NEO-296 — bounded, and the bound lives in `lib/batchIdReads.ts` with the
  * arithmetic. One `db.get` per DISTINCT id, at most `GET_MANY_BY_IDS_MAX`
- * (512) of them, so one execution costs at most ~514 system ops whatever the
+ * (768) of them, so one execution costs at most ~770 system ops whatever the
  * caller sends. Before it the cost was exactly the length of the array the
  * caller built — the review wizard built one entry per link-decided row,
- * duplicates included, and a 754-row batch spent ~754 ops per re-run of a live
- * subscription. Over-length is TRUNCATED here and REFUSED in `resolveNames`;
- * the module comment says why the two differ.
+ * duplicates included, and the 754-row 2024 Topps Chrome batch spent ~754 ops
+ * per re-run of a live subscription. The bound clears that batch deliberately:
+ * see the module comment for where 768 comes from, and for why over-length is
+ * TRUNCATED here and REFUSED in `resolveNames`.
  */
 export const getManyByIds = query({
   args: { ids: v.array(v.id("teams")) },
@@ -1822,6 +1829,16 @@ export const search = query({
 const RESOLVE_NAMES_MAX = 64;
 
 /**
+ * NEO-296 — how many rows this query reads under one name before it stops.
+ *
+ * Two, because two is the whole answer: one row is the row, and a second means
+ * "a human decides" no matter how many more there are. See the note on the
+ * query below for the arithmetic, and `findTeamsByFullName`'s `limit` for why
+ * a caller that SHOWS its candidates must not do this.
+ */
+const RESOLVE_NAMES_CANDIDATE_LIMIT = 2;
+
+/**
  * NEO-212: bulk existence check by the exact dedup key.
  *
  * Answers, for each submitted name, whether `commitCardChecklist` would find
@@ -1836,13 +1853,30 @@ const RESOLVE_NAMES_MAX = 64;
  * zips the result against its own list. Names normalising to the same key are
  * looked up once.
  *
- * NEO-296 — `RESOLVE_NAMES_MAX` bounded the number of lookups and not what one
- * costs, so 64 names could fan out to ~1,152 system ops. The second bound is
- * `TEAM_NAME_LOOKUP_READ_BUDGET`, and blowing it REFUSES the whole answer, for
- * the same reason the name cap refuses: the wizard turns this into "will create
- * N new teams", and a count computed from a partial read is a wrong number the
- * operator commits on. The refusal names the budget so the next person can tell
- * it apart from the name cap, and says what to do about it.
+ * ── NEO-296: what one name costs, and why nothing here abandons ────────────
+ *
+ * `RESOLVE_NAMES_MAX` bounded the number of LOOKUPS and not what one costs.
+ * Each `findTeamsByFullName` is 1 op for the name leg, 1 for the alias leg and
+ * one `db.get` per holder it resolves, so 64 names could fan out to ~1,152
+ * system ops in a query that re-runs as the operator moves through the wizard.
+ *
+ * The fix is to stop paying for candidates this function never looks at. It
+ * branches on none / exactly one / more than one and nothing else — the second
+ * row settles "several" — so it reads a window of `RESOLVE_NAMES_CANDIDATE_LIMIT`
+ * rather than 16. That is at most 4 ops per name and **256 for a full 64-name
+ * list, whatever the data**, against ~1,152 before, and the answer for every
+ * input is identical: a name two rows answer to is still `ambiguous`, a name
+ * one row answers to still returns that row, and a name nothing answers to is
+ * still absent.
+ *
+ * So there is no read budget here and nothing to abandon — deliberately, and
+ * this is the NEO-296 note not to re-add one. A budget could only end in a
+ * throw or a partial answer, and both are wrong in this particular query: a
+ * throw takes the player's step down (`useQuery` has no refused-click state),
+ * and a partial answer is a wrong count on a line the operator commits on. The
+ * cheap read removes the choice instead of making it. The sibling loop in
+ * `aliasesInUse` DOES carry a budget, because it needs the first other holder
+ * of each alias and so cannot narrow its window the same way.
  *
  * Admin-gated like every other operator-facing function in this file: the only
  * caller is the review wizard, which lives behind admin tooling.
@@ -1895,7 +1929,6 @@ export const resolveNames = query({
       existingName?: string;
       ambiguous?: boolean;
     }> = [];
-    const budget = createTeamNameLookupBudget();
 
     for (const raw of args.names) {
       const normalized = normalizeTeamName(raw);
@@ -1917,22 +1950,14 @@ export const resolveNames = query({
         // "M already exist" line and its career-team chips never saw a row
         // the operator had taught to answer to this string — the commit would
         // link it and the preview would say "new". One lookup, one answer.
-        const found = await findTeamsByFullNameWithinBudget(
+        // NEO-296: a two-row window. Everything below branches on the COUNT,
+        // and the count it needs tops out at two.
+        const found = await findTeamsByFullName(
           ctx,
           args.sportId,
           raw,
-          budget,
+          RESOLVE_NAMES_CANDIDATE_LIMIT,
         );
-        if (found === null) {
-          // The COUNTS, never the names: this string reaches Sentry and the
-          // browser console through Convex's error path.
-          throw new ConvexError(
-            `These names take too many reads to resolve at once ` +
-              `(${results.length} of ${args.names.length} answered before the ` +
-              `${TEAM_NAME_LOOKUP_READ_BUDGET}-read budget ran out). ` +
-              `Review them in smaller batches.`,
-          );
-        }
         seen.set(
           normalized,
           found.length > 1

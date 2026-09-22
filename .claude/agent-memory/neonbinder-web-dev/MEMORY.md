@@ -51,4 +51,4 @@
 - [Convex typecheck excludes test files](reference_convex_typecheck_excludes_test_files.md) — convex/tsconfig excludes *.test.ts, so a changed args/returns shape is green at the gate while every test call site is stale
 - [Never stash in a shared ticket worktree](reference_never_stash_in_a_shared_ticket_worktree.md) — parallel builders share one working tree; stashing reverts their in-flight edits
 - [Component test at a real cap times out](reference_component_test_at_a_real_cap_times_out.md) — a 1,000-row happy-dom fixture passes alone and times out in the suite; inject the cap as a prop
-- [Refuse vs truncate a bounded read](reference_refuse_vs_truncate_a_bounded_read.md) — throw when the answer is a count the operator acts on; truncate a name map; stop a scan that only feeds an advisory note
+- [Refuse vs truncate a bounded read](reference_refuse_vs_truncate_a_bounded_read.md) — check the caller before writing a refusal; a window of 2 beats a budget when the consumer only counts to two; truncate a name map, never throw in a query

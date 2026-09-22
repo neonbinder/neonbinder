@@ -850,13 +850,27 @@ describe("EntityReviewWizard — final confirm step", () => {
     expect(onConfirm).toHaveBeenCalledTimes(1);
   });
 
-  it("disables Confirm & Save and shows 'Saving...' while saving is true", () => {
+  it("marks Confirm & Save aria-disabled and shows 'Saving...' while saving is true", () => {
+    // NEO-294 — `aria-disabled`, not native `disabled`: a paged finalize walk
+    // keeps `saving` true for seconds, and a native disable would drop the
+    // autofocused button out of the tab order for all of it. The refusal is in
+    // the handler, which is what the next test pins.
     currentRows = [makeRow({ decision: { action: "create" } })];
     renderWizard({ saving: true });
 
     const button = screen.getByRole("button", { name: /Saving/ });
     expect(button).toBeTruthy();
-    expect((button as HTMLButtonElement).disabled).toBe(true);
+    expect((button as HTMLButtonElement).disabled).toBe(false);
+    expect(button.getAttribute("aria-disabled")).toBe("true");
+  });
+
+  it("Confirm & Save refuses a second click while a commit is in flight", () => {
+    currentRows = [makeRow({ decision: { action: "create" } })];
+    const { onConfirm } = renderWizard({ saving: true });
+
+    fireEvent.click(screen.getByRole("button", { name: /Saving/ }));
+
+    expect(onConfirm).not.toHaveBeenCalled();
   });
 });
 
@@ -3855,7 +3869,12 @@ describe("EntityReviewWizard — commit failure", () => {
 
     const alert = screen.getByRole("alert");
     expect(alert.textContent).toContain("Commit failed: conflicting card numbers");
-    expect(alert.textContent).toContain("Every decision you made is still here.");
+    // NEO-294 — the old line claimed "Nothing was saved", which stopped being
+    // true when NEO-189 split the commit into chunks that write before
+    // finalize runs. What the copy promises now is the property the code
+    // actually has: re-running converges.
+    expect(alert.textContent).toContain("Some of this commit may already be saved.");
+    expect(alert.textContent).not.toContain("Nothing was saved");
 
     // One control per action: the footer's Confirm & Save stands down while the
     // inline Retry is up, so the operator is not choosing between two buttons
@@ -6771,5 +6790,104 @@ describe("EntityReviewWizard — a career team with several eras", () => {
     expect(screen.queryByText("Winnipeg Jets · which era?")).toBeNull();
     expect(screen.queryByText("needs a team decision")).toBeNull();
     expect(screen.getByText("Winnipeg Jets (1972–1980)")).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-296 — the two `getManyByIds` subscriptions ask for DISTINCT ids, in a
+// STABLE order
+//
+// One entry per decided row was one `db.get` per decided row inside a live
+// subscription: a 754-row batch where the operator links them all asked for
+// 754 reads on every re-run, and a batch that size links the same handful of
+// teams over and over. The server dedups and bounds these too
+// (`convex/lib/batchIdReads.ts`), which is exactly why the client half needs
+// its own case — a regression here answers identically and is invisible from
+// the server.
+//
+// The ordering half is not cosmetic: Convex keys a live subscription on the
+// SERIALIZED args, so a list that reorders without changing membership tears
+// the subscription down and sets it up again on every batch update. Same
+// reasoning as `PlayerManagement.tsx`'s row-team ids.
+// ---------------------------------------------------------------------------
+
+describe("EntityReviewWizard — linked-entity lookups are deduped and stably ordered", () => {
+  /** The args of the LAST call to `ref`, or undefined if it never ran. */
+  function lastArgs(ref: string): unknown {
+    const calls = queryCalls.filter((c) => c.ref === ref);
+    return calls.length > 0 ? calls[calls.length - 1].args : undefined;
+  }
+
+  it("passes each distinct linked id exactly once, however many rows name it", () => {
+    // Nine link decisions across two entities: the shape a real batch takes
+    // when a set's checklist repeats the same club and the same player.
+    currentRows = [
+      ...Array.from({ length: 5 }, () =>
+        makeRow({
+          kind: "team",
+          decision: { action: "link", linkedTeamId: "team_padres" },
+        }),
+      ),
+      makeRow({
+        kind: "team",
+        decision: { action: "link", linkedTeamId: "team_angels" },
+      }),
+      ...Array.from({ length: 3 }, () =>
+        makeRow({
+          kind: "player",
+          decision: { action: "link", linkedPlayerId: "player_trout" },
+        }),
+      ),
+    ];
+    renderWizard();
+
+    expect(lastArgs("teams.getManyByIds")).toEqual({
+      ids: ["team_angels", "team_padres"],
+    });
+    expect(lastArgs("players.getManyByIds")).toEqual({
+      ids: ["player_trout"],
+    });
+  });
+
+  it("keeps the args byte-identical when the batch changes but the decision set does not", () => {
+    // The reactive `getBatch` re-emits on every decision anywhere in the
+    // review, and a row arriving in a different position must not re-key these
+    // two subscriptions. Built in the OPPOSITE id order on the second render,
+    // which is the failure a plain `[...ids]` with no sort would produce.
+    const first = makeRow({
+      kind: "team",
+      decision: { action: "link", linkedTeamId: "team_padres" },
+    });
+    const second = makeRow({
+      kind: "team",
+      decision: { action: "link", linkedTeamId: "team_angels" },
+    });
+    currentRows = [first, second];
+    const { rerender } = renderWizard();
+    const before = lastArgs("teams.getManyByIds");
+
+    // Same two links, reordered, plus an undecided row that carries none.
+    currentRows = [second, makeRow({ kind: "player", status: "ready" }), first];
+    rerenderWizard(rerender);
+    const after = lastArgs("teams.getManyByIds");
+
+    expect(before).toEqual({ ids: ["team_angels", "team_padres"] });
+    // `toEqual` is the assertion that matters — Convex serializes the args, so
+    // equal-by-value is equal-by-subscription-key. A reordered list would fail
+    // it while still resolving the same two names on screen.
+    expect(after).toEqual(before);
+  });
+
+  it("asks for nothing at all when no row was answered by linking", () => {
+    // `"skip"` rather than an empty id list: an empty `ids` array is still a
+    // live subscription and still a round trip.
+    currentRows = [
+      makeRow({ kind: "team", decision: { action: "create" } }),
+      makeRow({ kind: "player", status: "ready" }),
+    ];
+    renderWizard();
+
+    expect(lastArgs("teams.getManyByIds")).toBe("skip");
+    expect(lastArgs("players.getManyByIds")).toBe("skip");
   });
 });
