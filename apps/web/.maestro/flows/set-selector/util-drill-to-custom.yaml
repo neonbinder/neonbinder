@@ -893,6 +893,47 @@ tags:
     when:
       true: "${SPORT && YEAR && MANUFACTURER && SET_NAME && VARIANT_TYPE}"
     commands:
+      # ── THE CASCADE HAS TO HAVE SETTLED BEFORE ANY GEOMETRY IS READ ───────
+      # The Sets column does not collapse into its card when the set is
+      # picked — it collapses when the VARIANT TYPES query lands, seconds
+      # later. Until it does, every column to its right sits 80px further
+      # right, because an expanded column is 340px wide and a collapsed card
+      # is 260px. Anything measured before that is measured in the wrong
+      # place.
+      #
+      # CI 35731602457 / runner 2 (`card-features-editor-toggle`) is the
+      # proof. The set was picked at 13:39:40.9; at 13:39:46.2 the tap still
+      # read `Add custom Variant Types` at [679,306][773,338] and clicked its
+      # centre (726,322); 1.16s later the Sets column collapsed and the
+      # button was at [599,312][693,344] — exactly 340-260 = 80px left, with
+      # the click now 33px outside it. "Add Custom Entry" never appeared,
+      # and the create-gate histogram put the backend at 0.97-0.98s on that
+      # same runner either side of it, so nothing was stalled: the click
+      # simply missed a target that moved after it was aimed.
+      #
+      # `waitToSettleTimeoutMs: 2000` on the tap below does NOT defend
+      # against this — the log reads "Tap aimed via settled hierarchy" and
+      # still uses the pre-collapse bounds, because at that moment the
+      # collapse has not happened yet. A settle heuristic cannot out-wait a
+      # layout change that is still in the future; only the product's own
+      # signal that the cascade is done can, and that signal is the
+      # collapsed card.
+      #
+      # A SCROLL rather than a bare wait (R6 — the scroll is the assertion).
+      # `extendedWaitUntil` never scrolls, and maestro-web prunes the
+      # hierarchy by viewport, so a bare wait would be answering a question
+      # about page position as well as about the collapse and could go red on
+      # a caller that arrives here scrolled past the columns row. Direction UP
+      # because the card is above the set row the SET block centred, and the
+      # centring scroll immediately below restores the position for the tap.
+      # It exits at try 0 (~0.5s) once the card is there, which is the normal
+      # case; the retries are the race.
+      - scrollUntilVisible:
+          element:
+            id: "Sets: ${SET_NAME} — change"
+          direction: UP
+          timeout: 7000
+
       # Idle-mode signal: centerElement-scroll to Add-custom button (R8 pattern).
       # 45s covers shared-Convex contention from parallel workers (~11s observed)
       # plus a first-run cold path where the Variant Types column briefly shows
