@@ -47,3 +47,5 @@
 - [A re-parent drops a row out of its open column](reference_a_reparent_drops_a_row_out_of_its_open_column.md) — SetSelector columns are scoped to the parent id; re-point the parent column, never clear the selection
 - [Wrap-boundary toolbars move under the cursor](reference_wrap_boundary_toolbar_moves_under_the_cursor.md) — fix the width, not the flow; all 4 admin screens carry it, and the width follows the longest realistic option
 - [Undefined error_class is transient](reference_undefined_error_class_is_transient.md) — an untagged login failure gets the "didn't answer" copy; a test stub must set error_class to reach the refused-credentials wording
+- [Convex system-op budget and bounded walks](reference_convex_system_op_budget_and_bounded_walks.md) — ~900 ops/transaction is comfortable, ~1800 strains, ~4000 fails; bound a whole-batch mutation as a cursor walk with SEPARATE scan and work bounds
+- [Convex typecheck excludes test files](reference_convex_typecheck_excludes_test_files.md) — convex/tsconfig excludes *.test.ts, so a changed args/returns shape is green at the gate while every test call site is stale

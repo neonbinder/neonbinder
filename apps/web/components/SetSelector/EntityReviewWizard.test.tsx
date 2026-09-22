@@ -217,7 +217,7 @@ vi.mock("./EntityLinkSearch", () => ({
 // Component under test — imported after mocks
 // ---------------------------------------------------------------------------
 
-import EntityReviewWizard from "./EntityReviewWizard";
+import EntityReviewWizard, { BULK_MAX_PAGES } from "./EntityReviewWizard";
 
 // ---------------------------------------------------------------------------
 // Fixtures / helpers
@@ -272,6 +272,20 @@ type Row = {
       }
     | { action: "skip" };
 };
+
+/**
+ * NEO-294 — what `recordAllRemainingAs*` returns for the last page of a walk:
+ * it decided some rows and there is nothing behind them.
+ *
+ * `decided` is deliberately not asserted anywhere; the wizard's counts come
+ * from the reactive `getBatch`, and the only field that steers it is `hasMore`.
+ */
+const LAST_PAGE = { decided: 0, hasMore: false, cursor: null };
+
+/** A page with more behind it, resuming at `cursor`. */
+function morePages(cursor: number, decided = 25) {
+  return { decided, hasMore: true, cursor };
+}
 
 let nextRowId = 0;
 function makeRow(overrides: Partial<Row> = {}): Row {
@@ -423,8 +437,11 @@ beforeEach(() => {
   mockRecordDecision.mockResolvedValue(null);
   mockClearDecision.mockResolvedValue(null);
   mockCancelBatch.mockResolvedValue(null);
-  mockRecordAllRemainingAsCreate.mockResolvedValue(0);
-  mockRecordAllRemainingAsSkip.mockResolvedValue(0);
+  // NEO-294 — the bulk paths decide ONE BOUNDED PAGE per call and report
+  // whether more remain. The default is "that was the whole batch", so a test
+  // that does not care about paging still sees exactly one call.
+  mockRecordAllRemainingAsCreate.mockResolvedValue(LAST_PAGE);
+  mockRecordAllRemainingAsSkip.mockResolvedValue(LAST_PAGE);
   mockStageCareerTeamRows.mockResolvedValue(0);
   mockClearCareerTeamStint.mockResolvedValue(null);
   currentRows = [];
@@ -1343,7 +1360,197 @@ describe("EntityReviewWizard — bulk 'Add remaining players as new'", () => {
     fireEvent.click(bulk);
 
     await screen.findByRole("alert");
+    // NEO-294 — the control no longer carries a native `disabled` at all, so
+    // "usable again" is the absence of `aria-disabled`.
     expect(bulk.disabled).toBe(false);
+    expect(bulk.getAttribute("aria-disabled")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-294 — a bulk run is a WALK over the batch, not one mutation
+//
+// `recordAllRemainingAs*` decides one bounded page per call now (a 419-entity
+// review in a single transaction is what blew Convex's system-operation budget
+// on the seed job) and returns `{ decided, hasMore, cursor }`. The wizard is
+// what walks that cursor, so these pin the client half of the contract: it
+// keeps asking until the server says stop, it passes the cursor it was handed,
+// the counter keeps moving while it runs, and a second run cannot start on top
+// of the first.
+// ---------------------------------------------------------------------------
+
+describe("EntityReviewWizard — bulk walks the batch a page at a time", () => {
+  /** A promise this test resolves by hand, to hold a page open. */
+  function deferred<T>() {
+    let resolve: (v: T) => void = () => {};
+    const promise = new Promise<T>((res) => (resolve = res));
+    return { promise, resolve };
+  }
+
+  it("keeps calling with the server's cursor until hasMore is false", async () => {
+    currentRows = [makeRow({ status: "ready", name: "A" }), makeRow({ status: "ready", name: "B" })];
+    mockRecordAllRemainingAsCreate
+      .mockResolvedValueOnce(morePages(4242))
+      .mockResolvedValueOnce({ decided: 5, hasMore: false, cursor: 9999 });
+    renderWizard();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Add remaining players as new (2)" }),
+    );
+
+    await waitFor(() =>
+      expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(2),
+    );
+    // The first call starts at the head of the batch — no `cursor` key at all,
+    // which is what the validator's `v.optional` means by "from the start".
+    expect(mockRecordAllRemainingAsCreate).toHaveBeenNthCalledWith(1, {
+      selectorOptionId: "selopt-1",
+      batchId: "batch-1",
+    });
+    // The second resumes exactly where the server said, and nowhere else.
+    expect(mockRecordAllRemainingAsCreate).toHaveBeenNthCalledWith(2, {
+      selectorOptionId: "selopt-1",
+      batchId: "batch-1",
+      cursor: 4242,
+    });
+  });
+
+  it("stops after one call when the first page was the whole batch", async () => {
+    currentRows = [makeRow({ status: "ready" })];
+    renderWizard();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Add remaining players as new (1)" }),
+    );
+
+    await waitFor(() =>
+      expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1),
+    );
+    // A review smaller than one page is one round trip, exactly as before.
+    await act(async () => {});
+    expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it("skip walks its pages too", async () => {
+    currentRows = [makeRow({ status: "ready" }), makeRow({ status: "pending" })];
+    mockRecordAllRemainingAsSkip
+      .mockResolvedValueOnce(morePages(77))
+      .mockResolvedValueOnce(LAST_PAGE);
+    renderWizard();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Skip remaining names (2)" }),
+    );
+
+    await waitFor(() => expect(mockRecordAllRemainingAsSkip).toHaveBeenCalledTimes(2));
+    expect(mockRecordAllRemainingAsSkip).toHaveBeenNthCalledWith(2, {
+      selectorOptionId: "selopt-1",
+      batchId: "batch-1",
+      cursor: 77,
+    });
+  });
+
+  it("the progress counter advances BETWEEN pages, not only at the end", async () => {
+    // The whole point of committing each page: an operator watching a 419-name
+    // review has to see it move. Each page commits on the server, `getBatch` is
+    // reactive, so the header is already counting — this pins that the walk
+    // does not block the render in between.
+    const secondPage = deferred<unknown>();
+    mockRecordAllRemainingAsCreate
+      .mockResolvedValueOnce(morePages(10))
+      .mockImplementationOnce(() => secondPage.promise);
+
+    currentRows = [
+      makeRow({ _id: "row-a" as unknown as Id<"entityReviewQueue">, status: "ready", name: "A" }),
+      makeRow({ _id: "row-b" as unknown as Id<"entityReviewQueue">, status: "ready", name: "B" }),
+    ];
+    const { rerender } = renderWizard();
+    expect(screen.getByText("0 of 2 reviewed")).toBeTruthy();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Add remaining players as new (2)" }),
+    );
+    await waitFor(() =>
+      expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(2),
+    );
+
+    // The first page has committed and the reactive batch has caught up, while
+    // the second page is still in flight.
+    currentRows = [
+      makeRow({
+        _id: "row-a" as unknown as Id<"entityReviewQueue">,
+        status: "ready",
+        name: "A",
+        decision: { action: "create" },
+      }),
+      makeRow({ _id: "row-b" as unknown as Id<"entityReviewQueue">, status: "ready", name: "B" }),
+    ];
+    rerenderWizard(rerender);
+    expect(screen.getByText("1 of 2 reviewed")).toBeTruthy();
+
+    await act(async () => {
+      secondPage.resolve(LAST_PAGE);
+    });
+  });
+
+  it("refuses a second run while one is walking, with aria-disabled and not native disabled", async () => {
+    // A walk is seconds long, so "in flight" is a state a keyboard operator can
+    // stand in. A native `disabled` would blur them to <body>, outside the
+    // still-open modal — the same reason the per-row controls use aria-disabled.
+    const firstPage = deferred<unknown>();
+    mockRecordAllRemainingAsCreate.mockImplementationOnce(() => firstPage.promise);
+
+    currentRows = [makeRow({ status: "ready" }), makeRow({ status: "ready" })];
+    renderWizard();
+
+    const bulk = screen.getByRole("button", {
+      name: "Add remaining players as new (2)",
+    }) as HTMLButtonElement;
+    const skip = screen.getByRole("button", {
+      name: "Skip remaining names (2)",
+    }) as HTMLButtonElement;
+    bulk.focus();
+    fireEvent.click(bulk);
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Adding players…" })).toBeTruthy(),
+    );
+    const adding = screen.getByRole("button", { name: "Adding players…" });
+    expect(adding.getAttribute("aria-disabled")).toBe("true");
+    expect((adding as HTMLButtonElement).disabled).toBe(false);
+    // Focus is still inside the dialog, on the control that was pressed.
+    expect(document.activeElement).toBe(adding);
+    // Its twin is inert too — the two decide the same rows.
+    expect(skip.getAttribute("aria-disabled")).toBe("true");
+
+    // Neither a second click on the running control nor one on its twin starts
+    // anything: the handlers refuse, which is what `aria-disabled` promises.
+    fireEvent.click(adding);
+    fireEvent.click(skip);
+    expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1);
+    expect(mockRecordAllRemainingAsSkip).not.toHaveBeenCalled();
+
+    await act(async () => {
+      firstPage.resolve(LAST_PAGE);
+    });
+  });
+
+  it("gives up after BULK_MAX_PAGES and says the decisions so far are saved", async () => {
+    // A server that never says "no more" is the only way a cursor walk spins.
+    // The cap is a runaway guard: it stops, it explains, and it does not claim
+    // the work was lost.
+    mockRecordAllRemainingAsCreate.mockResolvedValue(morePages(1));
+    currentRows = [makeRow({ status: "ready" })];
+    renderWizard();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Add remaining players as new (1)" }),
+    );
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("Stopped partway through");
+    expect(alert.textContent).toContain("saved");
+    expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(BULK_MAX_PAGES);
   });
 });
 
@@ -1426,7 +1633,7 @@ describe("EntityReviewWizard — armed bulk add", () => {
     vi.useFakeTimers();
     try {
       mockRecordAllRemainingAsCreate
-        .mockResolvedValueOnce(1)
+        .mockResolvedValueOnce(LAST_PAGE)
         .mockRejectedValueOnce(new Error("not an admin"));
 
       currentRows = [
@@ -3971,7 +4178,7 @@ describe("EntityReviewWizard — armed bulk add does not stall", () => {
       ];
       rerender(wizardEl());
 
-      releaseFirst(1);
+      releaseFirst(LAST_PAGE);
       await act(async () => {});
 
       act(() => {

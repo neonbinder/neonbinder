@@ -2505,9 +2505,132 @@ export const clearDecision = mutation({
 });
 
 /**
- * Shared body of the two bulk fast-paths below: walk one batch and decide
- * every row that carries NO decision yet, leaving already-decided rows exactly
- * as the operator left them, and return how many this call decided.
+ * NEO-294 — how many rows of a batch ONE bulk-decide transaction may examine.
+ *
+ * ## The failure this exists to stop
+ *
+ * `recordAllRemainingAsCreate` used to `.collect()` the whole batch and decide
+ * every open row in a single mutation. On CI run 35760682857's seed job — the
+ * global reset plus a real 2024 Topps Chrome sync — the wizard sat at
+ * "119 of 419 reviewed" with 300 new players, 30 new teams and 754 rows in the
+ * batch, and the mutation died with Convex's
+ *
+ *   Your request couldn't be completed. Try again later. …timed out performing
+ *   too many system operations.
+ *
+ * That is not a CI-only shape: an operator confirming a real 419-entity review
+ * hits exactly the same wall and cannot commit their afternoon's work.
+ *
+ * ## The arithmetic, counted rather than guessed
+ *
+ * Per undecided PLAYER row the create path performs:
+ *
+ *   1 — the row itself, read by this page's `.take()`
+ *   2 — `isAmbiguousPlayerName` → `sameNamePlayers`: the `players` name index
+ *       plus the `playerAliases` index (+1 `db.get` per alias hit)
+ *   1 — `stageCareerTeamRowsImpl`'s `by_source_player` count
+ *   4 — PER accepted career team: the `by_batch_and_kind_and_name` dedupe,
+ *       the two reads inside `resolveTeamForSetYear` (exact name + alias), and
+ *       the insert when it stages one
+ *   1 — one `scheduler.runAfter` when anything was staged (a scheduled
+ *       function is a write, not a free call)
+ *   1 — the second `by_source_player` read that collects manual stints
+ *   1 — the `db.patch` that records the decision
+ *
+ * So ~6 operations for a bare player and ~28 for a Wikidata-enriched one with
+ * five career teams. At 300 players that is 1,800–8,400 operations in one
+ * transaction, on top of 754 reads just to collect the batch.
+ *
+ * The house precedent is `CARDS_PER_COMMIT_CHUNK` (selectorOptions.ts), sized
+ * from the same Convex error in NEO-189: ~5-6 operations per card, 150 cards,
+ * ~900 operations per transaction — measured as comfortable where ~1,800 was
+ * straining and ~4,000 failed outright. This aims at the same ~900.
+ *
+ * ## Two bounds, because scanning and deciding cost two different things
+ *
+ * `decide` caps the EXPENSIVE work — the ~28-operation body above — and `scan`
+ * caps how far down the batch one call reads looking for it, at one operation
+ * per row:
+ *
+ *   create — 200 reads + 25 × ~28 ≈ 900
+ *   skip   — 200 reads + 200 × 1 patch ≈ 400
+ *
+ * One bound would have to be the small one, and then a PASS over a batch whose
+ * rows are mostly decided already would cost a call per 25 rows. That is not
+ * hypothetical: the wizard re-walks the batch each time a round of lookups
+ * lands (NEO-221's armed loop), and each of those passes reads mostly-answered
+ * rows. With the scan bound, such a pass over a 754-row review is four calls
+ * rather than thirty-one.
+ *
+ * `skip` decides as many rows as it scans: a skip costs a patch and nothing
+ * else, so there is no second thing to bound.
+ *
+ * Keyed by the decision's own `action` so a page size cannot drift away from
+ * the path it bounds, and exported so a test can build a deliberately
+ * multi-page batch without hard-coding the numbers.
+ */
+export const ENTITY_REVIEW_BULK_PAGE = {
+  create: { scan: 200, decide: 25 },
+  skip: { scan: 200, decide: 200 },
+} as const;
+
+/** What one bounded bulk-decide call did, and where the next one resumes. */
+export type BulkDecideResult = {
+  /** Rows THIS call decided. */
+  decided: number;
+  /**
+   * This call stopped on a bound rather than on the end of the batch, so there
+   * may be more behind it. Call again with `cursor`.
+   */
+  hasMore: boolean;
+  /** `_creationTime` of the last row examined — the next call's `cursor`. */
+  cursor: number | null;
+};
+
+/**
+ * Shared body of the two bulk fast-paths below: walk ONE PAGE of a batch and
+ * decide every row in it that carries NO decision yet, leaving already-decided
+ * rows exactly as the operator left them, and report what this call did.
+ *
+ * ## NEO-294 — bounded, resumable, and additive by construction
+ *
+ * The page is `ENTITY_REVIEW_BULK_PAGE[action]` — at most `scan` rows read and
+ * at most `decide` of them decided — taken from the batch's own index in
+ * `_creationTime` order and resumed with `gt("_creationTime",
+ * cursor)`: the same hand-rolled cursor `cascadeSelectorOptionTeams` walks
+ * cards with, and for the same reason: `_creationTime` is the implicit last
+ * column of every index and is unique within a table, so "strictly after it"
+ * is an exact resume point. Convex allows one `.paginate()` per execution and
+ * a client-driven loop is not one execution, so a cursor is what a `.take()`
+ * page needs anyway.
+ *
+ * Every page COMMITS ON ITS OWN. The client drives the next call with the
+ * cursor it was handed (`EntityReviewWizard`'s `drainRemaining`), so an
+ * interrupted run — a closed tab, a dropped connection, a refused page — keeps
+ * every decision the earlier pages wrote and simply stops. Re-invoking finishes
+ * the job: the walk only ever writes to a row with no `decision`, so a page
+ * replayed with a stale cursor re-reads rows and writes nothing, and no
+ * decision can be recorded twice or lost. That is the same already-decided rule
+ * the wizard has always relied on, now load-bearing for resumption too.
+ *
+ * A run is one PASS, not a promise to decide everything: the cursor moves past
+ * rows this pass deliberately left alone (a `pending` lookup, an ambiguous
+ * name, a team row on the create path) and does not come back for them. The
+ * wizard re-arms a fresh pass from the start as lookups land, which is exactly
+ * what NEO-221 already had it doing.
+ *
+ * Rows STAGED by this walk (a player's career teams) are inserted with a
+ * `_creationTime` of now, so they sort after everything already in the batch
+ * and a later page of the same run scans them. They are team rows, so create
+ * skips each for the price of one read.
+ *
+ * `hasMore` is true when the decision budget ran out mid-page, or when a FULL
+ * scan came back — the reset batches' convention (`{ deleted, hasMore:
+ * rows.length === RESET_BATCH_SIZE }`). Either can cost one extra call that
+ * decides nothing, and that is the right way round: a cheap wasted call beats
+ * a run that stops one row short of done. The cursor is always the last row
+ * this call actually EXAMINED, so the rows a spent budget left unread are the
+ * next call's first.
  *
  * Factored out so `recordAllRemainingAsCreate` and `recordAllRemainingAsSkip`
  * cannot drift on batch scoping, on the already-decided rule, or on what the
@@ -2564,26 +2687,58 @@ export const clearDecision = mutation({
  */
 async function decideAllRemaining(
   ctx: MutationCtx,
-  args: { selectorOptionId: Id<"selectorOptions">; batchId: string },
+  args: {
+    selectorOptionId: Id<"selectorOptions">;
+    batchId: string;
+    /**
+     * NEO-294 — resume point: the `cursor` a previous call returned. Absent
+     * starts a fresh pass at the head of the batch. A garbage value from a
+     * direct API call can only make this walk examine fewer rows (an admin
+     * skipping their own work), never a row of a batch they do not own.
+     */
+    cursor?: number;
+  },
   decision: { action: "create" } | { action: "skip" },
   includePending: boolean,
   callerId: string,
-): Promise<number> {
+): Promise<BulkDecideResult> {
+  const page = ENTITY_REVIEW_BULK_PAGE[decision.action];
+  const after = args.cursor;
   const rows = await ctx.db
     .query("entityReviewQueue")
     .withIndex("by_selector_option_and_batch", (q) =>
-      q.eq("selectorOptionId", args.selectorOptionId).eq("batchId", args.batchId),
+      after === undefined
+        ? q.eq("selectorOptionId", args.selectorOptionId).eq("batchId", args.batchId)
+        : q
+            .eq("selectorOptionId", args.selectorOptionId)
+            .eq("batchId", args.batchId)
+            .gt("_creationTime", after),
     )
-    .collect();
+    .take(page.scan);
   // NEO-221 — same second layer as `recordDecision` and `cancelBatch`, and it
   // matters MORE here than on either of them: one call rules on every open row
-  // in the batch, so a stale batchId from another session would decide a
-  // colleague's whole review in a single mutation. Checked over every row
-  // before the first patch, so a refusal writes nothing at all.
+  // in the page, so a stale batchId from another session would decide a
+  // colleague's review. Checked over every row before the first patch, so a
+  // refused PAGE writes nothing at all — and because a batch is one
+  // (selectorOptionId, user) session (`startBatch` keys it that way), the first
+  // page refusing is the whole run refusing before anything is written.
   for (const row of rows) assertOwnsRow(row, callerId);
   const now = Date.now();
   let count = 0;
+  /**
+   * NEO-294 — the last row this call actually looked at, and therefore where
+   * the next one resumes. Tracked rather than taken from the end of the page,
+   * because a spent decision budget stops the walk mid-page and the rows
+   * behind that point must still be the next call's first.
+   */
+  let lastExamined: Doc<"entityReviewQueue"> | undefined;
+  let budgetSpent = false;
   for (const row of rows) {
+    if (count >= page.decide) {
+      budgetSpent = true;
+      break;
+    }
+    lastExamined = row;
     if (row.decision) continue;
     // NEO-221: a row whose lookup has not landed is skipped on the CREATE
     // path (see the note above) and included on SKIP.
@@ -2702,7 +2857,11 @@ async function decideAllRemaining(
     }
     count++;
   }
-  return count;
+  return {
+    decided: count,
+    hasMore: budgetSpent || rows.length === page.scan,
+    cursor: lastExamined ? lastExamined._creationTime : null,
+  };
 }
 
 
@@ -2722,9 +2881,17 @@ async function decideAllRemaining(
  * lookups land, so the operator still taps once — the count just fills in
  * over a few seconds instead of all at once.
  *
- * The return value is what makes that loop safe to drive from the client: it
- * is how many rows THIS call decided, so a re-call that finds nothing settled
- * yet returns 0 rather than looking like a failure.
+ * The return value is what makes that loop safe to drive from the client:
+ * `decided` is how many rows THIS call decided, so a re-call that finds nothing
+ * settled yet returns 0 rather than looking like a failure.
+ *
+ * ## NEO-294 — ONE PAGE per call, and the client walks the rest
+ *
+ * This decides at most `ENTITY_REVIEW_BULK_PAGE.create.decide` rows and hands
+ * back `{ hasMore, cursor }`; the caller re-calls with that cursor until `hasMore`
+ * is false. Deciding a whole 419-entity review in one transaction is what blew
+ * Convex's system-operation budget on the seed job — see `decideAllRemaining`
+ * for the measurement and for what an interrupted walk leaves behind.
  *
  * ## NEO-236 — teams are NOT decided here, and the count says players
  *
@@ -2738,9 +2905,16 @@ export const recordAllRemainingAsCreate = mutation({
   args: {
     selectorOptionId: v.id("selectorOptions"),
     batchId: v.string(),
+    // NEO-294 — absent starts a fresh pass; otherwise the `cursor` the previous
+    // call returned.
+    cursor: v.optional(v.number()),
   },
-  returns: v.number(),
-  handler: async (ctx, args): Promise<number> => {
+  returns: v.object({
+    decided: v.number(),
+    hasMore: v.boolean(),
+    cursor: v.union(v.number(), v.null()),
+  }),
+  handler: async (ctx, args): Promise<BulkDecideResult> => {
     const callerId = await requireAdmin(ctx);
     return await decideAllRemaining(ctx, args, { action: "create" }, false, callerId);
   },
@@ -2754,9 +2928,11 @@ export const recordAllRemainingAsCreate = mutation({
  * player column), where the operator wants the whole remainder left alone
  * rather than minting a row for each.
  *
- * Same admin gate, same batch scoping, same already-decided rule and same
- * return (how many rows THIS call decided) as the create variant; both run
- * through `decideAllRemaining` so the two cannot drift.
+ * Same admin gate, same batch scoping, same already-decided rule and the same
+ * bounded `{ decided, hasMore, cursor }` walk as the create variant; both run
+ * through `decideAllRemaining` so the two cannot drift. Its page is larger
+ * (`ENTITY_REVIEW_BULK_PAGE.skip`) because a skip costs a read and a patch and
+ * nothing else — see the arithmetic there.
  *
  * Unlike its create twin, this one still rules on EVERY kind of row, teams
  * included (NEO-236 narrowed only the create path). "None of this is an entity"
@@ -2776,9 +2952,16 @@ export const recordAllRemainingAsSkip = mutation({
   args: {
     selectorOptionId: v.id("selectorOptions"),
     batchId: v.string(),
+    // NEO-294 — absent starts a fresh pass; otherwise the `cursor` the previous
+    // call returned.
+    cursor: v.optional(v.number()),
   },
-  returns: v.number(),
-  handler: async (ctx, args): Promise<number> => {
+  returns: v.object({
+    decided: v.number(),
+    hasMore: v.boolean(),
+    cursor: v.union(v.number(), v.null()),
+  }),
+  handler: async (ctx, args): Promise<BulkDecideResult> => {
     const callerId = await requireAdmin(ctx);
     return await decideAllRemaining(ctx, args, { action: "skip" }, true, callerId);
   },
@@ -2798,19 +2981,38 @@ export const recordAllRemainingAsSkip = mutation({
  * the rows a caller already has: the sweep decides on a sampled window, and
  * deleting from a stale list would leave a batch partly alive.
  *
+ * ## NEO-294 — the one exception, and why it is safe
+ *
+ * `alreadyRead` lets a caller that has JUST read the whole batch through this
+ * exact index, in THIS transaction, hand those rows over instead of paying for
+ * them twice. Only `cancelBatch` qualifies, and it matters: a 754-row review —
+ * the seed job's real shape — cost 754 reads to check ownership, 754 more to
+ * re-read the same rows, and 754 deletes, which is the same order of
+ * system operations as the bulk decide that blew the budget outright. Halving
+ * the reads keeps Cancel comfortably inside it without giving up the
+ * all-or-nothing delete an operator's one irreversible action deserves.
+ *
+ * A Convex transaction is serializable and reads its own writes, so "just read
+ * in this transaction" is not an optimistic assumption — nothing can have
+ * changed underneath it. The sweep, which decides on a SAMPLED window, must
+ * keep passing nothing here.
+ *
  * Private, and assumes its caller has already gated itself.
  */
 async function deleteBatchRows(
   ctx: MutationCtx,
   selectorOptionId: Id<"selectorOptions">,
   batchId: string,
+  alreadyRead?: ReadonlyArray<Doc<"entityReviewQueue">>,
 ): Promise<number> {
-  const rows = await ctx.db
-    .query("entityReviewQueue")
-    .withIndex("by_selector_option_and_batch", (q) =>
-      q.eq("selectorOptionId", selectorOptionId).eq("batchId", batchId),
-    )
-    .collect();
+  const rows =
+    alreadyRead ??
+    (await ctx.db
+      .query("entityReviewQueue")
+      .withIndex("by_selector_option_and_batch", (q) =>
+        q.eq("selectorOptionId", selectorOptionId).eq("batchId", batchId),
+      )
+      .collect());
   for (const row of rows) await ctx.db.delete(row._id);
   return rows.length;
 }
@@ -2841,7 +3043,10 @@ export const cancelBatch = mutation({
       )
       .collect();
     for (const row of rows) assertOwnsRow(row, callerId);
-    await deleteBatchRows(ctx, args.selectorOptionId, args.batchId);
+    // NEO-294 — the rows just read ARE the batch, in this transaction; see
+    // `deleteBatchRows`. Re-reading them doubled the cost of cancelling a
+    // several-hundred-row review for nothing.
+    await deleteBatchRows(ctx, args.selectorOptionId, args.batchId, rows);
     return null;
   },
 });

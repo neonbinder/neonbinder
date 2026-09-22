@@ -478,7 +478,7 @@ describe("NEO-254: the New League step's decisions", () => {
         batchId: BATCH,
       });
 
-    expect(decided).toBe(1);
+    expect(decided.decided).toBe(1);
     expect((await t.run(async (ctx) => ctx.db.get(player)))!.decision).toEqual({
       action: "create",
     });
