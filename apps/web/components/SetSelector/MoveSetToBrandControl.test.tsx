@@ -60,6 +60,7 @@ const BRANDS = [
 ];
 
 const showToast = vi.fn();
+const onMoved = vi.fn();
 
 function renderControl() {
   return render(
@@ -68,8 +69,14 @@ function renderControl() {
       setValue="2024 Topps Chrome"
       yearLabel="2024"
       showToast={showToast}
+      onMoved={onMoved}
     />,
   );
+}
+
+/** The list container — the `<p>` prompt's own parent. */
+function listContainer(): HTMLElement {
+  return screen.getByText(MOVE_SET_PROMPT).parentElement as HTMLElement;
 }
 
 function openList() {
@@ -261,6 +268,107 @@ describe("MoveSetToBrandControl — the confirm", () => {
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toBe("Could not move this set");
     expect(showToast).not.toHaveBeenCalled();
+  });
+});
+
+describe("MoveSetToBrandControl — the modal barrier (NEO-294 a11y)", () => {
+  it("makes the brand list unreachable while the confirm is up, and reachable again after Cancel", () => {
+    // The list stays MOUNTED behind the dialog so Cancel returns to the same
+    // open list — but `aria-modal="true"` promises a screen reader that
+    // nothing outside the dialog exists, and the Tab trap only holds for Tab.
+    // A browse cursor would otherwise walk into a year's worth of brand
+    // buttons that cannot be pressed.
+    renderControl();
+    openList();
+    expect(listContainer().hasAttribute("inert")).toBe(false);
+
+    fireEvent.click(screen.getByLabelText("Move to Bowman"));
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(listContainer().hasAttribute("inert")).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByText(MOVE_SET_PROMPT)).toBeTruthy();
+    expect(listContainer().hasAttribute("inert")).toBe(false);
+  });
+
+  it("keeps the list unreachable while a refusal is being read inside the dialog", async () => {
+    // A clash leaves the dialog open. The barrier has to hold for as long as
+    // the dialog does, not just until the first round-trip finishes.
+    mockMoveSetToBrand.mockRejectedValue(
+      new ConvexError({ code: "SET_NAME_CLASH_AT_TARGET", value: "Chrome" }),
+    );
+    renderControl();
+    openList();
+    fireEvent.click(screen.getByLabelText("Move to Bowman"));
+    fireEvent.click(screen.getByRole("button", { name: "Yes, move it" }));
+
+    await screen.findByRole("alert");
+    expect(listContainer().hasAttribute("inert")).toBe(true);
+  });
+
+  it("cancelling hands focus back to the brand that was chosen", async () => {
+    // Going inert blurs whatever was focused inside the list, so `ConfirmDialog`'s
+    // own restore-on-close has nothing useful to go back to. Without the
+    // hand-back a keyboard operator who changed their mind restarts at the top
+    // of the document.
+    renderControl();
+    openList();
+    const bowman = screen.getByLabelText("Move to Bowman");
+    fireEvent.click(bowman);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByLabelText("Move to Bowman")),
+    );
+  });
+});
+
+describe("MoveSetToBrandControl — telling the owner where the set went", () => {
+  it("reports the destination brand so the column can follow the set", async () => {
+    // The Sets column is scoped to the brand the set just LEFT. Without this
+    // the row silently disappears from an open column while the panel below
+    // carries on describing it — a toast saying "Moved to Unknown" beside a
+    // column that no longer lists the set is two different answers.
+    renderControl();
+    openList();
+    fireEvent.click(screen.getByLabelText("Move to Unknown"));
+    fireEvent.click(screen.getByRole("button", { name: "Yes, move it" }));
+
+    await waitFor(() => expect(onMoved).toHaveBeenCalledWith("unknown-id"));
+    // After the toast: the confirmation is the sentence, the re-point is the
+    // evidence, and they arrive in that order.
+    expect(showToast).toHaveBeenCalledWith("Moved to Unknown");
+  });
+
+  it("says nothing to the owner when the move was refused", async () => {
+    mockMoveSetToBrand.mockRejectedValue(
+      new ConvexError({ code: "SET_NAME_CLASH_AT_TARGET", value: "Chrome" }),
+    );
+    renderControl();
+    openList();
+    fireEvent.click(screen.getByLabelText("Move to Bowman"));
+    fireEvent.click(screen.getByRole("button", { name: "Yes, move it" }));
+
+    await screen.findByRole("alert");
+    expect(onMoved).not.toHaveBeenCalled();
+  });
+
+  it("works without an owner listening", async () => {
+    // `onMoved` is optional: the panel renders this control at set level
+    // wherever it mounts, and a caller that has no column to re-point is a
+    // legitimate one.
+    render(
+      <MoveSetToBrandControl
+        setId={SET_ID}
+        setValue="2024 Topps Chrome"
+        yearLabel="2024"
+        showToast={showToast}
+      />,
+    );
+    openList();
+    fireEvent.click(screen.getByLabelText("Move to Unknown"));
+    fireEvent.click(screen.getByRole("button", { name: "Yes, move it" }));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith("Moved to Unknown"));
   });
 });
 

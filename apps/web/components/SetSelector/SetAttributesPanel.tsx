@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { TrashIcon } from "@heroicons/react/24/outline";
+import { PencilSquareIcon, TrashIcon } from "@heroicons/react/24/outline";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import { useConvex, useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
@@ -15,6 +15,13 @@ import {
   type SlotBearingRow,
 } from "../../convex/platformSlots";
 import { isSlAllBrandsBrandId } from "../../convex/slBrandAxis";
+// NEO-294 — the refusal the server throws, rendered by the affordance that
+// would otherwise earn it. One sentence, one definition; a second copy here
+// is how the panel and the mutation come to disagree.
+import {
+  BRAND_UNKNOWN_RENAME_REFUSAL,
+  isBrandUnknownRow,
+} from "../../convex/selectorSyncMatch";
 import { activateOnEnter } from "@/lib/dom/activate-on-enter";
 import { ConfirmDialog } from "../modules/confirm-dialog";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
@@ -170,6 +177,7 @@ export default function SetAttributesPanel({
   selectorOptionId,
   defaultCollapsed,
   onDeleted,
+  onMoved,
 }: {
   selectorOptionId: Id<"selectorOptions">;
   /** Start collapsed (cards present) so the panel doesn't push them off-screen. */
@@ -182,6 +190,15 @@ export default function SetAttributesPanel({
    * since it unmounts as part of the same update.
    */
   onDeleted?: (level: SelectorLevel) => void;
+  /**
+   * NEO-294 — the set this panel describes has moved under `brandId`. The
+   * Sets column is scoped to the brand it LEFT, so without this the row
+   * silently disappears from the column the operator is looking at while the
+   * panel below carries on describing it. The owner re-points the
+   * Manufacturers column at the destination; same division as `onDeleted` —
+   * only it knows what the cascade above this panel is showing.
+   */
+  onMoved?: (brandId: Id<"selectorOptions">) => void;
 }) {
   const row = useQuery(api.selectorOptions.getSelectorOptionById, {
     id: selectorOptionId,
@@ -253,6 +270,10 @@ export default function SetAttributesPanel({
   // contradiction, and the server refuses one.
   const showBrandPrefixRow =
     leafLevel === "manufacturer" && !row.metadata?.isBrandUnknown;
+  // NEO-294 — Jason, 2026-09-22: "Unknown should not be renamable." Read off
+  // the same NB role flag the line above reads, so the panel cannot disagree
+  // with itself about which row this is.
+  const brandUnknownRow = isBrandUnknownRow(row.metadata);
   const setNamePrefix = row.metadata?.setNamePrefix;
   // NEO-237 — the via-All-Brands toggle's three states, read off the row's
   // SportLots slots and the chain above it. "Is this id the all-brands
@@ -453,8 +474,19 @@ export default function SetAttributesPanel({
             </h3>
             {/* NEO-239: every level renames, variantType included. Base is an
                 NB role flag and the BSC `variant` facet comes off the row's
-                tagged slot, so no display value is load-bearing any more. */}
-            <RenameEntityControl id={selectorOptionId} currentValue={row.value} />
+                tagged slot, so no display value is load-bearing any more.
+                NEO-294: with ONE exception — the year's Unknown row, which is
+                frozen at the mutation. The pencil is replaced rather than
+                removed, so the answer to "why can't I rename this one" is
+                where the question gets asked. */}
+            {brandUnknownRow ? (
+              <BrandUnknownRenameNotice value={row.value} />
+            ) : (
+              <RenameEntityControl
+                id={selectorOptionId}
+                currentValue={row.value}
+              />
+            )}
             {/* NEO-239: which variant type is the set's base is IDENTITY, not
                 an attribute, so it sits with the name rather than in the grid
                 below — and stays reachable while the panel is collapsed, which
@@ -538,6 +570,7 @@ export default function SetAttributesPanel({
                 setValue={row.value}
                 yearLabel={ancestorYear}
                 showToast={showToast}
+                onMoved={onMoved}
               />
             )}
           </div>
@@ -792,6 +825,56 @@ export function slViaAllBrandsRefusal(e: unknown): string | null {
     return "This year has no SportLots link to go through.";
   }
   return null;
+}
+
+/**
+ * NEO-294 — the rename pencil's twin on the year's Unknown row.
+ *
+ * Jason, 2026-09-22: "Unknown should not be renamable." The server refuses it
+ * at both doors, so the only question left is what the panel does with the
+ * affordance that would earn the refusal.
+ *
+ * It STAYS, unpressable, rather than vanishing. Removing it would spare the
+ * refusal and answer nothing: the operator who wants to rename this row still
+ * wants to, and a control that is simply absent teaches them nothing about
+ * why. The same shape the delete control next door already uses for a row it
+ * cannot delete — `aria-disabled` with the reason named, revealed on click,
+ * and in the DOM as the button's `aria-describedby` target at all times so a
+ * screen reader hears it without the reveal. `aria-disabled`, never native
+ * `disabled`: a disabled button is not reachable, and "why is this greyed
+ * out" is exactly the question a keyboard user is entitled to ask.
+ *
+ * The accessible name is unchanged — "Rename {value}" — because it is the
+ * same affordance in the same place; what changed is that it says no.
+ */
+function BrandUnknownRenameNotice({ value }: { value: string }) {
+  const reasonId = useId();
+  const [revealed, setRevealed] = useState(false);
+  const reveal = () => setRevealed(true);
+
+  return (
+    <span className="shrink-0 inline-flex items-center gap-1">
+      <button
+        type="button"
+        aria-label={`Rename ${value}`}
+        aria-disabled="true"
+        aria-describedby={reasonId}
+        onClick={reveal}
+        onKeyDown={(event) => activateOnEnter(event, reveal)}
+        // p-1 for the same reason the real pencil carries it: a bare 16x16
+        // icon is under WCAG 2.5.8's 24x24 minimum target.
+        className="shrink-0 p-1 text-gray-500 opacity-50 cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF]"
+      >
+        <PencilSquareIcon className="w-4 h-4" aria-hidden="true" />
+      </button>
+      <span
+        id={reasonId}
+        className={revealed ? "text-[11px] text-gray-400" : "sr-only"}
+      >
+        {BRAND_UNKNOWN_RENAME_REFUSAL}
+      </span>
+    </span>
+  );
 }
 
 /** The toggle's visible sentence — what a flow asserts and taps. */

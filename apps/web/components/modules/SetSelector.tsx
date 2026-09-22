@@ -422,6 +422,33 @@ export default function SetSelector() {
   };
 
   /**
+   * NEO-294: the set the attributes panel was describing now lives under a
+   * DIFFERENT brand. The Sets column is scoped to `selectedManufacturerRowId`
+   * — the brand the set just left — so without this the row vanishes out of
+   * an open column while everything below it (variant types, the checklist,
+   * the panel itself) carries on working, because those key on the set's id
+   * and a re-parent does not change it. A toast saying "Moved to Choice" and
+   * a column that quietly no longer lists the set is the operator being told
+   * two different things.
+   *
+   * So the column FOLLOWS the set rather than losing it: re-point the
+   * Manufacturers column at the destination and the Sets column re-queries
+   * under it with the moved row still selected. This is the same move
+   * `handleSetSelect` already makes when a set is picked in the All Brands
+   * view — the selection follows the set to its real parent — and it is the
+   * one that keeps the evidence on screen: the brand card changes to the
+   * destination and the set is sitting under it.
+   *
+   * Deliberately NOT `handleManufacturerSelect`, which `clearFrom(4)`s the
+   * set and everything below it. Nothing was deleted here; there is nothing
+   * to clear. Focus is left alone for the same reason — the control that did
+   * this survives the move and has already parked focus on itself.
+   */
+  const handleSetMoved = (brandId: GenericId<"selectorOptions">) => {
+    setSelectedManufacturerId(brandId);
+  };
+
+  /**
    * NEO-219: drill the whole cascade onto a row that lives under a DIFFERENT
    * parent, offered when the custom-entry form finds the typed value elsewhere.
    *
@@ -872,6 +899,7 @@ export default function SetSelector() {
           selectorOptionId={deepestSelectedId as Id<"selectorOptions">}
           defaultCollapsed={true}
           onDeleted={handleRowDeleted}
+          onMoved={handleSetMoved}
         />
       )}
 

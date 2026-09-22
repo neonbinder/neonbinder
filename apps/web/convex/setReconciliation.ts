@@ -1551,6 +1551,12 @@ export const storeReconciledOptions = mutation({
               value: w.value,
               features: w.features,
               sportConfig: row.sportConfig,
+              // NEO-294 — this modal runs at every level, manufacturer
+              // included, so a tier-0 title edit is a fourth door onto the
+              // year's Unknown row. Hand over the role flags and the shared
+              // planner refuses it here too; the `!renamePlan.ok` branch
+              // below already logs and keeps the linkage.
+              metadata: row.metadata,
             },
             nextValue: item.value,
             siblings: workingSiblings(),

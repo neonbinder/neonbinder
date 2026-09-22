@@ -277,12 +277,16 @@ function makeChain(sport = "Baseball") {
   ];
 }
 
-function renderPanel(onDeleted?: (level: string) => void) {
+function renderPanel(
+  onDeleted?: (level: string) => void,
+  onMoved?: (brandId: string) => void,
+) {
   return render(
     <SetAttributesPanel
       selectorOptionId={SELECTOR_OPTION_ID}
       defaultCollapsed={false}
       onDeleted={onDeleted as never}
+      onMoved={onMoved as never}
     />,
   );
 }
@@ -2793,5 +2797,126 @@ describe("SetAttributesPanel — move to another brand (NEO-294)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Move to another brand" }));
     expect(screen.queryByLabelText("Move to Topps")).toBeNull();
     expect(screen.getByLabelText("Move to Unknown")).toBeTruthy();
+  });
+});
+
+/**
+ * NEO-294 — Jason, 2026-09-22: "Unknown should not be renamable."
+ *
+ * The server refuses it at both doors (`renameSelectorOption` and the shared
+ * `planValueRename`); what this pins is that the panel never offers the
+ * operator an action it knows will be refused, and that the answer to "why
+ * not" is where the question gets asked rather than only in a tooltip.
+ */
+describe("SetAttributesPanel — the Unknown row does not rename (NEO-294)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    currentChain = makeChain("Baseball");
+    currentHoldings = { holds: [], protected: false };
+  });
+
+  it("replaces the rename pencil with an unpressable one on the flagged row", () => {
+    currentRow = makeRow({
+      level: "manufacturer",
+      value: "Unknown",
+      metadata: { isBrandUnknown: true },
+    });
+    renderPanel();
+
+    const pencil = screen.getByRole("button", { name: "Rename Unknown" });
+    // aria-disabled, never native `disabled`: "why is this greyed out" is a
+    // question a keyboard user is entitled to be able to ask.
+    expect(pencil.getAttribute("aria-disabled")).toBe("true");
+    expect(pencil.hasAttribute("disabled")).toBe(false);
+    // No rename field can be opened from it.
+    fireEvent.click(pencil);
+    expect(screen.queryByLabelText("Edit name for Unknown")).toBeNull();
+  });
+
+  it("names the reason in the DOM at all times, and reveals it on click", () => {
+    currentRow = makeRow({
+      level: "manufacturer",
+      value: "Unknown",
+      metadata: { isBrandUnknown: true },
+    });
+    renderPanel();
+
+    const pencil = screen.getByRole("button", { name: "Rename Unknown" });
+    const reason = document.getElementById(
+      pencil.getAttribute("aria-describedby")!,
+    )!;
+    // In the DOM before the reveal, so a screen reader hears it without one.
+    expect(reason.textContent).toBe(
+      "Unknown is where sets with no known brand wait — it can't be renamed.",
+    );
+    expect(reason.className).toContain("sr-only");
+
+    fireEvent.click(pencil);
+    expect(reason.className).not.toContain("sr-only");
+  });
+
+  it("catches a flagged row still wearing the legacy 'All Brands' name", () => {
+    // Found by the NB role flag, never by the name — the same rule the server
+    // guard follows and the reason the un-renamed legacy row is frozen too.
+    currentRow = makeRow({
+      level: "manufacturer",
+      value: "All Brands",
+      metadata: { isBrandUnknown: true },
+    });
+    renderPanel();
+    expect(
+      screen.getByRole("button", { name: "Rename All Brands" }).getAttribute(
+        "aria-disabled",
+      ),
+    ).toBe("true");
+  });
+
+  it("leaves every other row's pencil exactly as it was", () => {
+    // Including a manufacturer whose flag is an explicit `false` — NEO-237's
+    // "an operator saying this IS a real brand", which the server honours too.
+    for (const metadata of [undefined, { isBrandUnknown: false }]) {
+      currentRow = makeRow({
+        level: "manufacturer",
+        value: "Topps",
+        ...(metadata ? { metadata } : {}),
+      });
+      const { unmount } = renderPanel();
+      const pencil = screen.getByRole("button", { name: "Rename Topps" });
+      expect(pencil.getAttribute("aria-disabled")).toBeNull();
+      fireEvent.click(pencil);
+      expect(screen.getByLabelText("Edit name for Topps")).toBeTruthy();
+      unmount();
+    }
+  });
+});
+
+/**
+ * NEO-294 — the panel hands a completed move up to whoever owns the columns.
+ * What the owner does with it is `SetSelector`'s business; that it is told at
+ * all is the panel's.
+ */
+describe("SetAttributesPanel — reporting a completed move (NEO-294)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    currentChain = makeChain("Baseball");
+    currentHoldings = { holds: [], protected: false };
+    currentYearBrands = [
+      { _id: "unknown-id", value: "Unknown", isCurrent: false },
+      { _id: "bowman-id", value: "Bowman", isCurrent: false },
+      { _id: "mfr-id", value: "Topps", isCurrent: true },
+    ];
+    mockMoveSetToBrand.mockResolvedValue({ movedTo: "Bowman" });
+  });
+
+  it("forwards the destination brand to onMoved", async () => {
+    const onMoved = vi.fn();
+    currentRow = makeRow({ level: "setName", value: "2024 Topps Chrome" });
+    renderPanel(undefined, onMoved);
+
+    fireEvent.click(screen.getByRole("button", { name: "Move to another brand" }));
+    fireEvent.click(screen.getByLabelText("Move to Bowman"));
+    fireEvent.click(screen.getByRole("button", { name: "Yes, move it" }));
+
+    await waitFor(() => expect(onMoved).toHaveBeenCalledWith("bowman-id"));
   });
 });

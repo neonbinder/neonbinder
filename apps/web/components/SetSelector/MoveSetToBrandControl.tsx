@@ -100,6 +100,7 @@ export default function MoveSetToBrandControl({
   setValue,
   yearLabel,
   showToast,
+  onMoved,
 }: {
   setId: Id<"selectorOptions">;
   /** The set's own NB name, for the confirm's question. */
@@ -108,6 +109,15 @@ export default function MoveSetToBrandControl({
   yearLabel?: string;
   /** The panel's `role="status"` toast — one live region for the whole panel. */
   showToast: (message: string) => void;
+  /**
+   * NEO-294 — the set now lives under `brandId`, so the Sets column the
+   * operator is looking at is scoped to the WRONG parent. The owner
+   * (`SetSelector`) re-points the Manufacturers column to the destination;
+   * this control cannot, because it knows nothing about the cascade above
+   * it. Same division as `onDeleted`: the control reports what happened to
+   * the row, the owner decides where the selection goes.
+   */
+  onMoved?: (brandId: Id<"selectorOptions">) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [target, setTarget] = useState<BrandChoice | null>(null);
@@ -124,6 +134,15 @@ export default function MoveSetToBrandControl({
    * reasoning).
    */
   const restoreFocusRef = useRef(false);
+  /**
+   * NEO-294 (a11y) — the brand whose button opened the confirm, so cancelling
+   * can put focus back on it. Needed because the list goes `inert` while the
+   * dialog is up (see the list container below) and a browser blurs whatever
+   * was focused inside an element the moment it becomes inert — which means
+   * `ConfirmDialog`'s own restore-on-close captures `<body>` and has nothing
+   * useful to go back to. This holds the answer across that window.
+   */
+  const returnFocusToRef = useRef<string | null>(null);
 
   const moveSetToBrand = useMutation(api.brandView.moveSetToBrand);
   // Asked only while the list is open: this control mounts on every set row in
@@ -155,6 +174,22 @@ export default function MoveSetToBrandControl({
     triggerRef.current?.focus();
   }, [open]);
 
+  // NEO-294 (a11y) — cancelling the confirm lifts `inert` off the list and
+  // leaves it open on the same brands. Focus has to come back to the brand
+  // that was chosen, or a keyboard operator who changed their mind restarts
+  // at the top of the document. Runs as an effect rather than inside
+  // `onCancel` so it lands AFTER the commit that removed `inert` — focusing a
+  // still-inert element is a no-op.
+  useEffect(() => {
+    if (target !== null || !open) return;
+    const brandId = returnFocusToRef.current;
+    if (!brandId) return;
+    returnFocusToRef.current = null;
+    listRef.current
+      ?.querySelector<HTMLButtonElement>(`[data-brand-id="${brandId}"]`)
+      ?.focus();
+  }, [target, open]);
+
   const closeList = () => {
     restoreFocusRef.current = true;
     setOpen(false);
@@ -170,13 +205,27 @@ export default function MoveSetToBrandControl({
     setOpen(true);
   };
 
+  /**
+   * Raise the confirm for one brand, remembering which row asked so Cancel
+   * can hand focus back to it.
+   */
+  const choose = (brand: BrandChoice) => {
+    setError(null);
+    returnFocusToRef.current = brand._id;
+    setTarget(brand);
+  };
+
   const handleConfirm = async () => {
     if (busy || !target) return;
     setBusy(true);
     setError(null);
     try {
       const { movedTo } = await moveSetToBrand({ setId, brandId: target._id });
+      const brandId = target._id;
       setTarget(null);
+      // Nothing to return focus to inside the list — it is going away with
+      // the dialog, and `closeList` parks focus on the trigger instead.
+      returnFocusToRef.current = null;
       // The list goes with the dialog: the set has left this brand, so the
       // question the list was asking has been answered.
       closeList();
@@ -184,6 +233,12 @@ export default function MoveSetToBrandControl({
       // a confirmation that echoes the row that was written is the one that
       // means the write landed where the operator pointed.
       showToast(`Moved to ${movedTo}`);
+      // Last, and after the toast: the owner re-points the Sets column at the
+      // destination brand, so the row the operator just moved is still under
+      // the cursor rather than silently gone from a column scoped to the brand
+      // it left. A toast is a claim; the row sitting under its new brand is
+      // the evidence.
+      onMoved?.(brandId);
     } catch (e) {
       setError(
         moveClashRefusal(e, target.value) ??
@@ -227,6 +282,19 @@ export default function MoveSetToBrandControl({
           // border-gray-500: the 3:1 boundary tone on this panel's surface;
           // gray-600 measures ~2.0:1 against gray-800 and fails SC 1.4.11.
           className="w-full mt-1 rounded border border-gray-500 bg-gray-900/40 p-2"
+          // NEO-294 (a11y) — the list stays MOUNTED behind the confirm so
+          // Cancel returns to the same open list rather than making the
+          // operator find their brand again. Mounted is not the same as
+          // reachable: `ConfirmDialog` is `aria-modal="true"`, which promises
+          // a screen reader that nothing outside it exists, and its Tab trap
+          // only holds for Tab — a browse cursor walks straight into a year's
+          // worth of brand buttons that cannot be pressed. `inert` is the one
+          // attribute that keeps that promise for both, and unlike
+          // `aria-hidden` it does not leave focusable children inside a
+          // hidden subtree (axe's `aria-hidden-focus`). Focus restore on
+          // cancel is handled by the effect above, because going inert blurs
+          // whatever was focused in here.
+          inert={target !== null}
           onKeyDown={(event) => {
             if (event.key !== "Escape") return;
             event.stopPropagation();
@@ -256,20 +324,16 @@ export default function MoveSetToBrandControl({
                 <button
                   key={brand._id}
                   type="button"
+                  // NOT an E2E target — flows address this button by its
+                  // `aria-label`. It is how the cancel-restore effect above
+                  // finds this exact row again after `inert` blurred it.
+                  data-brand-id={brand._id}
                   // The visible text is the brand; the accessible name says
                   // what pressing it does, which is what a flow targets and
                   // what a screen reader needs from a row of bare names.
                   aria-label={`Move to ${brand.value}`}
-                  onClick={() => {
-                    setError(null);
-                    setTarget(brand);
-                  }}
-                  onKeyDown={(event) =>
-                    activateOnEnter(event, () => {
-                      setError(null);
-                      setTarget(brand);
-                    })
-                  }
+                  onClick={() => choose(brand)}
+                  onKeyDown={(event) => activateOnEnter(event, () => choose(brand))}
                   // py-1.5 keeps each row at WCAG 2.5.8's 24px minimum target height;
                   // px-2 py-1 measured ~23px at this text size.
                   className="text-left text-xs px-2 py-1.5 rounded border border-transparent text-gray-200 hover:border-[#00D558] hover:text-[#00D558] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF]"

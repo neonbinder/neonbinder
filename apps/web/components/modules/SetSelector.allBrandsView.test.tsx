@@ -8,6 +8,11 @@
  * `deepestSelectedId`) treats the view sentinel as "no row" — the year is what
  * it falls back to.
  *
+ * NEO-294 adds the other case where the Manufacturers selection moves without
+ * the operator touching that column: a set moved to a different brand. Same
+ * assertion surface — which parent the Sets column is scoped to — so it lives
+ * here rather than in a second copy of this harness.
+ *
  * Same mocking strategy as `SetSelector.liveRegion.test.tsx`: every child
  * column is stubbed, and the stubs expose a plain button (or, here, some
  * captured props) wired to the real handler. `ResilientEntityColumn` is
@@ -143,8 +148,20 @@ vi.mock("../SetSelector/ParallelGroupingModal", () => ({
 }));
 vi.mock("../SetSelector/MultiSourcePanel", () => ({ default: () => null }));
 vi.mock("../SetSelector/SetAttributesPanel", () => ({
-  default: ({ selectorOptionId }: { selectorOptionId: string }) => (
-    <div data-testid="attributes-panel-target">{selectorOptionId}</div>
+  default: ({
+    selectorOptionId,
+    onMoved,
+  }: {
+    selectorOptionId: string;
+    onMoved?: (brandId: string) => void;
+  }) => (
+    <div>
+      <span data-testid="attributes-panel-target">{selectorOptionId}</span>
+      {/* NEO-294 — stands in for the move control's completed move. Kept
+          OUTSIDE the target span so its label never joins that element's
+          textContent, which other tests here read as the id. */}
+      <button onClick={() => onMoved?.("mfr-2")}>pick-set-moved</button>
+    </div>
   ),
 }));
 vi.mock("../SetSelector/SportForm", () => ({ SportForm: () => null }));
@@ -243,5 +260,55 @@ describe("SetSelector — the All Brands VIEW (NEO-237)", () => {
       .getAllByRole("status")
       .find((el) => el.className.includes("sr-only"))!;
     expect(region.textContent).toBe("Sets column opened");
+  });
+});
+
+/**
+ * NEO-294 — a set moved to another brand must not vanish from the open Sets
+ * column.
+ *
+ * The Sets column is scoped to the manufacturer row the operator selected.
+ * Re-parenting the set server-side therefore drops it out of that column's
+ * query while everything below it — the variant types, the checklist, the
+ * attributes panel — carries on working, because those key on the set's id
+ * and a re-parent does not change it. The column follows the set instead.
+ */
+describe("SetSelector — a moved set keeps its place (NEO-294)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function selectASetUnderABrand() {
+    render(<SetSelector />);
+    pick("sport");
+    pick("year");
+    pick("manufacturer");
+    pick("set-with-parent");
+  }
+
+  it("re-points the Manufacturers column at the destination brand", () => {
+    selectASetUnderABrand();
+    expect(screen.getByTestId("column-setName").getAttribute("data-parent-id"))
+      .toBe("mfr-1");
+
+    pick("set-moved");
+
+    // The Sets column now queries under the brand the set landed in, so the
+    // row is still listed — and the operator can SEE it under its new brand,
+    // which the toast alone never proves.
+    expect(screen.getByTestId("column-setName").getAttribute("data-parent-id"))
+      .toBe("mfr-2");
+  });
+
+  it("keeps the moved set selected — nothing was deleted, so nothing is cleared", () => {
+    selectASetUnderABrand();
+    // The Variant Types column is only visible while a set is selected, and
+    // the attributes panel is still pointed at the same row.
+    pick("set-moved");
+
+    expect(screen.getByTestId("column-variantType")).toBeTruthy();
+    expect(screen.getByTestId("attributes-panel-target").textContent).toContain(
+      "set-1",
+    );
   });
 });

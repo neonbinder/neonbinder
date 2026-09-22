@@ -99,6 +99,9 @@ import {
   type IncomingItem,
   // NEO-237 — the reserved view name, refused at the sync insert door too.
   isAllBrandsViewName,
+  // NEO-294 — the year's Unknown row does not rename, at any door.
+  isBrandUnknownRow,
+  BRAND_UNKNOWN_RENAME_REFUSAL,
   // NEO-237 — the one brand-prefix matcher and the two pure routers behind
   // Sync Sets. The BSC phase files by id first and prefix second; the
   // SportLots phase classifies a brand's list as covered / variant / new.
@@ -3857,6 +3860,21 @@ export const renameSelectorOption = mutation({
     // "base"); both now read the row's `variant`-tagged slot and
     // `metadata.isBase`, so a variantType renames like any other level.
 
+    // NEO-294 — Jason, 2026-09-22: "Unknown should not be renamable." The
+    // year's brand-unknown row is found by its NB ROLE everywhere else in the
+    // codebase, so it is frozen by that role here too, never by its name.
+    // `planValueRename` below refuses it as well; this door throws a
+    // ConvexError so the operator reads the sentence rather than the "Server
+    // Error" production redacts a plain `Error` to. The attributes panel does
+    // not offer the pencil on this row at all, so reaching this is a stale
+    // client or a direct call — both of which get told why.
+    if (isBrandUnknownRow(row.metadata)) {
+      throw new ConvexError({
+        code: "BRAND_UNKNOWN_RENAME_REFUSED",
+        message: BRAND_UNKNOWN_RENAME_REFUSAL,
+      });
+    }
+
     // Same normalized-compare rule addCustomSelectorOption uses, scoped to
     // siblings. Read even for a no-op so the one shared rename path always
     // sees the same inputs whichever caller reached it.
@@ -3867,7 +3885,15 @@ export const renameSelectorOption = mutation({
       )
       .collect();
 
-    const plan = planValueRename({ row, nextValue: args.value, siblings });
+    // `metadata` is spelled out because `planValueRename` requires it: a
+    // `Doc` whose `metadata` is optional does not satisfy a field the planner
+    // insists on being handed, which is exactly the compile error a future
+    // fifth call site should get rather than a silently skipped guard.
+    const plan = planValueRename({
+      row: { ...row, metadata: row.metadata },
+      nextValue: args.value,
+      siblings,
+    });
     if (!plan.ok) throw new Error(plan.message);
     if (plan.unchanged) return { success: true, message: "Unchanged" };
 
@@ -7851,6 +7877,10 @@ export const applySelectorSyncSuggestions = mutation({
           value: workingValue.get(row._id) ?? row.value,
           features: workingFeatures.get(row._id),
           sportConfig: row.sportConfig,
+          // NEO-294 — the row's NB role flags, so an accepted marketplace
+          // label cannot rename the year's Unknown row either. A suggestion
+          // naming it is counted as skipped, like any other refused plan.
+          metadata: row.metadata,
         },
         nextValue: label,
         siblings: siblings.map((r) => ({

@@ -277,6 +277,50 @@ export function isAllBrandsViewName(value: string): boolean {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
+// NEO-294 — the year's Unknown row does not rename
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * Jason, 2026-09-22: "Unknown should not be renamable."
+ *
+ * Beside the All Brands refusal above because it is the same KIND of rule —
+ * NB reserving a word in NB's own column — but the two are reserved from
+ * opposite directions, and the difference is worth stating:
+ *
+ *   • "All Brands" is refused as a NAME, whatever row is asking for it, which
+ *     is why it lives in `checkCustomSelectorValue` (the create door) as well
+ *     as in `planValueRename` (every rename door).
+ *   • "Unknown" is refused as a ROW: the name is deliberately NOT reserved
+ *     (typing it in the custom-entry form selects the existing row through
+ *     the per-parent duplicate return), and what may not change is the value
+ *     of the row carrying `metadata.isBrandUnknown`. So the guard reads the
+ *     row's NB ROLE FLAG, never its name — the same rule every other
+ *     brand-unknown consumer follows (`brandView`, `brandRehome`,
+ *     `findAncestorLabels`), and the reason a legacy row still named
+ *     "All Brands" is caught by it too.
+ *
+ * WHY the row is frozen: every year's bucket is found by the flag and shown
+ * under one word, so a year whose bucket says "Unknown" and a year whose
+ * bucket says something an operator typed are the same bucket wearing two
+ * names — and NEO-294's `ensureBrandRowForName` has to refuse a year whose
+ * flagged row wears a known brand's name, which is a state only a rename
+ * could produce.
+ *
+ * The ONE exception is `backfillBrandPrefixAndUnknownName`, which renames the
+ * legacy "All Brands"-named flagged rows to "Unknown". That is NB tidying its
+ * own word, not an operator door, so it passes `allowBrandUnknownRename`.
+ */
+export const BRAND_UNKNOWN_RENAME_REFUSAL =
+  "Unknown is where sets with no known brand wait — it can't be renamed.";
+
+/** True for the row that holds a year's sets whose brand NB has not identified. */
+export function isBrandUnknownRow(
+  metadata: { isBrandUnknown?: boolean } | null | undefined,
+): boolean {
+  return metadata?.isBrandUnknown === true;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
 // NEO-237 — the ONE brand-prefix matcher
 // ───────────────────────────────────────────────────────────────────────────
 
@@ -894,9 +938,24 @@ export function planValueRename(args: {
     value: string;
     features?: Record<string, string>;
     sportConfig?: unknown;
+    /**
+     * NEO-294 — REQUIRED, and required on purpose. The brand-unknown refusal
+     * below can only fire if the caller hands over the row's NB role flags,
+     * and an optional field is how a fourth call site would come to bypass a
+     * guard that three of them honour. `undefined` is a legitimate answer for
+     * a row that carries no metadata; forgetting to ask is not.
+     */
+    metadata: { isBrandUnknown?: boolean } | null | undefined;
   };
   nextValue: string;
   siblings: ReadonlyArray<{ _id: string; value: string }>;
+  /**
+   * NEO-294 — the internal escape hatch for the ONE rename that must still
+   * land on a flagged row: `backfillBrandPrefixAndUnknownName` renaming the
+   * legacy "All Brands"-named bucket to "Unknown". Never set from a path an
+   * operator or a marketplace label can reach.
+   */
+  allowBrandUnknownRename?: boolean;
 }): RenamePlan {
   const { row, siblings } = args;
 
@@ -911,6 +970,18 @@ export function planValueRename(args: {
   // accepted through `applySelectorSyncSuggestions` is a rename too.
   if (row.level === "manufacturer" && isAllBrandsViewName(trimmed)) {
     return { ok: false, reason: "invalid", message: ALL_BRANDS_VIEW_REFUSAL };
+  }
+
+  // NEO-294 — the year's Unknown row is frozen, whatever it is being renamed
+  // TO. Checked before the no-op branch below so "rename Unknown to Unknown"
+  // is refused rather than quietly reported as unchanged: the answer to
+  // "can I rename this row" must not depend on what was typed.
+  if (isBrandUnknownRow(row.metadata) && args.allowBrandUnknownRename !== true) {
+    return {
+      ok: false,
+      reason: "invalid",
+      message: BRAND_UNKNOWN_RENAME_REFUSAL,
+    };
   }
 
   const key = selectorValueKey(trimmed);
