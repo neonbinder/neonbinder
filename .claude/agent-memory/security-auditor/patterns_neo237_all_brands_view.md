@@ -31,7 +31,16 @@ The rules outlive the table:
 5. **Marketplace-id sentinel checks are clean when**: the constant + predicate live in one env-free
    module, every caller is inside `convex/` sync/adapter code, the adapter applies the scope to the
    PARSED response only, and the sentinel id stays in `returnedIds` so the NEO-211 unlink pass
-   keeps every M:1 holder. `grep -rn isSl…Id` outside `convex/` should return nothing.
+   keeps every M:1 holder. `grep -rn isSl…Id` outside `convex/` should return only the one
+   admin-panel toggle that derives an on/off boolean from the row's slot (never displays the id);
+   anything else outside `convex/` is a finding. A placeholder-aware name tier is safe only when
+   the predicate is a server-built closure keyed on `level` (never an arg) and tier 1 is untouched,
+   so a live id held elsewhere is still claimed by id before any placeholder row is "free".
+7. **Write caps named "per sync" are usually per SCOPE; multiply by scopes.** `MAX_SL_SETS_PER_SYNC`
+   (200) applies per brand scope in `routeSlSets`, so one Sync Sets can mint 200 × scopes rows; the
+   real ceiling is `MAX_YEAR_SET_ROWS` (3000), and once a year crosses it BOTH the SL create path
+   (`index_truncated`) and the BSC re-home path (`listYearSetRows`) stop for that year with no
+   operator recovery. Check the year-wide index budget against the sum of per-scope caps.
 6. **Armed backfill shape held**: internalMutation, dry-run default, `confirm` + env flag,
    `SCAN_LIMIT+1` truncation flag, `parentId` escape hatch (unvalidated, harmless), `MAX_REPORTED`
    cap, one JSON log line of counts. Same as NEO-272/NEO-293.
