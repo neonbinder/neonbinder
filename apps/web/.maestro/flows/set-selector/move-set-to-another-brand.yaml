@@ -18,8 +18,10 @@ tags:
 #      the list still open where it was (PART 2);
 #   3. confirming files the set under the chosen brand: the toast echoes the
 #      SERVER's name for the destination, the panel's breadcrumb re-reads the
-#      new chain, and the row is really gone from the old brand's column and
-#      present in the new one (PARTS 3 and 4);
+#      new chain, THE OPEN COLUMN FOLLOWS THE SET rather than dropping it
+#      (`handleSetMoved` re-points the Manufacturers selection at the
+#      destination, set still selected), and the row is really gone from the
+#      old brand's column and present in the new one (PARTS 3 and 4);
 #   4. it works in both directions — moving it back restores the fixture and
 #      proves the control is not one-way (PART 5).
 #
@@ -72,6 +74,15 @@ tags:
 #   toast     `Moved to <brand>` — the panel's one `role="status"`, fixed at
 #             top-20 so it is never under the fold
 #   panel     the breadcrumb `<sport> › 2026 › <brand> › <set>`
+#   cascade   the collapsed cards `Manufacturers: <brand> — change` and
+#             `Sets: <set> — change`, which are what the post-move re-point
+#             is read off
+#
+# NOTE ON THE LIST WHILE THE CONFIRM IS UP: it stays MOUNTED but goes
+# `inert`, so Cancel comes back to the same open list on the same brands
+# (PART 2 asserts exactly that). Nothing here asserts a list row's absence
+# while the dialog is open, which `inert` would not have produced anyway —
+# the nodes are still rendered and still visible to the driver.
 #
 # R2 — every negative below is paired with a positive on the same surface:
 # an `assertNotVisible` alone is satisfied by a page that has fallen to its
@@ -221,13 +232,23 @@ tags:
     timeout: 7000
 - tapOn: "Yes, move it"
 
-# Two readings of one write. The toast echoes the SERVER's name for the
-# destination (`movedTo`, read off the row the mutation wrote) rather than
-# the label the list rendered, so it is a confirmation that the write landed
-# where the operator pointed; and `getAncestorChain` is a live query on this
-# set's id, so the breadcrumb re-reads the chain the re-parent produced. The
-# panel stays mounted through the move while the set LEAVES the open Sets
-# column, which is why these two are where the evidence is.
+# Three readings of one write, and the third is the one a toast cannot give.
+#
+#   the toast echoes the SERVER's name for the destination (`movedTo`, read
+#   off the row the mutation wrote) rather than the label the list rendered,
+#   so it confirms the write landed where the operator pointed;
+#
+#   `getAncestorChain` is a live query on this set's id, so the panel's
+#   breadcrumb re-reads the chain the re-parent produced;
+#
+#   and THE COLUMN FOLLOWS THE SET. Every column in `SetSelector.tsx` is
+#   scoped to the selected PARENT id, so a re-parent would otherwise drop the
+#   row out of the open Sets column while the panel and everything below it
+#   carried on describing it — the operator told two different things at
+#   once. `handleSetMoved` re-points the Manufacturers selection at the
+#   destination instead of clearing anything, so the collapsed card changes
+#   to `Panini` in the same render with the set still selected. A regression
+#   that stopped re-pointing is silent everywhere except here.
 - extendedWaitUntil:
     visible: "Moved to Panini"
     timeout: 7000
@@ -235,6 +256,18 @@ tags:
     element:
       text: ".*2026 › Panini › msb-a-${WORKER_INDEX || 0}.*"
     timeout: 7000
+# The collapsed cards are UP in the columns row, above the panel this step is
+# standing on. No tap follows, so no centring — the scroll is the assertion
+# (R6). The Sets card is asserted alongside it: together they say the set is
+# still the selection AND it is now sitting under the destination brand,
+# which is the whole of what re-pointing promises.
+- scrollUntilVisible:
+    element:
+      id: "Manufacturers: Panini — change"
+    direction: UP
+    timeout: 7000
+- assertVisible:
+    id: "Sets: msb-a-${WORKER_INDEX || 0} — change"
 
 # ============================================================
 # PART 4 — THE ROW REALLY RE-PARENTED: PRESENT UNDER PANINI, GONE FROM TOPPS

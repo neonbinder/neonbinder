@@ -30,44 +30,71 @@ tags:
 # same one, which is the same reason `inserts-1996-score-…` carries the
 # NEO-203/211/219 steps rather than three more flows on one set.
 #
-# ── THE FIXTURE (SET-REGISTRY.md → "Hockey → 1996") ⚠️ NEEDS OWNER SIGN-OFF ─
-#   Hockey → 1996, proposed for this flow: nothing else in the suite touches
-#   it (1995 belongs to `checklist-one-marketplace-skips-match-dialog`, 1997
-#   to `brand-via-all-brands-narrows-sportlots`), and it sits between the two
-#   years whose SportLots brand list was MEASURED identical — `All Brands,
-#   Bowman, Classic, Donruss, Finest, Fleer, ITG, O-Pee-Chee, Pacific,
-#   Panini, Pinnacle, Score, Skybox, SP, Stadium Club, Topps, Ultra, Upper
-#   Deck` (registry measurement 2). `Leaf` is NOT in that list, which is the
-#   whole point: no marketplace and no operator can put a `Leaf` brand row in
-#   this year, so a set filed under one was filed there by the known list.
+# ── THE FIXTURE (SET-REGISTRY.md → "Baseball → 1990") ──────────────────────
+#   Baseball → 1990, CLAIMED BY JASON 2026-09-22 for this flow. It is the
+#   year the ticket's own evidence was gathered on: the collector pass read
+#   every one of the 955 set names sitting under `Unknown` on dev that day
+#   and curated the 39-name list from them, and Baseball 1990 — the great
+#   minor-league team-set year — is the densest part of that sample. Brands
+#   the pass recorded in THIS year's Unknown bucket: `ProCards`, `CMC`,
+#   `Star`, `Best`, `Sportflics`, `Leaf`, `Swell`, `Perez-Steele`, `MSA`,
+#   `Little Sun`, `Kenner`, `Eclipse`, `Boxscores` and `Mother's Cookies`.
+#   So "this year holds a set the list claims" is a MEASUREMENT here, not a
+#   guess — which is exactly why Jason moved the fixture off Hockey 1996,
+#   where it would have been a guess.
 #
-#   ⚠️ NOTHING BELOW THIS LINE IS MEASURED. The PR preview did not exist when
-#   this flow was written, so `Leaf` is a hobby judgement, not a reading:
-#   1996-97 Leaf hockey (Leaf, Leaf Limited, Leaf Preferred) is a real and
-#   ubiquitous Pinnacle product, `Leaf` is entry 17 of the list, and it is one
-#   regex-safe token. THE FIRST CI RUN IS THE MEASUREMENT. What it must
-#   confirm, in order:
-#     (a) BSC lists ≥1 set for Hockey 1996 whose name word-boundary-starts
-#         with `Leaf` — STEP 2's pick and its `Manufacturers: Leaf — change`
-#         card. If it does not, swap STEP 0's BRAND (see the candidates
-#         below) or STEP 0's YEAR, and re-record here.
-#     (b) the year-wide sync's cost — STEP 1's cold drill plus STEP 4's
-#         forced re-sync — against `run-e2e-queue.sh`'s 600s per-flow kill.
-#         The comparable measurement is `brand-via-all-brands-…` on 1997:
-#         4m24s WITH a live SportLots phase this flow never pays.
-#     (c) whether BSC lists MORE than one `Leaf…` set. STEP 4 re-picks the
-#         first match of the same filter as STEP 2, which is the same row by
-#         construction (the view sorts by display name, the name did not
-#         change, and an idempotent re-sync adds nothing) — but if the run
-#         shows several, record the names here so the next reader knows the
-#         ordering argument is load-bearing. A mismatch fails RED at STEP 4's
-#         card, never green.
-#   Candidates if `Leaf` is not there, none measured either: `Pro Set`
-#   (Hockey 1990/1991 — 1990-91 Pro Set is enormous, and SportLots' hockey
-#   brand list has no Pro Set entry); `ProCards`, `CMC`, `Star`, `Best`,
-#   `Choice` (Baseball 1990, the minor-league team-set year the ticket's dev
-#   sample was drawn from — but a modern baseball year's set list is far
-#   larger than a hockey year's, so weigh (b) before moving there).
+#   WHY `CMC` OF THOSE FOURTEEN, in the order the choice was made:
+#     • it is not an English word, so it cannot quietly match a set that is
+#       nothing to do with the brand — which rules out `Star`, `Best` and
+#       `Eclipse`, the three the list itself flags as accepted risks;
+#     • it carries no apostrophe, so it cannot fall foul of the
+#       typographic-apostrophe fold the module documents — that rules out
+#       `Mother's Cookies`;
+#     • it is one regex-safe token with no whole-word prefix relation to any
+#       other list entry or to any brand NB already has;
+#     • it is a MINOR-LEAGUE issuer, so SportLots' baseball brand list almost
+#       certainly has no entry for it — which is the property that keeps the
+#       claim honest once the pause lifts (see the NEO-287 note below). That
+#       is what rules out `Leaf`, a major baseball brand of the era that
+#       SportLots very likely does carry.
+#     • of the remaining minor-league names it was the most numerous in the
+#       curated sample (`CMC` 27, against `ProCards` 6, `MSA` 2, `Little
+#       Sun` 2, `Kenner` 2, `Boxscores` 1, `Swell` 1, `Sportflics` 1,
+#       `Perez-Steele` 1) — the widest margin against "the one set moved or
+#       was renamed upstream".
+#   `ProCards` is the drop-in replacement if `CMC` is not there; after that,
+#   `MSA`, `Sportflics`, `Boxscores`, `Swell`, `Kenner`. Change STEP 0 only.
+#
+#   ⚠️ WHAT IS STILL NOT MEASURED — THE FIRST CI RUN IS THE MEASUREMENT.
+#   The collector pass read DEV. This flow runs against a PR preview that is
+#   seeded from empty, and nothing had been pushed when it was written, so no
+#   reading was possible against the code under test. Confirm and record here:
+#     (a) BSC lists ≥1 set for Baseball 1990 whose name word-boundary-starts
+#         with `CMC`. Read off STEP 2's `Manufacturers: CMC — change` card.
+#         Swap STEP 0's BRAND from the ordered list above if not.
+#     (b) THE COST, against `run-e2e-queue.sh`'s 600s per-flow kill. This is
+#         the open question Jason's choice trades for certainty: 1990 is a
+#         far bigger year than the 1997 hockey fixture, and this flow pays
+#         the year-wide Sets sync TWICE (STEP 1 cold, STEP 4 forced). The
+#         only comparable figure is `brand-via-all-brands-narrows-sportlots`
+#         on Hockey 1997: 4m24s for ONE year-wide sync that also made ~18
+#         live SportLots POSTs this flow never makes. If the total lands
+#         near the kill, the cheap fix is to drop STEP 4's re-pick (the
+#         breadcrumb in STEP 3 and the card in STEP 4 say the same thing
+#         twice); the expensive one is a smaller year, and `Sportflics`
+#         (a mainstream 1986-90 issue) would let the fixture move to one.
+#     (c) that the year's set count stays under the two caps that would make
+#         this flow lie. `MAX_SETS_PER_YEAR_VIEW` is 1000 and bounds what
+#         the All Brands view LISTS — past it STEP 2's filter could come back
+#         empty (a red, not a wrong green). `MAX_YEAR_SET_ROWS` is 3000 and
+#         bounds the year index: past it `plan.moves` is SKIPPED WHOLESALE
+#         ("too many sets this year to move any out of Unknown"), which would
+#         make half 2 pass VACUOUSLY — no re-home would run at all, stamp or
+#         no stamp. That one has no on-screen signal, so read the Convex log
+#         for `year set index truncated` on the first run. Both are well
+#         above "a few hundred BSC sets", which is what `setFromMarketplace`
+#         calls a full baseball year, but 1990's minor-league team sets are
+#         exactly the tail that makes a year unusually long.
 #
 # ── WHY A REAL YEAR, AND WHY THIS FLOW IS A SOLE WRITER (R7a) ───────────────
 #   The known list is consulted inside `syncSetsAcrossManufacturers`, on the
@@ -78,11 +105,19 @@ tags:
 #   list mints, the year's `Unknown` row, every BSC set of the year filed
 #   under one of them, and the one operator move. Nothing is renamed, nothing
 #   is deleted, no checklist is fetched and no Base is mapped. It is the ONLY
-#   flow on Hockey 1996.
+#   flow on Baseball 1990.
+#
+#   IT ADDS NO ROW TO A SHARED COLUMN. Baseball's Years column is synced from
+#   the marketplaces and already holds 1990; the drill SELECTS it (the year
+#   level of `util-drill-to-cold-real-set` has no create path at all and goes
+#   red if the row is missing). Everything this flow creates lands in the
+#   Manufacturers column of 1990, which nothing else drills. The fold hazard
+#   in SET-REGISTRY.md → "Adding ROWS to a shared column" therefore does not
+#   apply, even though the SPORT is the shared one.
 #
 #   ⚠️ FRESH-ONLY PER DEPLOYMENT, the same contract as the 1995 and 1997
 #   fixtures: a second run finds the set already under `Unknown` and already
-#   stamped, so STEP 2's `Manufacturers: Leaf — change` fails by name. CI
+#   stamped, so STEP 2's `Manufacturers: CMC — change` fails by name. CI
 #   reseeds the preview on every run, so the first-run path IS the CI path;
 #   locally, re-seed (`npm run test:e2e -- setup`) before re-running. The
 #   flow deliberately does NOT move the set back at the end: a restore would
@@ -95,26 +130,28 @@ tags:
 #   half runs identically whether SportLots is paused or not, and this flow
 #   asserts nothing about a SportLots link, a narrowed picker or a count.
 #   Under the pause the year additionally has NO other brand rows at all
-#   (SportLots' list is the only source of them), which makes the claim
-#   stronger, not weaker. The one live-mode assumption is the measured
-#   absence of `Leaf` from SportLots' hockey brand list; when the pause lifts,
-#   re-read measurement (a) above.
+#   (SportLots' brand list is the only source of them), so a `CMC` row can
+#   only have come from the known list. When the pause lifts that argument
+#   rests on SportLots' baseball brand list having no `CMC` entry — the
+#   reason a minor-league issuer was chosen, and the thing to re-read at the
+#   same time as measurement (a).
 #
 # ── R5 ──────────────────────────────────────────────────────────────────────
 #   7000 everywhere EXCEPT the live marketplace round-trips, each commented
-#   at its site: the cold Hockey drill (owned by util-drill-to-cold-real-set),
-#   the cold variant-type sync a set pick fires, and STEP 4's forced year-wide
-#   Sync Sets. No `scrollUntilVisible` is without an explicit timeout.
+#   at its site: the cold Baseball 1990 drill (owned by
+#   util-drill-to-cold-real-set), the cold variant-type sync a set pick
+#   fires, and STEP 4's forced year-wide Sync Sets. No `scrollUntilVisible`
+#   is without an explicit timeout.
 #
 # ── HANDLES (visible text and accessible names; never a DOM id) ─────────────
 #   view/columns  `Search sets`, `Sync Sets`, `Syncing Sets`, `Variant Types`,
 #                 the collapsed card `Manufacturers: <brand> — change`
-#   panel         the breadcrumb `… › 1996 › <brand> › <set>`,
+#   panel         the breadcrumb `… › 1990 › <brand> › <set>`,
 #                 `Delete <set>` (the move's sibling — asserted here only to
 #                 show the two controls are distinguishable by name),
 #                 `Move to another brand` (MoveSetToBrandControl's trigger;
 #                 its visible text IS its accessible name),
-#                 `Move to which brand?`, the group `Brands in 1996`,
+#                 `Move to which brand?`, the group `Brands in 1990`,
 #                 `Move to <brand>` per option
 #   confirm       `Move "<set>" to <brand>?`, the fixed description sentence,
 #                 `Yes, move it` (ConfirmDialog owns the only `Cancel`)
@@ -127,8 +164,8 @@ tags:
 #   reads the `Unknown` routing on 1995. Neither exercises the known-brands
 #   vocabulary, the move control, or the operator stamp.
 #   `move-set-to-another-brand.yaml` proves the move CONTROL marketplace-free
-#   (its list, its confirm, its Cancel, both directions); it cannot force a
-#   sync, which is the half this flow owns.
+#   (its list, its confirm, its Cancel, the column re-point, both
+#   directions); it cannot force a sync, which is the half this flow owns.
 # ════════════════════════════════════════════════════════════════════════════
 
 # ============================================================
@@ -137,13 +174,14 @@ tags:
 #   SPORT / YEAR  the year this flow owns outright (SET-REGISTRY.md).
 #   BRAND         the entry of `convex/knownBrands.ts` expected to claim at
 #                 least one of BSC's sets for that year. Regex-safe, one
-#                 token, and absent from SportLots' brand list for the sport.
-#                 See the header for what a replacement must satisfy.
+#                 token, not an English word, no apostrophe, and a
+#                 minor-league issuer SportLots has no brand for. See the
+#                 header for the ordered replacement list.
 # ============================================================
 
-- evalScript: '${output.SPORT = "Hockey"}'
-- evalScript: '${output.YEAR = "1996"}'
-- evalScript: '${output.BRAND = "Leaf"}'
+- evalScript: '${output.SPORT = "Baseball"}'
+- evalScript: '${output.YEAR = "1990"}'
+- evalScript: '${output.BRAND = "CMC"}'
 
 # ============================================================
 # LAUNCH + SIGN IN (R4)
@@ -155,7 +193,7 @@ tags:
     timeout: 45000
 
 # ============================================================
-# STEP 1 — COLD DRILL TO Hockey › 1996 › the "All Brands" VIEW
+# STEP 1 — COLD DRILL TO Baseball › 1990 › the "All Brands" VIEW
 #
 # R9 — the drill lives in the util, which reads MANUFACTURER "All Brands" as
 # "tap the pinned view" (its NEO-237 block) and returns once the YEAR-WIDE
@@ -164,6 +202,10 @@ tags:
 # applied to everything that would otherwise have gone to `Unknown`, and the
 # remainder under `Unknown` itself. Everything below reads the result of that
 # one sync. The util owns every marketplace-length wait in it.
+#
+# Baseball's Sports and Years columns are already warm (the setup track syncs
+# them), so the cold part of this drill is the Manufacturers column for 1990
+# and the year-wide Sets sync under the view.
 # ============================================================
 
 - runFlow:
@@ -173,10 +215,10 @@ tags:
       YEAR: ${output.YEAR}
       MANUFACTURER: "All Brands"
 
-# PRECONDITION (R2): the view lists the year. A hockey year is hundreds of
-# sets, so `EntitySelector`'s search input (rendered above 8 entries) is
-# there. A year that synced to nothing fails HERE, by name, before any
-# known-brand claim is read into an empty column.
+# PRECONDITION (R2): the view lists the year. A 1990 baseball year is
+# hundreds of sets, so `EntitySelector`'s search input (rendered above 8
+# entries) is there. A year that synced to nothing fails HERE, by name,
+# before any known-brand claim is read into an empty column.
 - extendedWaitUntil:
     visible: ".*Search sets.*"
     timeout: 15000
@@ -188,15 +230,15 @@ tags:
 # carries the set name AND its brand as a muted second line, both inside the
 # one row button, so whichever node the driver takes lands the same click
 # (the idiom `brand-via-all-brands-…` STEP 4 uses). Case-insensitive because
-# BSC's spelling of a product name is BSC's business — "LEAF" would still be
-# filed under "Leaf": `matchesBrandPrefix` folds both sides.
+# BSC's spelling of a product name is BSC's business — "cmc" would still be
+# filed under "CMC": `matchesBrandPrefix` folds both sides.
 #
 # The pick BACK-FILLS the Manufacturers column from the set's OWN parent
 # (NEO-237), so the collapsed card names the row this set actually lives
-# under. That card is the acceptance criterion: `Leaf` can only be there
-# because `ensureBrandRow` minted it from the known list — SportLots' hockey
-# brand list has no Leaf entry (header), nothing in this flow types one, and
-# a build that stopped consulting the list reads `Unknown` here.
+# under. That card is the acceptance criterion: `CMC` can only be there
+# because `ensureBrandRow` minted it from the known list — nothing in this
+# flow types a brand, and under the pause the year has no other brand rows at
+# all. A build that stopped consulting the list reads `Unknown` here.
 # ============================================================
 
 - scrollUntilVisible:
@@ -288,9 +330,10 @@ tags:
 
 # `Unknown` leads the list (`compareBrandChoices` puts the year's flagged row
 # first), so it is the first row of the `max-h-48` box and never clipped by
-# it — which matters, because maestro-web scrolls only the window and cannot
-# drive an inner scroller. Centred before the tap (R8); it sits a row below
-# the trigger this step just centred, so it exits at try 0.
+# it — which matters here more than anywhere: 1990's known-list brands make
+# this a long list, and maestro-web scrolls only the window, never an inner
+# scroller. Centred before the tap (R8); it sits a row below the trigger this
+# step just centred, so it exits at try 0.
 - scrollUntilVisible:
     element:
       id: "Move to Unknown"
@@ -318,9 +361,15 @@ tags:
 #   list rendered;
 #
 #   the breadcrumb — `getAncestorChain` is a live query on this set's id, so
-#   the panel re-reads the chain the re-parent produced. The set has left the
-#   Sets column the view was showing it in, so this is the structural proof
-#   that the row really moved rather than the toast's word for it.
+#   the panel re-reads the chain the re-parent produced, without moving the
+#   page off the panel this step is already standing on.
+#
+# (The columns ABOVE also follow the set now — `handleSetMoved` re-points the
+# Manufacturers column at the destination, so the collapsed card changes to
+# `Unknown` in the same render. That is the move control's own behaviour and
+# it is asserted where the control is the feature, in
+# `move-set-to-another-brand.yaml`; repeating it here would be an extra UP
+# scroll for a claim this flow already makes at the breadcrumb.)
 - extendedWaitUntil:
     visible: "Moved to Unknown"
     timeout: 7000
@@ -380,6 +429,8 @@ tags:
 # would pass the moment the panel scrolled out of view. R5 marketplace
 # exception: 150000 is util-drill-to-cold-real-set's own contract for this
 # very sync ("RETURN CONTRACT"), forced here instead of fired by a mount.
+# This is the second year-wide sync of the flow and the one to watch in
+# measurement (b) of the header.
 - extendedWaitUntil:
     visible: "Sync Sets"
     timeout: 150000

@@ -55,6 +55,25 @@ flow may not spell.
 - success: `Moved to <brand>` in the panel's single `role="status"`, which is
   `fixed top-20` so it is never under the fold, and it echoes the SERVER's
   `movedTo`. It self-clears after 6s.
+- while the ConfirmDialog is up the list stays MOUNTED but goes `inert`, so
+  Cancel returns to the same open list on the same brands — `Move to which
+  brand?` is a valid post-Cancel positive. `inert` is an attribute, not
+  `display:none`, so those rows stay in the driver's hierarchy throughout.
+
+# The moved row does NOT vanish — assert the re-pointed card
+
+`SetSelector`'s columns are scoped to the selected PARENT id, so a re-parent
+would drop the row out of the open Sets column while the panel and everything
+below it carried on describing it. `handleSetMoved` (NEO-294) re-points the
+Manufacturers selection at the destination instead, leaving the set selected —
+so right after a successful move the collapsed cards read
+`Manufacturers: <destination> — change` **and** `Sets: <set> — change`, with no
+re-drill. That is the evidence the toast cannot supply, and a regression that
+stopped re-pointing is silent everywhere else. The cards sit UP in the columns
+row from the panel, so it is a `direction: UP` scroll, uncentred.
+
+Do not write "the set leaves the open column" in a flow comment any more — it
+was true only between the first NEO-294 commit and 856f3cb.
 
 # The known-brand counts have NO UI surface
 
@@ -79,6 +98,13 @@ with the positive pair `visible: "Syncing Sets"` (7000, the panel replaces the
 action row in the slot the tap just centred) then `visible: "Sync Sets"`
 (marketplace ceiling) — never a bare `notVisible`, which passes the moment the
 panel scrolls out of view.
+
+Also: the year's `Unknown` row **cannot be renamed** (NEO-294, 856f3cb). The
+pencil still renders with accessible name `Rename Unknown`, `aria-disabled`,
+and the reason `Unknown is where sets with no known brand wait — it can't be
+renamed.` is in the DOM as its `aria-describedby` target at all times. Four
+doors refuse it (mutation, shared planner, accepted sync suggestion,
+reconciliation tier-0), with an internal escape hatch for the backfill.
 
 Related: [[neo237-all-brands-view-and-unknown]],
 [[inner-scroller-clip-is-invisible-to-maestro]].

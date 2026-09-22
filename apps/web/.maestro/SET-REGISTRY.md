@@ -88,7 +88,7 @@ BuySportsCards alone for the whole run:
 | Hockey → 1997 (the whole year) | a manufacturer row `SPx` linked through SportLots' All Brands option; every set the year-wide Sync Sets saves from SportLots' lists (a `setName` row plus a `Base` carrying the SportLots id per new root — dozens, names never read or asserted); the year's BSC sets filed under the brands / `Unknown` and the prefix-matching ones re-homed to `SPx`. No checklist is fetched. | `flows/set-selector/brand-via-all-brands-narrows-sportlots.yaml` — **sole writer** of the year. ✅ Claimed by Jason 2026-09-21 (NEO-237 §0.1); the prefix `SPx` **measured** on PR #272's preview 2026-09-21 — see the Hockey 1997 section |
 | Baseball → 2024 → Topps → Topps MLB at Rickwood Field Negro Leagues Collection | `Base` — 4 cards, BSC only (the SportLots picker is CANCELLED in-flow; SportLots does not carry the set), fetched and COMMITTED in-flow (NOT pre-synced) | `flows/set-selector/checklist-wizard-link-team-saves-alias.yaml` — **sole writer**. Approved by Jason 2026-09-16 (NEO-284) |
 | Baseball → 2026 → Bowman → Bowman | `Insert` — reconciled in-flow (NOT pre-synced); the BSC insert `Anime Kanji` is promoted to a parallel of `Anime` by Group Parallels and its checklist is fetched and COMMITTED in-flow | `flows/set-selector/parallel-grouping-promoted-insert-fetches-from-bsc.yaml` — **sole writer**. Requested by the owner 2026-09-21 (NEO-293), replacing a rejected hand-made-parent fixture |
-| Hockey → 1996 (the whole year) | ⚠️ **PROPOSED, NEEDS OWNER SIGN-OFF.** Every brand row NB's known-brands list mints for the year, the year's `Unknown` row, and every BSC set of the year filed under one of them; one set (expected `Leaf…`) is MOVED to `Unknown` by the operator control and left there. No checklist is fetched, no Base is mapped, nothing is renamed or deleted. | `flows/set-selector/known-brand-files-set-and-operator-move-sticks.yaml` — **sole writer** of the year. See the Hockey 1996 section below |
+| Baseball → 1990 (the whole year) | Every brand row NB's known-brands list mints for the year, the year's `Unknown` row, and every BSC set of the year filed under one of them; one set (expected `CMC…`) is MOVED to `Unknown` by the operator control and left there. No checklist is fetched, no Base is mapped, nothing is renamed or deleted, and NO row is added to Baseball's shared Years column (1990 is synced, and the drill selects it). | `flows/set-selector/known-brand-files-set-and-operator-move-sticks.yaml` — **sole writer** of the year. ✅ Claimed by Jason 2026-09-22 (NEO-294); see the Baseball 1990 section |
 
 ### 2024 Topps NHL Sticker Collection — NEO-211, sole-writer ⚠️ SUBSTITUTED, NEEDS SIGN-OFF
 
@@ -984,10 +984,9 @@ whichever brands own the roots; no brand, name or count is asserted beyond
 one — the Base-carries-the-id shape is the helper's unit test, and the link
 this fixture proves live is STEP 4's narrowed picker pane under `SPx`.
 
-### Hockey → 1996 — the known-brands fixture (NEO-294) ⚠️ PROPOSED, NEEDS OWNER SIGN-OFF
+### Baseball → 1990 — the known-brands fixture (NEO-294) ✅ CLAIMED by Jason 2026-09-22
 
-**Rule 1 applies: this is a proposal, not an approval.** One real YEAR —
-**Hockey → 1996** — owned end to end by exactly one flow,
+One real YEAR — **Baseball → 1990** — owned end to end by exactly one flow,
 `flows/set-selector/known-brand-files-set-and-operator-move-sticks.yaml`,
 which proves on live marketplace data that (a) a BSC set whose name starts
 with an entry of NB's curated known-brands list (`convex/knownBrands.ts`, 39
@@ -996,64 +995,90 @@ the year's `Unknown`, and (b) an operator's later `Move to another brand`
 outlives the next forced Sync Sets — the `metadata.brandSetByOperator` stamp
 every automatic re-home skips.
 
-**Why 1996.** The two hockey years either side of it are already claimed and
-their SportLots brand lists were MEASURED identical (the 1995 fixture's
-measurement 2: `All Brands, Bowman, Classic, Donruss, Finest, Fleer, ITG,
-O-Pee-Chee, Pacific, Panini, Pinnacle, Score, Skybox, SP, Stadium Club,
-Topps, Ultra, Upper Deck` — 18 entries, "1997 returns the identical list"),
-so 1996 is the nearest year with the same shape and nothing in the suite
-touching it. `Leaf` is absent from that list, which is the property the
-fixture needs: no marketplace and no operator can put a `Leaf` brand row in
-this year, so a set found under one was filed there by the known list.
+**Why 1990, and why it replaced a proposed Hockey 1996.** 1996 was chosen
+first on the reasoning that its SportLots brand list was bracketed by two
+measured years; the brand it would have used (`Leaf`) was a hobby guess and
+nothing about that year had been read. Jason moved the fixture on
+2026-09-22: **Baseball 1990 is the year the ticket's own evidence came
+from.** The collector pass read all 955 set names sitting under `Unknown` on
+dev and curated the list from them, and 1990 — the great minor-league
+team-set year — is the densest part of that sample. Brands the pass recorded
+in THIS year's Unknown bucket: `ProCards`, `CMC`, `Star`, `Best`,
+`Sportflics`, `Leaf`, `Swell`, `Perez-Steele`, `MSA`, `Little Sun`,
+`Kenner`, `Eclipse`, `Boxscores`, `Mother's Cookies`. So "this year holds a
+set the list claims" is a measurement rather than a guess.
+
+**The brand the flow uses is `CMC`**, chosen off that measured list in this
+order: not an English word (so it cannot quietly match an unrelated set —
+that rules out `Star`, `Best`, `Eclipse`, the three the module itself flags
+as accepted risks); no apostrophe (rules out `Mother's Cookies`, whose match
+is one typographic apostrophe away from failing safe); one regex-safe token
+with no whole-word prefix relation to any other entry; a MINOR-LEAGUE issuer,
+so SportLots' baseball brand list almost certainly has no entry for it —
+which is what keeps the claim honest once the pause lifts, and what rules out
+`Leaf`, a major baseball brand of the era SportLots very likely does carry;
+and the most numerous of the remaining names in the sample (`CMC` 27 against
+`ProCards` 6, `MSA` 2, `Little Sun` 2, `Kenner` 2, and a handful of ones).
+`ProCards` is the drop-in replacement, then `MSA`, `Sportflics`,
+`Boxscores`, `Swell`, `Kenner`. Changing it is a one-line edit to the flow's
+STEP 0.
 
 | | |
 | -- | -- |
-| ancestors | `Hockey → 1996`, reached through the pinned All Brands view |
-| what the flow WRITES | every brand row the known list mints for the year (expected: `Leaf`, possibly others), the year's `Unknown` row, the year-wide BSC filing of every set under one of them, and ONE operator move of a `Leaf…` set into `Unknown` (stamped `brandSetByOperator`) |
-| what it never does | fetch a checklist, map a Base, rename or delete anything, create a brand by hand |
-| writer | **sole writer** of the whole year; no other flow may drill Hockey 1996 |
+| ancestors | `Baseball → 1990`, reached through the pinned All Brands view |
+| what the flow WRITES | every brand row the known list mints for the year (expected `CMC` among others), the year's `Unknown` row, the year-wide BSC filing of every set under one of them, and ONE operator move of a `CMC…` set into `Unknown` (stamped `brandSetByOperator`) |
+| what it never does | fetch a checklist, map a Base, rename or delete anything, create a brand by hand, or add a row to Baseball's shared Years column |
+| writer | **sole writer** of the whole year; no other flow may drill Baseball 1990 |
 | pre-synced by `setup.yaml` | **no** — the flow pays its own cold syncs on its own runner |
-| re-runs | **fresh-only per deployment**, the same contract as the 1995 and 1997 fixtures: a second run finds the set already under `Unknown` and already stamped, so the flow's `Manufacturers: Leaf — change` assertion fails by name. CI reseeds the preview every run, so the first-run path is the CI path; re-seed before re-running locally. The flow deliberately does NOT restore the set — a restore would make a re-run green while proving the filing from the operator's own move rather than from the list |
+| re-runs | **fresh-only per deployment**, the same contract as the 1995 and 1997 hockey fixtures: a second run finds the set already under `Unknown` and already stamped, so the flow's `Manufacturers: CMC — change` assertion fails by name. CI reseeds the preview every run, so the first-run path is the CI path; re-seed before re-running locally. The flow deliberately does NOT restore the set — a restore would make a re-run green while proving the filing from the operator's own move rather than from the list |
 
-#### ⚠️ NOTHING HERE IS MEASURED — the first CI run is the measurement
+**The shared-sport question, answered: it adds no row above set level.**
+Baseball's Years column is synced from the marketplaces and already holds
+1990, and the year level of `util-drill-to-cold-real-set` has no create path
+at all (it goes red if the row is missing). Everything this flow creates
+lands in the Manufacturers column of 1990, which nothing else drills. The
+fold hazard in "Adding ROWS to a shared column" below therefore does not
+apply, even though the SPORT is the one twenty other flows use.
 
-The PR preview did not exist when the flow was written (nothing had been
-pushed), so the Convex preview still ran pre-NEO-294 code and no reading of
-BSC's 1996 hockey list was possible. `Leaf` is a **hobby judgement**, not a
-measurement: 1996-97 Leaf hockey (Leaf, Leaf Limited, Leaf Preferred) is a
-real and ubiquitous Pinnacle product, `Leaf` is on the approved list, and it
-is one regex-safe token. What the first CI run must confirm, and what to
-record back here:
+#### What the first CI run must still measure
 
-1. **BSC lists ≥1 set for Hockey 1996 whose name word-boundary-starts with
-   `Leaf`.** Read off the flow's `Manufacturers: Leaf — change` card. If it
-   does not, swap the flow's STEP 0 `BRAND` (or `YEAR`) and re-measure.
-   Candidates considered, none measured: `Pro Set` on Hockey 1990/1991
-   (1990-91 Pro Set is enormous and SportLots' hockey brand list has no Pro
-   Set entry); `ProCards`, `CMC`, `Star`, `Best`, `Choice` on Baseball 1990,
-   the minor-league team-set year the ticket's dev sample was drawn from —
-   but a modern baseball year's set list is much larger than a hockey
-   year's, so weigh the cost below before moving there.
-2. **The cost**, against `run-e2e-queue.sh`'s 600s per-flow kill: one cold
-   Hockey drill (years + manufacturers + the year-wide Sets sync), one cold
-   variant-type sync on the picked set, and one FORCED year-wide Sync Sets.
-   The comparable figure is `brand-via-all-brands-narrows-sportlots` on
-   1997 — 4m24s **with** a live SportLots phase this flow never pays.
-3. **How many `Leaf…` sets BSC lists.** The flow picks the first match of the
-   same filter twice (before the move and after the forced sync) and relies
-   on the view's display-name ordering to make those the same row. If the
-   run shows several, record the names here so the next reader knows the
-   ordering argument is load-bearing. A mismatch fails RED at the second
-   card, never green.
-4. **Whether the year-wide sync's done notice carries anything new.** It does
-   NOT today: `syncSetsAcrossManufacturers` puts "N brands added from the
-   known list" / "N sets filed under a known brand" into its `summary`, which
-   reaches only `res.message` — and `ensureSelectorOptions` composes the
-   column's done row from `pausedSides` / `slCreated` / `failedPlatforms` /
-   `skippedSides` / `unlinkedTotal` and nothing else, dropping `res.message`
-   on success. So those two sentences have **no UI surface** and no flow may
-   target them. The flow asserts the STRUCTURE instead (which brand row the
-   set hangs off), which is the stronger claim anyway.
+The collector pass read DEV. The flow runs against a PR preview seeded from
+empty, and nothing had been pushed when it was written, so no reading was
+possible against the code under test. Confirm and record here:
+
+1. **BSC lists ≥1 set for Baseball 1990 whose name word-boundary-starts with
+   `CMC`** — read off the flow's `Manufacturers: CMC — change` card. Swap
+   STEP 0's `BRAND` from the ordered list above if not.
+2. **The cost**, against `run-e2e-queue.sh`'s 600s per-flow kill. This is the
+   open question the move to 1990 trades for certainty: it is a far bigger
+   year than Hockey 1997, and the flow pays the year-wide Sets sync TWICE
+   (cold, then forced). The only comparable figure is
+   `brand-via-all-brands-narrows-sportlots` on Hockey 1997 — 4m24s for ONE
+   year-wide sync that also made ~18 live SportLots POSTs this flow never
+   makes. If the total lands near the kill, the cheap fix is to drop the
+   flow's final re-pick (the breadcrumb and the card say the same thing
+   twice); the expensive one is a smaller year, for which `Sportflics` (a
+   mainstream 1986-90 issue) would be the brand.
+3. **That the year stays under the two caps that would make the flow lie.**
+   `MAX_SETS_PER_YEAR_VIEW` (1000) bounds what the All Brands view LISTS —
+   past it the flow's filter could come back empty, which is a red, not a
+   wrong green. `MAX_YEAR_SET_ROWS` (3000) bounds the year index — past it
+   `plan.moves` is skipped WHOLESALE ("too many sets this year to move any
+   out of Unknown"), which would make the survives-a-sync half pass
+   **vacuously**, with no on-screen signal at all. Read the Convex log for
+   `year set index truncated` on the first run. Both caps are well above "a
+   few hundred BSC sets" — `setFromMarketplace`'s own description of a full
+   baseball year — but 1990's minor-league team sets are exactly the tail
+   that makes a year unusually long.
+4. **Nothing about the known-brand COUNTS.** `syncSetsAcrossManufacturers`
+   puts "N brands added from the known list" / "N sets filed under a known
+   brand" into its `summary`, which reaches only `res.message` — and
+   `ensureSelectorOptions` composes the column's done row from `pausedSides`
+   / `slCreated` / `failedPlatforms` / `skippedSides` / `unlinkedTotal` and
+   nothing else, dropping `res.message` on success. Those two sentences have
+   **no UI surface** and no flow may target them. The flow asserts the
+   STRUCTURE instead (which brand row the set hangs off), which is the
+   stronger claim anyway.
 
 #### Why it cannot be a per-worker hand-made fixture
 
