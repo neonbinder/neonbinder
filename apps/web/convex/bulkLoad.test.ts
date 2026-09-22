@@ -10,8 +10,9 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
-import { normalizeTeamName } from "./teams";
+import { MAX_TEAM_ALIASES, normalizeTeamName } from "./teams";
 import { findTeamsByFullName } from "./lib/teamRow";
+import { BULK_LOAD_TEAM_OP_BUDGET } from "./bulkLoad";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -825,5 +826,185 @@ describe("upsertLeagues", () => {
     expect(third.results[0]).toMatchObject({ id: first.results[0].id, created: false });
     const leagueAfter = await t.run(async (ctx) => ctx.db.get(first.results[0].id!));
     expect(leagueAfter!.aliases).toEqual(["ABL", "Aussie League"]);
+  });
+});
+
+// ===========================================================================
+// NEO-296 — the alias-weighted operation budget
+//
+// The 50-row chunk cap was real but bounded the wrong thing. A row's cost is
+// set by its ALIASES: one full identity lookup each, and `MAX_TEAM_ALIASES`
+// admits 64. Fifty ordinary four-alias rows spend ~850 operations; fifty
+// 64-alias rows spend ~9,900 and Convex kills the transaction whole, so the
+// operator cannot tell which rows landed. `BULK_LOAD_TEAM_OP_BUDGET` is the
+// second bound, and these tests pin that a call which hits it stops BETWEEN
+// rows, commits what it did, and names where to resume.
+// ===========================================================================
+
+/** 64 distinct aliases — the dataset's measured maximum for one program. */
+function maxAliases(prefix: string): string[] {
+  return Array.from({ length: MAX_TEAM_ALIASES }, (_, i) => `${prefix} AKA ${i}`);
+}
+
+/** Eight rows at the alias maximum: ~197 operations each. */
+function heavyRows(count: number) {
+  return Array.from({ length: count }, (_, i) => ({
+    key: `heavy-${i}`,
+    location: `Heavyville${i}`,
+    name: `Program${i}`,
+    aliases: maxAliases(`H${i}`),
+  }));
+}
+
+describe("the operation budget is alias-weighted, and a partial run is legible", () => {
+  test("a chunk of 64-alias rows stops on the budget and names the row to resume from", async () => {
+    armed();
+    const t = convexTest(schema, modules);
+    await seedSport(t);
+    const rows = heavyRows(8);
+
+    const res = await t.mutation(internal.bulkLoad.upsertTeams, {
+      confirm: CONFIRM,
+      sport: "Baseball",
+      teams: rows,
+    });
+
+    // The arithmetic, measured rather than asserted loosely. Per row on the
+    // create path: 64 identity lookups × 2 (nothing answers to these strings)
+    // + 1 name leg + 1 alias leg + 1 `nearExisting` search + 1 insert +
+    // (1 collect + 64 alias inserts) = 197. Plus 1 for the sport row and 3
+    // for the one league-cache miss. So after five rows: 4 + 5×197 = 989,
+    // which is the first total at or past the 900 budget — and the check runs
+    // BETWEEN rows, so row six is never started.
+    expect(res.processed).toBe(5);
+    expect(res.opsSpent).toBe(989);
+    expect(res.opsSpent).toBeGreaterThanOrEqual(BULK_LOAD_TEAM_OP_BUDGET);
+    expect(res.hasMore).toBe(true);
+    expect(res.nextKey).toBe("heavy-5");
+
+    // Legible row by row: one result per row reached, keyed by the caller's
+    // own key, and nothing at all for the rows behind the bound.
+    expect(res.results).toHaveLength(5);
+    expect(res.results.map((r) => r.key)).toEqual([
+      "heavy-0",
+      "heavy-1",
+      "heavy-2",
+      "heavy-3",
+      "heavy-4",
+    ]);
+    expect(res.results.every((r) => r.status === "created")).toBe(true);
+
+    // And what it did is committed, not rolled back with the tail.
+    expect(await t.run(async (ctx) => ctx.db.query("teams").collect())).toHaveLength(5);
+  });
+
+  test("resuming from nextKey completes the chunk and applies nothing twice", async () => {
+    armed();
+    const t = convexTest(schema, modules);
+    await seedSport(t);
+    const rows = heavyRows(8);
+
+    const first = await t.mutation(internal.bulkLoad.upsertTeams, {
+      confirm: CONFIRM,
+      sport: "Baseball",
+      teams: rows,
+    });
+    const resumeAt = rows.findIndex((r) => r.key === first.nextKey);
+    expect(resumeAt).toBe(first.processed);
+
+    const second = await t.mutation(internal.bulkLoad.upsertTeams, {
+      confirm: CONFIRM,
+      sport: "Baseball",
+      teams: rows.slice(resumeAt),
+    });
+
+    expect(second.hasMore).toBe(false);
+    expect(second.nextKey).toBeNull();
+    expect(second.processed).toBe(rows.length - resumeAt);
+
+    // Eight rows in, eight teams out — resuming from `nextKey` (rather than
+    // replaying the chunk) is what keeps a `decision: { create: true }` answer
+    // in the prefix from minting a second row. See the header.
+    const teams = await t.run(async (ctx) => ctx.db.query("teams").collect());
+    expect(teams).toHaveLength(8);
+    expect(new Set(teams.map((team) => team.name)).size).toBe(8);
+  });
+
+  test("previewTeams carries the SAME budget and truncates on the same row, writing nothing", async () => {
+    // Deliberately NOT armed. The asymmetry stays — arming guards writes, and
+    // the dry run exists to be pointed at a deployment nobody has armed. What
+    // changed is that its read cost is bounded too, and by the same number,
+    // because the two share one handler. The write-side cost is charged in
+    // both modes so the dry run predicts the write run exactly rather than
+    // reporting seven rows the mutation then stops at five.
+    const t = convexTest(schema, modules);
+    await seedSport(t);
+
+    const preview = await t.query(internal.bulkLoad.previewTeams, {
+      confirm: CONFIRM,
+      sport: "Baseball",
+      teams: heavyRows(8),
+    });
+
+    expect(preview.processed).toBe(5);
+    expect(preview.hasMore).toBe(true);
+    expect(preview.nextKey).toBe("heavy-5");
+    expect(preview.results.every((r) => r.status === "would-create")).toBe(true);
+    expect(await t.run(async (ctx) => ctx.db.query("teams").collect())).toHaveLength(0);
+  });
+
+  test("the ordinary preload is untouched: a full 50-row chunk of 4-alias rows still lands in one call", async () => {
+    // The regression guard on the bound itself. 4 aliases × 2 + 1 name leg +
+    // 1 alias leg + 1 search + 1 insert + (1 collect + 4 alias inserts) = 17
+    // per row; 50 × 17 + 4 = 854, inside the 900 budget. The NCAA/ABL dataset
+    // this loader was written for keeps working at its existing chunk size.
+    armed();
+    const t = convexTest(schema, modules);
+    await seedSport(t);
+    const rows = Array.from({ length: 50 }, (_, i) => ({
+      key: `ord-${i}`,
+      location: `Town${i}`,
+      name: `Club${i}`,
+      aliases: [`A${i} one`, `A${i} two`, `A${i} three`, `A${i} four`],
+    }));
+
+    const res = await t.mutation(internal.bulkLoad.upsertTeams, {
+      confirm: CONFIRM,
+      sport: "Baseball",
+      teams: rows,
+    });
+
+    expect(res.hasMore).toBe(false);
+    expect(res.nextKey).toBeNull();
+    expect(res.processed).toBe(50);
+    expect(res.opsSpent).toBe(854);
+    expect(res.opsSpent).toBeLessThan(BULK_LOAD_TEAM_OP_BUDGET);
+    expect(await t.run(async (ctx) => ctx.db.query("teams").collect())).toHaveLength(50);
+  });
+
+  test("a single row bigger than the whole budget is still attempted, never refused for its size", async () => {
+    armed();
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    // Make every one of this row's aliases contested, so each identity lookup
+    // pays its `db.get` as well: the most expensive shape a single row has.
+    const aliases = maxAliases("Contested");
+    for (const alias of aliases.slice(0, 8)) {
+      await seedTeam(t, sportId, { name: alias });
+    }
+
+    const res = await t.mutation(internal.bulkLoad.upsertTeams, {
+      confirm: CONFIRM,
+      sport: "Baseball",
+      teams: [{ key: "solo", location: "Solo", name: "Program", aliases }],
+    });
+
+    expect(res.processed).toBe(1);
+    expect(res.hasMore).toBe(false);
+    expect(res.results).toHaveLength(1);
+    // Contested aliases are another row's primary name, so this comes back
+    // `ambiguous` with nothing written — but it was ANSWERED, which is the
+    // point: the budget never makes a legitimate row unloadable.
+    expect(res.results[0].status).toBe("ambiguous");
   });
 });

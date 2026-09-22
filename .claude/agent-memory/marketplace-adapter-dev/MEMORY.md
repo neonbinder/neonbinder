@@ -12,3 +12,4 @@
 - [Bulk rows in convex-test bypass the children cache](reference_convex_test_bulk_rows_bypass_children.md) — 3000-row bound tests: one t.run of direct inserts, never a seedSet that patches children each time
 - [Sync action `message` is log-only](reference_sync_action_message_is_log_only.md) — legacy *Form components render it but `useEnsureSync` columns never mount them; the status row is the only surface
 - [Marketplace bucket words leak into set names](reference_marketplace_bucket_words_leak_into_set_names.md) — "Other ONIT Athlete …" is stored as the NB name; start-anchored matchers miss it; fix at the adapter boundary, never widen the matcher
+- [Convex op budget: count writes, not items](reference_convex_op_budget_count_writes_not_items.md) — count ops at the call sites; budgeting writes makes a truncated call finishable by replaying the same list; a shared dry run must pay the write cost
