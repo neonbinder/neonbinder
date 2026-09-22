@@ -1,6 +1,6 @@
 ---
 name: reference-neo237-all-brands-view-second-pass
-description: NEO-237 second unit-test pass — file layout for ensureBrandUnknownRow/reconcileSetCandidates/rehomeSetRowsForSync, the resolvableSides chain-shape trap for SL-attach tests, and the EntitySelector/EntityColumn pinned-view test recipes
+description: NEO-237 second unit-test pass — file layout for ensureBrandUnknownRow/rehomeSetRowsForSync (the setCandidates reconcile tests went with the table the same day), the resolvableSides chain-shape trap for SL-attach tests, and the EntitySelector/EntityColumn pinned-view test recipes
 metadata:
   type: reference
 ---
@@ -17,10 +17,15 @@ helpers feed, plus the component layer.
   internal mutation (found by `metadata.isBrandUnknown` flag, never by name;
   features copied minus `manufacturer`; SL slot attached only if none present;
   throws on an unflagged sibling literally named "Unknown").
-- `reconcileSetCandidates.test.ts` — the `setCandidates` table's sole writer:
-  upsert keeps `status`, write-if-changed on label/members, unseen rows
-  deleted (even a skipped one — a Skip does not pin a row upstream dropped),
-  bounds re-asserted at the write door.
+- `reconcileSetCandidates.test.ts` — WRITTEN AND DELETED THE SAME DAY
+  (2026-09-21) with the `setCandidates` table and its review modal, once
+  Jason ruled a set a marketplace lists is saved, not offered. Its
+  replacements are `createSetsFromSlRoots.test.ts` (the internal mutation
+  that mints the set + Base per SportLots root, chunked, one year index per
+  call) and `setFromMarketplace.test.ts` (the helper, both read paths). The
+  recipe it used — upsert keeps status, write-if-changed, unseen rows
+  deleted, bounds re-asserted at the write door — is still the shape for
+  any reconcile-style writer.
 - Extended `brandRehome.test.ts` with a `rehomeSetRowsForSync` describe block
   — the internal mutation `routeBscSets`'s moves feed, distinct from the pure
   `rehomeSetRowsToBrand`/`rehomeSetsFromBrandUnknown` already there. Key
@@ -109,7 +114,7 @@ giving the leaf variantType row (standing in for Base) its own SL id.
   Custom" button — resubmit via Enter on the still-mounted input rather than
   re-clicking "+ Custom" (it isn't rendered mid-form).
 
-Full family: `apps/web/convex/{ensureBrandUnknownRow,reconcileSetCandidates,
+Full family: `apps/web/convex/{ensureBrandUnknownRow,
 fetchAggregatedOptions.allBrandsRouting,selectorSyncSuggestions.slAllBrands,
 ensureSelectorOptions.setNameYearParent,setReconciliation.brandScope,
 sportlots.fetchSetNames.brandScope}.test.ts`, extended `brandRehome.test.ts`;

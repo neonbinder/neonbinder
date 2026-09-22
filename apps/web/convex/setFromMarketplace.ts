@@ -1,4 +1,4 @@
-import type { MutationCtx } from "./_generated/server";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { deriveOwnLevelFeatures } from "./features/deriveCardFeatures";
 import { inheritedTeamIds } from "./lib/selectorTeams";
@@ -59,6 +59,25 @@ import { unionChildren } from "./selectorSyncStore";
  * share it, and a set the marketplace files under this brand that NB already
  * has under another one is a re-home question — the prefix's job, not this
  * helper's.
+ *
+ * ## The read budget
+ *
+ * The two duplicate checks (sibling under the brand, same name under another
+ * brand of the year) need every `setName` row of the year. Read per root that
+ * is ~2,700 documents × 200 roots on a full baseball year — Convex refuses a
+ * transaction long before that. So a batch caller builds the folded-name
+ * index ONCE (`buildSetNameIndex`, one pass over the year, bounded by
+ * `MAX_YEAR_SET_ROWS`) and hands it in; the helper then reads nothing but the
+ * brand row and advances the index with every set it writes, so a later root
+ * in the same batch that folds to the same name is the clash a re-read would
+ * have found. A caller that passes no index gets the self-reading path — the
+ * same decisions, one row at a time — and the tests pin the two agree.
+ * A truncated index cannot answer "exists elsewhere", so the helper refuses
+ * every root against it (`index_truncated`) rather than guess; the caller
+ * reports it. And one transaction writes at most `MAX_SL_SETS_PER_MUTATION`
+ * roots (each is two inserts and two patches); a longer list is chunked by
+ * the action, one index build per chunk, so a chunk always sees what the
+ * chunk before it wrote.
  */
 
 /**
@@ -109,9 +128,137 @@ export type SetElsewhereMatch = {
   brand: string;
 };
 
+/**
+ * NEO-237 — the read budget for a year-wide set index (`buildSetNameIndex`
+ * here, `listYearSetRows` in selectorOptions.ts). A full baseball year is a
+ * few hundred BSC sets plus whatever SportLots-only sets operators created;
+ * this is well above that and well inside one function's document budget.
+ * Truncation is REPORTED, never papered over: an index missing rows would
+ * let a sync insert a copy of a set another manufacturer already holds.
+ */
+export const MAX_YEAR_SET_ROWS = 3000;
+
+/**
+ * NEO-237 — roots one `createSetsFromSlRoots` transaction writes. Each root
+ * is two inserts and two patches plus the brand-row re-read, and every
+ * transaction rebuilds the year index (≤ `MAX_YEAR_SET_ROWS` reads), so 40
+ * keeps a chunk far inside Convex's per-transaction limits while a 200-root
+ * sync (`MAX_SL_SETS_PER_SYNC`) is five chunks, not two hundred index reads.
+ */
+export const MAX_SL_SETS_PER_MUTATION = 40;
+
+/** `items` in order, in slices of at most `size`; `[]` for no items. */
+export function chunkSlRoots<T>(
+  items: ReadonlyArray<T>,
+  size: number,
+): Array<Array<T>> {
+  if (!Number.isInteger(size) || size < 1) {
+    throw new Error(`chunkSlRoots: size must be a positive integer, got ${size}`);
+  }
+  const out: Array<Array<T>> = [];
+  for (let i = 0; i < items.length; i += size) {
+    out.push(items.slice(i, i + size));
+  }
+  return out;
+}
+
+/**
+ * The year's `setName` rows folded by `selectorValueKey`, from the target
+ * brand's point of view: its own siblings, and every other manufacturer's
+ * sets. Built once per batch by `buildSetNameIndex`; advanced by
+ * `insertSetWithBaseFromSl` with each set it writes.
+ */
+export type SetNameIndex = {
+  /** Folded name → the set under the target brand that holds it. */
+  siblingKeys: Map<string, { _id: Id<"selectorOptions">; value: string }>;
+  /**
+   * Folded name → sets under OTHER brands of the year that hold it, at most
+   * `MAX_SET_ELSEWHERE_MATCHES` per name (the same ceiling the self-reading
+   * path applies).
+   */
+  elsewhereKeys: Map<string, SetElsewhereMatch[]>;
+  /** The read hit `MAX_YEAR_SET_ROWS` before the year was covered. */
+  truncated: boolean;
+};
+
+/**
+ * One pass over the year: the brand's own `setName` children, then every
+ * other manufacturer's, through `by_level_and_parent`, bounded by
+ * `MAX_YEAR_SET_ROWS` rows in total. Reads `1 + manufacturers` queries
+ * regardless of how many roots the caller then files against it. Rows of
+ * another year are never read (the walk starts at the brand's parent).
+ */
+export async function buildSetNameIndex(
+  ctx: Pick<QueryCtx, "db">,
+  brand: Doc<"selectorOptions">,
+): Promise<SetNameIndex> {
+  const siblingKeys: SetNameIndex["siblingKeys"] = new Map();
+  const elsewhereKeys: SetNameIndex["elsewhereKeys"] = new Map();
+  let read = 0;
+  let truncated = false;
+
+  const setsUnder = async (parentId: Id<"selectorOptions">) => {
+    const remaining = MAX_YEAR_SET_ROWS - read;
+    if (remaining <= 0) {
+      truncated = true;
+      return [];
+    }
+    const rows = await ctx.db
+      .query("selectorOptions")
+      .withIndex("by_level_and_parent", (q) =>
+        q.eq("level", "setName").eq("parentId", parentId),
+      )
+      .take(remaining + 1);
+    if (rows.length > remaining) truncated = true;
+    const kept = rows.slice(0, remaining);
+    read += kept.length;
+    return kept;
+  };
+
+  for (const row of await setsUnder(brand._id)) {
+    const key = selectorValueKey(row.value);
+    // First sibling wins, as `Array.find` did on the self-reading path.
+    if (!siblingKeys.has(key)) {
+      siblingKeys.set(key, { _id: row._id, value: row.value });
+    }
+  }
+
+  if (brand.parentId) {
+    const manufacturers = await ctx.db
+      .query("selectorOptions")
+      .withIndex("by_level_and_parent", (q) =>
+        q.eq("level", "manufacturer").eq("parentId", brand.parentId),
+      )
+      .collect();
+    for (const other of manufacturers) {
+      if (other._id === brand._id) continue;
+      if (truncated) break;
+      for (const row of await setsUnder(other._id)) {
+        const key = selectorValueKey(row.value);
+        const matches = elsewhereKeys.get(key) ?? [];
+        if (matches.length >= MAX_SET_ELSEWHERE_MATCHES) continue;
+        matches.push({
+          _id: row._id,
+          value: row.value,
+          parentId: other._id,
+          brand: other.value,
+        });
+        elsewhereKeys.set(key, matches);
+      }
+    }
+  }
+
+  return { siblingKeys, elsewhereKeys, truncated };
+}
+
 export type InsertSetWithBaseRefusal =
   /** `brandId` is not a manufacturer row (gone under the caller's feet). */
   | { ok: false; reason: "brand_missing" }
+  /**
+   * The caller's pre-read index hit `MAX_YEAR_SET_ROWS`: "exists elsewhere"
+   * cannot be answered, so nothing is written against it.
+   */
+  | { ok: false; reason: "index_truncated" }
   /** The name fails the per-level rule the "+ Custom" form applies. */
   | { ok: false; reason: "invalid_name"; detail: string }
   /**
@@ -183,6 +330,13 @@ async function setNameMatchesElsewhere(
  * SportLots id and label the Base's slot carries. `createdByUserId` is the
  * caller's identity when it has one.
  *
+ * `index` is the batch caller's pre-read `buildSetNameIndex` for this brand.
+ * With it the duplicate checks read nothing — the only read is the brand row
+ * — and the set written is added to `index.siblingKeys` so the next root of
+ * the batch sees it. Without it the checks read the year themselves (one
+ * sibling query, one query per other manufacturer); the decisions are the
+ * same either way.
+ *
  * Every refusal returns before the first write, so a refused call leaves
  * the database exactly as it found it.
  */
@@ -194,10 +348,14 @@ export async function insertSetWithBaseFromSl(
     sl: { id: string; label: string };
     createdByUserId?: string;
   },
+  index?: SetNameIndex,
 ): Promise<InsertSetWithBaseResult> {
   const brand = await ctx.db.get(args.brandId);
   if (!brand || brand.level !== "manufacturer") {
     return { ok: false, reason: "brand_missing" };
+  }
+  if (index?.truncated) {
+    return { ok: false, reason: "index_truncated" };
   }
 
   const checked = checkCustomSelectorValue("setName", args.name);
@@ -208,13 +366,18 @@ export async function insertSetWithBaseFromSl(
   const key = selectorValueKey(value);
 
   // Sibling clash under the target brand — the fold every matcher uses.
-  const siblings = await ctx.db
-    .query("selectorOptions")
-    .withIndex("by_level_and_parent", (q) =>
-      q.eq("level", "setName").eq("parentId", brand._id),
-    )
-    .collect();
-  const clash = siblings.find((s) => selectorValueKey(s.value) === key);
+  let clash: { _id: Id<"selectorOptions">; value: string } | undefined;
+  if (index) {
+    clash = index.siblingKeys.get(key);
+  } else {
+    const siblings = await ctx.db
+      .query("selectorOptions")
+      .withIndex("by_level_and_parent", (q) =>
+        q.eq("level", "setName").eq("parentId", brand._id),
+      )
+      .collect();
+    clash = siblings.find((s) => selectorValueKey(s.value) === key);
+  }
   if (clash) {
     return {
       ok: false,
@@ -226,7 +389,9 @@ export async function insertSetWithBaseFromSl(
 
   // Cross-parent duplicate — the same scope `addCustomSelectorOption`'s
   // confirm offers from, so the two doors cannot disagree about what counts.
-  const matches = await setNameMatchesElsewhere(ctx, brand, key);
+  const matches = index
+    ? (index.elsewhereKeys.get(key) ?? [])
+    : await setNameMatchesElsewhere(ctx, brand, key);
   if (matches.length > 0) {
     return { ok: false, reason: "exists_elsewhere", matches };
   }
@@ -282,6 +447,9 @@ export async function insertSetWithBaseFromSl(
   await ctx.db.patch(brand._id, {
     children: unionChildren(brand.children, [setId]),
   });
+
+  // The next root of the batch sees this set exactly as a re-read would.
+  index?.siblingKeys.set(key, { _id: setId, value });
 
   return { ok: true, setId, baseId };
 }

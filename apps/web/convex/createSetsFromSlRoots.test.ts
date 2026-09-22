@@ -11,7 +11,9 @@
  * classifier that produces the roots this mutation is handed) and to
  * `platformLevelSupport.test.ts` (the whole action against stubbed
  * marketplaces). This file drives the DB-writing half: the name rule per
- * scope, the two counted refusals, idempotency across syncs, and the cap.
+ * scope, the two counted refusals, idempotency across syncs, the per-call
+ * cap and the chunking the action does above it, and the read budget (one
+ * year index per call, nothing written against a truncated one).
  */
 
 import { convexTest } from "convex-test";
@@ -20,6 +22,11 @@ import { internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { MAX_SL_SETS_PER_SYNC, routeSlSets } from "./selectorSyncMatch";
+import {
+  MAX_SL_SETS_PER_MUTATION,
+  MAX_YEAR_SET_ROWS,
+  chunkSlRoots,
+} from "./setFromMarketplace";
 import { SL_ALL_BRANDS_BRAND_ID } from "./slBrandAxis";
 
 const modules = (
@@ -158,6 +165,7 @@ describe("createSetsFromSlRoots — the set and its Base", () => {
       clashedAtTarget: 0,
       existsElsewhere: 0,
       invalid: 0,
+      indexTruncated: false,
     });
 
     const sets = await setsUnder(t, topps);
@@ -293,6 +301,7 @@ describe("createSetsFromSlRoots — refusals are counted, never written, never t
       clashedAtTarget: 1,
       existsElsewhere: 0,
       invalid: 0,
+      indexTruncated: false,
     });
 
     // The existing set is untouched — no Base, no SportLots id written on it.
@@ -329,6 +338,7 @@ describe("createSetsFromSlRoots — refusals are counted, never written, never t
       clashedAtTarget: 0,
       existsElsewhere: 1,
       invalid: 0,
+      indexTruncated: false,
     });
     expect(await rowCount(t)).toBe(before);
     expect(await setsUnder(t, topps)).toEqual([]);
@@ -449,34 +459,156 @@ describe("createSetsFromSlRoots — idempotent across syncs", () => {
       clashedAtTarget: 1,
       existsElsewhere: 0,
       invalid: 0,
+      indexTruncated: false,
     });
     expect(await rowCount(t)).toBe(before);
   });
 });
 
-describe("createSetsFromSlRoots — the cap", () => {
-  test(`exactly MAX_SL_SETS_PER_SYNC roots are written; one more is refused before any write`, async () => {
+const numberedRoots = (n: number, from = 0) =>
+  Array.from({ length: n }, (_, i) => ({
+    id: `sl-${from + i}`,
+    label: `Set ${String(from + i).padStart(4, "0")}`,
+  }));
+
+/**
+ * What the action does above the mutation: the classifier's roots in slices
+ * of `MAX_SL_SETS_PER_MUTATION`, one call each, counts summed, stopping at a
+ * truncated index. Mirrors `classify` in `syncSetsAcrossManufacturers`.
+ */
+async function createChunked(
+  t: T,
+  manufacturerId: Id<"selectorOptions">,
+  roots: Array<{ id: string; label: string }>,
+) {
+  const totals = {
+    created: 0,
+    clashedAtTarget: 0,
+    existsElsewhere: 0,
+    invalid: 0,
+    calls: 0,
+    notFiled: 0,
+  };
+  const chunks = chunkSlRoots(roots, MAX_SL_SETS_PER_MUTATION);
+  for (let c = 0; c < chunks.length; c++) {
+    const written = await create(t, manufacturerId, chunks[c]);
+    totals.calls++;
+    totals.created += written.created;
+    totals.clashedAtTarget += written.clashedAtTarget;
+    totals.existsElsewhere += written.existsElsewhere;
+    totals.invalid += written.invalid;
+    if (written.indexTruncated) {
+      totals.notFiled += chunks.slice(c).reduce((n, ch) => n + ch.length, 0);
+      break;
+    }
+  }
+  return totals;
+}
+
+describe("createSetsFromSlRoots — the per-call cap, and the chunking above it", () => {
+  test(`exactly MAX_SL_SETS_PER_MUTATION roots are written in one call; one more is refused before any write`, async () => {
     const t = convexTest(schema, modules);
     const { yearId } = await seedYear(t);
     const topps = await insertManufacturer(t, yearId, "Topps", {
       slId: "1",
       prefix: "Topps",
     });
-    const roots = (n: number) =>
-      Array.from({ length: n }, (_, i) => ({
-        id: `sl-${i}`,
-        label: `Set ${String(i).padStart(4, "0")}`,
-      }));
     const before = await rowCount(t);
 
-    await expect(create(t, topps, roots(MAX_SL_SETS_PER_SYNC + 1))).rejects.toThrow(
-      /exceeds/i,
-    );
+    await expect(
+      create(t, topps, numberedRoots(MAX_SL_SETS_PER_MUTATION + 1)),
+    ).rejects.toThrow(/exceeds/i);
     expect(await rowCount(t)).toBe(before);
 
-    const result = await create(t, topps, roots(MAX_SL_SETS_PER_SYNC));
-    expect(result.created).toBe(MAX_SL_SETS_PER_SYNC);
-    expect(await setsUnder(t, topps)).toHaveLength(MAX_SL_SETS_PER_SYNC);
+    const result = await create(t, topps, numberedRoots(MAX_SL_SETS_PER_MUTATION));
+    expect(result.created).toBe(MAX_SL_SETS_PER_MUTATION);
+    expect(await setsUnder(t, topps)).toHaveLength(MAX_SL_SETS_PER_MUTATION);
+  });
+
+  test("the per-call cap is a fraction of the per-sync cap, so a full sync is a handful of transactions", () => {
+    expect(MAX_SL_SETS_PER_MUTATION).toBeLessThan(MAX_SL_SETS_PER_SYNC);
+    expect(MAX_SL_SETS_PER_SYNC % MAX_SL_SETS_PER_MUTATION).toBe(0);
+  });
+
+  test("chunkSlRoots keeps every item, in order, in slices of at most `size`", () => {
+    const items = numberedRoots(95);
+    const chunks = chunkSlRoots(items, MAX_SL_SETS_PER_MUTATION);
+    expect(chunks.map((c) => c.length)).toEqual([40, 40, 15]);
+    expect(chunks.flat()).toEqual(items);
+    expect(chunkSlRoots([], 40)).toEqual([]);
+    expect(chunkSlRoots(numberedRoots(40), 40)).toHaveLength(1);
+    expect(chunkSlRoots(numberedRoots(41), 40).map((c) => c.length)).toEqual([40, 1]);
+    expect(() => chunkSlRoots(items, 0)).toThrow(/positive integer/);
+  });
+
+  test(`a full MAX_SL_SETS_PER_SYNC list chunked through the mutation: every set written once, in the classifier's order, counts summed`, async () => {
+    const t = convexTest(schema, modules);
+    const { yearId } = await seedYear(t);
+    const topps = await insertManufacturer(t, yearId, "Topps", {
+      slId: "1",
+      prefix: "Topps",
+    });
+    // The classifier sorts by folded label, so it hands the roots over in
+    // label order; the chunks preserve it and so must creation time.
+    const roots = numberedRoots(MAX_SL_SETS_PER_SYNC);
+
+    const totals = await createChunked(t, topps, roots);
+    expect(totals).toEqual({
+      created: MAX_SL_SETS_PER_SYNC,
+      clashedAtTarget: 0,
+      existsElsewhere: 0,
+      invalid: 0,
+      calls: MAX_SL_SETS_PER_SYNC / MAX_SL_SETS_PER_MUTATION,
+      notFiled: 0,
+    });
+
+    const sets = await setsUnder(t, topps);
+    expect(sets).toHaveLength(MAX_SL_SETS_PER_SYNC);
+    const byCreation = [...sets].sort((a, b) => a._creationTime - b._creationTime);
+    expect(byCreation.map((r) => r.value)).toEqual(
+      roots.map((r) => `Topps ${r.label}`),
+    );
+    const brand = await t.run((ctx) => ctx.db.get(topps));
+    expect(new Set(brand?.children)).toEqual(new Set(sets.map((r) => r._id)));
+  });
+
+  test("a clash in a LATER chunk against a set an EARLIER chunk wrote is counted, not a copy — each call re-reads the year", async () => {
+    const t = convexTest(schema, modules);
+    const { yearId } = await seedYear(t);
+    const topps = await insertManufacturer(t, yearId, "Topps", {
+      slId: "1",
+      prefix: "Topps",
+    });
+    const roots = numberedRoots(MAX_SL_SETS_PER_MUTATION + 2);
+    // Two different SportLots ids whose labels fold to the same name as
+    // roots of the first chunk.
+    roots[MAX_SL_SETS_PER_MUTATION] = { id: "dup-a", label: "set 0000" };
+    roots[MAX_SL_SETS_PER_MUTATION + 1] = { id: "dup-b", label: "SET 0001" };
+
+    const totals = await createChunked(t, topps, roots);
+    expect(totals.calls).toBe(2);
+    expect(totals.created).toBe(MAX_SL_SETS_PER_MUTATION);
+    expect(totals.clashedAtTarget).toBe(2);
+    expect(await setsUnder(t, topps)).toHaveLength(MAX_SL_SETS_PER_MUTATION);
+  });
+
+  test("a clash INSIDE one chunk, against a set the same call just wrote, is a clash too — the index advances with every write", async () => {
+    const t = convexTest(schema, modules);
+    const { yearId } = await seedYear(t);
+    const topps = await insertManufacturer(t, yearId, "Topps", {
+      slId: "1",
+      prefix: "Topps",
+    });
+    const result = await create(t, topps, [
+      { id: "1", label: "Heritage" },
+      { id: "2", label: "heritage" },
+      { id: "3", label: "HERITAGE " },
+    ]);
+    expect(result.created).toBe(1);
+    expect(result.clashedAtTarget).toBe(2);
+    expect((await setsUnder(t, topps)).map((r) => r.value)).toEqual([
+      "Topps Heritage",
+    ]);
   });
 
   test("the roots the classifier hands over are in a deterministic order, so the sets are created in it", async () => {
@@ -509,5 +641,98 @@ describe("createSetsFromSlRoots — the cap", () => {
       "Topps Gallery",
       "Topps Heritage",
     ]);
+  });
+});
+
+describe("createSetsFromSlRoots — the read budget", () => {
+  /** A year with `brands` manufacturers, each holding `setsPer` sets. */
+  async function seedBusyYear(
+    t: T,
+    yearId: Id<"selectorOptions">,
+    brands: number,
+    setsPer: number,
+  ) {
+    const ids: Id<"selectorOptions">[] = [];
+    for (let b = 0; b < brands; b++) {
+      const brandId = await insertManufacturer(t, yearId, `Brand ${b}`, {
+        prefix: `Brand ${b}`,
+      });
+      ids.push(brandId);
+      await t.run(async (ctx) => {
+        const children: Id<"selectorOptions">[] = [];
+        for (let i = 0; i < setsPer; i++) {
+          children.push(
+            await ctx.db.insert("selectorOptions", {
+              level: "setName",
+              value: `Brand ${b} Set ${i}`,
+              platformData: {},
+              parentId: brandId,
+              children: [],
+              lastUpdated: SENTINEL,
+            }),
+          );
+        }
+        await ctx.db.patch(brandId, { children });
+      });
+    }
+    return ids;
+  }
+
+  test("a full chunk against a year of many brands and sets is one call, and its decisions are the row-by-row ones", async () => {
+    // ~25 brands × 30 sets. Read per root (the old shape) this batch would
+    // touch every set 40 times over; the mutation reads the year ONCE (pinned
+    // by `setFromMarketplace.test.ts` on the helper) and still finds the
+    // sibling clash and the cross-brand duplicate among the roots.
+    const t = convexTest(schema, modules);
+    const { yearId } = await seedYear(t);
+    const [other] = await seedBusyYear(t, yearId, 24, 30);
+    const topps = await insertManufacturer(t, yearId, "Topps", {
+      slId: "1",
+      prefix: "Topps",
+    });
+    await insertSet(t, topps, "Topps Set 0007");
+    await insertSet(t, other, "Topps Set 0011");
+
+    const result = await create(t, topps, numberedRoots(MAX_SL_SETS_PER_MUTATION));
+    expect(result).toEqual({
+      created: MAX_SL_SETS_PER_MUTATION - 2,
+      clashedAtTarget: 1,
+      existsElsewhere: 1,
+      invalid: 0,
+      indexTruncated: false,
+    });
+    const names = (await setsUnder(t, topps)).map((r) => r.value);
+    expect(names).toContain("Topps Set 0007"); // the pre-existing one, once
+    expect(names.filter((n) => n === "Topps Set 0007")).toHaveLength(1);
+    expect(names).not.toContain("Topps Set 0011");
+    expect(names).toHaveLength(MAX_SL_SETS_PER_MUTATION - 1);
+  });
+
+  test(`a year over MAX_YEAR_SET_ROWS sets: nothing is written, indexTruncated is reported, and the chunk loop stops`, async () => {
+    const t = convexTest(schema, modules);
+    const { yearId } = await seedYear(t);
+    // One other brand holding one row more than the budget.
+    await seedBusyYear(t, yearId, 1, MAX_YEAR_SET_ROWS + 1);
+    const topps = await insertManufacturer(t, yearId, "Topps", {
+      slId: "1",
+      prefix: "Topps",
+    });
+    const before = await rowCount(t);
+
+    const single = await create(t, topps, numberedRoots(3));
+    expect(single).toEqual({
+      created: 0,
+      clashedAtTarget: 0,
+      existsElsewhere: 0,
+      invalid: 0,
+      indexTruncated: true,
+    });
+    expect(await rowCount(t)).toBe(before);
+
+    const totals = await createChunked(t, topps, numberedRoots(95));
+    expect(totals.calls).toBe(1);
+    expect(totals.created).toBe(0);
+    expect(totals.notFiled).toBe(95);
+    expect(await rowCount(t)).toBe(before);
   });
 });

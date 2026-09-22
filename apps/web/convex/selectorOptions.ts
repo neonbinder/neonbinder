@@ -124,7 +124,11 @@ import {
 // NEO-237 (D13) — a set + Base minted from one SportLots entry, the write
 // behind the Sync Sets SportLots phase.
 import {
+  MAX_SL_SETS_PER_MUTATION,
+  MAX_YEAR_SET_ROWS,
+  buildSetNameIndex,
   candidateDefaultName,
+  chunkSlRoots,
   insertSetWithBaseFromSl,
 } from "./setFromMarketplace";
 import {
@@ -8105,6 +8109,8 @@ export const ensureSelectorOptions = action({
         failedPlatforms: string[];
         skippedSides: Array<"bsc" | "sportlots">;
         pausedSides: Array<"bsc" | "sportlots">;
+        /** NEO-237 (D13) — the set sync only: sets minted from SportLots. */
+        slCreated?: number;
       };
       if (level === "setName") {
         if (!yearId) {
@@ -8205,12 +8211,22 @@ export const ensureSelectorOptions = action({
         res.failedPlatforms.length > 0
           ? partialSyncMessage(res.failedPlatforms)
           : undefined;
+      // NEO-237 (D13) — sets the SportLots phase MINTED are news the operator
+      // otherwise never sees: the action's own `message` is logged, not
+      // shown, and a clean sync clears the status row. So a non-zero count
+      // is its own sentence in the done row, and only then — zero adds
+      // nothing, so every other sentence stays byte-identical to before.
+      const createdNotice =
+        res.slCreated !== undefined && res.slCreated > 0
+          ? `${countNoun(res.slCreated, "set")} added from SportLots.`
+          : undefined;
       // A side cannot be both skipped and failed (a skipped side is never
       // called), so at most one of these is set. Failure wins if that ever
       // stops being true: it is the one that warrants a Retry. The paused
       // sentence is independent of both — it describes the OTHER side — and
-      // leads, so the operator reads the operator's own decision first.
-      const message = [pausedNotice, failedNotice ?? skippedNotice]
+      // leads, so the operator reads the operator's own decision first; what
+      // was added comes next, before what could not be asked.
+      const message = [pausedNotice, createdNotice, failedNotice ?? skippedNotice]
         .filter((part): part is string => part !== undefined)
         .join(" ") || undefined;
       const hasNotice = res.unlinkedTotal > 0 || message !== undefined;
@@ -9195,22 +9211,18 @@ export const yearHasAnySet = internalQuery({
 });
 
 /**
- * NEO-237 — the read budget for the year-wide set index below. A full
- * baseball year is a few hundred BSC sets plus whatever SportLots-only sets
- * operators created; this is well above that and well inside one function's
- * document budget. Truncation is REPORTED, never papered over: a holder index
- * missing rows would let the BSC phase insert a copy of a set another
- * manufacturer already holds, so re-homes are skipped when it fires.
- */
-const MAX_YEAR_SET_ROWS = 3000;
-
-/**
  * NEO-237 — every `setName` row under every manufacturer of the year, in one
  * lightweight shape, plus the manufacturers themselves. Read by the set sync
  * twice: before the BSC phase (the id-first holder index, D8) and before the
  * SportLots phase (the year-wide name index the variant test reads, D11).
  * Internal, deliberately: it enumerates marketplace ids, which nothing
  * user-facing reads.
+ *
+ * Bounded by `MAX_YEAR_SET_ROWS` (setFromMarketplace.ts, shared with the
+ * per-mutation name index the SportLots writes use). Truncation is
+ * REPORTED, never papered over: a holder index missing rows would let the
+ * BSC phase insert a copy of a set another manufacturer already holds, so
+ * re-homes are skipped when it fires.
  */
 export const listYearSetRows = internalQuery({
   args: { yearId: v.id("selectorOptions") },
@@ -9404,10 +9416,21 @@ export const rehomeSetRowsForSync = internalMutation({
  * Base and classifies the entry as covered before it reaches here. Safe to
  * retry mid-way for the same reason. A root's MEMBERS (its longer siblings)
  * are not written: with the set in place the next sync classifies them as
- * its variants. Bounded by `MAX_SL_SETS_PER_SYNC`, asserted here as well as
- * applied in `routeSlSets`, because a guard on one of two doors is not a
- * guard. `createdByUserId` is the calling admin's identity, threaded from
- * the action — never a client argument.
+ * its variants. `createdByUserId` is the calling admin's identity, threaded
+ * from the action — never a client argument.
+ *
+ * ## The read and write budget
+ *
+ * One transaction takes at most `MAX_SL_SETS_PER_MUTATION` roots (each is
+ * two inserts and two patches); the action chunks a longer list
+ * (`chunkSlRoots`) and sums the counts, so the per-sync cap
+ * (`MAX_SL_SETS_PER_SYNC`, applied in `routeSlSets`) is five transactions,
+ * not one. The duplicate checks read the year's `setName` rows ONCE per
+ * transaction (`buildSetNameIndex`, bounded by `MAX_YEAR_SET_ROWS`) and every
+ * root is filed against that index — the helper reads nothing but the brand
+ * row per root. A truncated index cannot answer "exists elsewhere", so
+ * nothing is written against it: `indexTruncated: true` comes back with
+ * every count at zero, and the action reports the roots it did not file.
  */
 export const createSetsFromSlRoots = internalMutation({
   args: {
@@ -9421,12 +9444,18 @@ export const createSetsFromSlRoots = internalMutation({
     existsElsewhere: v.number(),
     /** Labels no set name can be made of — a bug guard, not an operator state. */
     invalid: v.number(),
+    /**
+     * The year has more `setName` rows than `MAX_YEAR_SET_ROWS`; no root was
+     * filed (every count is zero) because a duplicate check with rows missing
+     * would insert copies.
+     */
+    indexTruncated: v.boolean(),
   }),
   handler: async (ctx, args) => {
-    if (args.roots.length > MAX_SL_SETS_PER_SYNC) {
+    if (args.roots.length > MAX_SL_SETS_PER_MUTATION) {
       throw new Error(
         `createSetsFromSlRoots: ${args.roots.length} roots exceeds ` +
-          `${MAX_SL_SETS_PER_SYNC}`,
+          `${MAX_SL_SETS_PER_MUTATION} per call — chunk them`,
       );
     }
     const brand = await ctx.db.get(args.manufacturerId);
@@ -9434,6 +9463,22 @@ export const createSetsFromSlRoots = internalMutation({
       throw new Error("createSetsFromSlRoots: not a manufacturer row");
     }
     const prefix = brand.metadata?.setNamePrefix;
+
+    // One pass over the year's sets for the whole batch (see the doc above).
+    const index = await buildSetNameIndex(ctx, brand);
+    if (index.truncated) {
+      console.warn(
+        `[createSetsFromSlRoots] brand=${brand._id} skipped ${args.roots.length} ` +
+          `roots — the year's set index exceeds ${MAX_YEAR_SET_ROWS} rows`,
+      );
+      return {
+        created: 0,
+        clashedAtTarget: 0,
+        existsElsewhere: 0,
+        invalid: 0,
+        indexTruncated: true,
+      };
+    }
 
     let created = 0;
     let clashedAtTarget = 0;
@@ -9445,14 +9490,18 @@ export const createSetsFromSlRoots = internalMutation({
       seen.add(root.id);
       assertValidSlotLabel(root.label, "createSetsFromSlRoots");
       const { defaultName } = candidateDefaultName(root.label, prefix);
-      const result = await insertSetWithBaseFromSl(ctx, {
-        brandId: brand._id,
-        name: defaultName,
-        sl: { id: root.id, label: root.label },
-        ...(args.createdByUserId
-          ? { createdByUserId: args.createdByUserId }
-          : {}),
-      });
+      const result = await insertSetWithBaseFromSl(
+        ctx,
+        {
+          brandId: brand._id,
+          name: defaultName,
+          sl: { id: root.id, label: root.label },
+          ...(args.createdByUserId
+            ? { createdByUserId: args.createdByUserId }
+            : {}),
+        },
+        index,
+      );
       if (result.ok) {
         created++;
         continue;
@@ -9474,6 +9523,9 @@ export const createSetsFromSlRoots = internalMutation({
         case "brand_missing":
           // Read at the top of this transaction; cannot vanish mid-way.
           throw new Error("createSetsFromSlRoots: brand vanished mid-write");
+        case "index_truncated":
+          // Checked before the loop; the index is not rebuilt mid-way.
+          throw new Error("createSetsFromSlRoots: index truncated mid-write");
       }
     }
     console.log(
@@ -9481,7 +9533,13 @@ export const createSetsFromSlRoots = internalMutation({
         `clashedAtTarget=${clashedAtTarget} existsElsewhere=${existsElsewhere} ` +
         `invalid=${invalid}`,
     );
-    return { created, clashedAtTarget, existsElsewhere, invalid };
+    return {
+      created,
+      clashedAtTarget,
+      existsElsewhere,
+      invalid,
+      indexTruncated: false,
+    };
   },
 });
 
@@ -9581,11 +9639,18 @@ export const syncSetsAcrossManufacturers = action({
     skippedSides: v.array(platformSideValidator),
     /** NEO-287 — see `fetchAggregatedOptions`. Either side may appear. */
     pausedSides: v.array(platformSideValidator),
+    /**
+     * NEO-237 (D13) — sets the SportLots phase MINTED this run, summed across
+     * every brand scope it wrote. `ensureSelectorOptions` turns a non-zero
+     * count into the column's done-row sentence; the BSC phase's stores are
+     * in `totalSets` with these, not here.
+     */
+    slCreated: v.number(),
   }),
   handler: async (
     ctx,
     args,
-  ): Promise<AggregatedSyncResult & { totalSets: number }> => {
+  ): Promise<AggregatedSyncResult & { totalSets: number; slCreated: number }> => {
     // The identity is threaded to `createSetsFromSlRoots` as the audit
     // `createdByUserId` of every set the SportLots phase mints.
     const adminUserId = await requireAdmin(ctx);
@@ -9603,6 +9668,7 @@ export const syncSetsAcrossManufacturers = action({
           success: false,
           message: "Could not resolve sport/year ancestors",
           totalSets: 0,
+          slCreated: 0,
         };
       }
 
@@ -9613,6 +9679,8 @@ export const syncSetsAcrossManufacturers = action({
       const summary: string[] = [];
       const unlinkedAll: UnlinkedEntry[] = [];
       let totalStored = 0;
+      // Sets the SportLots phase minted (D13), reported to the column.
+      let slCreatedTotal = 0;
 
       // ── BSC phase ─────────────────────────────────────────────────────
       //
@@ -9790,6 +9858,7 @@ export const syncSetsAcrossManufacturers = action({
           failedPlatforms,
           skippedSides,
           pausedSides: pausedList,
+          slCreated: 0,
         };
       }
 
@@ -9938,6 +10007,9 @@ export const syncSetsAcrossManufacturers = action({
         let slRootsTruncated = 0;
         // Entries whose label no slot can carry (`MAX_SLOT_LABEL_LENGTH`).
         let slUnnameable = 0;
+        // Roots not filed because the year's set index is over
+        // `MAX_YEAR_SET_ROWS` (`createSetsFromSlRoots` writes nothing then).
+        let slIndexTruncated = 0;
         // Entries hidden as a variant of a set NB already has. Not written
         // as sets, but not invisible either: the operator reaches them from
         // that set's Base picker / attach pane, and the summary says how
@@ -9975,21 +10047,35 @@ export const syncSetsAcrossManufacturers = action({
             );
           }
           if (routed.roots.length === 0) return;
-          // Every new root becomes a set NOW, one transaction per brand
-          // scope: a set + a Base carrying the SportLots id. Members are not
+          // Every new root becomes a set NOW: a set + a Base carrying the
+          // SportLots id, in transactions of at most MAX_SL_SETS_PER_MUTATION
+          // roots per brand scope, in the classifier's order. Members are not
           // written; the next sync files them as the new set's variants.
-          const written = await ctx.runMutation(
-            internal.selectorOptions.createSetsFromSlRoots,
-            {
-              manufacturerId: scope._id,
-              roots: routed.roots.map((r) => ({ id: r.id, label: r.label })),
-              createdByUserId: adminUserId,
-            },
-          );
-          slCreated += written.created;
-          slClashedAtTarget += written.clashedAtTarget;
-          slExistsElsewhere += written.existsElsewhere;
-          totalStored += written.created;
+          const rootArgs = routed.roots.map((r) => ({ id: r.id, label: r.label }));
+          const chunks = chunkSlRoots(rootArgs, MAX_SL_SETS_PER_MUTATION);
+          for (let c = 0; c < chunks.length; c++) {
+            const written = await ctx.runMutation(
+              internal.selectorOptions.createSetsFromSlRoots,
+              {
+                manufacturerId: scope._id,
+                roots: chunks[c],
+                createdByUserId: adminUserId,
+              },
+            );
+            slCreated += written.created;
+            slCreatedTotal += written.created;
+            slClashedAtTarget += written.clashedAtTarget;
+            slExistsElsewhere += written.existsElsewhere;
+            totalStored += written.created;
+            if (written.indexTruncated) {
+              // Nothing of this chunk was filed and the later chunks would
+              // fare the same: count them all and stop for this scope.
+              slIndexTruncated += chunks
+                .slice(c)
+                .reduce((n, chunk) => n + chunk.length, 0);
+              break;
+            }
+          }
         };
 
         // Every brand's prefix, for the Unknown scope: Unknown holds what
@@ -10067,6 +10153,12 @@ export const syncSetsAcrossManufacturers = action({
             `${countNoun(slUnnameable, "SportLots set")} skipped — name too long`,
           );
         }
+        if (slIndexTruncated > 0) {
+          summary.push(
+            `${countNoun(slIndexTruncated, "SportLots set")} not added — too ` +
+              `many sets this year to check for duplicates`,
+          );
+        }
         if (slVariantsOfKnown > 0) {
           summary.push(
             `${slVariantsOfKnown} more ${slVariantsOfKnown === 1 ? "matches" : "match"} ` +
@@ -10098,6 +10190,7 @@ export const syncSetsAcrossManufacturers = action({
         failedPlatforms,
         skippedSides,
         pausedSides: pausedList,
+        slCreated: slCreatedTotal,
       };
     } catch (error) {
       console.error("[syncSetsAcrossManufacturers] Error:", error);
@@ -10106,6 +10199,7 @@ export const syncSetsAcrossManufacturers = action({
         success: false,
         message: `Failed: ${error instanceof Error ? error.message : "Unknown error"}`,
         totalSets: 0,
+        slCreated: 0,
       };
     }
   },

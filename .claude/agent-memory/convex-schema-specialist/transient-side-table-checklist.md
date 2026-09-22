@@ -32,5 +32,11 @@ remove rows from these tables; a table left out of either accumulates rows
 pointing at deleted parents forever (the `playerAliases` / `teamAliases`
 precedent, NEO-254/284).
 
+The checklist runs in REVERSE too. NEO-237's `setCandidates` table (SportLots
+sets offered for review) was wired through all four on 2026-09-21 and removed
+the same day, once Jason ruled a set a marketplace lists is saved, not
+offered; the removal had to unwire the same four places, and the `toEqual`
+count blocks were again what failed first.
+
 **How to apply:** any plan that adds a side table keyed on `selectorOptions`
 lists all four in its migration steps. Related: [[staging-tables-scope-per-operator]].

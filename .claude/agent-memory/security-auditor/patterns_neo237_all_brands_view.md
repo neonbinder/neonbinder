@@ -1,21 +1,26 @@
 ---
 name: patterns-neo237-all-brands-view
-description: NEO-237 All Brands view / Unknown bucket / setCandidates audit — auth is clean and the sentinel stays in the adapter boundary; the durable traps are a reserved row name with an unguarded store door, a candidate table whose `side` is not what keys the slot on Create, sibling prefixes that are never checked for fold-collisions, and audit fields omitted by validator but not pinned by test
+description: NEO-237 All Brands view / Unknown bucket audit — auth is clean and the sentinel stays in the adapter boundary; the durable traps are a reserved row name with an unguarded store door, a side table whose `side` is not what keys the slot on Create (found on a candidate table built and removed the same day), sibling prefixes that are never checked for fold-collisions, and audit fields omitted by validator but not pinned by test
 metadata:
   type: project
 ---
 
 Audit rules that came out of NEO-237 (pinned "All Brands" view, `metadata.setNamePrefix`,
-`setCandidates`, `brandRehome.ts`, `slBrandAxis.ts`), reusable on any similar change:
+`brandRehome.ts`, `slBrandAxis.ts`), reusable on any similar change. Rules 2 and 4 were
+found on a `setCandidates` table + review modal that was built and then removed the same
+day (2026-09-21), because Jason ruled a set a marketplace lists is SAVED by the sync, not
+offered for review; the sync now mints the set + Base directly (`setFromMarketplace.ts`).
+The rules outlive the table:
 
 1. **A reserved NB display name has FOUR doors, not three.** `checkCustomSelectorValue`
    (custom form + `addCustomSelectorOption`) and `planValueRename` refuse the name, but
    `storeSelectorOptions`' insert branch does not — a public admin call, or an upstream
    option whose id stops satisfying the sentinel predicate, can still mint a row wearing
    the view's name. Grep the store insert path whenever a name is reserved.
-2. **A side-table row with a `side` field must key the slot it creates.** `createSetFromCandidate`
-   writes `candidate.marketplaceId` into the SportLots slot unconditionally; a `"bsc"` row
-   would put a BSC id in an SL slot. Check `initialSlots({ [side]: … })` vs a literal side.
+2. **A side-table row with a `side` field must key the slot it creates.** The removed
+   `createSetFromCandidate` wrote `candidate.marketplaceId` into the SportLots slot
+   unconditionally; a `"bsc"` row would have put a BSC id in an SL slot. Check
+   `initialSlots({ [side]: … })` vs a literal side on any row that carries a side.
 3. **Per-row routing prefixes need a sibling fold-collision check at the EDIT door.** Defaults
    (prefix = value) are unique by the sibling-name rule, but the edit mutation can set two
    brands to the same prefix; `routeBscSets` then files by sort order and there is no
@@ -31,5 +36,6 @@ Audit rules that came out of NEO-237 (pinned "All Brands" view, `metadata.setNam
    `SCAN_LIMIT+1` truncation flag, `parentId` escape hatch (unvalidated, harmless), `MAX_REPORTED`
    cap, one JSON log line of counts. Same as NEO-272/NEO-293.
 
-**How to apply:** on any change that reserves a name, adds a candidate/side table, adds a per-row
-routing fact, or adds an admin-gated read over a table with audit columns, run checks 1–4 first.
+**How to apply:** on any change that reserves a name, adds a side table keyed on a marketplace
+row, adds a per-row routing fact, or adds an admin-gated read over a table with audit columns,
+run checks 1–4 first.

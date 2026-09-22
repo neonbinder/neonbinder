@@ -35,18 +35,23 @@ metadata:
   the link is read afterwards in the attributes panel's SportLots cell and
   the narrowed base-picker pane).
 - **SportLots-only sets are SAVED by the year-wide Sync Sets** (2026-09-21;
-  the `N new on SportLots` pill + review modal are gone): each new root
+  the `N new on SportLots` pill + review modal were built and removed the
+  same day — Jason ruled a set a marketplace lists is saved, not offered;
+  no flow may target them): each new root
   becomes a `setName` row named `<brand prefix> <label>` (label as-is under
   Unknown) with `platformData: {}` and a Base carrying the SL id
   (`insertSetWithBaseFromSl`). `routeSlSets` still hides every entry a
   known set EQUALS or word-boundary-PREFIXES, so nothing is minted beside
   a BSC flagship of the same name. Two E2E consequences: (1) a set row is
   NOT terminal, so the view shows no `SL` pill on it — the id is only
-  visible on the Base after a pick; (2) the sync's `Synced sets (…, N sets
-  added from SportLots)` summary is `res.message`, which
-  `ensureSelectorOptions` DROPS on success (a clean sync deletes its status
-  row; only paused/failed/skipped/unlinked notices reach `SyncDoneNotice`),
-  so the fragment is not an E2E target until the done row carries it.
+  visible on the Base after a pick; (2) the ONLY on-screen trace of the
+  saves is the done row: `ensureSelectorOptions` composes
+  `N sets added from SportLots.` (`1 set added from SportLots.`) into the
+  status row's `done` message as its own sentence when N > 0 — rendered by
+  `SyncDoneNotice` directly ABOVE the idle `Sync Sets` button, with the
+  usual Dismiss. When N = 0 nothing is added and a clean sync still
+  deletes its status row, so the sentence is absent, never `0 sets`. The
+  action's own `Synced sets (…)` summary is `res.message` and never shown.
   Nothing on screen names a saved set, and its name is a marketplace label —
   never assert one as a literal.
 - **Sync Sets is two-sided**: a hand-made brand's (or any brand's under the

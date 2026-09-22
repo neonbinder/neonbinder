@@ -35,24 +35,28 @@ NEO-237, PR #272 run 35665861484 r6 (`brand-via-all-brands-narrows-sportlots`,
   visible" 1.0s later once the list had filled).
 Either way the flow continues while the SportLots phase (one all-brands POST +
 up to 18 brand POSTs; 8.5s on 1996, 11.7s on 1997, ~13s in CI) is still running.
-The candidates are written by `reconcileSetCandidates` right before the status
-clears, so anything that depends on the SportLots phase (the
-`N new on SportLots` pill, the skipped-side notice) is simply not there yet.
+Its writes land right before the status clears, so anything that depends on the
+SportLots phase (the done-row sentence, the skipped-side notice) is simply not
+there yet. (Measured on the `N new on SportLots` pill + `setCandidates` table,
+built and removed the same day, 2026-09-21, when Jason ruled a marketplace set
+is saved, not offered; the phase now mints the sets directly and the geometry
+is unchanged.)
 
 ## The gate that works
 ```yaml
 - extendedWaitUntil: { visible: ".*Search sets.*", timeout: 15000 }   # BSC content = the sync STARTED
 - scrollUntilVisible: { element: { text: "Sync Sets" }, timeout: 150000 }  # idle row = the sync ENDED
-- scrollUntilVisible: { element: { text: "[0-9]+ new on SportLots" }, centerElement: true, timeout: 7000 }
+- scrollUntilVisible: { element: { text: "[0-9]+ sets? added from SportLots\\." }, centerElement: true, timeout: 7000 }
 ```
 - The button is rendered only when the status row has left "syncing"
   (`showSyncingPanel` cannot be false any other way in the view: `hasInteracted`
   never latches there because `items` is always `[]` for a year parent).
 - The content precondition rules out the ~300ms pre-sync idle window after
   mount — the search box only exists once the sync has stored rows.
-- `SetCandidatesPill` mounts WITH the idle row and subscribes then, so the pill
-  lands one round-trip after the button: 200ms (CDP), 0.6s (Maestro). The 7000
-  bar holds.
+- The done notice is the SAME status-row render as the idle button (both come
+  from one `getSelectorSyncStatus` subscription), so it lands with the button,
+  not after it. (The removed pill had its own subscription and landed one
+  round-trip later: 200ms CDP, 0.6s Maestro — the 7000 bar held even then.)
 - 150000 is the util's own RETURN CONTRACT ceiling for this sync, relocated —
   record it at the site (R5), do not invent a number.
 

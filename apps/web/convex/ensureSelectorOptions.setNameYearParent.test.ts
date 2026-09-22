@@ -14,6 +14,12 @@
  * (sport+year, not sport+year+manufacturer) so a year with SportLots ids and
  * no BSC id still reaches the action, and a SportLots skip at `setName` is a
  * notice rather than the usual "does not serve this level" silence.
+ *
+ * The last family pins the done-row sentence for sets the SportLots phase
+ * MINTED (D13): the action's own `message` is never shown, and a clean sync
+ * clears the status row, so without it the operator never learns that sets
+ * were added. It is its own sentence, present only when the count is
+ * non-zero, so every other sentence stays byte-identical when nothing was.
  */
 
 import { convexTest } from "convex-test";
@@ -360,5 +366,120 @@ describe("ensureSelectorOptions(setName) — the SportLots attach-rule gate (D14
     });
     expect(status?.status).toBe("done");
     expect(status?.message).toMatch(/sportlots/i);
+  });
+});
+
+describe("ensureSelectorOptions(setName) — sets added from SportLots are news in the done row (D13)", () => {
+  function stubBothSides(slSets: Array<[string, string]>, bscSets: Array<[string, string]>) {
+    stubFetch(async (url) => {
+      const href = String(url);
+      if (isTokenUrl(href, "sportlots")) {
+        return jsonResponse({ token: "SLSESSION=stub", expiresAt: Date.now() + 86_400_000 });
+      }
+      if (href.includes("dealsets.tpl")) {
+        return htmlResponse(slSetListHtml(slSets));
+      }
+      if (isTokenUrl(href, "buysportscards")) {
+        return jsonResponse({ token: "bsc-stub" });
+      }
+      if (href.includes("api-prod.buysportscards.com")) {
+        return jsonResponse(bscSetListJson(bscSets));
+      }
+      throw new Error(`unexpected fetch: ${href}`);
+    });
+  }
+
+  test("one brand, one SportLots-only set: the column is 'done' with '1 set added from SportLots.'", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN);
+    const { yearId } = await seedSportAndYear(t);
+    const score = await insertManufacturer(t, yearId, "Score", { slId: "7", prefix: "Score" });
+    // BSC stores one set of its own (an EMPTY BSC list is a failed side, by
+    // the BSC phase's rule); SportLots lists one NB has no set for.
+    stubBothSides([["701", "Board"]], [["score-series-1", "Score Series 1"]]);
+
+    const result = await asAdmin.action(api.selectorOptions.ensureSelectorOptions, {
+      level: "setName",
+      parentId: score,
+    });
+    expect(result).toEqual({ ran: true, reason: "synced", skippedSides: [], pausedSides: [] });
+    expect((await setsUnder(t, score)).map((r) => r.value).sort()).toEqual([
+      "Score Board",
+      "Score Series 1",
+    ]);
+
+    const status = await asAdmin.query(api.selectorOptions.getSelectorSyncStatus, {
+      level: "setName",
+      parentId: score,
+    });
+    expect(status).toEqual({ status: "done", message: "1 set added from SportLots." });
+  });
+
+  test("from the view, the count is summed across every brand scope, and the sentence pluralises", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN);
+    const { yearId } = await seedSportAndYear(t);
+    await insertManufacturer(t, yearId, "Topps", { slId: "1", prefix: "Topps" });
+    await insertManufacturer(t, yearId, "Score", { slId: "7", prefix: "Score" });
+    // Both brands' lists carry the same SportLots-only entry: two sets. BSC
+    // stores its own under Topps; those are not "added from SportLots".
+    stubBothSides([["901", "Something New"]], [["topps-series-1", "Topps Series 1"]]);
+
+    const result = await asAdmin.action(api.selectorOptions.ensureSelectorOptions, {
+      level: "setName",
+      parentId: yearId,
+    });
+    expect(result.reason).toBe("synced");
+    const status = await asAdmin.query(api.selectorOptions.getSelectorSyncStatus, {
+      level: "setName",
+      parentId: yearId,
+    });
+    expect(status).toEqual({ status: "done", message: "2 sets added from SportLots." });
+  });
+
+  test("nothing added: a clean sync still clears the status row — no sentence, no 'done'", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN);
+    const { yearId } = await seedSportAndYear(t);
+    const topps = await insertManufacturer(t, yearId, "Topps", { slId: "1", prefix: "Topps" });
+    // BSC stores "Topps Series 1"; SportLots lists the same name, which the
+    // classifier files as covered-by-name, so the SportLots phase mints none.
+    stubBothSides([["501", "Series 1"]], [["topps-series-1", "Topps Series 1"]]);
+
+    const result = await asAdmin.action(api.selectorOptions.ensureSelectorOptions, {
+      level: "setName",
+      parentId: topps,
+    });
+    expect(result).toEqual({ ran: true, reason: "synced", skippedSides: [], pausedSides: [] });
+    expect((await setsUnder(t, topps)).map((r) => r.value)).toEqual(["Topps Series 1"]);
+    expect(
+      await asAdmin.query(api.selectorOptions.getSelectorSyncStatus, {
+        level: "setName",
+        parentId: topps,
+      }),
+    ).toBeNull();
+  });
+
+  test("nothing added beside a notice: the notice sentence is byte-identical to before", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN);
+    const { yearId } = await seedSportAndYear(t);
+    // No SportLots id on the brand → the SportLots phase is skipped, and the
+    // skip sentence is the whole message: no "0 sets added" in front of it.
+    const topps = await insertManufacturer(t, yearId, "Topps", { prefix: "Topps" });
+    stubBothSides([], [["topps-series-1", "Topps Series 1"]]);
+
+    await asAdmin.action(api.selectorOptions.ensureSelectorOptions, {
+      level: "setName",
+      parentId: topps,
+    });
+    const status = await asAdmin.query(api.selectorOptions.getSelectorSyncStatus, {
+      level: "setName",
+      parentId: topps,
+    });
+    expect(status).toEqual({
+      status: "done",
+      message: "SportLots skipped: no SportLots ids on this path.",
+    });
   });
 });
