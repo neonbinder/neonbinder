@@ -97,6 +97,9 @@ vi.mock("../../convex/_generated/api", () => ({
     brandView: {
       setSelectorOptionSetNamePrefix: "brandView.setSelectorOptionSetNamePrefix",
       setManufacturerSlViaAllBrands: "brandView.setManufacturerSlViaAllBrands",
+      // NEO-294 — the move control, bound at render on every set row.
+      getBrandsForYearOfSet: "brandView.getBrandsForYearOfSet",
+      moveSetToBrand: "brandView.moveSetToBrand",
     },
   },
 }));
@@ -109,6 +112,8 @@ const mockSetSelectorOptionCardNumberPrefix = vi.fn();
 /** NEO-237 */
 const mockSetSelectorOptionSetNamePrefix = vi.fn();
 const mockSetManufacturerSlViaAllBrands = vi.fn();
+/** NEO-294 */
+const mockMoveSetToBrand = vi.fn();
 /** NEO-277 */
 const mockSetSelectorOptionTeams = vi.fn();
 /**
@@ -128,6 +133,8 @@ let currentHoldings: unknown;
 let currentTeamRows: unknown;
 /** NEO-277: the team the mocked picker's trigger adds on click. */
 let pickNext = "team-bulls";
+/** NEO-294: the year's brands the move control offers. */
+let currentYearBrands: unknown;
 
 vi.mock("convex/react", () => ({
   useQuery: (query: string) => {
@@ -135,6 +142,7 @@ vi.mock("convex/react", () => ({
     if (query === "getAncestorChain") return currentChain;
     if (query === "getSelectorOptionHoldings") return currentHoldings;
     if (query === "teams.getManyByIds") return currentTeamRows;
+    if (query === "brandView.getBrandsForYearOfSet") return currentYearBrands;
     return undefined;
   },
   useMutation: (mutation: string) => {
@@ -149,6 +157,7 @@ vi.mock("convex/react", () => ({
       return mockSetSelectorOptionSetNamePrefix;
     if (mutation === "brandView.setManufacturerSlViaAllBrands")
       return mockSetManufacturerSlViaAllBrands;
+    if (mutation === "brandView.moveSetToBrand") return mockMoveSetToBrand;
     return vi.fn();
   },
   useConvex: () => ({ query: mockConvexQuery }),
@@ -2708,5 +2717,81 @@ describe("SetAttributesPanel — Fill teams render gate (NEO-279)", () => {
         expect(picker.includes(own)).toBe(false);
       }
     }
+  });
+});
+
+/**
+ * NEO-294 — the move control's PLACEMENT in the panel: which rows carry it,
+ * that it does not collide with the delete beside it, and that a completed
+ * move reaches the panel's one live region. Its own behaviour — the list, the
+ * confirm, the refusals, the focus park — is covered in
+ * `MoveSetToBrandControl.test.tsx`.
+ */
+describe("SetAttributesPanel — move to another brand (NEO-294)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    currentChain = makeChain("Baseball");
+    currentHoldings = { holds: [], protected: false };
+    currentYearBrands = [
+      { _id: "unknown-id", value: "Unknown", isCurrent: false },
+      { _id: "bowman-id", value: "Bowman", isCurrent: false },
+      { _id: "mfr-id", value: "Topps", isCurrent: true },
+    ];
+    mockMoveSetToBrand.mockResolvedValue({ movedTo: "Bowman" });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("sits beside the delete on a set row, under a name of its own", () => {
+    currentRow = makeRow({ level: "setName", value: "2024 Topps Chrome" });
+    renderPanel();
+
+    const move = screen.getByRole("button", { name: "Move to another brand" });
+    const trash = screen.getByLabelText("Delete 2024 Topps Chrome");
+    // Siblings in the same header row, and no operator — or flow — can
+    // confuse the two by name.
+    expect(move.parentElement).toBe(trash.parentElement);
+    expect(move.getAttribute("aria-label")).toBeNull();
+  });
+
+  it.each(["sport", "year", "manufacturer", "variantType", "insert", "parallel"])(
+    "is absent at level %s — only a set has a brand above it",
+    (level) => {
+      currentRow = makeRow({ level, value: "Whatever" });
+      renderPanel();
+      expect(
+        screen.queryByRole("button", { name: "Move to another brand" }),
+      ).toBeNull();
+    },
+  );
+
+  it("a completed move reports through the panel's own status region", async () => {
+    currentRow = makeRow({ level: "setName", value: "2024 Topps Chrome" });
+    renderPanel();
+
+    fireEvent.click(screen.getByRole("button", { name: "Move to another brand" }));
+    fireEvent.click(screen.getByLabelText("Move to Bowman"));
+    fireEvent.click(screen.getByRole("button", { name: "Yes, move it" }));
+
+    await waitFor(() =>
+      expect(mockMoveSetToBrand).toHaveBeenCalledWith({
+        setId: SELECTOR_OPTION_ID,
+        brandId: "bowman-id",
+      }),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("status").textContent).toContain("Moved to Bowman"),
+    );
+  });
+
+  it("never offers the brand the set is already under", () => {
+    currentRow = makeRow({ level: "setName", value: "2024 Topps Chrome" });
+    renderPanel();
+
+    fireEvent.click(screen.getByRole("button", { name: "Move to another brand" }));
+    expect(screen.queryByLabelText("Move to Topps")).toBeNull();
+    expect(screen.getByLabelText("Move to Unknown")).toBeTruthy();
   });
 });

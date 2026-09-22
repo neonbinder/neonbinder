@@ -949,14 +949,16 @@ describe("NEO-291: the card-prefix write is admin-gated, and the whole-metadata 
   });
 });
 
-describe("NEO-237: the All Brands view doors are admin-gated", () => {
+describe("NEO-237/NEO-294: the All Brands view doors are admin-gated", () => {
   /**
-   * Three new public functions on the set builder. One is a read that
-   * enumerates a year's sets; two are writes — a brand's set-name prefix,
-   * which MOVES sets between manufacturers, and a brand's link through
-   * SportLots' All Brands option, which writes a marketplace slot. Every one
-   * is `requireAdmin`, like every other set-builder door, and every one
-   * refuses before its first read or write.
+   * Five public functions on the set builder. Two are reads — one enumerates
+   * a year's sets, one enumerates a year's brands as move destinations — and
+   * three are writes: a brand's set-name prefix, which MOVES sets between
+   * manufacturers; a brand's link through SportLots' All Brands option, which
+   * writes a marketplace slot; and NEO-294's operator move, which re-parents
+   * a set and stamps it so no sync moves it back. Every one is
+   * `requireAdmin`, like every other set-builder door, and every one refuses
+   * before its first read or write.
    *
    * Called with valid, inert arguments so the refusal is the gate and not
    * argument validation.
@@ -987,7 +989,27 @@ describe("NEO-237: the All Brands view doors are admin-gated", () => {
         metadata: { setNamePrefix: "Choice" },
         lastUpdated: 1_700_000_000_000,
       });
-      return { yearId, brandId };
+      // NEO-294 — a second, flagged brand with a set under it, so the move
+      // door can be called with arguments it would actually accept.
+      const unknownId = await ctx.db.insert("selectorOptions", {
+        level: "manufacturer",
+        value: "Unknown",
+        platformData: {},
+        parentId: yearId,
+        children: [],
+        metadata: { isBrandUnknown: true },
+        lastUpdated: 1_700_000_000_000,
+      });
+      const setId = await ctx.db.insert("selectorOptions", {
+        level: "setName",
+        value: "Choice Biloxi Shuckers",
+        platformData: {},
+        parentId: unknownId,
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+      });
+      await ctx.db.patch(unknownId, { children: [setId] });
+      return { yearId, brandId, unknownId, setId };
     });
   }
 
@@ -1019,6 +1041,27 @@ describe("NEO-237: the All Brands view doors are admin-gated", () => {
         tt.mutation(api.brandView.setManufacturerSlViaAllBrands, {
           id: ids.brandId,
           enabled: false,
+        }),
+    ],
+    [
+      // NEO-294 — the move picker's read. Admin-gated like every other
+      // set-builder read: it enumerates a year's brand names.
+      "brandView.getBrandsForYearOfSet",
+      (tt: ReturnType<typeof convexTest>, ids: { setId: Id<"selectorOptions"> }) =>
+        tt.query(api.brandView.getBrandsForYearOfSet, { setId: ids.setId }),
+    ],
+    [
+      // NEO-294 — the operator move itself. Arguments that WOULD move the set
+      // out of Unknown and under Choice, so the assertions below (the brand
+      // still holds no set) are evidence the gate refused before the write.
+      "brandView.moveSetToBrand",
+      (
+        tt: ReturnType<typeof convexTest>,
+        ids: { setId: Id<"selectorOptions">; brandId: Id<"selectorOptions"> },
+      ) =>
+        tt.mutation(api.brandView.moveSetToBrand, {
+          setId: ids.setId,
+          brandId: ids.brandId,
         }),
     ],
   ])("%s refuses a signed-in non-admin and a signed-out caller", async (_name, call) => {

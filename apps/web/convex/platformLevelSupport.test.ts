@@ -869,3 +869,258 @@ describe("syncSetsAcrossManufacturers reports each side for what it was (NEO-216
     ]);
   });
 });
+
+// ===========================================================================
+// NEO-294 — the known-brands list inside Sync Sets
+// ===========================================================================
+
+/** A setName row under a manufacturer, with a BSC id and optional stamps. */
+async function insertSet(
+  t: ReturnType<typeof convexTest>,
+  parentId: Id<"selectorOptions">,
+  value: string,
+  opts: { bscId?: string; setByOperator?: boolean } = {},
+) {
+  return t.run(async (ctx) => {
+    const id = await ctx.db.insert("selectorOptions", {
+      level: "setName",
+      value,
+      platformData: opts.bscId ? { bsc: { b0: opts.bscId } } : {},
+      ...(opts.bscId ? { platformSlotSeq: { bsc: 1 } } : {}),
+      parentId,
+      children: [],
+      ...(opts.setByOperator
+        ? { metadata: { brandSetByOperator: true } }
+        : {}),
+      lastUpdated: Date.now(),
+    });
+    const parent = await ctx.db.get(parentId);
+    await ctx.db.patch(parentId, { children: [...(parent?.children ?? []), id] });
+    return id;
+  });
+}
+
+async function manufacturersOf(
+  t: ReturnType<typeof convexTest>,
+  yearId: Id<"selectorOptions">,
+) {
+  return t.run(async (ctx) =>
+    ctx.db
+      .query("selectorOptions")
+      .withIndex("by_level_and_parent", (q) =>
+        q.eq("level", "manufacturer").eq("parentId", yearId),
+      )
+      .collect(),
+  );
+}
+
+describe("syncSetsAcrossManufacturers files a known brand's sets under it (NEO-294)", () => {
+  test("a BSC set no brand claims mints its known brand — prefix, SportLots sentinel, the set under it — and a second sync changes nothing", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN);
+    const { yearId } = await seedSportAndYear(t);
+
+    stubFetch(async (url) => {
+      const href = String(url);
+      if (isTokenUrl(href, "sportlots")) {
+        return jsonResponse({
+          token: "SLSESSION=stub",
+          expiresAt: Date.now() + 86_400_000,
+        });
+      }
+      if (href.includes("dealsets.tpl")) {
+        // SportLots lists the same set; once BSC has filed it, the entry is a
+        // variant of a set NB already has, so the SportLots phase is quiet.
+        return htmlResponse(slSetListHtml([["901", "Choice Biloxi Shuckers"]]));
+      }
+      if (isTokenUrl(href, "buysportscards")) {
+        return jsonResponse({ token: "bsc-stub" });
+      }
+      if (href.includes("api-prod.buysportscards.com")) {
+        return jsonResponse(
+          bscSetListJson([["choice-biloxi-shuckers", "Choice Biloxi Shuckers"]]),
+        );
+      }
+      throw new Error(`unexpected fetch: ${href}`);
+    });
+
+    const first = await asAdmin.action(
+      api.selectorOptions.syncSetsAcrossManufacturers,
+      { yearId },
+    );
+    expect(first.success).toBe(true);
+    expect(first.message).toContain("1 brand added from the known list");
+    expect(first.message).toContain("1 set filed under a known brand");
+
+    // The brand row is born exactly as a hand-created one: NB's own name,
+    // the prefix defaulted from it, and SportLots' all-brands sentinel
+    // because the year can scope SportLots. No Unknown row was needed.
+    const mfrs = await manufacturersOf(t, yearId);
+    expect(mfrs.map((m) => m.value)).toEqual(["Choice"]);
+    const choice = mfrs[0];
+    expect(choice.metadata?.setNamePrefix).toBe("Choice");
+    expect(choice.metadata?.isBrandUnknown).toBeUndefined();
+    expect(choice.platformData.sportlots).toEqual({ s0: "All Brands" });
+
+    const choiceSets = await setsUnder(t, choice._id);
+    expect(choiceSets.map((r) => r.value)).toEqual(["Choice Biloxi Shuckers"]);
+    expect(choiceSets[0].platformData.bsc).toEqual({
+      b0: "choice-biloxi-shuckers",
+    });
+    expect(choice.children).toEqual([choiceSets[0]._id]);
+
+    const afterFirst = await t.run(async (ctx) =>
+      (await ctx.db.query("selectorOptions").collect()).length,
+    );
+
+    // Idempotent: the brand now claims the set by its own prefix, so the
+    // known list is never consulted and nothing is created or moved.
+    const second = await asAdmin.action(
+      api.selectorOptions.syncSetsAcrossManufacturers,
+      { yearId },
+    );
+    expect(second.success).toBe(true);
+    expect(second.message).not.toContain("added from the known list");
+    expect(second.message).not.toContain("filed under a known brand");
+    const afterSecond = await t.run(async (ctx) =>
+      (await ctx.db.query("selectorOptions").collect()).length,
+    );
+    expect(afterSecond).toBe(afterFirst);
+    expect((await manufacturersOf(t, yearId)).map((m) => m.value)).toEqual([
+      "Choice",
+    ]);
+  });
+
+  test("a set an OPERATOR left under Unknown is not moved, and no brand is minted for it", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN);
+    const { yearId } = await seedSportAndYear(t);
+    const unknown = await insertManufacturer(t, yearId, "Unknown", {
+      slId: "All Brands",
+      isBrandUnknown: true,
+    });
+    const placed = await insertSet(t, unknown, "Choice Albany Polecats", {
+      bscId: "choice-albany-polecats",
+      setByOperator: true,
+    });
+
+    stubFetch(async (url) => {
+      const href = String(url);
+      if (isTokenUrl(href, "sportlots")) {
+        return jsonResponse({
+          token: "SLSESSION=stub",
+          expiresAt: Date.now() + 86_400_000,
+        });
+      }
+      if (href.includes("dealsets.tpl")) {
+        return htmlResponse(slSetListHtml([["902", "Choice Albany Polecats"]]));
+      }
+      if (isTokenUrl(href, "buysportscards")) {
+        return jsonResponse({ token: "bsc-stub" });
+      }
+      if (href.includes("api-prod.buysportscards.com")) {
+        return jsonResponse(
+          bscSetListJson([["choice-albany-polecats", "Choice Albany Polecats"]]),
+        );
+      }
+      throw new Error(`unexpected fetch: ${href}`);
+    });
+
+    const result = await asAdmin.action(
+      api.selectorOptions.syncSetsAcrossManufacturers,
+      { yearId },
+    );
+    expect(result.success).toBe(true);
+    // No "Choice" row: the set that would have asked for one is the
+    // operator's, and their placement is not reconsidered.
+    expect((await manufacturersOf(t, yearId)).map((m) => m.value)).toEqual([
+      "Unknown",
+    ]);
+    expect(result.message).not.toContain("added from the known list");
+    const row = await t.run(async (ctx) => ctx.db.get(placed));
+    expect(row?.parentId).toBe(unknown);
+    // And the sync still matched it by id — no second copy under Unknown.
+    expect((await setsUnder(t, unknown)).map((r) => r.value)).toEqual([
+      "Choice Albany Polecats",
+    ]);
+  });
+
+  test("a SportLots root that would be created under Unknown is created under its known brand instead", async () => {
+    // A year SportLots serves and BSC does not: the SportLots phase is the
+    // only writer, so this pins the second half of the ticket's requirement 4.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN);
+    const yearId = await t.run(async (ctx) => {
+      const sportId = await ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Hockey",
+        platformData: { sportlots: { s0: "HK" } },
+        platformSlotSeq: { sportlots: 1 },
+        children: [],
+        lastUpdated: Date.now(),
+      });
+      return ctx.db.insert("selectorOptions", {
+        level: "year",
+        value: "1997",
+        platformData: { sportlots: { s0: "1997" } },
+        platformSlotSeq: { sportlots: 1 },
+        parentId: sportId,
+        children: [],
+        lastUpdated: Date.now(),
+      });
+    });
+    const unknown = await insertManufacturer(t, yearId, "Unknown", {
+      slId: "All Brands",
+      isBrandUnknown: true,
+    });
+
+    stubFetch(async (url) => {
+      const href = String(url);
+      if (href.includes("buysportscards")) {
+        throw new Error(`BSC must not be contacted: ${href}`);
+      }
+      if (isTokenUrl(href, "sportlots")) {
+        return jsonResponse({
+          token: "SLSESSION=stub",
+          expiresAt: Date.now() + 86_400_000,
+        });
+      }
+      if (href.includes("dealsets.tpl")) {
+        return htmlResponse(
+          slSetListHtml([
+            ["901", "Pucko Swedish Elite League"],
+            ["902", "Roanoke Express ECHL"],
+          ]),
+        );
+      }
+      throw new Error(`unexpected fetch: ${href}`);
+    });
+
+    const result = await asAdmin.action(
+      api.selectorOptions.syncSetsAcrossManufacturers,
+      { yearId, manufacturerId: unknown },
+    );
+    expect(result.success).toBe(true);
+    expect(result.message).toContain("1 brand added from the known list");
+    expect(result.message).toContain("1 set filed under a known brand");
+    expect(result.message).toContain("2 sets added from SportLots");
+
+    const mfrs = await manufacturersOf(t, yearId);
+    expect(mfrs.map((m) => m.value).sort()).toEqual(["Pucko", "Unknown"]);
+    const pucko = mfrs.find((m) => m.value === "Pucko")!;
+    expect(pucko.metadata?.setNamePrefix).toBe("Pucko");
+    expect(pucko.platformData.sportlots).toEqual({ s0: "All Brands" });
+
+    // The set keeps the label as its name (the brand prefix is already on
+    // the front of it) and its Base carries the SportLots id.
+    const puckoSets = await setsUnder(t, pucko._id);
+    expect(puckoSets.map((r) => r.value)).toEqual(["Pucko Swedish Elite League"]);
+    const [puckoBase] = await variantsUnder(t, puckoSets[0]._id);
+    expect(puckoBase.value).toBe("Base");
+    expect(puckoBase.platformData.sportlots).toEqual({ s0: "901" });
+
+    // What no known brand claims still lands under Unknown.
+    const unknownSets = await setsUnder(t, unknown);
+    expect(unknownSets.map((r) => r.value)).toEqual(["Roanoke Express ECHL"]);
+  });
+});

@@ -3,7 +3,10 @@ import type { MutationCtx } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { requireAdmin } from "./auth";
-import { rehomeSetsFromBrandUnknown } from "./brandRehome";
+import {
+  rehomeSetRowsToBrand,
+  rehomeSetsFromBrandUnknown,
+} from "./brandRehome";
 import { pausedSides } from "./marketplacePause";
 import {
   resolvableSides,
@@ -365,5 +368,235 @@ export const setManufacturerSlViaAllBrands = mutation({
       lastUpdated: Date.now(),
     });
     return null;
+  },
+});
+
+// ---------------------------------------------------------------------------
+// NEO-294 — the operator moves a set to a different brand
+// ---------------------------------------------------------------------------
+
+/**
+ * One destination the Attributes panel may offer, in the order the
+ * Manufacturers column shows it.
+ *
+ * `isCurrent` is the set's own parent: returned rather than filtered out so
+ * the panel can say which one it is leaving without a second read, and so a
+ * future surface that wants to show it greyed has the fact. The panel's
+ * picker drops it — "move it to where it already is" is not an option.
+ */
+const brandChoiceValidator = v.object({
+  _id: v.id("selectorOptions"),
+  value: v.string(),
+  isCurrent: v.boolean(),
+});
+
+/**
+ * The Manufacturers column's own order, so the picker and the column never
+ * disagree about where a brand sits.
+ *
+ * `EntitySelector`'s comparator, exactly: the year's Unknown row leads
+ * (`leadRow` in `ManufacturerSelector`, read off the NB flag and never off
+ * the name), then two all-numeric names sort DESCENDING — years read
+ * newest-first everywhere in this tree — and everything else by
+ * `localeCompare`. `Number("")` is 0, so two empty names compare numerically;
+ * that is the column's behaviour too, and a manufacturer row with an empty
+ * name is not a thing the tree can produce.
+ */
+export function compareBrandChoices(
+  a: Pick<Doc<"selectorOptions">, "value" | "metadata">,
+  b: Pick<Doc<"selectorOptions">, "value" | "metadata">,
+): number {
+  const leadA = a.metadata?.isBrandUnknown === true ? 0 : 1;
+  const leadB = b.metadata?.isBrandUnknown === true ? 0 : 1;
+  if (leadA !== leadB) return leadA - leadB;
+  const numA = Number(a.value);
+  const numB = Number(b.value);
+  if (!isNaN(numA) && !isNaN(numB)) return numB - numA;
+  return a.value.localeCompare(b.value);
+}
+
+/**
+ * NEO-294 — every brand a set could move to: the manufacturers of the set's
+ * OWN year, Unknown among them.
+ *
+ * Scoped to the year because the move is a re-parent inside one year and
+ * nothing else: a set's year is decided by where it was synced or created,
+ * and moving it across years would be a different, larger claim about the
+ * card. `[]` — never a throw — for an id that is not a set, or a set whose
+ * chain is incomplete: the panel asks this the moment its picker opens, and
+ * "there is nowhere to move it" is an ordinary answer.
+ *
+ * A separate query from `getSetsUnderYear` deliberately: that one is the All
+ * Brands VIEW's read, keyed on a year and carrying a thousand sets, and the
+ * picker wants one year's brand rows keyed on a set. Folding them would make
+ * every picker open pay for the view's payload.
+ */
+export const getBrandsForYearOfSet = query({
+  args: { setId: v.id("selectorOptions") },
+  returns: v.array(brandChoiceValidator),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    const set = await ctx.db.get(args.setId);
+    if (!set || set.level !== "setName" || !set.parentId) return [];
+    const currentBrand = await ctx.db.get(set.parentId);
+    if (!currentBrand || currentBrand.level !== "manufacturer") return [];
+    const yearId = currentBrand.parentId;
+    if (!yearId) return [];
+
+    const brands = await ctx.db
+      .query("selectorOptions")
+      .withIndex("by_level_and_parent", (q) =>
+        q.eq("level", "manufacturer").eq("parentId", yearId),
+      )
+      .collect();
+    return brands.sort(compareBrandChoices).map((brand) => ({
+      _id: brand._id,
+      value: brand.value,
+      isCurrent: brand._id === currentBrand._id,
+    }));
+  },
+});
+
+/**
+ * NEO-294 — move one set under a different brand of the same year.
+ *
+ * The operator's undo for every automatic placement: the prefix re-home, the
+ * known-brands list that creates a brand and files a set under it, and the
+ * sync's own bucketing. Auto-create is irreversible without it, which is why
+ * it ships in the same ticket.
+ *
+ * A PURE NB RE-PARENT — `rehomeSetRowsToBrand` does the work, so the set keeps
+ * its `_id`, its variant types, inserts and parallels, its cards and every
+ * marketplace slot on all of them; only `parentId`, the row's `manufacturer`
+ * feature snapshot and the two `children` caches change. Nothing here reads a
+ * marketplace value: both ends are NB rows named by NB ids.
+ *
+ * UNKNOWN IS A LEGAL DESTINATION HERE, and nowhere else. `rehomeSetRowsToBrand`
+ * refuses the year's flagged row for every automatic caller — a sync filing a
+ * set INTO "NB has not identified this brand" would be throwing information
+ * away — but an operator saying "this is not a Choice set, put it back" is
+ * making exactly that claim on purpose, so this door passes the opt-in.
+ *
+ * MOVED TWICE IS STILL THE OPERATOR. The stamp makes every AUTOMATIC re-home
+ * skip the row; this door passes `includeOperatorPlaced` so the operator can
+ * change their mind as often as they like.
+ *
+ * AND THE MOVE STICKS. The row is stamped `metadata.brandSetByOperator`, which
+ * every automatic re-home path skips: without it the next Sync Sets would see
+ * a set under Unknown whose name matches a known brand and file it straight
+ * back, and the operator's decision would survive until the next cron. Sync is
+ * additive and id-keyed; it does not overrule a person.
+ *
+ * Refusals, in order, all `ConvexError` so the panel can show them as written:
+ *
+ *  - the source is not a `setName` row — nothing else has a brand to move
+ *    between (a variant belongs to its set, not to a brand);
+ *  - the target is not a `manufacturer` row;
+ *  - the target is under a different year — the move is within one year;
+ *  - the target is already the set's parent — refused rather than treated as a
+ *    silent success, because a no-op that reports "Moved" is a lie about a
+ *    write, and the panel never offers the current brand anyway;
+ *  - a fold-equal sibling name already under the target
+ *    (`SET_NAME_CLASH_AT_TARGET`), which is the NEO-219 one-name-per-parent
+ *    rule. NOTHING IS MERGED AND NOTHING IS DELETED: two same-named sets under
+ *    one brand is a question about which is which, and this mutation must not
+ *    answer it. The refusal names the set already there so the operator can go
+ *    and rename one of them.
+ *
+ * Returns the destination's NB name for the panel's toast; the panel has the
+ * name already, but a confirmation that echoes the SERVER's row is the one
+ * that means the write landed on the brand the operator picked.
+ */
+export const moveSetToBrand = mutation({
+  args: {
+    setId: v.id("selectorOptions"),
+    brandId: v.id("selectorOptions"),
+  },
+  returns: v.object({ movedTo: v.string() }),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    const set = await ctx.db.get(args.setId);
+    if (!set) {
+      throw new ConvexError("That set is gone. Refresh and try again.");
+    }
+    if (set.level !== "setName") {
+      throw new ConvexError(
+        "Only a set moves to another brand — not a sport, a year or a variant.",
+      );
+    }
+    const target = await ctx.db.get(args.brandId);
+    if (!target) {
+      throw new ConvexError("That brand is gone. Refresh and try again.");
+    }
+    if (target.level !== "manufacturer") {
+      throw new ConvexError("A set moves under a brand — that row is not one.");
+    }
+    if (!set.parentId) {
+      throw new ConvexError(
+        "This set has no brand above it. Refresh and try again.",
+      );
+    }
+    if (set.parentId === target._id) {
+      throw new ConvexError(`This set is already under ${target.value}.`);
+    }
+    const currentBrand = await ctx.db.get(set.parentId);
+    if (!currentBrand || currentBrand.level !== "manufacturer") {
+      throw new ConvexError(
+        "This set has no brand above it. Refresh and try again.",
+      );
+    }
+    if (!target.parentId || target.parentId !== currentBrand.parentId) {
+      throw new ConvexError(
+        `${target.value} is in a different year — a set moves between the brands of its own year.`,
+      );
+    }
+
+    // The NEO-219 rule, checked here so the operator gets a refusal that names
+    // the set in the way: `rehomeSetRowsToBrand` COUNTS a clash and leaves the
+    // row where it is, which is right for a sync moving many rows and silent
+    // for one moving exactly one.
+    const key = selectorValueKey(set.value);
+    const targetSets = await ctx.db
+      .query("selectorOptions")
+      .withIndex("by_level_and_parent", (q) =>
+        q.eq("level", "setName").eq("parentId", target._id),
+      )
+      .collect();
+    const clash = targetSets.find((row) => selectorValueKey(row.value) === key);
+    if (clash) {
+      throw new ConvexError({
+        code: "SET_NAME_CLASH_AT_TARGET",
+        existingId: clash._id,
+        value: clash.value,
+      });
+    }
+
+    const { rehomed } = await rehomeSetRowsToBrand(ctx, {
+      rows: [set],
+      brandId: target._id,
+      // NEO-294 — the one caller allowed to file a set back into the year's
+      // Unknown row, because a person is saying so.
+      allowBrandUnknownTarget: true,
+      // And the one caller allowed to re-place a row an operator already
+      // placed: every automatic path skips a stamped row, but a second
+      // decision by the same hand is still theirs. Without this the first
+      // move would be the last one this control could make.
+      includeOperatorPlaced: true,
+    });
+    if (rehomed !== 1) {
+      // Every reason a row is skipped is checked above, so this is a row that
+      // changed under the operator between the checks and the write.
+      throw new ConvexError("That set didn't move. Refresh and try again.");
+    }
+
+    // Stamped AFTER the move and read fresh, so the flag lands on the row as
+    // `rehomeSetRowsToBrand` left it rather than on a stale copy of it.
+    const moved = await ctx.db.get(set._id);
+    await ctx.db.patch(set._id, {
+      metadata: { ...(moved?.metadata ?? {}), brandSetByOperator: true },
+      lastUpdated: Date.now(),
+    });
+
+    return { movedTo: target.value };
   },
 });

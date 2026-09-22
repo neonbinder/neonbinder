@@ -985,6 +985,27 @@ export type BrandRouteManufacturer<TId extends string = string> = {
 export type BscSetHolder<TId extends string = string> = {
   rowId: TId;
   parentId: TId;
+  /**
+   * NEO-294 — `metadata.brandSetByOperator`: an operator put this row where
+   * it is. Read only to REFUSE a move; nothing else about the row changes.
+   */
+  setByOperator?: boolean;
+};
+
+/**
+ * NEO-294 — a brand from the known list that this year does not have yet,
+ * and the sets that asked for it.
+ *
+ * DATA, not an action: `routeBscSets` is pure and cannot create a row, so it
+ * reports the brand NAME it wants and the caller mints it (`ensureBrandRow`)
+ * before routing runs again with that row in hand. The name is an NB
+ * constant from `knownBrands.ts`, never a marketplace value.
+ */
+export type KnownBrandRequest = {
+  /** The entry from `KNOWN_BRANDS`, exactly as spelled there. */
+  brand: string;
+  /** The BSC sets that matched it — reported so the caller can say how many. */
+  sets: MarketplaceSetEntry[];
 };
 
 export type BscSetRoutePlan<TId extends string = string> = {
@@ -998,6 +1019,14 @@ export type BscSetRoutePlan<TId extends string = string> = {
    * than inserting a second copy. Only ever Unknown → brand.
    */
   moves: Array<{ rowId: TId; fromId: TId; toId: TId }>;
+  /**
+   * NEO-294 — the known brands this year would need for the sets that
+   * otherwise land in Unknown, deduped and in first-seen order. Empty unless
+   * a `matchKnownBrand` was passed in. The sets counted here are ALSO in
+   * `unknown`: until the brand row exists there is nowhere else to put them,
+   * and the caller re-routes once it does.
+   */
+  knownBrandRequests: KnownBrandRequest[];
 };
 
 /**
@@ -1023,12 +1052,32 @@ export type BscSetRoutePlan<TId extends string = string> = {
  * had filed under a brand — or that a brand's creation had re-homed — was
  * re-inserted under whichever bucket the prefix chose. This is the fix.
  *
+ * NEO-294 adds two rules AROUND that ladder, both on the Unknown rung:
+ *
+ *   • AN OPERATOR'S PLACEMENT IS FINAL. A holder carrying `setByOperator`
+ *     never moves and its set is bucketed where the row already is — under
+ *     Unknown, in place. It is checked BEFORE the prefix, so the operator
+ *     outranks a brand's prefix and the known list alike. Bucketing it
+ *     anywhere else would insert a second copy beside the row it named.
+ *   • THE KNOWN LIST IS THE LAST WORD BEFORE UNKNOWN. A set no NB brand
+ *     claims is offered to `matchKnownBrand`; a hit is reported in
+ *     `knownBrandRequests` and the set ALSO stays in `unknown` for this
+ *     pass, because the brand row does not exist yet. The caller mints the
+ *     requested brands and calls this function again with them in
+ *     `manufacturers`, where rung 2 files the sets and the Unknown holders
+ *     become ordinary prefix moves. One function decides placement, once.
+ *
  * Pure: it reads rows and returns a plan; the action re-homes and stores.
+ * `matchKnownBrand` is injected rather than imported so this module stays
+ * free of `knownBrands.ts` (which imports the matcher from here) and so a
+ * test can route against a list of its own.
  */
 export function routeBscSets<TId extends string>(args: {
   sets: readonly MarketplaceSetEntry[];
   manufacturers: readonly BrandRouteManufacturer<TId>[];
   holdersByBscId: ReadonlyMap<string, readonly BscSetHolder<TId>[]>;
+  /** NEO-294 — `knownBrands.matchKnownBrand`; absent means "no known list". */
+  matchKnownBrand?: (setName: string) => string | undefined;
 }): BscSetRoutePlan<TId> {
   const unknownIds = new Set<TId>();
   // Prefix candidates, longest folded prefix first, so the first match is the
@@ -1058,6 +1107,16 @@ export function routeBscSets<TId extends string>(args: {
     else buckets.set(id, [set]);
   };
 
+  // NEO-294 — requested known brands, deduped on the folded name so two
+  // spellings of one entry could never ask for two rows. First-seen order.
+  const requests = new Map<string, KnownBrandRequest>();
+  const requestKnownBrand = (brand: string, set: MarketplaceSetEntry) => {
+    const key = selectorValueKey(brand);
+    const existing = requests.get(key);
+    if (existing) existing.sets.push(set);
+    else requests.set(key, { brand, sets: [set] });
+  };
+
   for (const set of args.sets) {
     const holders = args.holdersByBscId.get(set.platformValue) ?? [];
     const brandHolder = holders.find((h) => !unknownIds.has(h.parentId));
@@ -1065,10 +1124,20 @@ export function routeBscSets<TId extends string>(args: {
       bucket(brandHolder.parentId, set);
       continue;
     }
-    const target = brandByPrefix(set.value);
     if (holders.length > 0) {
       // Every holder sits under Unknown.
+      //
+      // NEO-294 — unless an operator put one of them there, in which case
+      // this set is theirs and neither the prefix nor the known list gets a
+      // vote. The row stays; the set is bucketed nowhere but Unknown.
+      if (holders.some((h) => h.setByOperator === true)) {
+        unknown.push(set);
+        continue;
+      }
+      const target = brandByPrefix(set.value);
       if (target === undefined) {
+        const known = args.matchKnownBrand?.(set.value);
+        if (known !== undefined) requestKnownBrand(known, set);
         unknown.push(set);
         continue;
       }
@@ -1080,11 +1149,17 @@ export function routeBscSets<TId extends string>(args: {
       bucket(target, set);
       continue;
     }
-    if (target === undefined) unknown.push(set);
-    else bucket(target, set);
+    const target = brandByPrefix(set.value);
+    if (target !== undefined) {
+      bucket(target, set);
+      continue;
+    }
+    const known = args.matchKnownBrand?.(set.value);
+    if (known !== undefined) requestKnownBrand(known, set);
+    unknown.push(set);
   }
 
-  return { buckets, unknown, moves };
+  return { buckets, unknown, moves, knownBrandRequests: [...requests.values()] };
 }
 
 // ───────────────────────────────────────────────────────────────────────────

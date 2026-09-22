@@ -26,6 +26,7 @@ import RenameEntityControl from "./RenameEntityControl";
 import BaseRoleControl from "./BaseRoleControl";
 import { isBaseRole } from "./baseRole";
 import FillTeamsControl from "./FillTeamsControl";
+import MoveSetToBrandControl from "./MoveSetToBrandControl";
 import TeamPicker, { type TeamPickerLabels } from "./TeamPicker";
 import {
   ALL_SIDES,
@@ -238,6 +239,10 @@ export default function SetAttributesPanel({
   if (!row || !chain) return null;
 
   const leafLevel = row.level as Level;
+  // NEO-294 — the year the move picker's brands belong to, named so the list
+  // says WHICH year's brands it is offering. Not a memo: it is one find over a
+  // chain of at most seven, below the guard that makes `chain` non-null.
+  const ancestorYear = chain.find((c) => c.level === "year")?.value;
   const features = row.features ?? {};
   const teamIds: Array<Id<"teams">> = row.teamIds ?? [];
   const showTeamRow = TEAM_LEVELS.has(leafLevel);
@@ -513,6 +518,28 @@ export default function SetAttributesPanel({
               level={leafLevel}
               onDeleted={onDeleted}
             />
+            {/* NEO-294: the operator's undo for every automatic placement —
+                the prefix re-home, the known-brands list, the sync's own
+                bucketing into Unknown. Beside the delete because those two
+                are the whole of what can be done to the set ROW, as opposed
+                to its attributes, and because a set filed under the wrong
+                brand is the case an operator would otherwise "fix" by
+                deleting and rebuilding it. Set level only: a brand is a
+                set's parent, and nothing else here has one.
+
+                Keyed with its own prefix for the reason the Fill teams
+                control is: the delete beside it is keyed on the same row id,
+                and two siblings sharing a key is the one thing React refuses
+                to reconcile. */}
+            {leafLevel === "setName" && (
+              <MoveSetToBrandControl
+                key={`move-brand-${selectorOptionId}`}
+                setId={selectorOptionId}
+                setValue={row.value}
+                yearLabel={ancestorYear}
+                showToast={showToast}
+              />
+            )}
           </div>
           <p className="text-xs text-gray-500 mt-0.5 truncate" title={breadcrumb}>
             {breadcrumb}

@@ -115,9 +115,11 @@ import {
 // inside this boundary and nowhere user-facing (see the module header).
 import { SL_ALL_BRANDS_BRAND_ID, isSlAllBrandsBrandId } from "./slBrandAxis";
 // NEO-237 — the pure NB re-home, Unknown → brand, shared by the three doors.
+import { matchKnownBrand } from "./knownBrands";
 import {
   countNoun,
   rehomedNotice,
+  ensureBrandRowForName,
   rehomeSetRowsToBrand,
   rehomeSetsFromBrandUnknown,
 } from "./brandRehome";
@@ -9182,6 +9184,50 @@ export const ensureBrandUnknownRow = internalMutation({
 });
 
 /**
+ * NEO-294 — find or mint the year's brand row for a name from the KNOWN
+ * BRANDS list, so a set that matches one is filed under that brand instead
+ * of Unknown.
+ *
+ * INTERNAL, like `ensureBrandUnknownRow` beside it and for the same reason:
+ * the row is born with a `metadata.setNamePrefix` and a SportLots sentinel,
+ * and `addCustomSelectorOption` — the public creation path — takes no
+ * `metadata` argument and must not gain one. The mint itself is the shared
+ * helper in brandRehome.ts, so the backfill (a mutation, which cannot call
+ * this one) creates byte-identical rows.
+ *
+ * `name` is an NB constant (`KNOWN_BRANDS`), never a marketplace value: the
+ * caller matched a set's NB display name against the list and is asking for
+ * the row that list names. Idempotent by folded name — a second sync over
+ * the same year finds the row and writes nothing.
+ */
+export const ensureBrandRow = internalMutation({
+  args: {
+    yearId: v.id("selectorOptions"),
+    /** An entry from `KNOWN_BRANDS`, exactly as spelled there. */
+    name: v.string(),
+  },
+  returns: v.object({
+    /** `null` when the year's flagged Unknown row wears this name. */
+    id: v.union(v.id("selectorOptions"), v.null()),
+    created: v.boolean(),
+    /** The row's actual prefix — an adopted pre-NEO-237 row may have none. */
+    setNamePrefix: v.optional(v.string()),
+  }),
+  handler: async (ctx, args) => {
+    const checked = checkCustomSelectorValue("manufacturer", args.name);
+    if (!checked.ok) {
+      // A constant in this repo's own source cannot fail the check; if it
+      // ever does, that is a bug in the list, not an operator's input.
+      throw new Error(`ensureBrandRow: ${checked.reason}`);
+    }
+    return await ensureBrandRowForName(ctx, {
+      yearId: args.yearId,
+      name: checked.value,
+    });
+  },
+});
+
+/**
  * NEO-237 — does ANY manufacturer under the year hold a set? The "already
  * populated" test for a Sets column opened from the All Brands view, where
  * the column's parent is the year and no setName row is ever parented by one.
@@ -9241,6 +9287,8 @@ export const listYearSetRows = internalQuery({
         parentId: v.id("selectorOptions"),
         value: v.string(),
         bscIds: v.array(v.string()),
+        /** NEO-294 — `metadata.brandSetByOperator`: this row does not move. */
+        setByOperator: v.optional(v.boolean()),
       }),
     ),
     truncated: v.boolean(),
@@ -9257,6 +9305,7 @@ export const listYearSetRows = internalQuery({
       parentId: Id<"selectorOptions">;
       value: string;
       bscIds: string[];
+      setByOperator?: boolean;
     }> = [];
     let truncated = false;
     for (const mfr of manufacturers) {
@@ -9278,6 +9327,9 @@ export const listYearSetRows = internalQuery({
           parentId: mfr._id,
           value: row.value,
           bscIds: slotIds(row, "bsc"),
+          ...(row.metadata?.brandSetByOperator !== undefined
+            ? { setByOperator: row.metadata.brandSetByOperator }
+            : {}),
         });
       }
     }
@@ -9681,6 +9733,11 @@ export const syncSetsAcrossManufacturers = action({
       let totalStored = 0;
       // Sets the SportLots phase minted (D13), reported to the column.
       let slCreatedTotal = 0;
+      // NEO-294 — brands minted from the KNOWN BRANDS list this run, and the
+      // sets filed under them. Both phases add to these and the summary says
+      // them once, so the operator reads one number per fact.
+      let knownBrandsAdded = 0;
+      let knownBrandSetsFiled = 0;
 
       // ── BSC phase ─────────────────────────────────────────────────────
       //
@@ -9747,16 +9804,78 @@ export const syncSetsAcrossManufacturers = action({
           for (const row of index.sets) {
             for (const bscId of row.bscIds) {
               const list = holdersByBscId.get(bscId);
-              const holder = { rowId: row._id, parentId: row.parentId };
+              const holder = {
+                rowId: row._id,
+                parentId: row.parentId,
+                // NEO-294 — an operator's placement; this row never moves.
+                ...(row.setByOperator !== undefined
+                  ? { setByOperator: row.setByOperator }
+                  : {}),
+              };
               if (list) list.push(holder);
               else holdersByBscId.set(bscId, [holder]);
             }
           }
-          const plan = routeBscSets<Id<"selectorOptions">>({
-            sets: bscResult.options,
-            manufacturers: index.manufacturers,
-            holdersByBscId,
-          });
+          // The routing input, which the known-brand pre-pass may GROW.
+          let routeManufacturers: Array<{
+            _id: Id<"selectorOptions">;
+            value: string;
+            setNamePrefix?: string;
+            isBrandUnknown?: boolean;
+          }> = index.manufacturers;
+          const route = () =>
+            routeBscSets<Id<"selectorOptions">>({
+              sets: bscResult.options,
+              manufacturers: routeManufacturers,
+              holdersByBscId,
+              // NEO-294 — consulted ONLY for a set that would land in
+              // Unknown; an NB brand, by id or by prefix, always wins first.
+              matchKnownBrand,
+            });
+          let plan = route();
+
+          // 2b. NEO-294 — the known-brand pre-pass. `routeBscSets` is pure
+          // and cannot create a row, so it named the brands this year would
+          // need; mint them here (idempotent, one row per year per brand)
+          // and route again with them in hand. The second pass is what
+          // FILES the sets — one function decides placement, once — and it
+          // turns the Unknown holders of those sets into ordinary prefix
+          // moves, which step 3 applies.
+          if (plan.knownBrandRequests.length > 0) {
+            const minted: typeof routeManufacturers = [];
+            let brandsAdded = 0;
+            for (const request of plan.knownBrandRequests) {
+              const ensured = await ctx.runMutation(
+                internal.selectorOptions.ensureBrandRow,
+                { yearId: args.yearId, name: request.brand },
+              );
+              // `null` = the year's flagged Unknown row already wears this
+              // name (an operator's rename). Nothing was created and these
+              // sets stay where they are.
+              if (ensured.id === null) continue;
+              if (ensured.created) brandsAdded++;
+              minted.push({
+                _id: ensured.id,
+                value: request.brand,
+                ...(ensured.setNamePrefix !== undefined
+                  ? { setNamePrefix: ensured.setNamePrefix }
+                  : {}),
+              });
+            }
+            if (minted.length > 0) {
+              routeManufacturers = [...routeManufacturers, ...minted];
+              plan = route();
+            }
+            // Counted from the FINAL plan, so the number is what was filed
+            // rather than what was hoped for: a brand row adopted from
+            // before NEO-237 may carry no prefix and claim nothing.
+            const filed = minted.reduce(
+              (n, m) => n + (plan.buckets.get(m._id)?.length ?? 0),
+              0,
+            );
+            knownBrandsAdded += brandsAdded;
+            knownBrandSetsFiled += filed;
+          }
 
           // 3. Re-home Unknown → brand BEFORE storing, so the brand's bucket
           // matches the moved row by id (D9). Not on a truncated index: a
@@ -9788,7 +9907,7 @@ export const syncSetsAcrossManufacturers = action({
             plan.buckets,
           );
           if (plan.unknown.length > 0) {
-            let unknownId = index.manufacturers.find(
+            let unknownId = routeManufacturers.find(
               (m) => m.isBrandUnknown === true,
             )?._id;
             if (!unknownId) {
@@ -9831,7 +9950,7 @@ export const syncSetsAcrossManufacturers = action({
             }
             // An internal LOG string, not a card title. Counts per bucket.
             const name =
-              index.manufacturers.find((m) => m._id === parentId)?.value ??
+              routeManufacturers.find((m) => m._id === parentId)?.value ??
               BRAND_UNKNOWN_VALUE;
             summary.push(`${name}: ${sets.length}`);
           }
@@ -10015,9 +10134,47 @@ export const syncSetsAcrossManufacturers = action({
         // that set's Base picker / attach pane, and the summary says how
         // many there are.
         let slVariantsOfKnown = 0;
+        /**
+         * Write one brand's new roots: at most `MAX_SL_SETS_PER_MUTATION`
+         * per transaction, counts summed. Returns how many sets were
+         * created, so the known-brand split can report its own number.
+         */
+        const writeRoots = async (
+          manufacturerId: Id<"selectorOptions">,
+          rootArgs: Array<{ id: string; label: string }>,
+        ): Promise<number> => {
+          let createdHere = 0;
+          const chunks = chunkSlRoots(rootArgs, MAX_SL_SETS_PER_MUTATION);
+          for (let c = 0; c < chunks.length; c++) {
+            const written = await ctx.runMutation(
+              internal.selectorOptions.createSetsFromSlRoots,
+              {
+                manufacturerId,
+                roots: chunks[c],
+                createdByUserId: adminUserId,
+              },
+            );
+            createdHere += written.created;
+            slCreated += written.created;
+            slCreatedTotal += written.created;
+            slClashedAtTarget += written.clashedAtTarget;
+            slExistsElsewhere += written.existsElsewhere;
+            totalStored += written.created;
+            if (written.indexTruncated) {
+              // Nothing of this chunk was filed and the later chunks would
+              // fare the same: count them all and stop for this scope.
+              slIndexTruncated += chunks
+                .slice(c)
+                .reduce((n, chunk) => n + chunk.length, 0);
+              break;
+            }
+          }
+          return createdHere;
+        };
         const classify = async (
           scope: (typeof scopes)[number],
           entries: Array<{ id: string; label: string }>,
+          opts: { knownBrandSplit?: boolean } = {},
         ) => {
           const covered = await ctx.runQuery(
             internal.selectorOptions.listBrandSubtreeSlIds,
@@ -10051,31 +10208,51 @@ export const syncSetsAcrossManufacturers = action({
           // SportLots id, in transactions of at most MAX_SL_SETS_PER_MUTATION
           // roots per brand scope, in the classifier's order. Members are not
           // written; the next sync files them as the new set's variants.
-          const rootArgs = routed.roots.map((r) => ({ id: r.id, label: r.label }));
-          const chunks = chunkSlRoots(rootArgs, MAX_SL_SETS_PER_MUTATION);
-          for (let c = 0; c < chunks.length; c++) {
-            const written = await ctx.runMutation(
-              internal.selectorOptions.createSetsFromSlRoots,
-              {
-                manufacturerId: scope._id,
-                roots: chunks[c],
-                createdByUserId: adminUserId,
-              },
-            );
-            slCreated += written.created;
-            slCreatedTotal += written.created;
-            slClashedAtTarget += written.clashedAtTarget;
-            slExistsElsewhere += written.existsElsewhere;
-            totalStored += written.created;
-            if (written.indexTruncated) {
-              // Nothing of this chunk was filed and the later chunks would
-              // fare the same: count them all and stop for this scope.
-              slIndexTruncated += chunks
-                .slice(c)
-                .reduce((n, chunk) => n + chunk.length, 0);
-              break;
+          let rootArgs = routed.roots.map((r) => ({ id: r.id, label: r.label }));
+
+          // NEO-294 — a root ABOUT TO BE CREATED UNDER UNKNOWN whose label
+          // matches a known brand is created under that brand instead. Only
+          // the Unknown scope splits: every other scope is a brand already,
+          // and taking a set off the brand SportLots listed it under would be
+          // the sync second-guessing a placement. The brand is minted exactly
+          // as the BSC phase mints it, and `createSetsFromSlRoots` names the
+          // set from that brand's prefix, so "Choice Biloxi Shuckers" keeps
+          // its name rather than gaining a second "Choice".
+          if (opts.knownBrandSplit) {
+            const groups = new Map<
+              string,
+              { brand: string; roots: typeof rootArgs }
+            >();
+            const rest: typeof rootArgs = [];
+            for (const root of rootArgs) {
+              const brand = matchKnownBrand(root.label);
+              if (brand === undefined) {
+                rest.push(root);
+                continue;
+              }
+              const key = selectorValueKey(brand);
+              const group = groups.get(key);
+              if (group) group.roots.push(root);
+              else groups.set(key, { brand, roots: [root] });
             }
+            for (const group of groups.values()) {
+              const ensured = await ctx.runMutation(
+                internal.selectorOptions.ensureBrandRow,
+                { yearId: args.yearId, name: group.brand },
+              );
+              if (ensured.id === null) {
+                // The flagged row wears this name; these sets stay put.
+                rest.push(...group.roots);
+                continue;
+              }
+              if (ensured.created) knownBrandsAdded++;
+              knownBrandSetsFiled += await writeRoots(ensured.id, group.roots);
+            }
+            rootArgs = rest;
           }
+
+          if (rootArgs.length === 0) return;
+          await writeRoots(scope._id, rootArgs);
         };
 
         // Every brand's prefix, for the Unknown scope: Unknown holds what
@@ -10108,7 +10285,9 @@ export const syncSetsAcrossManufacturers = action({
               .filter((e) => matchesBrandPrefix(e.label, prefix))
               .map((e) => ({ id: e.id, label: stripMatchedBrandPrefix(e.label, prefix) }));
           }
-          await classify(scope, entries);
+          // NEO-294 — only the Unknown scope offers its roots to the known
+          // list; see `classify`.
+          await classify(scope, entries, { knownBrandSplit: isUnknown });
         }
         for (let i = 0; i < realToFetch.length; i++) {
           const list = realLists[i];
@@ -10165,6 +10344,18 @@ export const syncSetsAcrossManufacturers = action({
               `sets you already have`,
           );
         }
+      }
+
+      // NEO-294 — said once for both phases.
+      if (knownBrandsAdded > 0) {
+        summary.push(
+          `${countNoun(knownBrandsAdded, "brand")} added from the known list`,
+        );
+      }
+      if (knownBrandSetsFiled > 0) {
+        summary.push(
+          `${countNoun(knownBrandSetsFiled, "set")} filed under a known brand`,
+        );
       }
 
       // Success means "something was asked and answered": the same rule

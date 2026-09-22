@@ -142,7 +142,7 @@ describe("rehomeSetRowsToBrand", () => {
       }),
     );
 
-    expect(result).toEqual({ rehomed: 1, clashes: 0 });
+    expect(result).toEqual({ rehomed: 1, clashes: 0, operatorPlaced: 0 });
     const [row, oldParent, newParent] = await t.run(async (ctx) => [
       await ctx.db.get(setId),
       await ctx.db.get(unknown),
@@ -173,7 +173,7 @@ describe("rehomeSetRowsToBrand", () => {
       }),
     );
 
-    expect(result).toEqual({ rehomed: 0, clashes: 1 });
+    expect(result).toEqual({ rehomed: 0, clashes: 1, operatorPlaced: 0 });
     const row = await t.run((ctx) => ctx.db.get(doomed));
     expect(row?.parentId).toBe(unknown);
   });
@@ -190,7 +190,7 @@ describe("rehomeSetRowsToBrand", () => {
         brandId: topps,
       }),
     );
-    expect(result).toEqual({ rehomed: 0, clashes: 0 });
+    expect(result).toEqual({ rehomed: 0, clashes: 0, operatorPlaced: 0 });
   });
 
   test("refuses when the target is not a manufacturer row", async () => {
@@ -238,7 +238,7 @@ describe("rehomeSetRowsToBrand", () => {
         brandId: topps,
       }),
     );
-    expect(result).toEqual({ rehomed: 0, clashes: 0 });
+    expect(result).toEqual({ rehomed: 0, clashes: 0, operatorPlaced: 0 });
   });
 });
 
@@ -261,7 +261,7 @@ describe("rehomeSetsFromBrandUnknown", () => {
       prefix: "Topps",
     }));
 
-    expect(result).toEqual({ rehomed: 1, clashes: 0 });
+    expect(result).toEqual({ rehomed: 1, clashes: 0, operatorPlaced: 0 });
     const [movedRow, staleRow] = await t.run(async (ctx) => [
       await ctx.db.get(matching),
       await ctx.db.get(nonMatching),
@@ -284,7 +284,7 @@ describe("rehomeSetsFromBrandUnknown", () => {
       brandId: topps,
       prefix: "   ",
     }));
-    expect(result).toEqual({ rehomed: 0, clashes: 0 });
+    expect(result).toEqual({ rehomed: 0, clashes: 0, operatorPlaced: 0 });
   });
 
   test("a year with no Unknown row yet returns zeros rather than throwing", async () => {
@@ -297,7 +297,7 @@ describe("rehomeSetsFromBrandUnknown", () => {
       brandId: topps,
       prefix: "Topps",
     }));
-    expect(result).toEqual({ rehomed: 0, clashes: 0 });
+    expect(result).toEqual({ rehomed: 0, clashes: 0, operatorPlaced: 0 });
   });
 
   test("when the brand IS the Unknown row itself, nothing moves", async () => {
@@ -313,7 +313,7 @@ describe("rehomeSetsFromBrandUnknown", () => {
       brandId: unknown,
       prefix: "Topps",
     }));
-    expect(result).toEqual({ rehomed: 0, clashes: 0 });
+    expect(result).toEqual({ rehomed: 0, clashes: 0, operatorPlaced: 0 });
   });
 });
 
