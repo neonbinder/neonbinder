@@ -46,3 +46,4 @@
 - [Inert the opener behind ConfirmDialog](reference_inert_the_opener_behind_confirmdialog.md) — not portalled and traps only Tab; use `inert` not `aria-hidden`, and restore focus in an effect because inert blurs
 - [A re-parent drops a row out of its open column](reference_a_reparent_drops_a_row_out_of_its_open_column.md) — SetSelector columns are scoped to the parent id; re-point the parent column, never clear the selection
 - [Wrap-boundary toolbars move under the cursor](reference_wrap_boundary_toolbar_moves_under_the_cursor.md) — fix the width, not the flow; all 4 admin screens carry it, and the width follows the longest realistic option
+- [Undefined error_class is transient](reference_undefined_error_class_is_transient.md) — an untagged login failure gets the "didn't answer" copy; a test stub must set error_class to reach the refused-credentials wording

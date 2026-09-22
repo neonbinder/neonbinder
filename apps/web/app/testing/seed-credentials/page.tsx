@@ -61,9 +61,18 @@ function TestingSeedCredentialsContent() {
         //
         // `skipped` is NOT a failure — that is the paused-platform path, and it
         // must still navigate.
-        const failed = result.seeded.some((s) => !s.skipped && !s.stored);
-        if (failed) {
-          setStatus(`Seed failed (${summary})`);
+        const failures = result.seeded.filter((s) => !s.skipped && !s.stored);
+        if (failures.length > 0) {
+          // NEO-294: `=fail` said THAT it failed and never WHY, so the
+          // screenshot still cost an investigation to read. seedMyTestCredentials
+          // now carries `saveCredentials`' own message — which already
+          // distinguishes a paused platform, a site-side refusal, a timeout,
+          // refused credentials and a contended lock — so print it. One site
+          // per line keeps several failures legible.
+          const detail = failures
+            .map((s) => `${s.site}: ${s.reason ?? "no reason reported"}`)
+            .join("\n");
+          setStatus(`Seed failed (${detail})`);
           return;
         }
         setStatus(`Seed complete (${summary}) — redirecting...`);
@@ -77,7 +86,7 @@ function TestingSeedCredentialsContent() {
 
   return (
     <div className="flex items-center justify-center min-h-screen bg-background">
-      <p className="text-slate-400 font-mono text-sm">
+      <p className="text-slate-400 font-mono text-sm max-w-3xl px-6 text-center whitespace-pre-line">
         [testing-seed] {status}
       </p>
     </div>
