@@ -17,13 +17,34 @@ import type { Id } from "./_generated/dataModel";
 import type { PlatformSide } from "./platformSlots";
 
 /**
- * Hard ceiling on a single sync batch.
+ * Hard ceiling on the ARGUMENT a single sync batch may carry.
  *
  * The matcher is O(items × siblings-with-the-same-name), which is fine, but a
  * mutation that walks an unbounded client-supplied array is a transaction-time
- * bomb regardless of how cheap each element is. BSC's largest year-level set
- * list is in the hundreds; 2,000 is generous headroom that still fails fast
- * and loudly rather than timing out halfway through a write.
+ * bomb regardless of how cheap each element is. 2,000 is where that argument
+ * is refused, fast and loudly, rather than timing out halfway through a write.
+ *
+ * ## NEO-296 — this is NOT the transaction bound, and it never was
+ *
+ * The original note here read "BSC's largest year-level set list is in the
+ * hundreds; 2,000 is generous headroom". Both halves went stale: SportLots
+ * listed 2,563 sets for one year, and the number was chosen against the
+ * matcher's CPU with no reference to what an item costs in Convex SYSTEM
+ * OPERATIONS. Those are counted one per CALL — a `.collect()` of 2,000 rows is
+ * one — so the cost that matters is the per-item loop: one `insert` per fresh
+ * row and one `patch` per changed row. At this cap that is up to ~4,000
+ * operations, past the line where a transaction fails outright.
+ *
+ * The real bound is a WRITE BUDGET inside each store, applied per transaction
+ * and resumable by replay:
+ *
+ *   `SELECTOR_STORE_WRITE_BUDGET`  — `selectorOptions.storeSelectorOptions`
+ *   `RECONCILE_STORE_WRITE_BUDGET` — `setReconciliation.storeReconciledOptions`
+ *
+ * So this constant now does one job only: it bounds the ARRAY a caller may
+ * hand over in one call. How much of that array a given transaction gets
+ * through is the budget's question, and both stores report `hasMore` when the
+ * answer is "not all of it".
  */
 export const MAX_SYNC_ITEMS = 2000;
 

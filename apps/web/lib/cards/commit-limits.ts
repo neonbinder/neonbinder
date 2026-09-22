@@ -25,3 +25,19 @@
  * to discover it. The modal caps its own selection at this number and says so.
  */
 export const MAX_OPERATOR_DELETE_IDS = 1000;
+
+/**
+ * NEO-296 — how many card numbers one `addCrossListingsByCardNumbers`
+ * transaction resolves and links.
+ *
+ * Here rather than in `convex/selectorOptions.ts` for the same reason
+ * `MAX_OPERATOR_DELETE_IDS` is: `CrossListingImportModal` slices its paste
+ * against this number and the mutation refuses above it, so the two must be
+ * one constant. A component cannot import a Convex function module without
+ * pulling the backend into the browser bundle.
+ *
+ * The arithmetic lives on the mutation, which is where the operations are
+ * spent: ~2 per number (an indexed read on the source set, plus an insert),
+ * so 400 is ~800 against the ~900 the house treats as comfortable.
+ */
+export const CROSS_LISTING_LINKS_PER_CALL = 400;

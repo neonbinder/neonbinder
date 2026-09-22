@@ -1031,6 +1031,39 @@ export const startBatch = internalMutation({
      * the operator's own Confirm, which is always allowed to start one.
      */
     continueBatchId: v.optional(v.string()),
+    /**
+     * NEO-296 — player names the CALLER has already established match no
+     * existing row, so this mutation need not ask again.
+     *
+     * `resolveUnknownsAndStartBatch` reaches this function only for names its
+     * own `players.resolveNameForReview` could not resolve, and that query
+     * already returns `matchCount` from the very index pair
+     * `initialEnrichmentFor` is about to read. A name with `matchCount === 0`
+     * has nothing for `buildExistingPlayerCandidates` to find, so the two
+     * index reads it costs are spent proving something the caller was just
+     * told. On a first-time sync — where almost every unknown name is
+     * genuinely new — that is 2 operations × the whole list, ~600 on the
+     * 300-player 2024 Topps Chrome batch, against a per-transaction budget of
+     * `ENTITY_REVIEW_START_OPS` (800).
+     *
+     * A SET of names rather than a parallel array, so it cannot be silently
+     * misaligned with `playerNames` by an edit to either.
+     *
+     * ## What a stale entry costs, and why it is acceptable here
+     *
+     * The caller's answer is a snapshot. If another session inserts a player
+     * of that name in the milliseconds between the two calls, this skips the
+     * lookup and the row is written without `enrichment.existingCandidates` —
+     * so the wizard does not pre-offer the link and the operator reaches the
+     * same row through the search box instead. Nothing is mis-created: the
+     * paths that could mint a duplicate (`recordAllRemainingAsCreate`, the
+     * commit prelude) all re-ask the LIVE index and are untouched by this.
+     *
+     * Absent, or a name not in it, means "ask" — so an old caller, a
+     * hand-written call and the continuation below all behave exactly as
+     * before.
+     */
+    playersWithNoExistingMatch: v.optional(v.array(v.string())),
   },
   returns: v.string(),
   handler: async (ctx, args): Promise<string> => {
@@ -1042,6 +1075,13 @@ export const startBatch = internalMutation({
     let ops = 0;
     /** Work this call deliberately left for its own continuation. */
     let deferred = 0;
+    /**
+     * NEO-296 — names the caller already proved match nothing. Membership is
+     * tested on the RAW name, which is what `playerNames` carries and what
+     * `resolveNameForReview` was asked about, so the two sides agree without a
+     * second normalisation to keep in step.
+     */
+    const noExistingMatch = new Set(args.playersWithNoExistingMatch ?? []);
     /**
      * Hand the rest of this call to the scheduler, tagged with the batch it
      * belongs to. Separate from the pool enqueue below so the two cannot be
@@ -1332,15 +1372,16 @@ export const startBatch = internalMutation({
         }
         // NEO-254 — see `initialEnrichmentFor`. A row added by a resume is as
         // liable to be an ambiguous name as one from a fresh batch.
-        const enrichment = await initialEnrichmentFor(
-          ctx,
-          kind,
-          name,
-          args.sportId,
-          setYear,
-        );
+        //
+        // NEO-296 — unless the caller already asked. See
+        // `playersWithNoExistingMatch`: a name with no matching row has no
+        // candidates to find, and the read is charged only when it happens.
+        const skipLookup = kind === "player" && noExistingMatch.has(name);
+        const enrichment = skipLookup
+          ? undefined
+          : await initialEnrichmentFor(ctx, kind, name, args.sportId, setYear);
         ops +=
-          REVIEW_NAME_LOOKUP_OPS.BASE +
+          (skipLookup ? 0 : REVIEW_NAME_LOOKUP_OPS.BASE) +
           (enrichment ? REVIEW_NAME_LOOKUP_OPS.EXTRA : 0) +
           1;
         addedIds.push(
@@ -1392,15 +1433,15 @@ export const startBatch = internalMutation({
       }
       // NEO-254 — the row knows it is a choice before any lookup runs. See
       // `initialEnrichmentFor` for why that cannot wait for the lookup.
-      const enrichment = await initialEnrichmentFor(
-        ctx,
-        "player",
-        name,
-        args.sportId,
-        setYear,
-      );
+      //
+      // NEO-296 — unless the caller already asked; see
+      // `playersWithNoExistingMatch`.
+      const skipLookup = noExistingMatch.has(name);
+      const enrichment = skipLookup
+        ? undefined
+        : await initialEnrichmentFor(ctx, "player", name, args.sportId, setYear);
       ops +=
-        REVIEW_NAME_LOOKUP_OPS.BASE +
+        (skipLookup ? 0 : REVIEW_NAME_LOOKUP_OPS.BASE) +
         (enrichment ? REVIEW_NAME_LOOKUP_OPS.EXTRA : 0) +
         1;
       ids.push(

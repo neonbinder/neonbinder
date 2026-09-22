@@ -6,6 +6,7 @@ import {
   internalMutation,
   internalQuery,
   ActionCtx,
+  MutationCtx,
   QueryCtx,
 } from "./_generated/server";
 import type { FunctionReference } from "convex/server";
@@ -60,7 +61,10 @@ import { safeMarketplaceText } from "../lib/marketplace/safe-text";
 // each entry point rather than trusted from the adapter. (`MAX_CARD_PLAYERS` /
 // `MAX_CARD_TEAMS` are already imported below.)
 import { MAX_PLAYER_NAME_LENGTH } from "../lib/players/name-limits";
-import { MAX_OPERATOR_DELETE_IDS } from "../lib/cards/commit-limits";
+import {
+  CROSS_LISTING_LINKS_PER_CALL,
+  MAX_OPERATOR_DELETE_IDS,
+} from "../lib/cards/commit-limits";
 // NEO-199: the SAME comparison CardPairingModal uses on a hand-linked pair.
 // An auto-matched disagreement and a manual one have to be the same thing —
 // see the note in lib/cards/card-name.ts.
@@ -273,6 +277,7 @@ import {
   slotForId,
   slotIds,
   slotLabel,
+  type PlatformSide,
 } from "./platformSlots";
 
 // The wire still speaks marketplace IDs — clients know nothing about slots.
@@ -1289,6 +1294,17 @@ async function resolveUnknownsAndStartBatch(
 }> {
   const unknownPlayers: string[] = [];
   const unknownTeams: string[] = [];
+  /**
+   * NEO-296 — the unknown player names this gate proved match NOTHING.
+   *
+   * `resolveNameForReview` below already reads the two indexes
+   * `entityReviewQueue.startBatch` would read again per name, and hands back
+   * `matchCount`. Zero means there is no existing row for the wizard to offer,
+   * so passing the fact along saves that mutation 2 operations per name —
+   * ~600 on a 300-player Confirm, against its 800-operation budget. See
+   * `startBatch`'s `playersWithNoExistingMatch` for what a stale entry costs.
+   */
+  const playersWithNoExistingMatch: string[] = [];
   let batchId: string | undefined;
 
   const playerByNorm = new Map<string, string>();
@@ -1447,6 +1463,11 @@ async function resolveUnknownsAndStartBatch(
     // person once the year is taken into account.
     if (!resolved.playerId) {
       unknownPlayers.push(name);
+      // NEO-296 — and whether it matched nothing at all, which is the common
+      // case on a first sync and is what lets `startBatch` skip its own
+      // lookup. `matchCount` is the count BEFORE any year narrowing, so zero
+      // here means zero rows of that name exist, full stop.
+      if (resolved.matchCount === 0) playersWithNoExistingMatch.push(name);
     } else if (resolved.narrowedByCardYear) {
       /*
        * NEO-254 — an auto-link the OPERATOR never saw.
@@ -1534,6 +1555,11 @@ async function resolveUnknownsAndStartBatch(
       sportId: args.sportId,
       playerNames: unknownPlayers,
       teamNames: unknownTeams,
+      // NEO-296 — omitted when empty so the wire shape is unchanged for a
+      // batch where every unknown name has a same-name row already.
+      ...(playersWithNoExistingMatch.length > 0
+        ? { playersWithNoExistingMatch }
+        : {}),
     });
   }
 
@@ -1737,6 +1763,188 @@ export const getCardChecklist = query({
  * fetch did not return the id. Every removal is reported back so an admin sees
  * it instead of discovering it later.
  */
+/**
+ * NEO-296 — how many WRITES one `storeSelectorOptions` transaction may make.
+ *
+ * ## The failure this exists to stop
+ *
+ * Convex counts one system operation per CALL — a `db.get`, an indexed read
+ * (`.first()` / `.unique()` / `.collect()` / `.take()`), an `insert`, a
+ * `patch`. A `.collect()` returning 2,000 rows is ONE of those. So what kills
+ * this transaction is never the sibling snapshot; it is the per-item loop.
+ *
+ * `MAX_SYNC_ITEMS` (2,000, `selectorSyncStore.ts`) was sized as "generous
+ * headroom" for the MATCHER'S CPU, with no reference to what an item costs in
+ * operations. Counted, one call spends:
+ *
+ *   1   — the parent `db.get` for the features / teamIds copy-down
+ *   1   — the sibling `.collect()` (one op, whatever it returns)
+ *   ≤7  — `loadResolvabilityChain`, one `db.get` per ancestor level
+ *   1   — per item that lands as a fresh INSERT
+ *   1   — per row the write pass patches, however many passes touched it
+ *   2   — the parent `db.get` + `patch` for the `children` union
+ *   ≤50 — `annotateHasCards`, one indexed read per unlink notice
+ *
+ * At the 2,000-item cap that is 2,000 inserts plus up to 2,000 patches plus
+ * ~60 fixed — past the ~4,000 that fails outright (house calibration on
+ * `CARDS_PER_COMMIT_CHUNK`: ~900 comfortable, ~1,800 straining, ~4,000
+ * failing). The cap sat beyond the failing line, and the year-level set sync
+ * is exactly the caller that reaches it: SportLots listed 2,563 sets for one
+ * year.
+ *
+ * ## Why a WRITE budget rather than a smaller item cap
+ *
+ * Identical to `RECONCILE_STORE_WRITE_BUDGET`, and deliberately the same
+ * number so the two stores cannot drift: an item that matches a row and
+ * changes nothing costs ZERO operations (NEO-85's write-if-changed guard), and
+ * on a re-run every item the previous call stored is exactly that. Counting
+ * WRITES is what makes the truncation **resumable by replay** — the caller
+ * re-sends the identical list, the stored prefix re-matches by id for free,
+ * and the call walks on into the tail. An item cap would make the second call
+ * re-spend its whole budget on the prefix and never advance. Nothing is
+ * applied twice either way: the store is additive and id-keyed, and each page
+ * commits as its own transaction.
+ *
+ * 800 writes plus the ~60 fixed operations lands just under the ~900 line.
+ *
+ * The UNLINK pass runs AFTER the item loop, so its patches land in the
+ * reported `writeOps` but are not part of the budget CHECK — it is never
+ * truncated, for the reason its sibling gives: it is evidence-driven (a
+ * covered side, plus a primary id the fetch did not return), its evidence is
+ * the WHOLE payload rather than the items this call reached, and dropping a
+ * detachment silently is the one thing invariant 5 forbids. It is also small
+ * by construction — a detachment per row upstream stopped listing — which is
+ * what makes leaving it outside the check safe rather than merely convenient.
+ *
+ * Exported so a test can build a deliberately multi-page batch without
+ * hard-coding the number.
+ */
+export const SELECTOR_STORE_WRITE_BUDGET = 800;
+
+/**
+ * NEO-296 — how many times a caller replays the same store payload before it
+ * gives up and says so.
+ *
+ * A runaway guard, not a budget. `MAX_SYNC_ITEMS` (2,000) items is at most
+ * three budget-full pages, and a page that writes nothing ends the walk, so a
+ * real sync finishes in one or two. Reaching 8 means a page is not advancing —
+ * a bug, and one that must not be reported to the operator as a finished sync.
+ */
+export const SELECTOR_STORE_MAX_PAGES = 8;
+
+/** What one `storeSelectorOptions` call reports; see its `returns` validator. */
+type StoreSelectorOptionsResult = {
+  success: boolean;
+  message: string;
+  optionsCount: number;
+  unlinked: UnlinkedEntry[];
+  unlinkedTotal: number;
+  relinked: UnlinkedEntry[];
+  relinkedTotal: number;
+  linkedFromPlaceholder: number;
+  returnedIdsTruncatedSides: PlatformSide[];
+  reservedNamesSkipped: number;
+  itemsProcessed: number;
+  hasMore: number | boolean;
+  writeOps: number;
+};
+
+/**
+ * NEO-296 — call `storeSelectorOptions` until it has stored the whole list.
+ *
+ * The store stops on a WRITE budget, not an item count, so a caller cannot
+ * pre-slice its way to a full store: how many items fit depends on how many of
+ * them turn out to be changes. What it CAN do is replay. Re-sending the
+ * identical payload is free for the prefix already stored — those items match
+ * by id and change nothing, so they spend no budget — and the call walks on
+ * into the tail. See `SELECTOR_STORE_WRITE_BUDGET`.
+ *
+ * Both callers are ACTIONS, which is why this is a loop and not an operator
+ * notice: an action can simply finish the job, and a truncation the operator
+ * has to act on is worse than one nobody ever sees. (The reconciler's store
+ * has the same budget and a CLIENT caller, so it reports instead.)
+ *
+ * ## Merging, which is not "add everything up"
+ *
+ * Each page recomputes some numbers over every item it reached and reports
+ * others as events that happened in that transaction:
+ *
+ *  - `optionsCount`, `reservedNamesSkipped`, `returnedIdsTruncatedSides` are
+ *    recomputed over items `0..itemsProcessed`, and the LAST page reached the
+ *    furthest — so the last page's value is the whole answer, and summing
+ *    would count the prefix once per page.
+ *  - `unlinked`, `relinked`, `linkedFromPlaceholder` and `writeOps` are events
+ *    that happen once. A later page re-reads a row the earlier page already
+ *    detached or re-linked and finds nothing to do, so these SUM.
+ *
+ * Getting that backwards would put a wrong number in front of an operator,
+ * which is the whole reason it is written down here.
+ */
+async function storeSelectorOptionsUntilDone(
+  ctx: ActionCtx,
+  args: {
+    level: (typeof levelValidator)["type"];
+    options: Array<{
+      value: string;
+      platformData: {
+        bsc?: string | string[];
+        sportlots?: string | string[];
+        sportlotsDisplay?: string;
+      };
+    }>;
+    parentId?: Id<"selectorOptions">;
+    coveredSides?: PlatformSide[];
+    returnedIds?: { bsc?: string[]; sportlots?: string[] };
+  },
+): Promise<StoreSelectorOptionsResult> {
+  let last: StoreSelectorOptionsResult | undefined;
+  const unlinked: UnlinkedEntry[] = [];
+  const relinked: UnlinkedEntry[] = [];
+  let unlinkedTotal = 0;
+  let relinkedTotal = 0;
+  let linkedFromPlaceholder = 0;
+  let writeOps = 0;
+  for (let page = 1; ; page++) {
+    const result: StoreSelectorOptionsResult = await ctx.runMutation(
+      api.selectorOptions.storeSelectorOptions,
+      args,
+    );
+    last = result;
+    unlinked.push(...result.unlinked);
+    relinked.push(...result.relinked);
+    unlinkedTotal += result.unlinkedTotal;
+    relinkedTotal += result.relinkedTotal;
+    linkedFromPlaceholder += result.linkedFromPlaceholder;
+    writeOps += result.writeOps;
+    if (!result.hasMore) break;
+    if (page >= SELECTOR_STORE_MAX_PAGES) {
+      // Loud and structured, and the result still says `hasMore` — a caller
+      // that reads this as a finished sync would be reporting a store that
+      // silently did less. Counts only.
+      console.warn(
+        JSON.stringify({
+          msg: "selector_sync_store_did_not_converge",
+          level: args.level,
+          parentId: args.parentId ?? null,
+          itemsSent: args.options.length,
+          itemsProcessed: result.itemsProcessed,
+          pages: page,
+        }),
+      );
+      break;
+    }
+  }
+  return {
+    ...last!,
+    unlinked: unlinked.slice(0, UNLINK_NOTICE_LIMIT),
+    unlinkedTotal,
+    relinked: relinked.slice(0, UNLINK_NOTICE_LIMIT),
+    relinkedTotal,
+    linkedFromPlaceholder,
+    writeOps,
+  };
+}
+
 export const storeSelectorOptions = mutation({
   args: {
     level: levelValidator,
@@ -1810,6 +2018,23 @@ export const storeSelectorOptions = mutation({
      * linked). Reported, never renamed. Zero on every normal sync.
      */
     reservedNamesSkipped: v.number(),
+    /**
+     * NEO-296 — how many of `options` this call actually reached. Less than
+     * `options.length` exactly when the write budget ran out.
+     */
+    itemsProcessed: v.number(),
+    /**
+     * NEO-296 — this call stopped on `SELECTOR_STORE_WRITE_BUDGET` rather than
+     * on the end of the list. Re-send the IDENTICAL list to continue: the
+     * stored prefix re-matches for free and the call walks into the tail.
+     */
+    hasMore: v.boolean(),
+    /**
+     * NEO-296 — inserts plus patches this transaction made, for the log and
+     * for a caller that wants to size its own batches. See
+     * `SELECTOR_STORE_WRITE_BUDGET` for what one operation is.
+     */
+    writeOps: v.number(),
   }),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
@@ -2009,6 +2234,69 @@ export const storeSelectorOptions = mutation({
       return w;
     };
 
+    /**
+     * NEO-296 — the patch this working row WOULD get, or `{}` for none.
+     *
+     * Extracted from the write pass so the budget counts exactly what the
+     * write pass writes. Two copies of this comparison would be a budget that
+     * drifts from the thing it bounds, and the drift would be silent: a store
+     * that reports `writeOps: 800` while spending 1,200.
+     *
+     * NEO-85's write-if-changed guard lives here. A matched row that differs
+     * in nothing costs no operation and no budget, which is what makes a
+     * replayed payload walk forward instead of re-spending its budget on the
+     * prefix it already stored.
+     */
+    const pendingPatchFor = (w: Working): Record<string, unknown> => {
+      const mergedPlatformData = pruneEmptySides({ ...w.platformData });
+      const mergedLabels = pruneEmptySides({ ...(w.platformLabels ?? {}) });
+      const mergedFacets = pruneEmptySides({ ...(w.platformFacets ?? {}) });
+      const nextLabels =
+        Object.keys(mergedLabels).length > 0 ? mergedLabels : undefined;
+      const nextFacets =
+        Object.keys(mergedFacets).length > 0 ? mergedFacets : undefined;
+
+      const patch: Record<string, unknown> = {};
+      if (!valuesDeepEqual(mergedPlatformData, w.row.platformData)) {
+        patch.platformData = mergedPlatformData;
+      }
+      if (!valuesDeepEqual(nextLabels ?? null, w.row.platformLabels ?? null)) {
+        patch.platformLabels = nextLabels;
+      }
+      if (!valuesDeepEqual(nextFacets ?? null, w.row.platformFacets ?? null)) {
+        patch.platformFacets = nextFacets;
+      }
+      if (
+        !valuesDeepEqual(
+          w.platformSlotSeq ?? {},
+          w.row.platformSlotSeq ?? {},
+        )
+      ) {
+        patch.platformSlotSeq = w.platformSlotSeq;
+      }
+      if (
+        !valuesDeepEqual(
+          w.primaryPlatformId ?? null,
+          w.row.primaryPlatformId ?? null,
+        )
+      ) {
+        patch.primaryPlatformId = w.primaryPlatformId;
+      }
+      if (
+        !valuesDeepEqual(
+          w.declinedUpstreamLabels ?? null,
+          w.row.declinedUpstreamLabels ?? null,
+        )
+      ) {
+        patch.declinedUpstreamLabels = w.declinedUpstreamLabels;
+      }
+      if (w.sportConfig) patch.sportConfig = w.sportConfig;
+      if (!valuesDeepEqual(w.metadata ?? null, w.row.metadata ?? null)) {
+        patch.metadata = w.metadata;
+      }
+      return patch;
+    };
+
     // NEO-239 — WHICH incoming id is the base variant, decided ONCE for the
     // whole batch.
     //
@@ -2055,8 +2343,27 @@ export const storeSelectorOptions = mutation({
       side: "bsc" | "sportlots";
     }> = [];
     let reservedNamesSkipped = 0;
+    /**
+     * NEO-296 — the two halves of the write budget.
+     *
+     * `inserts` are spent the moment they happen; `willPatch` holds the rows
+     * the write pass will touch, deduped, because a row is patched ONCE in
+     * that pass however many items or passes touched it. Their sum is what the
+     * budget bounds. A matched item that changes nothing adds to neither,
+     * which is exactly why re-sending the same list finishes the job.
+     */
+    let inserts = 0;
+    const willPatch = new Set<string>();
+    /** Items this call reached. The rest are the caller's next call. */
+    let itemsProcessed = 0;
 
     for (let i = 0; i < options.length; i++) {
+      // The bound is checked BEFORE the item, so the last item admitted is the
+      // one that spent the budget rather than the one after it. Everything
+      // already decided is written by the passes below and commits with this
+      // transaction; the tail is untouched, never half-applied.
+      if (inserts + willPatch.size >= SELECTOR_STORE_WRITE_BUDGET) break;
+      itemsProcessed = i + 1;
       const option = options[i];
       const item = items[i];
       const outcome = plan.outcomes[i];
@@ -2156,6 +2463,12 @@ export const storeSelectorOptions = mutation({
           const backfill = sportConfigDefaultsFor(option.value);
           if (backfill) w.sportConfig = backfill;
         }
+
+        // NEO-296 — charge the budget only if this row will ACTUALLY be
+        // patched. Asked through the same helper the write pass writes
+        // through, and deduped by row id, so the number the budget counts is
+        // the number of `db.patch` calls that follow.
+        if (Object.keys(pendingPatchFor(w)).length > 0) willPatch.add(row._id);
 
         linkedIds.push(row._id);
         continue;
@@ -2271,6 +2584,7 @@ export const storeSelectorOptions = mutation({
         ...(sportConfig ? { sportConfig } : {}),
         lastUpdated: Date.now(),
       });
+      inserts++;
       linkedIds.push(id);
     }
 
@@ -2285,6 +2599,14 @@ export const storeSelectorOptions = mutation({
     //
     // Inside the `options.length > 0` guard the delete pass used to carry: an
     // empty sync is not evidence of anything.
+    //
+    // NEO-296 — this pass is counted in `writeOps` but is NEVER truncated,
+    // and it does not need to be: its evidence is the WHOLE payload, not the
+    // items the budget let this call reach. `plan.returnedIds` is derived from
+    // every incoming item (or from the fetch's own `returnedIds`), so a row
+    // whose id is in the tail this call did not process is still seen as
+    // returned and is not unlinked. Truncating the detachments instead would
+    // break invariant 5 — a link that should have gone, silently kept.
     const unlinkedAll: UnlinkedEntry[] = [];
     if (options.length > 0) {
       for (const side of plan.coveredSides) {
@@ -2316,56 +2638,12 @@ export const storeSelectorOptions = mutation({
     // unchanged sync is correct. The unlink pass writes through the same
     // guard, so re-running an identical sync reports nothing and patches
     // nothing.
+    let patches = 0;
     for (const w of working.values()) {
-      const mergedPlatformData = pruneEmptySides({ ...w.platformData });
-      const mergedLabels = pruneEmptySides({ ...(w.platformLabels ?? {}) });
-      const mergedFacets = pruneEmptySides({ ...(w.platformFacets ?? {}) });
-      const nextLabels =
-        Object.keys(mergedLabels).length > 0 ? mergedLabels : undefined;
-      const nextFacets =
-        Object.keys(mergedFacets).length > 0 ? mergedFacets : undefined;
-
-      const patch: Record<string, unknown> = {};
-      if (!valuesDeepEqual(mergedPlatformData, w.row.platformData)) {
-        patch.platformData = mergedPlatformData;
-      }
-      if (!valuesDeepEqual(nextLabels ?? null, w.row.platformLabels ?? null)) {
-        patch.platformLabels = nextLabels;
-      }
-      if (!valuesDeepEqual(nextFacets ?? null, w.row.platformFacets ?? null)) {
-        patch.platformFacets = nextFacets;
-      }
-      if (
-        !valuesDeepEqual(
-          w.platformSlotSeq ?? {},
-          w.row.platformSlotSeq ?? {},
-        )
-      ) {
-        patch.platformSlotSeq = w.platformSlotSeq;
-      }
-      if (
-        !valuesDeepEqual(
-          w.primaryPlatformId ?? null,
-          w.row.primaryPlatformId ?? null,
-        )
-      ) {
-        patch.primaryPlatformId = w.primaryPlatformId;
-      }
-      if (
-        !valuesDeepEqual(
-          w.declinedUpstreamLabels ?? null,
-          w.row.declinedUpstreamLabels ?? null,
-        )
-      ) {
-        patch.declinedUpstreamLabels = w.declinedUpstreamLabels;
-      }
-      if (w.sportConfig) patch.sportConfig = w.sportConfig;
-      if (!valuesDeepEqual(w.metadata ?? null, w.row.metadata ?? null)) {
-        patch.metadata = w.metadata;
-      }
-
+      const patch = pendingPatchFor(w);
       if (Object.keys(patch).length > 0) {
         await ctx.db.patch(w.row._id, { ...patch, lastUpdated: Date.now() });
+        patches++;
       }
     }
 
@@ -2414,9 +2692,38 @@ export const storeSelectorOptions = mutation({
       );
     }
 
+    // NEO-296 — every WRITE this transaction made: the fresh inserts and the
+    // row patches. The reads (the parent get, the sibling collect, the
+    // ancestor walk, `annotateHasCards`) are the ~60 fixed operations the
+    // budget already sets aside for and are not counted here. The `children`
+    // union's patch is one more and is inside that fixed allowance.
+    const writeOps = inserts + patches;
+    const hasMore = itemsProcessed < options.length;
+    if (hasMore) {
+      // Structured, and loud: a truncated store is the one result a caller
+      // must not read as "done". Ids and counts only — a row `value` is
+      // operator content and an incoming one is a marketplace string.
+      console.warn(
+        JSON.stringify({
+          msg: "selector_sync_store_truncated",
+          fn: "storeSelectorOptions",
+          level,
+          parentId: parentId ?? null,
+          itemsSent: options.length,
+          itemsProcessed,
+          writeOps,
+          budget: SELECTOR_STORE_WRITE_BUDGET,
+        }),
+      );
+    }
+
     return {
       success: true,
-      message: `Successfully stored ${linkedIds.length} ${level} options`,
+      message: hasMore
+        ? `Stored ${linkedIds.length} ${level} options — ` +
+          `${options.length - itemsProcessed} of ${options.length} not reached ` +
+          `this time. Run the sync again to store the rest.`
+        : `Successfully stored ${linkedIds.length} ${level} options`,
       optionsCount: linkedIds.length,
       unlinked,
       unlinkedTotal: unlinkedAll.length,
@@ -2425,6 +2732,9 @@ export const storeSelectorOptions = mutation({
       linkedFromPlaceholder: linkedFromPlaceholderAll.length,
       returnedIdsTruncatedSides: truncatedSides,
       reservedNamesSkipped,
+      itemsProcessed,
+      hasMore,
+      writeOps,
     };
   },
 });
@@ -4090,23 +4400,211 @@ async function findAncestorLabels(
  * these into the same transaction, so query subscribers see exactly one
  * invalidation regardless of how many rows changed.
  */
-async function restampCardChecklistSortOrders(
+/**
+ * NEO-296 — how many `sortOrder` patches one restamp transaction makes.
+ *
+ * ## The arithmetic, and why the common case is untouched
+ *
+ * The read is ONE operation however many cards it returns (`.collect()`), so
+ * the cost is the patch loop, and the loop only patches a row whose
+ * `sortOrder` actually differs. A custom card added at the END of a checklist
+ * — the ordinary case, a new number past the set — shifts nothing and patches
+ * NOTHING. A card inserted at the FRONT of a 754-card set shifts every row
+ * behind it: 754 patches in `addCustomCard`'s own transaction, and a 5,000-card
+ * checklist (`MAX_CARDS_PER_COMMIT`) is 5,000 — past the ~4,000 that fails
+ * outright (house calibration on `CARDS_PER_COMMIT_CHUNK`: ~900 comfortable,
+ * ~1,800 straining).
+ *
+ * That is the shape of the bug: adding ONE card to a big set could fail, and
+ * fail after the card row was already inserted.
+ *
+ * 800 patches plus `addCustomCard`'s own fixed cost (the insert, the SKU
+ * patch, the sport walk) lands under ~900, so every checklist whose shift is
+ * under 800 rows — which is every real one — still completes in the operator's
+ * own transaction exactly as before. Only a bigger shift continues in the
+ * background.
+ */
+export const RESTAMP_SORT_ORDER_PAGE = 800;
+
+/**
+ * NEO-296 — how many restamp pages one chain walks before it stops and says so.
+ *
+ * A runaway stop, not a budget: `MAX_CARDS_PER_COMMIT` (5,000) cards is at
+ * most seven pages. Reaching 12 means the chain is not advancing, and a chain
+ * that will not stop is worse than one that logs what it left — the next
+ * `addCustomCard` on this set restamps from the start anyway.
+ */
+export const RESTAMP_MAX_PAGES = 12;
+
+/**
+ * Re-number a checklist's `sortOrder` to match card-number order, ONE PAGE.
+ *
+ * Returns where the next page resumes, or `null` when the pass is complete.
+ * `from` is an index into the sorted list rather than a `_creationTime`
+ * cursor, because the order being written is a property of the whole list:
+ * position `i` is only knowable once every card has been sorted, and the sort
+ * is recomputed each page off a single `.collect()`. A card added or removed
+ * between pages simply changes what the next page computes, and the pass
+ * converges on the current contents rather than on a snapshot.
+ *
+ * Every page commits on its own. An interrupted chain leaves the checklist
+ * PARTLY re-numbered — some rows on the new order, some on the old — which is
+ * a display-order wobble and nothing more: no card is lost, no number changes,
+ * and the next restamp of this set (or a re-run of the chain) finishes it.
+ * That is strictly better than what it replaces, which was the whole
+ * `addCustomCard` transaction failing on a big set.
+ */
+async function restampCardChecklistSortOrdersPage(
   ctx: { db: { query: any; patch: any } },
   selectorOptionId: Id<"selectorOptions">,
-): Promise<void> {
+  from: number,
+): Promise<{ patched: number; nextFrom: number | null }> {
   const all = await ctx.db
     .query("cardChecklist")
     .withIndex("by_selector_option", (q: any) =>
       q.eq("selectorOptionId", selectorOptionId),
     )
     .collect();
-  const sorted = [...all].sort((a, b) => compareCardNumbers(a.cardNumber, b.cardNumber));
-  for (let i = 0; i < sorted.length; i++) {
+  const sorted = [...all].sort((a: Doc<"cardChecklist">, b: Doc<"cardChecklist">) =>
+    compareCardNumbers(a.cardNumber, b.cardNumber),
+  );
+  let patched = 0;
+  for (let i = from; i < sorted.length; i++) {
+    // Checked BEFORE the patch, so the last row written is the one that spent
+    // the budget rather than the one after it, and `i` is where to resume.
+    if (patched >= RESTAMP_SORT_ORDER_PAGE) {
+      return { patched, nextFrom: i };
+    }
     if (sorted[i].sortOrder !== i) {
       await ctx.db.patch(sorted[i]._id, { sortOrder: i });
+      patched++;
     }
   }
+  return { patched, nextFrom: null };
 }
+
+/**
+ * Re-number a checklist's `sortOrder`, continuing in the background if one
+ * transaction cannot finish it.
+ *
+ * The caller (`addCustomCard`) is a MUTATION, so it cannot loop the way an
+ * action can; the house shape for a mutation with unbounded follow-up work is
+ * a self-scheduling chain (`brandRehome.rehomeFromBrandUnknownBatch`), and
+ * this is that. On every real checklist the first page finishes the job and
+ * nothing is ever scheduled.
+ */
+async function restampCardChecklistSortOrders(
+  ctx: MutationCtx,
+  selectorOptionId: Id<"selectorOptions">,
+): Promise<void> {
+  const page = await restampCardChecklistSortOrdersPage(ctx, selectorOptionId, 0);
+  if (page.nextFrom === null) return;
+  await ctx.scheduler.runAfter(
+    0,
+    internal.selectorOptions.restampCardChecklistSortOrdersBatch,
+    {
+      selectorOptionId,
+      from: page.nextFrom,
+      pagesLeft: RESTAMP_MAX_PAGES - 1,
+    },
+  );
+}
+
+/**
+ * The continuation behind `restampCardChecklistSortOrders` — one page, then
+ * itself again while there is more.
+ *
+ * Idempotent by construction: each page re-reads the checklist, re-sorts it
+ * and writes only the rows that differ, so a page replayed after a retry
+ * writes nothing. Nothing here can lose a card or change a card number; the
+ * only field it touches is the display order.
+ */
+export const restampCardChecklistSortOrdersBatch = internalMutation({
+  args: {
+    selectorOptionId: v.id("selectorOptions"),
+    from: v.number(),
+    pagesLeft: v.number(),
+  },
+  returns: v.object({
+    patched: v.number(),
+    /**
+     * This CHAIN is over — nothing further is scheduled.
+     *
+     * NEO-296: `done` is NOT "the checklist is in card-number order". A chain
+     * that spends `RESTAMP_MAX_PAGES` also stops, and also reports `done`,
+     * with the pass unfinished. The two are told apart by `converged`, and
+     * they are separate fields rather than one because they answer different
+     * questions: the scheduler wants to know whether to expect another call,
+     * and a caller or a test wants to know whether the order is right.
+     */
+    done: v.boolean(),
+    /**
+     * The pass reached the end of the checklist: every row's `sortOrder` now
+     * matches its card-number position.
+     *
+     * False with `done: true` is the runaway stop, and the one case where this
+     * mutation leaves a checklist partly re-numbered. That is a display-order
+     * wobble, not data loss — see the note on `RESTAMP_MAX_PAGES` — and the
+     * next `addCustomCard` on this set restamps from the start. It is surfaced
+     * rather than inferred so nobody has to read `done` as a convergence
+     * claim it was never making.
+     */
+    converged: v.boolean(),
+    /**
+     * Where the next page resumes, absent on the last one. Returned as well as
+     * scheduled because convex-test does not auto-run scheduled functions, so
+     * a test driving the chain by hand needs the index the page computed.
+     *
+     * Present on a runaway stop too: it is where a future run would have to
+     * pick up, which is exactly what makes that stop diagnosable.
+     */
+    nextFrom: v.optional(v.number()),
+  }),
+  handler: async (ctx, args) => {
+    const page = await restampCardChecklistSortOrdersPage(
+      ctx,
+      args.selectorOptionId,
+      args.from,
+    );
+    if (page.nextFrom === null) {
+      return { patched: page.patched, done: true, converged: true };
+    }
+    if (args.pagesLeft <= 1) {
+      // Counts and one id only. Stopping is the safe end of the trade: every
+      // page so far is committed, the checklist is intact, and the next card
+      // added to this set restamps from the start.
+      console.warn(
+        JSON.stringify({
+          msg: "restamp_sort_orders_stopped",
+          selectorOptionId: args.selectorOptionId,
+          pages: RESTAMP_MAX_PAGES,
+          from: page.nextFrom,
+        }),
+      );
+      return {
+        patched: page.patched,
+        done: true,
+        converged: false,
+        nextFrom: page.nextFrom,
+      };
+    }
+    await ctx.scheduler.runAfter(
+      0,
+      internal.selectorOptions.restampCardChecklistSortOrdersBatch,
+      {
+        selectorOptionId: args.selectorOptionId,
+        from: page.nextFrom,
+        pagesLeft: args.pagesLeft - 1,
+      },
+    );
+    return {
+      patched: page.patched,
+      done: false,
+      converged: false,
+      nextFrom: page.nextFrom,
+    };
+  },
+});
 
 // NEO-203: `storeCardChecklist` lived here — a public mutation with zero
 // callers that upserted a checklist keyed on cardNumber alone, deleted every
@@ -5424,7 +5922,55 @@ export const deleteCard = mutation({
 // MAX_EXPANDED_NUMBERS in CrossListingImportModal.tsx) — mirrored server-side
 // so a direct API call can't hand this mutation an unbounded batch just
 // because the client-side cap is only advisory.
+//
+// NEO-296 — this is the cap on what ONE OPERATOR IMPORT may name, and it is
+// deliberately NOT the transaction bound. That is
+// `CROSS_LISTING_LINKS_PER_CALL` below; see its arithmetic.
 const MAX_CROSS_LISTING_CARD_NUMBERS = 1000;
+
+/**
+ * NEO-296 — how many card numbers one `addCrossListingsByCardNumbers`
+ * transaction resolves and links.
+ *
+ * ## The arithmetic
+ *
+ * Convex counts one system operation per CALL. The existing-links `.collect()`
+ * is one, whatever it returns; the cost is the per-number loop:
+ *
+ *   1 — the `by_selector_option_and_number` `.first()` on the SOURCE set
+ *   1 — the `cardCrossListings` insert, for a number that resolves and is not
+ *       already linked
+ *
+ * So **2 operations per number** on the path that does the work, plus ~4
+ * fixed (the two node reads and the links collect). At the
+ * `MAX_CROSS_LISTING_CARD_NUMBERS` cap of 1,000 that is ~2,000 — into the band
+ * the house calibration calls straining, and an import is exactly the thing an
+ * operator does at full size: 2021 Score #301-320 is the worked example in the
+ * comment above, but "paste the whole checklist" is one keystroke away.
+ *
+ * 400 numbers is ~800 operations, under the ~900 comfortable line
+ * (`CARDS_PER_COMMIT_CHUNK`: ~900 comfortable, ~1,800 straining, ~4,000
+ * failing).
+ *
+ * ## Refused, not truncated — and the client slices
+ *
+ * A silently short import is the worst outcome here: the operator is told
+ * which numbers linked, which were already linked and which were not found,
+ * and a fourth silent category ("not attempted") would be indistinguishable
+ * from `notFound` on the screen that reports it. So the mutation refuses an
+ * over-long list and `CrossListingImportModal` sends it in slices, merging the
+ * three result lists — the operator still sees one answer for the whole paste.
+ *
+ * Each slice commits on its own and a link is idempotent: the existing-links
+ * read is per call, and a number already linked by an earlier slice comes back
+ * as `alreadyLinked` rather than being inserted twice. An interrupted import
+ * keeps every slice that landed and re-running it finishes the rest.
+ *
+ * The number itself lives in `lib/cards/commit-limits.ts` so the modal slices
+ * against the same value this mutation refuses above, and is re-exported here
+ * because that is where every server caller reads it from.
+ */
+export { CROSS_LISTING_LINKS_PER_CALL };
 
 export const addCrossListingsByCardNumbers = mutation({
   args: {
@@ -5445,10 +5991,13 @@ export const addCrossListingsByCardNumbers = mutation({
     if (args.sourceSelectorOptionId === args.targetSelectorOptionId) {
       throw new Error("Cannot cross-list a set into itself");
     }
-    if (args.cardNumbers.length > MAX_CROSS_LISTING_CARD_NUMBERS) {
+    if (args.cardNumbers.length > CROSS_LISTING_LINKS_PER_CALL) {
+      // NEO-296 — the TRANSACTION bound. `MAX_CROSS_LISTING_CARD_NUMBERS`
+      // still caps what one operator import may name; this caps what one
+      // transaction may do about it, and the modal slices between the two.
       throw new Error(
         `Too many card numbers in one request (${args.cardNumbers.length}); ` +
-          `max ${MAX_CROSS_LISTING_CARD_NUMBERS}.`,
+          `max ${CROSS_LISTING_LINKS_PER_CALL} per call — slice them.`,
       );
     }
 
@@ -5862,11 +6411,35 @@ const TEAM_EDITABLE_LEVELS: ReadonlySet<Level> = new Set<Level>([
 ]);
 
 /**
- * Cards examined per cascade invocation. Each is one read and at most one
- * patch, so 200 keeps an invocation an order of magnitude inside the mutation
- * read budget even after the first invocation's descendant walk.
+ * Cards examined per cascade invocation.
+ *
+ * Each is one read and at most one patch. The reads arrive in one `.take()`
+ * per node — one operation whatever it returns — so a page costs ~200 patches
+ * at worst, well inside the ~900 the house treats as comfortable
+ * (`CARDS_PER_COMMIT_CHUNK`).
+ *
+ * NEO-296 — the clause this comment used to end with, "even after the first
+ * invocation's descendant walk", is gone because that walk is no longer in the
+ * same transaction. It was the unbounded half: the card pass was paged from
+ * the day it was written, while the node pass ran over the WHOLE subtree
+ * first. See `TEAM_CASCADE_NODE_PAGE`.
  */
 const TEAM_CASCADE_CARD_PAGE = 200;
+
+/**
+ * Subtree NODES whose `teamIds` one cascade invocation settles.
+ *
+ * One `db.get` plus at most one `db.patch` each — **2 operations per node** —
+ * so 300 is ~600, inside the same ~900 line, and it is a page of its own
+ * rather than a share of the card budget so that neither number has to be read
+ * as "it depends what else ran".
+ *
+ * The node pass runs to completion before the first card is visited, which is
+ * the order `teamFollowVerdict` assumes: it asks whether a node still follows
+ * the root, and a half-settled subtree would answer that differently depending
+ * on where the previous page stopped.
+ */
+const TEAM_CASCADE_NODE_PAGE = 300;
 
 /**
  * Cards the preview examines before it gives up counting. A confirm dialog
@@ -6139,6 +6712,16 @@ export const cascadeSelectorOptionTeams = internalMutation({
     // Walk state, absent on the first invocation.
     nodeIds: v.optional(v.array(v.id("selectorOptions"))),
     nodeIndex: v.optional(v.number()),
+    /**
+     * NEO-296 — how far the NODE pass has got, as an index into `nodeIds`.
+     *
+     * `nodeIds[0]` is the root, which the caller has already written, so the
+     * pass starts at 1. Absent on the first invocation, and `nodeIds.length`
+     * once the pass is complete — which is the condition the card pass waits
+     * on. Separate from `nodeIndex` because the two passes walk the same list
+     * for different reasons and must not share a position.
+     */
+    nodeTeamsIndex: v.optional(v.number()),
     // The `_creationTime` of the last card examined under `nodeIds[nodeIndex]`.
     // A hand-rolled cursor rather than `.paginate()`, because Convex allows ONE
     // paginated query per function execution and an invocation walks several
@@ -6154,15 +6737,69 @@ export const cascadeSelectorOptionTeams = internalMutation({
 
     let nodeIds = args.nodeIds;
     if (!nodeIds) {
-      const descendantIds = await collectDescendantIds(ctx, args.rootId);
-      for (const id of descendantIds) {
-        const node = await ctx.db.get(id);
+      // The subtree is read ONCE, on the first invocation, and carried along
+      // the chain from here.
+      nodeIds = [args.rootId, ...(await collectDescendantIds(ctx, args.rootId))];
+    }
+
+    /*
+     * ── NEO-296: the NODE pass is a bounded page too ────────────────────────
+     *
+     * It used to run over the WHOLE subtree in the first transaction — one
+     * `db.get` and up to one `db.patch` per descendant — and then start the
+     * card pass in that same transaction. The card half has been bounded since
+     * it was written (`TEAM_CASCADE_CARD_PAGE`); this half was not, so a set
+     * with several hundred inserts and parallels spent ~2 operations per node
+     * before the card budget even began. At ~500 nodes that is ~1,000 on top
+     * of the card page's 200, into the band the house calls straining (~900
+     * comfortable, ~1,800 straining, ~4,000 failing —
+     * `CARDS_PER_COMMIT_CHUNK`).
+     *
+     * Now it takes `TEAM_CASCADE_NODE_PAGE` nodes per transaction and
+     * reschedules, exactly as the card pass does, and the card pass does not
+     * start until it is finished. Splitting them rather than sharing one
+     * budget keeps each page's cost flat and obvious: a node costs ~2
+     * operations, a card costs 1, and mixing them made neither number true.
+     *
+     * The order matters and is preserved: every node's `teamIds` is settled
+     * before any card is visited, which is what `teamFollowVerdict` assumes
+     * when it decides whether a node still follows the root.
+     *
+     * Every page commits on its own. An interrupted chain leaves the nodes it
+     * already wrote carrying the new teams and the rest carrying the old — the
+     * same partial state the card pass has always been able to leave, and the
+     * same remedy: the root keeps its `teamCascadeStartedAt` stamp, so the
+     * next edit's cascade re-walks from the top.
+     */
+    let nodeTeamsIndex = args.nodeTeamsIndex ?? 1;
+    if (nodeTeamsIndex < nodeIds.length) {
+      const end = Math.min(nodeTeamsIndex + TEAM_CASCADE_NODE_PAGE, nodeIds.length);
+      for (; nodeTeamsIndex < end; nodeTeamsIndex++) {
+        const node = await ctx.db.get(nodeIds[nodeTeamsIndex]);
         if (!node) continue;
         if (teamFollowVerdict(node.teamIds, previous, next) === "follow") {
-          await ctx.db.patch(id, { teamIds: [...next], lastUpdated: Date.now() });
+          await ctx.db.patch(node._id, {
+            teamIds: [...next],
+            lastUpdated: Date.now(),
+          });
         }
       }
-      nodeIds = [args.rootId, ...descendantIds];
+      if (nodeTeamsIndex < nodeIds.length) {
+        // More nodes to settle; the card pass waits for them.
+        await ctx.scheduler.runAfter(
+          0,
+          internal.selectorOptions.cascadeSelectorOptionTeams,
+          {
+            rootId: args.rootId,
+            previousTeamIds: previous,
+            teamIds: next,
+            ...(args.startedAt !== undefined ? { startedAt: args.startedAt } : {}),
+            nodeIds,
+            nodeTeamsIndex,
+          },
+        );
+        return null;
+      }
     }
 
     let nodeIndex = args.nodeIndex ?? 0;
@@ -6207,6 +6844,10 @@ export const cascadeSelectorOptionTeams = internalMutation({
           teamIds: next,
           ...(args.startedAt !== undefined ? { startedAt: args.startedAt } : {}),
           nodeIds,
+          // NEO-296 — the node pass is finished by the time the card pass
+          // reschedules; carrying its index says so, or a resumed chain would
+          // walk every node's `teamIds` again on each card page.
+          nodeTeamsIndex,
           nodeIndex,
           ...(cursor !== undefined ? { cursor } : {}),
         },
@@ -6323,6 +6964,35 @@ export const getInsertTreeByVariantType = query({
 //
 // All assertions run before any patches so a partial failure rejects cleanly.
 // Children arrays on parents are kept consistent.
+//
+// ── NEO-296: a CAP, deliberately, and not a page ───────────────────────────
+//
+// Every other unbounded operation in this file was given a bounded, resumable
+// walk. This one is not, because "all assertions run before any patches" is
+// the guarantee the function exists to provide: a grouping plan is one
+// operator decision about how a variantType's inserts and parallels relate,
+// and half of it applied is a tree in a shape nobody asked for. Paging it
+// would trade a failure the operator can retry for a partial re-parenting they
+// would have to diagnose.
+//
+// So the bound is on the ARGUMENT instead, and it is a refusal. Counted, one
+// entry costs:
+//
+//   promotion    — 2 `db.get` (source, target) + 1 `.collect()` (the source's
+//                  parallels) + 1 `patch` in the apply pass          = 4
+//   demotion     — 1 `db.get` + 1 `patch`                            = 2
+//   reparenting  — 2 `db.get` (row, new target) + 1 `patch`          = 3
+//
+// plus one `db.get` for the variantType and one `patch` per parent whose
+// `children` array changes. At 4 operations for the dearest kind, 200 entries
+// is ~800 — inside the ~900 the house treats as comfortable
+// (`CARDS_PER_COMMIT_CHUNK`: ~1,800 strains, ~4,000 fails).
+//
+// 200 is far above any real plan: this is a drag-and-drop over the inserts and
+// parallels of ONE variantType, all of them on screen at once. A caller that
+// somehow needs more is asking for a different feature, not a bigger
+// transaction.
+const MAX_PARALLEL_GROUPING_ENTRIES = 200;
 export const applyParallelGroupings = mutation({
   args: {
     variantTypeId: v.id("selectorOptions"),
@@ -6356,6 +7026,20 @@ export const applyParallelGroupings = mutation({
   }),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
+
+    // NEO-296 — the transaction bound, checked before anything is read. See
+    // `MAX_PARALLEL_GROUPING_ENTRIES` for the arithmetic and for why this is a
+    // refusal rather than a page.
+    const groupingEntries =
+      args.promotions.length +
+      args.demotions.length +
+      (args.reparentings?.length ?? 0);
+    if (groupingEntries > MAX_PARALLEL_GROUPING_ENTRIES) {
+      throw new Error(
+        `applyParallelGroupings: ${groupingEntries} entries exceeds the ` +
+          `${MAX_PARALLEL_GROUPING_ENTRIES}-per-call limit`,
+      );
+    }
 
     const variantType = await ctx.db.get(args.variantTypeId);
     if (!variantType) {
@@ -9017,8 +9701,11 @@ export const fetchAggregatedOptions = action({
       // so its id is part of the unlink universe (see D6 above).
       if (slAllBrandsOption) fetchedIds.sportlots.push(slAllBrandsOption.id);
 
-      const result = await ctx.runMutation(
-        api.selectorOptions.storeSelectorOptions,
+      // NEO-296 — replayed until the store has the whole list; see
+      // `storeSelectorOptionsUntilDone`. A year-level SportLots list runs to
+      // thousands of sets, which is past what one transaction may write.
+      const result = await storeSelectorOptionsUntilDone(
+        ctx,
         {
           level,
           options: deduped,
@@ -9495,10 +10182,55 @@ export const listBrandSubtreeSlIds = internalQuery({
 });
 
 /**
+ * NEO-296 — how many re-homes one `rehomeSetRowsForSync` transaction performs.
+ *
+ * ## The arithmetic
+ *
+ * Convex counts one system operation per CALL, so the cost is the per-move
+ * loop, not the size of anything read. Per move this mutation spends:
+ *
+ *   1   — the row `db.get`
+ *   0–1 — the parent `db.get`, MEMOISED below: every row in a year shares one
+ *         brand-unknown parent, so this is ~one per year, not one per move
+ *   ~1.8 — inside `rehomeSetRowsToBrand`: the row's own `patch`, plus its
+ *         share of the `children` patches (one per source parent, one for the
+ *         target brand) — the figure that function's own
+ *         `REHOME_ROWS_PER_TRANSACTION` (500) is sized against
+ *
+ * plus a fixed 2 per target brand (the brand `db.get` and the sibling
+ * `.take()`). So ~2.8 per move, and 250 moves is ~700 — inside the ~900 the
+ * house treats as comfortable (~1,800 strains, ~4,000 fails;
+ * `CARDS_PER_COMMIT_CHUNK`).
+ *
+ * Before this, the only bound was `MAX_SYNC_ITEMS` (2,000), which is an
+ * ARGUMENT cap and was never a transaction cap: 2,000 moves is ~5,600–9,600
+ * operations, and the un-memoised parent read made it worse. A year with a
+ * big Unknown row and a newly-prefixed brand reaches it — which is the whole
+ * scenario D9 exists for.
+ *
+ * Smaller than `REHOME_PAGE.move` (500) on purpose: that page is spent inside
+ * `rehomeSetRowsToBrand` alone, where the caller has already read the rows.
+ * This one pays a `db.get` per move first, so the same ~900 buys fewer moves.
+ */
+export const REHOME_MOVES_PER_CALL = 250;
+
+/**
  * NEO-237 (D8/D9) — the set sync's re-homes, by row id, grouped per target
  * brand. The rows are the ones `routeBscSets` found under Unknown holding a
  * BSC id whose upstream name now matches a brand's prefix; the move itself is
  * the shared pure NB op in brandRehome.ts.
+ *
+ * NEO-296 — at most `REHOME_MOVES_PER_CALL` moves per call, refused above
+ * that; the action slices (`rehomeSetRowsForSyncInSlices`). A refusal rather
+ * than a silent truncation, the same rule `createSetsFromSlRoots` follows: a
+ * move that did not happen leaves a set under Unknown where the operator was
+ * told it had been filed, and nothing later goes looking for it.
+ *
+ * Each slice commits on its own, and a move is idempotent — a row already
+ * under the brand is a no-op inside `rehomeSetRowsToBrand`, and a row whose
+ * parent is no longer the flagged Unknown row is skipped by the guard below.
+ * So an interrupted run leaves the moves it made, loses nothing, and
+ * re-running the sync finishes the rest.
  */
 export const rehomeSetRowsForSync = internalMutation({
   args: {
@@ -9511,10 +10243,10 @@ export const rehomeSetRowsForSync = internalMutation({
   },
   returns: v.object({ rehomed: v.number(), clashes: v.number() }),
   handler: async (ctx, args) => {
-    if (args.moves.length > MAX_SYNC_ITEMS) {
+    if (args.moves.length > REHOME_MOVES_PER_CALL) {
       throw new Error(
         `rehomeSetRowsForSync: ${args.moves.length} moves exceeds the ` +
-          `${MAX_SYNC_ITEMS}-per-call limit`,
+          `${REHOME_MOVES_PER_CALL}-per-call limit — slice them`,
       );
     }
     const byTarget = new Map<Id<"selectorOptions">, Id<"selectorOptions">[]>();
@@ -9523,6 +10255,28 @@ export const rehomeSetRowsForSync = internalMutation({
       if (list) list.push(move.rowId);
       else byTarget.set(move.toId, [move.rowId]);
     }
+    /**
+     * NEO-296 — the parent read, once per PARENT rather than once per move.
+     *
+     * Every row in this plan came out of the same year's brand-unknown row, so
+     * the un-memoised version spent one `db.get` per move re-reading one
+     * document. Halving the per-move cost is most of what makes a 250-move
+     * page fit. `null` is cached too: a parent that is gone stays gone for the
+     * rest of the transaction.
+     */
+    const parentCache = new Map<
+      Id<"selectorOptions">,
+      Doc<"selectorOptions"> | null
+    >();
+    const parentOf = async (
+      parentId: Id<"selectorOptions">,
+    ): Promise<Doc<"selectorOptions"> | null> => {
+      const hit = parentCache.get(parentId);
+      if (hit !== undefined) return hit;
+      const parent = await ctx.db.get(parentId);
+      parentCache.set(parentId, parent);
+      return parent;
+    };
     let rehomed = 0;
     let clashes = 0;
     for (const [brandId, rowIds] of byTarget) {
@@ -9533,7 +10287,7 @@ export const rehomeSetRowsForSync = internalMutation({
         // plan was computed a moment ago, and a row an operator moved in
         // between is theirs.
         if (!row || row.level !== "setName" || !row.parentId) continue;
-        const parent = await ctx.db.get(row.parentId);
+        const parent = await parentOf(row.parentId);
         if (parent?.metadata?.isBrandUnknown !== true) continue;
         rows.push(row);
       }
@@ -9545,6 +10299,47 @@ export const rehomeSetRowsForSync = internalMutation({
     return { rehomed, clashes };
   },
 });
+
+/**
+ * NEO-296 — every re-home the sync planned, in transaction-sized slices.
+ *
+ * The action is not a transaction, so this is the same shape the skip-name
+ * lookup uses: slice, call, sum. No cursor and nothing partial to report —
+ * the loop runs to the end of the plan or throws, and each slice commits on
+ * its own so an interruption keeps the moves it made.
+ *
+ * Sliced by TARGET-BRAND GROUPING order rather than by the raw plan order, so
+ * a slice boundary does not split one brand across two transactions more often
+ * than it has to: each group pays a fixed brand `db.get` + sibling `.take()`,
+ * and splitting a group pays it twice.
+ */
+async function rehomeSetRowsForSyncInSlices(
+  ctx: ActionCtx,
+  moves: Array<{ rowId: Id<"selectorOptions">; toId: Id<"selectorOptions"> }>,
+): Promise<{ rehomed: number; clashes: number }> {
+  const byTarget = new Map<
+    Id<"selectorOptions">,
+    Array<{ rowId: Id<"selectorOptions">; toId: Id<"selectorOptions"> }>
+  >();
+  for (const move of moves) {
+    const list = byTarget.get(move.toId);
+    if (list) list.push(move);
+    else byTarget.set(move.toId, [move]);
+  }
+  const ordered = [...byTarget.values()].flat();
+  let rehomed = 0;
+  let clashes = 0;
+  for (let start = 0; start < ordered.length; start += REHOME_MOVES_PER_CALL) {
+    const slice = ordered.slice(start, start + REHOME_MOVES_PER_CALL);
+    const result: { rehomed: number; clashes: number } = await ctx.runMutation(
+      internal.selectorOptions.rehomeSetRowsForSync,
+      { moves: slice },
+    );
+    rehomed += result.rehomed;
+    clashes += result.clashes;
+  }
+  return { rehomed, clashes };
+}
 
 /**
  * NEO-237 (D13) — the sets one brand scope gains from SportLots in one Sync
@@ -10007,9 +10802,12 @@ export const syncSetsAcrossManufacturers = action({
               );
               summary.push("too many sets this year to move any out of Unknown");
             } else {
-              const moved = await ctx.runMutation(
-                internal.selectorOptions.rehomeSetRowsForSync,
-                { moves: plan.moves.map((m) => ({ rowId: m.rowId, toId: m.toId })) },
+              // NEO-296 — sliced to transaction size; see
+              // `REHOME_MOVES_PER_CALL`. A whole year's worth of moves in one
+              // transaction was ~5,600+ operations.
+              const moved = await rehomeSetRowsForSyncInSlices(
+                ctx,
+                plan.moves.map((m) => ({ rowId: m.rowId, toId: m.toId })),
               );
               if (moved.rehomed > 0) summary.push(rehomedNotice(moved.rehomed));
               if (moved.clashes > 0) {
@@ -10053,17 +10851,17 @@ export const syncSetsAcrossManufacturers = action({
           // that sees the whole year, which this is not.
           for (const [parentId, sets] of buckets) {
             for (let i = 0; i < sets.length; i += MAX_SYNC_ITEMS) {
-              const result = await ctx.runMutation(
-                api.selectorOptions.storeSelectorOptions,
-                {
-                  level: "setName",
-                  parentId,
-                  options: sets.slice(i, i + MAX_SYNC_ITEMS).map((s) => ({
-                    value: s.value,
-                    platformData: { bsc: s.platformValue },
-                  })),
-                },
-              );
+              // NEO-296 — the `MAX_SYNC_ITEMS` slice is the ARGUMENT cap; the
+              // store's own write budget is what bounds the transaction, and
+              // this replays each slice until it is fully stored.
+              const result = await storeSelectorOptionsUntilDone(ctx, {
+                level: "setName",
+                parentId,
+                options: sets.slice(i, i + MAX_SYNC_ITEMS).map((s) => ({
+                  value: s.value,
+                  platformData: { bsc: s.platformValue },
+                })),
+              });
               totalStored += result.optionsCount;
               unlinkedAll.push(...result.unlinked);
             }

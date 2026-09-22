@@ -6,6 +6,7 @@ import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import NeonButton from "../modules/NeonButton";
 import { Input } from "../primitives/Input";
+import { CROSS_LISTING_LINKS_PER_CALL } from "../../lib/cards/commit-limits";
 
 /**
  * NEO-21: link cards that were physically printed in one product into a
@@ -401,12 +402,44 @@ export default function CrossListingImportModal({
 
     setSubmitting(true);
     try {
-      const res = await addCrossListings({
-        sourceSelectorOptionId,
-        targetSelectorOptionId: targetVariantId,
-        cardNumbers: parsed.numbers,
-      });
-      setResult(res);
+      /*
+       * NEO-296 — sent in transaction-sized slices, merged into one answer.
+       *
+       * The mutation resolves and links one number at a time (an indexed read
+       * plus an insert each), so a 1,000-number paste was ~2,000 Convex system
+       * operations in a single transaction — past comfortable, and an import
+       * IS done at full size. `CROSS_LISTING_LINKS_PER_CALL` is what one
+       * transaction may do; this loop is what makes that invisible to the
+       * operator, who still pastes one list and reads one result.
+       *
+       * Each slice commits on its own, and a link is idempotent — a number an
+       * earlier slice linked comes back as `alreadyLinked` rather than being
+       * inserted twice — so an interrupted import keeps what it made and
+       * re-running it finishes the rest.
+       */
+      const merged: LinkResult = {
+        linked: [],
+        alreadyLinked: [],
+        notFound: [],
+      };
+      for (
+        let start = 0;
+        start < parsed.numbers.length;
+        start += CROSS_LISTING_LINKS_PER_CALL
+      ) {
+        const res = await addCrossListings({
+          sourceSelectorOptionId,
+          targetSelectorOptionId: targetVariantId,
+          cardNumbers: parsed.numbers.slice(
+            start,
+            start + CROSS_LISTING_LINKS_PER_CALL,
+          ),
+        });
+        merged.linked.push(...res.linked);
+        merged.alreadyLinked.push(...res.alreadyLinked);
+        merged.notFound.push(...res.notFound);
+      }
+      setResult(merged);
     } catch (e) {
       setError(
         `Import failed: ${e instanceof Error ? e.message : "Unknown error"}`,
