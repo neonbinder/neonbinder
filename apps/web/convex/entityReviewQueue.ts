@@ -48,6 +48,12 @@ import { resolveTeamForSetYear } from "./lib/teamRow";
 // NEO-254: the set's year, for labelling which same-name candidates were
 // active in it. One ancestor walk per batch; see convex/lib/selectorAncestry.ts.
 import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
+// NEO-294 — the two bounds that decide what one ambiguous name COSTS. Imported
+// rather than restated so `startBatch`'s op budget is tied to the real limits:
+// if either grows, the arithmetic in ENTITY_REVIEW_START_OPS grows with it
+// instead of quietly under-charging.
+import { PLAYER_AMBIGUITY_SCAN_LIMIT } from "../lib/players/name-limits";
+import { CAREER_SUMMARY_MAX_TEAMS } from "../lib/players/career-summary";
 
 /**
  * NEO-92: backs the step-through "new players & teams" review wizard that
@@ -838,12 +844,30 @@ function toPublicRow<T extends { createdByUserId: string }>(
  * twice. A kept-but-unused decision costs one throwaway row; the batch is
  * deleted wholesale at commit, cancel, or by the abandoned-batch sweep.
  *
- * Every surviving row is stamped `lastTouchedAt`: coming back to a batch is
+ * ONE surviving row is stamped `lastTouchedAt`: coming back to a batch is
  * proof of life, and a session an operator has just re-entered must not look
- * abandoned to the sweep.
+ * abandoned to the sweep. NEO-294 cut this from "every surviving row" — the
+ * sweep spares a batch when ANY row is live, so the other 753 writes on a
+ * 754-row review proved nothing the first one had not. See
+ * `ENTITY_REVIEW_START_OPS`.
  *
  * The `batchId` is preserved throughout, because the client is already holding
  * it and a new one would strand the open wizard.
+ *
+ * ## NEO-294 — bounded, and idempotent so the bound costs nothing
+ *
+ * One call writes at most `ENTITY_REVIEW_START_OPS` operations' worth of rows
+ * and re-schedules ITSELF for the rest, with the same arguments plus
+ * `continueBatchId`. No cursor is needed and none would help: reconciliation
+ * is a pure function of the batch's current rows and the incoming names, so
+ * running it again converges — a row already inserted is suppressed by its
+ * key, a row already deleted is simply absent, and a row that was never in
+ * scope is never touched. That also makes an interrupted chain harmless: every
+ * page committed on its own, and the next Confirm finishes the job.
+ *
+ * `continueBatchId` is the one thing a continuation needs that a re-Confirm
+ * does not: permission to write only while the batch it belongs to is still
+ * open. See the guard at the top of the handler.
  */
 /**
  * NEO-254 — the enrichment a review row is BORN with.
@@ -889,6 +913,107 @@ async function initialEnrichmentFor(
   return existingCandidates.length > 0 ? { existingCandidates } : undefined;
 }
 
+/**
+ * NEO-294 — what ONE `startBatch` transaction may spend, counted in Convex
+ * system operations.
+ *
+ * ## The failure this exists to stop
+ *
+ * Same wall, same seed job, one mutation earlier than the bulk decide above.
+ * `startBatch` is what the operator's **Confirm** on the pairing modal blocks
+ * on, and on CI run 35760682857's 2024 Topps Chrome sync it was handed 300 new
+ * player names and 30 new team names in one call. Convex counts one system
+ * operation per CALL — a `db.get`, an index read, an insert/patch/delete, a
+ * `scheduler.runAfter` — and this handler makes a per-NAME call:
+ *
+ *   FRESH path, per player name
+ *     2 — `initialEnrichmentFor` → `buildExistingPlayerCandidates` →
+ *         `sameNamePlayers`: the `players` name index plus the `playerAliases`
+ *         index. Paid for EVERY name, ambiguous or not.
+ *     … — and when two or more rows already answer to that name, up to
+ *         PLAYER_AMBIGUITY_SCAN_LIMIT alias `db.get`s plus
+ *         CAREER_SUMMARY_MAX_TEAMS team reads per candidate for the career
+ *         summary (the narrowing itself reads no teams here — this caller
+ *         passes no `cardTeamNames`).
+ *     1 — the insert.
+ *   FRESH path, per team name
+ *     1 — the insert. Teams carry no ambiguity marker.
+ *   RESUME path
+ *     1 — the `.first()` that finds the open batch
+ *     1 — the `.collect()` of its rows (ONE op whatever the row count; the
+ *         documents land against the separate read budget, not this one)
+ *     1 — PER EXISTING ROW, unconditionally: a `delete` for a name the
+ *         incoming set dropped, or a `patch` stamping `lastTouchedAt`.
+ *
+ * So a bare 300-player fresh batch is ~930 operations before a single
+ * ambiguous name, and a handful of common surnames push it past 3,000. The
+ * resume path is worse in the ordinary case: ~755 writes on a 754-row batch
+ * before ONE new name is even considered, and it fires on every re-Confirm and
+ * every re-sync with a batch open — which is more common than the fresh path.
+ *
+ * ## The budget, and the two things that made it fit
+ *
+ * `CARDS_PER_COMMIT_CHUNK` (selectorOptions.ts) measured the ceiling from the
+ * same Convex error in NEO-189: ~900 operations per transaction is
+ * comfortable, ~1,800 strains, ~4,000 fails outright. 800 leaves ~11% headroom
+ * for this handler's fixed overhead — the batch lookup, the ancestor walk for
+ * the set year (at most MAX_ANCESTOR_DEPTH = 16 `db.get`s), the pool enqueue,
+ * and the continuation schedule — so the worst transaction lands near ~820.
+ *
+ * Two changes do the work; the page is what catches what is left.
+ *
+ * 1. **The resume path stamps ONE row, not all of them.** `lastTouchedAt` has
+ *    exactly one reader, `sweepAbandonedBatches`, and its test is
+ *    `all.some((row) => lastTouched(row) >= cutoff)` — ANY live row spares the
+ *    whole batch. 754 stamps were 753 writes proving something one stamp
+ *    already proves. That turns the ordinary resume (nothing dropped, nothing
+ *    added) from ~755 operations into about five.
+ * 2. **Every write is charged against this budget**, drops and inserts alike,
+ *    and the ambiguity read is charged at what it actually costs.
+ *
+ * ## When the budget runs out
+ *
+ * The call stops writing and re-schedules ITSELF with identical arguments. It
+ * does not need a cursor, because the resume path is idempotent and
+ * convergent: a row already inserted is found by `existingKeys` and not
+ * inserted twice, a row already deleted is simply not there, and the incoming
+ * set is recomputed from the same arguments. A truncated FRESH call leaves a
+ * batch behind, so its continuation takes the resume branch and finishes the
+ * same list. Each page commits on its own, so an interrupted run keeps every
+ * row it wrote and the next Confirm converges on the rest.
+ *
+ * Truncation is REPORTED — a `console.warn` with counts and ids, never a name
+ * (the observability.ts rule) — rather than silently doing less.
+ *
+ * The return value stays a bare `batchId`: the caller
+ * (`selectorOptions.resolveUnknownsAndStartBatch`) assigns it directly, and a
+ * `{ batchId, hasMore }` shape would make every caller responsible for a walk
+ * the scheduler already drives. Nothing downstream can observe the split
+ * either — truncation only happens once there are 800 operations' worth of
+ * work, which means several hundred undecided rows are already in the batch
+ * when the wizard opens, and the wizard's Confirm & Save appears only when
+ * EVERY row is decided. No operator clears several hundred rows in the
+ * milliseconds a `runAfter(0)` takes.
+ */
+export const ENTITY_REVIEW_START_OPS = 800;
+
+/**
+ * NEO-294 — what one `initialEnrichmentFor` call is charged.
+ *
+ * `BASE` is the pair of index reads `sameNamePlayers` always performs. `EXTRA`
+ * is the ceiling on everything an AMBIGUOUS name adds on top: one `db.get` per
+ * alias hit, and `CAREER_SUMMARY_MAX_TEAMS` team reads per candidate for the
+ * career summary (deduped by id across candidates, so this over-charges rather
+ * than under-charges). Charged after the call, from whether candidates came
+ * back — the cheap answer is by far the common one, and charging every name
+ * the worst case would cut the page to a quarter of the names it can actually
+ * afford.
+ */
+const REVIEW_NAME_LOOKUP_OPS = {
+  BASE: 2,
+  EXTRA: PLAYER_AMBIGUITY_SCAN_LIMIT * (CAREER_SUMMARY_MAX_TEAMS + 1),
+} as const;
+
 export const startBatch = internalMutation({
   args: {
     selectorOptionId: v.id("selectorOptions"),
@@ -896,9 +1021,50 @@ export const startBatch = internalMutation({
     sportId: v.id("selectorOptions"),
     playerNames: v.array(v.string()),
     teamNames: v.array(v.string()),
+    /**
+     * NEO-294 — set ONLY on the continuation this mutation schedules for
+     * itself, and never by the caller.
+     *
+     * It names the batch the chain belongs to, so a link that lands after that
+     * batch is gone — cancelled, committed, or reaped — stops instead of
+     * minting a fresh batch full of names nobody asked about again. Absent is
+     * the operator's own Confirm, which is always allowed to start one.
+     */
+    continueBatchId: v.optional(v.string()),
   },
   returns: v.string(),
   handler: async (ctx, args): Promise<string> => {
+    /**
+     * NEO-294 — system operations this transaction has spent. See
+     * ENTITY_REVIEW_START_OPS for what each write and each name lookup costs
+     * and for what happens when the budget runs out.
+     */
+    let ops = 0;
+    /** Work this call deliberately left for its own continuation. */
+    let deferred = 0;
+    /**
+     * Hand the rest of this call to the scheduler, tagged with the batch it
+     * belongs to. Separate from the pool enqueue below so the two cannot be
+     * confused: one continues THIS function, the other starts the Wikidata
+     * lookups.
+     */
+    const deferRemainder = async (batchId: string): Promise<void> => {
+      if (deferred === 0) return;
+      // Ids and counts only — never a name. See the no-PII rule in
+      // observability.ts.
+      console.warn(
+        JSON.stringify({
+          msg: "entity_review_start_batch_paged",
+          selectorOptionId: args.selectorOptionId,
+          ops,
+          deferred,
+        }),
+      );
+      await ctx.scheduler.runAfter(0, internal.entityReviewQueue.startBatch, {
+        ...args,
+        continueBatchId: batchId,
+      });
+    };
     // NEO-254 — the set's own year, walked ONCE per batch rather than once per
     // name. It only labels which same-name candidates were active that year;
     // an undefined year simply leaves every candidate unlabelled.
@@ -932,6 +1098,34 @@ export const startBatch = internalMutation({
           .eq("createdByUserId", args.createdByUserId),
       )
       .first();
+    ops += 1;
+
+    /*
+     * NEO-294 — a continuation whose batch is GONE does nothing at all.
+     *
+     * Paging opened one window the single-transaction version could not have:
+     * the operator cancels (or the wizard commits) between two links of the
+     * chain. Without this guard the next link finds no open batch, takes the
+     * FRESH path, and mints a brand-new batch full of the names the operator
+     * has just finished dealing with — a wizard that reopens itself.
+     *
+     * Costs nothing: the read it decides on is the one every call already
+     * makes. A mismatched id means this chain's batch was replaced by another,
+     * which is the same answer.
+     */
+    if (
+      args.continueBatchId !== undefined &&
+      existing?.batchId !== args.continueBatchId
+    ) {
+      // Ids only — never a name. See the no-PII rule in observability.ts.
+      console.warn(
+        JSON.stringify({
+          msg: "entity_review_start_batch_abandoned",
+          selectorOptionId: args.selectorOptionId,
+        }),
+      );
+      return args.continueBatchId;
+    }
 
     if (existing) {
       const batchId = existing.batchId;
@@ -945,6 +1139,10 @@ export const startBatch = internalMutation({
           q.eq("selectorOptionId", args.selectorOptionId).eq("batchId", batchId),
         )
         .collect();
+      // NEO-294 — ONE operation whatever the row count. The documents
+      // themselves land against Convex's separate read budget (~32k docs), not
+      // against the system-operation ceiling this handler is bounding.
+      ops += 1;
 
       // Incoming names, deduped by key so two spellings of one name cannot
       // insert two rows. First spelling wins, matching how
@@ -1016,10 +1214,21 @@ export const startBatch = internalMutation({
         return parent ? rowSurvives(parent, seen) : false;
       };
 
+      /**
+       * NEO-294 — rows this pass has deleted, so the proof-of-life stamp below
+       * lands on one that is still there.
+       */
+      const droppedIds = new Set<string>();
       for (const row of existingRows) {
         const key = keyFor(row.kind, row.name);
         // Recorded BEFORE the drop test, so a decided row that is no longer
         // incoming still suppresses a re-insert of its own name.
+        //
+        // NEO-294 — and recorded before the BUDGET test too, which matters
+        // more. A row this call ran out of budget to delete is still a row in
+        // the batch, and its key must still suppress an insert of the same
+        // name; the scan itself costs nothing (`existingRows` is already in
+        // hand), so the loop runs to the end whatever the budget says.
         existingKeys.add(key);
         if (
           !incoming.has(key) &&
@@ -1045,7 +1254,13 @@ export const startBatch = internalMutation({
         ) {
           // Gone from the incoming set and never ruled on — a question about
           // a name no card carries. A DECIDED row is kept; see the doc above.
+          if (ops >= ENTITY_REVIEW_START_OPS) {
+            deferred += 1;
+            continue;
+          }
           await ctx.db.delete(row._id);
+          droppedIds.add(row._id as string);
+          ops += 1;
           continue;
         }
         /*
@@ -1064,16 +1279,57 @@ export const startBatch = internalMutation({
          * live parent team is not in and delete the lot.
          */
         if (row.source !== undefined && !rowSurvives(row)) {
+          if (ops >= ENTITY_REVIEW_START_OPS) {
+            deferred += 1;
+            continue;
+          }
           await ctx.db.delete(row._id);
+          droppedIds.add(row._id as string);
+          ops += 1;
           continue;
         }
-        // Re-entering the batch is operator activity. See the sweep.
-        await ctx.db.patch(row._id, { lastTouchedAt: now });
+      }
+
+      /*
+       * NEO-294 — re-entering the batch is operator activity, and ONE stamp
+       * says so.
+       *
+       * This used to patch `lastTouchedAt` on every surviving row: 754 writes
+       * on the seed job's batch, before a single new name was considered, on
+       * the path that fires every time an operator re-Confirms. The field has
+       * exactly one reader, `sweepAbandonedBatches`, and its test is
+       * `all.some((row) => lastTouched(row) >= cutoff)` — ANY row past the
+       * cutoff spares the WHOLE batch, because a batch is one session (see the
+       * sweep's "every row, not any row" note, which is about what makes a
+       * batch DEAD, not about what keeps it alive). So 753 of those writes
+       * proved something the 754th already proved.
+       *
+       * It lands on a row this pass did NOT drop, for the obvious reason. If
+       * nothing survives, nothing is stamped and nothing needs to be: either
+       * this resume inserts rows, whose `_creationTime` is itself proof of life
+       * (`max(_creationTime, lastTouchedAt ?? 0)`), or the batch is empty and
+       * the sweep's `all.length === 0` guard skips it.
+       */
+      const alive = existingRows.find((row) => !droppedIds.has(row._id as string));
+      if (alive !== undefined) {
+        if (ops >= ENTITY_REVIEW_START_OPS) {
+          deferred += 1;
+        } else {
+          await ctx.db.patch(alive._id, { lastTouchedAt: now });
+          ops += 1;
+        }
       }
 
       const addedIds: Array<Id<"entityReviewQueue">> = [];
       for (const [key, { kind, name }] of incoming) {
         if (existingKeys.has(key)) continue;
+        // NEO-294 — an insert costs a name lookup plus the write itself, and
+        // the budget is checked BEFORE the lookup so a refused row costs
+        // nothing at all. The rest come back on the continuation.
+        if (ops >= ENTITY_REVIEW_START_OPS) {
+          deferred += 1;
+          continue;
+        }
         // NEO-254 — see `initialEnrichmentFor`. A row added by a resume is as
         // liable to be an ambiguous name as one from a fresh batch.
         const enrichment = await initialEnrichmentFor(
@@ -1083,6 +1339,10 @@ export const startBatch = internalMutation({
           args.sportId,
           setYear,
         );
+        ops +=
+          REVIEW_NAME_LOOKUP_OPS.BASE +
+          (enrichment ? REVIEW_NAME_LOOKUP_OPS.EXTRA : 0) +
+          1;
         addedIds.push(
           await ctx.db.insert("entityReviewQueue", {
             selectorOptionId: args.selectorOptionId,
@@ -1105,18 +1365,31 @@ export const startBatch = internalMutation({
         // Only the ADDED rows. A resume must never re-enqueue a lookup that
         // already ran (or is running) — see the enqueue note on the fresh path
         // below, and NEO-99's creation-only enrichment contract.
+        //
+        // NEO-294 — and only the rows added by THIS page. A continuation
+        // enqueues the ones it adds, so no row is enqueued twice and none is
+        // missed.
         await ctx.scheduler.runAfter(
           0,
           internal.wikidataPool.enqueueEntityReviewLookups,
           { rowIds: addedIds },
         );
       }
+      await deferRemainder(batchId);
       return batchId;
     }
 
     const batchId = crypto.randomUUID();
     const ids: Array<Id<"entityReviewQueue">> = [];
     for (const name of args.playerNames) {
+      // NEO-294 — checked before the lookup, so a name this page cannot afford
+      // costs nothing. The continuation picks it up through the RESUME branch,
+      // which now finds the rows this page wrote: `existingKeys` suppresses
+      // re-inserting them, and the names still missing are inserted there.
+      if (ops >= ENTITY_REVIEW_START_OPS) {
+        deferred += 1;
+        continue;
+      }
       // NEO-254 — the row knows it is a choice before any lookup runs. See
       // `initialEnrichmentFor` for why that cannot wait for the lookup.
       const enrichment = await initialEnrichmentFor(
@@ -1126,6 +1399,10 @@ export const startBatch = internalMutation({
         args.sportId,
         setYear,
       );
+      ops +=
+        REVIEW_NAME_LOOKUP_OPS.BASE +
+        (enrichment ? REVIEW_NAME_LOOKUP_OPS.EXTRA : 0) +
+        1;
       ids.push(
         await ctx.db.insert("entityReviewQueue", {
           selectorOptionId: args.selectorOptionId,
@@ -1142,6 +1419,13 @@ export const startBatch = internalMutation({
       );
     }
     for (const name of args.teamNames) {
+      // NEO-294 — a team row is one insert and no name lookup, so it is
+      // charged one operation. Same deferral as the player loop above.
+      if (ops >= ENTITY_REVIEW_START_OPS) {
+        deferred += 1;
+        continue;
+      }
+      ops += 1;
       ids.push(
         await ctx.db.insert("entityReviewQueue", {
           selectorOptionId: args.selectorOptionId,
@@ -1169,6 +1453,7 @@ export const startBatch = internalMutation({
         { rowIds: ids },
       );
     }
+    await deferRemainder(batchId);
     return batchId;
   },
 });
@@ -2977,25 +3262,36 @@ export const recordAllRemainingAsSkip = mutation({
  * "delete a batch" means — before this, two of them carried their own copy of
  * the same loop, which is one drift away from a sweep that half-cleans.
  *
- * Deliberately reads through `by_selector_option_and_batch` rather than taking
- * the rows a caller already has: the sweep decides on a sampled window, and
- * deleting from a stale list would leave a batch partly alive.
+ * Reads through `by_selector_option_and_batch` unless the caller hands over
+ * rows it read through that same index in this same transaction (see
+ * `alreadyRead` below): the sweep decides on a sampled window, and deleting
+ * from a stale list would leave a batch partly alive.
  *
- * ## NEO-294 — the one exception, and why it is safe
+ * ## NEO-294 — `alreadyRead`, and why it is safe
  *
- * `alreadyRead` lets a caller that has JUST read the whole batch through this
- * exact index, in THIS transaction, hand those rows over instead of paying for
- * them twice. Only `cancelBatch` qualifies, and it matters: a 754-row review —
- * the seed job's real shape — cost 754 reads to check ownership, 754 more to
- * re-read the same rows, and 754 deletes, which is the same order of
- * system operations as the bulk decide that blew the budget outright. Halving
- * the reads keeps Cancel comfortably inside it without giving up the
- * all-or-nothing delete an operator's one irreversible action deserves.
+ * `alreadyRead` lets a caller that has JUST read this batch through this exact
+ * index, in THIS transaction, hand those rows over instead of paying for them
+ * twice. `cancelBatch` reads the page to check ownership before it deletes
+ * anything, and `sweepAbandonedBatches` reads the whole batch to decide
+ * whether it is abandoned at all — both were re-reading the same rows a line
+ * later. A Convex transaction is serializable and reads its own writes, so
+ * "just read in this transaction" is not an optimistic assumption; nothing can
+ * have changed underneath it.
  *
- * A Convex transaction is serializable and reads its own writes, so "just read
- * in this transaction" is not an optimistic assumption — nothing can have
- * changed underneath it. The sweep, which decides on a SAMPLED window, must
- * keep passing nothing here.
+ * What a caller must NOT pass is a SAMPLED window. The sweep's paginated page
+ * (`page.page`) is a window over the table, not over one batch, and deleting
+ * from it would leave a batch half-alive — which is why the sweep re-reads the
+ * batch in full and passes THAT.
+ *
+ * ## NEO-294 — and the delete itself is bounded
+ *
+ * One delete is one system operation, so "delete the batch" is O(rows) against
+ * a ~900-operation ceiling: a 754-row review — the seed job's real shape — cost
+ * 754 reads to check ownership, 754 more to re-read the same rows and 754
+ * deletes, the same order as the bulk decide that blew the budget outright.
+ * This deletes at most `ENTITY_REVIEW_DELETE_PAGE` rows and reports whether
+ * more remain; the callers below schedule `cleanupBatch` to finish, and it
+ * chains until the batch is gone.
  *
  * Private, and assumes its caller has already gated itself.
  */
@@ -3004,23 +3300,84 @@ async function deleteBatchRows(
   selectorOptionId: Id<"selectorOptions">,
   batchId: string,
   alreadyRead?: ReadonlyArray<Doc<"entityReviewQueue">>,
-): Promise<number> {
+): Promise<{ deleted: number; hasMore: boolean }> {
   const rows =
     alreadyRead ??
+    // One row PAST the page, so "is there more behind this" is answered by the
+    // same read rather than by a second one. `alreadyRead` callers do the
+    // same — see `cancelBatch` — or pass the batch in full, as the sweep does.
     (await ctx.db
       .query("entityReviewQueue")
       .withIndex("by_selector_option_and_batch", (q) =>
         q.eq("selectorOptionId", selectorOptionId).eq("batchId", batchId),
       )
-      .collect());
-  for (const row of rows) await ctx.db.delete(row._id);
-  return rows.length;
+      .take(ENTITY_REVIEW_DELETE_PAGE + 1));
+  const page = rows.slice(0, ENTITY_REVIEW_DELETE_PAGE);
+  for (const row of page) await ctx.db.delete(row._id);
+  return { deleted: page.length, hasMore: rows.length > page.length };
+}
+
+/**
+ * NEO-294 — how many rows of a batch ONE transaction may delete.
+ *
+ * A delete is one system operation and nothing else is spent per row, so the
+ * arithmetic is as plain as it gets: 800 deletes, plus the one index read that
+ * produced the page and the one `scheduler.runAfter` that continues the chain,
+ * is ~802 against the ~900 that `CARDS_PER_COMMIT_CHUNK` measured as
+ * comfortable (~1,800 strains, ~4,000 fails). That is ~11% headroom.
+ *
+ * Deliberately NOT smaller. Cancel is the operator's one irreversible action
+ * on a review, and a batch that is only half-deleted is a batch `startBatch`
+ * will happily RESUME into the next fetch of the set — so the page is sized to
+ * keep the largest review anyone has measured (754 rows) a single
+ * all-or-nothing transaction, and only a review bigger than that pays for a
+ * continuation. The continuation is a scheduled `cleanupBatch`, which commits
+ * its own page and chains; if it were ever to die mid-chain the
+ * abandoned-batch sweep is the backstop.
+ */
+export const ENTITY_REVIEW_DELETE_PAGE = 800;
+
+/**
+ * NEO-294 — schedule `cleanupBatch` to finish a delete this transaction could
+ * not. Shared by the three callers so none of them can forget the tail.
+ */
+async function scheduleBatchCleanup(
+  ctx: MutationCtx,
+  selectorOptionId: Id<"selectorOptions">,
+  batchId: string,
+): Promise<void> {
+  // Ids and counts only — never a name. See the no-PII rule in
+  // observability.ts.
+  console.warn(
+    JSON.stringify({
+      msg: "entity_review_batch_delete_paged",
+      selectorOptionId,
+      page: ENTITY_REVIEW_DELETE_PAGE,
+    }),
+  );
+  await ctx.scheduler.runAfter(0, internal.entityReviewQueue.cleanupBatch, {
+    selectorOptionId,
+    batchId,
+  });
 }
 
 /**
  * Wizard Cancel. Only ever deletes these throwaway rows — players, teams,
  * and cardChecklist are never touched during review, so cancelling has
  * exactly the same all-or-nothing semantics as today's dialog.
+ *
+ * ## NEO-294 — bounded, and what the operator sees
+ *
+ * The read is a PAGE (`ENTITY_REVIEW_DELETE_PAGE`) rather than the whole
+ * batch, because a `.collect()` of a review that has grown past the page would
+ * be followed by more deletes than one transaction can afford. Every review
+ * anyone has measured fits in one page, so in practice this is the same
+ * single, all-or-nothing transaction it has always been; a bigger one commits
+ * its first page and hands the tail to a scheduled `cleanupBatch`.
+ *
+ * The mutation still resolves only once its own page is gone, which is what
+ * `EntityReviewWizard` waits on before it calls `onCancel` — so nothing
+ * announces "cancelled" before something has actually been cancelled.
  */
 export const cancelBatch = mutation({
   args: {
@@ -3036,17 +3393,29 @@ export const cancelBatch = mutation({
     // tab must not be able to throw away a colleague's work. An empty batch
     // (already committed or cancelled) has no owner to disagree with and is a
     // no-op, exactly as it was.
+    //
+    // NEO-294 — a PAGE, not the whole batch. One extra row is read so the
+    // "is there more behind this page" answer comes from the same query rather
+    // than from a second one.
     const rows = await ctx.db
       .query("entityReviewQueue")
       .withIndex("by_selector_option_and_batch", (q) =>
         q.eq("selectorOptionId", args.selectorOptionId).eq("batchId", args.batchId),
       )
-      .collect();
+      .take(ENTITY_REVIEW_DELETE_PAGE + 1);
     for (const row of rows) assertOwnsRow(row, callerId);
-    // NEO-294 — the rows just read ARE the batch, in this transaction; see
-    // `deleteBatchRows`. Re-reading them doubled the cost of cancelling a
-    // several-hundred-row review for nothing.
-    await deleteBatchRows(ctx, args.selectorOptionId, args.batchId, rows);
+    // NEO-294 — the rows just read ARE (the head of) the batch, in this
+    // transaction; see `deleteBatchRows`. Re-reading them doubled the cost of
+    // cancelling a several-hundred-row review for nothing.
+    const { hasMore } = await deleteBatchRows(
+      ctx,
+      args.selectorOptionId,
+      args.batchId,
+      rows,
+    );
+    if (hasMore) {
+      await scheduleBatchCleanup(ctx, args.selectorOptionId, args.batchId);
+    }
     return null;
   },
 });
@@ -3381,6 +3750,15 @@ export const sweepStalePendingRows = internalMutation({
  * genuinely abandoned batch (e.g. the user closed the tab mid-review,
  * never confirmed or cancelled) — nothing currently calls it in the
  * commit/cancel path, both of which clean up their own rows directly.
+ *
+ * ## NEO-294 — it is also the TAIL of every other delete
+ *
+ * `cancelBatch` and `sweepAbandonedBatches` each delete one bounded page and
+ * schedule this for whatever is behind it; this deletes a page of its own and
+ * chains until the batch is gone. Each link commits on its own and re-reads
+ * the batch from the head, so an interrupted chain loses nothing and a replay
+ * finds fewer rows rather than deleting anything twice — a delete of a row
+ * that is no longer there is not reached at all.
  */
 export const cleanupBatch = internalMutation({
   args: {
@@ -3389,7 +3767,14 @@ export const cleanupBatch = internalMutation({
   },
   returns: v.null(),
   handler: async (ctx, args) => {
-    await deleteBatchRows(ctx, args.selectorOptionId, args.batchId);
+    const { hasMore } = await deleteBatchRows(
+      ctx,
+      args.selectorOptionId,
+      args.batchId,
+    );
+    if (hasMore) {
+      await scheduleBatchCleanup(ctx, args.selectorOptionId, args.batchId);
+    }
     return null;
   },
 });
@@ -3512,7 +3897,27 @@ export const sweepAbandonedBatches = internalMutation({
 
     let batches = 0;
     let rows = 0;
+    /**
+     * NEO-294 — system operations this invocation has left, across ALL the
+     * batches it nominated: one per batch re-read, one per row deleted.
+     *
+     * `deleteBatchRows` bounds ONE batch; nothing bounded the loop around it,
+     * and a page of `ENTITY_REVIEW_ABANDONED_SCAN` table rows can nominate a
+     * great many batches. A cron that reaps ten 754-row reviews in one
+     * transaction is ~7,500 system operations, past the ~4,000 that fails
+     * outright — the sweep would then throw on every run and the litter it
+     * exists to clear would simply accumulate. The re-read is counted too: 500
+     * nominations whose batches turn out to be alive is 500 operations spent
+     * deleting nothing, which is the shape a busy deployment actually has.
+     */
+    let budget = ENTITY_REVIEW_DELETE_PAGE;
+    /** A batch this invocation could not finish, or did not start. */
+    let interrupted = false;
     for (const { selectorOptionId, batchId } of candidates.values()) {
+      if (budget <= 0) {
+        interrupted = true;
+        break;
+      }
       // The decision, taken over the WHOLE batch. One live row anywhere in it
       // means the session is not over — see the note above.
       const all = await ctx.db
@@ -3521,10 +3926,28 @@ export const sweepAbandonedBatches = internalMutation({
           q.eq("selectorOptionId", selectorOptionId).eq("batchId", batchId),
         )
         .collect();
+      budget -= 1;
       if (all.length === 0) continue;
       if (all.some((row) => lastTouched(row) >= cutoff)) continue;
-      rows += await deleteBatchRows(ctx, selectorOptionId, batchId);
+      // NEO-294 — `all` IS this batch, read through the same index in this
+      // same transaction, so hand it over rather than paying for it twice.
+      // (What must never be passed here is `page.page`, which is a sampled
+      // window over the TABLE — see `deleteBatchRows`.)
+      const { deleted, hasMore } = await deleteBatchRows(
+        ctx,
+        selectorOptionId,
+        batchId,
+        all.slice(0, Math.max(budget, 0)),
+      );
+      rows += deleted;
+      budget -= deleted;
       batches += 1;
+      // Bigger than one page, or bigger than what was left of this
+      // invocation's budget: the tail is a scheduled `cleanupBatch`, exactly
+      // as it is for a cancel.
+      if (hasMore || deleted < all.length) {
+        await scheduleBatchCleanup(ctx, selectorOptionId, batchId);
+      }
     }
 
     if (batches > 0) {
@@ -3535,6 +3958,33 @@ export const sweepAbandonedBatches = internalMutation({
       );
     }
 
+    /*
+     * NEO-294 — a budget-interrupted invocation re-runs on the SAME cursor.
+     *
+     * Advancing past a page whose candidates were not all judged would leave
+     * those batches unreaped until the table wrapped around, which on a
+     * deployment whose oldest rows are long-lived reviews is never. Re-reading
+     * the same position is safe and terminates: the batches this run deleted
+     * are gone, so the next pass nominates the ones behind them, and once a
+     * pass spends less than its budget the cursor moves on as usual.
+     *
+     * `rows > 0` is what makes "terminates" a guarantee rather than an
+     * argument about constant sizes. A pass that deleted NOTHING and re-ran on
+     * the same cursor would nominate the same batches and do the same nothing,
+     * forever; advancing instead costs only that the next CRON run (which
+     * always starts from the head) re-nominates them. With
+     * ENTITY_REVIEW_ABANDONED_SCAN below ENTITY_REVIEW_DELETE_PAGE the case
+     * cannot arise today — a page cannot nominate enough batches to spend the
+     * budget on re-reads alone — but the loop must not depend on that.
+     */
+    if (interrupted && rows > 0) {
+      await ctx.scheduler.runAfter(
+        0,
+        internal.entityReviewQueue.sweepAbandonedBatches,
+        args.cursor === undefined ? {} : { cursor: args.cursor },
+      );
+      return { batches, rows, done: false };
+    }
     if (!page.isDone) {
       await ctx.scheduler.runAfter(
         0,

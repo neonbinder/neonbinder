@@ -1,5 +1,7 @@
-import { v } from "convex/values";
+import { v, type Infer } from "convex/values";
 import { internalMutation, mutation, query } from "./_generated/server";
+import type { MutationCtx } from "./_generated/server";
+import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
 import { requireAdmin, getCurrentUserIdentity } from "./auth";
 import { cardPlatformWireDataValidator } from "./schema";
@@ -104,6 +106,129 @@ const candidateInputValidator = v.object({
 
 
 /**
+ * NEO-294 — how many candidate rows ONE transaction may write or clear.
+ *
+ * ## The failure this exists to stop
+ *
+ * Convex counts one system operation per CALL — an index read, an insert, a
+ * delete, a `scheduler.runAfter` — and `startCandidateBatch` made one per
+ * CARD, twice: it deleted the operator's previous rows and then inserted the
+ * new ones, in a single transaction. On a ~900-card set (2024 Topps Chrome,
+ * the shape the seed job syncs) a re-sync is
+ *
+ *   1 index read + ~900 deletes + ~900 inserts ≈ 1,801 operations
+ *
+ * against the ceiling `CARDS_PER_COMMIT_CHUNK` (selectorOptions.ts) measured
+ * from the same Convex error in NEO-189: ~900 is comfortable, ~1,800 strains,
+ * ~4,000 fails outright. The whole candidate array arrives in ONE
+ * `ctx.runMutation` from `fetchCardChecklist`, and that caller does not chunk,
+ * so nothing was bounding it.
+ *
+ * ## The page, and the arithmetic
+ *
+ * 700 rows per transaction, plus the one index read that produced the page and
+ * the one `scheduler.runAfter` that continues the chain, is ~702 — ~22%
+ * headroom under the comfortable ceiling. The clear and the write are separate
+ * phases with separate pages, which is most of the fix on its own: the
+ * measured worst case stops being 1,801 operations and becomes two
+ * transactions of ~901 even before either is paged.
+ *
+ * ## Why the chain is scheduled rather than driven by the caller
+ *
+ * `createSetsFromSlRoots`' chunking is the caller-driven precedent, and it
+ * would be the better shape here too — but the caller lives in
+ * `selectorOptions.ts` and the loop belongs with the data it walks. A
+ * `runAfter(0)` chain gets the same bound with the same convergence: the CLEAR
+ * runs to completion before the first row is written (so the modal never
+ * interleaves two runs, which is what the clear is for), each page commits on
+ * its own, and `from` names the next candidate so a replayed page re-writes
+ * nothing.
+ *
+ * Nothing downstream observes the split. The auto-keep path already polls
+ * `getReadyCandidates` until `total` equals the count the action reported
+ * (`CardChecklist.awaitStreamedBatch`, 30s budget) before it commits anything,
+ * and the pairing modal's Confirm is gated on the action's own promise. The
+ * one ordering that had to be made explicit is the team lookup's — see
+ * `resolveCandidateTeams`, which now retries a card whose row this chain had
+ * not reached yet.
+ */
+export const CHECKLIST_CANDIDATE_PAGE = 700;
+
+/**
+ * NEO-294 — `startCandidateBatch`'s own arguments, so the page writer and the
+ * continuation it schedules are typed from one place rather than from a
+ * hand-copied shape that could drift from the validator.
+ */
+type StartCandidateBatchArgs = {
+  selectorOptionId: Id<"selectorOptions">;
+  batchId: string;
+  userId: string;
+  candidates: Array<Infer<typeof candidateInputValidator>>;
+  readyImmediately: boolean;
+  from?: number;
+};
+
+/**
+ * NEO-294 — delete one page of an operator's candidate rows on a row, and say
+ * whether more remain.
+ *
+ * The single body behind `startCandidateBatch`'s clear, `discardCandidates`
+ * and the scheduled tail of both, so the three cannot drift on what "this
+ * operator's rows on this selectorOption" means — the scoping NEO-195's
+ * follow-up added after an unscoped clear destroyed a second admin's in-flight
+ * review.
+ *
+ * Reads one row PAST the page so `hasMore` comes from the same query rather
+ * than a second one. Private, and assumes its caller has gated itself.
+ */
+async function clearCandidatePage(
+  ctx: MutationCtx,
+  selectorOptionId: Id<"selectorOptions">,
+  userId: string,
+): Promise<{ cleared: number; hasMore: boolean }> {
+  const rows = await ctx.db
+    .query("checklistCandidates")
+    .withIndex("by_selector_option_and_user", (q) =>
+      q.eq("selectorOptionId", selectorOptionId).eq("createdByUserId", userId),
+    )
+    .take(CHECKLIST_CANDIDATE_PAGE + 1);
+  const page = rows.slice(0, CHECKLIST_CANDIDATE_PAGE);
+  for (const row of page) await ctx.db.delete(row._id);
+  return { cleared: page.length, hasMore: rows.length > page.length };
+}
+
+/**
+ * NEO-294 — finish a clear that ran out of transaction. Chains until the
+ * operator's rows on this selectorOption are gone.
+ *
+ * Internal and unscoped by identity on purpose: it is the tail of a decision an
+ * admin already made and a gate already checked, and it can only ever delete
+ * rows for the (selectorOption, operator) pair the caller named.
+ */
+export const clearCandidatesTail = internalMutation({
+  args: {
+    selectorOptionId: v.id("selectorOptions"),
+    userId: v.string(),
+  },
+  returns: v.object({ cleared: v.number(), hasMore: v.boolean() }),
+  handler: async (ctx, args) => {
+    const result = await clearCandidatePage(
+      ctx,
+      args.selectorOptionId,
+      args.userId,
+    );
+    if (result.hasMore) {
+      await ctx.scheduler.runAfter(
+        0,
+        internal.checklistCandidates.clearCandidatesTail,
+        { selectorOptionId: args.selectorOptionId, userId: args.userId },
+      );
+    }
+    return result;
+  },
+});
+
+/**
  * Open a batch: drop anything left from THIS OPERATOR's previous run on this
  * row, then write every candidate as `pending`.
  *
@@ -123,6 +248,16 @@ const candidateInputValidator = v.object({
  *
  * Scoping keeps the original intent intact (a second run by the SAME operator
  * still replaces their own previous batch) and drops only the collateral.
+ *
+ * ## NEO-294 — two bounded phases, and the clear still goes first
+ *
+ * See `CHECKLIST_CANDIDATE_PAGE` for the arithmetic. `from` is the index of
+ * the next candidate to write and is absent on the caller's own invocation;
+ * the CLEAR is finished before the first row is written, because a modal
+ * showing two runs' candidates interleaved is the failure the clear exists to
+ * prevent and a half-cleared table is exactly that. The bounds are per
+ * TRANSACTION, not per batch: nothing is ever dropped, and `hasMore` says
+ * whether a continuation is on its way.
  */
 export const startCandidateBatch = internalMutation({
   args: {
@@ -134,20 +269,18 @@ export const startCandidateBatch = internalMutation({
     // shown — see the note above — and simply carry `pending` until enrichment
     // reaches them.
     readyImmediately: v.boolean(),
+    // NEO-294 — the index of the first candidate THIS call writes. Absent
+    // starts at the head and clears the operator's previous run first.
+    from: v.optional(v.number()),
   },
-  returns: v.object({ written: v.number(), cleared: v.number() }),
+  returns: v.object({
+    written: v.number(),
+    cleared: v.number(),
+    // NEO-294 — true when a scheduled continuation is carrying the rest.
+    hasMore: v.boolean(),
+  }),
   handler: async (ctx, args) => {
-    // Scoped to the caller: another operator's in-flight batch on this same
-    // row is not stale, it is someone else's live review.
-    const stale = await ctx.db
-      .query("checklistCandidates")
-      .withIndex("by_selector_option_and_user", (q) =>
-        q
-          .eq("selectorOptionId", args.selectorOptionId)
-          .eq("createdByUserId", args.userId),
-      )
-      .collect();
-    for (const row of stale) await ctx.db.delete(row._id);
+    const from = args.from ?? 0;
 
     // NEO-251 (security review) — bound every name on a candidate before any of
     // it is stored.
@@ -217,20 +350,120 @@ export const startCandidateBatch = internalMutation({
       }
     }
 
-    for (const c of args.candidates) {
-      await ctx.db.insert("checklistCandidates", {
-        ...c,
-        selectorOptionId: args.selectorOptionId,
-        batchId: args.batchId,
-        createdByUserId: args.userId,
-        stem: cardNumberStem(c.cardNumber),
-        status: args.readyImmediately ? "ready" : "pending",
-        lastUpdated: Date.now(),
-      });
+    /*
+     * NEO-294 — PHASE 1, and only on the first call: drop what THIS OPERATOR
+     * left behind on this row.
+     *
+     * Scoped to the caller: another operator's in-flight batch on this same row
+     * is not stale, it is someone else's live review.
+     *
+     * The clear finishes before ANY row of the new batch is written. That is
+     * what keeps the page read below unambiguous — no row of `args.batchId`
+     * exists yet, so everything the index returns is genuinely stale — and it
+     * is what the clear is for in the first place: a modal showing two runs'
+     * candidates interleaved, the older ones pointing at marketplace state
+     * that no longer exists.
+     */
+    if (from === 0) {
+      const { cleared, hasMore } = await clearCandidatePage(
+        ctx,
+        args.selectorOptionId,
+        args.userId,
+      );
+      if (hasMore) {
+        // Still clearing. Re-enter at `from: 0` rather than moving on, so the
+        // write phase cannot start on a half-cleared table.
+        await ctx.scheduler.runAfter(
+          0,
+          internal.checklistCandidates.startCandidateBatch,
+          { ...args, from: 0 },
+        );
+        return { written: 0, cleared, hasMore: true };
+      }
+      return await writeCandidatePage(ctx, args, 0, cleared);
     }
-    return { written: args.candidates.length, cleared: stale.length };
+    return await writeCandidatePage(ctx, args, from, 0);
   },
 });
+
+/**
+ * NEO-294 — PHASE 2: write one page of candidates and hand the rest to the
+ * scheduler.
+ *
+ * Split out so the two entry points into it (the first call, once its clear
+ * has finished, and every continuation) cannot drift on what a page is or on
+ * when the chain stops.
+ *
+ * `from` is an index into an array the caller re-passes unchanged rather than
+ * a cursor into the table, so there is nothing to go stale between links. A
+ * page is a Convex transaction: it committed or it wrote nothing, and the
+ * scheduler runs each link once — so there is no half-written page to
+ * reconcile. The recovery path for a chain that dies is the ENTRY point, which
+ * clears this operator's rows before it writes anything; re-running the fetch
+ * can never leave two copies of a card.
+ */
+async function writeCandidatePage(
+  ctx: MutationCtx,
+  args: StartCandidateBatchArgs,
+  from: number,
+  cleared: number,
+): Promise<{ written: number; cleared: number; hasMore: boolean }> {
+  /*
+   * NEO-294 — a continuation whose batch is GONE writes nothing.
+   *
+   * Paging opened one window the single-transaction version could not have: a
+   * link of an abandoned chain landing after the operator has cancelled, or
+   * after their next sync cleared the table and started a new batch. Without
+   * this, those rows would be inserted into a dead batch and surface in
+   * `getReadyCandidates` beside the live one — the interleaving the clear
+   * exists to prevent, arriving through the back door.
+   *
+   * One index read, on continuations only, so the ordinary single-page batch
+   * pays nothing. `from > 0` is exactly "somebody wrote page zero", so an
+   * empty batch here means it was cleared rather than never started.
+   */
+  if (from > 0) {
+    const alive = await ctx.db
+      .query("checklistCandidates")
+      .withIndex("by_batch", (q) => q.eq("batchId", args.batchId))
+      .first();
+    if (alive === null) {
+      // Counts and a batch id only — never a card name. See observability.ts.
+      console.warn(
+        JSON.stringify({
+          msg: "checklist_candidate_batch_abandoned",
+          batchId: args.batchId,
+          from,
+        }),
+      );
+      return { written: 0, cleared, hasMore: false };
+    }
+  }
+
+  const page = args.candidates.slice(from, from + CHECKLIST_CANDIDATE_PAGE);
+  const now = Date.now();
+  for (const c of page) {
+    await ctx.db.insert("checklistCandidates", {
+      ...c,
+      selectorOptionId: args.selectorOptionId,
+      batchId: args.batchId,
+      createdByUserId: args.userId,
+      stem: cardNumberStem(c.cardNumber),
+      status: args.readyImmediately ? "ready" : "pending",
+      lastUpdated: now,
+    });
+  }
+  const next = from + page.length;
+  const hasMore = next < args.candidates.length;
+  if (hasMore) {
+    await ctx.scheduler.runAfter(
+      0,
+      internal.checklistCandidates.startCandidateBatch,
+      { ...args, from: next },
+    );
+  }
+  return { written: page.length, cleared, hasMore };
+}
 
 /**
  * Attach resolved team names to the cards a lookup chunk covered, then release
@@ -243,6 +476,23 @@ export const startCandidateBatch = internalMutation({
  * team for it (an insert, a checklist card). Marking it ready is correct;
  * leaving it pending would strand the row and, with group gating, its whole
  * stem.
+ *
+ * ## NEO-294 — one retry for a row the write chain has not reached
+ *
+ * `startCandidateBatch` now writes a very large batch across more than one
+ * transaction (see `CHECKLIST_CANDIDATE_PAGE`), so for the first few
+ * milliseconds of a >700-card sync a `bscRef` this chunk resolved may belong
+ * to a row that does not exist yet. Silently skipping it — which is what the
+ * `if (!row) continue` below does, and rightly, for a row a Cancel deleted —
+ * would lose that card's team with no trace, and nothing re-asks BSC.
+ *
+ * So a miss is retried ONCE, after a short delay, for exactly the refs that
+ * missed. The gap it has to cover is tiny and the margin is large: the write
+ * chain is `runAfter(0)` links of ~700 inserts, while the caller only reaches
+ * this mutation after a real BSC round trip for 50 cards (~4s on the measured
+ * ~74s/900-card enrichment). One retry, never a loop — if the row is still
+ * absent it was deleted, not late, and the count is reported rather than
+ * retried forever.
  */
 export const resolveCandidateTeams = internalMutation({
   args: {
@@ -251,8 +501,16 @@ export const resolveCandidateTeams = internalMutation({
     resolved: v.array(
       v.object({ bscRef: v.string(), teamName: v.optional(v.string()) }),
     ),
+    // NEO-294 — set on the one retry, so a miss cannot reschedule forever.
+    retry: v.optional(v.boolean()),
   },
-  returns: v.object({ patched: v.number(), released: v.number() }),
+  returns: v.object({
+    patched: v.number(),
+    released: v.number(),
+    // NEO-294 — refs this call found no row for. Retried once (see above) and
+    // then reported.
+    missing: v.number(),
+  }),
   handler: async (ctx, args) => {
     const rows = await ctx.db
       .query("checklistCandidates")
@@ -266,10 +524,15 @@ export const resolveCandidateTeams = internalMutation({
     }
 
     const touchedStems = new Set<string>();
+    /** NEO-294 — refs with no row yet; see the retry note above. */
+    const missed: Array<{ bscRef: string; teamName?: string }> = [];
     let patched = 0;
     for (const { bscRef, teamName } of args.resolved) {
       const row = byBscRef.get(bscRef);
-      if (!row) continue;
+      if (!row) {
+        missed.push(teamName === undefined ? { bscRef } : { bscRef, teamName });
+        continue;
+      }
       await ctx.db.patch(row._id, {
         // An empty result is an answer, not a failure — see the note above.
         ...(teamName ? { teams: [teamName] } : {}),
@@ -293,7 +556,33 @@ export const resolveCandidateTeams = internalMutation({
     for (const stem of touchedStems) {
       if (!pendingByStem.has(stem)) released++;
     }
-    return { patched, released };
+
+    /*
+     * NEO-294 — the one retry. `args.retry` marks the retry itself, so this
+     * can never chain: a ref still missing on the second pass belongs to a row
+     * that was deleted, not to one that is late.
+     *
+     * The delay is what makes it worth doing at all — `runAfter(0)` would land
+     * in the same millisecond the write chain is still in.
+     */
+    const RETRY_MS = 1_000;
+    if (missed.length > 0 && args.retry !== true) {
+      await ctx.scheduler.runAfter(
+        RETRY_MS,
+        internal.checklistCandidates.resolveCandidateTeams,
+        { batchId: args.batchId, resolved: missed, retry: true },
+      );
+    } else if (missed.length > 0) {
+      // Counts and a batch id only — never a card name. See observability.ts.
+      console.warn(
+        JSON.stringify({
+          msg: "checklist_candidate_team_unmatched",
+          batchId: args.batchId,
+          missing: missed.length,
+        }),
+      );
+    }
+    return { patched, released, missing: missed.length };
   },
 });
 
@@ -448,20 +737,39 @@ const CANDIDATE_STALE_MS = 60 * 60 * 1000;
 
 export const sweepStaleCandidates = internalMutation({
   args: {},
-  returns: v.object({ deleted: v.number() }),
+  returns: v.object({ deleted: v.number(), hasMore: v.boolean() }),
   handler: async (ctx) => {
     const cutoff = Date.now() - CANDIDATE_STALE_MS;
-    // Bounded: a sweep that tried to delete an unbounded backlog in one
-    // transaction would be the thing that breaks, not the litter it is
-    // clearing. Whatever is left is picked up on the next run.
+    /*
+     * NEO-294 — the SCAN was bounded; the DELETES were not.
+     *
+     * `take(2000)` costs one system operation however many rows it returns, so
+     * the bound that mattered was never here — it was the delete per row
+     * behind it. Two abandoned ~900-card fetches is ~1,800 operations in one
+     * transaction, which `CARDS_PER_COMMIT_CHUNK` measured as straining, and a
+     * sweep that throws leaves the litter it exists to clear exactly where it
+     * was. So the deletes are bounded too, at the same page every other write
+     * in this file uses.
+     *
+     * The scan stays wider than the page on purpose: the rows this sweep
+     * leaves alone are the LIVE ones, and reading past them is what lets one
+     * invocation reach stale rows sitting behind a busy operator's batch.
+     * Restarting from the top next run converges, because the rows it deletes
+     * leave the table.
+     */
     const rows = await ctx.db.query("checklistCandidates").take(2000);
     let deleted = 0;
+    let hasMore = false;
     for (const row of rows) {
       if (row.lastUpdated >= cutoff) continue;
+      if (deleted >= CHECKLIST_CANDIDATE_PAGE) {
+        hasMore = true;
+        break;
+      }
       await ctx.db.delete(row._id);
       deleted++;
     }
-    return { deleted };
+    return { deleted, hasMore };
   },
 });
 
@@ -477,21 +785,44 @@ export const sweepStaleCandidates = internalMutation({
  * your own review must not delete a second operator's live candidates out from
  * under their open modal. `requireAdmin` hands back the caller's id, so the
  * scope costs no second identity lookup.
+ *
+ * ## NEO-294 — bounded, and what Cancel still guarantees
+ *
+ * This was a `.collect()` plus a delete per row: on the ~900-card set the seed
+ * job syncs, ~901 system operations sitting behind a Cancel button, with
+ * nothing but the set's size deciding whether it fit. It now deletes one
+ * `CHECKLIST_CANDIDATE_PAGE` and hands the tail to `clearCandidatesTail`, so a
+ * ~900-card discard is one transaction of 700 and one of ~200 rather than one
+ * of 901, and a set twice that size costs a third rather than failing.
+ *
+ * `deleted` is what THIS call deleted, and `hasMore` says a continuation is
+ * carrying the rest — the same honest per-call reporting the entity-review
+ * bulk walk uses. The callers in `CardChecklist` await this before they say
+ * anything to the operator, so nothing announces a discard that has not begun;
+ * a set large enough to page finishes emptying a few milliseconds later, and
+ * in every flow the modal is being torn down anyway.
  */
 export const discardCandidates = mutation({
   args: { selectorOptionId: v.id("selectorOptions") },
-  returns: v.object({ deleted: v.number() }),
+  returns: v.object({
+    deleted: v.number(),
+    // NEO-294 — true when a scheduled continuation is carrying the rest.
+    hasMore: v.boolean(),
+  }),
   handler: async (ctx, args) => {
     const userId = await requireAdmin(ctx);
-    const rows = await ctx.db
-      .query("checklistCandidates")
-      .withIndex("by_selector_option_and_user", (q) =>
-        q
-          .eq("selectorOptionId", args.selectorOptionId)
-          .eq("createdByUserId", userId),
-      )
-      .collect();
-    for (const row of rows) await ctx.db.delete(row._id);
-    return { deleted: rows.length };
+    const { cleared, hasMore } = await clearCandidatePage(
+      ctx,
+      args.selectorOptionId,
+      userId,
+    );
+    if (hasMore) {
+      await ctx.scheduler.runAfter(
+        0,
+        internal.checklistCandidates.clearCandidatesTail,
+        { selectorOptionId: args.selectorOptionId, userId },
+      );
+    }
+    return { deleted: cleared, hasMore };
   },
 });

@@ -7,10 +7,13 @@
  */
 
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
+// NEO-294 — the page the clear and the write are bounded at, so a
+// deliberately multi-page batch is built from the real number.
+import { CHECKLIST_CANDIDATE_PAGE } from "./checklistCandidates";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -389,5 +392,371 @@ describe("two operators on the same set do not destroy each other's work", () =>
       selectorOptionId: id,
     });
     expect(res).toEqual({ batchId: undefined, total: 0, ready: 0, cards: [] });
+  });
+});
+
+// ===========================================================================
+// NEO-294 — writing and clearing a batch are bounded
+//
+// Convex counts one system operation per CALL, and `startCandidateBatch` made
+// one per card TWICE: it deleted the operator's previous rows and inserted the
+// new ones in a single transaction. A re-sync of the ~900-card set the seed job
+// runs is ~1,801 operations, which `CARDS_PER_COMMIT_CHUNK` measured as
+// straining — and the whole candidate array arrives in ONE `ctx.runMutation`,
+// so nothing was bounding it.
+//
+// What these pin: a transaction writes at most one page, the CLEAR still
+// finishes before the first row is written, the chain converges on exactly the
+// cards it was given, and a small batch is still one call.
+// ===========================================================================
+
+describe("candidate writes are bounded and chain (NEO-294)", () => {
+  /** `count` distinct candidates — more than one transaction may write. */
+  function manyCandidates(count: number) {
+    return Array.from({ length: count }, (_, i) => cand(`${i}`, `bsc-${i}`));
+  }
+
+  /** The pending continuations `startCandidateBatch` armed for itself. */
+  async function scheduledWrites(
+    t: ReturnType<typeof convexTest>,
+  ): Promise<Array<{ from?: number }>> {
+    return t.run(async (ctx) => {
+      const rows = await (
+        ctx as unknown as {
+          db: {
+            system: {
+              query: (n: string) => {
+                collect: () => Promise<
+                  Array<{ name: string; args: Array<{ from?: number }> }>
+                >;
+              };
+            };
+          };
+        }
+      ).db.system.query("_scheduled_functions").collect();
+      return rows
+        .filter((r) => r.name === "checklistCandidates:startCandidateBatch")
+        .map((r) => r.args[0]);
+    });
+  }
+
+  async function countRows(t: ReturnType<typeof convexTest>): Promise<number> {
+    return t.run(
+      async (ctx) => (await ctx.db.query("checklistCandidates").collect()).length,
+    );
+  }
+
+  test("a batch bigger than one page writes a page and arms the rest", async () => {
+    const t = convexTest(schema, modules);
+    const id = await seedRow(t);
+    const candidates = manyCandidates(CHECKLIST_CANDIDATE_PAGE + 40);
+
+    const res = await startBatch(t, id, candidates, true);
+
+    expect(res.written).toBe(CHECKLIST_CANDIDATE_PAGE);
+    expect(res.hasMore).toBe(true);
+    expect(await countRows(t)).toBe(CHECKLIST_CANDIDATE_PAGE);
+    // The continuation names the next card rather than carrying a cursor that
+    // could go stale — the array it walks is re-passed unchanged.
+    expect((await scheduledWrites(t)).map((a) => a.from)).toEqual([
+      CHECKLIST_CANDIDATE_PAGE,
+    ]);
+  });
+
+  test("the chain finishes the batch, with one row per card and no duplicates", async () => {
+    const t = convexTest(schema, modules);
+    const id = await seedRow(t);
+    const candidates = manyCandidates(CHECKLIST_CANDIDATE_PAGE + 40);
+
+    await startBatch(t, id, candidates, true);
+    await t.finishAllScheduledFunctions(() => {});
+
+    expect(await countRows(t)).toBe(candidates.length);
+    const view = await readAs(t, ADMIN, id);
+    expect(view.total).toBe(candidates.length);
+    expect(new Set(view.cards.map((c) => c.cardNumber)).size).toBe(
+      candidates.length,
+    );
+  });
+
+  test("an interrupted chain keeps the page it committed, and re-running the fetch converges", async () => {
+    // Each page commits on its own, so a chain that dies mid-way leaves the
+    // rows it wrote rather than rolling them back — and the entry point at the
+    // head is what makes recovery exact: it CLEARS this operator's rows before
+    // it writes, so re-running the fetch can never leave two copies of a card.
+    //
+    // (There is no "replayed page" case to defend against. A page is a Convex
+    // transaction: it either committed or it wrote nothing at all, and the
+    // scheduler runs each link once.)
+    const t = convexTest(schema, modules);
+    const id = await seedRow(t);
+    const candidates = manyCandidates(CHECKLIST_CANDIDATE_PAGE + 10);
+
+    // The first page commits; its continuation is still armed.
+    await startBatch(t, id, candidates, true);
+    expect(await countRows(t)).toBe(CHECKLIST_CANDIDATE_PAGE);
+
+    // The operator syncs again. Same cards, a new batch id. The clear at the
+    // head takes the old batch with it, and the orphaned continuation then
+    // finds nothing of its own batch left and writes nothing — so draining
+    // everything afterwards cannot resurrect a dead batch beside the live one.
+    await startBatch(t, id, candidates, true, { batchId: "batch-2" });
+    await t.finishAllScheduledFunctions(() => {});
+
+    expect(await countRows(t)).toBe(candidates.length);
+    const view = await readAs(t, ADMIN, id);
+    expect(view.batchId).toBe("batch-2");
+    expect(new Set(view.cards.map((c) => c.cardNumber)).size).toBe(
+      candidates.length,
+    );
+    expect(
+      await t.run(async (ctx) =>
+        (await ctx.db.query("checklistCandidates").collect()).filter(
+          (r) => r.batchId !== "batch-2",
+        ),
+      ),
+    ).toHaveLength(0);
+  });
+
+  test("a continuation whose batch has been cleared writes nothing", async () => {
+    // The one window paging opened: a link of an abandoned chain landing after
+    // a cancel, or after the next sync cleared the table. Inserted blind, those
+    // rows would surface in the modal beside the live batch — the interleaving
+    // the clear exists to prevent, through the back door.
+    const t = convexTest(schema, modules);
+    const id = await seedRow(t);
+    const candidates = manyCandidates(CHECKLIST_CANDIDATE_PAGE + 10);
+    await startBatch(t, id, candidates, true);
+
+    await t
+      .withIdentity(ADMIN)
+      .mutation(api.checklistCandidates.discardCandidates, {
+        selectorOptionId: id,
+      });
+    expect(await countRows(t)).toBe(0);
+
+    await t.finishAllScheduledFunctions(() => {});
+
+    expect(await countRows(t)).toBe(0);
+  });
+
+  test("a batch that fits in one page is still one call", async () => {
+    const t = convexTest(schema, modules);
+    const id = await seedRow(t);
+
+    const res = await startBatch(t, id, [cand("1", "b1"), cand("2", "b2")], true);
+
+    expect(res).toEqual({ written: 2, cleared: 0, hasMore: false });
+    expect(await scheduledWrites(t)).toHaveLength(0);
+  });
+
+  test("a clear bigger than one page finishes BEFORE the new batch is written", async () => {
+    // The ordering the clear exists for: a modal showing two runs' candidates
+    // interleaved, the older ones pointing at marketplace state that is gone.
+    // A half-cleared table is exactly that, so the write phase does not start
+    // until the clear has.
+    const t = convexTest(schema, modules);
+    const id = await seedRow(t);
+    const previous = manyCandidates(CHECKLIST_CANDIDATE_PAGE + 30);
+    await startBatch(t, id, previous, true);
+    await t.finishAllScheduledFunctions(() => {});
+    expect(await countRows(t)).toBe(previous.length);
+
+    const res = await t.mutation(
+      internal.checklistCandidates.startCandidateBatch,
+      {
+        selectorOptionId: id,
+        batchId: "batch-2",
+        userId: ADMIN.subject,
+        candidates: [cand("9", "b9")],
+        readyImmediately: true,
+      },
+    );
+
+    // Nothing of the new batch yet — this transaction only cleared.
+    expect(res.written).toBe(0);
+    expect(res.cleared).toBe(CHECKLIST_CANDIDATE_PAGE);
+    expect(res.hasMore).toBe(true);
+    expect(
+      await t.run(async (ctx) =>
+        (await ctx.db.query("checklistCandidates").collect()).filter(
+          (r) => r.batchId === "batch-2",
+        ),
+      ),
+    ).toHaveLength(0);
+
+    await t.finishAllScheduledFunctions(() => {});
+    const view = await readAs(t, ADMIN, id);
+    expect(view.batchId).toBe("batch-2");
+    expect(view.total).toBe(1);
+  });
+
+  test("discard clears a page and the tail empties the rest", async () => {
+    const t = convexTest(schema, modules);
+    const id = await seedRow(t);
+    const candidates = manyCandidates(CHECKLIST_CANDIDATE_PAGE + 15);
+    await startBatch(t, id, candidates, true);
+    await t.finishAllScheduledFunctions(() => {});
+
+    const res = await t
+      .withIdentity(ADMIN)
+      .mutation(api.checklistCandidates.discardCandidates, {
+        selectorOptionId: id,
+      });
+
+    expect(res.deleted).toBe(CHECKLIST_CANDIDATE_PAGE);
+    expect(res.hasMore).toBe(true);
+    expect(await countRows(t)).toBe(candidates.length - CHECKLIST_CANDIDATE_PAGE);
+
+    await t.finishAllScheduledFunctions(() => {});
+    expect(await countRows(t)).toBe(0);
+  });
+
+  test("a discard that fits in one page schedules no tail", async () => {
+    const t = convexTest(schema, modules);
+    const id = await seedRow(t);
+    await startBatch(t, id, [cand("1", "b1")], true);
+
+    const res = await t
+      .withIdentity(ADMIN)
+      .mutation(api.checklistCandidates.discardCandidates, {
+        selectorOptionId: id,
+      });
+
+    expect(res).toEqual({ deleted: 1, hasMore: false });
+    expect(await countRows(t)).toBe(0);
+  });
+
+  test("the stale sweep bounds its DELETES, not just its scan", async () => {
+    // `take(2000)` costs one operation however many rows it returns; the
+    // per-row cost was always the delete behind it. Two abandoned ~900-card
+    // fetches in one transaction is the shape that strains.
+    const t = convexTest(schema, modules);
+    const id = await seedRow(t);
+    const candidates = manyCandidates(CHECKLIST_CANDIDATE_PAGE + 20);
+    await startBatch(t, id, candidates, true);
+    await t.finishAllScheduledFunctions(() => {});
+    await t.run(async (ctx) => {
+      for (const row of await ctx.db.query("checklistCandidates").collect()) {
+        await ctx.db.patch(row._id, {
+          lastUpdated: Date.now() - 2 * 60 * 60 * 1000,
+        });
+      }
+    });
+
+    const first = await t.mutation(
+      internal.checklistCandidates.sweepStaleCandidates,
+      {},
+    );
+    expect(first.deleted).toBe(CHECKLIST_CANDIDATE_PAGE);
+    expect(first.hasMore).toBe(true);
+
+    // Restarting from the top converges: the rows it deletes leave the table.
+    const second = await t.mutation(
+      internal.checklistCandidates.sweepStaleCandidates,
+      {},
+    );
+    expect(second.hasMore).toBe(false);
+    expect(await countRows(t)).toBe(0);
+  });
+});
+
+// ===========================================================================
+// NEO-294 — a team lookup that lands before the row it belongs to
+//
+// Paging the write means a `bscRef` a lookup chunk resolved can, for a few
+// milliseconds of a very large sync, belong to a row that has not been written
+// yet. Skipping it silently would lose that card's team with no trace and
+// nothing re-asks BSC, so a miss is retried once and then reported.
+// ===========================================================================
+
+describe("resolveCandidateTeams survives a row that is not written yet (NEO-294)", () => {
+  // The retry is scheduled with a real DELAY — `runAfter(0)` would land in the
+  // same millisecond the write chain is still in, which is the whole point of
+  // having it. `finishAllScheduledFunctions` can only force a function whose
+  // time has passed, so these two tests drive a fake clock.
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function scheduledRetries(
+    t: ReturnType<typeof convexTest>,
+  ): Promise<number> {
+    return t.run(async (ctx) => {
+      const rows = await (
+        ctx as unknown as {
+          db: {
+            system: {
+              query: (n: string) => {
+                collect: () => Promise<Array<{ name: string }>>;
+              };
+            };
+          };
+        }
+      ).db.system.query("_scheduled_functions").collect();
+      return rows.filter(
+        (r) => r.name === "checklistCandidates:resolveCandidateTeams",
+      ).length;
+    });
+  }
+
+  test("a ref with no row yet is retried once, and the retry lands the team", async () => {
+    const t = convexTest(schema, modules);
+    const id = await seedRow(t);
+    await startBatch(t, id, [cand("1", "b1")]);
+
+    // "b2" has no row yet — the write chain has not reached it.
+    const first = await t.mutation(
+      internal.checklistCandidates.resolveCandidateTeams,
+      {
+        batchId: "batch-1",
+        resolved: [
+          { bscRef: "b1", teamName: "Orioles" },
+          { bscRef: "b2", teamName: "Padres" },
+        ],
+      },
+    );
+    expect(first.patched).toBe(1);
+    expect(first.missing).toBe(1);
+    expect(await scheduledRetries(t)).toBe(1);
+
+    // The row arrives on a later page of the write chain — `from` past the
+    // card already written, so the clear at the head does not run and the
+    // first card stays put.
+    await t.mutation(internal.checklistCandidates.startCandidateBatch, {
+      selectorOptionId: id,
+      batchId: "batch-1",
+      userId: ADMIN.subject,
+      candidates: [cand("1", "b1"), cand("2", "b2")],
+      readyImmediately: false,
+      from: 1,
+    });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+    const view = await readAs(t, ADMIN, id);
+    const two = view.cards.find((c) => c.cardNumber === "2");
+    expect(two?.teams).toEqual(["Padres"]);
+    expect(two?.teamResolved).toBe(true);
+  });
+
+  test("the retry never chains — a ref for a row that was DELETED stops there", async () => {
+    const t = convexTest(schema, modules);
+    const id = await seedRow(t);
+    await startBatch(t, id, [cand("1", "b1")]);
+
+    const retry = await t.mutation(
+      internal.checklistCandidates.resolveCandidateTeams,
+      {
+        batchId: "batch-1",
+        resolved: [{ bscRef: "gone", teamName: "Padres" }],
+        retry: true,
+      },
+    );
+
+    expect(retry.missing).toBe(1);
+    expect(await scheduledRetries(t)).toBe(0);
   });
 });
