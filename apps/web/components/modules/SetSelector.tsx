@@ -54,6 +54,10 @@ import { bscSourceView } from "../../convex/bscFacets";
 import SportSelector from "../SetSelector/SportSelector";
 import YearSelector from "../SetSelector/YearSelector";
 import ManufacturerSelector from "../SetSelector/ManufacturerSelector";
+import {
+  isAllBrandsView,
+  type ManufacturerSelection,
+} from "../SetSelector/all-brands-view";
 import SetSelectorComponent from "../SetSelector/SetSelector";
 import SetVariantSelector from "../SetSelector/SetVariantSelector";
 import VariantSelector from "../SetSelector/VariantSelector";
@@ -112,9 +116,15 @@ export default function SetSelector() {
   // Level 2: Year
   const [selectedYearId, setSelectedYearId] =
     useState<GenericId<"selectorOptions"> | null>(null);
-  // Level 3: Manufacturer (SL only)
+  // Level 3: Manufacturer (SL only) — a row, or the All Brands VIEW
+  // (NEO-237, D17): the pinned entry at the top of the column that lists
+  // every set in the year. The view is a client sentinel, never a row id, so
+  // anything below that needs a ROW reads `selectedManufacturerRowId`.
   const [selectedManufacturerId, setSelectedManufacturerId] =
-    useState<GenericId<"selectorOptions"> | null>(null);
+    useState<ManufacturerSelection | null>(null);
+  const inAllBrandsView = isAllBrandsView(selectedManufacturerId);
+  const selectedManufacturerRowId: GenericId<"selectorOptions"> | null =
+    inAllBrandsView ? null : selectedManufacturerId;
   // Level 4: Set (BSC only)
   const [selectedSetId, setSelectedSetId] =
     useState<GenericId<"selectorOptions"> | null>(null);
@@ -266,6 +276,9 @@ export default function SetSelector() {
   const revealedColumns: string[] = ["Sports"];
   if (selectedSportId) revealedColumns.push("Years");
   if (selectedYearId) revealedColumns.push("Manufacturers");
+  // NEO-237: the All Brands VIEW opens the Sets column too — it is a
+  // selection in the Manufacturers column even though it is not a row — so
+  // it is announced like any other reveal.
   if (selectedManufacturerId) revealedColumns.push("Sets");
   if (selectedSetId) revealedColumns.push("Variant Types");
   if (!isBaseVariantTypeSelected && selectedVariantTypeId)
@@ -346,11 +359,25 @@ export default function SetSelector() {
     setSelectedYearId(id);
     clearFrom(3);
   };
-  const handleManufacturerSelect = (id: GenericId<"selectorOptions">) => {
+  const handleManufacturerSelect = (id: ManufacturerSelection) => {
     setSelectedManufacturerId(id);
     clearFrom(4);
   };
-  const handleSetSelect = (id: GenericId<"selectorOptions">) => {
+  /**
+   * NEO-237 (D17): a set picked in the All Brands view BACK-FILLS the
+   * Manufacturers column from the set's own parent, so the cascade below it
+   * (variant types, the attributes panel's breadcrumb, every fetch that reads
+   * the manufacturer ancestor) sees the row the set actually lives under. The
+   * view was a lens for finding the set; once found, the set's brand is the
+   * selection. Both writes land in one render, so the operator sees the
+   * collapsed Manufacturers card change to the brand at the moment the set
+   * is chosen.
+   */
+  const handleSetSelect = (
+    id: GenericId<"selectorOptions">,
+    parentId?: GenericId<"selectorOptions">,
+  ) => {
+    if (inAllBrandsView && parentId) setSelectedManufacturerId(parentId);
     setSelectedSetId(id);
     clearFrom(5);
   };
@@ -455,12 +482,15 @@ export default function SetSelector() {
   // so extending to shallower levels does not reintroduce that failure
   // mode. Verified against the exact regression scenario (util-drill-to-
   // custom.yaml / custom-entry-survives-resync.yaml) before shipping this.
+  //
+  // NEO-237: the All Brands VIEW is not a row, so with the view open and
+  // nothing picked beneath it the deepest ROW is the year.
   const deepestSelectedId =
     selectedVariantOfVariantId ||
     selectedVariantId ||
     selectedVariantTypeId ||
     selectedSetId ||
-    selectedManufacturerId ||
+    selectedManufacturerRowId ||
     selectedYearId ||
     selectedSportId ||
     null;
@@ -649,28 +679,47 @@ export default function SetSelector() {
           syncingLabel="Syncing Manufacturer Options"
         />
 
-        {/* 4. Set (BSC only) */}
+        {/* 4. Set (BSC only) — or, under the All Brands VIEW, every set in
+            the year with its brand alongside (NEO-237, D14c/D17). In the view
+            the column's parent is the YEAR: `ensureSelectorOptions` and the
+            sync status row key on it, "+ Custom" is replaced by a line
+            saying to pick a brand first (a view has no one parent to create
+            under), and picking a set back-fills the Manufacturers column
+            from the set's own parent. */}
         <ResilientEntityColumn
           selector={
             <SetSelectorComponent
-              manufacturerId={selectedManufacturerId!}
+              manufacturerId={selectedManufacturerRowId}
+              yearId={selectedYearId!}
               selectedSetId={selectedSetId}
               onSetSelect={handleSetSelect}
               expanded={setExpanded}
               setExpanded={setSetExpanded}
             />
           }
+          // Legacy path only; this column is on `useEnsureSync`, so the form
+          // is never rendered and the view never reaches it.
           renderForm={(onDone) => (
-            <SetForm manufacturerId={selectedManufacturerId!} onDone={onDone} />
+            <SetForm
+              manufacturerId={selectedManufacturerRowId!}
+              onDone={onDone}
+            />
           )}
           addButtonText="Sync Sets"
           isVisible={!!selectedManufacturerId}
           level="setName"
-          parentId={selectedManufacturerId || undefined}
+          parentId={
+            inAllBrandsView
+              ? selectedYearId || undefined
+              : selectedManufacturerRowId || undefined
+          }
           onSelectExisting={handleSetSelect}
           onDrillToExisting={handleDrillToExisting}
           useEnsureSync
           syncingLabel="Syncing Sets"
+          hideCustom={
+            inAllBrandsView ? { reason: "Pick a brand to add a set" } : undefined
+          }
         />
 
         {/* 5. Variant Type (BSC only: Base, Insert, Parallel, Promo) */}

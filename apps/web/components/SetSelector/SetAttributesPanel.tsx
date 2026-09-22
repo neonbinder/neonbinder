@@ -8,7 +8,14 @@ import {
   EXPECTED_FEATURES,
   type ExpectedFeature,
 } from "../../convex/features/expectedFeatures";
-import { slotIds, type SlotBearingRow } from "../../convex/platformSlots";
+import { resolvableSides } from "../../convex/marketplaceResolvability";
+import {
+  primaryId,
+  slotIds,
+  type SlotBearingRow,
+} from "../../convex/platformSlots";
+import { isSlAllBrandsBrandId } from "../../convex/slBrandAxis";
+import { activateOnEnter } from "@/lib/dom/activate-on-enter";
 import { ConfirmDialog } from "../modules/confirm-dialog";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import { contrastRatio, normalizeHexColor } from "@/lib/print/contrast";
@@ -91,6 +98,25 @@ import {
  * `metadata.cardNumberPrefix`, not a `features` key, and saves through its own
  * mutation; otherwise it behaves exactly like the text rows around it. See
  * `CardPrefixRow`.
+ *
+ * Brand (NEO-237): the first cell of the grid on a MANUFACTURER row — the
+ * set-name prefix that says which sets are this brand's ("Choice" files
+ * "Choice Biloxi Shuckers" here) and, for a brand linked to SportLots through
+ * its All Brands option, what SportLots is asked for. `metadata.setNamePrefix`,
+ * its own mutation, and a save that can MOVE sets: prefix-matching sets sit
+ * under the year's Unknown row until a brand claims them, so the toast says
+ * how many it moved. Hidden on the Unknown row itself, which has no prefix by
+ * definition. The label is "Brand" (Jason 2026-09-21, provisional). See
+ * `BrandPrefixRow`.
+ *
+ * Beside it, on the same rows, the brand's SportLots link "through All
+ * Brands" as a pressed toggle (`SlViaAllBrandsToggle`): on when the row's
+ * SportLots id is SportLots' all-brands option, so SportLots is asked for the
+ * whole year and narrowed to the sets that start with the Brand value. The
+ * confirm-create tick was the only door to that link before; this is the
+ * repair path for a brand created without it, and the undo. Disabled with
+ * the reason when the row holds a SportLots brand of its own (a real link is
+ * never overwritten) or when the year has no SportLots link to go through.
  */
 
 /**
@@ -168,6 +194,12 @@ export default function SetAttributesPanel({
   const setSelectorOptionCardNumberPrefix = useMutation(
     api.selectorOptions.setSelectorOptionCardNumberPrefix,
   );
+  const setSelectorOptionSetNamePrefix = useMutation(
+    api.brandView.setSelectorOptionSetNamePrefix,
+  );
+  const setManufacturerSlViaAllBrands = useMutation(
+    api.brandView.setManufacturerSlViaAllBrands,
+  );
 
   const [expanded, setExpanded] = useState(!defaultCollapsed);
   const [toast, setToast] = useState<string | null>(null);
@@ -211,6 +243,33 @@ export default function SetAttributesPanel({
   const showTeamRow = TEAM_LEVELS.has(leafLevel);
   const showCardPrefixRow = showsCardPrefix(leafLevel, row.metadata);
   const cardNumberPrefix = row.metadata?.cardNumberPrefix;
+  // NEO-237: manufacturer rows only, and never the year's Unknown row — that
+  // row holds the sets whose brand is NOT known, so a prefix on it is a
+  // contradiction, and the server refuses one.
+  const showBrandPrefixRow =
+    leafLevel === "manufacturer" && !row.metadata?.isBrandUnknown;
+  const setNamePrefix = row.metadata?.setNamePrefix;
+  // NEO-237 — the via-All-Brands toggle's three states, read off the row's
+  // SportLots slots and the chain above it. "Is this id the all-brands
+  // option" is a marketplace-vocabulary question answered by the adapter
+  // boundary's own predicate (`slBrandAxis.ts`, FE-importable on purpose);
+  // the toggle is the linkage control, and linkage is the one thing a
+  // component may show about a marketplace id.
+  const slPrimary = showBrandPrefixRow ? primaryId(row, "sportlots") : undefined;
+  const slViaAllBrandsOn = isSlAllBrandsBrandId(slPrimary);
+  const slHasOwnBrand = slPrimary !== undefined && !slViaAllBrandsOn;
+  // The chain above the row — `getAncestorChain` includes the leaf, and the
+  // sync judges a manufacturer against its parents (`EntityColumn`'s
+  // `parentChain`, same rule).
+  const slReachable =
+    showBrandPrefixRow &&
+    resolvableSides(chain.slice(0, -1), { level: "manufacturer" }).sportlots
+      .resolvable;
+  const slViaAllBrandsDisabledReason = slHasOwnBrand
+    ? "Linked to a SportLots brand of its own"
+    : !slReachable && !slViaAllBrandsOn
+      ? "This year has no SportLots link to go through"
+      : null;
 
   // Toggle-pill features (checkbox + toggleOptions) render together in one
   // wrapping row instead of scattered through the 2-column grid at their
@@ -305,6 +364,67 @@ export default function SetAttributesPanel({
       });
     } catch (e) {
       setToast(`Failed: ${userFacingMessage(e, `Could not save ${label}`)}`);
+    }
+  };
+
+  /**
+   * NEO-237 — the Brand row's save. Unlike the other rows the toast waits for
+   * the server: a non-empty save can MOVE prefix-matching sets out of the
+   * year's Unknown row, and the count is the one thing worth saying about
+   * it ("Saved Brand · 3 sets moved out of Unknown"). A save that moved
+   * nothing, and a clear, read like every other row's.
+   */
+  const handleSaveSetNamePrefix = async (value: string) => {
+    const label = "Brand";
+    const trimmed = value.trim();
+    const clearing = trimmed.length === 0;
+    if (clearing ? setNamePrefix === undefined : setNamePrefix === trimmed) {
+      return;
+    }
+    try {
+      const { rehomed } = await setSelectorOptionSetNamePrefix({
+        id: selectorOptionId,
+        setNamePrefix: trimmed,
+      });
+      showToast(
+        clearing
+          ? // Not "Cleared Brand": the row's NAME is untouched, and what a
+            // clear changes is which sets the brand claims.
+            "Cleared — this brand claims no sets by name now"
+          : rehomed > 0
+            ? `Saved ${label} · ${rehomed} ${rehomed === 1 ? "set" : "sets"} moved out of Unknown`
+            : `Saved ${label}`,
+      );
+    } catch (e) {
+      setToast(
+        `Failed: ${
+          prefixTakenRefusal(e, trimmed) ??
+          userFacingMessage(e, `Could not save ${label}`)
+        }`,
+      );
+    }
+  };
+
+  /**
+   * NEO-237 — the via-All-Brands toggle's write. The toast waits for the
+   * server like the Brand row's does: this one writes (or retires) a
+   * marketplace slot, and the confirmation should mean it happened.
+   */
+  const handleToggleSlViaAllBrands = async (enabled: boolean) => {
+    try {
+      await setManufacturerSlViaAllBrands({ id: selectorOptionId, enabled });
+      showToast(
+        enabled
+          ? "Linked — SportLots sets match this brand by name now"
+          : "Unlinked — SportLots sets no longer match this brand by name",
+      );
+    } catch (e) {
+      setToast(
+        `Failed: ${
+          slViaAllBrandsRefusal(e) ??
+          userFacingMessage(e, "Could not change the SportLots link")
+        }`,
+      );
     }
   };
 
@@ -494,6 +614,29 @@ export default function SetAttributesPanel({
           )}
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {/* NEO-237: first cell on a brand row, for the same reason the
+                card prefix is first on a variant row — it is the one fact
+                here that decides which SETS are this brand's. */}
+            {showBrandPrefixRow && (
+              <BrandPrefixRow
+                value={setNamePrefix}
+                onSave={handleSaveSetNamePrefix}
+              />
+            )}
+            {/* NEO-237: the second cell on a brand row — the SportLots side
+                of the same fact. Brand says which sets are this brand's;
+                this says whether SportLots is asked for them by that name.
+                It is ON from creation (the server links every new brand
+                through All Brands when the year can be asked — Jason,
+                2026-09-21), so this cell is the ONE place to turn it off. */}
+            {showBrandPrefixRow && (
+              <SlViaAllBrandsToggle
+                key={`sl-via-all-brands-${selectorOptionId}`}
+                on={slViaAllBrandsOn}
+                disabledReason={slViaAllBrandsDisabledReason}
+                onToggle={handleToggleSlViaAllBrands}
+              />
+            )}
             {/* NEO-291: first cell, because it is the one fact here that
                 changes how the cards beneath are NUMBERED — every card in an
                 insert wears it — and an operator building a Diamond Kings
@@ -515,6 +658,196 @@ export default function SetAttributesPanel({
             ))}
           </div>
         </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * NEO-237 — the brand's set-name prefix, as a row in the Attributes panel.
+ *
+ * `CardPrefixRow`'s shape exactly: a synthetic `ExpectedFeature` carries the
+ * label and hint into `FeatureValueControl`, hydration is
+ * `useReactiveField`'s (never resync over an unsaved edit), and the save goes
+ * through its own mutation. Maestro targets the input as `Value for Brand`;
+ * the wrapper is `Set feature Brand`, the same shape as every other row.
+ *
+ * The label is "Brand", not "Set prefix" (Jason 2026-09-21, decision 4,
+ * provisional pending the preview): to an operator the value IS the brand as
+ * it appears at the front of a set name, and "prefix" is the mechanism.
+ */
+const BRAND_PREFIX_FEATURE: ExpectedFeature = {
+  key: "setNamePrefix",
+  label: "Brand",
+  inputType: "text",
+  hint: "Sets whose names start with this are this brand's — Choice claims Choice Biloxi Shuckers. Usually the brand name, spelled the way set names spell it.",
+};
+
+function BrandPrefixRow({
+  value,
+  onSave,
+}: {
+  /** The row's stored `metadata.setNamePrefix`; `undefined` when absent. */
+  value: string | undefined;
+  /** `""` clears. Trimming and validation are the server's. */
+  onSave: (value: string) => Promise<unknown>;
+}) {
+  const label = BRAND_PREFIX_FEATURE.label;
+  const fieldClass = useFieldTestClass();
+  const hintId = useId();
+
+  return (
+    <label
+      className="flex flex-col gap-0.5 p-2 rounded border text-xs border-gray-700 bg-gray-900/30"
+      aria-label={`Set feature ${label}`}
+    >
+      <span className="flex items-center justify-between text-[10px] uppercase tracking-wide text-gray-400">
+        <span
+          title={BRAND_PREFIX_FEATURE.hint}
+          className="cursor-help underline decoration-dotted decoration-gray-500"
+        >
+          {label}
+        </span>
+      </span>
+      <span id={hintId} className="sr-only">
+        {BRAND_PREFIX_FEATURE.hint}
+      </span>
+      <FeatureValueControl
+        feat={BRAND_PREFIX_FEATURE}
+        value={value ?? ""}
+        onSave={onSave}
+        // Same as the feature rows (NEO-217): without this an emptied field
+        // snaps back to the stored prefix on blur. Routing it to `onSave("")`
+        // is what makes the prefix clearable.
+        onEmptyCommit={() => onSave("")}
+        ariaLabel={`Value for ${label}`}
+        ariaDescribedBy={hintId}
+        placeholder="e.g. Upper Deck"
+        dataFeatKey={BRAND_PREFIX_FEATURE.key}
+        className={`${fieldClass("brand-prefix")} w-full p-1 border rounded text-xs dark:bg-gray-900 dark:border-gray-700 focus:border-[#00D558] focus:outline-none`}
+      />
+    </label>
+  );
+}
+
+/**
+ * The Brand row's structured refusal (security review S2): a sibling brand
+ * under the same year already holds this prefix. Read from `data` — the
+ * message is redacted on production — and named after the brand that holds
+ * it, which is the thing the operator has to go and change.
+ */
+export function prefixTakenRefusal(e: unknown, prefix: string): string | null {
+  if (typeof e !== "object" || e === null) return null;
+  const data = (e as { data?: unknown }).data;
+  if (typeof data !== "object" || data === null) return null;
+  const { code, value } = data as { code?: unknown; value?: unknown };
+  if (code !== "PREFIX_TAKEN") return null;
+  const holder = typeof value === "string" && value.length > 0 ? value : "another brand";
+  return `'${prefix}' is already ${holder}'s Brand — two brands can't claim the same sets. Change it there first.`;
+}
+
+/**
+ * The via-All-Brands toggle's structured refusals, from `data` for the same
+ * reason. The toggle is disabled with the reason before either can fire;
+ * these are the backstop for a row that changed under the panel.
+ */
+export function slViaAllBrandsRefusal(e: unknown): string | null {
+  if (typeof e !== "object" || e === null) return null;
+  const data = (e as { data?: unknown }).data;
+  if (typeof data !== "object" || data === null) return null;
+  const { code, reason } = data as { code?: unknown; reason?: unknown };
+  if (code === "SL_LINKED") {
+    return typeof reason === "string" && reason.length > 0
+      ? reason
+      : "Linked to a SportLots brand of its own — that link stays.";
+  }
+  if (code === "SL_NOT_RESOLVABLE") {
+    return "This year has no SportLots link to go through.";
+  }
+  return null;
+}
+
+/** The toggle's visible sentence — what a flow asserts and taps. */
+export const SL_VIA_ALL_BRANDS_TOGGLE_TEXT =
+  "SportLots has no brand for this — match its sets by name";
+
+/**
+ * NEO-237 — the brand's SportLots link through All Brands, as a pressed
+ * toggle in the Attributes grid, beside Brand.
+ *
+ * The only control for the link: a new brand gets it without being asked
+ * (see `addCustomSelectorOption`), so an operator meets it here already on,
+ * and presses it off for a brand that must NOT match SportLots sets by name.
+ * Drawn as a box that fills when on, the whole sentence as the target,
+ * `aria-pressed` — the column's other yes/no decisions are pressed buttons.
+ * Wrapped in the grid's cell chrome with a "SportLots" eyebrow, so the cell
+ * reads like its neighbours. When it cannot be pressed the reason is under
+ * it in plain text — `aria-disabled` and `aria-describedby`, never native
+ * `disabled`, so a keyboard user can reach it and hear why.
+ */
+function SlViaAllBrandsToggle({
+  on,
+  disabledReason,
+  onToggle,
+}: {
+  on: boolean;
+  /** Non-null: shown, unpressable, with this line under it. */
+  disabledReason: string | null;
+  onToggle: (enabled: boolean) => Promise<unknown>;
+}) {
+  const fieldClass = useFieldTestClass();
+  const reasonId = useId();
+  const [busy, setBusy] = useState(false);
+  const unavailable = busy || disabledReason !== null;
+
+  const toggle = async () => {
+    if (unavailable) return;
+    setBusy(true);
+    try {
+      await onToggle(!on);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div
+      className="flex flex-col gap-1 p-2 rounded border text-xs border-gray-700 bg-gray-900/30"
+      aria-label="Set feature SportLots link"
+    >
+      <span className="text-[10px] uppercase tracking-wide text-gray-400">
+        SportLots
+      </span>
+      <button
+        type="button"
+        className={`${fieldClass("btn-sl-via-all-brands")} w-full text-left flex items-start gap-2 p-2 rounded-md border text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] ${
+          on
+            ? "border-[#00D558] bg-[#00D558]/10 text-gray-100"
+            : // gray-500: the 3:1 boundary tone on this panel's dark surface
+              // (gray-600 measures ~2.0:1 against gray-800; -500 clears it).
+              "border-gray-500 text-gray-300 hover:border-[#00D558]"
+        } ${unavailable ? "opacity-60 cursor-not-allowed hover:border-gray-500" : ""}`}
+        aria-pressed={on}
+        aria-disabled={unavailable || undefined}
+        aria-describedby={disabledReason ? reasonId : undefined}
+        onClick={() => void toggle()}
+        onKeyDown={(e) => activateOnEnter(e, () => void toggle(), unavailable)}
+      >
+        <span
+          aria-hidden="true"
+          className={`mt-0.5 h-3.5 w-3.5 shrink-0 rounded-sm border ${
+            on ? "border-[#00D558] bg-[#00D558]" : "border-gray-500"
+          }`}
+        />
+        <span>{SL_VIA_ALL_BRANDS_TOGGLE_TEXT}</span>
+      </button>
+      {disabledReason && (
+        // Next to the control it describes, not only in a tooltip: a
+        // disabled control that keeps its reason on hover asks a keyboard
+        // user to work it out.
+        <span id={reasonId} className="text-[11px] text-gray-400">
+          {disabledReason}
+        </span>
       )}
     </div>
   );

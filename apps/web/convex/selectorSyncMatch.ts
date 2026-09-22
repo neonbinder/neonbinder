@@ -26,10 +26,14 @@
  *      legal, so an id held by two siblings is not evidence of which row the
  *      update belongs to.
  *   2. Normalised display value, against siblings that are FREE on the sides
- *      the item carries — either no id at all on that side, or an id upstream
- *      did not return this run (a re-slug: same set, new id). Matching a stale
- *      row here is what heals a BSC re-slug through `setPrimarySlotId`, which
- *      reuses the slot KEY so every card on it keeps resolving.
+ *      the item carries — no id at all on that side, an id upstream did not
+ *      return this run (a re-slug: same set, new id), or a PLACEHOLDER id the
+ *      caller names as such (NEO-237: a manufacturer row linked through
+ *      SportLots' all-brands option before the brand's own id was known).
+ *      Matching a stale row here is what heals a BSC re-slug through
+ *      `setPrimarySlotId`, which reuses the slot KEY so every card on it keeps
+ *      resolving; matching a placeholder row upgrades it to the real id
+ *      through the same slot, and the outcome says so (`placeholderSides`).
  *   3. No candidate → insert. Ambiguous candidate → withheld and surfaced.
  *      Withholding writes nothing; it never deletes and never guesses.
  *
@@ -224,11 +228,139 @@ export function checkCustomSelectorValue(
     }
   }
 
+  // NEO-237 — "All Brands" is the VIEW pinned at the top of the Manufacturers
+  // column, not a row. See `ALL_BRANDS_VIEW_VALUE_KEY`.
+  if (level === "manufacturer" && isAllBrandsViewName(base.value)) {
+    return { ok: false, reason: ALL_BRANDS_VIEW_REFUSAL };
+  }
+
   // Every other level: non-empty after trim, which `checkSelectorValue`
   // already guaranteed. There is deliberately no per-level character rule for
   // set/insert/parallel names — real ones carry slashes, parentheses, accents
   // and print-run numerals ("Gold /50", "Refractor (SP)").
   return base;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// NEO-237 — the All Brands VIEW name is not a manufacturer name
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * The Manufacturers column carries a pinned entry, "All Brands", that is a
+ * VIEW ("show every set in this year, brand as a suffix") selected by a client
+ * sentinel and never a document id. Before NEO-237 a `manufacturer` row of
+ * that name was minted by the set sync to hold brand-unknown sets and stored
+ * from SportLots' brand list, which offers "All Brands" as its no-filter
+ * option; that row is now called "Unknown" (`ensureBrandUnknownRow`) and the
+ * SportLots option is routed to it rather than stored (`fetchAggregatedOptions`
+ * at the manufacturer level, `isSlAllBrandsBrandId`).
+ *
+ * So a manufacturer row of this name would be a second thing wearing the
+ * view's label in the same column, and both doors that take an operator-typed
+ * manufacturer name refuse it: `checkCustomSelectorValue` (the form and
+ * `addCustomSelectorOption`) and `planValueRename` (every rename path). This
+ * is NB's OWN view name being reserved in NB's own column — nothing here
+ * compares a marketplace value. "Unknown" is deliberately NOT reserved:
+ * typing it selects the existing row through the per-parent duplicate return.
+ *
+ * Folded through `selectorValueKey`, the same fold the sibling-clash check
+ * uses, so "all brands" and "ALL BRANDS " are refused as the same word.
+ */
+export const ALL_BRANDS_VIEW_VALUE_KEY = selectorValueKey("All Brands");
+
+/** The refusal both doors show. Fixed text; carries no operator value. */
+export const ALL_BRANDS_VIEW_REFUSAL =
+  "All Brands is the view at the top of this column, not a brand.";
+
+export function isAllBrandsViewName(value: string): boolean {
+  return selectorValueKey(value) === ALL_BRANDS_VIEW_VALUE_KEY;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// NEO-237 — the ONE brand-prefix matcher
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * Does `label` start with `prefix` as a whole word?
+ *
+ * The single rule behind every "which brand does this set name belong to"
+ * decision: the Sync Sets BSC phase (`routeBscSets`), the SportLots adapter's
+ * all-brands narrowing (`fetchSetNames`), the SportLots-only classification
+ * (`routeSlSets`), and the re-home of sets out of Unknown (`brandRehome.ts`).
+ * One matcher, so the set a brand claims at sync time is the set the adapter
+ * narrows to and the set the re-home moves — three copies would be three
+ * answers.
+ *
+ * Both sides go through `selectorValueKey` (lowercase, trim), and the
+ * character after the prefix must be ABSENT or NON-ALPHANUMERIC: "Choice
+ * Biloxi" and "Choice-Biloxi" match "Choice", "Choices" does not, and
+ * "Toppstown" does not match "Topps" — the same word-boundary rule
+ * `stripBrandPrefixForLabel` learned the hard way ("Toppstown Retro" →
+ * "town Retro"). Unicode letters and digits count as alphanumeric, so an
+ * accented continuation is a longer word too, not a boundary.
+ *
+ * Widens the set sync's old `startsWith(brand + " ") || === brand`: any
+ * non-alphanumeric boundary now counts ("Upper Deck-…"). No change for an
+ * existing row, because id-first routing wins before a prefix is consulted.
+ *
+ * An empty prefix matches NOTHING. A manufacturer row with no
+ * `setNamePrefix` buckets nothing and narrows nothing; it never falls back
+ * to its display value (schema.ts `setNamePrefix`).
+ */
+export function matchesBrandPrefix(label: string, prefix: string): boolean {
+  return foldedPrefixMatches(selectorValueKey(label), selectorValueKey(prefix));
+}
+
+/**
+ * The rule on ALREADY-FOLDED strings, for the one caller that tests one label
+ * against thousands of keys (`routeSlSets`) and cannot afford to re-fold both
+ * sides per pair. Everything else goes through `matchesBrandPrefix`.
+ */
+function foldedPrefixMatches(foldedLabel: string, foldedPrefix: string): boolean {
+  if (!foldedPrefix) return false;
+  if (!foldedLabel.startsWith(foldedPrefix)) return false;
+  const next = foldedLabel.charAt(foldedPrefix.length);
+  return next === "" || !/[\p{L}\p{N}]/u.test(next);
+}
+
+/**
+ * The label with its matched brand prefix removed — for the all-brands
+ * narrowing, where the adapter returns "Carddass Dragon Ball" under a
+ * "Bandai" row exactly as it returns "Series 1" under "Topps".
+ *
+ * Case-insensitive and whole-word (it is `matchesBrandPrefix` applied to the
+ * ORIGINAL label, then the prefix's length sliced off), and never strips to
+ * nothing: a set named exactly after its brand keeps its name rather than
+ * becoming "" and being dropped by the caller's `if (setName)` guard — the
+ * second correction `stripBrandPrefixForLabel` carries, for the same reason.
+ * Returns the label unchanged when the prefix does not match.
+ *
+ * The boundary the matcher accepts is any non-alphanumeric character, so the
+ * remainder may start with the separator that ended the brand: "Choice-
+ * Biloxi" → "-Biloxi". A dash-like separator (hyphen, en/em dash, colon,
+ * slash, pipe) is dropped along with the whitespace around it, because it
+ * joined the brand to the name and means nothing on its own. Anything else
+ * stays — a leading "#", "(" or quote may well be part of the set's name,
+ * and guessing is what `stripBrandPrefixForLabel` declined to do. That
+ * adapter strip keeps its whitespace-only trim (rows named by it before
+ * NEO-237 must not churn a rename suggestion); this one names only rows a
+ * via-All-Brands brand narrows, all of them born under this rule.
+ */
+export function stripMatchedBrandPrefix(label: string, prefix: string): string {
+  if (!matchesBrandPrefix(label, prefix)) return label;
+  const trimmedLabel = label.trim();
+  const stripped = trimLeadingSeparators(trimmedLabel.slice(prefix.trim().length));
+  return stripped.length > 0 ? stripped : trimmedLabel;
+}
+
+/**
+ * What is left of a label after its brand prefix, with the joining
+ * separator gone: whitespace and dash-like punctuation only. Shared by
+ * `stripMatchedBrandPrefix` and `routeSlSets`' folded re-strip so the label
+ * the adapter displays and the label the classifier judges are one string.
+ */
+function trimLeadingSeparators(rest: string): string {
+  return rest.replace(/^[\s\-–—:/|]+/u, "").trim();
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -262,9 +394,31 @@ export type IncomingItem = {
 };
 
 export type MatchOutcome<TId extends string = string> =
-  | { kind: "matched"; existingId: TId; tier: 0 | 1 | 2 }
+  | {
+      kind: "matched";
+      existingId: TId;
+      tier: 0 | 1 | 2;
+      /**
+       * NEO-237 — tier 2 only, and only when non-empty: the sides on which
+       * the matched row's primary id is a PLACEHOLDER (`isPlaceholderId`)
+       * that the item's real id now replaces. The store uses it to tell an
+       * upgrade-from-placeholder apart from a re-slug: the slot key is
+       * reused either way, but a placeholder never attributed anything, so
+       * the swap is not a `relinked` rebinding.
+       */
+      placeholderSides?: PlatformSide[];
+    }
   | { kind: "insert" }
   | { kind: "withheld"; reason: string };
+
+/**
+ * NEO-237 — "is this id on this side a placeholder link, not a live
+ * marketplace id?" Answered by the CALLER, because the matcher is generic over
+ * sides and levels and the answer is not: SportLots' all-brands option id
+ * (`slBrandAxis.ts`) is a placeholder on a manufacturer row and would be a
+ * bug anywhere else. Absent → nothing is a placeholder, today's rule exactly.
+ */
+export type PlaceholderIdPredicate = (side: PlatformSide, id: string) => boolean;
 
 export type MatchAmbiguity = {
   /** The incoming item's display value — never a marketplace id or label. */
@@ -366,17 +520,44 @@ export function effectiveCoveredSides(
  *
  * A row whose id on that side DID come back is not free: something else in
  * this batch legitimately owns it.
+ *
+ * NEO-237 — unless that id is a PLACEHOLDER (`isPlaceholderId`). A brand an
+ * operator typed before Sync Manufacturers ran holds SportLots' all-brands
+ * option id, and the fetch that finally lists the brand under its own id
+ * ALSO returns the all-brands option — so by the rule above the row would
+ * never be free, the real id would be withheld as "linked to a different
+ * live id", and the only way out was the attributes-panel toggle. The
+ * placeholder is not a live link to a set upstream lists under that id; it
+ * is "no brand id yet", so the row is free and the real id lands in the
+ * same slot. A row holding a REAL SportLots brand id keeps today's withhold.
  */
 function isSideFreeForNameMatch(
   row: SlotBearingRow,
   side: PlatformSide,
   returnedIds: Set<string>,
+  isPlaceholderId: PlaceholderIdPredicate | undefined,
 ): boolean {
   const slot = primarySlot(row, side);
   if (!slot) return true;
   const id = idForSlot(row, side, slot);
   if (id === undefined) return true;
+  if (isPlaceholderId?.(side, id)) return true;
   return !returnedIds.has(id);
+}
+
+/** The sides on which `row`'s primary id is a placeholder the item replaces. */
+function placeholderSidesFor(
+  row: SlotBearingRow,
+  sides: readonly PlatformSide[],
+  isPlaceholderId: PlaceholderIdPredicate | undefined,
+): PlatformSide[] {
+  if (!isPlaceholderId) return [];
+  return sides.filter((side) => {
+    const slot = primarySlot(row, side);
+    if (!slot) return false;
+    const id = idForSlot(row, side, slot);
+    return id !== undefined && isPlaceholderId(side, id);
+  });
 }
 
 export function planSelectorSync<TId extends string>(args: {
@@ -385,8 +566,15 @@ export function planSelectorSync<TId extends string>(args: {
   coveredSides?: readonly PlatformSide[];
   /** What the FETCH returned. Falls back to the items when absent — see above. */
   returnedIds?: { bsc?: readonly string[]; sportlots?: readonly string[] };
+  /**
+   * NEO-237 — which ids are placeholder links (see `PlaceholderIdPredicate`).
+   * Consulted by tier 2 only. Tier 1 is untouched: a placeholder id never
+   * arrives as an item (`fetchAggregatedOptions` routes it out first), and if
+   * an old bundle ever sent it, the M:1 withhold is the right answer.
+   */
+  isPlaceholderId?: PlaceholderIdPredicate;
 }): SelectorSyncPlan<TId> {
-  const { existing, items } = args;
+  const { existing, items, isPlaceholderId } = args;
 
   const returnedIds = resolveReturnedIds(items, args.returnedIds);
   const coveredSides = effectiveCoveredSides(returnedIds, args.coveredSides);
@@ -532,7 +720,7 @@ export function planSelectorSync<TId extends string>(args: {
         ambiguities.push({ item: item.value, reason: withheld });
       } else if (
         !sidesCarried.every((side) =>
-          isSideFreeForNameMatch(row, side, returnedIds[side]),
+          isSideFreeForNameMatch(row, side, returnedIds[side], isPlaceholderId),
         )
       ) {
         // The name matches but the row is currently, legitimately bound to a
@@ -548,7 +736,20 @@ export function planSelectorSync<TId extends string>(args: {
         });
       } else {
         claimed.add(row._id);
-        outcomes[i] = { kind: "matched", existingId: row._id, tier: 2 };
+        // NEO-237 — say which sides were placeholders, so the store can
+        // count the upgrade instead of reporting a re-slug. Only when there
+        // is one: the outcome shape for every other match is unchanged.
+        const placeholderSides = placeholderSidesFor(
+          row,
+          sidesCarried,
+          isPlaceholderId,
+        );
+        outcomes[i] = {
+          kind: "matched",
+          existingId: row._id,
+          tier: 2,
+          ...(placeholderSides.length > 0 ? { placeholderSides } : {}),
+        };
         continue;
       }
     }
@@ -705,6 +906,13 @@ export function planValueRename(args: {
   }
   const trimmed = checked.value;
 
+  // NEO-237 — the third door. A rename is how a row would come to wear the
+  // view's name after the create path refused it, and a marketplace label
+  // accepted through `applySelectorSyncSuggestions` is a rename too.
+  if (row.level === "manufacturer" && isAllBrandsViewName(trimmed)) {
+    return { ok: false, reason: "invalid", message: ALL_BRANDS_VIEW_REFUSAL };
+  }
+
   const key = selectorValueKey(trimmed);
   if (key === selectorValueKey(row.value)) {
     // A no-op rename (or a case-only change to the same word) should not churn
@@ -751,5 +959,334 @@ export function planValueRename(args: {
     value: trimmed,
     ...(Object.keys(features).length > 0 ? { features } : {}),
     ...(sportConfig ? { sportConfig } : {}),
+  };
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// NEO-237 — Sync Sets routing, BSC phase (D8)
+// ───────────────────────────────────────────────────────────────────────────
+
+/** A marketplace set as the adapter returns it: display label + its id. */
+export type MarketplaceSetEntry = { value: string; platformValue: string };
+
+/**
+ * What the router needs to know about one manufacturer row under the year.
+ * Read off `metadata`, never off `value`: a row lacking `setNamePrefix`
+ * claims nothing by prefix (schema.ts), and a flagged row is never a prefix
+ * candidate — it is where the sets that match no brand go.
+ */
+export type BrandRouteManufacturer<TId extends string = string> = {
+  _id: TId;
+  setNamePrefix?: string;
+  isBrandUnknown?: boolean;
+};
+
+/** A setName row under some manufacturer of the year that holds a BSC id. */
+export type BscSetHolder<TId extends string = string> = {
+  rowId: TId;
+  parentId: TId;
+};
+
+export type BscSetRoutePlan<TId extends string = string> = {
+  /** Sets to store under each BRAND (id-first; see below). */
+  buckets: Map<TId, MarketplaceSetEntry[]>;
+  /** Sets that matched no brand: the Unknown bucket, whether or not a row for it exists yet. */
+  unknown: MarketplaceSetEntry[];
+  /**
+   * Rows to re-home Unknown → brand BEFORE the buckets are stored, so the
+   * brand's per-bucket store finds them as siblings and matches by id rather
+   * than inserting a second copy. Only ever Unknown → brand.
+   */
+  moves: Array<{ rowId: TId; fromId: TId; toId: TId }>;
+};
+
+/**
+ * File one flat BSC set list under the year's manufacturers.
+ *
+ * ID FIRST, PREFIX SECOND, UNKNOWN THIRD — and a move only ever goes Unknown
+ * → brand:
+ *
+ *   1. a setName row ANYWHERE under the year already holds the set's BSC id
+ *      (`holdersByBscId`, built from every manufacturer's sets, not one
+ *      parent's) →
+ *        • under a brand: that brand's bucket, whatever the prefix says. An
+ *          operator's placement, or a prior sync's, is the linkage; the name
+ *          is not consulted. Several holders under brands (NEO-137 M:1) →
+ *          the first brand holder's bucket, and nothing moves.
+ *        • under Unknown, and the label prefix-matches a brand → that row is
+ *          re-homed to the brand (`moves`) and the set goes in the brand's
+ *          bucket. Under Unknown with no matching brand → Unknown, in place.
+ *   2. no holder → the LONGEST matching prefix wins ("Upper Deck" before
+ *      "Upper"), else Unknown.
+ *
+ * Before NEO-237 tier 1 matched only within one parent, so a set an operator
+ * had filed under a brand — or that a brand's creation had re-homed — was
+ * re-inserted under whichever bucket the prefix chose. This is the fix.
+ *
+ * Pure: it reads rows and returns a plan; the action re-homes and stores.
+ */
+export function routeBscSets<TId extends string>(args: {
+  sets: readonly MarketplaceSetEntry[];
+  manufacturers: readonly BrandRouteManufacturer<TId>[];
+  holdersByBscId: ReadonlyMap<string, readonly BscSetHolder<TId>[]>;
+}): BscSetRoutePlan<TId> {
+  const unknownIds = new Set<TId>();
+  // Prefix candidates, longest folded prefix first, so the first match is the
+  // most specific one. Flagged rows and rows without a prefix never appear.
+  const candidates: Array<{ _id: TId; prefix: string }> = [];
+  for (const mfr of args.manufacturers) {
+    if (mfr.isBrandUnknown === true) {
+      unknownIds.add(mfr._id);
+      continue;
+    }
+    const prefix = mfr.setNamePrefix?.trim();
+    if (prefix) candidates.push({ _id: mfr._id, prefix });
+  }
+  candidates.sort(
+    (a, b) => selectorValueKey(b.prefix).length - selectorValueKey(a.prefix).length,
+  );
+  const brandByPrefix = (label: string): TId | undefined =>
+    candidates.find((c) => matchesBrandPrefix(label, c.prefix))?._id;
+
+  const buckets = new Map<TId, MarketplaceSetEntry[]>();
+  const unknown: MarketplaceSetEntry[] = [];
+  const moves: BscSetRoutePlan<TId>["moves"] = [];
+  const moved = new Set<TId>();
+  const bucket = (id: TId, set: MarketplaceSetEntry) => {
+    const list = buckets.get(id);
+    if (list) list.push(set);
+    else buckets.set(id, [set]);
+  };
+
+  for (const set of args.sets) {
+    const holders = args.holdersByBscId.get(set.platformValue) ?? [];
+    const brandHolder = holders.find((h) => !unknownIds.has(h.parentId));
+    if (brandHolder) {
+      bucket(brandHolder.parentId, set);
+      continue;
+    }
+    const target = brandByPrefix(set.value);
+    if (holders.length > 0) {
+      // Every holder sits under Unknown.
+      if (target === undefined) {
+        unknown.push(set);
+        continue;
+      }
+      for (const h of holders) {
+        if (moved.has(h.rowId)) continue;
+        moved.add(h.rowId);
+        moves.push({ rowId: h.rowId, fromId: h.parentId, toId: target });
+      }
+      bucket(target, set);
+      continue;
+    }
+    if (target === undefined) unknown.push(set);
+    else bucket(target, set);
+  }
+
+  return { buckets, unknown, moves };
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// NEO-237 — Sync Sets classification, SportLots phase (D11)
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * Bounds on what one Sync Sets writes from SportLots for one brand scope.
+ * Every root the classifier keeps becomes an NB set in that sync
+ * (`createSetsFromSlRoots`, the sole writer), so the cap is a write bound:
+ * a SportLots year lists ~2,500 sets, and a brand with more than 200 NEW
+ * roots in one sync is a data-quality problem to look at, not a batch to
+ * insert blind — the rest are counted and land on the next sync. Members
+ * only shape the grouping (which entries are roots); they are never written.
+ */
+export const MAX_SL_SET_MEMBERS = 50;
+export const MAX_SL_SETS_PER_SYNC = 200;
+
+export type SlSetEntry = { id: string; label: string };
+
+export type SlSetRoot = {
+  id: string;
+  label: string;
+  members: SlSetEntry[];
+};
+
+export type SlSetRoutePlan = {
+  /** Entries whose id is already attached somewhere under the brand. */
+  covered: number;
+  /** Entries hidden as a variant of a set NB already has (year-wide). */
+  variants: number;
+  /** The SportLots-only roots that become sets, sorted by folded label, capped. */
+  roots: SlSetRoot[];
+  /** Roots past `MAX_SL_SETS_PER_SYNC`, dropped after the sort. */
+  rootsTruncated: number;
+  /** Members past `MAX_SL_SET_MEMBERS` across all roots. */
+  membersTruncated: number;
+  /** Entries dropped because their label exceeds `MAX_SLOT_LABEL_LENGTH`. */
+  unnameable: number;
+};
+
+/**
+ * The folded name keys a year's setName rows answer to, for the "variant of
+ * a known set" test. BOTH forms per row: its `value`, and its brand's
+ * `setNamePrefix + " " + value`. NB files a BSC-synced set as "Topps Chrome"
+ * under Topps and a hand-built one as "Chrome"; a SportLots label that lands
+ * under Unknown's full-year list reads "Topps Chrome Sepia Refractor", and
+ * either key has to hide it.
+ */
+export function knownSetNameKeys(
+  rows: ReadonlyArray<{ value: string; brandPrefix?: string }>,
+): Set<string> {
+  const keys = new Set<string>();
+  for (const row of rows) {
+    const key = selectorValueKey(row.value);
+    if (!key) continue;
+    keys.add(key);
+    const prefix = row.brandPrefix?.trim();
+    if (prefix) keys.add(selectorValueKey(`${prefix} ${row.value}`));
+  }
+  return keys;
+}
+
+/**
+ * Classify one brand scope's SportLots set list.
+ *
+ *   covered  — the entry's SL id is attached on any row under the brand's
+ *              sets (the caller walks setName → variantType → insert →
+ *              parallel). Wins over everything: a set NB already links needs
+ *              no offer, however it is named.
+ *   variant  — a set NB already has, year-wide, EQUALS or word-boundary-
+ *              PREFIXES the entry's label (`knownSetNameKeys`), so the entry
+ *              is that set's variant, not a new set. Not surfaced — the
+ *              Inserts sync under that set finds it. Two tests:
+ *
+ *              EQUALS is tested on the label as the adapter returned it AND
+ *              re-prefixed with the scope's own prefix: under a real brand
+ *              the adapter strips "Topps " off "Topps Chrome", and NB's set
+ *              may be called either "Chrome" or "Topps Chrome".
+ *
+ *              PREFIXES is tested with the SCOPE PREFIX STRIPPED FROM BOTH
+ *              SIDES: the entry's label minus the prefix (a no-op when the
+ *              adapter already stripped it) against each known name minus the
+ *              same prefix. A known set contributes a prefix-hider only from
+ *              what remains after the brand prefix, and a known set that IS
+ *              the brand prefix (a flagship filed under its brand's own name:
+ *              "Topps" under Topps, "Bowman" under Bowman) leaves nothing —
+ *              it hides an exact match and nothing by prefix. Without this
+ *              the flagship hid the whole brand: "Topps" prefixed the
+ *              re-prefixed form of every entry ("Topps Heritage", "Topps
+ *              Finest", …) the moment the Topps row existed. Now "Heritage"
+ *              under Topps is tested as "heritage" against "" (skipped) and
+ *              is NEW; "Chrome Sepia Refractor" is tested as "chrome sepia
+ *              refractor" against "Topps Chrome" → "chrome" and is a VARIANT.
+ *   new      — everything else, grouped by ROOT: an entry is a root when no
+ *              other new entry's label word-boundary-prefixes it; every other
+ *              entry joins the LONGEST root that prefixes it. Two entries with
+ *              one label fold together (the first is the root). Roots are
+ *              sorted by folded label BEFORE the cap so two syncs over the
+ *              same list keep the same window: what was cut off last time is
+ *              exactly what the next sync (with last time's roots now
+ *              covered) reaches first.
+ *
+ * Pure. `entries` are the adapter's (already prefix-stripped) labels: the
+ * whole-word, case-insensitive strip of `stripMatchedBrandPrefix` for a
+ * via-All-Brands scope, `stripBrandPrefixForLabel`'s case-sensitive one for a
+ * real brand's own list, and no strip at all for Unknown (no `scopePrefix`).
+ * The strip repeated here is the folded form of the first, so a label that
+ * arrives stripped is unchanged and one the case-sensitive strip missed is
+ * still judged on what follows the brand.
+ */
+export function routeSlSets(args: {
+  entries: readonly SlSetEntry[];
+  coveredSlIds: ReadonlySet<string>;
+  knownSetNameKeys: ReadonlySet<string>;
+  /** The scope's `setNamePrefix`; absent for Unknown (no re-prefixed form). */
+  scopePrefix?: string;
+}): SlSetRoutePlan {
+  const prefix = args.scopePrefix?.trim();
+  const foldedPrefix = prefix ? selectorValueKey(prefix) : "";
+  // The folded key minus the scope prefix as a whole word; "" when the key
+  // IS the prefix. Unlike `stripMatchedBrandPrefix` this DOES strip to
+  // nothing, because "nothing remains" is the signal the prefix test needs.
+  const stripScopePrefix = (foldedKey: string): string => {
+    if (!foldedPrefixMatches(foldedKey, foldedPrefix)) return foldedKey;
+    return trimLeadingSeparators(foldedKey.slice(foldedPrefix.length));
+  };
+  // Keys come folded from `knownSetNameKeys`; folded again here so a caller
+  // that built the set by hand cannot make the pairwise test case-sensitive.
+  const known = [...args.knownSetNameKeys].map(selectorValueKey).filter(Boolean);
+  const knownSet = new Set(known);
+  // The prefix-hiders: what remains of each known name after the scope
+  // prefix. The flagship named after its brand contributes nothing here.
+  const knownHiders = [...new Set(known.map(stripScopePrefix))].filter(Boolean);
+  const isVariantOfKnown = (label: string): boolean => {
+    const key = selectorValueKey(label);
+    if (knownSet.has(key)) return true;
+    if (prefix && knownSet.has(selectorValueKey(`${prefix} ${label}`))) return true;
+    // A label that IS the brand name (kept whole by the adapter's strip) has
+    // nothing after the prefix to test; it is only ever an exact match.
+    const stripped = stripScopePrefix(key);
+    if (!stripped) return false;
+    for (const hider of knownHiders) {
+      if (foldedPrefixMatches(stripped, hider)) return true;
+    }
+    return false;
+  };
+
+  let covered = 0;
+  let variants = 0;
+  let unnameable = 0;
+  const fresh: Array<{ id: string; label: string; key: string }> = [];
+  const seenIds = new Set<string>();
+  for (const entry of args.entries) {
+    if (!entry.id || seenIds.has(entry.id)) continue;
+    seenIds.add(entry.id);
+    if (args.coveredSlIds.has(entry.id)) {
+      covered++;
+      continue;
+    }
+    const label = entry.label.trim();
+    if (!label) continue;
+    if (label.length > MAX_SLOT_LABEL_LENGTH) {
+      unnameable++;
+      continue;
+    }
+    if (isVariantOfKnown(label)) {
+      variants++;
+      continue;
+    }
+    fresh.push({ id: entry.id, label, key: selectorValueKey(label) });
+  }
+
+  // Shortest first, so every root an entry could join has been decided
+  // before the entry is looked at; ties by key keep the grouping stable
+  // across syncs.
+  fresh.sort(
+    (a, b) => a.key.length - b.key.length || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0),
+  );
+  const roots: Array<SlSetRoot & { key: string; dropped: number }> = [];
+  for (const entry of fresh) {
+    let best: (typeof roots)[number] | undefined;
+    for (const root of roots) {
+      if (!foldedPrefixMatches(entry.key, root.key)) continue;
+      if (!best || root.key.length > best.key.length) best = root;
+    }
+    if (!best) {
+      roots.push({ id: entry.id, label: entry.label, members: [], key: entry.key, dropped: 0 });
+      continue;
+    }
+    if (best.members.length >= MAX_SL_SET_MEMBERS) best.dropped++;
+    else best.members.push({ id: entry.id, label: entry.label });
+  }
+
+  roots.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  const kept = roots.slice(0, MAX_SL_SETS_PER_SYNC);
+  return {
+    covered,
+    variants,
+    roots: kept.map(({ id, label, members }) => ({ id, label, members })),
+    rootsTruncated: roots.length - kept.length,
+    membersTruncated: kept.reduce((n, r) => n + r.dropped, 0),
+    unnameable,
   };
 }

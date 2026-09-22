@@ -948,3 +948,99 @@ describe("NEO-291: the card-prefix write is admin-gated, and the whole-metadata 
     expect(src).not.toContain("export const updateSelectorOptionMetadata");
   });
 });
+
+describe("NEO-237: the All Brands view doors are admin-gated", () => {
+  /**
+   * Three new public functions on the set builder. One is a read that
+   * enumerates a year's sets; two are writes — a brand's set-name prefix,
+   * which MOVES sets between manufacturers, and a brand's link through
+   * SportLots' All Brands option, which writes a marketplace slot. Every one
+   * is `requireAdmin`, like every other set-builder door, and every one
+   * refuses before its first read or write.
+   *
+   * Called with valid, inert arguments so the refusal is the gate and not
+   * argument validation.
+   */
+  async function seedYearBrand(t: ReturnType<typeof convexTest>) {
+    return t.run(async (ctx) => {
+      const sportId = await ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Hockey",
+        platformData: {},
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+      });
+      const yearId = await ctx.db.insert("selectorOptions", {
+        level: "year",
+        value: "1997",
+        platformData: {},
+        parentId: sportId,
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+      });
+      const brandId = await ctx.db.insert("selectorOptions", {
+        level: "manufacturer",
+        value: "Choice",
+        platformData: {},
+        parentId: yearId,
+        children: [],
+        metadata: { setNamePrefix: "Choice" },
+        lastUpdated: 1_700_000_000_000,
+      });
+      return { yearId, brandId };
+    });
+  }
+
+  test.each([
+    [
+      "brandView.getSetsUnderYear",
+      (tt: ReturnType<typeof convexTest>, ids: { yearId: Id<"selectorOptions"> }) =>
+        tt.query(api.brandView.getSetsUnderYear, { yearId: ids.yearId }),
+    ],
+    [
+      "brandView.setSelectorOptionSetNamePrefix",
+      (tt: ReturnType<typeof convexTest>, ids: { brandId: Id<"selectorOptions"> }) =>
+        tt.mutation(api.brandView.setSelectorOptionSetNamePrefix, {
+          id: ids.brandId,
+          setNamePrefix: "Choice Biloxi",
+        }),
+    ],
+    [
+      "brandView.setManufacturerSlViaAllBrands (on)",
+      (tt: ReturnType<typeof convexTest>, ids: { brandId: Id<"selectorOptions"> }) =>
+        tt.mutation(api.brandView.setManufacturerSlViaAllBrands, {
+          id: ids.brandId,
+          enabled: true,
+        }),
+    ],
+    [
+      "brandView.setManufacturerSlViaAllBrands (off)",
+      (tt: ReturnType<typeof convexTest>, ids: { brandId: Id<"selectorOptions"> }) =>
+        tt.mutation(api.brandView.setManufacturerSlViaAllBrands, {
+          id: ids.brandId,
+          enabled: false,
+        }),
+    ],
+  ])("%s refuses a signed-in non-admin and a signed-out caller", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const ids = await seedYearBrand(t);
+    await expect(call(t.withIdentity(SIGNED_IN), ids)).rejects.toThrow();
+    await expect(call(t, ids)).rejects.toThrow();
+    // Refused before any write: the brand is as seeded and holds no set.
+    const { brand, setsUnderBrand } = await t.run(
+      async (ctx) => ({
+        brand: await ctx.db.get(ids.brandId),
+        setsUnderBrand: await ctx.db
+          .query("selectorOptions")
+          .withIndex("by_level_and_parent", (q) =>
+            q.eq("level", "setName").eq("parentId", ids.brandId),
+          )
+          .collect(),
+      }),
+    );
+    expect(brand!.metadata).toEqual({ setNamePrefix: "Choice" });
+    expect(brand!.platformData).toEqual({});
+    expect(brand!.lastUpdated).toBe(1_700_000_000_000);
+    expect(setsUnderBrand).toHaveLength(0);
+  });
+});

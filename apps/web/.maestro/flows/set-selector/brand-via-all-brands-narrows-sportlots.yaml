@@ -1,0 +1,591 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "A brand SportLots has no entry for links through All Brands by set-name prefix — the year-wide sync saves SportLots' own sets, the brand's sets re-home from Unknown, and its SportLots list narrows to the prefix"
+tags:
+  - set-selector
+---
+# ════════════════════════════════════════════════════════════════════════════
+# R1 — ONE FEATURE (NEO-237, D3/D9/D10-D13): a brand that has no SportLots
+# brand of its own can be LINKED THROUGH SportLots' "All Brands" option,
+# narrowed by an NB-owned set-name prefix, and Sync Sets is two-sided. On live
+# marketplace data, end to end, this flow proves:
+#
+#   1. Sync Sets from the All Brands view files BSC's year list under the
+#      brands by prefix and the remainder under the year's `Unknown` row, then
+#      asks SportLots per brand (STEP 1);
+#   2. every set SportLots lists that NB has no row for is SAVED by that same
+#      sync — an NB set named `<brand prefix> <label>` (the label as-is under
+#      Unknown) with a Base carrying the SportLots id, no review in between
+#      (Jason, 2026-09-21: "if a set exists in a marketplace it should be
+#      saved whether it is in SL or BSC or both") — and the Sets column's
+#      done notice says how many: "N sets added from SportLots" (STEP 2);
+#   3. the New Manufacturer confirm says that Unknown's matching sets will
+#      move (STEP 3) — and asks NOTHING about SportLots: creating a brand
+#      under a year that carries SportLots ids links it through All Brands
+#      by itself (Jason's preview pass, 2026-09-21: the opt-in control is
+#      gone), silently not under a year without them. The link is therefore
+#      proved by what FOLLOWS the create, never at the confirm — claim 5 and
+#      the attributes panel's SportLots cell (STEP 5);
+#   4. creating the brand RE-HOMES the prefix-matching sets out of Unknown —
+#      the same set, picked in the view afterwards, back-fills the
+#      Manufacturers column to the NEW brand (STEP 4), and the brand's Sets
+#      column reports "N sets moved out of Unknown" (STEP 5);
+#   5. under that brand the Base picker's SportLots pane is the NARROWED
+#      all-brands list — a handful of candidates, never the year's whole
+#      catalogue (STEP 4);
+#   6. the brand's attributes carry the prefix as "Brand", defaulted to its
+#      name (STEP 5).
+#
+# ── THE FIXTURE (SET-REGISTRY.md → "Hockey → 1997") ─────────────────────────
+#   Hockey → 1997, claimed by Jason 2026-09-21 for this flow: same SportLots
+#   brand list as 1995 (registry measurement 2 — `All Brands, Bowman, …,
+#   Upper Deck`, 18 entries, "1997 returns the identical list"), nothing else
+#   in the suite touches it. The brand is `SPx` (STEP 0): a real 1997-98
+#   hockey product that SportLots' brand list has NO entry for, so it can
+#   only be reached through All Brands; its name is a single regex-safe
+#   token; and the word-boundary matcher keeps it apart from the real `SP`
+#   brand in both directions ("SPx" does not start with "SP" at a boundary,
+#   and "SP Authentic" does not start with "SPx").
+#
+#   MEASURED 2026-09-21 on PR #272's Convex preview (local Vite → preview,
+#   after CI run 35658444013's seed; the flow passed end to end in 4m24s,
+#   no step on the give-up path). What the marketplaces answered:
+#     (a) BSC lists a 1997 hockey set named exactly `SPx`: STEP 1's sync
+#         filed it under `Unknown` (no brand's prefix claimed it), STEP 3's
+#         create re-homed it, and STEP 4 picked it in the view and read
+#         `Manufacturers: SPx — change` back.
+#     (b) SportLots' all-brands list for 1997, narrowed to "SPx", holds
+#         between 1 and 8 entries: STEP 4's pane rendered at least one
+#         `SportLots base candidate: …` and NO "Search SportLots sets..."
+#         box (BaseSetPicker renders the box above 8). Unchanged by the
+#         auto-save: the pane is the adapter's narrowed list, not the rows
+#         that exist (`BaseSetPicker` never drops an attached candidate),
+#         and STEP 1 saves none of these anyway — `routeSlSets` hides every
+#         SportLots entry that a set NB already has EQUALS or word-boundary-
+#         PREFIXES, and (a)'s BSC set `SPx` prefixes all of them.
+#     (c) the year-wide sync classified 74 SportLots roots as new on the
+#         first run (measured through the review modal that stood here
+#         before the 2026-09-21 auto-save; the first was under Donruss,
+#         "Between the Pipes /3500"). Those roots are what STEP 2's notice
+#         now counts — year-wide in the view, never dependent on the SPx
+#         prefix. The count itself is the marketplace's business and is not
+#         asserted; only that it is not zero.
+#   If a replacement is ever needed, it must satisfy (a) and (b) again —
+#   the registry lists the alternatives considered. Re-measure and record.
+#   That measurement predates the 2026-09-21 preview-pass changes (the
+#   confirm's opt-in control removed, STEP 5's SportLots-cell reads added,
+#   `Unknown` pinned second in the Manufacturers column, and the review
+#   modal replaced by the auto-save STEP 2 now reads); those steps were
+#   parsed offline only and are measured by the next CI run of this flow.
+#
+# ── WHY A REAL YEAR, AND WHY THIS FLOW IS A SOLE WRITER (R7a) ───────────────
+#   Every claim above is about what a marketplace ANSWERS: which sets BSC
+#   lists, which SportLots lists, and how the sync files and narrows them. A
+#   hand-made subtree carries no ids, asks nothing, and gets nothing to file
+#   (NEO-239) — the notice never counts, the picker's pane says "no base
+#   set", and a brand created under it is linked to nothing. So the year is
+#   real, cold, and this flow WRITES to it: a manufacturer row (`SPx`, linked
+#   through All Brands by the create itself — the year carries SportLots
+#   ids), every set the year-wide sync saves from SportLots' lists (dozens;
+#   their names are SportLots' labels behind the brands' prefixes — never
+#   read, never guessed, never a literal here), and the re-homes. Nothing
+#   deletes, nothing renames. It is the ONLY flow on Hockey 1997.
+#
+#   ⚠️ FRESH-ONLY, like `checklist-one-marketplace-skips-match-dialog`: a
+#   second run against the same deployment finds `SPx` already there — the
+#   "+ Custom" form then SELECTS the existing row with no confirm at all,
+#   and STEP 3 fails on the confirm sentence by name. CI reseeds the
+#   preview every run, so the first-run path is the CI path; locally,
+#   re-seed (`npm run test:e2e -- setup`) before re-running.
+#
+# ── NEO-287: BOTH MODES, HARD ASSERTS IN EACH (R2) ──────────────────────────
+#   Under the pause the year has no SportLots ids at all (README → "Operator
+#   switches": below the root the pause reads as a BSC-only tree), so every
+#   SportLots-shaped claim above has a paused counterpart asserted by name:
+#   the view's Sets column ends with "SportLots skipped: no SportLots ids on
+#   this path." and counts nothing added; the create links the brand to nothing, so the
+#   picker's pane reads "SportLots returned no base set for <set>" and the
+#   attributes panel's SportLots cell says why it cannot be pressed ("This
+#   year has no SportLots link to go through"). The confirm step itself is
+#   the same screen in both modes and asserted unconditionally, as is the
+#   BSC half — filing, re-homing, the "moved out of Unknown" notice, the
+#   Brand row.
+#
+# ── R5 ──────────────────────────────────────────────────────────────────────
+#   7000 everywhere EXCEPT the live marketplace round-trips: the cold Hockey
+#   year / manufacturer syncs (owned by the drill util), the year-wide set
+#   sync's SportLots phase (STEP 2 — waited out HERE, on the `Sync Sets`
+#   button, because the util's "Syncing Sets" gate cannot see that panel in
+#   the view; see STEP 2), the cold variant-type sync of the BSC-filed set,
+#   and the base picker's own fetch. Each is commented where it appears.
+#
+# ── HANDLES (accessible names and visible text; never a DOM id) ─────────────
+#   Sets column `N sets added from SportLots` (SyncDoneNotice, the year-wide
+#               sync's done notice in the view; the count is server-written
+#               from the rows the sync inserted), `N sets moved out of
+#               Unknown` (the brand's own column, STEP 5), `SportLots
+#               skipped: no SportLots ids on this path.`
+#   confirm     `Create manufacturer '<name>' under Hockey › 1997?`, the line
+#               `Sets in Unknown whose names start with '<name>' move here.`,
+#               `Create manufacturer` — and nothing about SportLots (the
+#               2026-09-21 change; a control here again is a regression)
+#   picker      `BSC base candidate: …`, `SportLots base candidate: …`,
+#               `Search SportLots sets...`, `Confirm Base Set`, `Cancel`,
+#               `Base mapping cancelled`, `Close`, `Map Base Set`
+#   attributes  `Edit attributes`, `Value for Brand`, the SportLots cell's
+#               toggle text `SportLots has no brand for this — match its sets
+#               by name` (SetAttributesPanel; on/off is aria-pressed, which
+#               the driver does not expose) and, only when it cannot be
+#               pressed, its reason line `This year has no SportLots link to
+#               go through`
+#
+# ── R3 ──────────────────────────────────────────────────────────────────────
+#   `all-brands-view-lists-every-set` proves the view itself, marketplace-free;
+#   `checklist-one-marketplace-skips-match-dialog` proves the Unknown routing
+#   on 1995 and the one-marketplace checklist path. Neither creates a brand,
+#   asks SportLots through All Brands, or reads what the sync saved from
+#   SportLots' lists.
+# ════════════════════════════════════════════════════════════════════════════
+
+# ============================================================
+# STEP 0 — THE FIXTURE, IN ONE PLACE
+#
+#   BRAND   the brand to create through All Brands; also its set-name prefix
+#           (the form defaults the prefix to the name). Regex-safe, one token,
+#           no SportLots brand of its own. See the header for what a
+#           replacement must satisfy.
+#   YEAR    plain four digits — Hockey years are bare years in NB (1905–2026).
+# ============================================================
+
+- evalScript: '${output.BRAND = "SPx"}'
+- evalScript: '${output.YEAR = "1997"}'
+
+# ============================================================
+# LAUNCH + SIGN IN (R4)
+# ============================================================
+
+- launchApp
+- extendedWaitUntil:
+    visible: ".*Build set parameters using marketplace APIs.*"
+    timeout: 45000
+
+# ============================================================
+# STEP 1 — COLD DRILL TO Hockey › 1997 › the "All Brands" VIEW
+#
+# The util reads MANUFACTURER "All Brands" as "tap the pinned view" (its
+# NEO-237 block) and returns once the YEAR-WIDE Sets sync has finished — BSC's
+# whole list filed by prefix and the rest under `Unknown`, then one
+# SportLots set list per brand of the year (the real brands' own lists, and
+# the all-brands list once, narrowed per brand). Everything below reads the
+# result of that one sync.
+# ============================================================
+
+- runFlow:
+    file: util-drill-to-cold-real-set.yaml
+    env:
+      SPORT: "Hockey"
+      YEAR: ${output.YEAR}
+      MANUFACTURER: "All Brands"
+
+# PRECONDITION (R2): the view lists the year — hundreds of sets, so the
+# search input is there. A year that synced to nothing fails here, by name,
+# before any SportLots claim is read into it.
+- extendedWaitUntil:
+    visible: ".*Search sets.*"
+    timeout: 15000
+
+- runFlow:
+    file: ../util/util-paused-platforms.yaml
+
+# ============================================================
+# STEP 2 — THE YEAR-WIDE SYNC SAVED SPORTLOTS' OWN SETS, AND SAYS HOW MANY
+#
+# There is no review surface any more (Jason, 2026-09-21: "why do we have a
+# dialog? If a set exists in a marketplace it should be saved"): the sync's
+# SportLots phase writes every new root as a set with a Base carrying the
+# SportLots id (`insertSetWithBaseFromSl`), and the Sets column's done
+# notice — the `SyncDoneNotice` above the idle `Sync Sets` button, one
+# server-composed sentence rendered verbatim — carries the count: "N sets
+# added from SportLots". That notice is the claim: the count is written from
+# the rows the mutation inserted, so a sync that saved nothing cannot show
+# it and a build that stopped saving reads no notice at all (R2). Its value
+# is the marketplace's business, not this flow's (fixture note (c) in the
+# header): only "not zero" is asserted.
+#
+# What is NOT asserted, and why: a saved set's row in the view. A set row is
+# not a terminal row, so `EntitySelector` renders no SL pill on it (the id
+# lives on its Base), and its name is SportLots' label behind a brand prefix
+# — nothing on this screen names one, so nothing here can pick one without
+# guessing a marketplace label. The link on the Base is proved on THIS
+# year's own terms in STEP 4 instead (the picker pane), and the Base-carries-
+# the-id shape is unit-tested at the helper.
+# ============================================================
+
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      # PAUSED: nothing was asked of SportLots, so nothing was saved from it —
+      # and the column says why, in the one-sided-skip notice the year-wide
+      # sync leaves when no brand carries the ids to scope SportLots. The
+      # notice sits below the column's list, DOWN from where the drill left
+      # the page. The negative is paired with that positive on the same
+      # surface (R2).
+      - scrollUntilVisible:
+          element:
+            text: "SportLots skipped: no SportLots ids on this path."
+          timeout: 7000
+      - assertNotVisible:
+          text: ".*added from SportLots.*"
+
+- runFlow:
+    when:
+      true: "${!output.SL_PAUSED}"
+    commands:
+      # LIVE. THE SYNC IS NOT OVER when the util returns — its `"Syncing Sets"
+      # is not visible` gate is a negative on an element that leaves the
+      # viewport mid-sync. The panel renders UNDER the column's list; the BSC
+      # phase fills that list from empty to its 400px box within ~2s of the
+      # tap and shoves the panel from viewport y≈245 to y≈645 (the tap leaves
+      # the page at scrollY≈238 — Chrome's scroll anchoring pulls it back from
+      # the 313 the centring reached), past the 625px device height, so the
+      # hierarchy prunes it (README → "OFF-SCREEN = ABSENT") while the
+      # SportLots phase (one all-brands POST + up to 18 brand POSTs, ~9–13s
+      # measured on 1996/1997) is still running. CI run 35665861484 r6: panel
+      # seen at +2.3s, "not visible" +1.0s later, the action row absent for
+      # the next 10s, present in the failure screenshot at +13.7s. Locally the gate
+      # never sees the panel at all and SKIPS. Either way the util hands back
+      # a column whose action row does not exist yet.
+      #
+      # So wait for the sync's END on the one POSITIVE signal the column
+      # renders for it: the idle `Sync Sets` button, which `EntityColumn`
+      # mounts only when the status row has left "syncing" (the panel and the
+      # action row are the same slot). It cannot be the pre-sync idle window
+      # (~300ms after mount): the `.*Search sets.*` precondition above is BSC
+      # content that only the sync stores, so the button seen AFTER it is the
+      # sync finishing. DOWN — the row is under the 400px list. R5 marketplace
+      # exception: this is the drill util's own 150s contract for this very
+      # sync (util-drill-to-cold-real-set.yaml → "RETURN CONTRACT"), relocated
+      # to where it can actually be observed; the default 20000 would be an
+      # unrecorded number.
+      - scrollUntilVisible:
+          element:
+            text: "Sync Sets"
+          timeout: 150000
+      # THE NOTICE. `EntityColumn` renders the done notice in the same slot
+      # as the idle action row and from the same status row the sync's final
+      # mutation wrote — `status: "done"` with the message, in the render
+      # that mounted the button — so nothing here races: the sentence is on
+      # screen the moment the button is, directly ABOVE it in DOM order
+      # (`SyncDoneNotice`, then `idleButtons`). UP from where the `Sync Sets`
+      # scroll left the page, uncentred: no tap follows, the scroll is the
+      # assertion (R6). Full-match regex on the notice's own <p>; the leading
+      # digit is forced non-zero so "0 sets added" — a SportLots phase that
+      # ran and saved nothing — fails here by name rather than passing on
+      # the shape of the sentence.
+      - scrollUntilVisible:
+          element:
+            text: ".*[1-9][0-9]* sets? added from SportLots.*"
+          direction: UP
+          timeout: 7000
+
+# ============================================================
+# STEP 3 — CREATE THE BRAND, LINKED THROUGH ALL BRANDS
+#
+# R9 — reach the Manufacturers column EXPANDED through util-drill-to-custom,
+# which stops at the deepest level it is given: Hockey › 1997 and nothing
+# below, a fresh navigation with every level warm (the Years and
+# Manufacturers rows were synced in STEP 1, so the util selects rows and
+# creates nothing). NOT by tapping the collapsed `Manufacturers: … — change`
+# card from where STEP 2 left the page (near maximum scroll, under the
+# view's 400px Sets list): an UP swipe would have to find the card under the
+# sticky header, and the util's fresh navigation is the documented R9 path.
+# (Before the auto-save this step also had to dodge a sideways column-row
+# scroll that selecting a set in the view triggers — `scrollColumnIntoView`
+# pushes the leading cards off the LEFT edge, measured locally 2026-09-21 at
+# x=-88..172 — the wall `set-team-carries-down-to-cards` and
+# `features-propagation` document. STEP 2 selects nothing now, but STEP 4
+# does, and the same reasoning keeps STEP 5 on the util.)
+# The "+ Custom" button sits below the column's list — a `max-h-[400px]`
+# inner scroller on a real year (eighteen brands plus Unknown) — so it is
+# under the fold and reached by a window scroll, DOWN, centred for the tap
+# (R8).
+# ============================================================
+
+- runFlow:
+    file: util-drill-to-custom.yaml
+    env:
+      SPORT: "Hockey"
+      YEAR: ${output.YEAR}
+# The expanded column's first entry is the pinned view in both modes, and
+# the year's `Unknown` row is the first DATA row beneath it (2026-09-21:
+# it no longer sorts alphabetically among the brands); live, the eighteen
+# real brands follow under a search box, under the pause the list ends at
+# `Unknown`. The gate below is on the pinned entry — a non-scrolling gate
+# that the column is open, before the swipe: the hierarchy is
+# viewport-bounded, so the button itself cannot be waited on unscrolled
+# from here. Nothing in this flow reads that column by POSITION (every row
+# tap in the drill utils is an exact name under the header or the search
+# box), so the order is not what any step here depends on.
+- extendedWaitUntil:
+    visible:
+      id: "All Brands — every set in ${output.YEAR}"
+    timeout: 7000
+- scrollUntilVisible:
+    element:
+      id: "Add custom Manufacturers"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Add custom Manufacturers"
+- extendedWaitUntil:
+    visible: "Add Custom Entry"
+    timeout: 7000
+- tapOn: "Enter custom value..."
+- inputText: ${output.BRAND}
+# ONE Enter: the form checks the rest of the tree for the name ("Checking
+# where this name is already used…") and then shows the CONFIRM step. A
+# second blind Enter would press Create before the line below is read
+# (NEO-272). The confirm's sentence names the parent chain, so it is also
+# the proof the form is standing under Hockey › 1997 and not somewhere the
+# util's drill left it.
+- pressKey: Enter
+- extendedWaitUntil:
+    visible: "Create manufacturer '${output.BRAND}' under Hockey › ${output.YEAR}\\?"
+    timeout: 7000
+
+# The line every manufacturer confirm carries: what creating this brand does
+# to Unknown's sets. Fixed copy with the typed value in it. It is ALL the
+# confirm says — the SportLots link is not a question any more (header,
+# claim 3): the create links the brand through All Brands when the year
+# carries SportLots ids and not otherwise, and neither mode has anything to
+# press or to see here. The proof of the link is downstream, where it can
+# be read: STEP 4's narrowed pane (live) and STEP 5's SportLots cell (both
+# modes). Same screen in both modes, so no branch (R10).
+- assertVisible: "Sets in Unknown whose names start with '${output.BRAND}' move here."
+
+- tapOn:
+    id: "Create manufacturer"
+# The form closes on the server's answer: the row exists, its prefix defaulted
+# to its name, the SportLots link attached (live) and the re-home run, all in
+# the same mutation. One Convex mutation — the 7000 bar.
+- extendedWaitUntil:
+    notVisible: "Add Custom Entry"
+    timeout: 7000
+
+# ============================================================
+# STEP 4 — THE RE-HOMED SET, PICKED IN THE VIEW, BACK-FILLS THE NEW BRAND;
+#          ITS BASE PICKER OFFERS THE NARROWED SPORTLOTS LIST
+#
+# R9 — back to the view through the drill util rather than by tapping the
+# pinned entry from where STEP 3 left the page (centred on "+ Custom", a
+# whole list below the entry: an UP swipe would have to find it under the
+# sticky header). Every level is WARM now, so the util's marketplace waits
+# are not paid: each "Syncing" guard finds nothing and the view's year read
+# is "already populated". Then filter the view to the brand's sets and pick
+# the first. In the view the row's name AND its brand line can both match a
+# regex that is the brand name — both sit inside the one row button, so
+# whichever the driver takes lands the same click. Case-insensitive because
+# BSC's spelling of a product name is BSC's business ("SPX" would still be
+# filed under "SPx": the matcher folds both sides).
+# ============================================================
+
+- runFlow:
+    file: util-drill-to-cold-real-set.yaml
+    env:
+      SPORT: "Hockey"
+      YEAR: ${output.YEAR}
+      MANUFACTURER: "All Brands"
+- extendedWaitUntil:
+    visible: ".*Search sets.*"
+    timeout: 15000
+- scrollUntilVisible:
+    element:
+      text: ".*Search sets.*"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    text: ".*Search sets.*"
+    waitToSettleTimeoutMs: 250
+- inputText: ${output.BRAND}
+- retry:
+    maxRetries: 1
+    commands:
+      - tapOn:
+          text: "(?i)${output.BRAND}( .*)?"
+          below:
+            id: "Search sets"
+          retryTapIfNoChange: true
+      - extendedWaitUntil:
+          visible: "Variant Types"
+          timeout: 7000
+
+# CLAIM 4, first half. The set was filed under `Unknown` by STEP 1's sync
+# (no brand's prefix claimed it then) and MOVED to the brand by STEP 3's
+# create; picking it in the view back-fills the Manufacturers column from
+# its CURRENT parent. A build that duplicated instead of re-homing, or
+# never moved the row, reads `Unknown` here — the exact card
+# `checklist-one-marketplace-skips-match-dialog` asserts on 1995.
+- assertVisible:
+    id: "Manufacturers: ${output.BRAND} — change"
+
+# Selecting the set fires its variant-type sync — BSC-only, cold. Measured
+# ~15s on the 1995 fixture; 60s is the drill utils' own variant-type contract
+# (R5 marketplace exception).
+- extendedWaitUntil:
+    visible: "Base"
+    timeout: 60000
+
+# CLAIM 5. An unmapped Base auto-opens the picker (`baseHasMapping` counts
+# the SportLots slot only). Result-keyed retry on the picker OPENING, which
+# is synchronous. Then the confirm button reads "Loading…" until the live
+# round-trip lands and flips to "Confirm Base Set" — waiting on that flip is
+# what makes the pane assertions a finished answer. Measured ~8s on 1995;
+# 60s is the R5 marketplace exception.
+- retry:
+    maxRetries: 1
+    commands:
+      - tapOn:
+          text: "Base"
+          retryTapIfNoChange: true
+      - extendedWaitUntil:
+          visible: "Select Base Set"
+          timeout: 7000
+- extendedWaitUntil:
+    visible: "Confirm Base Set"
+    timeout: 60000
+
+# BSC answers for this set — the same precondition the 1995 flow reads here.
+- assertVisible:
+    id: "BSC base candidate: .*"
+
+# THE NARROWING, by mode — and, since the confirm asks nothing, THE LIVE
+# PROOF THAT THE CREATE LINKED THE BRAND AT ALL. Live: the brand's SportLots
+# slot holds the all-brands option id and its prefix is the brand name, so
+# the adapter asks SportLots for the year's whole list and keeps only the
+# entries that start with the prefix (`fetchSetNames`, D3) — a handful.
+# BaseSetPicker renders its "Search SportLots sets..." box only above 8
+# candidates, so "at least one candidate AND no search box" is the shape of
+# a narrowed pane, and the shape the un-narrowed pane can never take: the
+# 1995 fixture measured 321 candidates on the full list. A create that
+# stopped linking would leave the brand with no SportLots id, the side would
+# be skipped for want of ids (invariant 6), and this pane would read
+# "SportLots returned no base set" — the paused shape, on a live runner, by
+# name. Paused: the year has no SportLots ids, so the create attached none
+# and the pane says so.
+- runFlow:
+    when:
+      true: "${!output.SL_PAUSED}"
+    commands:
+      - assertVisible:
+          id: "SportLots base candidate: .*"
+      - assertNotVisible: "Search SportLots sets..."
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      - assertVisible: "SportLots returned no base set for .*"
+      - assertNotVisible:
+          id: "SportLots base candidate: .*"
+
+# Leave the picker the no-write way, as every read-only drill does: Cancel,
+# then Close the recovery panel, and read `Map Base Set` back as the proof
+# nothing was mapped. The picker is a fixed full-viewport portal — a direct
+# tap is correct (documented R8 exception).
+- tapOn: "Cancel"
+- assertVisible:
+    text: ".*Base mapping cancelled.*"
+- tapOn: "Close"
+- extendedWaitUntil:
+    notVisible:
+      text: ".*Base mapping cancelled.*"
+    timeout: 7000
+- assertVisible: "Map Base Set"
+
+# ============================================================
+# STEP 5 — THE BRAND'S OWN SETS COLUMN SAYS WHAT MOVED; ITS "Brand" IS ITS NAME
+#
+# R9 — select the brand ROW through the drill util (a fresh navigation, every
+# level warm), so the cascade below it is empty and the attributes panel
+# scopes to the manufacturer. Not by re-opening the mounted column from its
+# card: with the set still selected, the collapsed Sets card reads the same
+# word as the brand row, and a `below: "Manufacturers"` anchor cannot tell
+# the two apart on the paused (no search box) shape. The util's own paused
+# create-guard finds the row STEP 3 made and creates nothing (R7a: this flow
+# is the path's sole writer either way).
+#
+# The brand's Sets column has been "done" since STEP 3:
+# `addCustomSelectorOption` records the re-home count on the column's own
+# status row, and the column's mount finds the sets already there, so
+# nothing re-syncs over it and the util's "Syncing Sets" guard finds nothing.
+# ============================================================
+
+- runFlow:
+    file: util-drill-to-cold-real-set.yaml
+    env:
+      SPORT: "Hockey"
+      YEAR: ${output.YEAR}
+      MANUFACTURER: ${output.BRAND}
+- assertVisible: "Sets"
+
+# CLAIM 4, second half. The count is the server's (`rehomeSetsFromBrandUnknown`),
+# written when the brand was created; the notice renders below the column's
+# list, so DOWN from the row tap. The scroll is the assertion (R6).
+- scrollUntilVisible:
+    element:
+      text: "[0-9]+ sets? moved out of Unknown"
+    timeout: 7000
+
+# CLAIM 6. The attributes panel follows the deepest selection — the brand —
+# and renders collapsed; `Edit attributes` opens it. DOWN, centred (a tap
+# follows); depends on the NEO-260 spacer for headroom (R8 case 1).
+- scrollUntilVisible:
+    element:
+      id: "Edit attributes"
+    centerElement: true
+    visibilityPercentage: 10
+    waitToSettleTimeoutMs: 1000
+    timeout: 7000
+- tapOn:
+    id: "Edit attributes"
+- assertVisible:
+    id: "Hide attributes"
+# `addCustomSelectorOption` writes `metadata.setNamePrefix = value` at
+# creation; the input's text is its VALUE. No tap follows — no centring; the
+# scroll is the assertion (R6).
+- scrollUntilVisible:
+    element:
+      id: "Value for Brand"
+      text: ${output.BRAND}
+    timeout: 7000
+
+# THE SPORTLOTS CELL — now the ONLY place the link made at create time is
+# shown to the operator (the confirm no longer asks; header, claim 3). It is
+# the grid cell beside Brand, on the same row at this viewport width. The
+# toggle's on/off is `aria-pressed`, which the driver does not expose, so
+# the sentence is asserted in both modes as the positive that the cell
+# rendered, and the MODE is read off the one thing that differs as text:
+# the reason line the panel prints under a toggle that cannot be pressed.
+# Paused: the year carries no SportLots ids, so the create attached none and
+# the line says so — the paused counterpart of STEP 4's narrowed pane (R2).
+# Live: the toggle is pressed and carries no reason line; that absence is
+# not asserted (a reachable-but-unlinked brand has none either), because
+# the pane in STEP 4 already proved the link. Both are scroll targets, DOWN
+# and uncentred (no tap follows; the scroll is the assertion, R6): the Brand
+# scroll above stops as soon as the input is in view, which can leave this
+# cell's lower lines under the fold. Two full-match texts (SetAttributesPanel
+# `SL_VIA_ALL_BRANDS_TOGGLE_TEXT` and `slViaAllBrandsDisabledReason`); the
+# confirm form's like-worded control is gone, so nothing else on the page
+# can satisfy the first.
+- scrollUntilVisible:
+    element:
+      text: "SportLots has no brand for this — match its sets by name"
+    timeout: 7000
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      - scrollUntilVisible:
+          element:
+            text: "This year has no SportLots link to go through"
+          timeout: 7000

@@ -83,3 +83,15 @@ setup reseed on the shared dev deployment, the screenshot shows Vintage DERIVED 
 an `aria-pressed` toggle-pill, not a `<span>`, so its stale `text:"true"` assert
 can't match — see [[write-once-feature-snapshots-panel-assertability]]. Fix = DROP
 6b, redundant with 6a Era. NOT a data/backfill problem.)
+
+## Same wall on single pressed-button toggles (NEO-237 SportLots cell, 2026-09-21)
+
+A one-button `aria-pressed` toggle (SetAttributesPanel's `SlViaAllBrandsToggle`,
+EntityColumn's former confirm opt-in) has NO text that differs between on and
+off — only classes and the attribute. The one text a flow can key a mode on is
+the REASON LINE such a control prints under itself when it cannot be pressed
+(`aria-disabled` + `aria-describedby`, plain `<span>` text). So: assert the
+toggle's sentence as the positive that the cell rendered, prove "on" by the
+downstream effect it causes (a narrowed marketplace pane, a badge), and prove
+"cannot be on" by the reason line — never by the absence of the reason line,
+which an enabled-but-off toggle shares.

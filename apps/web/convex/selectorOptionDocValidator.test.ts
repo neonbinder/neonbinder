@@ -73,6 +73,11 @@ const FULLY_POPULATED = {
     isParallel: false,
     isBase: true,
     isBrandUnknown: true,
+    // NEO-237 — `setNamePrefix` added for the same reason as `isBase` and
+    // `isBrandUnknown` above: `getAncestorChain`'s hand-typed metadata
+    // validator has to name every key or it throws on any real row carrying
+    // one this fixture omits.
+    setNamePrefix: "Topps",
   },
   sportConfig: {
     skuCode: "BB",

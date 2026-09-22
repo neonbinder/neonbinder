@@ -236,11 +236,24 @@ echo "Draining queue (runId=$E2E_RUN_ID) as $RUNNER_ID${DAEMON:+ [daemon]} ..." 
 ran=0
 while [ "$stop" -eq 0 ]; do
   if [ -n "$STOP_FILE" ] && [ -f "$STOP_FILE" ]; then echo "[$RUNNER_ID] stop sentinel" >> "$LOG"; break; fi
-  resp="$(_q claim "{\"runId\":\"${E2E_RUN_ID}\",\"claimedBy\":\"${RUNNER_ID}\",\"leaseMs\":900000}")" || {
-    echo "claim failed: $resp" >&2
+  # NEO-237 (PR #272 run 1): eight runners fire their first claim in the same
+  # instant, every one reads the same first pending row, and the loser of the
+  # write conflict can come back as an HTTP 500 after Convex's own retries.
+  # One lost race used to end the runner before it ran a single flow and fail
+  # the gate for a full CI cycle. Retry a few times with a short backoff; only
+  # a claim that keeps failing is a real outage.
+  claim_body="{\"runId\":\"${E2E_RUN_ID}\",\"claimedBy\":\"${RUNNER_ID}\",\"leaseMs\":900000}"
+  claim_ok=0
+  for attempt in 1 2 3 4; do
+    if resp="$(_q claim "$claim_body")"; then claim_ok=1; break; fi
+    echo "claim attempt $attempt failed: $resp" >&2
+    sleep $((attempt * 2))
+  done
+  if [ "$claim_ok" -ne 1 ]; then
+    echo "claim failed after 4 attempts" >&2
     [ -n "$DAEMON" ] && { sleep "$POLL_INTERVAL"; continue; }
     exit 1
-  }
+  fi
   flow="$(printf '%s' "$resp" | python3 -c "import sys,json; v=json.load(sys.stdin).get('flowPath'); print(v if v else '')")"
   if [ -z "$flow" ]; then
     [ -n "$DAEMON" ] && { sleep "$POLL_INTERVAL"; continue; }

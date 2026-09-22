@@ -23,6 +23,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
+import { SL_ALL_BRANDS_BRAND_ID } from "./slBrandAxis";
 
 const modules = (
   import.meta as unknown as {
@@ -1324,6 +1325,60 @@ describe("marketplace strings are validated before they become row names", () =>
 });
 
 // ===========================================================================
+// NEO-237 / security review S3 — the reserved view name is refused at insert
+// ===========================================================================
+
+describe("storeSelectorOptions never inserts a manufacturer row named after the All Brands view", () => {
+  test("a manufacturer option folding to 'all brands' is skipped, counted, and never inserted", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = admin(t);
+
+    const res = await asAdmin.mutation(api.selectorOptions.storeSelectorOptions, {
+      level: "manufacturer",
+      options: [
+        { value: "Topps", platformData: { bsc: "topps-2024" } },
+        { value: "  ALL brands ", platformData: { bsc: "ab-1" } },
+      ],
+      coveredSides: ["bsc"],
+    });
+
+    const rows = await t.run((ctx) => ctx.db.query("selectorOptions").collect());
+    expect(rows.map((r) => r.value)).toEqual(["Topps"]);
+    expect(res.reservedNamesSkipped).toBe(1);
+    expect(res.optionsCount).toBe(1);
+  });
+
+  test("`reservedNamesSkipped` is zero on every normal sync", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = admin(t);
+
+    const res = await asAdmin.mutation(api.selectorOptions.storeSelectorOptions, {
+      level: "manufacturer",
+      options: [{ value: "Topps", platformData: { bsc: "topps-2024" } }],
+      coveredSides: ["bsc"],
+    });
+    expect(res.reservedNamesSkipped).toBe(0);
+  });
+
+  test("does not apply at other levels — a setName can be named anything (folding rule is manufacturer-only)", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = admin(t);
+    const parentId = await insertParent(t);
+
+    const res = await asAdmin.mutation(api.selectorOptions.storeSelectorOptions, {
+      level: "setName",
+      parentId,
+      options: [{ value: "All Brands", platformData: { bsc: "ab-1" } }],
+      coveredSides: ["bsc"],
+    });
+
+    const rows = await rowsUnder(t, "setName", parentId);
+    expect(rows.map((r) => r.value)).toEqual(["All Brands"]);
+    expect(res.reservedNamesSkipped).toBe(0);
+  });
+});
+
+// ===========================================================================
 // NEO-211 — a re-slug rebinding is reported
 // ===========================================================================
 
@@ -1399,5 +1454,159 @@ describe("relinked", () => {
     );
     // Same id, same set, nothing rebound.
     expect(res.relinked).toEqual([]);
+  });
+});
+
+// ===========================================================================
+// NEO-237 — a hand-typed brand's SportLots PLACEHOLDER is upgraded, not
+// re-slugged, when Sync Manufacturers lists the brand under its own id
+// ===========================================================================
+
+describe("linkedFromPlaceholder", () => {
+  /** A sport + year that can scope SportLots, so the SL side is coverable. */
+  async function insertYear(t: ReturnType<typeof convexTest>) {
+    return t.run(async (ctx) => {
+      const sportId = await ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Hockey",
+        platformData: { sportlots: { s0: "HK" } },
+        platformSlotSeq: { sportlots: 1 },
+        children: [],
+        lastUpdated: SENTINEL,
+      });
+      const yearId = await ctx.db.insert("selectorOptions", {
+        level: "year",
+        value: "1997",
+        platformData: { sportlots: { s0: "1997" } },
+        platformSlotSeq: { sportlots: 1 },
+        parentId: sportId,
+        children: [],
+        lastUpdated: SENTINEL,
+      });
+      return yearId;
+    });
+  }
+
+  /** Exactly the row `addCustomSelectorOption` writes for a typed brand. */
+  async function insertViaAllBrands(
+    t: ReturnType<typeof convexTest>,
+    yearId: Id<"selectorOptions">,
+    value: string,
+  ) {
+    return t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "manufacturer",
+        value,
+        metadata: { setNamePrefix: value },
+        platformData: { sportlots: { s0: SL_ALL_BRANDS_BRAND_ID } },
+        platformLabels: { sportlots: { s0: value } },
+        platformSlotSeq: { sportlots: 1 },
+        parentId: yearId,
+        children: [],
+        lastUpdated: SENTINEL,
+      }),
+    );
+  }
+
+  test("the real brand id lands in the placeholder's slot; counted as an upgrade, not a relink; the other holder keeps its placeholder", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = admin(t);
+    const yearId = await insertYear(t);
+    // Typed before Sync Manufacturers ran: Topps (which SportLots DOES list)
+    // and Bandai (which it does not).
+    const toppsId = await insertViaAllBrands(t, yearId, "Topps");
+    const bandaiId = await insertViaAllBrands(t, yearId, "Bandai");
+
+    // What `fetchAggregatedOptions` sends after routing the all-brands
+    // option out (D6): the real brands as options, the sentinel still in
+    // the returned universe.
+    const res = await asAdmin.mutation(api.selectorOptions.storeSelectorOptions, {
+      level: "manufacturer",
+      parentId: yearId,
+      options: [{ value: "Topps", platformData: { sportlots: "1" } }],
+      coveredSides: ["sportlots"],
+      returnedIds: { sportlots: ["1", SL_ALL_BRANDS_BRAND_ID] },
+    });
+
+    const rows = await rowsUnder(t, "manufacturer", yearId);
+    expect(rows).toHaveLength(2); // nothing inserted — Topps was MATCHED
+
+    const topps = rows.find((r) => r._id === toppsId)!;
+    // Same slot key, now the real id and the marketplace's label.
+    expect(topps.platformData.sportlots).toEqual({ s0: "1" });
+    expect(topps.platformLabels?.sportlots).toEqual({ s0: "Topps" });
+    expect(topps.platformSlotSeq).toEqual({ sportlots: 1 });
+    expect(topps.value).toBe("Topps");
+    expect(topps.metadata?.setNamePrefix).toBe("Topps");
+
+    // Reported as an upgrade from a placeholder — NOT as a re-slug, which
+    // would claim every card under the row was reattributed.
+    expect(res.relinked).toEqual([]);
+    expect(res.relinkedTotal).toBe(0);
+    expect(res.linkedFromPlaceholder).toBe(1);
+    expect(res.unlinked).toEqual([]);
+
+    // Bandai: no incoming id, sentinel still returned → untouched, link kept.
+    const bandai = rows.find((r) => r._id === bandaiId)!;
+    expect(bandai.platformData.sportlots).toEqual({ s0: SL_ALL_BRANDS_BRAND_ID });
+    expect(bandai.platformLabels?.sportlots).toEqual({ s0: "Bandai" });
+    expect(bandai.lastUpdated).toBe(SENTINEL); // not even patched
+  });
+
+  test("a brand holding a REAL SportLots id is not upgraded by a same-named different id", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = admin(t);
+    const yearId = await insertYear(t);
+    const toppsId = await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "manufacturer",
+        value: "Topps",
+        metadata: { setNamePrefix: "Topps" },
+        platformData: { sportlots: { s0: "1" } },
+        platformSlotSeq: { sportlots: 1 },
+        parentId: yearId,
+        children: [],
+        lastUpdated: SENTINEL,
+      }),
+    );
+
+    const res = await asAdmin.mutation(api.selectorOptions.storeSelectorOptions, {
+      level: "manufacturer",
+      parentId: yearId,
+      options: [
+        { value: "Topps", platformData: { sportlots: "1" } },
+        { value: "Topps", platformData: { sportlots: "2" } },
+      ],
+      coveredSides: ["sportlots"],
+      returnedIds: { sportlots: ["1", "2", SL_ALL_BRANDS_BRAND_ID] },
+    });
+
+    const rows = await rowsUnder(t, "manufacturer", yearId);
+    expect(rows).toHaveLength(1); // the second Topps was withheld, not inserted
+    expect(rows[0]._id).toBe(toppsId);
+    expect(rows[0].platformData.sportlots).toEqual({ s0: "1" });
+    expect(res.linkedFromPlaceholder).toBe(0);
+    expect(res.relinked).toEqual([]);
+  });
+
+  test("`linkedFromPlaceholder` is zero on every normal sync, and the re-slug heal is still `relinked`", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = admin(t);
+    const parentId = await insertParent(t);
+
+    await asAdmin.mutation(api.selectorOptions.storeSelectorOptions, {
+      level: "setName",
+      parentId,
+      options: [{ value: "Bowman", platformData: { bsc: "b1" } }],
+      coveredSides: ["bsc"],
+    });
+    const res = await asAdmin.mutation(api.selectorOptions.storeSelectorOptions, {
+      level: "setName",
+      parentId,
+      options: [{ value: "Bowman", platformData: { bsc: "b1-reslugged" } }],
+      coveredSides: ["bsc"],
+    });
+    expect(res.linkedFromPlaceholder).toBe(0);
+    expect(res.relinkedTotal).toBe(1);
   });
 });

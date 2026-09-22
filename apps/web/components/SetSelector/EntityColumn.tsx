@@ -182,6 +182,12 @@ export type EntityColumnProps = {
   // stalled column. Left undefined when this column is used bare (e.g. in
   // tests) — the backstop is opt-in via the wrapper.
   onLoadingChange?: (loading: boolean) => void;
+  /**
+   * NEO-237 (D17) — the column is a VIEW over several parents, so there is no
+   * one parent to create a row under. "+ Custom" is replaced by `reason`, a
+   * line that says what to do instead ("Pick a brand to add a set").
+   */
+  hideCustom?: { reason: string };
 };
 
 // Gap left between a newly-revealed column's edge and the scroll row's true
@@ -226,6 +232,7 @@ export default function EntityColumn({
   useEnsureSync,
   syncingLabel,
   onLoadingChange,
+  hideCustom,
 }: EntityColumnProps) {
   const [mode, setMode] = useState<"idle" | "sync" | "custom">("idle");
   const [customValue, setCustomValue] = useState("");
@@ -584,6 +591,22 @@ export default function EntityColumn({
     }
   }, [noticeVisible]);
 
+  // a11y (NEO-237): `hideCustom` swaps "+ Custom" for a plain line, and it is
+  // driven by ANOTHER column's selection (the Manufacturers column picking
+  // the All Brands view), so a focused "+ Custom" can unmount under the
+  // operator with nothing positioned to inherit focus. Same guarded shape as
+  // the notice park above: keyed on the swap itself, and only when focus has
+  // actually landed on <body>.
+  const customHidden = hideCustom !== undefined;
+  const wasCustomHiddenRef = useRef(customHidden);
+  useEffect(() => {
+    const was = wasCustomHiddenRef.current;
+    wasCustomHiddenRef.current = customHidden;
+    if (!was && customHidden && document.activeElement === document.body) {
+      containerRef.current?.focus();
+    }
+  }, [customHidden]);
+
   // Which of this column's mutually-exclusive branches is on screen right now.
   //
   // Named once here rather than re-derived inside `newPathContent`, because two
@@ -792,6 +815,11 @@ export default function EntityColumn({
         value,
         parentId,
         ...(allowDuplicateElsewhere ? { allowDuplicateElsewhere: true } : {}),
+        // NEO-237: no "link through All Brands" flag. A new manufacturer is
+        // linked to SportLots through its all-brands option whenever the
+        // year can be asked — the server decides, unconditionally (Jason,
+        // 2026-09-21); the Attributes panel's SportLots toggle is the door
+        // to turn it off.
       });
       setCustomValue("");
       setCustomStage({ kind: "input" });
@@ -987,6 +1015,19 @@ export default function EntityColumn({
   const otherMatchCount =
     customStage.kind === "confirm-exists" ? customStage.matches.length - 1 : 0;
 
+  // NEO-237 — what creating a brand DOES to the year's sets, said once, under
+  // the create sentence: the brand's prefix defaults to its name, and the
+  // Unknown row's prefix-matching sets move under it on create (D9). The
+  // operator learns the model at the moment it applies, not from the toast
+  // after the fact. (The SportLots link through All Brands that the same
+  // prefix narrows is written by the server without asking — the confirm
+  // used to carry a checkbox for it, removed 2026-09-21 on Jason's preview
+  // feedback; the Attributes panel's SportLots toggle is where it is undone.)
+  const rehomeSentence =
+    level === "manufacturer"
+      ? `Sets in Unknown whose names start with '${confirmValue}' move here.`
+      : null;
+
   // Extracted so both the legacy mode-machine path and the new ensureSync path
   // render byte-identical custom-entry + idle-button UI (keeps NEO-39 field-class
   // + the "Add custom X" aria-label the drills target).
@@ -1086,7 +1127,15 @@ export default function EntityColumn({
 
       {customStage.kind === "confirm-create" && (
         <>
-          <p className="text-sm mb-3">{createSentence}</p>
+          <p className={`text-sm ${rehomeSentence ? "mb-1" : "mb-3"}`}>
+            {createSentence}
+          </p>
+          {rehomeSentence && (
+            // Same dual-mode contrast as the other explanatory lines here.
+            <p className="text-xs text-gray-600 dark:text-gray-400 mb-3">
+              {rehomeSentence}
+            </p>
+          )}
           {customError && (
             <div
               role="alert"
@@ -1255,7 +1304,7 @@ export default function EntityColumn({
         {/* After Sync, before "+ Custom", so `extraActions` ("Group Parallels")
             still sits last. */}
         {suggestionsPill}
-        {level && (
+        {level && !hideCustom && (
           <NeonButton
             secondary
             className={fieldClass("btn-open-custom")}
@@ -1265,6 +1314,14 @@ export default function EntityColumn({
           >
             + Custom
           </NeonButton>
+        )}
+        {level && hideCustom && (
+          // NEO-237: in the place "+ Custom" would be, the line that says why
+          // it is not — and what to do instead. Plain text, not a disabled
+          // button: there is nothing here to press.
+          <span className="text-xs text-gray-600 dark:text-gray-400">
+            {hideCustom.reason}
+          </span>
         )}
         {extraActions}
       </div>

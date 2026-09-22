@@ -24,6 +24,39 @@ export type SelectorItem = { _id: string; [key: string]: unknown };
 // defeating it.
 export const displayByValue = (item: SelectorItem) => item.value as string;
 
+/**
+ * NEO-237 (D17) — an entry pinned to the top of a column that is a VIEW, not
+ * a row: it is selected by a client sentinel `id` the caller owns, never a
+ * document id, and it is there whether the column has zero rows or a hundred.
+ *
+ * Pinned entries are outside the data list on purpose: they do not count
+ * toward the search-box threshold, the search filter never hides them, and
+ * the sort never moves them — they sit first, always. They ARE options in the
+ * listbox (roving tabindex, arrow keys, typeahead, `aria-selected`), because
+ * to the operator they are one of the column's choices.
+ *
+ * `description` is a second, muted line under the name, rendered exactly like
+ * a row's `getDescription`. The name stays alone in its own text node so a
+ * flow tapping the visible text finds one element.
+ */
+export type PinnedEntry = {
+  id: string;
+  name: string;
+  /** The full accessible name; must contain `name` (WCAG 2.5.3). */
+  ariaLabel: string;
+  description?: string;
+};
+
+/**
+ * A pinned entry as the row machinery sees it, tagged so the render path can
+ * tell it from a data row. The tag is a symbol-free string key rather than a
+ * class so the object stays a plain `SelectorItem`.
+ */
+type PinnedItem = SelectorItem & { __pinned: PinnedEntry };
+
+const isPinnedItem = (item: SelectorItem): item is PinnedItem =>
+  "__pinned" in item;
+
 type EntitySelectorProps = {
   title: string;
   query: FunctionReference<"query">;
@@ -40,6 +73,18 @@ type EntitySelectorProps = {
   // since the platform mappings only become user-meaningful at the
   // checklist boundary. Defaults to false everywhere.
   isItemTerminal?: (item: SelectorItem) => boolean;
+  /** NEO-237 — see {@link PinnedEntry}. Rendered first, in the given order. */
+  pinnedEntries?: ReadonlyArray<PinnedEntry>;
+  /**
+   * NEO-237 — data rows this returns true for sort ahead of the rest, in
+   * their usual order among themselves; the rest keep theirs (the sort is
+   * stable). Unlike a pinned entry a lead row IS a data row: selectable by
+   * its document id, filtered by the search box like any other, and counted
+   * toward the search-box threshold. The caller decides from the row's own
+   * fields (a flag NB wrote), never from its name. Pass ONE stable reference
+   * — an inline arrow defeats the `sortedItems` memo, as for `getDisplayName`.
+   */
+  leadRow?: (item: SelectorItem) => boolean;
 };
 
 function getPlatformData(item: SelectorItem): {
@@ -121,6 +166,8 @@ function EntitySelector({
   getDescription,
   selectedColor,
   isItemTerminal,
+  pinnedEntries,
+  leadRow,
 }: EntitySelectorProps) {
   const items = useQuery(query, queryArgs);
   const [searchFilter, setSearchFilter] = useState("");
@@ -163,9 +210,26 @@ function EntitySelector({
     at: 0,
   });
 
-  const selected = items?.find(
-    (item: SelectorItem) => item._id === selectedId,
+  // NEO-237: pinned entries as rows, built once per `pinnedEntries` identity
+  // so the roving-index and typeahead arrays below are stable across renders.
+  const pinnedItems = useMemo<PinnedItem[]>(
+    () =>
+      (pinnedEntries ?? []).map((entry) => ({
+        _id: entry.id,
+        value: entry.name,
+        __pinned: entry,
+      })),
+    [pinnedEntries],
   );
+  // The display name of ANY row, pinned or data. Pinned entries carry their
+  // own name rather than going through the caller's accessor, which was
+  // written for the data rows' shape.
+  const nameOf = (item: SelectorItem): string =>
+    isPinnedItem(item) ? item.__pinned.name : getDisplayName(item);
+
+  const selected =
+    pinnedItems.find((item) => item._id === selectedId) ??
+    items?.find((item: SelectorItem) => item._id === selectedId);
 
   // Sort items by their display names. Memoized on `items` (and the
   // `getDisplayName` reader the comparator uses) so an unrelated re-render —
@@ -177,6 +241,13 @@ function EntitySelector({
   const sortedItems = useMemo(() => {
     if (!items) return [];
     return [...items].sort((a, b) => {
+      // Lead rows first (see `leadRow`); a tie falls through to the name
+      // order, so two lead rows — or none — sort exactly as before.
+      if (leadRow) {
+        const leadA = leadRow(a) ? 0 : 1;
+        const leadB = leadRow(b) ? 0 : 1;
+        if (leadA !== leadB) return leadA - leadB;
+      }
       const nameA = getDisplayName(a);
       const nameB = getDisplayName(b);
 
@@ -189,7 +260,7 @@ function EntitySelector({
         return nameA.localeCompare(nameB);
       }
     });
-  }, [items, getDisplayName]);
+  }, [items, getDisplayName, leadRow]);
 
   // NEO-260 (a11y) — hand focus to the collapsed card when a selection closes
   // the list.
@@ -381,14 +452,21 @@ function EntitySelector({
       )
     : sortedItems;
 
+  // Every option in DOM order: pinned entries first (never filtered, never
+  // sorted), then the data rows. This is the array the roving index and the
+  // typeahead are computed over, so both agree with what `optionsIn` reads
+  // back out of the listbox.
+  const rows: SelectorItem[] =
+    pinnedItems.length > 0 ? [...pinnedItems, ...filteredItems] : filteredItems;
+
   // Which row is the column's single tab stop. The row the operator last stood
   // on if it is still in the filtered list, else the selected row, else the
   // first — so tabbing into a column with a selection lands on that selection,
   // which is what a listbox is supposed to do.
   const rovingIndex = (() => {
-    const byActive = filteredItems.findIndex((i) => i._id === activeOptionId);
+    const byActive = rows.findIndex((i) => i._id === activeOptionId);
     if (byActive >= 0) return byActive;
-    const bySelected = filteredItems.findIndex((i) => i._id === selectedId);
+    const bySelected = rows.findIndex((i) => i._id === selectedId);
     return bySelected >= 0 ? bySelected : 0;
   })();
 
@@ -439,7 +517,8 @@ function EntitySelector({
     // Typeahead. Free here because the rows are already sorted by the same
     // display name the search box filters on, so "first row whose name starts
     // with the buffer" is one findIndex. It matters most on the columns with
-    // eight or fewer rows, which render no search box at all.
+    // eight or fewer rows, which render no search box at all. A lead row
+    // sitting out of name order is still found by the same scan.
     if (event.key.length !== 1 || event.key === " ") return;
     const now = Date.now();
     const carried =
@@ -448,8 +527,8 @@ function EntitySelector({
         : typeaheadRef.current.buffer;
     const buffer = (carried + event.key).toLowerCase();
     typeaheadRef.current = { buffer, at: now };
-    const hit = filteredItems.findIndex((item) =>
-      getDisplayName(item).toLowerCase().startsWith(buffer),
+    const hit = rows.findIndex((item) =>
+      nameOf(item).toLowerCase().startsWith(buffer),
     );
     if (hit >= 0) moveTo(hit);
   };
@@ -470,13 +549,13 @@ function EntitySelector({
         ref={collapsedCardRef}
         type="button"
         className="w-full text-left bg-white dark:bg-gray-800 p-6 rounded-lg shadow flex items-center justify-between cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF]"
-        aria-label={`${title}: ${getDisplayName(selected)} — change`}
+        aria-label={`${title}: ${nameOf(selected)} — change`}
         aria-expanded={false}
         onClick={() => setExpanded(true)}
         onKeyDown={(e) => activateOnEnter(e, () => setExpanded(true))}
       >
         <div className="flex items-center gap-2">
-          <div className="font-semibold">{getDisplayName(selected)}</div>
+          <div className="font-semibold">{nameOf(selected)}</div>
         </div>
         <ChevronDownIcon className="w-5 h-5 text-gray-500" />
       </button>
@@ -484,6 +563,15 @@ function EntitySelector({
   }
 
   const showSearch = sortedItems.length > 8;
+
+  // The empty-state line. With pinned entries the listbox still renders (the
+  // view is always a choice), and this line sits UNDER it — outside the
+  // listbox, so the listbox's children stay options and nothing else — where
+  // a column with no data rows still says so. Same two strings as before:
+  // the cold-drill utils wait on the second one.
+  const emptyText = searchFilter
+    ? "No matches found"
+    : `No ${title.toLowerCase()} available. Sync from marketplaces to populate.`;
 
   return (
     <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
@@ -527,12 +615,10 @@ function EntitySelector({
           aria-label={`Search ${title.toLowerCase()}`}
         />
       )}
-      {filteredItems.length === 0 ? (
+      {rows.length === 0 ? (
         <div className="space-y-2 max-h-[400px] overflow-y-auto">
           <div className="text-sm text-gray-500 dark:text-gray-400 py-2">
-            {searchFilter
-              ? "No matches found"
-              : `No ${title.toLowerCase()} available. Sync from marketplaces to populate.`}
+            {emptyText}
           </div>
         </div>
       ) : (
@@ -553,9 +639,10 @@ function EntitySelector({
           onKeyDown={onListKeyDown}
           className="space-y-2 max-h-[400px] overflow-y-auto"
         >
-          {filteredItems.map((item: SelectorItem, index: number) => {
-            const pd = getPlatformData(item);
-            const showPills = isItemTerminal?.(item) ?? false;
+          {rows.map((item: SelectorItem, index: number) => {
+            const pinned = isPinnedItem(item) ? item.__pinned : null;
+            const pd = pinned ? null : getPlatformData(item);
+            const showPills = pinned ? false : (isItemTerminal?.(item) ?? false);
             const select = () => {
               onSelect(item._id);
               setExpanded(false);
@@ -565,6 +652,11 @@ function EntitySelector({
               <button
                 key={item._id}
                 type="button"
+                // NEO-237: a pinned VIEW carries its full accessible name — it
+                // says what the view shows, not just what it is called — and
+                // the name is still its visible text. Data rows carry none:
+                // their visible text is the whole name.
+                aria-label={pinned?.ariaLabel}
                 // `option`, not the implicit `button`: these are the mutually
                 // exclusive choices of one column, and `aria-selected` is what
                 // says which one is chosen. `aria-pressed` (a toggle-button
@@ -589,11 +681,18 @@ function EntitySelector({
                   selectedId === item._id
                     ? `${selectedColor}`
                     : "bg-gray-50 dark:bg-gray-700 border-gray-200 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-600"
+                }${
+                  // A pinned view is a lens on the column, not one of its
+                  // rows: the same row geometry (so the listbox reads as one
+                  // list and the driver's row taps land the same way) with a
+                  // rail in the accent blue down its left edge — the one
+                  // colour the cascade does not already spend on a state.
+                  pinned ? " border-l-4 border-l-[#00C2FF]" : ""
                 }`}
               >
                 <div className="flex items-center gap-2">
                   <span className="font-semibold">
-                    {getDisplayName(item)}
+                    {nameOf(item)}
                   </span>
                   {showPills && pd?.sportlots && (
                     <span className="text-xs px-1 py-0.5 rounded bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300">
@@ -606,7 +705,12 @@ function EntitySelector({
                     </span>
                   )}
                 </div>
-                {getDescription && getDescription(item) && (
+                {pinned?.description && (
+                  <div className="text-sm text-gray-600 dark:text-gray-400">
+                    {pinned.description}
+                  </div>
+                )}
+                {!pinned && getDescription && getDescription(item) && (
                   <div className="text-sm text-gray-600 dark:text-gray-400">
                     {getDescription(item)}
                   </div>
@@ -614,6 +718,12 @@ function EntitySelector({
               </button>
             );
           })}
+        </div>
+      )}
+      {rows.length > 0 && filteredItems.length === 0 && (
+        // Pinned entries only: the view is listed, the data rows are not.
+        <div className="text-sm text-gray-500 dark:text-gray-400 py-2">
+          {emptyText}
         </div>
       )}
     </div>

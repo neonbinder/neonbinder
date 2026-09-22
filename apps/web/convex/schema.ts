@@ -165,7 +165,13 @@ export const selectorOptionLevelValidator = v.union(
  *                     parent's role, at creation and on a level move
  *                     (convex/variantRole.ts); never client-sent
  *   isBase            BSC's base id at sync, or `setBaseVariantType`
- *   isUnknownBrand    `syncSetsAcrossManufacturers` / its backfill
+ *   isBrandUnknown    `ensureBrandUnknownRow` (minted or adopted by the
+ *                     manufacturer and set syncs) / `backfillBrandUnknownRole`
+ *   setNamePrefix     the manufacturer row's value at creation
+ *                     (`storeSelectorOptions`, `addCustomSelectorOption`),
+ *                     then `setSelectorOptionSetNamePrefix` (operator-typed)
+ *                     and the one-shot `backfillBrandPrefixAndUnknownName`;
+ *                     never on a row carrying `isBrandUnknown`
  */
 export const selectorOptionMetadataFields = {
   cardNumberPrefix: v.optional(v.string()),   // e.g. "DK-" for Diamond Kings
@@ -237,8 +243,46 @@ export const selectorOptionMetadataFields = {
    * `manufacturer` row, still the parent of its sets, still in the breadcrumb
    * and the manufacturer picker. The only behaviour it drives is that listing
    * generation treats the manufacturer as ABSENT.
+   *
+   * NEO-237 — the row is now named "Unknown" when NB mints it, and the
+   * marketplace's own all-brands option is ROUTED to it rather than stored
+   * as a row (see `ensureBrandUnknownRow`). The flag is unchanged: it is
+   * still the only thing anything reads.
    */
   isBrandUnknown: v.optional(v.boolean()),
+  /**
+   * NEO-237 — the SET-NAME PREFIX this manufacturer row owns: "a set whose
+   * name starts with this word belongs to this brand", as an NB fact about
+   * the row, the same kind of fact as `cardNumberPrefix`.
+   *
+   * Two things read it, both inside the sync/adapter boundary. The Sync Sets
+   * BSC phase files a set that no NB row already holds by id under the brand
+   * whose prefix matches its name (`routeBscSets`); and the SportLots adapter
+   * narrows the ALL-BRANDS set list — the list SportLots returns when a
+   * brand row's SL id is SportLots' own all-brands option — to the sets that
+   * start with it (`fetchSetNames`, only when the request's `brd` IS that
+   * option; a row with a real SL brand id is never narrowed). Creating a
+   * brand, or editing this value, re-homes the prefix-matching sets out of
+   * the year's Unknown row (`brandRehome.ts`).
+   *
+   * A FIELD, never derived from `value` at read time: the row's display
+   * value is an operator's to rename and is seeded from a marketplace label,
+   * so keying either behaviour on it would be the forward dependency product
+   * invariant 4 forbids. It is DEFAULTED from the value ONCE, at creation
+   * (`storeSelectorOptions`' manufacturer insert, `addCustomSelectorOption`),
+   * exactly as `isBase` is decided once — and edited afterwards through
+   * `setSelectorOptionSetNamePrefix` only. ABSENT means "buckets nothing":
+   * a row lacking it (written before this field; the one-shot
+   * `backfillBrandPrefixAndUnknownName` fills those) neither claims BSC sets
+   * nor narrows anything, and nothing falls back to `value`.
+   *
+   * Never written on a row carrying `isBrandUnknown`: that row holds the
+   * sets whose brand NB has NOT identified, so a prefix on it is a
+   * contradiction. Writers trim, drop the key on `""`, and cap at
+   * `MAX_SELECTOR_VALUE_LENGTH`. No index — it is read off rows already in
+   * hand (a year's manufacturers, an ancestor chain).
+   */
+  setNamePrefix: v.optional(v.string()),
 };
 
 export const selectorOptionFields = {
@@ -729,6 +773,16 @@ export default defineSchema({
     unlinkedTotal: v.optional(v.number()),
     updatedAt: v.number(),
   }).index("by_level_and_parent", ["level", "parentId"]),
+
+  // NEO-237 history: a `setCandidates` table (per-brand "new on SportLots"
+  // roots with an operator Create / Skip) existed only on this branch and was
+  // removed before it shipped — Jason, 2026-09-21: "If a set exists in a
+  // marketplace it should be saved whether it is in SL or BSC or both." The
+  // Sync Sets SportLots phase now writes SportLots-only sets straight into
+  // `selectorOptions` (`createSetsFromSlRoots` → `insertSetWithBaseFromSl`),
+  // the way it already stores BSC's sets. Its rows were drained on dev and on
+  // the PR preview before this schema deployed; no migration exists or is
+  // needed because no deployment ever carried the table past that.
 
   // Card Checklist - stores individual cards within a set variant.
   // Carries enough metadata to drive an eBay Sell Inventory API listing

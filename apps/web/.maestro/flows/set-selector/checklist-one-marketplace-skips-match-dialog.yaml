@@ -66,39 +66,52 @@ tags:
 #   answers, which needs a real, BSC-listed set synced through the real
 #   hierarchy.
 #
-#   Hockey → 1995 → "All Brands" is where those live. `syncSetsAcrossManufacturers`
-#   is BSC-only and buckets every BSC set whose name prefix-matches no
-#   SportLots brand under "All Brands" — the minor-league, junior, college and
-#   team sets. Those sets carry a BSC id and no SportLots id, at any level a
-#   SportLots attachment can live on (`setName | variantType | insert |
-#   parallel`, `attachedSidesOf`), so the sync sees exactly one attached side.
+#   Hockey → 1995 → `Unknown` is where those live (NEO-237). The BSC phase of
+#   `syncSetsAcrossManufacturers` files every BSC set under the year's
+#   manufacturer rows — by the id a row already holds, then by each brand's
+#   set-name prefix — and the rest, the minor-league, junior, college and
+#   team sets no brand's prefix claims, under the year's brand-unknown row,
+#   the one NB mints as "Unknown" (`ensureBrandUnknownRow`). Those sets carry
+#   a BSC id and no SportLots id, at any level a SportLots attachment can
+#   live on (`setName | variantType | insert | parallel`, `attachedSidesOf`),
+#   so the sync sees exactly one attached side.
 #
-#   ⚠️ MEASURED CORRECTION (PR #242 preview, 2026-09-07). An earlier draft of
-#   this flow claimed SportLots could not even be OFFERED under "All Brands",
-#   and asserted the picker's "SportLots returned no base set for <set>" line
-#   as its precondition. That is FALSE here and the assertion is gone:
-#   "All Brands" is a real row in SportLots' own hockey brand list, so the
-#   manufacturers sync creates it WITH a SportLots id and the base picker
-#   offers the year's whole SportLots catalogue (measured: 1 BSC candidate,
-#   321 SportLots candidates, no "no base set" line). None of that attaches
-#   anything: attachment is an id ON A ROW at set level or below, and the
-#   manufacturer's id is not one. What keeps this set one-sided is that we
-#   CANCEL the picker — and the product states the outcome itself, in the
-#   sentence STEP 6 waits on.
+#   The set is REACHED through the "All Brands" VIEW — the entry pinned to
+#   the top of the Manufacturers column that lists every set in the year with
+#   its brand as a muted second line — because a flow cannot know which
+#   brand-unknown row a year will mint before the year's Sets sync has run,
+#   and the view is where that sync fires from. Picking the set there
+#   BACK-FILLS the Manufacturers column from the set's own parent, and STEP 2
+#   asserts that the collapsed card then reads `Unknown`: that one assertion
+#   proves the year-wide sync ran, the set was filed under the brand-unknown
+#   row rather than a brand, and the back-fill resolved the view to the row.
+#
+#   ⚠️ MEASURED CORRECTION (PR #242 preview, 2026-09-07), RESTATED FOR NEO-237.
+#   An earlier draft claimed SportLots could not even be OFFERED here and
+#   asserted the picker's "SportLots returned no base set for <set>" line as
+#   its precondition. That is FALSE in live mode and the assertion is gone:
+#   SportLots' hockey brand list carries its own no-filter option, "All
+#   Brands", and the manufacturer sync now ROUTES that option's id onto the
+#   year's `Unknown` row (never storing a row under the option's label), so
+#   the base picker offers the year's whole SportLots catalogue under it
+#   (measured on the old row: 1 BSC candidate, 321 SportLots candidates, no
+#   "no base set" line — the same list, now held by `Unknown`). None of that
+#   attaches anything: attachment is an id ON A ROW at set level or below,
+#   and the manufacturer's id is not one. What keeps this set one-sided is
+#   that we CANCEL the picker — and the product states the outcome itself, in
+#   the sentence STEP 6 waits on.
 #
 #   NB owns the data either way: nothing here depends on a marketplace NAME.
-#   The set is selected by its NB display value, and "one marketplace attached"
-#   is read off the row's slots, never off which marketplace it happens to be.
+#   The set is selected by its NB display value, "one marketplace attached"
+#   is read off the row's slots, and the brand-unknown row is found by its NB
+#   role (`metadata.isBrandUnknown`), never by the name "Unknown".
 #
 # ── R9 — THE DRILL GOES THROUGH `util-drill-to-cold-real-set`, ONCE ─────────
-#   An earlier draft called it twice, on the theory that "All Brands" is minted
-#   by the year's Sets sync and therefore cannot be selected until some other
-#   manufacturer's Sets column has mounted. Measured on the PR #242 preview:
-#   for Hockey 1995 the row is already in the Manufacturers column the moment
-#   that column finishes its own (SportLots) sync, because SportLots lists
-#   "All Brands" as a brand. One pass is enough, and the second was ~60s of
-#   taps buying nothing. If a future year ever lacks the row, this flow fails
-#   loudly inside the util at the Manufacturer level, which is legible.
+#   With MANUFACTURER "All Brands", which the util reads as "tap the pinned
+#   view" (its NEO-237 block) in BOTH modes — there is no row to create and
+#   nothing to search for. Before NEO-237 the drill selected a manufacturer
+#   ROW of that name straight off SportLots' brand list; under the pause it
+#   typed the name into "+ Custom", which the form now refuses.
 #
 # ── R5 ──────────────────────────────────────────────────────────────────────
 #   The 7s default everywhere, EXCEPT the live marketplace round-trips: the
@@ -129,8 +142,9 @@ tags:
 #   padding a wait: the line is not slow, it is finished.
 #
 # ── R1/R2 — A SECOND FEATURE RIDES THIS FIXTURE, DELIBERATELY (NEO-272) ─────
-#   STEP 8 at the bottom proves something else: that the name of the "All
-#   Brands" row never reaches a card's generated listing title on a set filed
+#   STEP 8 at the bottom proves something else: that the name of the year's
+#   brand-unknown row — `Unknown`, and the marketplace's "All Brands" it used
+#   to wear — never reaches a card's generated listing title on a set filed
 #   under it. The `name:` above still names the primary feature, and it stays
 #   that way — read STEP 8's own block before blaming NEO-255 for a red down
 #   there.
@@ -138,7 +152,7 @@ tags:
 #   This is the two-in-one shape `custom-card-row-opens-panel-with-autotitle`
 #   documents in its own R2 block, where one drawer assertion covers both the
 #   row-click feature and NEO-24's auto-title. Same justification here, plus a
-#   harder one: `Hockey → 1995 → All Brands` is the suite's ONLY subtree under a
+#   harder one: `Hockey → 1995 → Unknown` is the suite's ONLY subtree under a
 #   manufacturer row whose brand NB has not identified, and giving NEO-272 its
 #   own flow would mean a SECOND real set (30-90s of cold marketplace sync) plus
 #   owner approval, for a claim this flow is already standing three lines away
@@ -172,8 +186,8 @@ tags:
 # a two-line edit here and a matching edit to .maestro/SET-REGISTRY.md, whose
 # "ONE-MARKETPLACE fixture" section carries the measured numbers.
 #
-#   SET   the BSC-only set under All Brands. Measured on the PR #242 preview:
-#         25 cards, 25 unknown player names, 0 unknown teams.
+#   SET   the BSC-only set the year files under `Unknown`. Measured on the
+#         PR #242 preview: 25 cards, 25 unknown player names, 0 unknown teams.
 #   YEAR  plain four digits. NB files Hockey years as bare years, never
 #         "1994-95" — the Years column for Hockey holds 122 rows, 1905–2026,
 #         all four-digit (measured 2026-09-07, and on dev 2026-09-03/NEO-211).
@@ -197,14 +211,19 @@ tags:
     timeout: 45000
 
 # ============================================================
-# STEP 1 — DRILL TO Hockey › <YEAR> › All Brands
+# STEP 1 — DRILL TO Hockey › <YEAR> › the "All Brands" VIEW
 #
 # setup.yaml provisions Baseball only, so this whole hierarchy is COLD and the
-# cold util owns every marketplace-length wait in it. Its return contract is
-# "the manufacturer is selected and the Sets column has finished its own cold
-# sync" — that sync is `syncSetsAcrossManufacturers`, which runs for the WHOLE
-# YEAR and files every BSC set no SportLots brand claimed under All Brands.
-# Measured on the PR #242 preview: 134 sets for Hockey 1995.
+# cold util owns every marketplace-length wait in it. "All Brands" is the
+# util's cue for the PINNED VIEW (its NEO-237 block), so its return contract
+# here is "the view is open and the Sets column has finished the YEAR-WIDE
+# cold sync" — `syncSetsAcrossManufacturers` with no brand scope: BSC's
+# whole 1995 list filed under the brands by prefix and the remainder under
+# the year's `Unknown` row (minted by that sync if the manufacturer sync
+# had not already routed SportLots' no-filter option onto one), then one
+# SportLots set list per brand that carries the ids. Measured on the PR #242
+# preview, before NEO-237: 134 BSC sets under the brand-unknown row alone;
+# the view now lists every set of the year, so hundreds.
 # ============================================================
 
 - runFlow:
@@ -215,18 +234,25 @@ tags:
       MANUFACTURER: "All Brands"
 
 # ============================================================
-# STEP 2 — SELECT THE SET
+# STEP 2 — SELECT THE SET FROM THE VIEW, AND READ WHICH ROW IT LIVES UNDER
 #
 # The util stops one level short on purpose (its header says why: the caller
 # owns the set pick).
 #
 # Only the SEARCH shape is handled, unlike the drill utils' two-branch dance.
-# `EntitySelector` renders its search input above 8 entries and All Brands is
-# by construction the big bucket — 134 sets measured for 1995 — so the input is
-# always there. Dropping the `notVisible: "Variant Types"` fallback removes the
-# ~7s dead poll R10 warns about; if a future year's All Brands somehow held
-# eight sets or fewer this fails on the `.*Search sets.*` wait, which names the
-# problem.
+# `EntitySelector` renders its search input above 8 entries and the view is
+# by construction the whole year — 134 sets under the brand-unknown row
+# alone, measured for 1995 — so the input is always there. Dropping the
+# `notVisible: "Variant Types"` fallback removes the ~7s dead poll R10 warns
+# about; if a future year somehow held eight sets or fewer this fails on the
+# `.*Search sets.*` wait, which names the problem.
+#
+# The rows here carry the set NAME as their own text node and the brand as a
+# muted second line in a sibling node, so `text: "<set>"` still finds exactly
+# the name (maestro-web's `text` is direct text nodes only). Nothing here
+# asserts the second line — which brand the set was filed under is read off
+# the COLLAPSED MANUFACTURERS CARD after the pick, below, where it is one
+# accessible name rather than one of hundreds of identical "Unknown" lines.
 # ============================================================
 
 - extendedWaitUntil:
@@ -257,6 +283,26 @@ tags:
           visible: "Variant Types"
           timeout: 20000
 
+# ── THE ROW THE SET LIVES UNDER IS `Unknown` (NEO-237, R2) ──────────────────
+# Picking a set in the view back-fills the Manufacturers column from the
+# set's own parent (`handleSetSelect`, SetSelector.tsx), and the column then
+# collapses to a card named `Manufacturers: <row> — change`. Asserting that
+# card reads `Unknown` is the live proof of three things at once: the
+# year-wide Sets sync RAN (STEP 1's util only waited its panel out), it filed
+# this BSC-only set under the year's brand-unknown row and not under a brand
+# (no brand's set-name prefix claims "Roanoke Express ECHL"), and the view
+# resolved to a real row on the pick. In live mode that row is the one the
+# manufacturer sync minted when it routed SportLots' "All Brands" option
+# onto it (D6); under the pause it is the one the BSC phase minted for want
+# of any brand. Either way its NAME is NB's — the marketplace's option label
+# is never stored — which is why "Unknown" and not "All Brands" is what a
+# correct build shows here. The em dash is U+2014, as EntitySelector composes
+# it; the accessible name is a FULL match on the pinned CLI. No scroll: the
+# card sits in the columns row that the pick just re-laid out, and a
+# horizontal offset is nothing a flow can correct anyway (README R8).
+- assertVisible:
+    id: "Manufacturers: Unknown — change"
+
 # Selecting the set fires its variant-type sync — BSC-only, and cold here.
 # Measured ~15s; 60s matches the drill utils' own variant-type contract, and is
 # the R5 marketplace exception.
@@ -281,10 +327,12 @@ tags:
 # `cardChecklistId` is the variantType id the moment a Base row is selected —
 # so the checklist is reachable underneath the recovery panel.
 #
-# (The SportLots pane is NOT asserted on. Measured on the PR #242 preview it
-# holds 321 candidates, because "All Brands" carries a SportLots brand id; see
-# the MEASURED CORRECTION in the header. Offering a candidate is not attaching
-# one, and this flow attaches none.)
+# (The SportLots pane is asserted by MODE only, below. Measured on the PR #242
+# preview it holds 321 candidates in live mode, because the `Unknown` row
+# carries SportLots' no-filter option id (routed there by the manufacturer
+# sync, NEO-237 D6) and that row has no set-name prefix to narrow the list
+# by; see the MEASURED CORRECTION in the header. Offering a candidate is not
+# attaching one, and this flow attaches none.)
 # ============================================================
 
 # No scroll: the Variant Types column is level with the ones already on screen
@@ -560,42 +608,43 @@ tags:
 - assertNotVisible: "SL only"
 
 # ============================================================
-# STEP 8 — "ALL BRANDS" NEVER REACHES A LISTING TITLE ON THIS SET (NEO-272)
+# STEP 8 — THE BRAND-UNKNOWN ROW'S NAME NEVER REACHES A LISTING TITLE (NEO-272)
 #
 # ⚠️ A DIFFERENT FEATURE FROM THE ONE THIS FLOW IS NAMED FOR. See the R1/R2
 # block in the header for why it lives here. A red in this step is NEO-272.
 #
-# THE FEATURE. "All Brands" is not a brand — it is the marketplace's no-filter
-# option on its brand axis, "show all cards from all brands", carried as a
-# manufacturer row — and the sets NB files under it are the ones whose brand NB
-# has not identified. That row carries the NB role `selectorOptions.metadata
-# .isBrandUnknown`, and listing generation drops a flagged manufacturer entirely
-# (`manufacturerAndSetTokens`, generateListing.ts): a name meaning "show
-# everything" tells a buyer nothing about the card in hand, so it is meaningless
-# text in a buyer-facing field — and "All Brands " spends eleven characters of a
-# budget of exactly eighty saying it.
+# THE FEATURE. `Unknown` is not a brand — it is the year's row for the sets
+# whose brand NB has not identified (before NEO-237 it wore the marketplace's
+# own no-filter label, "All Brands"). That row carries the NB role
+# `selectorOptions.metadata.isBrandUnknown`, and listing generation drops a
+# flagged manufacturer entirely (`manufacturerAndSetTokens`,
+# generateListing.ts): a name meaning "we do not know" tells a buyer nothing
+# about the card in hand, so it is meaningless text in a buyer-facing field —
+# and either spelling spends characters of a budget of exactly eighty saying it.
 #
-# WHY IT HAS TO BE ASSERTED LIVE, AND WHAT ONLY A LIVE RUN CAN SEE. The role is
-# stamped inside the REAL `syncSetsAcrossManufacturers`, which convex-test
-# never runs — `generateListing.test.ts` and `listingTitleBrandUnknown.test.ts`
-# cover everything DOWNSTREAM of the flag and nothing that sets it.
-# And this fixture happens to hit the one branch that only real data reaches:
-# Hockey 1995's `All Brands` row is NOT minted by that sync. It arrives from
-# SportLots' own brand list (SET-REGISTRY measurement 2 — the Manufacturers
-# column returns it before any Sets column has mounted), which is the normal
-# case rather than a curiosity: the row is the marketplace's own filter option,
-# so the marketplace supplies it. It therefore carries no flag, and the sync's
-# LEGACY ADOPTION branch has to recognise the row and stamp it via
-# `markBrandUnknownRole`. That branch runs in STEP 1, inside the
-# drill util's cold Sets sync, on every CI run of this flow. Nothing else in
-# the suite exercises it, on any year.
+# WHY IT HAS TO BE ASSERTED LIVE, AND WHAT ONLY A LIVE RUN CAN SEE. The role
+# is stamped inside the REAL sync — `ensureBrandUnknownRow`, which
+# `fetchAggregatedOptions` calls when the manufacturer sync meets SportLots'
+# "All Brands" option (live) and which the BSC phase of
+# `syncSetsAcrossManufacturers` calls when a set matches no brand (both
+# modes) — and the row's NAME is NB's "Unknown" in both cases, with the
+# marketplace's option id attached in the first and never its label stored.
+# `generateListing.test.ts` and `listingTitleBrandUnknown.test.ts` cover
+# everything DOWNSTREAM of the flag; the convex-test fakes of the sync cover
+# the routing with mocked marketplace actions. What only a live run sees is
+# the whole chain on real marketplace data: SportLots really lists the
+# option, the real adapter really returns it, the sync really routes it, and
+# the title generator really drops the row — on the same deployment, in one
+# run. STEP 1's cold syncs run that chain on every CI run of this flow;
+# nothing else in the suite exercises it, on any year.
 #
-# ⚠️ WHY THIS IS NOT `assertNotVisible: "All Brands"`. The role deliberately
+# ⚠️ WHY THIS IS NOT `assertNotVisible: "Unknown"`. The role deliberately
 # changes NOTHING about the row's visibility — still an ordinary manufacturer,
-# still in the breadcrumb, still in the manufacturer picker, and STEP 1 selected
-# it by that very name. A page-wide negative would fail on correct behaviour, or
-# pass because a column had scrolled. Both assertions below are scoped to the
-# drawer's `Card title` input, i.e. to the string the SERVER wrote.
+# still in the breadcrumb, still in the manufacturer picker, and STEP 2
+# asserted its collapsed card by that very name. A page-wide negative would
+# fail on correct behaviour, or pass because a column had scrolled. All three
+# assertions below are scoped to the drawer's `Card title` input, i.e. to the
+# string the SERVER wrote.
 #
 # ── WHY THIS OPENS A CARD IT ADDED, AND NOT ONE THE COMMIT WROTE ────────────
 #
@@ -632,9 +681,11 @@ tags:
 # creation (write-once; `custom-card-row-opens-panel-with-autotitle` is built on
 # that), and it composes the title from `findAncestorLabels`, which reads
 # `metadata.isBrandUnknown` off the manufacturer row this set hangs under — the
-# very flag STEP 1 had to stamp. A build that stopped stamping it writes
-# "1995 All Brands Roanoke Express ECHL …" here and fails, exactly as it would
-# have on a committed row.
+# very flag STEP 1's sync had to stamp when it minted the row. A build that
+# minted the row without the flag writes "1995 Unknown Roanoke Express ECHL …"
+# here and fails, exactly as it would have on a committed row; a build that
+# stored SportLots' option under its own label instead of routing it would
+# have failed STEP 2 first, by name.
 #
 # WHAT THAT TRADES AWAY, stated plainly: the assertion no longer rides on the
 # COMMIT path's own read of the flag (`commitCardChecklist`'s prelude resolves
@@ -742,8 +793,13 @@ tags:
     id: "Card title"
     text: ".*${output.SET}.*"
 
-# THE CLAIM. A build that stopped stamping the role writes
-# "1995 All Brands Roanoke Express ECHL #<n> …" and fails right here.
+# THE CLAIM, in both spellings. A build that minted the row without the role
+# writes "1995 Unknown Roanoke Express ECHL #<n> …" and fails on the first
+# negative; a build that stored SportLots' option label as the row's name
+# (the pre-NEO-237 shape, or a regression of D6) writes "1995 All Brands …"
+# and fails on the second. Both are the same feature — the flagged row's
+# name, whatever it is, stays out of the title — asserted against the two
+# names this row has ever carried.
 #
 # The exact SHAPE of the title is deliberately NOT asserted. No run has ever
 # measured one on this fixture, and a guessed literal ("1995 <set> #<n> Hockey")
@@ -752,6 +808,9 @@ tags:
 # fixture self-drains, so a local re-run to diagnose fails at STEP 4 by design.
 # Once a preview run has recorded a real title on this set, tighten this pair
 # into one anchored positive and record what it measured.
+- assertNotVisible:
+    id: "Card title"
+    text: ".*Unknown.*"
 - assertNotVisible:
     id: "Card title"
     text: ".*All Brands.*"

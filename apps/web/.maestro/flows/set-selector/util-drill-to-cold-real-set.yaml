@@ -19,13 +19,36 @@ tags:
 # .maestro/SET-REGISTRY.md):
 #   SPORT        = "Hockey"
 #   YEAR         = "2024"
-#   MANUFACTURER = "Topps"
+#   MANUFACTURER = "Topps"   — a manufacturer ROW's name, or the literal
+#                             "All Brands" for the PINNED VIEW (NEO-237, below)
 #
 # RETURN CONTRACT:
 #   The Manufacturer is selected and the SETS column has finished its own cold
 #   sync. This util deliberately stops SHORT of picking a set: the caller owns
 #   that, because a flow that RENAMES its set is the only thing that knows which
 #   of the two possible names the row is currently carrying.
+#
+# ── NEO-237: MANUFACTURER "All Brands" SELECTS THE PINNED VIEW, NOT A ROW ────
+# "All Brands" is no longer a manufacturer row. It is the entry PINNED to the
+# top of the Manufacturers column — a view that lists every set in the year
+# with its brand as a muted second line — rendered whether the column holds
+# zero rows or eighteen, never filtered, never synced, and REFUSED as a name
+# by the "+ Custom" form ("All Brands is the view at the top of this column,
+# not a brand."). SportLots' own no-filter option of that name is routed by
+# the manufacturer sync to the year's `Unknown` row and is never stored under
+# its label. So a caller that passes MANUFACTURER "All Brands" gets the SAME
+# step in both modes: tap the pinned entry, wait out the year-wide Sets sync.
+# There is nothing to create — the paused create branch below is for ROWS
+# only, and typing the view's name into the form would now fail on the
+# refusal. The pinned entry's accessible name is `All Brands — every set in
+# <year>`; its visible text is exactly `All Brands` (ManufacturerSelector.tsx).
+#
+# What the Sets column holds afterwards differs from a brand's column: every
+# set under every manufacturer of the year (`brandView.getSetsUnderYear`),
+# the search input always rendered on a real year, "+ Custom" replaced by
+# "Pick a brand to add a set". Picking a set there BACK-FILLS the Manufacturers
+# column from the set's own parent, so the collapsed card then names the real
+# brand (or `Unknown`), never the view.
 #
 # ── THREE THINGS THIS FILE GETS RIGHT THAT ARE EASY TO GET WRONG ─────────────
 #
@@ -60,7 +83,8 @@ tags:
 # chip, or the gate is satisfied before the column has loaded. Hockey / 2024 /
 # Topps is safe (no level's value equals another's).
 #
-# ── NEO-287: THE MANUFACTURER LEVEL WHILE SPORTLOTS IS ON PAUSE ─────────────
+# ── NEO-287: THE MANUFACTURER LEVEL WHILE SPORTLOTS IS ON PAUSE (ROWS) ──────
+# (Not the pinned view — see the NEO-237 block above: the view needs no row.)
 # Manufacturer rows come from SportLots' brand list and from nowhere else (BSC
 # has no manufacturer axis — convex/platformLevels.ts; its sets are filed under
 # whatever manufacturer rows exist, by name prefix). So while the operator has
@@ -204,9 +228,78 @@ tags:
 # the header. Nothing runs here on a live deployment (a pure script decides).
 - runFlow:
     file: ../util/util-paused-platforms.yaml
+# NEO-237 — decide once whether the caller wants the PINNED VIEW (see the
+# header). A pure script, no UI: `typeof` guards a bare `maestro test` that
+# passed no MANUFACTURER at all, exactly as util-paused-platforms guards its
+# own flag.
+- evalScript: '${output.PINNED_VIEW = (typeof MANUFACTURER === "string" ? MANUFACTURER : "Topps") === "All Brands"}'
+
+# ── THE PINNED VIEW — one tap, both modes, behind a CONTENT gate ─────────────
+# The entry is part of the column's listbox from the moment the column mounts
+# — INCLUDING the ~300ms before `ensureSelectorOptions` flips the status row
+# and the "Syncing" panel replaces the list (point 1 of the header: an idle
+# column is not proof it has data). Tapping it in that window would open the
+# view and fire the year-wide Sets sync against a year with NO brand rows yet:
+# every BSC set would land under `Unknown` and the SportLots phase would find
+# no brand to scope. So the tap waits for the manufacturer sync's CONTENT
+# first, by mode — the row path below gets the same guarantee from its
+# `.*Search manufacturers.*|<row>` gate.
+#   LIVE:   the search input, which EntitySelector renders only above 8 data
+#           rows — SportLots' hockey brand list is 18. 60s is the R5
+#           marketplace exception (the cold brand-list fetch). CALLER CAVEAT:
+#           a live year with eight brands or fewer never renders the input and
+#           would fail here, by name; no caller drills one.
+#   PAUSED: nothing is fetched (SportLots is the column's only source), so
+#           there is nothing to wait for — gate on the idle empty text under
+#           the pinned entry (fresh year) or on the year's `Unknown` row (a
+#           re-drill after the Sets sync minted it). The 7000 bar.
+#
+# The accessible name, not the visible words: `text: "All Brands"` would
+# also be a full match for the collapsed card's text once the view is
+# selected, and the retry below re-reads the screen after a possibly-landed
+# tap. R8 — centred before the tap. Result-keyed retry: the same
+# coordinate-staleness class the row taps below handle.
 - runFlow:
     when:
-      true: "${output.SL_PAUSED}"
+      true: "${output.PINNED_VIEW && !output.SL_PAUSED}"
+    commands:
+      - extendedWaitUntil:
+          visible: ".*Search manufacturers.*"
+          timeout: 60000
+- runFlow:
+    when:
+      true: "${output.PINNED_VIEW && output.SL_PAUSED}"
+    commands:
+      - extendedWaitUntil:
+          visible: "No manufacturers available. Sync from marketplaces to populate.|Unknown"
+          timeout: 7000
+- runFlow:
+    when:
+      true: "${output.PINNED_VIEW}"
+    commands:
+      - extendedWaitUntil:
+          visible:
+            id: "All Brands — every set in ${YEAR || '2024'}"
+          timeout: 7000
+      - scrollUntilVisible:
+          element:
+            id: "All Brands — every set in ${YEAR || '2024'}"
+          centerElement: true
+          timeout: 7000
+      - retry:
+          maxRetries: 1
+          commands:
+            - tapOn:
+                id: "All Brands — every set in ${YEAR || '2024'}"
+                retryTapIfNoChange: true
+            - extendedWaitUntil:
+                visible: "Sets"
+                timeout: 20000
+
+# ── A MANUFACTURER ROW — the two shapes, as before ───────────────────────────
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED && !output.PINNED_VIEW}"
     commands:
       # SETTLE. Below the root the pause reads as a BSC-only tree (PR #265
       # push 3): the sport carries no SportLots id, so this column — BSC does
@@ -268,67 +361,83 @@ tags:
           centerElement: true
           timeout: 7000
 
-- extendedWaitUntil:
-    visible: ".*Search manufacturers.*|${MANUFACTURER || 'Topps'}"
-    timeout: 60000
-
+# NEO-237 — a ROW only. The pinned view above already opened the Sets column,
+# and re-running these against it would type the view's name into a search
+# box that filters rows, never the pinned entry, and then tap nothing.
 - runFlow:
     when:
-      visible: ".*Search manufacturers.*"
+      true: "${!output.PINNED_VIEW}"
     commands:
-      - scrollUntilVisible:
-          element:
-            text: ".*Search manufacturers.*"
-          centerElement: true
-          timeout: 7000
-      - tapOn:
-          text: ".*Search manufacturers.*"
-          waitToSettleTimeoutMs: 250
-      - inputText: ${MANUFACTURER || "Topps"}
-      - retry:
-          maxRetries: 1
-          commands:
-            - tapOn:
-                text: ${MANUFACTURER || "Topps"}
-                below:
-                  id: "Search manufacturers"
-                retryTapIfNoChange: true
-            - extendedWaitUntil:
-                visible: "Sets"
-                timeout: 20000
+      - extendedWaitUntil:
+          visible: ".*Search manufacturers.*|${MANUFACTURER || 'Topps'}"
+          timeout: 60000
 
-- runFlow:
-    when:
-      notVisible: "Sets"
-    commands:
-      # R5 — 7000, the bar (was 15000). NO LOG EVIDENCE: this step did not
-      # execute in either green CI run (34349299679, 34361627641), so 7000 is
-      # the rule's default rather than a measurement. It is an ordinary in-app
-      # scroll — the `.*Search manufacturers.*|${MANUFACTURER}` gate above owns
-      # the cold-sync wait.
-      - scrollUntilVisible:
-          element:
-            text: ${MANUFACTURER || "Topps"}
-            below:
-              text: "Manufacturers"
-          centerElement: true
-          timeout: 7000
-      - retry:
-          maxRetries: 1
+      - runFlow:
+          when:
+            visible: ".*Search manufacturers.*"
           commands:
+            - scrollUntilVisible:
+                element:
+                  text: ".*Search manufacturers.*"
+                centerElement: true
+                timeout: 7000
             - tapOn:
-                text: ${MANUFACTURER || "Topps"}
-                below:
-                  text: "Manufacturers"
-                retryTapIfNoChange: true
-            - extendedWaitUntil:
-                visible: "Sets"
-                timeout: 20000
+                text: ".*Search manufacturers.*"
+                waitToSettleTimeoutMs: 250
+            - inputText: ${MANUFACTURER || "Topps"}
+            - retry:
+                maxRetries: 1
+                commands:
+                  - tapOn:
+                      text: ${MANUFACTURER || "Topps"}
+                      below:
+                        id: "Search manufacturers"
+                      retryTapIfNoChange: true
+                  - extendedWaitUntil:
+                      visible: "Sets"
+                      timeout: 20000
+
+      - runFlow:
+          when:
+            notVisible: "Sets"
+          commands:
+            # R5 — 7000, the bar (was 15000). NO LOG EVIDENCE: this step did not
+            # execute in either green CI run (34349299679, 34361627641), so 7000 is
+            # the rule's default rather than a measurement. It is an ordinary in-app
+            # scroll — the `.*Search manufacturers.*|${MANUFACTURER}` gate above owns
+            # the cold-sync wait.
+            - scrollUntilVisible:
+                element:
+                  text: ${MANUFACTURER || "Topps"}
+                  below:
+                    text: "Manufacturers"
+                centerElement: true
+                timeout: 7000
+            - retry:
+                maxRetries: 1
+                commands:
+                  - tapOn:
+                      text: ${MANUFACTURER || "Topps"}
+                      below:
+                        text: "Manufacturers"
+                      retryTapIfNoChange: true
+                  - extendedWaitUntil:
+                      visible: "Sets"
+                      timeout: 20000
 
 # ── RETURN CONTRACT — THE SETS COLUMN HAS FINISHED ITS COLD SYNC ─────────────
-# The set list for this manufacturer's year comes from syncSetsAcrossManufacturers
-# (BSC-only, every manufacturer under the year in one call), so this is the last
-# cold wait of the drill. The caller picks the set itself; see the header.
+# The set list comes from syncSetsAcrossManufacturers, which since NEO-237 is
+# TWO-SIDED: BSC's flat year list filed under the year's manufacturer rows by
+# id, then by each brand's set-name prefix, else under the year's `Unknown`
+# row (minted here if the year needs one); then one SportLots set list per
+# brand that carries the ids to scope it (a brand's own column scopes it to
+# that brand; the pinned view enumerates every brand of the year, cap 25,
+# three at a time). Under the pause, or on a hand-made brand, the SportLots
+# phase is a one-sided skip and the column ends "done" with
+# "SportLots skipped: no SportLots ids on this path." — a notice, not an
+# error. This is the last cold wait of the drill; 150s is the R5 marketplace
+# exception and now covers up to ~18 SportLots POSTs on a full year. The
+# caller picks the set itself; see the header.
 - runFlow:
     when:
       visible: "Syncing Sets"

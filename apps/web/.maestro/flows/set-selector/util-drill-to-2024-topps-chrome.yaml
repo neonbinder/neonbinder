@@ -42,9 +42,14 @@ tags:
 # (invariant 6) — and the BSC set list then files "Topps …" sets under it.
 #
 # Two consequences for this level, both handled in the PAUSED branch below:
-#   1. The column is SHORT (the hand-made rows plus "All Brands"), so there is
-#      no search input (EntitySelector renders it only above 8 entries) and
-#      the row is tapped directly, anchored on the column HEADER.
+#   1. The column is SHORT (the hand-made rows under the pinned "All Brands"
+#      VIEW entry — NEO-237: a view, not a row, present in every Manufacturers
+#      column and not counted toward the search threshold), so there is no
+#      search input (EntitySelector renders it only above 8 data rows) and
+#      the row is tapped directly, anchored on the column HEADER. The pinned
+#      entry's visible text is exactly "All Brands", which no row name this
+#      util is ever asked for full-matches; a caller that wants the VIEW uses
+#      util-drill-to-cold-real-set, which knows how to select it.
 #   2. A caller drilling a path the seed did not provision (1996 Baseball →
 #      Score) finds NO row at all. It says so with `CREATE_MANUFACTURER: "1"`,
 #      and the branch then adds the row through the column's own "+ Custom"

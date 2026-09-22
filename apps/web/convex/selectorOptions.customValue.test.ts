@@ -13,15 +13,20 @@
  *  - addCustomSelectorOption: CUSTOM_VALUE_INVALID, CUSTOM_EXISTS_ELSEWHERE,
  *    the allowDuplicateElsewhere escape hatch, and the untouched per-parent
  *    idempotent return that syncSetsAcrossManufacturers depends on
+ *  - addCustomSelectorOption (NEO-237): a new manufacturer is linked to
+ *    SportLots through its all-brands option whenever the year can be asked,
+ *    with no arg and no refusal when it cannot
  */
 
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vitest";
 import { ConvexError } from "convex/values";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
 import { checkCustomSelectorValue } from "./selectorSyncMatch";
+import { SL_ALL_BRANDS_BRAND_ID } from "./slBrandAxis";
+import { PAUSED_PLATFORMS_ENV } from "./lib/marketplacePause";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -847,38 +852,77 @@ describe("addCustomSelectorOption validation", () => {
     expect(id).toBe(hereAlready);
   });
 
-  test("the internal All Brands creation path is unaffected", async () => {
+  test("NEO-237 D15 — 'All Brands' is refused at manufacturer level, not adopted", async () => {
+    // Before NEO-237, `addCustomSelectorOption` at the manufacturer level was
+    // the internal creation path `syncSetsAcrossManufacturers` used to mint or
+    // adopt the brand-unknown bucket named "All Brands". That row is now
+    // "Unknown" (`ensureBrandUnknownRow`), and "All Brands" is the VIEW pinned
+    // at the top of the column — a manufacturer row of that name would be a
+    // second thing wearing the view's label. Both the operator-facing form and
+    // this mutation refuse it through the same `checkCustomSelectorValue`.
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
 
     const sportId = await insertRow(t, "sport", "Baseball");
     const year2021 = await insertRow(t, "year", "2021", sportId);
-    const year2024 = await insertRow(t, "year", "2024", sportId);
-    // A prior year already carries an "All Brands" manufacturer — the exact
-    // shape that would trip a global duplicate check.
-    await insertRow(t, "manufacturer", "All Brands", year2024, true);
 
-    // Verbatim what syncSetsAcrossManufacturers sends.
-    const id = await asAdmin.mutation(
-      api.selectorOptions.addCustomSelectorOption,
-      { level: "manufacturer", value: "All Brands", parentId: year2021 },
+    let thrown: unknown;
+    try {
+      await asAdmin.mutation(api.selectorOptions.addCustomSelectorOption, {
+        level: "manufacturer",
+        value: "All Brands",
+        parentId: year2021,
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(ConvexError);
+    expect(
+      (thrown as ConvexError<{ code: string; reason: string }>).data,
+    ).toEqual({
+      code: "CUSTOM_VALUE_INVALID",
+      reason: "All Brands is the view at the top of this column, not a brand.",
+    });
+
+    // Case/whitespace fold the same way the rest of the sibling-clash check
+    // does — "ALL BRANDS " is refused as the same word.
+    let thrownAgain: unknown;
+    try {
+      await asAdmin.mutation(api.selectorOptions.addCustomSelectorOption, {
+        level: "manufacturer",
+        value: "  ALL BRANDS ",
+        parentId: year2021,
+      });
+    } catch (error) {
+      thrownAgain = error;
+    }
+    expect(
+      (thrownAgain as ConvexError<{ code: string; reason: string }>).data
+        ?.code,
+    ).toBe("CUSTOM_VALUE_INVALID");
+
+    // Nothing was written.
+    const rows = await t.run(async (ctx) =>
+      ctx.db
+        .query("selectorOptions")
+        .withIndex("by_level_and_parent", (q) =>
+          q.eq("level", "manufacturer").eq("parentId", year2021),
+        )
+        .collect(),
     );
+    expect(rows).toEqual([]);
 
-    const row = await t.run(async (ctx) => ctx.db.get(id));
-    expect(row!.value).toBe("All Brands");
-    expect(row!.parentId).toBe(year2021);
-    // NEO-239 — `addCustomSelectorOption` no longer writes `isCustom`. What a
-    // hand-added row IS, is a row with no marketplace ids; that is the only
-    // fact anything downstream reads.
-    expect(row!.isCustom).toBeUndefined();
-    expect(row!.platformData).toEqual({});
-
-    // And it is still idempotent on a second call.
+    // "Unknown" is NOT reserved — it selects the existing row like any other
+    // name, through the ordinary per-parent duplicate return.
+    const unknownId = await asAdmin.mutation(
+      api.selectorOptions.addCustomSelectorOption,
+      { level: "manufacturer", value: "Unknown", parentId: year2021 },
+    );
     const again = await asAdmin.mutation(
       api.selectorOptions.addCustomSelectorOption,
-      { level: "manufacturer", value: "All Brands", parentId: year2021 },
+      { level: "manufacturer", value: "Unknown", parentId: year2021 },
     );
-    expect(again).toBe(id);
+    expect(again).toBe(unknownId);
   });
 
   test("rejects a non-admin caller before validating anything", async () => {
@@ -894,5 +938,194 @@ describe("addCustomSelectorOption validation", () => {
           parentId: sportId,
         }),
     ).rejects.toThrow(/Admin access required/);
+  });
+});
+
+// ===========================================================================
+// addCustomSelectorOption — the SportLots link through All Brands (NEO-237)
+// ===========================================================================
+
+/**
+ * Jason, 2026-09-21, on the PR #272 preview: the confirm-create checkbox
+ * "SportLots has no brand for this — match its sets by name" was
+ * unnecessary — "I cannot think of any time I would not want that checked."
+ * So the link is the default: no arg, written whenever the year's chain can
+ * scope SportLots, silently absent when it cannot. The Attributes panel's
+ * `brandView.setManufacturerSlViaAllBrands` is the one door to turn it off,
+ * and keeps its own refusals (`brandView.test.ts`).
+ */
+describe("addCustomSelectorOption — SportLots link through All Brands (NEO-237)", () => {
+  async function insertRowWithSl(
+    t: ReturnType<typeof convexTest>,
+    level: Level,
+    value: string,
+    slId: string,
+    parentId?: Id<"selectorOptions">,
+  ): Promise<Id<"selectorOptions">> {
+    return t.run(async (ctx) => {
+      const id = await ctx.db.insert("selectorOptions", {
+        level,
+        value,
+        platformData: { sportlots: { s0: slId } },
+        platformSlotSeq: { sportlots: 1 },
+        parentId,
+        children: [],
+        lastUpdated: SENTINEL_LAST_UPDATED,
+      });
+      if (parentId) {
+        const parent = await ctx.db.get(parentId);
+        if (parent) {
+          await ctx.db.patch(parentId, {
+            children: [...(parent.children ?? []), id],
+          });
+        }
+      }
+      return id;
+    });
+  }
+
+  /** sport → year, both carrying a SportLots id: SL resolvable at manufacturer. */
+  async function seedSlResolvableYear(t: ReturnType<typeof convexTest>) {
+    const sportId = await insertRowWithSl(t, "sport", "Hockey", "HK");
+    return insertRowWithSl(t, "year", "1997", "1997", sportId);
+  }
+
+  afterEach(() => {
+    delete process.env[PAUSED_PLATFORMS_ENV];
+  });
+
+  test("SL-resolvable year: the sentinel SportLots slot is written, labelled with the row's own value", async () => {
+    const t = convexTest(schema, modules);
+    const yearId = await seedSlResolvableYear(t);
+
+    const id = await t
+      .withIdentity(ADMIN_IDENTITY)
+      .mutation(api.selectorOptions.addCustomSelectorOption, {
+        level: "manufacturer",
+        value: "Bandai",
+        parentId: yearId,
+      });
+
+    const row = await t.run((ctx) => ctx.db.get(id));
+    expect(row?.value).toBe("Bandai");
+    expect(row?.platformData.sportlots).toEqual({ s0: SL_ALL_BRANDS_BRAND_ID });
+    // The slot label is the NB value, never the marketplace's own label, so
+    // the name-suggestion doors have nothing to suggest.
+    expect(row?.platformLabels?.sportlots).toEqual({ s0: "Bandai" });
+    expect(row?.platformSlotSeq?.sportlots).toBe(1);
+    // BSC untouched; the prefix default still lands.
+    expect(row?.platformData.bsc).toBeUndefined();
+    expect(row?.metadata?.setNamePrefix).toBe("Bandai");
+  });
+
+  test("SL-unresolvable year (no SportLots ids on sport/year): created with NO SportLots slot, no refusal", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await insertRow(t, "sport", "Hockey");
+    const yearId = await insertRow(t, "year", "1997", sportId);
+
+    const id = await t
+      .withIdentity(ADMIN_IDENTITY)
+      .mutation(api.selectorOptions.addCustomSelectorOption, {
+        level: "manufacturer",
+        value: "Bandai",
+        parentId: yearId,
+      });
+
+    const row = await t.run((ctx) => ctx.db.get(id));
+    expect(row?.value).toBe("Bandai");
+    expect(row?.platformData).toEqual({});
+    expect(row?.platformLabels).toBeUndefined();
+    expect(row?.platformSlotSeq).toBeUndefined();
+    expect(row?.metadata?.setNamePrefix).toBe("Bandai");
+  });
+
+  test("year carries a SportLots id but the sport above it does not: no slot, no refusal", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await insertRow(t, "sport", "Hockey");
+    const yearId = await insertRowWithSl(t, "year", "1997", "1997", sportId);
+
+    const id = await t
+      .withIdentity(ADMIN_IDENTITY)
+      .mutation(api.selectorOptions.addCustomSelectorOption, {
+        level: "manufacturer",
+        value: "Bandai",
+        parentId: yearId,
+      });
+
+    const row = await t.run((ctx) => ctx.db.get(id));
+    expect(row?.platformData).toEqual({});
+  });
+
+  test("SportLots paused: created with NO SportLots slot, no refusal", async () => {
+    process.env[PAUSED_PLATFORMS_ENV] = "sportlots";
+    const t = convexTest(schema, modules);
+    const yearId = await seedSlResolvableYear(t);
+
+    const id = await t
+      .withIdentity(ADMIN_IDENTITY)
+      .mutation(api.selectorOptions.addCustomSelectorOption, {
+        level: "manufacturer",
+        value: "Bandai",
+        parentId: yearId,
+      });
+
+    const row = await t.run((ctx) => ctx.db.get(id));
+    expect(row?.value).toBe("Bandai");
+    expect(row?.platformData).toEqual({});
+    expect(row?.platformSlotSeq).toBeUndefined();
+  });
+
+  test("only a manufacturer gets the link: a set under a via-All-Brands brand is created with no slot", async () => {
+    const t = convexTest(schema, modules);
+    const yearId = await seedSlResolvableYear(t);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const brandId = await asAdmin.mutation(
+      api.selectorOptions.addCustomSelectorOption,
+      { level: "manufacturer", value: "Bandai", parentId: yearId },
+    );
+
+    const setId = await asAdmin.mutation(
+      api.selectorOptions.addCustomSelectorOption,
+      { level: "setName", value: "Bandai Carddass", parentId: brandId },
+    );
+
+    const set = await t.run((ctx) => ctx.db.get(setId));
+    expect(set?.platformData).toEqual({});
+    expect(set?.metadata?.setNamePrefix).toBeUndefined();
+  });
+
+  test("the former slViaAllBrands arg is gone: passing it is an argument validation error, not a silent no-op", async () => {
+    const t = convexTest(schema, modules);
+    const yearId = await seedSlResolvableYear(t);
+
+    await expect(
+      t.withIdentity(ADMIN_IDENTITY).mutation(
+        api.selectorOptions.addCustomSelectorOption,
+        {
+          level: "manufacturer",
+          value: "Bandai",
+          parentId: yearId,
+          slViaAllBrands: true,
+        } as never,
+      ),
+    ).rejects.toThrow(/ArgumentValidationError|slViaAllBrands/);
+  });
+
+  test("typing a name that already exists resolves to that row and writes nothing new (idempotent return wins)", async () => {
+    const t = convexTest(schema, modules);
+    const yearId = await seedSlResolvableYear(t);
+    const existing = await insertRow(t, "manufacturer", "Topps", yearId);
+
+    const id = await t
+      .withIdentity(ADMIN_IDENTITY)
+      .mutation(api.selectorOptions.addCustomSelectorOption, {
+        level: "manufacturer",
+        value: "topps",
+        parentId: yearId,
+      });
+
+    expect(id).toBe(existing);
+    const row = await t.run((ctx) => ctx.db.get(existing));
+    expect(row?.platformData).toEqual({});
   });
 });
