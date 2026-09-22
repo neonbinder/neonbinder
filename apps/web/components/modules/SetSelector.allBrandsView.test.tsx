@@ -148,7 +148,6 @@ vi.mock("../SetSelector/SetAttributesPanel", () => ({
   ),
 }));
 vi.mock("../SetSelector/SportForm", () => ({ SportForm: () => null }));
-vi.mock("../SetSelector/SetCandidatesPill", () => ({ default: () => null }));
 
 import SetSelector from "./SetSelector";
 

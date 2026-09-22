@@ -21,6 +21,11 @@ Things that look like failures during the apps/web fast gates but are not.
    the appended args land on the completeness script and vitest runs the
    whole suite (~90s). For a fast targeted loop use `npx vitest run
    convex/foo` directly; the completeness check only passes on the full run.
+   Corollary: `node scripts/verify-test-completeness.mjs` on its own reads
+   the STALE `.vitest-results.json` from the last full run, so a test file
+   you just added is listed as "exist but reported no result" — that is
+   not the NEO-128 glob gap, it is the stale file; the full `npm run
+   test:unit` is the only real verdict (NEO-237).
 4. `apps/web/link-deps.sh` compares the repo ROOT (first `git worktree list`
    entry) to `apps/web`, so it always reports "Primary checkout has no
    node_modules" in the monorepo layout. Symlink by hand to a sibling's

@@ -193,18 +193,6 @@ async function setsUnder(t: ReturnType<typeof convexTest>, parentId: Id<"selecto
   );
 }
 
-async function candidatesUnder(
-  t: ReturnType<typeof convexTest>,
-  manufacturerId: Id<"selectorOptions">,
-) {
-  return t.run(async (ctx) =>
-    ctx.db
-      .query("setCandidates")
-      .withIndex("by_manufacturer_and_status", (q) => q.eq("manufacturerId", manufacturerId))
-      .collect(),
-  );
-}
-
 describe("ensureSelectorOptions(setName) from the All Brands view (year parent)", () => {
   test("'populated' means SOME manufacturer under the year has a set — no fetch happens", async () => {
     const t = convexTest(schema, modules);
@@ -279,9 +267,9 @@ describe("ensureSelectorOptions(setName) from the All Brands view (year parent)"
         return jsonResponse({ token: "SLSESSION=stub", expiresAt: Date.now() + 86_400_000 });
       }
       if (href.includes("dealsets.tpl")) {
-        // Both brands' SL lists are fetched; SportLots-only entries land as
-        // candidates for EACH brand — proof the view-mode sync did not scope
-        // to a single manufacturer.
+        // Both brands' SL lists are fetched; the SportLots-only entry is
+        // SAVED as a set under EACH brand — proof the view-mode sync did not
+        // scope to a single manufacturer.
         return htmlResponse(slSetListHtml([["901", "Something New"]]));
       }
       if (isTokenUrl(href, "buysportscards")) {
@@ -299,10 +287,8 @@ describe("ensureSelectorOptions(setName) from the All Brands view (year parent)"
     });
     expect(result.ran).toBe(true);
 
-    const toppsCandidates = await candidatesUnder(t, topps);
-    const scoreCandidates = await candidatesUnder(t, score);
-    expect(toppsCandidates.length).toBeGreaterThan(0);
-    expect(scoreCandidates.length).toBeGreaterThan(0);
+    expect((await setsUnder(t, topps)).map((r) => r.value)).toEqual(["Topps Something New"]);
+    expect((await setsUnder(t, score)).map((r) => r.value)).toEqual(["Score Something New"]);
   });
 });
 
@@ -336,7 +322,7 @@ describe("ensureSelectorOptions(setName) — the SportLots attach-rule gate (D14
     expect(result.reason).not.toBe("no_marketplace_ids");
     expect(result.ran).toBe(true);
     expect(fetched.some((u) => u.includes("dealsets.tpl"))).toBe(true);
-    expect(await candidatesUnder(t, score)).toHaveLength(1);
+    expect((await setsUnder(t, score)).map((r) => r.value)).toEqual(["Score Board"]);
   });
 
   test("a SportLots skip at setName is NOTIFIABLE — it is not swallowed as structural", async () => {

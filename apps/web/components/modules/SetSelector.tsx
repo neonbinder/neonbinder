@@ -79,7 +79,6 @@ import BaseMappingForm from "../SetSelector/BaseMappingForm";
 import ParallelGroupingModal from "../SetSelector/ParallelGroupingModal";
 import MultiSourcePanel from "../SetSelector/MultiSourcePanel";
 import SetAttributesPanel from "../SetSelector/SetAttributesPanel";
-import { SetCandidatesPill } from "../SetSelector/SetCandidateReviewModal";
 import type { SelectorLevel } from "../SetSelector/selector-sync-feedback";
 import NeonButton from "./NeonButton";
 
@@ -720,16 +719,6 @@ export default function SetSelector() {
           syncingLabel="Syncing Sets"
           hideCustom={
             inAllBrandsView ? { reason: "Pick a brand to add a set" } : undefined
-          }
-          extraPills={
-            inAllBrandsView && selectedYearId ? (
-              <SetCandidatesPill parentId={selectedYearId} viewMode />
-            ) : selectedManufacturerRowId ? (
-              <SetCandidatesPill
-                parentId={selectedManufacturerRowId}
-                viewMode={false}
-              />
-            ) : undefined
           }
         />
 

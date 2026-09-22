@@ -188,14 +188,6 @@ export type EntityColumnProps = {
    * line that says what to do instead ("Pick a brand to add a set").
    */
   hideCustom?: { reason: string };
-  /**
-   * NEO-237 — pills that belong to this column's domain (the Sets column's
-   * "N new on SportLots"), rendered right after the name-check pill so the
-   * two questions sit together. Like `extraActions`, this keeps the column
-   * from learning a domain it does not own; unlike it, these are pills, not
-   * buttons, and sit BEFORE "+ Custom".
-   */
-  extraPills?: ReactNode;
 };
 
 // Gap left between a newly-revealed column's edge and the scroll row's true
@@ -241,7 +233,6 @@ export default function EntityColumn({
   syncingLabel,
   onLoadingChange,
   hideCustom,
-  extraPills,
 }: EntityColumnProps) {
   const [mode, setMode] = useState<"idle" | "sync" | "custom">("idle");
   const [customValue, setCustomValue] = useState("");
@@ -1313,7 +1304,6 @@ export default function EntityColumn({
         {/* After Sync, before "+ Custom", so `extraActions` ("Group Parallels")
             still sits last. */}
         {suggestionsPill}
-        {extraPills}
         {level && !hideCustom && (
           <NeonButton
             secondary

@@ -1092,18 +1092,20 @@ export function routeBscSets<TId extends string>(args: {
 // ───────────────────────────────────────────────────────────────────────────
 
 /**
- * Bounds enforced by `reconcileSetCandidates`, the sole writer of
- * `setCandidates`, and applied here first so the plan the action hands it is
- * already inside them. A SportLots year lists ~2,500 sets; the operator is
- * shown roots, not entries, and a brand with more than 200 of those is not a
- * review list, it is a data-quality problem to fix upstream of the modal.
+ * Bounds on what one Sync Sets writes from SportLots for one brand scope.
+ * Every root the classifier keeps becomes an NB set in that sync
+ * (`createSetsFromSlRoots`, the sole writer), so the cap is a write bound:
+ * a SportLots year lists ~2,500 sets, and a brand with more than 200 NEW
+ * roots in one sync is a data-quality problem to look at, not a batch to
+ * insert blind — the rest are counted and land on the next sync. Members
+ * only shape the grouping (which entries are roots); they are never written.
  */
-export const MAX_SET_CANDIDATE_MEMBERS = 50;
-export const MAX_SET_CANDIDATE_ROOTS = 200;
+export const MAX_SL_SET_MEMBERS = 50;
+export const MAX_SL_SETS_PER_SYNC = 200;
 
 export type SlSetEntry = { id: string; label: string };
 
-export type SetCandidateRoot = {
+export type SlSetRoot = {
   id: string;
   label: string;
   members: SlSetEntry[];
@@ -1114,11 +1116,11 @@ export type SlSetRoutePlan = {
   covered: number;
   /** Entries hidden as a variant of a set NB already has (year-wide). */
   variants: number;
-  /** The "new on SportLots" roots, sorted by folded label, capped. */
-  roots: SetCandidateRoot[];
-  /** Roots past `MAX_SET_CANDIDATE_ROOTS`, dropped after the sort. */
+  /** The SportLots-only roots that become sets, sorted by folded label, capped. */
+  roots: SlSetRoot[];
+  /** Roots past `MAX_SL_SETS_PER_SYNC`, dropped after the sort. */
   rootsTruncated: number;
-  /** Members past `MAX_SET_CANDIDATE_MEMBERS` across all roots. */
+  /** Members past `MAX_SL_SET_MEMBERS` across all roots. */
   membersTruncated: number;
   /** Entries dropped because their label exceeds `MAX_SLOT_LABEL_LENGTH`. */
   unnameable: number;
@@ -1181,8 +1183,10 @@ export function knownSetNameKeys(
  *              other new entry's label word-boundary-prefixes it; every other
  *              entry joins the LONGEST root that prefixes it. Two entries with
  *              one label fold together (the first is the root). Roots are
- *              sorted by folded label BEFORE the cap so a skipped root cannot
- *              rotate out of the window between two syncs and lose its Skip.
+ *              sorted by folded label BEFORE the cap so two syncs over the
+ *              same list keep the same window: what was cut off last time is
+ *              exactly what the next sync (with last time's roots now
+ *              covered) reaches first.
  *
  * Pure. `entries` are the adapter's (already prefix-stripped) labels: the
  * whole-word, case-insensitive strip of `stripMatchedBrandPrefix` for a
@@ -1260,7 +1264,7 @@ export function routeSlSets(args: {
   fresh.sort(
     (a, b) => a.key.length - b.key.length || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0),
   );
-  const roots: Array<SetCandidateRoot & { key: string; dropped: number }> = [];
+  const roots: Array<SlSetRoot & { key: string; dropped: number }> = [];
   for (const entry of fresh) {
     let best: (typeof roots)[number] | undefined;
     for (const root of roots) {
@@ -1271,12 +1275,12 @@ export function routeSlSets(args: {
       roots.push({ id: entry.id, label: entry.label, members: [], key: entry.key, dropped: 0 });
       continue;
     }
-    if (best.members.length >= MAX_SET_CANDIDATE_MEMBERS) best.dropped++;
+    if (best.members.length >= MAX_SL_SET_MEMBERS) best.dropped++;
     else best.members.push({ id: entry.id, label: entry.label });
   }
 
   roots.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
-  const kept = roots.slice(0, MAX_SET_CANDIDATE_ROOTS);
+  const kept = roots.slice(0, MAX_SL_SETS_PER_SYNC);
   return {
     covered,
     variants,

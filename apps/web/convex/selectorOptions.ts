@@ -107,8 +107,7 @@ import {
   routeBscSets,
   routeSlSets,
   stripMatchedBrandPrefix,
-  MAX_SET_CANDIDATE_MEMBERS,
-  MAX_SET_CANDIDATE_ROOTS,
+  MAX_SL_SETS_PER_SYNC,
   type BscSetHolder,
   type MarketplaceSetEntry,
 } from "./selectorSyncMatch";
@@ -122,6 +121,12 @@ import {
   rehomeSetRowsToBrand,
   rehomeSetsFromBrandUnknown,
 } from "./brandRehome";
+// NEO-237 (D13) — a set + Base minted from one SportLots entry, the write
+// behind the Sync Sets SportLots phase.
+import {
+  candidateDefaultName,
+  insertSetWithBaseFromSl,
+} from "./setFromMarketplace";
 import {
   MAX_SYNC_ITEMS,
   UNLINK_NOTICE_LIMIT,
@@ -3517,11 +3522,9 @@ const ALL_SELECTOR_LEVELS = [
  * commit can land between the two.
  *
  * `entityReviewQueue` / `checklistCandidates` / `entityReviewSkips` /
- * `selectorSyncStatus` / `setCandidates` are NOT holdings. They are transient
- * per-batch or per-column state whose only meaning is "a fetch is/was in
- * flight here" (NEO-237: or "the marketplace listed these under this brand
- * last time we asked"); nothing an operator would mourn, and they go with
- * the row.
+ * `selectorSyncStatus` are NOT holdings. They are transient per-batch or
+ * per-column state whose only meaning is "a fetch is/was in flight here";
+ * nothing an operator would mourn, and they go with the row.
  */
 async function collectSelectorOptionHoldings(
   ctx: { db: QueryCtx["db"] },
@@ -3783,18 +3786,6 @@ export const deleteSelectorOption = mutation({
         .take(TRANSIENT_DELETE_CAP);
       for (const doc of statuses) await ctx.db.delete(doc._id);
     }
-
-    // NEO-237 — a brand's "new on SportLots" candidates and Skips are keyed
-    // on the brand and mean nothing without it. Bounded at the writer
-    // (`MAX_SET_CANDIDATE_ROOTS` per brand), so the cap here is the same belt
-    // as above.
-    const candidates = await ctx.db
-      .query("setCandidates")
-      .withIndex("by_manufacturer_and_status", (q) =>
-        q.eq("manufacturerId", row._id),
-      )
-      .take(TRANSIENT_DELETE_CAP);
-    for (const doc of candidates) await ctx.db.delete(doc._id);
 
     await ctx.db.delete(row._id);
 
@@ -6747,8 +6738,6 @@ function resetTimeBudgetMs(): number {
 
 /** The per-table reset counts, plus whether the run got through every table. */
 type SetBuilderResetResult = {
-  /** NEO-237 — drained FIRST; every row points at a manufacturer row. */
-  setCandidatesDeleted: number;
   selectorOptionsDeleted: number;
   cardChecklistDeleted: number;
   crossListingsDeleted: number;
@@ -6800,7 +6789,6 @@ async function runSetBuilderReset(
   const budgetMs = resetTimeBudgetMs();
 
   const counts = {
-    setCandidatesDeleted: 0,
     selectorOptionsDeleted: 0,
     cardChecklistDeleted: 0,
     crossListingsDeleted: 0,
@@ -6815,11 +6803,6 @@ async function runSetBuilderReset(
   // Table order is load-bearing — do not reorder. Each entry is the count it
   // feeds and the batch mutation that drains it.
   const steps: Array<[keyof typeof counts, ResetBatchRef]> = [
-    // NEO-237 — the "new on SportLots" candidates BEFORE the manufacturer
-    // rows they point at, for the reason leagues go after teams: an
-    // interrupted reset must never leave a referencing table pointing at
-    // rows that are already gone.
-    ["setCandidatesDeleted", internal.selectorOptions.resetSetCandidatesBatch],
     // Well inside MAX_RETURNED_IDS: this list is one LEVEL's options for one
     // parent, de-duplicated — the biggest real case is a year's set list,
     // which SportLots tops out at a few thousand for. The store degrades
@@ -6982,8 +6965,6 @@ export const resetSetBuilderDataFromCli = internalAction({
     confirm: v.literal("RESET"),
   },
   returns: v.object({
-    // NEO-237 — the per-brand marketplace candidates, drained first.
-    setCandidatesDeleted: v.number(),
     selectorOptionsDeleted: v.number(),
     cardChecklistDeleted: v.number(),
     crossListingsDeleted: v.number(),
@@ -7008,27 +6989,6 @@ export const resetSetBuilderDataFromCli = internalAction({
     // No identity check here or in the batch mutations below — reaching an
     // internalAction at all required the deployment's admin credential.
     return await runSetBuilderReset(ctx);
-  },
-});
-
-/**
- * NEO-237 — Internal: delete up to RESET_BATCH_SIZE rows from
- * `setCandidates`, looped by `runSetBuilderReset` until no rows remain. First
- * in the table order: every row here points at a manufacturer row.
- */
-export const resetSetCandidatesBatch = internalMutation({
-  args: {},
-  returns: v.object({
-    deleted: v.number(),
-    hasMore: v.boolean(),
-  }),
-  handler: async (ctx) => {
-    assertResetArmed();
-    const rows = await ctx.db.query("setCandidates").take(RESET_BATCH_SIZE);
-    for (const row of rows) {
-      await ctx.db.delete(row._id);
-    }
-    return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
   },
 });
 
@@ -9413,113 +9373,115 @@ export const rehomeSetRowsForSync = internalMutation({
 });
 
 /**
- * NEO-237 (D12) — the SOLE writer of `setCandidates`, one call per BRAND
- * SCOPE after a SUCCESSFUL fetch of that brand's SportLots list.
+ * NEO-237 (D13) — the sets one brand scope gains from SportLots in one Sync
+ * Sets, one call per BRAND SCOPE after a SUCCESSFUL fetch of that brand's
+ * list. Jason, 2026-09-21: "If a set exists in a marketplace it should be
+ * saved whether it is in SL or BSC or both." So every root `routeSlSets`
+ * classified as NEW becomes an NB set here — a `setName` row with no
+ * marketplace ids and a "Base" `variantType` child carrying the SportLots id
+ * (`insertSetWithBaseFromSl`) — the way the BSC phase already stores BSC's
+ * sets. No review surface, no skip memory.
  *
- *   seen   → upserted: status KEPT (a Skip survives every re-sync), label and
- *            members refreshed only when they changed (NEO-85: a no-op patch
- *            still invalidates the pill's query on every open column);
- *   unseen → deleted: upstream dropped it, or a set NB now has covers it.
+ * Named by `candidateDefaultName`: the brand's `setNamePrefix` in front of
+ * the (brand-stripped) label, so "Heritage" under Topps is filed as "Topps
+ * Heritage" beside the BSC-synced "Topps Series 1"; under Unknown there is
+ * no prefix and the label stands. The prefix comes off the brand row's
+ * metadata, never its display value.
  *
- * Never called for a failed or skipped side, so an outage cannot erase an
- * operator's Skips. The bounds are asserted here as well as applied in
- * `routeSlSets`, because a guard on one of two doors is not a guard.
+ * Two refusals, both counted and never written (the helper returns them
+ * rather than throwing, so one clash does not roll back the other sets):
+ *
+ *   clashedAtTarget — a set under this brand already folds to the name. That
+ *                     set exists; whether the SportLots id belongs on ITS Base
+ *                     is the operator's call (NEO-219 never auto-writes a Base
+ *                     mapping on an existing set), and the id is theirs to
+ *                     attach from the Base picker.
+ *   existsElsewhere — a set under ANOTHER brand of the year folds to the
+ *                     name: a re-home question for the prefix, not a second
+ *                     copy.
+ *
+ * Idempotent across syncs: the next sync reads the SportLots id off the new
+ * Base and classifies the entry as covered before it reaches here. Safe to
+ * retry mid-way for the same reason. A root's MEMBERS (its longer siblings)
+ * are not written: with the set in place the next sync classifies them as
+ * its variants. Bounded by `MAX_SL_SETS_PER_SYNC`, asserted here as well as
+ * applied in `routeSlSets`, because a guard on one of two doors is not a
+ * guard. `createdByUserId` is the calling admin's identity, threaded from
+ * the action — never a client argument.
  */
-export const reconcileSetCandidates = internalMutation({
+export const createSetsFromSlRoots = internalMutation({
   args: {
     manufacturerId: v.id("selectorOptions"),
-    side: platformSideValidator,
-    roots: v.array(
-      v.object({
-        id: v.string(),
-        label: v.string(),
-        members: v.array(v.object({ id: v.string(), label: v.string() })),
-      }),
-    ),
+    roots: v.array(v.object({ id: v.string(), label: v.string() })),
+    createdByUserId: v.optional(v.string()),
   },
   returns: v.object({
-    inserted: v.number(),
-    updated: v.number(),
-    deleted: v.number(),
-    unchanged: v.number(),
+    created: v.number(),
+    clashedAtTarget: v.number(),
+    existsElsewhere: v.number(),
+    /** Labels no set name can be made of — a bug guard, not an operator state. */
+    invalid: v.number(),
   }),
   handler: async (ctx, args) => {
-    if (args.roots.length > MAX_SET_CANDIDATE_ROOTS) {
+    if (args.roots.length > MAX_SL_SETS_PER_SYNC) {
       throw new Error(
-        `reconcileSetCandidates: ${args.roots.length} roots exceeds ` +
-          `${MAX_SET_CANDIDATE_ROOTS}`,
+        `createSetsFromSlRoots: ${args.roots.length} roots exceeds ` +
+          `${MAX_SL_SETS_PER_SYNC}`,
       );
-    }
-    for (const root of args.roots) {
-      assertValidSlotLabel(root.label, "reconcileSetCandidates");
-      if (root.members.length > MAX_SET_CANDIDATE_MEMBERS) {
-        throw new Error(
-          `reconcileSetCandidates: a root carries ${root.members.length} ` +
-            `members, over ${MAX_SET_CANDIDATE_MEMBERS}`,
-        );
-      }
-      for (const member of root.members) {
-        assertValidSlotLabel(member.label, "reconcileSetCandidates");
-      }
     }
     const brand = await ctx.db.get(args.manufacturerId);
     if (!brand || brand.level !== "manufacturer") {
-      throw new Error("reconcileSetCandidates: not a manufacturer row");
+      throw new Error("createSetsFromSlRoots: not a manufacturer row");
     }
+    const prefix = brand.metadata?.setNamePrefix;
 
-    // Both statuses: the index is prefixed on the brand.
-    const existing = await ctx.db
-      .query("setCandidates")
-      .withIndex("by_manufacturer_and_status", (q) =>
-        q.eq("manufacturerId", args.manufacturerId),
-      )
-      .collect();
-    const byMarketplaceId = new Map<string, Doc<"setCandidates">>();
-    for (const row of existing) {
-      if (row.side !== args.side) continue;
-      byMarketplaceId.set(row.marketplaceId, row);
-    }
-
-    let inserted = 0;
-    let updated = 0;
-    let deleted = 0;
-    let unchanged = 0;
+    let created = 0;
+    let clashedAtTarget = 0;
+    let existsElsewhere = 0;
+    let invalid = 0;
     const seen = new Set<string>();
     for (const root of args.roots) {
-      if (seen.has(root.id)) continue;
+      if (!root.id || seen.has(root.id)) continue;
       seen.add(root.id);
-      const current = byMarketplaceId.get(root.id);
-      if (!current) {
-        await ctx.db.insert("setCandidates", {
-          manufacturerId: args.manufacturerId,
-          side: args.side,
-          marketplaceId: root.id,
-          label: root.label,
-          members: root.members,
-          status: "pending",
-        });
-        inserted++;
-        continue;
-      }
-      if (
-        current.label === root.label &&
-        valuesDeepEqual(current.members, root.members)
-      ) {
-        unchanged++;
-        continue;
-      }
-      await ctx.db.patch(current._id, {
-        label: root.label,
-        members: root.members,
+      assertValidSlotLabel(root.label, "createSetsFromSlRoots");
+      const { defaultName } = candidateDefaultName(root.label, prefix);
+      const result = await insertSetWithBaseFromSl(ctx, {
+        brandId: brand._id,
+        name: defaultName,
+        sl: { id: root.id, label: root.label },
+        ...(args.createdByUserId
+          ? { createdByUserId: args.createdByUserId }
+          : {}),
       });
-      updated++;
+      if (result.ok) {
+        created++;
+        continue;
+      }
+      switch (result.reason) {
+        case "clash_at_target":
+          clashedAtTarget++;
+          break;
+        case "exists_elsewhere":
+          existsElsewhere++;
+          break;
+        case "invalid_name":
+          invalid++;
+          console.warn(
+            `[createSetsFromSlRoots] skipped an unnameable SportLots set ` +
+              `(reason=${result.detail})`,
+          );
+          break;
+        case "brand_missing":
+          // Read at the top of this transaction; cannot vanish mid-way.
+          throw new Error("createSetsFromSlRoots: brand vanished mid-write");
+      }
     }
-    for (const [marketplaceId, row] of byMarketplaceId) {
-      if (seen.has(marketplaceId)) continue;
-      await ctx.db.delete(row._id);
-      deleted++;
-    }
-    return { inserted, updated, deleted, unchanged };
+    console.log(
+      `[createSetsFromSlRoots] brand=${brand._id} created=${created} ` +
+        `clashedAtTarget=${clashedAtTarget} existsElsewhere=${existsElsewhere} ` +
+        `invalid=${invalid}`,
+    );
+    return { created, clashedAtTarget, existsElsewhere, invalid };
   },
 });
 
@@ -9583,13 +9545,13 @@ type SlSetListOutcome =
  * brand's own SportLots id — and an unresolvable brand is skipped, never
  * queried by name. The list SportLots returns is classified by `routeSlSets`
  * (D11): covered (its id is already attached under the brand), a variant of
- * a set NB already has year-wide, or NEW — and the new ones are reconciled
- * into `setCandidates` for that brand (D12), where the operator creates or
- * skips them. Brands linked THROUGH SportLots' all-brands option, and the
- * Unknown row, share ONE fetch of that list, narrowed per brand in this
- * action by the same matcher the adapter uses. Nothing here inserts a
- * `selectorOptions` row from SportLots: creation is the operator's
- * (`createSetFromSlCandidate`).
+ * a set NB already has year-wide, or NEW — and every new root is SAVED as an
+ * NB set with a "Base" carrying the SportLots id (`createSetsFromSlRoots`,
+ * D13), the way the BSC phase saves BSC's sets. Jason, 2026-09-21: "If a
+ * set exists in a marketplace it should be saved whether it is in SL or BSC
+ * or both" — no review surface. Brands linked THROUGH SportLots' all-brands
+ * option, and the Unknown row, share ONE fetch of that list, narrowed per
+ * brand in this action by the same matcher the adapter uses.
  *
  * Nothing deletes, nothing renames. `failedPlatforms` may now carry
  * `"sportlots"`; `skippedSides` / `pausedSides` report both sides.
@@ -9624,7 +9586,9 @@ export const syncSetsAcrossManufacturers = action({
     ctx,
     args,
   ): Promise<AggregatedSyncResult & { totalSets: number }> => {
-    await requireAdmin(ctx);
+    // The identity is threaded to `createSetsFromSlRoots` as the audit
+    // `createdByUserId` of every set the SportLots phase mints.
+    const adminUserId = await requireAdmin(ctx);
     const requestId = newRequestId();
     try {
       // 1. Build ancestor chain from yearId to get sport/year values + slugs
@@ -9965,10 +9929,19 @@ export const syncSetsAcrossManufacturers = action({
         );
 
         let slFailed = 0;
-        let slNew = 0;
-        // Entries hidden as a variant of a set NB already has. Not offered,
-        // but not invisible either: the operator reaches them from that set's
-        // Base picker / attach pane, and the summary says how many there are.
+        // What the SportLots phase wrote, and what it could not (D13).
+        let slCreated = 0;
+        let slClashedAtTarget = 0;
+        let slExistsElsewhere = 0;
+        // Roots past the per-sync cap: not lost, they are the first thing
+        // the next sync reaches once this one's are covered.
+        let slRootsTruncated = 0;
+        // Entries whose label no slot can carry (`MAX_SLOT_LABEL_LENGTH`).
+        let slUnnameable = 0;
+        // Entries hidden as a variant of a set NB already has. Not written
+        // as sets, but not invisible either: the operator reaches them from
+        // that set's Base picker / attach pane, and the summary says how
+        // many there are.
         let slVariantsOfKnown = 0;
         const classify = async (
           scope: (typeof scopes)[number],
@@ -9992,20 +9965,31 @@ export const syncSetsAcrossManufacturers = action({
             knownSetNameKeys: known,
             scopePrefix: scope.metadata?.setNamePrefix,
           });
-          await ctx.runMutation(internal.selectorOptions.reconcileSetCandidates, {
-            manufacturerId: scope._id,
-            side: "sportlots",
-            roots: routed.roots,
-          });
-          slNew += routed.roots.length;
           slVariantsOfKnown += routed.variants;
+          slRootsTruncated += routed.rootsTruncated;
+          slUnnameable += routed.unnameable;
           if (routed.rootsTruncated > 0 || routed.membersTruncated > 0) {
             console.warn(
               `[syncSetsAcrossManufacturers] SportLots list truncated for one ` +
                 `brand (roots +${routed.rootsTruncated}, members +${routed.membersTruncated})`,
             );
-            summary.push("one brand's SportLots list was cut short");
           }
+          if (routed.roots.length === 0) return;
+          // Every new root becomes a set NOW, one transaction per brand
+          // scope: a set + a Base carrying the SportLots id. Members are not
+          // written; the next sync files them as the new set's variants.
+          const written = await ctx.runMutation(
+            internal.selectorOptions.createSetsFromSlRoots,
+            {
+              manufacturerId: scope._id,
+              roots: routed.roots.map((r) => ({ id: r.id, label: r.label })),
+              createdByUserId: adminUserId,
+            },
+          );
+          slCreated += written.created;
+          slClashedAtTarget += written.clashedAtTarget;
+          slExistsElsewhere += written.existsElsewhere;
+          totalStored += written.created;
         };
 
         // Every brand's prefix, for the Unknown scope: Unknown holds what
@@ -10059,7 +10043,30 @@ export const syncSetsAcrossManufacturers = action({
               `${slUnresolvable === 1 ? "has" : "have"} no SportLots link`,
           );
         }
-        summary.push(`${slNew} new on SportLots`);
+        summary.push(`${countNoun(slCreated, "set")} added from SportLots`);
+        if (slClashedAtTarget > 0) {
+          summary.push(
+            `${countNoun(slClashedAtTarget, "SportLots set")} already had a set ` +
+              `by that name`,
+          );
+        }
+        if (slExistsElsewhere > 0) {
+          summary.push(
+            `${countNoun(slExistsElsewhere, "SportLots set")} skipped — a set ` +
+              `with that name exists under another brand`,
+          );
+        }
+        if (slRootsTruncated > 0) {
+          summary.push(
+            `${countNoun(slRootsTruncated, "more set")} on SportLots not added ` +
+              `this time — sync again`,
+          );
+        }
+        if (slUnnameable > 0) {
+          summary.push(
+            `${countNoun(slUnnameable, "SportLots set")} skipped — name too long`,
+          );
+        }
         if (slVariantsOfKnown > 0) {
           summary.push(
             `${slVariantsOfKnown} more ${slVariantsOfKnown === 1 ? "matches" : "match"} ` +

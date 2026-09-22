@@ -21,8 +21,8 @@ import {
   ALL_BRANDS_VIEW_REFUSAL,
   isAllBrandsViewName,
   knownSetNameKeys,
-  MAX_SET_CANDIDATE_MEMBERS,
-  MAX_SET_CANDIDATE_ROOTS,
+  MAX_SL_SET_MEMBERS,
+  MAX_SL_SETS_PER_SYNC,
   matchesBrandPrefix,
   routeBscSets,
   routeSlSets,
@@ -454,9 +454,9 @@ describe("routeSlSets", () => {
     expect(plan.roots[0].members.map((m) => m.id)).toEqual(["sl-2"]);
   });
 
-  test("members past MAX_SET_CANDIDATE_MEMBERS are dropped and counted, root kept", () => {
+  test("members past MAX_SL_SET_MEMBERS are dropped and counted, root kept", () => {
     const entries = [{ id: "root", label: "Finest" }];
-    for (let i = 0; i < MAX_SET_CANDIDATE_MEMBERS + 5; i++) {
+    for (let i = 0; i < MAX_SL_SET_MEMBERS + 5; i++) {
       entries.push({ id: `m${i}`, label: `Finest Variant ${i}` });
     }
     const plan = routeSlSets({
@@ -465,12 +465,12 @@ describe("routeSlSets", () => {
       knownSetNameKeys: new Set(),
     });
     expect(plan.roots).toHaveLength(1);
-    expect(plan.roots[0].members).toHaveLength(MAX_SET_CANDIDATE_MEMBERS);
+    expect(plan.roots[0].members).toHaveLength(MAX_SL_SET_MEMBERS);
     expect(plan.membersTruncated).toBe(5);
   });
 
-  test("roots past MAX_SET_CANDIDATE_ROOTS are dropped AFTER sorting by folded label, and the cap is stable across runs", () => {
-    const entries = Array.from({ length: MAX_SET_CANDIDATE_ROOTS + 3 }, (_, i) => ({
+  test("roots past MAX_SL_SETS_PER_SYNC are dropped AFTER sorting by folded label, and the cap is stable across runs", () => {
+    const entries = Array.from({ length: MAX_SL_SETS_PER_SYNC + 3 }, (_, i) => ({
       id: `id-${i}`,
       // Distinct, unrelated stems so every entry is its own root.
       label: `Root-${String(i).padStart(4, "0")}`,
@@ -489,7 +489,7 @@ describe("routeSlSets", () => {
       knownSetNameKeys: new Set(),
     });
 
-    expect(planA.roots).toHaveLength(MAX_SET_CANDIDATE_ROOTS);
+    expect(planA.roots).toHaveLength(MAX_SL_SETS_PER_SYNC);
     expect(planA.rootsTruncated).toBe(3);
     // Same window of roots (by id) regardless of input order.
     expect(planA.roots.map((r) => r.id)).toEqual(planB.roots.map((r) => r.id));
@@ -498,13 +498,12 @@ describe("routeSlSets", () => {
     expect(planA.roots[0].label).toBe("Root-0000");
   });
 
-  test("a skipped root near the truncation boundary keeps its slot across two runs with the same input", () => {
-    // Not literally "skipped" here (that is `reconcileSetCandidates`'
-    // upsert-by-status job) — this asserts the PURE classifier's own half of
-    // the guarantee: sorting before the cap means the same input always
-    // yields the same surviving root set, so a caller that preserves status
-    // by id across syncs never sees a root rotate out from under a Skip.
-    const entries = Array.from({ length: MAX_SET_CANDIDATE_ROOTS + 1 }, (_, i) => ({
+  test("a root near the truncation boundary keeps its slot across two runs with the same input", () => {
+    // Sorting before the cap means the same input always yields the same
+    // surviving root set, so what one sync cut off is exactly what the next
+    // sync (with this one's roots now covered) reaches first — nothing past
+    // the cap is lost, only deferred.
+    const entries = Array.from({ length: MAX_SL_SETS_PER_SYNC + 1 }, (_, i) => ({
       id: `id-${i}`,
       label: `Root-${String(i).padStart(4, "0")}`,
     }));

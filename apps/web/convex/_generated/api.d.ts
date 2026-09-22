@@ -92,12 +92,11 @@ import type * as repairSportHallOfFameQids from "../repairSportHallOfFameQids.js
 import type * as selectorOptions from "../selectorOptions.js";
 import type * as selectorSyncMatch from "../selectorSyncMatch.js";
 import type * as selectorSyncStore from "../selectorSyncStore.js";
-import type * as setDiscovery from "../setDiscovery.js";
-import type * as slBrandAxis from "../slBrandAxis.js";
 import type * as setReconciliation from "../setReconciliation.js";
 import type * as shipmentTracking from "../shipmentTracking.js";
 import type * as shipping from "../shipping.js";
 import type * as sku from "../sku.js";
+import type * as slBrandAxis from "../slBrandAxis.js";
 import type * as splitTeamLocations from "../splitTeamLocations.js";
 import type * as sportConfig from "../sportConfig.js";
 import type * as teamColorSources from "../teamColorSources.js";
@@ -199,12 +198,11 @@ declare const fullApi: ApiFromModules<{
   selectorOptions: typeof selectorOptions;
   selectorSyncMatch: typeof selectorSyncMatch;
   selectorSyncStore: typeof selectorSyncStore;
-  setDiscovery: typeof setDiscovery;
-  slBrandAxis: typeof slBrandAxis;
   setReconciliation: typeof setReconciliation;
   shipmentTracking: typeof shipmentTracking;
   shipping: typeof shipping;
   sku: typeof sku;
+  slBrandAxis: typeof slBrandAxis;
   splitTeamLocations: typeof splitTeamLocations;
   sportConfig: typeof sportConfig;
   teamColorSources: typeof teamColorSources;

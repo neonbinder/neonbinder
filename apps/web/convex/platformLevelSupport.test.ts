@@ -514,15 +514,16 @@ async function setsUnder(
   );
 }
 
-async function candidatesUnder(
+/** The variantType rows under one set — where a SportLots-minted Base lives. */
+async function variantsUnder(
   t: ReturnType<typeof convexTest>,
-  manufacturerId: Id<"selectorOptions">,
+  setId: Id<"selectorOptions">,
 ) {
   return t.run(async (ctx) =>
     ctx.db
-      .query("setCandidates")
-      .withIndex("by_manufacturer_and_status", (q) =>
-        q.eq("manufacturerId", manufacturerId),
+      .query("selectorOptions")
+      .withIndex("by_level_and_parent", (q) =>
+        q.eq("level", "variantType").eq("parentId", setId),
       )
       .collect(),
   );
@@ -565,7 +566,7 @@ describe("syncSetsAcrossManufacturers reports each side for what it was (NEO-216
     expect(fetched.some((u) => u.includes("sportlots"))).toBe(false);
   });
 
-  test("a brand with its own SportLots id runs the SportLots phase: BSC sets filed by prefix, SportLots-only sets become candidates, nothing is inserted from SportLots", async () => {
+  test("a brand with its own SportLots id runs the SportLots phase: BSC sets filed by prefix, a SportLots-only set is CREATED with a Base carrying the SportLots id", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN);
     const { yearId } = await seedSportAndYear(t);
@@ -586,8 +587,9 @@ describe("syncSetsAcrossManufacturers reports each side for what it was (NEO-216
         // "Topps Series 1" is the set BSC just filed under Topps (its
         // stripped label re-prefixed with Topps' own prefix equals the NB
         // name, so it is a variant of a known set, not a new one). "Topps
-        // Heritage" is SportLots-only: a candidate. "Topps Heritage Minors"
-        // shares its stem and joins it as a member, not a second root.
+        // Heritage" is SportLots-only: it becomes a set. "Topps Heritage
+        // Minors" shares its stem and is a member of that root, not a second
+        // set — the next sync files it as a variant of "Topps Heritage".
         return htmlResponse(
           slSetListHtml([
             ["501", "Topps Series 1"],
@@ -617,22 +619,30 @@ describe("syncSetsAcrossManufacturers reports each side for what it was (NEO-216
     // brand id, never by name.
     expect(fetched.some((u) => u.includes("dealsets.tpl"))).toBe(true);
 
-    // BSC's set is filed under Topps by prefix, and it is the ONLY set row:
-    // the SportLots phase classifies, it does not insert.
+    // BSC's set is filed under Topps by prefix; the SportLots-only root is
+    // SAVED beside it under the brand's prefix + the stripped label, and
+    // its member ("Heritage Minors") is NOT a second set.
     const toppsSets = await setsUnder(t, topps);
-    expect(toppsSets.map((r) => r.value)).toEqual(["Topps Series 1"]);
-    expect(toppsSets[0].platformData.bsc).toEqual({ b0: "topps-series-1" });
-    expect(toppsSets[0].platformData.sportlots).toBeUndefined();
+    expect(toppsSets.map((r) => r.value).sort()).toEqual([
+      "Topps Heritage",
+      "Topps Series 1",
+    ]);
+    const series1 = toppsSets.find((r) => r.value === "Topps Series 1")!;
+    expect(series1.platformData.bsc).toEqual({ b0: "topps-series-1" });
+    expect(series1.platformData.sportlots).toBeUndefined();
 
-    // The SportLots-only set is offered as ONE root with its longer sibling
-    // as a member; the covered/variant entry is not offered at all.
-    const candidates = await candidatesUnder(t, topps);
-    expect(candidates).toHaveLength(1);
-    expect(candidates[0].side).toBe("sportlots");
-    expect(candidates[0].marketplaceId).toBe("502");
-    expect(candidates[0].label).toBe("Heritage");
-    expect(candidates[0].status).toBe("pending");
-    expect(candidates[0].members).toEqual([{ id: "503", label: "Heritage Minors" }]);
+    // The set row is NB's (no marketplace ids); the link sits on its Base,
+    // exactly where the Base picker would put it.
+    const heritage = toppsSets.find((r) => r.value === "Topps Heritage")!;
+    expect(heritage.platformData).toEqual({});
+    expect(heritage.createdByUserId).toBe(ADMIN.subject);
+    const heritageVariants = await variantsUnder(t, heritage._id);
+    expect(heritageVariants).toHaveLength(1);
+    expect(heritageVariants[0].value).toBe("Base");
+    expect(heritageVariants[0].metadata?.isBase).toBe(true);
+    expect(heritageVariants[0].platformData.sportlots).toEqual({ s0: "502" });
+    expect(heritage.children).toEqual([heritageVariants[0]._id]);
+    expect(result.message).toContain("1 set added from SportLots");
 
     // No row was minted for a brand NB has not identified: every BSC set
     // matched a brand, so the year has no Unknown row.
@@ -706,12 +716,12 @@ describe("syncSetsAcrossManufacturers reports each side for what it was (NEO-216
     expect(fetched.some((u) => u.includes("buysportscards"))).toBe(false);
     expect(fetched.some((u) => u.includes("dealsets.tpl"))).toBe(true);
 
-    const candidates = await candidatesUnder(t, score);
-    expect(candidates.map((c) => [c.marketplaceId, c.label])).toEqual([
-      ["701", "Board"],
-    ]);
-    // Still nothing inserted from SportLots.
-    expect(await setsUnder(t, score)).toEqual([]);
+    // The SportLots-only set is saved under the brand's prefix + label.
+    const scoreSets = await setsUnder(t, score);
+    expect(scoreSets.map((r) => r.value)).toEqual(["Score Board"]);
+    const [base] = await variantsUnder(t, scoreSets[0]._id);
+    expect(base.value).toBe("Base");
+    expect(base.platformData.sportlots).toEqual({ s0: "701" });
   });
 
   test("brands linked through All Brands share one fetch of the all-brands list, narrowed per brand; Unknown gets the whole list", async () => {
@@ -768,19 +778,94 @@ describe("syncSetsAcrossManufacturers reports each side for what it was (NEO-216
     expect(fetched.filter((u) => u.includes("dealsets.tpl"))).toHaveLength(1);
 
     // Bandai sees only its prefix's sets, stripped, by whole word: "Bandaids"
-    // is not "Bandai " and stays out.
-    const bandaiCandidates = await candidatesUnder(t, bandai);
-    expect(bandaiCandidates.map((c) => [c.marketplaceId, c.label])).toEqual([
-      ["801", "Carddass"],
-    ]);
+    // is not "Bandai " and stays out. The set is filed as prefix + label
+    // ("Bandai Carddass") with its Base carrying the SportLots id.
+    const bandaiSets = await setsUnder(t, bandai);
+    expect(bandaiSets.map((r) => r.value)).toEqual(["Bandai Carddass"]);
+    const [bandaiBase] = await variantsUnder(t, bandaiSets[0]._id);
+    expect(bandaiBase.platformData.sportlots).toEqual({ s0: "801" });
     // Unknown sees the rest of the list, unstripped: what no brand's prefix
-    // claims — the same rule the BSC phase files by.
-    const unknownCandidates = await candidatesUnder(t, unknown);
-    expect(
-      unknownCandidates.map((c) => [c.marketplaceId, c.label]).sort(),
-    ).toEqual([
-      ["802", "Bandaids Promo"],
-      ["803", "Roanoke Express ECHL"],
+    // claims — the same rule the BSC phase files by. No prefix, so the
+    // labels stand as the set names.
+    const unknownSets = await setsUnder(t, unknown);
+    expect(unknownSets.map((r) => r.value).sort()).toEqual([
+      "Bandaids Promo",
+      "Roanoke Express ECHL",
+    ]);
+    const unknownSlIds = await Promise.all(
+      unknownSets.map(async (row) => {
+        const [base] = await variantsUnder(t, row._id);
+        return base.platformData.sportlots?.s0;
+      }),
+    );
+    expect(unknownSlIds.sort()).toEqual(["802", "803"]);
+    expect(result.message).toContain("3 sets added from SportLots");
+  });
+
+  test("a second sync over the same SportLots list creates nothing: the ids on the new Bases are covered", async () => {
+    // Idempotency at the action door. Sync 1 mints the set + Base; sync 2
+    // reads the SportLots id off that Base (`listBrandSubtreeSlIds`) and
+    // `routeSlSets` files the entry as covered before it can reach the
+    // writer. Its longer sibling is a variant of the set that now exists.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN);
+    const { yearId } = await seedSportAndYear(t);
+    const topps = await insertManufacturer(t, yearId, "Topps", {
+      slId: "1",
+      prefix: "Topps",
+    });
+
+    stubFetch(async (url) => {
+      const href = String(url);
+      if (isTokenUrl(href, "sportlots")) {
+        return jsonResponse({
+          token: "SLSESSION=stub",
+          expiresAt: Date.now() + 86_400_000,
+        });
+      }
+      if (href.includes("dealsets.tpl")) {
+        return htmlResponse(
+          slSetListHtml([
+            ["502", "Topps Heritage"],
+            ["503", "Topps Heritage Minors"],
+          ]),
+        );
+      }
+      if (isTokenUrl(href, "buysportscards")) {
+        return jsonResponse({ token: "bsc-stub" });
+      }
+      if (href.includes("api-prod.buysportscards.com")) {
+        return jsonResponse(bscSetListJson([["topps-series-1", "Topps Series 1"]]));
+      }
+      throw new Error(`unexpected fetch: ${href}`);
+    });
+
+    const first = await asAdmin.action(
+      api.selectorOptions.syncSetsAcrossManufacturers,
+      { yearId, manufacturerId: topps },
+    );
+    expect(first.success).toBe(true);
+    expect(first.message).toContain("1 set added from SportLots");
+    const afterFirst = await t.run(async (ctx) =>
+      (await ctx.db.query("selectorOptions").collect()).length,
+    );
+
+    const second = await asAdmin.action(
+      api.selectorOptions.syncSetsAcrossManufacturers,
+      { yearId, manufacturerId: topps },
+    );
+    expect(second.success).toBe(true);
+    expect(second.failedPlatforms).toEqual([]);
+    expect(second.message).toContain("0 sets added from SportLots");
+    // Not a clash either — the entry never reached the writer.
+    expect(second.message).not.toContain("already had a set by that name");
+    const afterSecond = await t.run(async (ctx) =>
+      (await ctx.db.query("selectorOptions").collect()).length,
+    );
+    expect(afterSecond).toBe(afterFirst);
+    expect((await setsUnder(t, topps)).map((r) => r.value).sort()).toEqual([
+      "Topps Heritage",
+      "Topps Series 1",
     ]);
   });
 });

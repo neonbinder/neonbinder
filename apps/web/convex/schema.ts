@@ -774,58 +774,15 @@ export default defineSchema({
     updatedAt: v.number(),
   }).index("by_level_and_parent", ["level", "parentId"]),
 
-  /**
-   * NEO-237 — sets a marketplace lists under a brand that NB has no row for
-   * yet, offered to the operator per brand as "new on SportLots" with
-   * Create set / Skip. One row per ROOT: the shortest of a family of
-   * marketplace entries that share a name stem ("Chrome", with "Chrome
-   * Sepia" and "Chrome Refractor" as its `members`), because a root is what
-   * becomes an NB set and its members are what the next sync classifies as
-   * that set's variants.
-   *
-   * A SEPARATE table, not `selectorSyncStatus` (rewritten on every write and
-   * deleted on dismiss, so a Skip would not survive the next sync) and not
-   * `selectorOptions` (these are not NB rows — they are the marketplace's
-   * side of a comparison, and an operator's Skip is the only NB fact here).
-   * Named neutrally with a `side` because BSC could offer the same thing
-   * tomorrow; every row today is `"sportlots"`.
-   *
-   * Reconciled per BRAND SCOPE by `reconcileSetCandidates`, the sole writer,
-   * after a SUCCESSFUL fetch of that brand's list: seen → upserted (status
-   * kept, label and members refreshed only when they changed), unseen →
-   * deleted (upstream dropped it, or a set now covers it). A failed or
-   * skipped side touches nothing, so a marketplace outage cannot erase an
-   * operator's Skips. Bounded by the writer: `MAX_SET_CANDIDATE_ROOTS` per
-   * brand, `MAX_SET_CANDIDATE_MEMBERS` per root, labels at
-   * `MAX_SLOT_LABEL_LENGTH`, and the roots are SORTED by folded label before
-   * the cap so a re-sync cannot rotate a skipped root out of the window and
-   * lose the Skip.
-   *
-   * No `yearId` (the manufacturer row carries it), no timestamps
-   * (`_creationTime` is enough for "first seen", and "last seen" is the
-   * reconcile itself: an unseen row is deleted, not aged). `skippedByUserId`
-   * is an audit field, never returned to a client.
-   *
-   * Transient like `selectorSyncStatus`: `deleteSelectorOption` sweeps a
-   * brand's rows with the brand, and `resetSetCandidatesBatch` drains the
-   * table first in the NEO-214 reset.
-   */
-  setCandidates: defineTable({
-    manufacturerId: v.id("selectorOptions"),
-    side: v.union(v.literal("bsc"), v.literal("sportlots")),
-    /** The root entry's marketplace set id — what the created Base is linked to. */
-    marketplaceId: v.string(),
-    /** The root's label as the adapter returned it (brand prefix already stripped). */
-    label: v.string(),
-    /** Longer entries sharing the root's stem; NOT written on Create. */
-    members: v.array(v.object({ id: v.string(), label: v.string() })),
-    status: v.union(v.literal("pending"), v.literal("skipped")),
-    skippedAt: v.optional(v.number()),
-    skippedByUserId: v.optional(v.string()),
-  })
-    // The pill counts pending roots for one brand; the reconcile reads both
-    // statuses for one brand. Both are prefix reads of this one index.
-    .index("by_manufacturer_and_status", ["manufacturerId", "status"]),
+  // NEO-237 history: a `setCandidates` table (per-brand "new on SportLots"
+  // roots with an operator Create / Skip) existed only on this branch and was
+  // removed before it shipped — Jason, 2026-09-21: "If a set exists in a
+  // marketplace it should be saved whether it is in SL or BSC or both." The
+  // Sync Sets SportLots phase now writes SportLots-only sets straight into
+  // `selectorOptions` (`createSetsFromSlRoots` → `insertSetWithBaseFromSl`),
+  // the way it already stores BSC's sets. Its rows were drained on dev and on
+  // the PR preview before this schema deployed; no migration exists or is
+  // needed because no deployment ever carried the table past that.
 
   // Card Checklist - stores individual cards within a set variant.
   // Carries enough metadata to drive an eBay Sell Inventory API listing

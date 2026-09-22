@@ -217,17 +217,6 @@ describe("deleteSelectorOption — empty row", () => {
         message: "boom",
         updatedAt: SENTINEL_LAST_UPDATED,
       });
-      // NEO-237 — a "new on SportLots" candidate keyed on the row being
-      // deleted means nothing without it: the brand it was offered under is
-      // gone, so the root has nowhere to become a set.
-      await ctx.db.insert("setCandidates", {
-        manufacturerId: setId,
-        side: "sportlots",
-        marketplaceId: "sl-1",
-        label: "New Root",
-        members: [],
-        status: "pending",
-      });
     });
 
     await asAdmin.mutation(api.selectorOptions.deleteSelectorOption, {
@@ -237,10 +226,9 @@ describe("deleteSelectorOption — empty row", () => {
     const leftovers = await t.run(async (ctx) => ({
       skips: (await ctx.db.query("entityReviewSkips").collect()).length,
       statuses: (await ctx.db.query("selectorSyncStatus").collect()).length,
-      setCandidates: (await ctx.db.query("setCandidates").collect()).length,
     }));
 
-    expect(leftovers).toEqual({ skips: 0, statuses: 0, setCandidates: 0 });
+    expect(leftovers).toEqual({ skips: 0, statuses: 0 });
   });
 
   // ── security condition 2: staged review work is a HOLDING, not transient ──
