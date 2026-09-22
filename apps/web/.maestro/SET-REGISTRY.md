@@ -53,8 +53,12 @@ BuySportsCards alone for the whole run:
   pinned entry), and the row that holds the sets no brand claims is the
   year's **`Unknown`** row, minted by the year-wide Sets sync (BSC phase)
   under the pause, or by the manufacturer sync live, when it routes
-  SportLots' own "All Brands" option onto it. Typing "All Brands" into
-  "+ Custom" is refused.
+  SportLots' own "All Brands" option onto it. Since 2026-09-21 that row is
+  listed FIRST among the column's data rows, directly under the view,
+  rather than alphabetically among the brands; no flow reads the column by
+  position (every row tap is an exact name under the header or the search
+  box), so nothing in the suite depends on either order. Typing "All Brands"
+  into "+ Custom" is refused.
 * Everything that says "MAPPED on BOTH sides" below is mapped on the BSC side
   only under the pause, and every `SL only` / `SportLots only` expectation is
   vacuous. Flows branch on `output.SL_PAUSED`, never on the screen (R10).
@@ -905,7 +909,7 @@ every CI run; the flow pays its own syncs on its own runner.
 | | |
 | -- | -- |
 | ancestors | `Hockey → 1997` |
-| what the flow WRITES | a manufacturer row **`SPx`** (via "+ Custom", linked through All Brands, prefix defaulted to its name); ONE set created from the first "new on SportLots" root of the year-wide list (its name is SportLots' label, read at run time — never a literal) with a `Base` carrying that SportLots id; the year-wide BSC filing (every brand plus `Unknown`) and the re-home of `SPx…` sets out of `Unknown` |
+| what the flow WRITES | a manufacturer row **`SPx`** (via "+ Custom"; the create itself links it through All Brands because the year carries SportLots ids — there is no opt-in on the confirm since Jason's 2026-09-21 preview pass; prefix defaulted to its name); ONE set created from the first "new on SportLots" root of the year-wide list (its name is SportLots' label, read at run time — never a literal) with a `Base` carrying that SportLots id; the year-wide BSC filing (every brand plus `Unknown`) and the re-home of `SPx…` sets out of `Unknown` |
 | what it never does | fetch a checklist, map a Base (the picker is cancelled), rename or delete anything |
 | writer | **sole writer** of the whole year; no other flow may drill Hockey 1997 |
 | pre-synced by `setup.yaml` | **no** |
@@ -913,8 +917,15 @@ every CI run; the flow pays its own syncs on its own runner.
 
 **The prefix is `SPx`, MEASURED 2026-09-21** on PR #272's Convex preview
 (local Vite pointed at the preview after CI run 35658444013's seed; the
-flow passed end to end in 4m24s). It was chosen from the product's
-constraints first and the reading confirmed them:
+flow passed end to end in 4m24s). That run still pressed the confirm's
+opt-in control; the same day's preview pass removed it (the create links
+through All Brands whenever the year carries SportLots ids) and pinned the
+year's `Unknown` row directly under the All Brands view in the Manufacturers
+column. The flow's STEP 3 no longer branches on the control and STEP 5 reads
+the attributes panel's SportLots cell instead; neither the order nor those
+reads have been measured yet — the next CI run of the flow is the
+measurement. It was chosen from the product's constraints first and the
+reading confirmed them:
 
 * SportLots' hockey brand list has no `SPx` entry, so the product can only be
   reached through All Brands — the case the feature exists for;

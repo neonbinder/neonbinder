@@ -16,9 +16,13 @@ tags:
 #      has no row for as "N new on SportLots" (STEP 2);
 #   2. "Create set" on one of those roots makes an NB set whose Base carries
 #      the SportLots id — the `SL` pill on the Base row (STEP 2);
-#   3. the New Manufacturer confirm offers "match its sets by name" only when
-#      the year carries SportLots ids, and says that Unknown's matching sets
-#      will move (STEP 3);
+#   3. the New Manufacturer confirm says that Unknown's matching sets will
+#      move (STEP 3) — and asks NOTHING about SportLots: creating a brand
+#      under a year that carries SportLots ids links it through All Brands
+#      by itself (Jason's preview pass, 2026-09-21: the opt-in control is
+#      gone), silently not under a year without them. The link is therefore
+#      proved by what FOLLOWS the create, never at the confirm — claim 5 and
+#      the attributes panel's SportLots cell (STEP 5);
 #   4. creating the brand RE-HOMES the prefix-matching sets out of Unknown —
 #      the same set, picked in the view afterwards, back-fills the
 #      Manufacturers column to the NEW brand (STEP 4), and the brand's Sets
@@ -58,22 +62,27 @@ tags:
 #         depended on the SPx prefix.
 #   If a replacement is ever needed, it must satisfy (a) and (b) again —
 #   the registry lists the alternatives considered. Re-measure and record.
+#   That measurement predates the 2026-09-21 preview-pass changes (the
+#   confirm's opt-in control removed, STEP 5's SportLots-cell reads added,
+#   `Unknown` pinned second in the Manufacturers column); those steps were
+#   parsed offline only and are measured by the next CI run of this flow.
 #
 # ── WHY A REAL YEAR, AND WHY THIS FLOW IS A SOLE WRITER (R7a) ───────────────
 #   Every claim above is about what a marketplace ANSWERS: which sets BSC
 #   lists, which SportLots lists, and how the sync files and narrows them. A
 #   hand-made subtree carries no ids, asks nothing, and gets nothing to file
 #   (NEO-239) — the pill never renders, the picker's pane says "no base set",
-#   and the confirm never offers the control. So the year is real, cold, and
-#   this flow WRITES to it: a manufacturer row (`SPx`, linked through All
-#   Brands), one set created from a SportLots root (its name is whatever
+#   and a brand created under it is linked to nothing. So the year is real,
+#   cold, and this flow WRITES to it: a manufacturer row (`SPx`, linked
+#   through All Brands by the create itself — the year carries SportLots
+#   ids), one set created from a SportLots root (its name is whatever
 #   SportLots calls it — read at run time, never guessed), and the re-homes.
 #   Nothing deletes, nothing renames. It is the ONLY flow on Hockey 1997.
 #
 #   ⚠️ FRESH-ONLY, like `checklist-one-marketplace-skips-match-dialog`: a
 #   second run against the same deployment finds `SPx` already there — the
-#   "+ Custom" form then SELECTS the existing row with no confirm and no
-#   control, and STEP 3 fails on the confirm sentence by name. CI reseeds the
+#   "+ Custom" form then SELECTS the existing row with no confirm at all,
+#   and STEP 3 fails on the confirm sentence by name. CI reseeds the
 #   preview every run, so the first-run path is the CI path; locally,
 #   re-seed (`npm run test:e2e -- setup`) before re-running.
 #
@@ -82,11 +91,13 @@ tags:
 #   switches": below the root the pause reads as a BSC-only tree), so every
 #   SportLots-shaped claim above has a paused counterpart asserted by name:
 #   the view's Sets column ends with "SportLots skipped: no SportLots ids on
-#   this path." and no pill; the confirm offers NO "match its sets by name"
-#   control (it is not rendered, not rendered disabled); the picker's pane
-#   reads "SportLots returned no base set for <set>". The BSC half — filing,
-#   re-homing, the "moved out of Unknown" notice, the Brand row — is
-#   identical in both modes and asserted unconditionally.
+#   this path." and no pill; the create links the brand to nothing, so the
+#   picker's pane reads "SportLots returned no base set for <set>" and the
+#   attributes panel's SportLots cell says why it cannot be pressed ("This
+#   year has no SportLots link to go through"). The confirm step itself is
+#   the same screen in both modes and asserted unconditionally, as is the
+#   BSC half — filing, re-homing, the "moved out of Unknown" notice, the
+#   Brand row.
 #
 # ── R5 ──────────────────────────────────────────────────────────────────────
 #   7000 everywhere EXCEPT the live marketplace round-trips: the cold Hockey
@@ -102,17 +113,21 @@ tags:
 #               "<label>"`, buttons `Create set from "<label>"` / `Skip
 #               "<label>"`; footer `role=status` `N to look at` → `Created
 #               '<name>'`; Close `Close — the rest stay listed`
-#   confirm     `Create manufacturer '<name>' under Hockey › 1997?`,
-#               the control `SportLots has no brand for this — match its sets
-#               by name (starting with '<name>')` (aria-pressed), the line
+#   confirm     `Create manufacturer '<name>' under Hockey › 1997?`, the line
 #               `Sets in Unknown whose names start with '<name>' move here.`,
-#               `Create manufacturer`
+#               `Create manufacturer` — and nothing about SportLots (the
+#               2026-09-21 change; a control here again is a regression)
 #   Sets column `N sets moved out of Unknown` (SyncDoneNotice), `SportLots
 #               skipped: no SportLots ids on this path.`
 #   picker      `BSC base candidate: …`, `SportLots base candidate: …`,
 #               `Search SportLots sets...`, `Confirm Base Set`, `Cancel`,
 #               `Base mapping cancelled`, `Close`, `Map Base Set`
-#   attributes  `Edit attributes`, `Value for Brand`
+#   attributes  `Edit attributes`, `Value for Brand`, the SportLots cell's
+#               toggle text `SportLots has no brand for this — match its sets
+#               by name` (SetAttributesPanel; on/off is aria-pressed, which
+#               the driver does not expose) and, only when it cannot be
+#               pressed, its reason line `This year has no SportLots link to
+#               go through`
 #
 # ── R3 ──────────────────────────────────────────────────────────────────────
 #   `all-brands-view-lists-every-set` proves the view itself, marketplace-free;
@@ -360,11 +375,16 @@ tags:
     env:
       SPORT: "Hockey"
       YEAR: ${output.YEAR}
-# The expanded column's first row is the pinned entry in both modes (the
-# real brands live under a search box live; under the pause the list is
-# `Unknown` alone) — a non-scrolling gate that the column is open, before
-# the swipe below: the hierarchy is viewport-bounded, so the button itself
-# cannot be waited on unscrolled from here.
+# The expanded column's first entry is the pinned view in both modes, and
+# the year's `Unknown` row is the first DATA row beneath it (2026-09-21:
+# it no longer sorts alphabetically among the brands); live, the eighteen
+# real brands follow under a search box, under the pause the list ends at
+# `Unknown`. The gate below is on the pinned entry — a non-scrolling gate
+# that the column is open, before the swipe: the hierarchy is
+# viewport-bounded, so the button itself cannot be waited on unscrolled
+# from here. Nothing in this flow reads that column by POSITION (every row
+# tap in the drill utils is an exact name under the header or the search
+# box), so the order is not what any step here depends on.
 - extendedWaitUntil:
     visible:
       id: "All Brands — every set in ${output.YEAR}"
@@ -383,7 +403,7 @@ tags:
 - inputText: ${output.BRAND}
 # ONE Enter: the form checks the rest of the tree for the name ("Checking
 # where this name is already used…") and then shows the CONFIRM step. A
-# second blind Enter would press Create before the control below is read
+# second blind Enter would press Create before the line below is read
 # (NEO-272). The confirm's sentence names the parent chain, so it is also
 # the proof the form is standing under Hockey › 1997 and not somewhere the
 # util's drill left it.
@@ -392,34 +412,21 @@ tags:
     visible: "Create manufacturer '${output.BRAND}' under Hockey › ${output.YEAR}\\?"
     timeout: 7000
 
-# The line every manufacturer confirm carries now: what creating this brand
-# does to Unknown's sets. Fixed copy with the typed value in it.
+# The line every manufacturer confirm carries: what creating this brand does
+# to Unknown's sets. Fixed copy with the typed value in it. It is ALL the
+# confirm says — the SportLots link is not a question any more (header,
+# claim 3): the create links the brand through All Brands when the year
+# carries SportLots ids and not otherwise, and neither mode has anything to
+# press or to see here. The proof of the link is downstream, where it can
+# be read: STEP 4's narrowed pane (live) and STEP 5's SportLots cell (both
+# modes). Same screen in both modes, so no branch (R10).
 - assertVisible: "Sets in Unknown whose names start with '${output.BRAND}' move here."
-
-# THE CONTROL — by mode. Live: the year carries SportLots ids (the sport and
-# the year both came off SportLots' lists), so the confirm offers the
-# opt-in; press it. Paused: the year has no SportLots ids, so it is NOT
-# rendered — not rendered disabled — and the line above is the positive that
-# proves the confirm step itself is up (R2). The parentheses are escaped:
-# `text:` is a full-match regex.
-- runFlow:
-    when:
-      true: "${!output.SL_PAUSED}"
-    commands:
-      - tapOn:
-          text: "SportLots has no brand for this — match its sets by name \\(starting with '${output.BRAND}'\\)"
-- runFlow:
-    when:
-      true: "${output.SL_PAUSED}"
-    commands:
-      - assertNotVisible:
-          text: "SportLots has no brand for this.*"
 
 - tapOn:
     id: "Create manufacturer"
 # The form closes on the server's answer: the row exists, its prefix defaulted
-# to its name, and the re-home has run in the same mutation. One Convex
-# mutation — the 7000 bar.
+# to its name, the SportLots link attached (live) and the re-home run, all in
+# the same mutation. One Convex mutation — the 7000 bar.
 - extendedWaitUntil:
     notVisible: "Add Custom Entry"
     timeout: 7000
@@ -510,15 +517,20 @@ tags:
 - assertVisible:
     id: "BSC base candidate: .*"
 
-# THE NARROWING, by mode. Live: the brand's SportLots slot holds the
-# all-brands option id and its prefix is the brand name, so the adapter
-# asks SportLots for the year's whole list and keeps only the entries that
-# start with the prefix (`fetchSetNames`, D3) — a handful. BaseSetPicker
-# renders its "Search SportLots sets..." box only above 8 candidates, so
-# "at least one candidate AND no search box" is the shape of a narrowed
-# pane, and the shape the un-narrowed pane can never take: the 1995 fixture
-# measured 321 candidates on the full list. Paused: the brand has no
-# SportLots id (the control was not offered), so the pane says so.
+# THE NARROWING, by mode — and, since the confirm asks nothing, THE LIVE
+# PROOF THAT THE CREATE LINKED THE BRAND AT ALL. Live: the brand's SportLots
+# slot holds the all-brands option id and its prefix is the brand name, so
+# the adapter asks SportLots for the year's whole list and keeps only the
+# entries that start with the prefix (`fetchSetNames`, D3) — a handful.
+# BaseSetPicker renders its "Search SportLots sets..." box only above 8
+# candidates, so "at least one candidate AND no search box" is the shape of
+# a narrowed pane, and the shape the un-narrowed pane can never take: the
+# 1995 fixture measured 321 candidates on the full list. A create that
+# stopped linking would leave the brand with no SportLots id, the side would
+# be skipped for want of ids (invariant 6), and this pane would read
+# "SportLots returned no base set" — the paused shape, on a live runner, by
+# name. Paused: the year has no SportLots ids, so the create attached none
+# and the pane says so.
 - runFlow:
     when:
       true: "${!output.SL_PAUSED}"
@@ -604,3 +616,34 @@ tags:
       id: "Value for Brand"
       text: ${output.BRAND}
     timeout: 7000
+
+# THE SPORTLOTS CELL — now the ONLY place the link made at create time is
+# shown to the operator (the confirm no longer asks; header, claim 3). It is
+# the grid cell beside Brand, on the same row at this viewport width. The
+# toggle's on/off is `aria-pressed`, which the driver does not expose, so
+# the sentence is asserted in both modes as the positive that the cell
+# rendered, and the MODE is read off the one thing that differs as text:
+# the reason line the panel prints under a toggle that cannot be pressed.
+# Paused: the year carries no SportLots ids, so the create attached none and
+# the line says so — the paused counterpart of STEP 4's narrowed pane (R2).
+# Live: the toggle is pressed and carries no reason line; that absence is
+# not asserted (a reachable-but-unlinked brand has none either), because
+# the pane in STEP 4 already proved the link. Both are scroll targets, DOWN
+# and uncentred (no tap follows; the scroll is the assertion, R6): the Brand
+# scroll above stops as soon as the input is in view, which can leave this
+# cell's lower lines under the fold. Two full-match texts (SetAttributesPanel
+# `SL_VIA_ALL_BRANDS_TOGGLE_TEXT` and `slViaAllBrandsDisabledReason`); the
+# confirm form's like-worded control is gone, so nothing else on the page
+# can satisfy the first.
+- scrollUntilVisible:
+    element:
+      text: "SportLots has no brand for this — match its sets by name"
+    timeout: 7000
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      - scrollUntilVisible:
+          element:
+            text: "This year has no SportLots link to go through"
+          timeout: 7000
