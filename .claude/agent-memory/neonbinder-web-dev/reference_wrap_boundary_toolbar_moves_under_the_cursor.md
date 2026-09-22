@@ -1,6 +1,6 @@
 ---
 name: reference-wrap-boundary-toolbar-moves-under-the-cursor
-description: An admin filter toolbar whose children are content-sized reflows when a live query resolves, moving the trailing button ~650px mid-tap — fix the width in product code; scrollUntilVisible + centerElement cannot help
+description: An admin filter toolbar whose children are content-sized reflows when a live query resolves, moving the trailing button ~650px mid-tap — fix the width in product code (all four admin screens now carry it); the fixed width follows the longest realistic option, not a constant
 metadata:
   type: reference
 ---
@@ -27,11 +27,46 @@ product layout defect, per [[e2e-never-target-a-dom-id]]-style reasoning: fix it
 where the width comes from.
 
 **The fix** is two class changes per screen — a fixed width on the select's
-wrapper (`w-44`) and a `min-w-[13rem]` floor on the counter — so the row's width
-no longer depends on the data. Live sites as of 2026-09:
-`components/admin/LeagueManagement.tsx` and `components/admin/PlayerManagement.tsx`
-(both carry an in-file note). `FranchiseManagement.tsx` and `TeamManagement.tsx`
-open with the same `flex flex-wrap items-end gap-3` row — check them before
-adding another per-flow workaround.
+wrapper and a `min-w-[13rem]` floor on the counter — so the row's width no
+longer depends on the data. All four admin master-detail screens carry it as of
+2026-09-22, each with an in-file note: `LeagueManagement.tsx` (the long note the
+other three point at), `PlayerManagement.tsx`, `FranchiseManagement.tsx` and
+`TeamManagement.tsx`. Before adding another per-flow workaround, check whether a
+new screen opened with this row shape.
+
+**The fixed width is not always `w-44`.** It has to hold the longest realistic
+option, and that depends on what the select lists:
+
+- a *sport* select (`sportList`) tops out near "Basketball", so `w-44` (176px)
+  is comfortable;
+- a *league* select renders `abbreviation ?? name`, and `findOrCreateLeague`
+  writes rows mid-import with no abbreviation — so it must hold a full name like
+  "Major League Baseball", "International League" or an FBS conference. That
+  needs `w-72` (288px): 288 − 24 (`px-3`) − ~20 (Chrome's dropdown indicator)
+  ≈ 244px of text, ~28 characters at 16px Lexend.
+
+Check the row still fits the 1024px CI viewport at the new width. The admin
+content box is `max-w-6xl mx-auto p-6`, i.e. 1024 − 48 ≈ 976px (~961 with a
+classic scrollbar). A row of `w-64` Input + `w-72` select + `min-w-[13rem]`
+counter + two `gap-3` is 776px, and stays inline even when the counter grows
+past its floor.
+
+**`min-w` is a floor, not a cap.** A counter whose text can outgrow ~13rem (Team
+Management's reaches ~57 characters at the 2000-row cap) still changes width
+with the data. That is only safe because it is the *last* in-flow child there —
+nothing sits to its right to be moved. A screen that puts a button after the
+counter needs the counter bounded, not just floored.
+
+Two things to check on a screen you are closing out, beyond the two classes:
+
+- a counter with a bare `pb-2` and no height class is the pre-fix pattern. The
+  treatment is `flex items-center` + the shared `FIELD_BOX_HEIGHT`
+  (`min-h-[2.625rem]`, exported from `components/admin/AddLeagueForm.tsx`), so
+  it centres against the field boxes and stays put when the row wraps.
+- the select's own query matters as much as the counter's. Team Management's
+  `leagues` is a *separate* `useQuery` from the `management` query the screen
+  early-returns on, so the row renders with the select at "All leagues" width
+  and then jumps when `leagues` lands — a hazard the counter's early return
+  hides.
 
 Related: [[e2e-viewport-is-the-ux-constraint]].

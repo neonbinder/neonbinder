@@ -608,7 +608,12 @@ export default function FranchiseManagement() {
           onChange={(e) => setFilter(e.target.value)}
           className="w-64"
         />
-        <div>
+        {/* Fixed width, not content width: `sportList` is a live global query,
+            so a content-sized select changes width when another session mints
+            or deletes a sport, and this row sits at its wrap boundary — the
+            Start a franchise button moves out from under the cursor. Long note
+            at the same spot in LeagueManagement.tsx. */}
+        <div className="w-44">
           <label htmlFor="franchise-sport-filter" className={LABEL_CLASS}>
             Sport
           </label>
@@ -626,8 +631,12 @@ export default function FranchiseManagement() {
             ))}
           </select>
         </div>
+        {/* `min-w-[13rem]` for the same reason as the select's fixed width
+            above: this node is empty until the counts resolve, and an
+            auto-width node growing from 0 to ~200px is the other half of the
+            reflow. See LeagueManagement.tsx. */}
         <p
-          className={`flex items-center text-xs text-slate-400 ${FIELD_BOX_HEIGHT}`}
+          className={`flex items-center text-xs text-slate-400 min-w-[13rem] ${FIELD_BOX_HEIGHT}`}
         >
           {counter}
         </p>
