@@ -88,6 +88,7 @@ BuySportsCards alone for the whole run:
 | Hockey → 1997 (the whole year) | a manufacturer row `SPx` linked through SportLots' All Brands option; every set the year-wide Sync Sets saves from SportLots' lists (a `setName` row plus a `Base` carrying the SportLots id per new root — dozens, names never read or asserted); the year's BSC sets filed under the brands / `Unknown` and the prefix-matching ones re-homed to `SPx`. No checklist is fetched. | `flows/set-selector/brand-via-all-brands-narrows-sportlots.yaml` — **sole writer** of the year. ✅ Claimed by Jason 2026-09-21 (NEO-237 §0.1); the prefix `SPx` **measured** on PR #272's preview 2026-09-21 — see the Hockey 1997 section |
 | Baseball → 2024 → Topps → Topps MLB at Rickwood Field Negro Leagues Collection | `Base` — 4 cards, BSC only (the SportLots picker is CANCELLED in-flow; SportLots does not carry the set), fetched and COMMITTED in-flow (NOT pre-synced) | `flows/set-selector/checklist-wizard-link-team-saves-alias.yaml` — **sole writer**. Approved by Jason 2026-09-16 (NEO-284) |
 | Baseball → 2026 → Bowman → Bowman | `Insert` — reconciled in-flow (NOT pre-synced); the BSC insert `Anime Kanji` is promoted to a parallel of `Anime` by Group Parallels and its checklist is fetched and COMMITTED in-flow | `flows/set-selector/parallel-grouping-promoted-insert-fetches-from-bsc.yaml` — **sole writer**. Requested by the owner 2026-09-21 (NEO-293), replacing a rejected hand-made-parent fixture |
+| Hockey → 1996 (the whole year) | ⚠️ **PROPOSED, NEEDS OWNER SIGN-OFF.** Every brand row NB's known-brands list mints for the year, the year's `Unknown` row, and every BSC set of the year filed under one of them; one set (expected `Leaf…`) is MOVED to `Unknown` by the operator control and left there. No checklist is fetched, no Base is mapped, nothing is renamed or deleted. | `flows/set-selector/known-brand-files-set-and-operator-move-sticks.yaml` — **sole writer** of the year. See the Hockey 1996 section below |
 
 ### 2024 Topps NHL Sticker Collection — NEO-211, sole-writer ⚠️ SUBSTITUTED, NEEDS SIGN-OFF
 
@@ -983,6 +984,87 @@ whichever brands own the roots; no brand, name or count is asserted beyond
 one — the Base-carries-the-id shape is the helper's unit test, and the link
 this fixture proves live is STEP 4's narrowed picker pane under `SPx`.
 
+### Hockey → 1996 — the known-brands fixture (NEO-294) ⚠️ PROPOSED, NEEDS OWNER SIGN-OFF
+
+**Rule 1 applies: this is a proposal, not an approval.** One real YEAR —
+**Hockey → 1996** — owned end to end by exactly one flow,
+`flows/set-selector/known-brand-files-set-and-operator-move-sticks.yaml`,
+which proves on live marketplace data that (a) a BSC set whose name starts
+with an entry of NB's curated known-brands list (`convex/knownBrands.ts`, 39
+names) is filed under a brand row the sync CREATES for it rather than under
+the year's `Unknown`, and (b) an operator's later `Move to another brand`
+outlives the next forced Sync Sets — the `metadata.brandSetByOperator` stamp
+every automatic re-home skips.
+
+**Why 1996.** The two hockey years either side of it are already claimed and
+their SportLots brand lists were MEASURED identical (the 1995 fixture's
+measurement 2: `All Brands, Bowman, Classic, Donruss, Finest, Fleer, ITG,
+O-Pee-Chee, Pacific, Panini, Pinnacle, Score, Skybox, SP, Stadium Club,
+Topps, Ultra, Upper Deck` — 18 entries, "1997 returns the identical list"),
+so 1996 is the nearest year with the same shape and nothing in the suite
+touching it. `Leaf` is absent from that list, which is the property the
+fixture needs: no marketplace and no operator can put a `Leaf` brand row in
+this year, so a set found under one was filed there by the known list.
+
+| | |
+| -- | -- |
+| ancestors | `Hockey → 1996`, reached through the pinned All Brands view |
+| what the flow WRITES | every brand row the known list mints for the year (expected: `Leaf`, possibly others), the year's `Unknown` row, the year-wide BSC filing of every set under one of them, and ONE operator move of a `Leaf…` set into `Unknown` (stamped `brandSetByOperator`) |
+| what it never does | fetch a checklist, map a Base, rename or delete anything, create a brand by hand |
+| writer | **sole writer** of the whole year; no other flow may drill Hockey 1996 |
+| pre-synced by `setup.yaml` | **no** — the flow pays its own cold syncs on its own runner |
+| re-runs | **fresh-only per deployment**, the same contract as the 1995 and 1997 fixtures: a second run finds the set already under `Unknown` and already stamped, so the flow's `Manufacturers: Leaf — change` assertion fails by name. CI reseeds the preview every run, so the first-run path is the CI path; re-seed before re-running locally. The flow deliberately does NOT restore the set — a restore would make a re-run green while proving the filing from the operator's own move rather than from the list |
+
+#### ⚠️ NOTHING HERE IS MEASURED — the first CI run is the measurement
+
+The PR preview did not exist when the flow was written (nothing had been
+pushed), so the Convex preview still ran pre-NEO-294 code and no reading of
+BSC's 1996 hockey list was possible. `Leaf` is a **hobby judgement**, not a
+measurement: 1996-97 Leaf hockey (Leaf, Leaf Limited, Leaf Preferred) is a
+real and ubiquitous Pinnacle product, `Leaf` is on the approved list, and it
+is one regex-safe token. What the first CI run must confirm, and what to
+record back here:
+
+1. **BSC lists ≥1 set for Hockey 1996 whose name word-boundary-starts with
+   `Leaf`.** Read off the flow's `Manufacturers: Leaf — change` card. If it
+   does not, swap the flow's STEP 0 `BRAND` (or `YEAR`) and re-measure.
+   Candidates considered, none measured: `Pro Set` on Hockey 1990/1991
+   (1990-91 Pro Set is enormous and SportLots' hockey brand list has no Pro
+   Set entry); `ProCards`, `CMC`, `Star`, `Best`, `Choice` on Baseball 1990,
+   the minor-league team-set year the ticket's dev sample was drawn from —
+   but a modern baseball year's set list is much larger than a hockey
+   year's, so weigh the cost below before moving there.
+2. **The cost**, against `run-e2e-queue.sh`'s 600s per-flow kill: one cold
+   Hockey drill (years + manufacturers + the year-wide Sets sync), one cold
+   variant-type sync on the picked set, and one FORCED year-wide Sync Sets.
+   The comparable figure is `brand-via-all-brands-narrows-sportlots` on
+   1997 — 4m24s **with** a live SportLots phase this flow never pays.
+3. **How many `Leaf…` sets BSC lists.** The flow picks the first match of the
+   same filter twice (before the move and after the forced sync) and relies
+   on the view's display-name ordering to make those the same row. If the
+   run shows several, record the names here so the next reader knows the
+   ordering argument is load-bearing. A mismatch fails RED at the second
+   card, never green.
+4. **Whether the year-wide sync's done notice carries anything new.** It does
+   NOT today: `syncSetsAcrossManufacturers` puts "N brands added from the
+   known list" / "N sets filed under a known brand" into its `summary`, which
+   reaches only `res.message` — and `ensureSelectorOptions` composes the
+   column's done row from `pausedSides` / `slCreated` / `failedPlatforms` /
+   `skippedSides` / `unlinkedTotal` and nothing else, dropping `res.message`
+   on success. So those two sentences have **no UI surface** and no flow may
+   target them. The flow asserts the STRUCTURE instead (which brand row the
+   set hangs off), which is the stronger claim anyway.
+
+#### Why it cannot be a per-worker hand-made fixture
+
+The known list is consulted inside `syncSetsAcrossManufacturers`, on the sets
+a marketplace returned. A hand-made subtree carries no ids, so neither side
+is resolvable, nothing is fetched and there is nothing to file (NEO-239) —
+and with nothing to sync there is no automatic re-home for the operator's
+stamp to survive either. The move CONTROL itself needs no marketplace, and
+that half lives marketplace-free in `move-set-to-another-brand.yaml`
+(`msb-` prefix below); only the two claims above need a real year.
+
 ### The TEAM-link alias fixture — Baseball / 2024 / Topps / Topps MLB at Rickwood Field Negro Leagues Collection (NEO-284) — approved by Jason 2026-09-16
 
 One new real set, touched by exactly one flow,
@@ -1188,6 +1270,7 @@ would put the wrong question on screen.
 | `cvar-` | `variation-link-group-and-unlink.yaml` |
 | `fp-` | `features-propagation.yaml` |
 | `ftl-` | `set-fill-teams-from-teammate-card.yaml` (also `-${ATTEMPT_ID}`) — under `E2E Test Sport <w>` › 2026 › Topps, the `stt-` shape for the same League-row reason. Per-attempt because the Fill teams confirm's title and toast are EXACT card counts. Its two cards are deleted at the end; the set, its `Insert` › `Base` rows, its player `FTP<token>` and its team `FTT<token>` stand. The set is given NO set-level team (NEO-277 would copy it onto every card and leave nothing to fill). |
+| `msb-` | `move-set-to-another-brand.yaml` — its OWN sport `msb-sport-<worker>`, brand rows `Topps` / `Panini` under it in 2026 (hand-made, no ids), and ONE set `msb-a-<worker>` under `Topps`. The flow moves that set to `Panini` and back, so it ends where it started; `Panini` stays empty. Per-worker only (no count is asserted). **Never under `E2E Test Sport <worker>`** — it adds a brand row, see the fold note below. |
 | `parallel-feature-` | `cards-parallel-custom.yaml` |
 | `pg-cancel-` | `parallel-grouping-cancel-discards.yaml` (also `-${ATTEMPT_ID}`) |
 | `pg-move-` | `move-parallels-of-inserts-custom.yaml` |

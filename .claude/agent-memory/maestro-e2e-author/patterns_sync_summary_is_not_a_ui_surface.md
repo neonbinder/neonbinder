@@ -30,3 +30,13 @@ and no `role=status` box above it (NEO-237 E3, 2026-09-21, local run against
 the PR preview: red by name at the notice step in 1m, the R2 property).
 
 Related: [[neo237-all-brands-view-and-unknown]].
+
+**Second worked example, NEO-294 (2026-09-22).** The known-brands split added
+`N brands added from the known list` / `N sets filed under a known brand` to the
+same `summary` array. Neither reaches a `setSelectorSyncStatus` write — the
+action's return object carries `slCreated` and nothing else new — so both are
+unassertable. The flow proves the filing STRUCTURALLY instead (the view's
+back-fill card `Manufacturers: <brand> — change` plus the panel breadcrumb),
+which does not depend on a count at all. Check the RETURN OBJECT, not just the
+summary: a fragment is only a target once `ensureSelectorOptions` has a field to
+compose it from. See [[neo294-known-brands-and-move-control]].

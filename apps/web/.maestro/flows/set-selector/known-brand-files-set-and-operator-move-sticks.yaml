@@ -1,0 +1,421 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "A set whose name matches NB's known-brands list is filed under a brand the sync creates for it — and an operator's move out of that brand outlives the next Sync Sets"
+tags:
+  - set-selector
+---
+# ════════════════════════════════════════════════════════════════════════════
+# R1 — ONE FEATURE (NEO-294): NB's own 39-name brand vocabulary
+# (`convex/knownBrands.ts`) decides where a set goes when no NB brand claims
+# it, and the OPERATOR outranks the vocabulary. Two halves of one placement
+# rule, on live marketplace data, end to end:
+#
+#   1. Sync Sets on a cold year files a BSC set whose name starts with a
+#      known brand under a brand row the sync CREATES for it, not under the
+#      year's `Unknown` (STEP 2). The brand row exists because the set fits
+#      it — the list is a vocabulary, never a set of rows to mint.
+#   2. The set's attributes panel offers `Move to another brand`; moving it
+#      to `Unknown` lands it there (STEP 3), and a FORCED year-wide Sync Sets
+#      afterwards leaves it exactly where the operator put it (STEP 4) —
+#      `metadata.brandSetByOperator`, the stamp every automatic re-home
+#      skips.
+#
+# WHY THE TWO HALVES ARE ONE FLOW AND NOT TWO. Half 2 is only meaningful
+# against a placement half 1 made: the re-home the stamp has to survive is
+# the known-list re-home itself (`selectorOptions.ts` step 3 moves EXISTING
+# Unknown holders, so without the stamp the forced sync in STEP 4 would pull
+# this row straight back under `${output.BRAND}` — that is the regression
+# this flow is shaped around, and it is silent). The fixture is a whole real
+# YEAR and the sole-writer rule (R7a) forbids a second flow from building the
+# same one, which is the same reason `inserts-1996-score-…` carries the
+# NEO-203/211/219 steps rather than three more flows on one set.
+#
+# ── THE FIXTURE (SET-REGISTRY.md → "Hockey → 1996") ⚠️ NEEDS OWNER SIGN-OFF ─
+#   Hockey → 1996, proposed for this flow: nothing else in the suite touches
+#   it (1995 belongs to `checklist-one-marketplace-skips-match-dialog`, 1997
+#   to `brand-via-all-brands-narrows-sportlots`), and it sits between the two
+#   years whose SportLots brand list was MEASURED identical — `All Brands,
+#   Bowman, Classic, Donruss, Finest, Fleer, ITG, O-Pee-Chee, Pacific,
+#   Panini, Pinnacle, Score, Skybox, SP, Stadium Club, Topps, Ultra, Upper
+#   Deck` (registry measurement 2). `Leaf` is NOT in that list, which is the
+#   whole point: no marketplace and no operator can put a `Leaf` brand row in
+#   this year, so a set filed under one was filed there by the known list.
+#
+#   ⚠️ NOTHING BELOW THIS LINE IS MEASURED. The PR preview did not exist when
+#   this flow was written, so `Leaf` is a hobby judgement, not a reading:
+#   1996-97 Leaf hockey (Leaf, Leaf Limited, Leaf Preferred) is a real and
+#   ubiquitous Pinnacle product, `Leaf` is entry 17 of the list, and it is one
+#   regex-safe token. THE FIRST CI RUN IS THE MEASUREMENT. What it must
+#   confirm, in order:
+#     (a) BSC lists ≥1 set for Hockey 1996 whose name word-boundary-starts
+#         with `Leaf` — STEP 2's pick and its `Manufacturers: Leaf — change`
+#         card. If it does not, swap STEP 0's BRAND (see the candidates
+#         below) or STEP 0's YEAR, and re-record here.
+#     (b) the year-wide sync's cost — STEP 1's cold drill plus STEP 4's
+#         forced re-sync — against `run-e2e-queue.sh`'s 600s per-flow kill.
+#         The comparable measurement is `brand-via-all-brands-…` on 1997:
+#         4m24s WITH a live SportLots phase this flow never pays.
+#     (c) whether BSC lists MORE than one `Leaf…` set. STEP 4 re-picks the
+#         first match of the same filter as STEP 2, which is the same row by
+#         construction (the view sorts by display name, the name did not
+#         change, and an idempotent re-sync adds nothing) — but if the run
+#         shows several, record the names here so the next reader knows the
+#         ordering argument is load-bearing. A mismatch fails RED at STEP 4's
+#         card, never green.
+#   Candidates if `Leaf` is not there, none measured either: `Pro Set`
+#   (Hockey 1990/1991 — 1990-91 Pro Set is enormous, and SportLots' hockey
+#   brand list has no Pro Set entry); `ProCards`, `CMC`, `Star`, `Best`,
+#   `Choice` (Baseball 1990, the minor-league team-set year the ticket's dev
+#   sample was drawn from — but a modern baseball year's set list is far
+#   larger than a hockey year's, so weigh (b) before moving there).
+#
+# ── WHY A REAL YEAR, AND WHY THIS FLOW IS A SOLE WRITER (R7a) ───────────────
+#   The known list is consulted inside `syncSetsAcrossManufacturers`, on the
+#   sets a MARKETPLACE returned. A hand-made subtree carries no ids, so
+#   neither side is resolvable, nothing is fetched and there is nothing to
+#   file (NEO-239) — no per-worker fixture can express half 1 at all. So the
+#   year is real, cold, and this flow WRITES to it: every brand row the known
+#   list mints, the year's `Unknown` row, every BSC set of the year filed
+#   under one of them, and the one operator move. Nothing is renamed, nothing
+#   is deleted, no checklist is fetched and no Base is mapped. It is the ONLY
+#   flow on Hockey 1996.
+#
+#   ⚠️ FRESH-ONLY PER DEPLOYMENT, the same contract as the 1995 and 1997
+#   fixtures: a second run finds the set already under `Unknown` and already
+#   stamped, so STEP 2's `Manufacturers: Leaf — change` fails by name. CI
+#   reseeds the preview on every run, so the first-run path IS the CI path;
+#   locally, re-seed (`npm run test:e2e -- setup`) before re-running. The
+#   flow deliberately does NOT move the set back at the end: a restore would
+#   make a re-run green while proving half 1 from the operator's own move
+#   rather than from the list.
+#
+# ── NEO-287: NO PAUSED BRANCH, AND WHY THAT IS NOT A GAP ────────────────────
+#   Every claim here is BSC-side. The known-brands split lives in the BSC
+#   phase of the set sync and in the SportLots phase's Unknown scope; the BSC
+#   half runs identically whether SportLots is paused or not, and this flow
+#   asserts nothing about a SportLots link, a narrowed picker or a count.
+#   Under the pause the year additionally has NO other brand rows at all
+#   (SportLots' list is the only source of them), which makes the claim
+#   stronger, not weaker. The one live-mode assumption is the measured
+#   absence of `Leaf` from SportLots' hockey brand list; when the pause lifts,
+#   re-read measurement (a) above.
+#
+# ── R5 ──────────────────────────────────────────────────────────────────────
+#   7000 everywhere EXCEPT the live marketplace round-trips, each commented
+#   at its site: the cold Hockey drill (owned by util-drill-to-cold-real-set),
+#   the cold variant-type sync a set pick fires, and STEP 4's forced year-wide
+#   Sync Sets. No `scrollUntilVisible` is without an explicit timeout.
+#
+# ── HANDLES (visible text and accessible names; never a DOM id) ─────────────
+#   view/columns  `Search sets`, `Sync Sets`, `Syncing Sets`, `Variant Types`,
+#                 the collapsed card `Manufacturers: <brand> — change`
+#   panel         the breadcrumb `… › 1996 › <brand> › <set>`,
+#                 `Delete <set>` (the move's sibling — asserted here only to
+#                 show the two controls are distinguishable by name),
+#                 `Move to another brand` (MoveSetToBrandControl's trigger;
+#                 its visible text IS its accessible name),
+#                 `Move to which brand?`, the group `Brands in 1996`,
+#                 `Move to <brand>` per option
+#   confirm       `Move "<set>" to <brand>?`, the fixed description sentence,
+#                 `Yes, move it` (ConfirmDialog owns the only `Cancel`)
+#   toast         `Moved to <brand>` — the panel's one `role="status"`, fixed
+#                 at top-20 so it is never under the fold
+#
+# ── R3 ──────────────────────────────────────────────────────────────────────
+#   `brand-via-all-brands-narrows-sportlots` creates a brand by HAND and
+#   watches the prefix re-home; `checklist-one-marketplace-skips-match-dialog`
+#   reads the `Unknown` routing on 1995. Neither exercises the known-brands
+#   vocabulary, the move control, or the operator stamp.
+#   `move-set-to-another-brand.yaml` proves the move CONTROL marketplace-free
+#   (its list, its confirm, its Cancel, both directions); it cannot force a
+#   sync, which is the half this flow owns.
+# ════════════════════════════════════════════════════════════════════════════
+
+# ============================================================
+# STEP 0 — THE FIXTURE, IN ONE PLACE
+#
+#   SPORT / YEAR  the year this flow owns outright (SET-REGISTRY.md).
+#   BRAND         the entry of `convex/knownBrands.ts` expected to claim at
+#                 least one of BSC's sets for that year. Regex-safe, one
+#                 token, and absent from SportLots' brand list for the sport.
+#                 See the header for what a replacement must satisfy.
+# ============================================================
+
+- evalScript: '${output.SPORT = "Hockey"}'
+- evalScript: '${output.YEAR = "1996"}'
+- evalScript: '${output.BRAND = "Leaf"}'
+
+# ============================================================
+# LAUNCH + SIGN IN (R4)
+# ============================================================
+
+- launchApp
+- extendedWaitUntil:
+    visible: ".*Build set parameters using marketplace APIs.*"
+    timeout: 45000
+
+# ============================================================
+# STEP 1 — COLD DRILL TO Hockey › 1996 › the "All Brands" VIEW
+#
+# R9 — the drill lives in the util, which reads MANUFACTURER "All Brands" as
+# "tap the pinned view" (its NEO-237 block) and returns once the YEAR-WIDE
+# Sets sync has finished: BSC's whole list for the year filed under the
+# year's brand rows by id and by set-name prefix, the known-brands split
+# applied to everything that would otherwise have gone to `Unknown`, and the
+# remainder under `Unknown` itself. Everything below reads the result of that
+# one sync. The util owns every marketplace-length wait in it.
+# ============================================================
+
+- runFlow:
+    file: util-drill-to-cold-real-set.yaml
+    env:
+      SPORT: ${output.SPORT}
+      YEAR: ${output.YEAR}
+      MANUFACTURER: "All Brands"
+
+# PRECONDITION (R2): the view lists the year. A hockey year is hundreds of
+# sets, so `EntitySelector`'s search input (rendered above 8 entries) is
+# there. A year that synced to nothing fails HERE, by name, before any
+# known-brand claim is read into an empty column.
+- extendedWaitUntil:
+    visible: ".*Search sets.*"
+    timeout: 15000
+
+# ============================================================
+# STEP 2 — CLAIM 1: THE SET IS UNDER A BRAND THE SYNC CREATED FOR IT
+#
+# Filter the view to the brand's sets and pick the first. In the view a row
+# carries the set name AND its brand as a muted second line, both inside the
+# one row button, so whichever node the driver takes lands the same click
+# (the idiom `brand-via-all-brands-…` STEP 4 uses). Case-insensitive because
+# BSC's spelling of a product name is BSC's business — "LEAF" would still be
+# filed under "Leaf": `matchesBrandPrefix` folds both sides.
+#
+# The pick BACK-FILLS the Manufacturers column from the set's OWN parent
+# (NEO-237), so the collapsed card names the row this set actually lives
+# under. That card is the acceptance criterion: `Leaf` can only be there
+# because `ensureBrandRow` minted it from the known list — SportLots' hockey
+# brand list has no Leaf entry (header), nothing in this flow types one, and
+# a build that stopped consulting the list reads `Unknown` here.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      text: ".*Search sets.*"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    text: ".*Search sets.*"
+    waitToSettleTimeoutMs: 250
+- inputText: ${output.BRAND}
+# NEO-85 residual coordinate-staleness: result-keyed retry, the Variant Types
+# header is the result.
+- retry:
+    maxRetries: 1
+    commands:
+      - tapOn:
+          text: "(?i)${output.BRAND}( .*)?"
+          below:
+            id: "Search sets"
+          retryTapIfNoChange: true
+      - extendedWaitUntil:
+          visible: "Variant Types"
+          timeout: 7000
+
+# THE ACCEPTANCE CRITERION for claim 1.
+- assertVisible:
+    id: "Manufacturers: ${output.BRAND} — change"
+
+# Selecting a set fires its variant-type sync against BSC. Let it finish
+# before the panel below is scrolled to, so no mid-sync re-render moves the
+# control out from under a captured coordinate. R5 marketplace exception:
+# 60000 is the drill utils' own variant-type contract. Negative, so it is
+# paired with the column header as the positive on the same surface (R2).
+- extendedWaitUntil:
+    notVisible: "Syncing Variant Types"
+    timeout: 60000
+- assertVisible: "Variant Types"
+
+# ============================================================
+# STEP 3 — CLAIM 2, first half: THE OPERATOR MOVES IT TO `Unknown`
+#
+# `SetAttributesPanel` renders the move trigger in its ALWAYS-VISIBLE header
+# row, beside the delete and the `Edit attributes` toggle — set rows only,
+# because a brand is a set's parent and nothing else here has one. So the
+# panel does not need opening.
+#
+# DOWN and centred: `SetSelector.tsx` renders the selector columns, then the
+# base-mapping button, then MultiSourcePanel, then SetAttributesPanel, so the
+# panel is below the page's position after the pick. THIS STEP DEPENDS ON THE
+# NEO-260 208px spacer in src/layouts/binder-layout.tsx for its scroll
+# headroom (R8 case 1), exactly as every other `Edit attributes` step does —
+# this control sits on the same header line.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      text: "Move to another brand"
+    centerElement: true
+    visibilityPercentage: 10
+    waitToSettleTimeoutMs: 1000
+    timeout: 7000
+
+# The move and the delete are siblings on that header line, and they are
+# told apart by NAME, never by position: the delete is `Delete <the set's
+# own name>` (which this flow cannot spell — the name is BSC's) and the move
+# is the fixed sentence above. Asserting the delete's shape here is what
+# makes the tap below unambiguous.
+- assertVisible:
+    id: "Delete .*"
+
+- tapOn: "Move to another brand"
+
+# The list is a disclosure on the same button (there is no second dismiss —
+# ConfirmDialog owns the only `Cancel` on this screen). Its prompt and the
+# group's accessible name are the two things that say WHAT is being offered:
+# the brands of this set's own year.
+- extendedWaitUntil:
+    visible: 'Move to which brand\?'
+    timeout: 7000
+- assertVisible:
+    id: "Brands in ${output.YEAR}"
+
+# The set's CURRENT brand is never an option — "move it to where it already
+# is" is not a thing to offer, and the server refuses it. Paired with the
+# positive immediately below, on the same surface (R2).
+- assertNotVisible:
+    id: "Move to ${output.BRAND}"
+
+# `Unknown` leads the list (`compareBrandChoices` puts the year's flagged row
+# first), so it is the first row of the `max-h-48` box and never clipped by
+# it — which matters, because maestro-web scrolls only the window and cannot
+# drive an inner scroller. Centred before the tap (R8); it sits a row below
+# the trigger this step just centred, so it exits at try 0.
+- scrollUntilVisible:
+    element:
+      id: "Move to Unknown"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Move to Unknown"
+
+# The house ConfirmDialog. The title carries the set's own name, which this
+# flow cannot spell, so it is matched as a regex around the part that is
+# ours — and the description is fixed copy that answers the operator's real
+# question before they commit. Asserting the dialog's HEADER and FOOTER only
+# (README → "Asserting inside a dialog").
+- extendedWaitUntil:
+    visible: 'Move ".*" to Unknown\?'
+    timeout: 7000
+- assertVisible: "The set keeps its cards, its variants and its marketplace links — only the brand above it changes. Sync Sets will leave it where you put it."
+- tapOn: "Yes, move it"
+
+# THE ACCEPTANCE CRITERION for the move itself. Two readings of one write:
+#
+#   the toast — the panel's single `role="status"`, fixed at top-20 so it is
+#   never under the fold, and it echoes the SERVER's name for the
+#   destination (`movedTo` off the row the mutation wrote), not the label the
+#   list rendered;
+#
+#   the breadcrumb — `getAncestorChain` is a live query on this set's id, so
+#   the panel re-reads the chain the re-parent produced. The set has left the
+#   Sets column the view was showing it in, so this is the structural proof
+#   that the row really moved rather than the toast's word for it.
+- extendedWaitUntil:
+    visible: "Moved to Unknown"
+    timeout: 7000
+- scrollUntilVisible:
+    element:
+      text: ".*${output.YEAR} › Unknown › .*"
+    timeout: 7000
+
+# ============================================================
+# STEP 4 — CLAIM 2, second half: A FORCED SYNC LEAVES IT WHERE IT WAS PUT
+#
+# THE REGRESSION THIS EXISTS FOR. `syncSetsAcrossManufacturers` step 3
+# re-homes EXISTING `Unknown` holders into the brand the known list names for
+# them — so without `metadata.brandSetByOperator` on the row, the sync below
+# would quietly pull this set back under `${output.BRAND}` and the operator's
+# decision would be gone with no message anywhere. The stamp is invisible; a
+# forced sync is the only way to see it work.
+#
+# R9 — back to the view through the drill util rather than by tapping a
+# collapsed card from where STEP 3 left the page. Every level is WARM now, so
+# none of the util's marketplace waits are paid and the view's year read is
+# "already populated" — nothing re-syncs on its own, which is exactly why the
+# sync below has to be FORCED.
+# ============================================================
+
+- runFlow:
+    file: util-drill-to-cold-real-set.yaml
+    env:
+      SPORT: ${output.SPORT}
+      YEAR: ${output.YEAR}
+      MANUFACTURER: "All Brands"
+- extendedWaitUntil:
+    visible: ".*Search sets.*"
+    timeout: 15000
+
+# `Sync Sets` is the column's own action row, which `EntityColumn` renders
+# BELOW the list — and the view's list is a 400px box on a real year — so it
+# is under the fold: DOWN, centred for the tap (R8).
+- scrollUntilVisible:
+    element:
+      text: "Sync Sets"
+    centerElement: true
+    timeout: 7000
+- tapOn: "Sync Sets"
+
+# The panel replaces the action row in the SAME slot the tap just centred, so
+# it is on screen where the button was. This positive gate is what stops the
+# wait below from being satisfied by the idle button that was already there
+# before the tap (R2) — "Syncing Sets" and "Sync Sets" are different
+# full-match strings, so neither wait can see the other's element.
+- extendedWaitUntil:
+    visible: "Syncing Sets"
+    timeout: 7000
+# The forced year-wide sync: BSC's whole set list for the year re-fetched and
+# re-routed. The idle button only mounts again once the status row has left
+# "syncing", so this is a POSITIVE terminal signal, not a `notVisible` that
+# would pass the moment the panel scrolled out of view. R5 marketplace
+# exception: 150000 is util-drill-to-cold-real-set's own contract for this
+# very sync ("RETURN CONTRACT"), forced here instead of fired by a mount.
+- extendedWaitUntil:
+    visible: "Sync Sets"
+    timeout: 150000
+
+# Re-pick the same row. Reaching the action row above parked the page at
+# maximum scroll, so the column's search box is ABOVE the viewport: UP (the
+# NEO-237 trap the 1997 flow burned 7s on with DOWN). The filter and the
+# "first match" are the same as STEP 2's, and they resolve to the same row —
+# the view sorts by display name, the set's name did not change, and an
+# idempotent re-sync adds nothing that could sort before it. If they ever
+# diverged the card below would fail RED, never pass wrongly: no other
+# `${output.BRAND}…` set is under `Unknown`.
+- scrollUntilVisible:
+    element:
+      text: ".*Search sets.*"
+    direction: UP
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    text: ".*Search sets.*"
+    waitToSettleTimeoutMs: 250
+- inputText: ${output.BRAND}
+- retry:
+    maxRetries: 1
+    commands:
+      - tapOn:
+          text: "(?i)${output.BRAND}( .*)?"
+          below:
+            id: "Search sets"
+          retryTapIfNoChange: true
+      - extendedWaitUntil:
+          visible: "Variant Types"
+          timeout: 7000
+
+# THE ACCEPTANCE CRITERION for claim 2. The back-fill card reads the set's
+# CURRENT parent: `Unknown`, where the operator put it, after a sync that
+# would have re-homed an unstamped row.
+- assertVisible:
+    id: "Manufacturers: Unknown — change"
