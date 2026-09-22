@@ -85,7 +85,7 @@ BuySportsCards alone for the whole run:
 | Baseball → 1996 → Score → Score | `Insert` (reconciled in-flow, NOT pre-synced) | `flows/set-selector/inserts-1996-score-one-nb-set-two-bsc-sources.yaml` — **sole writer** |
 | Hockey → 2024 → Topps → Topps NHL Sticker Collection | none — the flow never goes below `Variant Types` (NOT pre-synced) | `flows/set-selector/set-rename-survives-resync-and-suggests-bsc-name.yaml` — **sole writer** |
 | Hockey → 1995 → Unknown (reached through the All Brands view) → Roanoke Express ECHL | `Base` — 25 cards, fetched and COMMITTED in-flow, BSC only (NOT pre-synced) | `flows/set-selector/checklist-one-marketplace-skips-match-dialog.yaml` — **sole writer**. ✅ **APPROVED 2026-09-09** (NEO-260); manufacturer row renamed by NEO-237 (the marketplace's "All Brands" option is routed onto the year's `Unknown` row, never stored under its label) |
-| Hockey → 1997 (the whole year) | a manufacturer row `SPx` linked through SportLots' All Brands option; ONE set created from a "new on SportLots" root (name read at run time) with its `Base` carrying the SportLots id; the year's BSC sets filed under the brands / `Unknown` and the prefix-matching ones re-homed to `SPx`. No checklist is fetched. | `flows/set-selector/brand-via-all-brands-narrows-sportlots.yaml` — **sole writer** of the year. ✅ Claimed by Jason 2026-09-21 (NEO-237 §0.1); the prefix `SPx` **measured** on PR #272's preview 2026-09-21 — see the Hockey 1997 section |
+| Hockey → 1997 (the whole year) | a manufacturer row `SPx` linked through SportLots' All Brands option; every set the year-wide Sync Sets saves from SportLots' lists (a `setName` row plus a `Base` carrying the SportLots id per new root — dozens, names never read or asserted); the year's BSC sets filed under the brands / `Unknown` and the prefix-matching ones re-homed to `SPx`. No checklist is fetched. | `flows/set-selector/brand-via-all-brands-narrows-sportlots.yaml` — **sole writer** of the year. ✅ Claimed by Jason 2026-09-21 (NEO-237 §0.1); the prefix `SPx` **measured** on PR #272's preview 2026-09-21 — see the Hockey 1997 section |
 | Baseball → 2024 → Topps → Topps MLB at Rickwood Field Negro Leagues Collection | `Base` — 4 cards, BSC only (the SportLots picker is CANCELLED in-flow; SportLots does not carry the set), fetched and COMMITTED in-flow (NOT pre-synced) | `flows/set-selector/checklist-wizard-link-team-saves-alias.yaml` — **sole writer**. Approved by Jason 2026-09-16 (NEO-284) |
 | Baseball → 2026 → Bowman → Bowman | `Insert` — reconciled in-flow (NOT pre-synced); the BSC insert `Anime Kanji` is promoted to a parallel of `Anime` by Group Parallels and its checklist is fetched and COMMITTED in-flow | `flows/set-selector/parallel-grouping-promoted-insert-fetches-from-bsc.yaml` — **sole writer**. Requested by the owner 2026-09-21 (NEO-293), replacing a rejected hand-made-parent fixture |
 
@@ -809,9 +809,14 @@ prefix-matches no brand's `setNamePrefix` under the year's brand-unknown row
 (`Unknown`; "All Brands" before NEO-237) — the minor-league, junior, college
 and team sets. Those sets get a BSC id and no SportLots id, at any level a
 SportLots attachment can live on, which is what makes them one-sided. The
-SportLots phase NEO-237 added never inserts a set row (it only records
-`setCandidates`), so it cannot make this set two-sided either. (See item 4
-above for what is NOT true of the row.)
+SportLots phase NEO-237 added SAVES the sets SportLots lists that NB has no
+row for (since 2026-09-21; a review modal stood in between before) — but only
+as NEW `setName` rows with their own Base: `routeSlSets` hides every entry
+that an existing set EQUALS or word-boundary-PREFIXES, and no path attaches a
+SportLots id to a row BSC filed. So the phase adds rows beside this set under
+`Unknown` and cannot make this set itself two-sided; the flow reaches it by
+its exact name through the search box, so the extra rows do not change what
+it taps. (See item 4 above for what is NOT true of the row.)
 
 #### Sole writer — and why this one cannot be read-only
 
@@ -899,7 +904,9 @@ real YEAR — **Hockey → 1997** — owned end to end by exactly one flow,
 on live marketplace data that a brand SportLots has no entry for can be linked
 THROUGH SportLots' "All Brands" option, narrowed by an NB-owned set-name
 prefix, and that Sync Sets is two-sided (BSC filed by prefix / into `Unknown`,
-SportLots' extra sets offered as "new on SportLots" and creatable).
+SportLots' extra sets SAVED as NB sets with a Base carrying the SportLots id —
+no review step; Jason, 2026-09-21: "if a set exists in a marketplace it should
+be saved whether it is in SL or BSC or both").
 
 Why 1997: the same SportLots brand list as 1995 (measurement 2 above — 18
 entries, "1997 returns the identical list"), a full hockey year on both
@@ -909,7 +916,7 @@ every CI run; the flow pays its own syncs on its own runner.
 | | |
 | -- | -- |
 | ancestors | `Hockey → 1997` |
-| what the flow WRITES | a manufacturer row **`SPx`** (via "+ Custom"; the create itself links it through All Brands because the year carries SportLots ids — there is no opt-in on the confirm since Jason's 2026-09-21 preview pass; prefix defaulted to its name); ONE set created from the first "new on SportLots" root of the year-wide list (its name is SportLots' label, read at run time — never a literal) with a `Base` carrying that SportLots id; the year-wide BSC filing (every brand plus `Unknown`) and the re-home of `SPx…` sets out of `Unknown` |
+| what the flow WRITES | a manufacturer row **`SPx`** (via "+ Custom"; the create itself links it through All Brands because the year carries SportLots ids — there is no opt-in on the confirm since Jason's 2026-09-21 preview pass; prefix defaulted to its name); EVERY set the year-wide sync saves from SportLots' lists (one `setName` row named `<brand prefix> <label>` — the label as-is under `Unknown` — plus a `Base` carrying the SportLots id, per new root; 74 roots measured, see (3) below; their names are never read or asserted); the year-wide BSC filing (every brand plus `Unknown`) and the re-home of `SPx…` sets out of `Unknown` |
 | what it never does | fetch a checklist, map a Base (the picker is cancelled), rename or delete anything |
 | writer | **sole writer** of the whole year; no other flow may drill Hockey 1997 |
 | pre-synced by `setup.yaml` | **no** |
@@ -933,7 +940,14 @@ reading confirmed them:
   from the real `SP` brand in both directions ("SPx" does not start with
   "SP" at a boundary; "SP Authentic" does not start with "SPx");
 * the 1997-98 product is small: a base set and a handful of parallels, so the
-  narrowed SportLots list sits at 1–8 entries.
+  narrowed SportLots list sits at 1–8 entries;
+* and BSC's set named exactly `SPx` (1) keeps the auto-save OUT of the prefix:
+  `routeSlSets` hides every SportLots entry that a set NB already has EQUALS
+  or word-boundary-PREFIXES, so under `Unknown` the `SPx…` entries are
+  variants of that BSC set, never new roots — nothing named `SPx…` is minted
+  from SportLots, the re-home moves only BSC's rows, and (2)'s picker pane
+  (the adapter's narrowed list, which `BaseSetPicker` never filters by what
+  is attached) reads the same in both worlds.
 
 What the flow needs true of the lists, which step reads each, and what was
 read:
@@ -945,10 +959,14 @@ read:
 2. SportLots' all-brands list for 1997 holds 1–8 entries starting with
    `SPx` — **read: ≥1 `SportLots base candidate: …` and no search box** in
    STEP 4's picker pane (`BaseSetPicker` renders the box above 8);
-3. the year-wide sync leaves ≥1 "new on SportLots" root under SOME brand —
-   **read: 74** on the first run (73 on a re-run, one having become a set);
-   the first root sat under Donruss ("Between the Pipes /3500", then "Line 2
-   Line"). STEP 2 creates a set from the first one.
+3. the year-wide sync classifies ≥1 SportLots root as new under SOME brand
+   and SAVES it — **read: 74** roots on the first run, measured through the
+   review modal that stood in for the auto-save until 2026-09-21 (the first
+   sat under Donruss, "Between the Pipes /3500", then "Line 2 Line"). STEP 2
+   reads the Sets column's done notice, "N sets added from SportLots", and
+   asserts only that N is not zero; the names are SportLots' business and no
+   flow may assert one as a literal. Not yet measured through the notice —
+   the next CI run of the flow is that measurement.
 
 If a replacement is ever needed, swap STEP 0's `BRAND` for another 1997-98
 product SportLots has no brand for and re-measure — candidates considered,
@@ -958,9 +976,12 @@ spelled "Upper Deck Black Diamond"), `Leaf` (real brand, but ~10+ SportLots
 entries, so (2) needs the search-box assertion rethought). Avoid names with
 apostrophes or regex metacharacters (`Collector's Choice`, `McDonald's`).
 
-The view's "new on SportLots" pill is year-wide, so STEP 2's created set lands
-under whichever brand owns the first root — that brand is not asserted, only
-that the created set exists in the view with `Base` + `SL`.
+The auto-save is year-wide (every brand's own list, the all-brands list once
+per via-All-Brands brand and once for `Unknown`), so the saved sets land under
+whichever brands own the roots; no brand, name or count is asserted beyond
+"not zero". A set row is not a terminal row, so the view shows no `SL` pill on
+one — the Base-carries-the-id shape is the helper's unit test, and the link
+this fixture proves live is STEP 4's narrowed picker pane under `SPx`.
 
 ### The TEAM-link alias fixture — Baseball / 2024 / Topps / Topps MLB at Rickwood Field Negro Leagues Collection (NEO-284) — approved by Jason 2026-09-16
 
