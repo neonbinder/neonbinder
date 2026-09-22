@@ -90,9 +90,11 @@ tags:
 #
 # ── R5 ──────────────────────────────────────────────────────────────────────
 #   7000 everywhere EXCEPT the live marketplace round-trips: the cold Hockey
-#   year / manufacturer / year-wide set syncs (owned by the drill util), the
-#   cold variant-type sync of the BSC-filed set, and the base picker's own
-#   fetch. Each is commented where it appears.
+#   year / manufacturer syncs (owned by the drill util), the year-wide set
+#   sync's SportLots phase (STEP 2 — waited out HERE, on the `Sync Sets`
+#   button, because the util's "Syncing Sets" gate cannot see that panel in
+#   the view; see STEP 2), the cold variant-type sync of the BSC-filed set,
+#   and the base picker's own fetch. Each is commented where it appears.
 #
 # ── HANDLES (accessible names and visible text; never a DOM id) ─────────────
 #   pill        `N new on SportLots` / aria `N new on SportLots — review new sets`
@@ -201,10 +203,42 @@ tags:
     when:
       true: "${!output.SL_PAUSED}"
     commands:
-      # LIVE. The sync is already over (the util waited its panel out), so
-      # the pill is either rendered or it never will be: the 7000 bar. R8 —
-      # centred before the tap; the pill sits in the column's action row,
-      # below the list, DOWN from the search input the precondition found.
+      # LIVE. THE SYNC IS NOT OVER when the util returns — its `"Syncing Sets"
+      # is not visible` gate is a negative on an element that leaves the
+      # viewport mid-sync. The panel renders UNDER the column's list; the BSC
+      # phase fills that list from empty to its 400px box within ~2s of the
+      # tap and shoves the panel from viewport y≈245 to y≈645 (the tap leaves
+      # the page at scrollY≈238 — Chrome's scroll anchoring pulls it back from
+      # the 313 the centring reached), past the 625px device height, so the
+      # hierarchy prunes it (README → "OFF-SCREEN = ABSENT") while the
+      # SportLots phase (one all-brands POST + up to 18 brand POSTs, ~9–13s
+      # measured on 1996/1997) is still running. CI run 35665861484 r6: panel
+      # seen at +2.3s, "not visible" +1.0s later, pill absent for the next
+      # 10s, present in the failure screenshot at +13.7s. Locally the gate
+      # never sees the panel at all and SKIPS. Either way the util hands back
+      # a column whose action row does not exist yet.
+      #
+      # So wait for the sync's END on the one POSITIVE signal the column
+      # renders for it: the idle `Sync Sets` button, which `EntityColumn`
+      # mounts only when the status row has left "syncing" (the panel and the
+      # action row are the same slot). It cannot be the pre-sync idle window
+      # (~300ms after mount): the `.*Search sets.*` precondition above is BSC
+      # content that only the sync stores, so the button seen AFTER it is the
+      # sync finishing. DOWN — the row is under the 400px list. R5 marketplace
+      # exception: this is the drill util's own 150s contract for this very
+      # sync (util-drill-to-cold-real-set.yaml → "RETURN CONTRACT"), relocated
+      # to where it can actually be observed; the default 20000 would be an
+      # unrecorded number.
+      - scrollUntilVisible:
+          element:
+            text: "Sync Sets"
+          timeout: 150000
+      # The pill is a sibling of that button; its own read (`SetCandidatesPill`
+      # mounts with the row, then subscribes) lands one round-trip later —
+      # 200ms measured — so the 7000 bar holds. Its presence is the claim: the
+      # candidates were written by the SportLots phase before the status
+      # cleared, so a sync that classified nothing as new never renders it.
+      # R8 — centred before the tap.
       - scrollUntilVisible:
           element:
             text: "[0-9]+ new on SportLots"
@@ -254,7 +288,8 @@ tags:
       # IS the brand, and that is fine: both are inside the one row button.
       #
       # UP, not DOWN (R5 — "say where the previous step leaves the page"):
-      # centring the pill above drove the page to MAXIMUM scroll (the pill
+      # waiting out the sync on `Sync Sets` above (and centring the pill)
+      # drove the page to MAXIMUM scroll (the pill
       # sits in the action row under the column's 400px list), and the
       # search input is at the HEAD of that column — above the viewport
       # from here. CI run 35658444013 r2 measured it: root y=-677, Sets
