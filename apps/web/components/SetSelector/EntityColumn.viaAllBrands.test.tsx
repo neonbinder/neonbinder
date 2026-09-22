@@ -1,10 +1,13 @@
 /**
- * NEO-237 — `EntityColumn`'s manufacturer-level confirm-create control:
- * "Link to SportLots through All Brands", offered only when the parent chain
- * could actually be asked (`resolvableSides(parentChain, { level:
- * "manufacturer" }).sportlots.resolvable` — the SAME gate the sync itself
- * uses), wired to `slViaAllBrands: true` on create, reset on Back/Cancel, and
- * the rehome sentence under the create prompt.
+ * NEO-237 — `EntityColumn`'s manufacturer-level confirm-create step after
+ * Jason's preview feedback (2026-09-21): the "SportLots has no brand for this
+ * — match its sets by name" checkbox is GONE. The server links every new
+ * manufacturer to SportLots through its all-brands option whenever the year
+ * can be asked (`addCustomSelectorOption`, no arg), so the confirm carries
+ * no control for it in either kind of year, the rehome sentence under the
+ * create prompt still says what happens to the year's sets, and the create
+ * call passes no flag. The Attributes panel's toggle
+ * (`SetAttributesPanel.test.tsx`) is the one door to turn the link off.
  *
  * Also covers the unrelated but adjacent `hideCustom` a11y park: when another
  * column's selection (the All Brands view) swaps "+ Custom" for a plain line,
@@ -50,7 +53,7 @@ import EntityColumn from "./EntityColumn";
 
 const YEAR_ID = "year-1997" as unknown as OptionId;
 
-/** A chain whose sport AND year both carry SportLots ids — the control's gate. */
+/** A chain whose sport AND year both carry SportLots ids. */
 const SL_RESOLVABLE_YEAR_CHAIN = [
   {
     _id: "sport-hockey" as unknown as OptionId,
@@ -66,7 +69,7 @@ const SL_RESOLVABLE_YEAR_CHAIN = [
   },
 ];
 
-/** A chain with NO SportLots ids anywhere — the control must not appear. */
+/** A chain with NO SportLots ids anywhere. */
 const SL_UNRESOLVABLE_YEAR_CHAIN = [
   { _id: "sport-hockey" as unknown as OptionId, level: "sport", value: "Hockey" },
   { _id: YEAR_ID, level: "year", value: "1997" },
@@ -75,6 +78,9 @@ const SL_UNRESOLVABLE_YEAR_CHAIN = [
 const EXISTING_ITEMS = [
   { _id: "mfr-existing" as unknown as OptionId, value: "Topps", isCustom: false },
 ];
+
+/** The removed control's sentence — asserted ABSENT. */
+const REMOVED_CONTROL = /SportLots has no brand for this/;
 
 function renderManufacturerColumn() {
   return render(
@@ -105,7 +111,7 @@ async function typeAndSubmit(typed: string) {
   return input;
 }
 
-describe("EntityColumn — via-All-Brands confirm-create control (NEO-237)", () => {
+describe("EntityColumn — manufacturer confirm-create has no via-All-Brands control (NEO-237, Jason 2026-09-21)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     state.items = EXISTING_ITEMS;
@@ -118,16 +124,19 @@ describe("EntityColumn — via-All-Brands confirm-create control (NEO-237)", () 
     vi.restoreAllMocks();
   });
 
-  it("is offered when the chain could actually be asked (sport + year carry SL ids)", async () => {
+  it("offers no control when the chain could be asked (sport + year carry SL ids) — the link is the default", async () => {
     renderManufacturerColumn();
     await typeAndSubmit("Bandai");
 
     await waitFor(() => {
-      expect(screen.getByText(/SportLots has no brand for this/)).toBeTruthy();
+      expect(screen.getByText(/Create manufacturer 'Bandai'/)).toBeTruthy();
     });
+    expect(screen.queryByText(REMOVED_CONTROL)).toBeNull();
+    // Nor any pressed-toggle standing in for it.
+    expect(document.querySelectorAll("button[aria-pressed]")).toHaveLength(0);
   });
 
-  it("is HIDDEN — not disabled — when the chain has no SportLots ids at all", async () => {
+  it("offers no control when the chain has no SportLots ids either", async () => {
     state.chain = SL_UNRESOLVABLE_YEAR_CHAIN;
     renderManufacturerColumn();
     await typeAndSubmit("Bandai");
@@ -135,113 +144,10 @@ describe("EntityColumn — via-All-Brands confirm-create control (NEO-237)", () 
     await waitFor(() => {
       expect(screen.getByText(/Create manufacturer 'Bandai'/)).toBeTruthy();
     });
-    expect(screen.queryByText(/SportLots has no brand for this/)).toBeNull();
+    expect(screen.queryByText(REMOVED_CONTROL)).toBeNull();
   });
 
-  it("carries aria-pressed and toggles on click", async () => {
-    renderManufacturerColumn();
-    await typeAndSubmit("Bandai");
-
-    const toggle = await screen.findByText(/SportLots has no brand for this/);
-    const button = toggle.closest("button")!;
-    expect(button.getAttribute("aria-pressed")).toBe("false");
-
-    fireEvent.click(button);
-    expect(button.getAttribute("aria-pressed")).toBe("true");
-
-    fireEvent.click(button);
-    expect(button.getAttribute("aria-pressed")).toBe("false");
-  });
-
-  it("passes slViaAllBrands: true on create only when the control was turned ON", async () => {
-    renderManufacturerColumn();
-    await typeAndSubmit("Bandai");
-
-    const toggle = await screen.findByText(/SportLots has no brand for this/);
-    fireEvent.click(toggle.closest("button")!);
-
-    await act(async () => {
-      fireEvent.click(screen.getByText("Create"));
-    });
-
-    expect(mockAddCustom).toHaveBeenCalledWith({
-      level: "manufacturer",
-      value: "Bandai",
-      parentId: YEAR_ID,
-      slViaAllBrands: true,
-    });
-  });
-
-  it("does NOT pass slViaAllBrands when the control was left off", async () => {
-    renderManufacturerColumn();
-    await typeAndSubmit("Bandai");
-    await screen.findByText(/SportLots has no brand for this/);
-
-    await act(async () => {
-      fireEvent.click(screen.getByText("Create"));
-    });
-
-    expect(mockAddCustom).toHaveBeenCalledWith({
-      level: "manufacturer",
-      value: "Bandai",
-      parentId: YEAR_ID,
-    });
-  });
-
-  it("resets to off after Back to manufacturer name", async () => {
-    renderManufacturerColumn();
-    await typeAndSubmit("Bandai");
-
-    const toggle = await screen.findByText(/SportLots has no brand for this/);
-    fireEvent.click(toggle.closest("button")!);
-    expect(toggle.closest("button")!.getAttribute("aria-pressed")).toBe("true");
-
-    await act(async () => {
-      fireEvent.click(
-        screen.getByRole("button", { name: "Back to manufacturer name" }),
-      );
-    });
-    // Back returns to the INPUT stage (value still filled) — submit again
-    // rather than reopening "+ Custom", which is not on screen mid-form.
-    const input = screen.getByPlaceholderText(
-      "Enter custom value...",
-    ) as HTMLInputElement;
-    await act(async () => {
-      fireEvent.keyDown(input, { key: "Enter" });
-    });
-
-    const toggleAgain = await screen.findByText(/SportLots has no brand for this/);
-    expect(toggleAgain.closest("button")!.getAttribute("aria-pressed")).toBe(
-      "false",
-    );
-  });
-
-  it("resets to off after Cancel and re-opening", async () => {
-    renderManufacturerColumn();
-    await typeAndSubmit("Bandai");
-    const toggle = await screen.findByText(/SportLots has no brand for this/);
-    fireEvent.click(toggle.closest("button")!);
-
-    // Back to the input stage, then Cancel closes the form entirely.
-    await act(async () => {
-      fireEvent.click(
-        screen.getByRole("button", { name: "Back to manufacturer name" }),
-      );
-    });
-    await act(async () => {
-      fireEvent.click(
-        screen.getByRole("button", { name: "Cancel new manufacturer" }),
-      );
-    });
-    await typeAndSubmit("Bandai");
-
-    const toggleAgain = await screen.findByText(/SportLots has no brand for this/);
-    expect(toggleAgain.closest("button")!.getAttribute("aria-pressed")).toBe(
-      "false",
-    );
-  });
-
-  it("shows the rehome sentence under the create prompt at manufacturer level", async () => {
+  it("still says what creating the brand does to the year's sets", async () => {
     renderManufacturerColumn();
     await typeAndSubmit("Bandai");
 
@@ -250,6 +156,58 @@ describe("EntityColumn — via-All-Brands confirm-create control (NEO-237)", () 
         screen.getByText("Sets in Unknown whose names start with 'Bandai' move here."),
       ).toBeTruthy();
     });
+  });
+
+  it("does not say it at other levels", async () => {
+    render(
+      <EntityColumn
+        selector={<div>selector</div>}
+        renderForm={() => <div>form</div>}
+        addButtonText="Sync Sets"
+        isVisible={true}
+        level="setName"
+        parentId={YEAR_ID}
+      />,
+    );
+    await typeAndSubmit("Bandai Carddass");
+
+    await waitFor(() => {
+      expect(screen.getByText(/Create set 'Bandai Carddass'/)).toBeTruthy();
+    });
+    expect(screen.queryByText(/move here\./)).toBeNull();
+  });
+
+  it("creates with level, value and parent only — no slViaAllBrands flag, whatever the chain", async () => {
+    renderManufacturerColumn();
+    await typeAndSubmit("Bandai");
+    await screen.findByText(/Create manufacturer 'Bandai'/);
+
+    await act(async () => {
+      fireEvent.click(screen.getByText("Create"));
+    });
+
+    expect(mockAddCustom).toHaveBeenCalledTimes(1);
+    expect(mockAddCustom).toHaveBeenCalledWith({
+      level: "manufacturer",
+      value: "Bandai",
+      parentId: YEAR_ID,
+    });
+    expect(Object.keys(mockAddCustom.mock.calls[0][0])).not.toContain(
+      "slViaAllBrands",
+    );
+  });
+
+  it("the confirm's only buttons are Create and Back — nothing between the sentence and the decision", async () => {
+    renderManufacturerColumn();
+    await typeAndSubmit("Bandai");
+    await screen.findByText(/Create manufacturer 'Bandai'/);
+
+    const names = screen
+      .getAllByRole("button")
+      .map((b) => b.getAttribute("aria-label") ?? b.textContent?.trim());
+    expect(names).toContain("Create manufacturer");
+    expect(names).toContain("Back to manufacturer name");
+    expect(names.some((n) => REMOVED_CONTROL.test(n ?? ""))).toBe(false);
   });
 });
 

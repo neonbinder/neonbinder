@@ -21,10 +21,6 @@ import {
   type UnlinkedEntry,
 } from "./selector-sync-feedback";
 import { checkCustomSelectorValue } from "../../convex/selectorSyncMatch";
-// NEO-237: the same gate the manufacturer sync applies, asked of the parent
-// chain the confirm already holds — "could SportLots be asked at this level
-// from here?" — decides whether the via-All-Brands control is offered at all.
-import { resolvableSides } from "../../convex/marketplaceResolvability";
 
 type Level =
   | "sport"
@@ -250,12 +246,6 @@ export default function EntityColumn({
   const [mode, setMode] = useState<"idle" | "sync" | "custom">("idle");
   const [customValue, setCustomValue] = useState("");
   const [customError, setCustomError] = useState<string | null>(null);
-  // NEO-237 — the confirm step's "Link to SportLots through All Brands"
-  // decision, manufacturer level only. Off by default (Jason 2026-09-21,
-  // decision 4): a brand SportLots lists under its own name needs nothing,
-  // and a wrong yes narrows every SportLots fetch under the brand to sets
-  // that start with its name. Reset with the rest of the form.
-  const [viaAllBrands, setViaAllBrands] = useState(false);
   // NEO-219: where the custom-entry form is in its type -> confirm -> write
   // sequence. See CustomStage.
   const [customStage, setCustomStage] = useState<CustomStage>({ kind: "input" });
@@ -493,7 +483,6 @@ export default function EntityColumn({
     setCustomValue("");
     setCustomError(null);
     setCustomStage({ kind: "input" });
-    setViaAllBrands(false);
     pendingCreateEnterRef.current = false;
   }, [parentId]);
 
@@ -835,15 +824,14 @@ export default function EntityColumn({
         value,
         parentId,
         ...(allowDuplicateElsewhere ? { allowDuplicateElsewhere: true } : {}),
-        // NEO-237: only a manufacturer-level confirm can set this, and only
-        // when the control was offered (see `offersViaAllBrands`).
-        ...(viaAllBrands && level === "manufacturer"
-          ? { slViaAllBrands: true }
-          : {}),
+        // NEO-237: no "link through All Brands" flag. A new manufacturer is
+        // linked to SportLots through its all-brands option whenever the
+        // year can be asked — the server decides, unconditionally (Jason,
+        // 2026-09-21); the Attributes panel's SportLots toggle is the door
+        // to turn it off.
       });
       setCustomValue("");
       setCustomStage({ kind: "input" });
-      setViaAllBrands(false);
       setMode("idle");
     } catch (error) {
       // The server re-runs both checks this form ran, so its refusal is the
@@ -954,7 +942,6 @@ export default function EntityColumn({
 
   const backToInput = () => {
     pendingCreateEnterRef.current = false;
-    setViaAllBrands(false);
     setCustomStage((stage) =>
       stage.kind === "confirm-create" || stage.kind === "confirm-exists"
         ? { kind: "input" }
@@ -967,7 +954,6 @@ export default function EntityColumn({
     setCustomValue("");
     setCustomError(null);
     setCustomStage({ kind: "input" });
-    setViaAllBrands(false);
     setMode("idle");
   };
 
@@ -1038,31 +1024,14 @@ export default function EntityColumn({
   const otherMatchCount =
     customStage.kind === "confirm-exists" ? customStage.matches.length - 1 : 0;
 
-  /**
-   * NEO-237 — whether the manufacturer confirm offers "Link to SportLots
-   * through All Brands".
-   *
-   * Only when SportLots could be ASKED at this level from this chain: the
-   * year carries a SportLots id (and the sport above it), judged by the same
-   * `resolvableSides` the sync itself uses. A year with no SportLots link has
-   * no All Brands list to narrow, so the control would be a promise the
-   * adapter cannot keep; it is not rendered rather than rendered disabled,
-   * because a disabled control asks the operator to work out why.
-   *
-   * Nothing here reads a marketplace NAME. The predicate is "does the chain
-   * carry the ids", which is the one question a component may ask.
-   */
-  const offersViaAllBrands =
-    level === "manufacturer" &&
-    !!parentChain &&
-    resolvableSides(parentChain, { level: "manufacturer" }).sportlots
-      .resolvable;
-  const viaAllBrandsLabel = `SportLots has no brand for this — match its sets by name (starting with '${confirmValue}')`;
   // NEO-237 — what creating a brand DOES to the year's sets, said once, under
   // the create sentence: the brand's prefix defaults to its name, and the
   // Unknown row's prefix-matching sets move under it on create (D9). The
   // operator learns the model at the moment it applies, not from the toast
-  // after the fact.
+  // after the fact. (The SportLots link through All Brands that the same
+  // prefix narrows is written by the server without asking — the confirm
+  // used to carry a checkbox for it, removed 2026-09-21 on Jason's preview
+  // feedback; the Attributes panel's SportLots toggle is where it is undone.)
   const rehomeSentence =
     level === "manufacturer"
       ? `Sets in Unknown whose names start with '${confirmValue}' move here.`
@@ -1175,45 +1144,6 @@ export default function EntityColumn({
             <p className="text-xs text-gray-600 dark:text-gray-400 mb-3">
               {rehomeSentence}
             </p>
-          )}
-          {offersViaAllBrands && (
-            // NEO-237 — an opt-in, drawn as one: a box that fills when it is
-            // on, with the whole sentence as the control, so the target is
-            // the width of the column and not a 14px square. A toggle button
-            // (`aria-pressed`) rather than a checkbox input: the house
-            // Checkbox primitive is the light-surface one, and this column's
-            // other yes/no decisions (the Attributes toggles, the name-check
-            // pills) are pressed buttons too. Keyboard: Space is native,
-            // Enter is explicit — the confirm's own Create holds focus, so an
-            // operator reaches this with Tab and never by accident.
-            <button
-              type="button"
-              className={`${fieldClass("btn-via-all-brands")} w-full text-left flex items-start gap-2 p-2 mb-3 rounded-md border text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] ${
-                viaAllBrands
-                  ? "border-[#00D558] bg-[#00D558]/10 text-gray-900 dark:text-gray-100"
-                  : // gray-500 in BOTH modes: -600 measures ~2.0:1 against
-                    // this column's dark:bg-gray-800 and -400 ~2.6:1 against
-                    // its light bg-white — both under WCAG 1.4.11's 3:1 for a
-                    // control's boundary; -500 clears it on each.
-                    "border-gray-500 text-gray-700 dark:text-gray-300 hover:border-[#00D558]"
-              }`}
-              aria-pressed={viaAllBrands}
-              onClick={() => setViaAllBrands((on) => !on)}
-              onKeyDown={(e) =>
-                activateOnEnter(e, () => setViaAllBrands((on) => !on), creating)
-              }
-              disabled={creating}
-            >
-              <span
-                aria-hidden="true"
-                className={`mt-0.5 h-3.5 w-3.5 shrink-0 rounded-sm border ${
-                  viaAllBrands
-                    ? "border-[#00D558] bg-[#00D558]"
-                    : "border-gray-500"
-                }`}
-              />
-              <span>{viaAllBrandsLabel}</span>
-            </button>
           )}
           {customError && (
             <div

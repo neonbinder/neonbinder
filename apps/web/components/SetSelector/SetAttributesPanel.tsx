@@ -625,7 +625,10 @@ export default function SetAttributesPanel({
             )}
             {/* NEO-237: the second cell on a brand row — the SportLots side
                 of the same fact. Brand says which sets are this brand's;
-                this says whether SportLots is asked for them by that name. */}
+                this says whether SportLots is asked for them by that name.
+                It is ON from creation (the server links every new brand
+                through All Brands when the year can be asked — Jason,
+                2026-09-21), so this cell is the ONE place to turn it off. */}
             {showBrandPrefixRow && (
               <SlViaAllBrandsToggle
                 key={`sl-via-all-brands-${selectorOptionId}`}
@@ -772,9 +775,11 @@ export const SL_VIA_ALL_BRANDS_TOGGLE_TEXT =
  * NEO-237 — the brand's SportLots link through All Brands, as a pressed
  * toggle in the Attributes grid, beside Brand.
  *
- * The same drawing as the confirm-create control in `EntityColumn` (a box
- * that fills when on, the whole sentence as the target, `aria-pressed`), so
- * the operator meets one control in two places rather than two controls.
+ * The only control for the link: a new brand gets it without being asked
+ * (see `addCustomSelectorOption`), so an operator meets it here already on,
+ * and presses it off for a brand that must NOT match SportLots sets by name.
+ * Drawn as a box that fills when on, the whole sentence as the target,
+ * `aria-pressed` — the column's other yes/no decisions are pressed buttons.
  * Wrapped in the grid's cell chrome with a "SportLots" eyebrow, so the cell
  * reads like its neighbours. When it cannot be pressed the reason is under
  * it in plain text — `aria-disabled` and `aria-describedby`, never native
@@ -819,7 +824,7 @@ function SlViaAllBrandsToggle({
           on
             ? "border-[#00D558] bg-[#00D558]/10 text-gray-100"
             : // gray-500: the 3:1 boundary tone on this panel's dark surface
-              // (see `EntityColumn`'s twin of this control).
+              // (gray-600 measures ~2.0:1 against gray-800; -500 clears it).
               "border-gray-500 text-gray-300 hover:border-[#00D558]"
         } ${unavailable ? "opacity-60 cursor-not-allowed hover:border-gray-500" : ""}`}
         aria-pressed={on}

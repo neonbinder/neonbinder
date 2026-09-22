@@ -75,6 +75,16 @@ type EntitySelectorProps = {
   isItemTerminal?: (item: SelectorItem) => boolean;
   /** NEO-237 — see {@link PinnedEntry}. Rendered first, in the given order. */
   pinnedEntries?: ReadonlyArray<PinnedEntry>;
+  /**
+   * NEO-237 — data rows this returns true for sort ahead of the rest, in
+   * their usual order among themselves; the rest keep theirs (the sort is
+   * stable). Unlike a pinned entry a lead row IS a data row: selectable by
+   * its document id, filtered by the search box like any other, and counted
+   * toward the search-box threshold. The caller decides from the row's own
+   * fields (a flag NB wrote), never from its name. Pass ONE stable reference
+   * — an inline arrow defeats the `sortedItems` memo, as for `getDisplayName`.
+   */
+  leadRow?: (item: SelectorItem) => boolean;
 };
 
 function getPlatformData(item: SelectorItem): {
@@ -157,6 +167,7 @@ function EntitySelector({
   selectedColor,
   isItemTerminal,
   pinnedEntries,
+  leadRow,
 }: EntitySelectorProps) {
   const items = useQuery(query, queryArgs);
   const [searchFilter, setSearchFilter] = useState("");
@@ -230,6 +241,13 @@ function EntitySelector({
   const sortedItems = useMemo(() => {
     if (!items) return [];
     return [...items].sort((a, b) => {
+      // Lead rows first (see `leadRow`); a tie falls through to the name
+      // order, so two lead rows — or none — sort exactly as before.
+      if (leadRow) {
+        const leadA = leadRow(a) ? 0 : 1;
+        const leadB = leadRow(b) ? 0 : 1;
+        if (leadA !== leadB) return leadA - leadB;
+      }
       const nameA = getDisplayName(a);
       const nameB = getDisplayName(b);
 
@@ -242,7 +260,7 @@ function EntitySelector({
         return nameA.localeCompare(nameB);
       }
     });
-  }, [items, getDisplayName]);
+  }, [items, getDisplayName, leadRow]);
 
   // NEO-260 (a11y) — hand focus to the collapsed card when a selection closes
   // the list.
@@ -499,7 +517,8 @@ function EntitySelector({
     // Typeahead. Free here because the rows are already sorted by the same
     // display name the search box filters on, so "first row whose name starts
     // with the buffer" is one findIndex. It matters most on the columns with
-    // eight or fewer rows, which render no search box at all.
+    // eight or fewer rows, which render no search box at all. A lead row
+    // sitting out of name order is still found by the same scan.
     if (event.key.length !== 1 || event.key === " ") return;
     const now = Date.now();
     const carried =

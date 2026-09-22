@@ -2535,20 +2535,10 @@ export const addCustomSelectorOption = mutation({
     // and creating a knowing duplicate is an explicit, auditable act rather
     // than something a client gets by not knowing about the flag.
     allowDuplicateElsewhere: v.optional(v.boolean()),
-    /**
-     * NEO-237 — link this new MANUFACTURER row to SportLots THROUGH its
-     * all-brands option: SportLots has no brand entry for Bandai or Choice,
-     * so the row's SL slot takes the all-brands id and every SportLots fetch
-     * under it is narrowed to the sets starting with the row's
-     * `setNamePrefix` (adapters/sportlots.ts `fetchSetNames`). Manufacturer
-     * level only, default false, and refused when the year's chain cannot
-     * scope SportLots at all — the control that sets it is shown only then.
-     *
-     * The id written is marketplace vocabulary (`SL_ALL_BRANDS_BRAND_ID`),
-     * compared only ever through `isSlAllBrandsBrandId` inside the sync and
-     * adapter boundary. Nothing user-facing reads it.
-     */
-    slViaAllBrands: v.optional(v.boolean()),
+    // NEO-237 — there is deliberately NO "link through All Brands" arg. A
+    // manufacturer row is ALWAYS linked to SportLots through its all-brands
+    // option when the year can be asked; see the handler. The former
+    // `slViaAllBrands` opt-in never reached a shipped bundle.
   },
   // Unchanged shape (old SPA bundles). The re-home count a new brand produces
   // is surfaced as a `selectorSyncStatus` "done" notice on the brand's Sets
@@ -2657,35 +2647,44 @@ export const addCustomSelectorOption = mutation({
       ...(isManufacturer ? { setNamePrefix: value } : {}),
     };
 
-    // NEO-237 — "via All Brands": the SportLots slot takes the all-brands
-    // option id, with the row's own value as the slot label so the label
-    // never suggests a rename (the suggestion doors skip it besides, D7).
-    // Refused rather than ignored when the chain cannot scope SportLots,
-    // because a slot id on a path SportLots cannot be asked about is a link
-    // that can never be fetched — invariant 5 wants links that work.
+    // NEO-237 — "via All Brands", UNCONDITIONAL at manufacturer level.
+    //
+    // A brand typed here is one SportLots did not list under its own name
+    // (a listed brand arrives through the sync and carries its own id), so
+    // the only SportLots link it can ever hold is the all-brands option,
+    // narrowed by the row's `setNamePrefix` (adapters/sportlots.ts
+    // `fetchSetNames`). The confirm step used to offer this as a checkbox;
+    // Jason, 2026-09-21, on the preview: "I cannot think of any time I would
+    // not want that checked." So it is the default, with no arg to decline
+    // it — the one door to turn it off (or back on) afterwards is the
+    // Attributes panel's SportLots toggle, `brandView.
+    // setManufacturerSlViaAllBrands`, which refuses when the chain cannot
+    // scope SportLots. This path does NOT refuse: when the year has no
+    // SportLots ids the row is simply created with no SportLots slot — a
+    // brand under a BSC-only year is an ordinary row, not an error (invariant
+    // 6), and writing the sentinel on a path SportLots cannot be asked about
+    // would be a link that can never be fetched (invariant 5).
+    //
+    // The SportLots slot takes the all-brands option id with the row's own
+    // value as the slot label, so the label never suggests a rename (the
+    // suggestion doors skip it besides, D7). The id written is marketplace
+    // vocabulary (`SL_ALL_BRANDS_BRAND_ID`), compared only ever through
+    // `isSlAllBrandsBrandId` inside the sync and adapter boundary; nothing
+    // user-facing reads it. The chain is judged with the sync's own
+    // `resolvableSides`, pause included, so a paused SportLots writes nothing
+    // (the toggle can attach it once the pause lifts).
     let slots: ReturnType<typeof initialSlots> | undefined;
-    if (args.slViaAllBrands) {
-      if (!isManufacturer) {
-        throw new ConvexError({
-          code: "CUSTOM_VALUE_INVALID",
-          reason: "Only a manufacturer can be linked through All Brands",
-        });
-      }
+    if (isManufacturer) {
       const chain = await loadResolvabilityChain(ctx, parentId);
       const resolution = resolvableSides(chain, {
         level: "manufacturer",
         paused: pausedSides(),
       });
-      if (!resolution.sportlots.resolvable) {
-        throw new ConvexError({
-          code: "SL_NOT_RESOLVABLE",
-          reason:
-            "This year has no SportLots ids to link a brand through All Brands with",
+      if (resolution.sportlots.resolvable) {
+        slots = initialSlots({
+          sportlots: [{ id: SL_ALL_BRANDS_BRAND_ID, label: value }],
         });
       }
-      slots = initialSlots({
-        sportlots: [{ id: SL_ALL_BRANDS_BRAND_ID, label: value }],
-      });
     }
 
     const id = await ctx.db.insert("selectorOptions", {

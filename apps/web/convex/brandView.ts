@@ -217,7 +217,7 @@ export const setSelectorOptionSetNamePrefix = mutation({
 /**
  * The ancestor chain a mutation needs to judge whether SportLots can be
  * asked at manufacturer level — the same walk `addCustomSelectorOption`
- * makes before it honours `slViaAllBrands`, on the same fields.
+ * makes before it writes the all-brands link, on the same fields.
  */
 async function loadParentChain(
   ctx: MutationCtx,
@@ -240,17 +240,20 @@ async function loadParentChain(
 }
 
 /**
- * The repair door for the via-All-Brands link (collector review, NEO-237).
+ * The ONE door for the via-All-Brands link after creation (NEO-237).
  *
- * `addCustomSelectorOption`'s `slViaAllBrands` tick is the one place a brand
- * gains SportLots' all-brands option as its SportLots id at creation. A
- * brand created without it — or before the control existed — is left with
- * "SportLots skipped: no SportLots ids on this path" on every SportLots
- * fetch, and no way back short of deleting the row. This is the way back,
- * and its undo: `enabled: true` writes the sentinel slot exactly as the
- * create path does (`SL_ALL_BRANDS_BRAND_ID`, the row's own value as the
- * slot label, the slot helpers allocating the key); `enabled: false`
- * detaches that one slot and nothing else.
+ * `addCustomSelectorOption` writes SportLots' all-brands option as a new
+ * brand's SportLots id whenever the year can be asked — unconditionally,
+ * with no arg to decline it (Jason, 2026-09-21: "I cannot think of any time
+ * I would not want that checked"). So this toggle is where the link is
+ * turned OFF for a brand that should not match SportLots sets by name, and
+ * where it is turned back on — or attached for the first time on a brand
+ * created while the year had no SportLots ids, or before this ticket. A
+ * brand without it is left with "SportLots skipped: no SportLots ids on
+ * this path" on every SportLots fetch. `enabled: true` writes the sentinel
+ * slot exactly as the create path does (`SL_ALL_BRANDS_BRAND_ID`, the row's
+ * own value as the slot label, the slot helpers allocating the key);
+ * `enabled: false` detaches that one slot and nothing else.
  *
  * Refusals, in order:
  *
@@ -262,10 +265,11 @@ async function loadParentChain(
  *    turning the sentinel on would make two SportLots ids compete, and
  *    turning it off has nothing to turn off. The panel disables the toggle
  *    with the reason before this can fire; the refusal is the backstop.
- *  - `enabled: true` when the chain cannot scope SportLots — the same
- *    `SL_NOT_RESOLVABLE` shape as the create path, for the same reason: a
- *    slot id on a path SportLots cannot be asked about is a link that can
- *    never be fetched.
+ *  - `enabled: true` when the chain cannot scope SportLots —
+ *    `SL_NOT_RESOLVABLE`: a slot id on a path SportLots cannot be asked
+ *    about is a link that can never be fetched. (The create path does not
+ *    refuse here; it silently writes no slot. This door is explicit, so it
+ *    says why.)
  *
  * Idempotent both ways: on when already on and off when already off touch
  * nothing. Nothing here reads a marketplace NAME — the sentinel is compared
