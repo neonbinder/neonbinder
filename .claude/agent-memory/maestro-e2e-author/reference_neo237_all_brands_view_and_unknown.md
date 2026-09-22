@@ -44,16 +44,23 @@ metadata:
   known set EQUALS or word-boundary-PREFIXES, so nothing is minted beside
   a BSC flagship of the same name. Two E2E consequences: (1) a set row is
   NOT terminal, so the view shows no `SL` pill on it — the id is only
-  visible on the Base after a pick; (2) the ONLY on-screen trace of the
-  saves is the done row: `ensureSelectorOptions` composes
-  `N sets added from SportLots.` (`1 set added from SportLots.`) into the
-  status row's `done` message as its own sentence when N > 0 — rendered by
-  `SyncDoneNotice` directly ABOVE the idle `Sync Sets` button, with the
-  usual Dismiss. When N = 0 nothing is added and a clean sync still
-  deletes its status row, so the sentence is absent, never `0 sets`. The
-  action's own `Synced sets (…)` summary is `res.message` and never shown.
-  Nothing on screen names a saved set, and its name is a marketplace label —
-  never assert one as a literal.
+  visible on the Base after a pick, which needs the set's NAME; (2) **as of
+  2026-09-22 the save has NO on-screen trace at all.** The done-row sentence
+  `N sets added from SportLots.` that `ensureSelectorOptions` used to compose
+  from `slCreated` was REMOVED (Jason: "We don't do it for other marketplaces
+  we shouldn't do it here"); `slCreated` survives as telemetry on the
+  action's return and in its log-only `message`, and nothing reads it. So a
+  clean live sync that minted 74 sets renders exactly like a clean BSC-only
+  one: the bare idle `Sync Sets` row. Do not propose putting the count back
+  to make a flow assertable — see [[sync-summary-is-not-a-ui-surface]] for
+  what to ask for instead. What IS still assertable about the SportLots phase
+  is whether it RAN: `skippedSides` takes "sportlots" only when NOT ONE brand
+  of the year passes the ATTACH gate, so
+  `SportLots skipped: no SportLots ids on this path.` is present exactly when
+  SportLots was never asked — assert it ABSENT live and PRESENT under the
+  pause (the idiom `setup.yaml` uses on the paused sentence). Nothing on
+  screen names a saved set, and its name is a marketplace label — never
+  assert one as a literal.
 - **Sync Sets is two-sided**: a hand-made brand's (or any brand's under the
   pause) Sets column ends "done" with `SportLots skipped: no SportLots ids on
   this path.` — a notice, not the failure copy the strict seed asserts on.

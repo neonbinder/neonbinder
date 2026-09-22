@@ -907,7 +907,9 @@ THROUGH SportLots' "All Brands" option, narrowed by an NB-owned set-name
 prefix, and that Sync Sets is two-sided (BSC filed by prefix / into `Unknown`,
 SportLots' extra sets SAVED as NB sets with a Base carrying the SportLots id —
 no review step; Jason, 2026-09-21: "if a set exists in a marketplace it should
-be saved whether it is in SL or BSC or both").
+be saved whether it is in SL or BSC or both"). The save itself is not
+assertable — see (3) below; what the flow reads of the SportLots phase is
+that it RAN.
 
 Why 1997: the same SportLots brand list as 1995 (measurement 2 above — 18
 entries, "1997 returns the identical list"), a full hockey year on both
@@ -960,14 +962,51 @@ read:
 2. SportLots' all-brands list for 1997 holds 1–8 entries starting with
    `SPx` — **read: ≥1 `SportLots base candidate: …` and no search box** in
    STEP 4's picker pane (`BaseSetPicker` renders the box above 8);
-3. the year-wide sync classifies ≥1 SportLots root as new under SOME brand
-   and SAVES it — **read: 74** roots on the first run, measured through the
-   review modal that stood in for the auto-save until 2026-09-21 (the first
-   sat under Donruss, "Between the Pipes /3500", then "Line 2 Line"). STEP 2
-   reads the Sets column's done notice, "N sets added from SportLots", and
-   asserts only that N is not zero; the names are SportLots' business and no
-   flow may assert one as a literal. Not yet measured through the notice —
-   the next CI run of the flow is that measurement.
+3. the year-wide sync ASKS SportLots per brand and saves the roots NB has no
+   row for — **read: 74** roots classified as new on the first run, measured
+   through the review modal that stood in for the auto-save until 2026-09-21.
+   **Since 2026-09-22 that save has NO on-screen surface** (Jason: "We don't
+   do it for other marketplaces we shouldn't do it here" —
+   `ensureSelectorOptions` no longer composes "N sets added from SportLots."
+   into the done row, and that sentence was the only thing the product ever
+   said about it). STEP 2 therefore reads what the sync still says about the
+   SportLots side: the notice `SportLots skipped: no SportLots ids on this
+   path.`, asserted ABSENT live and PRESENT under the pause —
+   `syncSetsAcrossManufacturers` puts "sportlots" into `skippedSides` only
+   when NOT ONE brand of the year passes the ATTACH gate, so its absence
+   means SportLots was asked. Neither reading is measured yet; the next CI
+   run of the flow is that measurement. The 74 stays here as what this year
+   answered, not as anything a step reads, and the labels behind it are
+   SportLots' business — no flow may assert one as a literal.
+
+   **The gap, and the affordance that would close it.** No step proves a set
+   was SAVED, because nothing on screen tells an SL-minted set from a
+   BSC-filed one: a set row is not terminal, so the view shows no `SL` pill
+   on it (the id is on its Base, reachable only once the set is picked BY
+   NAME), and a minted row's name is a SportLots label behind a brand prefix
+   — no surface names one and no flow may guess one. This fixture's own brand
+   cannot supply a reachable example either: BSC's set named exactly `SPx`
+   word-boundary-prefixes every `SPx…` SportLots entry, so `routeSlSets`
+   mints nothing under it. That is deliberate — it is what keeps (2)'s picker
+   pane identical in both worlds — and it is also why no example exists here.
+   Two ways out, neither taken on the PR that removed the notice:
+   * **product, preferred (an affordance, not a notice):** put a set row's
+     marketplace coverage ON the row — the `SL`/`BSC` pills `EntitySelector`
+     already renders for terminal rows, derived from the subtree rather than
+     the set's own empty `platformData` — AND a way to REACH such a row that
+     does not need its name, since a pill is not searchable. The cheapest is
+     the machinery NEO-237 already built: a `leadRow` group, or a second
+     pinned entry beside `All Brands — every set in <year>` whose
+     `aria-label` is a flow handle by construction, for the sets this year
+     has no BSC listing for. It answers a real dealer question ("which of
+     these can I not pull a checklist for?"), and it gives E2E a named handle
+     to the row and then to its Base's `SL` pill. Jason's call — it is a UI
+     change, not a test fixture.
+   * **fixture:** a brand whose BSC set does NOT prefix-cover SportLots'
+     entries, so the sync mints `<BRAND> <label>` rows the flow can find by
+     its own prefix. That needs a live measurement of both lists for the
+     candidate year and conflicts with (2) as written here. Re-measure and
+     record before changing STEP 0.
 
 If a replacement is ever needed, swap STEP 0's `BRAND` for another 1997-98
 product SportLots has no brand for and re-measure — candidates considered,
@@ -979,10 +1018,11 @@ apostrophes or regex metacharacters (`Collector's Choice`, `McDonald's`).
 
 The auto-save is year-wide (every brand's own list, the all-brands list once
 per via-All-Brands brand and once for `Unknown`), so the saved sets land under
-whichever brands own the roots; no brand, name or count is asserted beyond
-"not zero". A set row is not a terminal row, so the view shows no `SL` pill on
-one — the Base-carries-the-id shape is the helper's unit test, and the link
-this fixture proves live is STEP 4's narrowed picker pane under `SPx`.
+whichever brands own the roots; no brand, name or count is asserted at all
+(2026-09-22 — see (3)). A set row is not a terminal row, so the view shows no
+`SL` pill on one — the Base-carries-the-id shape is the helper's unit test,
+and the link this fixture proves live is STEP 4's narrowed picker pane under
+`SPx`.
 
 ### Baseball → 1990 — the known-brands fixture (NEO-294) ✅ CLAIMED by Jason 2026-09-22
 
@@ -1074,8 +1114,10 @@ possible against the code under test. Confirm and record here:
    puts "N brands added from the known list" / "N sets filed under a known
    brand" into its `summary`, which reaches only `res.message` — and
    `ensureSelectorOptions` composes the column's done row from `pausedSides`
-   / `slCreated` / `failedPlatforms` / `skippedSides` / `unlinkedTotal` and
-   nothing else, dropping `res.message` on success. Those two sentences have
+   / `failedPlatforms` / `skippedSides` / `unlinkedTotal` and nothing else,
+   dropping `res.message` on success (`slCreated` was the one count that
+   reached it; that sentence was removed 2026-09-22 — see the Hockey 1997
+   section). Those two sentences have
    **no UI surface** and no flow may target them. The flow asserts the
    STRUCTURE instead (which brand row the set hangs off), which is the
    stronger claim anyway.

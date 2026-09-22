@@ -8141,8 +8141,6 @@ export const ensureSelectorOptions = action({
         failedPlatforms: string[];
         skippedSides: Array<"bsc" | "sportlots">;
         pausedSides: Array<"bsc" | "sportlots">;
-        /** NEO-237 (D13) — the set sync only: sets minted from SportLots. */
-        slCreated?: number;
       };
       if (level === "setName") {
         if (!yearId) {
@@ -8243,22 +8241,21 @@ export const ensureSelectorOptions = action({
         res.failedPlatforms.length > 0
           ? partialSyncMessage(res.failedPlatforms)
           : undefined;
-      // NEO-237 (D13) — sets the SportLots phase MINTED are news the operator
-      // otherwise never sees: the action's own `message` is logged, not
-      // shown, and a clean sync clears the status row. So a non-zero count
-      // is its own sentence in the done row, and only then — zero adds
-      // nothing, so every other sentence stays byte-identical to before.
-      const createdNotice =
-        res.slCreated !== undefined && res.slCreated > 0
-          ? `${countNoun(res.slCreated, "set")} added from SportLots.`
-          : undefined;
+      // NEO-237 (D13) added a third sentence here — "<N> sets added from
+      // SportLots." — whenever the set sync's SportLots phase minted rows.
+      // Jason, 2026-09-22: "We don't do it for other marketplaces we
+      // shouldn't do it here." A clean sync that happened to mint SportLots
+      // sets now reads exactly like a clean BSC-only one: nothing. The
+      // count itself survives as telemetry in `syncSetsAcrossManufacturers`'
+      // return and in its log-only `message` summary — it is simply never
+      // composed into the operator-visible done row.
+      //
       // A side cannot be both skipped and failed (a skipped side is never
       // called), so at most one of these is set. Failure wins if that ever
       // stops being true: it is the one that warrants a Retry. The paused
       // sentence is independent of both — it describes the OTHER side — and
-      // leads, so the operator reads the operator's own decision first; what
-      // was added comes next, before what could not be asked.
-      const message = [pausedNotice, createdNotice, failedNotice ?? skippedNotice]
+      // leads, so the operator reads the operator's own decision first.
+      const message = [pausedNotice, failedNotice ?? skippedNotice]
         .filter((part): part is string => part !== undefined)
         .join(" ") || undefined;
       const hasNotice = res.unlinkedTotal > 0 || message !== undefined;
@@ -9723,9 +9720,14 @@ export const syncSetsAcrossManufacturers = action({
     pausedSides: v.array(platformSideValidator),
     /**
      * NEO-237 (D13) — sets the SportLots phase MINTED this run, summed across
-     * every brand scope it wrote. `ensureSelectorOptions` turns a non-zero
-     * count into the column's done-row sentence; the BSC phase's stores are
-     * in `totalSets` with these, not here.
+     * every brand scope it wrote. The BSC phase's stores are in `totalSets`
+     * with these, not here.
+     *
+     * Telemetry only. It used to become a done-row sentence in
+     * `ensureSelectorOptions`; that notice was removed (Jason, 2026-09-22 —
+     * no other marketplace announces what it added, so neither does this
+     * one). The count still rides the log-only `message` summary below, and
+     * nothing user-facing reads it.
      */
     slCreated: v.number(),
   }),

@@ -15,11 +15,14 @@
  * no BSC id still reaches the action, and a SportLots skip at `setName` is a
  * notice rather than the usual "does not serve this level" silence.
  *
- * The last family pins the done-row sentence for sets the SportLots phase
- * MINTED (D13): the action's own `message` is never shown, and a clean sync
- * clears the status row, so without it the operator never learns that sets
- * were added. It is its own sentence, present only when the count is
- * non-zero, so every other sentence stays byte-identical when nothing was.
+ * The last family pins the SILENCE around sets the SportLots phase MINTED.
+ * NEO-237 (D13) gave them a done-row sentence ("<N> sets added from
+ * SportLots."); Jason removed it on 2026-09-22 — "We don't do it for other
+ * marketplaces we shouldn't do it here." So a sync that minted SportLots
+ * sets must leave the column in EXACTLY the state a sync that minted none
+ * leaves it in, and every other sentence (paused, skipped, partial) must be
+ * byte-identical whether the count was zero or not. The count itself lives
+ * on in `syncSetsAcrossManufacturers`' return and its log-only summary.
  */
 
 import { convexTest } from "convex-test";
@@ -27,6 +30,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import schema from "./schema";
 import { __resetContractCache } from "./credentials";
 import { api } from "./_generated/api";
+import { PAUSED_PLATFORMS_ENV } from "./lib/marketplacePause";
 import type { Id } from "./_generated/dataModel";
 
 vi.mock("posthog-node", () => {
@@ -123,6 +127,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   delete process.env.POSTHOG_API_KEY;
   delete process.env.NEONBINDER_BROWSER_URL;
+  delete process.env[PAUSED_PLATFORMS_ENV];
 });
 
 async function seedSportAndYear(
@@ -369,7 +374,7 @@ describe("ensureSelectorOptions(setName) — the SportLots attach-rule gate (D14
   });
 });
 
-describe("ensureSelectorOptions(setName) — sets added from SportLots are news in the done row (D13)", () => {
+describe("ensureSelectorOptions(setName) — sets added from SportLots are NOT announced (NEO-294, was D13)", () => {
   function stubBothSides(slSets: Array<[string, string]>, bscSets: Array<[string, string]>) {
     stubFetch(async (url) => {
       const href = String(url);
@@ -389,7 +394,7 @@ describe("ensureSelectorOptions(setName) — sets added from SportLots are news 
     });
   }
 
-  test("one brand, one SportLots-only set: the column is 'done' with '1 set added from SportLots.'", async () => {
+  test("one brand, one SportLots-only set: the set is stored and the status row is CLEARED, exactly as when none was added", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN);
     const { yearId } = await seedSportAndYear(t);
@@ -408,21 +413,23 @@ describe("ensureSelectorOptions(setName) — sets added from SportLots are news 
       "Score Series 1",
     ]);
 
-    const status = await asAdmin.query(api.selectorOptions.getSelectorSyncStatus, {
-      level: "setName",
-      parentId: score,
-    });
-    expect(status).toEqual({ status: "done", message: "1 set added from SportLots." });
+    // A clean sync says nothing, whether or not the SportLots phase minted.
+    expect(
+      await asAdmin.query(api.selectorOptions.getSelectorSyncStatus, {
+        level: "setName",
+        parentId: score,
+      }),
+    ).toBeNull();
   });
 
-  test("from the view, the count is summed across every brand scope, and the sentence pluralises", async () => {
+  test("from the view, sets minted across every brand scope are equally silent", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN);
     const { yearId } = await seedSportAndYear(t);
-    await insertManufacturer(t, yearId, "Topps", { slId: "1", prefix: "Topps" });
-    await insertManufacturer(t, yearId, "Score", { slId: "7", prefix: "Score" });
-    // Both brands' lists carry the same SportLots-only entry: two sets. BSC
-    // stores its own under Topps; those are not "added from SportLots".
+    const topps = await insertManufacturer(t, yearId, "Topps", { slId: "1", prefix: "Topps" });
+    const score = await insertManufacturer(t, yearId, "Score", { slId: "7", prefix: "Score" });
+    // Both brands' lists carry the same SportLots-only entry: two sets minted.
+    // BSC stores its own under Topps.
     stubBothSides([["901", "Something New"]], [["topps-series-1", "Topps Series 1"]]);
 
     const result = await asAdmin.action(api.selectorOptions.ensureSelectorOptions, {
@@ -430,11 +437,18 @@ describe("ensureSelectorOptions(setName) — sets added from SportLots are news 
       parentId: yearId,
     });
     expect(result.reason).toBe("synced");
-    const status = await asAdmin.query(api.selectorOptions.getSelectorSyncStatus, {
-      level: "setName",
-      parentId: yearId,
-    });
-    expect(status).toEqual({ status: "done", message: "2 sets added from SportLots." });
+    // The count is genuinely non-zero — the silence below is not vacuous.
+    expect(
+      [...(await setsUnder(t, topps)), ...(await setsUnder(t, score))]
+        .map((r) => r.value)
+        .sort(),
+    ).toEqual(["Score Something New", "Topps Series 1", "Topps Something New"]);
+    expect(
+      await asAdmin.query(api.selectorOptions.getSelectorSyncStatus, {
+        level: "setName",
+        parentId: yearId,
+      }),
+    ).toBeNull();
   });
 
   test("nothing added: a clean sync still clears the status row — no sentence, no 'done'", async () => {
@@ -480,6 +494,37 @@ describe("ensureSelectorOptions(setName) — sets added from SportLots are news 
     expect(status).toEqual({
       status: "done",
       message: "SportLots skipped: no SportLots ids on this path.",
+    });
+  });
+
+  test("sets ADDED beside a paused side: the paused sentence is byte-identical and stands alone", async () => {
+    // The N > 0 half of the byte-identity claim. BSC is paused, so the BSC
+    // phase is skipped while the SportLots phase runs and mints — the case
+    // that used to read "BuySportsCards is on pause: … 1 set added from
+    // SportLots." The paused sentence must now be the whole message.
+    process.env[PAUSED_PLATFORMS_ENV] = "buysportscards";
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN);
+    const { yearId } = await seedSportAndYear(t);
+    const score = await insertManufacturer(t, yearId, "Score", { slId: "7", prefix: "Score" });
+    // The BSC list is never asked for under the pause.
+    stubBothSides([["701", "Board"]], []);
+
+    const result = await asAdmin.action(api.selectorOptions.ensureSelectorOptions, {
+      level: "setName",
+      parentId: score,
+    });
+    expect(result.pausedSides).toEqual(["bsc"]);
+    expect((await setsUnder(t, score)).map((r) => r.value)).toEqual(["Score Board"]);
+
+    const status = await asAdmin.query(api.selectorOptions.getSelectorSyncStatus, {
+      level: "setName",
+      parentId: score,
+    });
+    expect(status).toEqual({
+      status: "done",
+      message:
+        "BuySportsCards is on pause: nothing from BuySportsCards was asked for or changed.",
     });
   });
 });
