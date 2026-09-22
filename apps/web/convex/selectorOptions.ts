@@ -1689,7 +1689,19 @@ export const storeSelectorOptions = mutation({
      */
     relinked: v.array(unlinkedEntryValidator),
     relinkedTotal: v.number(),
-     /**
+    /**
+     * NEO-237 — manufacturer rows whose SportLots PLACEHOLDER link (the
+     * all-brands option id a hand-typed brand is born with) was replaced by
+     * the brand's own id this run, matched by name. Its own count, not
+     * `relinked`: a re-slug reattributes every card on the slot to a
+     * different marketplace set, and that is what `relinked` warns about; a
+     * placeholder never attributed anything. Still counted, not silent,
+     * because the row's Sets column now fetches the brand's own SportLots
+     * list instead of the narrowed all-brands list. Zero on every normal
+     * sync.
+     */
+    linkedFromPlaceholder: v.number(),
+    /**
      * Sides whose `returnedIds` list was over the cap and so were treated as
      * NOT covered this run: everything was still stored additively, but
      * nothing was unlinked on them. Empty on every normal sync.
@@ -1839,6 +1851,20 @@ export const storeSelectorOptions = mutation({
       items,
       coveredSides: effectiveCovered,
       returnedIds: effectiveReturnedIds,
+      // NEO-237 — at manufacturer level, SportLots' all-brands option id is a
+      // PLACEHOLDER link, not a live brand id: `addCustomSelectorOption`
+      // writes it on every hand-typed brand, and the fetch that finally lists
+      // that brand under its own id also returns the option, so without this
+      // the name tier withheld the real id forever. Level-gated the way
+      // `slotIsSlAllBrands` is: the same id on any other level would be a
+      // different bug, and one worth seeing. Marketplace vocabulary, compared
+      // inside the sync boundary only (`slBrandAxis.ts`).
+      ...(level === "manufacturer"
+        ? {
+            isPlaceholderId: (side: "bsc" | "sportlots", id: string) =>
+              side === "sportlots" && isSlAllBrandsBrandId(id),
+          }
+        : {}),
     });
     if (plan.ambiguities.length > 0) {
       // Deliberately log-only: an ambiguity names sibling rows and is exactly
@@ -1927,6 +1953,10 @@ export const storeSelectorOptions = mutation({
 
     const linkedIds: Id<"selectorOptions">[] = [];
     const relinkedAll: UnlinkedEntry[] = [];
+    const linkedFromPlaceholderAll: Array<{
+      id: Id<"selectorOptions">;
+      side: "bsc" | "sportlots";
+    }> = [];
     let reservedNamesSkipped = 0;
 
     for (let i = 0; i < options.length; i++) {
@@ -1950,13 +1980,21 @@ export const storeSelectorOptions = mutation({
           // is the re-slug heal. The slot key is reused, so nothing orphans —
           // but every card under this row is now attributed to a different
           // marketplace set, and that must not be silent.
+          //
+          // NEO-237 — unless what the row held was a PLACEHOLDER (the plan
+          // says which sides): then this is a hand-typed brand receiving its
+          // real SportLots id, counted under `linkedFromPlaceholder` instead.
           const previousId = primaryId(w, side);
           if (
             outcome.tier === 2 &&
             previousId !== undefined &&
             previousId !== incoming
           ) {
-            relinkedAll.push({ id: row._id, value: row.value, side });
+            if (outcome.placeholderSides?.includes(side)) {
+              linkedFromPlaceholderAll.push({ id: row._id, side });
+            } else {
+              relinkedAll.push({ id: row._id, value: row.value, side });
+            }
           }
           // At these levels the item's display value IS the marketplace's own
           // name for the set, so it is the label. Storing it is what lets
@@ -2265,6 +2303,19 @@ export const storeSelectorOptions = mutation({
         }),
       );
     }
+    if (linkedFromPlaceholderAll.length > 0) {
+      // Row ids and sides only — never the placeholder or the brand id
+      // (marketplace values), and never the row's name.
+      console.log(
+        JSON.stringify({
+          msg: "selector_sync_linked_from_placeholder",
+          level,
+          parentId: parentId ?? null,
+          count: linkedFromPlaceholderAll.length,
+          rows: linkedFromPlaceholderAll.slice(0, 25),
+        }),
+      );
+    }
 
     return {
       success: true,
@@ -2274,6 +2325,7 @@ export const storeSelectorOptions = mutation({
       unlinkedTotal: unlinkedAll.length,
       relinked: relinkedAll.slice(0, UNLINK_NOTICE_LIMIT),
       relinkedTotal: relinkedAll.length,
+      linkedFromPlaceholder: linkedFromPlaceholderAll.length,
       returnedIdsTruncatedSides: truncatedSides,
       reservedNamesSkipped,
     };
@@ -2659,7 +2711,12 @@ export const addCustomSelectorOption = mutation({
     // it — the one door to turn it off (or back on) afterwards is the
     // Attributes panel's SportLots toggle, `brandView.
     // setManufacturerSlViaAllBrands`, which refuses when the chain cannot
-    // scope SportLots. This path does NOT refuse: when the year has no
+    // scope SportLots. The sentinel is a PLACEHOLDER, not a live brand id:
+    // if a later Sync Manufacturers lists this brand under its own SportLots
+    // id, `storeSelectorOptions`' name tier treats the placeholder side as
+    // free (`planSelectorSync` `isPlaceholderId`) and the real id lands in
+    // this same slot, counted as `linkedFromPlaceholder`. This path does NOT
+    // refuse: when the year has no
     // SportLots ids the row is simply created with no SportLots slot — a
     // brand under a BSC-only year is an ordinary row, not an error (invariant
     // 6), and writing the sentinel on a path SportLots cannot be asked about

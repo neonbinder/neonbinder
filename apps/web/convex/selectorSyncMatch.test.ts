@@ -21,6 +21,7 @@ import {
   type IncomingItem,
   type MatchableRow,
 } from "./selectorSyncMatch";
+import { SL_ALL_BRANDS_BRAND_ID, isSlAllBrandsBrandId } from "./slBrandAxis";
 
 type Row = MatchableRow<string> & { level: string };
 
@@ -393,6 +394,159 @@ describe("tier precedence and reporting", () => {
     expect(plan.outcomes[0]).toMatchObject({ kind: "matched", existingId: "a" });
     expect(plan.ambiguities).toHaveLength(1);
     expect(plan.ambiguities[0].reason).toContain("held by 2 sibling rows");
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// NEO-237 — placeholder links: a hand-typed brand born holding SportLots'
+// all-brands option id, before Sync Manufacturers ever listed the brand.
+// ───────────────────────────────────────────────────────────────────────────
+
+describe("planSelectorSync — placeholder links (NEO-237)", () => {
+  /** What `storeSelectorOptions` passes at manufacturer level. */
+  const slPlaceholder = (side: string, id: string) =>
+    side === "sportlots" && isSlAllBrandsBrandId(id);
+
+  /** A brand typed on the New Manufacturer step: the slot `addCustomSelectorOption` writes. */
+  const viaAllBrands = (id: string, value: string) =>
+    row(id, value, {
+      level: "manufacturer",
+      platformData: { sportlots: { s0: SL_ALL_BRANDS_BRAND_ID } },
+      platformLabels: { sportlots: { s0: value } },
+      platformSlotSeq: { sportlots: 1 },
+    });
+
+  /** The fetch always returns the all-brands option beside the real brands. */
+  const returned = (...real: string[]) => ({
+    sportlots: [...real, SL_ALL_BRANDS_BRAND_ID],
+  });
+
+  test("a hand-typed brand holding the placeholder is FREE for its real id, and the outcome says so", () => {
+    const topps = viaAllBrands("a", "Topps");
+    const plan = planSelectorSync({
+      existing: [topps],
+      items: [item("Topps", { sportlots: "1" })],
+      coveredSides: ["sportlots"],
+      returnedIds: returned("1"),
+      isPlaceholderId: slPlaceholder,
+    });
+    // Tier 2, and the plan names the side whose placeholder the real id
+    // replaces — the store counts it as an upgrade, not a `relinked` re-slug.
+    expect(plan.outcomes[0]).toEqual({
+      kind: "matched",
+      existingId: "a",
+      tier: 2,
+      placeholderSides: ["sportlots"],
+    });
+    expect(plan.ambiguities).toEqual([]);
+  });
+
+  test("without the predicate the placeholder is a live id — today's withhold, unchanged (the reconciler path)", () => {
+    const topps = viaAllBrands("a", "Topps");
+    const plan = planSelectorSync({
+      existing: [topps],
+      items: [item("Topps", { sportlots: "1" })],
+      coveredSides: ["sportlots"],
+      returnedIds: returned("1"),
+    });
+    // The gap this ticket closes, pinned as the behaviour a caller that
+    // names no placeholder still gets: the sentinel came back in
+    // `returnedIds`, so the row reads as bound to a live id.
+    expect(plan.outcomes[0]).toEqual({
+      kind: "withheld",
+      reason: "name matches a row already linked to a different live id",
+    });
+  });
+
+  test("a row holding a REAL SportLots brand id keeps today's withhold", () => {
+    const topps = row("a", "Topps", {
+      level: "manufacturer",
+      platformData: { sportlots: { s0: "1" } },
+      platformSlotSeq: { sportlots: 1 },
+    });
+    const plan = planSelectorSync({
+      existing: [topps],
+      items: [
+        item("Topps", { sportlots: "1" }), // keeps "1" alive
+        item("Topps", { sportlots: "2" }), // same name, different brand id
+      ],
+      coveredSides: ["sportlots"],
+      returnedIds: returned("1", "2"),
+      isPlaceholderId: slPlaceholder,
+    });
+    expect(plan.outcomes[0]).toEqual({ kind: "matched", existingId: "a", tier: 1 });
+    expect(plan.outcomes[1]).toEqual({
+      kind: "withheld",
+      reason: "name matches a row already linked to a different live id",
+    });
+  });
+
+  test("two placeholder rows folding to the incoming name are withheld — never a coin flip", () => {
+    const plan = planSelectorSync({
+      existing: [viaAllBrands("a", "Topps"), viaAllBrands("b", "TOPPS")],
+      items: [item("Topps", { sportlots: "1" })],
+      coveredSides: ["sportlots"],
+      returnedIds: returned("1"),
+      isPlaceholderId: slPlaceholder,
+    });
+    expect(plan.outcomes[0].kind).toBe("withheld");
+    expect(plan.ambiguities[0].reason).toContain("share this name");
+  });
+
+  test("a via-All-Brands brand the fetch does not list keeps its placeholder through the unlink pass", () => {
+    const bandai = viaAllBrands("b", "Bandai");
+    const plan = planSelectorSync({
+      existing: [viaAllBrands("a", "Topps"), bandai],
+      items: [item("Topps", { sportlots: "1" })],
+      coveredSides: ["sportlots"],
+      returnedIds: returned("1"),
+      isPlaceholderId: slPlaceholder,
+    });
+    // Nothing named Bandai came in, so Bandai is nobody's match…
+    expect(plan.outcomes).toEqual([
+      { kind: "matched", existingId: "a", tier: 2, placeholderSides: ["sportlots"] },
+    ]);
+    // …and the sentinel is still in the returned universe (D6 keeps it
+    // there), so the unlink pass leaves the placeholder on every holder the
+    // sync did not upgrade. Freeing the side for a NAME match must not make
+    // the id look delisted.
+    expect(plan.coveredSides).toEqual(["sportlots"]);
+    expect(plan.returnedIds.sportlots.has(SL_ALL_BRANDS_BRAND_ID)).toBe(true);
+    expect(
+      unlinkStalePrimary(bandai, "sportlots", plan.returnedIds.sportlots),
+    ).toBeUndefined();
+  });
+
+  test("placeholder freeness is judged only on the sides the item carries", () => {
+    // BSC lists Topps; SportLots does not (yet). The BSC id attaches by name
+    // and the SportLots placeholder is simply not in play — no
+    // `placeholderSides`, because nothing on that side is being replaced.
+    const topps = viaAllBrands("a", "Topps");
+    const plan = planSelectorSync({
+      existing: [topps],
+      items: [item("Topps", { bsc: "topps-1997" })],
+      coveredSides: ["bsc", "sportlots"],
+      returnedIds: { bsc: ["topps-1997"], ...returned() },
+      isPlaceholderId: slPlaceholder,
+    });
+    expect(plan.outcomes[0]).toEqual({ kind: "matched", existingId: "a", tier: 2 });
+  });
+
+  test("tier 1 is untouched: an item carrying the placeholder id itself is still M:1-withheld", () => {
+    // D6 routes the option out before the plan; this pins what happens if an
+    // old bundle ever sent it anyway — the id sits on two rows, so it is not
+    // evidence of which one the update belongs to, predicate or no predicate.
+    const plan = planSelectorSync({
+      existing: [viaAllBrands("a", "Topps"), viaAllBrands("b", "Bandai")],
+      items: [item("All Brands", { sportlots: SL_ALL_BRANDS_BRAND_ID })],
+      coveredSides: ["sportlots"],
+      returnedIds: returned(),
+      isPlaceholderId: slPlaceholder,
+    });
+    expect(plan.outcomes[0]).toEqual({
+      kind: "withheld",
+      reason: "sportlots id is held by 2 sibling rows",
+    });
   });
 });
 

@@ -26,10 +26,14 @@
  *      legal, so an id held by two siblings is not evidence of which row the
  *      update belongs to.
  *   2. Normalised display value, against siblings that are FREE on the sides
- *      the item carries — either no id at all on that side, or an id upstream
- *      did not return this run (a re-slug: same set, new id). Matching a stale
- *      row here is what heals a BSC re-slug through `setPrimarySlotId`, which
- *      reuses the slot KEY so every card on it keeps resolving.
+ *      the item carries — no id at all on that side, an id upstream did not
+ *      return this run (a re-slug: same set, new id), or a PLACEHOLDER id the
+ *      caller names as such (NEO-237: a manufacturer row linked through
+ *      SportLots' all-brands option before the brand's own id was known).
+ *      Matching a stale row here is what heals a BSC re-slug through
+ *      `setPrimarySlotId`, which reuses the slot KEY so every card on it keeps
+ *      resolving; matching a placeholder row upgrades it to the real id
+ *      through the same slot, and the outcome says so (`placeholderSides`).
  *   3. No candidate → insert. Ambiguous candidate → withheld and surfaced.
  *      Withholding writes nothing; it never deletes and never guesses.
  *
@@ -390,9 +394,31 @@ export type IncomingItem = {
 };
 
 export type MatchOutcome<TId extends string = string> =
-  | { kind: "matched"; existingId: TId; tier: 0 | 1 | 2 }
+  | {
+      kind: "matched";
+      existingId: TId;
+      tier: 0 | 1 | 2;
+      /**
+       * NEO-237 — tier 2 only, and only when non-empty: the sides on which
+       * the matched row's primary id is a PLACEHOLDER (`isPlaceholderId`)
+       * that the item's real id now replaces. The store uses it to tell an
+       * upgrade-from-placeholder apart from a re-slug: the slot key is
+       * reused either way, but a placeholder never attributed anything, so
+       * the swap is not a `relinked` rebinding.
+       */
+      placeholderSides?: PlatformSide[];
+    }
   | { kind: "insert" }
   | { kind: "withheld"; reason: string };
+
+/**
+ * NEO-237 — "is this id on this side a placeholder link, not a live
+ * marketplace id?" Answered by the CALLER, because the matcher is generic over
+ * sides and levels and the answer is not: SportLots' all-brands option id
+ * (`slBrandAxis.ts`) is a placeholder on a manufacturer row and would be a
+ * bug anywhere else. Absent → nothing is a placeholder, today's rule exactly.
+ */
+export type PlaceholderIdPredicate = (side: PlatformSide, id: string) => boolean;
 
 export type MatchAmbiguity = {
   /** The incoming item's display value — never a marketplace id or label. */
@@ -494,17 +520,44 @@ export function effectiveCoveredSides(
  *
  * A row whose id on that side DID come back is not free: something else in
  * this batch legitimately owns it.
+ *
+ * NEO-237 — unless that id is a PLACEHOLDER (`isPlaceholderId`). A brand an
+ * operator typed before Sync Manufacturers ran holds SportLots' all-brands
+ * option id, and the fetch that finally lists the brand under its own id
+ * ALSO returns the all-brands option — so by the rule above the row would
+ * never be free, the real id would be withheld as "linked to a different
+ * live id", and the only way out was the attributes-panel toggle. The
+ * placeholder is not a live link to a set upstream lists under that id; it
+ * is "no brand id yet", so the row is free and the real id lands in the
+ * same slot. A row holding a REAL SportLots brand id keeps today's withhold.
  */
 function isSideFreeForNameMatch(
   row: SlotBearingRow,
   side: PlatformSide,
   returnedIds: Set<string>,
+  isPlaceholderId: PlaceholderIdPredicate | undefined,
 ): boolean {
   const slot = primarySlot(row, side);
   if (!slot) return true;
   const id = idForSlot(row, side, slot);
   if (id === undefined) return true;
+  if (isPlaceholderId?.(side, id)) return true;
   return !returnedIds.has(id);
+}
+
+/** The sides on which `row`'s primary id is a placeholder the item replaces. */
+function placeholderSidesFor(
+  row: SlotBearingRow,
+  sides: readonly PlatformSide[],
+  isPlaceholderId: PlaceholderIdPredicate | undefined,
+): PlatformSide[] {
+  if (!isPlaceholderId) return [];
+  return sides.filter((side) => {
+    const slot = primarySlot(row, side);
+    if (!slot) return false;
+    const id = idForSlot(row, side, slot);
+    return id !== undefined && isPlaceholderId(side, id);
+  });
 }
 
 export function planSelectorSync<TId extends string>(args: {
@@ -513,8 +566,15 @@ export function planSelectorSync<TId extends string>(args: {
   coveredSides?: readonly PlatformSide[];
   /** What the FETCH returned. Falls back to the items when absent — see above. */
   returnedIds?: { bsc?: readonly string[]; sportlots?: readonly string[] };
+  /**
+   * NEO-237 — which ids are placeholder links (see `PlaceholderIdPredicate`).
+   * Consulted by tier 2 only. Tier 1 is untouched: a placeholder id never
+   * arrives as an item (`fetchAggregatedOptions` routes it out first), and if
+   * an old bundle ever sent it, the M:1 withhold is the right answer.
+   */
+  isPlaceholderId?: PlaceholderIdPredicate;
 }): SelectorSyncPlan<TId> {
-  const { existing, items } = args;
+  const { existing, items, isPlaceholderId } = args;
 
   const returnedIds = resolveReturnedIds(items, args.returnedIds);
   const coveredSides = effectiveCoveredSides(returnedIds, args.coveredSides);
@@ -660,7 +720,7 @@ export function planSelectorSync<TId extends string>(args: {
         ambiguities.push({ item: item.value, reason: withheld });
       } else if (
         !sidesCarried.every((side) =>
-          isSideFreeForNameMatch(row, side, returnedIds[side]),
+          isSideFreeForNameMatch(row, side, returnedIds[side], isPlaceholderId),
         )
       ) {
         // The name matches but the row is currently, legitimately bound to a
@@ -676,7 +736,20 @@ export function planSelectorSync<TId extends string>(args: {
         });
       } else {
         claimed.add(row._id);
-        outcomes[i] = { kind: "matched", existingId: row._id, tier: 2 };
+        // NEO-237 — say which sides were placeholders, so the store can
+        // count the upgrade instead of reporting a re-slug. Only when there
+        // is one: the outcome shape for every other match is unchanged.
+        const placeholderSides = placeholderSidesFor(
+          row,
+          sidesCarried,
+          isPlaceholderId,
+        );
+        outcomes[i] = {
+          kind: "matched",
+          existingId: row._id,
+          tier: 2,
+          ...(placeholderSides.length > 0 ? { placeholderSides } : {}),
+        };
         continue;
       }
     }
