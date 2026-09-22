@@ -480,7 +480,7 @@ describe("adminCancelPlaceholderBatch", () => {
       .withIdentity(ADMIN)
       .mutation(api.placeholderPipeline.adminCancelPlaceholderBatch, { jobId: "job-1" });
 
-    expect(result).toEqual({ canceled: true, canceledCount: 0 });
+    expect(result).toEqual({ canceled: true, canceledCount: 0, draining: false });
     const job = await getJob(t, "job-1");
     expect(job?.status).toBe("failed");
     expect(job?.errorCode).toBe("CANCELED");

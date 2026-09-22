@@ -826,6 +826,8 @@ describe("NEO-279: Fill teams is admin-gated, and its reads/writes are internal"
   test.each([
     ["listTeamFillSubtree", "internalQuery"],
     ["readTeamFillCards", "internalQuery"],
+    // NEO-296 — the bounded subtree walk that replaced the one-shot read.
+    ["readTeamFillNodes", "internalQuery"],
     ["readTeamFillPlayers", "internalQuery"],
     ["readTeamFillTeams", "internalQuery"],
     ["applyTeamFillChunk", "internalMutation"],

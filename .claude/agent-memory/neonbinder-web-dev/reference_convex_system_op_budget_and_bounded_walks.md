@@ -1,6 +1,6 @@
 ---
 name: reference-convex-system-op-budget-and-bounded-walks
-description: Measured Convex per-transaction operation thresholds in this repo (~900 comfortable, ~1800 straining, ~4000 fails) and the house shape for bounding a whole-batch mutation — a client-driven cursor walk with SEPARATE scan and decide bounds
+description: Measured Convex per-transaction operation thresholds in this repo (~900 comfortable, ~1800 straining, ~4000 fails), that a workpool COMPONENT call costs ~3 invisibly, the house shape for bounding a whole-batch mutation (cursor walk with SEPARATE scan and work bounds), and what to do instead when no caller can drive the loop
 metadata:
   type: reference
 ---
@@ -20,6 +20,14 @@ Count operations per row before picking a size: each indexed read, each
 A loop body that calls a helper (ambiguity check, staging, era resolution) is
 usually 5–10x more expensive than it looks — NEO-294's per-player cost was ~28.
 
+**A COMPONENT call inside a mutation is 2-3 operations, and invisible at the
+call site.** `pool.cancel(ctx, workId)` / `pool.enqueueAction(...)`
+(`@convex-dev/workpool`) are component MUTATIONS running in the caller's own
+transaction, not scheduler hops: they read and write the component's tables
+before returning. A loop over "every in-flight row" that calls one per row is
+the same defect as a loop of `db.patch`, costing triple, and nothing in the
+line `await pool.cancel(...)` says so. Count them at 3 when sizing a page.
+
 **The house bounding shape** (`selectorOptions` reset batches,
 `commitCardChecklist` chunks, `entityReviewQueue.decideAllRemaining`):
 a public function does ONE bounded page, returns `{ <count>, hasMore, cursor }`,
@@ -37,3 +45,32 @@ lands). Bounding "rows read" (large) separately from "rows acted on" (small)
 turned a 754-row re-pass from 31 calls into 4. The cursor must then be the last
 row EXAMINED, not the last row of the page, or the rows a spent work-budget
 left unread are skipped forever.
+
+**When there is NO looping caller, the mutation schedules ITSELF.** Several of
+the worst offenders are reached from a caller you do not own (an action in
+another module, a component that awaits the mutation once), so the
+`{ hasMore, cursor }` shape has nobody to drive it. The working substitute:
+write one bounded page, then `ctx.scheduler.runAfter(0, <this same function>,
+<args>)` for the rest, and keep the public return shape unchanged. Two things
+make it safe:
+
+- **Prefer convergence over a cursor.** If re-invoking with the SAME arguments
+  reaches the same end state (a reconciliation that suppresses what already
+  exists, a delete that re-reads from the head), the continuation needs no
+  state at all and an interrupted chain is finished by the operator's next
+  ordinary action. Only pass an index/cursor when the work is a plain walk over
+  an array the caller re-passes.
+- **Tag the continuation with the id of the thing it continues.** A link
+  landing after the batch was cancelled, committed or superseded will otherwise
+  take the *create* branch and resurrect what the operator just disposed of —
+  a wizard that reopens itself, or rows of a dead batch beside the live one.
+  Cheapest guard: the continuation carries `continueBatchId` and abandons when
+  the current open batch is absent or different (no extra read; decide on the
+  lookup the handler already does).
+
+A scheduled page is invisible downstream only if nothing reads the whole set
+synchronously. Check the consumers first: in `apps/web` the auto-keep checklist
+path already polls `getReadyCandidates` until `total` matches the action's own
+count, so it tolerates a chained write — but a sibling mutation that patches
+rows by id (`resolveCandidateTeams`) had to gain ONE delayed retry, because a
+row it cannot find is silently skipped.

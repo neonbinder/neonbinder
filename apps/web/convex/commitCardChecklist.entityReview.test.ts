@@ -34,6 +34,8 @@ import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "./features/cardAttention";
+import { SKIPPED_NAME_LOOKUP_PAGE } from "./selectorOptions";
+import { normalizePlayerName } from "./players";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -3206,5 +3208,140 @@ describe("commitCardChecklist: pending-name bounds (NEO-246, NEO-251)", () => {
         pendingPlayerNames: repaired.pendingPlayerNames!,
       }),
     ).resolves.toBeNull();
+  });
+});
+
+// ===========================================================================
+// NEO-294 / NEO-296 instance 2 — the skip lookup is asked in BOUNDED SLICES
+//
+// `findSkippedEntityNames` is handed EVERY distinct player and team name the
+// fetch observed, not just the unknown ones, and does one indexed point lookup
+// per name. Convex charges one system operation per CALL, so that loop is one
+// operation per name — and a first-time 2024 Topps Chrome sync hands it ~750.
+// CI run 35771938308's seed job died there, which the operator sees as a bare
+// `Server Error` at the Confirm New Players step, before the wizard opens.
+//
+// `resolveUnknownsAndStartBatch` runs inside an ACTION, which is not a
+// transaction, so the fix is a slice loop rather than a cursor: each slice is
+// its own query and the union of them is exactly what one unbounded call
+// returned. Nothing is truncated, which is what the second test pins by
+// scattering skips across the slice boundaries.
+// ===========================================================================
+
+describe("findSkippedEntityNames is bounded, and its caller slices (NEO-294)", () => {
+  test("the query refuses a list longer than one slice rather than answering short", async () => {
+    // A short answer here is invisible: a name the operator already settled
+    // simply reappears in the wizard on every future fetch, with nothing
+    // anywhere saying why. So the bound is a refusal, not a truncation.
+    const t = convexTest(schema, modules);
+    const { variantTypeId } = await seedVariantTypeUnderChromeSet(t);
+
+    await expect(
+      t.query(internal.selectorOptions.findSkippedEntityNames, {
+        selectorOptionId: variantTypeId,
+        candidates: Array.from(
+          { length: SKIPPED_NAME_LOOKUP_PAGE + 1 },
+          (_, i) => ({
+            kind: "player" as const,
+            nameNormalized: normalizePlayerName(`Rookie${i}`),
+          }),
+        ),
+      }),
+    ).rejects.toThrow(
+      new RegExp(`exceeds the ${SKIPPED_NAME_LOOKUP_PAGE} per call`),
+    );
+
+    // …and exactly one slice is accepted.
+    expect(
+      await t.query(internal.selectorOptions.findSkippedEntityNames, {
+        selectorOptionId: variantTypeId,
+        candidates: Array.from({ length: SKIPPED_NAME_LOOKUP_PAGE }, (_, i) => ({
+          kind: "player" as const,
+          nameNormalized: normalizePlayerName(`Rookie${i}`),
+        })),
+      }),
+    ).toEqual([]);
+  });
+
+  test("a checklist with more names than one slice still suppresses every skip, wherever it falls", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+
+    // Two full slices and a short third, so the walk has to make three calls
+    // and merge all three answers.
+    const total = SKIPPED_NAME_LOOKUP_PAGE * 2 + 9;
+    const names = Array.from({ length: total }, (_, i) => `Rookie${i}`);
+    // Skips on the first name of every slice, the last name of the first
+    // slice, and the final name of the list — the four positions a
+    // one-slice-only or off-by-one loop would lose.
+    const skippedAt = [
+      0,
+      SKIPPED_NAME_LOOKUP_PAGE - 1,
+      SKIPPED_NAME_LOOKUP_PAGE,
+      total - 1,
+    ];
+    await t.run(async (ctx) => {
+      for (const i of skippedAt) {
+        await ctx.db.insert("entityReviewSkips", {
+          selectorOptionId: variantTypeId,
+          kind: "player",
+          nameNormalized: normalizePlayerName(names[i]),
+          name: names[i],
+          skippedAt: Date.now(),
+          skippedByUserId: ADMIN_IDENTITY.subject,
+        });
+      }
+    });
+
+    const resolved = await asAdmin.action(
+      api.selectorOptions.resolveChecklistEntities,
+      {
+        selectorOptionId: variantTypeId,
+        sportId,
+        cards: names.map((name, i) =>
+          makeCard({ cardNumber: String(i + 1), cardName: name, players: [name] }),
+        ),
+      },
+    );
+
+    // Every name is unknown EXCEPT the four settled ones — and they are
+    // dropped before they are counted, not merely left out of the batch.
+    expect(resolved.unknownPlayers.length).toBe(total - skippedAt.length);
+    for (const i of skippedAt) {
+      expect(resolved.unknownPlayers).not.toContain(names[i]);
+    }
+    expect(resolved.unknownPlayers).toContain(names[1]);
+    expect(resolved.unknownPlayers).toContain(names[SKIPPED_NAME_LOOKUP_PAGE + 1]);
+  });
+
+  test("a checklist inside one slice is still a single lookup, and still correct", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("entityReviewSkips", {
+        selectorOptionId: variantTypeId,
+        kind: "player",
+        nameNormalized: normalizePlayerName("CHECKLIST"),
+        name: "CHECKLIST",
+        skippedAt: Date.now(),
+        skippedByUserId: ADMIN_IDENTITY.subject,
+      });
+    });
+
+    const resolved = await asAdmin.action(
+      api.selectorOptions.resolveChecklistEntities,
+      {
+        selectorOptionId: variantTypeId,
+        sportId,
+        cards: [
+          makeCard({ cardNumber: "1", cardName: "Card", players: ["CHECKLIST"] }),
+          makeCard({ cardNumber: "2", cardName: "Trout", players: ["Mike Trout"] }),
+        ],
+      },
+    );
+
+    expect(resolved.unknownPlayers).toEqual(["Mike Trout"]);
   });
 });

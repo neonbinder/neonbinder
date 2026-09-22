@@ -60,6 +60,7 @@ import type { RunResult, WorkId } from "@convex-dev/workpool";
 import { getCurrentUserId, requireAdmin } from "./auth";
 import { fastPreprocessPool } from "./placeholderPool";
 import { heavyPreprocessPool } from "./placeholderHeavyPool";
+import { PLACEHOLDER_MAX_ENTRY_INDEX } from "./lib/placeholderObjects";
 
 /**
  * How many images are handled per chunked mutation — registration, enqueuing,
@@ -679,8 +680,30 @@ export const sweepJobPairs = internalMutation({
 const CANCEL_RESULT_VALIDATOR = v.object({
   canceled: v.boolean(),
   canceledCount: v.number(),
+  /**
+   * NEO-296 — true when some of those `canceledCount` items are being stopped
+   * by a scheduled continuation rather than by this call. The job is ALREADY
+   * terminal either way; this says only that the last of the in-flight work is
+   * still being told to stop, a moment behind the answer.
+   */
+  draining: v.boolean(),
   reason: v.optional(v.string()),
 });
+
+/** Drop `cancelJobImpl`'s internal bookkeeping down to the wire shape. */
+function toCancelResult(result: CancelOutcome): {
+  canceled: boolean;
+  canceledCount: number;
+  draining: boolean;
+  reason?: string;
+} {
+  return {
+    canceled: result.canceled,
+    canceledCount: result.canceledCount,
+    draining: result.draining,
+    ...(result.reason !== undefined ? { reason: result.reason } : {}),
+  };
+}
 
 export const cancelPlaceholderBatch = mutation({
   args: { jobId: v.string() },
@@ -689,7 +712,7 @@ export const cancelPlaceholderBatch = mutation({
     const userId = await requireUserId(ctx);
     const job = await findOwnedJob(ctx, args.jobId, userId);
     if (!job) throw new Error("Job not found");
-    return cancelJobImpl(ctx, job, "user");
+    return toCancelResult(await cancelJobImpl(ctx, job, "user"));
   },
 });
 
@@ -767,16 +790,24 @@ export const seedCancelMyActivePlaceholderJobs = mutation({
 
     let canceled = 0;
     let canceledWorkItems = 0;
+    // NEO-296 — ONE cancel budget across every job this call clears, not one
+    // each. Each `pool.cancel` is ~3 system operations in this transaction, so
+    // a per-job budget would multiply by however many active jobs the caller
+    // has. A job that finds the budget spent is still made terminal — which is
+    // the point of the call — and its work is cancelled by the scheduled
+    // continuation, exactly as a single oversized job's is.
+    let budget = PLACEHOLDER_CANCEL_CHUNK;
     for (const job of ownJobs) {
       if (!ACTIVE_STATUSES.has(job.status)) continue;
       // Through the shared impl, NOT a status patch: an active job may hold
       // in-flight workpool items that have to be cancelled and awaiting_upload
       // rows that have to be swept. `canceledBy: "user"` — this is the caller
       // clearing their OWN runs, not an operator reaching into someone else's.
-      const result = await cancelJobImpl(ctx, job, "user");
+      const result = await cancelJobImpl(ctx, job, "user", budget);
       if (result.canceled) {
         canceled += 1;
         canceledWorkItems += result.canceledCount;
+        budget -= result.issued;
       }
     }
 
@@ -784,40 +815,193 @@ export const seedCancelMyActivePlaceholderJobs = mutation({
   },
 });
 
+/**
+ * NEO-296 — how many in-flight work items one transaction cancels before
+ * handing the rest to a scheduled continuation.
+ *
+ * ## The arithmetic
+ *
+ * `pool.cancel` is a COMPONENT MUTATION that runs inside this transaction, not
+ * a scheduled hop, and it costs ~2-3 system operations that are invisible at
+ * the call site. Everything else a cancel does is fixed: one index read for the
+ * job's image rows, one patch to make the job terminal, and two
+ * `scheduler.runAfter` (the awaiting-upload sweep, and the next chunk when
+ * there is one). So a chunk costs
+ *
+ *     200 cancels x ~3  +  ~4 fixed  =  ~604 operations
+ *
+ * against the ~900 this codebase treats as comfortable — ~1,800 strains and
+ * ~4,000 fails outright (`CARDS_PER_COMMIT_CHUNK` in selectorOptions.ts).
+ * Unchunked, a 1,000-image zip cancelled right after enqueue was ~3,000
+ * operations in one transaction, on the ONE lever that exists for a wedged
+ * batch: if it timed out the user had no way out at all. A job holds at most
+ * PLACEHOLDER_MAX_ENTRY_INDEX + 1 rows, so the worst case is six chunks.
+ *
+ * ## Why only the cancels are bounded, and not the read
+ *
+ * Reading the job's rows is ONE `.take()` — one operation whatever it returns
+ * — so the first call can read the whole job cheaply and report the true
+ * `canceledCount` even though it only issues `budget` of those cancels. That
+ * is what keeps "N queued images canceled" honest for the user while the tail
+ * drains behind them.
+ */
+export const PLACEHOLDER_CANCEL_CHUNK = 200;
+
+/** One in-flight work item a cancel chunk has to stop. */
+export type CancelChunkItem = {
+  workId: string;
+  /** An escalated row's handle belongs to the HEAVY pool, every other to FAST. */
+  escalated: boolean;
+};
+
+/** What one cancel chunk should do, and where the next one resumes. */
+export type CancelChunkPlan = {
+  /**
+   * Every in-flight work item this cancel will stop, across this chunk AND the
+   * ones scheduled behind it — what the user is told, not what this
+   * transaction managed to reach.
+   */
+  inFlight: number;
+  /** The items THIS transaction cancels, in entry-index order. */
+  cancel: Array<CancelChunkItem>;
+  /**
+   * `entryIndex` the next chunk resumes at, or absent when this chunk finished
+   * the job. Always the index of a row this chunk did NOT cancel, so the chain
+   * advances by at least one row per hop and cannot spin.
+   */
+  nextFrom?: number;
+};
+
+/**
+ * Split a page of image rows into "cancel now" and "cancel next time".
+ *
+ * A plain exported function rather than the body of the mutation, for the
+ * reason `recordImageOutcomeImpl` is one: the workpool component cannot be
+ * mounted under convex-test, so the only way to test which items a chunk
+ * picks, what it reports, and where it resumes is to test the decision apart
+ * from the call that would touch the pool.
+ *
+ * `scanTruncated` is the caller's answer to "did the read come back full?".
+ * A job cannot legally hold more than PLACEHOLDER_MAX_ENTRY_INDEX + 1 rows, so
+ * it is a data fault rather than an expected page boundary — but the rows past
+ * the read are reported (a resume point past the last row read) rather than
+ * dropped, because an uncancelled work item is paid work that keeps running.
+ */
+export function planCancelChunk(
+  rows: ReadonlyArray<{
+    entryIndex: number;
+    status: string;
+    workId?: string;
+    escalated?: boolean;
+  }>,
+  budget: number,
+  scanTruncated: boolean,
+): CancelChunkPlan {
+  const cancel: Array<CancelChunkItem> = [];
+  let inFlight = 0;
+  let nextFrom: number | undefined;
+
+  for (const row of rows) {
+    if (!row.workId) continue;
+    if (row.status === "done" || row.status === "failed") continue;
+    inFlight += 1;
+    if (cancel.length < budget) {
+      cancel.push({ workId: row.workId, escalated: row.escalated === true });
+    } else if (nextFrom === undefined) {
+      nextFrom = row.entryIndex;
+    }
+  }
+
+  if (scanTruncated && nextFrom === undefined && rows.length > 0) {
+    nextFrom = rows[rows.length - 1].entryIndex + 1;
+  }
+
+  return { inFlight, cancel, ...(nextFrom !== undefined ? { nextFrom } : {}) };
+}
+
+/** What `cancelJobImpl` tells its callers, including the bookkeeping it keeps to itself. */
+type CancelOutcome = {
+  canceled: boolean;
+  /** In-flight items this cancel stops in total — see `CancelChunkPlan.inFlight`. */
+  canceledCount: number;
+  /** Items this TRANSACTION issued a `pool.cancel` for; the rest are scheduled. */
+  issued: number;
+  /** Some of `canceledCount` are being stopped by a scheduled continuation. */
+  draining: boolean;
+  reason?: string;
+};
+
+/**
+ * Read one page of a job's image rows for the cancel path.
+ *
+ * `PLACEHOLDER_MAX_ENTRY_INDEX + 2` so a job holding every index it legally
+ * may (0..PLACEHOLDER_MAX_ENTRY_INDEX) comes back complete and is NOT mistaken
+ * for a truncated read — the same bound `placeholderWatchdog` reads a whole
+ * job with, plus the one row that tells the two apart.
+ */
+async function readCancelPage(
+  ctx: MutationCtx,
+  jobId: string,
+  from: number,
+): Promise<{ rows: Array<Doc<"placeholderImages">>; scanTruncated: boolean }> {
+  const rows = await ctx.db
+    .query("placeholderImages")
+    .withIndex("by_job_and_index", (q) =>
+      q.eq("jobId", jobId).gte("entryIndex", from),
+    )
+    .take(PLACEHOLDER_MAX_ENTRY_INDEX + 2);
+  const scanTruncated = rows.length > PLACEHOLDER_MAX_ENTRY_INDEX + 1;
+  if (scanTruncated) {
+    // Counts only, no user content: a job holding more rows than its entry
+    // index allows is a bug worth seeing, and the chain keeps going past it.
+    console.warn(
+      `[placeholderPipeline] cancel read came back full at ${rows.length} rows; ` +
+        `continuing past the page rather than leaving work running.`,
+    );
+  }
+  return { rows, scanTruncated };
+}
+
 async function cancelJobImpl(
   ctx: MutationCtx,
   job: Doc<"placeholderJobs">,
   canceledBy: "user" | "admin",
-): Promise<{ canceled: boolean; canceledCount: number; reason?: string }> {
+  budget: number = PLACEHOLDER_CANCEL_CHUNK,
+): Promise<CancelOutcome> {
   if (job.status === "succeeded" || job.status === "failed") {
-    return { canceled: false, canceledCount: 0, reason: `job is already ${job.status}` };
+    return {
+      canceled: false,
+      canceledCount: 0,
+      issued: 0,
+      draining: false,
+      reason: `job is already ${job.status}`,
+    };
   }
 
-  const images = await ctx.db
-    .query("placeholderImages")
-    .withIndex("by_job_and_index", (q) => q.eq("jobId", job.jobId))
-    .collect();
+  const { rows, scanTruncated } = await readCancelPage(ctx, job.jobId, 0);
+  const plan = planCancelChunk(rows, budget, scanTruncated);
 
-  let canceledCount = 0;
-  for (const image of images) {
-    if (!image.workId) continue;
-    if (image.status === "done" || image.status === "failed") continue;
+  for (const item of plan.cancel) {
     // An escalated row's `workId` is a HEAVY-pool handle; every other in-flight
     // row's is a FAST-pool handle. Cancelling on the wrong pool would silently
     // no-op and leave real work running, so the tier decides which pool.
     // `WorkId` is a phantom-branded string; the stored column is a plain string
     // because the brand exists only in TypeScript.
-    const pool = image.escalated ? heavyPreprocessPool : fastPreprocessPool;
-    await pool.cancel(ctx, image.workId as WorkId);
-    canceledCount += 1;
+    const pool = item.escalated ? heavyPreprocessPool : fastPreprocessPool;
+    await pool.cancel(ctx, item.workId as WorkId);
   }
 
+  // The terminal patch lands in THIS transaction, whatever the remainder does.
+  // That is the whole point of the chunking: the job is out of the user's way
+  // and startable again the moment they ask, and `finishedAt` doubles as the
+  // token the continuation checks itself against (see `cancelRemainingWork`).
+  const canceledAt = Date.now();
   await ctx.db.patch(job._id, {
     status: "failed",
     errorCode: "CANCELED",
     errorDetail:
       canceledBy === "admin" ? "canceled by an administrator" : "canceled by user",
-    finishedAt: Date.now(),
+    finishedAt: canceledAt,
   });
 
   // Unconditional rather than gated on `mode === "stream"`, for the same
@@ -831,8 +1015,99 @@ async function cancelJobImpl(
     from: 0,
   });
 
-  return { canceled: true, canceledCount };
+  if (plan.nextFrom !== undefined) {
+    await ctx.scheduler.runAfter(0, internal.placeholderPipeline.cancelRemainingWork, {
+      jobId: job.jobId,
+      from: plan.nextFrom,
+      canceledAt,
+    });
+  }
+
+  return {
+    canceled: true,
+    canceledCount: plan.inFlight,
+    issued: plan.cancel.length,
+    draining: plan.nextFrom !== undefined,
+  };
 }
+
+/**
+ * NEO-296 — cancel the work a `cancelJobImpl` chunk did not reach, then
+ * self-schedule until none is left. The `sweepAwaitingUploads` shape, applied
+ * to the pool instead of to rows.
+ *
+ * ## It re-checks that the cancel it was scheduled for still owns the job
+ *
+ * "failed / CANCELED" is a STARTABLE status: the user can restart the batch a
+ * second after cancelling it, and `registerExtractedImages` then writes fresh
+ * `workId`s over the very rows this chain was walking. A continuation that
+ * only checked "is this job cancelled?" would cancel the restart's work. So it
+ * checks `finishedAt` against the `canceledAt` it was handed — the timestamp
+ * the cancelling transaction wrote — and stops dead when anything else has
+ * touched the job since. A restart, a second cancel, a deleted job: all the
+ * same answer, which is to do nothing.
+ *
+ * ## Replaying a chunk is harmless
+ *
+ * Nothing here writes to the image rows, so a chunk re-run with the same
+ * cursor re-issues cancels the pool has already applied, which is a no-op on
+ * an item that is already cancelled or already finished. The cursor is what
+ * makes the chain terminate rather than what makes it correct: `nextFrom` is
+ * always a row this chunk did not cancel, and the next chunk cancels it, so
+ * the resume point strictly advances.
+ */
+export const cancelRemainingWork = internalMutation({
+  args: {
+    jobId: v.string(),
+    /** `entryIndex` to resume at — inclusive. */
+    from: v.number(),
+    /** The `finishedAt` of the cancel this chain belongs to. */
+    canceledAt: v.number(),
+  },
+  returns: v.object({
+    canceled: v.number(),
+    done: v.boolean(),
+    /**
+     * Where the next chunk resumes, absent on the last one. Returned as well
+     * as scheduled for the reason `sweepAwaitingUploads` returns its cursor:
+     * convex-test does not auto-run scheduled functions, so a caller replaying
+     * the chain by hand needs the value the chunk computed.
+     */
+    nextFrom: v.optional(v.number()),
+  }),
+  handler: async (ctx, args) => {
+    const job = await findJob(ctx, args.jobId);
+    if (
+      !job ||
+      job.status !== "failed" ||
+      job.errorCode !== "CANCELED" ||
+      job.finishedAt !== args.canceledAt
+    ) {
+      // Someone else owns the job now — a restart, a later cancel, or it is
+      // gone. Cancelling from here would be cancelling their work.
+      return { canceled: 0, done: true };
+    }
+
+    const { rows, scanTruncated } = await readCancelPage(ctx, args.jobId, args.from);
+    const plan = planCancelChunk(rows, PLACEHOLDER_CANCEL_CHUNK, scanTruncated);
+
+    for (const item of plan.cancel) {
+      const pool = item.escalated ? heavyPreprocessPool : fastPreprocessPool;
+      await pool.cancel(ctx, item.workId as WorkId);
+    }
+
+    if (plan.nextFrom !== undefined) {
+      await ctx.scheduler.runAfter(0, internal.placeholderPipeline.cancelRemainingWork, {
+        jobId: args.jobId,
+        from: plan.nextFrom,
+        canceledAt: args.canceledAt,
+      });
+      return { canceled: plan.cancel.length, done: false, nextFrom: plan.nextFrom };
+    }
+
+    return { canceled: plan.cancel.length, done: true };
+  },
+});
 
 // ---------------------------------------------------------------------------
 // Internal: batch registration and fan-out
@@ -2354,6 +2629,6 @@ export const adminCancelPlaceholderBatch = mutation({
       }),
     );
 
-    return cancelJobImpl(ctx, job, "admin");
+    return toCancelResult(await cancelJobImpl(ctx, job, "admin"));
   },
 });

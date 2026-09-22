@@ -333,5 +333,21 @@ describe("the seed's first Base commit saves every card", () => {
     // enrichment, so discarding the tail is the honest description.
     await drainScheduled(t);
     await cancelScheduled(t);
-  });
+  },
+  /*
+   * NEO-294 — an explicit timeout, because 5s was never a budget anyone chose
+   * for this test.
+   *
+   * This is deliberately the SEED'S fixture — 335 BSC cards paired against 300
+   * SportLots ones, fetched, paired, reviewed and committed through the real
+   * action — and it runs in ~3.1s on an idle machine. Vitest's 5s default left
+   * under two seconds of headroom, so it passed alone and timed out in a full
+   * eight-worker run, which is the shape of a test nobody can trust. (NEO-294
+   * added two finalize round trips for a checklist this size; they are
+   * milliseconds, and the margin was already the problem.)
+   *
+   * 20s is not licence for this test to get slower — if it approaches that,
+   * the commit path has regressed and that is the finding.
+   */
+  20000);
 });

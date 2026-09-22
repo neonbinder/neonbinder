@@ -28,6 +28,7 @@ import {
   TEAM_FILL_APPLY_CHUNK,
   TEAM_FILL_DRIFT_MESSAGE,
   TEAM_FILL_ID_CHUNK,
+  TEAM_FILL_NODE_CHUNK,
 } from "./teamFill";
 import { TEAM_FILL_GROUP_NODE_CAP } from "./lib/teamFill";
 import { MAX_CARD_TEAMS } from "./features/cardAttention";
@@ -839,35 +840,147 @@ describe("applyTeamFill", () => {
 // ===========================================================================
 
 describe("listTeamFillSubtree", () => {
-  test("returns the root first, then every descendant with its level, parent and isBase role", async () => {
+  test("returns the root with its level, parent, isBase role and children", async () => {
     const t = convexTest(schema, modules);
-    const { setNameId, variantTypeId, insertId, parallelId } = await seedTree(t);
+    const { setNameId, sportId, variantTypeId } = await seedTree(t);
     const result = await t.query(internal.teamFill.listTeamFillSubtree, {
       selectorOptionId: setNameId,
     });
-    expect(result.nodes[0]).toEqual({ _id: setNameId, level: "setName", parentId: expect.any(String), isBase: false });
-    expect(result.nodes.slice(1)).toEqual(
-      expect.arrayContaining([
-        { _id: variantTypeId, level: "variantType", parentId: setNameId, isBase: true },
-        { _id: insertId, level: "insert", parentId: variantTypeId, isBase: false },
-        { _id: parallelId, level: "parallel", parentId: insertId, isBase: false },
-      ]),
-    );
-    expect(result.nodes).toHaveLength(4);
+    expect(result.root).toEqual({
+      _id: setNameId,
+      level: "setName",
+      parentId: sportId,
+      isBase: false,
+      childIds: [variantTypeId],
+    });
     expect(result.setYear).toBe(2024);
+    expect(result.sportId).toBe(sportId);
+  });
+
+  test("refuses a root that is not a setName row", async () => {
+    const t = convexTest(schema, modules);
+    const { variantTypeId } = await seedTree(t);
+    await expect(
+      t.query(internal.teamFill.listTeamFillSubtree, { selectorOptionId: variantTypeId }),
+    ).rejects.toThrow(/not a variant or parallel/i);
+  });
+});
+
+// ===========================================================================
+// readTeamFillNodes — the bounded subtree walk (NEO-296)
+// ===========================================================================
+
+describe("readTeamFillNodes", () => {
+  test("projects each id once, with the children the next step follows", async () => {
+    const t = convexTest(schema, modules);
+    const { setNameId, variantTypeId, insertId, parallelId } = await seedTree(t);
+    const rows = await t.query(internal.teamFill.readTeamFillNodes, {
+      nodeIds: [variantTypeId, insertId, parallelId],
+    });
+    expect(rows).toEqual([
+      { _id: variantTypeId, level: "variantType", parentId: setNameId, isBase: true, childIds: [insertId] },
+      { _id: insertId, level: "insert", parentId: variantTypeId, isBase: false, childIds: [parallelId] },
+      { _id: parallelId, level: "parallel", parentId: insertId, isBase: false, childIds: [] },
+    ]);
   });
 
   test("isBase is the metadata ROLE, never the display value", async () => {
     const t = convexTest(schema, modules);
-    const { setNameId, variantTypeId } = await seedTree(t, { isBase: false });
-    const result = await t.query(internal.teamFill.listTeamFillSubtree, {
-      selectorOptionId: setNameId,
+    const { variantTypeId } = await seedTree(t, { isBase: false });
+    const [base] = await t.query(internal.teamFill.readTeamFillNodes, {
+      nodeIds: [variantTypeId],
     });
-    const base = result.nodes.find((node) => node._id === variantTypeId);
     expect(base).toMatchObject({ level: "variantType", isBase: false });
     // The row IS named "Base"; that is exactly what must not count.
     const row = await t.run(async (ctx) => ctx.db.get(variantTypeId));
     expect(row!.value).toBe("Base");
+  });
+
+  test("a dangling child id is omitted rather than answered as a node", async () => {
+    const t = convexTest(schema, modules);
+    const { insertId, parallelId } = await seedTree(t);
+    await t.run(async (ctx) => ctx.db.delete(parallelId));
+    const rows = await t.query(internal.teamFill.readTeamFillNodes, {
+      nodeIds: [insertId, parallelId],
+    });
+    expect(rows.map((row) => row._id)).toEqual([insertId]);
+  });
+
+  test("refuses more ids than TEAM_FILL_NODE_CHUNK rather than answering short", async () => {
+    const t = convexTest(schema, modules);
+    const { setNameId } = await seedTree(t);
+    const tooMany = Array.from({ length: TEAM_FILL_NODE_CHUNK + 1 }, () => setNameId);
+    await expect(
+      t.query(internal.teamFill.readTeamFillNodes, { nodeIds: tooMany }),
+    ).rejects.toThrow(new RegExp(`chunks of ${TEAM_FILL_NODE_CHUNK}`));
+  });
+
+  test("a subtree wider than one chunk is walked in full by preview and apply", async () => {
+    // The node walk pages at TEAM_FILL_NODE_CHUNK; a card sitting on a node in
+    // the SECOND page must be planned and written exactly like one in the
+    // first. Without the page loop the preview would silently promise less
+    // than the set holds.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, setNameId, variantTypeId, insertId } = await seedTree(t);
+    const padres = await insertTeam(t, sportId, "San Diego Padres");
+    const gwynn = await insertPlayer(t, sportId, "Tony Gwynn");
+
+    const extra = await t.run(async (ctx) => {
+      const ids: Array<Id<"selectorOptions">> = [];
+      for (let i = 0; i < TEAM_FILL_NODE_CHUNK + 4; i += 1) {
+        ids.push(
+          await ctx.db.insert("selectorOptions", {
+            level: "parallel",
+            value: `Refractor ${i}`,
+            platformData: {},
+            parentId: insertId,
+            children: [],
+            lastUpdated: Date.now(),
+          }),
+        );
+      }
+      const parent = (await ctx.db.get(insertId))!;
+      await ctx.db.patch(insertId, { children: [...(parent.children ?? []), ...ids] });
+      return ids;
+    });
+    const lastNode = extra[extra.length - 1];
+
+    // Evidence on the base checklist, the teamless card on the very last node.
+    await insertCard(t, variantTypeId, { cardNumber: "1", playerIds: [gwynn], teamOnCardIds: [padres] });
+    const target = await insertCard(t, lastNode, { cardNumber: "1", playerIds: [gwynn] });
+
+    const preview = await asAdmin.action(api.teamFill.previewTeamFill, {
+      selectorOptionId: setNameId,
+    });
+    expect(preview.fillable).toBe(1);
+
+    const result = await asAdmin.action(api.teamFill.applyTeamFill, {
+      selectorOptionId: setNameId,
+      expectedFillable: preview.fillable,
+    });
+    expect(result.applied).toBe(1);
+    expect((await getCard(t, target))!.teamOnCardIds).toEqual([padres]);
+  });
+
+  test("a children cycle is visited once rather than walked forever", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, setNameId, variantTypeId, parallelId } = await seedTree(t);
+    // A hand-edited `children` pointing back up the tree. The walk's queued
+    // set is what keeps this a finite read rather than a hang.
+    await t.run(async (ctx) => ctx.db.patch(parallelId, { children: [setNameId] }));
+    const padres = await insertTeam(t, sportId, "San Diego Padres");
+    const gwynn = await insertPlayer(t, sportId, "Tony Gwynn");
+    await insertCard(t, variantTypeId, { cardNumber: "1", playerIds: [gwynn], teamOnCardIds: [padres] });
+    const target = await insertCard(t, parallelId, { cardNumber: "1", playerIds: [gwynn] });
+
+    const preview = await asAdmin.action(api.teamFill.previewTeamFill, {
+      selectorOptionId: setNameId,
+    });
+    expect(preview.fillable).toBe(1);
+    expect(preview.candidates).toBe(1);
+    expect(target).toBeDefined();
   });
 });
 

@@ -35,6 +35,8 @@ import type { Doc, Id } from "./_generated/dataModel";
 import {
   recordImageOutcomeImpl,
   resolveMaxActiveJobsPerUser,
+  planCancelChunk,
+  PLACEHOLDER_CANCEL_CHUNK,
   DEFAULT_MAX_ACTIVE_JOBS_PER_USER,
 } from "./placeholderPipeline";
 
@@ -1371,6 +1373,187 @@ describe("cancelPlaceholderBatch", () => {
     });
     // Recovery costs one image, not two.
     expect(result.keptDone).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-296 — the cancel chunk: what one transaction stops, and what it hands on
+// ---------------------------------------------------------------------------
+
+describe("planCancelChunk", () => {
+  /** `n` in-flight rows, entry indexes 0..n-1. */
+  const inFlightRows = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      entryIndex: i,
+      status: "processing",
+      workId: `w${i}`,
+    }));
+
+  test("a job smaller than the budget is one chunk with nowhere to resume", () => {
+    const plan = planCancelChunk(inFlightRows(3), PLACEHOLDER_CANCEL_CHUNK, false);
+    expect(plan.inFlight).toBe(3);
+    expect(plan.cancel.map((item) => item.workId)).toEqual(["w0", "w1", "w2"]);
+    expect(plan.nextFrom).toBeUndefined();
+  });
+
+  test("skips rows the cancel has no business touching", () => {
+    const plan = planCancelChunk(
+      [
+        { entryIndex: 0, status: "awaiting_upload" }, // never enqueued
+        { entryIndex: 1, status: "done", workId: "w1" }, // already finished
+        { entryIndex: 2, status: "failed", workId: "w2" },
+        { entryIndex: 3, status: "processing", workId: "w3" },
+      ],
+      PLACEHOLDER_CANCEL_CHUNK,
+      false,
+    );
+    expect(plan.inFlight).toBe(1);
+    expect(plan.cancel).toEqual([{ workId: "w3", escalated: false }]);
+  });
+
+  test("an escalated row is cancelled on the heavy pool, not the fast one", () => {
+    const plan = planCancelChunk(
+      [
+        { entryIndex: 0, status: "processing", workId: "fast", escalated: false },
+        { entryIndex: 1, status: "processing", workId: "heavy", escalated: true },
+      ],
+      PLACEHOLDER_CANCEL_CHUNK,
+      false,
+    );
+    expect(plan.cancel).toEqual([
+      { workId: "fast", escalated: false },
+      { workId: "heavy", escalated: true },
+    ]);
+  });
+
+  test("a spent budget reports the WHOLE count and resumes at the first row it left", () => {
+    // What the user is told ("N queued images canceled") is every item this
+    // cancel stops, not the slice one transaction reached.
+    const plan = planCancelChunk(inFlightRows(10), 4, false);
+    expect(plan.inFlight).toBe(10);
+    expect(plan.cancel).toHaveLength(4);
+    expect(plan.nextFrom).toBe(4);
+  });
+
+  test("the chain resumes on a row it did not cancel, so it always advances", () => {
+    let from = 0;
+    const rows = inFlightRows(10);
+    const cancelled: string[] = [];
+    for (let guard = 0; guard < 10; guard += 1) {
+      const plan = planCancelChunk(
+        rows.filter((row) => row.entryIndex >= from),
+        3,
+        false,
+      );
+      cancelled.push(...plan.cancel.map((item) => item.workId));
+      if (plan.nextFrom === undefined) break;
+      expect(plan.nextFrom).toBeGreaterThan(from);
+      from = plan.nextFrom;
+    }
+    expect(cancelled).toEqual(rows.map((row) => row.workId));
+  });
+
+  test("a read that came back full is carried past, never dropped", () => {
+    // Everything read was cancelled, but the page was full: rows may exist
+    // beyond it and an uncancelled work item is paid work still running.
+    const plan = planCancelChunk(inFlightRows(5), PLACEHOLDER_CANCEL_CHUNK, true);
+    expect(plan.cancel).toHaveLength(5);
+    expect(plan.nextFrom).toBe(5);
+  });
+
+  test("a truncated read of nothing has nowhere to resume", () => {
+    expect(planCancelChunk([], PLACEHOLDER_CANCEL_CHUNK, true).nextFrom).toBeUndefined();
+  });
+});
+
+describe("cancelRemainingWork", () => {
+  /** Cancel `job-active`, leaving it terminal, and hand back its `finishedAt`. */
+  async function cancelAndGetToken(t: ReturnType<typeof convexTest>) {
+    await t.withIdentity(USER_A).mutation(api.placeholderPipeline.cancelPlaceholderBatch, {
+      jobId: JOB_A,
+    });
+    const job = await getJob(t, JOB_A);
+    return job!.finishedAt!;
+  }
+
+  test("a cancel with nothing in flight says so and leaves no continuation", async () => {
+    const t = harness();
+    await seedJob(t, { status: "processing", totalImages: 1 });
+    await seedImage(t, JOB_A, 0, USER_A.subject, "processing");
+
+    const result = await t
+      .withIdentity(USER_A)
+      .mutation(api.placeholderPipeline.cancelPlaceholderBatch, { jobId: JOB_A });
+    expect(result).toEqual({ canceled: true, canceledCount: 0, draining: false });
+
+    const scheduled = await t.run(async (ctx) =>
+      ctx.db.system.query("_scheduled_functions").collect(),
+    );
+    // Only the awaiting-upload sweep the cancel has always scheduled.
+    expect(scheduled.map((row) => row.name)).toEqual([
+      "placeholderStream:sweepAwaitingUploads",
+    ]);
+  });
+
+  test("stops when a restart has taken the job over", async () => {
+    // "failed / CANCELED" is a startable status: the user can restart a second
+    // later and `registerExtractedImages` writes fresh workIds onto these very
+    // rows. A continuation that only asked "is it cancelled?" would cancel the
+    // restart's work.
+    const t = harness();
+    await seedJob(t, { status: "processing", totalImages: 1 });
+    await seedImage(t, JOB_A, 0, USER_A.subject, "processing");
+    const canceledAt = await cancelAndGetToken(t);
+
+    await t
+      .withIdentity(USER_A)
+      .mutation(api.placeholderPipeline.startPlaceholderBatch, { jobId: JOB_A });
+
+    const result = await t.mutation(internal.placeholderPipeline.cancelRemainingWork, {
+      jobId: JOB_A,
+      from: 0,
+      canceledAt,
+    });
+    expect(result).toEqual({ canceled: 0, done: true });
+  });
+
+  test("stops when a LATER cancel owns the job", async () => {
+    const t = harness();
+    await seedJob(t, { status: "processing", totalImages: 1 });
+    const canceledAt = await cancelAndGetToken(t);
+
+    const result = await t.mutation(internal.placeholderPipeline.cancelRemainingWork, {
+      jobId: JOB_A,
+      from: 0,
+      // A token from a cancel that is not the one on the job row.
+      canceledAt: canceledAt - 1,
+    });
+    expect(result).toEqual({ canceled: 0, done: true });
+  });
+
+  test("stops on a job that no longer exists", async () => {
+    const t = harness();
+    const result = await t.mutation(internal.placeholderPipeline.cancelRemainingWork, {
+      jobId: "job-gone",
+      from: 0,
+      canceledAt: 1,
+    });
+    expect(result).toEqual({ canceled: 0, done: true });
+  });
+
+  test("a resumed chunk with nothing left to cancel ends the chain", async () => {
+    const t = harness();
+    await seedJob(t, { status: "processing", totalImages: 2 });
+    await seedImage(t, JOB_A, 0, USER_A.subject, "done");
+    await seedImage(t, JOB_A, 1, USER_A.subject, "processing");
+    const canceledAt = await cancelAndGetToken(t);
+
+    const result = await t.mutation(internal.placeholderPipeline.cancelRemainingWork, {
+      jobId: JOB_A,
+      from: 1,
+      canceledAt,
+    });
+    expect(result).toEqual({ canceled: 0, done: true });
   });
 });
 

@@ -113,10 +113,20 @@ const MAX_REPORTED = 50;
 const SCAN_LIMIT = 4000;
 
 /**
- * Moves per run. Each is a row patch plus two `children` patches, so this is
- * a WRITE bound, not a read one. Self-healing: see the header.
+ * Moves per run. A WRITE bound, not a read one, and self-healing: see the
+ * header.
+ *
+ * The cost is one `db.patch` per row — the `children` patches on the source
+ * and the target are per CALL to `rehomeSetRowsToBrand`, not per row, and
+ * every row this backfill moves comes from the same source (the year's
+ * Unknown bucket). So one run costs roughly `MAX_MOVES_PER_RUN` plus ~6 per
+ * distinct target brand (its `ensureBrandRowForName`, its sibling read, its
+ * two `children` patches). At 400 moves across even 40 brands that is ~640
+ * system operations against the ~900 a transaction is comfortable with
+ * (`CARDS_PER_COMMIT_CHUNK`'s calibration). 500 left too little room once a
+ * year matched enough distinct brands.
  */
-const MAX_MOVES_PER_RUN = 500;
+const MAX_MOVES_PER_RUN = 400;
 
 type RowAction =
   /** Matched a known brand and was (or would be) re-homed to it. */
