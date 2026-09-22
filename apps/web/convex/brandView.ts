@@ -21,6 +21,7 @@ import {
 } from "./platformSlots";
 import { selectorOptionFields } from "./schema";
 import { MAX_SELECTOR_VALUE_LENGTH, selectorValueKey } from "./selectorSyncMatch";
+import { MAX_YEAR_SET_ROWS } from "./setFromMarketplace";
 import { SL_ALL_BRANDS_BRAND_ID, isSlAllBrandsBrandId } from "./slBrandAxis";
 
 /**
@@ -458,6 +459,16 @@ export const getBrandsForYearOfSet = query({
 });
 
 /**
+ * NEO-294 (audit condition 2) — the refusal when the destination brand holds
+ * more sets than the clash check may read. Named and exported so the test and
+ * the operator read the same sentence.
+ */
+export const setMoveTargetTooLargeRefusal = (brandName: string): string =>
+  `${brandName} has more than ${MAX_YEAR_SET_ROWS} sets — too many to check ` +
+  `this set's name against without risking two sets of one name under it. ` +
+  `Nothing moved.`;
+
+/**
  * NEO-294 — move one set under a different brand of the same year.
  *
  * The operator's undo for every automatic placement: the prefix re-home, the
@@ -501,7 +512,11 @@ export const getBrandsForYearOfSet = query({
  *    rule. NOTHING IS MERGED AND NOTHING IS DELETED: two same-named sets under
  *    one brand is a question about which is which, and this mutation must not
  *    answer it. The refusal names the set already there so the operator can go
- *    and rename one of them.
+ *    and rename one of them;
+ *  - the target holds more than `MAX_YEAR_SET_ROWS` sets, so that same check
+ *    cannot be made at all (`setMoveTargetTooLargeRefusal`). It fails CLOSED:
+ *    a half-read sibling list would let the move create the very duplicate
+ *    the check exists to prevent.
  *
  * Returns the destination's NB name for the panel's toast; the panel has the
  * name already, but a confirmation that echoes the SERVER's row is the one
@@ -555,13 +570,24 @@ export const moveSetToBrand = mutation({
     // the set in the way: `rehomeSetRowsToBrand` COUNTS a clash and leaves the
     // row where it is, which is right for a sync moving many rows and silent
     // for one moving exactly one.
+    //
+    // BOUNDED, AND FAILS CLOSED (NEO-294 audit, condition 2). Unknown is a
+    // legal destination for this control and is the biggest "brand" in every
+    // year — 955 sets on dev — so this read gets the same bound as the year
+    // index (`MAX_YEAR_SET_ROWS`). A truncated list cannot answer "is this
+    // name taken?", and moving the row on a half-read answer would put two
+    // fold-equal names under one parent, which is the rule this mutation
+    // exists to uphold. So overflow REFUSES rather than moving.
     const key = selectorValueKey(set.value);
     const targetSets = await ctx.db
       .query("selectorOptions")
       .withIndex("by_level_and_parent", (q) =>
         q.eq("level", "setName").eq("parentId", target._id),
       )
-      .collect();
+      .take(MAX_YEAR_SET_ROWS + 1);
+    if (targetSets.length > MAX_YEAR_SET_ROWS) {
+      throw new ConvexError(setMoveTargetTooLargeRefusal(target.value));
+    }
     const clash = targetSets.find((row) => selectorValueKey(row.value) === key);
     if (clash) {
       throw new ConvexError({

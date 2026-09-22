@@ -176,14 +176,22 @@ function set(value: string, platformValue: string): MarketplaceSetEntry {
   return { value, platformValue };
 }
 
+/**
+ * A holder row. `value` is POSITIONAL and required, because it is the name
+ * `routeBscSets` routes an existing row by (NEO-294 audit, condition 1) —
+ * spelling it out at every call site is the point: a test that gives a
+ * holder the marketplace's spelling is asserting that the two agree.
+ */
 function holder(
   rowId: Id,
   parentId: Id,
+  value: string,
   opts: { setByOperator?: boolean } = {},
 ): BscSetHolder<Id> {
   return {
     rowId,
     parentId,
+    value,
     ...(opts.setByOperator !== undefined
       ? { setByOperator: opts.setByOperator }
       : {}),
@@ -237,7 +245,7 @@ describe("routeBscSets", () => {
         mfr("panini", { prefix: "Panini" }),
       ],
       holdersByBscId: new Map([
-        ["bsc-1", [holder("row-1", "topps")]],
+        ["bsc-1", [holder("row-1", "topps", "Topps Chrome")]],
       ]),
     });
     expect(plan.buckets.get("topps")).toEqual([set("Panini Prizm", "bsc-1")]);
@@ -245,11 +253,13 @@ describe("routeBscSets", () => {
     expect(plan.moves).toEqual([]);
   });
 
-  test("id under Unknown + label prefix-matches a brand → re-home and bucket under the brand", () => {
+  test("id under Unknown + the ROW's own name prefix-matches a brand → re-home and bucket under the brand", () => {
     const plan = routeBscSets({
       sets: [set("Topps Chrome", "bsc-1")],
       manufacturers: [mfr("topps", { prefix: "Topps" }), mfr("unk", { unknown: true })],
-      holdersByBscId: new Map([["bsc-1", [holder("row-1", "unk")]]]),
+      holdersByBscId: new Map([
+        ["bsc-1", [holder("row-1", "unk", "Topps Chrome")]],
+      ]),
     });
     expect(plan.buckets.get("topps")).toEqual([set("Topps Chrome", "bsc-1")]);
     expect(plan.moves).toEqual([
@@ -257,11 +267,13 @@ describe("routeBscSets", () => {
     ]);
   });
 
-  test("id under Unknown + no matching prefix → stays in Unknown, in place (no move)", () => {
+  test("id under Unknown + the row's name matches no prefix → stays in Unknown, in place (no move)", () => {
     const plan = routeBscSets({
       sets: [set("Some Odd Set", "bsc-1")],
       manufacturers: [mfr("topps", { prefix: "Topps" }), mfr("unk", { unknown: true })],
-      holdersByBscId: new Map([["bsc-1", [holder("row-1", "unk")]]]),
+      holdersByBscId: new Map([
+        ["bsc-1", [holder("row-1", "unk", "Some Odd Set")]],
+      ]),
     });
     expect(plan.unknown).toEqual([set("Some Odd Set", "bsc-1")]);
     expect(plan.moves).toEqual([]);
@@ -292,7 +304,13 @@ describe("routeBscSets", () => {
       sets: [set("Shared Set", "bsc-1")],
       manufacturers: [mfr("topps", { prefix: "Topps" }), mfr("panini", { prefix: "Panini" })],
       holdersByBscId: new Map([
-        ["bsc-1", [holder("row-topps", "topps"), holder("row-panini", "panini")]],
+        [
+          "bsc-1",
+          [
+            holder("row-topps", "topps", "Shared Set"),
+            holder("row-panini", "panini", "Shared Set"),
+          ],
+        ],
       ]),
     });
     expect(plan.buckets.get("topps")).toEqual([set("Shared Set", "bsc-1")]);
@@ -309,7 +327,9 @@ describe("routeBscSets", () => {
     const plan = routeBscSets({
       sets: [set("Orphaned Set", "bsc-1")],
       manufacturers: [mfr("topps", { prefix: "Topps" })],
-      holdersByBscId: new Map([["bsc-1", [holder("row-1", "deleted-parent")]]]),
+      holdersByBscId: new Map([
+        ["bsc-1", [holder("row-1", "deleted-parent", "Orphaned Set")]],
+      ]),
     });
     expect(plan.buckets.get("deleted-parent")).toEqual([
       set("Orphaned Set", "bsc-1"),
@@ -321,7 +341,9 @@ describe("routeBscSets", () => {
     const plan = routeBscSets({
       sets: [set("Topps Chrome", "bsc-1"), set("Topps Chrome", "bsc-1")],
       manufacturers: [mfr("topps", { prefix: "Topps" }), mfr("unk", { unknown: true })],
-      holdersByBscId: new Map([["bsc-1", [holder("row-1", "unk")]]]),
+      holdersByBscId: new Map([
+        ["bsc-1", [holder("row-1", "unk", "Topps Chrome")]],
+      ]),
     });
     expect(plan.moves).toEqual([
       { rowId: "row-1", fromId: "unk", toId: "topps" },
@@ -619,7 +641,9 @@ describe("routeBscSets and the known-brands list (NEO-294)", () => {
     const plan = routeBscSets({
       sets: [set("Choice Biloxi Shuckers", "bsc-1")],
       manufacturers: [mfr("topps", { prefix: "Topps" }), mfr("unk", { unknown: true })],
-      holdersByBscId: new Map([["bsc-1", [holder("row-1", "topps")]]]),
+      holdersByBscId: new Map([
+        ["bsc-1", [holder("row-1", "topps", "Choice Biloxi Shuckers")]],
+      ]),
       matchKnownBrand,
     });
     expect(plan.buckets.get("topps")).toEqual([
@@ -634,7 +658,14 @@ describe("routeBscSets and the known-brands list (NEO-294)", () => {
       sets: [set("Choice Biloxi Shuckers", "bsc-1")],
       manufacturers: [mfr("unk", { unknown: true })],
       holdersByBscId: new Map([
-        ["bsc-1", [holder("row-1", "unk", { setByOperator: true })]],
+        [
+          "bsc-1",
+          [
+            holder("row-1", "unk", "Choice Biloxi Shuckers", {
+              setByOperator: true,
+            }),
+          ],
+        ],
       ]),
       matchKnownBrand,
     });
@@ -651,7 +682,10 @@ describe("routeBscSets and the known-brands list (NEO-294)", () => {
       sets: [set("Topps Chrome", "bsc-1")],
       manufacturers: [mfr("topps", { prefix: "Topps" }), mfr("unk", { unknown: true })],
       holdersByBscId: new Map([
-        ["bsc-1", [holder("row-1", "unk", { setByOperator: true })]],
+        [
+          "bsc-1",
+          [holder("row-1", "unk", "Topps Chrome", { setByOperator: true })],
+        ],
       ]),
       matchKnownBrand,
     });
@@ -688,7 +722,9 @@ describe("routeBscSets and the known-brands list (NEO-294)", () => {
     // brands, route again with them in `manufacturers`. The re-route is what
     // produces the bucket and the move; the first pass only asks.
     const sets = [set("Choice Biloxi Shuckers", "bsc-1")];
-    const holders = new Map([["bsc-1", [holder("row-1", "unk")]]]);
+    const holders = new Map([
+      ["bsc-1", [holder("row-1", "unk", "Choice Biloxi Shuckers")]],
+    ]);
     const first = routeBscSets({
       sets,
       manufacturers: [mfr("unk", { unknown: true })],
@@ -727,5 +763,134 @@ describe("routeBscSets and the known-brands list (NEO-294)", () => {
       set("Philadelphia Phillies Team Issue", "bsc-1"),
     ]);
     expect(plan.knownBrandRequests).toEqual([]);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// NEO-294 audit, condition 1 — WHOSE NAME MOVES AN EXISTING ROW
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * A row NB already has is routed by ITS OWN name; only a set NB has no row
+ * for is routed by the marketplace's. The scenario these pin: an operator
+ * renames a set sitting under Unknown (ordinary set rows are renameable —
+ * the NEO-211 door), and the marketplace goes on returning the name it was
+ * created from. Routing on the marketplace's name would mint a brand and
+ * re-parent the operator's row on the strength of a value NB no longer uses
+ * — a marketplace silently moving NB data after creation, which product
+ * invariants 3 and 4 forbid.
+ *
+ * Both tests FAIL on the pre-fix behaviour (`brandByPrefix(set.value)` /
+ * `matchKnownBrand(set.value)` on the holder rung).
+ */
+describe("routeBscSets routes an EXISTING row by the NB name (NEO-294 audit)", () => {
+  test("a renamed row under Unknown is NOT re-parented by the marketplace's old name", () => {
+    // BSC still calls it "Choice Biloxi Shuckers"; NB's row is now
+    // "Biloxi Shuckers Team Set", which no brand prefix claims.
+    const plan = routeBscSets({
+      sets: [set("Choice Biloxi Shuckers", "bsc-1")],
+      manufacturers: [
+        mfr("unk", { unknown: true }),
+        mfr("choice", { prefix: "Choice" }),
+      ],
+      holdersByBscId: new Map([
+        ["bsc-1", [holder("row-1", "unk", "Biloxi Shuckers Team Set")]],
+      ]),
+      matchKnownBrand,
+    });
+    expect(plan.moves).toEqual([]);
+    expect(plan.buckets.size).toBe(0);
+    expect(plan.unknown).toEqual([set("Choice Biloxi Shuckers", "bsc-1")]);
+  });
+
+  test("a renamed row under Unknown asks the known list for NOTHING — no brand is minted for it", () => {
+    // The same rename with no "Choice" brand in the year: the marketplace's
+    // name would have requested one, the NB row's asks for nothing.
+    const plan = routeBscSets({
+      sets: [set("Choice Biloxi Shuckers", "bsc-1")],
+      manufacturers: [mfr("unk", { unknown: true })],
+      holdersByBscId: new Map([
+        ["bsc-1", [holder("row-1", "unk", "Biloxi Shuckers Team Set")]],
+      ]),
+      matchKnownBrand,
+    });
+    expect(plan.knownBrandRequests).toEqual([]);
+    expect(plan.moves).toEqual([]);
+    expect(plan.unknown).toEqual([set("Choice Biloxi Shuckers", "bsc-1")]);
+  });
+
+  test("a row whose NB name matches a DIFFERENT brand goes to that one, not the marketplace's", () => {
+    // Not just "no move": the NB name is what is consulted, so it can route
+    // the row somewhere the marketplace's name never would.
+    const plan = routeBscSets({
+      sets: [set("Choice Biloxi Shuckers", "bsc-1")],
+      manufacturers: [
+        mfr("unk", { unknown: true }),
+        mfr("choice", { prefix: "Choice" }),
+        mfr("star", { prefix: "Star" }),
+      ],
+      holdersByBscId: new Map([
+        ["bsc-1", [holder("row-1", "unk", "Star Biloxi Shuckers")]],
+      ]),
+      matchKnownBrand,
+    });
+    expect(plan.moves).toEqual([
+      { rowId: "row-1", fromId: "unk", toId: "star" },
+    ]);
+    expect(plan.buckets.get("star")).toEqual([
+      set("Choice Biloxi Shuckers", "bsc-1"),
+    ]);
+    expect(plan.buckets.has("choice")).toBe(false);
+  });
+
+  test("each Unknown holder of one BSC id is judged on its OWN name, never a sibling's", () => {
+    const plan = routeBscSets({
+      sets: [set("Choice Biloxi Shuckers", "bsc-1")],
+      manufacturers: [
+        mfr("unk", { unknown: true }),
+        mfr("choice", { prefix: "Choice" }),
+      ],
+      holdersByBscId: new Map([
+        [
+          "bsc-1",
+          [
+            holder("row-renamed", "unk", "Biloxi Shuckers Team Set"),
+            holder("row-2", "unk", "Choice Biloxi Shuckers"),
+          ],
+        ],
+      ]),
+      matchKnownBrand,
+    });
+    // Only the row whose own name says "Choice" moves.
+    expect(plan.moves).toEqual([
+      { rowId: "row-2", fromId: "unk", toId: "choice" },
+    ]);
+  });
+
+  test("a set NB has NO row for is still routed by the marketplace's name (creation-time derivation)", () => {
+    // Invariant 2(a): a row may be DERIVED from marketplace data when it is
+    // created. That half must keep working — this is the whole feature.
+    const byPrefix = routeBscSets({
+      sets: [set("Choice Biloxi Shuckers", "bsc-1")],
+      manufacturers: [
+        mfr("unk", { unknown: true }),
+        mfr("choice", { prefix: "Choice" }),
+      ],
+      holdersByBscId: new Map(),
+      matchKnownBrand,
+    });
+    expect(byPrefix.buckets.get("choice")).toEqual([
+      set("Choice Biloxi Shuckers", "bsc-1"),
+    ]);
+
+    const byKnownList = routeBscSets({
+      sets: [set("Choice Biloxi Shuckers", "bsc-1")],
+      manufacturers: [mfr("unk", { unknown: true })],
+      holdersByBscId: new Map(),
+      matchKnownBrand,
+    });
+    expect(byKnownList.knownBrandRequests).toEqual([
+      { brand: "Choice", sets: [set("Choice Biloxi Shuckers", "bsc-1")] },
+    ]);
   });
 });

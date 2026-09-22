@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
+import { MAX_YEAR_SET_ROWS } from "./setFromMarketplace";
 
 const modules = (
   import.meta as unknown as {
@@ -432,6 +433,54 @@ describe("backfillKnownBrands — bounds", () => {
     expect(report.scanned).toBe(1);
     expect(report.counts.moved).toBe(5);
     expect(report.message).not.toContain("read or move bound");
+  });
+
+  /**
+   * NEO-294 audit, condition 4. The dry run is what an operator reads before
+   * arming prod, so it may not promise a move it has not checked. Once the
+   * read budget is spent, the per-brand "names already taken" read comes back
+   * empty whether the brand is empty or the budget is gone — planning every
+   * later matching row as `moved` with no clash check behind it. Planning
+   * stops instead, and `truncated` says why.
+   */
+  test("stops planning rather than promising a move it could not clash-check", async () => {
+    const t = convexTest(schema, modules);
+    const year = await seedYear(t);
+    const unknown = await seedManufacturer(t, year, "Unknown", {
+      isBrandUnknown: true,
+    });
+    const choice = await seedManufacturer(t, year, "Choice", {
+      setNamePrefix: "Choice",
+    });
+    // The target already HAS that name, so the honest plan for the matching
+    // row is `clash_at_target` — never `moved`.
+    await seedSet(t, choice, "Choice Biloxi Shuckers");
+    // The Unknown bucket spends the whole read budget: the matching row is
+    // the last one the bounded read keeps, and one more row pushes it past
+    // the bound. Inserted directly — the `children` cache plays no part.
+    await t.run(async (ctx) => {
+      const insert = (value: string) =>
+        ctx.db.insert("selectorOptions", {
+          level: "setName",
+          value,
+          platformData: {},
+          parentId: unknown,
+          children: [],
+          lastUpdated: SENTINEL,
+        });
+      for (let i = 0; i < MAX_YEAR_SET_ROWS - 1; i++) await insert(`Filler ${i}`);
+      await insert("Choice Biloxi Shuckers");
+      await insert("Filler past the bound");
+    });
+
+    const report = await dry(t);
+
+    expect(report.truncated).toBe(true);
+    expect(report.setRowsRead).toBe(MAX_YEAR_SET_ROWS);
+    // The row the unbounded version planned as `moved` against an empty
+    // taken-set, on top of a set of that very name.
+    expect(report.counts.moved).toBe(0);
+    expect(report.rows.some((r) => r.action === "moved")).toBe(false);
   });
 
   test("`parentId` narrows the run to one year and leaves the others alone", async () => {

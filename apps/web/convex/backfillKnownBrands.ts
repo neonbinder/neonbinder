@@ -221,12 +221,23 @@ export const run = internalMutation({
 
     // ONE running budget across the whole run, `buildSetNameIndex`'s rule.
     let setRowsRead = 0;
+    /**
+     * NEO-294 (audit condition 4) — a `setsUnder` call came back SHORT, so
+     * every later one is blind: it returns `[]` whether the parent has no
+     * sets or the budget is simply gone. An empty answer cannot be told from
+     * a complete one, and treating it as complete would plan rows as `moved`
+     * with no clash check behind them — in the DRY RUN an operator reads
+     * before arming prod. Planning stops instead; `truncated` says so and
+     * the re-run reaches further.
+     */
+    let setReadsExhausted = false;
     const setsUnder = async (
       parent: Id<"selectorOptions">,
     ): Promise<Doc<"selectorOptions">[]> => {
       const remaining = MAX_YEAR_SET_ROWS - setRowsRead;
       if (remaining <= 0) {
         truncated = true;
+        setReadsExhausted = true;
         return [];
       }
       const rows = await ctx.db
@@ -235,7 +246,10 @@ export const run = internalMutation({
           q.eq("level", "setName").eq("parentId", parent),
         )
         .take(remaining + 1);
-      if (rows.length > remaining) truncated = true;
+      if (rows.length > remaining) {
+        truncated = true;
+        setReadsExhausted = true;
+      }
       const kept = rows.slice(0, remaining);
       setRowsRead += kept.length;
       return kept;
@@ -299,6 +313,13 @@ export const run = internalMutation({
         if (!taken) {
           // Read the target's sets ONCE per brand, for the NEO-219 fold.
           const existingSets = existing ? await setsUnder(existing._id) : [];
+          // NEO-294 (audit condition 4) — that read came back short (or not
+          // at all), so this brand's taken-names set is a guess. A guess
+          // plans `moved` for rows that may clash, which is a promise the
+          // armed run cannot keep: stop planning the year, exactly as the
+          // year's own truncated read does above. A brand with NO row yet
+          // (`existing` undefined) reads nothing and is unaffected.
+          if (existing && setReadsExhausted) break;
           taken = new Set(existingSets.map((r) => selectorValueKey(r.value)));
           takenByBrand.set(brandKey, taken);
         }

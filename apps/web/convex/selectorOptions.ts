@@ -9837,6 +9837,10 @@ export const syncSetsAcrossManufacturers = action({
               const holder = {
                 rowId: row._id,
                 parentId: row.parentId,
+                // NEO-294 — the NB row's OWN name, which is the only one
+                // allowed to re-home it; BSC's name for the same set routes
+                // only sets NB has no row for. See `routeBscSets`.
+                value: row.value,
                 // NEO-294 — an operator's placement; this row never moves.
                 ...(row.setByOperator !== undefined
                   ? { setByOperator: row.setByOperator }
@@ -10159,6 +10163,24 @@ export const syncSetsAcrossManufacturers = action({
         // Roots not filed because the year's set index is over
         // `MAX_YEAR_SET_ROWS` (`createSetsFromSlRoots` writes nothing then).
         let slIndexTruncated = 0;
+        /**
+         * NEO-294 (audit condition 3) — the year's set index came back
+         * truncated, so NOTHING more will be filed this sync.
+         *
+         * Sticky and hoisted out of `writeRoots` deliberately. That index is
+         * YEAR-wide and rebuilt inside every `createSetsFromSlRoots` call
+         * (≤ `MAX_YEAR_SET_ROWS` reads); sets are only ever added, so once it
+         * overflows every later call would rebuild it, write nothing and
+         * report the same truncation. Before NEO-294 that cost one wasted
+         * rebuild per scope; the known-brand split turns ≤5 chunked calls
+         * into up to ~40 group calls, so the same paper cut became ~40 full
+         * year scans to write nothing. With the flag the first truncated
+         * response stops the scope — and every scope after it — and the
+         * roots that never got their chance are COUNTED into
+         * `slIndexTruncated` exactly as they were before, so the operator's
+         * summary is unchanged.
+         */
+        let slIndexOverBudget = false;
         // Entries hidden as a variant of a set NB already has. Not written
         // as sets, but not invisible either: the operator reaches them from
         // that set's Base picker / attach pane, and the summary says how
@@ -10173,6 +10195,12 @@ export const syncSetsAcrossManufacturers = action({
           manufacturerId: Id<"selectorOptions">,
           rootArgs: Array<{ id: string; label: string }>,
         ): Promise<number> => {
+          if (slIndexOverBudget) {
+            // The index already overflowed: these roots would be refused by
+            // a rebuild that costs a full year scan. Count them, read nothing.
+            slIndexTruncated += rootArgs.length;
+            return 0;
+          }
           let createdHere = 0;
           const chunks = chunkSlRoots(rootArgs, MAX_SL_SETS_PER_MUTATION);
           for (let c = 0; c < chunks.length; c++) {
@@ -10192,7 +10220,9 @@ export const syncSetsAcrossManufacturers = action({
             totalStored += written.created;
             if (written.indexTruncated) {
               // Nothing of this chunk was filed and the later chunks would
-              // fare the same: count them all and stop for this scope.
+              // fare the same: count them all and stop for this scope — and,
+              // since the index is year-wide, for every scope after it.
+              slIndexOverBudget = true;
               slIndexTruncated += chunks
                 .slice(c)
                 .reduce((n, chunk) => n + chunk.length, 0);
@@ -10266,6 +10296,14 @@ export const syncSetsAcrossManufacturers = action({
               else groups.set(key, { brand, roots: [root] });
             }
             for (const group of groups.values()) {
+              if (slIndexOverBudget) {
+                // NEO-294 (audit condition 3) — nothing can be filed this
+                // sync, so no brand row is minted for sets that cannot land
+                // under it. The roots fall through to `rest`, where
+                // `writeRoots` counts them into `slIndexTruncated`.
+                rest.push(...group.roots);
+                continue;
+              }
               const ensured = await ctx.runMutation(
                 internal.selectorOptions.ensureBrandRow,
                 { yearId: args.yearId, name: group.brand },

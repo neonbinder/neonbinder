@@ -1,8 +1,11 @@
 /**
  * NEO-294 — the known-brands list and its matcher.
  *
- * Three jobs, in order of how much they would cost to get wrong:
+ * Four jobs, in order of how much they would cost to get wrong:
  *
+ *   0. EVERY ENTRY IS A LEGAL SELECTOR VALUE. `ensureBrandRowForName` writes
+ *      these names without running `checkCustomSelectorValue`, so this file
+ *      is the only place a bad entry is caught before a backfill hits it.
  *   1. THE INVARIANT. No entry may word-boundary-prefix another, because the
  *      whole of `matchKnownBrand`'s "exactly one answer" rests on it. Checked
  *      over the entire list rather than by eye, so a future one-line PR that
@@ -20,7 +23,11 @@
 
 import { describe, expect, test } from "vitest";
 import { KNOWN_BRANDS, matchKnownBrand } from "./knownBrands";
-import { matchesBrandPrefix, selectorValueKey } from "./selectorSyncMatch";
+import {
+  checkCustomSelectorValue,
+  matchesBrandPrefix,
+  selectorValueKey,
+} from "./selectorSyncMatch";
 
 // ───────────────────────────────────────────────────────────────────────────
 // The list itself
@@ -46,6 +53,23 @@ describe("KNOWN_BRANDS", () => {
       expect(brand).toBe(brand.trim());
       expect(brand.length).toBeGreaterThan(0);
     }
+  });
+
+  /**
+   * EVERY ENTRY MUST SURVIVE THE DOOR IT GOES THROUGH. The `ensureBrandRow`
+   * mutation checks each name with `checkCustomSelectorValue` before writing
+   * it, but `ensureBrandRowForName` — the helper `backfillKnownBrands` calls
+   * DIRECTLY, with no mutation wrapper — does not. So an entry that check
+   * would refuse (a zero-width character, an over-long name, whitespace
+   * only) reaches the database down one path and throws down the other, and
+   * neither failure names this file. Assert it here, over the whole list, on
+   * the same function the sync's door uses.
+   */
+  test("every entry passes checkCustomSelectorValue at manufacturer level", () => {
+    const refused = KNOWN_BRANDS.filter(
+      (brand) => !checkCustomSelectorValue("manufacturer", brand).ok,
+    );
+    expect(refused).toEqual([]);
   });
 
   /**

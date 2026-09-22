@@ -34,8 +34,10 @@
  *   • `setSelectorOptionSetNamePrefix` (an edited prefix claims likewise —
  *     "Choice" typed with prefix "Choice Biloxi" moves nothing, and fixing
  *     the prefix is how the operator moves it);
- *   • the Sync Sets BSC phase (`routeBscSets`' `moves`: a set whose BSC id
- *     sits under Unknown and whose upstream name now matches a brand).
+ *   • the Sync Sets BSC phase (`routeBscSets`' `moves`: a row that sits
+ *     under Unknown holding a BSC id, and whose OWN NB name now matches a
+ *     brand's prefix — never the marketplace's name for that set, which
+ *     would let an upstream label move a row an operator has renamed).
  *
  * Never brand → brand, and never from a sync on a row already under a brand:
  * a placement is linkage, and the sync's job is to route a marketplace's
@@ -46,9 +48,13 @@
  * already exists under the target brand STAYS under Unknown, counted and
  * logged, never renamed and never merged. The operator resolves it by hand —
  * which is the right outcome, because two same-named sets under one brand is
- * a question about which one is which, and a sync must not answer it.
+ * a question about which one is which, and a sync must not answer it. That
+ * check is bounded by `MAX_YEAR_SET_ROWS` and FAILS CLOSED past it
+ * (`rehomeTargetTooLargeRefusal`): a half-read sibling list would let the
+ * move create the exact duplicate the check prevents.
  */
 
+import { ConvexError } from "convex/values";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
@@ -57,6 +63,7 @@ import {
   valuesDeepEqual,
 } from "./selectorSyncMatch";
 import { unionChildren } from "./selectorSyncStore";
+import { MAX_YEAR_SET_ROWS } from "./setFromMarketplace";
 import { resolvableSides, type ResolvableRow } from "./marketplaceResolvability";
 import { pausedSides } from "./marketplacePause";
 import { initialSlots } from "./platformSlots";
@@ -73,6 +80,17 @@ import { inheritedTeamIds } from "./lib/selectorTeams";
 export function rehomedNotice(count: number): string {
   return `${countNoun(count, "set")} moved out of Unknown`;
 }
+
+/**
+ * NEO-294 (audit condition 2) — the refusal when the target brand holds more
+ * sets than the sibling-clash read may cover. A `ConvexError` rather than an
+ * `Error` so the sentence survives to whoever is looking (production redacts
+ * a plain Error to "Server Error"); named and exported so the test and the
+ * message cannot drift apart.
+ */
+export const rehomeTargetTooLargeRefusal = (brandName: string): string =>
+  `${brandName} has more than ${MAX_YEAR_SET_ROWS} sets — too many to check ` +
+  `a set's name against, so nothing was moved under it.`;
 
 /**
  * "1 set" / "3 sets" / "0 brands" — the one pluraliser behind every count the
@@ -181,12 +199,23 @@ export async function rehomeSetRowsToBrand(
 
   // The target's IN-TRANSACTION name set, grown as rows land, so two Unknown
   // rows that fold to one name cannot both move.
+  //
+  // BOUNDED, AND FAILS CLOSED (NEO-294 audit, condition 2): the year's
+  // Unknown row is a legal target for the operator's move and is the biggest
+  // bucket there is, so this read carries `MAX_YEAR_SET_ROWS` like every
+  // other year-scoped set read. A truncated sibling list cannot answer "is
+  // this name taken?", and re-homing against a half-read answer would put
+  // two fold-equal names under one parent — the NEO-219 rule this function
+  // upholds. Refuse instead; nothing is written.
   const targetSiblings = await ctx.db
     .query("selectorOptions")
     .withIndex("by_level_and_parent", (q) =>
       q.eq("level", "setName").eq("parentId", args.brandId),
     )
-    .collect();
+    .take(MAX_YEAR_SET_ROWS + 1);
+  if (targetSiblings.length > MAX_YEAR_SET_ROWS) {
+    throw new ConvexError(rehomeTargetTooLargeRefusal(brand.value));
+  }
   const takenKeys = new Set(targetSiblings.map((r) => selectorValueKey(r.value)));
 
   const now = Date.now();

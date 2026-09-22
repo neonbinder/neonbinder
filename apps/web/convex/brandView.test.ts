@@ -10,6 +10,8 @@ import { ConvexError } from "convex/values";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
+import { setMoveTargetTooLargeRefusal } from "./brandView";
+import { MAX_YEAR_SET_ROWS } from "./setFromMarketplace";
 
 const modules = (
   import.meta as unknown as {
@@ -792,6 +794,47 @@ describe("moveSetToBrand", () => {
       existingId: sitting,
       value: "choice biloxi shuckers",
     });
+  });
+
+  /**
+   * NEO-294 audit, condition 2. Unknown is a legal destination here and is
+   * the biggest bucket in every year, so the sibling read is bounded. Past
+   * the bound the clash check cannot be made, and a move made anyway would
+   * create the duplicate that check exists to prevent — so it FAILS CLOSED.
+   */
+  test("refuses when the target holds more sets than the clash check may read, and moves nothing", async () => {
+    const t = convexTest(schema, modules);
+    const year = await seedYear(t);
+    const unknown = await seedManufacturer(t, year, "Unknown", {
+      isBrandUnknown: true,
+    });
+    const choice = await seedManufacturer(t, year, "Choice");
+    const set = await seedSet(t, unknown, "Choice Biloxi Shuckers");
+    // One past the bound. Inserted directly: the `children` cache plays no
+    // part in the read this test is about.
+    await t.run(async (ctx) => {
+      for (let i = 0; i <= MAX_YEAR_SET_ROWS; i++) {
+        await ctx.db.insert("selectorOptions", {
+          level: "setName",
+          value: `Filler ${i}`,
+          platformData: {},
+          parentId: choice,
+          children: [],
+          lastUpdated: SENTINEL,
+        });
+      }
+    });
+
+    const error = await admin(t)
+      .mutation(api.brandView.moveSetToBrand, { setId: set, brandId: choice })
+      .catch((e: unknown) => e);
+    expect((error as ConvexError<string>).data).toBe(
+      setMoveTargetTooLargeRefusal("Choice"),
+    );
+
+    const after = await t.run((ctx) => ctx.db.get(set));
+    expect(after!.parentId).toBe(unknown);
+    expect(after!.metadata?.brandSetByOperator).toBeUndefined();
   });
 
   test("refuses a brand under a different year", async () => {

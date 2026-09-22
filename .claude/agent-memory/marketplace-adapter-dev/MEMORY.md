@@ -8,3 +8,5 @@
 - [PRODUCT BUG tests are fix requests](feedback_product_bug_tests_are_fix_requests.md) — a red test titled "PRODUCT BUG (file:line)" is a fix for the file owner; run untracked sibling tests in the fast gate, never edit the test
 - [Read budget by construction in convex-test](reference_convex_test_read_budget_by_construction.md) — Proxy over ctx.db counts reads; optional pre-read index + both paths pinned equal; t.run cannot return a Map; empty BSC list = failed side
 - [convex-test needs the modules arg](reference_convex_test_needs_the_modules_arg.md) — `convexTest(schema)` alone throws a misleading `.glob is not a function` TypeError
+- [Pure routers: existing rows route by the NB value](reference_pure_router_rows_carry_nb_value.md) — a holder index with ids only makes the marketplace label the only string in scope; the rename is what exposes it
+- [Bulk rows in convex-test bypass the children cache](reference_convex_test_bulk_rows_bypass_children.md) — 3000-row bound tests: one t.run of direct inserts, never a seedSet that patches children each time
