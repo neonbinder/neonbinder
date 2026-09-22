@@ -52,6 +52,20 @@ function TestingSeedCredentialsContent() {
         const summary = result.seeded
           .map((s) => `${s.site}=${s.skipped ? "skip" : s.stored ? "stored" : "fail"}`)
           .join(" ");
+        // A seed that failed used to print "Seed complete (sportlots=fail)"
+        // and navigate anyway, so the flow marched on and died ~15s later on a
+        // downstream symptom while the actual cause was on screen for a
+        // fraction of a second and captured in no artifact (diagnosed on PR
+        // #273 run 1, CI run 35731602457). Stop here instead: the next assert
+        // fails on the cause, and the failure screenshot carries it.
+        //
+        // `skipped` is NOT a failure — that is the paused-platform path, and it
+        // must still navigate.
+        const failed = result.seeded.some((s) => !s.skipped && !s.stored);
+        if (failed) {
+          setStatus(`Seed failed (${summary})`);
+          return;
+        }
         setStatus(`Seed complete (${summary}) — redirecting...`);
         navigate(redirect);
       } catch (e: unknown) {

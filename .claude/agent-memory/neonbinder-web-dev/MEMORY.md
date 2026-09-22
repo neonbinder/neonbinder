@@ -45,3 +45,4 @@
 - [Confirmdialog owns the word cancel](reference_confirmdialog_owns_the_word_cancel.md) — the shared ConfirmDialog always renders a button named "Cancel"; an inline picker that raises it must be a disclosure toggle, not a second Cancel
 - [Inert the opener behind ConfirmDialog](reference_inert_the_opener_behind_confirmdialog.md) — not portalled and traps only Tab; use `inert` not `aria-hidden`, and restore focus in an effect because inert blurs
 - [A re-parent drops a row out of its open column](reference_a_reparent_drops_a_row_out_of_its_open_column.md) — SetSelector columns are scoped to the parent id; re-point the parent column, never clear the selection
+- [Wrap-boundary toolbars move under the cursor](reference_wrap_boundary_toolbar_moves_under_the_cursor.md) — a content-sized select + auto-width counter reflow the admin filter row when a live query lands; fix the width, not the flow

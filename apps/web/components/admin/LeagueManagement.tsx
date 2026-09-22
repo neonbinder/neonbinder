@@ -1034,7 +1034,22 @@ export default function LeagueManagement() {
           onChange={(e) => setFilter(e.target.value)}
           className="w-64"
         />
-        <div>
+        {/* Fixed width, not content width. This row sits right at its wrap
+            boundary, so anything in it whose width follows the DATA moves the
+            Add league button: `sportList` is a live global query, and a sport
+            another session mints or deletes changes the longest <option> and
+            therefore this select's intrinsic width. Measured in CI run
+            35731602457 — the button was tapped at (75,387) and was at
+            [675,327] 1.2s later (~650px right, 44px up), because the
+            sport-scoped counter landed and the row flipped from wrapped to
+            inline. That was the third recurrence: CI run 34697831691 had
+            already hardened the flow with scrollUntilVisible + centerElement
+            and it failed again with byte-identical bounds, since a re-read
+            cannot out-run a layout change that has not happened yet. So the
+            fix is here, not in the flow: with `w-44` on this wrapper and a
+            min-width on the counter below, the row's width no longer depends
+            on the data — which also removes the jank for the operator. */}
+        <div className="w-44">
           <label htmlFor="sport-filter" className={LABEL_CLASS}>
             Sport
           </label>
@@ -1056,6 +1071,11 @@ export default function LeagueManagement() {
             anything. Centred against the field boxes rather than nudged up with
             a `pb-2`, so it stays put when the row wraps.
 
+            `min-w-[13rem]` for the same reason as the select's fixed width
+            above (CI run 35731602457): this node is empty until the counts
+            resolve, and an auto-width node growing from 0 to ~200px is what
+            tipped the row over its wrap boundary under the operator's cursor.
+
             Deliberately NOT a live region itself: it changes on every keystroke,
             and a polite region queues every intermediate value rather than
             replacing it, so filtering by hand read a screen-reader user a count
@@ -1063,7 +1083,7 @@ export default function LeagueManagement() {
             The announcement rides the sr-only channel below instead, one
             debounce behind, and this node stays synchronous for the eyes. */}
         <p
-          className={`flex items-center text-xs text-slate-400 ${FIELD_BOX_HEIGHT}`}
+          className={`flex items-center text-xs text-slate-400 min-w-[13rem] ${FIELD_BOX_HEIGHT}`}
         >
           {counter}
         </p>
