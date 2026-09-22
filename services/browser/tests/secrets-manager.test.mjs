@@ -82,7 +82,10 @@ const CREDS = {
  *
  * @param opts.createdVersion  name addSecretVersion reports back (null to omit)
  * @param opts.versions        what listSecretVersions returns
- * @param opts.addBehavior     "ok" | "notFound" (first add 404s, then succeeds) | "boom"
+ * @param opts.addBehavior     "ok" | "notFound" (first add 404s, then succeeds)
+ *                             | "alwaysNotFound" (every add 404s) | "boom"
+ * @param opts.createBehavior  "ok" | "alreadyExists" (NEO-294: another writer
+ *                             created the secret first) | "boom"
  * @param opts.destroyBehavior optional (name) => void; throw to simulate failure
  * @param opts.listThrows      when true, listSecretVersions rejects
  */
@@ -90,6 +93,7 @@ function makeClient({
   createdVersion = V(8),
   versions = [],
   addBehavior = "ok",
+  createBehavior = "ok",
   destroyBehavior = null,
   listThrows = false,
 } = {}) {
@@ -112,8 +116,13 @@ function makeClient({
         err.code = 7;
         throw err;
       }
-      if (addBehavior === "notFound" && addCount === 1) {
-        const err = new Error("Secret not found");
+      if (
+        addBehavior === "alwaysNotFound" ||
+        (addBehavior === "notFound" && addCount === 1)
+      ) {
+        // Shaped like the real client's: it names the secret resource, which
+        // is exactly the detail that must never reach a caller or a log line.
+        const err = new Error(`5 NOT_FOUND: Secret [${SECRET}] not found.`);
         err.code = 5;
         throw err;
       }
@@ -121,6 +130,18 @@ function makeClient({
     },
     async createSecret(req) {
       calls.create.push(req);
+      if (createBehavior === "alreadyExists") {
+        // Verbatim shape of the error that turned a SUCCESSFUL marketplace
+        // login into a 502 (NEO-294).
+        const err = new Error(`6 ALREADY_EXISTS: Secret [${SECRET}] already exists.`);
+        err.code = 6;
+        throw err;
+      }
+      if (createBehavior === "boom") {
+        const err = new Error("PERMISSION_DENIED: no secretmanager.secrets.create");
+        err.code = 7;
+        throw err;
+      }
       return [{ name: SECRET }];
     },
     async listSecretVersions(req) {
@@ -545,6 +566,167 @@ describe("SecretsManagerService.updateCredentials — create-then-add path", () 
     assert.ok(
       !destroyed(activeClient).includes(V(1)),
       "must not destroy the version created on this path",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-294: the check-then-create race is idempotent, in BOTH orderings
+// ---------------------------------------------------------------------------
+
+/**
+ * Secret Manager has no create-if-absent, so writing a key that may not exist
+ * is unavoidably `addSecretVersion` → NOT_FOUND → `createSecret`, and the gap
+ * between those two calls is a race. Both orderings are reachable in
+ * production and both must converge on "a new version exists on this secret":
+ *
+ *   - we lose the create  ⇒ ALREADY_EXISTS is success-and-continue
+ *   - we lose nothing     ⇒ NOT_FOUND on add creates, then adds
+ *
+ * What made this worth a suite of its own: the loser of the create race had
+ * ALREADY performed a real, successful marketplace sign-in. Throwing there
+ * reported a working login as a 502 (and on SportLots burned the adapter's
+ * entire 5-attempt retry budget, because every attempt re-ran the same losing
+ * race). Idempotence is the fix — NOT a retry or a sleep, and NOT a lock: the
+ * two writers can be two Cloud Run instances or two Convex deployments sharing
+ * one GCP project, which no in-process lock can see.
+ */
+describe("SecretsManagerService.updateCredentials — concurrent create (NEO-294)", () => {
+  it("falls through to add-version when createSecret says ALREADY_EXISTS", async () => {
+    activeClient = makeClient({
+      addBehavior: "notFound", // first add 404s: the secret is absent when we look
+      createBehavior: "alreadyExists", // …but another writer creates it before we do
+      createdVersion: V(3),
+      versions: [
+        { name: V(3), state: "ENABLED" },
+        { name: V(2), state: "ENABLED" },
+      ],
+    });
+
+    // The assertion that matters most: this RESOLVES. A throw here is what the
+    // adapter turns into "login failed" for a login that actually succeeded.
+    await new SecretsManagerService().updateCredentials(KEY, CREDS);
+
+    assert.equal(activeClient.calls.create.length, 1, "should have attempted the create");
+    // The create is addressed by (project parent, bare secret id) while the
+    // adds are addressed by the full secret resource name. All four arguments
+    // are strings, so nothing but an assertion catches a swapped pair.
+    assert.equal(activeClient.calls.create[0].parent, "projects/neonbinder-test");
+    assert.equal(activeClient.calls.create[0].secretId, KEY);
+    assert.equal(
+      activeClient.calls.add.length,
+      2,
+      "should add the version to the secret the other writer created",
+    );
+    assert.deepEqual(
+      activeClient.calls.add[1].parent,
+      SECRET,
+      "the second add targets the existing secret",
+    );
+    assert.deepEqual(
+      destroyed(activeClient),
+      [V(2)],
+      "prune still runs, still excluding the version this call wrote",
+    );
+  });
+
+  it("stores the credential payload even when it loses the create race", async () => {
+    // Losing the race must not cost the write. Round-trip the payload back out
+    // so this cannot pass on a call that was merely made but stored nothing.
+    activeClient = makeClient({
+      addBehavior: "notFound",
+      createBehavior: "alreadyExists",
+      createdVersion: V(1),
+      versions: [{ name: V(1), state: "ENABLED" }],
+    });
+
+    await new SecretsManagerService().updateCredentials(KEY, CREDS);
+
+    const written = JSON.parse(activeClient.calls.add[1].payload.data.toString("utf8"));
+    assert.deepEqual(written, CREDS, "the losing writer's payload is still what landed");
+  });
+
+  it("never leaks the raw GCP error — no secret resource name in any log line", async () => {
+    // The raw message is `6 ALREADY_EXISTS: Secret [projects/<p>/secrets/<id>]
+    // already exists.` — it names the project and the per-user key. Before this
+    // fix it escaped the sanitiser entirely (the create ran INSIDE the catch
+    // that does the sanitising) and reached the login response body.
+    activeClient = makeClient({
+      addBehavior: "notFound",
+      createBehavior: "alreadyExists",
+      createdVersion: V(1),
+      versions: [{ name: V(1), state: "ENABLED" }],
+    });
+
+    await new SecretsManagerService().updateCredentials(KEY, CREDS);
+
+    const allOutput = [...capturedErrors, ...capturedLogs].join("\n");
+    assert.ok(
+      !allOutput.includes("ALREADY_EXISTS"),
+      "the raw gRPC status must not be logged",
+    );
+    assert.ok(
+      !allOutput.includes(CREDS.password) && !allOutput.includes(CREDS.token),
+      "credential material must never reach the log",
+    );
+    assert.ok(
+      capturedLogs.some((line) => line.includes("created concurrently")),
+      "the lost race should still be observable server-side",
+    );
+  });
+
+  it("is a fall-through, not a retry: a concurrent DELETE fails, and does not loop", async () => {
+    // The one interleaving that must NOT converge: the secret is gone again
+    // after our create, because an operator cleared this credential. Recreating
+    // it would resurrect a credential the user just asked us to destroy — so
+    // this propagates, sanitised, and the call count proves there is no loop.
+    activeClient = makeClient({
+      addBehavior: "alwaysNotFound",
+      createBehavior: "ok",
+    });
+
+    await assert.rejects(
+      () => new SecretsManagerService().updateCredentials(KEY, CREDS),
+      (err) => {
+        assert.equal(
+          err.message,
+          "Failed to update credentials",
+          "the caller-facing message stays generic",
+        );
+        return true;
+      },
+    );
+
+    assert.equal(activeClient.calls.create.length, 1, "creates at most once");
+    assert.equal(activeClient.calls.add.length, 2, "adds at most twice — no ping-pong");
+    assert.deepEqual(destroyed(activeClient), [], "a failed write must not prune");
+  });
+
+  it("sanitises a GENUINE create failure instead of propagating it raw", async () => {
+    // PERMISSION_DENIED on createSecret is a real integration fault, not a
+    // race. It must still reach the caller as the fixed generic string — this
+    // is the path that previously bypassed the sanitiser altogether.
+    activeClient = makeClient({ addBehavior: "notFound", createBehavior: "boom" });
+
+    await assert.rejects(
+      () => new SecretsManagerService().updateCredentials(KEY, CREDS),
+      (err) => {
+        assert.equal(err.message, "Failed to update credentials");
+        assert.ok(
+          !err.message.includes("PERMISSION_DENIED") && !err.message.includes(SECRET),
+          "no raw status and no resource name in the thrown error",
+        );
+        return true;
+      },
+    );
+
+    assert.ok(
+      capturedErrors.some((line) => line.includes("Failed to update credentials for key")),
+      "the real cause is logged server-side",
+    );
+    assert.ok(
+      !capturedErrors.join("\n").includes(CREDS.password),
+      "…but never with the payload that failed to write",
     );
   });
 });
