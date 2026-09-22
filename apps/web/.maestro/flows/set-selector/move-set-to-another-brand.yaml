@@ -261,10 +261,25 @@ tags:
 # (R6). The Sets card is asserted alongside it: together they say the set is
 # still the selection AND it is now sitting under the destination brand,
 # which is the whole of what re-pointing promises.
+#
+# visibilityPercentage: 10 — NOT a tolerance for slowness, and not a timeout
+# by another name. The columns row is a HORIZONTAL scroller that maestro-web
+# cannot drive, and by this point in the flow five columns are open, so the
+# row is scrolled right and the Manufacturers card hangs off the LEFT edge.
+# CI 35731602457 measured it at Bounds(x=-122, y=301, width=265) — 53.96%
+# visible — on every retry for the full 7s, while the aria-label read
+# `Manufacturers: Panini — change` and the breadcrumb read `… › Panini ›
+# msb-a-7`: the re-point had happened and the default 100% bar was simply
+# unsatisfiable, because no amount of UP scrolling recovers a horizontal
+# clip. The card is a fixed 260px whatever the brand is called, so this
+# number is a property of the layout, not of the data — and a card that had
+# really gone would be pruned from the hierarchy entirely and still fail
+# here. R8's note on the columns row is the same hazard PART 4 below names.
 - scrollUntilVisible:
     element:
       id: "Manufacturers: Panini — change"
     direction: UP
+    visibilityPercentage: 10
     timeout: 7000
 - assertVisible:
     id: "Sets: msb-a-${WORKER_INDEX || 0} — change"
