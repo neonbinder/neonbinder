@@ -974,6 +974,40 @@ tags:
                 visible:
                   text: "Add as New (Team|League)|.*Confirm & Save.*"
                 timeout: 240000
+            # `optional: true` — THE GUARD/TAP RACE, AND WHAT ADJUDICATES IT
+            # HERE. The probe above and this tap are two hierarchy reads ~0.3s
+            # apart, and under a saturated deployment the wizard settles the
+            # row inside that gap: the button is gone by the time the tap
+            # resolves, and a non-optional tap then burns its full
+            # `lookupTimeoutMs` (17000) and kills the SEED — taking the whole
+            # run's gate with it, which is the failure that has cost this
+            # branch two nights. Maestro cannot read a guard and a tap
+            # atomically, so the race cannot be designed out.
+            #
+            # The button vanishing between the two reads means the row was
+            # ANSWERED — the loop's success condition, not a failure. So the
+            # tap is tolerated, and the next iteration's `extendedWaitUntil`
+            # above blocks until the next step or the terminal state.
+            #
+            # THE ADJUDICATOR IS `.*Confirm & Save.*` — the wait immediately
+            # after this loop — and it is a hard gate no tolerated tap can
+            # reach past. Verified at source, not inferred:
+            # `components/SetSelector/EntityReviewWizard.tsx` computes
+            # `allDecided = total > 0 && decided === total`, and renders the
+            # Confirm & Save button ONLY `{allDecided && !commitError && …}`.
+            # So a row this loop failed to answer leaves `decided < total`,
+            # the button never renders, and that wait fails by name — exactly
+            # the outcome this loop's own header already demands ("if this
+            # loop ends early, that wait fails loudly rather than the flow
+            # committing a half-reviewed batch"). R2 holds: the tolerance
+            # cannot buy a green seed.
+            #
+            # Full mechanism (`CommandWarned`, the parsed command object, the
+            # house precedent) is written once at the corresponding step of
+            # `set-selector/util-wizard-walk-to-player-row.yaml`; do not
+            # duplicate it here (R3). NOT an R5 matter — the 240000 ceilings
+            # around it are this track's sanctioned live-Wikidata exception
+            # and are untouched.
             - runFlow:
                 when:
                   visible:
@@ -981,6 +1015,7 @@ tags:
                 commands:
                   - tapOn:
                       id: "Add as New (Team|League)"
+                      optional: true
       # NEO-221 — the bulk button no longer decides rows whose Wikidata lookup
       # is still in flight (deciding a name nobody has looked up yet was the
       # defect). It decides the SETTLED rows now and stays armed, adding the

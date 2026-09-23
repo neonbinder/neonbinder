@@ -21,16 +21,41 @@ now**, by hand, like any other taxonomy row.
 ## 1. What the reset actually does
 
 `resetSetBuilderDataFromCli` (`apps/web/convex/selectorOptions.ts`) deletes
-**every row** in six tables on the target deployment:
+**every row** in eleven tables on the target deployment, in this order:
 
 | Table | What goes with it |
 |---|---|
 | `selectorOptions` | the whole sport → manufacturer → year → set → variant cascade, and every platform mapping attached to it |
 | `cardChecklist` | every card row, including hand-entered and hand-edited ones |
 | `cardCrossListings` | the junction rows linking a card to other sets it appears under (NEO-21) |
+| `entityReviewQueue` | every staged entity-review row, in every batch — an unfinished wizard's unknown player/team/league names (NEO-294) |
+| `checklistCandidates` | every staged candidate card of an unfinished checklist review (NEO-294) |
 | `players` | every player row, including career history and Wikidata enrichment |
+| `playerAliases` | the alias index behind those players (NEO-254) |
 | `teams` | every team row, including colours (NEO-91/NEO-147) |
+| `teamAliases` | the alias index behind those teams (NEO-284) |
+| `franchises` | every franchise row (NEO-254) |
 | `leagues` | every league row (NEO-156) |
+
+The order is load-bearing: a referencing table is drained before the table it
+points at, so a run that stops at its time budget never leaves a pointer
+dangling. The two review tables go before `players`/`teams`/`leagues` for that
+reason — a recorded decision carries `linkedPlayerId`, `linkedTeamId` or
+`linkedLeagueId`.
+
+> **Why the review tables are in the list at all (NEO-294).** They are
+> transient staging, and in normal operation a commit or a cancel empties
+> them. What is left is a cron's problem, and the crons differ:
+> `reap abandoned entity-review batches` waits **24 hours** of silence before
+> deleting a review batch, while stale `checklistCandidates` go after **one
+> hour**. The 24-hour threshold is correct — deleting a batch throws away an
+> operator's decisions — and it is also unreachable in CI, where six runs land
+> in fourteen hours. Before NEO-294 that residue accumulated into one preview
+> deployment: the reset itself went 15 s → 69 s → 246 s across successive runs
+> and a flow failed on `1485 checklist reviews are in progress here`, a count
+> taken from both tables at once. NEO-294 changed neither cron; it made the
+> reset claim the tables. The counts below are the diagnostic — a reset
+> reporting thousands here inherited someone else's abandoned reviews.
 
 It is not scoped to a set, a sport, or a user. There is no narrower tool: a
 set row cannot be deleted individually by design (decision of 2026-08-27 — a
@@ -73,10 +98,15 @@ On success it prints the per-table counts:
 ```json
 {
   "cardChecklistDeleted": 412,
+  "checklistCandidatesDeleted": 0,
   "crossListingsDeleted": 5,
+  "entityReviewQueueDeleted": 0,
+  "franchisesDeleted": 12,
   "leaguesDeleted": 3,
+  "playerAliasesDeleted": 41,
   "playersDeleted": 288,
   "selectorOptionsDeleted": 9134,
+  "teamAliasesDeleted": 9,
   "teamsDeleted": 76,
   "complete": true
 }
@@ -320,7 +350,7 @@ the right deployment.
 **"Not authenticated".** Something under the reset is running an identity
 check it should not — a CLI run carries no identity by design (§2.1). Nothing
 on this path should produce it; if it appears, a `requireAdmin` has been
-reintroduced into `resetSetBuilderDataFromCli` or one of the six batch
+reintroduced into `resetSetBuilderDataFromCli` or one of the eleven batch
 mutations. `convex/resetSetBuilderData.test.ts` should have caught it.
 
 **"I reset the wrong deployment."** If it was prod: NEO-190 §4.1, restore the

@@ -40,6 +40,15 @@ tags:
 # skip control's wording never changes for a given kind.
 #
 # `times:` is a runaway guard, not a budget — each loop exits on its condition.
+#
+# THE EXIT CONTRACT, stated once so it is not inferred from the YAML: each
+# drain loop runs WHILE no player row is presented, answering whatever team or
+# league row is, and the `extendedWaitUntil` under it is the hard adjudicator —
+# the loop's exit predicate and the post-condition are deliberately the SAME
+# predicate, so there is no gap between "the loop stopped" and "the loop
+# arrived". The tap inside is `optional: true` for the one reason set out at
+# the site: the target disappearing IS the loop finishing, and Maestro cannot
+# read the guard and the tap atomically. Nothing else in this file is optional.
 
 # --- 1. wait out the batch's lookups.
 # "N still looking up — wait or skip" is the wizard's own status line and is
@@ -67,6 +76,52 @@ tags:
       # spins its whole `times` budget before the wait below fails. Neither
       # alternative matches a PLAYER row's `— not a person`, which is what this
       # loop exits on.
+      # ── `optional: true` ON THE TAP, AND WHY IT IS NOT R2 FALL-THROUGH ────
+      #
+      # The guard above and the tap below are TWO hierarchy reads ~0.33s apart
+      # (CI 35817349245, runner 3: guard RUNNING 04:56:25.759, tap RUNNING
+      # 04:56:26.085). On a slow deployment the wizard settles a row inside
+      # that gap, the tap's target is gone, and a non-optional tap burns its
+      # full `lookupTimeoutMs` — 16.76s, measured on that run — and fails the
+      # flow. There is no way to make a guard and a tap atomic in Maestro, so
+      # the race cannot be designed out; it can only be given the right
+      # meaning.
+      #
+      # And its meaning is the loop's SUCCESS condition, not a failure: the
+      # skip control vanishing between the guard and the tap means the row was
+      # answered and the drain is finished. So the tap is tolerated, the loop
+      # re-evaluates `while`, finds the player row, and exits.
+      #
+      # Parsed from this file with Maestro's own `YamlCommandReader`,
+      # offline, `optional: true` here yields
+      # `TapOnElementCommand(selector=ElementSelector(…, optional=true), …,
+      # optional=true)` — command level, not just selector level — while the
+      # enclosing `runFlow` stays `optional=false`. Orchestra's
+      # `executeCommand` catches the `MaestroException` and, because
+      # `Command.getOptional()` is true, raises `CommandWarned` (logged,
+      # skipped) instead of rethrowing; the house note at
+      # `profile/worker-bootstrap.yaml` records the same decompilation. Only
+      # this tap is tolerated — the conditional block around it is still
+      # mandatory.
+      #
+      # R2 IS SATISFIED BY THE POST-CONDITION BELOW, which is hard and which
+      # the product itself makes load-bearing: `entity-review-nav.ts`
+      # (`resolveNav` + `nextUndecided`) presents EVERY settled undecided TEAM
+      # row before ANY player row, so a player row being presented is the
+      # product asserting the team queue is drained. A walk that silently
+      # failed to answer teams cannot reach that state. Every real breakage
+      # still fails loudly, within 30s:
+      #   · control present, tap does nothing → row stays → loop spends
+      #     `times` → post-condition fails.
+      #   · control never appears → loop exits at once → post-condition fails.
+      #   · wizard wedged on a team row → post-condition fails.
+      # Same shape as `util-drill-to-custom.yaml`'s optional pre-wait, whose
+      # comment ends "a genuinely missing set still fails loudly at the
+      # scrollUntilVisible".
+      #
+      # Bonus: `optional: true` also swaps `lookupTimeoutMs` (17000) for
+      # `optionalLookupTimeoutMs` (7000), so when the race does hit it costs
+      # 7s once instead of the 16.76s above.
       - runFlow:
           when:
             visible:
@@ -74,6 +129,7 @@ tags:
           commands:
             - tapOn:
                 id: "Skip .*(not a team|has no league)"
+                optional: true
 - extendedWaitUntil:
     visible:
       id: "Skip .* not a person"
@@ -119,6 +175,52 @@ tags:
       # spins its whole `times` budget before the wait below fails. Neither
       # alternative matches a PLAYER row's `— not a person`, which is what this
       # loop exits on.
+      # ── `optional: true` ON THE TAP, AND WHY IT IS NOT R2 FALL-THROUGH ────
+      #
+      # The guard above and the tap below are TWO hierarchy reads ~0.33s apart
+      # (CI 35817349245, runner 3: guard RUNNING 04:56:25.759, tap RUNNING
+      # 04:56:26.085). On a slow deployment the wizard settles a row inside
+      # that gap, the tap's target is gone, and a non-optional tap burns its
+      # full `lookupTimeoutMs` — 16.76s, measured on that run — and fails the
+      # flow. There is no way to make a guard and a tap atomic in Maestro, so
+      # the race cannot be designed out; it can only be given the right
+      # meaning.
+      #
+      # And its meaning is the loop's SUCCESS condition, not a failure: the
+      # skip control vanishing between the guard and the tap means the row was
+      # answered and the drain is finished. So the tap is tolerated, the loop
+      # re-evaluates `while`, finds the player row, and exits.
+      #
+      # Parsed from this file with Maestro's own `YamlCommandReader`,
+      # offline, `optional: true` here yields
+      # `TapOnElementCommand(selector=ElementSelector(…, optional=true), …,
+      # optional=true)` — command level, not just selector level — while the
+      # enclosing `runFlow` stays `optional=false`. Orchestra's
+      # `executeCommand` catches the `MaestroException` and, because
+      # `Command.getOptional()` is true, raises `CommandWarned` (logged,
+      # skipped) instead of rethrowing; the house note at
+      # `profile/worker-bootstrap.yaml` records the same decompilation. Only
+      # this tap is tolerated — the conditional block around it is still
+      # mandatory.
+      #
+      # R2 IS SATISFIED BY THE POST-CONDITION BELOW, which is hard and which
+      # the product itself makes load-bearing: `entity-review-nav.ts`
+      # (`resolveNav` + `nextUndecided`) presents EVERY settled undecided TEAM
+      # row before ANY player row, so a player row being presented is the
+      # product asserting the team queue is drained. A walk that silently
+      # failed to answer teams cannot reach that state. Every real breakage
+      # still fails loudly, within 30s:
+      #   · control present, tap does nothing → row stays → loop spends
+      #     `times` → post-condition fails.
+      #   · control never appears → loop exits at once → post-condition fails.
+      #   · wizard wedged on a team row → post-condition fails.
+      # Same shape as `util-drill-to-custom.yaml`'s optional pre-wait, whose
+      # comment ends "a genuinely missing set still fails loudly at the
+      # scrollUntilVisible".
+      #
+      # Bonus: `optional: true` also swaps `lookupTimeoutMs` (17000) for
+      # `optionalLookupTimeoutMs` (7000), so when the race does hit it costs
+      # 7s once instead of the 16.76s above.
       - runFlow:
           when:
             visible:
@@ -126,6 +228,7 @@ tags:
           commands:
             - tapOn:
                 id: "Skip .*(not a team|has no league)"
+                optional: true
 - extendedWaitUntil:
     visible:
       id: "Skip .* not a person"

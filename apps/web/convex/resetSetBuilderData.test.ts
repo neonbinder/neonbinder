@@ -26,9 +26,16 @@
  * `t.action(...)` with no `withIdentity` is that shape.
  *
  * The drain case is the one that would otherwise rot silently: the reset
- * covers SIX tables, and a table added to the schema but not to the loop
+ * covers ELEVEN tables, and a table added to the schema but not to the loop
  * leaves rows behind that the next run reuses ids for. Each table is seeded
  * with a distinguishable number of rows so a mixed-up count is visible.
+ *
+ * NEO-294 added `entityReviewQueue` and `checklistCandidates` to the loop.
+ * The reset never claimed either; only a cron did, and the queue's waits 24
+ * hours, so six CI runs in fourteen hours stacked every abandoned review into
+ * one preview (reset 15 s → 69 s → 246 s, PR #273). The page boundary
+ * therefore has its own test at the bottom of this file: at 1,485 rows the
+ * interesting case is the one a single `.take()` cannot finish.
  */
 
 import { convexTest } from "convex-test";
@@ -54,7 +61,7 @@ type Seeded = {
  * Row shapes are minimal but schema-valid — this is about the delete loop, not
  * about the business meaning of any row.
  */
-async function seedAllSixTables(
+async function seedEveryDrainedTable(
   t: ReturnType<typeof convexTest>,
 ): Promise<Seeded> {
   return t.run(async (ctx) => {
@@ -158,6 +165,37 @@ async function seedAllSixTables(
       lastUpdated: NOW,
     });
 
+    // entityReviewQueue: 7 (NEO-294) — one abandoned review's worth of
+    // unknown names, in the three kinds the wizard walks.
+    for (let i = 1; i <= 7; i += 1) {
+      await ctx.db.insert("entityReviewQueue", {
+        selectorOptionId: variantId,
+        batchId: "batch-abandoned",
+        createdByUserId: "admin_who_closed_the_tab",
+        kind: i <= 4 ? "player" : i <= 6 ? "team" : "league",
+        name: `Unknown ${i}`,
+        sportId,
+        status: "ready",
+      });
+    }
+
+    // checklistCandidates: 8 (NEO-294) — the staged cards of the same
+    // abandoned review. More than the queue rows, as on a real set.
+    for (let i = 1; i <= 8; i += 1) {
+      await ctx.db.insert("checklistCandidates", {
+        selectorOptionId: variantId,
+        batchId: "batch-abandoned",
+        createdByUserId: "admin_who_closed_the_tab",
+        cardNumber: String(i),
+        cardName: `Candidate ${i}`,
+        platformData: {},
+        bucket: "matched",
+        stem: String(i),
+        status: "ready",
+        lastUpdated: NOW,
+      });
+    }
+
     return { sportId };
   });
 }
@@ -174,6 +212,10 @@ async function tableCounts(t: ReturnType<typeof convexTest>) {
     cardChecklist: (await ctx.db.query("cardChecklist").collect()).length,
     cardCrossListings: (await ctx.db.query("cardCrossListings").collect())
       .length,
+    entityReviewQueue: (await ctx.db.query("entityReviewQueue").collect())
+      .length,
+    checklistCandidates: (await ctx.db.query("checklistCandidates").collect())
+      .length,
     players: (await ctx.db.query("players").collect()).length,
     teams: (await ctx.db.query("teams").collect()).length,
     franchises: (await ctx.db.query("franchises").collect()).length,
@@ -189,7 +231,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
   test("refuses when ALLOW_RESET_SET_BUILDER_DATA is unset, and deletes nothing", async () => {
     // The NEO-214 reversal: the CLI path used to skip this check on purpose.
     const t = convexTest(schema, modules);
-    await seedAllSixTables(t);
+    await seedEveryDrainedTable(t);
 
     await expect(runReset(t)).rejects.toThrow(/ALLOW_RESET_SET_BUILDER_DATA/);
 
@@ -199,6 +241,8 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       selectorOptions: 3,
       cardChecklist: 5,
       cardCrossListings: 6,
+      entityReviewQueue: 7,
+      checklistCandidates: 8,
       players: 4,
       teams: 2,
       franchises: 1,
@@ -212,7 +256,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
     // and a near-miss value silently failing open would be the worst outcome.
     vi.stubEnv("ALLOW_RESET_SET_BUILDER_DATA", "1");
     const t = convexTest(schema, modules);
-    await seedAllSixTables(t);
+    await seedEveryDrainedTable(t);
 
     await expect(runReset(t)).rejects.toThrow(/ALLOW_RESET_SET_BUILDER_DATA/);
 
@@ -220,6 +264,8 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       selectorOptions: 3,
       cardChecklist: 5,
       cardCrossListings: 6,
+      entityReviewQueue: 7,
+      checklistCandidates: 8,
       players: 4,
       teams: 2,
       franchises: 1,
@@ -227,10 +273,10 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
     });
   });
 
-  test("armed, with NO caller identity: drains all six tables and returns the counts", async () => {
+  test("armed, with NO caller identity: drains every table and returns the counts", async () => {
     vi.stubEnv("ALLOW_RESET_SET_BUILDER_DATA", "true");
     const t = convexTest(schema, modules);
-    await seedAllSixTables(t);
+    await seedEveryDrainedTable(t);
 
     const result = await runReset(t);
 
@@ -238,6 +284,8 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       selectorOptionsDeleted: 3,
       cardChecklistDeleted: 5,
       crossListingsDeleted: 6,
+      entityReviewQueueDeleted: 7,
+      checklistCandidatesDeleted: 8,
       playersDeleted: 4,
       playerAliasesDeleted: 0,
       teamsDeleted: 2,
@@ -251,6 +299,8 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       selectorOptions: 0,
       cardChecklist: 0,
       cardCrossListings: 0,
+      entityReviewQueue: 0,
+      checklistCandidates: 0,
       players: 0,
       teams: 0,
       franchises: 0,
@@ -269,6 +319,8 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
     ["resetSelectorOptionsBatch", "selectorOptions"],
     ["resetCardChecklistBatch", "cardChecklist"],
     ["resetCardCrossListingsBatch", "cardCrossListings"],
+    ["resetEntityReviewQueueBatch", "entityReviewQueue"],
+    ["resetChecklistCandidatesBatch", "checklistCandidates"],
     ["resetPlayersBatch", "players"],
     ["resetTeamsBatch", "teams"],
     ["resetFranchisesBatch", "franchises"],
@@ -277,7 +329,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
     "%s refuses when unarmed, even called directly, and deletes nothing",
     async (fn) => {
       const t = convexTest(schema, modules);
-      await seedAllSixTables(t);
+      await seedEveryDrainedTable(t);
 
       await expect(
         t.mutation(
@@ -292,6 +344,8 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
         selectorOptions: 3,
         cardChecklist: 5,
         cardCrossListings: 6,
+        entityReviewQueue: 7,
+        checklistCandidates: 8,
         players: 4,
         teams: 2,
         franchises: 1,
@@ -310,6 +364,8 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       selectorOptionsDeleted: 0,
       cardChecklistDeleted: 0,
       crossListingsDeleted: 0,
+      entityReviewQueueDeleted: 0,
+      checklistCandidatesDeleted: 0,
       playersDeleted: 0,
       playerAliasesDeleted: 0,
       teamsDeleted: 0,
@@ -337,7 +393,7 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
     vi.stubEnv("ALLOW_RESET_SET_BUILDER_DATA", "true");
     vi.stubEnv("RESET_TIME_BUDGET_MS", "0");
     const t = convexTest(schema, modules);
-    await seedAllSixTables(t);
+    await seedEveryDrainedTable(t);
 
     const result = await runReset(t);
 
@@ -356,9 +412,9 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
     vi.stubEnv("ALLOW_RESET_SET_BUILDER_DATA", "true");
     vi.stubEnv("RESET_TIME_BUDGET_MS", "0");
     const t = convexTest(schema, modules);
-    await seedAllSixTables(t);
+    await seedEveryDrainedTable(t);
 
-    // Mirrors the shell loop's cap: nine tables need at most nine passes
+    // Mirrors the shell loop's cap: eleven tables need at most eleven passes
     // under a zero budget, and a loop that needs more than 20 is stuck.
     const MAX_PASSES = 20;
     let passes = 0;
@@ -367,6 +423,8 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
       selectorOptionsDeleted: 0,
       cardChecklistDeleted: 0,
       crossListingsDeleted: 0,
+      entityReviewQueueDeleted: 0,
+      checklistCandidatesDeleted: 0,
       playersDeleted: 0,
       playerAliasesDeleted: 0,
       teamsDeleted: 0,
@@ -392,6 +450,8 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
       selectorOptionsDeleted: 3,
       cardChecklistDeleted: 5,
       crossListingsDeleted: 6,
+      entityReviewQueueDeleted: 7,
+      checklistCandidatesDeleted: 8,
       playersDeleted: 4,
       playerAliasesDeleted: 0,
       teamsDeleted: 2,
@@ -403,6 +463,8 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
       selectorOptions: 0,
       cardChecklist: 0,
       cardCrossListings: 0,
+      entityReviewQueue: 0,
+      checklistCandidates: 0,
       players: 0,
       teams: 0,
       franchises: 0,
@@ -416,7 +478,7 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
     // a little" — it has to be the same hard refusal as before.
     vi.stubEnv("RESET_TIME_BUDGET_MS", "0");
     const t = convexTest(schema, modules);
-    await seedAllSixTables(t);
+    await seedEveryDrainedTable(t);
 
     await expect(runReset(t)).rejects.toThrow(/ALLOW_RESET_SET_BUILDER_DATA/);
 
@@ -424,6 +486,8 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
       selectorOptions: 3,
       cardChecklist: 5,
       cardCrossListings: 6,
+      entityReviewQueue: 7,
+      checklistCandidates: 8,
       players: 4,
       teams: 2,
       franchises: 1,
@@ -526,5 +590,160 @@ describe("NEO-254: the alias index is drained with the players it describes", ()
     } finally {
       delete process.env.ALLOW_RESET_SET_BUILDER_DATA;
     }
+  });
+});
+
+/**
+ * NEO-294 — the entity-review tables, and the page boundary that matters.
+ *
+ * `runSetBuilderReset` drained `selectorOptions`, `cardChecklist`,
+ * `cardCrossListings`, the players/teams/leagues triple and their alias
+ * indexes — but never `entityReviewQueue` or `checklistCandidates`. The only
+ * thing that removed those was a cron, and for the queue that cron waits 24
+ * hours: right for a real operator's session, unreachable in CI, where six
+ * runs in fourteen hours all land inside the window and every run inherited
+ * the last one's abandoned reviews. Measured on PR #273: reset 15 s → 69 s →
+ * 246 s across successive runs, the seed job +37%, and a hierarchy dump
+ * reading "1485 checklist reviews are in progress here — finish or cancel
+ * them first" — a count `collectSelectorOptionHoldings` takes from both
+ * tables at once.
+ *
+ * 1,485 is the number these tests are calibrated against. One batch takes
+ * RESET_BATCH_SIZE (500) rows, so the real shape is a drain the first page
+ * cannot finish — which is exactly the case a small fixture would miss.
+ */
+describe("NEO-294: the entity-review tables are drained, across pages", () => {
+  /** One row past RESET_BATCH_SIZE: the smallest fixture that needs a 2nd page. */
+  const OVER_ONE_PAGE = 501;
+
+  async function seedAbandonedReview(t: ReturnType<typeof convexTest>) {
+    return t.run(async (ctx) => {
+      const sportId = await ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Baseball",
+        platformData: {},
+        children: [],
+        lastUpdated: NOW,
+      });
+      const setId = await ctx.db.insert("selectorOptions", {
+        level: "setName",
+        value: "Topps Chrome",
+        parentId: sportId,
+        platformData: {},
+        children: [],
+        lastUpdated: NOW,
+      });
+      for (let i = 0; i < OVER_ONE_PAGE; i += 1) {
+        await ctx.db.insert("entityReviewQueue", {
+          selectorOptionId: setId,
+          // Two batches, so the drain is proved to be table-wide rather than
+          // per-batch: there is no `batches` table, a "batch" is only this
+          // grouping, and a reset that cleared one batch would leave the other.
+          batchId: i % 2 === 0 ? "batch-a" : "batch-b",
+          createdByUserId: "admin_who_closed_the_tab",
+          kind: "player",
+          name: `Unknown ${i}`,
+          sportId,
+          status: "ready",
+        });
+        await ctx.db.insert("checklistCandidates", {
+          selectorOptionId: setId,
+          batchId: i % 2 === 0 ? "batch-a" : "batch-b",
+          createdByUserId: "admin_who_closed_the_tab",
+          cardNumber: String(i),
+          cardName: `Candidate ${i}`,
+          platformData: {},
+          bucket: "matched",
+          stem: String(i),
+          status: "ready",
+          lastUpdated: NOW,
+        });
+      }
+    });
+  }
+
+  const reviewCounts = (t: ReturnType<typeof convexTest>) =>
+    t.run(async (ctx) => ({
+      entityReviewQueue: (await ctx.db.query("entityReviewQueue").collect())
+        .length,
+      checklistCandidates: (
+        await ctx.db.query("checklistCandidates").collect()
+      ).length,
+    }));
+
+  test("one batch stops at the page and says so; the reset's loop finishes it", async () => {
+    vi.stubEnv("ALLOW_RESET_SET_BUILDER_DATA", "true");
+    const t = convexTest(schema, modules);
+    await seedAbandonedReview(t);
+
+    // The page boundary itself: a single batch mutation can only take
+    // RESET_BATCH_SIZE rows, and it has to report that more remain — that
+    // `hasMore` is what `runSetBuilderReset`'s while-loop runs on.
+    expect(
+      await t.mutation(internal.selectorOptions.resetEntityReviewQueueBatch, {}),
+    ).toEqual({ deleted: 500, hasMore: true });
+    expect(
+      await t.mutation(internal.selectorOptions.resetEntityReviewQueueBatch, {}),
+    ).toEqual({ deleted: 1, hasMore: false });
+
+    // `checklistCandidates` is untouched so far, so the full reset below has
+    // to page it by itself: a count of 501 from one run is only reachable
+    // through more than one batch.
+    const result = await runReset(t);
+
+    expect(result.entityReviewQueueDeleted).toBe(0);
+    expect(result.checklistCandidatesDeleted).toBe(OVER_ONE_PAGE);
+    expect(result.complete).toBe(true);
+    expect(await reviewCounts(t)).toEqual({
+      entityReviewQueue: 0,
+      checklistCandidates: 0,
+    });
+  });
+
+  test("a single armed run empties both tables however many pages it takes", async () => {
+    vi.stubEnv("ALLOW_RESET_SET_BUILDER_DATA", "true");
+    const t = convexTest(schema, modules);
+    await seedAbandonedReview(t);
+
+    const result = await runReset(t);
+
+    expect(result.entityReviewQueueDeleted).toBe(OVER_ONE_PAGE);
+    expect(result.checklistCandidatesDeleted).toBe(OVER_ONE_PAGE);
+    expect(result.complete).toBe(true);
+    // The thing the CI log needed and did not have: residue is now a number an
+    // operator can read, not a 246-second reset nobody could explain.
+    expect(await reviewCounts(t)).toEqual({
+      entityReviewQueue: 0,
+      checklistCandidates: 0,
+    });
+  });
+
+  test("the review rows go before the players, teams and leagues they point at", async () => {
+    // A decision carries `linkedPlayerId` / `linkedTeamId` / `linkedLeagueId`,
+    // so a reset interrupted at its budget must never have drained those
+    // tables while review rows still name them. A zero budget yields after
+    // each table that did work, which makes the order observable: by the pass
+    // that first deletes a player, the queue is already empty.
+    vi.stubEnv("ALLOW_RESET_SET_BUILDER_DATA", "true");
+    vi.stubEnv("RESET_TIME_BUDGET_MS", "0");
+    const t = convexTest(schema, modules);
+    await seedEveryDrainedTable(t);
+
+    let sawPlayersDeleted = false;
+    let queueWhenPlayersWent = -1;
+    let candidatesWhenPlayersWent = -1;
+    for (let pass = 0; pass < 20 && !sawPlayersDeleted; pass += 1) {
+      const result = await runReset(t);
+      if (result.playersDeleted > 0) {
+        sawPlayersDeleted = true;
+        const counts = await reviewCounts(t);
+        queueWhenPlayersWent = counts.entityReviewQueue;
+        candidatesWhenPlayersWent = counts.checklistCandidates;
+      }
+    }
+
+    expect(sawPlayersDeleted).toBe(true);
+    expect(queueWhenPlayersWent).toBe(0);
+    expect(candidatesWhenPlayersWent).toBe(0);
   });
 });

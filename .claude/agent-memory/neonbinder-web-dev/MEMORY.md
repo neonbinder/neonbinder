@@ -54,3 +54,5 @@
 - [Component test at a real cap times out](reference_component_test_at_a_real_cap_times_out.md) — a 1,000-row happy-dom fixture passes alone and times out in the suite; inject the cap as a prop
 - [Refuse vs truncate a bounded read](reference_refuse_vs_truncate_a_bounded_read.md) — check the caller before writing a refusal; a window of 2 beats a budget when the consumer only counts to two; truncate a name map, never throw in a query
 - [Vi mock a constant needs a getter](reference_vi_mock_a_constant_needs_a_getter.md) — lowering a MAX_* cap for a convex-test run: spread the original and expose it as a getter, or it freezes at import
+- [Entity review batch is a grouping not a table](reference_entity_review_batch_is_a_grouping_not_a_table.md) — no "batches" table; the queue's reaper waits 24h but the candidates' waits 1h, and one holdings number covers both
+- [Reset loop has a fifth consumer](reference_reset_loop_has_a_fifth_consumer.md) — publicFunctionAuth.test.ts pins each reset*Batch as internalMutation; the seeded toEqual block lives at two indent levels

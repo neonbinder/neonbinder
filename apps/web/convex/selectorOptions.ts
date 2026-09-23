@@ -7593,6 +7593,10 @@ type SetBuilderResetResult = {
   selectorOptionsDeleted: number;
   cardChecklistDeleted: number;
   crossListingsDeleted: number;
+  /** NEO-294 — staged review rows, the residue that made CI's reset quadratic. */
+  entityReviewQueueDeleted: number;
+  /** NEO-294 — staged candidate cards, the other half of an abandoned review. */
+  checklistCandidatesDeleted: number;
   playersDeleted: number;
   playerAliasesDeleted: number;
   teamsDeleted: number;
@@ -7644,6 +7648,8 @@ async function runSetBuilderReset(
     selectorOptionsDeleted: 0,
     cardChecklistDeleted: 0,
     crossListingsDeleted: 0,
+    entityReviewQueueDeleted: 0,
+    checklistCandidatesDeleted: 0,
     playersDeleted: 0,
     playerAliasesDeleted: 0,
     teamsDeleted: 0,
@@ -7670,6 +7676,45 @@ async function runSetBuilderReset(
     [
       "crossListingsDeleted",
       internal.selectorOptions.resetCardCrossListingsBatch,
+    ],
+    // ── NEO-294: the entity-review tables, drained BEFORE players/teams/
+    // leagues ──────────────────────────────────────────────────────────────
+    //
+    // The two staging tables a checklist fetch fills and a commit or a cancel
+    // empties. The RESET never claimed either, so the only thing that removed
+    // them was a cron — and for `entityReviewQueue` that cron waits
+    // ENTITY_REVIEW_ABANDONED_MS (24 h), which is the right threshold for a
+    // real operator's session (deleting a batch throws away their decisions)
+    // and unreachable in CI, where six runs land in fourteen hours and every
+    // one of them leaves its reviews behind. `checklistCandidates` is swept an
+    // hour after `lastUpdated`, so it does not stack across a day the way the
+    // queue does — but it is very much live during a run and between two runs
+    // close together, at ~900 rows per fetched set.
+    //
+    // Measured on PR #273: reset 15 s → 69 s → 246 s across successive runs on
+    // one preview, the seed job 15m00s → 20m39s before a flow ran, and a
+    // failure dump reading "1485 checklist reviews are in progress here".
+    // That message is `collectSelectorOptionHoldings` counting exactly these
+    // two tables together — residue from earlier runs refusing a delete the
+    // current run needs.
+    //
+    // BEFORE players/teams/leagues, for the reason the leagues comment below
+    // gives: a queue row's decision carries `linkedPlayerId` / `linkedTeamId`
+    // / `linkedLeagueId`, so draining those tables first would leave review
+    // rows pointing at deleted entities for the rest of the reset — and a
+    // reset interrupted at the budget would leave them that way until the next
+    // pass.
+    //
+    // Queue before candidates: a `careerTeamOf` / `leagueOf` row points at the
+    // queue row that needed it, so the queue is drained as one table rather
+    // than half-drained around a table that references nothing.
+    [
+      "entityReviewQueueDeleted",
+      internal.selectorOptions.resetEntityReviewQueueBatch,
+    ],
+    [
+      "checklistCandidatesDeleted",
+      internal.selectorOptions.resetChecklistCandidatesBatch,
     ],
     // Players + teams are populated alongside cardChecklist by the
     // commitCardChecklist flow. Wipe them too so subsequent dev/test
@@ -7728,6 +7773,25 @@ async function runSetBuilderReset(
  * and on deployments where `selectorOptions` has accumulated many thousands of
  * rows from prior test runs a single-pass `.collect()` threw "Too many reads in
  * a single function execution".
+ *
+ * ## NEO-294 — the system-operation arithmetic
+ *
+ * Every batch below has the same shape and therefore the same cost: one range
+ * read that produces the page (a `.take()` is ONE operation however many rows
+ * it returns) plus one delete per row, and nothing else per row — no `get`,
+ * no patch, no scheduled continuation. So a batch is `1 + 500 = ~501`
+ * operations against the ~900 that `CARDS_PER_COMMIT_CHUNK` measured as
+ * comfortable (~1,800 strains, ~4,000 fails). That is ~44% headroom, which is
+ * the margin this size buys over `ENTITY_REVIEW_DELETE_PAGE`'s 800 — that
+ * constant is sized to keep a cancel all-or-nothing, and a reset has no such
+ * requirement: it is already a resumable loop, so a smaller page just means
+ * more passes.
+ *
+ * The NEO-294 tables added to the loop cost the same one delete each. A
+ * "batch" of entity review is not a row of its own anywhere — it is the
+ * `(selectorOptionId, batchId)` grouping WITHIN `entityReviewQueue` — so
+ * draining the table drains every batch in it, at one operation per row and
+ * no per-batch surcharge.
  */
 const RESET_BATCH_SIZE = 500;
 
@@ -7761,8 +7825,9 @@ function assertResetArmed(): void {
 
 /**
  * The ONLY entry point to the Set Builder reset (NEO-214). Wipes
- * `selectorOptions`, `cardChecklist`, `cardCrossListings`, `players`, `teams`
- * and `leagues`.
+ * `selectorOptions`, `cardChecklist`, `cardCrossListings`,
+ * `entityReviewQueue`, `checklistCandidates`, `players`, `playerAliases`,
+ * `teams`, `teamAliases`, `franchises` and `leagues`.
  *
  * Runbook: `docs/operations/neo214-set-builder-admin-scripts.md`. Take a
  * **Backup Now** first (NEO-190 §3) and run it with the app CLOSED — resetting
@@ -7820,6 +7885,12 @@ export const resetSetBuilderDataFromCli = internalAction({
     selectorOptionsDeleted: v.number(),
     cardChecklistDeleted: v.number(),
     crossListingsDeleted: v.number(),
+    // NEO-294 — the staging tables. Reported so the CI seed log carries the
+    // residue count: a run that clears thousands here is a run that inherited
+    // a previous run's abandoned reviews, which is the diagnostic that would
+    // have caught the 15 s → 246 s drift a week earlier.
+    entityReviewQueueDeleted: v.number(),
+    checklistCandidatesDeleted: v.number(),
     playersDeleted: v.number(),
     // NEO-254 — reported alongside the players, so a run that drained one and
     // not the other is visible in the operator's own output.
@@ -7908,6 +7979,92 @@ export const resetCardCrossListingsBatch = internalMutation({
     // point — see assertResetArmed.
     assertResetArmed();
     const rows = await ctx.db.query("cardCrossListings").take(RESET_BATCH_SIZE);
+    for (const row of rows) {
+      await ctx.db.delete(row._id);
+    }
+    return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
+  },
+});
+
+/**
+ * Internal: drain `entityReviewQueue`, looped by `runSetBuilderReset`.
+ *
+ * NEO-294. The wizard's staging table, and the one that actually accumulates:
+ * a first-time sync of a real set surfaces hundreds of unknown
+ * player/team/league names, and nothing in CI ever removed them.
+ * `commitCardChecklist` and `cancelBatch` clean up after themselves, and the
+ * hourly `reap abandoned entity-review batches` cron clears what they missed —
+ * but only past ENTITY_REVIEW_ABANDONED_MS (24 h), which is deliberately long
+ * because deleting a batch throws away real operator work. Six CI runs in
+ * fourteen hours all land inside that window, so each one inherits every
+ * review the ones before it left staged.
+ *
+ * The 24-hour threshold is CORRECT and is not what this changes. What was
+ * wrong is that CI's own reset never claimed the table.
+ *
+ * The cost is not cosmetic. `collectSelectorOptionHoldings` counts these rows
+ * as in-flight review work and REFUSES a row delete while any exist, which is
+ * the `"1485 checklist reviews are in progress here"` failure; and
+ * `startBatch` resumes a batch it finds for the same (selectorOptionId, user),
+ * so stale rows are also a wrong starting point for the next fetch.
+ *
+ * There is no separate "batches" table — a batch is the
+ * `(selectorOptionId, batchId)` grouping inside THIS table — so draining the
+ * table drains the batches, and a row costs exactly one delete. Deliberately a
+ * flat `.take()` rather than the indexed, per-batch `deleteBatchRows` the
+ * product path uses: the reset wants the whole table gone, so grouping by
+ * batch would only add a read per group to arrive at the same set of deletes.
+ */
+export const resetEntityReviewQueueBatch = internalMutation({
+  args: {},
+  returns: v.object({
+    deleted: v.number(),
+    hasMore: v.boolean(),
+  }),
+  handler: async (ctx) => {
+    // The arming flag, not an identity, is what lives next to the delete, so a
+    // future internal caller cannot drain this table by bypassing the entry
+    // point — see assertResetArmed.
+    assertResetArmed();
+    const rows = await ctx.db.query("entityReviewQueue").take(RESET_BATCH_SIZE);
+    for (const row of rows) {
+      await ctx.db.delete(row._id);
+    }
+    return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
+  },
+});
+
+/**
+ * Internal: drain `checklistCandidates`, looped by `runSetBuilderReset`.
+ *
+ * NEO-294, the twin of `resetEntityReviewQueueBatch` above and the bigger of
+ * the two by row count: one staged candidate per card, so ~900 rows for a
+ * single real set against a few hundred review rows.
+ *
+ * Its cron is NOT the queue's. `sweepStaleCandidates` deletes a row an hour
+ * after its `lastUpdated` (CANDIDATE_STALE_MS), so this table does not stack
+ * across a working day the way the queue does. It is drained here anyway, and
+ * with the queue, because the reset's job is a clean slate NOW rather than
+ * within the hour: `collectSelectorOptionHoldings` adds both tables into the
+ * single "reviews in progress" count that REFUSES a row delete, and a run
+ * starting less than an hour after the last one inherits ~900 live rows per
+ * set the previous run fetched. A reset that emptied the queue and left these
+ * would still hand the seed a deployment that refuses its deletes.
+ */
+export const resetChecklistCandidatesBatch = internalMutation({
+  args: {},
+  returns: v.object({
+    deleted: v.number(),
+    hasMore: v.boolean(),
+  }),
+  handler: async (ctx) => {
+    // The arming flag, not an identity, is what lives next to the delete, so a
+    // future internal caller cannot drain this table by bypassing the entry
+    // point — see assertResetArmed.
+    assertResetArmed();
+    const rows = await ctx.db
+      .query("checklistCandidates")
+      .take(RESET_BATCH_SIZE);
     for (const row of rows) {
       await ctx.db.delete(row._id);
     }

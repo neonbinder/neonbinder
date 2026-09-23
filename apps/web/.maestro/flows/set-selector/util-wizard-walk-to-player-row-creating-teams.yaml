@@ -75,6 +75,21 @@ tags:
       # player row, and tapping `Add as New Player` would both break that and
       # risk minting a duplicate of an ambiguous same-name row. Anchored so it
       # cannot reach the demoted `Add as New {kind} anyway` link.
+      # `optional: true` — the SAME guard/tap race as the skip-draining twin,
+      # and repaired the same way. The full reasoning, the measurement and the
+      # decompiled `CommandWarned` mechanism are written once at the
+      # corresponding step of `util-wizard-walk-to-player-row.yaml`; do not
+      # duplicate them here (R3). In one line: the guard and the tap are two
+      # hierarchy reads ~0.33s apart, the button vanishing in that gap means
+      # the row was answered and the drain is DONE, and the hard
+      # `extendedWaitUntil` below is what adjudicates — a player row cannot be
+      # presented while a settled undecided team row remains
+      # (`components/SetSelector/entity-review-nav.ts`, `nextUndecided`).
+      #
+      # Safe on a CREATE path specifically: a tolerated miss creates nothing,
+      # and "created nothing" is exactly what the post-condition catches — the
+      # team row would still be undecided, so no player row would be presented
+      # and the wait would fail at 30s.
       - runFlow:
           when:
             visible:
@@ -82,6 +97,7 @@ tags:
           commands:
             - tapOn:
                 id: "^Add as New (Team|League)$"
+                optional: true
 - extendedWaitUntil:
     visible:
       id: "Skip .* not a person"
@@ -131,6 +147,21 @@ tags:
       # player row, and tapping `Add as New Player` would both break that and
       # risk minting a duplicate of an ambiguous same-name row. Anchored so it
       # cannot reach the demoted `Add as New {kind} anyway` link.
+      # `optional: true` — the SAME guard/tap race as the skip-draining twin,
+      # and repaired the same way. The full reasoning, the measurement and the
+      # decompiled `CommandWarned` mechanism are written once at the
+      # corresponding step of `util-wizard-walk-to-player-row.yaml`; do not
+      # duplicate them here (R3). In one line: the guard and the tap are two
+      # hierarchy reads ~0.33s apart, the button vanishing in that gap means
+      # the row was answered and the drain is DONE, and the hard
+      # `extendedWaitUntil` below is what adjudicates — a player row cannot be
+      # presented while a settled undecided team row remains
+      # (`components/SetSelector/entity-review-nav.ts`, `nextUndecided`).
+      #
+      # Safe on a CREATE path specifically: a tolerated miss creates nothing,
+      # and "created nothing" is exactly what the post-condition catches — the
+      # team row would still be undecided, so no player row would be presented
+      # and the wait would fail at 30s.
       - runFlow:
           when:
             visible:
@@ -138,6 +169,7 @@ tags:
           commands:
             - tapOn:
                 id: "^Add as New (Team|League)$"
+                optional: true
 - extendedWaitUntil:
     visible:
       id: "Skip .* not a person"

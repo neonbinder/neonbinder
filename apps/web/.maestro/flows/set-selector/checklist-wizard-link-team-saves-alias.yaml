@@ -323,6 +323,23 @@ tags:
       notVisible:
         id: "Skip .* not a team"
     commands:
+      # `optional: true` — the guard and this tap are two hierarchy reads
+      # ~0.3s apart; the league row settling inside that gap takes the control
+      # away, and a non-optional tap then burns `lookupTimeoutMs` (17000) and
+      # fails the flow. The control vanishing means the league row was
+      # ANSWERED, which is this loop finishing.
+      #
+      # ADJUDICATOR: `id: "Skip .* not a team"`, the wait immediately below —
+      # a TEAM row is presented. The wizard presents exactly ONE row at a time
+      # (`EntityReviewWizard`'s `current` resolves the single `nav.rowId`), so
+      # that control can only be on screen when the presented row IS a team
+      # row. A league tap that genuinely did nothing leaves the LEAGUE row
+      # presented, so the team control cannot appear and the wait fails at
+      # 7000. R2 holds — and the hard `assertTrue ${output.ROW_NAME.length>0}`
+      # three steps down re-proves a team row independently.
+      #
+      # Full mechanism written once at the corresponding step of
+      # `util-wizard-walk-to-player-row.yaml` (R3 — not duplicated).
       - runFlow:
           when:
             visible:
@@ -330,6 +347,7 @@ tags:
           commands:
             - tapOn:
                 id: "Skip .* has no league"
+                optional: true
 - extendedWaitUntil:
     visible:
       id: "Skip .* not a team"

@@ -680,16 +680,26 @@ describe("NEO-214: the Set Builder admin panel and its client-callable functions
     "resetSelectorOptionsBatch",
     "resetCardChecklistBatch",
     "resetCardCrossListingsBatch",
+    // NEO-294 — the entity-review staging tables, added to the reset loop.
+    "resetEntityReviewQueueBatch",
+    "resetChecklistCandidatesBatch",
     "resetPlayersBatch",
+    // These three were in the loop but missing from this list; a batch that
+    // is not pinned here can be turned public without a test going red, which
+    // is the whole point of the list.
+    "resetPlayerAliasesBatch",
     "resetTeamsBatch",
+    "resetTeamAliasesBatch",
+    "resetFranchisesBatch",
     "resetLeaguesBatch",
   ])("%s is declared internalMutation, not mutation", (fn) => {
-    // These six do the actual deleting, and they carry no identity check —
+    // These do the actual deleting, and they carry no identity check —
     // a CLI run has no identity, so one would refuse every legitimate call
     // (see resetSetBuilderData.test.ts). The arming flag guards them instead.
     // That trade is only sound while they stay unreachable from a client, so
     // the declaration keyword is load-bearing here in a way it is not
-    // elsewhere: `mutation` would expose six unauthenticated table-wipes.
+    // elsewhere: `mutation` would expose an unauthenticated table-wipe per
+    // entry in this list.
     const src = readFileSync(join(__dirname, "selectorOptions.ts"), "utf8");
     expect(src).toContain(`export const ${fn} = internalMutation({`);
     expect(src).not.toContain(`export const ${fn} = mutation(`);
