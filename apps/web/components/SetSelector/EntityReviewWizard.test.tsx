@@ -3873,7 +3873,11 @@ describe("EntityReviewWizard — commit failure", () => {
     // true when NEO-189 split the commit into chunks that write before
     // finalize runs. What the copy promises now is the property the code
     // actually has: re-running converges.
-    expect(alert.textContent).toContain("Some of this commit may already be saved.");
+    // Jason's own words, signed off verbatim — the plain register is the
+    // point, so this asserts the sentence rather than a paraphrase of it.
+    expect(alert.textContent).toContain(
+      "Part of this commit already saved. Retry commit picks up where it stopped — cards re-match what's already there instead of doubling, and your decisions are all still here. The set's card count will tell you when it's done.",
+    );
     expect(alert.textContent).not.toContain("Nothing was saved");
 
     // One control per action: the footer's Confirm & Save stands down while the

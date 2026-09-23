@@ -92,7 +92,12 @@ export function moveClashRefusal(e: unknown, targetName: string): string | null 
   if (code !== "SET_NAME_CLASH_AT_TARGET") return null;
   const existing =
     typeof value === "string" && value.length > 0 ? value : "a set of that name";
-  return `${targetName} already has a set called "${existing}" — nothing moved. Rename one of them first.`;
+  // "Rename one of them first" left the operator guessing WHICH one and
+  // WHERE. Only one of the two is in front of him — the set he is moving —
+  // and the control that renames it is the pencil sitting beside its name in
+  // this same panel header, whose own accessible name starts with "Rename".
+  // Naming it both ways is what turns a refusal into a next step.
+  return `${targetName} already has a set called "${existing}" — nothing moved. Rename this set with the Rename pencil beside its name, then move it.`;
 }
 
 export default function MoveSetToBrandControl({
@@ -197,6 +202,15 @@ export default function MoveSetToBrandControl({
 
   const toggleList = () => {
     if (busy) return;
+    // NEO-294 (a11y) — the trigger is `inert` while the confirm is up, so in
+    // any browser that honours it this is unreachable. The guard is the
+    // second lock, and the one that holds if `inert` is ever removed or
+    // unsupported: toggling from here would call `closeList()`, unmount the
+    // list AND `listRef` while the dialog is still showing, and leave both
+    // restore paths with nothing to focus — the cancel effect finds
+    // `listRef.current === null`, and `ConfirmDialog`'s own restore finds its
+    // captured node no longer `isConnected`. Focus lands on `<body>`.
+    if (target !== null) return;
     if (open) {
       closeList();
       return;
@@ -268,6 +282,15 @@ export default function MoveSetToBrandControl({
         // operator just pressed, and disabling it would blur focus to <body>.
         aria-disabled={busy || undefined}
         aria-busy={busy || undefined}
+        // NEO-294 (a11y) — the barrier has to cover the TRIGGER as well as
+        // the list. Both are DOM siblings of the dialog, so `aria-modal`
+        // alone hides neither: Tab cannot reach the trigger and the backdrop
+        // blocks the mouse, but a screen reader's virtual cursor navigates
+        // independently of both and can activate it. Doing so collapses the
+        // list out from under an open confirm and loses focus to `<body>` —
+        // for exactly the audience `aria-modal` exists to protect. See
+        // `toggleList` for the second lock.
+        inert={target !== null}
         title={MOVE_SET_TOOLTIP}
         className="shrink-0 text-xs py-1.5 text-gray-400 hover:text-[#00D558] focus:text-[#00D558] focus-visible:ring-2 focus-visible:ring-[#00D558] focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900 aria-disabled:opacity-50 aria-disabled:cursor-not-allowed aria-disabled:hover:text-gray-400"
       >
@@ -306,10 +329,12 @@ export default function MoveSetToBrandControl({
             <p className="text-[11px] text-gray-400">Finding this year's brands…</p>
           ) : choices.length === 0 ? (
             // An empty list is a statement about the year, not a failure —
-            // and the remedy (make a brand in the Manufacturers column) is
-            // where the operator already knows to go.
+            // so it says what to do about it. "This year has no other brand
+            // to move it to." was a dead end: the operator came here because
+            // the set is misfiled, and a shrug is not an answer. The remedy
+            // is one column to the left.
             <p className="text-[11px] text-gray-400">
-              This year has no other brand to move it to.
+              {`No other brand in ${yearLabel ?? "this year"} yet. Add one in the Manufacturers column, then come back.`}
             </p>
           ) : (
             <div

@@ -147,12 +147,14 @@ describe("MoveSetToBrandControl — the list", () => {
     expect(screen.getByText("Finding this year's brands…")).toBeTruthy();
   });
 
-  it("says the year has nowhere else to put it rather than showing an empty list", () => {
+  it("says where to make a brand rather than shrugging at an empty list", () => {
     currentBrands = [{ _id: "topps-id", value: "Topps", isCurrent: true }];
     renderControl();
     openList();
     expect(
-      screen.getByText("This year has no other brand to move it to."),
+      screen.getByText(
+        "No other brand in 2024 yet. Add one in the Manufacturers column, then come back.",
+      ),
     ).toBeTruthy();
     expect(screen.queryByRole("group")).toBeNull();
   });
@@ -250,7 +252,7 @@ describe("MoveSetToBrandControl — the confirm", () => {
 
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toBe(
-      'Bowman already has a set called "topps chrome" — nothing moved. Rename one of them first.',
+      'Bowman already has a set called "topps chrome" — nothing moved. Rename this set with the Rename pencil beside its name, then move it.',
     );
     // The refusal is where the question was asked: the dialog stays open, and
     // nothing is claimed in the panel's toast.
@@ -289,6 +291,57 @@ describe("MoveSetToBrandControl — the modal barrier (NEO-294 a11y)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(screen.getByText(MOVE_SET_PROMPT)).toBeTruthy();
     expect(listContainer().hasAttribute("inert")).toBe(false);
+  });
+
+  it("covers the TRIGGER too — it is outside the dialog just as the list is", () => {
+    // The list was inert and the trigger was not, although both are DOM
+    // siblings of the dialog and neither is inside it. Tab cannot reach the
+    // trigger (the dialog traps it) and the backdrop blocks the mouse, so the
+    // gap was invisible to everyone EXCEPT a screen reader's virtual cursor,
+    // which navigates independently of both — the audience `aria-modal`
+    // exists to protect.
+    renderControl();
+    openList();
+    const trigger = screen.getByRole("button", { name: MOVE_SET_LABEL });
+    expect(trigger.hasAttribute("inert")).toBe(false);
+
+    fireEvent.click(screen.getByLabelText("Move to Bowman"));
+    expect(trigger.hasAttribute("inert")).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(trigger.hasAttribute("inert")).toBe(false);
+  });
+
+  it("activating the trigger behind the confirm cannot collapse the list or lose focus", async () => {
+    // The focus-loss path, spelled out. `inert` is what stops this in a
+    // browser; happy-dom does not enforce it, which is exactly why the
+    // control also refuses the toggle while a confirm is up. Without BOTH,
+    // this click unmounts the list and `listRef` under an open dialog: the
+    // cancel-restore effect then finds `listRef.current === null` and does
+    // nothing, and `ConfirmDialog`'s own restore finds its captured node no
+    // longer `isConnected` and also does nothing. Focus ends on <body>.
+    renderControl();
+    openList();
+    fireEvent.click(screen.getByLabelText("Move to Bowman"));
+    const trigger = screen.getByRole("button", { name: MOVE_SET_LABEL });
+
+    fireEvent.click(trigger);
+    // Enter too: the trigger drives itself from the keyboard (maestro-web's
+    // synthetic Enter never clicks), so the refusal has to hold on both.
+    fireEvent.keyDown(trigger, { key: "Enter" });
+
+    // The list is still there, still behind the still-open dialog.
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(screen.getByText(MOVE_SET_PROMPT)).toBeTruthy();
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+
+    // And the way back out still works: Cancel restores focus to the brand
+    // that asked, which is only possible because the list never unmounted.
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByLabelText("Move to Bowman")),
+    );
+    expect(document.activeElement).not.toBe(document.body);
   });
 
   it("keeps the list unreachable while a refusal is being read inside the dialog", async () => {
@@ -384,7 +437,7 @@ describe("moveClashRefusal", () => {
         "Topps",
       ),
     ).toBe(
-      'Topps already has a set called "Chrome" — nothing moved. Rename one of them first.',
+      'Topps already has a set called "Chrome" — nothing moved. Rename this set with the Rename pencil beside its name, then move it.',
     );
   });
 
@@ -403,7 +456,7 @@ describe("moveClashRefusal", () => {
         "Topps",
       ),
     ).toBe(
-      'Topps already has a set called "a set of that name" — nothing moved. Rename one of them first.',
+      'Topps already has a set called "a set of that name" — nothing moved. Rename this set with the Rename pencil beside its name, then move it.',
     );
   });
 });

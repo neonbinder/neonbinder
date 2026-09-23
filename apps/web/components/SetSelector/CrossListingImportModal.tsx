@@ -192,6 +192,19 @@ export default function CrossListingImportModal({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<LinkResult | null>(null);
+  /**
+   * NEO-296 — how far through the slices we are.
+   *
+   * One call used to mean one wait; a 1,200-number paste is now three
+   * sequential round-trips, and the only feedback was a button reading
+   * "Linking…" for long enough to look hung and invite a second press. A
+   * running count is the difference between "this is working" and "this is
+   * stuck". Null whenever no import is in flight.
+   */
+  const [progress, setProgress] = useState<{
+    done: number;
+    total: number;
+  } | null>(null);
 
   const stepControlsRef = useRef<HTMLDivElement | null>(null);
   const optionListRef = useRef<HTMLDivElement | null>(null);
@@ -382,6 +395,12 @@ export default function CrossListingImportModal({
   };
 
   const handleSubmit = async () => {
+    // a11y: the controls that used to carry `disabled={submitting}` now carry
+    // `aria-disabled`, which does not stop a click — so the refusal lives
+    // here. Native `disabled` blurs the button the operator just pressed to
+    // <body>, and slicing one call into up to three sequential round-trips
+    // made that window long enough to matter.
+    if (submitting) return;
     setError(null);
     setResult(null);
 
@@ -401,6 +420,23 @@ export default function CrossListingImportModal({
     }
 
     setSubmitting(true);
+    setProgress({ done: 0, total: parsed.numbers.length });
+    /*
+     * NEO-296 — declared OUTSIDE the try, because what it holds when a slice
+     * throws is the only record of what already committed.
+     *
+     * Each slice is its own transaction: slice 1 linking 400 cards is
+     * durable whether or not slice 2 succeeds. When `merged` lived inside the
+     * try, a throw in slice 2 set "Import failed: …", never called
+     * `setResult`, and those 400 links were reported to nobody — the same
+     * shape as the "Nothing was saved" falsehood this branch just removed,
+     * reintroduced one loop later.
+     */
+    const merged: LinkResult = {
+      linked: [],
+      alreadyLinked: [],
+      notFound: [],
+    };
     try {
       /*
        * NEO-296 — sent in transaction-sized slices, merged into one answer.
@@ -417,11 +453,6 @@ export default function CrossListingImportModal({
        * inserted twice — so an interrupted import keeps what it made and
        * re-running it finishes the rest.
        */
-      const merged: LinkResult = {
-        linked: [],
-        alreadyLinked: [],
-        notFound: [],
-      };
       for (
         let start = 0;
         start < parsed.numbers.length;
@@ -438,14 +469,33 @@ export default function CrossListingImportModal({
         merged.linked.push(...res.linked);
         merged.alreadyLinked.push(...res.alreadyLinked);
         merged.notFound.push(...res.notFound);
+        setProgress({
+          done: Math.min(
+            start + CROSS_LISTING_LINKS_PER_CALL,
+            parsed.numbers.length,
+          ),
+          total: parsed.numbers.length,
+        });
       }
       setResult(merged);
     } catch (e) {
+      const message = e instanceof Error ? e.message : "Unknown error";
+      const committed = merged.linked.length;
+      // "Paste the same list again" is a safe instruction, not a hope: a link
+      // is idempotent, so a number an earlier slice already linked comes back
+      // as `alreadyLinked` rather than being inserted twice — and the numbers
+      // that were never in the source come back in `notFound`, which a second
+      // run reports in full.
       setError(
-        `Import failed: ${e instanceof Error ? e.message : "Unknown error"}`,
+        committed === 0
+          ? `Import stopped partway: ${message}. Paste the same list again to finish the rest.`
+          : `Import stopped partway: ${message}. ${committed.toLocaleString()} card${
+              committed === 1 ? " was" : "s were"
+            } linked before it stopped — paste the same list again to finish the rest.`,
       );
     } finally {
       setSubmitting(false);
+      setProgress(null);
     }
   };
 
@@ -534,11 +584,15 @@ export default function CrossListingImportModal({
                         )}
                         <button
                           type="button"
-                          disabled={submitting}
-                          onClick={() => handleJumpBack(index)}
+                          // aria-disabled, not `disabled`: see handleSubmit.
+                          aria-disabled={submitting || undefined}
+                          onClick={() => {
+                            if (submitting) return;
+                            handleJumpBack(index);
+                          }}
                           aria-label={`Change ${LEVEL_LABEL[LEVELS[index]]}`}
                           title={`Change ${LEVEL_LABEL[LEVELS[index]]}`}
-                          className={`px-2 py-0.5 rounded-md border text-xs transition-colors disabled:opacity-50 ${
+                          className={`px-2 py-0.5 rounded-md border text-xs transition-colors aria-disabled:opacity-50 aria-disabled:cursor-not-allowed ${
                             confirmedIndex === index
                               ? "border-[#00D558] bg-[#00D558]/10 text-[#00D558]"
                               : "border-gray-600 bg-gray-800 text-gray-300 hover:border-gray-400"
@@ -576,13 +630,18 @@ export default function CrossListingImportModal({
                             if (e.key !== "Enter") return;
                             // Never let Enter here submit the form.
                             e.preventDefault();
+                            if (submitting) return;
                             const top = filteredOptions[0];
                             if (top) handlePick(activeIndex, top);
                           }}
-                          disabled={submitting}
+                          // readOnly + aria-disabled rather than `disabled`:
+                          // a disabled input is dropped from the tab order and
+                          // blurred mid-import. See handleSubmit.
+                          readOnly={submitting}
+                          aria-disabled={submitting || undefined}
                           placeholder={`Filter ${LEVEL_LABEL[activeLevel]}…`}
                           aria-label={`Filter ${LEVEL_LABEL[activeLevel]} options`}
-                          className="w-full px-3 py-1.5 text-sm"
+                          className="w-full px-3 py-1.5 text-sm aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
                         />
                       )}
 
@@ -593,10 +652,14 @@ export default function CrossListingImportModal({
                     {stopParent && (
                       <button
                         type="button"
-                        disabled={submitting}
-                        onClick={() => handleConfirmSource(activeIndex - 1)}
+                        // aria-disabled, not `disabled`: see handleSubmit.
+                        aria-disabled={submitting || undefined}
+                        onClick={() => {
+                          if (submitting) return;
+                          handleConfirmSource(activeIndex - 1);
+                        }}
                         aria-label={`Use ${stopParent.value} as the source set`}
-                        className="w-full text-left px-3 py-1.5 rounded-lg border border-[#00B7FF] bg-[#00B7FF]/10 text-sm text-[#00B7FF] hover:bg-[#00B7FF]/20 transition-colors disabled:opacity-50"
+                        className="w-full text-left px-3 py-1.5 rounded-lg border border-[#00B7FF] bg-[#00B7FF]/10 text-sm text-[#00B7FF] hover:bg-[#00B7FF]/20 transition-colors aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
                       >
                         Use {stopParent.value} as the source set
                       </button>
@@ -628,10 +691,14 @@ export default function CrossListingImportModal({
                       <button
                         key={opt._id}
                         type="button"
-                        disabled={submitting}
-                        onClick={() => handlePick(activeIndex, opt)}
+                        // aria-disabled, not `disabled`: see handleSubmit.
+                        aria-disabled={submitting || undefined}
+                        onClick={() => {
+                          if (submitting) return;
+                          handlePick(activeIndex, opt);
+                        }}
                         aria-label={`Pick ${LEVEL_LABEL[activeLevel]} ${opt.value}`}
-                        className={`w-full text-left px-3 py-2 rounded-lg border text-sm transition-all disabled:opacity-50 ${
+                        className={`w-full text-left px-3 py-2 rounded-lg border text-sm transition-all aria-disabled:opacity-50 aria-disabled:cursor-not-allowed ${
                           picked[activeIndex]?.id === opt._id
                             ? "border-[#00D558] bg-[#00D558]/10 ring-1 ring-[#00D558] text-gray-100"
                             : "border-gray-600 bg-gray-800 text-gray-200 hover:border-gray-400"
@@ -654,18 +721,37 @@ export default function CrossListingImportModal({
                     type="text"
                     value={cardNumberInput}
                     onChange={(e) => {
+                      if (submitting) return;
                       setCardNumberInput(e.target.value);
                       setError(null);
                     }}
-                    disabled={submitting}
+                    // readOnly + aria-disabled rather than `disabled`: see
+                    // handleSubmit. This field in particular has to keep focus
+                    // — after a partial import the operator's next move is to
+                    // re-submit the very list sitting in it.
+                    readOnly={submitting}
+                    aria-disabled={submitting || undefined}
                     placeholder="e.g. 301-320 or 301,303,305-310"
                     aria-label="Card numbers to cross-list"
-                    className="w-full px-3 py-2 text-sm"
+                    className="w-full px-3 py-2 text-sm aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
                   />
                   <span className="block text-xs text-gray-500">
                     Ranges expand; separate entries with commas.
                   </span>
                 </label>
+
+                {/* NEO-296 — a running count, because one press is now up to
+                    three sequential round-trips. role="status" (polite): it
+                    updates several times per import and must not interrupt
+                    whatever the operator is reading. */}
+                {progress && (
+                  <div
+                    role="status"
+                    className="p-2 rounded-md border border-gray-700 bg-gray-800/60 text-sm text-gray-300"
+                  >
+                    {`Linked ${progress.done.toLocaleString()} of ${progress.total.toLocaleString()}…`}
+                  </div>
+                )}
 
                 {error && (
                   <div
@@ -705,18 +791,25 @@ export default function CrossListingImportModal({
             </div>
 
             <div className="px-6 py-3 border-t border-gray-700 flex justify-end gap-3">
+              {/* Both carry aria-disabled rather than `disabled`: see
+                  handleSubmit. The submit button is the one that matters —
+                  natively disabling it on click blurs it to <body> for the
+                  whole import, which is now up to three round-trips long. */}
               <NeonButton
                 type="button"
                 cancel
-                onClick={onClose}
-                disabled={submitting}
+                onClick={() => {
+                  if (submitting) return;
+                  onClose();
+                }}
+                aria-disabled={submitting || undefined}
                 aria-label="Cancel cross-release import"
               >
                 {result ? "Close" : "Cancel"}
               </NeonButton>
               <NeonButton
                 type="submit"
-                disabled={submitting || !sourceSelectorOptionId}
+                aria-disabled={submitting || !sourceSelectorOptionId || undefined}
                 aria-label="Link cross-release cards"
               >
                 {submitting ? "Linking…" : "Link Cards"}

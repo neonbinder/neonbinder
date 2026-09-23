@@ -18,8 +18,16 @@ restored everything and they had written 129 more lines meanwhile, which merged
 cleanly — but only by luck, and any tool call they made in that window read a
 file that had silently rolled back.
 
+**Second incident, same file, NEO-294:** `git checkout -- <test file>` to
+delete a two-line debug probe I had pasted into a test — and it threw away my
+own ~115 lines of new tests in the same file, because git restores the WHOLE
+file to HEAD and has no idea which hunk was the probe. Remove a temporary
+probe with the exact inverse Edit, never with git. `git` has no "undo my last
+edit"; only the editor does.
+
 **How to apply:** to tell "my change broke this" from "it was already red",
-never stash and never `git checkout --`. Instead:
+and to clean up a scratch edit, never stash and never `git checkout --`.
+Instead:
 - `git stash` is out and so is a WIP commit (builders must not commit).
 - Read the baseline out of git without touching the tree:
   `git show HEAD:apps/web/convex/<file>.ts > /tmp/scratch/base.ts` and compare,

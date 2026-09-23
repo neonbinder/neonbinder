@@ -296,6 +296,21 @@ const CONFIRM_SAVE_LABEL = "Confirm & Save (Enter) — commit this review";
 const CONFIRM_SAVING_LABEL = "Saving... — committing this review";
 const CANCEL_REVIEW_LABEL = "Cancel (Esc) — leave without committing";
 
+/**
+ * NEO-294 — the two bulk links' VISIBLE words, named once.
+ *
+ * "Press the button again to pick up where it left off" sat under two buttons,
+ * and the sentences that did try to name one said "Add All Remaining as New" —
+ * a label this footer has not rendered for some time. A message that names a
+ * control it does not share a constant with drifts silently, which is exactly
+ * what happened. Both the buttons and every sentence that names them now read
+ * from here. The visible text is the accessible name for both (no aria-label),
+ * and a Maestro flow matches `.*Add remaining players as new.*`, so these
+ * strings are E2E surface: change them and change the flow.
+ */
+const BULK_CREATE_LABEL = "Add remaining players as new";
+const BULK_SKIP_LABEL = "Skip remaining names";
+
 /** What the final step is about to write, as counted by the PARENT. */
 export type EntityReviewSummary = {
   /** Cards this fetch will save once committed. */
@@ -1304,8 +1319,13 @@ export default function EntityReviewWizard({
       if (bulkAbortRef.current) return;
       cursor = result.cursor;
     }
+    // NEO-294 — names the button, because "the button" sat under TWO of them.
+    // An operator who had just pressed Skip remaining names was told to press
+    // "the button" beside a live Add remaining players as new.
     throw new Error(
-      "Stopped partway through — the names decided so far are saved. Press the button again to pick up where it left off.",
+      `Stopped partway through — the names decided so far are saved. Press "${
+        kind === "create" ? BULK_CREATE_LABEL : BULK_SKIP_LABEL
+      }" again to pick up where it left off.`,
     );
   };
 
@@ -1377,7 +1397,9 @@ export default function EntityReviewWizard({
       autoAddRef.current = false;
       setAutoAddPending(false);
       setBulkError(
-        `Stopped adding automatically after ${AUTO_ADD_MAX_CALLS} rounds. ${undecided.length} names are still waiting — use "Add All Remaining as New" again.`,
+        // NEO-294 — was `"Add All Remaining as New"`, a label this footer
+        // stopped rendering. Read from the constant the button renders.
+        `Stopped adding automatically after ${AUTO_ADD_MAX_CALLS} rounds. ${undecided.length} names are still waiting — use "${BULK_CREATE_LABEL}" again.`,
       );
       return;
     }
@@ -3502,10 +3524,19 @@ export default function EntityReviewWizard({
                       converges — so pressing the button again finishes the
                       job instead of doubling it.
                     */}
+                    {/*
+                      NEO-294 — Jason signed this off verbatim; the plain
+                      register is deliberate. This is the screen where being
+                      cute costs money, so it says what happened, what the
+                      button does, and how the operator knows it worked —
+                      nothing else. Do not brand-voice it.
+                    */}
                     <p className="text-xs text-gray-400">
-                      Some of this commit may already be saved. Retry commit
-                      finishes it — nothing is written twice and no decision is
-                      lost.
+                      Part of this commit already saved. Retry commit picks up
+                      where it stopped — cards re-match what&apos;s already
+                      there instead of doubling, and your decisions are all
+                      still here. The set&apos;s card count will tell you when
+                      it&apos;s done.
                     </p>
                     <div className="flex items-center gap-3">
                       {/*
@@ -3961,7 +3992,7 @@ export default function EntityReviewWizard({
                   >
                     {bulkPending === "create"
                       ? "Adding players…"
-                      : `Add remaining players as new (${remainingPlayers})`}
+                      : `${BULK_CREATE_LABEL} (${remainingPlayers})`}
                   </button>
                   <button
                     type="button"
@@ -3973,7 +4004,7 @@ export default function EntityReviewWizard({
                   >
                     {bulkPending === "skip"
                       ? "Skipping names…"
-                      : `Skip remaining names (${remainingNames})`}
+                      : `${BULK_SKIP_LABEL} (${remainingNames})`}
                   </button>
                 </div>
               )}

@@ -895,7 +895,7 @@ export default function SyncReviewModal({
                     id="sync-review-removed"
                     className="text-sm font-semibold text-gray-200"
                   >
-                    No longer listed upstream ({orphans.length})
+                    {`No longer listed upstream (${orphans.length.toLocaleString()})`}
                   </h3>
                   {/* Bulk select is scoped to THIS list, which is only the
                       fully-orphaned rows — a card still live on one of its
@@ -916,15 +916,26 @@ export default function SyncReviewModal({
                             ),
                       )
                     }
+                    // a11y (WCAG 2.5.3 Label in Name): the accessible name has
+                    // to START from the visible words, or voice control loses
+                    // the control — "click Select all" cannot reach a button
+                    // whose accessible name never contains "Select all". Over
+                    // the cap the VISIBLE label changes too, because the
+                    // button no longer selects all and saying it does is the
+                    // falsehood, not the aria-label.
                     aria-label={
                       allOrphansSelected
                         ? "Clear every delete selection"
                         : orphansOverCap
-                          ? `Select the first ${maxDeleteSelection} of ${orphans.length} cards for deletion`
-                          : `Select all ${orphans.length} cards for deletion`
+                          ? `Select first ${maxDeleteSelection.toLocaleString()} of ${orphans.length.toLocaleString()} cards for deletion`
+                          : `Select all ${orphans.length.toLocaleString()} cards for deletion`
                     }
                   >
-                    {allOrphansSelected ? "Clear all" : "Select all"}
+                    {allOrphansSelected
+                      ? "Clear all"
+                      : orphansOverCap
+                        ? `Select first ${maxDeleteSelection.toLocaleString()}`
+                        : "Select all"}
                   </button>
                 </div>
                 <p className="text-xs text-gray-400 mb-2">
@@ -935,7 +946,8 @@ export default function SyncReviewModal({
                   {diff.removedUpstream.partialOrphanCount > 0 && (
                     <>
                       {" "}
-                      {diff.removedUpstream.partialOrphanCount} further row
+                      {diff.removedUpstream.partialOrphanCount.toLocaleString()}{" "}
+                      further row
                       {diff.removedUpstream.partialOrphanCount === 1
                         ? " is"
                         : "s are"}{" "}
@@ -951,18 +963,26 @@ export default function SyncReviewModal({
                     That needs a persisted per-row orphan marker, which is a
                     schema change and a separate concern from this review. */}
                 {/* NEO-294 — stated before the list, because it changes what
-                    "Select all" means. Not role="alert": it is a standing
-                    limit the operator can read at any time, not an event. */}
+                    the bulk-select button does. Not role="alert": it is a
+                    standing limit the operator can read at any time, not an
+                    event. It describes BOTH controls it governs: the bulk
+                    button above and the per-row checkboxes below, which point
+                    here with aria-describedby — a screen-reader user who
+                    focuses a dimmed row after the cap bites gets this text and
+                    nothing else, so a sentence about the bulk button alone
+                    left them to infer why their own tick did nothing. */}
                 {orphansOverCap && (
                   <p
                     id="sync-delete-cap"
                     className="text-xs text-[#FFB020] mb-2"
                   >
-                    One commit can delete up to{" "}
-                    {maxDeleteSelection.toLocaleString()} cards. Select all
-                    ticks the first {maxDeleteSelection.toLocaleString()} of{" "}
-                    {orphans.length.toLocaleString()}; run the sync again to
-                    clear the rest.
+                    One pass can delete up to{" "}
+                    {maxDeleteSelection.toLocaleString()} cards. Select first{" "}
+                    {maxDeleteSelection.toLocaleString()} takes them from the
+                    top of this list of {orphans.length.toLocaleString()} —
+                    apply these, then run Sync Sets again for the rest. Once{" "}
+                    {maxDeleteSelection.toLocaleString()} are ticked, another
+                    tick is refused until you untick one.
                   </p>
                 )}
                 <ul className="flex flex-col gap-1">
@@ -1067,12 +1087,19 @@ export default function SyncReviewModal({
                 explicit attribute — see the codebase's own status/alert notice
                 pattern for when that IS needed. */}
             <span className="text-xs text-gray-400" role="status">
-              {acceptedFieldCount} change
+              {acceptedFieldCount.toLocaleString()} change
               {acceptedFieldCount === 1 ? "" : "s"} will be applied
               {anyOrphanSelected
-                ? ` · ${selectedDeleteIds.length} card${
+                ? ` · ${selectedDeleteIds.length.toLocaleString()} card${
                     selectedDeleteIds.length === 1 ? "" : "s"
                   } will be deleted`
+                : ""}
+              {/* NEO-294 — this counter is sticky and already a live region,
+                  so it is the surface that can tell a screen-reader user why
+                  ticking stopped working AT THE MOMENT it stops: the count
+                  they just changed is the count that hit the ceiling. */}
+              {anyOrphanSelected && deleteListFull
+                ? " — the most one pass can take."
                 : ""}
             </span>
             <div className="flex gap-2">
@@ -1166,7 +1193,7 @@ export default function SyncReviewModal({
                 id="sync-delete-confirm-heading"
                 className="text-base font-semibold text-gray-100"
               >
-                Delete {selectedDeleteIds.length} card
+                Delete {selectedDeleteIds.length.toLocaleString()} card
                 {selectedDeleteIds.length === 1 ? "" : "s"}?
               </h3>
               <p
@@ -1177,13 +1204,24 @@ export default function SyncReviewModal({
                 Anything that varies them is re-parented rather than deleted.
                 This cannot be undone.
                 {/* NEO-294 — a capped selection says what it is leaving
-                    behind, at the last moment it matters. */}
-                {orphansOverCap && (
+                    behind, at the last moment it matters.
+                    Gated on the cap ACTUALLY BITING, not on the list merely
+                    being long. `orphansOverCap` alone is a fact about the
+                    LIST: a dealer who scans 1,247 delisted rows and
+                    deliberately ticks three of them — the normal case — was
+                    told "1,244 of the 1,247 … stay for now — run the sync
+                    again to clear them", which instructs him to delete 1,244
+                    cards he had just chosen to keep. The sentence is only
+                    true when the ceiling, not the operator, decided what was
+                    left out. */}
+                {orphansOverCap && deleteListFull && (
                   <>
                     {" "}
                     {(orphans.length - selectedDeleteIds.length).toLocaleString()}{" "}
-                    of the {orphans.length.toLocaleString()} unlisted cards stay
-                    for now — run the sync again to clear them.
+                    of the {orphans.length.toLocaleString()} cards in this list
+                    are staying — one pass can only take{" "}
+                    {maxDeleteSelection.toLocaleString()}. Run Sync Sets again
+                    to clear the rest.
                   </>
                 )}
               </p>
@@ -1208,7 +1246,7 @@ export default function SyncReviewModal({
                   cancel
                   size="2"
                   onClick={submit}
-                  aria-label={`Confirm deleting ${selectedDeleteIds.length} cards`}
+                  aria-label={`Confirm deleting ${selectedDeleteIds.length.toLocaleString()} cards`}
                 >
                   Delete
                 </NeonButton>
