@@ -13,3 +13,4 @@
 - [Which paths exercise a cold BSC password login](reference_which_paths_exercise_a_cold_bsc_password_login.md) — transient creds + the canary are the ONLY callers of the B2C password exchange; a sub-second BSC login is cache/refresh, never proof sign-in works
 - [Secret Manager has no upsert](reference_secret_manager_has_no_upsert.md) — every credential write is a check-then-create race; ALREADY_EXISTS and NOT_FOUND are both fall-throughs, never a lock or a retry
 - [Adapter error string is body and classifier](reference_adapter_error_string_is_body_and_classifier.md) — sanitising an adapter's `error` also changes `error_class`; status code is flag-driven and safe
+- [Never log fully-qualified resource names](feedback_never_log_fully_qualified_resource_names.md) — bare secret id + version ordinal in logs; NEO-294 reversed the old "resource names are safe to log" position

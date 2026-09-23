@@ -150,6 +150,28 @@ function versionOrdinal(versionName: string): number | undefined {
 }
 
 /**
+ * A log-safe name for a secret version: the BARE secret id plus the version
+ * ordinal, e.g. `buysportscards-credentials-user_abc/versions/7`.
+ *
+ * NEO-294. The full resource name is `projects/<project>/secrets/<id>/versions/<N>`
+ * and carries the GCP project identifier — the identifier this ticket exists
+ * to keep out of the error path, and the one a raw gRPC message leaked onto an
+ * HTTP response body. The project is a property of the deployment the log line
+ * already came from, so naming it again buys nothing and spends a secret.
+ *
+ * The ordinal is deliberately KEPT: telling one version from another is the
+ * entire reason these prune log lines exist, and a line that says only which
+ * secret failed to prune cannot be acted on.
+ *
+ * @returns `<secretId>/versions/<N>`, or `<secretId>/versions/<unparseable>`
+ *   when the name does not end in `/versions/N` (never the full name).
+ */
+function shortVersion(secretId: string, versionName: string): string {
+  const ordinal = versionOrdinal(versionName);
+  return `${secretId}/versions/${ordinal ?? "<unparseable>"}`;
+}
+
+/**
  * gRPC status codes the Secret Manager client reports on `err.code`.
  *
  * Both of these are ORDINARY outcomes of two writers reaching the same key, not
@@ -392,7 +414,7 @@ export class SecretsManagerService {
 
     // NEO-115: keep exactly one version. This is deliberately AFTER the write
     // succeeded and is best-effort — see pruneToNewestVersion.
-    await this.pruneToNewestVersion(secretName, createdVersionName);
+    await this.pruneToNewestVersion(secretName, secretId, createdVersionName);
   }
 
   /**
@@ -554,23 +576,32 @@ export class SecretsManagerService {
    *   single-use, so a half-completed write is not recoverable by retrying the
    *   read. Hence the ordering below — prune only ever runs AFTER the new
    *   version is durably written and its name is known.
-   * - **No secret material is logged.** Only version RESOURCE NAMES, counts
-   *   and error messages reach the log; payloads are never read here
-   *   (listSecretVersions returns metadata only, never `payload`), and errors
-   *   are reduced to their message so no arbitrary object graph is spilled
-   *   into Cloud Logging.
+   * - **No secret material and no infrastructure identifier is logged.** Only
+   *   the BARE secret id, version ordinals, counts and error messages reach the
+   *   log — never the fully-qualified `projects/<project>/secrets/...` resource
+   *   name, which would write the GCP project identifier into Cloud Logging on
+   *   every prune failure (NEO-294; `shortVersion` is the helper). Payloads are
+   *   never read here (listSecretVersions returns metadata only, never
+   *   `payload`), and errors are reduced to their message so no arbitrary
+   *   object graph is spilled into Cloud Logging.
    * - **Bounded and concurrent.** At most MAX_DESTROYS_PER_WRITE destroys are
    *   issued, and they run together rather than one-at-a-time, so the prune
    *   can never dominate the latency of the credential write it follows. See
    *   the constant for the 42s incident that forced this.
    *
-   * @param secretName Fully-qualified `projects/<p>/secrets/<id>` resource name.
+   * @param secretName Fully-qualified `projects/<p>/secrets/<id>` resource
+   *   name. Addresses the API calls; it is NEVER logged — see the bullet above.
+   * @param secretId The bare `<site>-credentials-<clerkUserId>` id. Passed in
+   *   rather than parsed back out of `secretName` so the log-safe form is the
+   *   one the caller already holds, and so a future caller cannot supply a
+   *   name without also supplying the id it is allowed to log.
    * @param keepVersionName Resource name of the version to preserve. When
    *   null/undefined the prune is skipped — destroying "everything else" with
    *   no known survivor would destroy the credential we just stored.
    */
   private async pruneToNewestVersion(
     secretName: string,
+    secretId: string,
     keepVersionName: string | null | undefined,
   ): Promise<void> {
     if (!keepVersionName) {
@@ -578,7 +609,7 @@ export class SecretsManagerService {
       // destroy the version we just wrote, so do nothing.
       console.error(
         "Skipping version prune for secret '%s': created version name unavailable",
-        secretName,
+        secretId,
       );
       return;
     }
@@ -590,7 +621,7 @@ export class SecretsManagerService {
       // newer one, and guessing wrong destroys a live credential.
       console.error(
         "Skipping version prune for secret '%s': created version name has no parseable ordinal",
-        secretName,
+        secretId,
       );
       return;
     }
@@ -646,7 +677,7 @@ export class SecretsManagerService {
           const err = result.reason;
           console.error(
             "Failed to destroy secret version '%s': %s",
-            stale[i],
+            shortVersion(secretId, stale[i]),
             err instanceof Error ? err.message : String(err),
           );
         }
@@ -654,17 +685,17 @@ export class SecretsManagerService {
 
       if (stale.length === MAX_DESTROYS_PER_WRITE) {
         // Backlog remains; the next write takes another batch. Counts and
-        // resource names only — never payloads.
+        // the bare secret id only — never payloads, never the project.
         console.log(
           "Pruned %d version(s) of secret '%s' (per-write cap reached; more remain)",
           stale.length,
-          secretName,
+          secretId,
         );
       }
     } catch (err: any) {
       console.error(
         "Failed to prune old versions for secret '%s': %s",
-        secretName,
+        secretId,
         err instanceof Error ? err.message : String(err),
       );
     }

@@ -69,6 +69,13 @@ const { SecretsManagerService } = require("../dist/services/secrets-manager");
 const KEY = "buysportscards-credentials-user_abc";
 const SECRET = `projects/neonbinder-test/secrets/${KEY}`;
 const V = (n) => `${SECRET}/versions/${n}`;
+/**
+ * NEO-294: the log-safe form of a version name — the BARE secret id plus the
+ * ordinal, never `projects/<project>/...`. The prune log lines emit THIS, and
+ * the assertions below pin that in both directions: the short form present,
+ * the fully-qualified form absent.
+ */
+const SHORT_V = (n) => `${KEY}/versions/${n}`;
 
 const CREDS = {
   username: "seller@example.com",
@@ -530,8 +537,14 @@ describe("SecretsManagerService.updateCredentials — prune is bounded and concu
       "the failing version must not prevent its siblings from being attempted",
     );
     assert.ok(
-      capturedErrors.some((line) => line.includes(V(19))),
+      capturedErrors.some((line) => line.includes(SHORT_V(19))),
       "the rejected version should be named in the log so it can be chased",
+    );
+    // NEO-294: named by the log-SAFE form. The ordinal is what makes the line
+    // chaseable and is deliberately kept; the project identifier is not.
+    assert.ok(
+      !capturedErrors.some((line) => line.includes(V(19))),
+      "…but never by its fully-qualified resource name",
     );
     assert.equal(
       capturedErrors.filter((line) => line.includes("Failed to destroy")).length,
@@ -774,8 +787,12 @@ describe("SecretsManagerService.updateCredentials — prune is best-effort", () 
       "one failing version must not abort the sweep",
     );
     assert.ok(
-      capturedErrors.some((line) => line.includes(V(4))),
-      "the failure should be logged server-side",
+      capturedErrors.some((line) => line.includes(SHORT_V(4))),
+      "the failure should be logged server-side, by its log-safe version name",
+    );
+    assert.ok(
+      !capturedErrors.some((line) => line.includes(V(4))),
+      "and never by the fully-qualified name, which carries the GCP project",
     );
   });
 
@@ -1193,6 +1210,85 @@ describe("SecretsManagerService.updateCredentials — prune logging discipline",
     for (const secret of [CREDS.username, CREDS.password, CREDS.token]) {
       assert.ok(!joined.includes(secret), `log must not contain ${secret === CREDS.password ? "the password" : secret}`);
     }
-    assert.ok(joined.includes(V(2)), "version resource names ARE safe to log and are useful");
+    // NEO-294 REVERSES the position this line used to pin. It previously read
+    // "version resource names ARE safe to log and are useful" — half right.
+    // The useful half is the ORDINAL, which tells one version from another and
+    // is what makes a prune failure chaseable. The rest of the resource name
+    // is `projects/<project>/secrets/<per-user-id>`, i.e. the GCP project
+    // identifier, which is the thing this ticket exists to keep out of the
+    // error path. So: keep the ordinal, drop the project.
+    assert.ok(
+      joined.includes(SHORT_V(2)),
+      "the version must still be identifiable — the ordinal is the useful part",
+    );
+    assert.ok(
+      !joined.includes(SECRET),
+      "but never the fully-qualified resource name",
+    );
+    assert.ok(
+      !joined.includes("projects/"),
+      "and never the GCP project identifier, on any prune failure path",
+    );
+  });
+
+  it("no prune path logs a fully-qualified resource name (NEO-294)", async () => {
+    // The inverted position, pinned across EVERY prune log line at once rather
+    // than one test per branch — a new prune log that reaches for `secretName`
+    // fails here even if it invents its own message.
+    const cases = [
+      {
+        name: "created version name unavailable",
+        client: () => makeClient({ createdVersion: null, versions: [{ name: V(1), state: "ENABLED" }] }),
+      },
+      {
+        name: "created version name has no parseable ordinal",
+        client: () => makeClient({ createdVersion: SECRET, versions: [{ name: V(1), state: "ENABLED" }] }),
+      },
+      {
+        name: "listSecretVersions fails",
+        client: () => makeClient({ createdVersion: V(2), listThrows: true }),
+      },
+      {
+        name: "destroy fails",
+        client: () =>
+          makeClient({
+            createdVersion: V(3),
+            versions: [
+              { name: V(3), state: "ENABLED" },
+              { name: V(2), state: "ENABLED" },
+            ],
+            destroyBehavior: () => {
+              throw new Error("PERMISSION_DENIED: no destroy permission");
+            },
+          }),
+      },
+      {
+        name: "per-write cap reached",
+        client: () => makeClient({ createdVersion: V(999), versions: backlog(V(999), 50) }),
+      },
+    ];
+
+    for (const { name, client } of cases) {
+      capturedErrors = [];
+      capturedLogs = [];
+      activeClient = client();
+
+      await new SecretsManagerService().updateCredentials(KEY, CREDS);
+
+      const joined = [...capturedErrors, ...capturedLogs].join("\n");
+      assert.ok(joined.length > 0, `${name}: sanity — this path does log`);
+      assert.ok(
+        !joined.includes("projects/"),
+        `${name}: no GCP project identifier may reach the log`,
+      );
+      assert.ok(
+        !joined.includes(SECRET),
+        `${name}: no fully-qualified secret resource name may reach the log`,
+      );
+      assert.ok(
+        joined.includes(KEY),
+        `${name}: …but the bare secret id must still be there, or the line is unchaseable`,
+      );
+    }
   });
 });
